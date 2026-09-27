@@ -4,188 +4,164 @@ namespace App\Console\Commands;
 
 use App\Models\AutomationDispatch;
 use App\Models\AutomationRule;
-use App\Services\Messaging\AutomationWorkflowExecutor;
+use App\Models\User;
+use App\Services\InvoiceService;
+use App\Services\Messaging\AutomationWorkflowConverter;
+use App\Services\Messaging\AutomationWorkflowValidator;
+use App\Services\Messaging\ScheduledAutomationDispatcher;
+use App\Services\Messaging\WeeklyAutomationContext;
+use App\Services\Messaging\WeeklyDigestContexts;
+use App\Services\SalesReportService;
 use Carbon\Carbon;
 use Illuminate\Console\Command;
-use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Log;
 
 class RunSystemAutomations extends Command
 {
-    protected $signature = 'automations:run-system {--trigger=} {--force}';
+    protected $signature = 'automations:run-system {--trigger=} {--rule=} {--force}';
 
-    protected $description = 'Run due system automation commands such as weekly invoicing and weekly sales reports';
+    protected $description = 'Prepare due weekly invoices and reports, then execute their saved automation actions';
 
-    public function __construct(
-        private readonly AutomationWorkflowExecutor $workflowExecutor
-    ) {
-        parent::__construct();
-    }
-
-    public function handle(): int
+    public function handle(ScheduledAutomationDispatcher $dispatcher, WeeklyAutomationContext $contexts): int
     {
-        $now = now();
-        $trigger = $this->option('trigger');
-
-        $rules = AutomationRule::query()
-            ->active()
+        $rules = AutomationRule::active()
             ->where('scope', 'SYSTEM')
-            ->when($trigger, fn ($query) => $query->where('trigger_type', $trigger))
-            ->orderBy('trigger_type')
-            ->get();
+            ->whereIn('trigger_type', ['WEEKLY_AUTOMATED_INVOICING', 'WEEKLY_SALES_REPORT', 'INVOICE_SUMMARY', 'WEEKLY_REP_INVOICE', 'WEEKLY_PAYOUT_REPORT', 'WEEKLY_PAYOUT_DIGEST'])
+            ->when($this->option('trigger'), fn ($query) => $query->where('trigger_type', $this->option('trigger')))
+            ->when($this->option('rule'), fn ($query) => $query->whereKey($this->option('rule')))
+            ->orderBy('trigger_type')->get();
+        $failed = 0;
+        $generatedInvoices = null;
+        $generatedInvoiceIds = [];
 
-        if ($rules->isEmpty()) {
-            $this->warn('No active system automations found. Ensuring system automations exist...');
-            Artisan::call('automations:ensure-system');
-            $rules = AutomationRule::query()
-                ->active()
-                ->where('scope', 'SYSTEM')
-                ->when($trigger, fn ($query) => $query->where('trigger_type', $trigger))
-                ->orderBy('trigger_type')
-                ->get();
-
-            if ($rules->isEmpty()) {
-                $this->warn('Still no active system automations found after ensure-system.');
-                return self::SUCCESS;
-            }
-        }
-
-        $executed = 0;
-
+        // Missing or disabled rules deliberately stay that way. Creation and repair
+        // belong to migrations, never to a scheduler that might undo an admin edit.
         foreach ($rules as $rule) {
-            $dispatchPayload = $this->resolveDispatchPayload($rule, $now);
-            if ($dispatchPayload === null) {
+            $scheduledFor = $this->scheduledFor($rule, now());
+            if (! $scheduledFor) {
+                continue;
+            }
+            $periodKey = $rule->trigger_type.'|'.$scheduledFor->toDateString();
+            $dispatch = AutomationDispatch::firstOrNew([
+                'automation_rule_id' => $rule->id,
+                'period_key' => $periodKey,
+            ]);
+            if ($dispatch->status === 'completed' && ! $this->option('force')) {
                 continue;
             }
 
-            ['command' => $commandString, 'scheduled_for' => $scheduledFor, 'period_key' => $periodKey] = $dispatchPayload;
-
-            if (!$this->option('force') && $this->alreadySuccessful($rule, $periodKey)) {
-                $this->line("Skipping {$rule->name}; already executed for {$periodKey}.");
-                continue;
-            }
-
-            $dispatch = AutomationDispatch::updateOrCreate(
-                [
-                    'automation_rule_id' => $rule->id,
-                    'period_key' => $periodKey,
-                ],
-                [
-                    'trigger_type' => $rule->trigger_type,
-                    'scheduled_for' => $scheduledFor,
-                    'command' => $commandString,
-                    'status' => 'running',
-                    'error_message' => null,
-                    'started_at' => now(),
-                    'completed_at' => null,
-                ]
-            );
+            $dispatch->fill([
+                'trigger_type' => $rule->trigger_type,
+                'scheduled_for' => $scheduledFor,
+                'command' => 'workflow:'.$rule->trigger_type,
+                'status' => 'running',
+                'error_message' => null,
+                'started_at' => now(),
+                'completed_at' => null,
+            ])->save();
 
             try {
-                $this->info("Running {$rule->name}: {$commandString}");
-                $exitCode = 1;
-
-                $run = $this->workflowExecutor->createSystemRun(
-                    $rule,
-                    [
-                        'trigger_type' => $rule->trigger_type,
-                        'scheduled_for' => $scheduledFor->toIso8601String(),
-                        'period_key' => $periodKey,
-                    ],
-                    $commandString,
-                    $scheduledFor,
-                    function () use ($commandString, &$exitCode): string {
-                        $exitCode = Artisan::call($commandString);
-                        return trim(Artisan::output());
+                $workflow = app(AutomationWorkflowConverter::class)->getWorkflowDefinition($rule);
+                $validation = app(AutomationWorkflowValidator::class)->validate($workflow);
+                if (! $validation['valid']) {
+                    throw new \RuntimeException('Weekly automation has an invalid workflow.');
+                }
+                $delivered = 0;
+                $invoiceIds = [];
+                if ($rule->trigger_type === 'WEEKLY_AUTOMATED_INVOICING') {
+                    // Generation is bookkeeping. All delivery belongs to the visible
+                    // workflow, including its channels, template, recipients and filters.
+                    if ($generatedInvoices === null) {
+                        $generatedInvoices = app(InvoiceService::class)->generateForLastCompletedWeek(false);
+                        $generatedInvoiceIds = $generatedInvoices->filter(fn ($invoice) => $invoice->created_at
+                            && $invoice->created_at->gte($dispatch->created_at->copy()->startOfSecond()))->pluck('id')->all();
                     }
-                );
-                $output = (string) (($run->steps()->latest('id')->first()?->output_json['output']) ?? '');
-
+                    // Every due rule sees the same generation batch. Persist its IDs
+                    // before delivery so a failed clone can retry without regenerating
+                    // notifications for unrelated historical or manual invoices.
+                    $previousBatch = json_decode((string) $dispatch->output, true);
+                    $invoiceIds = array_values(array_unique(array_merge($generatedInvoiceIds, (array) ($previousBatch['invoice_ids'] ?? []))));
+                    $dispatch->update(['output' => json_encode(['invoice_ids' => $invoiceIds])]);
+                    foreach ($generatedInvoices as $invoice) {
+                        if ((float) ($invoice->total_amount ?? $invoice->total) <= 0
+                            || ! in_array($invoice->id, $invoiceIds, true)) {
+                            continue;
+                        }
+                        $key = 'weekly-invoice:'.$invoice->id;
+                        if ($dispatcher->alreadyDispatched($rule, $key)) {
+                            continue;
+                        }
+                        if (! $dispatcher->dispatch($rule, $contexts->invoice($invoice), $key)) {
+                            throw new \RuntimeException('Weekly invoice workflow did not complete.');
+                        }
+                        $delivered++;
+                    }
+                } elseif ($rule->trigger_type === 'WEEKLY_SALES_REPORT') {
+                    $reports = app(SalesReportService::class);
+                    [$start, $end] = $reports->getLastCompletedWeek();
+                    foreach ($reports->generateWeeklyReportsForAllSalesReps($start, $end) as $report) {
+                        if (! $contexts->hasReportActivity($report)) {
+                            continue;
+                        }
+                        $rep = User::find(data_get($report, 'sales_rep.id'));
+                        if (! $rep || ! $reports->isSalesRep($rep)) {
+                            continue;
+                        }
+                        $key = 'weekly-report:'.$rep->id.':'.$start->toDateString();
+                        if ($dispatcher->alreadyDispatched($rule, $key)) {
+                            continue;
+                        }
+                        if (! $dispatcher->dispatch($rule, $contexts->report($rep, $report), $key)) {
+                            throw new \RuntimeException('Weekly sales report workflow did not complete.');
+                        }
+                        $delivered++;
+                    }
+                } else {
+                    foreach (app(WeeklyDigestContexts::class)->forRule($rule) as $key => $context) {
+                        if ($dispatcher->alreadyDispatched($rule, $key)) {
+                            continue;
+                        }
+                        if (! $dispatcher->dispatch($rule, $context, $key)) {
+                            throw new \RuntimeException('Weekly summary workflow did not complete.');
+                        }
+                        $delivered++;
+                    }
+                }
                 $dispatch->update([
-                    'status' => $exitCode === 0 ? 'completed' : 'failed',
-                    'output' => $output,
-                    'error_message' => $exitCode === 0 ? null : 'Automation command failed. Review its configuration and try again.',
+                    'status' => 'completed',
+                    'output' => json_encode(['invoice_ids' => $invoiceIds, 'dispatched_count' => $delivered]),
                     'completed_at' => now(),
                 ]);
-
-                if ($exitCode !== 0) {
-                    $this->error("Automation failed: {$rule->name}");
-                    Log::error('System automation command failed', [
-                        'rule_id' => $rule->id,
-                        'trigger_type' => $rule->trigger_type,
-                        'command' => $commandString,
-                        'exit_code' => $exitCode,
-                    ]);
-                    continue;
-                }
-
-                $executed++;
-                $this->info("Completed {$rule->name}");
+                $this->info($rule->name.': '.$delivered.' workflow context(s) dispatched.');
             } catch (\Throwable $exception) {
+                $failed++;
                 $dispatch->update([
                     'status' => 'failed',
-                    'error_message' => \App\Services\ApiErrorResponder::publicMessage($exception, 'Automation could not complete. Review its configuration and try again.'),
+                    'error_message' => 'Weekly automation could not complete. Review its run history and configuration.',
                     'completed_at' => now(),
                 ]);
-
-                Log::error('System automation crashed', [
-                    'rule_id' => $rule->id,
-                    'trigger_type' => $rule->trigger_type,
-                    'command' => $commandString,
-                    'error' => \App\Services\ApiErrorResponder::publicMessage($exception, 'Automation could not complete. Review its configuration and try again.'),
-                ]);
-
-                $this->error("Automation crashed: {$rule->name}");
+                Log::error('Weekly automation failed', ['rule_id' => $rule->id, 'exception' => $exception]);
+                $this->error('Automation failed: '.$rule->name);
             }
         }
 
-        $this->info("Executed {$executed} system automation(s).");
-
-        return self::SUCCESS;
+        return $failed > 0 ? self::FAILURE : self::SUCCESS;
     }
 
-    private function resolveDispatchPayload(AutomationRule $rule, Carbon $now): ?array
+    private function scheduledFor(AutomationRule $rule, Carbon $now): ?Carbon
     {
-        $schedule = is_array($rule->schedule_json) ? $rule->schedule_json : [];
-        $conditions = is_array($rule->condition_json) ? $rule->condition_json : [];
-        $commandString = $conditions['command'] ?? $schedule['command'] ?? null;
-
-        if (!$commandString) {
-            return null;
-        }
-
+        $schedule = (array) $rule->schedule_json;
         if (($schedule['type'] ?? null) !== 'weekly') {
             return null;
         }
-
-        $dayOfWeek = (int) ($schedule['day_of_week'] ?? 1);
+        $day = (int) ($schedule['day_of_week'] ?? 1);
         $time = (string) ($schedule['time'] ?? '00:00');
-        [$hour, $minute] = array_pad(array_map('intval', explode(':', $time)), 2, 0);
-
-        $scheduledFor = $now->copy()
-            ->startOfWeek(Carbon::SUNDAY)
-            ->addDays($dayOfWeek)
-            ->setTime($hour, $minute, 0);
-
-        if ($now->lt($scheduledFor)) {
+        if ($day < 0 || $day > 6 || ! preg_match('/^(?:[01]\d|2[0-3]):[0-5]\d$/', $time)) {
             return null;
         }
+        [$hour, $minute] = array_map('intval', explode(':', $time));
+        $scheduled = $now->copy()->startOfWeek(Carbon::SUNDAY)->addDays($day)->setTime($hour, $minute);
 
-        $periodKey = sprintf('%s|%s', $rule->trigger_type, $scheduledFor->format('Y-m-d H:i'));
-
-        return [
-            'command' => $commandString,
-            'scheduled_for' => $scheduledFor,
-            'period_key' => $periodKey,
-        ];
-    }
-
-    private function alreadySuccessful(AutomationRule $rule, string $periodKey): bool
-    {
-        return AutomationDispatch::query()
-            ->where('automation_rule_id', $rule->id)
-            ->where('period_key', $periodKey)
-            ->where('status', 'completed')
-            ->exists();
+        return $now->gte($scheduled) || $this->option('force') ? $scheduled : null;
     }
 }

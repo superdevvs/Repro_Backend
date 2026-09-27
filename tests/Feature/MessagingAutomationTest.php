@@ -105,7 +105,7 @@ class MessagingAutomationTest extends TestCase
         $this->assertSame('LOCAL_SMTP', $message->provider);
     }
 
-    public function test_invoice_reminders_send_due_and_overdue_once(): void
+    public function test_invoice_overdue_reminders_use_saved_template_and_send_once(): void
     {
         Mail::fake();
         $this->createDefaultEmailChannel();
@@ -144,7 +144,7 @@ class MessagingAutomationTest extends TestCase
             'period_end' => now()->subDays(2)->toDateString(),
             'invoice_number' => '00019',
             'issue_date' => now()->subDays(15),
-            'due_date' => now()->subDays(2),
+            'due_date' => now()->subDays(3),
             'total' => 180,
             'amount_paid' => 0,
             'status' => Invoice::STATUS_SENT,
@@ -160,21 +160,21 @@ class MessagingAutomationTest extends TestCase
         $this->assertSame((float) $dueInvoice->balanceDue(), (float) ($dueMessage->metadata['amount_due'] ?? -1));
         $this->assertSame($dueInvoice->invoice_number, $dueMessage->metadata['invoice_number'] ?? null);
         $this->assertSame($dueInvoice->paymentLink(), $dueMessage->metadata['payment_link'] ?? null);
-        $this->assertSame('Payment Reminder - Property details unavailable - Invoice 00018', $dueMessage->subject);
-        $this->assertStringContainsString('Invoice Number: 00018', html_entity_decode(strip_tags($dueMessage->body_html)));
-        $this->assertStringContainsString('Invoice Number: 00018', $dueMessage->body_text);
+        $this->assertSame('Payment Reminder - Invoice 00018', $dueMessage->subject);
+        $this->assertStringContainsString('Invoice 00018', html_entity_decode(strip_tags($dueMessage->body_html)));
+        $this->assertStringContainsString('Invoice 00018', $dueMessage->body_text);
         $this->assertStringNotContainsString('Invoice Invoice', $dueMessage->subject.$dueMessage->body_html.$dueMessage->body_text);
 
         $overdueMessage = Message::where('related_invoice_id', $overdueInvoice->id)->first();
         $this->assertNotNull($overdueMessage);
         $this->assertSame('AUTOMATION', $overdueMessage->send_source);
-        $this->assertContains(sprintf('INVOICE_OVERDUE:%s:2d', $overdueInvoice->id), $overdueMessage->tags_json ?? []);
-        $this->assertSame('overdue_2d', $overdueMessage->metadata['reminder_stage'] ?? null);
+        $this->assertContains(sprintf('INVOICE_OVERDUE:%s:3d', $overdueInvoice->id), $overdueMessage->tags_json ?? []);
+        $this->assertSame('overdue_3d', $overdueMessage->metadata['reminder_stage'] ?? null);
         $this->assertSame($overdueInvoice->invoice_number, $overdueMessage->metadata['invoice_number'] ?? null);
         $this->assertSame($overdueInvoice->paymentLink(), $overdueMessage->metadata['payment_link'] ?? null);
-        $this->assertSame('Payment Reminder - Property details unavailable - Invoice 00019', $overdueMessage->subject);
-        $this->assertStringContainsString('Invoice Number: 00019', html_entity_decode(strip_tags($overdueMessage->body_html)));
-        $this->assertStringContainsString('Invoice Number: 00019', $overdueMessage->body_text);
+        $this->assertSame('Payment Reminder - Invoice 00019', $overdueMessage->subject);
+        $this->assertStringContainsString('Invoice 00019', html_entity_decode(strip_tags($overdueMessage->body_html)));
+        $this->assertStringContainsString('Invoice 00019', $overdueMessage->body_text);
         $this->assertStringNotContainsString('Invoice Invoice', $overdueMessage->subject.$overdueMessage->body_html.$overdueMessage->body_text);
 
         Artisan::call('messaging:invoice-reminders');
@@ -312,8 +312,8 @@ class MessagingAutomationTest extends TestCase
         $overdueTemplate = $this->createTemplate('Invoice Overdue Cadence');
         $this->createAutomation('INVOICE_OVERDUE', $overdueTemplate, ['client']);
 
-        $scheduledOffsets = [1, 2, 3, 7, 30, 60, 90];
-        $skippedOffsets = [4, 5, 6, 8, 15, 29, 31, 45, 59, 61];
+        $scheduledOffsets = [1, 3, 7, 14, 30, 60, 90];
+        $skippedOffsets = [2, 4, 5, 6, 8, 15, 29, 31, 45, 59, 61];
 
         $scheduledInvoices = [];
         foreach ($scheduledOffsets as $offset) {
@@ -597,7 +597,7 @@ class MessagingAutomationTest extends TestCase
             'subject' => 'Scheduled test',
             'body_html' => '<p>Hello later</p>',
             'body_text' => 'Hello later',
-        ], now()->addMinute());
+        ], now()->subMinute());
 
         try {
             $service->dispatchScheduledMessage($message->fresh());
@@ -611,6 +611,31 @@ class MessagingAutomationTest extends TestCase
         $this->assertSame('FAILED', $message->status);
         $this->assertNotNull($message->failed_at);
         $this->assertSame('SMTP unavailable', $message->error_message);
+    }
+
+    public function test_scheduled_message_rechecks_due_state_and_uses_one_lock_per_message(): void
+    {
+        $this->createDefaultEmailChannel();
+        $provider = Mockery::mock(LocalSmtpProvider::class);
+        $provider->shouldReceive('send')->once()->andReturn('scheduled-once');
+        $this->app->instance(LocalSmtpProvider::class, $provider);
+        $service = $this->app->make(MessagingService::class);
+        $message = $service->scheduleEmail([
+            'to' => 'recipient@example.com', 'subject' => 'Send once', 'body_text' => 'Scheduled fixture',
+        ], now()->addMinute());
+        $stale = $message->fresh();
+        $this->assertSame('SCHEDULED', $service->dispatchScheduledMessage($message)->status);
+        $message->update(['scheduled_at' => now()->subMinute()]);
+        $lock = \Illuminate\Support\Facades\Cache::lock('scheduled-message:'.$message->id, 300);
+        $this->assertTrue($lock->get());
+        try {
+            $this->assertSame('SCHEDULED', $service->dispatchScheduledMessage($message)->status);
+        } finally {
+            $lock->release();
+        }
+        $this->assertSame('SENT', $service->dispatchScheduledMessage($message)->status);
+        $this->assertSame('SENT', $service->dispatchScheduledMessage($stale)->status);
+        $this->assertSame('scheduled-once', $message->fresh()->provider_message_id);
     }
 
     public function test_retry_stuck_command_sends_eligible_queued_email_messages(): void
@@ -727,91 +752,20 @@ class MessagingAutomationTest extends TestCase
         $this->assertNull($message->metadata);
     }
 
-    public function test_shoot_reminders_only_fall_back_for_client_when_automation_already_notified_photographer(): void
+    public function test_shoot_reminders_do_not_bypass_the_configured_workflow_for_an_omitted_recipient(): void
     {
         Carbon::setTestNow(Carbon::create(2026, 4, 18, 12, 0, 0));
         try {
-            $client = User::factory()->create(['role' => 'client', 'email' => 'reminder-client@example.com']);
-            $photographer = User::factory()->create(['role' => 'photographer', 'email' => 'reminder-photographer@example.com']);
-            $shoot = $this->createReminderShoot($client, $photographer);
-
-            $mailService = Mockery::mock(MailService::class);
-            $mailService->shouldReceive('sendShootReminderEmail')
-                ->once()
-                ->withArgs(function (
-                    User $recipient,
-                    Shoot $targetShoot,
-                    $scheduledAt,
-                    array $tags,
-                    ?bool $notifyPhotographer = null
-                ) use ($client, $shoot) {
-                    return $recipient->is($client)
-                        && $targetShoot->id === $shoot->id
-                        && $scheduledAt instanceof Carbon
-                        && count($tags) === 1
-                        && str_contains($tags[0], 'SHOOT_REMINDER:24H:shoot:'.$shoot->id.':')
-                        && $notifyPhotographer === false;
-                })
-                ->andReturnTrue();
-            $this->app->instance(MailService::class, $mailService);
-
-            $this->app->instance(
-                AutomationService::class,
-                $this->buildReminderAutomationServiceDouble($mailService, [
-                    'trigger_type' => 'SHOOT_REMINDER',
-                    'active_rule_count' => 1,
-                    'handled' => true,
-                    'client_email_sent' => false,
-                    'photographer_email_sent' => true,
-                ])
-            );
-
-            app(AutomationService::class)->triggerShootReminders();
-        } finally {
-            Carbon::setTestNow();
-        }
-    }
-
-    public function test_shoot_reminders_only_fall_back_for_photographer_when_automation_already_notified_client(): void
-    {
-        Carbon::setTestNow(Carbon::create(2026, 4, 18, 12, 0, 0));
-        try {
-            $client = User::factory()->create(['role' => 'client', 'email' => 'reminder-client-2@example.com']);
-            $photographer = User::factory()->create(['role' => 'photographer', 'email' => 'reminder-photographer-2@example.com']);
-            $shoot = $this->createReminderShoot($client, $photographer);
-
-            $mailService = Mockery::mock(MailService::class);
-            $mailService->shouldReceive('sendShootReminderEmail')
-                ->once()
-                ->withArgs(function (
-                    User $recipient,
-                    Shoot $targetShoot,
-                    $scheduledAt,
-                    array $tags,
-                    ?bool $notifyPhotographer = null
-                ) use ($photographer, $shoot) {
-                    return $recipient->is($photographer)
-                        && $targetShoot->id === $shoot->id
-                        && $scheduledAt instanceof Carbon
-                        && count($tags) === 1
-                        && str_contains($tags[0], 'SHOOT_REMINDER:24H:shoot:'.$shoot->id.':')
-                        && $notifyPhotographer === false;
-                })
-                ->andReturnTrue();
-            $this->app->instance(MailService::class, $mailService);
-
-            $this->app->instance(
-                AutomationService::class,
-                $this->buildReminderAutomationServiceDouble($mailService, [
-                    'trigger_type' => 'SHOOT_REMINDER',
-                    'active_rule_count' => 1,
-                    'handled' => true,
-                    'client_email_sent' => true,
-                    'photographer_email_sent' => false,
-                ])
-            );
-
-            app(AutomationService::class)->triggerShootReminders();
+            $client = User::factory()->create(['role' => 'client']);
+            $photographer = User::factory()->create(['role' => 'photographer']);
+            $this->createReminderShoot($client, $photographer);
+            $mail = Mockery::mock(MailService::class);
+            $mail->shouldReceive('sendShootReminderEmail')->never();
+            $service = $this->buildReminderAutomationServiceDouble($mail, [
+                'trigger_type' => 'SHOOT_REMINDER', 'active_rule_count' => 1,
+                'handled' => true, 'client_email_sent' => false, 'photographer_email_sent' => true,
+            ]);
+            $service->triggerShootReminders();
         } finally {
             Carbon::setTestNow();
         }
@@ -905,6 +859,10 @@ class MessagingAutomationTest extends TestCase
 
     private function createAutomation(string $trigger, MessageTemplate $template, array $recipients): AutomationRule
     {
+        $schedule = in_array($trigger, ['INVOICE_DUE', 'INVOICE_OVERDUE'], true) ? ['time' => '00:00'] : null;
+        if (in_array($trigger, ['INVOICE_SUMMARY', 'WEEKLY_REP_INVOICE'], true)) {
+            $schedule = ['type' => 'weekly', 'day_of_week' => 1, 'time' => '03:00'];
+        }
         $existingRule = AutomationRule::query()
             ->where('trigger_type', $trigger)
             ->orderBy('id')
@@ -915,6 +873,8 @@ class MessagingAutomationTest extends TestCase
                 'template_id' => $template->id,
                 'is_active' => true,
                 'recipients_json' => $recipients,
+                'schedule_json' => $schedule,
+                'workflow_definition_json' => null,
             ])->save();
 
             AutomationRule::query()
@@ -932,6 +892,7 @@ class MessagingAutomationTest extends TestCase
             'is_active' => true,
             'scope' => 'GLOBAL',
             'recipients_json' => $recipients,
+            'schedule_json' => $schedule,
         ]);
     }
 

@@ -360,6 +360,7 @@ class AuthController extends Controller
     private function saveProfile(Request $request)
     {
         $user = $request->user();
+        $previousPhoneForNotification = trim((string) ($user->phonenumber ?: $user->phone));
         \App\Support\PhotographerCapabilityFields::assertWritable($request);
 
         if ($request->has('email')) {
@@ -587,6 +588,15 @@ class AuthController extends Controller
             ->values()
             ->all();
 
+        if (array_key_exists('phonenumber', $validated)) {
+            $newPhoneForNotification = trim((string) ($user->phonenumber ?: $user->phone));
+            \App\Services\Users\AccountSecurityMutation::afterCommit($request, function () use ($user, $previousPhoneForNotification, $newPhoneForNotification): void {
+                app(\App\Services\Users\PhoneNumberChangedNotificationService::class)->dispatch(
+                    $user, $previousPhoneForNotification, $newPhoneForNotification, $user,
+                );
+            });
+        }
+
         if ($passwordChanged) {
             $this->recordUserActivity(
                 $user,
@@ -688,8 +698,10 @@ class AuthController extends Controller
 
                 \App\Services\Users\AccountSecurityMutation::afterCommit($request, function () use ($user): void {
                     try {
-                        $this->mailService->sendTermsAcceptedEmail($user);
-                        $this->automationService->handleEvent('TERMS_ACCEPTED', $this->buildUserContext($user));
+                        $dispatch = $this->automationService->handleEvent('TERMS_ACCEPTED', $this->buildUserContext($user));
+                        if ($this->automationService->shouldUseFallback('TERMS_ACCEPTED', $dispatch)) {
+                            $this->mailService->sendTermsAcceptedEmail($user);
+                        }
                     } catch (\Throwable $exception) {
                         Log::warning('Profile saved but terms notification failed.', ['user_id' => $user->getKey(), 'exception_class' => $exception::class]);
                     }

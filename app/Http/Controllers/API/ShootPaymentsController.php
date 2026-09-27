@@ -421,23 +421,7 @@ class ShootPaymentsController extends Controller
         }
 
         try {
-            $receiptShoot = $shoot->fresh(['client', 'payments', 'services.category']) ?? $shoot;
-            $receiptPayment = $payment->fresh() ?? $payment;
-
-            if ($receiptShoot->client) {
-                $queued = $this->mailService->sendPaymentConfirmationEmail(
-                    $receiptShoot->client,
-                    $receiptShoot,
-                    $receiptPayment
-                );
-
-                if (! $queued) {
-                    Log::warning('Payment confirmation email was not queued', [
-                        'shoot_id' => $shoot->id,
-                        'payment_id' => $payment->id,
-                    ]);
-                }
-            }
+            app(\App\Services\Messaging\AutomationService::class)->queueAcceptedPaymentReceipt([$payment]);
         } catch (\Throwable $emailError) {
             \App\Services\ApiErrorResponder::log($emailError, 'warning');
         }

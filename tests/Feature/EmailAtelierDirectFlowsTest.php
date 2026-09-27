@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Http\Controllers\Admin\EditorPayoutController as AdminEditorPayoutController;
 use App\Http\Controllers\EditorPayoutController;
 use App\Http\Controllers\PayoutReportController;
+use App\Models\AutomationRule;
 use App\Models\Message;
 use App\Models\MessageTemplate;
 use App\Models\User;
@@ -15,7 +16,6 @@ use App\Services\PayoutReportService;
 use App\Services\SystemEmails\DirectEmailTemplates;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Request;
-use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Notification;
@@ -149,9 +149,10 @@ class EmailAtelierDirectFlowsTest extends TestCase
         $this->edit('payout-digest', 'payout_digest_html');
         $this->disable($disabled);
         $service = Mockery::mock(PayoutReportService::class);
-        $service->shouldReceive('lastCompletedWeekRange')->once()->andReturn([Carbon::parse('2026-09-07'), Carbon::parse('2026-09-13')]);
+        $digest = AutomationRule::where('trigger_type', 'WEEKLY_PAYOUT_DIGEST')->firstOrFail();
+        $digest->update(['schedule_json' => array_merge($digest->schedule_json, ['accounting_email' => 'accounting@example.test'])]);
         foreach (['Photographer' => 'photographer', 'Editor' => 'editor', 'SalesRep' => 'salesRep'] as $method => $role) {
-            $service->shouldReceive('build'.$method.'Summaries')->once()->andReturn(collect([$this->payoutSummary($role)]));
+            $service->shouldReceive('build'.$method.'Summaries')->twice()->andReturn(collect([$this->payoutSummary($role, true)]));
         }
         $this->app->instance(PayoutReportService::class, $service);
         $sent = $this->capture($disabled === 'payout-report' ? 1 : ($disabled === 'payout-digest' ? 3 : 4));
@@ -270,10 +271,12 @@ class EmailAtelierDirectFlowsTest extends TestCase
         $this->assertStringNotContainsString('Preview example', $payload['body_html']);
     }
 
-    private function payoutSummary(string $role): array
+    private function payoutSummary(string $role, bool $persist = false): array
     {
+        $person = $persist ? User::factory()->create(['role' => $role, 'name' => 'Scoped '.$role, 'email' => $role.'@example.test']) : null;
+
         return [
-            'id' => 42, 'name' => 'Scoped '.$role, 'email' => $role.'@example.test', 'role' => $role,
+            'id' => $person?->id ?? 42, 'name' => 'Scoped '.$role, 'email' => $role.'@example.test', 'role' => $role,
             'shoot_count' => 7, 'service_count' => 12, 'gross_total' => 321.45, 'average_value' => 45.92,
             'commission_rate' => 10, 'commission_total' => 32.15, 'compensation_total' => 0, 'payout_total' => 321.45,
         ];

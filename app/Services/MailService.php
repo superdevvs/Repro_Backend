@@ -1291,7 +1291,7 @@ class MailService
                     'event_version' => $shoot->updated_at?->toIso8601String() ?? $shoot->id,
                 ],
             ]);
-            $this->dispatchProtectedEmail('SHOOT_DELIVERED', $payload, $user->email, $clientCcEmails, [], $this->automatedClientPayload($user, [
+            $accepted = $this->dispatchProtectedEmail('SHOOT_DELIVERED', $payload, $user->email, $clientCcEmails, [], $this->automatedClientPayload($user, [
                 'related_shoot_id' => $shoot->id,
                 // The delivered email is a mandatory transactional notification:
                 // bypass the email-health gate so it is never silently
@@ -1305,7 +1305,12 @@ class MailService
                     $isFullOrderDelivery ? 'full' : 'partial',
                     $this->serviceScopeHash($shootData)
                 ),
+                'require_confirmed_duplicate' => true,
+                'retry_failed' => true,
             ]);
+            if (! $accepted) {
+                return false;
+            }
             
             Log::info('Shoot ready email sent', [
                 'user_id' => $user->id,
@@ -2730,7 +2735,7 @@ class MailService
                     'related_invoice_id' => $invoice->id,
                     'related_account_id' => $admin->id,
                 ], [
-                    'idempotency_key' => sprintf('INVOICE_PENDING_APPROVAL:%d:%d:%s', $invoice->id, $admin->id, sha1($period)),
+                    'idempotency_key' => sprintf('INVOICE_PENDING_APPROVAL:%d:%d:%s', $invoice->id, $admin->id, sha1($period.'|'.$payload['meta']['event_version'])),
                 ]);
             }
             
@@ -2780,7 +2785,7 @@ class MailService
                 'related_invoice_id' => $invoice->id,
                 'related_account_id' => $recipient->id,
             ], [
-                'idempotency_key' => sprintf('INVOICE_APPROVED:%d:%d:%s', $invoice->id, $recipient->id, sha1($period)),
+                'idempotency_key' => sprintf('INVOICE_APPROVED:%d:%d:%s', $invoice->id, $recipient->id, sha1($period.'|'.$payload['meta']['event_version'])),
             ]);
             
             Log::info('Invoice approved email sent', [
@@ -2830,7 +2835,7 @@ class MailService
                 'related_invoice_id' => $invoice->id,
                 'related_account_id' => $recipient->id,
             ], [
-                'idempotency_key' => sprintf('INVOICE_REJECTED:%d:%d:%s', $invoice->id, $recipient->id, sha1($period)),
+                'idempotency_key' => sprintf('INVOICE_REJECTED:%d:%d:%s', $invoice->id, $recipient->id, sha1($period.'|'.$payload['meta']['event_version'])),
             ]);
             
             Log::info('Invoice rejected email sent', [
@@ -3051,24 +3056,39 @@ class MailService
         array $newSecondaryRoles = []
     ): bool {
         try {
-            $oldRoleLabel = $this->formatRoleLabel($oldRole);
-            $newRoleLabel = $this->formatRoleLabel($newRole);
+            $roleLabel = fn (string $role): string => match (strtolower(str_replace(['_', '-', ' '], '', $role))) {
+                'salesrep', 'rep' => 'Sales Rep',
+                'superadmin' => 'Super Admin',
+                'editingmanager' => 'Editing Manager',
+                default => Str::headline($role),
+            };
+            $oldRoleLabel = $roleLabel($oldRole);
+            $newRoleLabel = $roleLabel($newRole);
 
             $secondaryRolesLabels = collect($newSecondaryRoles ?? [])
-                ->map(fn ($role) => $this->formatRoleLabel((string) $role))
+                ->map(fn ($role) => $roleLabel((string) $role))
                 ->filter()
                 ->values()
                 ->all();
+
+            $oldSecondaryIdentity = array_values(array_unique($oldSecondaryRoles));
+            $newSecondaryIdentity = array_values(array_unique($newSecondaryRoles));
+            sort($oldSecondaryIdentity);
+            sort($newSecondaryIdentity);
+            $eventVersion = sha1(json_encode([
+                $oldRole, $newRole, $oldSecondaryIdentity, $newSecondaryIdentity,
+                $user->updated_at?->format('Y-m-d H:i:s.u'),
+            ], JSON_THROW_ON_ERROR));
 
             $payload = $this->buildProtectedEmailPayload([
                 'recipient' => $this->formatUserData($user),
                 'account' => $this->formatUserData($user),
                 'meta' => [
-                    'recipient_type' => $newRole,
+                    'recipient_type' => $this->accountRecipientType($user),
                     'old_role_label' => $oldRoleLabel,
                     'new_role_label' => $newRoleLabel,
                     'secondary_roles' => $secondaryRolesLabels,
-                    'event_version' => sha1($oldRole . '|' . $newRole . '|' . implode(',', $oldSecondaryRoles) . '|' . implode(',', $newSecondaryRoles)),
+                    'event_version' => $eventVersion,
                 ],
             ]);
 
@@ -3076,7 +3096,7 @@ class MailService
                 'related_account_id' => $user->id,
                 'enforce_email_health_gate' => false,
             ], [
-                'idempotency_key' => sprintf('ROLE_CHANGED:%d:%s', $user->id, sha1($oldRole . '|' . $newRole)),
+                'idempotency_key' => sprintf('ROLE_CHANGED:%d:%s', $user->id, $eventVersion),
             ]);
 
             Log::info('Role changed email sent', [

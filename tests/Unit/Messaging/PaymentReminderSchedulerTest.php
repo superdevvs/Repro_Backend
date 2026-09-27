@@ -18,7 +18,7 @@ class PaymentReminderSchedulerTest extends TestCase
     {
         $start = CarbonImmutable::parse('2026-01-01 10:00:00');
         // Short horizon: only Phase 1 reminders.
-        $result = (new PaymentReminderScheduler())->schedule($start, $start->addDays(7));
+        $result = (new PaymentReminderScheduler)->schedule($start, $start->addDays(7));
 
         $this->assertSame([
             '2026-01-02 10:00:00', // day +1
@@ -31,7 +31,7 @@ class PaymentReminderSchedulerTest extends TestCase
     {
         $start = CarbonImmutable::parse('2026-01-01 10:00:00');
         // Horizon at day 30 — Phase 1 + Phase 2 (day 14/21/28); no monthly yet.
-        $result = (new PaymentReminderScheduler())->schedule($start, $start->addDays(30));
+        $result = (new PaymentReminderScheduler)->schedule($start, $start->addDays(30));
 
         $this->assertSame([
             '2026-01-02 10:00:00', // +1
@@ -47,7 +47,7 @@ class PaymentReminderSchedulerTest extends TestCase
     {
         $start = CarbonImmutable::parse('2026-01-01 10:00:00');
         // Horizon ~3 months out to capture monthly reminders.
-        $result = (new PaymentReminderScheduler())->schedule($start, CarbonImmutable::parse('2026-04-30 23:59:59'));
+        $result = (new PaymentReminderScheduler)->schedule($start, CarbonImmutable::parse('2026-04-30 23:59:59'));
 
         $formatted = $this->format($result);
 
@@ -68,7 +68,7 @@ class PaymentReminderSchedulerTest extends TestCase
     {
         $start = CarbonImmutable::parse('2026-01-15 08:30:00');
         $horizon = CarbonImmutable::parse('2026-06-30 23:59:59');
-        $result = (new PaymentReminderScheduler())->schedule($start, $horizon);
+        $result = (new PaymentReminderScheduler)->schedule($start, $horizon);
 
         $this->assertNotEmpty($result);
 
@@ -86,8 +86,42 @@ class PaymentReminderSchedulerTest extends TestCase
     {
         $start = CarbonImmutable::parse('2026-01-01 10:00:00');
         // Horizon before day +1 — nothing scheduled.
-        $result = (new PaymentReminderScheduler())->schedule($start, $start->addHours(12));
+        $result = (new PaymentReminderScheduler)->schedule($start, $start->addHours(12));
 
         $this->assertSame([], $result);
+    }
+
+    public function test_saved_cadence_replaces_first_month_days_and_last_weekday_delivery_time(): void
+    {
+        $start = CarbonImmutable::parse('2026-01-01 10:15:00', 'America/New_York');
+        $result = (new PaymentReminderScheduler)->schedule($start, $start->addMonths(3), [
+            'reminder_days' => [2, 10, 25],
+            'monthly_day_of_week' => CarbonInterface::FRIDAY,
+            'time' => '14:35',
+        ]);
+
+        $this->assertSame([
+            '2026-01-03 10:15:00',
+            '2026-01-11 10:15:00',
+            '2026-01-26 10:15:00',
+            '2026-02-27 14:35:00',
+            '2026-03-27 14:35:00',
+        ], $this->format($result));
+        foreach ($result as $timestamp) {
+            $this->assertSame('America/New_York', $timestamp->timezoneName);
+        }
+    }
+
+    public function test_explicit_default_settings_preserve_legacy_schedule(): void
+    {
+        $scheduler = new PaymentReminderScheduler;
+        $start = CarbonImmutable::parse('2026-07-15 11:45:00');
+        $horizon = $start->addMonths(4);
+
+        $this->assertSame($this->format($scheduler->schedule($start, $horizon)), $this->format($scheduler->schedule($start, $horizon, [
+            'reminder_days' => [1, 3, 7, 14, 21, 28],
+            'monthly_day_of_week' => 0,
+            'time' => '09:00',
+        ])));
     }
 }

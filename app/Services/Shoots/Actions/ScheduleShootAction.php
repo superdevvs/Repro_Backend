@@ -5,13 +5,13 @@ namespace App\Services\Shoots\Actions;
 use App\Http\Requests\UpdateShootStatusRequest;
 use App\Models\Shoot;
 use App\Models\User;
-use App\Services\ShootMediaStorageService;
 use App\Services\GoogleCalendar\GoogleCalendarSyncDispatcher;
 use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
 use App\Services\Messaging\ClientConfirmationRecoveryService;
-use App\Services\ShootWorkflowService;
+use App\Services\ShootMediaStorageService;
 use App\Services\Shoots\ShootMutationSupportService;
+use App\Services\ShootWorkflowService;
 use Illuminate\Validation\ValidationException;
 
 class ScheduleShootAction
@@ -24,8 +24,7 @@ class ScheduleShootAction
         protected ClientConfirmationRecoveryService $clientConfirmationRecoveryService,
         protected MailService $mailService,
         protected GoogleCalendarSyncDispatcher $googleCalendarSyncDispatcher
-    ) {
-    }
+    ) {}
 
     public function execute(UpdateShootStatusRequest $request, Shoot $shoot, User $user): Shoot
     {
@@ -34,7 +33,7 @@ class ScheduleShootAction
         $beforeSnapshot = $this->mailService->captureShootSnapshot($shoot);
         $scheduledAt = $validated['scheduled_at'] ? new \DateTime($validated['scheduled_at']) : null;
 
-        if (!$scheduledAt) {
+        if (! $scheduledAt) {
             throw ValidationException::withMessages([
                 'scheduled_at' => ['scheduled_at is required'],
             ]);
@@ -92,7 +91,7 @@ class ScheduleShootAction
                 'updated_at' => now(),
             ]);
 
-        if (!$shoot->dropbox_raw_folder) {
+        if (! $shoot->dropbox_raw_folder) {
             $this->mediaStorageService->createShootFolders($shoot);
         }
 
@@ -148,11 +147,11 @@ class ScheduleShootAction
             );
         }
 
-        if ($shouldUseFallback || !$clientEmailSent || !$photographerEmailSent) {
-            if (!$clientEmailSent) {
-                if (!$shoot->client) {
+        if ($shouldUseFallback) {
+            if (! $clientEmailSent) {
+                if (! $shoot->client) {
                     $this->clientConfirmationRecoveryService->recordNoDeliveryPath($shoot, null, 'SHOOT_SCHEDULED');
-                } elseif (!$this->clientConfirmationRecoveryService->hasDeliverableEmail($shoot->client)) {
+                } elseif (! $this->clientConfirmationRecoveryService->hasDeliverableEmail($shoot->client)) {
                     $this->clientConfirmationRecoveryService->recordSkippedMissingEmail($shoot, $shoot->client, 'SHOOT_SCHEDULED');
                 } else {
                     $paymentLink = $this->mailService->generatePaymentLink($shoot);
@@ -182,7 +181,7 @@ class ScheduleShootAction
                 }
             }
 
-            if ($shouldUseFallback || !$photographerEmailSent) {
+            if ($shouldUseFallback && ! $photographerEmailSent) {
                 $this->mailService->sendAssignedPhotographerShootScheduledEmails($shoot);
             }
         }
@@ -190,7 +189,7 @@ class ScheduleShootAction
         if (
             $originalPhotographerId
             && $originalPhotographerId !== $shoot->photographer_id
-            && !$this->automationService->hasActiveTrigger('PHOTOGRAPHER_CHANGED')
+            && $this->automationService->shouldUseFallback('PHOTOGRAPHER_CHANGED')
         ) {
             $previousPhotographer = User::find($originalPhotographerId);
             $affectedPhotographers = collect([$previousPhotographer])
@@ -215,7 +214,7 @@ class ScheduleShootAction
 
     private function formatDispatchSummaryForLog(?array $dispatch): array
     {
-        if (!is_array($dispatch)) {
+        if (! is_array($dispatch)) {
             return [
                 'present' => false,
             ];

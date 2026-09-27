@@ -6,6 +6,9 @@
 *.md diff=markdown
 *.php diff=php
 
+# Preserve intentional spaces in the exact historical production template fixture.
+tests/Fixtures/messaging/shoot-deleted-legacy.html whitespace=-blank-at-eol
+
 /.github export-ignore
 CHANGELOG.md export-ignore
 .styleci.yml export-ignore

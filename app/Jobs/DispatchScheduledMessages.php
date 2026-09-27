@@ -13,10 +13,10 @@ use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
-use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 
-class DispatchScheduledMessages implements ShouldQueue, ShouldBeUnique
+class DispatchScheduledMessages implements ShouldBeUnique, ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
@@ -48,8 +48,8 @@ class DispatchScheduledMessages implements ShouldQueue, ShouldBeUnique
      *
      * Only `pending` reminders are considered, so a reminder already marked `sent`/`cancelled`
      * is never picked up again — this is the no-duplicate guard per `(shoot_id, scheduled_date)`
-     * (Req 12.15). Each reminder is processed in its own transaction with a row lock so a
-     * concurrent run cannot send the same reminder twice.
+     * (Req 12.15). A per-reminder cache lock serializes delivery without holding a SQLite
+     * write transaction while an external provider responds.
      */
     private function dispatchDuePaymentReminders(AutomationService $automation): void
     {
@@ -77,10 +77,9 @@ class DispatchScheduledMessages implements ShouldQueue, ShouldBeUnique
      */
     private function dispatchPaymentReminder(PaymentReminder $reminder, AutomationService $automation): void
     {
-        DB::transaction(function () use ($reminder, $automation) {
+        Cache::lock('payment-reminder:'.$reminder->getKey(), 300)->get(function () use ($reminder, $automation) {
             $locked = PaymentReminder::query()
                 ->whereKey($reminder->getKey())
-                ->lockForUpdate()
                 ->first();
 
             // No-duplicate guard: a concurrent run may have already sent or cancelled this row.
@@ -102,6 +101,10 @@ class DispatchScheduledMessages implements ShouldQueue, ShouldBeUnique
                 return;
             }
 
+            if (! $automation->paymentReminderIsCurrent($locked)) {
+                return;
+            }
+
             try {
                 $message = $automation->sendPaymentReminder($shoot);
             } catch (\Throwable $exception) {
@@ -114,13 +117,18 @@ class DispatchScheduledMessages implements ShouldQueue, ShouldBeUnique
                 throw $exception;
             }
 
+            // A disabled action, suppressed recipient or provider failure is not a send.
+            if (! $message || ! in_array(strtoupper((string) $message->status), ['SENT', 'DELIVERED', 'QUEUED', 'SCHEDULED'], true)) {
+                return;
+            }
+
             // Record the send and link the Message so the (shoot_id, scheduled_date) row is never
             // re-sent on a subsequent run (Req 12.15).
-            $locked->forceFill([
+            PaymentReminder::whereKey($locked->id)->where('status', PaymentReminder::STATUS_PENDING)->update([
                 'status' => PaymentReminder::STATUS_SENT,
                 'sent_at' => now(),
-                'message_id' => $message?->id,
-            ])->save();
+                'message_id' => $message->id,
+            ]);
         });
     }
 }

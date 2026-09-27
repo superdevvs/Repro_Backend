@@ -13,7 +13,7 @@ use Illuminate\Console\Command;
  * per month for as long as it stays unpaid. {@see AutomationService::schedulePaymentReminders()}
  * only materializes a bounded look-ahead window from "now", so this command re-runs scheduling for
  * every unpaid, ready-notified shoot on a cadence SHORTER than that window (registered weekly in
- * the Console Kernel). Each run rolls the window forward, so the next last-Sunday reminder is
+ * bootstrap/app.php). Each run rolls the window forward, so the next last-Sunday reminder is
  * always materialized before it becomes due.
  *
  * Idempotency and stop-on-paid are guaranteed by schedulePaymentReminders() itself: the
@@ -52,7 +52,7 @@ class PaymentRemindersSweep extends Command
 
             return Command::SUCCESS;
         } catch (\Throwable $e) {
-            $this->error('Payment reminder sweep failed: ' . $e->getMessage());
+            $this->error('Payment reminder sweep failed: '.$e->getMessage());
 
             return Command::FAILURE;
         }

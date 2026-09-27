@@ -58,17 +58,23 @@ class PaymentReminderDispatchCadenceTest extends TestCase
         MessageTemplate::updateOrCreate(
             ['slug' => 'payment-due-reminder'],
             [
-                'channel'   => 'EMAIL',
-                'name'      => 'Invoice Payment Reminder',
-                'category'  => 'INVOICE',
-                'subject'   => 'Payment due for your shoot',
+                'channel' => 'EMAIL',
+                'name' => 'Invoice Payment Reminder',
+                'category' => 'INVOICE',
+                'subject' => 'Payment due for your shoot',
                 'body_html' => '<p>Hi {{recipient_name}}, your balance is due.</p>',
                 'body_text' => 'Hi {{recipient_name}}, your balance is due.',
-                'scope'     => 'SYSTEM',
+                'scope' => 'SYSTEM',
                 'is_system' => true,
                 'is_active' => true,
             ]
         );
+        \App\Models\SmsNumber::create([
+            'provider' => 'TELNYX', 'phone_number' => '+12025550999', 'label' => 'Test sender',
+            'owner_type' => 'GLOBAL', 'is_default' => true,
+        ]);
+        \App\Models\AutomationRule::where('trigger_type', 'SHOOT_PAYMENT_REMINDER')->delete();
+        app(\App\Services\Messaging\SystemAutomationDefaults::class)->ensure();
     }
 
     /**
@@ -85,14 +91,18 @@ class PaymentReminderDispatchCadenceTest extends TestCase
                 ->zeroOrMoreTimes()
                 ->andReturnUsing(function (array $payload): Message {
                     $this->emailSends[] = [
-                        'to'   => $payload['to'] ?? null,
+                        'to' => $payload['to'] ?? null,
                         'tags' => $payload['tags_json'] ?? null,
                     ];
 
-                    return Message::make([
-                        'channel'    => 'EMAIL',
+                    return Message::create([
+                        'channel' => 'EMAIL',
+                        'direction' => 'OUTBOUND',
+                        'send_source' => 'AUTOMATION',
                         'to_address' => $payload['to'] ?? null,
-                        'status'     => 'SENT',
+                        'status' => 'SENT',
+                        'tags_json' => $payload['tags_json'] ?? [],
+                        'related_shoot_id' => $payload['related_shoot_id'] ?? null,
                     ]);
                 });
 
@@ -100,14 +110,18 @@ class PaymentReminderDispatchCadenceTest extends TestCase
                 ->zeroOrMoreTimes()
                 ->andReturnUsing(function (array $payload): Message {
                     $this->smsSends[] = [
-                        'to'   => $payload['to'] ?? null,
+                        'to' => $payload['to'] ?? null,
                         'tags' => $payload['tags_json'] ?? null,
                     ];
 
-                    return Message::make([
-                        'channel'    => 'SMS',
+                    return Message::create([
+                        'channel' => 'SMS',
+                        'direction' => 'OUTBOUND',
+                        'send_source' => 'AUTOMATION',
                         'to_address' => $payload['to'] ?? null,
-                        'status'     => 'SENT',
+                        'status' => 'SENT',
+                        'tags_json' => $payload['tags_json'] ?? [],
+                        'related_shoot_id' => $payload['related_shoot_id'] ?? null,
                     ]);
                 });
         });
@@ -116,16 +130,16 @@ class PaymentReminderDispatchCadenceTest extends TestCase
     private function makeUnpaidShootWithBothChannels(string $anchor): Shoot
     {
         $client = User::factory()->create([
-            'email'       => 'client@example.com',
-            'name'        => 'Casey Client',
+            'email' => 'client@example.com',
+            'name' => 'Casey Client',
             'phonenumber' => '+15551234567',
         ]);
 
         // ShootFactory defaults payment_status to 'paid'; create unpaid explicitly and stamp the
         // cadence anchor (the shoot_ready_notified_at timestamp).
         return Shoot::factory()->create([
-            'client_id'               => $client->id,
-            'payment_status'          => 'unpaid',
+            'client_id' => $client->id,
+            'payment_status' => 'unpaid',
             'shoot_ready_notified_at' => Carbon::parse($anchor),
         ]);
     }
@@ -135,7 +149,7 @@ class PaymentReminderDispatchCadenceTest extends TestCase
      */
     private function runDispatch(): void
     {
-        (new DispatchScheduledMessages())->handle(
+        (new DispatchScheduledMessages)->handle(
             app(MessagingService::class),
             app(AutomationWorkflowExecutor::class),
             app(AutomationService::class),

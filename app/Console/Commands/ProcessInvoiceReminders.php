@@ -2,14 +2,14 @@
 
 namespace App\Console\Commands;
 
+use App\Models\AutomationRule;
 use App\Models\Invoice;
-use App\Models\Message;
 use App\Models\Shoot;
 use App\Models\User;
 use App\Services\Messaging\AutomationService;
+use App\Services\Messaging\ScheduledAutomationDispatcher;
 use Carbon\Carbon;
 use Illuminate\Console\Command;
-use Illuminate\Support\Collection;
 
 class ProcessInvoiceReminders extends Command
 {
@@ -21,7 +21,7 @@ class ProcessInvoiceReminders extends Command
      * Fixed reminder offsets (in days past the due date) before the recurring
      * 30-day cadence kicks in.
      */
-    private const OVERDUE_FIXED_OFFSETS = [1, 2, 3, 7, 30];
+    private const OVERDUE_FIXED_OFFSETS = [1, 3, 7, 14, 30];
 
     /**
      * After the final fixed offset, reminders repeat every N days until the
@@ -31,15 +31,43 @@ class ProcessInvoiceReminders extends Command
 
     public function handle(AutomationService $automationService): int
     {
-        $today = now()->startOfDay();
+        $now = now();
+        $today = $now->copy()->startOfDay();
+        $dispatcher = app(ScheduledAutomationDispatcher::class);
+        $sent = 0;
 
-        $overdueInvoices = $this->clientInvoiceQuery()
-            ->whereDate('due_date', '<', $today)
+        $rules = AutomationRule::active()
+            ->whereIn('trigger_type', ['INVOICE_DUE', 'INVOICE_OVERDUE'])
             ->get();
 
-        $overdueCount = $this->processOverdueInvoices($automationService, $overdueInvoices, $today);
+        foreach ($rules as $rule) {
+            if (! $dispatcher->dailyTimeReached($rule, $now, '09:30')) {
+                continue;
+            }
 
-        $this->info(sprintf('Invoice reminders sent: %d overdue', $overdueCount));
+            $query = $this->clientInvoiceQuery();
+            if ($rule->trigger_type === 'INVOICE_DUE') {
+                $daysBefore = max(0, (int) ($rule->schedule_json['days_before'] ?? 0));
+                $query->whereDate('due_date', $today->copy()->addDays($daysBefore));
+            } else {
+                $query->whereDate('due_date', '<', $today);
+            }
+
+            foreach ($query->get() as $invoice) {
+                $daysOverdue = (int) Carbon::parse($invoice->due_date)->startOfDay()->diffInDays($today, false);
+                if ($rule->trigger_type === 'INVOICE_OVERDUE' && ! $this->isScheduledOverdueOffset($daysOverdue, $rule)) {
+                    continue;
+                }
+
+                $tag = sprintf('%s:%s:%dd', $rule->trigger_type, $invoice->id, $daysOverdue);
+                $key = sprintf('invoice:%d:due:%s:day:%s', $invoice->id, $invoice->due_date->toDateString(), $today->toDateString());
+                if ($this->dispatchReminder($invoice, $rule, $tag, $key)) {
+                    $sent++;
+                }
+            }
+        }
+
+        $this->info(sprintf('Invoice reminders dispatched: %d', $sent));
 
         return Command::SUCCESS;
     }
@@ -48,6 +76,7 @@ class ProcessInvoiceReminders extends Command
     {
         return Invoice::query()
             ->whereNotNull('due_date')
+            ->whereNotIn('status', ['draft', 'paid', 'cancelled', 'canceled', 'void'])
             ->where(function ($query) {
                 $query->where('role', Invoice::ROLE_CLIENT)
                     ->orWhere(function ($legacy) {
@@ -66,54 +95,35 @@ class ProcessInvoiceReminders extends Command
             ]);
     }
 
-    private function processOverdueInvoices(
-        AutomationService $automationService,
-        Collection $invoices,
-        Carbon $today
-    ): int {
-        $sent = 0;
-
-        foreach ($invoices as $invoice) {
-            $dueDate = $invoice->due_date instanceof Carbon
-                ? $invoice->due_date->copy()->startOfDay()
-                : Carbon::parse($invoice->due_date)->startOfDay();
-            $daysOverdue = (int) $dueDate->diffInDays($today, false);
-
-            if (! $this->isScheduledOverdueOffset($daysOverdue)) {
-                continue;
-            }
-
-            $tag = sprintf('INVOICE_OVERDUE:%s:%dd', $invoice->id, $daysOverdue);
-
-            if ($this->dispatchReminder($automationService, $invoice, 'INVOICE_OVERDUE', $tag)) {
-                $sent++;
-            }
-        }
-
-        return $sent;
-    }
-
-    private function isScheduledOverdueOffset(int $daysOverdue): bool
+    private function isScheduledOverdueOffset(int $daysOverdue, AutomationRule $rule): bool
     {
         if ($daysOverdue <= 0) {
             return false;
         }
 
-        if (in_array($daysOverdue, self::OVERDUE_FIXED_OFFSETS, true)) {
+        $offsets = collect($rule->schedule_json['overdue_days'] ?? self::OVERDUE_FIXED_OFFSETS)
+            ->filter(fn ($day) => is_numeric($day) && (int) $day > 0)
+            ->map(fn ($day) => (int) $day)->unique()->sort()->values()->all();
+
+        if (in_array($daysOverdue, $offsets, true)) {
             return true;
         }
 
-        $lastFixed = max(self::OVERDUE_FIXED_OFFSETS);
+        if ($offsets === []) {
+            return false;
+        }
+        $lastFixed = max($offsets);
+        $interval = (int) ($rule->schedule_json['repeat_every_days'] ?? self::OVERDUE_RECURRING_INTERVAL_DAYS);
 
-        return $daysOverdue > $lastFixed
-            && ($daysOverdue - $lastFixed) % self::OVERDUE_RECURRING_INTERVAL_DAYS === 0;
+        return $interval > 0 && $daysOverdue > $lastFixed
+            && ($daysOverdue - $lastFixed) % $interval === 0;
     }
 
     private function dispatchReminder(
-        AutomationService $automationService,
         Invoice $invoice,
-        string $triggerType,
-        string $tag
+        AutomationRule $rule,
+        string $tag,
+        string $key
     ): bool {
         if ($invoice->balanceDue() <= 0) {
             return false;
@@ -124,16 +134,12 @@ class ProcessInvoiceReminders extends Command
             return false;
         }
 
-        if ($this->alreadySent($tag)) {
-            return false;
-        }
-
         $dueDate = $invoice->due_date instanceof Carbon
             ? $invoice->due_date->copy()->startOfDay()
             : Carbon::parse($invoice->due_date)->startOfDay();
         $today = now()->startOfDay();
         $daysOverdue = max(0, (int) $dueDate->diffInDays($today, false));
-        $reminderStage = $this->reminderStageForDaysOverdue($daysOverdue);
+        $reminderStage = $rule->trigger_type === 'INVOICE_DUE' ? 'due' : $this->reminderStageForDaysOverdue($daysOverdue);
         $amountDue = round((float) $invoice->balanceDue(), 2);
         $shootContext = $this->resolveShootContext($invoice);
 
@@ -171,9 +177,7 @@ class ProcessInvoiceReminders extends Command
             $context['rep'] = $rep;
         }
 
-        $automationService->handleEvent($triggerType, $context);
-
-        return true;
+        return app(ScheduledAutomationDispatcher::class)->dispatch($rule, $context, $key);
     }
 
     /**
@@ -283,13 +287,5 @@ class ProcessInvoiceReminders extends Command
         }
 
         return User::find($repId);
-    }
-
-    private function alreadySent(string $tag): bool
-    {
-        return Message::query()
-            ->where('send_source', 'AUTOMATION')
-            ->where('tags_json', 'like', '%'.$tag.'%')
-            ->exists();
     }
 }

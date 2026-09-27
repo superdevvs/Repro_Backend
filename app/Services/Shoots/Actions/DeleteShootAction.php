@@ -9,9 +9,9 @@ use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
 use App\Services\ShootActivityLogger;
 use App\Services\Shoots\ShootMediaMutationSupportService;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\ValidationException;
 use Throwable;
-use Illuminate\Support\Facades\Log;
 
 class DeleteShootAction
 {
@@ -21,8 +21,7 @@ class DeleteShootAction
         protected ShootActivityLogger $activityLogger,
         protected GoogleCalendarSyncDispatcher $googleCalendarSyncDispatcher,
         protected ShootMediaMutationSupportService $shootMediaMutationSupportService
-    ) {
-    }
+    ) {}
 
     public function execute(Shoot $shoot, User $user, array $options = []): array
     {
@@ -50,30 +49,18 @@ class DeleteShootAction
                 $context['rep'] = $shoot->rep;
             }
         } catch (Throwable $e) {
-            Log::warning('Failed to build shoot deletion automation context: ' . $e->getMessage(), [
+            Log::warning('Failed to build shoot deletion automation context: '.$e->getMessage(), [
                 'shoot_id' => $shoot->id,
             ]);
         }
 
-        $systemEmailAlreadySent = false;
-        if ($shoot->client) {
-            try {
-                $this->mailService->sendShootRemovedEmail($shoot->client, $shoot);
-                $systemEmailAlreadySent = true;
-            } catch (Throwable $e) {
-                Log::warning('Failed to send shoot deletion email: ' . $e->getMessage(), [
-                    'shoot_id' => $shoot->id,
-                    'client_id' => $shoot->client->id ?? null,
-                ]);
-            }
-        }
-
         if ($context !== []) {
             try {
-                $context['system_email_already_sent'] = $systemEmailAlreadySent;
+                $context['suppress_external_recipients'] = in_array($shoot->status, [Shoot::STATUS_CANCELLED, Shoot::STATUS_DECLINED], true)
+                    || in_array($shoot->workflow_status, [Shoot::STATUS_CANCELLED, Shoot::STATUS_DECLINED], true);
                 $this->automationService->handleEvent('SHOOT_REMOVED', $context);
             } catch (Throwable $e) {
-                Log::warning('Failed to process shoot deletion automation: ' . $e->getMessage(), [
+                Log::warning('Failed to process shoot deletion automation: '.$e->getMessage(), [
                     'shoot_id' => $shoot->id,
                 ]);
             }
@@ -94,7 +81,7 @@ class DeleteShootAction
                 $user
             );
         } catch (Throwable $e) {
-            Log::warning('Failed to log shoot deletion activity: ' . $e->getMessage());
+            Log::warning('Failed to log shoot deletion activity: '.$e->getMessage());
         }
 
         if ($deleteMedia) {

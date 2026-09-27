@@ -2,12 +2,12 @@
 
 namespace App\Services\ReproAi\Tools;
 
-use App\Models\Shoot;
 use App\Models\Service;
+use App\Models\Shoot;
 use App\Models\User;
-use App\Services\ShootMediaStorageService;
 use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
+use App\Services\ShootMediaStorageService;
 use App\Services\Shoots\ShootMutationSupportService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -16,8 +16,11 @@ use Illuminate\Validation\ValidationException;
 class BookingTools
 {
     private ShootMediaStorageService $mediaStorageService;
+
     private MailService $mailService;
+
     private AutomationService $automationService;
+
     private ShootMutationSupportService $support;
 
     public function __construct()
@@ -30,17 +33,17 @@ class BookingTools
 
     /**
      * Book a photography shoot
-     * 
-     * @param array $params Parameters from AI tool call
-     * @param array $context Additional context (user_id, etc.)
+     *
+     * @param  array  $params  Parameters from AI tool call
+     * @param  array  $context  Additional context (user_id, etc.)
      * @return array Result of booking operation
      */
     public function bookShoot(array $params, array $context = []): array
     {
         try {
             $userId = $context['user_id'] ?? auth()->id();
-            
-            if (!$userId) {
+
+            if (! $userId) {
                 return [
                     'success' => false,
                     'error' => 'User not authenticated',
@@ -63,7 +66,7 @@ class BookingTools
             // Get or default services
             $serviceIds = is_array($params['services']) ? $params['services'] : [$params['services']];
             $services = Service::whereIn('id', $serviceIds)->get();
-            
+
             if ($services->isEmpty()) {
                 return [
                     'success' => false,
@@ -95,13 +98,13 @@ class BookingTools
                 'payment_status' => 'unpaid',
                 'notes' => $params['notes'] ?? null,
                 'shoot_notes' => $params['notes'] ?? null,
-                'status' => (!empty($params['date']) && !empty($params['time'])) ? 'scheduled' : 'on_hold',
+                'status' => (! empty($params['date']) && ! empty($params['time'])) ? 'scheduled' : 'on_hold',
                 'workflow_status' => Shoot::WORKFLOW_BOOKED,
                 'created_by' => auth()->user()->name ?? 'Robbie',
             ];
 
             DB::beginTransaction();
-            
+
             try {
                 $shoot = Shoot::create($shootData);
 
@@ -144,12 +147,12 @@ class BookingTools
                     $clientEmailSent = (bool) ($shootBookedDispatch['client_email_sent'] ?? false);
                     $photographerEmailSent = (bool) ($shootBookedDispatch['photographer_email_sent'] ?? false);
 
-                    if ($client && ($shouldUseFallback || !$clientEmailSent) && !$clientEmailSent) {
+                    if ($client && $shouldUseFallback && ! $clientEmailSent) {
                         $paymentLink = $this->mailService->generatePaymentLink($shoot);
                         $this->mailService->sendShootScheduledEmail($client, $shoot, $paymentLink, false);
                     }
 
-                    if ($shouldUseFallback || !$photographerEmailSent) {
+                    if ($shouldUseFallback && ! $photographerEmailSent) {
                         $this->mailService->sendAssignedPhotographerShootScheduledEmails($shoot);
                     }
                 }
@@ -164,9 +167,9 @@ class BookingTools
                     'time' => $shoot->time,
                     'total_quote' => $totalQuote,
                     'services' => $services->pluck('name')->toArray(),
-                    'message' => $shoot->status === 'scheduled' 
+                    'message' => $shoot->status === 'scheduled'
                         ? "Shoot booked successfully for {$shoot->scheduled_date?->format('M d, Y')} at {$shoot->time}"
-                        : "Shoot created. Please schedule a date and time to complete booking.",
+                        : 'Shoot created. Please schedule a date and time to complete booking.',
                 ];
             } catch (ValidationException $e) {
                 DB::rollBack();
@@ -188,10 +191,10 @@ class BookingTools
                     'error' => $e->getMessage(),
                     'params' => $params,
                 ]);
-                
+
                 return [
                     'success' => false,
-                    'error' => 'Failed to create shoot: ' . $e->getMessage(),
+                    'error' => 'Failed to create shoot: '.$e->getMessage(),
                 ];
             }
         } catch (ValidationException $e) {
@@ -212,7 +215,7 @@ class BookingTools
                 'error' => $e->getMessage(),
                 'params' => $params,
             ]);
-            
+
             return [
                 'success' => false,
                 'error' => $e->getMessage(),
@@ -222,7 +225,7 @@ class BookingTools
 
     private function formatDispatchSummaryForLog(?array $dispatch): array
     {
-        if (!is_array($dispatch)) {
+        if (! is_array($dispatch)) {
             return [
                 'present' => false,
             ];

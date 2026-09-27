@@ -24,28 +24,28 @@ class PaymentReminderScheduler
     /**
      * Compute the ascending list of Payment_Reminder timestamps for a shoot.
      *
-     * @param CarbonImmutable $start      the shoot's shoot_ready_notified_at timestamp
-     * @param CarbonImmutable $horizonEnd the inclusive upper bound for scheduled reminders
+     * @param  CarbonImmutable  $start  the shoot's shoot_ready_notified_at timestamp
+     * @param  CarbonImmutable  $horizonEnd  the inclusive upper bound for scheduled reminders
      * @return list<CarbonImmutable> reminder timestamps, ascending, all <= $horizonEnd
      */
-    public function schedule(CarbonImmutable $start, CarbonImmutable $horizonEnd): array
+    public function schedule(CarbonImmutable $start, CarbonImmutable $horizonEnd, array $config = []): array
     {
         $out = [];
 
-        // Phase 1 (fixed): day 1 = start + 1 day, then +3 and +7.
-        foreach ([1, 3, 7] as $d) {
-            $out[] = $start->addDays($d);
-        }
-
-        // Phase 2 (weekly, rest of first month): day 14, 21, 28.
-        for ($d = 14; $d <= 30; $d += 7) {
-            $out[] = $start->addDays($d);
+        // Defaults preserve the established first-month cadence. Saved rule
+        // settings replace the list without changing the shoot-ready anchor.
+        $days = array_values(array_unique(array_map('intval', array_filter(
+            (array) ($config['reminder_days'] ?? [1, 3, 7, 14, 21, 28]),
+            fn ($day) => is_numeric($day) && (int) $day >= 1 && (int) $day <= 30,
+        ))));
+        foreach ($days as $day) {
+            $out[] = $start->addDays($day);
         }
 
         // Phase 3 (monthly): last Sunday of each month after the first month.
         $month = $start->addMonth()->startOfMonth();
         while ($month->lessThanOrEqualTo($horizonEnd)) {
-            $out[] = $this->lastSundayOf($month);
+            $out[] = $this->lastWeekdayOf($month, $config);
             $month = $month->addMonth()->startOfMonth();
         }
 
@@ -63,12 +63,21 @@ class PaymentReminderScheduler
     /**
      * The last Sunday of the given month, at 09:00.
      */
-    private function lastSundayOf(CarbonImmutable $month): CarbonImmutable
+    private function lastWeekdayOf(CarbonImmutable $month, array $config): CarbonImmutable
     {
         $end = $month->endOfMonth();
+        $weekday = (int) ($config['monthly_day_of_week'] ?? CarbonInterface::SUNDAY);
+        if ($weekday < CarbonInterface::SUNDAY || $weekday > CarbonInterface::SATURDAY) {
+            $weekday = CarbonInterface::SUNDAY;
+        }
+        $time = (string) ($config['time'] ?? '09:00');
+        if (! preg_match('/^(?:[01]\d|2[0-3]):[0-5]\d$/', $time)) {
+            $time = '09:00';
+        }
+        [$hour, $minute] = array_map('intval', explode(':', $time));
 
         return $end
-            ->subDays(($end->dayOfWeek - CarbonInterface::SUNDAY + 7) % 7)
-            ->setTime(9, 0);
+            ->subDays(($end->dayOfWeek - $weekday + 7) % 7)
+            ->setTime($hour, $minute);
     }
 }

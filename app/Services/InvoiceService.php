@@ -1011,14 +1011,8 @@ class InvoiceService
                     try {
                         $this->mailService->sendInvoiceGeneratedEmail($invoice);
 
-                        $invoice->loadMissing(['salesRep', 'client']);
-                        $context = [
-                            'invoice' => $invoice,
-                            'invoice_id' => $invoice->id,
-                            'rep' => $rep,
-                            'account_id' => $repId,
-                        ];
-                        app(AutomationService::class)->handleEvent('WEEKLY_REP_INVOICE', $context);
+                        // The weekly client-invoice summary has its own saved
+                        // schedule and aggregate context; this is a payee invoice.
                     } catch (\Exception $e) {
                         Log::error('Failed to send sales rep invoice email', [
                             'invoice_id' => $invoice->id,

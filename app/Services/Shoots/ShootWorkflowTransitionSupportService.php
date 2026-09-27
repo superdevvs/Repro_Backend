@@ -15,8 +15,7 @@ class ShootWorkflowTransitionSupportService
     public function __construct(
         protected MailService $mailService,
         protected AutomationService $automationService
-    ) {
-    }
+    ) {}
 
     public function sendCancellationRequestSideEffects(Shoot $shoot, User $user): void
     {
@@ -39,7 +38,7 @@ class ShootWorkflowTransitionSupportService
                 'reason' => $shoot->cancellation_reason,
             ]);
         } catch (\Throwable $e) {
-            Log::warning('Failed to trigger SHOOT_CANCELLATION_REQUESTED automation: ' . $e->getMessage());
+            Log::warning('Failed to trigger SHOOT_CANCELLATION_REQUESTED automation: '.$e->getMessage());
         }
 
         if ($shoot->client && $shoot->client->email) {
@@ -57,7 +56,7 @@ class ShootWorkflowTransitionSupportService
         if (
             $shoot->photographer
             && $shoot->photographer->email
-            && (!$shoot->client || (int) $shoot->photographer->id !== (int) $shoot->client->id)
+            && (! $shoot->client || (int) $shoot->photographer->id !== (int) $shoot->client->id)
         ) {
             try {
                 $this->mailService->sendShootCancellationRequestedEmail($shoot->photographer, $shoot);
@@ -75,40 +74,14 @@ class ShootWorkflowTransitionSupportService
     {
         $shoot->loadMissing(['client', 'photographer', 'services']);
 
-        $systemEmailAlreadySent = false;
-        if ($shoot->client && $shoot->client->email) {
-            try {
-                $systemEmailAlreadySent = $this->mailService->sendShootCancelledEmail($shoot->client, $shoot);
-            } catch (\Throwable $e) {
-                Log::warning('Failed to send cancellation email: ' . $e->getMessage());
-            }
-        }
-
-        if (
-            $shoot->photographer
-            && $shoot->photographer->email
-            && (!$shoot->client || (int) $shoot->photographer->id !== (int) $shoot->client->id)
-        ) {
-            try {
-                $photographerEmailSent = $this->mailService->sendShootCancelledEmail($shoot->photographer, $shoot);
-                $systemEmailAlreadySent = $systemEmailAlreadySent || $photographerEmailSent;
-            } catch (\Throwable $e) {
-                Log::warning('Failed to send cancellation email to photographer', [
-                    'shoot_id' => $shoot->id,
-                    'photographer_id' => $shoot->photographer->id,
-                    'error' => $e->getMessage(),
-                ]);
-            }
-        }
-
         try {
             $this->automationService->handleEvent('SHOOT_CANCELED', [
                 'shoot' => $shoot->fresh(['client', 'photographer', 'services']),
                 'user' => $user,
-                'system_email_already_sent' => $systemEmailAlreadySent,
+                'system_email_already_sent' => false,
             ]);
         } catch (\Exception $e) {
-            Log::warning('Failed to trigger SHOOT_CANCELED automation: ' . $e->getMessage());
+            Log::warning('Failed to trigger SHOOT_CANCELED automation: '.$e->getMessage());
         }
     }
 
@@ -137,7 +110,7 @@ class ShootWorkflowTransitionSupportService
                 'cancellation_fee' => round($cancellationFee, 2),
             ]);
         } catch (\Throwable $e) {
-            Log::warning('Failed to trigger SHOOT_CANCELLATION_APPROVED automation: ' . $e->getMessage());
+            Log::warning('Failed to trigger SHOOT_CANCELLATION_APPROVED automation: '.$e->getMessage());
         }
     }
 
@@ -163,33 +136,18 @@ class ShootWorkflowTransitionSupportService
                 'reason' => $reason,
             ]);
         } catch (\Throwable $e) {
-            Log::warning('Failed to trigger SHOOT_CANCELLATION_REJECTED automation: ' . $e->getMessage());
+            Log::warning('Failed to trigger SHOOT_CANCELLATION_REJECTED automation: '.$e->getMessage());
         }
     }
 
     public function sendCompletionSideEffects(Shoot $shoot, User $user): void
     {
-        $systemEmailAlreadySent = false;
-        $shoot->loadMissing(['client', 'photographer', 'rep', 'services']);
-
-        if ($shoot->client && $shoot->client->email) {
-            try {
-                $this->mailService->sendShootReadyEmail($shoot->client, $shoot);
-                $systemEmailAlreadySent = true;
-            } catch (\Throwable $e) {
-                Log::warning('Failed to send completion email', [
-                    'shoot_id' => $shoot->id,
-                    'error' => $e->getMessage(),
-                ]);
-            }
-        }
-
         try {
             $context = $this->automationService->buildShootContext($shoot);
             if ($shoot->rep) {
                 $context['rep'] = $shoot->rep;
             }
-            $context['system_email_already_sent'] = $systemEmailAlreadySent;
+            $context['system_email_already_sent'] = false;
             $this->automationService->handleEvent('SHOOT_COMPLETED', $context);
         } catch (\Throwable $e) {
             Log::warning('Failed to trigger completion automation', [
@@ -218,7 +176,7 @@ class ShootWorkflowTransitionSupportService
                 $this->mailService->sendShootRequestDeclinedEmail($shoot->client, $shoot);
             }
         } catch (\Exception $e) {
-            Log::warning('Failed to trigger SHOOT_REQUEST_DECLINED automation: ' . $e->getMessage());
+            Log::warning('Failed to trigger SHOOT_REQUEST_DECLINED automation: '.$e->getMessage());
         }
     }
 
@@ -241,12 +199,12 @@ class ShootWorkflowTransitionSupportService
 
     protected function notifyUser(?User $user, string $type, string $title, string $message, array $data = []): void
     {
-        if (!$user) {
+        if (! $user) {
             return;
         }
 
         try {
-            if (!class_exists('App\\Models\\Notification') || !Schema::hasTable('notifications')) {
+            if (! class_exists('App\\Models\\Notification') || ! Schema::hasTable('notifications')) {
                 return;
             }
 
@@ -271,11 +229,11 @@ class ShootWorkflowTransitionSupportService
     {
         if ($editorId) {
             $selectedEditor = User::find($editorId);
-            if (!$selectedEditor || $selectedEditor->role !== 'editor') {
+            if (! $selectedEditor || $selectedEditor->role !== 'editor') {
                 throw new \App\Exceptions\PublicBusinessRuleException('Selected user is not an editor');
             }
 
-            if ($lane && !$selectedEditor->canEditLane($lane)) {
+            if ($lane && ! $selectedEditor->canEditLane($lane)) {
                 throw new \App\Exceptions\PublicBusinessRuleException("Selected editor cannot handle {$lane} editing.");
             }
 

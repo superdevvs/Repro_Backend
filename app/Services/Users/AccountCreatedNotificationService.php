@@ -50,6 +50,7 @@ class AccountCreatedNotificationService
 
         $resetLink = null;
         $verificationToken = null;
+        $automation = [];
         try {
             $resetLink = $this->mailService->generateStoredPasswordResetLink($user);
             $result['links']['password_setup'] = $resetLink;
@@ -74,14 +75,14 @@ class AccountCreatedNotificationService
 
             $automation = $this->automationService->handleEvent('ACCOUNT_CREATED', $automationContext);
             $acceptedByAutomation = $this->emailWasSentTo($automation, $user->email);
-            $sent = $acceptedByAutomation || $this->mailService->sendAccountCreatedEmail(
+            $sent = $acceptedByAutomation || ($this->automationService->shouldUseFallback('ACCOUNT_CREATED', $automation) && $this->mailService->sendAccountCreatedEmail(
                 $user,
                 $resetLink,
                 $result['links']['verification'],
                 $result['links']['equipment'],
                 $pendingEquipmentCount,
                 (bool) ($options['include_password_creation_link'] ?? false)
-            );
+            ));
             $result['email']['account_created'] = $this->channel(true, $sent, $sent ? null : 'Provider did not accept the account-created email.');
         } catch (\Throwable $exception) {
             $result['email']['account_created'] = $this->failed($exception);
@@ -116,7 +117,14 @@ class AccountCreatedNotificationService
             }
         }
 
-        $result['sms'] = $this->sendSms($user, $actor);
+        if ($this->automationService->shouldUseFallback('ACCOUNT_CREATED', $automation)) {
+            $result['sms'] = $this->sendSms($user, $actor);
+        } else {
+            $phone = $this->normalizePhone($this->rawPhone($user));
+            $sent = collect($automation['sms_sent_to'] ?? [])
+                ->contains(fn ($recipient) => $this->normalizePhone((string) $recipient) === $phone);
+            $result['sms'] = $this->channel($sent, $sent);
+        }
 
         return $result;
     }
@@ -124,6 +132,9 @@ class AccountCreatedNotificationService
     /** @return array{attempted: bool, sent: bool, error: ?string} */
     public function sendSms(User $user, ?User $actor = null): array
     {
+        if (! $this->automationService->shouldUseFallback('ACCOUNT_CREATED')) {
+            return $this->channel(false);
+        }
         $rawPhone = $this->rawPhone($user);
         if ($rawPhone === '') {
             return $this->channel(false);
@@ -131,7 +142,7 @@ class AccountCreatedNotificationService
 
         try {
             $phone = $this->normalizePhone($rawPhone);
-            if (!preg_match('/^\+[1-9]\d{7,14}$/', $phone)) {
+            if (! preg_match('/^\+[1-9]\d{7,14}$/', $phone)) {
                 throw new \InvalidArgumentException('Phone number cannot be normalized to E.164.');
             }
             $this->messagingService->sendSms([
@@ -147,27 +158,31 @@ class AccountCreatedNotificationService
                 'related_account_id' => $user->id,
                 'user_id' => $actor?->id ?? $user->id,
             ]);
+
             return $this->channel(true, true);
         } catch (\Throwable $exception) {
             $this->logFailure('sms', $user, $exception);
+
             return $this->failed($exception);
         }
     }
 
     public function requiresVerification(?string $role): bool
     {
-        return !in_array($this->normalizeRole($role), ['admin', 'superadmin'], true);
+        return ! in_array($this->normalizeRole($role), ['admin', 'superadmin'], true);
     }
 
     public function emailWasSentTo(array $dispatch, string $email): bool
     {
         $expected = strtolower(trim($email));
+
         return collect($dispatch['email_sent_to'] ?? [])->contains(fn ($recipient) => strtolower(trim((string) $recipient)) === $expected);
     }
 
     public function normalizeRole(?string $role): string
     {
         $normalized = strtolower(str_replace(['_', '-', ' '], '', (string) $role));
+
         return match ($normalized) {
             'salesrep' => 'sales_rep',
             'editingmanager' => 'editing_manager',
@@ -178,8 +193,13 @@ class AccountCreatedNotificationService
     public function normalizePhone(string $phone): string
     {
         $digits = preg_replace('/\D+/', '', $phone) ?? '';
-        if (strlen($digits) === 10) return '+1'.$digits;
-        if (strlen($digits) === 11 && str_starts_with($digits, '1')) return '+'.$digits;
+        if (strlen($digits) === 10) {
+            return '+1'.$digits;
+        }
+        if (strlen($digits) === 11 && str_starts_with($digits, '1')) {
+            return '+'.$digits;
+        }
+
         return str_starts_with(trim($phone), '+') ? '+'.$digits : '+'.$digits;
     }
 
@@ -213,6 +233,7 @@ class AccountCreatedNotificationService
     {
         $message = $exception->getMessage();
         $message = preg_replace('/\b(Bearer\s+|api[_-]?key[=: ]+|token[=: ]+)[^\s,;]+/i', '$1[REDACTED]', $message) ?? 'Provider request failed.';
+
         return mb_substr($message, 0, 500);
     }
 

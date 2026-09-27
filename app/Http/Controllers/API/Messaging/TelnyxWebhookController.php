@@ -136,7 +136,8 @@ class TelnyxWebhookController extends Controller
             'sms_number_id' => $number?->id,
         ]);
 
-        if ($createdMessageId !== null && config('services.telnyx.ai_sms_enabled', false)) {
+        $isComplianceKeyword = app(\App\Services\Messaging\AiSms\SmsComplianceService::class)->detectKeyword($text) !== null;
+        if ($createdMessageId !== null && (config('services.telnyx.ai_sms_enabled', false) || $isComplianceKeyword)) {
             ProcessInboundSmsAiJob::dispatch($createdMessageId);
         }
 
@@ -169,7 +170,34 @@ class TelnyxWebhookController extends Controller
             return response()->json(['status' => 'unknown_message']);
         }
 
-        $message->update($this->mapStatusUpdate($eventType, $payload));
+        $updates = $this->mapStatusUpdate($eventType, $payload);
+        \App\Support\LockedWrite::run(fn () => DB::transaction(function () use ($message, $updates, $eventType, $payload): void {
+            $message->refresh();
+            // Webhooks may arrive out of order. A late carrier-accepted event
+            // must never erase a terminal delivery/failure result.
+            if (($updates['status'] ?? null) === 'SENT' && in_array($message->status, ['DELIVERED', 'FAILED'], true)) {
+                return;
+            }
+            $occurredAt = data_get($payload, 'data.occurred_at');
+            $previousAt = data_get($message->metadata, 'telnyx_status_occurred_at');
+            if ($occurredAt && $previousAt) {
+                try {
+                    if (\Carbon\CarbonImmutable::parse($occurredAt)->lt(\Carbon\CarbonImmutable::parse($previousAt))) {
+                        return;
+                    }
+                } catch (\Throwable) {
+                    // Missing/malformed provider timestamps do not fabricate delivery.
+                }
+            }
+            $metadata = (array) ($message->metadata ?? []);
+            $metadata['telnyx_event_id'] = data_get($payload, 'data.id');
+            $metadata['telnyx_event_type'] = $eventType;
+            $metadata['telnyx_delivery_status'] = data_get($payload, 'data.payload.to.0.status');
+            if ($occurredAt) {
+                $metadata['telnyx_status_occurred_at'] = $occurredAt;
+            }
+            $message->update($updates + ['metadata' => $metadata]);
+        }), 'sms.delivery_status');
 
         return response()->json(['status' => 'updated']);
     }
@@ -251,22 +279,23 @@ class TelnyxWebhookController extends Controller
                 'delivered' => [
                     'status' => 'DELIVERED',
                     'delivered_at' => now(),
+                    'failed_at' => null,
                     'error_message' => null,
                 ],
                 'sending_failed', 'delivery_failed', 'failed' => [
                     'status' => 'FAILED',
                     'failed_at' => now(),
+                    'delivered_at' => null,
                     'error_message' => 'Telnyx final state: ' . $finalState,
                 ],
-                default => [
-                    'status' => 'DELIVERED',
-                    'delivered_at' => now(),
-                    'error_message' => null,
-                ],
+                // Telnyx explicitly distinguishes delivery_unconfirmed from
+                // delivered. Preserve the last known state for unknown results.
+                default => [],
             },
             'message.failed' => [
                 'status' => 'FAILED',
                 'failed_at' => now(),
+                'delivered_at' => null,
                 'error_message' => 'Telnyx reported message.failed',
             ],
             default => [],

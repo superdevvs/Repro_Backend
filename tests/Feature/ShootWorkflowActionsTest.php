@@ -590,35 +590,19 @@ class ShootWorkflowActionsTest extends TestCase
     }
 
     #[\PHPUnit\Framework\Attributes\Test]
-    public function cancellation_completion_side_effects_notify_client_and_photographer(): void
+    public function cancellation_side_effects_use_the_configured_automation(): void
     {
-        $cancelledRecipientIds = [];
-        $this->rebindWorkflowSupportMailService(function ($mailService) use (&$cancelledRecipientIds): void {
-            $mailService->shouldReceive('sendShootCancelledEmail')
-                ->twice()
-                ->andReturnUsing(function (User $recipient, Shoot $shoot) use (&$cancelledRecipientIds) {
-                    $cancelledRecipientIds[] = (int) $recipient->id;
-                    $this->assertSame((int) $this->client->id, (int) $shoot->client_id);
-                    $this->assertSame((int) $this->photographer->id, (int) $shoot->photographer_id);
-
-                    return true;
-                });
+        $this->rebindWorkflowSupportMailService(function ($mailService): void {
+            $mailService->shouldReceive('sendShootCancelledEmail')->never();
         });
-
-        $shoot = $this->makeShoot([
-            'status' => Shoot::STATUS_CANCELLED,
-            'workflow_status' => Shoot::STATUS_CANCELLED,
-            'cancellation_reason' => 'Client request',
-        ]);
-
-        $this->app->make(ShootWorkflowTransitionSupportService::class)
-            ->sendCancellationSideEffects($shoot, $this->admin);
-
-        sort($cancelledRecipientIds);
-        $this->assertSame(
-            [(int) $this->client->id, (int) $this->photographer->id],
-            $cancelledRecipientIds
-        );
+        $shoot = $this->makeShoot(['status' => Shoot::STATUS_CANCELLED,
+            'workflow_status' => Shoot::STATUS_CANCELLED, 'cancellation_reason' => 'Client request']);
+        $automation = Mockery::mock(AutomationService::class);
+        $automation->shouldReceive('handleEvent')->once()->withArgs(fn (string $trigger, array $context) => $trigger === 'SHOOT_CANCELED' && $context['shoot']->id === $shoot->id && $context['system_email_already_sent'] === false
+        )->andReturn(['handled' => true]);
+        $this->app->instance(AutomationService::class, $automation);
+        $this->app->forgetInstance(ShootWorkflowTransitionSupportService::class);
+        $this->app->make(ShootWorkflowTransitionSupportService::class)->sendCancellationSideEffects($shoot, $this->admin);
     }
 
     #[\PHPUnit\Framework\Attributes\Test]

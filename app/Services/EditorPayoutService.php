@@ -17,6 +17,7 @@ class EditorPayoutService
     {
         $rows = DB::table('shoot_service')
             ->join('shoots', 'shoots.id', '=', 'shoot_service.shoot_id')
+            ->where(fn ($query) => $query->whereNull('shoots.shoot_type')->orWhere('shoots.shoot_type', '!=', \App\Models\Shoot::SHOOT_TYPE_INTERNAL_TEST))
             ->leftJoin('services', 'services.id', '=', 'shoot_service.service_id')
             ->where(fn ($query) => $query->whereNotNull('shoot_service.editor_id')->orWhereNotNull('shoot_service.video_editor_id'))
             ->when($editorId, fn ($query) => $query->where(fn ($query) => $query->where('shoot_service.editor_id', $editorId)->orWhere('shoot_service.video_editor_id', $editorId)))
@@ -392,6 +393,7 @@ class EditorPayoutService
     private function basePayoutQuery(array $filters, ?Carbon $start = null, ?Carbon $end = null): Builder
     {
         return EditorPayout::query()
+            ->whereDoesntHave('shoot', fn ($query) => $query->where('shoot_type', \App\Models\Shoot::SHOOT_TYPE_INTERNAL_TEST))
             ->when(!empty($filters['status']), function (Builder $query) use ($filters) {
                 if ($filters['status'] === 'paid') {
                     $query->where('is_paid', true);

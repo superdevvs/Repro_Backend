@@ -84,7 +84,10 @@ class TemplateVariableResolver
 
         $shoot = $this->resolveShoot($context);
         if ($shoot) {
-            $derived = array_merge($derived, $this->resolveShootVariables($shoot));
+            $derived = array_merge($derived, $this->resolveShootVariables($shoot, ! in_array($recipientType, ['photographer', 'previous_photographer', 'new_photographer'], true)));
+            if ($shoot->exists) {
+                $derived['remaining_balance'] = number_format(max((float) $shoot->total_quote - $shoot->calculateCanonicalTotalPaid(), 0), 2);
+            }
         }
 
         if (! empty($derived['client_first_name'])) {
@@ -119,6 +122,37 @@ class TemplateVariableResolver
         if ($invoice) {
             $derived = array_merge($derived, $this->resolveInvoiceVariables($invoice));
         }
+
+        $payment = $context['payment'] ?? null;
+        if ($payment instanceof \App\Models\Payment) {
+            $details = (array) ($payment->payment_details ?? []);
+            $derived = array_merge($derived, [
+                'payment_amount' => number_format((float) $payment->amount, 2),
+                'payment_items' => ($shoot?->address ?? 'Payment #'.$payment->id).': $'.number_format((float) $payment->amount, 2),
+                'payment_method' => $payment->payment_method,
+                'payment_reference' => $payment->stripe_payment_id ?: $payment->square_payment_id ?: (string) $payment->id,
+                'payment_date' => $payment->processed_at?->format('M j, Y'),
+                'receipt_link' => collect([$details['receipt_url'] ?? null, $details['hosted_receipt_url'] ?? null,
+                    $details['receiptUrl'] ?? null, $context['dashboard_link'] ?? null, $portalUrl])
+                    ->first(fn ($value) => is_string($value) && trim($value) !== ''),
+                'invoice_number' => $invoice?->invoice_number ?? $payment->invoice?->invoice_number ?? ('Payment '.($payment->stripe_payment_id ?: $payment->square_payment_id ?: $payment->id)),
+                'refund_method' => $payment->payment_method,
+                'original_payment_reference' => $payment->stripe_payment_id ?: $payment->square_payment_id ?: (string) $payment->id,
+                'refund_settlement_timing' => $context['refund_settlement_timing'] ?? $context['refund_timing'] ?? 'Your payment provider will confirm when the refund settles.',
+                'refund_timing' => $context['refund_timing'] ?? 'Your payment provider will confirm when the refund settles.',
+            ]);
+            if ($payment->invoice_id && ! $invoice) {
+                $invoice = $payment->invoice;
+                if ($invoice) {
+                    $derived = array_merge($this->resolveInvoiceVariables($invoice), $derived);
+                }
+            }
+        }
+        if ($invoice) {
+            $derived['remaining_balance'] = number_format(max((float) $invoice->balanceDue(), 0), 2);
+        }
+        $derived['login_link'] = $portalUrl.'/login';
+        $derived['rebook_link'] = $portalUrl.'/book-shoot';
 
         $recipientFirstName = $this->resolveRecipientFirstName($context, $derived, $recipientType);
         if ($recipientFirstName !== '') {
@@ -306,7 +340,7 @@ class TemplateVariableResolver
     /**
      * @return array<string, mixed>
      */
-    private function resolveShootVariables(Shoot $shoot): array
+    private function resolveShootVariables(Shoot $shoot, bool $includeClientPrices = true): array
     {
         if ($this->canLoadShootRelations($shoot)) {
             $shoot->loadMissing(['photographer', 'services', 'notes']);
@@ -333,7 +367,7 @@ class TemplateVariableResolver
         )
             ? app(\App\Services\Payments\PublicPaymentAccessTokenService::class)->buildPublicUrl($shoot)
             : null;
-        $formattedServices = $this->formatServices($shoot);
+        $formattedServices = $this->formatServices($shoot, $includeClientPrices);
         $servicesProvided = $formattedServices['text'];
         $servicesProvidedHtml = $formattedServices['html'];
         $assignedPhotographers = $this->formatAssignedPhotographers($shoot);
@@ -381,7 +415,7 @@ class TemplateVariableResolver
     /**
      * @return array{text: string, html: string}
      */
-    private function formatServices(Shoot $shoot): array
+    private function formatServices(Shoot $shoot, bool $includeClientPrices): array
     {
         $services = $shoot->relationLoaded('services')
             ? collect($shoot->getRelation('services') ?? [])
@@ -400,7 +434,7 @@ class TemplateVariableResolver
                     $lineParts[] = 'x'.$quantity;
                 }
 
-                $price = $service->pivot->price ?? $service->price ?? null;
+                $price = $includeClientPrices ? ($service->pivot->price ?? $service->price ?? null) : null;
                 if ($price !== null && $price !== '') {
                     $lineParts[] = '$'.number_format((float) $price, 2);
                 }

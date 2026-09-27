@@ -2,10 +2,12 @@
 
 namespace App\Jobs;
 
+use App\Models\Message;
 use App\Models\Shoot;
 use App\Models\User;
 use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
+use App\Services\Messaging\ShootDeliveryNotificationRecorder;
 use App\Services\Shoots\FinalizeProgressTracker;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -25,7 +27,9 @@ class SendShootReadyEmailJob implements ShouldQueue
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
     public int $tries = 3;
+
     public array $backoff = [30, 120, 300];
+
     public int $timeout = 120;
 
     public function __construct(
@@ -47,16 +51,19 @@ class SendShootReadyEmailJob implements ShouldQueue
         ?FinalizeProgressTracker $progress = null
     ): void {
         $progress ??= app(FinalizeProgressTracker::class);
+        $recorder = app(ShootDeliveryNotificationRecorder::class);
 
         /** @var Shoot|null $shoot */
         $shoot = Shoot::query()->find($this->shootId);
-        if (!$shoot) {
+        if (! $shoot) {
             $progress->stageSkipped($this->shootId, FinalizeProgressTracker::STAGE_DELIVERY_EMAIL, 'Shoot not found');
+
             return;
         }
 
         if ($shoot->isInternalTestShoot()) {
             $progress->stageSkipped($this->shootId, FinalizeProgressTracker::STAGE_DELIVERY_EMAIL, 'Internal test: external side effects suppressed');
+
             return;
         }
 
@@ -65,26 +72,27 @@ class SendShootReadyEmailJob implements ShouldQueue
         $shoot->loadMissing(['client', 'photographer', 'rep', 'service']);
         $client = $shoot->client ?: User::find($shoot->client_id);
 
-        $emailError = null;
+        $failure = null;
         $systemEmailAlreadySent = false;
-        if ($client) {
+        $accepted = collect();
+        $dispatch = [];
+        if ($client && (! $this->isFullOrderDelivery || $automation->shouldUseFallback('SHOOT_COMPLETED'))) {
             try {
+                $sent = false;
                 if ($this->shootServiceId) {
-                    $mail->sendShootReadyEmail($client, $shoot, [$this->shootServiceId], $this->isFullOrderDelivery);
-                    $systemEmailAlreadySent = $this->isFullOrderDelivery;
+                    $sent = $mail->sendShootReadyEmail($client, $shoot, [$this->shootServiceId], $this->isFullOrderDelivery);
                 } elseif ($this->isFullOrderDelivery) {
-                    $mail->sendShootReadyEmail($client, $shoot);
-                    $systemEmailAlreadySent = true;
+                    $sent = $mail->sendShootReadyEmail($client, $shoot);
+                }
+                if ($sent) {
+                    $accepted = Message::where('related_shoot_id', $shoot->id)->where('send_source', 'SHOOT_DELIVERED')
+                        ->where('to_address', $client->email)->whereIn('status', ['SENT', 'DELIVERED'])->get();
+                    $systemEmailAlreadySent = $this->isFullOrderDelivery && $accepted->isNotEmpty();
+                } else {
+                    $failure = new \RuntimeException('The delivery email was not accepted. The notification will be retried.');
                 }
             } catch (\Throwable $e) {
-                $emailError = $e->getMessage();
-                Log::warning('SendShootReadyEmailJob: ready email failed', [
-                    'shoot_id' => $shoot->id,
-                    'shoot_service_id' => $this->shootServiceId,
-                    'error' => $e->getMessage(),
-                ]);
-                // Do not rethrow — we still want the automation event to fire
-                // if configured. Email idempotency is handled upstream.
+                $failure = $e;
             }
         }
 
@@ -95,47 +103,48 @@ class SendShootReadyEmailJob implements ShouldQueue
                     $context['rep'] = $shoot->rep;
                 }
                 $context['system_email_already_sent'] = $systemEmailAlreadySent;
-                $automation->handleEvent('SHOOT_COMPLETED', $context);
-            } catch (\Throwable $e) {
-                Log::warning('SendShootReadyEmailJob: automation dispatch failed', [
-                    'shoot_id' => $shoot->id,
-                    'error' => $e->getMessage(),
-                ]);
-            }
-
-            // Gap C anchor: the automated ready/delivered path must also start the payment-reminder
-            // cadence (the manual shoot_ready send already does). Stamp shoot_ready_notified_at only
-            // when it is not already set so a later ready send / job re-run never moves the anchor and
-            // reshuffles the cadence (Req 4.2 anchor stability). The stamp/schedule runs regardless of
-            // whether the mail send above succeeded — the anchor represents "we attempted the ready
-            // notification" — and is scoped to the same full-order-delivery condition as the automation.
-            try {
-                if ($shoot->shoot_ready_notified_at === null) {
-                    $shoot->forceFill(['shoot_ready_notified_at' => now()])->save();
+                $context['delivery_notification_full_order'] = true;
+                // Updating the successful-notification anchor must not change a
+                // replay's identity and duplicate its already accepted channels.
+                $context['event_id'] = 'shoot-delivered:'.$shoot->id.':'.($shoot->completed_at?->toIso8601String() ?? 'full');
+                $dispatch = $automation->handleEvent('SHOOT_COMPLETED', $context);
+                $accepted = $accepted->merge($recorder->acceptedMessages($dispatch['message_ids'] ?? []));
+                if ((int) ($dispatch['failed_run_count'] ?? 0) > 0) {
+                    $failure = new \RuntimeException('A delivery notification workflow failed. Its unfinished channels will be retried.');
                 }
-
-                // schedulePaymentReminders() self-guards: it cancels/skips for a paid shoot, no-ops
-                // without an anchor, and is idempotent on (shoot_id, scheduled_date), so calling it on
-                // an already-anchored shoot neither moves the anchor nor duplicates reminder rows
-                // (Req 4.3, 4.4, 4.5). Refresh so the just-stamped anchor is visible to the scheduler.
-                $automation->schedulePaymentReminders($shoot->refresh());
             } catch (\Throwable $e) {
-                Log::warning('SendShootReadyEmailJob: payment reminder scheduling failed', [
-                    'shoot_id' => $shoot->id,
-                    'error' => $e->getMessage(),
-                ]);
+                $failure = $e;
             }
         }
 
-        if ($emailError !== null) {
-            $progress->stageFailed($this->shootId, FinalizeProgressTracker::STAGE_DELIVERY_EMAIL, $emailError);
+        if ($failure) {
+            $progress->stageFailed($this->shootId, FinalizeProgressTracker::STAGE_DELIVERY_EMAIL, 'Delivery notification failed and will be retried.');
+            throw $failure;
+        }
+
+        if ($accepted->isEmpty()) {
+            $progress->stageSkipped($this->shootId, FinalizeProgressTracker::STAGE_DELIVERY_EMAIL,
+                (int) ($dispatch['waiting_run_count'] ?? 0) > 0
+                    ? 'Notification is waiting for its saved workflow schedule.'
+                    : 'No delivery notification was sent. Check the saved rule and recipient contact details.');
+
             return;
+        }
+
+        $clientNotified = $recorder->clientWasNotified($accepted, $client);
+        if ($clientNotified && $this->fireAutomation && $this->isFullOrderDelivery) {
+            try {
+                $recorder->record($shoot, $accepted);
+            } catch (\Throwable $e) {
+                $progress->stageFailed($this->shootId, FinalizeProgressTracker::STAGE_DELIVERY_EMAIL, 'Client notified; payment reminder scheduling will be retried.');
+                throw $e;
+            }
         }
 
         $progress->stageCompleted(
             $this->shootId,
             FinalizeProgressTracker::STAGE_DELIVERY_EMAIL,
-            $client ? 'Client notified' : 'No client contact on this shoot'
+            $clientNotified ? 'Client notification accepted for delivery' : 'Notification sent to configured recipients'
         );
     }
 
@@ -149,7 +158,7 @@ class SendShootReadyEmailJob implements ShouldQueue
         app(FinalizeProgressTracker::class)->stageFailed(
             $this->shootId,
             FinalizeProgressTracker::STAGE_DELIVERY_EMAIL,
-            $exception->getMessage()
+            'Delivery notification could not complete. Review the automation run and message delivery history.'
         );
     }
 }

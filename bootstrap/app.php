@@ -26,13 +26,15 @@ return Application::configure(basePath: dirname(__DIR__))
     ->withSchedule(function (Schedule $schedule) {
         $schedule->command('voice-browser:reconcile')->everyMinute()->withoutOverlapping();
         // Laravel 11 in this project boots schedules from the application builder.
-        $schedule->command('automations:run-system')->everyFifteenMinutes();
+        $schedule->command('automations:run-system')->everyMinute()->withoutOverlapping();
         $schedule->job(new DispatchScheduledMessages)->everyMinute();
-        $schedule->command('messaging:shoot-reminders')->everyFiveMinutes();
-        $schedule->command('messaging:property-contact-reminders')->dailyAt('09:00');
-        $schedule->command('messaging:invoice-reminders')->dailyAt('09:30');
-        $schedule->command('messaging:invoice-summaries')->weeklyOn(1, '03:00');
-        $schedule->command('payouts:send')->weeklyOn(0, '05:00');
+        $schedule->command('messaging:shoot-reminders')->everyMinute()->withoutOverlapping();
+        // The rules own the delivery times; these polling jobs only discover due work.
+        $schedule->command('messaging:property-contact-reminders')->everyMinute()->withoutOverlapping();
+        $schedule->command('messaging:invoice-reminders')->everyMinute()->withoutOverlapping();
+        $schedule->command('messaging:payment-reminders-sweep')->weeklyOn(1, '04:30')->withoutOverlapping();
+        // Invoice summaries and payouts also run through automations:run-system;
+        // their visible rules retain Monday 03:00 and Sunday 05:00 defaults.
         $schedule->command('cubicasa:resync-pending')->everyThirtyMinutes()->withoutOverlapping();
         // Reconciliation safety net for an iGuide the photographer produces
         // hours or days after the booking, when no webhook reached us. This was

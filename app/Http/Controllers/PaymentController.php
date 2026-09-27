@@ -329,33 +329,9 @@ class PaymentController extends Controller
                         null
                     );
 
-                    $context = $this->automationService->buildShootContext($shoot);
-                    $context['payment'] = $payment;
-                    $context['payment_id'] = $payment->id;
-                    $context['payment_status'] = $newPaymentStatus;
-                    $context['amount_paid'] = $totalPaid;
-                    $paymentCompletedDispatch = $this->automationService->handleEvent('PAYMENT_COMPLETED', $context);
                 }
 
-                // The receipt is independent of the final-balance automation.
-                $client = User::find($shoot->client_id);
-                if ($client) {
-                    try {
-                        $this->mailService->sendPaymentConfirmationEmail($client, $shoot, $payment);
-                        
-                        // Log email sent
-                        $this->activityLogger->log(
-                            $shoot,
-                            'payment_completion_email_sent',
-                            [
-                                'recipient' => $client->email,
-                            ],
-                            null
-                        );
-                    } catch (\Exception $e) {
-                        \App\Services\ApiErrorResponder::log($e, 'error');
-                    }
-                }
+                $this->automationService->queueAcceptedPaymentReceipt([$payment]);
 
                 Log::info("Payment for Shoot ID {$shootId} processed successfully.", [
                     'payment_id' => $payment->id,
@@ -561,24 +537,7 @@ class PaymentController extends Controller
                             auth()->user()
                         );
 
-                        if ($newPaymentStatus === 'paid' && $oldPaymentStatus !== 'paid') {
-                            $context = $this->automationService->buildShootContext($shoot);
-                            $context['payment'] = $paymentRecord;
-                            $context['payment_id'] = $paymentRecord->id;
-                            $context['payment_status'] = $newPaymentStatus;
-                            $context['amount_paid'] = $totalPaid;
-                            $paymentCompletedDispatch = $this->automationService->handleEvent('PAYMENT_COMPLETED', $context);
-
-                        }
-
-                        $client = User::find($shoot->client_id);
-                        if ($client) {
-                            try {
-                                $this->mailService->sendPaymentConfirmationEmail($client, $shoot, $paymentRecord);
-                            } catch (\Exception $e) {
-                                \App\Services\ApiErrorResponder::log($e, 'error');
-                            }
-                        }
+                        $this->automationService->queueAcceptedPaymentReceipt([$paymentRecord]);
 
                         return response()->json([
                             'status' => 'success',
@@ -692,6 +651,7 @@ class PaymentController extends Controller
                     $context['payment'] = $payment;
                     $context['payment_id'] = $payment->id;
                     $context['refund_amount'] = $request->input('amount');
+                    $context['refund_id'] = $refund->getId();
                     $context['payment_status'] = $newStatus;
                     $this->automationService->handleEvent('PAYMENT_REFUNDED', $context);
                 }

@@ -40,6 +40,7 @@ class DeliveryEmailPreservationTest extends TestCase
 
     private function createDefaultEmailChannel(): MessageChannel
     {
+        \App\Services\Messaging\OutboundDeliveryGuard::allowFakeProviderPipelineForTesting();
         return MessageChannel::create([
             'type' => 'EMAIL',
             'provider' => 'LOCAL_SMTP',
@@ -313,16 +314,15 @@ class DeliveryEmailPreservationTest extends TestCase
 
         $this->assertSame(Shoot::STATUS_CANCELLED, $shoot->fresh()->status);
         $this->assertSame($client->email, $shoot->client->email);
-        $dispatches = SystemEmailDispatch::where('email_alias', 'SHOOT_CANCELLED')
+        $dispatches = Message::where('send_source', 'AUTOMATION')->where('channel', 'EMAIL')
             ->where('related_shoot_id', $shoot->id)->get();
         $this->assertCount(2, $dispatches, 'Each recipient receives exactly one cancellation.');
-        foreach (['client' => $client, 'photographer' => $photographer] as $type => $recipient) {
-            $dispatch = $dispatches->firstWhere('recipient_email', $recipient->email);
+        foreach ([$client, $photographer] as $recipient) {
+            $dispatch = $dispatches->firstWhere('to_address', $recipient->email);
             $this->assertNotNull($dispatch);
-            $this->assertSame($type, $dispatch->recipient_type);
-            $this->assertSame('sent', $dispatch->status, $dispatch->error_code.': '.$dispatch->error_message);
+            $this->assertSame('SENT', $dispatch->status);
         }
-        $photographerBody = $dispatches->firstWhere('recipient_email', $photographer->email)->message->body_html;
+        $photographerBody = $dispatches->firstWhere('to_address', $photographer->email)->body_html;
         $this->assertStringNotContainsString('$200.00', $photographerBody);
     }
 
@@ -429,7 +429,7 @@ class DeliveryEmailPreservationTest extends TestCase
     // event execute (the full SendShootReadyEmailJob flow), exactly one client
     // delivery email is recorded.
     // ---------------------------------------------------------------------
-    public function test_exactly_one_client_delivery_email_when_both_paths_fire(): void
+    public function test_saved_client_delivery_replay_does_not_duplicate_email(): void
     {
         Mail::fake();
         $this->createDefaultEmailChannel();
@@ -444,34 +444,29 @@ class DeliveryEmailPreservationTest extends TestCase
             'workflow_status' => Shoot::STATUS_DELIVERED,
         ]);
 
-        // Drives the protected delivery send AND fires the SHOOT_COMPLETED
-        // automation event (with the system_email_already_sent flag) inline.
+        // The saved workflow sends through the configured email channel.
         (new SendShootReadyEmailJob($shoot->id, null, true, true))
             ->handle($this->app->make(MailService::class), $this->app->make(AutomationService::class));
 
         $this->assertSame(
             1,
-            SystemEmailDispatch::query()
-                ->where('email_alias', 'SHOOT_DELIVERED')
+            Message::query()->where('send_source', 'AUTOMATION')->where('channel', 'EMAIL')->where('status', 'SENT')
                 ->where('related_shoot_id', $shoot->id)
-                ->where('recipient_email', $client->email)
+                ->where('to_address', $client->email)
                 ->count(),
-            'Exactly one client delivery email must be recorded when both delivery paths execute.'
+            'Exactly one accepted client delivery email must be recorded.'
         );
 
-        // Belt-and-suspenders: re-invoking the canonical send (as the
-        // automation executor would) is deduplicated by the idempotency key,
-        // so still exactly one client delivery email exists.
-        $this->app->make(MailService::class)->sendShootReadyEmail($client, $shoot->fresh());
+        (new SendShootReadyEmailJob($shoot->id, null, true, true))
+            ->handle($this->app->make(MailService::class), $this->app->make(AutomationService::class));
 
         $this->assertSame(
             1,
-            SystemEmailDispatch::query()
-                ->where('email_alias', 'SHOOT_DELIVERED')
+            Message::query()->where('send_source', 'AUTOMATION')->where('channel', 'EMAIL')->where('status', 'SENT')
                 ->where('related_shoot_id', $shoot->id)
-                ->where('recipient_email', $client->email)
+                ->where('to_address', $client->email)
                 ->count(),
-            'Re-sending the canonical delivery email must not create a duplicate.'
+            'Replaying delivery must not create a duplicate.'
         );
     }
 }

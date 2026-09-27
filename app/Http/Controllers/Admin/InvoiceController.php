@@ -272,14 +272,10 @@ class InvoiceController extends Controller
         // Use the exact durable transaction row. Amount-based lookup can select
         // the wrong receipt when two equal partial payments exist.
         if ($clientPayment) {
-            $shootForEmail = $clientPayment->shoot ?? $invoice->shoot;
-            $clientForEmail = $shootForEmail?->client ?? $invoice->client;
-            if ($shootForEmail && $clientForEmail) {
-                try {
-                    app(MailService::class)->sendPaymentConfirmationEmail($clientForEmail, $shootForEmail, $clientPayment);
-                } catch (\Throwable $emailError) {
-                    \App\Services\ApiErrorResponder::log($emailError, 'warning');
-                }
+            try {
+                app(AutomationService::class)->queueAcceptedPaymentReceipt([$clientPayment]);
+            } catch (\Throwable $emailError) {
+                \App\Services\ApiErrorResponder::log($emailError, 'warning');
             }
         }
 

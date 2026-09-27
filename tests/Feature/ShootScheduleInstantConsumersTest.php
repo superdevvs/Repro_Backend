@@ -7,13 +7,12 @@ use App\Models\Service;
 use App\Models\Shoot;
 use App\Models\User;
 use App\Services\InvoiceService;
-use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
 use App\Services\Shoots\Actions\RequestCancellationAction;
 use Carbon\Carbon;
 use Illuminate\Foundation\Testing\RefreshDatabase;
-use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Http;
 use Laravel\Sanctum\Sanctum;
 use Mockery;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -42,7 +41,7 @@ class ShootScheduleInstantConsumersTest extends TestCase
         return [
             'summer legacy at 24h' => ['2026-09-08 14:00:00', '2026-09-09 10:00:00', null, null, '2026-09-09T14:00:00+00:00', true],
             'legacy is not four hours early' => ['2026-09-08 10:00:00', '2026-09-09 10:00:00', null, null, '2026-09-09T14:00:00+00:00', false],
-            'inclusive five-minute boundary' => ['2026-09-08 13:55:00', '2026-09-09 10:00:00', null, null, '2026-09-09T14:00:00+00:00', true],
+            'inclusive five-minute late boundary' => ['2026-09-08 14:05:00', '2026-09-09 10:00:00', null, null, '2026-09-09T14:00:00+00:00', true],
             'outside five-minute boundary' => ['2026-09-08 13:54:59', '2026-09-09 10:00:00', null, null, '2026-09-09T14:00:00+00:00', false],
             'UTC date crossing' => ['2026-09-09 03:30:00', '2026-09-09 23:30:00', null, null, '2026-09-10T03:30:00+00:00', true],
             'explicit absolute timestamp' => ['2026-09-08 14:00:00', '2026-09-09 14:00:00', 'America/New_York', null, '2026-09-09T14:00:00+00:00', true],
@@ -65,20 +64,21 @@ class ShootScheduleInstantConsumersTest extends TestCase
         }
         AutomationRule::query()->update(['is_active' => false]);
         $before = $shoot->getRawOriginal('scheduled_at');
-        $mail = Mockery::mock(MailService::class);
+        AutomationRule::create(['name' => 'Configured reminder', 'scope' => 'SYSTEM',
+            'trigger_type' => 'SHOOT_REMINDER', 'is_active' => true, 'schedule_json' => ['offset' => '-24h']]);
+        $executor = Mockery::mock(\App\Services\Messaging\AutomationWorkflowExecutor::class);
         if ($due) {
-            $mail->shouldReceive('sendShootReminderEmail')->twice()->withArgs(
-                function (User $recipient, Shoot $target, Carbon $scheduledAt, array $tags) use ($shoot, $expectedUtc) {
-                    return $target->id === $shoot->id
-                        && $scheduledAt->copy()->utc()->toIso8601String() === $expectedUtc
-                        && count($tags) === 1
-                        && str_ends_with($tags[0], ':'.$expectedUtc);
+            $executor->shouldReceive('executeEventTrigger')->once()->withArgs(
+                function (string $trigger, array $context) use ($shoot, $expectedUtc) {
+                    return $trigger === 'SHOOT_REMINDER' && $context['shoot_id'] === $shoot->id
+                        && $context['shoot_datetime']->copy()->utc()->toIso8601String() === $expectedUtc
+                        && str_ends_with($context['tags_json'][0], ':'.$expectedUtc);
                 }
-            )->andReturnTrue();
+            )->andReturn(['handled' => true]);
         } else {
-            $mail->shouldNotReceive('sendShootReminderEmail');
+            $executor->shouldNotReceive('executeEventTrigger');
         }
-        $this->app->instance(MailService::class, $mail);
+        $this->app->instance(\App\Services\Messaging\AutomationWorkflowExecutor::class, $executor);
 
         app(AutomationService::class)->triggerShootReminders();
 

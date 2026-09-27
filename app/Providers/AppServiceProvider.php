@@ -33,6 +33,8 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
+        $this->app['queue']->extend('database', fn () => new \App\Queue\SqliteRetryDatabaseConnector($this->app['db']));
+
         \Illuminate\Support\Facades\View::composer('emails.*', \App\Services\SystemEmails\EmailViewComposer::class);
 
         // Resolve soft-deleted users during token authentication so they are explicitly rejected

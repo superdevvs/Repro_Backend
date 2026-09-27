@@ -53,7 +53,9 @@ class StripeRefundWorkflowTest extends TestCase
             ->andReturn([]);
         $automationService->shouldReceive('handleEvent')
             ->once()
-            ->with('PAYMENT_REFUNDED', Mockery::type('array'));
+            ->with('PAYMENT_REFUNDED', Mockery::on(fn (array $context) => ($context['refund_id'] ?? null) === 're_test_123'
+                && ($context['payment_id'] ?? null) === $payment->id
+                && (float) ($context['refund_amount'] ?? 0) === 250.0));
         $this->app->instance(AutomationService::class, $automationService);
 
         $refundMock = Mockery::mock('alias:Stripe\\Refund');

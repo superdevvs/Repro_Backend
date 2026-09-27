@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Models\AutomationRule;
 use App\Models\Message;
 use App\Models\MessageChannel;
 use App\Models\MessageTemplate;
@@ -13,7 +14,6 @@ use App\Services\Messaging\OutboundDeliveryGuard;
 use App\Services\PayoutReportService;
 use App\Services\SystemEmails\EditableEmailContent;
 use Illuminate\Foundation\Testing\RefreshDatabase;
-use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Notification;
@@ -55,14 +55,16 @@ class EmailEditableContentFlowsTest extends TestCase
         $template->update(['is_active' => $enabled]);
 
         $report = Mockery::mock(PayoutReportService::class);
-        $report->shouldReceive('lastCompletedWeekRange')->once()->andReturn([Carbon::parse('2026-09-07'), Carbon::parse('2026-09-13')]);
+        $digestRule = AutomationRule::where('trigger_type', 'WEEKLY_PAYOUT_DIGEST')->firstOrFail();
+        $digestRule->update(['schedule_json' => array_merge($digestRule->schedule_json, ['accounting_email' => 'accounting@example.test'])]);
         foreach ([
             ['Photographer', 'photographer', 'Actual Photo Recipient', 541.23],
             ['Editor', 'editor', 'Actual Editing Recipient', 87.65],
             ['SalesRep', 'salesRep', 'Actual Sales Recipient', 119.80],
         ] as [$method, $role, $name, $amount]) {
-            $report->shouldReceive('build'.$method.'Summaries')->once()->andReturn(collect([[
-                'id' => 42, 'name' => $name, 'email' => $role.'@example.test', 'role' => $role,
+            $person = User::factory()->create(['role' => $role, 'name' => $name, 'email' => $role.'@example.test']);
+            $report->shouldReceive('build'.$method.'Summaries')->twice()->andReturn(collect([[
+                'id' => $person->id, 'name' => $name, 'email' => $role.'@example.test', 'role' => $role,
                 'shoot_count' => 7, 'service_count' => 12, 'gross_total' => $amount, 'average_value' => $amount / 7,
                 'commission_rate' => 10, 'commission_total' => $amount, 'compensation_total' => 0, 'payout_total' => $amount,
             ]]));
@@ -79,9 +81,9 @@ class EmailEditableContentFlowsTest extends TestCase
 
         $this->artisan('payouts:send')->assertExitCode(0);
 
-        $digests = collect($sent->items)->where('send_source', 'PAYOUT_DIGEST')->values();
+        $digests = collect($sent->items)->where('to', 'accounting@example.test')->values();
         $this->assertCount($enabled ? 1 : 0, $digests);
-        $this->assertCount(3, collect($sent->items)->where('send_source', 'PAYOUT_REPORT'));
+        $this->assertCount(3, collect($sent->items)->where('to', '!=', 'accounting@example.test'));
         if ($enabled) {
             $digest = $digests->first();
             $this->assertSame('accounting@example.test', $digest['to']);

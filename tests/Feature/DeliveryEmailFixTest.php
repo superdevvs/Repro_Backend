@@ -7,6 +7,7 @@ use App\Jobs\GenerateShootMediaArchiveJob;
 use App\Jobs\PublishShootToBrightMlsJob;
 use App\Jobs\SendShootReadyEmailJob;
 use App\Models\AutomationRule;
+use App\Models\Message;
 use App\Models\MessageChannel;
 use App\Models\MessageTemplate;
 use App\Models\Service;
@@ -48,6 +49,7 @@ class DeliveryEmailFixTest extends TestCase
 
     private function createDefaultEmailChannel(): MessageChannel
     {
+        \App\Services\Messaging\OutboundDeliveryGuard::allowFakeProviderPipelineForTesting();
         return MessageChannel::create([
             'type' => 'EMAIL',
             'provider' => 'LOCAL_SMTP',
@@ -217,6 +219,20 @@ class DeliveryEmailFixTest extends TestCase
         $this->assertStringStartsWith('SHOOT_DELIVERED:', (string) $capturedOptions['idempotency_key']);
     }
 
+    public function test_ready_mail_does_not_report_suppression_or_failed_duplicate_as_accepted(): void
+    {
+        $client = User::factory()->create(['role' => 'client']);
+        $shoot = $this->createDeliverableShoot($client);
+        $orchestrator = Mockery::mock(SystemEmailOrchestrator::class);
+        $orchestrator->shouldReceive('send')->twice()->andReturn(
+            ['sent' => false, 'duplicate' => false, 'dispatch' => null],
+            ['sent' => false, 'duplicate' => true, 'dispatch' => new SystemEmailDispatch(['status' => 'failed'])],
+        );
+        $this->app->instance(SystemEmailOrchestrator::class, $orchestrator);
+        $this->assertFalse(app(MailService::class)->sendShootReadyEmail($client, $shoot));
+        $this->assertFalse(app(MailService::class)->sendShootReadyEmail($client, $shoot));
+    }
+
     public function test_automation_executor_skips_client_send_when_system_email_already_sent(): void
     {
         Mail::fake();
@@ -289,11 +305,11 @@ class DeliveryEmailFixTest extends TestCase
 
         $this->assertSame(
             1,
-            SystemEmailDispatch::query()
-                ->where('email_alias', 'SHOOT_DELIVERED')
-                ->where('recipient_email', $client->email)
+            Message::query()
+                ->where('send_source', 'AUTOMATION')->where('channel', 'EMAIL')->where('status', 'SENT')
+                ->where('related_shoot_id', $shoot->id)->where('to_address', $client->email)
                 ->count(),
-            'The full finalize -> deliver flow must record one SHOOT_DELIVERED dispatch for the client.'
+            'The full finalize -> deliver flow must record one accepted saved-workflow email for the client.'
         );
 
         $this->assertSame(
@@ -336,15 +352,15 @@ class DeliveryEmailFixTest extends TestCase
 
         $this->assertSame(
             1,
-            SystemEmailDispatch::query()
-                ->where('email_alias', 'SHOOT_DELIVERED')
-                ->where('recipient_email', $client->email)
+            Message::query()
+                ->where('send_source', 'AUTOMATION')->where('channel', 'EMAIL')->where('status', 'SENT')
+                ->where('related_shoot_id', $shoot->id)->where('to_address', $client->email)
                 ->count(),
             'No-media (fast-forward) full-order delivery must still dispatch the delivery email.'
         );
     }
 
-    public function test_exactly_one_delivery_email_when_protected_path_and_automation_both_fire(): void
+    public function test_saved_delivery_workflow_sends_once_without_the_legacy_fallback(): void
     {
         Mail::fake();
         $this->createDefaultEmailChannel();
@@ -355,6 +371,7 @@ class DeliveryEmailFixTest extends TestCase
             'email_status' => 'verified',
         ]);
         $shoot = $this->createDeliverableShoot($client);
+        AutomationRule::where('trigger_type', 'SHOOT_COMPLETED')->delete();
 
         $template = MessageTemplate::create([
             'channel' => 'EMAIL', 'name' => 'SC2', 'subject' => 'SC2',
@@ -366,18 +383,19 @@ class DeliveryEmailFixTest extends TestCase
             'is_active' => true, 'scope' => 'GLOBAL', 'recipients_json' => ['client'],
         ]);
 
-        // Protected send + SHOOT_COMPLETED automation event in one job.
+        // The saved rule owns delivery; its presence suppresses the legacy sender.
         (new SendShootReadyEmailJob($shoot->id, null, true, true))
             ->handle($this->app->make(MailService::class), $this->app->make(AutomationService::class));
 
         $this->assertSame(
             1,
-            SystemEmailDispatch::query()
-                ->where('email_alias', 'SHOOT_DELIVERED')
+            Message::query()
+                ->where('send_source', 'AUTOMATION')->where('channel', 'EMAIL')->where('status', 'SENT')
                 ->where('related_shoot_id', $shoot->id)
-                ->where('recipient_email', $client->email)
+                ->where('to_address', $client->email)
                 ->count(),
-            'Exactly one client delivery email must be recorded even when both paths execute.'
+            'Exactly one accepted client delivery email must be recorded.'
         );
+        $this->assertSame(0, SystemEmailDispatch::where('email_alias', 'SHOOT_DELIVERED')->where('related_shoot_id', $shoot->id)->count());
     }
 }

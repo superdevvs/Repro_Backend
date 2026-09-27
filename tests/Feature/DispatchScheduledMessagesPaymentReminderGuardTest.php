@@ -11,6 +11,8 @@ use App\Services\Messaging\AutomationWorkflowExecutor;
 use App\Services\Messaging\MessagingService;
 use Carbon\CarbonImmutable;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Mockery;
 use Tests\TestCase;
 
@@ -35,7 +37,7 @@ class DispatchScheduledMessagesPaymentReminderGuardTest extends TestCase
         $workflowExecutor = Mockery::mock(AutomationWorkflowExecutor::class);
         $workflowExecutor->shouldReceive('resumeDueSteps')->once();
 
-        (new DispatchScheduledMessages())->handle(
+        (new DispatchScheduledMessages)->handle(
             $this->app->make(MessagingService::class),
             $workflowExecutor,
             $this->app->make(AutomationService::class)
@@ -106,5 +108,53 @@ class DispatchScheduledMessagesPaymentReminderGuardTest extends TestCase
             Message::where('related_shoot_id', $shoot->id)->count(),
             'no new reminder message should be created on re-run'
         );
+    }
+
+    public function test_suppressed_delivery_stays_pending_and_accepted_delivery_runs_without_a_write_transaction(): void
+    {
+        $shoot = Shoot::factory()->create(['payment_status' => 'unpaid']);
+        $reminder = PaymentReminder::create([
+            'shoot_id' => $shoot->id, 'scheduled_date' => now()->toDateString(),
+            'scheduled_at' => now()->subMinute(), 'status' => PaymentReminder::STATUS_PENDING,
+        ]);
+        $transactionLevel = DB::transactionLevel();
+        $calls = 0;
+        $automation = Mockery::mock(AutomationService::class);
+        $automation->shouldReceive('shootPaymentIsComplete')->twice()->andReturnFalse();
+        $automation->shouldReceive('paymentReminderIsCurrent')->twice()->andReturnTrue();
+        $automation->shouldReceive('sendPaymentReminder')->twice()->andReturnUsing(function () use (&$calls, $transactionLevel) {
+            $this->assertSame($transactionLevel, DB::transactionLevel(), 'Provider calls must not run inside an extra SQLite transaction.');
+
+            return ++$calls === 1 ? null : Message::make(['status' => 'SENT']);
+        });
+        $this->app->instance(AutomationService::class, $automation);
+
+        $this->runJob();
+        $this->assertSame(PaymentReminder::STATUS_PENDING, $reminder->fresh()->status);
+        $this->assertNull($reminder->fresh()->sent_at);
+        $this->runJob();
+        $this->assertSame(PaymentReminder::STATUS_SENT, $reminder->fresh()->status);
+        $this->runJob();
+        $this->assertSame(2, $calls);
+    }
+
+    public function test_concurrent_dispatch_holding_the_reminder_lock_prevents_a_second_send(): void
+    {
+        $shoot = Shoot::factory()->create(['payment_status' => 'unpaid']);
+        $reminder = PaymentReminder::create([
+            'shoot_id' => $shoot->id, 'scheduled_date' => now()->toDateString(),
+            'scheduled_at' => now()->subMinute(), 'status' => PaymentReminder::STATUS_PENDING,
+        ]);
+        $automation = Mockery::mock(AutomationService::class);
+        $automation->shouldNotReceive('sendPaymentReminder');
+        $this->app->instance(AutomationService::class, $automation);
+        $lock = Cache::lock('payment-reminder:'.$reminder->id, 300);
+        $lock->get();
+        try {
+            $this->runJob();
+            $this->assertSame(PaymentReminder::STATUS_PENDING, $reminder->fresh()->status);
+        } finally {
+            $lock->release();
+        }
     }
 }

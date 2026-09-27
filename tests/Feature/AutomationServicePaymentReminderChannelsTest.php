@@ -2,13 +2,13 @@
 
 namespace Tests\Feature;
 
+use App\Exceptions\Messaging\SmsSendException;
 use App\Jobs\DispatchScheduledMessages;
 use App\Models\Message;
 use App\Models\MessageTemplate;
 use App\Models\PaymentReminder;
 use App\Models\Shoot;
 use App\Models\User;
-use App\Exceptions\Messaging\SmsSendException;
 use App\Services\Messaging\AutomationService;
 use App\Services\Messaging\AutomationWorkflowExecutor;
 use App\Services\Messaging\MessagingService;
@@ -30,8 +30,14 @@ use Tests\TestCase;
  */
 class AutomationServicePaymentReminderChannelsTest extends TestCase
 {
-    use RefreshDatabase;
     use MockeryPHPUnitIntegration;
+    use RefreshDatabase;
+
+    protected function tearDown(): void
+    {
+        \Carbon\Carbon::setTestNow();
+        parent::tearDown();
+    }
 
     private function seedReminderTemplate(): void
     {
@@ -43,12 +49,18 @@ class AutomationServicePaymentReminderChannelsTest extends TestCase
             'category' => 'INVOICE',
             'subject' => 'Payment Reminder for your shoot',
             'body_html' => '<p>[greeting] your balance is due. [payment_link]</p>',
-            'body_text' => "[greeting] your balance is due. Pay at [payment_link]",
+            'body_text' => '[greeting] your balance is due. Pay at [payment_link]',
             'variables_json' => ['greeting', 'payment_link'],
             'scope' => 'SYSTEM',
             'is_system' => true,
             'is_active' => true,
         ]);
+        \App\Models\SmsNumber::create([
+            'provider' => 'TELNYX', 'phone_number' => '+12025550999', 'label' => 'Test sender',
+            'owner_type' => 'GLOBAL', 'is_default' => true,
+        ]);
+        \App\Models\AutomationRule::where('trigger_type', 'SHOOT_PAYMENT_REMINDER')->delete();
+        app(\App\Services\Messaging\SystemAutomationDefaults::class)->ensure();
     }
 
     private function mockMessaging(): Mockery\MockInterface
@@ -109,7 +121,7 @@ class AutomationServicePaymentReminderChannelsTest extends TestCase
                 && ($payload['contact_phone'] ?? null) === '+12025550111'
                 && ($payload['contact_type'] ?? null) === 'client'
                 && ($payload['send_source'] ?? null) === 'AUTOMATION'
-                && in_array('PAYMENT_REMINDER:shoot:' . $shoot->id, (array) ($payload['tags_json'] ?? []), true)))
+                && in_array('PAYMENT_REMINDER:shoot:'.$shoot->id, (array) ($payload['tags_json'] ?? []), true)))
             ->andReturn($this->fakeMessage(['channel' => 'SMS', 'related_shoot_id' => $shoot->id]));
 
         $returned = $this->service()->sendPaymentReminder($shoot->fresh());
@@ -167,6 +179,7 @@ class AutomationServicePaymentReminderChannelsTest extends TestCase
 
     public function test_sms_failure_does_not_prevent_email_and_row_is_marked_sent(): void
     {
+        \Carbon\Carbon::setTestNow('2026-01-02 10:01:00');
         $this->seedReminderTemplate();
 
         $client = User::factory()->create([
@@ -197,7 +210,7 @@ class AutomationServicePaymentReminderChannelsTest extends TestCase
         $workflowExecutor = Mockery::mock(AutomationWorkflowExecutor::class);
         $workflowExecutor->shouldReceive('resumeDueSteps')->once();
 
-        (new DispatchScheduledMessages())->handle(
+        (new DispatchScheduledMessages)->handle(
             $this->app->make(MessagingService::class),
             $workflowExecutor,
             $this->app->make(AutomationService::class)

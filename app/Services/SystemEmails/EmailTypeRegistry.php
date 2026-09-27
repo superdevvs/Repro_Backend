@@ -60,7 +60,7 @@ class EmailTypeRegistry
             'PHOTOGRAPHER_EQUIPMENT_VERIFICATION' => new EmailTypeDefinition('PHOTOGRAPHER_EQUIPMENT_VERIFICATION', 1, 'account', 'emails.photographer_equipment_verification', 'v1', $account, ['photographer']),
             'PHOTOGRAPHER_EQUIPMENT_APPROVED' => new EmailTypeDefinition('PHOTOGRAPHER_EQUIPMENT_APPROVED', 1, 'account', 'emails.photographer_equipment_approved', 'v1', $account, ['photographer']),
             'PHOTOGRAPHER_EQUIPMENT_REJECTED' => new EmailTypeDefinition('PHOTOGRAPHER_EQUIPMENT_REJECTED', 1, 'account', 'emails.photographer_equipment_rejected', 'v1', $account, ['photographer']),
-            'ROLE_CHANGED' => new EmailTypeDefinition('ROLE_CHANGED', 1, 'account', 'emails.role_changed', 'v1', $account, ['client', 'photographer', 'rep', 'admin']),
+            'ROLE_CHANGED' => new EmailTypeDefinition('ROLE_CHANGED', 1, 'account', 'emails.role_changed', 'v1', $account, ['client', 'photographer', 'rep', 'admin', 'editor']),
             'PASSWORD_RESET' => new EmailTypeDefinition('PASSWORD_RESET', 1, 'security', 'emails.password_reset', 'v1', $account, ['client', 'photographer', 'rep', 'admin']),
             'SHOOT_SCHEDULED' => new EmailTypeDefinition('SHOOT_SCHEDULED', 1, 'booking', 'emails.shoot_scheduled', 'v1', $shoot, ['client', 'photographer']),
             'SHOOT_UPDATED' => new EmailTypeDefinition('SHOOT_UPDATED', 1, 'booking', 'emails.shoot_updated', 'v1', $shoot, ['client', 'photographer']),

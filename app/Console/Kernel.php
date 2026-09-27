@@ -57,10 +57,9 @@ class Kernel extends ConsoleKernel
      *
      * Anything registered here and NOT in bootstrap/app.php does not run.
      * iguide:resync-pending was in exactly that position and silently never
-     * ran; it now lives in bootstrap/app.php. Still only registered here, and
-     * therefore still not running: invoices:generate --weekly --no-email and
-     * reports:sales:weekly. Both were left alone deliberately rather than
-     * switched on as a side effect of an unrelated fix.
+     * ran; it now lives in bootstrap/app.php. Weekly invoice generation,
+     * reports, invoice summaries and payouts now run through the saved rules
+     * in automations:run-system. Do not activate the legacy calls below too.
      *
      * Add new schedules to bootstrap/app.php, not here.
      */

@@ -1363,7 +1363,7 @@ class StripePaymentController extends Controller
 
                 $receiptClient = $createdPayments->first()?->shoot?->client;
                 if (! $requiresStaleRefund && $receiptClient && $createdPayments->isNotEmpty()) {
-                    $this->mailService->sendGroupedPaymentConfirmationEmail($receiptClient, $createdPayments);
+                    $this->automationService->queueAcceptedPaymentReceipt($createdPayments);
                 }
 
                 return true;
@@ -1899,6 +1899,7 @@ class StripePaymentController extends Controller
                         'shoot_id' => (int) $shoot->id,
                         'payment_id' => (int) $lockedPayment->id,
                         'refund_amount' => $allocatedAmount,
+                        'refund_id' => $refundId,
                         'payment_status' => $summary['payment_status'],
                         'is_applied' => $isApplied,
                     ];
@@ -1928,6 +1929,7 @@ class StripePaymentController extends Controller
                         $context['payment'] = $payment;
                         $context['payment_id'] = $payment->id;
                         $context['refund_amount'] = $effect['refund_amount'];
+                        $context['refund_id'] = $effect['refund_id'];
                         $context['payment_status'] = $effect['payment_status'];
                         $this->automationService->handleEvent('PAYMENT_REFUNDED', $context);
                     }
@@ -3143,29 +3145,10 @@ class StripePaymentController extends Controller
                 null
             );
 
-            $context = $this->automationService->buildShootContext($shoot);
-            $context['payment'] = $payment;
-            $context['payment_id'] = $payment->id;
-            $context['payment_status'] = $newPaymentStatus;
-            $context['amount_paid'] = $totalPaid;
-            $paymentCompletedDispatch = $this->automationService->handleEvent('PAYMENT_COMPLETED', $context);
         }
 
-        // Send payment confirmation email fallback only when no automation is active.
-        $client = User::find($shoot->client_id);
-        if ($client && $dispatchReceipt) {
-            try {
-                $this->mailService->sendPaymentConfirmationEmail($client, $shoot, $payment);
-
-                $this->activityLogger->log(
-                    $shoot,
-                    'payment_completion_email_sent',
-                    ['recipient' => $client->email],
-                    null
-                );
-            } catch (\Exception $e) {
-                \App\Services\ApiErrorResponder::log($e, 'error');
-            }
+        if ($dispatchReceipt) {
+            $this->automationService->queueAcceptedPaymentReceipt([$payment]);
         }
 
         Log::info("Stripe payment for Shoot ID {$shoot->id} processed successfully.", [

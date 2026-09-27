@@ -217,7 +217,11 @@ class ShootRescheduleRequestController extends Controller
         $changesSummary = $shootChangeSummary['summary'];
         $context['shoot_changes'] = $changesSummary;
         $context['shoot_changes_html'] = $shootChangeSummary['html'];
-        $automationService->handleEvent('SHOOT_SCHEDULED', $context);
+        $scheduledContext = array_merge($context, [
+            'notify_client' => false,
+            'notify_photographer' => $automationService->shouldUseFallback('SHOOT_UPDATED'),
+        ]);
+        $automationService->handleEvent('SHOOT_SCHEDULED', $scheduledContext);
         $shootUpdatedDispatch = $automationService->handleEvent('SHOOT_UPDATED', $context);
 
         if ($shoot->client && $automationService->shouldUseFallback('SHOOT_UPDATED', $shootUpdatedDispatch) !== false) {

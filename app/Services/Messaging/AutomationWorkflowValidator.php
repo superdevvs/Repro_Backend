@@ -47,7 +47,7 @@ class AutomationWorkflowValidator
         }
 
         foreach ($edges as $edge) {
-            if (!$nodeMap->has($edge['source'] ?? null) || !$nodeMap->has($edge['target'] ?? null)) {
+            if (! $nodeMap->has($edge['source'] ?? null) || ! $nodeMap->has($edge['target'] ?? null)) {
                 $errors[] = 'Workflow contains an edge that references a missing node.';
             }
         }
@@ -59,11 +59,11 @@ class AutomationWorkflowValidator
                 && in_array($node['type'] ?? '', self::ACTION_NODE_TYPES, true);
         })->count();
 
-        if ($reachableActionCount < 1 && empty($meta['system_command'])) {
+        if ($reachableActionCount < 1) {
             $errors[] = 'Workflow must contain at least one reachable action node.';
         }
 
-        $unreachableNodes = $nodes->pluck('id')->filter(fn (string $id) => !in_array($id, $reachable, true));
+        $unreachableNodes = $nodes->pluck('id')->filter(fn (string $id) => ! in_array($id, $reachable, true));
         foreach ($unreachableNodes as $nodeId) {
             $nodeErrors[$nodeId][] = 'This node is not connected to the main flow.';
         }
@@ -122,12 +122,12 @@ class AutomationWorkflowValidator
                 break;
 
             case 'condition.if':
-                if (empty($config['rules']) || !is_array($config['rules'])) {
+                if (empty($config['rules']) || ! is_array($config['rules'])) {
                     $errors[] = 'Condition node must contain at least one rule.';
                 }
                 $outgoing = $edges->where('source', $node['id'] ?? '');
                 $branches = $outgoing->pluck('branchKey')->filter()->values()->all();
-                if (!in_array('true', $branches, true) || !in_array('false', $branches, true)) {
+                if (! in_array('true', $branches, true) || ! in_array('false', $branches, true)) {
                     $errors[] = 'Condition node must have both true and false branches connected.';
                 }
                 break;
@@ -186,7 +186,7 @@ class AutomationWorkflowValidator
                 ->all();
 
             foreach ($targets as $target) {
-                if (!in_array($target, $visited, true)) {
+                if (! in_array($target, $visited, true)) {
                     $queue[] = $target;
                 }
             }

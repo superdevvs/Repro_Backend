@@ -47,17 +47,7 @@ class SmsAiAgentService
             return;
         }
 
-        if (!$this->isGloballyEnabled()) {
-            $this->markProcessed($inbound, ['skip_reason' => 'global_disabled']);
-            return;
-        }
-
         $smsNumber = $this->resolveSmsNumber($inbound);
-        if ($smsNumber instanceof SmsNumber && $smsNumber->sms_ai_enabled === false) {
-            $this->markProcessed($inbound, ['skip_reason' => 'sms_number_ai_disabled']);
-            return;
-        }
-
         $body = trim((string) $inbound->body_text);
         if ($body === '') {
             $this->markProcessed($inbound, ['skip_reason' => 'empty_body']);
@@ -67,7 +57,17 @@ class SmsAiAgentService
         // Compliance keywords run BEFORE any AI / opt-out checks.
         $keyword = $this->compliance->detectKeyword($body);
         if ($keyword !== null) {
-            $this->handleComplianceKeyword($keyword, $inbound, $thread);
+            $this->handleComplianceKeyword($keyword, $inbound, $thread, $smsNumber?->id);
+            return;
+        }
+
+        if (!$this->isGloballyEnabled()) {
+            $this->markProcessed($inbound, ['skip_reason' => 'global_disabled']);
+            return;
+        }
+
+        if ($smsNumber instanceof SmsNumber && $smsNumber->sms_ai_enabled === false) {
+            $this->markProcessed($inbound, ['skip_reason' => 'sms_number_ai_disabled']);
             return;
         }
 
@@ -115,7 +115,8 @@ class SmsAiAgentService
                 $thread,
                 $contact,
                 "Hi! To help with shoots or payments, I need to verify your identity. Reply with your full name and the email on file.",
-                ['skip_reason' => 'unidentified']
+                ['skip_reason' => 'unidentified'],
+                smsNumberId: $smsNumber?->id
             );
             $this->markProcessed($inbound, ['skip_reason' => 'unidentified']);
             return;
@@ -143,7 +144,7 @@ class SmsAiAgentService
 
         try {
             if ($isAffirmative && $pending !== null) {
-                $this->executeConfirmedAction($session, $pending, $thread, $contact, $context);
+                $this->executeConfirmedAction($session, $pending, $thread, $contact, $context, $smsNumber?->id);
                 $this->markProcessed($inbound, ['ai_action' => 'confirmed', 'tool' => $pending['tool']]);
                 return;
             }
@@ -183,7 +184,7 @@ class SmsAiAgentService
                     fn ($m) => $m['tool_calls'] ?? null,
                     $toolMetadata
                 ))),
-            ]);
+            ], smsNumberId: $smsNumber?->id);
 
             $this->markProcessed($inbound, ['ai_action' => 'replied', 'session_id' => $session->id]);
         } catch (\Throwable $e) {
@@ -193,12 +194,12 @@ class SmsAiAgentService
             ]);
             $this->reply($thread, $contact, "Sorry, I hit a snag. A teammate will follow up shortly.", [
                 'ai_error' => $e->getMessage(),
-            ]);
+            ], smsNumberId: $smsNumber?->id);
             $this->markProcessed($inbound, ['ai_action' => 'errored', 'error' => $e->getMessage()]);
         }
     }
 
-    private function handleComplianceKeyword(string $keyword, Message $inbound, MessageThread $thread): void
+    private function handleComplianceKeyword(string $keyword, Message $inbound, MessageThread $thread, ?int $smsNumberId): void
     {
         $resolved = $this->resolver->resolveByE164($inbound->from_address ?? '');
         $contact = $resolved['contact'] ?? $thread->contact;
@@ -212,13 +213,9 @@ class SmsAiAgentService
 
         $reply = $this->compliance->staticReplyFor($keyword);
 
-        if ($keyword === 'stop') {
-            // Sending the stop confirmation is allowed (it's the only message permitted
-            // post-opt-out per CTIA). Use bypass_opt_out to actually deliver.
-            $this->reply($thread, $contact, $reply, ['compliance_keyword' => $keyword], bypassOptOut: true);
-        } else {
-            $this->reply($thread, $contact, $reply, ['compliance_keyword' => $keyword]);
-        }
+        // Only these explicit inbound keywords may receive a static compliance
+        // reply while opted out; they never enable AI or run account tools.
+        $this->reply($thread, $contact, $reply, ['compliance_keyword' => $keyword], bypassOptOut: true, smsNumberId: $smsNumberId);
 
         $this->markProcessed($inbound, ['compliance_keyword' => $keyword]);
     }
@@ -228,7 +225,8 @@ class SmsAiAgentService
         array $pending,
         MessageThread $thread,
         ?Contact $contact,
-        array $context
+        array $context,
+        ?int $smsNumberId
     ): void {
         $orchestrator = app(ReproAiOrchestrator::class);
         $context['confirmation_acknowledged'] = true;
@@ -269,7 +267,7 @@ class SmsAiAgentService
         $this->reply($thread, $contact, $reply, [
             'ai_session_id' => $session->id,
             'confirmed_tool' => $tool,
-        ]);
+        ], smsNumberId: $smsNumberId);
     }
 
     private function reply(
@@ -277,8 +275,14 @@ class SmsAiAgentService
         ?Contact $contact,
         string $body,
         array $extraMetadata = [],
-        bool $bypassOptOut = false
+        bool $bypassOptOut = false,
+        ?int $smsNumberId = null
     ): void {
+        if ($smsNumberId === null) {
+            Log::error('SMS reply skipped: inbound destination has no configured sender', ['thread_id' => $thread->id]);
+            return;
+        }
+
         $contact = $contact ?? $thread->contact;
         if (!$contact) {
             return;
@@ -297,14 +301,15 @@ class SmsAiAgentService
         foreach ($segments as $segment) {
             try {
                 $this->messaging->sendSms([
+                    'sms_number_id' => $smsNumberId,
                     'to' => $to,
                     'body_text' => $segment,
                     'contact_phone' => $to,
                     'contact_name' => $contact->name,
                     'contact_type' => $contact->type,
-                    'metadata' => array_merge(['ai_generated' => true], $extraMetadata),
+                    'metadata' => array_merge(['ai_generated' => !isset($extraMetadata['compliance_keyword'])], $extraMetadata),
                     'bypass_opt_out' => $bypassOptOut,
-                    'send_source' => 'AI_SMS_AGENT',
+                    'send_source' => isset($extraMetadata['compliance_keyword']) ? 'SMS_COMPLIANCE' : 'AI_SMS_AGENT',
                 ]);
             } catch (\Throwable $e) {
                 Log::error('AI SMS reply send failed', [

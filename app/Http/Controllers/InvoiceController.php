@@ -515,14 +515,10 @@ class InvoiceController extends Controller
         // Queue the receipt from the exact Payment row so equal-value partial
         // payments cannot collide in the legacy amount lookup.
         if ($clientPayment) {
-            $shootForEmail = $clientPayment->shoot ?? $invoice->shoot;
-            $clientForEmail = $shootForEmail?->client ?? $invoice->client;
-            if ($shootForEmail && $clientForEmail) {
-                try {
-                    app(MailService::class)->sendPaymentConfirmationEmail($clientForEmail, $shootForEmail, $clientPayment);
-                } catch (\Throwable $emailError) {
-                    \App\Services\ApiErrorResponder::log($emailError, 'warning');
-                }
+            try {
+                app(AutomationService::class)->queueAcceptedPaymentReceipt([$clientPayment]);
+            } catch (\Throwable $emailError) {
+                \App\Services\ApiErrorResponder::log($emailError, 'warning');
             }
         }
 

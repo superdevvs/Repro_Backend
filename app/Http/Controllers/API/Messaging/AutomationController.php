@@ -4,7 +4,6 @@ namespace App\Http\Controllers\API\Messaging;
 
 use App\Http\Controllers\Controller;
 use App\Models\AutomationRule;
-use App\Models\MessageTemplate;
 use App\Services\Messaging\AutomationService;
 use App\Services\Messaging\AutomationWorkflowConverter;
 use App\Services\Messaging\AutomationWorkflowExecutor;
@@ -12,10 +11,8 @@ use App\Services\Messaging\AutomationWorkflowValidator;
 use App\Services\Messaging\TemplateRenderer;
 use App\Services\Messaging\TemplateVariableResolver;
 use App\Services\SystemEmails\ProtectedAutomationEmailMap;
-use Database\Seeders\MessagingSystemSeeder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\Rule;
@@ -44,13 +41,10 @@ class AutomationController extends Controller
         private readonly AutomationWorkflowValidator $workflowValidator,
         private readonly AutomationWorkflowExecutor $workflowExecutor,
         private readonly ProtectedAutomationEmailMap $protectedAutomationEmailMap,
-    ) {
-    }
+    ) {}
 
     public function index(Request $request): JsonResponse
     {
-        $this->ensureRequiredSystemAutomations();
-
         $query = AutomationRule::query()
             ->with(['template', 'channel', 'creator', 'updater', 'latestDispatch']);
 
@@ -94,15 +88,14 @@ class AutomationController extends Controller
     {
         $data = $this->validatePayload($request, $automation);
 
-        if ($automation->is_system_locked && isset($data['workflow_definition_json'])) {
-            $this->assertLockedWorkflowShape($automation, $data['workflow_definition_json']);
-        }
-
         $automation->update(array_merge($data, [
             'updated_by' => $request->user()->id,
         ]));
 
         $automation = $this->persistResolvedWorkflow($automation, $data);
+        if ($automation->trigger_type === 'SHOOT_PAYMENT_REMINDER') {
+            $this->automationService->reconcileConfiguredPaymentReminders();
+        }
 
         return response()->json($this->serializeAutomation($automation->fresh()->load(['template', 'channel', 'latestDispatch']), true));
     }
@@ -158,7 +151,7 @@ class AutomationController extends Controller
             'test_context' => ['array'],
         ]);
 
-        if (!$automation->template) {
+        if (! $automation->template) {
             return response()->json(['error' => 'Automation has no template'], 400);
         }
 
@@ -170,7 +163,7 @@ class AutomationController extends Controller
             $variables
         );
 
-        if (!empty($rendered['missing'])) {
+        if (! empty($rendered['missing'])) {
             Log::warning('Automation test email missing template variables', [
                 'automation_id' => $automation->id,
                 'template_id' => $automation->template_id,
@@ -181,7 +174,7 @@ class AutomationController extends Controller
         $messagingService = app(\App\Services\Messaging\MessagingService::class);
         $messagingService->sendEmail([
             'to' => $data['test_email'],
-            'subject' => '[TEST] ' . ($rendered['subject'] ?? $automation->template->subject),
+            'subject' => '[TEST] '.($rendered['subject'] ?? $automation->template->subject),
             'body_html' => $rendered['body_html'] ?? null,
             'body_text' => $rendered['body_text'] ?? null,
             'channel_id' => $automation->channel_id,
@@ -201,7 +194,7 @@ class AutomationController extends Controller
 
     public function toggleActive(AutomationRule $automation): JsonResponse
     {
-        $automation->update(['is_active' => !$automation->is_active]);
+        $automation->update(['is_active' => ! $automation->is_active]);
 
         return response()->json($this->serializeAutomation($automation->fresh()->load(['template', 'channel', 'latestDispatch']), false));
     }
@@ -214,6 +207,7 @@ class AutomationController extends Controller
 
         Artisan::call('automations:run-system', [
             '--trigger' => $automation->trigger_type,
+            '--rule' => $automation->id,
             '--force' => true,
         ]);
 
@@ -237,6 +231,8 @@ class AutomationController extends Controller
             'SHOOT_SCHEDULED',
             'SHOOT_UPDATED',
             'SHOOT_REMINDER',
+            'PHOTOGRAPHER_SHOOT_REMINDER',
+            'SHOOT_PAYMENT_REMINDER',
             'SHOOT_COMPLETED',
             'SHOOT_CANCELED',
             'SHOOT_REMOVED',
@@ -249,6 +245,8 @@ class AutomationController extends Controller
             'INVOICE_PAID',
             'WEEKLY_PHOTOGRAPHER_INVOICE',
             'WEEKLY_REP_INVOICE',
+            'WEEKLY_PAYOUT_REPORT',
+            'WEEKLY_PAYOUT_DIGEST',
             'WEEKLY_SALES_REPORT',
             'WEEKLY_AUTOMATED_INVOICING',
             'PHOTO_UPLOADED',
@@ -258,6 +256,7 @@ class AutomationController extends Controller
             'SHOOT_REQUESTED',
             'SHOOT_REQUEST_APPROVED',
             'SHOOT_REQUEST_MODIFIED',
+            'SHOOT_REQUEST_DECLINED',
             'EDITING_COMPLETE',
             'PROPERTY_CONTACT_REMINDER',
         ];
@@ -287,57 +286,72 @@ class AutomationController extends Controller
             ]);
         }
 
-        if (!empty($data['workflow_definition_json'])) {
+        if (! empty($data['workflow_definition_json'])) {
             $validation = $this->workflowValidator->validate($data['workflow_definition_json']);
-            if (!$validation['valid']) {
+            if (! $validation['valid']) {
                 throw ValidationException::withMessages([
                     'workflow_definition_json' => $validation['errors'],
                 ]);
             }
         }
 
-        if ($this->protectedAutomationEmailMap->isProtectedTrigger((string) ($data['trigger_type'] ?? $automation?->trigger_type ?? ''))) {
-            $data['template_id'] = null;
+        // The saved workflow is authoritative, including system automations.
+        // Synchronize scheduler metadata so changing a visual trigger affects execution.
+        if (! empty($data['workflow_definition_json'])) {
+            foreach (['system_default_key', 'defaults_repaired_20260927'] as $key) {
+                if ($automation && array_key_exists($key, $automation->workflow_definition_json['meta'] ?? [])) {
+                    $data['workflow_definition_json']['meta'][$key] = $automation->workflow_definition_json['meta'][$key];
+                } else {
+                    unset($data['workflow_definition_json']['meta'][$key]);
+                }
+            }
+            $trigger = collect($data['workflow_definition_json']['nodes'] ?? [])
+                ->first(fn (array $node) => str_starts_with((string) ($node['type'] ?? ''), 'trigger.'));
+            if (($trigger['config']['triggerType'] ?? $data['trigger_type']) !== $data['trigger_type']) {
+                throw ValidationException::withMessages(['workflow_definition_json' => ['The workflow trigger must match the automation trigger.']]);
+            }
+            if (isset($trigger['config']['schedule'])) {
+                $data['schedule_json'] = $trigger['config']['schedule'];
+            }
+            $data['entry_trigger_json'] = [
+                'trigger_type' => $data['trigger_type'],
+                'node_id' => $trigger['id'] ?? null,
+                'node_type' => $trigger['type'] ?? null,
+                'config' => $trigger['config'] ?? [],
+            ];
         }
+        $scheduleRules = [
+            'schedule.time' => ['sometimes', 'regex:/^(?:[01]\d|2[0-3]):[0-5]\d$/'],
+            'schedule.days_before' => ['sometimes', 'integer', 'min:0', 'max:365'],
+            'schedule.day_of_week' => ['sometimes', 'integer', 'between:0,6'],
+            'schedule.accounting_email' => ['sometimes', 'nullable', 'email'],
+            'schedule.monthly_day_of_week' => ['sometimes', 'integer', 'between:0,6'],
+            'schedule.overdue_days' => ['sometimes', 'array'],
+            'schedule.overdue_days.*' => ['integer', 'min:1', 'max:3660'],
+            'schedule.reminder_days' => ['sometimes', 'array'],
+            'schedule.reminder_days.*' => ['integer', 'min:1', 'max:30'],
+            'schedule.repeat_every_days' => ['sometimes', 'integer', 'min:0'],
+        ];
+        if (in_array($data['trigger_type'], ['SHOOT_REMINDER', 'PHOTOGRAPHER_SHOOT_REMINDER'], true)) {
+            $scheduleRules['schedule.offset'] = ['sometimes', 'regex:/^-[1-9]\d*[mhd]$/'];
+        }
+        \Illuminate\Support\Facades\Validator::make(['schedule' => $data['schedule_json'] ?? []], $scheduleRules)->validate();
+
+        $data['is_system_locked'] = false;
 
         return $data;
-    }
-
-    private function ensureRequiredSystemAutomations(): void
-    {
-        $existingSystemTriggers = AutomationRule::query()
-            ->where('scope', 'SYSTEM')
-            ->whereIn('trigger_type', self::REQUIRED_SYSTEM_TRIGGER_TYPES)
-            ->pluck('trigger_type')
-            ->all();
-
-        $missingTriggers = array_diff(self::REQUIRED_SYSTEM_TRIGGER_TYPES, $existingSystemTriggers);
-
-        if ($missingTriggers === []) {
-            if ($this->propertyContactReminderWorkflowsNeedRepair()) {
-                Artisan::call('db:seed', [
-                    '--class' => MessagingSystemSeeder::class,
-                    '--force' => true,
-                ]);
-            }
-
-            $this->repairPropertyContactReminderWorkflows();
-            return;
-        }
-
-        Artisan::call('automations:ensure-system');
-        if ($this->propertyContactReminderWorkflowsNeedRepair()) {
-            Artisan::call('db:seed', [
-                '--class' => MessagingSystemSeeder::class,
-                '--force' => true,
-            ]);
-        }
-        $this->repairPropertyContactReminderWorkflows();
     }
 
     private function persistResolvedWorkflow(AutomationRule $automation, array $data): AutomationRule
     {
         $workflow = $data['workflow_definition_json'] ?? $this->workflowConverter->getWorkflowDefinition($automation);
+        foreach (['system_default_key', 'defaults_repaired_20260927'] as $key) {
+            $original = $automation->getRawOriginal('workflow_definition_json');
+            $original = is_string($original) ? json_decode($original, true) : $original;
+            if (array_key_exists($key, $original['meta'] ?? [])) {
+                $workflow['meta'][$key] = $original['meta'][$key];
+            }
+        }
         $entryTrigger = $data['entry_trigger_json'] ?? $this->workflowConverter->getEntryTrigger($automation);
 
         $automation->forceFill([
@@ -351,87 +365,6 @@ class AutomationController extends Controller
         return $automation->fresh();
     }
 
-    private function propertyContactReminderWorkflowsNeedRepair(): bool
-    {
-        $automations = AutomationRule::query()
-            ->where('scope', 'SYSTEM')
-            ->where('trigger_type', 'PROPERTY_CONTACT_REMINDER')
-            ->whereIn('name', self::PROPERTY_CONTACT_REMINDER_NAMES)
-            ->with('template')
-            ->get();
-
-        if ($automations->count() !== count(self::PROPERTY_CONTACT_REMINDER_NAMES)) {
-            return true;
-        }
-
-        foreach ($automations as $automation) {
-            $validation = $this->workflowValidator->validate($this->workflowConverter->getWorkflowDefinition($automation));
-            $expectedTemplateSlug = str_contains($automation->name, 'SMS')
-                ? 'property-contact-reminder-sms'
-                : 'property-contact-reminder';
-            $expectedTemplateId = MessageTemplate::query()->where('slug', $expectedTemplateSlug)->value('id');
-
-            if (
-                !$validation['valid']
-                || !$automation->is_system_locked
-                || ($automation->engine_version ?? 0) < 2
-                || !$automation->workflow_definition_json
-                || (int) $automation->template_id !== (int) $expectedTemplateId
-            ) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    private function repairPropertyContactReminderWorkflows(): void
-    {
-        AutomationRule::query()
-            ->where('scope', 'SYSTEM')
-            ->where('trigger_type', 'PROPERTY_CONTACT_REMINDER')
-            ->whereIn('name', self::PROPERTY_CONTACT_REMINDER_NAMES)
-            ->with('template')
-            ->get()
-            ->each(function (AutomationRule $automation): void {
-                $expectedTemplateSlug = str_contains($automation->name, 'SMS')
-                    ? 'property-contact-reminder-sms'
-                    : 'property-contact-reminder';
-                $expectedTemplateId = MessageTemplate::query()->where('slug', $expectedTemplateSlug)->value('id');
-
-                if ($expectedTemplateId && (int) $automation->template_id !== (int) $expectedTemplateId) {
-                    $automation->template_id = $expectedTemplateId;
-                }
-
-                $workflow = $this->workflowConverter->buildLegacyWorkflow($automation);
-                $triggerNode = collect($workflow['nodes'] ?? [])
-                    ->first(fn (array $node) => str_starts_with((string) ($node['type'] ?? ''), 'trigger.'));
-                $entryTrigger = [
-                    'trigger_type' => $automation->trigger_type,
-                    'node_id' => $triggerNode['id'] ?? null,
-                    'node_type' => $triggerNode['type'] ?? null,
-                    'config' => $triggerNode['config'] ?? [],
-                ];
-                $validation = $this->workflowValidator->validate($workflow);
-
-                if (!$validation['valid']) {
-                    Log::warning('Property contact reminder workflow remains invalid after repair attempt', [
-                        'automation_id' => $automation->id,
-                        'name' => $automation->name,
-                        'errors' => $validation['errors'],
-                    ]);
-                }
-
-                $automation->forceFill([
-                    'editor_mode' => 'visual',
-                    'engine_version' => 2,
-                    'is_system_locked' => true,
-                    'workflow_definition_json' => $workflow,
-                    'entry_trigger_json' => $entryTrigger,
-                ])->save();
-            });
-    }
-
     private function serializeAutomation(AutomationRule $automation, bool $includeRuns): array
     {
         $workflow = $this->workflowConverter->getWorkflowDefinition($automation);
@@ -440,56 +373,19 @@ class AutomationController extends Controller
             ->when($includeRuns, fn ($query) => $query->with('steps'))
             ->limit($includeRuns ? 20 : 3)
             ->get();
-        $templateSourceOfTruth = $this->protectedAutomationEmailMap->isProtectedTrigger((string) $automation->trigger_type)
-            ? 'code'
-            : 'database';
+        $templateSourceOfTruth = 'database';
 
         return array_merge($automation->toArray(), [
             'editor_mode' => $automation->editor_mode ?: 'visual',
             'engine_version' => $automation->engine_version ?: 2,
             'workflow_definition_json' => $workflow,
             'entry_trigger_json' => $automation->entry_trigger_json ?: $this->workflowConverter->getEntryTrigger($automation),
-            'is_system_locked' => (bool) $automation->is_system_locked,
+            'is_system_locked' => false,
             'legacy_status' => is_array($automation->workflow_definition_json) ? 'migrated' : 'converted_from_legacy',
             'template_source_of_truth' => $templateSourceOfTruth,
             'template_override_ignored' => $templateSourceOfTruth === 'code',
             'validation_state' => $validation,
             'recent_runs' => $recentRuns->toArray(),
         ]);
-    }
-
-    private function assertLockedWorkflowShape(AutomationRule $automation, array $incomingWorkflow): void
-    {
-        $existingWorkflow = $this->workflowConverter->getWorkflowDefinition($automation);
-
-        $existingSignature = [
-            'nodes' => collect($existingWorkflow['nodes'] ?? [])->map(fn (array $node) => [
-                'id' => $node['id'] ?? null,
-                'type' => $node['type'] ?? null,
-            ])->values()->all(),
-            'edges' => collect($existingWorkflow['edges'] ?? [])->map(fn (array $edge) => [
-                'source' => $edge['source'] ?? null,
-                'target' => $edge['target'] ?? null,
-                'branchKey' => $edge['branchKey'] ?? null,
-            ])->values()->all(),
-        ];
-
-        $incomingSignature = [
-            'nodes' => collect($incomingWorkflow['nodes'] ?? [])->map(fn (array $node) => [
-                'id' => $node['id'] ?? null,
-                'type' => $node['type'] ?? null,
-            ])->values()->all(),
-            'edges' => collect($incomingWorkflow['edges'] ?? [])->map(fn (array $edge) => [
-                'source' => $edge['source'] ?? null,
-                'target' => $edge['target'] ?? null,
-                'branchKey' => $edge['branchKey'] ?? null,
-            ])->values()->all(),
-        ];
-
-        if ($existingSignature !== $incomingSignature) {
-            throw ValidationException::withMessages([
-                'workflow_definition_json' => ['System-locked automations cannot change workflow structure in v1.'],
-            ]);
-        }
     }
 }

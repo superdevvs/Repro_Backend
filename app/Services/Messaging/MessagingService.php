@@ -20,6 +20,7 @@ use App\Services\Messaging\Contracts\EmailProviderInterface;
 use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use RuntimeException;
@@ -899,22 +900,28 @@ class MessagingService
 
     public function dispatchScheduledMessage(Message $message): Message
     {
-        $channel = strtoupper((string) $message->channel);
-        $provider = strtoupper((string) $message->provider);
+        $sent = Cache::lock('scheduled-message:'.$message->getKey(), 300)->get(function () use ($message): Message {
+            $message->refresh();
+            if ($message->status !== 'SCHEDULED' || $message->scheduled_at?->isFuture()) {
+                return $message;
+            }
+            $channel = strtoupper((string) $message->channel);
+            $provider = strtoupper((string) $message->provider);
 
-        if ($channel === 'SMS') {
-            return $this->dispatchStoredSmsMessage($message);
-        }
+            if ($channel === 'SMS') {
+                return $this->dispatchStoredSmsMessage($message);
+            }
+            if ($channel === 'EMAIL' && $provider === 'INTERNAL') {
+                return $this->dispatchStoredInternalEmailMessage($message);
+            }
+            if ($channel === 'EMAIL') {
+                return $this->dispatchStoredEmailMessage($message);
+            }
 
-        if ($channel === 'EMAIL' && $provider === 'INTERNAL') {
-            return $this->dispatchStoredInternalEmailMessage($message);
-        }
+            return $message;
+        });
 
-        if ($channel === 'EMAIL') {
-            return $this->dispatchStoredEmailMessage($message);
-        }
-
-        return $message;
+        return $sent instanceof Message ? $sent : $message->refresh();
     }
 
     public function dispatchStoredEmailMessage(Message $message): Message
@@ -926,6 +933,9 @@ class MessagingService
 
         if ($message->channel !== 'EMAIL') {
             return $message;
+        }
+        if (! $this->deliveryGuard->allows('EMAIL', (string) $message->to_address)) {
+            return $this->markMessageBlocked($message, 'EMAIL');
         }
 
         $channel = $message->channelConfig ?? $this->resolveEmailChannel([
@@ -984,6 +994,9 @@ class MessagingService
 
         if ($message->channel !== 'SMS') {
             return $message;
+        }
+        if (! $this->deliveryGuard->allows('SMS', (string) $message->to_address)) {
+            return $this->markMessageBlocked($message, 'SMS');
         }
 
         try {

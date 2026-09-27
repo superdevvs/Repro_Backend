@@ -15,6 +15,7 @@ use App\Services\Messaging\OutboundDeliveryGuard;
 use App\Services\Messaging\Providers\LocalSmtpProvider;
 use App\Services\SystemEmails\EmailContextBuilder;
 use App\Services\SystemEmails\SystemEmailOrchestrator;
+use App\Services\Users\AccountCreatedNotificationService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Mail;
 use Laravel\Sanctum\Sanctum;
@@ -32,6 +33,7 @@ class SystemEmailPlatformTest extends TestCase
         // has to travel the full path rather than being withheld by the delivery
         // guard. Mail::fake() and the fake providers still absorb it.
         OutboundDeliveryGuard::allowFakeProviderPipelineForTesting();
+        AutomationRule::query()->where('trigger_type', 'ACCOUNT_CREATED')->update(['is_active' => false]);
     }
 
     public function test_mail_service_records_canonical_dispatch_and_deduplicates_account_created_email(): void
@@ -46,7 +48,7 @@ class SystemEmailPlatformTest extends TestCase
         ]);
 
         $service = $this->app->make(MailService::class);
-        $resetLink = 'https://reprodashboard.com/reset-password?token=test-token&email=' . urlencode($user->email);
+        $resetLink = 'https://reprodashboard.com/reset-password?token=test-token&email='.urlencode($user->email);
 
         $this->assertTrue($service->sendAccountCreatedEmail($user, $resetLink));
         $this->assertTrue($service->sendAccountCreatedEmail($user, $resetLink));
@@ -66,7 +68,7 @@ class SystemEmailPlatformTest extends TestCase
         $this->assertSame($message->id, $dispatch->message_id);
     }
 
-    public function test_protected_automation_ignores_legacy_template_html_and_uses_canonical_pipeline(): void
+    public function test_automation_sends_the_saved_template_instead_of_a_hidden_canonical_override(): void
     {
         Mail::fake();
         $this->createDefaultEmailChannel();
@@ -81,8 +83,8 @@ class SystemEmailPlatformTest extends TestCase
             'channel' => 'EMAIL',
             'name' => 'Legacy Account Created Override',
             'subject' => 'Legacy Account Created Override',
-            'body_html' => '<p>LEGACY HTML SHOULD NOT SHIP</p>',
-            'body_text' => 'LEGACY TEXT SHOULD NOT SHIP',
+            'body_html' => '<p>Saved welcome copy</p>',
+            'body_text' => 'Saved welcome copy',
             'variables_json' => ['client_name'],
             'scope' => 'SYSTEM',
             'is_system' => true,
@@ -99,7 +101,7 @@ class SystemEmailPlatformTest extends TestCase
         ]);
 
         $executor = $this->app->make(AutomationWorkflowExecutor::class);
-        $resetLink = 'https://reprodashboard.com/reset-password?token=protected&email=' . urlencode($user->email);
+        $resetLink = 'https://reprodashboard.com/reset-password?token=protected&email='.urlencode($user->email);
 
         $executor->executeEventTrigger('ACCOUNT_CREATED', [
             'account_id' => $user->id,
@@ -109,16 +111,14 @@ class SystemEmailPlatformTest extends TestCase
 
         $message = Message::query()->where('related_account_id', $user->id)->first();
         $this->assertNotNull($message);
-        $this->assertStringNotContainsString('LEGACY HTML SHOULD NOT SHIP', (string) $message->body_html);
-        $this->assertSame('ACCOUNT_CREATED', $message->send_source);
-        $this->assertSame('ACCOUNT_CREATED', $message->metadata['canonical_email']['email_alias'] ?? null);
-
-        $dispatch = SystemEmailDispatch::query()->where('message_id', $message->id)->first();
-        $this->assertNotNull($dispatch);
-        $this->assertSame('ACCOUNT_CREATED_V1', $dispatch->email_type);
+        $this->assertStringContainsString('Saved welcome copy', (string) $message->body_html);
+        $this->assertSame('Legacy Account Created Override', $message->subject);
+        $this->assertSame('AUTOMATION', $message->send_source);
+        $this->assertSame($template->id, $message->template_id);
+        $this->assertSame(0, SystemEmailDispatch::query()->where('message_id', $message->id)->count());
     }
 
-    public function test_account_created_protected_automation_uses_account_context_as_recipient(): void
+    public function test_account_created_automation_uses_the_saved_account_recipient(): void
     {
         Mail::fake();
         $this->createDefaultEmailChannel();
@@ -131,13 +131,14 @@ class SystemEmailPlatformTest extends TestCase
         AutomationRule::create([
             'name' => 'Protected Account Created Rule',
             'trigger_type' => 'ACCOUNT_CREATED',
+            'template_id' => $this->createSavedWelcomeTemplate()->id,
             'is_active' => true,
             'scope' => 'GLOBAL',
-            'recipients_json' => ['client'],
+            'recipients_json' => ['account'],
         ]);
 
         $executor = $this->app->make(AutomationWorkflowExecutor::class);
-        $resetLink = 'https://reprodashboard.com/reset-password?token=account-context&email=' . urlencode($user->email);
+        $resetLink = 'https://reprodashboard.com/reset-password?token=account-context&email='.urlencode($user->email);
 
         $summary = $executor->executeEventTrigger('ACCOUNT_CREATED', [
             'account_id' => $user->id,
@@ -150,7 +151,7 @@ class SystemEmailPlatformTest extends TestCase
 
         $message = Message::query()
             ->where('related_account_id', $user->id)
-            ->where('send_source', 'ACCOUNT_CREATED')
+            ->where('send_source', 'AUTOMATION')
             ->first();
 
         $this->assertNotNull($message);
@@ -194,7 +195,7 @@ class SystemEmailPlatformTest extends TestCase
                 'email' => $user->email,
             ],
             'links' => [
-                'reset_password' => 'https://reprodashboard.com/reset-password?token=force&email=' . urlencode($user->email),
+                'reset_password' => 'https://reprodashboard.com/reset-password?token=force&email='.urlencode($user->email),
                 'dashboard' => 'https://reprodashboard.com',
             ],
             'meta' => [
@@ -241,7 +242,7 @@ class SystemEmailPlatformTest extends TestCase
         ]);
 
         $service = $this->app->make(MailService::class);
-        $resetLink = 'https://reprodashboard.com/reset-password?token=failure&email=' . urlencode($user->email);
+        $resetLink = 'https://reprodashboard.com/reset-password?token=failure&email='.urlencode($user->email);
 
         $this->assertFalse($service->sendAccountCreatedEmail($user, $resetLink));
 
@@ -257,7 +258,7 @@ class SystemEmailPlatformTest extends TestCase
         $this->assertSame('RuntimeException', $dispatch->error_code);
     }
 
-    public function test_mail_service_and_automation_path_do_not_double_send_same_protected_event(): void
+    public function test_account_notification_does_not_add_a_direct_fallback_to_the_saved_automation(): void
     {
         Mail::fake();
         $this->createDefaultEmailChannel();
@@ -271,24 +272,20 @@ class SystemEmailPlatformTest extends TestCase
         AutomationRule::create([
             'name' => 'Protected Account Created Rule',
             'trigger_type' => 'ACCOUNT_CREATED',
+            'template_id' => $this->createSavedWelcomeTemplate()->id,
             'is_active' => true,
             'scope' => 'GLOBAL',
-            'recipients_json' => ['client'],
+            'recipients_json' => ['account'],
         ]);
 
-        $executor = $this->app->make(AutomationWorkflowExecutor::class);
-        $service = $this->app->make(MailService::class);
-        $resetLink = 'https://reprodashboard.com/reset-password?token=shared&email=' . urlencode($user->email);
-
-        $executor->executeEventTrigger('ACCOUNT_CREATED', [
-            'account_id' => $user->id,
-            'client' => $user,
-            'password_reset_link' => $resetLink,
-        ]);
-
-        $this->assertTrue($service->sendAccountCreatedEmail($user, $resetLink));
+        $service = $this->app->make(AccountCreatedNotificationService::class);
+        $first = $service->dispatch($user, ['require_verification' => false]);
+        $second = $service->dispatch($user, ['require_verification' => false]);
+        $this->assertTrue($first['email']['account_created']['sent']);
+        $this->assertTrue($second['email']['account_created']['sent']);
         $this->assertSame(1, Message::query()->where('related_account_id', $user->id)->count());
-        $this->assertSame(1, SystemEmailDispatch::query()->where('email_alias', 'ACCOUNT_CREATED')->count());
+        $this->assertSame('Saved welcome', Message::query()->where('related_account_id', $user->id)->firstOrFail()->subject);
+        $this->assertSame(0, SystemEmailDispatch::query()->where('email_alias', 'ACCOUNT_CREATED')->count());
     }
 
     public function test_verification_email_dispatch_records_token_metadata(): void
@@ -397,6 +394,15 @@ class SystemEmailPlatformTest extends TestCase
         $this->assertNotNull($message);
         $this->assertSame($photographer->email, $message->to_address);
         $this->assertNotNull($equipment->fresh()->verification_requested_at);
+    }
+
+    private function createSavedWelcomeTemplate(): MessageTemplate
+    {
+        return MessageTemplate::create([
+            'channel' => 'EMAIL', 'name' => 'Saved welcome', 'subject' => 'Saved welcome',
+            'body_html' => '<p>Hello {{recipient_name}}</p>', 'body_text' => 'Hello {{recipient_name}}',
+            'scope' => 'SYSTEM', 'is_system' => true, 'is_active' => true,
+        ]);
     }
 
     private function createDefaultEmailChannel(): MessageChannel

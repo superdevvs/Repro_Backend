@@ -202,9 +202,12 @@ class TelnyxMessagingTest extends TestCase
             'recipients_json' => ['client'],
         ]);
 
-        app(AutomationService::class)->handleEvent('PROPERTY_CONTACT_REMINDER', [
-            'client' => $client,
+        $shoot = \App\Models\Shoot::factory()->create([
+            'client_id' => $client->id, 'status' => 'scheduled', 'workflow_status' => 'scheduled',
+            'scheduled_at' => now()->addDays(2),
         ]);
+        $automation = app(AutomationService::class);
+        $automation->handleEvent('PROPERTY_CONTACT_REMINDER', $automation->buildShootContext($shoot));
 
         $message = Message::where('send_source', 'AUTOMATION')
             ->where('channel', 'SMS')
@@ -334,6 +337,55 @@ class TelnyxMessagingTest extends TestCase
         $message->refresh();
         $this->assertSame('DELIVERED', $message->status);
         $this->assertNotNull($message->delivered_at);
+    }
+
+    public function test_unconfirmed_or_unknown_final_status_does_not_claim_sms_delivery(): void
+    {
+        $this->skipIfNoSodium();
+        foreach (['delivery_unconfirmed', 'sent', ''] as $index => $status) {
+            $message = Message::create([
+                'channel' => 'SMS', 'direction' => 'OUTBOUND', 'provider' => 'TELNYX',
+                'provider_message_id' => 'msg_unconfirmed_'.$index,
+                'from_address' => '+18883426998', 'to_address' => '+12025550188',
+                'body_text' => 'Status fixture', 'status' => 'SENT', 'thread_id' => $this->createSmsThread()->id,
+            ]);
+            $this->postSignedTelnyx('/api/webhooks/telnyx/messaging', [
+                'data' => ['id' => 'evt_unconfirmed_'.$index, 'event_type' => 'message.finalized',
+                    'payload' => ['id' => $message->provider_message_id, 'to' => [['status' => $status]]]],
+            ])->assertOk();
+            $message->refresh();
+            $this->assertSame('SENT', $message->status);
+            $this->assertNull($message->delivered_at);
+            $this->assertSame($status ?: null, $message->metadata['telnyx_delivery_status']);
+        }
+    }
+
+    public function test_late_status_webhooks_do_not_erase_terminal_delivery_results(): void
+    {
+        $this->skipIfNoSodium();
+        $message = Message::create([
+            'channel' => 'SMS', 'direction' => 'OUTBOUND', 'provider' => 'TELNYX',
+            'provider_message_id' => 'msg_out_of_order',
+            'from_address' => '+18883426998', 'to_address' => '+12025550188',
+            'body_text' => 'Status fixture', 'status' => 'SENT', 'thread_id' => $this->createSmsThread()->id,
+        ]);
+        $payload = ['data' => ['id' => 'evt_delivered', 'event_type' => 'message.finalized',
+            'occurred_at' => now()->subMinute()->toIso8601String(),
+            'payload' => ['id' => $message->provider_message_id, 'to' => [['status' => 'delivered']]]]];
+        $this->postSignedTelnyx('/api/webhooks/telnyx/messaging', $payload)->assertOk();
+        $payload['data']['id'] = 'evt_stale_failed';
+        $payload['data']['occurred_at'] = now()->subMinutes(2)->toIso8601String();
+        $payload['data']['payload']['to'][0]['status'] = 'delivery_failed';
+        $this->postSignedTelnyx('/api/webhooks/telnyx/messaging', $payload)->assertOk();
+        $payload['data']['id'] = 'evt_late_sent';
+        $payload['data']['event_type'] = 'message.sent';
+        $payload['data']['occurred_at'] = now()->toIso8601String();
+        $this->postSignedTelnyx('/api/webhooks/telnyx/messaging', $payload)->assertOk();
+        $message->refresh();
+        $this->assertSame('DELIVERED', $message->status);
+        $this->assertNotNull($message->delivered_at);
+        $this->assertNull($message->failed_at);
+        $this->assertSame('evt_delivered', $message->metadata['telnyx_event_id']);
     }
 
     public function test_invalid_telnyx_signature_is_rejected(): void

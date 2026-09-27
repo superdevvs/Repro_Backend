@@ -2,11 +2,12 @@
 
 namespace App\Services\Messaging;
 
-use App\Models\Payment;
 use App\Models\AutomationRule;
 use App\Models\AutomationRun;
 use App\Models\AutomationRunStep;
+use App\Models\Message;
 use App\Models\MessageTemplate;
+use App\Models\Payment;
 use App\Models\Shoot;
 use App\Models\User;
 use App\Services\MailService;
@@ -14,13 +15,14 @@ use App\Services\SystemEmails\ProtectedAutomationEmailMap;
 use Carbon\Carbon;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Collection;
-use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 
 class AutomationWorkflowExecutor
 {
     private const SALES_REP_ROLES = ['salesRep', 'sales_rep', 'salesrep'];
+
     private const ADMIN_ROLES = ['admin', 'superadmin', 'super_admin', 'editing_manager'];
 
     public function __construct(
@@ -31,14 +33,14 @@ class AutomationWorkflowExecutor
         private readonly AutomationWorkflowValidator $workflowValidator,
         private readonly MailService $mailService,
         private readonly ProtectedAutomationEmailMap $protectedAutomationEmailMap,
-    ) {
-    }
+    ) {}
 
     public function executeEventTrigger(string $triggerType, array $context): array
     {
         $rules = AutomationRule::query()
             ->active()
             ->where('trigger_type', $triggerType)
+            ->when(! empty($context['automation_rule_id']), fn ($query) => $query->whereKey($context['automation_rule_id']))
             ->with(['template', 'channel'])
             ->get();
 
@@ -70,7 +72,7 @@ class AutomationWorkflowExecutor
         $workflow = $this->workflowConverter->getWorkflowDefinition($automation);
         $validation = $this->workflowValidator->validate($workflow);
 
-        if (!$validation['valid']) {
+        if (! $validation['valid']) {
             if ($simulate) {
                 return [
                     'validation' => $validation,
@@ -92,12 +94,14 @@ class AutomationWorkflowExecutor
             ]);
         }
 
+        $context['automation_event_key'] ??= $this->eventKey($automation, $context);
         $resolvedContext = $this->variableResolver->resolve($context);
         $triggerNode = collect($workflow['nodes'])->first(fn (array $node) => str_starts_with((string) ($node['type'] ?? ''), 'trigger.'));
         $queue = $this->nextNodeIds($workflow, $triggerNode['id'] ?? null);
 
         if ($simulate) {
             $trace = $this->simulateQueue($automation, $workflow, $resolvedContext, $queue);
+
             return [
                 'validation' => $validation,
                 'trace' => $trace,
@@ -147,7 +151,14 @@ class AutomationWorkflowExecutor
                     $run = $step->run;
                     $automation = $run?->automationRule;
 
-                    if (!$run || !$automation) {
+                    if (! $run || ! $automation) {
+                        continue;
+                    }
+
+                    if (! $automation->is_active || $this->isStaleReminder($automation, (array) $run->context_json)) {
+                        $step->update(['status' => 'cancelled', 'completed_at' => now()]);
+                        $run->update(['status' => 'cancelled', 'completed_at' => now()]);
+
                         continue;
                     }
 
@@ -165,7 +176,35 @@ class AutomationWorkflowExecutor
                         'error_message' => null,
                     ]);
 
-                    $this->processQueue($automation, $workflow, $run, $context, $nextNodeIds);
+                    try {
+                        $this->processQueue($automation, $workflow, $run, $context, $nextNodeIds);
+                        if ($run->status === 'failed' && $automation->trigger_type === 'SHOOT_COMPLETED'
+                            && ($context['delivery_notification_full_order'] ?? false)) {
+                            throw new \RuntimeException('A deferred delivery notification action failed.');
+                        }
+                        app(ShootDeliveryNotificationRecorder::class)->completeDeferredRun($run->fresh('steps'));
+                    } catch (\Throwable $exception) {
+                        if ($automation->trigger_type === 'SHOOT_COMPLETED' && ($context['delivery_notification_full_order'] ?? false)) {
+                            // A failed resumed delivery must remain eligible for the
+                            // next poll. Accepted channels reuse their delivery keys.
+                            $canRetry = $step->attempt_count < 3;
+                            if ($canRetry) {
+                                $step->update(['status' => 'waiting', 'scheduled_for' => now()->addMinute(),
+                                    'completed_at' => null, 'attempt_count' => $step->attempt_count + 1]);
+                            }
+                            $run->update(['status' => $canRetry ? 'waiting' : 'failed',
+                                'completed_at' => $canRetry ? null : now(), 'scheduled_for' => $canRetry ? now()->addMinute() : null,
+                                'error_message' => $canRetry ? 'Delivery notification will retry after a temporary failure.'
+                                    : 'Delivery notification could not complete after three attempts. Review its failed steps.']);
+                            app(\App\Services\Shoots\FinalizeProgressTracker::class)->stageFailed(
+                                (int) ($context['shoot_id'] ?? $run->related_shoot_id),
+                                \App\Services\Shoots\FinalizeProgressTracker::STAGE_DELIVERY_EMAIL,
+                                $canRetry ? 'Deferred delivery notification failed and will be retried.'
+                                    : 'Delivery notification could not complete after three attempts. Review the automation run.',
+                            );
+                        }
+                        throw $exception;
+                    }
                 }
             });
     }
@@ -233,12 +272,13 @@ class AutomationWorkflowExecutor
     private function processQueue(AutomationRule $automation, array $workflow, AutomationRun $run, array $context, array $queue): void
     {
         $nodeMap = collect($workflow['nodes'])->keyBy('id');
+        $hadFailure = $run->steps()->where('status', 'failed')->exists();
 
         while ($queue !== []) {
             $nodeId = array_shift($queue);
             $node = $nodeMap->get($nodeId);
 
-            if (!$node) {
+            if (! $node) {
                 continue;
             }
 
@@ -259,6 +299,11 @@ class AutomationWorkflowExecutor
             $output = [];
 
             try {
+                if (str_starts_with($node['type'], 'action.') && $this->isStaleReminder($automation, $context)) {
+                    $step->update(['status' => 'completed', 'completed_at' => now(), 'output_json' => ['skipped' => true, 'reason' => 'Reminder no longer applies.']]);
+
+                    continue;
+                }
                 switch ($node['type']) {
                     case 'condition.if':
                         $branch = $this->evaluateConditionNode($node, $context) ? 'true' : 'false';
@@ -268,7 +313,10 @@ class AutomationWorkflowExecutor
 
                     case 'wait.duration':
                     case 'wait.datetime_offset':
-                        $scheduledFor = $this->resolveWaitSchedule($node, $context);
+                        $scheduledFor = $node['type'] === 'wait.datetime_offset'
+                            && ! empty($context['schedule_dispatch_key'])
+                            && in_array($automation->trigger_type, ['SHOOT_REMINDER', 'PHOTOGRAPHER_SHOOT_REMINDER'], true)
+                                ? null : $this->resolveWaitSchedule($node, $context);
                         if ($scheduledFor && $scheduledFor->gt(now())) {
                             $step->update([
                                 'status' => 'waiting',
@@ -281,6 +329,7 @@ class AutomationWorkflowExecutor
                                 'status' => 'waiting',
                                 'scheduled_for' => $scheduledFor,
                             ]);
+
                             return;
                         }
 
@@ -326,7 +375,12 @@ class AutomationWorkflowExecutor
                     'error_message' => \App\Services\ApiErrorResponder::publicMessage($exception, 'Automation could not complete. Review its configuration and try again.'),
                 ]);
 
-                throw $exception;
+                if (str_starts_with($node['type'], 'action.')) {
+                    $hadFailure = true;
+                    $nextNodeIds = $this->nextNodeIds($workflow, $nodeId);
+                } else {
+                    throw $exception;
+                }
             }
 
             foreach ($nextNodeIds as $nextNodeId) {
@@ -334,8 +388,15 @@ class AutomationWorkflowExecutor
             }
         }
 
+        if ($automation->trigger_type === 'SHOOT_COMPLETED' && ($context['delivery_notification_full_order'] ?? false)) {
+            // Keep failed attempts in the audit trail, while a successful retry
+            // of the same node resolves that node's earlier failure.
+            $hadFailure = $run->steps()->reorder('id', 'desc')->get()->unique('node_id')->contains('status', 'failed');
+        }
+
         $run->update([
-            'status' => 'completed',
+            'status' => $hadFailure ? 'failed' : 'completed',
+            'error_message' => $hadFailure ? 'One or more actions failed. Review the failed steps and retry.' : null,
             'completed_at' => now(),
             'scheduled_for' => null,
         ]);
@@ -359,7 +420,7 @@ class AutomationWorkflowExecutor
                 'lt' => $actual < $expected,
                 'lte' => $actual <= $expected,
                 'contains' => Str::contains((string) $actual, (string) $expected),
-                'exists' => !empty($actual),
+                'exists' => ! empty($actual),
                 'in' => in_array($actual, Arr::wrap($expected), true),
                 default => $actual == $expected,
             };
@@ -367,7 +428,7 @@ class AutomationWorkflowExecutor
 
         return $match === 'any'
             ? in_array(true, $results, true)
-            : !in_array(false, $results, true);
+            : ! in_array(false, $results, true);
     }
 
     private function resolveWaitSchedule(array $node, array $context): ?Carbon
@@ -390,7 +451,7 @@ class AutomationWorkflowExecutor
 
         $referenceField = $config['referenceField'] ?? 'shoot_datetime';
         $reference = data_get($context, $referenceField) ?? data_get($context, 'shoot_datetime') ?? data_get($context, 'shoot_date');
-        if (!$reference) {
+        if (! $reference) {
             return null;
         }
 
@@ -420,14 +481,15 @@ class AutomationWorkflowExecutor
     private function executeEmailAction(AutomationRule $automation, array $node, array $context): array
     {
         $config = is_array($node['config'] ?? null) ? $node['config'] : [];
-        $template = !empty($config['templateId'])
+        $template = ! empty($config['templateId'])
             ? MessageTemplate::find($config['templateId'])
             : null;
 
-        $protectedResult = $this->executeProtectedEmailAction($automation, $config, $context, $template);
-
-        if ($protectedResult !== null) {
-            return $protectedResult;
+        if (! empty($config['templateId']) && ! $template) {
+            throw new \RuntimeException('The selected email template is unavailable.');
+        }
+        if ($template && ! $template->is_active) {
+            return ['channel' => 'email', 'sent_to' => [], 'message_ids' => [], 'skipped' => true, 'reason' => 'Template is disabled.'];
         }
 
         if ($this->shouldSkipCoreSystemEmailAutomation($automation, $context)) {
@@ -438,43 +500,58 @@ class AutomationWorkflowExecutor
             ];
         }
 
-        $rendered = $template
-            ? $this->templateRenderer->render($template, $context)
-            : $this->renderInlineMessage($config, $context);
-
         $recipients = $this->resolveActionRecipients($automation, $config, $context, 'email');
         $sentTo = [];
+        $messageIds = [];
+        $failures = [];
 
         foreach ($recipients as $recipient) {
             if (empty($recipient['email'])) {
                 continue;
             }
 
-            $this->messagingService->sendEmail([
-                'to' => $recipient['email'],
-                'subject' => $rendered['subject'] ?? '',
-                'body_html' => $rendered['body_html'] ?? '',
-                'body_text' => $rendered['body_text'] ?? '',
-                'channel_id' => $config['channelId'] ?? $automation->channel_id,
-                'template_id' => $template?->id,
-                'related_shoot_id' => $context['shoot_id'] ?? null,
-                'related_account_id' => $context['account_id'] ?? null,
-                'related_invoice_id' => $context['invoice_id'] ?? null,
-                'send_source' => 'AUTOMATION',
-                'contact_email' => $recipient['email'],
-                'contact_name' => $recipient['name'] ?? 'Recipient',
-                'contact_type' => $recipient['type'] ?? 'other',
-                'tags_json' => $context['tags_json'] ?? null,
-                'attachments_json' => $context['attachments_json'] ?? null,
-                'metadata' => $context['metadata'] ?? null,
-            ]);
+            try {
+                $message = $this->deliverOnce($automation, $node, $context, $recipient['email'], 'email', function (string $tag) use ($automation, $config, $context, $recipient, $template) {
+                    $recipientContext = $this->recipientContext($automation, $recipient, $context);
+                    $rendered = $template ? $this->templateRenderer->render($template, $recipientContext) : $this->renderInlineMessage($config, $recipientContext);
 
-            $sentTo[] = $recipient['email'];
+                    return $this->messagingService->sendEmail([
+                        'to' => $recipient['email'],
+                        'subject' => $rendered['subject'] ?? '',
+                        'body_html' => $rendered['body_html'] ?? '',
+                        'body_text' => $rendered['body_text'] ?? '',
+                        'channel_id' => $config['channelId'] ?? $automation->channel_id,
+                        'template_id' => $template?->id,
+                        'related_shoot_id' => $context['shoot_id'] ?? null,
+                        'related_account_id' => $context['account_id'] ?? null,
+                        'related_invoice_id' => $context['invoice_id'] ?? null,
+                        'send_source' => 'AUTOMATION',
+                        'contact_email' => $recipient['email'],
+                        'contact_name' => $recipient['name'] ?? 'Recipient',
+                        'contact_type' => $recipient['type'] ?? 'other',
+                        'tags_json' => array_values(array_unique(array_merge((array) ($context['tags_json'] ?? []), [$tag]))),
+                        'attachments_json' => $context['attachments_json'] ?? null,
+                        'metadata' => $context['metadata'] ?? null,
+                    ]);
+                });
+
+                $sentTo[] = $recipient['email'];
+                if ($message?->id) {
+                    $messageIds[] = $message->id;
+                }
+            } catch (\Throwable $exception) {
+                $failures[] = $exception;
+            }
+        }
+
+        if ($failures !== []) {
+            throw $failures[0];
         }
 
         return [
             'channel' => 'email',
             'sent_to' => $sentTo,
+            'message_ids' => $messageIds,
         ];
     }
 
@@ -486,7 +563,7 @@ class AutomationWorkflowExecutor
     ): ?array {
         $triggerType = strtoupper((string) $automation->trigger_type);
 
-        if (!$this->protectedAutomationEmailMap->isProtectedTrigger($triggerType)) {
+        if (! $this->protectedAutomationEmailMap->isProtectedTrigger($triggerType)) {
             return null;
         }
 
@@ -499,7 +576,7 @@ class AutomationWorkflowExecutor
             ];
         }
 
-        if ($template !== null || !empty($config['bodyHtml']) || !empty($config['bodyText']) || !empty($config['subject'])) {
+        if ($template !== null || ! empty($config['bodyHtml']) || ! empty($config['bodyText']) || ! empty($config['subject'])) {
             Log::warning('Ignoring legacy automation email HTML for protected trigger.', [
                 'automation_id' => $automation->id,
                 'trigger_type' => $automation->trigger_type,
@@ -640,7 +717,7 @@ class AutomationWorkflowExecutor
                 // client never receives a duplicate. Non-client recipients and
                 // other automation steps are unaffected.
                 $systemEmailAlreadySent = (bool) ($context['system_email_already_sent'] ?? false);
-                if ($shoot && $client && !$systemEmailAlreadySent && in_array('client', $recipientTypes, true) && $this->mailService->sendShootReadyEmail($client, $shoot)) {
+                if ($shoot && $client && ! $systemEmailAlreadySent && in_array('client', $recipientTypes, true) && $this->mailService->sendShootReadyEmail($client, $shoot)) {
                     $sentTo[] = $client->email;
                 }
                 break;
@@ -735,7 +812,7 @@ class AutomationWorkflowExecutor
     {
         $value = $context['shoot_datetime'] ?? $context['scheduled_at'] ?? null;
 
-        if (!$value) {
+        if (! $value) {
             return null;
         }
 
@@ -824,44 +901,94 @@ class AutomationWorkflowExecutor
     private function executeSmsAction(AutomationRule $automation, array $node, array $context): array
     {
         $config = is_array($node['config'] ?? null) ? $node['config'] : [];
-        $template = !empty($config['templateId'])
+        $template = ! empty($config['templateId'])
             ? MessageTemplate::find($config['templateId'])
             : null;
-        $rendered = $template
-            ? $this->templateRenderer->render($template, $context)
-            : $this->renderInlineMessage($config, $context);
+        if (! empty($config['templateId']) && ! $template) {
+            throw new \RuntimeException('The selected SMS template is unavailable.');
+        }
+        if ($template && ! $template->is_active) {
+            return ['channel' => 'sms', 'sent_to' => [], 'message_ids' => [], 'skipped' => true, 'reason' => 'Template is disabled.'];
+        }
 
+        $smsNumberId = $this->resolveSmsSender($automation, $config);
         $recipients = $this->resolveActionRecipients($automation, $config, $context, 'sms');
         $sentTo = [];
+        $messageIds = [];
+        $failures = [];
 
         foreach ($recipients as $recipient) {
             if (empty($recipient['phone'])) {
                 continue;
             }
 
-            $this->messagingService->sendSms([
-                'to' => $recipient['phone'],
-                'body_text' => $rendered['body_text'] ?? '',
-                'sender_display_name' => $automation->name,
-                'send_source' => 'AUTOMATION',
-                'related_shoot_id' => $context['shoot_id'] ?? null,
-                'related_account_id' => $context['account_id'] ?? null,
-                'related_invoice_id' => $context['invoice_id'] ?? null,
-                'contact_phone' => $recipient['phone'],
-                'contact_name' => $recipient['name'] ?? 'Recipient',
-                'contact_type' => $recipient['type'] ?? 'other',
-                'tags_json' => $context['tags_json'] ?? null,
-                'attachments_json' => $context['attachments_json'] ?? null,
-                'metadata' => $context['metadata'] ?? null,
-            ]);
+            try {
+                $message = $this->deliverOnce($automation, $node, $context, $recipient['phone'], 'sms', function (string $tag) use ($automation, $config, $context, $recipient, $template, $smsNumberId) {
+                    $recipientContext = $this->recipientContext($automation, $recipient, $context);
+                    $rendered = $template ? $this->templateRenderer->render($template, $recipientContext) : $this->renderInlineMessage($config, $recipientContext);
 
-            $sentTo[] = $recipient['phone'];
+                    return $this->messagingService->sendSms([
+                        'to' => $recipient['phone'],
+                        'sms_number_id' => $smsNumberId,
+                        'template_id' => $template?->id,
+                        'body_text' => $rendered['body_text'] ?? '',
+                        'sender_display_name' => $automation->name,
+                        'send_source' => 'AUTOMATION',
+                        'related_shoot_id' => $context['shoot_id'] ?? null,
+                        'related_account_id' => $context['account_id'] ?? null,
+                        'related_invoice_id' => $context['invoice_id'] ?? null,
+                        'contact_phone' => $recipient['phone'],
+                        'contact_name' => $recipient['name'] ?? 'Recipient',
+                        'contact_type' => $recipient['type'] ?? 'other',
+                        'tags_json' => array_values(array_unique(array_merge((array) ($context['tags_json'] ?? []), [$tag]))),
+                        'attachments_json' => $context['attachments_json'] ?? null,
+                        'metadata' => $context['metadata'] ?? null,
+                    ]);
+                });
+
+                $sentTo[] = $recipient['phone'];
+                if ($message?->id) {
+                    $messageIds[] = $message->id;
+                }
+            } catch (\Throwable $exception) {
+                $failures[] = $exception;
+            }
+        }
+
+        if ($failures !== []) {
+            throw $failures[0];
         }
 
         return [
             'channel' => 'sms',
             'sent_to' => $sentTo,
+            'message_ids' => $messageIds,
         ];
+    }
+
+    private function resolveSmsSender(AutomationRule $automation, array $config): ?int
+    {
+        if (! empty($config['smsNumberId'])) {
+            return \App\Models\SmsNumber::findOrFail($config['smsNumberId'])->id;
+        }
+        $channelId = $config['channelId'] ?? $automation->channel_id;
+        if (! $channelId) {
+            return null;
+        }
+        $channel = \App\Models\MessageChannel::find($channelId);
+        if ($channel?->type !== 'SMS') {
+            if (! empty($config['channelId'])) {
+                throw new \RuntimeException('Select an SMS sending number for this action.');
+            }
+
+            return null;
+        }
+        $number = \App\Models\SmsNumber::where('phone_number', $channel->from_number)->first();
+        if (! $number) {
+            throw new \RuntimeException('The selected SMS channel has no configured sending number.');
+        }
+
+        return $number->id;
     }
 
     private function executeInternalNotificationAction(AutomationRule $automation, array $node, array $context): array
@@ -882,8 +1009,8 @@ class AutomationWorkflowExecutor
             $this->messagingService->storeInternalEmail([
                 'to' => $recipient['email'],
                 'subject' => $title,
-                'body_text' => trim($body . "\n\nOpen: " . $destinationUrl),
-                'body_html' => '<p>' . e($body) . '</p><p><a href="' . e($destinationUrl) . '">Open workflow item</a></p>',
+                'body_text' => trim($body."\n\nOpen: ".$destinationUrl),
+                'body_html' => '<p>'.e($body).'</p><p><a href="'.e($destinationUrl).'">Open workflow item</a></p>',
                 'send_source' => 'AUTOMATION',
                 'sender_display_name' => $automation->name,
                 'contact_email' => $recipient['email'],
@@ -910,10 +1037,10 @@ class AutomationWorkflowExecutor
     {
         $recipientMode = $config['recipientMode'] ?? 'automation_default';
 
-        if ($recipientMode === 'context' && !empty($config['contextKey'])) {
-            $contextKey = (string) $config['contextKey'];
+        if ($recipientMode === 'context' && ! empty($config['contextKey'])) {
+            $contextKey = $this->normalizeRoleName((string) $config['contextKey']);
 
-            if (!$this->shouldIncludeRoleRecipient($contextKey, $automation, $context)) {
+            if (! $this->shouldIncludeRoleRecipient($contextKey, $automation, $context)) {
                 return [];
             }
 
@@ -933,7 +1060,8 @@ class AutomationWorkflowExecutor
         $recipients = [];
 
         foreach ($roles as $role) {
-            if (!$this->shouldIncludeRoleRecipient((string) $role, $automation, $context)) {
+            $role = $this->normalizeRoleName((string) $role);
+            if (! $this->shouldIncludeRoleRecipient((string) $role, $automation, $context)) {
                 continue;
             }
 
@@ -943,7 +1071,25 @@ class AutomationWorkflowExecutor
                     break;
 
                 case 'photographer':
-                    $recipients = array_merge($recipients, $this->contextRecipient('photographer', $context));
+                    $items = $automation->trigger_type === 'PHOTOGRAPHER_CHANGED'
+                        ? ($context['affected_photographers'] ?? $context['photographers'] ?? [])
+                        : ($context['photographers'] ?? []);
+                    if ($items !== []) {
+                        foreach ($items as $item) {
+                            $recipients = array_merge($recipients, $this->contextRecipient('photographer', ['photographer' => $item]));
+                        }
+                    } else {
+                        $recipients = array_merge($recipients, $this->contextRecipient('photographer', $context));
+                    }
+                    break;
+
+                case 'previous_photographer':
+                case 'new_photographer':
+                case 'account':
+                case 'editor':
+                case 'accounting':
+                case 'recipient':
+                    $recipients = array_merge($recipients, $this->contextRecipient($role, $context));
                     break;
 
                 case 'rep':
@@ -972,7 +1118,7 @@ class AutomationWorkflowExecutor
         }
 
         return collect($recipients)
-            ->filter(fn (array $recipient) => !empty($recipient['email']) || ($mode === 'sms' && !empty($recipient['phone'])))
+            ->filter(fn (array $recipient) => ! empty($recipient['email']) || ($mode === 'sms' && ! empty($recipient['phone'])))
             ->unique(fn (array $recipient) => $recipient['email'] ?? $recipient['phone'] ?? spl_object_hash((object) $recipient))
             ->values()
             ->all();
@@ -980,10 +1126,14 @@ class AutomationWorkflowExecutor
 
     private function shouldIncludeRoleRecipient(string $role, AutomationRule $automation, array $context): bool
     {
+        if (! empty($context['suppress_external_recipients']) && $role !== 'admin') {
+            return false;
+        }
+
         if (
             $role === 'client'
             && ($context['notify_client'] ?? null) === false
-            && in_array($automation->trigger_type, ['SHOOT_SCHEDULED', 'SHOOT_UPDATED'], true)
+            && in_array($automation->trigger_type, ['SHOOT_SCHEDULED', 'SHOOT_UPDATED', 'SHOOT_REQUEST_APPROVED', 'SHOOT_REQUEST_MODIFIED'], true)
         ) {
             return false;
         }
@@ -999,7 +1149,7 @@ class AutomationWorkflowExecutor
         if (
             $role === 'photographer'
             && $automation->trigger_type === 'SHOOT_UPDATED'
-            && !empty($context['photographer_changed'])
+            && ! empty($context['photographer_changed'])
         ) {
             return false;
         }
@@ -1010,16 +1160,28 @@ class AutomationWorkflowExecutor
     private function contextRecipient(string $key, array $context): array
     {
         $item = data_get($context, $key);
-        if (!$item) {
+        if (! $item) {
             return [];
         }
 
         return [[
+            'id' => $item['id'] ?? $item->id ?? null,
             'email' => $item['email'] ?? $item->email ?? null,
             'phone' => $item['phonenumber'] ?? $item->phonenumber ?? $item['phone'] ?? $item->phone ?? null,
             'name' => $item['name'] ?? $item->name ?? Str::headline($key),
             'type' => $key,
         ]];
+    }
+
+    private function normalizeRoleName(string $role): string
+    {
+        return match (strtolower(str_replace(['_', '-', ' '], '', $role))) {
+            'salesrep', 'rep' => 'rep',
+            'superadmin', 'admin', 'editingmanager' => 'admin',
+            'previousphotographer' => 'previous_photographer',
+            'newphotographer' => 'new_photographer',
+            default => strtolower($role),
+        };
     }
 
     private function normalizeRoles(mixed $recipientsJson): array
@@ -1035,9 +1197,117 @@ class AutomationWorkflowExecutor
         return ['client'];
     }
 
+    private function recipientContext(AutomationRule $automation, array $recipient, array $context): array
+    {
+        $context = array_merge($context, [
+            'recipient' => $recipient,
+            'recipient_name' => $recipient['name'] ?? '',
+            'recipient_email' => $recipient['email'] ?? '',
+            'recipient_type' => $recipient['type'] ?? 'other',
+        ]);
+        if ($automation->trigger_type === 'PHOTOGRAPHER_CHANGED') {
+            $assignedIds = collect($context['photographers'] ?? [])->pluck('id')->all();
+            $removed = ! in_array($recipient['id'] ?? null, $assignedIds, true);
+            $context['assignment_status'] = $removed ? 'Removed from shoot' : 'Assigned to shoot';
+            $context['assignment_message'] = $removed
+                ? 'You have been removed from this shoot. It is no longer on your schedule.'
+                : 'You are assigned to this shoot. Please review the schedule, access details and services below.';
+        }
+        $resolved = $this->variableResolver->resolve($context);
+        if (! empty($context['shoot_service_id']) && ! empty($context['service_items'])) {
+            $names = collect($context['service_items'])->pluck('name')->filter()->values()->all();
+            $resolved['services_provided'] = implode(', ', $names);
+            $resolved['services_provided_html'] = '<ul><li>'.implode('</li><li>', array_map('e', $names)).'</li></ul>';
+            $resolved['shoot_packages'] = $resolved['services_provided'];
+        }
+
+        return $resolved;
+    }
+
+    private function eventKey(AutomationRule $automation, array $context): string
+    {
+        if (! empty($context['schedule_dispatch_key'])) {
+            return (string) $context['schedule_dispatch_key'];
+        }
+        $trigger = $automation->trigger_type;
+        if ($trigger === 'ACCOUNT_CREATED') {
+            return $trigger.':'.($context['account_id'] ?? data_get($context, 'account.id') ?? data_get($context, 'client.id'));
+        }
+        if ($trigger === 'PAYMENT_REFUNDED' && !empty($context['refund_id'])) {
+            return $trigger.':'.$context['refund_id'].':'.($context['payment_id'] ?? '');
+        }
+        if ($trigger === 'PAYMENT_COMPLETED' && ! empty($context['payment_id'])) {
+            return $trigger.':'.$context['payment_id'];
+        }
+        $shoot = $context['shoot'] ?? null;
+        $identity = $context['payment_id'] ?? data_get($context, 'payment.id') ?? $context['invoice_id'] ?? $context['shoot_id'] ?? $context['account_id'] ?? '';
+        $version = $context['event_id'] ?? $context['tags_json'] ?? data_get($shoot, 'updated_at') ?? now()->toIso8601String();
+        if (in_array($trigger, ['SHOOT_BOOKED', 'PHOTOGRAPHER_ASSIGNED', 'SHOOT_SCHEDULED'], true)) {
+            $trigger = 'SHOOT_ASSIGNMENT';
+            $version = [data_get($shoot, 'scheduled_at'), data_get($shoot, 'scheduled_date'), data_get($shoot, 'time'), collect($context['photographers'] ?? [])->pluck('id')->all()];
+        }
+
+        return $trigger.':'.$identity.':'.hash('sha256', json_encode($version));
+    }
+
+    private function deliverOnce(AutomationRule $automation, array $node, array $context, string $address, string $channel, callable $deliver): ?Message
+    {
+        $eventKey = $context['automation_event_key'] ?? $this->eventKey($automation, $context);
+        $sharedEvent = $automation->trigger_type === 'ACCOUNT_CREATED'
+            || in_array($automation->trigger_type, ['SHOOT_BOOKED', 'PHOTOGRAPHER_ASSIGNED', 'SHOOT_SCHEDULED'], true);
+        $scope = $sharedEvent ? '' : $automation->id.':'.($node['id'] ?? 'action');
+        $tag = 'AUTOMATION_DELIVERY:'.hash('sha256', $eventKey.':'.$scope.':'.$channel.':'.strtolower($address));
+
+        return Cache::lock($tag, 120)->block(5, function () use ($tag, $deliver): ?Message {
+            $exists = Message::query()->where('tags_json', 'like', '%'.$tag.'%')
+                ->whereIn('status', ['SENT', 'DELIVERED', 'QUEUED', 'SCHEDULED'])->first();
+            if ($exists) {
+                return $exists;
+            }
+            $message = $deliver($tag);
+            if ($message instanceof Message && in_array($message->status, ['FAILED', 'CANCELLED', 'SUPPRESSED'], true)) {
+                throw new \RuntimeException('Automation message was not accepted for delivery.');
+            }
+
+            return $message instanceof Message ? $message : null;
+        });
+    }
+
+    private function isStaleReminder(AutomationRule $automation, array $context): bool
+    {
+        if (in_array($automation->trigger_type, ['INVOICE_DUE', 'INVOICE_OVERDUE'], true) && ! empty($context['invoice_id'])) {
+            $invoice = \App\Models\Invoice::find($context['invoice_id']);
+
+            return ! $invoice || in_array(strtolower((string) $invoice->status), ['paid', 'cancelled', 'canceled', 'void'], true) || (float) $invoice->balanceDue() <= 0;
+        }
+        if ($automation->trigger_type === 'SHOOT_PAYMENT_REMINDER') {
+            $shoot = Shoot::find($context['shoot_id'] ?? null);
+
+            return ! $shoot || in_array(strtolower((string) $shoot->payment_status), ['paid', 'no_payment_required'], true);
+        }
+        if (! in_array($automation->trigger_type, ['SHOOT_REMINDER', 'PHOTOGRAPHER_SHOOT_REMINDER', 'PROPERTY_CONTACT_REMINDER'], true)) {
+            return false;
+        }
+        $shoot = Shoot::find($context['shoot_id'] ?? null);
+        if (! $shoot || in_array(strtolower((string) $shoot->status), ['cancelled', 'canceled', 'declined', 'completed', 'delivered'], true)
+            || in_array(strtolower((string) $shoot->workflow_status), ['cancelled', 'canceled', 'declined', 'completed', 'delivered'], true)) {
+            return true;
+        }
+        $current = app(\App\Services\Schedule\ScheduleInstantResolver::class)->forShoot($shoot);
+        if (! empty($context['shoot_service_id'])) {
+            $item = $shoot->serviceItems()->find($context['shoot_service_id']);
+            if (! $item || in_array($item->workflow_status, ['cancelled', 'completed', 'delivered'], true)) {
+                return true;
+            }
+            $current = app(\App\Services\Schedule\ScheduleInstantResolver::class)->forServiceItem($shoot, $item);
+        }
+
+        return $current && ! empty($context['shoot_datetime']) && ! $current->equalTo(Carbon::parse($context['shoot_datetime']));
+    }
+
     private function nextNodeIds(array $workflow, ?string $sourceId, ?string $branchKey = null): array
     {
-        if (!$sourceId) {
+        if (! $sourceId) {
             return [];
         }
 
@@ -1083,7 +1353,7 @@ class AutomationWorkflowExecutor
         while ($queue !== []) {
             $nodeId = array_shift($queue);
             $node = $nodeMap->get($nodeId);
-            if (!$node) {
+            if (! $node) {
                 continue;
             }
 
@@ -1148,7 +1418,7 @@ class AutomationWorkflowExecutor
             ->filter(fn ($run) => $run instanceof AutomationRun && $run->status === 'waiting')
             ->count();
         $failedRunCount = collect($runs)
-            ->filter(fn ($run) => !($run instanceof AutomationRun) || $run->status === 'failed')
+            ->filter(fn ($run) => ! ($run instanceof AutomationRun) || $run->status === 'failed')
             ->count() + count($errors);
         $activeRuleCount = $rules->count();
         $emailDeliverySummary = $this->summarizeEmailDeliveryByRole($runs);
@@ -1157,6 +1427,7 @@ class AutomationWorkflowExecutor
             'trigger_type' => $triggerType,
             'active_rule_count' => $activeRuleCount,
             'run_count' => count($runs),
+            'message_ids' => collect($runs)->filter(fn ($run) => $run instanceof AutomationRun)->flatMap(fn ($run) => $run->steps)->flatMap(fn ($step) => $step->output_json['message_ids'] ?? [])->unique()->values()->all(),
             'completed_run_count' => $completedRunCount,
             'waiting_run_count' => $waitingRunCount,
             'failed_run_count' => $failedRunCount,
@@ -1164,6 +1435,10 @@ class AutomationWorkflowExecutor
                 && $failedRunCount === 0
                 && ($completedRunCount + $waitingRunCount) === $activeRuleCount,
             'errors' => $errors,
+            'sms_sent_to' => collect($runs)->filter(fn ($run) => $run instanceof AutomationRun)
+                ->flatMap(fn ($run) => $run->steps)
+                ->filter(fn ($step) => ($step->output_json['channel'] ?? null) === 'sms')
+                ->flatMap(fn ($step) => $step->output_json['sent_to'] ?? [])->unique()->values()->all(),
         ], $emailDeliverySummary);
     }
 
@@ -1174,7 +1449,7 @@ class AutomationWorkflowExecutor
         $photographerEmails = [];
 
         foreach ($runs as $run) {
-            if (!$run instanceof AutomationRun) {
+            if (! $run instanceof AutomationRun) {
                 continue;
             }
 
@@ -1238,7 +1513,7 @@ class AutomationWorkflowExecutor
 
     private function normalizeEmailAddress(mixed $email): ?string
     {
-        if (!is_string($email)) {
+        if (! is_string($email)) {
             return null;
         }
 

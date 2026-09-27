@@ -3,14 +3,16 @@
 namespace Tests\Feature;
 
 use App\Jobs\SendShootReadyEmailJob;
+use App\Models\MessageChannel;
 use App\Models\PaymentReminder;
 use App\Models\Shoot;
 use App\Models\User;
 use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
+use App\Services\Messaging\OutboundDeliveryGuard;
 use Carbon\CarbonImmutable;
 use Illuminate\Foundation\Testing\RefreshDatabase;
-use Mockery\MockInterface;
+use Illuminate\Support\Facades\Mail;
 use Tests\TestCase;
 
 /**
@@ -28,8 +30,8 @@ use Tests\TestCase;
  * duplicate reminder rows (the (shoot_id, scheduled_date) upsert is idempotent — Req 4.5). A shoot
  * that is already paid must schedule no reminders (Req 4.3).
  *
- * MailService is mocked so no real email goes out; the real AutomationService is resolved from the
- * container (the wiring under test), so the PaymentReminder rows it persists are exercised end to end.
+ * Laravel's mail transport is faked. The saved automation, persisted Message proof and payment
+ * reminder scheduling run through the real services without sending external email.
  */
 class SendShootReadyEmailJobCadenceWiringTest extends TestCase
 {
@@ -37,22 +39,23 @@ class SendShootReadyEmailJobCadenceWiringTest extends TestCase
 
     private function mockMail(): void
     {
-        $this->mock(MailService::class, function (MockInterface $mock): void {
-            $mock->shouldReceive('sendShootReadyEmail')->zeroOrMoreTimes()->andReturnNull();
-        });
+        Mail::fake();
+        OutboundDeliveryGuard::allowFakeProviderPipelineForTesting();
+        MessageChannel::create(['type' => 'EMAIL', 'provider' => 'LOCAL_SMTP', 'display_name' => 'Test delivery',
+            'from_email' => 'delivery@example.test', 'is_default' => true, 'owner_scope' => 'GLOBAL']);
     }
 
     private function makeUnpaidShoot(?CarbonImmutable $anchor = null): Shoot
     {
         $client = User::factory()->create([
             'email' => 'client@example.com',
-            'name'  => 'Casey Client',
+            'name' => 'Casey Client',
         ]);
 
         // ShootFactory defaults payment_status to 'paid', so set 'unpaid' explicitly.
         return Shoot::factory()->create([
-            'client_id'               => $client->id,
-            'payment_status'          => 'unpaid',
+            'client_id' => $client->id,
+            'payment_status' => 'unpaid',
             'shoot_ready_notified_at' => $anchor,
         ]);
     }
@@ -143,8 +146,8 @@ class SendShootReadyEmailJobCadenceWiringTest extends TestCase
 
         $client = User::factory()->create(['email' => 'paid@example.com', 'name' => 'Paid Client']);
         $shoot = Shoot::factory()->create([
-            'client_id'               => $client->id,
-            'payment_status'          => 'paid',
+            'client_id' => $client->id,
+            'payment_status' => 'paid',
             'shoot_ready_notified_at' => null,
         ]);
 

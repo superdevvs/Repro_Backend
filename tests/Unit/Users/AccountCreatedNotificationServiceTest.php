@@ -27,7 +27,7 @@ class AccountCreatedNotificationServiceTest extends TestCase
         $mail->expects($verify ? $this->once() : $this->never())->method('sendClientEmailVerificationEmail')->willReturn(true);
         $mail->expects($this->never())->method('sendPhotographerEquipmentVerificationEmail');
         $mail->expects($this->never())->method('equipmentVerificationLink');
-        $messaging->expects($this->once())->method('sendSms')->with($this->callback(fn (array $payload) => $payload['to'] === '+14105550123'))->willReturn(new Message());
+        $messaging->expects($this->once())->method('sendSms')->with($this->callback(fn (array $payload) => $payload['to'] === '+14105550123'))->willReturn(new Message);
 
         $result = $service->dispatch($user);
 
@@ -120,6 +120,28 @@ class AccountCreatedNotificationServiceTest extends TestCase
         $this->assertSame(['attempted' => false, 'sent' => false, 'error' => null], $result['sms']);
     }
 
+    public function test_disabled_configured_welcome_does_not_fall_back_to_hardcoded_email(): void
+    {
+        [$service, $mail, $automation, $messaging] = $this->service(false);
+        $automation->method('handleEvent')->willReturn(['email_sent_to' => []]);
+        $mail->expects($this->never())->method('sendAccountCreatedEmail');
+        $messaging->expects($this->never())->method('sendSms');
+        $result = $service->dispatch($this->user('admin', '+14105550123'));
+        $this->assertFalse($result['email']['account_created']['sent']);
+        $this->assertFalse($result['sms']['attempted']);
+        $this->assertFalse($result['sms']['sent']);
+    }
+
+    public function test_saved_welcome_sms_is_reported_without_a_second_hardcoded_send(): void
+    {
+        [$service, $mail, $automation, $messaging] = $this->service(false);
+        $automation->method('handleEvent')->willReturn(['email_sent_to' => ['qa@example.test'], 'sms_sent_to' => ['+14105550123']]);
+        $mail->expects($this->never())->method('sendAccountCreatedEmail');
+        $messaging->expects($this->never())->method('sendSms');
+        $result = $service->dispatch($this->user('admin', '(410) 555-0123'));
+        $this->assertTrue($result['sms']['sent']);
+    }
+
     public static function roles(): array
     {
         return [
@@ -128,7 +150,7 @@ class AccountCreatedNotificationServiceTest extends TestCase
         ];
     }
 
-    private function service(): array
+    private function service(bool $legacyFallback = true): array
     {
         $messaging = $this->createMock(MessagingService::class);
         $mail = $this->createMock(MailService::class);
@@ -137,10 +159,12 @@ class AccountCreatedNotificationServiceTest extends TestCase
         $health = $this->createMock(EmailHealthService::class);
         $mail->method('generateStoredPasswordResetLink')->willReturn('https://app.test/reset/token');
         $automation->method('buildUserContext')->willReturn([]);
-        $token = new ClientEmailVerificationToken();
+        $automation->method('shouldUseFallback')->willReturn($legacyFallback);
+        $token = new ClientEmailVerificationToken;
         $token->id = 44;
         $links->method('issueVerificationToken')->willReturn($token);
         $links->method('buildUrlForIssuedToken')->willReturn('https://app.test/verify/token');
+
         return [new AccountCreatedNotificationService($messaging, $mail, $automation, $links, $health), $mail, $automation, $messaging];
     }
 
@@ -148,6 +172,7 @@ class AccountCreatedNotificationServiceTest extends TestCase
     {
         $user = new User(['name' => 'QA User', 'email' => 'qa@example.test', 'role' => $role, 'phonenumber' => $phone]);
         $user->id = 101;
+
         return $user;
     }
 }

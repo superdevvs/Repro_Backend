@@ -42,7 +42,7 @@ class PayoutReportService
             ])
             ->where(function ($query) {
                 $query->whereNull('shoot_type')
-                    ->orWhere('shoot_type', '!=', Shoot::SHOOT_TYPE_COMPLIMENTARY_RESHOOT);
+                    ->orWhereNotIn('shoot_type', [Shoot::SHOOT_TYPE_COMPLIMENTARY_RESHOOT, Shoot::SHOOT_TYPE_INTERNAL_TEST]);
             })
             ->where(function ($q) use ($start, $end) {
                 $q->whereBetween('completed_at', [$start, $end])
@@ -90,6 +90,7 @@ class PayoutReportService
         }
 
         $compensations = ShootCompensation::query()
+            ->whereDoesntHave('shoot', fn ($query) => $query->where('shoot_type', Shoot::SHOOT_TYPE_INTERNAL_TEST))
             ->where('recipient_type', ShootCompensation::RECIPIENT_PHOTOGRAPHER)
             ->where('mode', '!=', ShootCompensation::MODE_NONE)
             ->whereNull('voided_at')
@@ -151,7 +152,7 @@ class PayoutReportService
             ])
             ->where(function ($query) {
                 $query->whereNull('shoot_type')
-                    ->orWhere('shoot_type', '!=', Shoot::SHOOT_TYPE_COMPLIMENTARY_RESHOOT);
+                    ->orWhereNotIn('shoot_type', [Shoot::SHOOT_TYPE_COMPLIMENTARY_RESHOOT, Shoot::SHOOT_TYPE_INTERNAL_TEST]);
             })
             ->whereBetween('scheduled_date', [
                 $start->copy()->startOfDay()->toDateTimeString(),
@@ -167,6 +168,7 @@ class PayoutReportService
         $shoots = $this->resolveMissingSalesReps($shoots);
 
         $compensations = ShootCompensation::query()
+            ->whereDoesntHave('shoot', fn ($query) => $query->where('shoot_type', Shoot::SHOOT_TYPE_INTERNAL_TEST))
             ->where('recipient_type', ShootCompensation::RECIPIENT_SALES_REP)
             ->where('mode', '!=', ShootCompensation::MODE_NONE)
             ->whereNull('voided_at')
@@ -411,4 +413,3 @@ class PayoutReportService
             ->first();
     }
 }
-

@@ -146,6 +146,7 @@ class ApproveShootAction
                 $requestApprovalTrigger === 'SHOOT_REQUEST_MODIFIED'
                 && $notifyClient !== false
                 && ! $requestApprovalClientEmailSent
+                && $this->automationService->shouldUseFallback($requestApprovalTrigger, $requestApprovalDispatch)
                 && $shoot->client
             ) {
                 $requestApprovalClientEmailSent = $this->mailService->sendShootRequestModifiedEmail(
@@ -166,10 +167,13 @@ class ApproveShootAction
         // SHOOT_BOOKED rule and the SHOOT_SCHEDULED fallback both target the photographer.
         $shootScheduledAttemptedAt = now();
         $scheduledContext = $context;
-        if ($wasRequested && $requestApprovalClientEmailSent) {
+        if ($wasRequested) {
             $scheduledContext['notify_client'] = false;
         }
         $shootScheduledDispatch = $this->automationService->handleEvent('SHOOT_SCHEDULED', $scheduledContext);
+        if (! empty($scheduledContext['photographers'])) {
+            $this->automationService->handleEvent('PHOTOGRAPHER_ASSIGNED', $scheduledContext);
+        }
         $shouldUseFallback = $this->automationService->shouldUseFallback('SHOOT_SCHEDULED', $shootScheduledDispatch) !== false;
         Log::info('Shoot approval fallback decision evaluated', [
             'shoot_id' => $shoot->id,
@@ -194,7 +198,7 @@ class ApproveShootAction
             );
         }
 
-        if ($shouldUseFallback || ! $clientEmailSent || ! $photographerEmailSent) {
+        if ($shouldUseFallback) {
             if ($notifyClient !== false && ! $clientEmailSent && ! $clientConfirmationCoveredByApproval) {
                 if (! $shoot->client) {
                     $this->clientConfirmationRecoveryService->recordNoDeliveryPath($shoot, null, 'SHOOT_SCHEDULED');

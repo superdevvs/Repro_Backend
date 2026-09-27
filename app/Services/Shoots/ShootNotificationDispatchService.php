@@ -4,10 +4,10 @@ namespace App\Services\Shoots;
 
 use App\Models\Shoot;
 use App\Models\User;
-use App\Services\ShootMediaStorageService;
 use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
 use App\Services\Messaging\ClientConfirmationRecoveryService;
+use App\Services\ShootMediaStorageService;
 use Illuminate\Support\Facades\Log;
 
 class ShootNotificationDispatchService
@@ -17,13 +17,12 @@ class ShootNotificationDispatchService
         protected ClientConfirmationRecoveryService $clientConfirmationRecoveryService,
         protected ShootMediaStorageService $mediaStorageService,
         protected MailService $mailService,
-    ) {
-    }
+    ) {}
 
     public function processCreatedShoot(int $shootId, bool $treatAsClientRequest, bool $isImmediatelyScheduled): void
     {
         $shoot = Shoot::with(['client', 'photographer', 'rep', 'service', 'services'])->find($shootId);
-        if (!$shoot || $shoot->isInternalTestShoot()) {
+        if (! $shoot || $shoot->isInternalTestShoot()) {
             return;
         }
 
@@ -39,7 +38,7 @@ class ShootNotificationDispatchService
             }
         }
 
-        if (!$treatAsClientRequest && $isImmediatelyScheduled) {
+        if (! $treatAsClientRequest && $isImmediatelyScheduled) {
             try {
                 $this->mediaStorageService->createShootFolders($shoot);
             } catch (\Exception $e) {
@@ -52,7 +51,7 @@ class ShootNotificationDispatchService
 
         $shootBookedDispatch = null;
         $shootBookedAttemptedAt = null;
-        if (!$treatAsClientRequest) {
+        if (! $treatAsClientRequest) {
             try {
                 $context = $this->buildShootContext($shoot);
                 $shootBookedAttemptedAt = now();
@@ -65,7 +64,8 @@ class ShootNotificationDispatchService
             }
         }
 
-        if (!$treatAsClientRequest && $isImmediatelyScheduled) {
+        if (! $treatAsClientRequest && $isImmediatelyScheduled) {
+            $scheduledDispatch = $this->automationService->handleEvent('SHOOT_SCHEDULED', $this->buildShootContext($shoot));
             try {
                 $shoot->loadMissing(['client', 'photographer', 'services']);
                 $client = $shoot->client;
@@ -77,7 +77,7 @@ class ShootNotificationDispatchService
                     'dispatch' => $this->formatDispatchSummaryForLog($shootBookedDispatch),
                 ]);
 
-                $clientEmailSent = (bool) ($shootBookedDispatch['client_email_sent'] ?? false);
+                $clientEmailSent = (bool) ($scheduledDispatch['client_email_sent'] ?? false);
                 $photographerEmailSent = (bool) ($shootBookedDispatch['photographer_email_sent'] ?? false);
 
                 if ($client && $clientEmailSent) {
@@ -88,10 +88,10 @@ class ShootNotificationDispatchService
                     );
                 }
 
-                if (!$clientEmailSent) {
-                    if (!$client) {
+                if (! $clientEmailSent && $this->automationService->shouldUseFallback('SHOOT_SCHEDULED', $scheduledDispatch)) {
+                    if (! $client) {
                         $this->clientConfirmationRecoveryService->recordNoDeliveryPath($shoot, null, 'SHOOT_BOOKED');
-                    } elseif (!$this->clientConfirmationRecoveryService->hasDeliverableEmail($client)) {
+                    } elseif (! $this->clientConfirmationRecoveryService->hasDeliverableEmail($client)) {
                         $this->clientConfirmationRecoveryService->recordSkippedMissingEmail($shoot, $client, 'SHOOT_BOOKED');
                     } else {
                         $paymentLink = $this->mailService->generatePaymentLink($shoot);
@@ -112,7 +112,7 @@ class ShootNotificationDispatchService
                     }
                 }
 
-                if ($shouldUseFallback || !$photographerEmailSent) {
+                if ($shouldUseFallback && ! $photographerEmailSent) {
                     $this->mailService->sendAssignedPhotographerShootScheduledEmails($shoot);
                 }
             } catch (\Exception $e) {
@@ -137,7 +137,7 @@ class ShootNotificationDispatchService
         bool $photographerNewlyAssigned
     ): void {
         $shoot = Shoot::with(['client', 'photographer', 'rep', 'service', 'services'])->find($shootId);
-        if (!$shoot || $shoot->isInternalTestShoot()) {
+        if (! $shoot || $shoot->isInternalTestShoot()) {
             return;
         }
 
@@ -152,8 +152,8 @@ class ShootNotificationDispatchService
         if (
             $photographerNewlyAssigned
             && $shoot->photographer
-            && !$this->automationService->hasActiveTrigger('SHOOT_SCHEDULED')
-            && !$this->automationService->hasActiveTrigger('PHOTOGRAPHER_ASSIGNED')
+            && $this->automationService->shouldUseFallback('SHOOT_SCHEDULED')
+            && $this->automationService->shouldUseFallback('PHOTOGRAPHER_ASSIGNED')
         ) {
             try {
                 $paymentLink = $this->mailService->generatePaymentLink($shoot);
@@ -170,40 +170,6 @@ class ShootNotificationDispatchService
         }
 
         $systemEmailAlreadySent = false;
-        if ($originalStatus !== $shoot->status || $originalWorkflow !== $shoot->workflow_status) {
-            if (
-                in_array($shoot->status, [Shoot::STATUS_CANCELLED, Shoot::STATUS_DECLINED], true)
-                || in_array($shoot->workflow_status, [Shoot::STATUS_CANCELLED, Shoot::STATUS_DECLINED], true)
-            ) {
-                try {
-                    $removedRecipient = $client ?? User::find($shoot->client_id);
-                    if ($removedRecipient) {
-                        $this->mailService->sendShootRemovedEmail($removedRecipient, $shoot);
-                        $systemEmailAlreadySent = true;
-                    }
-                } catch (\Exception $e) {
-                    Log::error('Failed to send shoot removed email', [
-                        'shoot_id' => $shoot->id,
-                        'error' => $e->getMessage(),
-                    ]);
-                }
-            }
-
-            if ($shoot->status === Shoot::STATUS_DELIVERED || $shoot->workflow_status === Shoot::STATUS_DELIVERED) {
-                try {
-                    $deliveredRecipient = $client ?? User::find($shoot->client_id);
-                    if ($deliveredRecipient) {
-                        $this->mailService->sendShootReadyEmail($deliveredRecipient, $shoot);
-                        $systemEmailAlreadySent = true;
-                    }
-                } catch (\Exception $e) {
-                    Log::error('Failed to send shoot ready email', [
-                        'shoot_id' => $shoot->id,
-                        'error' => $e->getMessage(),
-                    ]);
-                }
-            }
-        }
 
         $shootUpdatedDispatch = null;
         try {
@@ -215,7 +181,10 @@ class ShootNotificationDispatchService
             $context['photographer_changed'] = $photographerChanged;
             $context['system_email_already_sent'] = $systemEmailAlreadySent;
 
-            $shootUpdatedDispatch = $this->automationService->handleEvent('SHOOT_UPDATED', $context);
+            $materialUpdate = preg_match('/^(Schedule|Timezone|Location|Services|Client|Photographer|Total|Shoot Notes|Access Type|Access Contact Name|Access Contact Phone|Lockbox Code|Lockbox Location):/m', $changesSummary) === 1;
+            if ($materialUpdate && ! in_array($shoot->status, [Shoot::STATUS_CANCELLED, Shoot::STATUS_DECLINED, Shoot::STATUS_DELIVERED], true)) {
+                $shootUpdatedDispatch = $this->automationService->handleEvent('SHOOT_UPDATED', $context);
+            }
 
             if ($photographerChanged) {
                 $context['previous_photographer_id'] = $originalPhotographerId;
@@ -254,7 +223,7 @@ class ShootNotificationDispatchService
             ]);
         }
 
-        $shouldUseFallback = $this->automationService->shouldUseFallback('SHOOT_UPDATED', $shootUpdatedDispatch) !== false;
+        $shouldUseFallback = ! empty($materialUpdate) && $this->automationService->shouldUseFallback('SHOOT_UPDATED', $shootUpdatedDispatch) !== false;
         Log::info('Shoot updated fallback decision evaluated', [
             'shoot_id' => $shoot->id,
             'trigger_type' => 'SHOOT_UPDATED',
@@ -266,10 +235,10 @@ class ShootNotificationDispatchService
 
         $clientEmailSent = (bool) ($shootUpdatedDispatch['client_email_sent'] ?? false);
         $photographerEmailSent = (bool) ($shootUpdatedDispatch['photographer_email_sent'] ?? false);
-        $shouldSendClientFallback = $client && $notifyClient !== false && ($shouldUseFallback || !$clientEmailSent) && !$clientEmailSent;
-        $shouldSendPhotographerFallback = !$photographerChanged
+        $shouldSendClientFallback = $client && $notifyClient !== false && $shouldUseFallback && ! $clientEmailSent;
+        $shouldSendPhotographerFallback = ! $photographerChanged
             && $notifyPhotographer !== false
-            && ($shouldUseFallback || !$photographerEmailSent);
+            && $shouldUseFallback && ! $photographerEmailSent;
 
         if ($shouldSendClientFallback) {
             try {
@@ -306,7 +275,7 @@ class ShootNotificationDispatchService
         if (
             $photographerChanged
             && $notifyPhotographer !== false
-            && !$this->automationService->hasActiveTrigger('PHOTOGRAPHER_CHANGED')
+            && $this->automationService->shouldUseFallback('PHOTOGRAPHER_CHANGED')
         ) {
             foreach ($affectedPhotographers as $photographer) {
                 try {
@@ -330,7 +299,7 @@ class ShootNotificationDispatchService
     public function processExternalShootRequested(int $shootId): void
     {
         $shoot = Shoot::with(['client', 'photographer', 'rep', 'service', 'services'])->find($shootId);
-        if (!$shoot || $shoot->isInternalTestShoot()) {
+        if (! $shoot || $shoot->isInternalTestShoot()) {
             return;
         }
 
@@ -353,19 +322,19 @@ class ShootNotificationDispatchService
         Log::info('External shoot requested fallback decision evaluated', [
             'shoot_id' => $shoot->id,
             'trigger_type' => 'SHOOT_REQUESTED',
-            'fallback_used' => $shouldUseFallback || !$clientEmailSent,
+            'fallback_used' => $shouldUseFallback || ! $clientEmailSent,
             'dispatch' => $this->formatDispatchSummaryForLog($dispatchResult),
         ]);
 
-        if ($shouldUseFallback || !$clientEmailSent) {
-            if (!$client) {
+        if ($shouldUseFallback && ! $clientEmailSent) {
+            if (! $client) {
                 $this->logSkippedExternalShootRequestedFallback($shoot, null, 'missing_client_record');
-            } elseif (!$this->clientConfirmationRecoveryService->hasDeliverableEmail($client)) {
+            } elseif (! $this->clientConfirmationRecoveryService->hasDeliverableEmail($client)) {
                 $this->logSkippedExternalShootRequestedFallback($shoot, $client, 'missing_client_email');
             } else {
                 $sent = $this->mailService->sendShootRequestedEmail($client, $shoot);
 
-                if (!$sent) {
+                if (! $sent) {
                     Log::warning('External shoot requested client fallback did not send successfully.', [
                         'shoot_id' => $shoot->id,
                         'client_id' => $client->id,
@@ -392,7 +361,7 @@ class ShootNotificationDispatchService
 
     private function formatDispatchSummaryForLog(?array $dispatch): array
     {
-        if (!is_array($dispatch)) {
+        if (! is_array($dispatch)) {
             return [
                 'present' => false,
             ];

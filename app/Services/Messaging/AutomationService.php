@@ -2,16 +2,16 @@
 
 namespace App\Services\Messaging;
 
-use App\Services\MailService;
-use App\Services\Schedule\ScheduleInstantResolver;
 use App\Models\AutomationRule;
+use App\Models\Invoice;
 use App\Models\Message;
 use App\Models\MessageTemplate;
 use App\Models\PaymentReminder;
 use App\Models\Shoot;
 use App\Models\ShootService;
 use App\Models\User;
-use App\Models\Invoice;
+use App\Services\MailService;
+use App\Services\Schedule\ScheduleInstantResolver;
 use Carbon\Carbon;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\Log;
@@ -19,6 +19,7 @@ use Illuminate\Support\Facades\Log;
 class AutomationService
 {
     private const SALES_REP_ROLES = ['salesRep', 'sales_rep', 'salesrep'];
+
     private const ADMIN_ROLES = ['admin', 'superadmin', 'super_admin', 'editing_manager'];
 
     /**
@@ -43,7 +44,51 @@ class AutomationService
         private readonly AutomationWorkflowExecutor $workflowExecutor,
         private readonly ?MailService $mailService = null,
         private readonly ?PaymentReminderScheduler $paymentReminderScheduler = null,
-    ) {
+    ) {}
+
+    public function queueAcceptedPaymentReceipt(iterable $payments): void
+    {
+        $paymentIds = collect($payments)->filter(fn ($payment) => $payment instanceof \App\Models\Payment)
+            ->pluck('id')->filter()->unique()->values()->all();
+        if ($paymentIds !== []) {
+            \App\Jobs\DispatchPaymentReceipt::dispatch($paymentIds)->afterCommit();
+        }
+    }
+
+    /** One receipt for each accepted transaction, including partial and grouped payments. */
+    public function sendAcceptedPaymentReceipt(iterable $payments): array
+    {
+        $payments = collect($payments)->filter(fn ($payment) => $payment instanceof \App\Models\Payment
+            && in_array($payment->status, [\App\Models\Payment::STATUS_COMPLETED, \App\Models\Payment::STATUS_REFUNDED], true))
+            ->sortBy('id')->values();
+        $payment = $payments->first();
+        $shoot = $payment?->shoot;
+        if (!$payment || !$shoot || $shoot->isInternalTestShoot()) {
+            return [];
+        }
+        $context = $this->buildShootContext($shoot->fresh());
+        $amount = (float) $payments->sum('amount');
+        $items = $payments->map(fn ($item) => ($item->shoot?->address ?? 'Shoot #'.$item->shoot_id).': $'.number_format((float) $item->amount, 2))->all();
+        $context = array_merge($context, [
+            'payment' => $payment, 'payment_id' => $payment->id,
+            'payment_status' => $shoot->fresh()->payment_status,
+            'payment_amount' => number_format($amount, 2),
+            'amount_paid' => number_format($amount, 2),
+            'payment_items' => implode("\n", $items),
+            'payment_items_html' => '<ul><li>'.implode('</li><li>', array_map('e', $items)).'</li></ul>',
+            'remaining_balance' => number_format($payments->map(fn ($item) => $item->shoot)->unique('id')
+                ->sum(fn ($item) => max((float) $item->total_quote - $item->calculateCanonicalTotalPaid(), 0)), 2),
+        ]);
+        $result = $this->handleEvent('PAYMENT_COMPLETED', $context);
+        if ($this->shouldUseFallback('PAYMENT_COMPLETED', $result) && $shoot->client) {
+            $mail = $this->mailService ?? app(MailService::class);
+            if ($payments->count() > 1) {
+                $mail->sendGroupedPaymentConfirmationEmail($shoot->client, $payments);
+            } else {
+                $mail->sendPaymentConfirmationEmail($shoot->client, $shoot, $payment);
+            }
+        }
+        return $result;
     }
 
     public function hasActiveTrigger(string $triggerType): bool
@@ -79,6 +124,11 @@ class AutomationService
             return [];
         }
 
+        $paymentRule = AutomationRule::active()->forTrigger('SHOOT_PAYMENT_REMINDER')->first();
+        if (! $paymentRule && AutomationRule::forTrigger('SHOOT_PAYMENT_REMINDER')->exists()) {
+            return [];
+        }
+
         $anchor = $shoot->shoot_ready_notified_at;
         if ($anchor === null) {
             // Cadence is anchored to shoot_ready_notified_at; without it there is nothing to schedule.
@@ -99,8 +149,21 @@ class AutomationService
         $horizonEnd = ($start->greaterThan($now) ? $start : $now)
             ->addMonths(self::PAYMENT_REMINDER_LOOKAHEAD_MONTHS);
 
-        $scheduler = $this->paymentReminderScheduler ?? new PaymentReminderScheduler();
-        $timestamps = $scheduler->schedule($start, $horizonEnd);
+        $scheduler = $this->paymentReminderScheduler ?? new PaymentReminderScheduler;
+        $timestamps = $scheduler->schedule($start, $horizonEnd, $paymentRule?->schedule_json ?? []);
+        if ($paymentRule) {
+            $desired = collect($timestamps)->keyBy(fn ($timestamp) => $timestamp->toDateString());
+            PaymentReminder::where('shoot_id', $shoot->id)->where('status', PaymentReminder::STATUS_PENDING)
+                ->get()->each(function (PaymentReminder $reminder) use ($desired, $now): void {
+                    $date = CarbonImmutable::parse($reminder->scheduled_date)->toDateString();
+                    $target = $desired->get($date);
+                    if ((! $target && $reminder->scheduled_at->lte($now)) || ($target && $target->lessThan($now->startOfDay()))) {
+                        $reminder->update(['status' => PaymentReminder::STATUS_CANCELLED]);
+                    } elseif ($target && ! $target->equalTo($reminder->scheduled_at)) {
+                        $reminder->update(['scheduled_at' => $target]);
+                    }
+                });
+        }
 
         $reminders = [];
         foreach ($timestamps as $timestamp) {
@@ -121,9 +184,15 @@ class AutomationService
                 'scheduled_date' => $timestamp->toDateString(),
             ]);
 
+            if ($reminder->exists && $reminder->status !== PaymentReminder::STATUS_PENDING) {
+                $reminders[] = $reminder;
+
+                continue;
+            }
+
             $reminder->scheduled_at = $timestamp->toDateTimeString();
 
-            if (!$reminder->exists) {
+            if (! $reminder->exists) {
                 $reminder->status = PaymentReminder::STATUS_PENDING;
             }
 
@@ -132,6 +201,36 @@ class AutomationService
         }
 
         return $reminders;
+    }
+
+    /** Recheck a queued row against the saved cadence immediately before sending. */
+    public function paymentReminderIsCurrent(PaymentReminder $reminder): bool
+    {
+        $configured = AutomationRule::forTrigger('SHOOT_PAYMENT_REMINDER')->exists();
+        if (! $configured) {
+            return true;
+        }
+        $rule = AutomationRule::active()->forTrigger('SHOOT_PAYMENT_REMINDER')->first();
+        $shoot = $reminder->shoot;
+        if (! $rule || ! $shoot || ! $shoot->shoot_ready_notified_at || $reminder->scheduled_at->lt(now()->startOfDay())) {
+            $reminder->update(['status' => PaymentReminder::STATUS_CANCELLED]);
+
+            return false;
+        }
+        $this->schedulePaymentReminders($shoot);
+        $reminder->refresh();
+
+        return $reminder->status === PaymentReminder::STATUS_PENDING && $reminder->scheduled_at->lte(now());
+    }
+
+    public function reconcileConfiguredPaymentReminders(): void
+    {
+        Shoot::whereNotNull('shoot_ready_notified_at')->whereNotIn('payment_status', ['paid', Shoot::PAYMENT_STATUS_NO_PAYMENT_REQUIRED])
+            ->chunkById(100, function ($shoots): void {
+                foreach ($shoots as $shoot) {
+                    $this->schedulePaymentReminders($shoot);
+                }
+            });
     }
 
     /**
@@ -197,7 +296,25 @@ class AutomationService
     {
         if ($shoot->isInternalTestShoot()) {
             $this->cancelPaymentReminders($shoot);
+
             return null;
+        }
+
+        if ($this->isShootPaid($shoot)) {
+            $this->cancelPaymentReminders($shoot);
+
+            return null;
+        }
+        if (AutomationRule::forTrigger('SHOOT_PAYMENT_REMINDER')->exists()) {
+            $tag = 'PAYMENT_REMINDER:shoot:'.$shoot->id.':'.now()->toDateString();
+            $context = $this->buildShootContext($shoot);
+            $context['schedule_dispatch_key'] = $tag;
+            $context['tags_json'] = ['PAYMENT_REMINDER:shoot:'.$shoot->id, $tag];
+            $result = $this->handleEvent('SHOOT_PAYMENT_REMINDER', $context);
+
+            return Message::whereIn('id', $result['message_ids'] ?? [])
+                ->whereIn('status', ['SENT', 'DELIVERED', 'QUEUED', 'SCHEDULED'])
+                ->orderByRaw("CASE WHEN channel = 'EMAIL' THEN 0 ELSE 1 END")->latest('id')->first();
         }
 
         $client = $shoot->client;
@@ -261,7 +378,7 @@ class AutomationService
                     'contact_email' => $email,
                     'contact_name' => $client->name ?? 'Client',
                     'contact_type' => 'client',
-                    'tags_json' => ['PAYMENT_REMINDER:shoot:' . $shoot->id],
+                    'tags_json' => ['PAYMENT_REMINDER:shoot:'.$shoot->id],
                 ]);
             } catch (\Throwable $exception) {
                 Log::error('Payment reminder email send failed', [
@@ -289,7 +406,7 @@ class AutomationService
                     'contact_phone' => $phone,
                     'contact_name' => $client->name ?? 'Client',
                     'contact_type' => 'client',
-                    'tags_json' => ['PAYMENT_REMINDER:shoot:' . $shoot->id],
+                    'tags_json' => ['PAYMENT_REMINDER:shoot:'.$shoot->id],
                 ]);
             } catch (\Throwable $exception) {
                 Log::warning('Payment reminder SMS send failed or suppressed', [
@@ -329,6 +446,18 @@ class AutomationService
             return $this->suppressedTestShootSummary($triggerType);
         }
 
+        if ($eventShoot instanceof Shoot) {
+            $context = array_merge($this->buildShootContext($eventShoot), $context);
+        }
+        if ($triggerType === 'SHOOT_UPDATED') {
+            $lines = preg_split('/\R/', (string) ($context['shoot_changes'] ?? $context['changes_summary'] ?? '')) ?: [];
+            $material = array_values(array_filter($lines, fn (string $line) => preg_match('/^(Schedule|Timezone|Location|Services|Client|Photographer|Total|Shoot Notes|Access Type|Access Contact Name|Access Contact Phone|Lockbox Code|Lockbox Location):/', trim($line))));
+            if ($material === []) {
+                return array_merge($this->emptyDispatchSummary($triggerType), ['handled' => true, 'suppressed_non_material_update' => true]);
+            }
+            $context['shoot_changes'] = implode("\n", $material);
+            $context['shoot_changes_html'] = '<ul><li>'.implode('</li><li>', array_map('e', $material)).'</li></ul>';
+        }
         try {
             return $this->workflowExecutor->executeEventTrigger($triggerType, $context);
         } catch (\Throwable $exception) {
@@ -359,19 +488,9 @@ class AutomationService
 
     public function shouldUseFallback(string $triggerType, ?array $dispatchResult = null): bool
     {
-        if (!is_array($dispatchResult)) {
-            return true;
-        }
-
-        if (($dispatchResult['active_rule_count'] ?? 0) === 0) {
-            return true;
-        }
-
-        if (strtoupper($triggerType) === 'ACCOUNT_CREATED' && empty($dispatchResult['email_sent_to'] ?? [])) {
-            return true;
-        }
-
-        return !($dispatchResult['handled'] ?? false);
+        // An administrator disabling a rule or choosing fewer recipients is intentional.
+        // Only installations without any configured rule retain the legacy fallback.
+        return ! AutomationRule::forTrigger($triggerType)->exists();
     }
 
     /**
@@ -399,8 +518,9 @@ class AutomationService
      */
     private function sendMessage(AutomationRule $rule, array $recipient, array $context): void
     {
-        if (!$rule->template) {
+        if (! $rule->template) {
             Log::warning('Automation rule has no template', ['rule_id' => $rule->id]);
+
             return;
         }
 
@@ -412,7 +532,7 @@ class AutomationService
         ]));
         $rendered = $this->templateRenderer->render($rule->template, $resolvedContext);
 
-        if (!empty($rendered['missing'])) {
+        if (! empty($rendered['missing'])) {
             Log::warning('Automation email missing template variables', [
                 'rule_id' => $rule->id,
                 'template_id' => $rule->template_id,
@@ -437,11 +557,11 @@ class AutomationService
             'contact_type' => $recipient['type'] ?? 'other',
         ];
 
-        if (!empty($context['tags_json'])) {
+        if (! empty($context['tags_json'])) {
             $payload['tags_json'] = $context['tags_json'];
         }
 
-        if (!empty($context['attachments_json'])) {
+        if (! empty($context['attachments_json'])) {
             $payload['attachments_json'] = $context['attachments_json'];
         }
 
@@ -476,13 +596,13 @@ class AutomationService
         $schedule = $rule->schedule_json;
 
         // Handle offset-based scheduling (e.g., "-24h" before shoot)
-        if (!empty($schedule['offset'])) {
+        if (! empty($schedule['offset'])) {
             $referenceTime = null;
 
             // Get reference time from context (shoot date, etc.)
-            if (!empty($context['shoot_datetime'])) {
+            if (! empty($context['shoot_datetime'])) {
                 $referenceTime = Carbon::parse($context['shoot_datetime']);
-            } elseif (!empty($context['shoot_date'])) {
+            } elseif (! empty($context['shoot_date'])) {
                 $referenceTime = Carbon::parse($context['shoot_date']);
             }
 
@@ -505,7 +625,7 @@ class AutomationService
         }
 
         // Handle cron-like scheduling (e.g., "monday 9:00" for weekly reports)
-        if (!empty($schedule['cron'])) {
+        if (! empty($schedule['cron'])) {
             // This would need proper cron parsing; for now, just return null to send immediately
             // In production, you'd use a package like cron-expression
             return null;
@@ -529,10 +649,10 @@ class AutomationService
         foreach ($recipientTypes as $type) {
             switch ($type) {
                 case 'client':
-                    if (!$this->shouldIncludeClientRecipient($rule, $context)) {
+                    if (! $this->shouldIncludeClientRecipient($rule, $context)) {
                         break;
                     }
-                    if (!empty($context['client'])) {
+                    if (! empty($context['client'])) {
                         $client = $context['client'];
                         $recipients[] = [
                             'email' => $client['email'] ?? $client->email ?? null,
@@ -544,7 +664,7 @@ class AutomationService
                     break;
 
                 case 'photographer':
-                    if (!$this->shouldIncludePhotographerRecipient($rule, $context)) {
+                    if (! $this->shouldIncludePhotographerRecipient($rule, $context)) {
                         break;
                     }
 
@@ -580,7 +700,7 @@ class AutomationService
                     break;
 
                 case 'rep':
-                    if (!empty($context['rep'])) {
+                    if (! empty($context['rep'])) {
                         $rep = $context['rep'];
                         $recipients[] = [
                             'email' => $rep['email'] ?? $rep->email ?? null,
@@ -593,7 +713,7 @@ class AutomationService
         }
 
         return collect($recipients)
-            ->filter(fn ($recipient) => !empty($recipient['email']) || !empty($recipient['phone']))
+            ->filter(fn ($recipient) => ! empty($recipient['email']) || ! empty($recipient['phone']))
             ->unique(fn ($recipient) => strtolower((string) ($recipient['email'] ?? $recipient['phone'] ?? '')))
             ->values()
             ->all();
@@ -623,7 +743,7 @@ class AutomationService
                 if (isset($expected['lt']) && $actual >= $expected['lt']) {
                     return false;
                 }
-                if (isset($expected['in']) && !in_array($actual, $expected['in'])) {
+                if (isset($expected['in']) && ! in_array($actual, $expected['in'])) {
                     return false;
                 }
             } else {
@@ -639,20 +759,20 @@ class AutomationService
             $hasContactDetails = data_get($context, 'has_contact_details', false);
             $hasLockboxDetails = data_get($context, 'has_lockbox_details', false);
             $presenceOption = data_get($context, 'presence_option');
-            
+
             // If presence option is not set, or required details are missing, trigger reminder
-            if (!$presenceOption) {
+            if (! $presenceOption) {
                 return true; // No presence option set, trigger reminder
             }
-            
-            if ($presenceOption === 'other' && !$hasContactDetails) {
+
+            if ($presenceOption === 'other' && ! $hasContactDetails) {
                 return true; // Other contact selected but details missing
             }
-            
-            if ($presenceOption === 'lockbox' && !$hasLockboxDetails) {
+
+            if ($presenceOption === 'lockbox' && ! $hasLockboxDetails) {
                 return true; // Lockbox selected but details missing
             }
-            
+
             // If presence is 'self' or all required details are provided, don't trigger
             return false;
         }
@@ -665,185 +785,82 @@ class AutomationService
      */
     public function triggerShootReminders(): void
     {
-        $targetTime = Carbon::now()->addHours(24);
-
-        // Legacy scheduled_at values are local clocks, while zoned bookings
-        // are UTC instants. A one-day candidate margin covers every supported
-        // UTC offset; the resolved instant below enforces the five-minute window.
-        $candidateStart = $targetTime->copy()->subDay();
-        $candidateEnd = $targetTime->copy()->addDay();
-
-        $shoots = Shoot::query()
-            ->where(function ($query) use ($targetTime, $candidateStart, $candidateEnd) {
-                $query->whereBetween('scheduled_at', [
-                    $candidateStart,
-                    $candidateEnd,
-                ])->orWhere(function ($fallback) use ($targetTime) {
-                    $fallback->whereNull('scheduled_at')
-                        ->whereNotNull('scheduled_date')
-                        ->whereBetween('scheduled_date', [
-                            $targetTime->copy()->subDay()->toDateString(),
-                            $targetTime->copy()->addDay()->toDateString(),
-                        ]);
-                })->orWhereHas('serviceItems', function ($serviceQuery) use ($candidateStart, $candidateEnd) {
-                    $serviceQuery
-                        ->whereBetween('scheduled_at', [
-                            $candidateStart,
-                            $candidateEnd,
-                        ])
-                        ->where('workflow_status', '!=', ShootService::WORKFLOW_CANCELLED);
-                });
-            })
-            ->with(['client', 'photographer', 'rep', 'service', 'services', 'serviceItems.service.category', 'serviceItems.photographer', 'serviceItems.editor', 'notes'])
-            ->get();
-
-        foreach ($shoots as $shoot) {
-            $dueServiceItems = $this->resolveDueServiceReminderItems($shoot, $targetTime);
-            if ($dueServiceItems->isNotEmpty()) {
-                foreach ($dueServiceItems as $serviceItem) {
-                    $this->dispatchServiceItemReminder($shoot, $serviceItem);
+        $rules = AutomationRule::active()->whereIn('trigger_type', ['SHOOT_REMINDER', 'PHOTOGRAPHER_SHOOT_REMINDER'])->get();
+        foreach ($rules as $rule) {
+            $workflow = app(AutomationWorkflowConverter::class)->getWorkflowDefinition($rule);
+            $trigger = collect($workflow['nodes'] ?? [])->first(fn (array $node) => str_starts_with($node['type'] ?? '', 'trigger.'));
+            $schedule = $trigger['config']['schedule'] ?? $rule->schedule_json ?? [];
+            $offset = $schedule['offset'] ?? ($rule->trigger_type === 'PHOTOGRAPHER_SHOOT_REMINDER' ? '-2h' : '-24h');
+            if (! preg_match('/^-(\d+)([mhd])$/', (string) $offset, $matches)) {
+                continue;
+            }
+            $minutes = (int) $matches[1] * match ($matches[2]) {
+                'd' => 1440, 'h' => 60, default => 1
+            };
+            $target = Carbon::now()->addMinutes($minutes);
+            $shoots = Shoot::query()
+                ->whereNotIn('status', ['cancelled', 'canceled', 'declined', 'completed', 'delivered'])
+                ->where(function ($query) {
+                    $query->whereNull('workflow_status')->orWhereNotIn('workflow_status', ['cancelled', 'canceled', 'declined', 'completed', 'delivered']);
+                })
+                ->where(function ($query) use ($target) {
+                    $query->whereBetween('scheduled_at', [$target->copy()->subDay(), $target->copy()->addDay()])
+                        ->orWhereBetween('scheduled_date', [$target->copy()->subDay()->toDateString(), $target->copy()->addDay()->toDateString()])
+                        ->orWhereHas('serviceItems', fn ($items) => $items->whereBetween('scheduled_at', [$target->copy()->subDay(), $target->copy()->addDay()]));
+                })
+                ->with(['client', 'photographer', 'rep', 'services', 'serviceItems.service.category', 'serviceItems.photographer', 'serviceItems.editor', 'notes'])
+                ->get();
+            foreach ($shoots as $shoot) {
+                if ($shoot->isInternalTestShoot()) {
+                    continue;
                 }
+                $scheduledItems = $shoot->serviceItems->filter(fn ($item) => $item->scheduled_at !== null);
+                if ($scheduledItems->isNotEmpty()) {
+                    foreach ($scheduledItems as $item) {
+                        if (in_array($item->workflow_status, ['cancelled', 'completed', 'delivered'], true)) {
+                            continue;
+                        }
+                        $at = app(ScheduleInstantResolver::class)->forServiceItem($shoot, $item);
+                        if ($at && $at->betweenIncluded($target->copy()->subMinutes(5), $target)) {
+                            $context = $this->buildShootContext($shoot);
+                            $photographer = $this->resolveServiceItemPhotographer($shoot, $item);
+                            $context['shoot_service_id'] = $item->id;
+                            $context['service_items'] = [$this->formatServiceItemContext($shoot, $item)];
+                            $context['shoot_services'] = $item->service?->name ?? $context['shoot_services'];
+                            $context['photographer'] = $photographer;
+                            $context['photographers'] = $photographer ? [$photographer] : [];
+                            $this->dispatchConfiguredReminder($rule, $context, $at, 'service:'.$item->id);
+                        }
+                    }
 
-                continue;
-            }
-
-            $scheduledAt = $this->resolveShootDateTime($shoot);
-            if (!$scheduledAt) {
-                continue;
-            }
-
-            if ($scheduledAt->lt($targetTime->copy()->subMinutes(5)) || $scheduledAt->gt($targetTime->copy()->addMinutes(5))) {
-                continue;
-            }
-
-            $tag = sprintf(
-                'SHOOT_REMINDER:24H:shoot:%d:%s',
-                $shoot->id,
-                $scheduledAt->copy()->utc()->toIso8601String()
-            );
-
-            if ($this->hasSentAutomationTag($tag)) {
-                continue;
-            }
-
-            $context = $this->buildShootContext($shoot);
-            $context['shoot_datetime'] = $scheduledAt;
-            $context['tags_json'] = [$tag];
-            $shouldUseFallback = true;
-            $clientEmailSent = false;
-            $photographerEmailSent = false;
-
-            if ($this->hasActiveTrigger('SHOOT_REMINDER')) {
-                $dispatchResult = $this->handleEvent('SHOOT_REMINDER', $context);
-                $shouldUseFallback = $this->shouldUseFallback('SHOOT_REMINDER', $dispatchResult) !== false;
-                $clientEmailSent = (bool) ($dispatchResult['client_email_sent'] ?? false);
-                $photographerEmailSent = (bool) ($dispatchResult['photographer_email_sent'] ?? false);
-            }
-
-            if ($this->mailService && !empty($context['client']) && ($shouldUseFallback || !$clientEmailSent)) {
-                $this->mailService->sendShootReminderEmail(
-                    $context['client'],
-                    $shoot,
-                    $scheduledAt,
-                    [$tag],
-                    false
-                );
-            }
-
-            if ($this->mailService && !empty($context['photographers']) && ($shouldUseFallback || !$photographerEmailSent)) {
-                foreach ($context['photographers'] as $photographer) {
-                    $this->mailService->sendShootReminderEmail(
-                        $photographer,
-                        $shoot,
-                        $scheduledAt,
-                        [$tag],
-                        false
-                    );
+                    continue;
+                }
+                $at = $this->resolveShootDateTime($shoot);
+                if ($at && $at->betweenIncluded($target->copy()->subMinutes(5), $target)) {
+                    $this->dispatchConfiguredReminder($rule, $this->buildShootContext($shoot), $at, 'shoot:'.$shoot->id);
                 }
             }
         }
     }
 
-    private function resolveDueServiceReminderItems(Shoot $shoot, Carbon $targetTime): \Illuminate\Support\Collection
+    private function dispatchConfiguredReminder(AutomationRule $rule, array $context, Carbon $scheduledAt, string $identity): void
     {
-        return collect($shoot->serviceItems ?? [])
-            ->filter(function (ShootService $serviceItem) use ($shoot, $targetTime) {
-                if (!$serviceItem->scheduled_at) {
-                    return false;
-                }
-
-                if ($serviceItem->workflow_status === ShootService::WORKFLOW_CANCELLED) {
-                    return false;
-                }
-
-                return app(ScheduleInstantResolver::class)->forServiceItem($shoot, $serviceItem)?->between(
-                    $targetTime->copy()->subMinutes(5),
-                    $targetTime->copy()->addMinutes(5)
-                );
-            })
-            ->values();
-    }
-
-    private function dispatchServiceItemReminder(Shoot $shoot, ShootService $serviceItem): void
-    {
-        $scheduledAt = app(ScheduleInstantResolver::class)->forServiceItem($shoot, $serviceItem);
-        if (!$scheduledAt) {
+        $tag = $rule->trigger_type.':rule:'.$rule->id.':'.$identity.':'.$scheduledAt->copy()->utc()->toIso8601String();
+        // Every message has its own recipient/channel dedupe key. Retry a partially failed
+        // run without repeating deliveries that already succeeded.
+        $done = \App\Models\AutomationRun::query()->where('automation_rule_id', $rule->id)
+            ->whereIn('status', ['completed', 'waiting'])
+            ->where('context_json->schedule_dispatch_key', $tag)->exists();
+        if ($done) {
             return;
         }
-
-        $tag = sprintf(
-            'SHOOT_REMINDER:24H:shoot_service:%d:%s',
-            $serviceItem->id,
-            $scheduledAt->copy()->utc()->toIso8601String()
-        );
-
-        if ($this->hasSentAutomationTag($tag)) {
-            return;
-        }
-
-        $photographer = $this->resolveServiceItemPhotographer($shoot, $serviceItem);
-        $context = $this->buildShootContext($shoot);
+        $context['automation_rule_id'] = $rule->id;
+        $context['schedule_dispatch_key'] = $tag;
         $context['shoot_datetime'] = $scheduledAt;
-        $context['shoot_service_id'] = $serviceItem->id;
-        $context['service_items'] = [$this->formatServiceItemContext($shoot, $serviceItem)];
-        $context['shoot_services'] = $serviceItem->service?->name ?? $context['shoot_services'];
-        $context['photographer'] = $photographer;
-        $context['photographers'] = $photographer ? [$photographer] : [];
-        $context['role_context'] = 'service_item';
+        $context['shoot_date'] = $scheduledAt->format('M j, Y');
+        $context['shoot_time'] = $scheduledAt->format('g:i A T');
         $context['tags_json'] = [$tag];
-
-        $shouldUseFallback = true;
-        $clientEmailSent = false;
-        $photographerEmailSent = false;
-
-        if ($this->hasActiveTrigger('SHOOT_REMINDER')) {
-            $dispatchResult = $this->handleEvent('SHOOT_REMINDER', $context);
-            $shouldUseFallback = $this->shouldUseFallback('SHOOT_REMINDER', $dispatchResult) !== false;
-            $clientEmailSent = (bool) ($dispatchResult['client_email_sent'] ?? false);
-            $photographerEmailSent = (bool) ($dispatchResult['photographer_email_sent'] ?? false);
-        }
-
-        if ($this->mailService && !empty($context['client']) && ($shouldUseFallback || !$clientEmailSent)) {
-            $this->mailService->sendShootReminderEmail(
-                $context['client'],
-                $shoot,
-                $scheduledAt,
-                [$tag],
-                false,
-                [$serviceItem->id]
-            );
-        }
-
-        if ($this->mailService && $photographer && ($shouldUseFallback || !$photographerEmailSent)) {
-            $this->mailService->sendShootReminderEmail(
-                $photographer,
-                $shoot,
-                $scheduledAt,
-                [$tag],
-                false,
-                [$serviceItem->id]
-            );
-        }
+        $this->handleEvent($rule->trigger_type, $context);
     }
 
     public function buildUserContext(User $user): array
@@ -883,7 +900,7 @@ class AutomationService
                 ?? $shoot->scheduled_at?->format('M j, Y'),
             'shoot_time' => $this->formatShootTime($shoot),
             'shoot_datetime' => $this->resolveShootDateTime($shoot),
-            'shoot_address' => $shoot->address ?? 'N/A',
+            'shoot_address' => trim(implode(', ', array_filter([$shoot->address, $shoot->city, $shoot->state, $shoot->zip]))) ?: 'N/A',
             'shoot_services' => $shoot->services->count() > 0
                 ? $shoot->services->pluck('name')->implode(', ')
                 : ($shoot->service?->name ?? 'Photography'),
@@ -896,16 +913,23 @@ class AutomationService
             'editor_service_items' => $this->groupServiceItemsByRole($shoot, 'editor'),
             'account_id' => $shoot->client_id,
             'property_details' => $propertyDetails,
+            'dashboard_link' => rtrim(config('app.frontend_url', config('app.url')), '/').'/shoots/'.$shoot->id,
+            'map_link' => 'https://www.google.com/maps/search/?api=1&query='.rawurlencode(trim(implode(', ', array_filter([$shoot->address, $shoot->city, $shoot->state, $shoot->zip])))),
+            'property_contact_name' => $propertyDetails['accessContactName'] ?? $shoot->client?->name ?? '',
+            'property_contact_phone' => $propertyDetails['accessContactPhone'] ?? $shoot->client?->phonenumber ?? '',
+            'access_instructions' => implode(' - ', array_filter([$propertyDetails['presenceOption'] ?? null, $propertyDetails['lockboxLocation'] ?? null, $propertyDetails['lockboxCode'] ?? null, $propertyDetails['accessNotes'] ?? null])),
+            'payment_status' => $shoot->payment_status,
+            'special_instructions' => $this->formatShootNotes($shoot),
             'presence_option' => $propertyDetails['presenceOption'] ?? null,
-            'has_contact_details' => !empty($propertyDetails['accessContactName']) && !empty($propertyDetails['accessContactPhone']),
-            'has_lockbox_details' => !empty($propertyDetails['lockboxCode']) && !empty($propertyDetails['lockboxLocation']),
+            'has_contact_details' => ! empty($propertyDetails['accessContactName']) && ! empty($propertyDetails['accessContactPhone']),
+            'has_lockbox_details' => ! empty($propertyDetails['lockboxCode']) && ! empty($propertyDetails['lockboxLocation']),
         ];
     }
 
     private function formatShootTime(Shoot $shoot): string
     {
         $time = $shoot->time;
-        if (!empty($time)) {
+        if (! empty($time)) {
             try {
                 return Carbon::parse($time)->format('g:i A');
             } catch (\Exception $e) {
@@ -933,16 +957,16 @@ class AutomationService
     {
         $notes = [];
 
-        if (!empty($shoot->shoot_notes)) {
+        if (! empty($shoot->shoot_notes)) {
             $notes[] = $shoot->shoot_notes;
         }
 
-        if (!$shoot->relationLoaded('notes')) {
+        if (! $shoot->relationLoaded('notes')) {
             $shoot->load('notes');
         }
 
         foreach ($shoot->notes ?? [] as $note) {
-            if (!empty($note->content) && $note->visibility === 'client_visible') {
+            if (! empty($note->content) && $note->visibility === 'client_visible') {
                 $notes[] = $note->content;
             }
         }
@@ -954,7 +978,7 @@ class AutomationService
 
     private function shouldIncludeClientRecipient(AutomationRule $rule, array $context): bool
     {
-        if (ShootEmailMatrix::hasEvent($rule->trigger_type) && !ShootEmailMatrix::includesClient($rule->trigger_type)) {
+        if (ShootEmailMatrix::hasEvent($rule->trigger_type) && ! ShootEmailMatrix::includesClient($rule->trigger_type)) {
             return false;
         }
 
@@ -973,7 +997,7 @@ class AutomationService
 
     private function shouldIncludePhotographerRecipient(AutomationRule $rule, array $context): bool
     {
-        if (ShootEmailMatrix::hasEvent($rule->trigger_type) && !ShootEmailMatrix::includesPhotographer($rule->trigger_type)) {
+        if (ShootEmailMatrix::hasEvent($rule->trigger_type) && ! ShootEmailMatrix::includesPhotographer($rule->trigger_type)) {
             return false;
         }
 
@@ -990,7 +1014,7 @@ class AutomationService
 
         if (
             $rule->trigger_type === ShootEmailMatrix::SHOOT_UPDATED
-            && !empty($context['photographer_changed'])
+            && ! empty($context['photographer_changed'])
         ) {
             return false;
         }
@@ -1003,15 +1027,15 @@ class AutomationService
      */
     private function resolvePhotographerRecipients(AutomationRule $rule, array $context): array
     {
-        if ($rule->trigger_type === ShootEmailMatrix::PHOTOGRAPHER_CHANGED && !empty($context['affected_photographers'])) {
+        if ($rule->trigger_type === ShootEmailMatrix::PHOTOGRAPHER_CHANGED && ! empty($context['affected_photographers'])) {
             return collect($context['affected_photographers'])->filter()->values()->all();
         }
 
-        if (!empty($context['photographers'])) {
+        if (! empty($context['photographers'])) {
             return collect($context['photographers'])->filter()->values()->all();
         }
 
-        if (!empty($context['photographer'])) {
+        if (! empty($context['photographer'])) {
             return [$context['photographer']];
         }
 
@@ -1029,7 +1053,7 @@ class AutomationService
         $hasServices = $services->isNotEmpty();
         $hasServicesWithoutPhotographer = $services->contains(fn ($service) => empty($service->pivot->photographer_id));
         $parentPhotographerId = ($shoot->photographer_id || $shoot->photographer?->id)
-            && (!$hasServices || $hasServicesWithoutPhotographer)
+            && (! $hasServices || $hasServicesWithoutPhotographer)
                 ? ($shoot->photographer_id ?? $shoot->photographer?->id)
                 : null;
 
@@ -1073,7 +1097,7 @@ class AutomationService
 
         $photographerId = $serviceItem->photographer_id ?: $shoot->photographer_id;
 
-        if (!$photographerId) {
+        if (! $photographerId) {
             return null;
         }
 
@@ -1124,7 +1148,7 @@ class AutomationService
                     ? $serviceItem->editor_id
                     : ($serviceItem->photographer_id ?: $shoot->photographer_id);
 
-                if (!$userId) {
+                if (! $userId) {
                     return null;
                 }
 
@@ -1146,7 +1170,7 @@ class AutomationService
     {
         return Message::query()
             ->where('send_source', 'AUTOMATION')
-            ->where('tags_json', 'like', '%' . $tag . '%')
+            ->where('tags_json', 'like', '%'.$tag.'%')
             ->exists();
     }
 
@@ -1163,11 +1187,11 @@ class AutomationService
 
         $client = null;
 
-        if (!empty($context['client'])) {
+        if (! empty($context['client'])) {
             if ($context['client'] instanceof User) {
                 $client = $context['client'];
             } elseif (is_array($context['client'])) {
-                if (!empty($context['client']['shoot_cc_emails']) || !empty($context['client']['shootCcEmails'])) {
+                if (! empty($context['client']['shoot_cc_emails']) || ! empty($context['client']['shootCcEmails'])) {
                     return $this->normalizeEmailAddresses(
                         $context['client']['shoot_cc_emails'] ?? $context['client']['shootCcEmails'] ?? [],
                         $recipient['email'] ?? $context['client']['email'] ?? null
@@ -1178,21 +1202,21 @@ class AutomationService
             }
         }
 
-        if (!$client && !empty($context['account_id'])) {
+        if (! $client && ! empty($context['account_id'])) {
             $account = User::find($context['account_id']);
             if ($account && $account->role === 'client') {
                 $client = $account;
             }
         }
 
-        if (!$client && !empty($context['shoot_id'])) {
+        if (! $client && ! empty($context['shoot_id'])) {
             $client = Shoot::query()
                 ->with('client')
                 ->find($context['shoot_id'])
                 ?->client;
         }
 
-        if (!$client && !empty($context['invoice_id'])) {
+        if (! $client && ! empty($context['invoice_id'])) {
             $invoice = Invoice::query()
                 ->with(['client', 'shoot.client'])
                 ->find($context['invoice_id']);
@@ -1203,7 +1227,6 @@ class AutomationService
     }
 
     /**
-     * @param  mixed  $emails
      * @return array<int, string>
      */
     private function normalizeEmailAddresses(mixed $emails, ?string $exclude = null): array

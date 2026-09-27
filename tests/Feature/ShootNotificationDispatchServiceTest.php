@@ -5,10 +5,10 @@ namespace Tests\Feature;
 use App\Models\Service;
 use App\Models\Shoot;
 use App\Models\User;
-use App\Services\ShootMediaStorageService;
 use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
 use App\Services\Messaging\ClientConfirmationRecoveryService;
+use App\Services\ShootMediaStorageService;
 use App\Services\Shoots\ShootNotificationDispatchService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Log;
@@ -60,7 +60,7 @@ class ShootNotificationDispatchServiceTest extends TestCase
         $service->processExternalShootRequested($shoot->id);
     }
 
-    public function test_external_requested_notifications_fall_back_to_client_when_automation_misses_client_email(): void
+    public function test_external_requested_notifications_do_not_override_configured_recipient_choices(): void
     {
         $shoot = $this->createRequestedShoot('client-fallback@test.com');
 
@@ -80,17 +80,10 @@ class ShootNotificationDispatchServiceTest extends TestCase
             ->andReturnFalse();
 
         $mailService = Mockery::mock(MailService::class);
-        $mailService->shouldReceive('sendShootRequestedEmail')
-            ->once()
-            ->withArgs(fn (User $recipient, Shoot $targetShoot) => $recipient->is($shoot->client) && $targetShoot->is($shoot))
-            ->andReturnTrue();
+        $mailService->shouldReceive('sendShootRequestedEmail')->never();
         $mailService->shouldReceive('sendShootRequestedAdminNotificationEmails')->never();
-
         $recoveryService = Mockery::mock(ClientConfirmationRecoveryService::class);
-        $recoveryService->shouldReceive('hasDeliverableEmail')
-            ->once()
-            ->with(Mockery::on(fn (User $recipient) => $recipient->is($shoot->client)))
-            ->andReturnTrue();
+        $recoveryService->shouldReceive('hasDeliverableEmail')->never();
 
         $dropbox = Mockery::mock(ShootMediaStorageService::class);
 

@@ -38,7 +38,7 @@ class AutomationWorkflowConverter
         $isScheduledSystem = ($automation->scope === 'SYSTEM')
             && (($automation->schedule_json['type'] ?? null) === 'weekly');
 
-        $triggerNodeId = 'trigger_' . $automation->id;
+        $triggerNodeId = 'trigger_'.$automation->id;
         $nodes[] = [
             'id' => $triggerNodeId,
             'type' => $isScheduledSystem ? 'trigger.schedule' : 'trigger.event',
@@ -53,6 +53,7 @@ class AutomationWorkflowConverter
                 ]
                 : [
                     'triggerType' => $automation->trigger_type,
+                    'schedule' => $automation->schedule_json ?? [],
                 ],
             'validation' => [],
         ];
@@ -64,7 +65,7 @@ class AutomationWorkflowConverter
         $conditionJson = is_array($automation->condition_json) ? $automation->condition_json : [];
         $hasLegacyCondition = $conditionJson !== [] && array_diff(array_keys($conditionJson), ['schedule', 'day', 'time', 'command']) !== [];
         if ($hasLegacyCondition) {
-            $conditionNodeId = 'condition_' . $automation->id;
+            $conditionNodeId = 'condition_'.$automation->id;
             $nodes[] = [
                 'id' => $conditionNodeId,
                 'type' => 'condition.if',
@@ -76,7 +77,7 @@ class AutomationWorkflowConverter
                 'validation' => [],
             ];
             $edges[] = [
-                'id' => $currentNodeId . '_' . $conditionNodeId,
+                'id' => $currentNodeId.'_'.$conditionNodeId,
                 'source' => $currentNodeId,
                 'target' => $conditionNodeId,
             ];
@@ -85,8 +86,8 @@ class AutomationWorkflowConverter
         }
 
         $schedule = is_array($automation->schedule_json) ? $automation->schedule_json : [];
-        if (!empty($schedule['offset'])) {
-            $waitNodeId = 'wait_' . $automation->id;
+        if (! empty($schedule['offset']) && ! in_array($automation->trigger_type, ['SHOOT_REMINDER', 'PHOTOGRAPHER_SHOOT_REMINDER'], true)) {
+            $waitNodeId = 'wait_'.$automation->id;
             $offset = $this->parseLegacyOffset((string) $schedule['offset']);
 
             $nodes[] = [
@@ -102,7 +103,7 @@ class AutomationWorkflowConverter
                 'validation' => [],
             ];
             $edges[] = [
-                'id' => $currentNodeId . '_' . $waitNodeId,
+                'id' => $currentNodeId.'_'.$waitNodeId,
                 'source' => $currentNodeId,
                 'target' => $waitNodeId,
                 'branchKey' => $currentNodeId === $conditionNodeId ? 'true' : null,
@@ -112,7 +113,7 @@ class AutomationWorkflowConverter
         }
 
         if ($automation->template_id) {
-            $actionNodeId = 'action_' . $automation->id;
+            $actionNodeId = 'action_'.$automation->id;
             $actionType = ($automation->template?->channel ?? 'EMAIL') === 'SMS'
                 ? 'action.sms'
                 : 'action.email';
@@ -130,7 +131,7 @@ class AutomationWorkflowConverter
                 'validation' => [],
             ];
             $edges[] = [
-                'id' => $currentNodeId . '_' . $actionNodeId,
+                'id' => $currentNodeId.'_'.$actionNodeId,
                 'source' => $currentNodeId,
                 'target' => $actionNodeId,
                 'branchKey' => $currentNodeId === $conditionNodeId ? 'true' : null,
@@ -139,7 +140,7 @@ class AutomationWorkflowConverter
             $currentX += 240;
         }
 
-        $endNodeId = 'end_' . $automation->id;
+        $endNodeId = 'end_'.$automation->id;
         $nodes[] = [
             'id' => $endNodeId,
             'type' => 'end',
@@ -153,9 +154,9 @@ class AutomationWorkflowConverter
             $trueEdgeExists = collect($edges)->contains(fn (array $edge) => ($edge['source'] ?? null) === $conditionNodeId
                 && ($edge['branchKey'] ?? null) === 'true');
 
-            if (!$trueEdgeExists) {
+            if (! $trueEdgeExists) {
                 $edges[] = [
-                    'id' => $conditionNodeId . '_' . $trueTargetNodeId . '_true',
+                    'id' => $conditionNodeId.'_'.$trueTargetNodeId.'_true',
                     'source' => $conditionNodeId,
                     'target' => $trueTargetNodeId,
                     'branchKey' => 'true',
@@ -163,7 +164,7 @@ class AutomationWorkflowConverter
             }
 
             $edges[] = [
-                'id' => $conditionNodeId . '_' . $endNodeId . '_false',
+                'id' => $conditionNodeId.'_'.$endNodeId.'_false',
                 'source' => $conditionNodeId,
                 'target' => $endNodeId,
                 'branchKey' => 'false',
@@ -172,7 +173,7 @@ class AutomationWorkflowConverter
 
         if ($currentNodeId !== $conditionNodeId) {
             $edges[] = [
-                'id' => $currentNodeId . '_' . $endNodeId,
+                'id' => $currentNodeId.'_'.$endNodeId,
                 'source' => $currentNodeId,
                 'target' => $endNodeId,
             ];
@@ -215,6 +216,7 @@ class AutomationWorkflowConverter
                         'value' => $operand,
                     ];
                 }
+
                 continue;
             }
 
@@ -230,7 +232,7 @@ class AutomationWorkflowConverter
 
     private function parseLegacyOffset(string $offset): array
     {
-        if (!preg_match('/^([+-]?)(\d+)([hdm])$/', $offset, $matches)) {
+        if (! preg_match('/^([+-]?)(\d+)([hdm])$/', $offset, $matches)) {
             return [
                 'direction' => 'before',
                 'amount' => 24,
@@ -252,13 +254,24 @@ class AutomationWorkflowConverter
     private function normalizeRecipientRoles(mixed $recipientsJson): array
     {
         if (is_array($recipientsJson) && array_is_list($recipientsJson)) {
-            return array_values(array_map('strval', $recipientsJson));
+            return array_values(array_map($this->normalizeRole(...), $recipientsJson));
         }
 
         if (is_array($recipientsJson) && isset($recipientsJson['roles']) && is_array($recipientsJson['roles'])) {
-            return array_values(array_map('strval', $recipientsJson['roles']));
+            return array_values(array_map($this->normalizeRole(...), $recipientsJson['roles']));
         }
 
         return ['client'];
+    }
+
+    private function normalizeRole(mixed $role): string
+    {
+        return match (strtolower(str_replace(['_', '-', ' '], '', (string) $role))) {
+            'salesrep', 'rep' => 'rep',
+            'superadmin', 'admin', 'editingmanager' => 'admin',
+            'previousphotographer' => 'previous_photographer',
+            'newphotographer' => 'new_photographer',
+            default => strtolower((string) $role),
+        };
     }
 }

@@ -10,6 +10,8 @@ use Illuminate\Support\Facades\Schema;
 
 class MessagingSystemSeeder extends Seeder
 {
+    private array $createdRuleIds = [];
+
     private const BRAND_NAME = 'R/E Pro Photos';
 
     private const BRAND_PHONE = '(202) 868-1663';
@@ -152,11 +154,61 @@ class MessagingSystemSeeder extends Seeder
 
     public function run(): void
     {
+        $this->createdRuleIds = [];
         $this->seedSystemTemplates();
         $this->seedRequiredAutomations();
+        if (Schema::hasColumn('automation_rules', 'workflow_definition_json')) {
+            // Only freshly created rules receive the current factory channels.
+            // Reseeding never appends actions to an operator's saved workflow.
+            app(\App\Services\Messaging\SystemAutomationDefaults::class)->repair($this->createdRuleIds);
+        }
     }
 
-    private function seedSystemTemplates(): void
+    public function upgradeDefaultTemplateContent(): void
+    {
+        $this->seedSystemTemplates(true);
+    }
+
+    public function isFactoryShootDeletedTemplate(MessageTemplate $template): bool
+    {
+        if ($template->slug !== 'shoot-deleted' || ! $template->is_active || ! empty($template->content_blocks_json)) {
+            return false;
+        }
+        $original = $this->normalizeTemplateDefinition([
+            'slug' => 'shoot-deleted', 'subject' => 'Photo Shoot Removed from Schedule',
+            'body_html' => $this->getShootDeletedTemplate(), 'body_text' => $this->getShootDeletedPlainText(),
+        ]);
+        $enhanced = \App\Services\Messaging\AutomationTemplateContent::enhance($original);
+        // Pre-June factory templates included this exact shared brand wrapper.
+        // An enabled override alone is not evidence of authored copy: migrations
+        // enabled saved stock templates too. Require the complete exact copy.
+        $legacy = $original;
+        $legacy['body_html'] = $this->transformContent($this->legacyFactoryEmailWrapper($this->getShootDeletedTemplate()));
+        foreach ([$original, $enhanced, $legacy] as $copy) {
+            if ($template->subject === $copy['subject'] && $template->body_html === $copy['body_html'] && $template->body_text === $copy['body_text']) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function legacyFactoryEmailWrapper(string $content): string
+    {
+        $header = '
+            <div class="email-header" style="border-bottom: 2px solid #007bff; padding-bottom: 12px; margin-bottom: 24px;">
+                <h1 style="margin: 0; font-size: 20px; color: #2c3e50;">'.self::BRAND_NAME.'</h1>
+            </div>';
+        $footer = '
+            <div class="email-footer note" style="border-top: 1px solid #eee; margin-top: 30px; padding-top: 16px; color: #666; font-size: 13px;">
+                '.$this->getContactLineHtml().'
+                '.$this->getSignOffHtml().'
+            </div>';
+
+        return trim($header."\n\n".trim($content)."\n\n".$footer);
+    }
+
+    private function seedSystemTemplates(bool $upgradeDefaultContent = false): void
     {
         $templates = [
             // 1. New Account Created
@@ -544,6 +596,8 @@ class MessagingSystemSeeder extends Seeder
 
         foreach ($templates as $template) {
             $normalized = $this->normalizeTemplateDefinition($template);
+            $original = $normalized;
+            $normalized = \App\Services\Messaging\AutomationTemplateContent::enhance($normalized);
 
             $existing = MessageTemplate::query()
                 ->where('slug', $normalized['slug'])
@@ -561,6 +615,13 @@ class MessagingSystemSeeder extends Seeder
             $canonicalVariables = is_array($normalized['variables_json'] ?? null)
                 ? $normalized['variables_json']
                 : [];
+
+            // Only exact factory copy can be upgraded. An operator's authored
+            // HTML, text or subject must survive deployment unchanged.
+            if ($upgradeDefaultContent && $existing->body_html === $original['body_html']
+                && $existing->body_text === $original['body_text'] && $existing->subject === $original['subject']) {
+                $existing->fill(collect($normalized)->only(['body_html', 'body_text'])->all());
+            }
 
             // Template copy is operational data once an admin edits it. A
             // seeder rerun may repair structural metadata and add newly required
@@ -598,7 +659,7 @@ class MessagingSystemSeeder extends Seeder
                 'trigger_type' => 'ACCOUNT_CREATED',
                 'is_active' => true,
                 'scope' => 'SYSTEM',
-                'recipients_json' => ['client'],
+                'recipients_json' => ['account'],
             ],
             [
                 'name' => 'Shoot Booking Confirmation',
@@ -803,7 +864,7 @@ class MessagingSystemSeeder extends Seeder
                 'SHOOT_UPDATED' => 'shoot-updated',
                 'SHOOT_COMPLETED' => 'shoot-ready',
                 // MEDIA_UPLOAD_COMPLETE removed - Photos Ready should only trigger on SHOOT_COMPLETED (finalize)
-                'SHOOT_CANCELED' => 'shoot-deleted',
+                'SHOOT_CANCELED' => 'shoot-cancelled',
                 'SHOOT_REMOVED' => 'shoot-deleted',
                 'PAYMENT_REFUNDED' => 'refund-submitted',
                 'PHOTOGRAPHER_ASSIGNED' => 'photographer-assigned',
@@ -825,20 +886,48 @@ class MessagingSystemSeeder extends Seeder
                 $automation['template_id'] = MessageTemplate::where('slug', $slugMap[$automation['trigger_type']])->first()?->id;
             }
 
-            $automationRule = AutomationRule::updateOrCreate(
-                ['trigger_type' => $automation['trigger_type'], 'name' => $automation['name']],
-                $automation
-            );
+            if ($automation['trigger_type'] === 'PROPERTY_CONTACT_REMINDER') {
+                $days = (int) $automation['condition_json']['days_before'];
+                $automation['schedule_json'] = ['days_before' => $days, 'time' => '09:00'];
+                if (str_contains($automation['name'], 'SMS') && $days === 2) {
+                    $automation['is_active'] = false;
+                } elseif (! str_contains($automation['name'], 'SMS') && $days <= 1) {
+                    $automation['recipients_json'] = $days === 0 ? ['client', 'admin', 'photographer'] : ['client', 'admin'];
+                }
+            } elseif ($automation['trigger_type'] === 'INVOICE_DUE') {
+                $automation['schedule_json'] = ['days_before' => 0, 'time' => '09:30'];
+            } elseif ($automation['trigger_type'] === 'INVOICE_OVERDUE') {
+                $automation['schedule_json'] = ['overdue_days' => [1, 3, 7, 14, 30], 'repeat_every_days' => 30, 'time' => '09:30'];
+            } elseif ($automation['trigger_type'] === 'SHOOT_REMOVED') {
+                $automation['recipients_json'] = ['admin'];
+            }
 
-            if ($supportsVisualWorkflow) {
+            $existingRules = AutomationRule::where('scope', 'SYSTEM')->where('trigger_type', $automation['trigger_type'])->get();
+            $existing = $existingRules->first(fn ($rule) => ($rule->workflow_definition_json['meta']['system_default_key'] ?? null) === $automation['name'])
+                ?? $existingRules->firstWhere('name', $automation['name']);
+            if (! $existing && $automation['trigger_type'] === 'PROPERTY_CONTACT_REMINDER') {
+                $expectedChannel = str_contains($automation['name'], 'SMS') ? 'SMS' : 'EMAIL';
+                $expectedDays = $automation['schedule_json']['days_before'];
+                $existing = $existingRules->first(fn ($rule) => (int) ($rule->schedule_json['days_before'] ?? $rule->condition_json['days_before'] ?? -1) === $expectedDays
+                    && ($rule->template?->channel ?? 'EMAIL') === $expectedChannel);
+            } elseif (! $existing) {
+                $existing = $existingRules->first();
+            }
+            $automationRule = $existing ?? AutomationRule::create($automation);
+            if (! $existing) {
+                $this->createdRuleIds[] = $automationRule->id;
+            }
+
+            if ($supportsVisualWorkflow && $automationRule->wasRecentlyCreated) {
                 $workflow = $workflowConverter->buildLegacyWorkflow($automationRule);
+                $workflow['meta']['system_default_key'] = $automation['name'];
                 $triggerNode = collect($workflow['nodes'] ?? [])
                     ->first(fn (array $node) => str_starts_with((string) ($node['type'] ?? ''), 'trigger.'));
 
                 $automationRule->forceFill([
                     'editor_mode' => 'visual',
                     'engine_version' => 2,
-                    'is_system_locked' => $automationRule->scope === 'SYSTEM',
+                    'is_system_locked' => false,
                     'workflow_definition_json' => $workflow,
                     'entry_trigger_json' => [
                         'trigger_type' => $automationRule->trigger_type,
