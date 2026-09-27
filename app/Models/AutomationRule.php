@@ -71,7 +71,10 @@ class AutomationRule extends Model
 
     public function recentRuns(): HasMany
     {
-        return $this->hasMany(AutomationRun::class, 'automation_rule_id')->latest();
+        // A waiting run can resume after newer runs were created.
+        return $this->hasMany(AutomationRun::class, 'automation_rule_id')
+            ->orderByDesc('updated_at')
+            ->orderByDesc('id');
     }
 
     public function scopeActive($query)
@@ -84,4 +87,3 @@ class AutomationRule extends Model
         return $query->where('trigger_type', $triggerType);
     }
 }
-
