@@ -925,7 +925,7 @@ class Shoot extends Model
 
     public function units()
     {
-        return $this->hasMany(ShootUnit::class)->orderBy('sort_order')->orderBy('id');
+        return $this->hasMany(ShootUnit::class, 'shoot_id')->orderBy('sort_order')->orderBy('id');
     }
 
     public function ghostUsers()
