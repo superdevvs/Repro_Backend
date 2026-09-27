@@ -584,6 +584,8 @@ Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager'])->pr
         // Wildcard routes
         Route::get('invoices/{invoice}/download', [InvoiceController::class, 'download']);
         Route::get('invoices/{invoice}/review-detail', [App\Http\Controllers\Admin\InvoiceApprovalController::class, 'reviewDetail']);
+        Route::get('invoices/{invoice}/accounts-note', [App\Http\Controllers\Admin\InvoiceAccountsNoteController::class, 'show']);
+        Route::put('invoices/{invoice}/accounts-note', [App\Http\Controllers\Admin\InvoiceAccountsNoteController::class, 'update']);
         Route::get('invoices/{invoice}', [App\Http\Controllers\Admin\InvoiceController::class, 'show']);
         Route::post('invoices/{invoice}/send', [InvoiceController::class, 'send']);
         Route::post('invoices/{invoice}/mark-paid', [InvoiceController::class, 'markPaid']);
