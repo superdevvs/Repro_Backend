@@ -524,7 +524,7 @@ class UpdateShootAction
         $createdReturnVisitInvoiceId = null;
         $pendingUpdateAttributes = $shoot->getDirty();
         try {
-            \App\Support\LockedWrite::run(fn () => DB::transaction(function () use (
+            $applyEdit = function () use (
                 $shoot,
                 $pendingUpdateAttributes,
                 $validated,
@@ -538,6 +538,11 @@ class UpdateShootAction
                 &$createdReturnVisitClassification,
                 &$createdReturnVisitInvoiceId
             ): void {
+                // Retry attempts must publish only the committed return visit.
+                $createdReturnVisit = null;
+                $returnVisitReplayed = false;
+                $createdReturnVisitClassification = null;
+                $createdReturnVisitInvoiceId = null;
                 $shoot->forceFill($pendingUpdateAttributes);
                 $this->editablePayloadService->apply($shoot, $validated, $user);
                 if ($featuredFlagProvided) {
@@ -597,7 +602,8 @@ class UpdateShootAction
                         ]
                     );
                 }
-            }), 'shoot-update');
+            };
+            \App\Support\LockedWrite::run(fn () => DB::transaction($applyEdit), 'shoot-update');
         } catch (\DomainException $exception) {
                     $this->abortJson(\App\Services\ApiErrorResponder::publicMessage($exception), 409);
         }

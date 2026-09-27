@@ -637,6 +637,34 @@ class ComplimentaryServicesEditShootTest extends TestCase
             ->count());
     }
 
+    public function test_outer_write_retry_returns_only_the_committed_return_visit(): void
+    {
+        // Exercise the production outer transaction, not RefreshDatabase's
+        // savepoint: Laravel intentionally handles nested deadlocks differently.
+        \Illuminate\Support\Facades\DB::commit();
+        \Illuminate\Foundation\Testing\RefreshDatabaseState::$migrated = false;
+        $attempts = 0;
+        \Illuminate\Support\Facades\Event::listen('eloquent.creating: '.\App\Models\UserActivityLog::class, function ($log) use (&$attempts) {
+            if ($log->event_type === 'complimentary_reshoot.created' && ($log->metadata['entry_point'] ?? null) === 'edit_shoot') {
+                if (++$attempts === 1) {
+                    throw new \RuntimeException('database is locked');
+                }
+            }
+        });
+        $payload = $this->payload(false, false, ['company_notes' => 'Survives the entire transaction retry']);
+        $response = $this->patchJson('/api/shoots/'.$this->sourceShoot->id, $payload)
+            ->assertOk()
+            ->assertJsonPath('data.created_complimentary_reshoot.shoot_type', Shoot::SHOOT_TYPE_COMPLIMENTARY_RESHOOT)
+            ->assertJsonPath('data.created_complimentary_reshoot.replayed', false)
+            ->assertJsonPath('data.company_notes', 'Survives the entire transaction retry');
+
+        $this->assertSame(2, $attempts);
+        $children = Shoot::query()->where('complimentary_reshoot_idempotency_key', $payload['complimentary_service_options']['idempotency_key'])->get();
+        $this->assertCount(1, $children);
+        $this->assertSame($children->first()->id, $response->json('data.created_complimentary_reshoot.id'));
+        $this->assertSame(1, \App\Models\UserActivityLog::query()->where('event_type', 'complimentary_reshoot.created')->where('target_id', $children->first()->id)->get()->filter(fn ($log) => ($log->metadata['entry_point'] ?? null) === 'edit_shoot')->count());
+    }
+
     /**
      * @param  array<string, mixed>  $extra
      * @return array<string, mixed>
