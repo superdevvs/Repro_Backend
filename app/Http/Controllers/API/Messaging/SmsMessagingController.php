@@ -23,7 +23,7 @@ use Illuminate\Validation\ValidationException;
 
 class SmsMessagingController extends Controller
 {
-    private const MAX_RECIPIENTS = 25;
+    private const MAX_RECIPIENTS = 100;
 
     public function __construct(private readonly MessagingService $messaging)
     {
@@ -78,10 +78,17 @@ class SmsMessagingController extends Controller
     public function recipients(Request $request): JsonResponse
     {
         $search = trim((string) $request->query('search', ''));
-        $limit = max(5, min((int) $request->query('limit', 20), 50));
+        $role = $this->normalizedRole((string) $request->query('role', ''));
+        $roleLimit = $role !== '' ? 100 : 50;
+        $limit = max(5, min((int) $request->query('limit', $role !== '' ? 100 : 20), $roleLimit));
         $actor = $request->user();
         $isSalesRep = $this->normalizedRole($actor?->role) === 'salesrep';
         $allowedClientIds = $isSalesRep && $actor ? $this->allowedClientIds($actor) : [];
+        if ($role !== '' && !in_array($role, ['photographer', 'client', 'editor', 'salesrep', 'admin', 'editingmanager'], true)) {
+            throw ValidationException::withMessages([
+                'role' => 'Choose a photographer, client, or editor group.',
+            ]);
+        }
 
         $results = collect();
 
@@ -103,8 +110,15 @@ class SmsMessagingController extends Controller
             });
         }
 
+        if ($role !== '') {
+            $userQuery->whereRaw(
+                "lower(replace(replace(replace(role, '-', ''), '_', ''), ' ', '')) = ?",
+                [$role]
+            );
+        }
+
         if ($isSalesRep) {
-            if ($allowedClientIds === []) {
+            if ($allowedClientIds === [] || ($role !== '' && $role !== 'client')) {
                 $userQuery->whereRaw('1 = 0');
             } else {
                 $userQuery->where('role', 'client')->whereIn('id', $allowedClientIds);
@@ -127,9 +141,16 @@ class SmsMessagingController extends Controller
                 'name' => $recipient->name ?: $phone,
                 'phone' => $phone,
                 'kind' => $recipient->role === 'client' ? 'client' : 'user',
+                'role' => $this->normalizedRole((string) $recipient->role),
                 'subtitle' => $subtitle !== [] ? implode(' • ', $subtitle) : 'User',
                 'user_id' => $recipient->id,
             ]);
+        }
+
+        if ($role !== '') {
+            return response()->json(
+                $results->unique('phone')->sortBy(fn ($entry) => strtolower((string) $entry['name']))->values()->all()
+            );
         }
 
         $contactQuery = Contact::query()->where(function ($query) {

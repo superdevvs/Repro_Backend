@@ -70,6 +70,32 @@ class BulkRecipientMessagingTest extends TestCase
         $response->assertJsonMissingPath('sent');
     }
 
+    public function test_sms_directory_can_select_an_entire_role(): void
+    {
+        $admin = User::factory()->create(['role' => 'admin', 'phonenumber' => null, 'phone' => null]);
+        User::factory()->create([
+            'role' => 'photographer',
+            'name' => 'Pat Photographer',
+            'phonenumber' => '2025550160',
+            'phone' => null,
+        ]);
+        User::factory()->create([
+            'role' => 'client',
+            'name' => 'Cara Client',
+            'phonenumber' => '2025550161',
+            'phone' => null,
+        ]);
+
+        Sanctum::actingAs($admin);
+
+        $response = $this->getJson('/api/messaging/sms/recipients?role=photographer&limit=100');
+
+        $response->assertOk();
+        $names = collect($response->json())->pluck('name');
+        $this->assertTrue($names->contains('Pat Photographer'));
+        $this->assertFalse($names->contains('Cara Client'));
+    }
+
     public function test_sms_directory_lists_people_with_phone_numbers(): void
     {
         $admin = User::factory()->create(['role' => 'admin']);
