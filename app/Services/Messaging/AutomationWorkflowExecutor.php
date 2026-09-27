@@ -363,10 +363,13 @@ class AutomationWorkflowExecutor
                         break;
                 }
 
+                $hasFailedRecipients = ($output['failed_to'] ?? []) !== [];
+                $hadFailure = $hadFailure || $hasFailedRecipients;
                 $step->update([
-                    'status' => 'completed',
+                    'status' => $hasFailedRecipients ? 'failed' : 'completed',
                     'completed_at' => now(),
                     'output_json' => $output,
+                    'error_message' => $hasFailedRecipients ? $output['error_message'] : null,
                 ]);
             } catch (\Throwable $exception) {
                 $step->update([
@@ -503,7 +506,8 @@ class AutomationWorkflowExecutor
         $recipients = $this->resolveActionRecipients($automation, $config, $context, 'email');
         $sentTo = [];
         $messageIds = [];
-        $failures = [];
+        $failedTo = [];
+        $errorMessage = null;
 
         foreach ($recipients as $recipient) {
             if (empty($recipient['email'])) {
@@ -535,23 +539,24 @@ class AutomationWorkflowExecutor
                     ]);
                 });
 
-                $sentTo[] = $recipient['email'];
-                if ($message?->id) {
-                    $messageIds[] = $message->id;
+                if ($message && in_array(strtoupper((string) $message->status), ['SENT', 'DELIVERED', 'QUEUED', 'SCHEDULED'], true)) {
+                    $sentTo[] = $recipient['email'];
+                    if ($message->id) {
+                        $messageIds[] = $message->id;
+                    }
                 }
             } catch (\Throwable $exception) {
-                $failures[] = $exception;
+                $failedTo[] = $recipient['email'];
+                $errorMessage ??= \App\Services\ApiErrorResponder::publicMessage($exception, 'Automation could not complete. Review its configuration and try again.');
             }
-        }
-
-        if ($failures !== []) {
-            throw $failures[0];
         }
 
         return [
             'channel' => 'email',
             'sent_to' => $sentTo,
+            'failed_to' => $failedTo,
             'message_ids' => $messageIds,
+            'error_message' => $errorMessage,
         ];
     }
 
@@ -915,7 +920,8 @@ class AutomationWorkflowExecutor
         $recipients = $this->resolveActionRecipients($automation, $config, $context, 'sms');
         $sentTo = [];
         $messageIds = [];
-        $failures = [];
+        $failedTo = [];
+        $errorMessage = null;
 
         foreach ($recipients as $recipient) {
             if (empty($recipient['phone'])) {
@@ -946,23 +952,24 @@ class AutomationWorkflowExecutor
                     ]);
                 });
 
-                $sentTo[] = $recipient['phone'];
-                if ($message?->id) {
-                    $messageIds[] = $message->id;
+                if ($message && in_array(strtoupper((string) $message->status), ['SENT', 'DELIVERED', 'QUEUED', 'SCHEDULED'], true)) {
+                    $sentTo[] = $recipient['phone'];
+                    if ($message->id) {
+                        $messageIds[] = $message->id;
+                    }
                 }
             } catch (\Throwable $exception) {
-                $failures[] = $exception;
+                $failedTo[] = $recipient['phone'];
+                $errorMessage ??= \App\Services\ApiErrorResponder::publicMessage($exception, 'Automation could not complete. Review its configuration and try again.');
             }
-        }
-
-        if ($failures !== []) {
-            throw $failures[0];
         }
 
         return [
             'channel' => 'sms',
             'sent_to' => $sentTo,
+            'failed_to' => $failedTo,
             'message_ids' => $messageIds,
+            'error_message' => $errorMessage,
         ];
     }
 
@@ -1258,11 +1265,24 @@ class AutomationWorkflowExecutor
         $scope = $sharedEvent ? '' : $automation->id.':'.($node['id'] ?? 'action');
         $tag = 'AUTOMATION_DELIVERY:'.hash('sha256', $eventKey.':'.$scope.':'.$channel.':'.strtolower($address));
 
-        return Cache::lock($tag, 120)->block(5, function () use ($tag, $deliver): ?Message {
+        $sharedBookingEmail = $channel === 'email'
+            && in_array($automation->trigger_type, ['SHOOT_BOOKED', 'PHOTOGRAPHER_ASSIGNED', 'SHOOT_SCHEDULED'], true);
+
+        return Cache::lock($tag, 120)->block(5, function () use ($tag, $deliver, $sharedBookingEmail): ?Message {
             $exists = Message::query()->where('tags_json', 'like', '%'.$tag.'%')
                 ->whereIn('status', ['SENT', 'DELIVERED', 'QUEUED', 'SCHEDULED'])->first();
             if ($exists) {
                 return $exists;
+            }
+            if ($sharedBookingEmail) {
+                $failed = Message::query()->where('tags_json', 'like', '%'.$tag.'%')
+                    ->where('status', 'FAILED')->latest('id')->first();
+                // A timeout can occur after the provider accepted an email. A
+                // sibling booking rule must not turn that unknown outcome into
+                // a duplicate. Only an explicit provider rejection permits retry.
+                if ($failed && data_get($failed->metadata, 'delivery.provider_rejected') !== true) {
+                    throw new \RuntimeException('Previous booking email delivery outcome is unknown; review the existing message before retrying.');
+                }
             }
             $message = $deliver($tag);
             if ($message instanceof Message && in_array($message->status, ['FAILED', 'CANCELLED', 'SUPPRESSED'], true)) {
@@ -1431,6 +1451,14 @@ class AutomationWorkflowExecutor
             'completed_run_count' => $completedRunCount,
             'waiting_run_count' => $waitingRunCount,
             'failed_run_count' => $failedRunCount,
+            'email_failed_to' => collect($runs)->filter(fn ($run) => $run instanceof AutomationRun)
+                ->flatMap(fn ($run) => $run->steps)
+                ->filter(fn ($step) => ($step->output_json['channel'] ?? null) === 'email')
+                ->flatMap(fn ($step) => $step->output_json['failed_to'] ?? [])->unique()->values()->all(),
+            'sms_failed_to' => collect($runs)->filter(fn ($run) => $run instanceof AutomationRun)
+                ->flatMap(fn ($run) => $run->steps)
+                ->filter(fn ($step) => ($step->output_json['channel'] ?? null) === 'sms')
+                ->flatMap(fn ($step) => $step->output_json['failed_to'] ?? [])->unique()->values()->all(),
             'handled' => $activeRuleCount > 0
                 && $failedRunCount === 0
                 && ($completedRunCount + $waitingRunCount) === $activeRuleCount,

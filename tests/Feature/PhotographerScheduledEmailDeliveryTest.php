@@ -5,12 +5,14 @@ namespace Tests\Feature;
 use App\Exceptions\Messaging\EmailProviderRejectedException;
 use App\Models\AutomationRule;
 use App\Models\Message;
+use App\Models\MessageChannel;
 use App\Models\MessageTemplate;
 use App\Models\Service;
 use App\Models\Shoot;
 use App\Models\SystemEmailDispatch;
 use App\Models\User;
-use App\Services\Messaging\MessagingService;
+use App\Services\Messaging\OutboundDeliveryGuard;
+use App\Services\Messaging\Providers\LocalSmtpProvider;
 use App\Services\ShootMediaStorageService;
 use App\Services\Shoots\ShootNotificationDispatchService;
 use App\Services\SystemEmails\EmailAuditService;
@@ -30,6 +32,9 @@ class PhotographerScheduledEmailDeliveryTest extends TestCase
     #[DataProvider('providerFailures')]
     public function test_booking_retries_only_explicit_rejections_and_preserves_successful_deliveries(bool $retryable): void
     {
+        OutboundDeliveryGuard::allowFakeProviderPipelineForTesting();
+        MessageChannel::create(['type' => 'EMAIL', 'provider' => 'LOCAL_SMTP', 'display_name' => 'Test sender',
+            'from_email' => 'sender@example.test', 'owner_scope' => 'GLOBAL', 'is_active' => true]);
         $client = User::factory()->create(['role' => 'client']);
         $lead = User::factory()->photographer()->create();
         $second = User::factory()->photographer()->create();
@@ -67,8 +72,10 @@ class PhotographerScheduledEmailDeliveryTest extends TestCase
         ]);
 
         $attempts = [];
-        $messaging = Mockery::mock(MessagingService::class);
-        $messaging->shouldReceive('sendEmail')->times($retryable ? 4 : 3)->andReturnUsing(function (array $payload) use (&$attempts, $lead, $retryable): Message {
+        // Mock the provider boundary so the real transport persists delivery
+        // records and the workflow can deduplicate accepted recipients.
+        $provider = Mockery::mock(LocalSmtpProvider::class);
+        $provider->shouldReceive('send')->times($retryable ? 4 : 3)->andReturnUsing(function (MessageChannel $channel, array $payload) use (&$attempts, $lead, $retryable): string {
             $email = $payload['to'];
             $attempts[$email] = ($attempts[$email] ?? 0) + 1;
             if ($email === $lead->email && $attempts[$email] === 1) {
@@ -77,24 +84,27 @@ class PhotographerScheduledEmailDeliveryTest extends TestCase
                     : new \RuntimeException('Provider outcome unknown after timeout');
             }
 
-            return new Message(['status' => 'SENT']);
+            return 'fixture-'.hash('sha256', $email.':'.$attempts[$email]);
         });
-        $this->app->instance(MessagingService::class, $messaging);
+        $this->app->instance(LocalSmtpProvider::class, $provider);
         $storage = Mockery::mock(ShootMediaStorageService::class);
-        $storage->shouldReceive('createShootFolders')->once();
+        $storage->shouldReceive('createShootFolders')->twice();
         $this->app->instance(ShootMediaStorageService::class, $storage);
 
         app(ShootNotificationDispatchService::class)->processCreatedShoot($shoot->id, false, true);
+        app(ShootNotificationDispatchService::class)->processCreatedShoot($shoot->id, false, true);
 
         $this->assertSame($retryable ? 2 : 1, $attempts[$lead->email] ?? 0, 'Only an explicit rejection may be retried.');
-        $this->assertSame(1, $attempts[$second->email] ?? 0, 'The successful photographer is deduplicated during fallback.');
+        $this->assertSame(1, $attempts[$second->email] ?? 0, 'Successful recipients are deduplicated across sibling rules and event replays.');
         $this->assertSame(1, $attempts[$client->email] ?? 0);
-        $this->assertSame($retryable ? 3 : 2, SystemEmailDispatch::query()->where('email_alias', 'SHOOT_SCHEDULED')->where('status', 'sent')->count());
-        $leadDispatch = SystemEmailDispatch::query()->where('recipient_email', $lead->email)->firstOrFail();
-        $this->assertSame($retryable ? 2 : 1, $leadDispatch->attempt_count);
-        $this->assertSame($retryable ? 'sent' : 'failed', $leadDispatch->status);
-        $this->assertSame($lead->email, $leadDispatch->payload_snapshot['recipient']['email']);
-        $this->assertSame($lead->email, $leadDispatch->transport_snapshot['to']);
+        $messages = Message::where('send_source', 'AUTOMATION')->where('related_shoot_id', $shoot->id)->get();
+        $this->assertSame($retryable ? 3 : 2, $messages->where('status', 'SENT')->count());
+        $this->assertSame($retryable ? 2 : 1, $messages->where('to_address', $lead->email)->count());
+        $failed = $messages->where('to_address', $lead->email)->firstWhere('status', 'FAILED');
+        $this->assertNotNull($failed);
+        $this->assertSame($retryable, data_get($failed->metadata, 'delivery.provider_rejected'));
+        $this->assertSame($retryable ? EmailProviderRejectedException::class : \RuntimeException::class, data_get($failed->metadata, 'delivery.error_class'));
+        $this->assertSame(0, SystemEmailDispatch::count(), 'Configured workflows do not invoke hardcoded fallback receipts.');
     }
 
     public static function providerFailures(): array

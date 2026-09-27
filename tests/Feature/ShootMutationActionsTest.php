@@ -230,7 +230,7 @@ class ShootMutationActionsTest extends TestCase
     }
 
     #[\PHPUnit\Framework\Attributes\Test]
-    public function scheduling_falls_back_when_scheduled_automation_did_not_send_client_email(): void
+    public function scheduling_honors_saved_recipients_when_scheduled_automation_did_not_send_client_email(): void
     {
         Sanctum::actingAs($this->admin);
 
@@ -280,19 +280,10 @@ class ShootMutationActionsTest extends TestCase
             ->andReturnFalse();
         $this->app->instance(AutomationService::class, $automationService);
 
-        $this->rebindMailService(function ($mailService) use ($shoot) {
-            $mailService->shouldReceive('sendShootScheduledEmail')
-                ->once()
-                ->withArgs(function (User $recipient, Shoot $scheduledShoot, string $paymentLink, ?bool $notifyPhotographer = null) use ($shoot) {
-                    return $recipient->is($this->client)
-                        && $scheduledShoot->id === $shoot->id
-                        && $paymentLink === 'https://example.test/payment'
-                        && $notifyPhotographer === false;
-                })
-                ->andReturnTrue();
-            $mailService->shouldReceive('sendAssignedPhotographerShootScheduledEmails')->once()->andReturnTrue();
+        $this->rebindMailService(function ($mailService) {
+            $mailService->shouldReceive('sendShootScheduledEmail')->never();
+            $mailService->shouldReceive('sendAssignedPhotographerShootScheduledEmails')->never();
         });
-
         $response = $this->postJson("/api/shoots/{$shoot->id}/schedule", [
             'scheduled_at' => now()->addDays(3)->setTime(10, 30)->format('Y-m-d H:i:s'),
             'photographer_id' => $this->photographer->id,
@@ -300,14 +291,7 @@ class ShootMutationActionsTest extends TestCase
 
         $response->assertOk();
 
-        $this->assertDatabaseHas('shoot_email_deliveries', [
-            'shoot_id' => $shoot->id,
-            'recipient_user_id' => $this->client->id,
-            'event_type' => ShootEmailDelivery::EVENT_SHOOT_SCHEDULED_CONFIRMATION,
-            'recipient_type' => ShootEmailDelivery::RECIPIENT_CLIENT,
-            'status' => ShootEmailDelivery::STATUS_SENT,
-            'source' => ShootEmailDelivery::SOURCE_FALLBACK,
-        ]);
+        $this->assertDatabaseCount('shoot_email_deliveries', 0);
     }
 
     #[\PHPUnit\Framework\Attributes\Test]
@@ -864,7 +848,7 @@ class ShootMutationActionsTest extends TestCase
     }
 
     #[\PHPUnit\Framework\Attributes\Test]
-    public function approval_falls_back_when_scheduled_automation_is_handled_but_client_email_was_not_sent(): void
+    public function approval_honors_saved_recipients_when_scheduled_automation_is_handled_but_client_email_was_not_sent(): void
     {
         Sanctum::actingAs($this->admin);
 
@@ -915,19 +899,10 @@ class ShootMutationActionsTest extends TestCase
         $automationService->shouldReceive('hasActiveTrigger')->zeroOrMoreTimes()->andReturnFalse();
         $this->app->instance(AutomationService::class, $automationService);
 
-        $this->rebindMailService(function ($mailService) use ($shoot) {
-            $mailService->shouldReceive('sendShootScheduledEmail')
-                ->once()
-                ->withArgs(function (User $recipient, Shoot $approvedShoot, string $paymentLink, ?bool $notifyPhotographer = null) use ($shoot) {
-                    return $recipient->is($this->client)
-                        && $approvedShoot->id === $shoot->id
-                        && $paymentLink === 'https://example.test/payment'
-                        && $notifyPhotographer === false;
-                })
-                ->andReturnTrue();
-            $mailService->shouldReceive('sendAssignedPhotographerShootScheduledEmails')->once()->andReturnTrue();
+        $this->rebindMailService(function ($mailService) {
+            $mailService->shouldReceive('sendShootScheduledEmail')->never();
+            $mailService->shouldReceive('sendAssignedPhotographerShootScheduledEmails')->never();
         });
-
         $response = $this->postJson("/api/shoots/{$shoot->id}/approve", [
             'scheduled_at' => now()->addDays(4)->setTime(9, 30)->format('Y-m-d H:i:s'),
             'photographer_id' => $this->photographer->id,
@@ -937,19 +912,13 @@ class ShootMutationActionsTest extends TestCase
 
         $response->assertOk();
 
-        $this->assertDatabaseHas('shoot_email_deliveries', [
-            'shoot_id' => $shoot->id,
-            'recipient_user_id' => $this->client->id,
-            'event_type' => ShootEmailDelivery::EVENT_SHOOT_SCHEDULED_CONFIRMATION,
-            'recipient_type' => ShootEmailDelivery::RECIPIENT_CLIENT,
-            'status' => ShootEmailDelivery::STATUS_SENT,
-            'source' => ShootEmailDelivery::SOURCE_FALLBACK,
-        ]);
+        $this->assertDatabaseCount('shoot_email_deliveries', 0);
     }
 
     #[\PHPUnit\Framework\Attributes\Test]
     public function approval_records_failed_client_confirmation_delivery_when_fallback_send_fails(): void
     {
+        \App\Models\AutomationRule::whereIn('trigger_type', ['SHOOT_BOOKED', 'SHOOT_SCHEDULED', 'SHOOT_REQUEST_APPROVED', 'SHOOT_REQUEST_MODIFIED'])->delete();
         Sanctum::actingAs($this->admin);
 
         $shoot = Shoot::factory()->create([
@@ -983,7 +952,7 @@ class ShootMutationActionsTest extends TestCase
         $automationService->shouldReceive('shouldUseFallback')
             ->once()
             ->with('SHOOT_SCHEDULED', Mockery::type('array'))
-            ->andReturnFalse();
+            ->andReturnTrue();
         $automationService->shouldReceive('hasActiveTrigger')->zeroOrMoreTimes()->andReturnFalse();
         $this->app->instance(AutomationService::class, $automationService);
 
@@ -1023,6 +992,7 @@ class ShootMutationActionsTest extends TestCase
     #[\PHPUnit\Framework\Attributes\Test]
     public function admin_created_scheduled_shoot_uses_booked_fallback_to_notify_client_and_photographer(): void
     {
+        \App\Models\AutomationRule::whereIn('trigger_type', ['SHOOT_BOOKED', 'SHOOT_SCHEDULED', 'SHOOT_REQUEST_APPROVED', 'SHOOT_REQUEST_MODIFIED'])->delete();
         Sanctum::actingAs($this->admin);
 
         $automationService = Mockery::mock(AutomationService::class);
@@ -1041,19 +1011,21 @@ class ShootMutationActionsTest extends TestCase
             ->withArgs(fn (string $triggerType) => $triggerType === 'SHOOT_BOOKED')
             ->andReturn([
                 'trigger_type' => 'SHOOT_BOOKED',
-                'active_rule_count' => 1,
-                'run_count' => 1,
+                'active_rule_count' => 0,
+                'run_count' => 0,
                 'completed_run_count' => 0,
                 'waiting_run_count' => 0,
-                'failed_run_count' => 1,
+                'failed_run_count' => 0,
                 'handled' => false,
-                'errors' => [
-                    ['automation_id' => 2, 'message' => 'Failed to authenticate with Cakemail API'],
-                ],
+                'errors' => [],
             ]);
         $automationService->shouldReceive('shouldUseFallback')
             ->once()
             ->with('SHOOT_BOOKED', Mockery::type('array'))
+            ->andReturnTrue();
+        $automationService->shouldReceive('handleEvent')->once()->with('SHOOT_SCHEDULED', Mockery::type('array'))
+            ->andReturn($this->emptyAutomationDispatchSummary('SHOOT_SCHEDULED'));
+        $automationService->shouldReceive('shouldUseFallback')->once()->with('SHOOT_SCHEDULED', Mockery::type('array'))
             ->andReturnTrue();
         $automationService->shouldReceive('hasActiveTrigger')->zeroOrMoreTimes()->andReturnFalse();
         $this->app->instance(AutomationService::class, $automationService);
@@ -1127,8 +1099,8 @@ class ShootMutationActionsTest extends TestCase
         $mailService->shouldReceive('captureShootSnapshot')->zeroOrMoreTimes()->passthru();
         $mailService->shouldReceive('buildClientRequestChangeSummary')->zeroOrMoreTimes()->passthru();
         $mailService->shouldReceive('buildShootChangeSummary')->zeroOrMoreTimes()->andReturn([
-            'summary' => 'Photographer updated',
-            'html' => '<p>Photographer updated</p>',
+            'summary' => 'Photographer: Mutation Photographer -> Replacement Photographer',
+            'html' => '<p>Photographer: Mutation Photographer -> Replacement Photographer</p>',
         ]);
         $mailService->shouldReceive('sendShootScheduledEmail')->never();
         $mailService->shouldReceive('sendShootUpdatedEmail')
@@ -1136,7 +1108,7 @@ class ShootMutationActionsTest extends TestCase
             ->withArgs(function (User $recipient, Shoot $updatedShoot, ?string $summary, ?bool $notifyClient, ?bool $notifyPhotographer) use ($shoot) {
                 return $recipient->is($this->client)
                     && $updatedShoot->id === $shoot->id
-                    && $summary === 'Photographer updated'
+                    && $summary === 'Photographer: Mutation Photographer -> Replacement Photographer'
                     && $notifyClient === true
                     && $notifyPhotographer === false;
             })
@@ -1147,7 +1119,7 @@ class ShootMutationActionsTest extends TestCase
                 return in_array($recipient->id, [$this->photographer->id, $replacementPhotographer->id], true)
                     && $updatedShoot->id === $shoot->id
                     && $previousPhotographer?->id === $this->photographer->id
-                    && $summary === 'Photographer updated';
+                    && $summary === 'Photographer: Mutation Photographer -> Replacement Photographer';
             })
             ->andReturnTrue();
         $mailService->shouldReceive('generatePaymentLink')->zeroOrMoreTimes()->andReturn('https://example.test/payment');
@@ -1168,7 +1140,7 @@ class ShootMutationActionsTest extends TestCase
     }
 
     #[\PHPUnit\Framework\Attributes\Test]
-    public function shoot_update_falls_back_when_update_automation_did_not_send_client_email(): void
+    public function shoot_update_honors_saved_recipients_without_direct_fallback(): void
     {
         Sanctum::actingAs($this->admin);
 
@@ -1218,19 +1190,9 @@ class ShootMutationActionsTest extends TestCase
         $automationService->shouldReceive('hasActiveTrigger')->zeroOrMoreTimes()->andReturnFalse();
         $this->app->instance(AutomationService::class, $automationService);
 
-        $this->rebindMailService(function ($mailService) use ($shoot) {
-            $mailService->shouldReceive('sendShootUpdatedEmail')
-                ->once()
-                ->withArgs(function (User $recipient, Shoot $updatedShoot, ?string $summary, ?bool $notifyClient, ?bool $notifyPhotographer) use ($shoot) {
-                    return $recipient->is($this->client)
-                        && $updatedShoot->id === $shoot->id
-                        && $summary === 'Shoot details updated'
-                        && $notifyClient === true
-                        && $notifyPhotographer === true;
-                })
-                ->andReturnTrue();
-        });
-
+        $this->rebindMailService(function ($mailService) {
+            $mailService->shouldReceive('sendShootUpdatedEmail')->never();
+        }, 'Location: Original address -> 510 Updated Ave');
         $response = $this->patchJson("/api/shoots/{$shoot->id}", [
             'address' => '510 Updated Ave',
             'notify_client' => true,
@@ -2487,15 +2449,15 @@ class ShootMutationActionsTest extends TestCase
         $this->app->instance(PhotographerAvailabilityService::class, $availabilityService);
     }
 
-    protected function rebindMailService(callable $configure): void
+    protected function rebindMailService(callable $configure, string $summary = 'Shoot details updated'): void
     {
         $mailService = Mockery::mock(MailService::class);
         $mailService->shouldIgnoreMissing();
         $mailService->shouldReceive('captureShootSnapshot')->zeroOrMoreTimes()->passthru();
         $mailService->shouldReceive('buildClientRequestChangeSummary')->zeroOrMoreTimes()->passthru();
         $mailService->shouldReceive('buildShootChangeSummary')->zeroOrMoreTimes()->andReturn([
-            'summary' => 'Shoot details updated',
-            'html' => '<p>Shoot details updated</p>',
+            'summary' => $summary,
+            'html' => '<p>'.e($summary).'</p>',
         ]);
         $mailService->shouldReceive('sendShootRemovedEmail')->zeroOrMoreTimes()->andReturnTrue();
         $mailService->shouldReceive('generatePaymentLink')->zeroOrMoreTimes()->andReturn('https://example.test/payment');

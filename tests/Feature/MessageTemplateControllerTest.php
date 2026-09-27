@@ -369,10 +369,10 @@ class MessageTemplateControllerTest extends TestCase
     public function test_registered_defaults_have_complete_known_preview_examples_in_both_themes(): void
     {
         Sanctum::actingAs(User::factory()->create(['role' => 'admin']));
-        foreach (MessageTemplate::where('channel', 'EMAIL')->where('is_system', true)->get() as $template) {
+        foreach (MessageTemplate::where('is_system', true)->get() as $template) {
             foreach (['light', 'dark'] as $theme) {
-                $this->postJson("/api/messaging/templates/{$template->id}/preview", ['theme' => $theme])
-                    ->assertOk()->assertJsonPath('missing', []);
+                $response = $this->postJson("/api/messaging/templates/{$template->id}/preview", ['theme' => $theme])->assertOk();
+                $this->assertSame([], $response->json('missing'), "Missing preview samples for {$template->slug} ({$theme}).");
             }
         }
     }

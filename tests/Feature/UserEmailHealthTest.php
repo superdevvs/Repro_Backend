@@ -2,6 +2,8 @@
 
 namespace Tests\Feature;
 
+use App\Models\AutomationRule;
+use App\Models\AutomationRun;
 use App\Models\ClientEmailVerificationToken;
 use App\Models\Message;
 use App\Models\MessageChannel;
@@ -17,6 +19,7 @@ use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\URL;
 use Laravel\Sanctum\Sanctum;
 use Mockery\MockInterface;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Support\SignsInboundWebhooks;
 use Tests\TestCase;
 
@@ -242,6 +245,7 @@ class UserEmailHealthTest extends TestCase
 
     public function test_admin_created_accounts_require_email_verification_except_admin_roles(): void
     {
+        $this->withoutConfiguredWelcomeAutomation();
         $admin = User::factory()->admin()->create();
         $roles = [
             'superadmin' => 'aj@reprophotos.com',
@@ -322,8 +326,9 @@ class UserEmailHealthTest extends TestCase
         }
     }
 
-    public function test_admin_created_account_dispatches_welcome_sms_and_reports_delivery(): void
+    public function test_admin_created_account_without_automation_dispatches_welcome_sms_and_reports_delivery(): void
     {
+        $this->withoutConfiguredWelcomeAutomation();
         $admin = User::factory()->admin()->create();
 
         $this->partialMock(MailService::class, function (MockInterface $mock) {
@@ -499,6 +504,7 @@ class UserEmailHealthTest extends TestCase
 
     public function test_registration_flow_generates_a_v2_verification_link_that_can_be_opened(): void
     {
+        $this->withoutConfiguredWelcomeAutomation();
         $capturedLink = null;
 
         $verificationLinkService = app(ClientEmailVerificationLinkService::class);
@@ -540,8 +546,9 @@ class UserEmailHealthTest extends TestCase
         ]);
     }
 
-    public function test_public_registration_dispatches_welcome_sms_and_reports_each_channel(): void
+    public function test_public_registration_without_automation_dispatches_welcome_sms_and_reports_each_channel(): void
     {
+        $this->withoutConfiguredWelcomeAutomation();
         $this->partialMock(MailService::class, function (MockInterface $mock) {
             $mock->shouldReceive('sendAccountCreatedEmail')->once()->andReturnTrue();
             $mock->shouldReceive('sendClientEmailVerificationEmail')->once()->andReturnTrue();
@@ -572,8 +579,9 @@ class UserEmailHealthTest extends TestCase
             ->assertJsonPath('notification_delivery.sms.error', null);
     }
 
-    public function test_public_registration_reports_sms_failure_without_rolling_back_account(): void
+    public function test_public_registration_without_automation_reports_sms_failure_without_rolling_back_account(): void
     {
+        $this->withoutConfiguredWelcomeAutomation();
         $this->partialMock(MailService::class, function (MockInterface $mock) {
             $mock->shouldReceive('sendAccountCreatedEmail')->once()->andReturnTrue();
             $mock->shouldReceive('sendClientEmailVerificationEmail')->once()->andReturnTrue();
@@ -815,6 +823,176 @@ class UserEmailHealthTest extends TestCase
         $this->assertTrue($clientIds->contains($firstClient->id));
         $this->assertTrue($clientIds->contains($secondClient->id));
         $this->assertCount(2, $clientIds);
+    }
+
+    #[DataProvider('welcomeAutomationModes')]
+    public function test_registration_respects_saved_welcome_channels_and_reports_failures(bool $active, bool $smsFails, bool $emailEnabled = true, bool $emailFails = false, bool $waiting = false, string $status = 'SENT'): void
+    {
+        $this->withoutConfiguredWelcomeAutomation();
+        $rule = AutomationRule::create([
+            'name' => 'Saved welcome channels', 'trigger_type' => 'ACCOUNT_CREATED',
+            'scope' => 'SYSTEM', 'is_active' => $active, 'recipients_json' => ['account'],
+            'workflow_definition_json' => [
+                'nodes' => [
+                    ['id' => 'trigger', 'type' => 'trigger.event', 'config' => ['triggerType' => 'ACCOUNT_CREATED']],
+                    ['id' => 'email', 'type' => 'action.email', 'config' => ['recipientMode' => 'automation_default',
+                        'subject' => 'Saved welcome subject', 'bodyText' => 'Saved email for {{recipient_name}}']],
+                    ['id' => 'sms', 'type' => 'action.sms', 'config' => ['recipientMode' => 'automation_default',
+                        'bodyText' => 'Saved SMS for {{recipient_name}}']],
+                    ['id' => 'end', 'type' => 'end', 'config' => []],
+                ],
+                'edges' => [
+                    ['id' => 'a', 'source' => 'trigger', 'target' => 'email'],
+                    ['id' => 'b', 'source' => 'email', 'target' => 'sms'],
+                    ['id' => 'c', 'source' => 'sms', 'target' => 'end'],
+                ],
+            ],
+        ]);
+        if (! $emailEnabled) {
+            $workflow = $rule->workflow_definition_json;
+            $workflow['nodes'] = array_values(array_filter($workflow['nodes'], fn ($node) => $node['id'] !== 'email'));
+            $workflow['edges'] = [['id' => 'a', 'source' => 'trigger', 'target' => 'sms'], ['id' => 'b', 'source' => 'sms', 'target' => 'end']];
+            $rule->update(['workflow_definition_json' => $workflow]);
+        }
+        if ($waiting) {
+            $workflow = $rule->workflow_definition_json;
+            $workflow['nodes'][] = ['id' => 'wait', 'type' => 'wait.duration', 'config' => ['amount' => 1, 'unit' => 'hours']];
+            $workflow['edges'][0]['target'] = 'wait';
+            $workflow['edges'][] = ['id' => 'd', 'source' => 'wait', 'target' => 'email'];
+            $rule->update(['workflow_definition_json' => $workflow]);
+        }
+        $this->partialMock(MailService::class, function (MockInterface $mock) {
+            $mock->shouldNotReceive('sendAccountCreatedEmail');
+            $mock->shouldReceive('sendClientEmailVerificationEmail')->once()->andReturnTrue();
+        });
+        $executes = $active && ! $waiting;
+        $this->mock(MessagingService::class, function (MockInterface $mock) use ($executes, $smsFails, $emailEnabled, $emailFails, $status) {
+            if (! $executes) {
+                $mock->shouldNotReceive('sendEmail');
+                $mock->shouldNotReceive('sendSms');
+
+                return;
+            }
+            if (! $emailEnabled) {
+                $mock->shouldNotReceive('sendEmail');
+            } elseif ($emailFails) {
+                $mock->shouldReceive('sendEmail')->once()->andThrow(new \RuntimeException('Provider temporarily unavailable'));
+            } else {
+                $mock->shouldReceive('sendEmail')->once()->andReturnUsing(fn (array $payload) => $this->acceptedWelcomeMessage($payload, 'EMAIL', $status));
+            }
+            if ($smsFails) {
+                $mock->shouldReceive('sendSms')->once()->andThrow(new \RuntimeException('Provider temporarily unavailable'));
+            } else {
+                $mock->shouldReceive('sendSms')->once()->andReturnUsing(fn (array $payload) => $this->acceptedWelcomeMessage($payload, 'SMS', $status));
+            }
+        });
+        $emailSent = $executes && $emailEnabled && ! $emailFails && $status === 'SENT';
+        $smsSent = $executes && ! $smsFails && $status === 'SENT';
+        $response = $this->postJson('/api/register', [
+            'name' => 'Configured Welcome', 'email' => 'configured.welcome@example.com',
+            'phonenumber' => '202-555-0123', 'password' => 'secret123', 'password_confirmation' => 'secret123',
+        ])->assertCreated()
+            ->assertJsonPath('notification_delivery.email.account_created.attempted', $emailSent || ($executes && $emailEnabled && $emailFails))
+            ->assertJsonPath('notification_delivery.email.account_created.sent', $emailSent)
+            ->assertJsonPath('notification_delivery.email.account_created.error', $executes && $emailEnabled && $emailFails ? 'Email automation failed. Review its failed step.' : null)
+            ->assertJsonPath('notification_delivery.email.verification.sent', true)
+            ->assertJsonPath('notification_delivery.sms.attempted', $smsSent || ($executes && $smsFails))
+            ->assertJsonPath('notification_delivery.sms.sent', $smsSent)
+            ->assertJsonPath('notification_delivery.sms.error', $executes && $smsFails ? 'SMS automation failed. Review its failed step.' : null);
+        $this->assertDatabaseHas('users', ['id' => $response->json('user.id'), 'email' => 'configured.welcome@example.com']);
+        $this->assertSame($executes && $emailEnabled && ! $emailFails ? 1 : 0, Message::where('channel', 'EMAIL')->count());
+        $this->assertSame($executes && ! $smsFails ? 1 : 0, Message::where('channel', 'SMS')->count());
+        if ($emailSent) {
+            $this->assertSame('Saved welcome subject', Message::where('channel', 'EMAIL')->firstOrFail()->subject);
+        }
+    }
+
+    public static function welcomeAutomationModes(): array
+    {
+        return [
+            'both accepted' => [true, false], 'SMS failure is visible' => [true, true], 'paused rule' => [false, false],
+            'SMS only' => [true, false, false], 'email failure is visible' => [true, false, true, true],
+            'saved wait' => [true, false, true, false, true], 'blocked channels' => [true, false, true, false, false, 'BLOCKED'],
+        ];
+    }
+
+    #[DataProvider('welcomeRecipientModes')]
+    public function test_unrelated_recipient_failures_do_not_overwrite_account_delivery_status(?string $phone, bool $includeAccount): void
+    {
+        $this->withoutConfiguredWelcomeAutomation();
+        $admin = User::factory()->admin()->create(['email' => 'welcome.admin@example.test', 'phonenumber' => '+12025550999']);
+        AutomationRule::create([
+            'name' => 'Recipient-specific welcome', 'trigger_type' => 'ACCOUNT_CREATED', 'scope' => 'SYSTEM', 'is_active' => true,
+            'recipients_json' => $includeAccount ? ['account', 'admin'] : ['admin'],
+            'workflow_definition_json' => [
+                'nodes' => [
+                    ['id' => 'trigger', 'type' => 'trigger.event', 'config' => ['triggerType' => 'ACCOUNT_CREATED']],
+                    ['id' => 'email', 'type' => 'action.email', 'config' => ['recipientMode' => 'automation_default', 'subject' => 'Welcome', 'bodyText' => 'Welcome']],
+                    ['id' => 'sms', 'type' => 'action.sms', 'config' => ['recipientMode' => 'automation_default', 'bodyText' => 'Welcome']],
+                    ['id' => 'end', 'type' => 'end', 'config' => []],
+                ],
+                'edges' => [['id' => 'a', 'source' => 'trigger', 'target' => 'email'], ['id' => 'b', 'source' => 'email', 'target' => 'sms'], ['id' => 'c', 'source' => 'sms', 'target' => 'end']],
+            ],
+        ]);
+        $this->partialMock(MailService::class, function (MockInterface $mock) {
+            $mock->shouldNotReceive('sendAccountCreatedEmail');
+            $mock->shouldReceive('sendClientEmailVerificationEmail')->once()->andReturnTrue();
+        });
+        $this->mock(MessagingService::class, function (MockInterface $mock) use ($admin, $includeAccount, $phone) {
+            $mock->shouldReceive('sendEmail')->times($includeAccount ? 2 : 1)->andReturnUsing(function ($payload) use ($admin) {
+                if ($payload['to'] === $admin->email) {
+                    throw new \RuntimeException('Admin provider failure');
+                }
+
+                return $this->acceptedWelcomeMessage($payload, 'EMAIL');
+            });
+            $mock->shouldReceive('sendSms')->times($includeAccount && $phone ? 2 : 1)->andReturnUsing(function ($payload) use ($admin) {
+                if ($payload['to'] === $admin->phonenumber) {
+                    throw new \RuntimeException('Admin provider failure');
+                }
+
+                return $this->acceptedWelcomeMessage($payload, 'SMS');
+            });
+        });
+        $accountSms = $includeAccount && $phone !== null;
+        $this->postJson('/api/register', ['name' => 'Recipient Welcome', 'email' => 'recipient.welcome@example.com',
+            'phonenumber' => $phone, 'password' => 'secret123', 'password_confirmation' => 'secret123'])
+            ->assertCreated()
+            ->assertJsonPath('notification_delivery.email.account_created', ['attempted' => $includeAccount, 'sent' => $includeAccount, 'error' => null])
+            ->assertJsonPath('notification_delivery.sms', ['attempted' => $accountSms, 'sent' => $accountSms, 'error' => null]);
+        $run = AutomationRun::where('trigger_type', 'ACCOUNT_CREATED')->sole();
+        $this->assertSame('failed', $run->status, 'Other recipients must still have a visible failed workflow.');
+        $email = $run->steps()->where('node_type', 'action.email')->sole();
+        $sms = $run->steps()->where('node_type', 'action.sms')->sole();
+        $this->assertSame([$admin->email], $email->output_json['failed_to']);
+        $this->assertSame([$admin->phonenumber], $sms->output_json['failed_to']);
+        $this->assertCount($includeAccount ? 1 : 0, $email->output_json['message_ids']);
+        $this->assertCount($accountSms ? 1 : 0, $sms->output_json['message_ids']);
+        $this->assertCount($includeAccount ? 1 : 0, $email->output_json['sent_to']);
+        $this->assertCount($accountSms ? 1 : 0, $sms->output_json['sent_to']);
+    }
+
+    public static function welcomeRecipientModes(): array
+    {
+        return ['unrelated only' => ['202-555-0123', false], 'no account phone' => [null, false],
+            'partial success is retained' => ['202-555-0123', true], 'email-only account success' => [null, true]];
+    }
+
+    private function acceptedWelcomeMessage(array $payload, string $channel, string $status = 'SENT'): Message
+    {
+        return Message::create([
+            'channel' => $channel, 'direction' => 'OUTBOUND', 'provider' => 'FAKE', 'status' => $status,
+            'send_source' => 'AUTOMATION', 'to_address' => $payload['to'], 'subject' => $payload['subject'] ?? null,
+            'body_text' => $payload['body_text'], 'related_account_id' => $payload['related_account_id'],
+            'tags_json' => $payload['tags_json'],
+        ]);
+    }
+
+    private function withoutConfiguredWelcomeAutomation(): void
+    {
+        // These legacy-fallback fixtures must explicitly represent an installation
+        // without a welcome rule; a paused/configured rule intentionally suppresses fallback.
+        AutomationRule::forTrigger('ACCOUNT_CREATED')->delete();
     }
 
     protected function buildLegacyVerificationLink(User $user): string

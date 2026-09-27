@@ -1095,6 +1095,8 @@ class MessagingService
                 'status' => 'FAILED',
                 'failed_at' => now()->toIso8601String(),
                 'error' => $exception->getMessage(),
+                'error_class' => get_class($exception),
+                'provider_rejected' => $exception instanceof \App\Exceptions\Messaging\EmailProviderRejectedException,
             ]),
         ]);
 

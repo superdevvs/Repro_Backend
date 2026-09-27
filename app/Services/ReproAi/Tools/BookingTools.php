@@ -130,9 +130,10 @@ class BookingTools
                     $context['rep'] = $shoot->rep;
                 }
                 $shootBookedDispatch = $this->automationService->handleEvent('SHOOT_BOOKED', $context);
-                if ($shoot->scheduled_at) {
+                $shootScheduledDispatch = null;
+                if ($shoot->status === 'scheduled') {
                     $context['scheduled_at'] = $shoot->scheduled_at?->toISOString();
-                    $this->automationService->handleEvent('SHOOT_SCHEDULED', $context);
+                    $shootScheduledDispatch = $this->automationService->handleEvent('SHOOT_SCHEDULED', $context);
                 }
 
                 if ($shoot->status === 'scheduled') {
@@ -144,10 +145,11 @@ class BookingTools
                         'dispatch' => $this->formatDispatchSummaryForLog($shootBookedDispatch),
                     ]);
 
-                    $clientEmailSent = (bool) ($shootBookedDispatch['client_email_sent'] ?? false);
+                    $clientEmailSent = (bool) ($shootScheduledDispatch['client_email_sent'] ?? false)
+                        || (bool) ($shootBookedDispatch['client_email_sent'] ?? false);
                     $photographerEmailSent = (bool) ($shootBookedDispatch['photographer_email_sent'] ?? false);
 
-                    if ($client && $shouldUseFallback && ! $clientEmailSent) {
+                    if ($client && $this->automationService->shouldUseFallback('SHOOT_SCHEDULED', $shootScheduledDispatch) && ! $clientEmailSent) {
                         $paymentLink = $this->mailService->generatePaymentLink($shoot);
                         $this->mailService->sendShootScheduledEmail($client, $shoot, $paymentLink, false);
                     }

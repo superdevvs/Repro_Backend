@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\AutomationRule;
 use App\Models\MessageTemplate;
+use App\Services\Messaging\AutomationWorkflowConverter;
 use App\Services\SystemEmails\DirectEmailTemplates;
 use App\Services\SystemEmails\EmailAtelierTemplates;
 use App\Services\SystemEmails\EmailTypeRegistry;
@@ -25,10 +26,9 @@ use Tests\TestCase;
  *
  * Methodology: observation-first. The expected values below were OBSERVED from
  * the current (UNFIXED) seeder output and committed here as the baseline
- * snapshot. These tests PASS on the unfixed code (confirming the baseline to
- * preserve) and are re-run UNCHANGED after the fix (task 3.8) to prove the
- * central wrapper/snippet refactor did not silently change any structural
- * wiring.
+ * snapshot. The September automation repair has explicit, separately listed
+ * additions for operational details, editable schedules and optional SMS.
+ * Original metadata and body tokens remain protected by this baseline.
  *
  * The central fix promotes getEmailWrapper() into a shared header/footer, so it
  * is allowed to ADD shared tokens (e.g. the canonical contact line) to a body;
@@ -270,6 +270,55 @@ class ShootEmailCompletenessPreservationTest extends TestCase
         );
     }
 
+    /** Reviewed operational additions; keep every original declared variable. */
+    private function expectedVariables(string $slug, array $original): array
+    {
+        $added = match ($slug) {
+            'shoot-scheduled', 'shoot-request-approved', 'shoot-request-modified', 'shoot-updated' => ['dashboard_link'],
+            'shoot-request-declined' => ['portal_url'],
+            'photographer-assigned', 'shoot-reminder' => ['map_link', 'property_contact_name', 'property_contact_phone', 'access_instructions', 'dashboard_link'],
+            'photographer-changed' => ['assignment_message'],
+            'shoot-ready' => ['payment_status', 'remaining_balance', 'dashboard_link'],
+            'shoot-cancelled' => ['cancellation_reason'],
+            'shoot-deleted' => ['cancellation_reason', 'portal_url'],
+            'payment-thank-you' => ['invoice_number', 'payment_method', 'payment_items', 'remaining_balance', 'receipt_link'],
+            'refund-submitted' => ['refund_amount', 'original_payment_reference', 'refund_method', 'refund_settlement_timing'],
+            'property-contact-reminder', 'property-contact-reminder-sms' => ['access_warning', 'dashboard_link'],
+            default => [],
+        };
+
+        return array_values(array_unique(array_merge($original, $added)));
+    }
+
+    /** Newly visible schedules replace existing hidden delivery paths. */
+    private function additionalAutomationResolution(): array
+    {
+        return [
+            'SHOOT_SCHEDULED|Client Booking Confirmation' => 'shoot-scheduled',
+            'PHOTOGRAPHER_SHOOT_REMINDER|Photographer Shoot Reminder' => 'photographer-shoot-reminder',
+            'SHOOT_PAYMENT_REMINDER|Shoot Payment Reminder' => 'payment-due-reminder',
+            'WEEKLY_AUTOMATED_INVOICING|Weekly Automated Invoicing' => 'weekly-invoice-generated',
+            'WEEKLY_SALES_REPORT|Weekly Sales Reports' => 'weekly-sales-report',
+            'INVOICE_SUMMARY|Weekly Client Invoice Summary' => 'weekly-client-invoice-summary',
+            'WEEKLY_REP_INVOICE|Weekly Rep Invoice Summary' => 'weekly-rep-invoice-summary',
+            'WEEKLY_PAYOUT_REPORT|Weekly Payout Reports' => 'payout-report',
+            'WEEKLY_PAYOUT_DIGEST|Weekly Accounting Payout Digest' => 'payout-digest',
+        ];
+    }
+
+    private function automationTemplateAdditions(): array
+    {
+        return [
+            'automation-account-created-sms', 'automation-photographer-assigned-sms',
+            'automation-photographer-changed-sms', 'automation-photographer-shoot-reminder-sms',
+            'automation-shoot-booked-sms', 'automation-shoot-canceled-sms', 'automation-shoot-cancelled-sms',
+            'automation-shoot-completed-sms', 'automation-shoot-request-approved-sms',
+            'automation-shoot-request-modified-sms', 'automation-shoot-scheduled-sms', 'automation-shoot-updated-sms',
+            'photographer-shoot-reminder', 'shoot-payment-reminder-sms',
+            'weekly-client-invoice-summary', 'weekly-rep-invoice-summary',
+        ];
+    }
+
     /** Extract the set of {{mustache}} variables present in a string. */
     private function extractTokens(string $content): array
     {
@@ -311,12 +360,12 @@ class ShootEmailCompletenessPreservationTest extends TestCase
         $flowSlugs = array_column(EmailAtelierTemplates::definitions(), 'slug');
         $aliases = app(EmailTypeRegistry::class)->protectedAliases();
         $protectedSlugs = array_map(fn ($alias) => 'system-'.strtolower(str_replace('_', '-', $alias)), $aliases);
-        $intentionalAdditions = array_merge($directSlugs, $flowSlugs, $protectedSlugs);
+        $intentionalAdditions = array_merge($directSlugs, $flowSlugs, $protectedSlugs, $this->automationTemplateAdditions());
         $actualAdditions = array_values(array_diff($actualSlugs, $expectedSlugs));
 
         $this->assertNotEmpty($actualAdditions, 'The additive editor migrations must register the additional email families.');
         $this->assertSame([], array_values(array_diff($actualAdditions, $intentionalAdditions)), 'Unexpected SYSTEM template registrations must not silently enter the baseline.');
-        foreach (array_merge($directSlugs, $flowSlugs) as $slug) {
+        foreach (array_merge($directSlugs, $flowSlugs, $this->automationTemplateAdditions()) as $slug) {
             $this->assertContains($slug, $actualSlugs, 'Every direct/flow email must be registered in the editor.');
         }
         foreach ($aliases as $alias) {
@@ -351,7 +400,7 @@ class ShootEmailCompletenessPreservationTest extends TestCase
             );
 
             $this->assertSame(
-                $expected['variables_json'],
+                $this->expectedVariables($slug, $expected['variables_json']),
                 $template->variables_json,
                 "variables_json for '{$slug}' must match the baseline post-mapVariables() declaration (3.4)."
             );
@@ -396,10 +445,11 @@ class ShootEmailCompletenessPreservationTest extends TestCase
     // ---------------------------------------------------------------------
     public function test_seeded_automation_rule_set_matches_baseline(): void
     {
-        $expectedKeys = array_keys($this->baselineAutomationResolution());
+        $this->assertCount(23, $this->baselineAutomationResolution(), 'The original 23 rules remain protected.');
+        $expectedKeys = array_keys($this->baselineAutomationResolution() + $this->additionalAutomationResolution());
         sort($expectedKeys);
 
-        $this->assertCount(23, $expectedKeys, 'Baseline must describe exactly 23 SYSTEM automation rules.');
+        $this->assertCount(32, $expectedKeys, 'Only the nine reviewed editable schedules may be added.');
 
         $actualKeys = AutomationRule::query()
             ->where('scope', 'SYSTEM')
@@ -421,15 +471,23 @@ class ShootEmailCompletenessPreservationTest extends TestCase
     // ---------------------------------------------------------------------
     public function test_automation_trigger_to_template_resolution_matches_baseline(): void
     {
-        $expected = $this->baselineAutomationResolution();
+        $expected = $this->baselineAutomationResolution() + $this->additionalAutomationResolution();
+        // The old factory cancellation rule selected deletion copy; this repair
+        // intentionally selects its existing cancellation template instead.
+        $expected['SHOOT_CANCELED|Shoot Cancelled Notification'] = 'shoot-cancelled';
 
         $slugById = MessageTemplate::query()->pluck('slug', 'id')->all();
 
         $actual = [];
         foreach (AutomationRule::query()->where('scope', 'SYSTEM')->get() as $rule) {
             $key = $rule->trigger_type.'|'.$rule->name;
-            $actual[$key] = $rule->template_id !== null
-                ? ($slugById[$rule->template_id] ?? null)
+            // The saved workflow is authoritative. An older protected-email
+            // migration cleared legacy template_id without changing its nodes.
+            $workflow = app(AutomationWorkflowConverter::class)->getWorkflowDefinition($rule);
+            $action = collect($workflow['nodes'])->first(fn ($node) => in_array($node['type'], ['action.email', 'action.sms'], true));
+            $templateId = $action['config']['templateId'] ?? null;
+            $actual[$key] = $templateId !== null
+                ? ($slugById[$templateId] ?? null)
                 : null;
         }
 
@@ -496,7 +554,7 @@ class ShootEmailCompletenessPreservationTest extends TestCase
 
                 // variables_json order is part of the declared contract; assert
                 // exact equality regardless of the shuffled visit order.
-                $this->assertSame($expected['variables_json'], $template->variables_json, "iter {$i}: variables_json drift for {$slug}");
+                $this->assertSame($this->expectedVariables($slug, $expected['variables_json']), $template->variables_json, "iter {$i}: variables_json drift for {$slug}");
 
                 // Token preservation under a shuffled expected-token ordering.
                 $expectedTokens = $expected['body_tokens'];

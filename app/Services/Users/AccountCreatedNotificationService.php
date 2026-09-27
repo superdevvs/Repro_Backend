@@ -75,15 +75,22 @@ class AccountCreatedNotificationService
 
             $automation = $this->automationService->handleEvent('ACCOUNT_CREATED', $automationContext);
             $acceptedByAutomation = $this->emailWasSentTo($automation, $user->email);
-            $sent = $acceptedByAutomation || ($this->automationService->shouldUseFallback('ACCOUNT_CREATED', $automation) && $this->mailService->sendAccountCreatedEmail(
-                $user,
-                $resetLink,
-                $result['links']['verification'],
-                $result['links']['equipment'],
-                $pendingEquipmentCount,
-                (bool) ($options['include_password_creation_link'] ?? false)
-            ));
-            $result['email']['account_created'] = $this->channel(true, $sent, $sent ? null : 'Provider did not accept the account-created email.');
+            if ($this->automationService->shouldUseFallback('ACCOUNT_CREATED', $automation)) {
+                $sent = $acceptedByAutomation || $this->mailService->sendAccountCreatedEmail(
+                    $user,
+                    $resetLink,
+                    $result['links']['verification'],
+                    $result['links']['equipment'],
+                    $pendingEquipmentCount,
+                    (bool) ($options['include_password_creation_link'] ?? false)
+                );
+                $result['email']['account_created'] = $this->channel(true, $sent, $sent ? null : 'Provider did not accept the account-created email.');
+            } else {
+                $failed = collect($automation['email_failed_to'] ?? [])
+                    ->contains(fn ($recipient) => strtolower(trim((string) $recipient)) === strtolower(trim($user->email)));
+                $result['email']['account_created'] = $this->channel($acceptedByAutomation || $failed, $acceptedByAutomation,
+                    $failed && ! $acceptedByAutomation ? 'Email automation failed. Review its failed step.' : null);
+            }
         } catch (\Throwable $exception) {
             $result['email']['account_created'] = $this->failed($exception);
             $this->logFailure('email.account_created', $user, $exception);
@@ -121,9 +128,12 @@ class AccountCreatedNotificationService
             $result['sms'] = $this->sendSms($user, $actor);
         } else {
             $phone = $this->normalizePhone($this->rawPhone($user));
-            $sent = collect($automation['sms_sent_to'] ?? [])
+            $sent = $phone !== '' && collect($automation['sms_sent_to'] ?? [])
                 ->contains(fn ($recipient) => $this->normalizePhone((string) $recipient) === $phone);
-            $result['sms'] = $this->channel($sent, $sent);
+            $failed = $phone !== '' && collect($automation['sms_failed_to'] ?? [])
+                ->contains(fn ($recipient) => $this->normalizePhone((string) $recipient) === $phone);
+            $result['sms'] = $this->channel($sent || $failed, $sent,
+                $failed && ! $sent ? 'SMS automation failed. Review its failed step.' : null);
         }
 
         return $result;
@@ -193,6 +203,9 @@ class AccountCreatedNotificationService
     public function normalizePhone(string $phone): string
     {
         $digits = preg_replace('/\D+/', '', $phone) ?? '';
+        if ($digits === '') {
+            return '';
+        }
         if (strlen($digits) === 10) {
             return '+1'.$digits;
         }
