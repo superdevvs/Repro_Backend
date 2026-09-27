@@ -94,6 +94,10 @@ class InvoiceController extends Controller
             });
         } elseif ($this->hasRole($user, self::SALES_REP_ROLES)) {
             // Sales reps can only see invoices for their clients
+            // Weekly payouts share these shoots but are not client receivables.
+            $query->where(function ($invoiceQuery) {
+                $invoiceQuery->where('role', Invoice::ROLE_CLIENT)->orWhereNull('role');
+            });
             $query->where(function ($q) use ($user) {
                 $q->where('sales_rep_id', $user->id)
                     ->orWhereHas('shoots', function ($shootQuery) use ($user) {

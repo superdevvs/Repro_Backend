@@ -35,6 +35,10 @@ class SalesReportService
         $repShootIds = $repShoots->pluck('id')->filter()->map(fn ($id) => (int) $id)->all();
 
         $repInvoices = Invoice::query()
+            // Legacy shoot invoices can have no role; payee payouts are not sales revenue.
+            ->where(function ($query) {
+                $query->where('role', Invoice::ROLE_CLIENT)->orWhereNull('role');
+            })
             ->with([
                 'shoot:id,client_id,rep_id,scheduled_date,created_at,total_quote,sales_rep_pay_enabled',
                 'shoots:id,client_id,rep_id,scheduled_date,created_at,total_quote,sales_rep_pay_enabled',
