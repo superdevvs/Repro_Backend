@@ -108,7 +108,7 @@ class LinkPreviewComplianceTest extends TestCase
 
         $this->assertSame('https://youriguide.com/unbranded_4821/', $payload['iguide_tour_url']);
         $this->assertSame(
-            'https://unbranded.youriguide.com/embed/unbranded_4821/?autostart=1&noinitanimation=1&unbranded=1&nomenu=1&nodetails=1',
+            'https://unbranded.youriguide.com/embed/unbranded_4821/?autostart=1&page=tour&minfp=1&unbranded=1&nomenu=1&nodetails=1',
             $payload['iguide_viewer']['inline_url']
         );
         $this->assertSame($payload['iguide_tour_url'], $payload['iguide_viewer']['open_url']);
@@ -136,7 +136,7 @@ class LinkPreviewComplianceTest extends TestCase
             $payload['iguide_viewer']['open_url']
         );
         $this->assertSame(
-            'https://youriguide.com/embed/provider-view/?accessToken=secret&autostart=1&noinitanimation=1',
+            'https://youriguide.com/embed/provider-view/?accessToken=secret&autostart=1&page=tour&minfp=1',
             $payload['iguide_viewer']['inline_url']
         );
     }

@@ -25,6 +25,8 @@ use Illuminate\Validation\ValidationException;
 
 class EmailMessagingController extends Controller
 {
+    private const MAX_COMPOSE_RECIPIENTS = 25;
+
     public function __construct(
         private readonly MessagingService $messaging,
         private readonly InternalMessageNotificationService $internalNotifications,
@@ -258,7 +260,7 @@ class EmailMessagingController extends Controller
         $isInternalReply = $request->filled('in_reply_to_message_id');
 
         $rules = [
-            'to' => [$canSendOutbound && !$isInternalReply ? 'required' : 'nullable', 'email'],
+            'to' => $this->emailRecipientRule($canSendOutbound && !$isInternalReply, $canSendOutbound),
             'cc' => ['nullable', 'array'],
             'cc.*' => ['email'],
             'bcc' => ['nullable', 'array'],
@@ -314,6 +316,13 @@ class EmailMessagingController extends Controller
         }
 
         $data = $this->applyTemplateIfNeeded($data);
+        $addresses = $this->normalizeComposeAddresses($data['to'] ?? null);
+        if ($canSendOutbound && count($addresses) > 1) {
+            return $this->composeMany($user, $data, $addresses);
+        }
+        if (count($addresses) === 1) {
+            $data['to'] = $addresses[0];
+        }
 
         $senderDisplayName = $user->name ?: $user->email;
         $senderAccountId = $canSendOutbound ? null : $user->id;
@@ -359,7 +368,7 @@ class EmailMessagingController extends Controller
         }
 
         $data = $request->validate([
-            'to' => ['required', 'email'],
+            'to' => $this->emailRecipientRule(true, true),
             'cc' => ['nullable', 'array'],
             'cc.*' => ['email'],
             'bcc' => ['nullable', 'array'],
@@ -383,6 +392,13 @@ class EmailMessagingController extends Controller
         $data['bcc'] = $this->normalizeEmailAddresses($data['bcc'] ?? []);
         $data = array_merge($data, $this->extractUploadedAttachments($request));
         $data = $this->applyTemplateIfNeeded($data);
+        $addresses = $this->normalizeComposeAddresses($data['to'] ?? null);
+        if (count($addresses) > 1) {
+            return $this->scheduleMany($user, $data, $addresses);
+        }
+        if (count($addresses) === 1) {
+            $data['to'] = $addresses[0];
+        }
 
         $scheduledAt = \Carbon\Carbon::parse($data['scheduled_at']);
 
@@ -546,6 +562,176 @@ class EmailMessagingController extends Controller
         $this->internalNotifications->queueFor($message);
 
         return response()->json($message);
+    }
+
+    /**
+     * @return array<int, string|\Closure>
+     */
+    private function emailRecipientRule(bool $required, bool $allowMany): array
+    {
+        return [
+            $required ? 'required' : 'nullable',
+            function (string $attribute, mixed $value, \Closure $fail) use ($allowMany): void {
+                if ($value === null || $value === '') {
+                    return;
+                }
+
+                $items = is_array($value) ? $value : [$value];
+                if (!$allowMany && is_array($value)) {
+                    $fail('Multiple recipients are only available when sending email.');
+
+                    return;
+                }
+                if (!is_string($value) && !is_array($value)) {
+                    $fail('Recipients must be an email address or a list of email addresses.');
+
+                    return;
+                }
+                if (count($items) > self::MAX_COMPOSE_RECIPIENTS) {
+                    $fail('You can send to at most '.self::MAX_COMPOSE_RECIPIENTS.' people at once.');
+
+                    return;
+                }
+                foreach ($items as $email) {
+                    if (!is_string($email) || !filter_var(trim($email), FILTER_VALIDATE_EMAIL)) {
+                        $fail('Each recipient must be a valid email address.');
+
+                        return;
+                    }
+                }
+            },
+        ];
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private function normalizeComposeAddresses(mixed $to): array
+    {
+        $items = is_array($to) ? $to : (is_string($to) && trim($to) !== '' ? [$to] : []);
+
+        return $this->normalizeEmailAddresses($items);
+    }
+
+    /**
+     * @param  array<string, mixed>  $data
+     * @param  array<int, string>  $addresses
+     */
+    private function composeMany(User $user, array $data, array $addresses): JsonResponse
+    {
+        $messages = [];
+        $failures = [];
+
+        foreach ($addresses as $address) {
+            try {
+                $messages[] = $this->messaging->sendEmail($this->outboundPayloadFor($user, $data, $address));
+            } catch (ValidationException $exception) {
+                $failures[] = [
+                    'to' => $address,
+                    'message' => collect($exception->errors())->flatten()->first() ?: 'Email could not be sent.',
+                ];
+            } catch (\Throwable $exception) {
+                report($exception);
+                $failures[] = [
+                    'to' => $address,
+                    'message' => 'Email could not be sent.',
+                ];
+            }
+        }
+
+        if ($messages === []) {
+            return response()->json([
+                'message' => $failures[0]['message'] ?? 'Email could not be sent.',
+                'sent' => 0,
+                'failed' => count($failures),
+                'failures' => $failures,
+            ], 422);
+        }
+
+        return response()->json([
+            'sent' => count($messages),
+            'failed' => count($failures),
+            'failures' => $failures,
+            'messages' => $messages,
+        ]);
+    }
+
+    /**
+     * @param  array<string, mixed>  $data
+     * @param  array<int, string>  $addresses
+     */
+    private function scheduleMany(User $user, array $data, array $addresses): JsonResponse
+    {
+        $scheduledAt = \Carbon\Carbon::parse($data['scheduled_at']);
+        $messages = [];
+        $failures = [];
+
+        foreach ($addresses as $address) {
+            try {
+                $messages[] = $this->messaging->scheduleEmail(
+                    $this->outboundPayloadFor($user, $data, $address),
+                    $scheduledAt
+                );
+            } catch (ValidationException $exception) {
+                $failures[] = [
+                    'to' => $address,
+                    'message' => collect($exception->errors())->flatten()->first() ?: 'Email could not be scheduled.',
+                ];
+            } catch (\Throwable $exception) {
+                report($exception);
+                $failures[] = [
+                    'to' => $address,
+                    'message' => 'Email could not be scheduled.',
+                ];
+            }
+        }
+
+        if ($messages === []) {
+            return response()->json([
+                'message' => $failures[0]['message'] ?? 'Email could not be scheduled.',
+                'scheduled' => 0,
+                'failed' => count($failures),
+                'failures' => $failures,
+            ], 422);
+        }
+
+        return response()->json([
+            'scheduled' => count($messages),
+            'failed' => count($failures),
+            'failures' => $failures,
+            'messages' => $messages,
+        ]);
+    }
+
+    /**
+     * @param  array<string, mixed>  $data
+     * @return array<string, mixed>
+     */
+    private function outboundPayloadFor(User $user, array $data, string $address): array
+    {
+        $recipient = User::query()->whereRaw('lower(email) = ?', [$address])->first();
+        $payload = array_merge($data, [
+            'to' => $address,
+            'cc' => array_values(array_filter($data['cc'] ?? [], fn ($email) => $email !== $address)),
+            'bcc' => array_values(array_filter($data['bcc'] ?? [], fn ($email) => $email !== $address)),
+            'user_id' => $user->id,
+            'send_source' => 'MANUAL',
+            'sender_user_id' => $user->id,
+            'sender_role' => $user->role,
+            'sender_display_name' => $user->name ?: $user->email,
+            'contact_email' => $address,
+        ]);
+
+        if ($recipient) {
+            $payload['contact_name'] = $recipient->name ?: $address;
+            $payload['contact_type'] = $recipient->role ?: 'other';
+            $payload['contact_user_id'] = $recipient->id;
+            if ($recipient->role === 'client') {
+                $payload['contact_account_id'] = $recipient->id;
+            }
+        }
+
+        return $payload;
     }
 
     /**

@@ -930,7 +930,12 @@ class ShootPublicAssetsService
             parse_str($parts['query'], $query);
         }
         $query['autostart'] = '1';
-        $query['noinitanimation'] = '1';
+        // noinitanimation skips the startup path that honors minfp, so a wide
+        // embed (desktop and the mobile 16:9 frame) opens the floor plan
+        // full-size. page=tour is the property display; minfp keeps the plan small.
+        unset($query['noinitanimation']);
+        $query['page'] = 'tour';
+        $query['minfp'] = '1';
         if ($unbranded) {
             $query['unbranded'] = '1';
             $query['nomenu'] = '1';

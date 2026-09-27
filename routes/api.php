@@ -1207,6 +1207,11 @@ Route::middleware(['auth:sanctum'])->prefix('messaging')->group(function () {
     });
 
     Route::middleware('role:superadmin,admin,editing_manager,sales_rep,photographer')->group(function () {
+        Route::get('/sms/recipients', [SmsMessagingController::class, 'recipients']);
+        Route::get('/sms/groups', [SmsMessagingController::class, 'groups']);
+        Route::post('/sms/groups', [SmsMessagingController::class, 'storeGroup']);
+        Route::put('/sms/groups/{smsGroup}', [SmsMessagingController::class, 'updateGroup']);
+        Route::delete('/sms/groups/{smsGroup}', [SmsMessagingController::class, 'destroyGroup']);
         Route::get('/sms/threads', [SmsMessagingController::class, 'threads']);
         Route::get('/sms/threads/{thread}', [SmsMessagingController::class, 'showThread']);
         Route::post('/sms/threads/{thread}/messages', [SmsMessagingController::class, 'sendToThread']);
