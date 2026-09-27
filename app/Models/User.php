@@ -486,6 +486,18 @@ class User extends Authenticatable
         $this->metadata = $metadata;
     }
 
+    public function resolvedPhone(): ?string
+    {
+        foreach ([$this->phonenumber, $this->phone] as $candidate) {
+            $value = is_string($candidate) ? trim($candidate) : '';
+            if ($value !== '') {
+                return $value;
+            }
+        }
+
+        return null;
+    }
+
     public function serviceGroups()
     {
         return $this->belongsToMany(ServiceGroup::class, 'service_group_user', 'user_id', 'service_group_id')

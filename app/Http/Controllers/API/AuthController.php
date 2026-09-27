@@ -489,6 +489,7 @@ class AuthController extends Controller
         // Map phone_number to phonenumber if provided
         if (array_key_exists('phone_number', $validated)) {
             $validated['phonenumber'] = $validated['phone_number'];
+            $validated['phone'] = $validated['phone_number'];
             unset($validated['phone_number']);
         }
 
@@ -822,7 +823,8 @@ class AuthController extends Controller
     {
         $payload = $user->toArray();
         $payload['zipcode'] = $payload['zip'] ?? $user->zip;
-        $payload['phone'] = $payload['phonenumber'] ?? $user->phonenumber;
+        $payload['phone'] = $user->resolvedPhone();
+        $payload['phonenumber'] = $payload['phone'];
         $payload['email_health'] = $user->email_health;
         $payload['legal_status'] = app(LegalDocumentService::class)->statusFor($user);
         $payload['email_verification'] = app(\App\Services\Users\EmailVerificationPilot::class)->status($user);

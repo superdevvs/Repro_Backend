@@ -329,6 +329,40 @@ class UpdateProfileTest extends TestCase
         $this->assertSame(['category:old'], $user->metadata['specialties']);
     }
 
+    public function test_profile_returns_a_phone_stored_only_on_the_phone_column(): void
+    {
+        $user = User::factory()->create([
+            'role' => 'admin',
+            'phone' => '2025550100',
+            'phonenumber' => null,
+        ]);
+
+        $this->withHeader('Authorization', 'Bearer '.$user->createToken('phone')->plainTextToken)
+            ->getJson('/api/user')
+            ->assertOk()
+            ->assertJsonPath('phone', '2025550100')
+            ->assertJsonPath('phonenumber', '2025550100');
+    }
+
+    public function test_profile_phone_update_writes_both_phone_columns(): void
+    {
+        $user = User::factory()->create([
+            'role' => 'client',
+            'phone' => null,
+            'phonenumber' => null,
+        ]);
+        $token = $user->createToken('phone-save')->plainTextToken;
+
+        $this->withHeader('Authorization', 'Bearer '.$token)
+            ->putJson('/api/profile', ['phone_number' => '2025550199'])
+            ->assertOk()
+            ->assertJsonPath('user.phone', '2025550199');
+
+        $user->refresh();
+        $this->assertSame('2025550199', $user->phone);
+        $this->assertSame('2025550199', $user->phonenumber);
+    }
+
     public function test_photographer_can_save_and_clear_an_id_or_passport_document(): void
     {
         $user = User::factory()->photographer()->create([

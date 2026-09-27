@@ -263,6 +263,7 @@ class UserController extends Controller
 
         if (array_key_exists('phone_number', $validated)) {
             $validated['phonenumber'] = $validated['phone_number'];
+            $validated['phone'] = $validated['phone_number'];
             unset($validated['phone_number']);
         }
 
@@ -741,6 +742,7 @@ class UserController extends Controller
 
         if (array_key_exists('phone_number', $validated)) {
             $validated['phonenumber'] = $validated['phone_number'];
+            $validated['phone'] = $validated['phone_number'];
             unset($validated['phone_number']);
         }
 
@@ -1599,10 +1601,10 @@ class UserController extends Controller
         );
         
         // Map database fields to frontend field names
-        if (isset($payload['phonenumber'])) {
-            $payload['phone'] = $payload['phonenumber'];
-            $payload['phone_number'] = $payload['phonenumber'];
-        }
+        $resolvedPhone = $user->resolvedPhone();
+        $payload['phone'] = $resolvedPhone;
+        $payload['phonenumber'] = $resolvedPhone;
+        $payload['phone_number'] = $resolvedPhone;
         if (isset($payload['company_name'])) {
             $payload['company'] = $payload['company_name'];
         }
@@ -1903,10 +1905,10 @@ class UserController extends Controller
         );
         
         // Map database fields to frontend field names
-        if (isset($payload['phonenumber'])) {
-            $payload['phone'] = $payload['phonenumber'];
-            $payload['phone_number'] = $payload['phonenumber'];
-        }
+        $resolvedPhone = $user->resolvedPhone();
+        $payload['phone'] = $resolvedPhone;
+        $payload['phonenumber'] = $resolvedPhone;
+        $payload['phone_number'] = $resolvedPhone;
         if (isset($payload['company_name'])) {
             $payload['company'] = $payload['company_name'];
         }
