@@ -230,6 +230,102 @@ class ShootMutationActionsTest extends TestCase
     }
 
     #[\PHPUnit\Framework\Attributes\Test]
+    public function sales_reps_can_schedule_a_hold_shoot_and_save_its_appointment(): void
+    {
+        foreach (['salesRep', 'sales_rep', 'rep', 'representative', 'editing_manager'] as $role) {
+            $actor = User::factory()->create(['role' => $role]);
+            Sanctum::actingAs($actor);
+
+            $shoot = Shoot::factory()->create([
+                'client_id' => $this->client->id,
+                'photographer_id' => $this->photographer->id,
+                'service_id' => $this->service->id,
+                'rep_id' => User::factory()->create(['role' => 'salesRep'])->id,
+                'status' => 'on_hold',
+                'workflow_status' => Shoot::STATUS_ON_HOLD,
+                'address' => '9407 Reservoir Road',
+                'city' => 'Fredericksburg',
+                'state' => 'VA',
+                'zip' => '22407',
+            ]);
+            $this->attachPrimaryService($shoot);
+
+            $scheduledDay = now()->addDays(4)->toDateString();
+            $this->patchJson("/api/shoots/{$shoot->id}", [
+                'scheduled_date' => $scheduledDay,
+                'time' => '11:00',
+                'address' => '9407 Reservoir Road',
+            ])->assertOk();
+
+            $shoot->refresh();
+            $this->assertSame($scheduledDay, $shoot->scheduled_date?->toDateString());
+            $this->assertSame('on_hold', $shoot->status);
+            $this->assertSame(Shoot::STATUS_ON_HOLD, $shoot->workflow_status);
+
+            $scheduledAt = now()->addDays(4)->setTime(11, 0)->format('Y-m-d H:i:s');
+            $this->postJson("/api/shoots/{$shoot->id}/schedule", [
+                'scheduled_at' => $scheduledAt,
+                'photographer_id' => $this->photographer->id,
+            ])->assertOk()
+                ->assertJsonPath('message', 'Shoot scheduled successfully');
+
+            $shoot->refresh();
+            $this->assertSame(Shoot::STATUS_SCHEDULED, $shoot->status);
+            $this->assertSame(Shoot::STATUS_SCHEDULED, $shoot->workflow_status);
+            $this->assertSame($scheduledAt, $shoot->scheduled_at?->format('Y-m-d H:i:s'));
+            $this->assertDatabaseHas('shoot_activity_logs', [
+                'shoot_id' => $shoot->id,
+                'action' => 'shoot_resumed_from_hold',
+                'user_id' => $actor->id,
+            ]);
+        }
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
+    public function sales_reps_cannot_schedule_or_rewrite_a_shoot_that_is_not_on_hold(): void
+    {
+        Sanctum::actingAs($this->salesRep);
+        $shoot = Shoot::factory()->create([
+            'client_id' => $this->client->id,
+            'photographer_id' => $this->photographer->id,
+            'service_id' => $this->service->id,
+            'rep_id' => $this->salesRep->id,
+            'status' => Shoot::STATUS_SCHEDULED,
+            'workflow_status' => Shoot::STATUS_SCHEDULED,
+            'address' => '12 Active Lane',
+            'city' => 'Baltimore',
+            'state' => 'MD',
+            'zip' => '21201',
+        ]);
+        $this->attachPrimaryService($shoot);
+
+        $this->postJson("/api/shoots/{$shoot->id}/schedule", [
+            'scheduled_at' => now()->addDays(2)->setTime(9, 0)->format('Y-m-d H:i:s'),
+            'photographer_id' => $this->photographer->id,
+        ])->assertForbidden();
+
+        $this->patchJson("/api/shoots/{$shoot->id}", [
+            'address' => 'Not allowed',
+            'scheduled_date' => now()->addDays(2)->toDateString(),
+        ])->assertForbidden();
+
+        $this->assertSame('12 Active Lane', $shoot->fresh()->address);
+        $this->assertSame(Shoot::STATUS_SCHEDULED, $shoot->fresh()->status);
+
+        $held = Shoot::factory()->create([
+            'client_id' => $this->client->id,
+            'photographer_id' => $this->photographer->id,
+            'service_id' => $this->service->id,
+            'rep_id' => $this->salesRep->id,
+            'status' => 'on_hold',
+            'workflow_status' => Shoot::STATUS_ON_HOLD,
+        ]);
+        $this->attachPrimaryService($held);
+        $this->patchJson("/api/shoots/{$held->id}", ['status' => 'delivered'])->assertForbidden();
+        $this->assertSame('on_hold', $held->fresh()->status);
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
     public function scheduling_honors_saved_recipients_when_scheduled_automation_did_not_send_client_email(): void
     {
         Sanctum::actingAs($this->admin);

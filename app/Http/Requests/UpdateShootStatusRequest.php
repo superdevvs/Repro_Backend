@@ -2,6 +2,8 @@
 
 namespace App\Http\Requests;
 
+use App\Models\Shoot;
+use App\Services\Shoots\ShootAuthorizationSupport;
 use Illuminate\Foundation\Http\FormRequest;
 
 class UpdateShootStatusRequest extends FormRequest
@@ -9,12 +11,12 @@ class UpdateShootStatusRequest extends FormRequest
     public function authorize(): bool
     {
         $user = $this->user();
-        if (! $user) {
+        $shoot = $this->route('shoot');
+        if (! $user || ! $shoot instanceof Shoot) {
             return false;
         }
 
-        // Only admin, super admin, photographer (for their shoots), and editor can update status
-        return in_array($user->role, ['admin', 'superadmin', 'photographer', 'editor']);
+        return app(ShootAuthorizationSupport::class)->canScheduleShoot($shoot, $user);
     }
 
     public function rules(): array
