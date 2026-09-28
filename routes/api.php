@@ -278,6 +278,9 @@ Route::get('upload-sources/{provider}/callback', [UploadSourceController::class,
 Route::post('webhooks/stripe', [StripePaymentController::class, 'handleWebhook'])
     ->name('webhooks.stripe');
 
+Route::post('webhooks/stripe/listing-studio', \App\Http\Controllers\ListingStudioStripeWebhookController::class)
+    ->name('webhooks.stripe.listing-studio');
+
 Route::get('public/payments/{token}', [ShootPaymentsController::class, 'getPublicPaymentDetails'])
     ->name('api.public.payments.show');
 Route::post('public/payments/{token}/checkout', [StripePaymentController::class, 'createPublicEmbeddedCheckoutSession'])
@@ -422,6 +425,7 @@ Route::middleware('auth:sanctum')->prefix('profile')->group(function () {
 });
 
 Route::middleware(['auth:sanctum', 'role:client,salesRep,rep,admin,superadmin'])->prefix('listing-studio')->group(function () {
+    Route::get('/subscriptions', [\App\Http\Controllers\API\ListingStudioSubscriptionController::class, 'index']);
     Route::get('/catalog', [ListingStudioRequestController::class, 'catalog']);
     Route::get('/clients', [ListingStudioRequestController::class, 'clients']);
     Route::get('/requests', [ListingStudioRequestController::class, 'index']);

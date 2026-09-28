@@ -531,6 +531,26 @@ class StripePaymentController extends Controller
 
         Log::info('Stripe webhook received', ['type' => $event->type, 'id' => $event->id]);
 
+        // Listing Studio is a separate subscription ledger. Only canonical, allowlisted
+        // subscriptions are intercepted; shoot ownership and refund rules stay intact.
+        try {
+            $listingStudio = null;
+            if (config('listing-studio.stripe_enabled')) {
+                $eventData = method_exists($event, 'toArray') ? $event->toArray() : json_decode(json_encode($event), true);
+                $listingStudio = app(\App\Services\ListingStudio\StripeSubscriptionRefundSync::class)->handle($eventData)
+                    ?? app(\App\Services\ListingStudio\StripeSubscriptionSync::class)->handle($eventData);
+            }
+            if ($listingStudio !== null) {
+                return response()->json($listingStudio);
+            }
+        } catch (\Throwable $exception) {
+            Log::error('Listing Studio Stripe synchronization failed.', [
+                'event_hash' => hash('sha256', $event->id), 'error_class' => $exception::class,
+            ]);
+
+            return response()->json(['status' => 'retry', 'handled' => false, 'outcome' => 'listing_studio_sync_failed'], 500);
+        }
+
         if (in_array($event->type, [
             'checkout.session.completed', 'checkout.session.async_payment_succeeded',
             'checkout.session.async_payment_failed', 'checkout.session.expired',
