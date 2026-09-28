@@ -422,6 +422,7 @@ class ShootResource extends JsonResource
             'external_booking_mapping_status' => $this->external_booking_mapping_status,
             'externalBookingMappingStatus' => $this->external_booking_mapping_status,
             'completedAt' => $this->completed_at?->toIso8601String(),
+            'completed_date' => data_get($this->external_booking_payload, 'source_dates.completed_date'),
             'status' => $this->status,
             'workflowStatus' => $this->workflow_status,
             'shoot_type' => $this->shoot_type ?? Shoot::SHOOT_TYPE_STANDARD,

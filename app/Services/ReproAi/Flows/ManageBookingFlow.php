@@ -520,6 +520,10 @@ class ManageBookingFlow implements FlowHandlerInterface
         $cutoff = now()->subHours(24); // Shoots older than 24 hours past scheduled date
 
         $query = $this->getShootsForUser($user)
+            ->where(function ($query) {
+                $query->whereNull('external_booking_payload->legacy_migration->historical_payments_only')
+                    ->orWhere('external_booking_payload->legacy_migration->historical_payments_only', false);
+            })
             ->whereNull('photos_uploaded_at')
             ->where('scheduled_date', '<', $cutoff)
             ->whereNotIn('status', [Shoot::STATUS_CANCELLED, Shoot::STATUS_DECLINED])
@@ -580,6 +584,10 @@ class ManageBookingFlow implements FlowHandlerInterface
     protected function showShootsNeedingUpload(AiChatSession $session, User $user): array
     {
         $query = $this->getShootsForUser($user)
+            ->where(function ($query) {
+                $query->whereNull('external_booking_payload->legacy_migration->historical_payments_only')
+                    ->orWhere('external_booking_payload->legacy_migration->historical_payments_only', false);
+            })
             ->whereNull('photos_uploaded_at')
             ->whereDate('scheduled_date', '<', now())
             ->whereNotIn('status', [Shoot::STATUS_CANCELLED, Shoot::STATUS_DECLINED])

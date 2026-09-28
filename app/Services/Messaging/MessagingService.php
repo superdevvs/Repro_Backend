@@ -96,7 +96,7 @@ class MessagingService
                 'invoice' => ['External notifications are disabled for this invoice.'],
             ]);
         }
-        if (!empty($payload['related_shoot_id']) && Shoot::find($payload['related_shoot_id'])?->suppressesExternalNotifications()) {
+        if (!empty($payload['related_shoot_id']) && Shoot::withoutGlobalScope('private_import_drafts')->find($payload['related_shoot_id'])?->suppressesExternalNotifications()) {
             throw \Illuminate\Validation\ValidationException::withMessages([
                 'shoot' => ['External notifications are disabled for this shoot.'],
             ]);
@@ -221,7 +221,7 @@ class MessagingService
                 'invoice' => ['External notifications are disabled for this invoice.'],
             ]);
         }
-        if (!empty($payload['related_shoot_id']) && Shoot::find($payload['related_shoot_id'])?->suppressesExternalNotifications()) {
+        if (!empty($payload['related_shoot_id']) && Shoot::withoutGlobalScope('private_import_drafts')->find($payload['related_shoot_id'])?->suppressesExternalNotifications()) {
             throw \Illuminate\Validation\ValidationException::withMessages([
                 'shoot' => ['External notifications are disabled for this shoot.'],
             ]);
@@ -964,7 +964,7 @@ class MessagingService
             $message->forceFill(['status' => 'CANCELLED', 'error_message' => 'Invoice notification policy: external message suppressed'])->save();
             return $message->refresh();
         }
-        if ($message->related_shoot_id && Shoot::find($message->related_shoot_id)?->suppressesExternalNotifications()) {
+        if ($message->related_shoot_id && Shoot::withoutGlobalScope('private_import_drafts')->find($message->related_shoot_id)?->suppressesExternalNotifications()) {
             $message->forceFill(['status' => 'CANCELLED', 'error_message' => 'Shoot notification policy: external message suppressed'])->save();
             return $message->refresh();
         }
@@ -1029,7 +1029,7 @@ class MessagingService
             $message->forceFill(['status' => 'CANCELLED', 'error_message' => 'Invoice notification policy: external message suppressed'])->save();
             return $message->refresh();
         }
-        if ($message->related_shoot_id && Shoot::find($message->related_shoot_id)?->suppressesExternalNotifications()) {
+        if ($message->related_shoot_id && Shoot::withoutGlobalScope('private_import_drafts')->find($message->related_shoot_id)?->suppressesExternalNotifications()) {
             $message->forceFill(['status' => 'CANCELLED', 'error_message' => 'Shoot notification policy: external message suppressed'])->save();
             return $message->refresh();
         }

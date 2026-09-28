@@ -40,6 +40,7 @@ class PayoutReportService
                     $q->withPivot(['photographer_id', 'photographer_pay', 'quantity']);
                 },
             ])
+            ->excludeHistoricalImportsFromNewBilling()
             ->where(function ($query) {
                 $query->whereNull('shoot_type')
                     ->orWhereNotIn('shoot_type', [Shoot::SHOOT_TYPE_COMPLIMENTARY_RESHOOT, Shoot::SHOOT_TYPE_INTERNAL_TEST]);
@@ -150,6 +151,7 @@ class PayoutReportService
                 'service.sqftRanges',
                 'services' => fn ($query) => $query->withPivot(['price', 'quantity']),
             ])
+            ->excludeHistoricalImportsFromNewBilling()
             ->where(function ($query) {
                 $query->whereNull('shoot_type')
                     ->orWhereNotIn('shoot_type', [Shoot::SHOOT_TYPE_COMPLIMENTARY_RESHOOT, Shoot::SHOOT_TYPE_INTERNAL_TEST]);

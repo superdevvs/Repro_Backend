@@ -240,6 +240,11 @@ class ShootPresenter
 
     public function transformShoot(Shoot $shoot): Shoot
     {
+        $sourceDate = data_get($shoot->external_booking_payload, 'source_dates.completed_date');
+        if (is_string($sourceDate)) {
+            $shoot->setAttribute('completed_date', $sourceDate);
+        }
+
         $shoot->loadMissing(['client', 'photographer', 'editor', 'service', 'services.category', 'rep', 'createdByUser', 'ghostUsers', 'featuredHomepageImages.file']);
         $scheduleResolver = app(ScheduleInstantResolver::class);
         $scheduledInstant = $scheduleResolver->forShoot($shoot)?->utc()->toIso8601String();
@@ -295,6 +300,11 @@ class ShootPresenter
         $releaseAccess = app(ShootClientReleaseAccessService::class);
         $classifier = app(ShootDownloadAssetClassifier::class);
         foreach ($shoot->files as $file) {
+            if ($shoot->isImportDraft() && Shoot::canReviewImportDrafts() && ! $file->isBlockedFromDelivery()) {
+                $file->setAttribute('url', $this->mediaStorage->servingUrl($file->path));
+                $file->setAttribute('web_url', $this->mediaStorage->servingUrl($file->web_path));
+                $file->setAttribute('thumbnail_url', $this->mediaStorage->servingUrl($file->thumbnail_path));
+            }
             $file->setAttribute('download_asset_type', $classifier->type($file));
             if (! $releaseAccess->isFileReleaseLocked($shoot, $file, $requestingUser) && ! $file->isBlockedFromDelivery()) {
                 $pages = data_get($file->metadata, 'preview_images', []);
@@ -371,6 +381,11 @@ class ShootPresenter
         $isEditorRole = $requestingRole === 'editor';
         $isClientRole = $requestingRole === 'client';
         $canManageReshoots = in_array($requestingRole, ['admin', 'superadmin'], true);
+        if ($canManageReshoots) {
+            $shoot->makeVisible('external_booking_payload');
+        } else {
+            $shoot->makeHidden('external_booking_payload');
+        }
         $requestingUserId = $requestingUser?->id ? (string) $requestingUser->id : null;
         $editorAssignments = $this->editingAssignmentService->buildEditorAssignmentsPayload(
             $shoot,

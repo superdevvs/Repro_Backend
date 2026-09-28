@@ -18,6 +18,10 @@ class EditorPayoutService
         $rows = DB::table('shoot_service')
             ->join('shoots', 'shoots.id', '=', 'shoot_service.shoot_id')
             ->where(fn ($query) => $query->whereNull('shoots.shoot_type')->orWhere('shoots.shoot_type', '!=', \App\Models\Shoot::SHOOT_TYPE_INTERNAL_TEST))
+            ->where(function ($query) {
+                $query->whereNull('shoots.external_booking_payload->legacy_migration->historical_payments_only')
+                    ->orWhere('shoots.external_booking_payload->legacy_migration->historical_payments_only', false);
+            })
             ->leftJoin('services', 'services.id', '=', 'shoot_service.service_id')
             ->leftJoin('shoot_units', 'shoot_units.id', '=', 'shoot_service.shoot_unit_id')
             ->where(fn ($query) => $query->whereNotNull('shoot_service.editor_id')->orWhereNotNull('shoot_service.video_editor_id'))

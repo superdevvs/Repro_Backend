@@ -304,14 +304,15 @@ class Invoice extends Model
         if (data_get($this->payment_details, 'legacy_migration.notifications_suppressed') === true) {
             return true;
         }
-        if ($this->shoot?->suppressesExternalNotifications()) {
+        if ($this->shoot_id && $this->shoot()->withoutGlobalScope('private_import_drafts')->first()?->suppressesExternalNotifications()) {
             return true;
         }
         if (! $this->exists) {
             return false;
         }
-        return $this->shoots->contains(fn (Shoot $shoot) => $shoot->suppressesExternalNotifications())
-            || $this->items->contains(fn (InvoiceItem $item) => $item->shoot?->suppressesExternalNotifications());
+        return $this->shoots()->withoutGlobalScope('private_import_drafts')->get()->contains(fn (Shoot $shoot) => $shoot->suppressesExternalNotifications())
+            || $this->items()->with(['shoot' => fn ($query) => $query->withoutGlobalScope('private_import_drafts')])->get()
+                ->contains(fn (InvoiceItem $item) => $item->shoot?->suppressesExternalNotifications());
     }
 
     public function client()

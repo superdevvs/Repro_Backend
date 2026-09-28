@@ -17,8 +17,32 @@ class Shoot extends Model
 {
     use HasFactory;
 
+    public const STATUS_IMPORT_DRAFT = 'import_draft';
+
+    public function isImportDraft(): bool
+    {
+        return $this->status === self::STATUS_IMPORT_DRAFT;
+    }
+
+    /** Historical balances already settled elsewhere must not generate new bills or payouts. */
+    public function scopeExcludeHistoricalImportsFromNewBilling(Builder $query): Builder
+    {
+        return $query->where(function (Builder $query) {
+            $query->whereNull('external_booking_payload->legacy_migration->historical_payments_only')
+                ->orWhere('external_booking_payload->legacy_migration->historical_payments_only', false);
+        });
+    }
+
+    public static function canReviewImportDrafts(): bool
+    {
+        // Public tour routes remain private even in a staff browser session.
+        return ! request()->is('api/public/*')
+            && in_array(strtolower((string) auth()->user()?->role), ['admin', 'superadmin'], true);
+    }
+
+
     // Stored upstream diagnostics are not part of the public shoot representation.
-    protected $hidden = ['bright_mls_response'];
+    protected $hidden = ['bright_mls_response', 'external_booking_payload'];
 
     protected $fillable = [
         'client_id',
@@ -325,6 +349,10 @@ class Shoot extends Model
     /** Imported bookings stay quiet until an administrator explicitly releases them. */
     public function suppressesExternalNotifications(): bool
     {
+        if ($this->isImportDraft()) {
+            return true;
+        }
+
         return $this->isInternalTestShoot()
             || data_get($this->external_booking_payload, 'legacy_migration.notifications_suppressed') === true;
     }
@@ -1594,6 +1622,18 @@ class Shoot extends Model
     protected static function boot()
     {
         parent::boot();
+
+        static::addGlobalScope('private_import_drafts', function (Builder $query) {
+            if (! static::canReviewImportDrafts()) {
+                $query->where($query->getModel()->qualifyColumn('status'), '!=', self::STATUS_IMPORT_DRAFT);
+            }
+        });
+        static::saving(function (self $shoot) {
+            if ($shoot->exists && $shoot->getRawOriginal('status') === self::STATUS_IMPORT_DRAFT
+                && $shoot->isDirty()) {
+                throw ValidationException::withMessages(['status' => 'This historical import is a private review draft. Release requires the reviewed import workflow.']);
+            }
+        });
 
         static::saving(function (Shoot $shoot) {
             $persistedShootType = $shoot->exists && $shoot->isDirty('shoot_type')

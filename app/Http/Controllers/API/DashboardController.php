@@ -1397,7 +1397,12 @@ class DashboardController extends Controller
         }
 
         // Photographers haven't uploaded RAW files
-        $lateRawUploads = Shoot::whereNull('photos_uploaded_at')
+        $lateRawUploads = Shoot::query()
+            ->where(function ($query) {
+                $query->whereNull('external_booking_payload->legacy_migration->historical_payments_only')
+                    ->orWhere('external_booking_payload->legacy_migration->historical_payments_only', false);
+            })
+            ->whereNull('photos_uploaded_at')
             ->whereDate('scheduled_date', '<', $today)
             ->whereNotIn('status', [Shoot::STATUS_CANCELLED, Shoot::STATUS_DECLINED])
             ->count();
@@ -1675,6 +1680,10 @@ class DashboardController extends Controller
 
         // Shoots needing upload
         $needsUpload = Shoot::where('photographer_id', $user->id)
+            ->where(function ($query) {
+                $query->whereNull('external_booking_payload->legacy_migration->historical_payments_only')
+                    ->orWhere('external_booking_payload->legacy_migration->historical_payments_only', false);
+            })
             ->whereNull('photos_uploaded_at')
             ->whereDate('scheduled_date', '<', $today)
             ->whereNotIn('status', [Shoot::STATUS_CANCELLED, Shoot::STATUS_DECLINED])

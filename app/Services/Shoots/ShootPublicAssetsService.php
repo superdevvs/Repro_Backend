@@ -29,7 +29,29 @@ class ShootPublicAssetsService
     public function resolvePublicShoot(Request $request, $shootId = null): ?Shoot
     {
         if ($shootId) {
-            return Shoot::with(['files', 'client'])->find($shootId);
+            return Shoot::with(['files', 'client'])->where('status', '!=', Shoot::STATUS_IMPORT_DRAFT)->find($shootId);
+        }
+
+        // Legacy URLs identify a source shoot, never a native database ID or an address.
+        if ($request->has('legacyCompanyId') || $request->has('legacyShootId')) {
+            $company = $request->query('legacyCompanyId');
+            $source = $request->query('legacyShootId');
+            if (! is_string($company) || ! is_string($source)
+                || ! preg_match('/^[0-9]{1,20}$/D', $company)
+                || ! preg_match('/^[0-9]{1,20}$/D', $source)
+                || ! DB::getSchemaBuilder()->hasTable('legacy_shoot_imports')) {
+                return null;
+            }
+            $mappings = DB::table('legacy_shoot_imports')
+                ->where('source_system', 'pro.reprophotos.com')->where('source_id', $source)
+                ->limit(2)->get(['shoot_id']);
+            if ($mappings->count() !== 1) {
+                return null;
+            }
+            $shoot = Shoot::with(['files', 'client'])
+                ->where('status', '!=', Shoot::STATUS_IMPORT_DRAFT)->find($mappings->first()->shoot_id);
+            return $shoot && data_get($shoot->external_booking_payload, 'external_key') === "viewshoot:{$company}:{$source}"
+                ? $shoot : null;
         }
 
         $address = trim((string) $request->query('address', ''));
@@ -41,7 +63,7 @@ class ShootPublicAssetsService
             return null;
         }
 
-        $query = Shoot::with(['files', 'client'])
+        $query = Shoot::with(['files', 'client'])->where('status', '!=', Shoot::STATUS_IMPORT_DRAFT)
             ->whereRaw('LOWER(address) = ?', [strtolower($address)])
             ->whereRaw('LOWER(city) = ?', [strtolower($city)])
             ->whereRaw('LOWER(state) = ?', [strtolower($state)]);
@@ -57,6 +79,8 @@ class ShootPublicAssetsService
 
     public function buildTypedPublicAssets(Shoot $shoot, string $type, bool $reconcilePayments = true, ?\App\Models\ShootUnit $unit = null): array
     {
+        abort_if($shoot->isImportDraft(), 404);
+
         abort_if(! $unit && ! $shoot->relationLoaded('tourUnit') && $shoot->units()->exists(), 404, 'Use the direct link for a unit.');
         if ($unit) {
             $shoot = $reconcilePayments ? $this->paymentStatusSupport->reconcileStripePaymentState($shoot, ['files', 'client', 'payments']) : $shoot;
@@ -588,6 +612,8 @@ class ShootPublicAssetsService
      */
     protected function buildPublicAssets(Shoot $shoot, bool $reconcilePayments = true): array
     {
+        abort_if($shoot->isImportDraft(), 404);
+
         $shoot = $reconcilePayments
             ? $this->paymentStatusSupport->reconcileStripePaymentState($shoot, ['files', 'client', 'payments'])
             : $shoot->loadMissing(['files', 'client', 'payments']);

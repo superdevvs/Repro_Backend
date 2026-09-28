@@ -9,6 +9,18 @@ class ShootFile extends Model
 {
     use HasFactory;
 
+    protected static function booted(): void
+    {
+        static::addGlobalScope('private_import_drafts', function ($query) {
+            if (! Shoot::canReviewImportDrafts()) {
+                $query->whereNotIn('shoot_files.shoot_id', function ($drafts) {
+                    $drafts->select('id')->from('shoots')->where('status', Shoot::STATUS_IMPORT_DRAFT);
+                });
+            }
+        });
+    }
+
+
     protected $fillable = [
         'shoot_id',
         'shoot_service_id',

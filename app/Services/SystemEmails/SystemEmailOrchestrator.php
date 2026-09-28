@@ -247,7 +247,7 @@ class SystemEmailOrchestrator
             return true;
         }
         $shootId = $transport['related_shoot_id'] ?? data_get($payload, 'shoot.id');
-        return $shootId && Shoot::find($shootId)?->suppressesExternalNotifications();
+        return $shootId && Shoot::withoutGlobalScope('private_import_drafts')->find($shootId)?->suppressesExternalNotifications();
     }
 
     private function guardRecipientType(EmailTypeDefinition $definition, string $recipientType): void

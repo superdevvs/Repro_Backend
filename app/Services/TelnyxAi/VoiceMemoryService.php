@@ -229,7 +229,7 @@ class VoiceMemoryService
             return [];
         }
 
-        $query = \DB::table('shoots')->whereNotIn('status', ['delivered', 'cancelled', 'declined']);
+        $query = \DB::table('shoots')->where('status', '!=', 'import_draft')->whereNotIn('status', ['delivered', 'cancelled', 'declined']);
         $this->scopeToCaller($query, $user, $contact);
 
         return collect($query->orderByDesc('id')->limit(5)->get())
@@ -388,7 +388,7 @@ class VoiceMemoryService
         if (!$this->tableExists('shoots')) {
             return 0;
         }
-        $query = \DB::table('shoots');
+        $query = \DB::table('shoots')->where('status', '!=', 'import_draft');
         $this->scopeToCaller($query, $user, $contact);
         return (int) $query->count();
     }

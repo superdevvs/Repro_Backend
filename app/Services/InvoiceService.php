@@ -52,6 +52,7 @@ class InvoiceService
                 $q->withPivot(['photographer_id', 'photographer_pay', 'quantity']);
             },
         ])
+            ->excludeHistoricalImportsFromNewBilling()
             ->where(function ($query) {
                 $query->whereNull('shoot_type')
                     ->orWhere('shoot_type', '!=', Shoot::SHOOT_TYPE_COMPLIMENTARY_RESHOOT);
@@ -526,6 +527,7 @@ class InvoiceService
             'services',
         ])
             ->where('client_id', $user->id)
+            ->excludeHistoricalImportsFromNewBilling()
             ->where(function ($query) {
                 $query->whereNull('shoot_type')
                     ->orWhere('shoot_type', '!=', Shoot::SHOOT_TYPE_COMPLIMENTARY_RESHOOT);
@@ -537,6 +539,16 @@ class InvoiceService
             ->get();
 
         if ($shoots->isEmpty()) {
+            // Imported settled balances already have their own historical documents.
+            $historicalInvoice = Invoice::query()->where('client_id', $user->id)
+                ->where('role', Invoice::ROLE_CLIENT)
+                ->whereHas('shoot', fn ($query) => $query
+                    ->where('external_booking_payload->legacy_migration->historical_payments_only', true)
+                    ->whereBetween('scheduled_date', [$start->toDateString(), $end->toDateString()]))
+                ->latest('id')->first();
+            if ($historicalInvoice) {
+                return $historicalInvoice->load(['items', 'user', 'client', 'shoots']);
+            }
             $complimentaryReceipt = Invoice::query()
                 ->where('user_id', $user->id)
                 ->where('role', Invoice::ROLE_CLIENT)
@@ -797,6 +809,7 @@ class InvoiceService
             'client:id,name,created_by_id,metadata,role',
             'rep:id,name,email,role,secondary_roles,metadata,account_status',
         ])
+            ->excludeHistoricalImportsFromNewBilling()
             ->where(function ($query) {
                 $query->whereNull('shoot_type')
                     ->orWhere('shoot_type', '!=', Shoot::SHOOT_TYPE_COMPLIMENTARY_RESHOOT);

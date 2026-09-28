@@ -72,6 +72,10 @@ class ShootAuthorizationSupport
 
     public function canClientAccessShoot(Shoot $shoot, ?User $user = null): bool
     {
+        if ($shoot->isImportDraft()) {
+            return false;
+        }
+
         $user = $user ?? auth()->user();
         if (! $this->isClientUser($user)) {
             return false;
@@ -146,6 +150,10 @@ class ShootAuthorizationSupport
 
     public function canAccessShootMedia(Shoot $shoot, ?User $user = null): bool
     {
+        if ($shoot->isImportDraft()) {
+            return $this->hasRole($user ?? auth()->user(), ['admin', 'superadmin']);
+        }
+
         $user = $user ?? auth()->user();
         if (! $user) {
             return false;
@@ -183,6 +191,10 @@ class ShootAuthorizationSupport
         string $uploadType = 'raw',
         ?int $shootServiceId = null
     ): bool {
+        if ($shoot->isImportDraft()) {
+            return false;
+        }
+
         $user = $user ?? auth()->user();
         if (! $user) {
             return false;

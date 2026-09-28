@@ -480,6 +480,11 @@ class ShootHistoryService
 
     protected function resolveCompletedDate(Shoot $shoot): ?string
     {
+        $sourceDate = data_get($shoot->external_booking_payload, 'source_dates.completed_date');
+        if (is_string($sourceDate) && preg_match('/^\d{4}-\d{2}-\d{2}$/D', $sourceDate)) {
+            return $sourceDate;
+        }
+
         if ($shoot->admin_verified_at) {
             return $shoot->admin_verified_at->toDateString();
         }
