@@ -681,6 +681,7 @@ class InvoiceShootOrderSyncTest extends TestCase
 
     public function test_service_repricing_and_invoice_regeneration_preserve_manual_adjustments(): void
     {
+        $this->service->update(['allow_multiple' => true]);
         [$shoot, $invoice] = $this->createShootAndInvoice();
         $added = $this->postJson("/api/admin/invoices/{$invoice->id}/misc-items", [
             'description' => 'Persistent Adjustment',
@@ -764,6 +765,7 @@ class InvoiceShootOrderSyncTest extends TestCase
 
     public function test_adjusted_total_is_internally_consistent_and_only_applies_to_that_save(): void
     {
+        $this->service->update(['allow_multiple' => true]);
         [$shoot, $invoice] = $this->createShootAndInvoice();
         $this->postJson("/api/admin/invoices/{$invoice->id}/misc-items", [
             'description' => 'Persistent Adjustment',
@@ -805,6 +807,7 @@ class InvoiceShootOrderSyncTest extends TestCase
 
     public function test_adjusted_total_cannot_be_lower_than_retained_billable_adjustments(): void
     {
+        $this->service->update(['allow_multiple' => true]);
         [$shoot, $invoice] = $this->createShootAndInvoice();
         $this->postJson("/api/admin/invoices/{$invoice->id}/misc-items", [
             'description' => 'Non-negotiable Adjustment',
@@ -981,6 +984,7 @@ class InvoiceShootOrderSyncTest extends TestCase
 
     public function test_shoot_discount_reprices_services_and_tax_and_can_be_cleared(): void
     {
+        $this->service->update(['allow_multiple' => true]);
         [$shoot, $invoice] = $this->createShootAndInvoice();
         $shoot->forceFill(['tax_region' => 'MD', 'tax_percent' => 6, 'discount_type' => null, 'discount_value' => null])->save();
         $this->postJson("/api/admin/invoices/{$invoice->id}/misc-items", [
