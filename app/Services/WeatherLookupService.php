@@ -31,14 +31,6 @@ class WeatherLookupService
 
     public function lookup(array $params): ?array
     {
-        $hasCoordinates = isset($params['latitude'], $params['longitude'])
-            && is_numeric($params['latitude'])
-            && is_numeric($params['longitude']);
-
-        if (!$hasCoordinates && empty($this->googleApiKey)) {
-            throw new \RuntimeException('Google API key is not configured for location-based weather lookups.');
-        }
-
         $cacheKey = $this->buildResultCacheKey($params);
 
         $cached = $this->safeCacheGet($cacheKey);
@@ -148,6 +140,43 @@ class WeatherLookupService
         $cacheKey = 'weather:geocode:fwd:' . md5(strtolower(trim($location)));
 
         return $this->safeCacheRemember($cacheKey, self::GEOCODE_CACHE_TTL_SECONDS, function () use ($location) {
+            if ($this->googleApiKey) {
+                $resolved = $this->geocodeWithGoogle($location);
+                if ($resolved) {
+                    return $resolved;
+                }
+            }
+
+            try {
+                // Share the existing throttled, cached address provider when Google is unavailable.
+                $address = ['address' => $location];
+                $parts = array_map('trim', explode(',', $location));
+                if (count($parts) >= 2 && preg_match('/^\d+[A-Za-z]?(?:-\d+[A-Za-z]?)?\s/', $parts[0])) {
+                    // Retain the locality fallback for street addresses absent from the map.
+                    // City-only queries must remain intact so we never fall back to a whole state.
+                    $address = ['address' => array_shift($parts), 'city' => implode(', ', $parts)];
+                }
+                $coordinates = app(AddressLookupService::class)->geocodeAddress($address);
+
+                return $coordinates ? [
+                    'latitude' => (float) $coordinates['latitude'],
+                    'longitude' => (float) $coordinates['longitude'],
+                    'location' => $location,
+                ] : null;
+            } catch (\Throwable $e) {
+                Log::warning('Fallback weather geocoding failed', [
+                    'location' => $location,
+                    'exception' => $e::class,
+                ]);
+
+                return null;
+            }
+        });
+    }
+
+    private function geocodeWithGoogle(string $location): ?array
+    {
+        try {
             $response = Http::acceptJson()
                 ->timeout(self::REQUEST_TIMEOUT_SECONDS)
                 ->get(self::GEOCODE_API, [
@@ -184,7 +213,14 @@ class WeatherLookupService
                 'longitude' => (float) $coords['lng'],
                 'location' => $this->formatLocationLabel($result) ?: ($result['formatted_address'] ?? $location),
             ];
-        });
+        } catch (\Throwable $e) {
+            Log::warning('Google geocoding request failed', [
+                'location' => $location,
+                'exception' => $e::class,
+            ]);
+
+            return null;
+        }
     }
 
     private function reverseGeocode(float $latitude, float $longitude): ?string
@@ -192,12 +228,23 @@ class WeatherLookupService
         $cacheKey = 'weather:geocode:rev:' . md5(number_format($latitude, 3, '.', '') . ',' . number_format($longitude, 3, '.', ''));
 
         return $this->safeCacheRemember($cacheKey, self::GEOCODE_CACHE_TTL_SECONDS, function () use ($latitude, $longitude) {
-            $response = Http::acceptJson()
-                ->timeout(self::REQUEST_TIMEOUT_SECONDS)
-                ->get(self::GEOCODE_API, [
-                    'latlng' => sprintf('%s,%s', $latitude, $longitude),
-                    'key' => $this->googleApiKey,
+            try {
+                $response = Http::acceptJson()
+                    ->timeout(self::REQUEST_TIMEOUT_SECONDS)
+                    ->get(self::GEOCODE_API, [
+                        'latlng' => sprintf('%s,%s', $latitude, $longitude),
+                        'key' => $this->googleApiKey,
+                    ]);
+            } catch (\Throwable $e) {
+                // A missing display label must not prevent weather for known coordinates.
+                Log::warning('Google reverse geocoding request failed', [
+                    'latitude' => $latitude,
+                    'longitude' => $longitude,
+                    'exception' => $e::class,
                 ]);
+
+                return null;
+            }
 
             if (!$response->ok()) {
                 return null;
