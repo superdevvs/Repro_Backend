@@ -138,8 +138,7 @@ class ShootController extends Controller
     {
         $user = $request->user();
 
-        if (! $this->shootAuthorizationSupport->hasRole($user, ['admin', 'superadmin', 'photographer', 'editor'])
-            || ! $this->shootAuthorizationSupport->canViewShootDetails($shoot, $user)) {
+        if (! $this->shootAuthorizationSupport->canScheduleShoot($shoot, $user)) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 

@@ -71,6 +71,7 @@ class UpdateShootAction
         $isClient = $user->role === 'client';
         $isRep = $this->authorizationSupport->hasRole($user, ['salesRep']);
         $canManageRequested = $this->authorizationSupport->canManageRequestedShoot($shoot, $user);
+        $canManageHold = $this->authorizationSupport->canManageHoldShoot($shoot, $user);
         $isPhotographer = $user->role === 'photographer';
         $requestKeys = array_keys($request->all());
         $onlyPrivateListing = count($requestKeys) > 0 && count(array_diff($requestKeys, ['is_private_listing'])) === 0;
@@ -127,7 +128,19 @@ class UpdateShootAction
             $this->abortJson('Use the approval or decline action to change a requested shoot status.', 403);
         }
 
-        if (! $isAdmin && ! $canManageRequested) {
+        if ($isRep && $canManageHold && $request->hasAny(['status', 'workflow_status'])) {
+            foreach (['status', 'workflow_status'] as $field) {
+                $nextStatus = $request->input($field);
+                if ($nextStatus === null || $nextStatus === '') {
+                    continue;
+                }
+                if (! in_array(strtolower((string) $nextStatus), ['scheduled', 'on_hold', 'hold_on'], true)) {
+                    $this->abortJson('Forbidden', 403);
+                }
+            }
+        }
+
+        if (! $isAdmin && ! $canManageRequested && ! $canManageHold) {
             $ownsShoot = $isClient && (string) $shoot->client_id === (string) $user->id;
             $assignedRep = $isRep && (string) $shoot->rep_id === (string) $user->id;
             $assignedPhotographer = $isPhotographer

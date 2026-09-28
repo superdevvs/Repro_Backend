@@ -238,6 +238,42 @@ class ShootAuthorizationSupport
         return $this->canAccessShootMedia($shoot, $user);
     }
 
+    public function isOnHold(Shoot $shoot): bool
+    {
+        foreach ([$shoot->status, $shoot->workflow_status] as $status) {
+            if (in_array(strtolower((string) $status), ['on_hold', 'hold_on'], true)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Sales can bring a hold shoot back onto the schedule. They cannot use the
+     * same action to move a shoot that is already active.
+     */
+    public function canScheduleShoot(Shoot $shoot, ?User $user): bool
+    {
+        if (! $user || ! $this->canViewShootDetails($shoot, $user)) {
+            return false;
+        }
+
+        if ($this->hasRole($user, ['admin', 'superadmin', 'editing_manager', 'photographer', 'editor'])) {
+            return true;
+        }
+
+        return $this->hasRole($user, ['salesRep']) && $this->isOnHold($shoot);
+    }
+
+    /** Hold shoots are still being arranged, so sales can set the appointment. */
+    public function canManageHoldShoot(Shoot $shoot, ?User $user): bool
+    {
+        return $this->hasRole($user, ['salesRep'])
+            && $this->isOnHold($shoot)
+            && $this->canViewShootDetails($shoot, $user);
+    }
+
     public function ensureShootAccess(Shoot $shoot, ?User $user = null): void
     {
         abort_unless($this->canViewShootDetails($shoot, $user), 403, 'Forbidden');
