@@ -762,7 +762,7 @@ class ShootEditablePayloadService
             ?? data_get($propertyDetails, 'square_feet');
         $sqft = is_numeric($sqftValue) ? (int) $sqftValue : null;
 
-        return collect($merged)->map(function (array $service) use (
+        return collect($merged)->map(function (array $service, int $index) use (
             $canOverrideLinePrice,
             $currentItems,
             $serviceModels,
@@ -781,6 +781,15 @@ class ShootEditablePayloadService
 
             if (($service['quantity'] ?? null) === null) {
                 $service['quantity'] = $currentItem?->quantity ?? 1;
+            }
+
+            if ($serviceModel) {
+                $this->support->assertServiceQuantityAllowed(
+                    $serviceModel,
+                    (int) $service['quantity'],
+                    $currentItem?->quantity,
+                    "services.$index.quantity"
+                );
             }
 
             return $service;

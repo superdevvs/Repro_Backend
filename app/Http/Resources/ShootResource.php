@@ -315,8 +315,9 @@ class ShootResource extends JsonResource
                         'name' => $service->name,
                         'price' => (float) ($service->pivot->price ?? $service->price ?? 0),
                         'quantity' => (int) ($service->pivot->quantity ?? 1),
+                        'allow_multiple' => (bool) $service->allow_multiple,
                         'pricing_type' => $service->pricing_type,
-                        'photo_count' => $service->photo_count !== null ? (int) $service->photo_count : null,
+                        'photo_count' => $serviceItemSummary['photo_count'] ?? null,
                         'sqft_ranges' => $sqftRanges->map(fn ($range) => [
                             'id' => $range->id,
                             'sqft_from' => (int) $range->sqft_from,

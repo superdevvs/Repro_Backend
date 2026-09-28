@@ -982,8 +982,8 @@ class DashboardController extends Controller
                 ->limit(30)
                 ->get();
         } else {
-            // Unknown role - return empty collection
-            return collect([]);
+            // Feature-specific notifications below also evaluate secondary roles.
+            $shootActivityLogs = collect([]);
         }
 
         // Format and sanitize the activity logs, filtering out logs with deleted shoots
@@ -996,12 +996,16 @@ class DashboardController extends Controller
         // Fetch email notifications based on role
         $emailNotifications = $this->getEmailNotificationsForRole($role, $userId);
         $userAccountNotifications = $this->getUserAccountNotificationsForRole($role, $userId);
+        $listingStudioNotifications = ($viewer = User::find($userId))
+            ? app(\App\Services\ListingStudioAccess::class)->notifications($viewer)
+            : collect();
 
         // Merge and sort by timestamp
         return $formattedShootLogs
             ->concat($emailNotifications)
             ->concat($userAccountNotifications)
-            ->sortByDesc('timestamp')
+            ->concat($listingStudioNotifications)
+            ->sortByDesc(fn (array $notification) => strtotime((string) ($notification['timestamp'] ?? '')) ?: 0)
             ->take(50)
             ->values();
     }

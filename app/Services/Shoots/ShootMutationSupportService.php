@@ -45,6 +45,27 @@ class ShootMutationSupportService
         return round($total, 2);
     }
 
+    public function assertServiceQuantityAllowed(Service $service, int $quantity, ?int $bookedQuantity = null, string $field = 'services'): void
+    {
+        // Disabling the catalogue option must not invalidate existing bookings.
+        // Their quantity can be retained or reduced, but cannot be increased.
+        if (! $service->allow_multiple && $quantity > max(1, $bookedQuantity ?? 1)) {
+            throw ValidationException::withMessages([
+                $field => ["Enable Allow multiple for {$service->name} before adding more than one."],
+            ]);
+        }
+    }
+
+    public function assertNewServiceQuantitiesAllowed(array $services): void
+    {
+        $catalog = Service::query()->whereIn('id', collect($services)->pluck('id'))->get()->keyBy('id');
+        foreach ($services as $index => $line) {
+            if ($service = $catalog->get($line['id'])) {
+                $this->assertServiceQuantityAllowed($service, (int) ($line['quantity'] ?? 1), null, "services.$index.quantity");
+            }
+        }
+    }
+
     public function buildTaxCalculation(array $services, ?string $state, ?string $taxRegion = null): array
     {
         return $this->buildPricingCalculation($services, null, $state, $taxRegion);

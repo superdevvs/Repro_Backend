@@ -521,6 +521,42 @@ class ComplimentaryReshootControllerTest extends TestCase
         )->assertForbidden();
     }
 
+    public function test_multiple_reshoot_standard_pay_scales_but_custom_pay_is_an_exact_total(): void
+    {
+        $this->service->update(['allow_multiple' => true]);
+        $payload = $this->payload('company_error');
+        $payload['items'][0]['quantity'] = 3;
+        $this->postJson("/api/admin/shoots/{$this->sourceShoot->id}/complimentary-reshoots", $payload)
+            ->assertCreated()->assertJsonPath('data.service_items.0.quantity', 3)
+            ->assertJsonPath('data.photographer_compensations.0.amount', 225);
+
+        $payload['items'][0]['photographer_compensation_mode'] = ShootCompensation::MODE_CUSTOM;
+        $payload['items'][0]['photographer_pay'] = 110;
+        $this->postJson("/api/admin/shoots/{$this->sourceShoot->id}/complimentary-reshoots", $payload)
+            ->assertCreated()->assertJsonPath('data.photographer_compensations.0.amount', 110);
+    }
+
+    public function test_reshoot_keeps_source_multiples_when_disabled_but_rejects_more_or_a_different_service(): void
+    {
+        $this->sourceItem->update(['quantity' => 3]);
+        $payload = $this->payload('company_error');
+        $payload['items'][0]['quantity'] = 3;
+        $this->getJson("/api/admin/shoots/{$this->sourceShoot->id}/complimentary-reshoots/template")
+            ->assertOk()->assertJsonPath('data.source_service_items.0.quantity', 3)
+            ->assertJsonPath('data.source_service_items.0.allow_multiple', false)
+            ->assertJsonPath('data.source_service_items.0.standard_photographer_pay', 225);
+        $this->postJson("/api/admin/shoots/{$this->sourceShoot->id}/complimentary-reshoots", $payload)
+            ->assertCreated()->assertJsonPath('data.service_items.0.quantity', 3);
+        $payload['items'][0]['quantity'] = 4;
+        $this->postJson("/api/admin/shoots/{$this->sourceShoot->id}/complimentary-reshoots", $payload)
+            ->assertUnprocessable()->assertJsonValidationErrors('items.0.quantity');
+        $payload['items'][0]['service_id'] = Service::factory()->create(['allow_multiple' => false])->id;
+        $payload['items'][0]['quantity'] = 2;
+        $this->postJson("/api/admin/shoots/{$this->sourceShoot->id}/complimentary-reshoots", $payload)
+            ->assertUnprocessable()->assertJsonValidationErrors('items.0.quantity');
+        $this->assertSame(1, Shoot::where('reshoot_of_shoot_id', $this->sourceShoot->id)->count());
+    }
+
     /**
      * @return array<string, mixed>
      */

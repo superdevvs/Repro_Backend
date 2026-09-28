@@ -751,13 +751,15 @@ class ShootPresenter
                         // the editor UI surfaces editor payout separately.
                         'price' => $isEditorRole ? null : (float) ($service->pivot?->price ?? $service->price ?? 0),
                         'quantity' => (int) ($service->pivot?->quantity ?? 1),
+                        'allow_multiple' => (bool) $service->allow_multiple,
                         'pricing_type' => $service->pricing_type,
                         'photographer_required' => (bool) $service->photographer_required,
                         // Canonical contracted photo count. Null means unspecified, and
                         // booking quantity is never substituted for it.
-                        'photo_count' => $serviceItemSummary['photo_count']
-                            ?? ($service->photo_count !== null && (int) $service->photo_count > 0
-                                ? (int) $service->photo_count
+                        'photo_count' => array_key_exists('photo_count', $serviceItemSummary)
+                            ? $serviceItemSummary['photo_count']
+                            : ($service->photo_count !== null && (int) $service->photo_count > 0
+                                ? (int) $service->photo_count * max(1, (int) ($service->pivot?->quantity ?? 1))
                                 : null),
                         // Upload capability, carried through from the service item so
                         // the resolver runs once per item. The client builds its photo

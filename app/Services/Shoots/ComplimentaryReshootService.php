@@ -52,6 +52,7 @@ class ComplimentaryReshootService
                 'service_id' => $item->service_id,
                 'name' => $service?->name ?? 'Service',
                 'quantity' => $quantity,
+                'allow_multiple' => (bool) ($service?->allow_multiple ?? false),
                 'nominal_unit_price' => $nominalUnit,
                 'nominal_total' => round($nominalUnit * $quantity, 2),
                 'standard_photographer_pay' => round((float) $standard['amount'], 2),
@@ -107,6 +108,7 @@ class ComplimentaryReshootService
                 ->map(fn (Service $service) => [
                     'id' => $service->id,
                     'name' => $service->name,
+                    'allow_multiple' => (bool) $service->allow_multiple,
                     'price' => round((float) $service->getPriceForSqft($this->extractSqft($sourceShoot)), 2),
                     'standard_photographer_pay' => round((float) ($service->getPhotographerPayForSqft($this->extractSqft($sourceShoot)) ?? 0), 2),
                     'exclude_from_sales_commission' => (bool) $service->exclude_from_sales_commission,
@@ -239,6 +241,16 @@ class ComplimentaryReshootService
                 $services = Service::query()->whereIn('id', $serviceIds)->get()->keyBy('id');
                 if ($services->count() !== $serviceIds->count()) {
                     throw ValidationException::withMessages(['items' => ['One or more selected services no longer exist.']]);
+                }
+                foreach ($requestedItems as $itemIndex => $itemData) {
+                    $sourceItem = $sourceItems[(int) $itemData['source_shoot_service_id']];
+                    $serviceId = (int) ($itemData['service_id'] ?: $sourceItem->service_id);
+                    app(ShootMutationSupportService::class)->assertServiceQuantityAllowed(
+                        $services[$serviceId],
+                        max((int) ($itemData['quantity'] ?? 1), 1),
+                        (int) $sourceItem->service_id === $serviceId ? $sourceItem->quantity : null,
+                        "items.$itemIndex.quantity"
+                    );
                 }
 
                 $sourceRepId = (int) ($sourceShoot->rep_id ?? 0) ?: null;

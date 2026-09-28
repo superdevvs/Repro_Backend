@@ -108,7 +108,7 @@ class StoreShootRequest extends FormRequest
 
             // Services: required array with service_id, quantity, and price
             'services' => [$this->has('service_lines') || $canOmitServices ? 'nullable' : 'required', 'array', $canOmitServices ? 'min:0' : 'min:1'],
-            'services.*.id' => 'required|exists:services,id',
+            'services.*.id' => 'required|distinct|exists:services,id',
             'services.*.quantity' => 'nullable|integer|min:1',
             'services.*.price' => 'nullable|numeric|min:0',
             'services.*.photographer_id' => 'nullable|exists:users,id',
@@ -118,7 +118,7 @@ class StoreShootRequest extends FormRequest
 
             // Service item details: optional override rows for per-service scheduling/roles.
             'service_items' => 'nullable|array',
-            'service_items.*.service_id' => 'required_with:service_items|exists:services,id',
+            'service_items.*.service_id' => 'required_with:service_items|distinct|exists:services,id',
             'service_items.*.photographer_id' => 'nullable|exists:users,id',
             'service_items.*.editor_id' => 'nullable|exists:users,id',
             'service_items.*.scheduled_at' => 'nullable|date',

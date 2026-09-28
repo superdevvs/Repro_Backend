@@ -122,6 +122,7 @@ class ShootServiceItemSupport
                 'description' => $item->service?->description,
                 'price' => (float) ($item->price ?? 0),
                 'quantity' => (int) ($item->quantity ?? 1),
+                'allow_multiple' => (bool) ($item->service?->allow_multiple ?? false),
                 'subtotal' => $subtotal,
                 'photographer_pay' => $photographerPay !== null ? (float) $photographerPay : null,
                 'photographerPay' => $photographerPay !== null ? (float) $photographerPay : null,

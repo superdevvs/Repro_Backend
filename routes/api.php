@@ -37,6 +37,7 @@ use App\Http\Controllers\API\IpLocationController;
 use App\Http\Controllers\API\LegalDocumentController;
 use App\Http\Controllers\API\LinkPreviewController;
 use App\Http\Controllers\API\ListingVideoController;
+use App\Http\Controllers\API\ListingStudioRequestController;
 use App\Http\Controllers\API\MediaUploadController;
 use App\Http\Controllers\API\Messaging\AutomationController;
 use App\Http\Controllers\API\Messaging\ClientConfirmationRecoveryController;
@@ -403,6 +404,15 @@ Route::middleware('auth:sanctum')->prefix('profile')->group(function () {
     Route::delete('/security/two-factor', [ProfileSecurityController::class, 'disableTwoFactor']);
     Route::delete('/security/sessions/others', [ProfileSecurityController::class, 'revokeOtherSessions']);
     Route::delete('/security/sessions/{tokenId}', [ProfileSecurityController::class, 'revokeSession'])->whereNumber('tokenId');
+});
+
+Route::middleware(['auth:sanctum', 'role:client,salesRep,rep,admin,superadmin'])->prefix('listing-studio')->group(function () {
+    Route::get('/catalog', [ListingStudioRequestController::class, 'catalog']);
+    Route::get('/clients', [ListingStudioRequestController::class, 'clients']);
+    Route::get('/requests', [ListingStudioRequestController::class, 'index']);
+    Route::post('/requests', [ListingStudioRequestController::class, 'store'])->middleware('throttle:30,1');
+    Route::patch('/requests/{listingStudioRequest}', [ListingStudioRequestController::class, 'review'])
+        ->middleware('role:admin,superadmin');
 });
 
 Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager,salesRep'])->get('/admin/users', [UserController::class, 'index']);

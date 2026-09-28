@@ -154,6 +154,12 @@ class ReturnVisitBookingService
                     $sourceItem = $sourceItems[(int) $item['source_shoot_service_id']];
                     $service = $services[(int) $item['service_id']];
                     $quantity = max((int) ($item['quantity'] ?? 1), 1);
+                    app(ShootMutationSupportService::class)->assertServiceQuantityAllowed(
+                        $service,
+                        $quantity,
+                        (int) $sourceItem->service_id === (int) $service->id ? $sourceItem->quantity : null,
+                        "complimentary_service_options.service_items.$index.quantity"
+                    );
                     $photographerId = (int) (
                         $item['photographer_id']
                         ?? $defaultPhotographerId

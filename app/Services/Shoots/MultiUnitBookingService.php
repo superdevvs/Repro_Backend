@@ -36,7 +36,7 @@ class MultiUnitBookingService
             'service_lines.*.shoot_unit_id' => 'nullable|integer',
             'service_lines.*.service_id' => 'required|integer|exists:services,id',
             'service_lines.*.price' => 'nullable|numeric|min:0',
-            'service_lines.*.quantity' => 'nullable|integer|in:1',
+            'service_lines.*.quantity' => 'nullable|integer|min:1',
             'service_lines.*.scheduled_at' => 'nullable|date',
             'service_lines.*.photographer_id' => 'nullable|integer|exists:users,id',
             'service_lines.*.editor_id' => 'nullable|integer|exists:users,id',
@@ -142,6 +142,13 @@ class MultiUnitBookingService
             if (! $service) {
                 $this->fail("service_lines.$index.service_id", 'Service does not exist.');
             }
+            $quantity = (int) ($line['quantity'] ?? $current?->quantity ?? 1);
+            app(ShootMutationSupportService::class)->assertServiceQuantityAllowed(
+                $service,
+                $quantity,
+                $current?->quantity,
+                "service_lines.$index.quantity"
+            );
             if ($current && ((int) $current->service_id !== (int) $service->id || (int) $current->shoot_unit_id !== (int) $unit['id'])) {
                 $this->fail("service_lines.$index", 'A booked line cannot be moved to a different unit or service. Add a new line.');
             }
@@ -173,7 +180,7 @@ class MultiUnitBookingService
             $row = [
                 'id' => $service->id, 'shoot_service_id' => $current?->id,
                 'client_key' => $line['client_key'], 'unit_client_key' => $unit['client_key'],
-                'shoot_unit_id' => $unit['id'], 'quantity' => 1,
+                'shoot_unit_id' => $unit['id'], 'quantity' => $quantity,
                 'price' => $canOverride && isset($line['price']) ? (float) $line['price'] : ($current?->price ?? $pricing[$priceKey]['price']),
                 'photographer_pay' => $current?->photographer_pay ?? $pricing[$priceKey]['photographer_pay'],
                 'duration_minutes' => $current?->duration_minutes ?? $pricing[$priceKey]['duration_minutes'],

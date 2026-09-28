@@ -179,9 +179,12 @@ class UploadIntakeResolver
             return null;
         }
 
-        if ($item->shoot_unit_id) return $item->contracted_photo_count;
+        $perItemCount = $item->shoot_unit_id
+            ? $item->contracted_photo_count
+            : $this->serviceFor($item)?->contractedPhotoCount();
 
-        return $this->serviceFor($item)?->contractedPhotoCount();
+        // Quantity scales a known package size; it never supplies a missing count.
+        return $perItemCount === null ? null : $perItemCount * max(1, (int) ($item->quantity ?? 1));
     }
 
     public function capabilityAvailable(): bool

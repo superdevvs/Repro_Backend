@@ -1206,6 +1206,7 @@ class ShootMutationActionsTest extends TestCase
     #[\PHPUnit\Framework\Attributes\Test]
     public function admin_can_update_a_shoot_and_emit_the_dynamic_refresh_signal(): void
     {
+        $this->secondService->update(['allow_multiple' => true]);
         Event::fake([ShootActivityBroadcast::class]);
         Sanctum::actingAs($this->admin);
 
@@ -2216,6 +2217,7 @@ class ShootMutationActionsTest extends TestCase
     #[\PHPUnit\Framework\Attributes\Test]
     public function later_client_discount_changes_do_not_reprice_an_undiscounted_booking(): void
     {
+        $this->service->update(['allow_multiple' => true]);
         Sanctum::actingAs($this->admin);
 
         $this->client->forceFill([
@@ -2250,6 +2252,7 @@ class ShootMutationActionsTest extends TestCase
     #[\PHPUnit\Framework\Attributes\Test]
     public function invoice_sync_failure_rolls_back_the_entire_service_edit(): void
     {
+        $this->service->update(['allow_multiple' => true]);
         $invoiceService = Mockery::mock(InvoiceService::class);
         $invoiceService->shouldIgnoreMissing();
         $invoiceService->shouldReceive('refreshClientInvoicesForShoot')

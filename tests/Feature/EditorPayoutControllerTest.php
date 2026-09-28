@@ -140,6 +140,23 @@ class EditorPayoutControllerTest extends TestCase
         ]);
     }
 
+    public function test_multiple_photo_packages_scale_editor_quantity_and_payout(): void
+    {
+        Carbon::setTestNow(Carbon::parse('2026-04-09 10:00:00'));
+        $admin = User::factory()->admin()->create();
+        $editor = User::factory()->create(['role' => 'editor', 'metadata' => ['photo_edit_rate' => 4.5]]);
+        $service = Service::factory()->create(['name' => 'HDR Photos', 'photo_count' => 10, 'allow_multiple' => true]);
+        $shoot = $this->createEditedShoot($editor, $service, 2);
+        Sanctum::actingAs($admin);
+        $this->getJson('/api/admin/editors/'.$editor->id.'/earnings-detail')
+            ->assertOk()->assertJsonPath('data.line_items.0.quantity_snapshot', 20)
+            ->assertJsonPath('data.summary.total_earned', 90);
+        $this->assertDatabaseHas('editor_payouts', [
+            'shoot_id' => $shoot->id, 'service_id' => $service->id,
+            'quantity_snapshot' => 20, 'payout_amount' => 90,
+        ]);
+    }
+
     public function test_editor_can_view_their_own_earnings_report(): void
     {
         Carbon::setTestNow(Carbon::parse('2026-04-09 10:00:00'));

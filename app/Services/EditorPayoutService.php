@@ -528,13 +528,13 @@ class EditorPayoutService
         // Prefer the admin-configured photo count on the service row when present —
         // this is the canonical bundle size (e.g. "25 HDR Photos" → 25).
         if ($servicePhotoCount > 0) {
-            return $servicePhotoCount;
+            return $servicePhotoCount * max($fallbackQuantity, 1);
         }
 
         // Otherwise try to extract the bundle size embedded in the service name,
         // covering common forms like "25 HDR Photos", "40 HDR", "30 Images".
         if (preg_match('/(\d+)\s*(?:[a-z]+\s+){0,3}(?:photo|image|hdr)/i', $serviceName, $matches)) {
-            return max((int) $matches[1], 1);
+            return max((int) $matches[1], 1) * max($fallbackQuantity, 1);
         }
 
         return max($fallbackQuantity, 1);

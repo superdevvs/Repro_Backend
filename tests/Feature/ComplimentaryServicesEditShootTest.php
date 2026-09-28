@@ -689,4 +689,23 @@ class ComplimentaryServicesEditShootTest extends TestCase
             ],
         ]);
     }
+
+    public function test_billable_return_visit_preserves_source_multiples_and_rejects_disabled_quantity_increases(): void
+    {
+        $this->sourceItem->update(['quantity' => 3]);
+        $payload = $this->payload(true, false);
+        $payload['complimentary_service_options']['client_pays'] = true;
+        $payload['complimentary_service_options']['service_items'][0]['quantity'] = 4;
+        $this->patchJson('/api/shoots/'.$this->sourceShoot->id, $payload)
+            ->assertUnprocessable()->assertJsonValidationErrors('complimentary_service_options.service_items.0.quantity');
+        $this->assertSame(0, Shoot::where('reshoot_of_shoot_id', $this->sourceShoot->id)->count());
+        $payload['complimentary_service_options']['service_items'][0]['quantity'] = 3;
+        $this->patchJson('/api/shoots/'.$this->sourceShoot->id, $payload)->assertOk();
+        $child = Shoot::where('reshoot_of_shoot_id', $this->sourceShoot->id)->firstOrFail();
+        $line = $child->serviceItems()->firstOrFail();
+        $this->assertSame(3, $line->quantity);
+        $this->assertSame(750.0, (float) $child->base_quote);
+        $this->assertSame(75.0, (float) $line->photographer_pay);
+        $this->assertSame(225.0, (float) $child->total_photographer_pay);
+    }
 }

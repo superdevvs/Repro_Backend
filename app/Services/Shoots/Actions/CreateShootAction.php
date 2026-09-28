@@ -58,6 +58,9 @@ class CreateShootAction
                 $request->input('service_photographers'),
                 $scheduledAt
             );
+            if (! $unitBooking) {
+                $this->support->assertNewServiceQuantitiesAllowed($servicesPayload);
+            }
             $pricingCalculation = $this->support->buildPricingCalculation(
                 $servicesPayload,
                 $client,
