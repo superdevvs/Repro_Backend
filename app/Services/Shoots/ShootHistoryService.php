@@ -70,9 +70,11 @@ class ShootHistoryService
                 ]);
             }
 
-            $paginator = $query
-                ->orderByRaw('COALESCE(admin_verified_at, editing_completed_at, scheduled_date, created_at) DESC')
-                ->paginate($perPage);
+            $ordering = app(ShootListOrdering::class);
+            $sort = $ordering->mode($request->query('sort'));
+            $paginator = $sort
+                ? $ordering->paginate($query, $sort, $perPage, (int) $request->query('page', 1))
+                : $query->orderByRaw('COALESCE(admin_verified_at, editing_completed_at, scheduled_date, created_at) DESC')->paginate($perPage);
 
             $clientCounts = $this->loadClientShootCounts($paginator->getCollection(), $user);
 
@@ -116,9 +118,11 @@ class ShootHistoryService
         $query = Shoot::with(['client', 'photographer', 'services', 'payments']);
         $this->applyHistoryFilters($query, $request, $user);
 
-        $shoots = $query
-            ->orderByRaw('COALESCE(admin_verified_at, editing_completed_at, scheduled_date, created_at) DESC')
-            ->get();
+        $ordering = app(ShootListOrdering::class);
+        $sort = $ordering->mode($request->query('sort'));
+        $shoots = $sort
+            ? $ordering->get($query, $sort)
+            : $query->orderByRaw('COALESCE(admin_verified_at, editing_completed_at, scheduled_date, created_at) DESC')->get();
 
         $clientCounts = $this->loadClientShootCounts($shoots, $user);
 

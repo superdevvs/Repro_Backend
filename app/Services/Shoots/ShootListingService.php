@@ -85,7 +85,7 @@ class ShootListingService
                 'date_range', 'scheduled_start', 'scheduled_end',
                 'completed_start', 'completed_end', 'custom_start', 'custom_end',
                 'date_from', 'date_to', 'private_listing', 'listing_scope', 'include_hidden',
-                'bracket', 'missing', 'limit', 'scheduled_status',
+                'bracket', 'missing', 'limit', 'scheduled_status', 'sort',
             ]);
             $filterParams = array_filter($filterParams, function ($value) {
                 return $value !== null && $value !== '';
@@ -186,7 +186,11 @@ class ShootListingService
                 $query->orderBy($ordering['column'], $ordering['direction'] ?? 'asc');
             }
 
-            $shoots = $query->paginate($perPage, ['*'], 'page', $page);
+            $ordering = app(ShootListOrdering::class);
+            $sort = $ordering->mode($request->query('sort'));
+            $shoots = $sort
+                ? $ordering->paginate($query, $sort, $perPage, $page)
+                : $query->paginate($perPage, ['*'], 'page', $page);
             $isClientUser = $user && $user->role === 'client';
 
             $transformedShoots = $shoots->getCollection()->map(function (Shoot $shoot) use ($transformShoot, $isClientUser) {
