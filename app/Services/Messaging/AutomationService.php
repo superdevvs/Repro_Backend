@@ -280,7 +280,7 @@ class AutomationService
      * through the same {@see MessagingService} send path the rest of automation uses. Issue #12
      * requires reminders to be delivered as both emails AND texts, so this sends:
      *   - an email when the client has a usable email address, and
-     *   - an SMS (using the template's text body) when the client has a usable phone number.
+     *   - an SMS (using its own compact template) when the client has a usable phone number.
      *
      * The two channels are fully independent and best-effort: the absence of one address, or a
      * failure (including an SMS opt-out / {@see SmsSendException}) on one channel, never prevents
@@ -343,14 +343,6 @@ class AutomationService
             ->where('is_active', true)
             ->first();
 
-        if ($template === null) {
-            Log::warning('Skipping payment reminder: payment-due-reminder template is unavailable', [
-                'shoot_id' => $shoot->id,
-            ]);
-
-            return null;
-        }
-
         $context = $this->variableResolver->resolve(array_merge($this->buildShootContext($shoot), [
             'recipient_type' => 'client',
             'recipient_name' => $client->name ?? 'Client',
@@ -358,14 +350,13 @@ class AutomationService
             'recipient_phone' => $phone !== '' ? $phone : null,
         ]));
 
-        $rendered = $this->templateRenderer->render($template, $context);
-
         $emailMessage = null;
         $smsMessage = null;
 
         // Channel 1 — email. Best-effort: a failure here is logged and must not prevent the SMS.
-        if ($email !== '') {
+        if ($email !== '' && $template !== null) {
             try {
+                $rendered = $this->templateRenderer->render($template, $context);
                 $emailMessage = $this->messagingService->sendEmail([
                     'to' => $email,
                     'subject' => $rendered['subject'] ?? $template->subject,
@@ -387,7 +378,7 @@ class AutomationService
                 ]);
             }
         } else {
-            Log::info('Skipping payment reminder email: client has no email', [
+            Log::info('Skipping payment reminder email: address or template is unavailable', [
                 'shoot_id' => $shoot->id,
             ]);
         }
@@ -396,18 +387,32 @@ class AutomationService
         // opt-out, or an SmsSendException is logged and must not prevent or undo the email.
         if ($phone !== '') {
             try {
-                $smsMessage = $this->messagingService->sendSms([
-                    'to' => $phone,
-                    'body_text' => $rendered['body_text'] ?? null,
-                    'send_source' => 'AUTOMATION',
-                    'template_id' => $template->id,
-                    'related_shoot_id' => $shoot->id,
-                    'related_account_id' => $shoot->client_id,
-                    'contact_phone' => $phone,
-                    'contact_name' => $client->name ?? 'Client',
-                    'contact_type' => 'client',
-                    'tags_json' => ['PAYMENT_REMINDER:shoot:'.$shoot->id],
-                ]);
+                $smsTemplate = MessageTemplate::query()
+                    ->where('slug', 'shoot-payment-reminder-sms')
+                    ->where('channel', 'SMS')
+                    ->first();
+                if ($smsTemplate === null) {
+                    $smsTemplate = new MessageTemplate([
+                        'channel' => 'SMS',
+                        'body_text' => SmsTemplateContent::forSlug('shoot-payment-reminder-sms'),
+                        'is_active' => true,
+                    ]);
+                }
+                if ($smsTemplate->is_active) {
+                    $smsRendered = $this->templateRenderer->render($smsTemplate, $context);
+                    $smsMessage = $this->messagingService->sendSms([
+                        'to' => $phone,
+                        'body_text' => $smsRendered['body_text'] ?? null,
+                        'send_source' => 'AUTOMATION',
+                        'template_id' => $smsTemplate->id,
+                        'related_shoot_id' => $shoot->id,
+                        'related_account_id' => $shoot->client_id,
+                        'contact_phone' => $phone,
+                        'contact_name' => $client->name ?? 'Client',
+                        'contact_type' => 'client',
+                        'tags_json' => ['PAYMENT_REMINDER:shoot:'.$shoot->id],
+                    ]);
+                }
             } catch (\Throwable $exception) {
                 Log::warning('Payment reminder SMS send failed or suppressed', [
                     'shoot_id' => $shoot->id,

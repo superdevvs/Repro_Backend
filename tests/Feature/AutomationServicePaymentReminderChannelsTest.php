@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Exceptions\Messaging\SmsSendException;
 use App\Jobs\DispatchScheduledMessages;
+use App\Models\AutomationRule;
 use App\Models\Message;
 use App\Models\MessageTemplate;
 use App\Models\PaymentReminder;
@@ -175,6 +176,106 @@ class AutomationServicePaymentReminderChannelsTest extends TestCase
 
         $this->assertNotNull($returned, 'phone-only reminder must return the SMS Message so the row is marked sent');
         $this->assertSame($smsMessage->id, $returned->id);
+    }
+
+    public function test_legacy_fallback_sends_compact_sms_without_reusing_email_copy(): void
+    {
+        $this->seedReminderTemplate();
+        $emailCopy = 'Email invoice details: balance, services, access notes, and payment instructions.';
+        MessageTemplate::where('slug', 'payment-due-reminder')->update(['body_text' => $emailCopy]);
+        AutomationRule::where('trigger_type', 'SHOOT_PAYMENT_REMINDER')->delete();
+        MessageTemplate::where('slug', 'shoot-payment-reminder-sms')->delete();
+        config(['app.frontend_url' => 'https://reprodashboard.com']);
+        $client = User::factory()->create([
+            'role' => 'client', 'name' => 'Lauren Agent',
+            'email' => 'client@example.com', 'phonenumber' => '+12025550111',
+        ]);
+        $shoot = $this->unpaidShootFor($client);
+        $shoot->update([
+            'address' => '108 James Street', 'city' => 'Woodsboro', 'state' => 'MD', 'zip' => '21798',
+            'scheduled_date' => '2026-09-28', 'time' => '10:00',
+        ]);
+        $emailMessage = $this->fakeMessage(['channel' => 'EMAIL']);
+        $smsMessage = $this->fakeMessage(['channel' => 'SMS']);
+        $messaging = $this->mockMessaging();
+        $emailPayload = null;
+        $smsPayload = null;
+        $messaging->shouldReceive('sendEmail')->once()
+            ->andReturnUsing(function ($payload) use (&$emailPayload, $emailMessage): Message {
+                $emailPayload = $payload;
+
+                return $emailMessage;
+            });
+        $messaging->shouldReceive('sendSms')->once()
+            ->andReturnUsing(function ($payload) use (&$smsPayload, $smsMessage): Message {
+                $smsPayload = $payload;
+
+                return $smsMessage;
+            });
+
+        $this->assertSame($emailMessage->id, $this->service()->sendPaymentReminder($shoot->fresh())?->id);
+        $this->assertSame($emailCopy, $emailPayload['body_text']);
+        $body = $smsPayload['body_text'];
+        $this->assertStringStartsWith("Payment due\n108 James Street, Woodsboro, MD, 21798\n", $body);
+        $this->assertStringContainsString('Sep 28, 2026', $body);
+        $this->assertStringContainsString('10:00 AM', $body);
+        $this->assertStringContainsString('Contact: Lauren Agent +12025550111', $body);
+        $this->assertStringContainsString('Details: https://reprodashboard.com/shoots/'.$shoot->id, $body);
+        $this->assertStringNotContainsString('balance, services', $body);
+        $this->assertStringNotContainsString('maps', $body);
+        $this->assertStringNotContainsString('{{', $body);
+        $this->assertNull($smsPayload['template_id']);
+        $this->assertDatabaseMissing('message_templates', ['slug' => 'shoot-payment-reminder-sms']);
+    }
+
+    public function test_legacy_fallback_uses_saved_sms_copy_and_its_template_id(): void
+    {
+        $this->seedReminderTemplate();
+        AutomationRule::where('trigger_type', 'SHOOT_PAYMENT_REMINDER')->delete();
+        $template = MessageTemplate::where('slug', 'shoot-payment-reminder-sms')->firstOrFail();
+        $template->update(['body_text' => 'Custom reminder: {{shoot_address}}', 'is_active' => true]);
+        $client = User::factory()->create(['email' => '', 'phonenumber' => '+12025550111']);
+        $shoot = $this->unpaidShootFor($client);
+        $message = $this->fakeMessage(['channel' => 'SMS']);
+        $messaging = $this->mockMessaging();
+        $messaging->shouldReceive('sendEmail')->never();
+        $messaging->shouldReceive('sendSms')->once()
+            ->with(Mockery::on(fn ($payload) => str_starts_with($payload['body_text'], 'Custom reminder: '.$shoot->address)
+                && $payload['template_id'] === $template->id))
+            ->andReturn($message);
+
+        $this->assertSame($message->id, $this->service()->sendPaymentReminder($shoot->fresh())?->id);
+        $this->assertSame('Custom reminder: {{shoot_address}}', $template->fresh()->body_text);
+    }
+
+    public function test_legacy_fallback_respects_disabled_sms_template_and_still_sends_email(): void
+    {
+        $this->seedReminderTemplate();
+        AutomationRule::where('trigger_type', 'SHOOT_PAYMENT_REMINDER')->delete();
+        MessageTemplate::where('slug', 'shoot-payment-reminder-sms')->update(['is_active' => false]);
+        $client = User::factory()->create(['email' => 'client@example.com', 'phonenumber' => '+12025550111']);
+        $shoot = $this->unpaidShootFor($client);
+        $message = $this->fakeMessage(['channel' => 'EMAIL']);
+        $messaging = $this->mockMessaging();
+        $messaging->shouldReceive('sendEmail')->once()->andReturn($message);
+        $messaging->shouldReceive('sendSms')->never();
+
+        $this->assertSame($message->id, $this->service()->sendPaymentReminder($shoot->fresh())?->id);
+    }
+
+    public function test_legacy_sms_can_send_when_email_template_is_unavailable(): void
+    {
+        $this->seedReminderTemplate();
+        AutomationRule::where('trigger_type', 'SHOOT_PAYMENT_REMINDER')->delete();
+        MessageTemplate::where('slug', 'payment-due-reminder')->update(['is_active' => false]);
+        $client = User::factory()->create(['email' => 'client@example.com', 'phonenumber' => '+12025550111']);
+        $shoot = $this->unpaidShootFor($client);
+        $message = $this->fakeMessage(['channel' => 'SMS']);
+        $messaging = $this->mockMessaging();
+        $messaging->shouldReceive('sendEmail')->never();
+        $messaging->shouldReceive('sendSms')->once()->andReturn($message);
+
+        $this->assertSame($message->id, $this->service()->sendPaymentReminder($shoot->fresh())?->id);
     }
 
     public function test_sms_failure_does_not_prevent_email_and_row_is_marked_sent(): void

@@ -2,10 +2,14 @@
 
 namespace App\Services\Users;
 
+use App\Models\MessageTemplate;
 use App\Models\User;
 use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
 use App\Services\Messaging\MessagingService;
+use App\Services\Messaging\SmsTemplateContent;
+use App\Services\Messaging\TemplateRenderer;
+use App\Services\Messaging\TemplateVariableResolver;
 use Illuminate\Support\Facades\Log;
 
 class AccountCreatedNotificationService
@@ -155,9 +159,27 @@ class AccountCreatedNotificationService
             if (! preg_match('/^\+[1-9]\d{7,14}$/', $phone)) {
                 throw new \InvalidArgumentException('Phone number cannot be normalized to E.164.');
             }
+            $template = MessageTemplate::query()
+                ->where('slug', 'automation-account-created-sms')
+                ->where('channel', 'SMS')
+                ->first();
+            if ($template !== null && ! $template->is_active) {
+                return $this->channel(false);
+            }
+            $template ??= new MessageTemplate([
+                'channel' => 'SMS',
+                'body_text' => SmsTemplateContent::forSlug('automation-account-created-sms'),
+                'is_active' => true,
+            ]);
+            $variables = app(TemplateVariableResolver::class)->resolve(array_merge(
+                $this->automationService->buildUserContext($user),
+                ['client' => $user, 'recipient' => $user, 'recipient_type' => $this->normalizeRole($user->role)]
+            ));
+            $rendered = app(TemplateRenderer::class)->render($template, $variables);
             $this->messagingService->sendSms([
                 'to' => $phone,
-                'body_text' => sprintf('R/E Pro Photos: Your %s account has been created. Check %s for setup and verification links. Sign in at %s', $this->roleLabel($user->role), $user->email, rtrim((string) config('app.frontend_url', 'https://reprodashboard.com'), '/')),
+                'body_text' => $rendered['body_text'],
+                'template_id' => $template->id,
                 'send_source' => 'ACCOUNT_CREATED',
                 'contact_phone' => $phone,
                 'contact_email' => $user->email,
@@ -248,10 +270,5 @@ class AccountCreatedNotificationService
         $message = preg_replace('/\b(Bearer\s+|api[_-]?key[=: ]+|token[=: ]+)[^\s,;]+/i', '$1[REDACTED]', $message) ?? 'Provider request failed.';
 
         return mb_substr($message, 0, 500);
-    }
-
-    private function roleLabel(?string $role): string
-    {
-        return ucwords(str_replace('_', ' ', $this->normalizeRole($role)));
     }
 }

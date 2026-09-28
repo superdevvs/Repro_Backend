@@ -111,15 +111,15 @@ class ManualNotificationService
         string $channel,
         User $sender,
     ): Message {
-        $template = $this->resolveTemplate($type);
         $recipientType = $this->normalizeRecipientType($recipientType);
         $channel = $this->normalizeChannel($channel);
+        $template = $this->resolveTemplate($type, $channel);
 
         $recipient = $this->resolveRecipient($shoot, $recipientType);
         $address = $this->recipientAddress($recipient, $channel);
 
         $context = $this->variableResolver->resolve(
-            $this->buildContext($shoot, $type, $recipientType, $recipient)
+            $this->buildContext($shoot, $type, $recipientType, $recipient, $channel)
         );
 
         if ($type === 'payment_due') {
@@ -201,15 +201,16 @@ class ManualNotificationService
      * @throws InvalidArgumentException When $type or $recipientType is unknown.
      * @throws RuntimeException         When the selected recipient cannot be resolved.
      */
-    public function preview(Shoot $shoot, string $type, string $recipientType): array
+    public function preview(Shoot $shoot, string $type, string $recipientType, string $channel = 'email'): array
     {
-        $template = $this->resolveTemplate($type);
+        $channel = $this->normalizeChannel($channel);
+        $template = $this->resolveTemplate($type, $channel);
         $recipientType = $this->normalizeRecipientType($recipientType);
 
         $recipient = $this->resolveRecipient($shoot, $recipientType);
 
         $context = $this->variableResolver->resolve(
-            $this->buildContext($shoot, $type, $recipientType, $recipient)
+            $this->buildContext($shoot, $type, $recipientType, $recipient, $channel)
         );
 
         // Mirror send()'s payment-flow enrichment so the preview shows the same content.
@@ -278,9 +279,39 @@ class ManualNotificationService
      *
      * @throws InvalidArgumentException When the type is not a known manual notification type.
      */
-    public function resolveTemplate(string $type): MessageTemplate
+    public function resolveTemplate(string $type, string $channel = 'email'): MessageTemplate
     {
         $slug = self::TYPES[$type] ?? throw new InvalidArgumentException("Unknown notification type {$type}");
+        $channel = $this->normalizeChannel($channel);
+
+        if ($channel === 'sms') {
+            // Preserve a deliberately configured SMS template under the legacy
+            // slug, including its disabled state. Never send email copy as SMS.
+            $legacySms = MessageTemplate::where('slug', $slug)->where('channel', 'SMS')->first();
+            if ($legacySms) {
+                if (! $legacySms->is_active) {
+                    throw new RuntimeException('The selected SMS template is disabled.');
+                }
+
+                return $legacySms;
+            }
+
+            $slug .= '-sms';
+            $body = SmsTemplateContent::forSlug($slug)
+                ?? throw new RuntimeException('The selected SMS template is unavailable.');
+            $template = MessageTemplate::firstOrCreate(['slug' => $slug, 'channel' => 'SMS'], [
+                'name' => ucwords(str_replace('-', ' ', substr($slug, 0, -4))).' SMS',
+                'scope' => 'SYSTEM', 'is_system' => true, 'is_active' => true,
+                'category' => str_starts_with($type, 'payment_') ? 'PAYMENT' : 'BOOKING',
+                'subject' => '', 'body_text' => $body,
+                'variables_json' => SmsTemplateContent::variables($body),
+            ]);
+            if (! $template->is_active) {
+                throw new RuntimeException('The selected SMS template is disabled.');
+            }
+
+            return $template;
+        }
 
         return MessageTemplate::query()
             ->where('slug', $slug)
@@ -293,9 +324,9 @@ class ManualNotificationService
      *
      * @return array<string, mixed>
      */
-    private function buildContext(Shoot $shoot, string $type, string $recipientType, User $recipient): array
+    private function buildContext(Shoot $shoot, string $type, string $recipientType, User $recipient, string $channel = 'email'): array
     {
-        return [
+        return array_merge($channel === 'sms' ? $this->automationService->buildShootContext($shoot) : [], [
             'shoot'          => $shoot,
             'shoot_id'       => $shoot->id,
             'account_id'     => $shoot->client_id,
@@ -304,7 +335,7 @@ class ManualNotificationService
             'recipient_type' => $recipientType,
             'recipient_name' => $recipient->name,
             'recipient_email' => $recipient->email,
-        ];
+        ]);
     }
 
     /**

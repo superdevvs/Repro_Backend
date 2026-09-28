@@ -272,7 +272,7 @@ class MessageTemplateController extends Controller
 
         $shoot = Shoot::findOrFail($data['shoot_id']);
 
-        $preview = $manual->preview($shoot, $data['type'], $data['recipient_type']);
+        $preview = $manual->preview($shoot, $data['type'], $data['recipient_type'], $data['channel'] ?? 'email');
 
         return response()->json($preview);
     }

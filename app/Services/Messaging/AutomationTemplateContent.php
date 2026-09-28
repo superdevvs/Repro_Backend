@@ -7,6 +7,17 @@ class AutomationTemplateContent
 {
     public static function enhance(array $template): array
     {
+        if (($template['channel'] ?? null) === 'SMS') {
+            $body = SmsTemplateContent::forSlug($template['slug']);
+            if ($body !== null) {
+                $template['body_text'] = $body;
+                $template['body_html'] = '';
+                $template['variables_json'] = SmsTemplateContent::variables($body);
+            }
+
+            return $template;
+        }
+
         $details = match ($template['slug']) {
             'account-created' => ['Next step: sign in and complete your profile.', '<p><a href="{{portal_url}}">Sign in and complete your profile</a>. Support: {{company_email}}</p>'],
             'shoot-requested' => ['Your request has been received and is not yet confirmed.', '<p>Your request has been received and is <strong>not yet confirmed</strong>.</p>'],

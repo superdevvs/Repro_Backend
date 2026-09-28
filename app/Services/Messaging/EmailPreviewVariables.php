@@ -42,6 +42,7 @@ class EmailPreviewVariables
             'access_instructions' => 'Preview example: meet the contact at the front entrance.',
             'access_warning' => 'Preview example: please confirm property access before the shoot.',
             'assignment_message' => 'You are assigned to this example shoot. Please review its schedule and access details.',
+            'assignment_status' => 'Assigned to shoot',
             'payment_status' => 'Partially paid', 'remaining_balance' => '125.00',
             'payment_method' => 'Card', 'payment_items' => 'Example photography service: $250.00',
             'receipt_link' => 'https://example.com/preview/receipt',
@@ -62,6 +63,9 @@ class EmailPreviewVariables
             'payment_details' => 'Preview receipt: $250.00 paid by card for the example shoot.',
             'support_link' => 'mailto:'.config('mail.contact_address', 'contact@reprophotos.com'),
         ]);
+        if (! array_key_exists('sms_contact', $provided) && ($resolved['sms_contact'] ?? '') === 'See shoot details') {
+            $resolved['sms_contact'] = $samples['sms_contact'];
+        }
         foreach (app(TemplateRenderer::class)->variableKeys($template) as $key) {
             if (array_key_exists($key, $provided) || (isset($resolved[$key]) && $resolved[$key] !== '')) {
                 continue;

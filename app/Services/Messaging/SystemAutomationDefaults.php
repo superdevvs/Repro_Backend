@@ -269,26 +269,7 @@ class SystemAutomationDefaults
 
     private function smsDefinitions(): array
     {
-        $copy = [
-            'ACCOUNT_CREATED' => 'Welcome to R/E Pro Photos, {{recipient_first_name}}. Your account is ready. Sign in: {{portal_url}}',
-            'PHOTOGRAPHER_SHOOT_REMINDER' => 'Shoot {{shoot_date}} {{shoot_time}}: {{shoot_address}}. Map: {{map_link}}. Contact: {{property_contact_name}} {{property_contact_phone}}. Access: {{access_instructions}}. Services: {{services_provided}}. Details: {{dashboard_link}}',
-            'SHOOT_SCHEDULED' => 'Booking confirmed: {{shoot_date}} {{shoot_time}}, {{shoot_address}}. Review or manage: {{dashboard_link}}',
-            'SHOOT_BOOKED' => 'Shoot assigned: {{shoot_date}} {{shoot_time}}, {{shoot_address}}. Services: {{services_provided}}. Details: {{dashboard_link}}',
-            'PHOTOGRAPHER_ASSIGNED' => 'Shoot assigned: {{shoot_date}} {{shoot_time}}, {{shoot_address}}. Services: {{services_provided}}. Details: {{dashboard_link}}',
-            'SHOOT_REQUEST_APPROVED' => 'Booking confirmed: {{shoot_date}} {{shoot_time}}, {{shoot_address}}. Review or manage: {{dashboard_link}}',
-            'SHOOT_REQUEST_MODIFIED' => 'Booking updated: {{shoot_date}} {{shoot_time}}, {{shoot_address}}. {{shoot_change_summary}} Review: {{dashboard_link}}',
-            'SHOOT_UPDATED' => 'Shoot updated at {{shoot_address}}: {{shoot_change_summary}}. Schedule: {{shoot_date}} {{shoot_time}}. Review: {{dashboard_link}}',
-            'PHOTOGRAPHER_CHANGED' => '{{assignment_message}} Shoot: {{shoot_date}} {{shoot_time}}, {{shoot_address}}. Details: {{dashboard_link}}',
-            'SHOOT_COMPLETED' => 'Your media is ready for {{shoot_address}}. Balance: {{remaining_balance}}. View gallery and downloads: {{dashboard_link}}',
-            'SHOOT_CANCELED' => 'Shoot cancelled: {{shoot_date}} {{shoot_time}}, {{shoot_address}}. {{cancellation_reason}} Details: {{dashboard_link}}',
-            'SHOOT_CANCELLED' => 'Shoot cancelled: {{shoot_date}} {{shoot_time}}, {{shoot_address}}. {{cancellation_reason}} Details: {{dashboard_link}}',
-        ];
-        $definitions = [];
-        foreach ($copy as $trigger => $body) {
-            $definitions[$trigger] = ['slug' => 'automation-'.strtolower(str_replace('_', '-', $trigger)).'-sms', 'body' => $body];
-        }
-
-        return $definitions;
+        return SmsTemplateContent::automationDefinitions();
     }
 
     private function additionalRules(): array
@@ -381,8 +362,15 @@ class SystemAutomationDefaults
         MessageTemplate::firstOrCreate(['slug' => 'shoot-payment-reminder-sms'], [
             'name' => 'Shoot Payment Reminder SMS', 'channel' => 'SMS', 'scope' => 'SYSTEM', 'is_system' => true,
             'is_active' => true, 'category' => 'PAYMENT', 'subject' => '',
-            'body_text' => 'Payment reminder for {{shoot_location}}. Balance: {{remaining_balance}}. Pay or review: {{payment_link}}',
-            'variables_json' => ['shoot_location', 'remaining_balance', 'payment_link'],
+            'body_text' => SmsTemplateContent::forSlug('shoot-payment-reminder-sms'),
+            'variables_json' => SmsTemplateContent::variables(SmsTemplateContent::forSlug('shoot-payment-reminder-sms')),
         ]);
+        foreach (SmsTemplateContent::all() as $slug => $body) {
+            MessageTemplate::firstOrCreate(['channel' => 'SMS', 'slug' => $slug], [
+                'name' => ucwords(str_replace('-', ' ', $slug)), 'scope' => 'SYSTEM', 'is_system' => true,
+                'is_active' => true, 'category' => 'GENERAL', 'subject' => '', 'body_text' => $body,
+                'variables_json' => SmsTemplateContent::variables($body),
+            ]);
+        }
     }
 }

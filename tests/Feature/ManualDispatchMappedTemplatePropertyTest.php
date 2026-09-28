@@ -107,6 +107,8 @@ class ManualDispatchMappedTemplatePropertyTest extends TestCase
                 'is_active'   => true,
             ]);
             $this->idBySlug[$slug] = $template->id;
+            $sms = app(ManualNotificationService::class)->resolveTemplate($type, 'sms');
+            $this->idBySlug[$sms->slug] = $sms->id;
         }
     }
 
@@ -325,6 +327,9 @@ class ManualDispatchMappedTemplatePropertyTest extends TestCase
                 $expectedSlug,
                 "[A] type {$type} must be a defined manual notification type for {$context}"
             );
+            if ($channel === 'sms') {
+                $expectedSlug .= '-sms';
+            }
 
             $capturedTemplateId = $capture['payload']['template_id'] ?? null;
             $this->assertNotNull(
@@ -340,7 +345,7 @@ class ManualDispatchMappedTemplatePropertyTest extends TestCase
             $this->assertSame(
                 $expectedSlug,
                 $resolved->slug,
-                "[A] dispatched template's slug must equal ManualNotificationService::TYPES[{$type}] for {$context}"
+                "[A] dispatched template's slug must match the type and channel for {$context}"
             );
             $this->assertSame(
                 $this->idBySlug[$expectedSlug],

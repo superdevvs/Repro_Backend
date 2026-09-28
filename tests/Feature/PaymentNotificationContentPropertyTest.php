@@ -20,8 +20,9 @@ use Tests\TestCase;
  *
  * Validates: Requirements 12.3, 12.4
  *
- * Universal invariant under test, for any shoot / recipient / channel / payment
- * combination:
+ * Email detail invariants and compact SMS links, for every shoot / recipient /
+ * channel / payment combination. SMS contains the purpose and shoot details link;
+ * the detailed payment and receipt information remains in email and the dashboard.
  *
  *   (12.3) WHEN a Payment due notification is dispatched, THE rendered message
  *          content delivered to MessagingService SHALL contain a payment link.
@@ -254,7 +255,12 @@ class PaymentNotificationContentPropertyTest extends TestCase
 
             $this->assertNotSame('', trim($content), "rendered content was empty for {$context}");
 
-            if ($case['type'] === self::TYPE_DUE) {
+            if ($case['channel'] === 'sms') {
+                $this->assertStringContainsString('/shoots/'.$shoot->id, $content, $context);
+                $this->assertStringContainsString($case['type'] === self::TYPE_DUE ? 'Payment due' : 'Payment received', $content, $context);
+                $this->assertStringNotContainsString('Amount paid:', $content, $context);
+                $this->assertStringNotContainsString('Remaining balance:', $content, $context);
+            } elseif ($case['type'] === self::TYPE_DUE) {
                 // AC 12.3 — the dispatched content must include the payment link.
                 $this->assertStringContainsString(
                     '/payment/',

@@ -202,6 +202,25 @@ class TemplateVariableResolver
             $resolved['invoice_number'] = $resolved['invoice_label'];
         }
 
+        // SMS uses one contact line; empty access fields should fall back to the
+        // client instead of producing a blank label. Email tokens stay unchanged.
+        $property = (array) ($shoot?->property_details ?? []);
+        $shootClient = $shoot?->relationLoaded('client') ? $shoot->getRelation('client') : null;
+        $firstFilled = fn (array $values) => collect($values)->first(fn ($value) => trim((string) $value) !== '', '');
+        $hasPropertyContact = array_key_exists('accessContactName', $property) || array_key_exists('accessContactPhone', $property);
+        $contactName = trim((string) ($hasPropertyContact ? ($property['accessContactName'] ?? '') : ($resolved['property_contact_name'] ?? '')));
+        $contactPhone = trim((string) ($hasPropertyContact ? ($property['accessContactPhone'] ?? '') : ($resolved['property_contact_phone'] ?? '')));
+        if ($contactPhone === '') {
+            $clientPhone = $firstFilled([$resolved['client_phone'] ?? '', $shootClient?->phonenumber ?? '', $shootClient?->phone ?? '']);
+            if ($clientPhone !== '') {
+                $contactName = $firstFilled([$resolved['client_name'] ?? '', $shootClient?->name ?? '']);
+                $contactPhone = $clientPhone;
+            }
+        }
+        $resolved['sms_contact'] = array_key_exists('sms_contact', $context)
+            ? $context['sms_contact']
+            : (trim(preg_replace('/\s+/', ' ', $contactName.' '.$contactPhone)) ?: 'See shoot details');
+
         return $resolved;
     }
 

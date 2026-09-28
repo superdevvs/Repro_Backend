@@ -4,6 +4,7 @@ namespace Tests\Unit\Users;
 
 use App\Models\ClientEmailVerificationToken;
 use App\Models\Message;
+use App\Models\MessageTemplate;
 use App\Models\User;
 use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
@@ -11,11 +12,14 @@ use App\Services\Messaging\MessagingService;
 use App\Services\Users\AccountCreatedNotificationService;
 use App\Services\Users\ClientEmailVerificationLinkService;
 use App\Services\Users\EmailHealthService;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 class AccountCreatedNotificationServiceTest extends TestCase
 {
+    use RefreshDatabase;
+
     #[DataProvider('roles')]
     public function test_dispatches_truthful_role_policy_for_all_supported_roles(string $role, bool $verify): void
     {
@@ -140,6 +144,48 @@ class AccountCreatedNotificationServiceTest extends TestCase
         $messaging->expects($this->never())->method('sendSms');
         $result = $service->dispatch($this->user('admin', '(410) 555-0123'));
         $this->assertTrue($result['sms']['sent']);
+    }
+
+    public function test_fallback_sms_uses_compact_copy_without_email_address_or_role(): void
+    {
+        config(['app.frontend_url' => 'https://reprodashboard.com']);
+        MessageTemplate::where('slug', 'automation-account-created-sms')->delete();
+        [$service, , , $messaging] = $this->service();
+        $messaging->expects($this->once())->method('sendSms')
+            ->with($this->callback(fn (array $payload) => $payload['body_text'] === 'R/E Pro Photos: Account ready. Check your email for setup. Sign in: https://reprodashboard.com'
+                && $payload['template_id'] === null))
+            ->willReturn(new Message);
+
+        $this->assertTrue($service->sendSms($this->user('photographer', '(410) 555-0123'))['sent']);
+        $this->assertDatabaseMissing('message_templates', ['slug' => 'automation-account-created-sms']);
+    }
+
+    public function test_fallback_sms_uses_saved_editable_template(): void
+    {
+        $template = MessageTemplate::updateOrCreate(['slug' => 'automation-account-created-sms'], [
+            'name' => 'Account ready SMS', 'channel' => 'SMS', 'is_active' => true,
+            'body_text' => 'Welcome {{recipient_first_name}}. Your account is ready.',
+        ]);
+        [$service, , , $messaging] = $this->service();
+        $messaging->expects($this->once())->method('sendSms')
+            ->with($this->callback(fn (array $payload) => $payload['body_text'] === 'Welcome QA. Your account is ready.'
+                && $payload['template_id'] === $template->id))
+            ->willReturn(new Message);
+
+        $this->assertTrue($service->sendSms($this->user('admin', '(410) 555-0123'))['sent']);
+    }
+
+    public function test_disabled_saved_sms_template_suppresses_fallback(): void
+    {
+        MessageTemplate::updateOrCreate(['slug' => 'automation-account-created-sms'], [
+            'name' => 'Account ready SMS', 'channel' => 'SMS', 'is_active' => false,
+            'body_text' => 'Disabled welcome',
+        ]);
+        [$service, , , $messaging] = $this->service();
+        $messaging->expects($this->never())->method('sendSms');
+
+        $this->assertSame(['attempted' => false, 'sent' => false, 'error' => null],
+            $service->sendSms($this->user('admin', '(410) 555-0123')));
     }
 
     public static function roles(): array
