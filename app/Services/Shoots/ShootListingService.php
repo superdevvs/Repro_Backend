@@ -440,6 +440,14 @@ class ShootListingService
             $query->where('missing_final', true);
         }
 
+        // Calendar navigation always refers to the booked day, including in
+        // Delivery. Keep date_from/date_to's existing delivery-date meaning.
+        $scheduledStart = $request->query('scheduled_start');
+        $scheduledEnd = $request->query('scheduled_end');
+        if ($scheduledStart || $scheduledEnd) {
+            $this->applyDateRangeFilter($query, 'scheduled_date', $scheduledStart, $scheduledEnd);
+        }
+
         $dateFrom = $request->query('date_from');
         $dateTo = $request->query('date_to');
         if ($dateFrom || $dateTo) {

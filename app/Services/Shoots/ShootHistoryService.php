@@ -372,6 +372,9 @@ class ShootHistoryService
         return [
             'id' => (int) $shoot->id,
             'scheduledDate' => optional($shoot->scheduled_date)->toDateString(),
+            'time' => $shoot->time,
+            'timezone' => $shoot->timezone,
+            'scheduledAt' => $shoot->scheduled_at?->toIso8601String(),
             'completedDate' => $completedDate,
             'status' => $shoot->workflow_status ?? $shoot->status,
             'client' => [
