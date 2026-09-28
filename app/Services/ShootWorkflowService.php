@@ -436,10 +436,14 @@ class ShootWorkflowService
         $this->validateTransition($shoot, self::STATUS_SCHEDULED);
 
         $this->writeTransaction(function () use ($shoot, $scheduledAt, $user, $notes) {
+            $scheduleScope = app(ScheduleDateScopeService::class);
             $shoot->status = self::STATUS_SCHEDULED;
             $shoot->workflow_status = self::STATUS_SCHEDULED;
             $shoot->scheduled_at = $scheduledAt;
-            $shoot->scheduled_date = $scheduledAt->format('Y-m-d');
+            $shoot->scheduled_date = $scheduleScope->localDateForScheduledAt($shoot->scheduled_at, $shoot->timezone)
+                ?? $scheduledAt->format('Y-m-d');
+            $shoot->time = $scheduleScope->localTimeForScheduledAt($shoot->scheduled_at, $shoot->timezone)
+                ?? $scheduledAt->format('H:i');
             $shoot->approved_at = now();
             $shoot->approved_by = $user?->id ?? auth()->id();
             if ($notes) {

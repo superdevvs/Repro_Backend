@@ -13,7 +13,9 @@ use App\Services\ShootMediaStorageService;
 use App\Services\Shoots\ShootEditablePayloadService;
 use App\Services\Shoots\ShootMutationSupportService;
 use App\Services\ShootWorkflowService;
+use App\Support\LockedWrite;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 class ApproveShootAction
@@ -67,7 +69,41 @@ class ApproveShootAction
                 && app(\App\Services\Shoots\ShootAuthorizationSupport::class)->canManageRequestedShoot($shoot, $user)));
         $targetPhotographerId = $validated['photographer_id'] ?? $shoot->photographer_id;
         $targetServices = $this->editablePayloadService->targetServicesFor($shoot, $validated, $user);
-        if ($shoot->units()->exists()) {
+        $isMultiUnit = $shoot->units()->exists();
+        $inheritedScheduleItemIds = [];
+        $previousSchedule = $this->support->normalizeDateTimeForDatabase($shoot->scheduled_at);
+        $approvedSchedule = $this->support->normalizeDateTimeForDatabase($scheduledAt);
+        if (! $isMultiUnit && $approvedSchedule !== $previousSchedule) {
+            $explicitScheduleServiceIds = collect(array_merge($validated['services'] ?? [], $validated['service_items'] ?? []))
+                ->filter(fn (array $service) => array_key_exists('scheduled_at', $service))
+                ->map(fn (array $service) => (int) ($service['service_id'] ?? $service['id']))
+                ->all();
+            $inheritedScheduleItemIds = $shoot->serviceItems
+                ->filter(function ($item) use ($previousSchedule, $explicitScheduleServiceIds) {
+                    $itemSchedule = $this->support->normalizeDateTimeForDatabase($item->scheduled_at);
+
+                    return ! in_array((int) $item->service_id, $explicitScheduleServiceIds, true)
+                        && $item->workflow_status !== 'cancelled'
+                        && ($itemSchedule === null || $itemSchedule === $previousSchedule);
+                })->pluck('id')->all();
+            $currentItems = $shoot->serviceItems->keyBy('service_id');
+            foreach ($targetServices as &$service) {
+                $serviceSchedule = $this->support->normalizeDateTimeForDatabase(
+                    array_key_exists('scheduled_at', $service)
+                        ? $service['scheduled_at']
+                        : $currentItems->get((int) $service['id'])?->scheduled_at
+                );
+                // Only omitted service schedules inherit the approved order time.
+                // Explicit schedules and independently timed visits stay intact.
+                if (! in_array((int) $service['id'], $explicitScheduleServiceIds, true)
+                    && ($service['workflow_status'] ?? null) !== 'cancelled'
+                    && ($serviceSchedule === null || $serviceSchedule === $previousSchedule)) {
+                    $service['scheduled_at'] = $approvedSchedule;
+                }
+            }
+            unset($service);
+        }
+        if ($isMultiUnit) {
             foreach ($targetServices as $index => $line) {
                 if (($line['photographer_required'] ?? false) && (empty($line['photographer_id']) || empty($line['scheduled_at']))) {
                     throw \Illuminate\Validation\ValidationException::withMessages(["service_lines.$index" => ['Schedule and assign a photographer to every unit capture line before approval.']]);
@@ -78,7 +114,7 @@ class ApproveShootAction
             }
         }
         if (! $skipAvailabilityCheck) {
-            if (! empty($targetPhotographerId) && ! $shoot->units()->exists()) {
+            if (! empty($targetPhotographerId) && ! $isMultiUnit) {
                 $durationMinutes = $this->support->calculateShootDurationFromServices($targetServices);
                 $this->support->checkPhotographerAvailability((int) $targetPhotographerId, $scheduledAt, $durationMinutes, $shoot->id);
             }
@@ -90,18 +126,29 @@ class ApproveShootAction
             );
         }
 
-        $this->editablePayloadService->apply($shoot, $validated, $user);
+        $writeAttempts = DB::transactionLevel() > 0 ? 1 : LockedWrite::DEFAULT_ATTEMPTS;
+        LockedWrite::run(fn () => DB::transaction(function () use ($shoot, $scheduledAt, $user, $validated, $inheritedScheduleItemIds, $previousSchedule) {
+            // A failed SQLite attempt may leave the in-memory workflow state
+            // changed even though its transaction rolled back.
+            $shoot->refresh();
+            $this->editablePayloadService->apply($shoot, $validated, $user);
 
-        if (! empty($shoot->photographer_id) && ! $shoot->units()->exists()) {
-            if (! $skipAvailabilityCheck) {
-                $durationMinutes = $this->support->calculateShootDurationFromServices(
-                    $shoot->services->map(fn ($service) => ['id' => $service->id])->toArray()
-                );
-                $this->support->checkPhotographerAvailability($shoot->photographer_id, $scheduledAt, $durationMinutes);
+            if ($inheritedScheduleItemIds !== []) {
+                $shoot->serviceItems()->whereIn('id', $inheritedScheduleItemIds)
+                    ->where(function ($query) use ($previousSchedule) {
+                        $query->whereNull('scheduled_at');
+                        if ($previousSchedule !== null) {
+                            $query->orWhere('scheduled_at', $previousSchedule);
+                        }
+                    })->update([
+                        'scheduled_at' => $this->support->normalizeDateTimeForDatabase($scheduledAt),
+                        'updated_at' => now(),
+                    ]);
+                $shoot->unsetRelation('services')->unsetRelation('serviceItems');
             }
-        }
 
-        $this->workflowService->approve($shoot, $scheduledAt, $user, $validated['notes'] ?? null);
+            $this->workflowService->approve($shoot, $scheduledAt, $user, $validated['notes'] ?? null);
+        }), "shoot.{$shoot->id}.approval-schedule", $writeAttempts);
         $this->mediaStorageService->createShootFolders($shoot);
 
         if ($scheduledAt) {
