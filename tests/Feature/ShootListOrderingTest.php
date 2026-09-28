@@ -156,6 +156,11 @@ class ShootListOrderingTest extends TestCase
         $this->assertSame([$la, $tie, $ny], array_column($this->listing($this->admin, $params)['data'], 'id'));
         Carbon::setTestNow(Carbon::parse('2026-09-28 13:30:59', 'UTC'));
         $this->assertSame([$ny, $la, $tie], array_column($this->listing($this->admin, $params)['data'], 'id'));
+        $unknown = $this->shoot(['scheduled_date' => '2026-09-29', 'time' => null, 'timezone' => 'America/New_York'])->id;
+        $nextMidnight = $this->shoot(['scheduled_date' => '2026-09-30', 'time' => '00:00', 'timezone' => 'America/New_York'])->id;
+        $pastUnknown = $this->shoot(['scheduled_date' => '2026-09-26', 'time' => null, 'timezone' => 'America/New_York'])->id;
+        $pastLastMinute = $this->shoot(['scheduled_date' => '2026-09-25', 'time' => '23:59', 'timezone' => 'America/New_York'])->id;
+        $this->assertSame([$ny, $la, $tie, $unknown, $nextMidnight, $pastUnknown, $pastLastMinute], array_column($this->listing($this->admin, $params)['data'], 'id'));
     }
 
     public function test_next_up_remains_chronological_across_local_day_boundaries_and_unknown_times(): void

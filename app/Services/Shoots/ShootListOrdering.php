@@ -101,7 +101,10 @@ class ShootListOrdering
             if ($key['date'] === null || $key['time'] !== null) {
                 continue;
             }
-            $edge = $edges[$key['date'].'|'.(int) $key['past']] ?? $key['instant'];
+            $edge = $edges[$key['date'].'|'.(int) $key['past']] ?? null;
+            if ($edge === null) {
+                continue;
+            }
             $keys[$index]['instant'] = $key['past']
                 ? min($key['instant'], $edge - 1)
                 : max($key['instant'], $edge + 1);
