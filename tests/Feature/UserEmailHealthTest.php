@@ -12,6 +12,7 @@ use App\Models\UserActivityLog;
 use App\Services\MailService;
 use App\Services\Messaging\MessagingService;
 use App\Services\Users\ClientEmailVerificationLinkService;
+use App\Services\Users\EmailHealthService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -27,6 +28,21 @@ class UserEmailHealthTest extends TestCase
 {
     use RefreshDatabase;
     use SignsInboundWebhooks;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        // These request tests exercise validation and delivery, not public DNS.
+        // Keep the valid and invalid fixture domains deterministic when offline.
+        $this->app->instance(EmailHealthService::class, new class extends EmailHealthService
+        {
+            protected function domainCanReceiveMail(string $domain): bool
+            {
+                return in_array($domain, ['example.com', 'gmail.com'], true);
+            }
+        });
+    }
 
     public function test_admin_creating_client_with_common_typo_domain_requires_confirmation(): void
     {
@@ -329,6 +345,7 @@ class UserEmailHealthTest extends TestCase
     public function test_admin_created_account_without_automation_dispatches_welcome_sms_and_reports_delivery(): void
     {
         $this->withoutConfiguredWelcomeAutomation();
+        config(['app.frontend_url' => 'https://reprodashboard.com']);
         $admin = User::factory()->admin()->create();
 
         $this->partialMock(MailService::class, function (MockInterface $mock) {
@@ -336,16 +353,13 @@ class UserEmailHealthTest extends TestCase
             $mock->shouldReceive('sendClientEmailVerificationEmail')->once()->andReturnTrue();
         });
 
-        $this->mock(MessagingService::class, function (MockInterface $mock) {
-            $mock->shouldReceive('sendSms')
-                ->once()
-                ->withArgs(function (array $payload): bool {
-                    return ($payload['to'] ?? null) === '+12075737634'
-                        && ($payload['send_source'] ?? null) === 'ACCOUNT_CREATED'
-                        && str_contains(strtolower((string) ($payload['body_text'] ?? '')), 'photographer account has been created')
-                        && str_contains((string) ($payload['body_text'] ?? ''), 'sms.account@example.com');
-                })
-                ->andReturn(new Message());
+        $smsPayload = null;
+        $this->mock(MessagingService::class, function (MockInterface $mock) use (&$smsPayload) {
+            $mock->shouldReceive('sendSms')->once()->andReturnUsing(function (array $payload) use (&$smsPayload): Message {
+                $smsPayload = $payload;
+
+                return new Message();
+            });
         });
 
         Sanctum::actingAs($admin);
@@ -363,6 +377,9 @@ class UserEmailHealthTest extends TestCase
             ->assertJsonPath('notification_delivery.sms.attempted', true)
             ->assertJsonPath('notification_delivery.sms.sent', true)
             ->assertJsonPath('notification_delivery.sms.error', null);
+
+        $this->assertCompactWelcomeSms($smsPayload, User::where('email', 'sms.account@example.com')->firstOrFail(), '+12075737634');
+        $this->assertSame($admin->id, $smsPayload['user_id']);
     }
 
     public function test_admin_cannot_resend_verification_for_already_verified_client(): void
@@ -549,18 +566,19 @@ class UserEmailHealthTest extends TestCase
     public function test_public_registration_without_automation_dispatches_welcome_sms_and_reports_each_channel(): void
     {
         $this->withoutConfiguredWelcomeAutomation();
+        config(['app.frontend_url' => 'https://reprodashboard.com']);
         $this->partialMock(MailService::class, function (MockInterface $mock) {
             $mock->shouldReceive('sendAccountCreatedEmail')->once()->andReturnTrue();
             $mock->shouldReceive('sendClientEmailVerificationEmail')->once()->andReturnTrue();
         });
 
-        $this->mock(MessagingService::class, function (MockInterface $mock) {
-            $mock->shouldReceive('sendSms')->once()->withArgs(function (array $payload): bool {
-                return ($payload['to'] ?? null) === '+12025550123'
-                    && ($payload['send_source'] ?? null) === 'ACCOUNT_CREATED'
-                    && ($payload['contact_type'] ?? null) === 'client'
-                    && str_contains((string) ($payload['body_text'] ?? ''), 'registered.sms@example.com');
-            })->andReturn(new Message());
+        $smsPayload = null;
+        $this->mock(MessagingService::class, function (MockInterface $mock) use (&$smsPayload) {
+            $mock->shouldReceive('sendSms')->once()->andReturnUsing(function (array $payload) use (&$smsPayload): Message {
+                $smsPayload = $payload;
+
+                return new Message();
+            });
         });
 
         $response = $this->postJson('/api/register', [
@@ -577,6 +595,10 @@ class UserEmailHealthTest extends TestCase
             ->assertJsonPath('notification_delivery.sms.attempted', true)
             ->assertJsonPath('notification_delivery.sms.sent', true)
             ->assertJsonPath('notification_delivery.sms.error', null);
+
+        $recipient = User::where('email', 'registered.sms@example.com')->firstOrFail();
+        $this->assertCompactWelcomeSms($smsPayload, $recipient, '+12025550123');
+        $this->assertSame($recipient->id, $smsPayload['user_id']);
     }
 
     public function test_public_registration_without_automation_reports_sms_failure_without_rolling_back_account(): void
@@ -993,6 +1015,26 @@ class UserEmailHealthTest extends TestCase
         // These legacy-fallback fixtures must explicitly represent an installation
         // without a welcome rule; a paused/configured rule intentionally suppresses fallback.
         AutomationRule::forTrigger('ACCOUNT_CREATED')->delete();
+    }
+
+    private function assertCompactWelcomeSms(?array $payload, User $recipient, string $phone): void
+    {
+        $this->assertNotNull($payload);
+        $this->assertSame($phone, $payload['to']);
+        $this->assertSame($phone, $payload['contact_phone']);
+        $this->assertSame('ACCOUNT_CREATED', $payload['send_source']);
+        $this->assertSame($recipient->email, $payload['contact_email']);
+        $this->assertSame($recipient->name, $payload['contact_name']);
+        $this->assertSame($recipient->role, $payload['contact_type']);
+        foreach (['contact_user_id', 'contact_account_id', 'related_account_id'] as $key) {
+            $this->assertSame($recipient->id, $payload[$key]);
+        }
+
+        $body = $payload['body_text'];
+        $this->assertSame('R/E Pro Photos: Account ready. Check your email for setup. Sign in: https://reprodashboard.com', $body);
+        $this->assertSame(1, preg_match_all('~https?://~', $body));
+        $this->assertStringNotContainsString('{{', $body);
+        $this->assertStringNotContainsString($recipient->email, $body);
     }
 
     protected function buildLegacyVerificationLink(User $user): string

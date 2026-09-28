@@ -28,7 +28,9 @@ use Tests\TestCase;
  * the current (UNFIXED) seeder output and committed here as the baseline
  * snapshot. The September automation repair has explicit, separately listed
  * additions for operational details, editable schedules and optional SMS.
- * Original metadata and body tokens remain protected by this baseline.
+ * Original email metadata and body tokens remain protected by this baseline.
+ * The compact SMS revision below explicitly replaces only the property-contact
+ * SMS variables and body tokens; its slug/category/channel remain unchanged.
  *
  * The central fix promotes getEmailWrapper() into a shared header/footer, so it
  * is allowed to ADD shared tokens (e.g. the canonical contact line) to a body;
@@ -264,10 +266,19 @@ class ShootEmailCompletenessPreservationTest extends TestCase
     /** Baseline (slug => null removed) cleaned of any placeholder entries. */
     private function baseline(): array
     {
-        return array_filter(
+        $baseline = array_filter(
             $this->baselineTemplates(),
             fn ($v) => $v !== null
         );
+
+        // Reviewed SMS-only copy change: one shoot-specific link and a compact
+        // contact line replace the old portal link and verbose access warning.
+        // Keep the original email snapshots and SMS routing metadata untouched.
+        $this->assertSame('SMS', $baseline['property-contact-reminder-sms']['channel']);
+        $baseline['property-contact-reminder-sms']['variables_json'] = ['shoot_address', 'shoot_date', 'shoot_time', 'sms_contact', 'dashboard_link'];
+        $baseline['property-contact-reminder-sms']['body_tokens'] = ['dashboard_link', 'shoot_address', 'shoot_date', 'shoot_time', 'sms_contact'];
+
+        return $baseline;
     }
 
     /** Reviewed operational additions; keep every original declared variable. */
@@ -283,7 +294,7 @@ class ShootEmailCompletenessPreservationTest extends TestCase
             'shoot-deleted' => ['cancellation_reason', 'portal_url'],
             'payment-thank-you' => ['invoice_number', 'payment_method', 'payment_items', 'remaining_balance', 'receipt_link'],
             'refund-submitted' => ['refund_amount', 'original_payment_reference', 'refund_method', 'refund_settlement_timing'],
-            'property-contact-reminder', 'property-contact-reminder-sms' => ['access_warning', 'dashboard_link'],
+            'property-contact-reminder' => ['access_warning', 'dashboard_link'],
             default => [],
         };
 
@@ -316,6 +327,9 @@ class ShootEmailCompletenessPreservationTest extends TestCase
             'automation-shoot-request-modified-sms', 'automation-shoot-scheduled-sms', 'automation-shoot-updated-sms',
             'photographer-shoot-reminder', 'shoot-payment-reminder-sms',
             'weekly-client-invoice-summary', 'weekly-rep-invoice-summary',
+            // Reviewed manual-notification SMS families remain separate from email.
+            'shoot-scheduled-sms', 'shoot-on-hold-sms', 'shoot-cancelled-sms',
+            'shoot-ready-sms', 'payment-due-sms', 'payment-receipt-sms',
         ];
     }
 
