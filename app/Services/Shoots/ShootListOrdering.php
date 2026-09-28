@@ -52,18 +52,24 @@ class ShootListOrdering
         $projection->limit = null;
         $projection->offset = null;
         $keys = [];
-        $now = Carbon::now();
+        $now = Carbon::now()->startOfMinute();
         foreach ($projection->cursor() as $row) {
             $keys[] = $this->scheduleKey($row, $now);
+        }
+        if ($mode === 'next_up') {
+            $this->anchorUnknownTimes($keys);
         }
         usort($keys, function (array $a, array $b) use ($mode): int {
             if ($a['date'] === null || $b['date'] === null) {
                 return ($a['date'] === null) <=> ($b['date'] === null) ?: $a['id'] <=> $b['id'];
             }
-            if ($mode === 'next_up' && $a['past'] !== $b['past']) {
-                return $a['past'] <=> $b['past'];
+            if ($mode === 'next_up') {
+                return $a['past'] <=> $b['past']
+                    ?: ($a['instant'] <=> $b['instant']) * ($a['past'] ? -1 : 1)
+                    ?: ($a['time'] === null) <=> ($b['time'] === null)
+                    ?: $a['id'] <=> $b['id'];
             }
-            $direction = $mode === 'date_desc' || ($mode === 'next_up' && $a['past']) ? -1 : 1;
+            $direction = $mode === 'date_desc' ? -1 : 1;
             $dateOrder = strcmp($a['date'], $b['date']) * $direction;
             if ($dateOrder !== 0) {
                 return $dateOrder;
@@ -76,6 +82,30 @@ class ShootListOrdering
         });
 
         return array_column($keys, 'id');
+    }
+
+    private function anchorUnknownTimes(array &$keys): void
+    {
+        // Give TBD appointments a fixed day boundary rather than a pairwise
+        // same-day override, which would break chronological transitivity.
+        $edges = [];
+        foreach ($keys as $key) {
+            if ($key['date'] === null || $key['time'] === null) {
+                continue;
+            }
+            $bucket = $key['date'].'|'.(int) $key['past'];
+            $edge = $edges[$bucket] ?? $key['instant'];
+            $edges[$bucket] = $key['past'] ? min($edge, $key['instant']) : max($edge, $key['instant']);
+        }
+        foreach ($keys as $index => $key) {
+            if ($key['date'] === null || $key['time'] !== null) {
+                continue;
+            }
+            $edge = $edges[$key['date'].'|'.(int) $key['past']] ?? $key['instant'];
+            $keys[$index]['instant'] = $key['past']
+                ? min($key['instant'], $edge - 1)
+                : max($key['instant'], $edge + 1);
+        }
     }
 
     private function scheduleKey(object $row, Carbon $now): array
@@ -98,11 +128,18 @@ class ShootListOrdering
         }
         $date = $this->localDate($row->scheduled_date) ?? $fallback?->format('Y-m-d');
         $time = $this->clockTime($row->time) ?? $fallback?->format('H:i');
+        // Build the real instant from the authoritative clock shown in the UI,
+        // never from an inconsistent legacy scheduled_at when booking fields exist.
+        $appointment = $date === null ? null : Carbon::createFromFormat('!Y-m-d H:i', $date.' '.($time ?? '00:00'), $timezone);
         $localNow = $now->copy()->setTimezone($timezone);
-        $past = $date !== null && ($date < $localNow->format('Y-m-d')
-            || ($date === $localNow->format('Y-m-d') && $time !== null && $time < $localNow->format('H:i')));
+        $past = $date !== null && ($time === null
+            ? $date < $localNow->format('Y-m-d')
+            : $appointment->getTimestamp() < $now->getTimestamp());
+        if ($appointment && $time === null && ! $past) {
+            $appointment->endOfDay();
+        }
 
-        return ['id' => (int) $row->id, 'date' => $date, 'time' => $time, 'past' => $past];
+        return ['id' => (int) $row->id, 'date' => $date, 'time' => $time, 'past' => $past, 'instant' => $appointment?->getTimestamp()];
     }
 
     private function localDate(mixed $value): ?string

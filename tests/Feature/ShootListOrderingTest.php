@@ -141,6 +141,38 @@ class ShootListOrderingTest extends TestCase
         }
     }
 
+    public function test_next_up_compares_real_instants_across_zones_and_preserves_local_date_modes(): void
+    {
+        Carbon::setTestNow(Carbon::parse('2026-09-28 12:00:00', 'UTC'));
+        $la = $this->shoot(['scheduled_date' => '2026-09-28', 'time' => '09:00', 'timezone' => 'America/Los_Angeles'])->id;
+        $ny = $this->shoot(['scheduled_date' => '2026-09-28', 'time' => '09:30', 'timezone' => 'America/New_York'])->id;
+        $tie = $this->shoot(['scheduled_date' => '2026-09-28', 'time' => '12:00', 'timezone' => 'America/New_York'])->id;
+        $params = ['sort' => 'next_up', 'no_cache' => 'true'];
+        $this->assertSame([$ny, $la, $tie], array_column($this->listing($this->admin, $params)['data'], 'id'));
+        $this->assertSame([$la, $ny, $tie], array_column($this->listing($this->admin, ['sort' => 'date_asc'])['data'], 'id'));
+        $this->assertSame([$tie, $ny, $la], array_column($this->listing($this->admin, ['sort' => 'date_desc'])['data'], 'id'));
+
+        Carbon::setTestNow(Carbon::parse('2026-09-28 18:00:00', 'UTC'));
+        $this->assertSame([$la, $tie, $ny], array_column($this->listing($this->admin, $params)['data'], 'id'));
+        Carbon::setTestNow(Carbon::parse('2026-09-28 13:30:59', 'UTC'));
+        $this->assertSame([$ny, $la, $tie], array_column($this->listing($this->admin, $params)['data'], 'id'));
+    }
+
+    public function test_next_up_remains_chronological_across_local_day_boundaries_and_unknown_times(): void
+    {
+        Carbon::setTestNow(Carbon::parse('2026-09-29 12:00:00', 'UTC'));
+        $laLate = $this->shoot(['scheduled_date' => '2026-09-29', 'time' => '23:00', 'timezone' => 'America/Los_Angeles'])->id;
+        $tokyoNextDay = $this->shoot(['scheduled_date' => '2026-09-30', 'time' => '00:30', 'timezone' => 'Asia/Tokyo'])->id;
+        $futureUnknown = $this->shoot(['scheduled_date' => '2026-09-29', 'time' => null, 'timezone' => 'America/New_York'])->id;
+        $nyNextDay = $this->shoot(['scheduled_date' => '2026-09-30', 'time' => '01:00', 'timezone' => 'America/New_York'])->id;
+        $nyPast = $this->shoot(['scheduled_date' => '2026-09-28', 'time' => '23:30', 'timezone' => 'America/New_York'])->id;
+        $tokyoPast = $this->shoot(['scheduled_date' => '2026-09-29', 'time' => '09:00', 'timezone' => 'Asia/Tokyo'])->id;
+        $tokyoEarly = $this->shoot(['scheduled_date' => '2026-09-28', 'time' => '00:00', 'timezone' => 'Asia/Tokyo'])->id;
+        $pastUnknown = $this->shoot(['scheduled_date' => '2026-09-28', 'time' => null, 'timezone' => 'America/Los_Angeles'])->id;
+        $undated = $this->shoot(['scheduled_date' => null, 'time' => null])->id;
+        $this->assertSame([$tokyoNextDay, $nyNextDay, $laLate, $futureUnknown, $nyPast, $tokyoPast, $tokyoEarly, $pastUnknown, $undated], array_column($this->listing($this->admin, ['sort' => 'next_up'])['data'], 'id'));
+    }
+
     public function test_only_the_selected_page_loads_full_models_and_relations(): void
     {
         for ($day = 1; $day <= 15; $day++) {
