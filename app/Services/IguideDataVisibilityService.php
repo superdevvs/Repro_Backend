@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Models\User;
+use App\Models\Shoot;
 
 /** Keep provider credentials/deliverable URLs out of view-only shoot payloads. */
 class IguideDataVisibilityService
@@ -15,7 +16,7 @@ class IguideDataVisibilityService
     }
 
     /** @return array<string,mixed>|null */
-    public function forUser(mixed $data, ?User $user): ?array
+    public function forUser(mixed $data, ?User $user, ?Shoot $shoot = null): ?array
     {
         $data = is_array($data) ? $data : [];
         if ($this->canManage($user)) {
@@ -23,6 +24,9 @@ class IguideDataVisibilityService
         }
 
         $package = $this->safePackage($data['manual_offline_package'] ?? null);
+        if ($package !== null && $shoot !== null && $user?->role === 'client') {
+            $package['published_audiences'] = app(IguideOfflineViewerService::class)->publishedAudiences($shoot);
+        }
         $visible = array_filter([
             // View-state URLs are intentionally retained so clients can open
             // the tour inline. Standalone credentials, operator/manage links,

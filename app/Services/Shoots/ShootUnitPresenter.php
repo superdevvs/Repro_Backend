@@ -16,7 +16,7 @@ class ShootUnitPresenter
 
         return $shoot->units()->get()
             ->filter(fn ($unit) => ! $scoped || collect($summaries)->contains(fn ($item) => (int) ($item['shoot_unit_id'] ?? 0) === (int) $unit->id))
-            ->map(function ($unit) use ($summaries, $visibility, $viewer, $role) {
+            ->map(function ($unit) use ($shoot, $summaries, $visibility, $viewer, $role) {
                 $items = collect($summaries)->where('shoot_unit_id', $unit->id)
                     ->filter(fn ($item) => ($item['is_deliverable'] ?? true) && ($item['workflow_status'] ?? '') !== 'cancelled');
                 $ready = $items->filter(fn ($item) => in_array($item['delivery_status'] ?? '', ['ready', 'delivered'], true)
@@ -29,10 +29,18 @@ class ShootUnitPresenter
                     $tourLinks = $safe['tour_links'];
                 }
                 $iguideData = $providerData['iguide_data'] ?? null;
-                if (! $visibility->canManage($viewer)) {
-                    $providerData = array_intersect_key($providerData, array_flip(['iguide_status', 'cubicasa_status']));
+                $providerView = null;
+                if ($role === 'client') {
+                    $providerView = clone $shoot;
+                    $providerView->setRelation('tourUnit', $unit);
+                    $providerView->setRelation('releasedUnitLineIds', $ready->pluck('shoot_service_id')->all());
                 }
-                if ($iguideData !== null) {
+                if (! $visibility->canManage($viewer)) {
+                    $providerData = $role === 'client'
+                        ? $this->clientProviderView($providerData, $visibility, $viewer, $providerView)
+                        : array_intersect_key($providerData, array_flip(['iguide_status', 'cubicasa_status']));
+                }
+                if ($iguideData !== null && $role !== 'client') {
                     $providerData['iguide_data'] = $visibility->forUser($iguideData, $viewer);
                 }
 
@@ -48,5 +56,26 @@ class ShootUnitPresenter
                     'is_ready_for_delivery' => $items->isNotEmpty() && $ready->count() === $items->count(),
                 ];
             })->values()->all();
+    }
+
+    /** Released lines may expose tour viewers, but never provider download URLs or credentials. */
+    private function clientProviderView(array $data, IguideDataVisibilityService $visibility, User $viewer, Shoot $shoot): array
+    {
+        $safe = array_intersect_key($data, array_flip(['iguide_status', 'cubicasa_status']));
+        foreach (['iguide_tour_url', 'cubicasa_tour_url'] as $key) {
+            $url = $visibility->forUser(['tour_url' => $data[$key] ?? null], $viewer)['tour_url'] ?? null;
+            if ($url !== null) $safe[$key] = $url;
+        }
+        $view = clone $shoot;
+        $view->iguide_data = $data['iguide_data'] ?? null;
+        $iguide = $visibility->forUser($data['iguide_data'] ?? null, $viewer, $view);
+        if ($iguide !== null) $safe['iguide_data'] = $iguide;
+        foreach ($data['lines'] ?? [] as $lineId => $lineData) {
+            if (! is_array($lineData)) continue;
+            unset($lineData['lines']);
+            $visible = $this->clientProviderView($lineData, $visibility, $viewer, $view);
+            if ($visible !== []) $safe['lines'][$lineId] = $visible;
+        }
+        return $safe;
     }
 }

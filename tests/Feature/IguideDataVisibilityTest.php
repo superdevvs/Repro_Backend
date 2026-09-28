@@ -157,6 +157,7 @@ class IguideDataVisibilityTest extends TestCase
         $this->assertSame([
             'status' => 'ready',
             'view_only' => true,
+            'published_audiences' => [],
         ], $package);
         $this->assertSame($package, $payload['iguide_manual_offline_package']);
         $this->assertArrayNotHasKey('iguide_property_id', $payload);

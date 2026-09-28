@@ -178,6 +178,9 @@ class ShootUnitToursTest extends TestCase
         Sanctum::actingAs($client);
         [$unit, $line] = $units[0];
         $viewerUrl = "/api/integrations/shoots/{$shoot->id}/units/{$unit->id}/iguide/offline-package/view-link";
+        $clientUnit = collect($this->getJson('/api/shoots/'.$shoot->id)->assertOk()->json('data.units'))->firstWhere('id', $unit->id);
+        $this->assertSame(['branded', 'mls'], data_get($clientUnit, 'provider_data.iguide_data.manual_offline_package.published_audiences'));
+        $this->assertSame(['branded', 'mls'], data_get($clientUnit, 'provider_data.lines.'.$line->id.'.iguide_data.manual_offline_package.published_audiences'));
         $this->postJson($viewerUrl)->assertOk();
         $line->update(['delivery_status' => ShootService::DELIVERY_NOT_STARTED]);
         $this->postJson($viewerUrl)->assertNotFound();

@@ -79,11 +79,11 @@ class ShootResource extends JsonResource
         $canManageReshoots = in_array($requestingRole, ['admin', 'superadmin'], true);
         $iguideVisibility = app(IguideDataVisibilityService::class);
         $canManageIguide = $iguideVisibility->canManage($requestingUser);
-        $visibleIguideData = $iguideVisibility->forUser($this->iguide_data, $requestingUser);
+        $visibleIguideData = $iguideVisibility->forUser($this->iguide_data, $requestingUser, $this->resource);
         $rawOfflinePackage = data_get($this->iguide_data, 'manual_offline_package');
         $visibleOfflinePackage = $canManageIguide && is_array($rawOfflinePackage)
             ? $iguideVisibility->operatorPackage($rawOfflinePackage)
-            : $iguideVisibility->safePackage($rawOfflinePackage);
+            : ($visibleIguideData['manual_offline_package'] ?? $iguideVisibility->safePackage($rawOfflinePackage));
         $isOwningClient = $requestingRole === 'client'
             && $requestingUser
             && (int) $requestingUser->id === (int) $this->client_id;

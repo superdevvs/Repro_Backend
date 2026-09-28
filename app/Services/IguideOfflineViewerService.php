@@ -116,6 +116,25 @@ class IguideOfflineViewerService
         return $this->issueViewerLinkIfReady($shoot);
     }
 
+    /** Public availability only: never mint a bearer URL or persist a short link. */
+    public function publishedAudiences(Shoot $shoot): array
+    {
+        if (! $this->isPubliclyReleased($shoot)
+            || (! $shoot->relationLoaded('releasedUnitLineIds')
+                && app(\App\Services\Shoots\ShootClientReleaseAccessService::class)->isPublicReleaseLocked($shoot))) {
+            return [];
+        }
+        $audiences = array_values(array_filter(['branded', 'mls'], fn ($audience) => $this->hasPublicationAttestation($shoot, $audience)));
+        if ($audiences === []) return [];
+        try {
+            $this->resolveReadyPackage((int) $shoot->id, $shoot->relationLoaded('tourUnit') ? (int) data_get($shoot->iguide_data, 'manual_offline_package.file_id') : null);
+        } catch (HttpExceptionInterface $exception) {
+            if ($exception->getStatusCode() === 404) return [];
+            throw $exception;
+        }
+        return $audiences;
+    }
+
     public function streamAsset(
         int $shootId,
         int $fileId,

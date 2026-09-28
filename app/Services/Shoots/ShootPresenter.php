@@ -59,7 +59,6 @@ class ShootPresenter
                 $serviceItem = $shootServiceId !== '' ? $serviceUnlockByItemId->get($shootServiceId) : null;
                 $fileNeedsWatermark = $needsWatermark
                     && ($shootServiceId === '' || ! ($serviceItem['is_unlocked_for_delivery'] ?? $serviceItem['isUnlockedForDelivery'] ?? false));
-
                 if ($fileNeedsWatermark) {
                     if (! $generatedWatermarkForShoot && ! $this->hasWatermarkedPayload($file)) {
                         $modelFile = $transformedShoot->files->firstWhere('id', $file['id'] ?? null);
@@ -293,12 +292,25 @@ class ShootPresenter
                 $authorization->canInteractWithShootMediaFile($shoot, $file, $requestingUser))->values());
         }
         $scopedMediaCounts = app(ShootAuthorizationSupport::class)->scopedMediaCounts($shoot, $requestingUser);
-        $visibleIguideData = $this->iguideDataVisibility->forUser($shoot->iguide_data, $requestingUser);
+        $releaseAccess = app(ShootClientReleaseAccessService::class);
+        $classifier = app(ShootDownloadAssetClassifier::class);
+        foreach ($shoot->files as $file) {
+            $file->setAttribute('download_asset_type', $classifier->type($file));
+            if (! $releaseAccess->isFileReleaseLocked($shoot, $file, $requestingUser) && ! $file->isBlockedFromDelivery()) {
+                $pages = data_get($file->metadata, 'preview_images', []);
+                if (is_array($pages) && $pages !== []) {
+                    $urls = array_map(fn ($path) => is_string($path) ? $this->resolveMediaAssetUrl($path) : null, array_values($pages));
+                    $file->setAttribute('preview_images', $urls);
+                    $file->setAttribute('previewImages', $urls);
+                }
+            }
+        }
+        $visibleIguideData = $this->iguideDataVisibility->forUser($shoot->iguide_data, $requestingUser, $shoot);
         $rawOfflinePackage = data_get($shoot->iguide_data, 'manual_offline_package');
         $visibleOfflinePackage = $this->iguideDataVisibility->canManage($requestingUser)
             && is_array($rawOfflinePackage)
                 ? $this->iguideDataVisibility->operatorPackage($rawOfflinePackage)
-                : $this->iguideDataVisibility->safePackage($rawOfflinePackage);
+                : ($visibleIguideData['manual_offline_package'] ?? $this->iguideDataVisibility->safePackage($rawOfflinePackage));
         $shoot->setAttribute('iguide_data', $visibleIguideData);
         $shoot->setAttribute('iguide_manual_offline_package', $visibleOfflinePackage);
         if (! $this->iguideDataVisibility->canManage($requestingUser)) {

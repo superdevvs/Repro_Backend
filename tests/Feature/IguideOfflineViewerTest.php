@@ -576,6 +576,31 @@ class IguideOfflineViewerTest extends TestCase
         $this->get($path)->assertNotFound();
     }
 
+    public function test_client_can_discover_only_attested_released_offline_audiences_without_minting_links(): void
+    {
+        [$shoot, $file] = $this->readyPackage();
+        $client = User::factory()->create(['role' => 'client']);
+        $shoot->update(['client_id' => $client->id, 'status' => Shoot::STATUS_DELIVERED, 'workflow_status' => Shoot::STATUS_DELIVERED]);
+        Sanctum::actingAs($client);
+        $linksBefore = \App\Models\ShortLink::count();
+        $this->getJson('/api/shoots/'.$shoot->id)->assertOk()
+            ->assertJsonPath('data.iguide_data.manual_offline_package.published_audiences', ['branded', 'mls'])
+            ->assertJsonPath('data.iguide_manual_offline_package.published_audiences', ['branded', 'mls']);
+        $this->assertSame($linksBefore, \App\Models\ShortLink::count());
+        $data = $shoot->iguide_data;
+        $data['manual_offline_package']['publication_attestation']['audiences'] = ['branded'];
+        $shoot->update(['iguide_data' => $data]);
+        $viewer = app(\App\Services\IguideOfflineViewerService::class);
+        $this->assertSame(['branded'], $viewer->publishedAudiences($shoot->fresh()));
+        $file->update(['scan_status' => ShootFile::SCAN_STATUS_INFECTED]);
+        $this->assertSame([], $viewer->publishedAudiences($shoot->fresh()));
+        $file->update(['scan_status' => ShootFile::SCAN_STATUS_CLEAN]);
+        $shoot->update(['payment_status' => 'unpaid', 'bypass_paywall' => false, 'total_quote' => 100]);
+        $this->assertSame([], $viewer->publishedAudiences($shoot->fresh()));
+        $shoot->update(['payment_status' => 'paid', 'status' => Shoot::STATUS_SCHEDULED, 'workflow_status' => Shoot::STATUS_SCHEDULED]);
+        $this->assertSame([], $viewer->publishedAudiences($shoot->fresh()));
+    }
+
     /**
      * @param  array<string,string>  $entries
      * @return array{0:Shoot,1:ShootFile}

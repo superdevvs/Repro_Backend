@@ -329,7 +329,7 @@ class ShootMediaArchiveService
             ShortLink::TARGET_SHOOT,
             (int) $shoot->id,
             $canonical,
-            $this->normalizeType($type).':'.$this->normalizeSize($size)
+            $this->canonicalizeType($type).':'.$this->normalizeSize($size)
         );
     }
 
@@ -357,6 +357,7 @@ class ShootMediaArchiveService
         string $size,
         ?\DateTimeInterface $expiresAt = null
     ): string {
+        $filters = $this->parseTypeFilters($type);
         return URL::temporarySignedRoute(
             'api.public.shoot-media.download',
             $expiresAt ?? now()->addDays(7),
@@ -364,7 +365,11 @@ class ShootMediaArchiveService
                 'shoot' => $shoot->id,
                 'type' => $this->normalizeType($type),
                 'size' => $this->normalizeSize($size),
-            ]
+            ] + array_filter([
+                'include_extras' => $filters['include_extras'] ? 1 : null,
+                'media_types' => $filters['media_types'] ?: null,
+                'asset_type' => $filters['asset_type'],
+            ], fn ($value) => $value !== null)
         );
     }
 
@@ -374,7 +379,7 @@ class ShootMediaArchiveService
         // `sort_order asc, created_at desc`, which meant a shoot nobody had
         // manually arranged (every sort_order still 0) was packaged newest-first
         // — the reverse of what the admin sees in the media grid.
-        $query = $shoot->files()->with(['serviceItem.unit', 'serviceItem.service'])->inDeliveryOrder();
+        $query = $shoot->files()->with(['serviceItem.unit', 'serviceItem.service.category'])->inDeliveryOrder();
 
         if ($shootServiceId !== null) {
             $query->where('shoot_service_id', $shootServiceId);
@@ -402,6 +407,7 @@ class ShootMediaArchiveService
         // existing delivery is not broken; only a positive infected verdict blocks.
         $files = $files
             ->reject(fn (ShootFile $file) => $file->isBlockedFromDelivery())
+            ->reject(fn (ShootFile $file) => $file->is_hidden)
             ->reject(fn (ShootFile $file) => $file->isIguideOfflinePackage())
             ->values();
 
@@ -434,6 +440,10 @@ class ShootMediaArchiveService
             $files = $files
                 ->filter(fn (ShootFile $file) => in_array((string) $file->media_type, $allowed, true))
                 ->values();
+        }
+        if ($filters['asset_type'] !== null) {
+            $classifier = app(ShootDownloadAssetClassifier::class);
+            $files = $files->filter(fn (ShootFile $file) => $classifier->type($file) === $filters['asset_type'])->values();
         }
 
         // Replay the frozen delivery order last, after every access/scan/extras
@@ -507,7 +517,8 @@ class ShootMediaArchiveService
 
     protected function resolveDownloadPath(ShootFile $file, string $size): ?string
     {
-        $candidates = $size === 'small'
+        $classifier = app(ShootDownloadAssetClassifier::class);
+        $candidates = $size === 'small' && $classifier->isImage($file) && ! $classifier->isVideo($file) && ! $classifier->isPdf($file)
             ? [
                 $file->web_path,
                 $file->thumbnail_path,
@@ -669,7 +680,8 @@ class ShootMediaArchiveService
         return $this->buildArchiveTypeToken(
             $this->normalizeType($type),
             $filters['include_extras'],
-            $filters['media_types']
+            $filters['media_types'],
+            $filters['asset_type']
         );
     }
 
@@ -681,7 +693,7 @@ class ShootMediaArchiveService
      * (with-extras) segment. Media types are lower-cased and sorted so the same
      * selection always yields the same token (and the same cache key).
      */
-    public function buildArchiveTypeToken(string $base, bool $includeExtras = false, array $mediaTypes = []): string
+    public function buildArchiveTypeToken(string $base, bool $includeExtras = false, array $mediaTypes = [], ?string $assetType = null): string
     {
         $token = $this->normalizeType($base);
         $segments = [];
@@ -698,6 +710,9 @@ class ShootMediaArchiveService
             sort($mediaTypes);
             $segments[] = 'mt=' . implode(',', $mediaTypes);
         }
+        if (in_array($assetType, ['photos', 'videos', 'floorplans'], true)) {
+            $segments[] = 'asset='.$assetType;
+        }
 
         return empty($segments) ? $token : $token . '|' . implode(';', $segments);
     }
@@ -706,6 +721,7 @@ class ShootMediaArchiveService
     {
         $includeExtras = false;
         $mediaTypes = [];
+        $assetType = null;
 
         $parts = explode('|', (string) $type, 2);
         if (isset($parts[1]) && $parts[1] !== '') {
@@ -718,11 +734,13 @@ class ShootMediaArchiveService
                         array_map('trim', explode(',', substr($segment, 3))),
                         fn ($value) => $value !== ''
                     ));
+                } elseif (str_starts_with($segment, 'asset=') && in_array(substr($segment, 6), ['photos', 'videos', 'floorplans'], true)) {
+                    $assetType = substr($segment, 6);
                 }
             }
         }
 
-        return ['include_extras' => $includeExtras, 'media_types' => $mediaTypes];
+        return ['include_extras' => $includeExtras, 'media_types' => $mediaTypes, 'asset_type' => $assetType];
     }
 
     /**
@@ -745,6 +763,9 @@ class ShootMediaArchiveService
                 fn ($value) => preg_replace('/[^a-z0-9]+/', '', strtolower($value)),
                 $types
             ));
+        }
+        if ($filters['asset_type'] !== null) {
+            $suffix .= '-asset-'.$filters['asset_type'];
         }
 
         return $base . $suffix;

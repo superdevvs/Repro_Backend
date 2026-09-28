@@ -5,6 +5,8 @@ namespace App\Services\Shoots\Actions;
 use App\Models\ShootFile;
 use App\Services\Shoots\DeliveryFilenameFormatter;
 use App\Services\Shoots\ShootFileAccessService;
+use App\Services\Shoots\ShootDownloadAssetClassifier;
+use App\Services\Shoots\ShootAuthorizationSupport;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -20,6 +22,17 @@ class DownloadShootMediaAction
 
     public function execute(ShootFile $file): ?string
     {
+        if (! $this->allowsPreviewFallback($file)) {
+            foreach ([$file->storage_path, $file->path] as $candidate) {
+                if ($candidate && $this->fileAccess->storedFileExists($candidate)) {
+                    $original = clone $file;
+                    $original->path = $candidate;
+                    $original->url = null;
+                    return $this->fileAccess->resolveFileUrl($original);
+                }
+            }
+            if (! $file->url && ! preg_match('/^https?:\/\//i', (string) $file->path)) return null;
+        }
         return $this->fileAccess->resolveFileUrl($file);
     }
 
@@ -27,12 +40,14 @@ class DownloadShootMediaAction
     {
         $filename = $this->deliveryDownloadName($file);
 
-        foreach ([
+        $candidates = [
             $file->storage_path,
             $file->path,
-            $file->web_path,
-            $file->thumbnail_path,
-        ] as $candidate) {
+        ];
+        if ($this->allowsPreviewFallback($file)) {
+            $candidates = array_merge($candidates, [$file->web_path, $file->thumbnail_path]);
+        }
+        foreach ($candidates as $candidate) {
             $localPath = $this->fileAccess->resolveLocalPath($candidate);
             if ($localPath && file_exists($localPath)) {
                 return response()->download($localPath, $filename);
@@ -44,7 +59,7 @@ class DownloadShootMediaAction
             return response()->download($downloaded, $filename)->deleteFileAfterSend(true);
         }
 
-        $url = $this->fileAccess->resolveFileUrl($file);
+        $url = $this->execute($file);
         if ($url) {
             // Credential-bearing fetch clients deliberately reject HTTP redirects.
             // Give them the destination explicitly for a credential-free handoff;
@@ -57,6 +72,43 @@ class DownloadShootMediaAction
         }
 
         return response()->json(['message' => 'File not available'], 404);
+    }
+
+    public function downloadFloorplanJpegResponse(ShootFile $file, int $page): BinaryFileResponse|JsonResponse
+    {
+        $classifier = app(ShootDownloadAssetClassifier::class);
+        if (! $classifier->isPdf($file) || ! $classifier->isFloorplan($file)) {
+            return response()->json(['message' => 'JPG pages are only available for PDF floorplans.'], 422);
+        }
+        $previews = data_get($file->metadata, 'preview_images', []);
+        $path = is_array($previews) ? (array_values($previews)[$page - 1] ?? null) : null;
+        // Only server-generated pages belonging to this shoot are eligible.
+        if (! is_string($path)
+            || ! str_starts_with($path, 'shoots/'.$file->shoot_id.'/floorplans/previews/')
+            || preg_match('#(^|/)\.\.(/|$)#', str_replace('\\', '/', $path))
+            || ! preg_match('/\.jpe?g$/i', $path)) {
+            return response()->json(['message' => 'This floorplan JPG page is not available.'], 404);
+        }
+        $localPath = $this->fileAccess->resolveLocalPath($path);
+        $temporary = false;
+        if (! $localPath) {
+            $localPath = $this->fileAccess->downloadStoredFileToTemp($path);
+            $temporary = true;
+        }
+        if (! $localPath || ! is_file($localPath)) {
+            return response()->json(['message' => 'This floorplan JPG page is not available.'], 404);
+        }
+        $name = pathinfo($this->deliveryDownloadName($file), PATHINFO_FILENAME).'-page-'.$page.'.jpg';
+        return response()->download($localPath, $name, ['Content-Type' => 'image/jpeg'])
+            ->deleteFileAfterSend($temporary);
+    }
+
+    private function allowsPreviewFallback(ShootFile $file): bool
+    {
+        $classifier = app(ShootDownloadAssetClassifier::class);
+        return $classifier->isImage($file) && ! $classifier->isVideo($file)
+            && ! $classifier->isPdf($file)
+            && ! app(ShootAuthorizationSupport::class)->isRawCameraFile($file);
     }
 
     /**

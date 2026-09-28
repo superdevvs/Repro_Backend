@@ -381,6 +381,14 @@ class ShootMediaController extends Controller
             return $this->shootClientReleaseAccessService->downloadLockedResponse();
         }
 
+        $downloadOptions = $request->validate([
+            'format' => 'nullable|in:original,jpg',
+            'page' => 'nullable|integer|min:1|max:25',
+        ]);
+        if (($downloadOptions['format'] ?? 'original') === 'jpg') {
+            return $this->downloadShootMediaAction->downloadFloorplanJpegResponse($file, (int) ($downloadOptions['page'] ?? 1));
+        }
+
         // Offline iGUIDE packages live on the private local disk. Always stream
         // them through this authenticated endpoint; never exchange the request
         // for a public-storage or third-party temporary URL.

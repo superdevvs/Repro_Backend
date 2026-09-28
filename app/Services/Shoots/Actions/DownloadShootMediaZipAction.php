@@ -53,6 +53,7 @@ class DownloadShootMediaZipAction
             'include_extras' => 'nullable|boolean',
             'media_types' => 'nullable|array',
             'media_types.*' => 'string|max:40',
+            'asset_type' => 'nullable|in:photos,videos,floorplans',
         ]);
 
         $baseType = $validated['type'] ?? 'raw';
@@ -64,7 +65,7 @@ class DownloadShootMediaZipAction
             (array) ($validated['media_types'] ?? []),
             fn ($value) => is_string($value) && $value !== ''
         ));
-        $type = $this->shootMediaArchiveService->buildArchiveTypeToken($baseType, $includeExtras, $mediaTypes);
+        $type = $this->shootMediaArchiveService->buildArchiveTypeToken($baseType, $includeExtras, $mediaTypes, $validated['asset_type'] ?? null);
         $requestedSize = $validated['size'] ?? 'original';
         $resolvedSize = $this->shootMediaArchiveService->normalizeSize($requestedSize);
         $shootServiceId = isset($validated['shoot_service_id']) ? (int) $validated['shoot_service_id'] : null;
