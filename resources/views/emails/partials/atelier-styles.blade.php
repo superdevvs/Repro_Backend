@@ -47,6 +47,7 @@
             .body-bg { background-color:#080f17 !important; }
             .content-card-bg, .hero-card-bg { background-color:#121e2c !important; border-color:#2c425e !important; }
             .section-card-bg, .stat-card-bg, .note-card-bg, .callout-bg, .callout-success-bg, .callout-warning-bg, .callout-danger-bg, .info-box, .change-card, .btn-secondary-bg { background-color:#1b2a3e !important; }
+            .email-solid-surface { background:#1b2a3e !important; border-color:#2c425e !important; }
             .dark-title, .dark-heading, .dark-strong, .info-value, .detail-value, .hero-title-primary, .hero-title-accent, .hero-title-location, .btn-secondary-bg { color:#f1f5fc !important; }
             .dark-body, .body-inner { color:#bdccdf !important; }
             .dark-muted, .info-label, .detail-label, .legal-copy-dark { color:#8da5c4 !important; }
@@ -57,10 +58,12 @@
         [data-ogsc] .footer-address, [data-ogsc] .footer-address a, [data-ogsc] .footer-address span { color:#121e2c !important; }
         [data-ogsc] .content-card-bg { background-color:#121e2c !important; border-color:#2c425e !important; }
         [data-ogsc] .section-card-bg, [data-ogsc] .stat-card-bg, [data-ogsc] .note-card-bg, [data-ogsc] .callout-bg, [data-ogsc] .callout-success-bg, [data-ogsc] .callout-warning-bg, [data-ogsc] .callout-danger-bg, [data-ogsc] .info-box, [data-ogsc] .change-card { background-color:#1b2a3e !important; }
+        [data-ogsc] .email-solid-surface { background:#1b2a3e !important; border-color:#2c425e !important; }
         [data-ogsc] .dark-title, [data-ogsc] .dark-heading, [data-ogsc] .dark-strong, [data-ogsc] .info-value, [data-ogsc] .detail-value, [data-ogsc] .hero-title-primary, [data-ogsc] .hero-title-accent { color:#f1f5fc !important; }
         [data-ogsc] .dark-body, [data-ogsc] .body-inner { color:#bdccdf !important; }
         [data-ogsc] .dark-muted, [data-ogsc] .info-label, [data-ogsc] .detail-label { color:#8da5c4 !important; }
         [data-ogsc] .atelier-link, [data-ogsc] .footer-contact-link { color:#9cbdff !important; }
         [data-ogsc] .footer-inner, [data-ogsc] .footer-rule { border-color:#2c425e !important; }
     @endif
+    .body-inner .atelier-button * { color:#ffffff !important; }
 </style>

@@ -34,6 +34,23 @@ class EmailPresentation
             $classes = preg_split('/\s+/', $node->getAttribute('class'));
             $has = static fn (array $names): bool => count(array_intersect($classes, $names)) > 0;
             $styles = [];
+            // Editable and legacy templates also contain unclassified solid
+            // backgrounds. Pair those surfaces with the existing adaptive text
+            // colors without changing their authored light-mode appearance.
+            if (self::hasSolidSurface($node)) {
+                $node->setAttribute('style', preg_replace_callback(
+                    '/((?:^|;)\s*background(?:-color)?\s*:[^;]*)/i',
+                    fn ($match) => preg_replace('/\s*!important\s*$/i', '', $match[1]),
+                    $node->getAttribute('style')
+                ));
+                if (! $has(['email-solid-surface'])) {
+                    $node->setAttribute('class', trim($node->getAttribute('class').' email-solid-surface'));
+                }
+                if ($theme === 'dark') {
+                    $styles += ['background' => $colors['surface'], 'background-color' => $colors['surface'], 'border-color' => $colors['border']];
+                    $node->setAttribute('bgcolor', $colors['surface']);
+                }
+            }
             if ($node->tagName === 'a' && $has(['atelier-link'])) {
                 $styles['color'] = $colors['accent'];
             }
@@ -69,12 +86,18 @@ class EmailPresentation
             if ($hero && $has(['dark-muted'])) {
                 $styles = array_replace($styles, ['color' => $colors['accent'], 'margin' => '0 0 16px', 'font-size' => '11px', 'line-height' => '16px', 'font-weight' => '600', 'letter-spacing' => '1.4px']);
             }
-            if ($node->tagName === 'a' && (preg_match('/background(?:-color)?\s*:/i', $node->getAttribute('style')) || $has(['button', 'cta-button', 'btn-primary', 'atelier-button']))) {
+            if (self::isButton($node)) {
                 $node->setAttribute('class', trim($node->getAttribute('class').' atelier-button'));
                 $styles = array_replace($styles, ['display' => 'block', 'box-sizing' => 'border-box', 'width' => '100%', 'padding' => '16px', 'border-radius' => '8px', 'background-color' => '#155bdd', 'background-image' => 'none', 'color' => '#ffffff', 'font-size' => '14px', 'line-height' => '22px', 'font-weight' => '600', 'text-align' => 'center', 'text-decoration' => 'none']);
                 if ($node->parentNode instanceof DOMElement && $node->parentNode->tagName === 'td') {
                     self::style($node->parentNode, ['background-color' => 'transparent', 'border-radius' => '8px']);
                     $node->parentNode->removeAttribute('bgcolor');
+                }
+            }
+            for ($ancestor = $node->parentNode; $ancestor instanceof DOMElement; $ancestor = $ancestor->parentNode) {
+                if (self::isButton($ancestor)) {
+                    $styles['color'] = '#ffffff';
+                    break;
                 }
             }
             self::style($node, $styles);
@@ -101,6 +124,59 @@ class EmailPresentation
         }
 
         return implode('', array_map(fn ($child) => $document->saveHTML($child), iterator_to_array($root->childNodes)));
+    }
+
+    private static function isButton(DOMElement $node): bool
+    {
+        return $node->tagName === 'a'
+            && (preg_match('/background(?:-color)?\s*:/i', $node->getAttribute('style'))
+                || preg_match('/(?:^|\s)(?:button|cta-button|btn-primary|atelier-button)(?:\s|$)/', $node->getAttribute('class')));
+    }
+
+    private static function hasSolidSurface(DOMElement $node): bool
+    {
+        if (! in_array($node->tagName, ['div', 'p', 'span', 'table', 'td', 'th', 'section', 'aside', 'blockquote', 'center'], true)) {
+            return false;
+        }
+
+        for ($ancestor = $node->parentNode; $ancestor instanceof DOMElement; $ancestor = $ancestor->parentNode) {
+            if (self::isButton($ancestor)) {
+                return false;
+            }
+        }
+
+        $style = $node->getAttribute('style');
+        $classes = preg_split('/\s+/', $node->getAttribute('class'));
+        $hasAdaptiveText = array_intersect($classes, [
+            'dark-title', 'dark-heading', 'dark-strong', 'dark-body', 'dark-muted',
+            'info-value', 'detail-value', 'info-label', 'detail-label', 'legal-copy-dark',
+            'hero-title-primary', 'hero-title-accent', 'hero-title-location', 'btn-secondary-bg',
+        ]) !== [];
+        // Native Blade content may intentionally pair its own foreground and
+        // background (for example, category pills). Keep that pair together.
+        if (! $hasAdaptiveText && preg_match('/(?:^|;)\s*color\s*:/i', $style)) {
+            return false;
+        }
+        if ($node->hasAttribute('background') || preg_match('/(?:url\s*\(|gradient\s*\()/i', $style)) {
+            return false;
+        }
+
+        // CTA wrappers must remain governed by the button formatting below.
+        $links = iterator_to_array($node->getElementsByTagName('a'));
+        if ($links && preg_replace('/\s+/', '', $node->textContent) === preg_replace('/\s+/', '', implode('', array_map(fn ($link) => $link->textContent, $links)))
+            && collect($links)->every(fn ($link) => self::isButton($link))) {
+            return false;
+        }
+
+        $background = $node->getAttribute('bgcolor');
+        if (preg_match_all('/(?:^|;)\s*background(?:-color)?\s*:\s*([^;]+)/i', $style, $matches)) {
+            $background = $matches[1][array_key_last($matches[1])];
+        }
+        $background = trim(preg_replace('/\s*!important\s*$/i', '', $background));
+
+        return $background !== ''
+            && ! preg_match('/^(?:none|transparent|inherit|initial|unset|revert|currentcolor)$/i', $background)
+            && ! preg_match('/^(?:rgba|hsla)\([^)]*,\s*0(?:\.0+)?\s*\)$/i', $background);
     }
 
     private static function style(DOMElement $node, array $changes): void

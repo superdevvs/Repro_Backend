@@ -32,7 +32,8 @@ class SmsContactResource extends JsonResource
             ->values()
             ->all();
 
-        if ($this->phone && empty($numbers)) {
+        $isGroup = $this->type === 'group' || str_starts_with((string) $this->phone, 'group:');
+        if ($this->phone && empty($numbers) && !$isGroup) {
             $numbers[] = [
                 'id' => $this->id.'-primary',
                 'number' => $this->phone,
@@ -46,9 +47,9 @@ class SmsContactResource extends JsonResource
             'name' => $this->name,
             'initials' => $this->initials(),
             'type' => $this->type ?? 'contact',
-            'email' => $this->email,
-            'primaryNumber' => $this->phone ?? ($numbers[0]['number'] ?? null),
-            'numbers' => $numbers,
+            'email' => $isGroup ? null : $this->email,
+            'primaryNumber' => $isGroup ? null : ($this->phone ?? ($numbers[0]['number'] ?? null)),
+            'numbers' => $isGroup ? [] : $numbers,
             'comment' => $this->comment,
             'tags' => $this->tags_json ?? [],
             'smsOptOut' => (bool) ($this->sms_opt_out ?? false),
@@ -72,4 +73,3 @@ class SmsContactResource extends JsonResource
         return Str::limit($initials ?: Str::upper(Str::substr($this->name, 0, 1)), 2, '');
     }
 }
-
