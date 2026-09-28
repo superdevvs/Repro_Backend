@@ -101,17 +101,73 @@ class HistoricalImportBillingTest extends TestCase
         $service=app(\App\Services\Shoots\ShootPublicAssetsService::class);
         $branded=$service->buildTypedPublicAssets($shoot->fresh(),'branded',false);
         $mls=$service->buildTypedPublicAssets($shoot->fresh(),'mls',false);
-        // The current public contract exposes explicitly published audience links,
-        // not private import flags or legacy uploaded-file label heuristics.
+        // The public import indicator supports tour presentation; source notes
+        // and the full external payload remain private.
         $this->assertSame('https://media.example.test/Branded.mp4',$branded['video_link']);
         $this->assertSame('https://media.example.test/Unbranded.mp4',$mls['video_link']);
         $this->assertArrayNotHasKey('video_branded',$mls['tour_links']);
         foreach ([$branded,$mls] as $public) {
-            $this->assertArrayNotHasKey('historical_import',$public);
+            $this->assertTrue($public['historical_import']);
             $this->assertArrayNotHasKey('external_booking_payload',$public['shoot']);
             $this->assertStringNotContainsString('internal only',json_encode($public));
         }
         $this->assertArrayNotHasKey('zillow_3d',$mls['tour_links']);
         $this->assertSame('https://www.zillow.com/view-3d-home/test',$branded['tour_links']['zillow_3d']);
+    }
+
+    public function test_imported_videos_keep_branded_assets_but_only_attested_unbranded_assets_reach_mls(): void
+    {
+        \Illuminate\Support\Facades\Storage::fake('local');
+        config(['media.tiered_storage_enabled' => false, 'media.local_disk' => 'local']);
+        $shoot = $this->historicalShoot(User::factory()->create(['role' => 'client']));
+        $payload = $shoot->external_booking_payload;
+        $payload['legacy_migration']['released_to_history'] = true;
+        $shoot->update(['external_booking_payload' => $payload]);
+        foreach (['Branded', 'Unbranded', 'Unknown'] as $label) {
+            \Illuminate\Support\Facades\Storage::disk('local')->put($label.'.mp4', 'test-video');
+            \App\Models\ShootFile::create([
+                'shoot_id' => $shoot->id, 'filename' => $label.'.mp4', 'stored_filename' => $label.'.mp4',
+                'path' => $label.'.mp4', 'media_type' => 'video', 'file_type' => 'video/mp4', 'file_size' => 10,
+                'uploaded_by' => $shoot->client_id, 'workflow_stage' => 'completed', 'scan_status' => 'clean',
+                'metadata' => ['labels' => [$label]],
+            ]);
+        }
+        $service = app(\App\Services\Shoots\ShootPublicAssetsService::class);
+        $branded = $service->buildTypedPublicAssets($shoot->fresh(), 'branded', false);
+        $this->assertCount(3, $branded['videos']);
+        foreach (['mls', 'generic-mls'] as $type) {
+            $public = $service->buildTypedPublicAssets($shoot->fresh(), $type, false);
+            $this->assertCount(1, $public['videos']);
+            $this->assertStringContainsString('Unbranded.mp4', $public['videos'][0]);
+            $this->assertSame($public['videos'][0], $public['video_link']);
+        }
+    }
+
+    public function test_historical_mls_filter_cannot_publish_raw_uploaded_or_blocked_files_or_reorder_delivered_videos(): void
+    {
+        \Illuminate\Support\Facades\Storage::fake('local');
+        config(['media.tiered_storage_enabled' => false, 'media.local_disk' => 'local']);
+        $shoot = $this->historicalShoot(User::factory()->create(['role' => 'client']));
+        $payload = $shoot->external_booking_payload;
+        $payload['legacy_migration']['released_to_history'] = true;
+        $shoot->update(['external_booking_payload' => $payload]);
+        foreach ([
+            ['Second', 'verified', 'clean', 2], ['First', 'verified', 'clean', 1],
+            ['Raw', 'todo', 'clean', 3], ['Uploaded', 'uploaded', 'clean', 4],
+            ['Quarantined', 'verified', 'quarantined', 5], ['Infected', 'verified', 'infected', 6],
+            ['OlderCompleted', 'completed', 'clean', 7],
+        ] as [$name, $stage, $scan, $order]) {
+            \Illuminate\Support\Facades\Storage::disk('local')->put($name.'.mp4', 'test-video');
+            \App\Models\ShootFile::create([
+                'shoot_id' => $shoot->id, 'filename' => $name.'.mp4', 'stored_filename' => $name.'.mp4',
+                'path' => $name.'.mp4', 'media_type' => 'video', 'file_type' => 'video/mp4', 'file_size' => 10,
+                'uploaded_by' => $shoot->client_id, 'workflow_stage' => $stage, 'scan_status' => $scan,
+                'sort_order' => $order, 'metadata' => ['labels' => ['Unbranded']],
+            ]);
+        }
+        $public = app(\App\Services\Shoots\ShootPublicAssetsService::class)->buildTypedPublicAssets($shoot->fresh(), 'mls', false);
+        $this->assertSame(['First.mp4', 'Second.mp4'], array_map(fn ($url) => basename(parse_url($url, PHP_URL_PATH)), $public['videos']));
+        $this->assertSame($public['videos'][0], $public['video_link']);
+        $this->assertArrayNotHasKey('external_booking_payload', $public['shoot']);
     }
 }

@@ -155,6 +155,26 @@ class ShootPublicAssetsService
         }
 
         $isBranded = $type === 'branded';
+        $isHistoricalImport = (bool) data_get($shoot->external_booking_payload, 'legacy_migration.released_to_history', false);
+        $assets['historical_import'] = $isHistoricalImport;
+        if ($isHistoricalImport && ! $isBranded) {
+            // The export attests only explicitly labelled unbranded videos for MLS.
+            // Other imported videos remain available in branded tours and client downloads.
+            $unbrandedVideos = $shoot->files->where('media_type', 'video')
+                ->whereIn('workflow_stage', [ShootFile::STAGE_COMPLETED, ShootFile::STAGE_VERIFIED])
+                ->reject(fn (ShootFile $file) => $file->isBlockedFromDelivery())
+                ->filter(fn (ShootFile $file) => collect(data_get($file->metadata, 'labels', []))
+                    ->contains(fn ($label) => is_string($label) && preg_match('/\\bunbranded\\b/i', $label)))
+                ->map(fn (ShootFile $file) => $this->resolvePublicAssetFileUrl($file))
+                ->filter()->unique()->values()->all();
+            // Narrow the already published, delivery-ordered set. Starting over
+            // from all files would expose unpublished uploads and lose ordering.
+            $assets['videos'] = array_values(array_filter(
+                $assets['videos'], fn ($url) => in_array($url, $unbrandedVideos, true)
+            ));
+            $videoUrl ??= $assets['videos'][0] ?? null;
+        }
+
         $offlineViewer = ($this->iguideOfflineViewerService ?? app(IguideOfflineViewerService::class))
             ->issuePublicViewerLinkIfEligible($shoot, $isBranded ? 'branded' : 'mls');
         if ($offlineViewer !== null) {
