@@ -298,6 +298,22 @@ class Invoice extends Model
         return $this->belongsTo(Shoot::class);
     }
 
+    /** Invoice-only messages and summaries must honor the imported booking's quiet mode. */
+    public function suppressesExternalNotifications(): bool
+    {
+        if (data_get($this->payment_details, 'legacy_migration.notifications_suppressed') === true) {
+            return true;
+        }
+        if ($this->shoot?->suppressesExternalNotifications()) {
+            return true;
+        }
+        if (! $this->exists) {
+            return false;
+        }
+        return $this->shoots->contains(fn (Shoot $shoot) => $shoot->suppressesExternalNotifications())
+            || $this->items->contains(fn (InvoiceItem $item) => $item->shoot?->suppressesExternalNotifications());
+    }
+
     public function client()
     {
         return $this->belongsTo(User::class, 'client_id');

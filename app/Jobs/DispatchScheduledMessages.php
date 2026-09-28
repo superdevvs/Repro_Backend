@@ -95,7 +95,7 @@ class DispatchScheduledMessages implements ShouldBeUnique, ShouldQueue
             }
 
             // Stop-on-paid race guard (Req 12.14): cancel instead of sending a stale reminder.
-            if ($shoot->isInternalTestShoot() || $automation->shootPaymentIsComplete($shoot)) {
+            if ($shoot->suppressesExternalNotifications() || $automation->shootPaymentIsComplete($shoot)) {
                 $automation->cancelPaymentReminders($shoot);
 
                 return;

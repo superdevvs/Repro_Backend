@@ -322,6 +322,13 @@ class Shoot extends Model
         return $this->shoot_type === self::SHOOT_TYPE_INTERNAL_TEST;
     }
 
+    /** Imported bookings stay quiet until an administrator explicitly releases them. */
+    public function suppressesExternalNotifications(): bool
+    {
+        return $this->isInternalTestShoot()
+            || data_get($this->external_booking_payload, 'legacy_migration.notifications_suppressed') === true;
+    }
+
     public function isComplimentaryReshoot(): bool
     {
         return $this->shoot_type === self::SHOOT_TYPE_COMPLIMENTARY_RESHOOT;

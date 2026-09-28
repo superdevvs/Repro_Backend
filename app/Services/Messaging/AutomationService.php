@@ -63,7 +63,7 @@ class AutomationService
             ->sortBy('id')->values();
         $payment = $payments->first();
         $shoot = $payment?->shoot;
-        if (!$payment || !$shoot || $shoot->isInternalTestShoot()) {
+        if (!$payment || !$shoot || $shoot->suppressesExternalNotifications()) {
             return [];
         }
         $context = $this->buildShootContext($shoot->fresh());
@@ -118,7 +118,7 @@ class AutomationService
     {
         // Stop-on-paid (Req 12.14): a paid shoot gets no new reminders and any pending ones are
         // cancelled. Re-running the scheduler after payment therefore self-heals the schedule.
-        if ($shoot->isInternalTestShoot() || $this->isShootPaid($shoot)) {
+        if ($shoot->suppressesExternalNotifications() || $this->isShootPaid($shoot)) {
             $this->cancelPaymentReminders($shoot);
 
             return [];
@@ -294,7 +294,7 @@ class AutomationService
      */
     public function sendPaymentReminder(Shoot $shoot): ?Message
     {
-        if ($shoot->isInternalTestShoot()) {
+        if ($shoot->suppressesExternalNotifications()) {
             $this->cancelPaymentReminders($shoot);
 
             return null;
@@ -431,19 +431,32 @@ class AutomationService
      */
     public function handleEvent(string $triggerType, array $context): array
     {
+        $eventInvoice = $context['invoice'] ?? null;
+        if (! $eventInvoice instanceof Invoice && ! empty($context['invoice_id'])) {
+            $eventInvoice = Invoice::find($context['invoice_id']);
+        }
+        if ($eventInvoice instanceof Invoice && $eventInvoice->suppressesExternalNotifications()) {
+            return array_merge($this->suppressedTestShootSummary($triggerType), [
+                'suppressed_test_shoot' => false,
+                'notifications_suppressed' => true,
+            ]);
+        }
         // Test-mode safety guard (feature #5): internal_test / simulator shoots must NEVER
         // dispatch real client or photographer messages. Short-circuit here — the single entry
         // point for every automation event — and report the event as "handled" (non-zero rule
         // count + sent flags) so downstream fallback direct-sends in the dispatch service /
         // shoot actions also skip. Nothing is actually sent.
         $eventShoot = $context['shoot'] ?? null;
-        if ($eventShoot instanceof Shoot && $eventShoot->isInternalTestShoot()) {
-            Log::info('Automation suppressed for internal test shoot (test mode)', [
+        if ($eventShoot instanceof Shoot && $eventShoot->suppressesExternalNotifications()) {
+            Log::info('Automation suppressed by shoot notification policy', [
                 'trigger_type' => $triggerType,
                 'shoot_id' => $eventShoot->id,
             ]);
 
-            return $this->suppressedTestShootSummary($triggerType);
+            return array_merge($this->suppressedTestShootSummary($triggerType), [
+                'suppressed_test_shoot' => $eventShoot->isInternalTestShoot(),
+                'notifications_suppressed' => true,
+            ]);
         }
 
         if ($eventShoot instanceof Shoot) {
@@ -815,7 +828,7 @@ class AutomationService
                 ->with(['client', 'photographer', 'rep', 'services', 'serviceItems.service.category', 'serviceItems.photographer', 'serviceItems.editor', 'notes'])
                 ->get();
             foreach ($shoots as $shoot) {
-                if ($shoot->isInternalTestShoot()) {
+                if ($shoot->suppressesExternalNotifications()) {
                     continue;
                 }
                 $scheduledItems = $shoot->serviceItems->filter(fn ($item) => $item->scheduled_at !== null);

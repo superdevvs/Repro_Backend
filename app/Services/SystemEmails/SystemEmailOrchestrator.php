@@ -5,6 +5,7 @@ namespace App\Services\SystemEmails;
 use App\Jobs\SendSystemEmailDispatchJob;
 use App\Models\SystemEmailDispatch;
 use App\Models\Shoot;
+use App\Models\Invoice;
 use App\Services\Users\EmailHealthService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -28,7 +29,7 @@ class SystemEmailOrchestrator
      */
     public function send(string $emailAlias, array $payload, array $transport, array $options = []): array
     {
-        if ($this->isInternalTestShoot($payload, $transport)) {
+        if ($this->suppressesExternalNotifications($payload, $transport)) {
             return ['sent' => false, 'queued' => false, 'duplicate' => false, 'dispatch' => null, 'message_id' => null];
         }
 
@@ -105,7 +106,7 @@ class SystemEmailOrchestrator
      */
     public function queue(string $emailAlias, array $payload, array $transport, array $options = []): array
     {
-        if ($this->isInternalTestShoot($payload, $transport)) {
+        if ($this->suppressesExternalNotifications($payload, $transport)) {
             return ['sent' => false, 'queued' => false, 'duplicate' => false, 'dispatch' => null, 'message_id' => null];
         }
 
@@ -159,11 +160,11 @@ class SystemEmailOrchestrator
                 return null;
             }
 
-            if ($this->isInternalTestShoot((array) $locked->payload_snapshot, (array) $locked->transport_snapshot)) {
+            if ($this->suppressesExternalNotifications((array) $locked->payload_snapshot, (array) $locked->transport_snapshot)) {
                 $locked->forceFill([
                     'status' => 'suppressed',
-                    'error_code' => 'internal_test_shoot',
-                    'error_message' => 'Internal test shoots do not send external email.',
+                    'error_code' => 'shoot_notifications_suppressed',
+                    'error_message' => 'External notifications are disabled for this shoot.',
                 ])->save();
                 return null;
             }
@@ -236,13 +237,17 @@ class SystemEmailOrchestrator
         }
     }
 
-    private function isInternalTestShoot(array $payload, array $transport): bool
+    private function suppressesExternalNotifications(array $payload, array $transport): bool
     {
+        $invoiceId = $transport['related_invoice_id'] ?? data_get($payload, 'invoice.id');
+        if ($invoiceId && Invoice::find($invoiceId)?->suppressesExternalNotifications()) {
+            return true;
+        }
         if (data_get($payload, 'shoot.shoot_type') === Shoot::SHOOT_TYPE_INTERNAL_TEST) {
             return true;
         }
         $shootId = $transport['related_shoot_id'] ?? data_get($payload, 'shoot.id');
-        return $shootId && Shoot::find($shootId)?->isInternalTestShoot();
+        return $shootId && Shoot::find($shootId)?->suppressesExternalNotifications();
     }
 
     private function guardRecipientType(EmailTypeDefinition $definition, string $recipientType): void

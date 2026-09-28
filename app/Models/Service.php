@@ -194,8 +194,15 @@ class Service extends Model
             ->orderBy('name');
     }
 
+    /** Historical prices may be read through booked relations, never selected for a new line. */
+    public function scopeBookable(Builder $query): Builder
+    {
+        return $query->where('services.is_migration_only', false);
+    }
+
     public function scopeVisibleToClient(Builder $query, ?User $client): Builder
     {
+        $query->bookable();
         if (!$this->serviceGroupsFeatureAvailable()) {
             return $query;
         }

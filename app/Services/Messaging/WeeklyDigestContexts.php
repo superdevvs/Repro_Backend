@@ -39,6 +39,7 @@ class WeeklyDigestContexts
             ->whereDoesntHave('shoots', fn ($query) => $query->where('shoot_type', \App\Models\Shoot::SHOOT_TYPE_INTERNAL_TEST))
             ->with(['client', 'user', 'salesRep', 'shoot.client', 'shoot.rep', 'shoots.client', 'shoots.rep'])
             ->get()->filter(fn (Invoice $invoice) => $invoice->requiresPayment()
+                && ! $invoice->suppressesExternalNotifications()
                 && (float) ($invoice->total ?? $invoice->total_amount) > 0);
 
         $buckets = [];

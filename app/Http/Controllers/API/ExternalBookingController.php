@@ -305,7 +305,7 @@ class ExternalBookingController extends Controller
      */
     public function services()
     {
-        $services = Service::with('category')
+        $services = Service::with('category')->bookable()
             ->orderBy('category_id')
             ->orderBy('name')
             ->get()

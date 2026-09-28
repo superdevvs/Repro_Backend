@@ -765,13 +765,24 @@ class ShootMutationSupportService
         return (int) $value;
     }
 
-    public function ensureClientCanBookServices(int $clientId, array $services): void
+    public function ensureClientCanBookServices(int $clientId, array $services, ?Shoot $existingShoot = null): void
     {
         if (empty($services)) {
             return;
         }
 
-        if (!$this->serviceGroupsFeatureAvailable()) {
+        $requested = collect($services)->pluck('id')->map(fn ($id) => (int) $id)->unique();
+        $legacyIds = Service::query()->whereIn('id', $requested)->where('is_migration_only', true)->pluck('id');
+        $retainedIds = $existingShoot && (int) $existingShoot->client_id === $clientId
+            ? $existingShoot->services()->pluck('services.id') : collect();
+        if ($legacyIds->diff($retainedIds)->isNotEmpty()) {
+            throw ValidationException::withMessages([
+                'services' => ['Historical migration services cannot be added to new bookings.'],
+            ]);
+        }
+        // Existing historical lines must remain editable without becoming bookable elsewhere.
+        $services = array_values(array_filter($services, fn ($row) => ! $legacyIds->contains((int) ($row['id'] ?? 0))));
+        if (empty($services) || !$this->serviceGroupsFeatureAvailable()) {
             return;
         }
 

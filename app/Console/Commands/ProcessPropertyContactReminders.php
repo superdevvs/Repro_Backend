@@ -43,7 +43,7 @@ class ProcessPropertyContactReminders extends Command
 
                 foreach ($shoots as $shoot) {
                     $scheduledAt = app(ScheduleInstantResolver::class)->forShoot($shoot);
-                    if ($shoot->isInternalTestShoot() || ($scheduledAt && $scheduledAt->isPast())) {
+                    if ($shoot->suppressesExternalNotifications() || ($scheduledAt && $scheduledAt->isPast())) {
                         continue;
                     }
                     // Check if property contact details are missing

@@ -226,7 +226,7 @@ class MultiUnitBookingService
                 $this->fail('units', 'This unit has tour or provider history. Keep it to preserve its links and media.');
             }
         }
-        app(ShootMutationSupportService::class)->ensureClientCanBookServices((int) ($data['client_id'] ?? $shoot?->client_id ?? $actor->id), $services);
+        app(ShootMutationSupportService::class)->ensureClientCanBookServices((int) ($data['client_id'] ?? $shoot?->client_id ?? $actor->id), $services, $shoot);
 
         return ['units' => $units, 'services' => $services, 'removed_ids' => $removed->pluck('id')->all()];
     }

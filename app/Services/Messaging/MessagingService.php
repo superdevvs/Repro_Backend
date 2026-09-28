@@ -9,6 +9,7 @@ use App\Events\SmsMessageSent;
 use App\Events\SmsThreadUpdated;
 use App\Exceptions\Messaging\SmsSendException;
 use App\Models\Contact;
+use App\Models\Invoice;
 use App\Models\Message;
 use App\Models\MessageChannel;
 use App\Models\MessageTemplate;
@@ -90,9 +91,14 @@ class MessagingService
      */
     public function sendEmail(array $payload): Message
     {
-        if (!empty($payload['related_shoot_id']) && Shoot::find($payload['related_shoot_id'])?->isInternalTestShoot()) {
+        if (!empty($payload['related_invoice_id']) && Invoice::find($payload['related_invoice_id'])?->suppressesExternalNotifications()) {
             throw \Illuminate\Validation\ValidationException::withMessages([
-                'shoot' => ['Internal test shoots do not send external messages.'],
+                'invoice' => ['External notifications are disabled for this invoice.'],
+            ]);
+        }
+        if (!empty($payload['related_shoot_id']) && Shoot::find($payload['related_shoot_id'])?->suppressesExternalNotifications()) {
+            throw \Illuminate\Validation\ValidationException::withMessages([
+                'shoot' => ['External notifications are disabled for this shoot.'],
             ]);
         }
 
@@ -210,9 +216,14 @@ class MessagingService
 
     public function sendSms(array $payload): Message
     {
-        if (!empty($payload['related_shoot_id']) && Shoot::find($payload['related_shoot_id'])?->isInternalTestShoot()) {
+        if (!empty($payload['related_invoice_id']) && Invoice::find($payload['related_invoice_id'])?->suppressesExternalNotifications()) {
             throw \Illuminate\Validation\ValidationException::withMessages([
-                'shoot' => ['Internal test shoots do not send external messages.'],
+                'invoice' => ['External notifications are disabled for this invoice.'],
+            ]);
+        }
+        if (!empty($payload['related_shoot_id']) && Shoot::find($payload['related_shoot_id'])?->suppressesExternalNotifications()) {
+            throw \Illuminate\Validation\ValidationException::withMessages([
+                'shoot' => ['External notifications are disabled for this shoot.'],
             ]);
         }
 
@@ -949,8 +960,12 @@ class MessagingService
 
     public function dispatchStoredEmailMessage(Message $message): Message
     {
-        if ($message->related_shoot_id && Shoot::find($message->related_shoot_id)?->isInternalTestShoot()) {
-            $message->forceFill(['status' => 'CANCELLED', 'error_message' => 'Internal test: external message suppressed'])->save();
+        if ($message->related_invoice_id && Invoice::find($message->related_invoice_id)?->suppressesExternalNotifications()) {
+            $message->forceFill(['status' => 'CANCELLED', 'error_message' => 'Invoice notification policy: external message suppressed'])->save();
+            return $message->refresh();
+        }
+        if ($message->related_shoot_id && Shoot::find($message->related_shoot_id)?->suppressesExternalNotifications()) {
+            $message->forceFill(['status' => 'CANCELLED', 'error_message' => 'Shoot notification policy: external message suppressed'])->save();
             return $message->refresh();
         }
 
@@ -1010,8 +1025,12 @@ class MessagingService
 
     public function dispatchStoredSmsMessage(Message $message): Message
     {
-        if ($message->related_shoot_id && Shoot::find($message->related_shoot_id)?->isInternalTestShoot()) {
-            $message->forceFill(['status' => 'CANCELLED', 'error_message' => 'Internal test: external message suppressed'])->save();
+        if ($message->related_invoice_id && Invoice::find($message->related_invoice_id)?->suppressesExternalNotifications()) {
+            $message->forceFill(['status' => 'CANCELLED', 'error_message' => 'Invoice notification policy: external message suppressed'])->save();
+            return $message->refresh();
+        }
+        if ($message->related_shoot_id && Shoot::find($message->related_shoot_id)?->suppressesExternalNotifications()) {
+            $message->forceFill(['status' => 'CANCELLED', 'error_message' => 'Shoot notification policy: external message suppressed'])->save();
             return $message->refresh();
         }
 

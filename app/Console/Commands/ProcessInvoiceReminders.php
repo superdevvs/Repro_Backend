@@ -125,7 +125,7 @@ class ProcessInvoiceReminders extends Command
         string $tag,
         string $key
     ): bool {
-        if ($invoice->balanceDue() <= 0) {
+        if ($invoice->suppressesExternalNotifications() || $invoice->balanceDue() <= 0) {
             return false;
         }
 

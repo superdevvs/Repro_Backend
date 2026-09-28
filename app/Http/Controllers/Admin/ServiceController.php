@@ -104,7 +104,7 @@ class ServiceController extends Controller
                 $relations[] = 'serviceGroups';
             }
 
-            $services = Service::query()
+            $services = Service::query()->bookable()
                 ->with($relations)
                 ->visibleToClient($this->resolveVisibleClient($request))
                 ->orderBy('category_id')
@@ -113,7 +113,7 @@ class ServiceController extends Controller
         } catch (\Throwable $exception) {
             \App\Services\ApiErrorResponder::log($exception, 'warning');
 
-            $services = Service::query()
+            $services = Service::query()->bookable()
                 ->with(['category', 'sqftRanges'])
                 ->orderBy('category_id')
                 ->orderBy('name')

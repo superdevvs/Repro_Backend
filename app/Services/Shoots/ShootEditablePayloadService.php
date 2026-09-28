@@ -292,7 +292,7 @@ class ShootEditablePayloadService
         $targetClientId = (int) ($validated['client_id'] ?? $shoot->client_id);
         $targetServices = $this->targetServicesFor($shoot, $validated, $actor);
 
-        $this->support->ensureClientCanBookServices($targetClientId, $targetServices);
+        $this->support->ensureClientCanBookServices($targetClientId, $targetServices, $shoot);
 
         if (array_key_exists('scheduled_at', $validated) && $validated['scheduled_at']) {
             $shoot->scheduled_at = new \DateTime($validated['scheduled_at']);
