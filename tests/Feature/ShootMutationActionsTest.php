@@ -418,6 +418,83 @@ class ShootMutationActionsTest extends TestCase
     }
 
     #[\PHPUnit\Framework\Attributes\Test]
+    public function resume_from_hold_ignores_non_deliverable_fee_availability_conflicts(): void
+    {
+        Sanctum::actingAs($this->admin);
+
+        $feeService = Service::factory()->create([
+            'name' => 'Onsite Cancellation/hold fee',
+            'price' => 60,
+            'photographer_required' => true,
+        ]);
+
+        $conflictingPhotographer = User::factory()->create(['role' => 'photographer']);
+        $servicePhotographer = User::factory()->create(['role' => 'photographer']);
+
+        // Another shoot occupies the fee photographer at the same slot.
+        $conflict = Shoot::factory()->create([
+            'client_id' => $this->client->id,
+            'photographer_id' => $conflictingPhotographer->id,
+            'service_id' => $this->service->id,
+            'status' => Shoot::STATUS_SCHEDULED,
+            'workflow_status' => Shoot::STATUS_SCHEDULED,
+            'scheduled_at' => now()->addDays(3)->setTime(15, 0)->format('Y-m-d H:i:s'),
+            'scheduled_date' => now()->addDays(3)->toDateString(),
+            'time' => '15:00',
+        ]);
+        $conflict->services()->attach($this->service->id, [
+            'price' => 150,
+            'quantity' => 1,
+            'photographer_id' => $conflictingPhotographer->id,
+            'scheduled_at' => now()->addDays(3)->setTime(15, 0)->format('Y-m-d H:i:s'),
+            'workflow_status' => 'scheduled',
+            'is_deliverable' => true,
+        ]);
+
+        $shoot = Shoot::factory()->create([
+            'client_id' => $this->client->id,
+            // Primary photographer is free; only the non-deliverable fee line
+            // points at the conflicted photographer (must not block resume).
+            'photographer_id' => $servicePhotographer->id,
+            'service_id' => $this->service->id,
+            'status' => 'on_hold',
+            'workflow_status' => Shoot::STATUS_ON_HOLD,
+            'scheduled_at' => now()->addDays(3)->setTime(15, 10)->format('Y-m-d H:i:s'),
+            'scheduled_date' => now()->addDays(3)->toDateString(),
+            'time' => '15:10',
+            'timezone' => 'America/New_York',
+            'address' => '9407 Reservoir Road',
+        ]);
+
+        $shoot->services()->attach($this->service->id, [
+            'price' => 275,
+            'quantity' => 1,
+            'photographer_id' => $servicePhotographer->id,
+            'scheduled_at' => now()->addDays(3)->setTime(15, 10)->format('Y-m-d H:i:s'),
+            'workflow_status' => 'pending',
+            'is_deliverable' => true,
+            'duration_minutes' => 60,
+        ]);
+        $shoot->services()->attach($feeService->id, [
+            'price' => 60,
+            'quantity' => 1,
+            'photographer_id' => $conflictingPhotographer->id,
+            'scheduled_at' => now()->addDays(3)->setTime(15, 10)->format('Y-m-d H:i:s'),
+            'workflow_status' => 'pending',
+            'is_deliverable' => false,
+        ]);
+
+        $this->postJson("/api/shoots/{$shoot->id}/schedule", [
+            'photographer_id' => $servicePhotographer->id,
+        ])->assertOk()
+            ->assertJsonPath('message', 'Shoot scheduled successfully');
+
+        $shoot->refresh();
+        $this->assertSame(Shoot::STATUS_SCHEDULED, $shoot->status);
+        $this->assertSame(Shoot::STATUS_SCHEDULED, $shoot->workflow_status);
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
     public function undated_on_hold_resume_without_schedule_payload_is_rejected(): void
     {
         Sanctum::actingAs($this->admin);

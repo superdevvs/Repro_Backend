@@ -52,6 +52,8 @@ class ScheduleShootAction
             $durationMinutes = $this->support->calculateShootDurationFromShoot($shoot);
             $this->support->checkPhotographerAvailability($photographerId, $scheduledAt, $durationMinutes, $shoot->id);
 
+            // Non-deliverable lines (fees, holds, etc.) must not block resume/schedule
+            // availability — they do not consume photographer calendar time.
             $targetServices = $shoot->services->map(function ($service) use ($scheduledAt) {
                 return [
                     'id' => (int) $service->id,
@@ -59,6 +61,8 @@ class ScheduleShootAction
                     'scheduled_at' => $service->pivot?->scheduled_at ?: $scheduledAt->format('Y-m-d H:i:s'),
                     'price' => $service->pivot?->price,
                     'quantity' => $service->pivot?->quantity ?? 1,
+                    'is_deliverable' => (bool) ($service->pivot?->is_deliverable ?? true),
+                    'duration_minutes' => $service->pivot?->duration_minutes,
                 ];
             })->values()->all();
             $this->support->checkServiceItemPhotographerAvailability($targetServices, (int) $photographerId, $shoot->id);

@@ -296,6 +296,11 @@ class ShootMutationSupportService
         $serviceModels = Service::whereIn('id', $serviceIds)->get()->keyBy('id');
 
         foreach ($services as $service) {
+            // Fee / hold / non-deliverable lines never reserve photographer time.
+            if (array_key_exists('is_deliverable', $service) && ! $service['is_deliverable']) {
+                continue;
+            }
+
             $scheduledAt = $service['scheduled_at'] ?? null;
             $serviceModel = $serviceModels->get((int) ($service['id'] ?? 0));
             $photographerId = ($serviceModel?->requiresPhotographer() ?? false)
