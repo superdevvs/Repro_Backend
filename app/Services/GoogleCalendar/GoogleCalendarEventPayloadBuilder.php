@@ -43,14 +43,20 @@ class GoogleCalendarEventPayloadBuilder
 
     public function build(Shoot $shoot, ?User $user = null): array
     {
-        $shoot->loadMissing('services', 'client');
+        $shoot->loadMissing('services', 'serviceItems.service', 'serviceItems.unit', 'client', 'rep', 'units');
 
-        if (!$shoot->scheduled_at) {
+        $scheduledAt = $shoot->scheduled_at ?: $shoot->serviceItems
+            ->pluck('scheduled_at')
+            ->filter()
+            ->sortBy(fn ($value) => $value->getTimestamp())
+            ->first();
+
+        if (!$scheduledAt) {
             throw new RuntimeException('Scheduled shoots are required for Google Calendar sync.');
         }
 
         $timezone = $this->calendarTimezone($shoot, $user);
-        $start = $this->calendarStart($shoot, $shoot->scheduled_at, $timezone);
+        $start = $this->calendarStart($shoot, $scheduledAt, $timezone);
         // Req 4.1/4.2: end = start + estimated duration. calculateShootDurationFromShoot()
         // returns the shoot duration in minutes, clamped to the 60-240 range and defaulting
         // to 120 when no duration can be derived. No behavior change here; documented only.
@@ -258,16 +264,18 @@ class GoogleCalendarEventPayloadBuilder
         }
         $sections = [implode("\n", $contactLines)];
 
-        // Shoot Services: one normalized "- {label}" line per service.
-        $services = $shoot->services
-            ->pluck('name')
-            ->map(fn ($name) => $this->formatServiceLabel((string) $name))
-            ->filter()
-            ->values();
+        $repName = $this->repName($shoot);
+        if ($repName !== '') {
+            $sections[] = "Rep: {$repName}";
+        }
+
+        // Shoot Services: one normalized "- {label}" line per booked service item
+        // (includes unit label when present). Falls back to the services relation.
+        $serviceLabels = $this->shootServiceLabels($shoot);
 
         $servicesBlock = 'Shoot Services:';
-        if ($services->isNotEmpty()) {
-            $servicesBlock .= "\n" . $services->map(fn ($name) => "- {$name}")->implode("\n");
+        if ($serviceLabels->isNotEmpty()) {
+            $servicesBlock .= "\n" . $serviceLabels->map(fn ($name) => "- {$name}")->implode("\n");
         }
         $sections[] = $servicesBlock;
 
@@ -335,11 +343,43 @@ class GoogleCalendarEventPayloadBuilder
     }
 
     /**
-     * Property Access: reuse the customer-facing note text (shoot_notes -> notes).
-     * Returns null when no customer-facing note text is available. Never throws.
+     * Property Access: prefer lockbox/combo + access notes from property_details,
+     * then fall back to customer-facing shoot notes. Never throws.
      */
     protected function derivePropertyAccess(Shoot $shoot): ?string
     {
+        $details = $this->propertyDetails($shoot);
+        $lines = [];
+
+        $presence = strtolower(trim((string) ($details['presenceOption'] ?? $details['presence_option'] ?? '')));
+        $lockboxCode = trim((string) ($details['lockboxCode'] ?? $details['lockbox_code'] ?? ''));
+        $lockboxLocation = trim((string) ($details['lockboxLocation'] ?? $details['lockbox_location'] ?? ''));
+        $accessNotes = trim((string) ($details['accessNotes'] ?? $details['access_notes'] ?? ''));
+
+        if ($presence !== '') {
+            $presenceLabel = match ($presence) {
+                'self' => 'Client will be present',
+                'other' => 'Someone else will provide access',
+                'lockbox' => 'Lockbox',
+                default => ucfirst($presence),
+            };
+            $lines[] = $presenceLabel;
+        }
+
+        if ($lockboxCode !== '') {
+            $lines[] = "Lockbox / combo code: {$lockboxCode}";
+        }
+        if ($lockboxLocation !== '') {
+            $lines[] = "Lockbox location: {$lockboxLocation}";
+        }
+        if ($accessNotes !== '') {
+            $lines[] = $accessNotes;
+        }
+
+        if ($lines !== []) {
+            return implode("\n", $lines);
+        }
+
         $notes = $this->customerFacingNotes($shoot);
 
         return $notes !== '' ? $notes : null;
@@ -362,12 +402,24 @@ class GoogleCalendarEventPayloadBuilder
     }
 
     /**
-     * On-Site Contact: there is no discrete on-site contact field, so this always falls back
-     * to the client formatted as "{name} ({phone}, {email})" with missing parts dropped.
-     * Returns "Not provided" only when the client name is also empty. Never throws.
+     * On-Site Contact: prefer access-contact fields from property_details when present,
+     * otherwise fall back to the client formatted as "{name} ({phone}, {email})".
+     * Returns "Not provided" only when no name can be derived. Never throws.
      */
     protected function deriveOnSiteContact(Shoot $shoot): string
     {
+        $propertyDetails = $this->propertyDetails($shoot);
+        $accessName = trim((string) ($propertyDetails['accessContactName'] ?? $propertyDetails['access_contact_name'] ?? ''));
+        $accessPhone = trim((string) ($propertyDetails['accessContactPhone'] ?? $propertyDetails['access_contact_phone'] ?? ''));
+
+        if ($accessName !== '' || $accessPhone !== '') {
+            if ($accessName !== '' && $accessPhone !== '') {
+                return "{$accessName} ({$accessPhone})";
+            }
+
+            return $accessName !== '' ? $accessName : $accessPhone;
+        }
+
         $client = $shoot->client;
         $name = trim((string) ($client?->name ?: $client?->company_name ?: ''));
 
@@ -451,6 +503,57 @@ class GoogleCalendarEventPayloadBuilder
         }
 
         return $service->getShootDurationMinutes($serviceItem->unit?->sqft);
+    }
+
+
+    protected function shootServiceLabels(Shoot $shoot): \Illuminate\Support\Collection
+    {
+        $shoot->loadMissing(['serviceItems.service', 'serviceItems.unit', 'services']);
+
+        $fromItems = $shoot->serviceItems
+            ->reject(fn (ShootService $item) => in_array($item->workflow_status, [
+                ShootService::WORKFLOW_CANCELLED,
+            ], true))
+            ->map(function (ShootService $item) {
+                $serviceName = $this->formatServiceLabel((string) ($item->service?->name ?? 'Service'));
+                if ($item->unit) {
+                    $serviceName = $item->unit->label . ' · ' . $serviceName;
+                }
+
+                return $serviceName;
+            })
+            ->filter()
+            ->values();
+
+        if ($fromItems->isNotEmpty()) {
+            return $fromItems;
+        }
+
+        return $shoot->services
+            ->pluck('name')
+            ->map(fn ($name) => $this->formatServiceLabel((string) $name))
+            ->filter()
+            ->values();
+    }
+
+    protected function propertyDetails(Shoot $shoot): array
+    {
+        $details = $shoot->property_details;
+
+        if (is_string($details)) {
+            $decoded = json_decode($details, true);
+            $details = is_array($decoded) ? $decoded : [];
+        }
+
+        return is_array($details) ? $details : [];
+    }
+
+    protected function repName(Shoot $shoot): string
+    {
+        $shoot->loadMissing('rep');
+        $rep = $shoot->rep;
+
+        return trim((string) ($rep?->name ?: $rep?->company_name ?: ''));
     }
 
     protected function formatServiceLabel(string $value): string

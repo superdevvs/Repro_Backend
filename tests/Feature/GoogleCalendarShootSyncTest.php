@@ -105,34 +105,39 @@ class GoogleCalendarShootSyncTest extends TestCase
             'google_event_id' => 'created-google-event',
         ]);
 
-        // The sync service now emits one calendar event per scheduled service item
-        // (per-service architecture via buildForServiceItem), so assert both events.
+        // One event per shoot (not per service), titled with the client name.
         $expectedStart = Carbon::parse($scheduledAt, 'America/New_York');
-        $assertServiceEventSent = function (string $service) use ($expectedStart) {
-            Http::assertSent(function (Request $request) use ($service, $expectedStart) {
-                $description = (string) ($request['description'] ?? '');
+        Http::assertSent(function (Request $request) use ($expectedStart) {
+            $description = (string) ($request['description'] ?? '');
 
-                return $request->method() === 'POST'
-                    && str_contains($request->url(), '/calendars/primary/events')
-                    && ($request['summary'] ?? null) === $service
-                    && ($request['start'] ?? null) === [
-                        'dateTime' => $expectedStart->toRfc3339String(),
-                        'timeZone' => 'America/New_York',
-                    ]
-                    && ($request['end'] ?? null) === [
-                        'dateTime' => $expectedStart->copy()->addMinutes(120)->toRfc3339String(),
-                        'timeZone' => 'America/New_York',
-                    ]
-                    && ($request['location'] ?? null) === '100 Sync Street, Baltimore, MD 21201'
-                    && str_contains($description, "Service\n" . $service)
-                    && str_contains($description, 'Use side door. Gate code 1234.')
-                    && str_contains($description, 'Bring the wide-angle lens.')
-                    && !str_contains($description, 'Internal dispatch detail');
-            });
-        };
+            return $request->method() === 'POST'
+                && str_contains($request->url(), '/calendars/primary/events')
+                && ($request['summary'] ?? null) === $this->client->name
+                && ($request['start'] ?? null) === [
+                    'dateTime' => $expectedStart->toRfc3339String(),
+                    'timeZone' => 'America/New_York',
+                ]
+                && ($request['end'] ?? null) === [
+                    'dateTime' => $expectedStart->copy()->addMinutes(120)->toRfc3339String(),
+                    'timeZone' => 'America/New_York',
+                ]
+                && ($request['location'] ?? null) === '100 Sync Street, Baltimore, MD 21201'
+                && str_contains($description, "Shoot Services:\n- HDR Photos\n- Floor Plan")
+                && str_contains($description, 'Use side door. Gate code 1234.')
+                && str_contains($description, 'Bring the wide-angle lens.')
+                && !str_contains($description, 'Internal dispatch detail');
+        });
 
-        $assertServiceEventSent('HDR Photos');
-        $assertServiceEventSent('Floor Plan');
+        $this->assertSame(
+            1,
+            GoogleCalendarEventMapping::query()->where('shoot_id', $shoot->id)->count()
+        );
+        $this->assertDatabaseHas('google_calendar_event_mappings', [
+            'shoot_id' => $shoot->id,
+            'user_id' => $this->photographer->id,
+            'shoot_service_id' => null,
+            'google_event_id' => 'created-google-event',
+        ]);
     }
 
     public function test_updating_a_synced_shoot_patches_the_existing_google_calendar_event(): void
@@ -336,7 +341,7 @@ class GoogleCalendarShootSyncTest extends TestCase
         $this->assertDatabaseCount('google_calendar_event_mappings', 0);
     }
 
-    public function test_removing_all_services_collapses_service_events_to_one_shoot_level_event(): void
+    public function test_resync_collapses_legacy_per_service_events_to_one_shoot_level_event(): void
     {
         Sanctum::actingAs($this->admin);
         $this->createGoogleCalendarConnection($this->photographer, 'photographer-calendar@example.com', 'access-token-zero-services');
@@ -351,6 +356,10 @@ class GoogleCalendarShootSyncTest extends TestCase
             'scheduled_at' => $scheduledAt,
             'scheduled_date' => $scheduledAt->toDateString(),
             'time' => '10:00',
+            'address' => '77 Collapse Ct',
+            'city' => 'Baltimore',
+            'state' => 'MD',
+            'zip' => '21201',
         ]);
         $shoot->services()->attach($this->service->id, [
             'price' => 150,
@@ -378,29 +387,29 @@ class GoogleCalendarShootSyncTest extends TestCase
         }
 
         Http::fake([
-            'https://www.googleapis.com/calendar/v3/calendars/*/events/service-event-1' => Http::response([
-                'id' => 'service-event-1',
-            ], 200),
+            'https://www.googleapis.com/calendar/v3/calendars/*/events/service-event-1' => Http::response('', 204),
             'https://www.googleapis.com/calendar/v3/calendars/*/events/service-event-2' => Http::response('', 204),
+            'https://www.googleapis.com/calendar/v3/calendars/*/events' => Http::response([
+                'id' => 'shoot-level-event',
+            ], 200),
         ]);
 
-        $confirmation = $this->patchJson("/api/shoots/{$shoot->id}", [
-            'services' => [],
-        ])->assertStatus(409);
-        $this->patchJson("/api/shoots/{$shoot->id}", [
-            'services' => [],
-            'confirm_service_detach' => true,
-            'service_detach_confirmation_token' => $confirmation->json('confirmation_token'),
-        ])->assertOk();
+        app(\App\Services\GoogleCalendar\GoogleCalendarShootSyncService::class)->syncShoot($shoot->id);
 
         $mappings = GoogleCalendarEventMapping::query()->where('shoot_id', $shoot->id)->get();
         $this->assertCount(1, $mappings);
         $this->assertNull($mappings->first()->shoot_service_id);
-        $this->assertSame('service-event-1', $mappings->first()->google_event_id);
+        $this->assertSame('shoot-level-event', $mappings->first()->google_event_id);
+        Http::assertSent(fn (Request $request) => $request->method() === 'DELETE'
+            && str_contains($request->url(), '/events/service-event-1'));
         Http::assertSent(fn (Request $request) => $request->method() === 'DELETE'
             && str_contains($request->url(), '/events/service-event-2'));
-        Http::assertSent(fn (Request $request) => $request->method() === 'PATCH'
-            && str_contains($request->url(), '/events/service-event-1'));
+        Http::assertSent(function (Request $request) {
+            return $request->method() === 'POST'
+                && str_contains($request->url(), '/calendars/primary/events')
+                && ($request['summary'] ?? null) === $this->client->name
+                && str_contains((string) ($request['description'] ?? ''), 'Shoot Services:');
+        });
     }
 
     public function test_google_calendar_payload_builder_formats_service_titles_and_notes_cleanly(): void
@@ -410,9 +419,15 @@ class GoogleCalendarShootSyncTest extends TestCase
             'delivery_time' => 2,
         ]);
 
+        $rep = User::factory()->create([
+            'role' => 'rep',
+            'name' => 'Jordan Rep',
+        ]);
+
         $shoot = Shoot::factory()->create([
             'client_id' => $this->client->id,
             'photographer_id' => $this->photographer->id,
+            'rep_id' => $rep->id,
             'service_id' => $this->service->id,
             'status' => Shoot::STATUS_SCHEDULED,
             'workflow_status' => Shoot::STATUS_SCHEDULED,
@@ -421,6 +436,11 @@ class GoogleCalendarShootSyncTest extends TestCase
             'time' => '10:30',
             'shoot_notes' => "need it fast\n\nfront gate open",
             'photographer_notes' => "green paint\nbring flash",
+            'property_details' => [
+                'presenceOption' => 'lockbox',
+                'lockboxCode' => '2468',
+                'lockboxLocation' => 'Side door',
+            ],
         ]);
 
         $shoot->services()->attach($this->service->id, [
@@ -444,7 +464,9 @@ class GoogleCalendarShootSyncTest extends TestCase
         $description = (string) $payload['description'];
         $this->assertStringStartsWith($this->client->name, $description);
         $this->assertStringContainsString("Shoot Services:\n- HDR Photos\n- Luxury Highlight Video", $description);
+        $this->assertStringContainsString("Rep: Jordan Rep", $description);
         $this->assertStringContainsString("Shoot Notes:\nneed it fast\nfront gate open", $description);
+        $this->assertStringContainsString("Property Access:\nLockbox\nLockbox / combo code: 2468\nLockbox location: Side door", $description);
         // photographer_notes now surface under "Arrival Instructions:" (description rebuilt by tasks 2-4).
         $this->assertStringContainsString("Arrival Instructions:\ngreen paint\nbring flash", $description);
         $this->assertStringContainsString("On-Site Contact:\n{$this->client->name}", $description);

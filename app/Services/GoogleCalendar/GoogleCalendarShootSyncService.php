@@ -20,7 +20,7 @@ class GoogleCalendarShootSyncService
 
     public function syncShoot(int $shootId): void
     {
-        $shoot = Shoot::with(['services', 'serviceItems.service', 'serviceItems.unit', 'serviceItems.photographer'])->find($shootId);
+        $shoot = Shoot::with(['client', 'services', 'units', 'serviceItems.service', 'serviceItems.unit', 'serviceItems.photographer', 'rep'])->find($shootId);
         if ($shoot?->isInternalTestShoot()) {
             return;
         }
@@ -34,18 +34,16 @@ class GoogleCalendarShootSyncService
             return;
         }
 
-        $serviceItems = $this->resolveSyncableServiceItems($shoot);
-
-        if ($serviceItems->isNotEmpty()) {
-            $this->syncServiceItemEvents($shoot, $serviceItems, $mappings);
-            return;
-        }
-
+        // Always sync one Google Calendar event per shoot per photographer.
+        // Per-service item events (titles like "HDR Photos" / "Drone") caused
+        // overlapping calendar clutter; service names/times live in the
+        // shoot-level description instead (including optional Service Timing).
+        // Existing per-service mappings are removed below so resync/update
+        // collapses old multi-events automatically.
         $assignedPhotographerIds = $this->resolveAssignedPhotographerIds($shoot);
 
-        // Deleting service rows nulls their mapping foreign keys. Keep at most
-        // one of those events as the shoot-level photographer event and remove
-        // every obsolete duplicate left by formerly separate service events.
+        // Keep at most one shoot-level event per photographer and remove every
+        // obsolete per-service duplicate left by the former sync path.
         $keptShootLevelUsers = collect();
         $mappings->each(function (GoogleCalendarEventMapping $mapping) use (
             $assignedPhotographerIds,
@@ -254,12 +252,16 @@ class GoogleCalendarShootSyncService
     {
         return collect([$shoot->photographer_id])
             ->merge($shoot->services->pluck('pivot.photographer_id')->all())
+            ->merge($shoot->serviceItems->pluck('photographer_id')->all())
             ->filter()
             ->map(fn ($id) => (string) $id)
             ->unique()
             ->values();
     }
 
+    /**
+     * @deprecated Per-service calendar events are retired; syncShoot always uses one event per shoot.
+     */
     protected function syncServiceItemEvents(Shoot $shoot, Collection $serviceItems, Collection $mappings): void
     {
         $eventTargets = $serviceItems
@@ -435,6 +437,21 @@ class GoogleCalendarShootSyncService
                 ->all(),
             'notes' => $shoot->shoot_notes ?: $shoot->notes,
             'photographer_notes' => $shoot->photographer_notes,
+            'property_details' => [
+                'presenceOption' => data_get($shoot->property_details, 'presenceOption')
+                    ?? data_get($shoot->property_details, 'presence_option'),
+                'lockboxCode' => data_get($shoot->property_details, 'lockboxCode')
+                    ?? data_get($shoot->property_details, 'lockbox_code'),
+                'lockboxLocation' => data_get($shoot->property_details, 'lockboxLocation')
+                    ?? data_get($shoot->property_details, 'lockbox_location'),
+                'accessNotes' => data_get($shoot->property_details, 'accessNotes')
+                    ?? data_get($shoot->property_details, 'access_notes'),
+                'accessContactName' => data_get($shoot->property_details, 'accessContactName')
+                    ?? data_get($shoot->property_details, 'access_contact_name'),
+                'accessContactPhone' => data_get($shoot->property_details, 'accessContactPhone')
+                    ?? data_get($shoot->property_details, 'access_contact_phone'),
+            ],
+            'rep_id' => $shoot->rep_id,
             'status' => $shoot->status,
             'workflow_status' => $shoot->workflow_status,
             'cancelled' => $this->isCancelledStatus($shoot),
