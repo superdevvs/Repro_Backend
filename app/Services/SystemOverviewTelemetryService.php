@@ -363,18 +363,32 @@ class SystemOverviewTelemetryService
             ->values()
             ->all();
 
+        // domainStats needs full 24h coverage; recentTraces/errors/routeMetrics stay on the last-60 slices.
+        $domainRequestAggregates = SystemOverviewRequestTrace::query()
+            ->where('occurred_at', '>=', $cutoff)
+            ->selectRaw('domain, COUNT(*) as request_count, AVG(duration_ms) as avg_duration_ms')
+            ->groupBy('domain')
+            ->get()
+            ->keyBy(fn ($row) => (string) ($row->domain ?? ''));
+
+        $domainErrorCounts = SystemOverviewErrorEvent::query()
+            ->where('occurred_at', '>=', $cutoff)
+            ->pluck('route_path')
+            ->countBy(fn (?string $routePath) => $this->resolveDomainFromPath($routePath));
+
         $domainStats = collect($this->allDomains())
-            ->mapWithKeys(function (string $domain) use ($traces, $errors, $liveUsers) {
-                $domainTraces = $traces->where('domain', $domain);
-                $domainErrors = $errors->filter(fn (SystemOverviewErrorEvent $error) => $this->resolveDomainFromPath($error->route_path) === $domain);
-                $domainUsers = collect($liveUsers)->filter(fn (array $user) => $this->resolveDomainFromPath($user['currentRoute'] ?? null) === $domain);
+            ->mapWithKeys(function (string $domain) use ($domainRequestAggregates, $domainErrorCounts, $liveUsers) {
+                $aggregate = $domainRequestAggregates->get($domain);
+                $domainUsers = collect($liveUsers)->filter(
+                    fn (array $user) => $this->resolveDomainFromPath($user['currentRoute'] ?? null) === $domain
+                );
 
                 return [
                     $domain => [
                         'activeUsers' => $domainUsers->count(),
-                        'requests' => $domainTraces->count(),
-                        'errors' => $domainErrors->count(),
-                        'avgDurationMs' => (int) round($domainTraces->avg('duration_ms') ?? 0),
+                        'requests' => (int) ($aggregate->request_count ?? 0),
+                        'errors' => (int) ($domainErrorCounts->get($domain) ?? 0),
+                        'avgDurationMs' => (int) round($aggregate->avg_duration_ms ?? 0),
                     ],
                 ];
             })
@@ -396,7 +410,7 @@ class SystemOverviewTelemetryService
                 'errorCount24h' => (int) $issueGroups->sum('event_count'),
                 'warningCount24h' => (int) $issueGroups->where('severity', 'warning')->sum('event_count'),
                 'uniqueIssueCount24h' => $issueGroups->count(),
-                'slowRouteCount' => SystemOverviewRequestTrace::query()->where('occurred_at', '>=', $cutoff)->where('duration_ms', '>=', 1500)->count(),
+                'slowRouteCount' => $this->countSlowRoutes($cutoff),
                 'integrationFailures24h' => SystemOverviewRequestTrace::query()->where('occurred_at', '>=', $cutoff)->where('domain', 'Integrations')->whereNotNull('blocker_type')->count(),
             ],
             'domainStats' => $domainStats,
@@ -820,7 +834,7 @@ class SystemOverviewTelemetryService
             ];
         }
 
-        if ($durationMs >= 2000) {
+        if ($durationMs >= 2000 && !$this->isUploadLikePath($this->routeTemplate($request))) {
             return [
                 'type' => 'slow_request',
                 'state' => 'warning',
@@ -936,6 +950,33 @@ class SystemOverviewTelemetryService
             'contextSummary' => $this->summarizePayload($error->context_summary),
             'occurredAt' => optional($error->occurred_at)->toIso8601String(),
         ];
+    }
+
+
+    private function countSlowRoutes(Carbon $cutoff): int
+    {
+        return SystemOverviewRequestTrace::query()
+            ->where('occurred_at', '>=', $cutoff)
+            ->where('duration_ms', '>=', 1500)
+            ->where(function ($query) {
+                // Successful upload-like routes are expected to be slow; failed ones still count.
+                $query->where('status_code', '>=', 400)
+                    ->orWhere(function ($nonUpload) {
+                        $nonUpload->whereRaw("LOWER(COALESCE(path, '')) NOT LIKE ?", ['%/upload%'])
+                            ->whereRaw("LOWER(COALESCE(path, '')) NOT LIKE ?", ['%upload-session%'])
+                            ->whereRaw("LOWER(COALESCE(path, '')) NOT LIKE ?", ['%/chunks%']);
+                    });
+            })
+            ->count();
+    }
+
+    private function isUploadLikePath(?string $path): bool
+    {
+        $value = strtolower((string) $path);
+
+        return str_contains($value, '/upload')
+            || str_contains($value, 'upload-session')
+            || str_contains($value, '/chunks');
     }
 
     private function allDomains(): array

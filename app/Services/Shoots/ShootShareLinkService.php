@@ -160,7 +160,10 @@ class ShootShareLinkService
             && $this->fileIdSetsMatch($files, $archiveService->getFilesForType($shoot, 'raw'));
 
         if ($canReuseRawArchive) {
-            $archiveService->queueArchiveGeneration($shoot, 'raw', 'original');
+            $archiveFresh = $archiveService->hasFreshArchive($shoot, 'raw', 'original');
+            if (! $archiveFresh) {
+                $archiveService->queueArchiveGeneration($shoot, 'raw', 'original');
+            }
             $expiresAt = now()->addDays(7);
             $publicArchiveUrl = $archiveService->buildPublicDownloadUrl($shoot, 'raw', 'original', $expiresAt);
 
@@ -197,7 +200,7 @@ class ShootShareLinkService
                 $user
             );
 
-            return [
+            $payload = [
                 'share_link' => $shareLinkId ? $this->buildPublicShareUrl($shareLinkRecord) : $publicArchiveUrl,
                 'share_link_id' => $shareLinkId,
                 'media_stage' => $normalizedMediaStage,
@@ -206,6 +209,14 @@ class ShootShareLinkService
                 'expires_at' => $expiresAtIso,
                 'archive_backed' => true,
             ];
+
+            if (! $archiveFresh) {
+                $payload['type'] = 'preparing';
+                $payload['message'] = 'Preparing your share link.';
+                $payload['poll_after_ms'] = 3000;
+            }
+
+            return $payload;
         }
 
         // Selected / lane-specific / edited shares still need a dedicated ZIP.

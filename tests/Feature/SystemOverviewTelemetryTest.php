@@ -360,6 +360,120 @@ class SystemOverviewTelemetryTest extends IsolatedSecurityTestCase
             ->assertJsonPath('telemetryAvailable', false);
     }
 
+
+    public function test_domain_stats_use_full_24h_aggregates_and_slow_route_count_ignores_successful_uploads(): void
+    {
+        $this->freezeTime();
+
+        $traceRows = [];
+        for ($i = 0; $i < 75; $i++) {
+            $traceRows[] = [
+                'trace_id' => sprintf('domain-stats-trace-%03d', $i),
+                'domain' => 'Shoots',
+                'method' => 'GET',
+                'path' => '/api/shoots',
+                'status_code' => 200,
+                'duration_ms' => 100,
+                'request_bytes' => 0,
+                'response_bytes' => 0,
+                'occurred_at' => now()->subMinutes(30),
+                'created_at' => now(),
+                'updated_at' => now(),
+            ];
+        }
+
+        // Successful slow upload-like routes must not inflate slowRouteCount.
+        $traceRows[] = [
+            'trace_id' => 'slow-upload-success',
+            'domain' => 'Shoots',
+            'method' => 'POST',
+            'path' => '/api/shoots/{shoot}/media/upload',
+            'status_code' => 200,
+            'duration_ms' => 5000,
+            'request_bytes' => 0,
+            'response_bytes' => 0,
+            'occurred_at' => now()->subMinutes(10),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ];
+        $traceRows[] = [
+            'trace_id' => 'slow-upload-session-success',
+            'domain' => 'Shoots',
+            'method' => 'POST',
+            'path' => '/api/shoots/{shoot}/upload-session',
+            'status_code' => 201,
+            'duration_ms' => 2500,
+            'request_bytes' => 0,
+            'response_bytes' => 0,
+            'occurred_at' => now()->subMinutes(9),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ];
+        $traceRows[] = [
+            'trace_id' => 'slow-chunks-success',
+            'domain' => 'Shoots',
+            'method' => 'PUT',
+            'path' => '/api/shoots/{shoot}/media/chunks',
+            'status_code' => 200,
+            'duration_ms' => 3000,
+            'request_bytes' => 0,
+            'response_bytes' => 0,
+            'occurred_at' => now()->subMinutes(8),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ];
+
+        // Failed uploads and ordinary slow routes still count.
+        $traceRows[] = [
+            'trace_id' => 'slow-upload-failed',
+            'domain' => 'Shoots',
+            'method' => 'POST',
+            'path' => '/api/shoots/{shoot}/media/upload',
+            'status_code' => 500,
+            'duration_ms' => 4000,
+            'request_bytes' => 0,
+            'response_bytes' => 0,
+            'occurred_at' => now()->subMinutes(7),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ];
+        $traceRows[] = [
+            'trace_id' => 'slow-ordinary-route',
+            'domain' => 'Dashboard',
+            'method' => 'GET',
+            'path' => '/api/dashboard',
+            'status_code' => 200,
+            'duration_ms' => 1800,
+            'request_bytes' => 0,
+            'response_bytes' => 0,
+            'occurred_at' => now()->subMinutes(6),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ];
+
+        SystemOverviewRequestTrace::query()->insert($traceRows);
+
+        SystemOverviewErrorEvent::query()->insert(array_fill(0, 5, [
+            'source' => 'backend',
+            'severity' => 'warning',
+            'route_path' => '/api/shoots/{shoot}',
+            'blocker_type' => 'error',
+            'error_class' => 'RuntimeException',
+            'message' => 'An operation could not be completed.',
+            'occurred_at' => now()->subMinutes(5),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]));
+
+        $snapshot = app(SystemOverviewTelemetryService::class)->buildSnapshot();
+
+        $this->assertSame(79, $snapshot['domainStats']['Shoots']['requests']);
+        $this->assertSame(5, $snapshot['domainStats']['Shoots']['errors']);
+        $this->assertSame(1, $snapshot['domainStats']['Dashboard']['requests']);
+        $this->assertCount(60, $snapshot['recentTraces']);
+        $this->assertSame(2, $snapshot['stats']['slowRouteCount']);
+    }
+
     private function dropOverviewTables(): void
     {
         Schema::dropIfExists('system_overview_error_events');

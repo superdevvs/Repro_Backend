@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Events\ShootActivityBroadcast;
 use App\Jobs\GenerateShootMediaArchiveJob;
+use App\Jobs\GenerateShootShareLinkZipJob;
 use App\Jobs\GenerateWatermarkedImageJob;
 use App\Jobs\SyncShootIguideJob;
 use App\Models\Payment;
@@ -364,6 +365,7 @@ class ShootMediaActionsTest extends TestCase
         Storage::fake('public');
         Storage::fake('local');
         Event::fake([ShootActivityBroadcast::class]);
+        Queue::fake([GenerateShootShareLinkZipJob::class]);
         Sanctum::actingAs($this->editor);
 
         $shoot = $this->createShoot([
@@ -377,12 +379,23 @@ class ShootMediaActionsTest extends TestCase
         ]);
 
         $rawPath = 'shoots/'.$shoot->id.'/todo/raw-1.nef';
+        $otherPath = 'shoots/'.$shoot->id.'/todo/raw-2.nef';
         Storage::disk('public')->put($rawPath, 'raw-bytes');
+        Storage::disk('public')->put($otherPath, 'raw-bytes-2');
 
         $file = $this->createShootFile($shoot, [
             'filename' => 'raw-1.nef',
             'stored_filename' => 'raw-1.nef',
             'path' => $rawPath,
+            'media_type' => 'raw',
+            'workflow_stage' => ShootFile::STAGE_TODO,
+        ]);
+        // Second raw file keeps this request on the selected/async ZIP path
+        // (not the full-set archive-backed shortcut).
+        $this->createShootFile($shoot, [
+            'filename' => 'raw-2.nef',
+            'stored_filename' => 'raw-2.nef',
+            'path' => $otherPath,
             'media_type' => 'raw',
             'workflow_stage' => ShootFile::STAGE_TODO,
         ]);
@@ -395,9 +408,11 @@ class ShootMediaActionsTest extends TestCase
             'file_ids' => [$file->id],
         ]);
 
-        $response->assertOk()
-            ->assertJsonPath('message', 'Share link generated successfully')
+        $response->assertStatus(202)
+            ->assertJsonPath('message', 'Preparing your share link.')
             ->assertJsonPath('file_count', 1)
+            ->assertJsonPath('type', 'preparing')
+            ->assertJsonPath('poll_after_ms', 3000)
             ->assertJsonStructure([
                 'share_link',
                 'share_link_id',
@@ -413,21 +428,13 @@ class ShootMediaActionsTest extends TestCase
         ]);
 
         $shareLink = ShootShareLink::query()->where('shoot_id', $shoot->id)->firstOrFail();
-        $this->assertMatchesRegularExpression('/share-links\/'.$shoot->id.'\/share-link-[^\/]+\.zip$/', $shareLink->dropbox_path);
+        $this->assertNull($shareLink->dropbox_path);
 
-        $this->getJson("/api/public/share-links/{$shareLink->public_token}")
-            ->assertOk()
-            ->assertJsonPath(
-                'redirect_url',
-                route('api.public.share-links.download', ['token' => $shareLink->public_token])
-            );
-
-        $downloadResponse = $this->get("/api/public/share-links/{$shareLink->public_token}/download");
-        $downloadResponse->assertOk();
-        $this->assertStringContainsString(
-            '123_Main_St_5_Towson_MD_21204_2026-05-14.zip',
-            $downloadResponse->headers->get('content-disposition', '')
-        );
+        Queue::assertPushed(GenerateShootShareLinkZipJob::class, function (GenerateShootShareLinkZipJob $job) use ($shoot, $shareLink, $file) {
+            return $job->shootId === $shoot->id
+                && $job->shareLinkId === $shareLink->id
+                && $job->fileIds === [(int) $file->id];
+        });
 
         $this->assertDatabaseHas('shoot_activity_logs', [
             'shoot_id' => $shoot->id,
@@ -440,7 +447,7 @@ class ShootMediaActionsTest extends TestCase
         });
     }
 
-    #[\PHPUnit\Framework\Attributes\Test]
+        #[\PHPUnit\Framework\Attributes\Test]
     public function admin_can_set_cover_media_and_clear_cached_file_lists(): void
     {
         Storage::fake('public');
@@ -572,40 +579,17 @@ class ShootMediaActionsTest extends TestCase
             'shoots/'.$shoot->id.'/archives/250-media-lane-baltimore-md-21201-edited-small.zip',
             $archivePath
         );
-        $expectedZip = Storage::disk('local')->get($archivePath);
-        $binaryResponse = $this->get('/api/shoots/'.$shoot->id.'/media/download-zip?type=edited&size=small', [
+        $this->assertTrue(app(\App\Services\Media\MediaStorage::class)->exists($archivePath));
+
+        // ZIP Accept no longer streams through PHP — same JSON redirect as JSON-first clients.
+        $this->get('/api/shoots/'.$shoot->id.'/media/download-zip?type=edited&size=small', [
             'Accept' => 'application/zip, application/json',
             'Origin' => 'https://reprodashboard.com',
-        ]);
-        $binaryResponse->assertOk()
-            ->assertHeader('Content-Type', 'application/zip')
-            ->assertHeader('Content-Length', (string) strlen($expectedZip))
-            ->assertHeader('X-Content-Type-Options', 'nosniff');
-        $this->assertStringContainsString(
-            '/api/public/shoot-media/file/shoots/'.$shoot->id.'/archives/',
-            (string) $binaryResponse->headers->get('X-Archive-Download-Url')
-        );
-        $this->assertStringContainsString('signature=', (string) $binaryResponse->headers->get('X-Archive-Download-Url'));
-        $this->assertStringContainsString(basename($archivePath), $binaryResponse->headers->get('Content-Disposition'));
-        $this->assertStringContainsString('private', $binaryResponse->headers->get('Cache-Control'));
-        $this->assertStringContainsString('no-store', $binaryResponse->headers->get('Cache-Control'));
-        $this->assertStringContainsString('Content-Disposition', $binaryResponse->headers->get('Access-Control-Expose-Headers'));
-        $this->assertStringContainsString('X-Archive-Download-Url', $binaryResponse->headers->get('Access-Control-Expose-Headers'));
-        $this->assertSame($expectedZip, $binaryResponse->streamedContent());
-        Storage::disk('local')->assertExists($archivePath);
+        ])->assertOk()->assertJsonPath('type', 'redirect');
 
         $this->get('/api/shoots/'.$shoot->id.'/media/download-zip?type=edited&size=small', [
             'Accept' => 'application/json, application/zip',
         ])->assertOk()->assertJsonPath('type', 'redirect');
-
-        $throwingMedia = \Mockery::mock(\App\Services\Media\MediaStorage::class)->makePartial();
-        $throwingMedia->shouldReceive('downloadResponse')->once()->andThrow(new \RuntimeException('synthetic-private-storage-secret /private/archive.zip'));
-        $this->app->instance(\App\Services\Media\MediaStorage::class, $throwingMedia);
-        $failedTransfer = $this->get('/api/shoots/'.$shoot->id.'/media/download-zip?type=edited&size=small', [
-            'Accept' => 'application/zip, application/json',
-        ])->assertStatus(500);
-        $this->assertStringNotContainsString('synthetic-private-storage-secret', $failedTransfer->getContent());
-        $this->assertStringNotContainsString('/private/archive.zip', $failedTransfer->getContent());
     }
 
     #[\PHPUnit\Framework\Attributes\Test]
@@ -840,6 +824,7 @@ class ShootMediaActionsTest extends TestCase
     {
         Storage::fake('public');
         Storage::fake('local');
+        Queue::fake([GenerateShootMediaArchiveJob::class]);
         Sanctum::actingAs($this->admin);
 
         $shoot = $this->createShoot([
@@ -867,19 +852,23 @@ class ShootMediaActionsTest extends TestCase
             'Origin' => 'https://reprodashboard.com',
         ]);
 
-        $response->assertOk();
-        $this->assertStringContainsString(
-            '250-media-lane-baltimore-md-21201-raw-files.zip',
-            (string) $response->headers->get('content-disposition')
-        );
-        $this->assertStringContainsString('Content-Disposition', $response->headers->get('Access-Control-Expose-Headers'));
+        $response->assertStatus(202)
+            ->assertJsonPath('type', 'preparing')
+            ->assertJsonPath('poll_after_ms', 3000);
+
+        Queue::assertPushed(GenerateShootMediaArchiveJob::class, function (GenerateShootMediaArchiveJob $job) use ($shoot) {
+            return $job->shootId === $shoot->id
+                && $job->type === 'raw'
+                && $job->size === 'original';
+        });
     }
 
-    #[\PHPUnit\Framework\Attributes\Test]
+        #[\PHPUnit\Framework\Attributes\Test]
     public function editing_manager_can_download_raw_files_from_an_in_progress_shoot(): void
     {
         Storage::fake('public');
         Storage::fake('local');
+        Queue::fake([GenerateShootMediaArchiveJob::class]);
         Sanctum::actingAs($this->editingManager);
 
         $shoot = $this->createShoot([
@@ -904,16 +893,21 @@ class ShootMediaActionsTest extends TestCase
 
         $response = $this->get('/api/shoots/'.$shoot->id.'/editor-download-raw', [
             'Accept' => 'application/json, application/zip',
+            'Origin' => 'https://reprodashboard.com',
         ]);
 
-        $response->assertOk();
-        $this->assertStringContainsString(
-            '250-media-lane-baltimore-md-21201-raw-files.zip',
-            (string) $response->headers->get('content-disposition')
-        );
+        $response->assertStatus(202)
+            ->assertJsonPath('type', 'preparing')
+            ->assertJsonPath('poll_after_ms', 3000);
+
+        Queue::assertPushed(GenerateShootMediaArchiveJob::class, function (GenerateShootMediaArchiveJob $job) use ($shoot) {
+            return $job->shootId === $shoot->id
+                && $job->type === 'raw'
+                && $job->size === 'original';
+        });
     }
 
-    #[\PHPUnit\Framework\Attributes\Test]
+        #[\PHPUnit\Framework\Attributes\Test]
     public function editing_manager_can_download_selected_files_zip(): void
     {
         Storage::fake('public');
@@ -1065,6 +1059,7 @@ class ShootMediaActionsTest extends TestCase
     {
         Storage::fake('public');
         Storage::fake('local');
+        Queue::fake([GenerateShootMediaArchiveJob::class]);
         Sanctum::actingAs($this->editor);
 
         $shoot = $this->createShoot([
@@ -1090,16 +1085,21 @@ class ShootMediaActionsTest extends TestCase
 
         $response = $this->get('/api/shoots/'.$shoot->id.'/editor-download-raw', [
             'Accept' => 'application/json, application/zip',
+            'Origin' => 'https://reprodashboard.com',
         ]);
 
-        $response->assertOk();
-        $this->assertStringContainsString(
-            '250-media-lane-baltimore-md-21201-raw-files.zip',
-            (string) $response->headers->get('content-disposition')
-        );
+        $response->assertStatus(202)
+            ->assertJsonPath('type', 'preparing')
+            ->assertJsonPath('poll_after_ms', 3000);
+
+        Queue::assertPushed(GenerateShootMediaArchiveJob::class, function (GenerateShootMediaArchiveJob $job) use ($shoot) {
+            return $job->shootId === $shoot->id
+                && $job->type === 'raw'
+                && $job->size === 'original';
+        });
     }
 
-    #[\PHPUnit\Framework\Attributes\Test]
+        #[\PHPUnit\Framework\Attributes\Test]
     public function admin_can_mark_extra_file_as_required_for_editing(): void
     {
         Sanctum::actingAs($this->admin);
@@ -1726,10 +1726,13 @@ class ShootMediaActionsTest extends TestCase
         $this->assertStringContainsString('-edited-small.zip', (string) $response->json('url'));
 
         $archivePath = app(ShootMediaArchiveService::class)->getArchivePath($shoot, 'edited', 'small');
-        $binaryResponse = $this->get($signedUrl, ['Accept' => 'application/zip, application/json']);
-        $binaryResponse->assertOk()->assertHeader('Content-Type', 'application/zip');
-        $this->assertSame(Storage::disk('local')->get($archivePath), $binaryResponse->streamedContent());
-        Storage::disk('local')->assertExists($archivePath);
+        $this->assertTrue(app(\App\Services\Media\MediaStorage::class)->exists($archivePath));
+
+        // ZIP Accept returns the same JSON redirect — no PHP BinaryFile streaming.
+        $this->get($signedUrl, ['Accept' => 'application/zip, application/json'])
+            ->assertOk()
+            ->assertJsonPath('type', 'redirect');
+
         $this->get('/api/public/shoot-media/'.$shoot->id.'/download-zip?type=edited&size=small', [
             'Accept' => 'application/zip, application/json',
         ])->assertForbidden();
@@ -1738,12 +1741,24 @@ class ShootMediaActionsTest extends TestCase
     #[\PHPUnit\Framework\Attributes\Test]
     public function moving_a_shoot_to_editing_queues_the_raw_small_archive(): void
     {
+        Storage::fake('public');
+        Storage::fake('local');
         Queue::fake([GenerateShootMediaArchiveJob::class]);
 
         $shoot = $this->createShoot([
             'status' => Shoot::STATUS_UPLOADED,
             'workflow_status' => Shoot::STATUS_UPLOADED,
             'raw_photo_count' => 1,
+        ]);
+        $rawPath = 'shoots/'.$shoot->id.'/todo/prebuild-raw.jpg';
+        Storage::disk('public')->put($rawPath, 'prebuild-raw-bytes');
+        $this->createShootFile($shoot, [
+            'filename' => 'prebuild-raw.jpg',
+            'stored_filename' => 'prebuild-raw.jpg',
+            'path' => $rawPath,
+            'storage_path' => $rawPath,
+            'media_type' => 'raw',
+            'workflow_stage' => ShootFile::STAGE_TODO,
         ]);
 
         $shoot->updateWorkflowStatus(Shoot::STATUS_EDITING, $this->admin->id);
@@ -1752,6 +1767,11 @@ class ShootMediaActionsTest extends TestCase
             return $job->shootId === $shoot->id
                 && $job->type === 'raw'
                 && $job->size === 'small';
+        });
+        Queue::assertPushed(GenerateShootMediaArchiveJob::class, function (GenerateShootMediaArchiveJob $job) use ($shoot) {
+            return $job->shootId === $shoot->id
+                && $job->type === 'raw'
+                && $job->size === 'original';
         });
     }
 

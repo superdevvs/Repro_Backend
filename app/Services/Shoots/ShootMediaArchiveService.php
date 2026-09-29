@@ -268,7 +268,8 @@ class ShootMediaArchiveService
             return false;
         }
 
-        $plan = $this->buildArchivePlan($shoot, $type, $size, $shootServiceId, $shootUnitId);
+        // Metadata-only plan avoids probing R2/local existence on every poll.
+        $plan = $this->buildArchivePlanFromMetadata($shoot, $type, $size, $shootServiceId, $shootUnitId);
 
         return $plan['entries'] !== []
             && ($manifest['source_signature'] ?? null) === $plan['source_signature'];
@@ -276,7 +277,7 @@ class ShootMediaArchiveService
 
     public function hasDownloadableFiles(Shoot $shoot, string $type, string $size, ?int $shootServiceId = null, ?int $shootUnitId = null): bool
     {
-        return $this->buildArchivePlan($shoot, $type, $size, $shootServiceId, $shootUnitId)['entries'] !== [];
+        return $this->buildArchivePlanFromMetadata($shoot, $type, $size, $shootServiceId, $shootUnitId)['entries'] !== [];
     }
 
     public function getArchivePath(Shoot $shoot, string $type, string $size, ?int $shootServiceId = null, ?int $shootUnitId = null): string
@@ -456,13 +457,36 @@ class ShootMediaArchiveService
 
     protected function buildArchivePlan(Shoot $shoot, string $type, string $size, ?int $shootServiceId = null, ?int $shootUnitId = null): array
     {
+        return $this->assembleArchivePlan($shoot, $type, $size, $shootServiceId, $shootUnitId, verifyExists: true);
+    }
+
+    /**
+     * Same entry shape/signature fields as buildArchivePlan, but picks the first
+     * non-empty DB candidate path without probing storage. Used by poll/freshness
+     * checks so multi-GB shoots do not hammer R2 on every status request.
+     */
+    protected function buildArchivePlanFromMetadata(Shoot $shoot, string $type, string $size, ?int $shootServiceId = null, ?int $shootUnitId = null): array
+    {
+        return $this->assembleArchivePlan($shoot, $type, $size, $shootServiceId, $shootUnitId, verifyExists: false);
+    }
+
+    protected function assembleArchivePlan(
+        Shoot $shoot,
+        string $type,
+        string $size,
+        ?int $shootServiceId,
+        ?int $shootUnitId,
+        bool $verifyExists
+    ): array {
         // Resolve every source path first so the numbering runs over the files
         // that will actually make it into the archive. Numbering before this
         // filter would leave gaps (001, 003, 004) whenever a file has no
         // resolvable source.
         $deliverable = [];
         foreach ($this->getFilesForType($shoot, $type, $shootServiceId, $shootUnitId) as $file) {
-            $sourcePath = $this->resolveDownloadPath($file, $size);
+            $sourcePath = $verifyExists
+                ? $this->resolveDownloadPath($file, $size)
+                : $this->resolveDownloadPathFromMetadata($file, $size);
             if (!$sourcePath) {
                 continue;
             }
@@ -515,10 +539,11 @@ class ShootMediaArchiveService
         ];
     }
 
-    protected function resolveDownloadPath(ShootFile $file, string $size): ?string
+    protected function downloadPathCandidates(ShootFile $file, string $size): array
     {
         $classifier = app(ShootDownloadAssetClassifier::class);
-        $candidates = $size === 'small' && $classifier->isImage($file) && ! $classifier->isVideo($file) && ! $classifier->isPdf($file)
+
+        return $size === 'small' && $classifier->isImage($file) && ! $classifier->isVideo($file) && ! $classifier->isPdf($file)
             ? [
                 $file->web_path,
                 $file->thumbnail_path,
@@ -530,13 +555,27 @@ class ShootMediaArchiveService
                 $file->storage_path,
                 $file->path,
             ];
+    }
 
-        foreach ($candidates as $candidate) {
+    protected function resolveDownloadPath(ShootFile $file, string $size): ?string
+    {
+        foreach ($this->downloadPathCandidates($file, $size) as $candidate) {
             if (!$candidate) {
                 continue;
             }
 
             if ($this->shootFileAccessService->storedFileExists($candidate)) {
+                return $candidate;
+            }
+        }
+
+        return null;
+    }
+
+    protected function resolveDownloadPathFromMetadata(ShootFile $file, string $size): ?string
+    {
+        foreach ($this->downloadPathCandidates($file, $size) as $candidate) {
+            if (is_string($candidate) && trim($candidate) !== '') {
                 return $candidate;
             }
         }

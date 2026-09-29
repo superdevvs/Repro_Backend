@@ -49,7 +49,13 @@ class PublicShootShareLinkController extends Controller
 
         $link->incrementDownloadCount();
 
-        return app(\App\Services\Media\MediaStorage::class)->downloadResponse(
+        $media = app(\App\Services\Media\MediaStorage::class);
+        $publicUrl = $media->publicUrl($link->dropbox_path);
+        if (is_string($publicUrl) && trim($publicUrl) !== '') {
+            return redirect()->away($publicUrl);
+        }
+
+        return $media->downloadResponse(
             $link->dropbox_path,
             $this->buildDownloadFilename($link),
             ['Content-Type' => 'application/zip', 'Cache-Control' => 'private, no-store']
