@@ -32,7 +32,7 @@ class ShootListingAuthorizationTest extends TestCase
             'photographer_id' => $photographer->id,
             'status' => Shoot::STATUS_DELIVERED,
             'workflow_status' => Shoot::STATUS_DELIVERED,
-            'hero_image' => 'shoots/cover.jpg',
+            'hero_image' => null,
             'raw_photo_count' => 12,
         ]);
         ShootFile::query()->create([
@@ -46,22 +46,60 @@ class ShootListingAuthorizationTest extends TestCase
             'uploaded_by' => $photographer->id,
             'workflow_stage' => 'todo',
         ]);
+        ShootFile::query()->create([
+            'shoot_id' => $shoot->id,
+            'filename' => 'living-room.jpg',
+            'stored_filename' => 'living-room.jpg',
+            'path' => 'shoots/living-room.jpg',
+            'grid_path' => 'shoots/living-room-grid.jpg',
+            'web_path' => 'shoots/living-room-web.jpg',
+            'thumbnail_path' => 'shoots/living-room-thumb.jpg',
+            'file_type' => 'image/jpeg',
+            'mime_type' => 'image/jpeg',
+            'media_type' => 'edited',
+            'file_size' => 4096,
+            'uploaded_by' => $photographer->id,
+            'workflow_stage' => ShootFile::STAGE_VERIFIED,
+            'is_cover' => true,
+            'is_hidden' => false,
+        ]);
 
-        DB::flushQueryLog();
-        DB::enableQueryLog();
         $response = $this->actingAs($photographer)->getJson('/api/shoots?tab=delivered&include_files=false&no_cache=true');
-        $queries = collect(DB::getQueryLog())->pluck('query')->implode("\n");
 
         $response->assertOk();
         $this->assertSame([], $response->json('data.0.files'));
         $this->assertSame(12, $response->json('data.0.media_summary.rawUploaded'));
         $this->assertStringNotContainsString('secret-raw', $response->getContent());
-        $this->assertStringNotContainsString('shoot_files', strtolower($queries));
+        $this->assertNotEmpty($response->json('data.0.hero_image'));
+        $this->assertNotEmpty($response->json('data.0.preview_images'));
+        $this->assertStringContainsString('living-room', (string) $response->json('data.0.hero_image'));
 
-        DB::flushQueryLog();
         $withFiles = $this->actingAs($photographer)->getJson('/api/shoots?tab=delivered&include_files=true&no_cache=true');
         $withFiles->assertOk();
-        $this->assertSame('secret-raw.CR3', $withFiles->json('data.0.files.0.filename'));
+        $filenames = collect($withFiles->json('data.0.files'))->pluck('filename')->all();
+        $this->assertContains('secret-raw.CR3', $filenames);
+    }
+
+    public function test_include_files_false_still_resolves_stored_hero_without_preview_files(): void
+    {
+        $photographer = User::factory()->create(['role' => 'photographer']);
+        $this->shoot([
+            'photographer_id' => $photographer->id,
+            'status' => Shoot::STATUS_DELIVERED,
+            'workflow_status' => Shoot::STATUS_DELIVERED,
+            'hero_image' => 'shoots/cover.jpg',
+            'raw_photo_count' => 3,
+        ]);
+
+        $response = $this->actingAs($photographer)->getJson('/api/shoots?tab=delivered&include_files=false&no_cache=true');
+
+        $response->assertOk();
+        $this->assertSame([], $response->json('data.0.files'));
+        $this->assertNotEmpty($response->json('data.0.hero_image'));
+        $this->assertSame(
+            [$response->json('data.0.hero_image')],
+            $response->json('data.0.preview_images')
+        );
     }
 
     public function test_sales_queries_counts_and_filter_metadata_include_every_shoot(): void

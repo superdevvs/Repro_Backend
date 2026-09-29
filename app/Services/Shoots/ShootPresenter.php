@@ -251,9 +251,12 @@ class ShootPresenter
         $scheduleTimezone = $scheduleResolver->timezoneForShoot($shoot);
         $cancellationFeeWindow = $scheduleResolver->isWithinCancellationFeeWindow($shoot);
         if (! $includeFiles) {
-            // List responses pass include_files=false. Loading every file here
-            // turned one delivered page into several megabytes and locked SQLite.
+            // List responses omit file rows (payload size), but dashboard cards
+            // still need hero_image + preview_images. Prefer the batch-loaded
+            // list_preview_files relation from ShootListingService.
+            $this->hydrateListCardMedia($shoot);
             $shoot->setRelation('files', collect());
+            $shoot->unsetRelation('list_preview_files');
         } elseif (! $shoot->relationLoaded('files')) {
             $shoot->load(['files' => function ($query) {
                 $query->select(
@@ -556,7 +559,8 @@ class ShootPresenter
         $shoot->media_summary = $this->buildMediaSummary($shoot);
         if ($includeFiles && (! $shoot->hero_image || in_array($requestingRole, ['photographer', 'editor', 'client'], true))) {
             $shoot->hero_image = $this->resolveHeroImage($shoot, false);
-        } elseif ($shoot->hero_image) {
+        } elseif ($shoot->hero_image && ! $this->looksLikeAbsoluteMediaUrl((string) $shoot->hero_image)) {
+            // include_files=false already resolved via hydrateListCardMedia when needed.
             $shoot->hero_image = $this->fileAccessService->resolvePublicStorageUrl($shoot->hero_image)
                 ?: $shoot->hero_image;
         }
@@ -1152,6 +1156,90 @@ class ShootPresenter
             'favorites' => $shoot->files->where('is_favorite', true)->count(),
             'delivered' => $shoot->files->where('workflow_stage', ShootFile::STAGE_VERIFIED)->count(),
         ];
+    }
+
+    /**
+     * Resolve hero_image + preview_images for list cards without serializing files.
+     */
+    protected function hydrateListCardMedia(Shoot $shoot): void
+    {
+        $previewFiles = $shoot->relationLoaded('list_preview_files')
+            ? collect($shoot->getRelation('list_preview_files'))
+            : collect();
+
+        if ($previewFiles->isEmpty() && filled($shoot->hero_image)) {
+            $resolved = $this->fileAccessService->resolvePublicStorageUrl($shoot->hero_image)
+                ?: $shoot->hero_image;
+            $shoot->hero_image = $resolved;
+            $shoot->setAttribute('preview_images', [$resolved]);
+            $shoot->setAttribute('previewImages', [$resolved]);
+
+            return;
+        }
+
+        if ($previewFiles->isEmpty()) {
+            return;
+        }
+
+        $previousFiles = $shoot->relationLoaded('files') ? $shoot->files : null;
+        $shoot->setRelation('files', $previewFiles);
+
+        if (! filled($shoot->hero_image)) {
+            $cover = $previewFiles->firstWhere('is_cover', true) ?? $previewFiles->first();
+            $shoot->hero_image = $cover
+                ? ($this->resolveListCardPreviewUrl($cover) ?: $this->resolveHeroImage($shoot, false))
+                : $this->resolveHeroImage($shoot, false);
+        } else {
+            $shoot->hero_image = $this->fileAccessService->resolvePublicStorageUrl($shoot->hero_image)
+                ?: $shoot->hero_image;
+        }
+
+        $previewImages = $previewFiles
+            ->map(fn (ShootFile $file) => $this->resolveListCardPreviewUrl($file))
+            ->filter()
+            ->unique()
+            ->values()
+            ->take(6)
+            ->all();
+
+        if ($previewImages === [] && filled($shoot->hero_image)) {
+            $previewImages = [$shoot->hero_image];
+        }
+
+        $shoot->setAttribute('preview_images', $previewImages);
+        $shoot->setAttribute('previewImages', $previewImages);
+
+        if ($previousFiles !== null) {
+            $shoot->setRelation('files', $previousFiles);
+        } else {
+            $shoot->unsetRelation('files');
+        }
+    }
+
+    protected function resolveListCardPreviewUrl(ShootFile $file): ?string
+    {
+        // Match dashboard overview cards: prefer the 600px grid rendition so
+        // Delivered shoots thumbnails stay sharp without shipping full webs.
+        foreach ([$file->grid_path ?? null, $file->web_path ?? null, $file->thumbnail_path ?? null, $file->url ?? null, $file->path ?? null] as $candidate) {
+            if (! is_string($candidate) || $candidate === '') {
+                continue;
+            }
+            $resolved = $this->fileAccessService->resolvePublicStorageUrl($candidate);
+            if ($resolved) {
+                return $resolved;
+            }
+        }
+
+        return $this->resolveOptimizedFileUrl($file);
+    }
+
+    protected function looksLikeAbsoluteMediaUrl(string $value): bool
+    {
+        return str_starts_with($value, 'http://')
+            || str_starts_with($value, 'https://')
+            || str_starts_with($value, '//')
+            || str_starts_with($value, '/api/')
+            || str_starts_with($value, '/storage/');
     }
 
     protected function resolveHeroImage(Shoot $shoot, bool $allowDropboxCalls = true): ?string

@@ -4,6 +4,7 @@ namespace App\Services\Shoots;
 
 use App\Models\Service;
 use App\Models\Shoot;
+use App\Models\ShootFile;
 use App\Models\User;
 use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Builder;
@@ -193,6 +194,13 @@ class ShootListingService
                 : $query->paginate($perPage, ['*'], 'page', $page);
             $isClientUser = $user && $user->role === 'client';
 
+            // Dashboard cards need hero/preview thumbnails even when file rows are
+            // omitted (include_files=false). Batch-load a tiny preview subset so
+            // salesRep/photographer/editor delivered cards are not placeholders.
+            if (! $needsFiles && $shoots->getCollection()->isNotEmpty()) {
+                $this->eagerLoadListCardPreviewFiles($shoots->getCollection());
+            }
+
             $transformedShoots = $shoots->getCollection()->map(function (Shoot $shoot) use ($transformShoot, $isClientUser, $needsFiles) {
                 return $transformShoot($shoot, $isClientUser, $needsFiles);
             });
@@ -239,6 +247,87 @@ class ShootListingService
                     ],
                 ],
             ], 500);
+        }
+    }
+
+    /**
+     * Attach up to six lightweight preview files per shoot for dashboard cards.
+     * Full file rows stay omitted from include_files=false responses.
+     *
+     * @param  \Illuminate\Support\Collection<int, \App\Models\Shoot>  $shoots
+     */
+    protected function eagerLoadListCardPreviewFiles($shoots): void
+    {
+        $ids = $shoots->pluck('id')->filter()->values()->all();
+        if ($ids === []) {
+            return;
+        }
+
+        $columns = [
+            'id',
+            'shoot_id',
+            'filename',
+            'stored_filename',
+            'workflow_stage',
+            'is_cover',
+            'is_hidden',
+            'url',
+            'path',
+            'dropbox_path',
+            'file_type',
+            'mime_type',
+            'media_type',
+            'thumbnail_path',
+            'grid_path',
+            'web_path',
+            'placeholder_path',
+            'sort_order',
+        ];
+
+        $buildQuery = function (array $shootIds) use ($columns) {
+            return ShootFile::query()
+                ->whereIn('shoot_id', $shootIds)
+                ->where(function ($query) {
+                    $query->where('is_hidden', false)->orWhereNull('is_hidden');
+                })
+                ->where(function ($query) {
+                    $query->whereNull('media_type')
+                        ->orWhereNotIn('media_type', ['floorplan', 'video']);
+                })
+                ->where(function ($query) {
+                    $query->whereNotNull('grid_path')
+                        ->orWhereNotNull('web_path')
+                        ->orWhereNotNull('thumbnail_path')
+                        ->orWhereNotNull('url')
+                        ->orWhereNotNull('path');
+                })
+                ->select($columns)
+                ->orderByDesc('is_cover')
+                ->orderByRaw('CASE WHEN sort_order IS NULL OR sort_order <= 0 THEN 1 ELSE 0 END asc')
+                ->orderBy('sort_order', 'asc')
+                ->orderByDesc('id');
+        };
+
+        $preferred = $buildQuery($ids)
+            ->whereIn('workflow_stage', [ShootFile::STAGE_COMPLETED, ShootFile::STAGE_VERIFIED])
+            ->get()
+            ->groupBy('shoot_id');
+
+        $missingIds = collect($ids)
+            ->reject(fn ($id) => ($preferred->get($id)?->isNotEmpty() ?? false))
+            ->values()
+            ->all();
+
+        $fallback = collect();
+        if ($missingIds !== []) {
+            $fallback = $buildQuery($missingIds)
+                ->get()
+                ->groupBy('shoot_id');
+        }
+
+        foreach ($shoots as $shoot) {
+            $group = $preferred->get($shoot->id) ?? $fallback->get($shoot->id) ?? collect();
+            $shoot->setRelation('list_preview_files', $group->take(6)->values());
         }
     }
 
