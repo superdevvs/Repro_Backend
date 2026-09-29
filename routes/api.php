@@ -718,6 +718,12 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // File workflow endpoints
     Route::post('/shoots/{shoot}/upload', [ShootMediaController::class, 'uploadFiles']);
+    Route::post('/shoots/{shoot}/upload-sessions', [\App\Http\Controllers\API\ShootMediaChunkUploadController::class, 'initiate']);
+    Route::put('/shoots/{shoot}/upload-sessions/{session}/chunks/{index}', [\App\Http\Controllers\API\ShootMediaChunkUploadController::class, 'storeChunk'])
+        ->whereUuid('session')
+        ->whereNumber('index');
+    Route::post('/shoots/{shoot}/upload-sessions/{session}/complete', [\App\Http\Controllers\API\ShootMediaChunkUploadController::class, 'complete'])
+        ->whereUuid('session');
     Route::post('/shoots/{shoot}/upload-from-source', [UploadSourceController::class, 'import']);
     Route::post('/shoots/{shoot}/upload/finalize-raw', [ShootMediaController::class, 'finalizeRawUpload']);
     Route::post('/shoots/{shoot}/upload/finalize-edited', [ShootMediaController::class, 'finalizeEditedUpload']);
