@@ -2,25 +2,32 @@
 
 namespace App\Services\Shoots;
 
+use App\Jobs\GenerateEditorRawZipJob;
 use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Models\User;
-use App\Services\ShootMediaStorageService;
+use App\Services\Media\MediaStorage;
 use App\Services\ShootActivityLogger;
+use App\Services\ShootMediaStorageService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use Symfony\Component\HttpFoundation\Response;
 
 class ShootEditorDownloadService
 {
+    private const POLL_AFTER_MS = 3000;
+
     public function __construct(
         protected ShootMediaStorageService $mediaStorageService,
         protected ShootActivityLogger $activityLogger,
         protected ShootAuthorizationSupport $shootAuthorizationSupport,
         protected ShootShareLinkService $shootShareLinkService,
         protected ShootEditingAssignmentService $shootEditingAssignmentService,
-        protected ShootArchiveFilenameFormatter $archiveFilenameFormatter
+        protected ShootArchiveFilenameFormatter $archiveFilenameFormatter,
+        protected ShootMediaArchiveService $shootMediaArchiveService,
+        protected ShootFileAccessService $shootFileAccessService
     ) {
     }
 
@@ -32,7 +39,7 @@ class ShootEditorDownloadService
         }
 
         $filesQuery = $shoot->files()->where('workflow_stage', ShootFile::STAGE_TODO);
-        if (!empty($fileIdsParam)) {
+        if (! empty($fileIdsParam)) {
             $filesQuery->whereIn('id', $fileIdsParam);
         }
 
@@ -48,7 +55,7 @@ class ShootEditorDownloadService
             : $allFiles;
         $fileCount = $files->count();
 
-        if (!empty($fileIdsParam) && $fileCount === 0) {
+        if (! empty($fileIdsParam) && $fileCount === 0) {
             return $this->withCors(
                 response()->json(['error' => 'No raw files found for selected IDs'], 404),
                 $request,
@@ -77,28 +84,104 @@ class ShootEditorDownloadService
             $this->notifyAdminsOfEditorDownload($shoot, $user, $fileCount > 0 ? $fileCount : 0);
         }
 
-        try {
-            if ($files->count() > 0) {
-                $zipPath = $this->shootShareLinkService->generateFilesZip($shoot, $files);
-                if ($zipPath && file_exists($zipPath)) {
-                    return $this->withCors(response()->download($zipPath, $this->archiveFilenameFormatter->rawFiles($shoot), [
-                        'X-File-Count' => $fileCount,
-                    ])->deleteFileAfterSend(true), $request);
+        // Prefer the shared async archive pipeline when this download is the full
+        // raw hand-off set. Building multi-GB ZIPs inline was causing nginx 499/502
+        // timeouts for editors (Cloudflare idle timeout while PHP zipped).
+        if ($this->fileIdsMatch($files, $this->shootMediaArchiveService->getFilesForType($shoot, 'raw'))) {
+            try {
+                $archiveResponse = $this->shootMediaArchiveService->resolveArchiveResponseData(
+                    $shoot,
+                    'raw',
+                    'original',
+                    $request->fullUrl()
+                );
+                $payload = $archiveResponse['payload'];
+                $payload['file_count'] = $fileCount;
+                if (($payload['type'] ?? null) === 'redirect' && empty($payload['message'])) {
+                    $payload['message'] = 'Raw files ready for download.';
                 }
+
+                return $this->withCors(
+                    response()->json($payload, $archiveResponse['status']),
+                    $request,
+                );
+            } catch (\RuntimeException $e) {
+                return $this->withCors(
+                    response()->json(['error' => $e->getMessage(), 'file_count' => $fileCount], 404),
+                    $request,
+                );
+            } catch (\Exception $e) {
+                \App\Services\ApiErrorResponder::log($e, 'error');
+
+                return $this->withCors(
+                    response()->json(['error' => 'The ZIP download could not be prepared. Please try again.'], 500),
+                    $request,
+                );
             }
+        }
 
-            return $this->withCors(response()->json([
-                'error' => 'No downloadable files are available.',
-                'file_count' => $fileCount,
-            ], 404), $request);
-        } catch (\Exception $e) {
-            \App\Services\ApiErrorResponder::log($e, 'error');
+        return $this->resolveScopedAsyncDownload($request, $shoot, $user, $files, $fileCount);
+    }
 
-            return $this->withCors(
-                response()->json(['error' => 'The ZIP download could not be prepared. Please try again.'], 500),
-                $request,
+    /**
+     * @param  \Illuminate\Support\Collection<int, ShootFile>  $files
+     */
+    protected function resolveScopedAsyncDownload(
+        Request $request,
+        Shoot $shoot,
+        User $user,
+        $files,
+        int $fileCount
+    ) {
+        $fileIds = $files->pluck('id')->map(fn ($id) => (int) $id)->sort()->values()->all();
+        $cacheKey = sha1(implode(',', $fileIds));
+        $storagePath = "editor-downloads/{$shoot->id}/{$cacheKey}.zip";
+        $lockKey = "editor-raw-zip:{$shoot->id}:{$cacheKey}";
+        $media = app(MediaStorage::class);
+
+        if ($media->exists($storagePath)) {
+            $url = $this->shootFileAccessService->resolvePublicStorageUrl($storagePath)
+                ?? $media->publicUrl($storagePath);
+
+            if (is_string($url) && $url !== '') {
+                return $this->withCors(response()->json([
+                    'type' => 'redirect',
+                    'url' => $url,
+                    'message' => 'Raw files ready for download.',
+                    'file_count' => $fileCount,
+                ]), $request);
+            }
+        }
+
+        if (Cache::add($lockKey, 1, 600)) {
+            GenerateEditorRawZipJob::dispatch(
+                (int) $shoot->id,
+                (int) $user->id,
+                $fileIds,
+                $storagePath,
+                $lockKey
             );
         }
+
+        return $this->withCors(response()->json([
+            'type' => 'preparing',
+            'message' => 'Preparing your raw files.',
+            'poll_after_ms' => self::POLL_AFTER_MS,
+            'status_url' => $request->fullUrl(),
+            'file_count' => $fileCount,
+        ], 202), $request);
+    }
+
+    /**
+     * @param  \Illuminate\Support\Collection<int, ShootFile>  $left
+     * @param  \Illuminate\Support\Collection<int, ShootFile>  $right
+     */
+    protected function fileIdsMatch($left, $right): bool
+    {
+        $a = $left->pluck('id')->map(fn ($id) => (int) $id)->sort()->values()->all();
+        $b = $right->pluck('id')->map(fn ($id) => (int) $id)->sort()->values()->all();
+
+        return $a !== [] && $a === $b;
     }
 
     protected function withCors(Response $response, Request $request): Response
@@ -117,7 +200,7 @@ class ShootEditorDownloadService
     protected function notifyAdminsOfEditorDownload(Shoot $shoot, User $editor, int $fileCount): void
     {
         try {
-            if (!class_exists('App\\Models\\Notification') || !Schema::hasTable('notifications')) {
+            if (! class_exists('App\\Models\\Notification') || ! Schema::hasTable('notifications')) {
                 return;
             }
 
@@ -138,7 +221,7 @@ class ShootEditorDownloadService
                 ]);
             }
         } catch (\Exception $e) {
-            Log::warning('Failed to notify admins of editor download: ' . $e->getMessage());
+            Log::warning('Failed to notify admins of editor download: '.$e->getMessage());
         }
     }
 }

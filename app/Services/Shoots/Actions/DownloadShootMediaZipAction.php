@@ -29,12 +29,8 @@ class DownloadShootMediaZipAction
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
-        if ($this->shootAuthorizationSupport->hasRole($user, ['editor'])) {
-            return response()->json([
-                'message' => 'Editors can only download raw files via the raw download endpoint.',
-            ], 403);
-        }
-
+        // Editors use the same async archive pipeline as other production roles.
+        // Per-file authorization below still enforces assignment scope for editors.
         return $this->executeArchiveDownload($request, $shoot, true);
     }
 

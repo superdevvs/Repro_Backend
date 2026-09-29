@@ -2,6 +2,7 @@
 
 namespace App\Services\Shoots;
 
+use App\Jobs\GenerateShootShareLinkZipJob;
 use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Models\ShootShareLink;
@@ -10,6 +11,7 @@ use App\Models\User;
 use App\Services\ShootMediaStorageService;
 use App\Services\ShootActivityLogger;
 use App\Services\ShortLinks\ShortLinkService;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
@@ -137,10 +139,6 @@ class ShootShareLinkService
     {
         $normalizedMediaStage = $this->normalizeMediaStage($mediaStage);
         $isEditedStage = $normalizedMediaStage === self::MEDIA_STAGE_EDITED;
-        $isLaneSpecificStage = in_array($normalizedMediaStage, [
-            self::MEDIA_STAGE_RAW_PHOTO,
-            self::MEDIA_STAGE_RAW_VIDEO,
-        ], true);
         $stageLabel = $isEditedStage ? 'edited' : 'raw';
 
         $files = $this->selectEditorShareFiles($shoot, $normalizedMediaStage, $fileIds);
@@ -150,54 +148,79 @@ class ShootShareLinkService
             throw new \App\Exceptions\PublicBusinessRuleException("No {$stageLabel} files found for selected IDs");
         }
 
-        $shareLink = null;
-        $shareLinkSourcePath = null;
-
-        if (!$shareLink) {
-            if ($files->isEmpty()) {
-                throw new \App\Exceptions\PublicBusinessRuleException("No {$stageLabel} files found to share");
-            }
-
-            $zipPath = $this->generateFilesZip($shoot, $files);
-            if (!$zipPath || !file_exists($zipPath)) {
-                throw new \RuntimeException('Failed to generate shareable ZIP file');
-            }
-
-            $publicDir = "share-links/{$shoot->id}";
-            $zipFilename = 'share-link-' . Str::uuid()->toString() . '.zip';
-            $publicPath = $publicDir . '/' . $zipFilename;
-            $media = app(\App\Services\Media\MediaStorage::class);
-
-            $stream = fopen($zipPath, 'r');
-            if ($stream === false) {
-                throw new \RuntimeException('Failed to read shareable ZIP file');
-            }
-
-            $stored = $media->put($publicPath, $stream);
-            if (is_resource($stream)) {
-                fclose($stream);
-            }
-            @unlink($zipPath);
-
-            if (!$stored) {
-                throw new \RuntimeException('Failed to store shareable ZIP file');
-            }
-
-            $shareLink = route('api.public.share-links.download', ['token' => 'pending']);
-            $shareLinkSourcePath = $publicPath;
+        if ($files->isEmpty()) {
+            throw new \App\Exceptions\PublicBusinessRuleException("No {$stageLabel} files found to share");
         }
 
-        if (!$shareLink) {
-            throw new \RuntimeException('Could not create share link. The ZIP could not be generated.');
+        // Full raw hand-offs reuse the async media-archive pipeline (same ZIP
+        // admins/photographers download). That avoids packing multi-GB archives
+        // inside the editor's generate-share-link request (nginx 499/502).
+        $archiveService = app(ShootMediaArchiveService::class);
+        $canReuseRawArchive = $normalizedMediaStage === self::MEDIA_STAGE_RAW
+            && $this->fileIdSetsMatch($files, $archiveService->getFilesForType($shoot, 'raw'));
+
+        if ($canReuseRawArchive) {
+            $archiveService->queueArchiveGeneration($shoot, 'raw', 'original');
+            $expiresAt = now()->addDays(7);
+            $publicArchiveUrl = $archiveService->buildPublicDownloadUrl($shoot, 'raw', 'original', $expiresAt);
+
+            try {
+                $shareLinkRecord = ShootShareLink::create([
+                    'shoot_id' => $shoot->id,
+                    'created_by' => $user->id,
+                    'share_url' => $publicArchiveUrl,
+                    'media_stage' => $normalizedMediaStage,
+                    'dropbox_path' => null,
+                    'download_count' => 0,
+                    'expires_at' => $expiresAt,
+                ]);
+                $shareLinkId = $shareLinkRecord->id;
+                $expiresAtIso = $shareLinkRecord->expires_at?->toIso8601String();
+            } catch (\Exception $dbError) {
+                Log::warning('Could not save archive-backed share link to database', ['error' => $dbError->getMessage()]);
+                $shareLinkRecord = null;
+                $shareLinkId = null;
+                $expiresAtIso = $expiresAt->toIso8601String();
+            }
+
+            $this->activityLogger->log(
+                $shoot,
+                'share_link_generated',
+                [
+                    'editor_id' => $user->id,
+                    'editor_name' => $user->name,
+                    'file_count' => $fileCount,
+                    'media_stage' => $normalizedMediaStage,
+                    'expires_in_hours' => null,
+                    'archive_backed' => true,
+                ],
+                $user
+            );
+
+            return [
+                'share_link' => $shareLinkId ? $this->buildPublicShareUrl($shareLinkRecord) : $publicArchiveUrl,
+                'share_link_id' => $shareLinkId,
+                'media_stage' => $normalizedMediaStage,
+                'file_count' => $fileCount,
+                'expires_in_hours' => null,
+                'expires_at' => $expiresAtIso,
+                'archive_backed' => true,
+            ];
         }
+
+        // Selected / lane-specific / edited shares still need a dedicated ZIP.
+        // Create the DB row immediately and build the package on the queue so
+        // the HTTP request returns before Cloudflare idle-times out.
+        $fileIdList = $files->pluck('id')->map(fn ($id) => (int) $id)->sort()->values()->all();
+        $lockKey = 'share-link-zip:'.$shoot->id.':'.$normalizedMediaStage.':'.sha1(implode(',', $fileIdList));
 
         try {
             $shareLinkRecord = ShootShareLink::create([
                 'shoot_id' => $shoot->id,
                 'created_by' => $user->id,
-                'share_url' => $shareLink,
+                'share_url' => route('api.public.share-links.download', ['token' => 'pending']),
                 'media_stage' => $normalizedMediaStage,
-                'dropbox_path' => $shareLinkSourcePath,
+                'dropbox_path' => null,
                 'download_count' => 0,
                 'expires_at' => now()->addDays(7),
             ]);
@@ -209,8 +232,17 @@ class ShootShareLinkService
             $expiresAt = $shareLinkRecord->expires_at?->toIso8601String();
         } catch (\Exception $dbError) {
             Log::warning('Could not save share link to database', ['error' => $dbError->getMessage()]);
-            $shareLinkId = null;
-            $expiresAt = null;
+            throw new \RuntimeException('Could not create share link record.');
+        }
+
+        if (Cache::add($lockKey, 1, 600)) {
+            GenerateShootShareLinkZipJob::dispatch(
+                (int) $shareLinkId,
+                (int) $shoot->id,
+                $fileIdList,
+                $normalizedMediaStage,
+                $lockKey
+            );
         }
 
         $this->activityLogger->log(
@@ -222,22 +254,40 @@ class ShootShareLinkService
                 'file_count' => $fileCount,
                 'media_stage' => $normalizedMediaStage,
                 'expires_in_hours' => null,
+                'async' => true,
             ],
             $user
         );
 
-        $publicShareLink = $shareLinkId
-            ? $this->buildPublicShareUrl($shareLinkRecord)
-            : $shareLink;
-
-        return [
-            'share_link' => $publicShareLink,
+        $ready = is_string($shareLinkRecord->dropbox_path) && $shareLinkRecord->dropbox_path !== '';
+        $payload = [
+            'share_link' => $this->buildPublicShareUrl($shareLinkRecord),
             'share_link_id' => $shareLinkId,
             'media_stage' => $normalizedMediaStage,
             'file_count' => $fileCount,
             'expires_in_hours' => null,
             'expires_at' => $expiresAt,
         ];
+
+        if (! $ready) {
+            $payload['type'] = 'preparing';
+            $payload['message'] = 'Preparing your share link.';
+            $payload['poll_after_ms'] = 3000;
+        }
+
+        return $payload;
+    }
+
+    /**
+     * @param  \Illuminate\Support\Collection<int, ShootFile>  $left
+     * @param  \Illuminate\Support\Collection<int, ShootFile>  $right
+     */
+    protected function fileIdSetsMatch($left, $right): bool
+    {
+        $a = $left->pluck('id')->map(fn ($id) => (int) $id)->sort()->values()->all();
+        $b = $right->pluck('id')->map(fn ($id) => (int) $id)->sort()->values()->all();
+
+        return $a !== [] && $a === $b;
     }
 
     public function ensureActiveShootShareLink(

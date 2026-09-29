@@ -676,8 +676,13 @@ class ShootMediaController extends Controller
                 }
             }
 
+            $status = (($payload['type'] ?? null) === 'preparing') ? 202 : 200;
+            $message = $status === 202
+                ? ($payload['message'] ?? 'Preparing your share link.')
+                : 'Share link generated successfully';
+
             return $this->withCors(
-                response()->json(array_merge($payload, ['message' => 'Share link generated successfully'])),
+                response()->json(array_merge($payload, ['message' => $message]), $status),
                 $request,
             );
         } catch (\InvalidArgumentException $e) {
