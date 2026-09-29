@@ -7,6 +7,7 @@ use App\Models\User;
 use App\Services\PhotographerAvailabilityService;
 use Carbon\Carbon;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Cache;
 use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
 
@@ -191,5 +192,30 @@ class PhotographerAvailabilityRecurrenceTest extends TestCase
         $this->assertSame('unavailable', $blocked->fresh()->status);
         $this->assertSame('wednesday', $blocked->fresh()->day_of_week);
     }
+
+
+    public function test_get_available_slots_survives_cache_put_failure(): void
+    {
+        $photographer = User::factory()->create(['role' => 'photographer']);
+        PhotographerAvailability::create($this->monday($photographer));
+
+        // Simulate FileStore put permission denied during Cache::remember.
+        // The service must still return computed slots (no 500).
+        Cache::shouldReceive('remember')
+            ->once()
+            ->andThrow(new \ErrorException(
+                'file_put_contents(/var/www/backend/storage/framework/cache/data/xx): Failed to open stream: Permission denied'
+            ));
+
+        $service = app(PhotographerAvailabilityService::class);
+        $slots = $service->getAvailableSlots(
+            $photographer->id,
+            Carbon::parse('2026-10-05'),
+            Carbon::parse('2026-10-05')
+        );
+
+        $this->assertSame([['start' => '09:00', 'end' => '21:00']], $slots['2026-10-05']);
+    }
+
 
 }

@@ -22,21 +22,50 @@ class PhotographerAvailabilityService
     public function getAvailableSlots(int $photographerId, Carbon $from, Carbon $to): array
     {
         $cacheKey = "availability:slots:{$photographerId}:{$from->toDateString()}:{$to->toDateString()}";
-        
-        return Cache::remember($cacheKey, now()->addMinutes(5), function () use ($photographerId, $from, $to) {
-            $slots = [];
-            $current = $from->copy();
 
-            while ($current->lte($to)) {
-                $daySlots = $this->getDaySlots($photographerId, $current);
-                if (!empty($daySlots)) {
-                    $slots[$current->toDateString()] = $daySlots;
-                }
-                $current->addDay();
-            }
-
-            return $slots;
+        // FileStore put can fail with permission denied (e.g. cache dirs owned by
+        // another user). Never let a cache write failure 500 the availability API —
+        // recompute and return slots without relying on a successful put.
+        return $this->safeCacheRemember($cacheKey, now()->addMinutes(5), function () use ($photographerId, $from, $to) {
+            return $this->computeAvailableSlots($photographerId, $from, $to);
         });
+    }
+
+    /**
+     * Compute available slots for a date range without touching the cache.
+     */
+    protected function computeAvailableSlots(int $photographerId, Carbon $from, Carbon $to): array
+    {
+        $slots = [];
+        $current = $from->copy();
+
+        while ($current->lte($to)) {
+            $daySlots = $this->getDaySlots($photographerId, $current);
+            if (!empty($daySlots)) {
+                $slots[$current->toDateString()] = $daySlots;
+            }
+            $current->addDay();
+        }
+
+        return $slots;
+    }
+
+    /**
+     * Cache::remember wrapper that treats put/get failures as non-fatal.
+     * Mirrors WeatherLookupService::safeCacheRemember.
+     */
+    protected function safeCacheRemember(string $key, mixed $ttl, callable $callback): mixed
+    {
+        try {
+            return Cache::remember($key, $ttl, $callback);
+        } catch (\Throwable $e) {
+            Log::warning('Availability slots cache remember failed', [
+                'key' => $key,
+                'error' => $e->getMessage(),
+            ]);
+
+            return $callback();
+        }
     }
 
     /**
