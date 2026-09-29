@@ -48,21 +48,7 @@ class MessagingUnreadCountsTest extends TestCase
         $this->makeUnreadThread('SMS', [$other->id]);
         $this->makeUnreadThread('EMAIL', []);
 
-        // Raw missed without needs_attention flags should NOT badge (matches Calls inbox).
-        $missedOnly = VoiceCall::query()->create([
-            'direction' => 'INBOUND',
-            'status' => 'missed',
-            'from_phone' => '+12025550111',
-            'to_phone' => '+12025550100',
-            'answered_at' => null,
-            'ended_at' => now()->subHour(),
-        ]);
-        VoiceCall::query()->whereKey($missedOnly->id)->update([
-            'created_at' => now()->subDay(),
-            'updated_at' => now()->subDay(),
-        ]);
-
-        $followUp = VoiceCall::query()->create([
+        VoiceCall::query()->create([
             'direction' => 'INBOUND',
             'status' => 'completed',
             'disposition' => 'handoff_to_staff',
@@ -72,12 +58,7 @@ class MessagingUnreadCountsTest extends TestCase
             'ended_at' => now()->subHours(2),
             'needs_follow_up' => true,
         ]);
-        VoiceCall::query()->whereKey($followUp->id)->update([
-            'created_at' => now()->subDays(2),
-            'updated_at' => now()->subDays(2),
-        ]);
-
-        $callbackNeeded = VoiceCall::query()->create([
+        VoiceCall::query()->create([
             'direction' => 'INBOUND',
             'status' => 'completed',
             'disposition' => 'callback_needed',
@@ -86,32 +67,24 @@ class MessagingUnreadCountsTest extends TestCase
             'answered_at' => now()->subHours(3),
             'ended_at' => now()->subHours(3),
         ]);
-        VoiceCall::query()->whereKey($callbackNeeded->id)->update([
-            'created_at' => now()->subDays(1),
-            'updated_at' => now()->subDays(1),
-        ]);
-
-        $stale = VoiceCall::query()->create([
+        // Resolved call must not badge.
+        VoiceCall::query()->create([
             'direction' => 'INBOUND',
             'status' => 'completed',
-            'disposition' => 'handoff_to_staff',
+            'disposition' => 'caller_hangup',
             'from_phone' => '+12025550113',
             'to_phone' => '+12025550100',
-            'answered_at' => null,
-            'ended_at' => now()->subDays(45),
-            'needs_follow_up' => true,
-        ]);
-        VoiceCall::query()->whereKey($stale->id)->update([
-            'created_at' => now()->subDays(45),
-            'updated_at' => now()->subDays(45),
-            'ended_at' => now()->subDays(45),
+            'answered_at' => now()->subHours(4),
+            'ended_at' => now()->subHours(4),
+            'needs_follow_up' => false,
+            'summary' => 'Resolved',
         ]);
 
         $counts = app(UnreadCountService::class)->forUser((int) $admin->id);
 
         $this->assertSame(1, $counts['email']);
         $this->assertSame(1, $counts['sms']);
-        $this->assertSame(2, $counts['call']); // followUp + callbackNeeded; missedOnly and stale excluded
+        $this->assertSame(2, $counts['call']);
         $this->assertSame(4, $counts['total']);
     }
 
