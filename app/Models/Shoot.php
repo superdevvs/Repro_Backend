@@ -357,6 +357,48 @@ class Shoot extends Model
             || data_get($this->external_booking_payload, 'legacy_migration.notifications_suppressed') === true;
     }
 
+    /**
+     * Human-readable reason external notifications are suppressed, or null when they are not.
+     */
+    public function externalNotificationSuppressionReason(): ?string
+    {
+        if ($this->isImportDraft()) {
+            return 'Import draft: external notifications suppressed';
+        }
+
+        if ($this->isInternalTestShoot()) {
+            return 'Internal test: external side effects suppressed';
+        }
+
+        if (data_get($this->external_booking_payload, 'legacy_migration.notifications_suppressed') === true) {
+            return 'Legacy import: external notifications suppressed until released';
+        }
+
+        return null;
+    }
+
+    /**
+     * Clear the legacy-import notification mute. Staff finalize (full-order delivery)
+     * is the explicit release for migrated bookings that were kept quiet on import.
+     *
+     * @return bool true when the mute flag was present and cleared
+     */
+    public function releaseExternalNotifications(string $reason = 'manual'): bool
+    {
+        if (data_get($this->external_booking_payload, 'legacy_migration.notifications_suppressed') !== true) {
+            return false;
+        }
+
+        $payload = $this->external_booking_payload ?? [];
+        data_set($payload, 'legacy_migration.notifications_suppressed', false);
+        data_set($payload, 'legacy_migration.notifications_released_at', now()->toIso8601String());
+        data_set($payload, 'legacy_migration.notifications_released_reason', $reason);
+
+        $this->forceFill(['external_booking_payload' => $payload])->save();
+
+        return true;
+    }
+
     public function isComplimentaryReshoot(): bool
     {
         return $this->shoot_type === self::SHOOT_TYPE_COMPLIMENTARY_RESHOOT;
