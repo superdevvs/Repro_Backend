@@ -389,6 +389,14 @@ class FinalizeShootJob implements ShouldQueue
             if ($isFullOrderDelivery) {
                 $shoot->updateWorkflowStatus(Shoot::STATUS_DELIVERED, $this->userId);
 
+                // Staff finalize is the explicit release for legacy-imported bookings
+                // that were muted on import. Clear the mute inside the same commit so
+                // the queued delivery email sees an unmuted shoot.
+                if (! $shoot->isInternalTestShoot()) {
+                    $shoot->releaseExternalNotifications('finalize_delivered');
+                    $shoot->refresh();
+                }
+
                 if ($shoot->client_id && ! $shoot->isInternalTestShoot()) {
                     ClientDeliveryNotification::query()->firstOrCreate(
                         [
