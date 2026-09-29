@@ -4,30 +4,33 @@ namespace Tests\Feature;
 
 use App\Jobs\FinalizeShootJob;
 use App\Jobs\SendShootReadyEmailJob;
+use App\Models\Invoice;
 use App\Models\Service;
 use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Models\User;
 use App\Services\ShootActivityLogger;
 use App\Services\Shoots\FinalizeProgressTracker;
+use App\Services\Shoots\ShootNotificationDispatchService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Queue;
 use Tests\TestCase;
 
 /**
- * Legacy-imported bookings are muted with notifications_suppressed until staff
- * explicitly releases them. Full-order finalize is that release: the mute must
- * clear in the same commit so SendShootReadyEmailJob does not skip the client email.
+ * Legacy-imported bookings are muted with notifications_suppressed only to quiet
+ * bulk import-time side effects. Post-import meaningful actions must release the
+ * mute so finalize, delivery, updates, payments, and manual messages can notify.
+ * Create-time side effects and cron pre-checks keep the mute until release.
  */
 class FinalizeReleasesLegacyNotificationSuppressTest extends TestCase
 {
     use RefreshDatabase;
 
-    private function createLegacyMutedDeliverableShoot(User $client): Shoot
+    private function createLegacyMutedDeliverableShoot(User $client, array $extra = []): Shoot
     {
         $service = Service::factory()->create(['name' => 'HDR Photos & Video', 'price' => 299.00]);
 
-        $shoot = Shoot::factory()->create([
+        $shoot = Shoot::factory()->create(array_merge([
             'client_id' => $client->id,
             'service_id' => $service->id,
             'address' => '6003 Calla Place',
@@ -46,7 +49,7 @@ class FinalizeReleasesLegacyNotificationSuppressTest extends TestCase
                     'notifications_suppressed' => true,
                 ],
             ],
-        ]);
+        ], $extra));
 
         $shoot->services()->attach($service->id, [
             'price' => $service->price,
@@ -79,7 +82,18 @@ class FinalizeReleasesLegacyNotificationSuppressTest extends TestCase
         $client = User::factory()->create(['role' => 'client', 'email' => 'client@example.com']);
         $shoot = $this->createLegacyMutedDeliverableShoot($client);
 
+        $invoice = Invoice::factory()->create([
+            'shoot_id' => $shoot->id,
+            'client_id' => $client->id,
+            'payment_details' => [
+                'legacy_migration' => [
+                    'notifications_suppressed' => true,
+                ],
+            ],
+        ]);
+
         $this->assertTrue($shoot->suppressesExternalNotifications());
+        $this->assertTrue($invoice->suppressesExternalNotifications());
         $this->assertSame(
             'Legacy import: external notifications suppressed until released',
             $shoot->externalNotificationSuppressionReason()
@@ -89,6 +103,7 @@ class FinalizeReleasesLegacyNotificationSuppressTest extends TestCase
             ->handle(app(ShootActivityLogger::class));
 
         $shoot->refresh();
+        $invoice->refresh();
 
         $this->assertSame(Shoot::STATUS_DELIVERED, $shoot->workflow_status);
         $this->assertFalse($shoot->suppressesExternalNotifications());
@@ -98,6 +113,8 @@ class FinalizeReleasesLegacyNotificationSuppressTest extends TestCase
             data_get($shoot->external_booking_payload, 'legacy_migration.notifications_released_reason')
         );
         $this->assertNotEmpty(data_get($shoot->external_booking_payload, 'legacy_migration.notifications_released_at'));
+        $this->assertFalse($invoice->suppressesExternalNotifications());
+        $this->assertFalse(data_get($invoice->payment_details, 'legacy_migration.notifications_suppressed'));
 
         Queue::assertPushed(
             SendShootReadyEmailJob::class,
@@ -105,7 +122,7 @@ class FinalizeReleasesLegacyNotificationSuppressTest extends TestCase
         );
     }
 
-    public function test_ready_email_job_skip_message_names_legacy_mute_not_internal_test(): void
+    public function test_delivery_email_job_releases_legacy_mute_instead_of_skipping(): void
     {
         $client = User::factory()->create(['role' => 'client', 'email' => 'client@example.com']);
         $shoot = $this->createLegacyMutedDeliverableShoot($client);
@@ -116,14 +133,65 @@ class FinalizeReleasesLegacyNotificationSuppressTest extends TestCase
         (new SendShootReadyEmailJob($shoot->id, null, true, true))
             ->handle(app(\App\Services\MailService::class), app(\App\Services\Messaging\AutomationService::class));
 
+        $shoot->refresh();
+        $this->assertFalse($shoot->suppressesExternalNotifications());
+        $this->assertSame(
+            'delivery_email_full_order',
+            data_get($shoot->external_booking_payload, 'legacy_migration.notifications_released_reason')
+        );
+
         $progress = $progressTracker->get($shoot->id);
         $emailStage = collect($progress['stages'] ?? [])->firstWhere('key', FinalizeProgressTracker::STAGE_DELIVERY_EMAIL);
-
-        $this->assertSame('skipped', $emailStage['status'] ?? null);
-        $this->assertSame(
+        $this->assertNotSame(
             'Legacy import: external notifications suppressed until released',
             $emailStage['message'] ?? null
         );
         $this->assertStringNotContainsString('Internal test', (string) ($emailStage['message'] ?? ''));
+    }
+
+    public function test_staff_update_side_effects_release_legacy_mute(): void
+    {
+        $client = User::factory()->create(['role' => 'client', 'email' => 'client@example.com']);
+        $shoot = $this->createLegacyMutedDeliverableShoot($client, [
+            'status' => Shoot::STATUS_SCHEDULED,
+            'workflow_status' => Shoot::STATUS_SCHEDULED,
+        ]);
+        $this->assertTrue($shoot->suppressesExternalNotifications());
+
+        app(ShootNotificationDispatchService::class)->processUpdatedShoot(
+            $shoot->id,
+            "Schedule: changed\n",
+            '<p>Schedule: changed</p>',
+            true,
+            false,
+            null,
+            Shoot::STATUS_SCHEDULED,
+            Shoot::STATUS_SCHEDULED,
+            false,
+            false
+        );
+
+        $shoot->refresh();
+        $this->assertFalse($shoot->suppressesExternalNotifications());
+        $this->assertSame(
+            'shoot_updated',
+            data_get($shoot->external_booking_payload, 'legacy_migration.notifications_released_reason')
+        );
+    }
+
+    public function test_create_side_effects_keep_legacy_mute_without_releasing(): void
+    {
+        $client = User::factory()->create(['role' => 'client', 'email' => 'client@example.com']);
+        $shoot = $this->createLegacyMutedDeliverableShoot($client, [
+            'status' => Shoot::STATUS_SCHEDULED,
+            'workflow_status' => Shoot::STATUS_SCHEDULED,
+        ]);
+
+        app(ShootNotificationDispatchService::class)->processCreatedShoot($shoot->id, false, true);
+
+        $shoot->refresh();
+        $this->assertTrue($shoot->suppressesExternalNotifications());
+        $this->assertTrue(data_get($shoot->external_booking_payload, 'legacy_migration.notifications_suppressed'));
+        $this->assertNull(data_get($shoot->external_booking_payload, 'legacy_migration.notifications_released_reason'));
     }
 }

@@ -315,6 +315,70 @@ class Invoice extends Model
                 ->contains(fn (InvoiceItem $item) => $item->shoot?->suppressesExternalNotifications());
     }
 
+    /**
+     * Clear invoice-level legacy-import notification mute.
+     *
+     * @return bool true when the mute flag was present and cleared
+     */
+    public function releaseExternalNotifications(string $reason = 'manual'): bool
+    {
+        if (data_get($this->payment_details, 'legacy_migration.notifications_suppressed') !== true) {
+            return false;
+        }
+
+        $details = $this->payment_details ?? [];
+        data_set($details, 'legacy_migration.notifications_suppressed', false);
+        data_set($details, 'legacy_migration.notifications_released_at', now()->toIso8601String());
+        data_set($details, 'legacy_migration.notifications_released_reason', $reason);
+
+        $this->forceFill(['payment_details' => $details])->save();
+
+        return true;
+    }
+
+    /**
+     * Release invoice + related shoot legacy mutes for a post-import notification path.
+     */
+    public function releaseLegacyImportMuteForPostImportOperation(string $reason): bool
+    {
+        $invoiceMuted = data_get($this->payment_details, 'legacy_migration.notifications_suppressed') === true;
+        $released = $this->releaseExternalNotifications($reason);
+
+        $shoots = collect();
+        if ($this->shoot_id) {
+            $direct = Shoot::withoutGlobalScope('private_import_drafts')->find($this->shoot_id);
+            if ($direct) {
+                $shoots->push($direct);
+            }
+        }
+        if ($this->exists) {
+            $shoots = $shoots->merge($this->shoots()->withoutGlobalScope('private_import_drafts')->get());
+            $shoots = $shoots->merge(
+                $this->items()
+                    ->with(['shoot' => fn ($query) => $query->withoutGlobalScope('private_import_drafts')])
+                    ->get()
+                    ->map(fn (InvoiceItem $item) => $item->shoot)
+                    ->filter()
+            );
+        }
+
+        $mutedShoots = $shoots->unique('id')->filter(
+            fn (Shoot $shoot) => $shoot->isLegacyImportNotificationMuted()
+        );
+
+        if (! $invoiceMuted && $mutedShoots->isEmpty()) {
+            return false;
+        }
+
+        foreach ($mutedShoots as $shoot) {
+            if ($shoot->releaseLegacyImportMuteForPostImportOperation($reason)) {
+                $released = true;
+            }
+        }
+
+        return $released;
+    }
+
     public function client()
     {
         return $this->belongsTo(User::class, 'client_id');

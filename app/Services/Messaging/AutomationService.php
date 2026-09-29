@@ -63,7 +63,12 @@ class AutomationService
             ->sortBy('id')->values();
         $payment = $payments->first();
         $shoot = $payment?->shoot;
-        if (!$payment || !$shoot || $shoot->suppressesExternalNotifications()) {
+        if (! $payment || ! $shoot) {
+            return [];
+        }
+        $shoot->releaseLegacyImportMuteForPostImportOperation('payment_receipt');
+        $shoot->refresh();
+        if ($shoot->suppressesExternalNotifications()) {
             return [];
         }
         $context = $this->buildShootContext($shoot->fresh());
@@ -440,6 +445,13 @@ class AutomationService
         if (! $eventInvoice instanceof Invoice && ! empty($context['invoice_id'])) {
             $eventInvoice = Invoice::find($context['invoice_id']);
         }
+        // Post-import automation (schedule, approve, payment, delivery, etc.) must notify.
+        // Release legacy-import mute here; cron paths pre-check suppress and never reach
+        // handleEvent for still-muted imports, so this does not bulk-email historical rows.
+        if ($eventInvoice instanceof Invoice) {
+            $eventInvoice->releaseLegacyImportMuteForPostImportOperation('automation:'.$triggerType);
+            $eventInvoice->refresh();
+        }
         if ($eventInvoice instanceof Invoice && $eventInvoice->suppressesExternalNotifications()) {
             return array_merge($this->suppressedTestShootSummary($triggerType), [
                 'suppressed_test_shoot' => false,
@@ -452,6 +464,11 @@ class AutomationService
         // count + sent flags) so downstream fallback direct-sends in the dispatch service /
         // shoot actions also skip. Nothing is actually sent.
         $eventShoot = $context['shoot'] ?? null;
+        if ($eventShoot instanceof Shoot) {
+            $eventShoot->releaseLegacyImportMuteForPostImportOperation('automation:'.$triggerType);
+            $eventShoot->refresh();
+            $context['shoot'] = $eventShoot;
+        }
         if ($eventShoot instanceof Shoot && $eventShoot->suppressesExternalNotifications()) {
             Log::info('Automation suppressed by shoot notification policy', [
                 'trigger_type' => $triggerType,
