@@ -45,6 +45,9 @@ class GoogleCalendarShootSyncTest extends TestCase
 
         $this->admin = User::factory()->create([
             'role' => 'admin',
+            'email_verified_at' => now(),
+            'email_verified_email' => null,
+            'email_verification_required_at' => null,
         ]);
 
         $this->client = User::factory()->create([
@@ -299,10 +302,16 @@ class GoogleCalendarShootSyncTest extends TestCase
         $this->deleteJson("/api/shoots/{$shoot->id}")
             ->assertOk();
 
+        $this->assertDatabaseMissing('shoots', ['id' => $shoot->id]);
         $this->assertDatabaseMissing('google_calendar_event_mappings', [
             'shoot_id' => $shoot->id,
             'user_id' => $this->photographer->id,
         ]);
+
+        Http::assertSent(function (Request $request) {
+            return $request->method() === 'DELETE'
+                && str_contains($request->url(), '/calendars/primary/events/delete-me-event');
+        });
     }
 
     public function test_unconnected_photographers_are_skipped_without_failing_the_shoot_mutation(): void

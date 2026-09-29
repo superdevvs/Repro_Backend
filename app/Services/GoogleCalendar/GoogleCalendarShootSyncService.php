@@ -216,7 +216,18 @@ class GoogleCalendarShootSyncService
                 $connection->forceFill([
                     'last_error' => $exception->getMessage(),
                 ])->save();
+
+                // Keep the mapping so a later resync/retry can still delete the
+                // Google event. Dropping it here would orphan the calendar entry.
+                return;
             }
+        } else {
+            Log::warning('Google Calendar mapping removed without an active connection; Google event may remain.', [
+                'shoot_id' => $mapping->shoot_id,
+                'user_id' => $mapping->user_id,
+                'google_event_id' => $mapping->google_event_id,
+                'calendar_id' => $mapping->calendar_id,
+            ]);
         }
 
         $mapping->delete();

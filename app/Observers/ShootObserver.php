@@ -7,6 +7,7 @@ use App\Jobs\GenerateShootMediaArchiveJob;
 use App\Jobs\SyncShootIguideJob;
 use App\Models\Shoot;
 use App\Services\CompensationEligibilityService;
+use App\Services\GoogleCalendar\GoogleCalendarSyncDispatcher;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\ValidationException;
@@ -25,6 +26,13 @@ class ShootObserver
                     'Shoots in a complimentary-reshoot lineage cannot be permanently deleted. Cancel the shoot to preserve its audit trail.',
                 ],
             ]);
+        }
+
+        // Any hard-delete path (API DeleteShootAction, purge command, QA cleanup)
+        // must drop Google Calendar mappings/events. afterCommit waits for the
+        // surrounding DB transaction so a rolled-back delete never queues removal.
+        if (! $shoot->isInternalTestShoot()) {
+            app(GoogleCalendarSyncDispatcher::class)->dispatchShootRemoval((int) $shoot->id);
         }
     }
 

@@ -4,7 +4,6 @@ namespace App\Console\Commands;
 
 use App\Models\Shoot;
 use App\Models\User;
-use App\Services\GoogleCalendar\GoogleCalendarSyncDispatcher;
 use App\Services\Shoots\ShootMediaMutationSupportService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
@@ -20,8 +19,8 @@ use Throwable;
  * SHOOT_REMOVED automation, which is correct for a single deliberate deletion by
  * an admin but wrong for a bulk reset — it would mail every address in the purge
  * set. This command reproduces the parts of that action that clean up after a
- * shoot (media on disk, the Google Calendar event, cache invalidation via the
- * model's deleted hook) and skips the parts that talk to people.
+ * shoot (media on disk, Google Calendar removal + cache invalidation via the
+ * ShootObserver deleting/deleted hooks) and skips the parts that talk to people.
  *
  * `shoots` has no soft deletes, so every removal here is permanent. Take a
  * database backup before running without --dry-run.
@@ -39,8 +38,7 @@ class PurgeShootsExceptClient extends Command
     protected $description = 'Delete every shoot except those belonging to the given client, without notifying anyone';
 
     public function handle(
-        ShootMediaMutationSupportService $mediaService,
-        GoogleCalendarSyncDispatcher $calendarDispatcher
+        ShootMediaMutationSupportService $mediaService
     ): int {
         $keepIds = $this->resolveKeepClientIds();
 
@@ -107,14 +105,10 @@ class PurgeShootsExceptClient extends Command
                     $deletedFiles += $mediaService->deleteShootMediaAssets($shoot);
                 }
 
-                // Hard delete. Fires the model's deleted hook, which flushes the
-                // dashboard/listing caches, and the FK cascades.
+                // Hard delete. ShootObserver::deleting queues Google Calendar
+                // removal; the model's deleted hook flushes listing caches; FKs cascade.
                 $shoot->delete();
                 $deletedShoots++;
-
-                // Id-based and post-delete, matching DeleteShootAction, so the
-                // external calendar entry does not outlive the shoot.
-                $calendarDispatcher->dispatchShootRemoval($shootId);
             } catch (Throwable $e) {
                 $failures[$shootId] = $e->getMessage();
                 $this->error("shoot {$shootId}: {$e->getMessage()}");

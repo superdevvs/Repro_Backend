@@ -4,7 +4,6 @@ namespace App\Services\Shoots\Actions;
 
 use App\Models\Shoot;
 use App\Models\User;
-use App\Services\GoogleCalendar\GoogleCalendarSyncDispatcher;
 use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
 use App\Services\ShootActivityLogger;
@@ -19,7 +18,6 @@ class DeleteShootAction
         protected AutomationService $automationService,
         protected MailService $mailService,
         protected ShootActivityLogger $activityLogger,
-        protected GoogleCalendarSyncDispatcher $googleCalendarSyncDispatcher,
         protected ShootMediaMutationSupportService $shootMediaMutationSupportService
     ) {}
 
@@ -99,10 +97,9 @@ class DeleteShootAction
                 ->whereIn('status', ['pending', 'failed'])
                 ->update(['status' => 'suppressed', 'error_code' => 'internal_test_shoot']);
         }
+        // Google Calendar removal is dispatched from ShootObserver::deleting so
+        // every hard-delete path (API, purge, QA) shares one cleanup hook.
         $shoot->delete();
-        if (! $shoot->isInternalTestShoot()) {
-            $this->googleCalendarSyncDispatcher->dispatchShootRemoval($shootId);
-        }
 
         return [
             'shoot_id' => $shootId,
