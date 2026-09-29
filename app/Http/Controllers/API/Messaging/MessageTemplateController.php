@@ -249,13 +249,24 @@ class MessageTemplateController extends Controller
             $data['recipient_type'],
             $data['channel'],
             $request->user(),
+            $data['recipient_user_id'] ?? null,
         );
+
+        $recipients = $manual->listRecipients($shoot, $data['recipient_type']);
+        if (! empty($data['recipient_user_id'])) {
+            $recipients = array_values(array_filter(
+                $recipients,
+                fn (array $row) => (int) $row['id'] === (int) $data['recipient_user_id']
+            ));
+        }
 
         return response()->json([
             'status' => 'sent',
             'message_id' => $message->id ?? null,
             'channel' => $data['channel'],
             'recipient_type' => $data['recipient_type'],
+            'recipients' => $recipients,
+            'recipient_count' => count($recipients),
         ]);
     }
 
@@ -272,15 +283,41 @@ class MessageTemplateController extends Controller
 
         $shoot = Shoot::findOrFail($data['shoot_id']);
 
-        $preview = $manual->preview($shoot, $data['type'], $data['recipient_type'], $data['channel'] ?? 'email');
+        $preview = $manual->preview(
+            $shoot,
+            $data['type'],
+            $data['recipient_type'],
+            $data['channel'] ?? 'email',
+            $data['recipient_user_id'] ?? null,
+        );
 
         return response()->json($preview);
     }
 
     /**
+     * List notify recipients for a shoot (client + every service-assigned photographer).
+     *
+     * Mounted at GET /messaging/notifications/recipients?shoot_id=.
+     */
+    public function notificationRecipients(Request $request, ManualNotificationService $manual): JsonResponse
+    {
+        $data = $request->validate([
+            'shoot_id' => ['required', 'integer', 'exists:shoots,id'],
+            'recipient_type' => ['nullable', Rule::in(['client', 'photographer'])],
+        ]);
+
+        $shoot = Shoot::with(['client', 'photographer', 'services'])->findOrFail($data['shoot_id']);
+
+        return response()->json([
+            'shoot_id' => $shoot->id,
+            'recipients' => $manual->listRecipients($shoot, $data['recipient_type'] ?? null),
+        ]);
+    }
+
+    /**
      * Validate the manual-send / manual-preview request payload.
      *
-     * @return array{shoot_id:int,type:string,recipient_type:string,channel?:string}
+     * @return array{shoot_id:int,type:string,recipient_type:string,channel?:string,recipient_user_id?:int}
      */
     protected function validateManualPayload(Request $request, bool $requireChannel = true): array
     {
@@ -289,6 +326,7 @@ class MessageTemplateController extends Controller
             'type' => ['required', 'string', Rule::in(array_keys(ManualNotificationService::TYPES))],
             'recipient_type' => ['required', Rule::in(['client', 'photographer'])],
             'channel' => [$requireChannel ? 'required' : 'nullable', Rule::in(['email', 'sms'])],
+            'recipient_user_id' => ['nullable', 'integer', 'exists:users,id'],
         ];
 
         return $request->validate($rules);

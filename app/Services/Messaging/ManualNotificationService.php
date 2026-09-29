@@ -9,6 +9,7 @@ use App\Models\Shoot;
 use App\Models\User;
 use App\Services\AuditLogService;
 use App\Services\Payments\PublicPaymentAccessTokenService;
+use Illuminate\Support\Collection;
 use InvalidArgumentException;
 use RuntimeException;
 
@@ -110,12 +111,76 @@ class ManualNotificationService
         string $recipientType,
         string $channel,
         User $sender,
+        ?int $recipientUserId = null,
     ): Message {
         $recipientType = $this->normalizeRecipientType($recipientType);
         $channel = $this->normalizeChannel($channel);
         $template = $this->resolveTemplate($type, $channel);
 
-        $recipient = $this->resolveRecipient($shoot, $recipientType);
+        $recipients = $this->resolveRecipients($shoot, $recipientType, $recipientUserId);
+        if ($recipients->isEmpty()) {
+            throw new RuntimeException("Shoot {$shoot->id} has no {$recipientType} to notify.");
+        }
+
+        $messages = [];
+        foreach ($recipients as $recipient) {
+            $messages[] = $this->sendToRecipient(
+                $shoot,
+                $type,
+                $recipientType,
+                $channel,
+                $sender,
+                $template,
+                $recipient,
+                stampReady: $type === 'shoot_ready' && $messages === [],
+            );
+        }
+
+        return $messages[array_key_last($messages)];
+    }
+
+    /**
+     * List notify recipients for a shoot.
+     *
+     * Photographer recipients include every service-assigned photographer plus the
+     * primary shoot photographer when still needed as a fallback — not only
+     * shoot.photographer_id.
+     *
+     * @return list<array{id:int,name:?string,email:?string,phone:?string,role:string,recipient_type:string}>
+     */
+    public function listRecipients(Shoot $shoot, ?string $recipientType = null): array
+    {
+        $types = $recipientType
+            ? [$this->normalizeRecipientType($recipientType)]
+            : self::RECIPIENT_TYPES;
+
+        $out = [];
+        foreach ($types as $type) {
+            foreach ($this->resolveRecipients($shoot, $type) as $user) {
+                $out[] = [
+                    'id' => (int) $user->id,
+                    'name' => $user->name,
+                    'email' => $user->email,
+                    'phone' => $user->phonenumber ?: $user->phone,
+                    'role' => (string) ($user->role ?? $type),
+                    'recipient_type' => $type,
+                ];
+            }
+        }
+
+        return $out;
+    }
+
+    private function sendToRecipient(
+        Shoot $shoot,
+        string $type,
+        string $recipientType,
+        string $channel,
+        User $sender,
+        MessageTemplate $template,
+        User $recipient,
+        bool $stampReady = true,
+    ): Message {
         $address = $this->recipientAddress($recipient, $channel);
 
         $context = $this->variableResolver->resolve(
@@ -151,15 +216,9 @@ class ManualNotificationService
             'user_id'          => $sender->id,
         ]);
 
-        // AC 12.10 — record the ready-notification timestamp, distinct from shoot/invoice dates.
-        // Gap A: starting from this first ready notification, begin the payment-reminder cadence.
-        if ($type === 'shoot_ready') {
+        // AC 12.10 — stamp once per manual shoot_ready dispatch, not per photographer copy.
+        if ($stampReady && $type === 'shoot_ready') {
             $shoot->forceFill(['shoot_ready_notified_at' => now()])->save();
-
-            // Start the Day 1/3/7 → weekly → last-Sunday payment-reminder cadence anchored on the
-            // timestamp just stamped. schedulePaymentReminders() self-guards: it cancels/skips for a
-            // paid shoot and no-ops without an anchor, and is idempotent on (shoot_id, scheduled_date),
-            // so re-sending shoot_ready never duplicates reminder rows (Req 4.1, 4.3, 4.4, 4.5).
             $this->automationService->schedulePaymentReminders($shoot->refresh());
         }
 
@@ -170,6 +229,7 @@ class ManualNotificationService
             'template_slug'  => $template->slug,
             'recipient_type' => $recipientType,
             'recipient'      => $address,
+            'recipient_user_id' => $recipient->id,
             'channel'        => $channel,
             'status'         => $message->status,
         ]);
@@ -196,18 +256,23 @@ class ManualNotificationService
      *     body_html: ?string,
      *     body_text: ?string,
      *     missing_variables: list<string>,
+     *     recipients: list<array{id:int,name:?string,email:?string,phone:?string,role:string,recipient_type:string}>,
      * }
      *
      * @throws InvalidArgumentException When $type or $recipientType is unknown.
      * @throws RuntimeException         When the selected recipient cannot be resolved.
      */
-    public function preview(Shoot $shoot, string $type, string $recipientType, string $channel = 'email'): array
+    public function preview(Shoot $shoot, string $type, string $recipientType, string $channel = 'email', ?int $recipientUserId = null): array
     {
         $channel = $this->normalizeChannel($channel);
         $template = $this->resolveTemplate($type, $channel);
         $recipientType = $this->normalizeRecipientType($recipientType);
 
-        $recipient = $this->resolveRecipient($shoot, $recipientType);
+        $recipients = $this->resolveRecipients($shoot, $recipientType, $recipientUserId);
+        if ($recipients->isEmpty()) {
+            throw new RuntimeException("Shoot {$shoot->id} has no {$recipientType} to notify.");
+        }
+        $recipient = $recipients->first();
 
         $context = $this->variableResolver->resolve(
             $this->buildContext($shoot, $type, $recipientType, $recipient, $channel)
@@ -230,6 +295,7 @@ class ManualNotificationService
             'body_html'         => $rendered['body_html'] ?? $rendered['html'] ?? null,
             'body_text'         => $rendered['body_text'] ?? $rendered['text'] ?? null,
             'missing_variables' => $this->collectMissingVariables($template, $context, $rendered),
+            'recipients'        => $this->listRecipients($shoot, $recipientType),
         ];
     }
 
@@ -351,13 +417,68 @@ class ManualNotificationService
         };
     }
 
-    private function resolveRecipient(Shoot $shoot, string $recipientType): User
+    /**
+     * Resolve one or more notify recipients for the shoot.
+     *
+     * Photographer mode returns every unique service-assigned photographer, falling
+     * back to shoot.photographer_id when a booked line still inherits the primary.
+     *
+     * @return Collection<int, User>
+     */
+    private function resolveRecipients(Shoot $shoot, string $recipientType, ?int $recipientUserId = null): Collection
     {
-        $recipient = $recipientType === 'photographer'
-            ? $shoot->photographer
-            : $shoot->client;
+        if ($recipientType === 'client') {
+            $client = $shoot->client;
+            if (! $client instanceof User) {
+                return collect();
+            }
 
-        if (!$recipient instanceof User) {
+            if ($recipientUserId !== null && (int) $client->id !== (int) $recipientUserId) {
+                return collect();
+            }
+
+            return collect([$client]);
+        }
+
+        $shoot->loadMissing(['photographer', 'services']);
+
+        // Union primary + every service-assigned photographer (not primary-only).
+        $photographerIds = collect([$shoot->photographer_id ?? $shoot->photographer?->id])
+            ->merge(collect($shoot->services ?? [])->pluck('pivot.photographer_id'))
+            ->filter()
+            ->map(fn ($id) => (int) $id)
+            ->unique()
+            ->values();
+
+        if ($recipientUserId !== null) {
+            $photographerIds = $photographerIds->filter(fn ($id) => (int) $id === (int) $recipientUserId)->values();
+        }
+
+        if ($photographerIds->isEmpty()) {
+            return collect();
+        }
+
+        $photographers = User::query()
+            ->whereIn('id', $photographerIds->all())
+            ->get()
+            ->keyBy('id');
+
+        if ($shoot->photographer) {
+            $photographers->put($shoot->photographer->id, $shoot->photographer);
+        }
+
+        return $photographerIds
+            ->map(fn ($id) => $photographers->get((int) $id))
+            ->filter(fn ($user) => $user instanceof User)
+            ->unique('id')
+            ->values();
+    }
+
+    private function resolveRecipient(Shoot $shoot, string $recipientType, ?int $recipientUserId = null): User
+    {
+        $recipient = $this->resolveRecipients($shoot, $recipientType, $recipientUserId)->first();
+
+        if (! $recipient instanceof User) {
             throw new RuntimeException("Shoot {$shoot->id} has no {$recipientType} to notify.");
         }
 

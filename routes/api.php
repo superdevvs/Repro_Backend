@@ -1193,6 +1193,7 @@ Route::middleware(['auth:sanctum'])->prefix('messaging')->group(function () {
         // shares this group's role:superadmin,admin restriction with the template routes above.
         Route::post('/notifications/manual-send', [MessageTemplateController::class, 'manualSend']);
         Route::post('/notifications/manual-preview', [MessageTemplateController::class, 'manualPreview']);
+        Route::get('/notifications/recipients', [MessageTemplateController::class, 'notificationRecipients']);
 
         // Automations
         Route::get('/automations', [AutomationController::class, 'index']);

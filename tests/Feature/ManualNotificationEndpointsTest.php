@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\Message;
 use App\Models\MessageTemplate;
+use App\Models\Service;
 use App\Models\Shoot;
 use App\Models\User;
 use App\Services\Messaging\MessagingService;
@@ -210,5 +211,97 @@ class ManualNotificationEndpointsTest extends TestCase
             ]);
 
         $response->assertForbidden();
+    }
+
+    public function test_notification_recipients_include_all_service_assigned_photographers(): void
+    {
+        $admin = User::factory()->create(['role' => 'admin']);
+        $client = User::factory()->create(['role' => 'client', 'email' => 'client-multi@example.com']);
+        $primary = User::factory()->create([
+            'role' => 'photographer',
+            'name' => 'Primary Photographer',
+            'email' => 'primary-photo@example.com',
+        ]);
+        $servicePhotographer = User::factory()->create([
+            'role' => 'photographer',
+            'name' => 'Service Photographer',
+            'email' => 'service-photo@example.com',
+        ]);
+        $service = Service::factory()->create(['photographer_required' => true]);
+
+        $shoot = Shoot::factory()->create([
+            'client_id' => $client->id,
+            'photographer_id' => $primary->id,
+        ]);
+        $shoot->services()->attach($service->id, [
+            'price' => 100,
+            'quantity' => 1,
+            'photographer_id' => $servicePhotographer->id,
+            'is_deliverable' => true,
+        ]);
+
+        $response = $this->actingAs($admin, 'sanctum')
+            ->getJson('/api/messaging/notifications/recipients?shoot_id='.$shoot->id.'&recipient_type=photographer');
+
+        $response->assertOk();
+        $ids = collect($response->json('recipients'))->pluck('id')->map(fn ($id) => (int) $id)->sort()->values()->all();
+        $this->assertSame(
+            collect([$primary->id, $servicePhotographer->id])->sort()->values()->all(),
+            $ids
+        );
+    }
+
+    public function test_manual_send_photographer_fans_out_to_service_assigned_photographers(): void
+    {
+        $this->template('shoot-scheduled');
+        $admin = User::factory()->create(['role' => 'admin']);
+        $primary = User::factory()->create([
+            'role' => 'photographer',
+            'email' => 'primary-fanout@example.com',
+        ]);
+        $servicePhotographer = User::factory()->create([
+            'role' => 'photographer',
+            'email' => 'service-fanout@example.com',
+        ]);
+        $service = Service::factory()->create(['photographer_required' => true]);
+        $shoot = Shoot::factory()->create(['photographer_id' => $primary->id]);
+        $shoot->services()->attach($service->id, [
+            'price' => 100,
+            'quantity' => 1,
+            'photographer_id' => $servicePhotographer->id,
+            'is_deliverable' => true,
+        ]);
+
+        $tos = [];
+        $this->mock(MessagingService::class, function (MockInterface $mock) use (&$tos): void {
+            $mock->shouldReceive('sendEmail')
+                ->twice()
+                ->withArgs(function (array $payload) use (&$tos): bool {
+                    $tos[] = $payload['to'];
+
+                    return true;
+                })
+                ->andReturn(Message::make([
+                    'id' => 99,
+                    'channel' => 'EMAIL',
+                    'to_address' => 'x@example.com',
+                    'status' => 'SENT',
+                ]));
+        });
+
+        $response = $this->actingAs($admin, 'sanctum')
+            ->postJson('/api/messaging/notifications/manual-send', [
+                'shoot_id' => $shoot->id,
+                'type' => 'shoot_scheduled',
+                'recipient_type' => 'photographer',
+                'channel' => 'email',
+            ]);
+
+        $response->assertOk()
+            ->assertJsonPath('recipient_count', 2);
+        $this->assertEqualsCanonicalizing(
+            ['primary-fanout@example.com', 'service-fanout@example.com'],
+            $tos
+        );
     }
 }
