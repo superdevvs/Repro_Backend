@@ -9,6 +9,7 @@ use App\Services\AddressLookupService;
 use App\Services\Photographers\RadiusEligibility;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 
 class PhotographerAvailabilityController extends Controller
 {
@@ -596,6 +597,86 @@ class PhotographerAvailabilityController extends Controller
         $this->clearAvailabilityCache($validated['photographer_id']);
 
         return response()->json(['data' => $created], 201);
+    }
+
+    /**
+     * Replace the photographer's recurring (dateless) available windows.
+     * Dated overrides, bookings, and unavailable blocks are left untouched.
+     * Used by the Availability "Default schedule" editor so adjusting Mon–Fri
+     * 9–5 does not trip create-only bulk overlap errors.
+     */
+    public function replaceWeekly(Request $request)
+    {
+        $validated = $request->validate([
+            'photographer_id' => 'required|exists:users,id',
+            'availabilities' => 'present|array',
+            'availabilities.*.day_of_week' => 'required|in:monday,tuesday,wednesday,thursday,friday,saturday,sunday',
+            'availabilities.*.start_time' => 'required|date_format:H:i',
+            'availabilities.*.end_time' => 'required|date_format:H:i|after:availabilities.*.start_time',
+            'availabilities.*.status' => 'sometimes|in:available,unavailable',
+        ]);
+
+        if ($response = $this->denyUnlessCanManageAvailability($request->user(), (int) $validated['photographer_id'])) {
+            return $response;
+        }
+
+        // Reject within-batch overlaps on the same weekday.
+        $errors = [];
+        $items = $validated['availabilities'];
+        for ($i = 0; $i < count($items); $i++) {
+            for ($j = $i + 1; $j < count($items); $j++) {
+                if (($items[$i]['day_of_week'] ?? null) !== ($items[$j]['day_of_week'] ?? null)) {
+                    continue;
+                }
+                if ($this->timesOverlap(
+                    $items[$i]['start_time'],
+                    $items[$i]['end_time'],
+                    $items[$j]['start_time'],
+                    $items[$j]['end_time']
+                )) {
+                    $errors[] = 'Slot #' . ($i + 1) . ' and Slot #' . ($j + 1) . ' overlap with each other';
+                }
+            }
+        }
+        if (!empty($errors)) {
+            return response()->json([
+                'message' => 'One or more default schedule slots overlap with each other.',
+                'errors' => $errors,
+                'error' => 'overlap',
+            ], 422);
+        }
+
+        $created = DB::transaction(function () use ($validated) {
+            $photographerId = (int) $validated['photographer_id'];
+
+            // Only wipe recurring *available* windows. Keep dated overrides,
+            // bookings, and recurring unavailable blocks.
+            PhotographerAvailability::where('photographer_id', $photographerId)
+                ->whereNull('date')
+                ->where(function ($query) {
+                    $query->where('status', 'available')
+                        ->orWhereNull('status');
+                })
+                ->delete();
+
+            $rows = [];
+            foreach ($validated['availabilities'] as $availability) {
+                $rows[] = PhotographerAvailability::create([
+                    'photographer_id' => $photographerId,
+                    'date' => null,
+                    'day_of_week' => $availability['day_of_week'],
+                    'start_time' => $availability['start_time'],
+                    'end_time' => $availability['end_time'],
+                    'status' => $availability['status'] ?? 'available',
+                ]);
+            }
+
+            return $rows;
+        });
+
+        $this->clearAvailabilityCache($validated['photographer_id']);
+
+        return response()->json(['data' => $created], 200);
     }
 
     public function availablePhotographers(Request $request)

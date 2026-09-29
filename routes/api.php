@@ -1147,15 +1147,16 @@ Route::prefix('photographer/availability')->group(function () {
 });
 
 Route::middleware('auth:sanctum')->prefix('photographer/availability')->group(function () {
-    Route::get('/{photographerId}', [PhotographerAvailabilityController::class, 'index']);
     Route::post('/', [PhotographerAvailabilityController::class, 'store']);
     Route::post('/bulk', [PhotographerAvailabilityController::class, 'bulkStore']);
+    Route::post('/replace-weekly', [PhotographerAvailabilityController::class, 'replaceWeekly']);
     Route::post('/bulk-index', [PhotographerAvailabilityController::class, 'bulkIndex']);
     Route::post('/booked-slots', [PhotographerAvailabilityController::class, 'getBookedSlotsWithDetails']);
-    Route::put('/{id}', [PhotographerAvailabilityController::class, 'update']);
-    Route::delete('/{id}', [PhotographerAvailabilityController::class, 'destroy']);
-    Route::delete('/clear/{photographerId}', [PhotographerAvailabilityController::class, 'clearAll']);
     Route::post('/check', [PhotographerAvailabilityController::class, 'checkAvailability']);
+    Route::get('/{photographerId}', [PhotographerAvailabilityController::class, 'index']);
+    Route::put('/{id}', [PhotographerAvailabilityController::class, 'update']);
+    Route::delete('/clear/{photographerId}', [PhotographerAvailabilityController::class, 'clearAll']);
+    Route::delete('/{id}', [PhotographerAvailabilityController::class, 'destroy']);
 });
 
 Route::middleware(['auth:sanctum'])->prefix('messaging')->group(function () {

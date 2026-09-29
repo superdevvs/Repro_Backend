@@ -117,4 +117,79 @@ class PhotographerAvailabilityRecurrenceTest extends TestCase
         ])->assertUnprocessable()->assertJsonPath('error', 'overlap');
         $this->assertDatabaseCount('photographer_availabilities', 1);
     }
+    public function test_replace_weekly_swaps_recurring_available_and_keeps_dated(): void
+    {
+        $photographer = User::factory()->create(['role' => 'photographer']);
+        Sanctum::actingAs($photographer);
+
+        PhotographerAvailability::create($this->monday($photographer, [
+            'start_time' => '08:00',
+            'end_time' => '12:00',
+        ]));
+        PhotographerAvailability::create($this->monday($photographer, [
+            'day_of_week' => 'tuesday',
+            'start_time' => '08:00',
+            'end_time' => '12:00',
+        ]));
+        $dated = PhotographerAvailability::create($this->monday($photographer, [
+            'date' => '2026-09-28',
+            'end_time' => '17:00',
+        ]));
+        $blocked = PhotographerAvailability::create($this->monday($photographer, [
+            'date' => null,
+            'day_of_week' => 'wednesday',
+            'status' => 'unavailable',
+            'start_time' => '12:00',
+            'end_time' => '13:00',
+        ]));
+
+        $this->postJson('/api/photographer/availability/replace-weekly', [
+            'photographer_id' => $photographer->id,
+            'availabilities' => [
+                [
+                    'day_of_week' => 'monday',
+                    'start_time' => '09:00',
+                    'end_time' => '17:00',
+                    'status' => 'available',
+                ],
+                [
+                    'day_of_week' => 'friday',
+                    'start_time' => '09:00',
+                    'end_time' => '17:00',
+                    'status' => 'available',
+                ],
+            ],
+        ])->assertOk()->assertJsonCount(2, 'data');
+
+        $this->assertDatabaseMissing('photographer_availabilities', [
+            'photographer_id' => $photographer->id,
+            'date' => null,
+            'day_of_week' => 'monday',
+            'start_time' => '08:00',
+        ]);
+        $this->assertDatabaseMissing('photographer_availabilities', [
+            'photographer_id' => $photographer->id,
+            'date' => null,
+            'day_of_week' => 'tuesday',
+        ]);
+        $this->assertDatabaseHas('photographer_availabilities', [
+            'photographer_id' => $photographer->id,
+            'date' => null,
+            'day_of_week' => 'monday',
+            'start_time' => '09:00',
+            'end_time' => '17:00',
+            'status' => 'available',
+        ]);
+        $this->assertDatabaseHas('photographer_availabilities', [
+            'photographer_id' => $photographer->id,
+            'date' => null,
+            'day_of_week' => 'friday',
+            'start_time' => '09:00',
+            'end_time' => '17:00',
+        ]);
+        $this->assertSame('2026-09-28', $dated->fresh()->date);
+        $this->assertSame('unavailable', $blocked->fresh()->status);
+        $this->assertSame('wednesday', $blocked->fresh()->day_of_week);
+    }
+
 }
