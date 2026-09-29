@@ -61,6 +61,13 @@ class SendShootReadyEmailJob implements ShouldQueue
             return;
         }
 
+        // Delivery / re-deliver is a post-import meaningful action. Release legacy
+        // mute before the gate so client delivery email is not permanently skipped.
+        $shoot->releaseLegacyImportMuteForPostImportOperation(
+            $this->isFullOrderDelivery ? 'delivery_email_full_order' : 'delivery_email_partial'
+        );
+        $shoot->refresh();
+
         if ($reason = $shoot->externalNotificationSuppressionReason()) {
             $progress->stageSkipped($this->shootId, FinalizeProgressTracker::STAGE_DELIVERY_EMAIL, $reason);
 

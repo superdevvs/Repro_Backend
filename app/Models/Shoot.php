@@ -346,7 +346,14 @@ class Shoot extends Model
         return $this->shoot_type === self::SHOOT_TYPE_INTERNAL_TEST;
     }
 
-    /** Imported bookings stay quiet until an administrator explicitly releases them. */
+    /**
+     * Whether external client/photographer notifications must stay quiet.
+     *
+     * Import drafts and internal test shoots are always muted. Legacy imports may
+     * also carry notifications_suppressed from bulk import; that flag is only for
+     * import-time quieting and must be released on any post-import meaningful action
+     * (finalize, update, delivery, payment, manual message) so new events notify.
+     */
     public function suppressesExternalNotifications(): bool
     {
         if ($this->isImportDraft()) {
@@ -355,6 +362,12 @@ class Shoot extends Model
 
         return $this->isInternalTestShoot()
             || data_get($this->external_booking_payload, 'legacy_migration.notifications_suppressed') === true;
+    }
+
+    /** True when the legacy-import mute flag is still set (not drafts/tests alone). */
+    public function isLegacyImportNotificationMuted(): bool
+    {
+        return data_get($this->external_booking_payload, 'legacy_migration.notifications_suppressed') === true;
     }
 
     /**
@@ -378,25 +391,70 @@ class Shoot extends Model
     }
 
     /**
-     * Clear the legacy-import notification mute. Staff finalize (full-order delivery)
-     * is the explicit release for migrated bookings that were kept quiet on import.
+     * Clear the legacy-import notification mute on this shoot and related invoices.
      *
-     * @return bool true when the mute flag was present and cleared
+     * Mute exists only to quiet bulk import-time side effects. Post-import ops
+     * (finalize, staff update, re-deliver, payment, manual SMS/email, schedule/
+     * approve automations) must call this (or releaseLegacyImportMuteForPostImportOperation)
+     * before notification gates so new events are not permanently silenced.
+     *
+     * @return bool true when a shoot or related invoice mute flag was cleared
      */
     public function releaseExternalNotifications(string $reason = 'manual'): bool
     {
-        if (data_get($this->external_booking_payload, 'legacy_migration.notifications_suppressed') !== true) {
+        $released = false;
+
+        if (data_get($this->external_booking_payload, 'legacy_migration.notifications_suppressed') === true) {
+            $payload = $this->external_booking_payload ?? [];
+            data_set($payload, 'legacy_migration.notifications_suppressed', false);
+            data_set($payload, 'legacy_migration.notifications_released_at', now()->toIso8601String());
+            data_set($payload, 'legacy_migration.notifications_released_reason', $reason);
+
+            $this->forceFill(['external_booking_payload' => $payload])->save();
+            $released = true;
+        }
+
+        if (! $this->exists) {
+            return $released;
+        }
+
+        $invoiceIds = collect();
+        $invoiceIds = $invoiceIds->merge(
+            Invoice::query()->where('shoot_id', $this->id)->pluck('id')
+        );
+        $invoiceIds = $invoiceIds->merge($this->invoices()->pluck('invoices.id'));
+        $invoiceIds = $invoiceIds->merge(
+            Invoice::query()
+                ->whereHas('items', fn ($query) => $query->where('shoot_id', $this->id))
+                ->pluck('id')
+        );
+
+        foreach ($invoiceIds->unique()->filter() as $invoiceId) {
+            $invoice = Invoice::query()->find($invoiceId);
+            if ($invoice && $invoice->releaseExternalNotifications($reason)) {
+                $released = true;
+            }
+        }
+
+        return $released;
+    }
+
+    /**
+     * Release legacy-import mute for a post-import notification path.
+     * Never clears import-draft or internal-test suppression.
+     * No-ops quickly when the legacy mute flag is already clear.
+     */
+    public function releaseLegacyImportMuteForPostImportOperation(string $reason): bool
+    {
+        if ($this->isImportDraft() || $this->isInternalTestShoot()) {
             return false;
         }
 
-        $payload = $this->external_booking_payload ?? [];
-        data_set($payload, 'legacy_migration.notifications_suppressed', false);
-        data_set($payload, 'legacy_migration.notifications_released_at', now()->toIso8601String());
-        data_set($payload, 'legacy_migration.notifications_released_reason', $reason);
+        if (! $this->isLegacyImportNotificationMuted()) {
+            return false;
+        }
 
-        $this->forceFill(['external_booking_payload' => $payload])->save();
-
-        return true;
+        return $this->releaseExternalNotifications($reason);
     }
 
     public function isComplimentaryReshoot(): bool

@@ -240,13 +240,22 @@ class SystemEmailOrchestrator
     private function suppressesExternalNotifications(array $payload, array $transport): bool
     {
         $invoiceId = $transport['related_invoice_id'] ?? data_get($payload, 'invoice.id');
+        if ($invoiceId) {
+            Invoice::find($invoiceId)?->releaseLegacyImportMuteForPostImportOperation('system_email');
+        }
+        $shootId = $transport['related_shoot_id'] ?? data_get($payload, 'shoot.id');
+        if ($shootId) {
+            Shoot::withoutGlobalScope('private_import_drafts')
+                ->find($shootId)
+                ?->releaseLegacyImportMuteForPostImportOperation('system_email');
+        }
+
         if ($invoiceId && Invoice::find($invoiceId)?->suppressesExternalNotifications()) {
             return true;
         }
         if (data_get($payload, 'shoot.shoot_type') === Shoot::SHOOT_TYPE_INTERNAL_TEST) {
             return true;
         }
-        $shootId = $transport['related_shoot_id'] ?? data_get($payload, 'shoot.id');
         return $shootId && Shoot::withoutGlobalScope('private_import_drafts')->find($shootId)?->suppressesExternalNotifications();
     }
 

@@ -89,8 +89,30 @@ class MessagingService
     /**
      * @param  array<string, mixed>  $payload
      */
+
+    /**
+     * Staff/manual sends are post-import meaningful actions. Release legacy-import
+     * mute on related shoot/invoice so intentional messages are not blocked.
+     * Import drafts and internal tests remain suppressed by the gates below.
+     *
+     * @param  array<string, mixed>  $payload
+     */
+    private function releaseLegacyImportMuteForOutboundPayload(array $payload): void
+    {
+        if (! empty($payload['related_invoice_id'])) {
+            Invoice::find($payload['related_invoice_id'])
+                ?->releaseLegacyImportMuteForPostImportOperation('manual_message');
+        }
+        if (! empty($payload['related_shoot_id'])) {
+            Shoot::withoutGlobalScope('private_import_drafts')
+                ->find($payload['related_shoot_id'])
+                ?->releaseLegacyImportMuteForPostImportOperation('manual_message');
+        }
+    }
+
     public function sendEmail(array $payload): Message
     {
+        $this->releaseLegacyImportMuteForOutboundPayload($payload);
         if (!empty($payload['related_invoice_id']) && Invoice::find($payload['related_invoice_id'])?->suppressesExternalNotifications()) {
             throw \Illuminate\Validation\ValidationException::withMessages([
                 'invoice' => ['External notifications are disabled for this invoice.'],
@@ -216,6 +238,7 @@ class MessagingService
 
     public function sendSms(array $payload): Message
     {
+        $this->releaseLegacyImportMuteForOutboundPayload($payload);
         if (!empty($payload['related_invoice_id']) && Invoice::find($payload['related_invoice_id'])?->suppressesExternalNotifications()) {
             throw \Illuminate\Validation\ValidationException::withMessages([
                 'invoice' => ['External notifications are disabled for this invoice.'],
@@ -960,6 +983,10 @@ class MessagingService
 
     public function dispatchStoredEmailMessage(Message $message): Message
     {
+        $this->releaseLegacyImportMuteForOutboundPayload([
+            'related_invoice_id' => $message->related_invoice_id,
+            'related_shoot_id' => $message->related_shoot_id,
+        ]);
         if ($message->related_invoice_id && Invoice::find($message->related_invoice_id)?->suppressesExternalNotifications()) {
             $message->forceFill(['status' => 'CANCELLED', 'error_message' => 'Invoice notification policy: external message suppressed'])->save();
             return $message->refresh();
@@ -1025,6 +1052,10 @@ class MessagingService
 
     public function dispatchStoredSmsMessage(Message $message): Message
     {
+        $this->releaseLegacyImportMuteForOutboundPayload([
+            'related_invoice_id' => $message->related_invoice_id,
+            'related_shoot_id' => $message->related_shoot_id,
+        ]);
         if ($message->related_invoice_id && Invoice::find($message->related_invoice_id)?->suppressesExternalNotifications()) {
             $message->forceFill(['status' => 'CANCELLED', 'error_message' => 'Invoice notification policy: external message suppressed'])->save();
             return $message->refresh();

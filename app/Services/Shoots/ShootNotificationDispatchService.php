@@ -137,7 +137,16 @@ class ShootNotificationDispatchService
         bool $photographerNewlyAssigned
     ): void {
         $shoot = Shoot::with(['client', 'photographer', 'rep', 'service', 'services'])->find($shootId);
-        if (! $shoot || $shoot->suppressesExternalNotifications()) {
+        if (! $shoot) {
+            return;
+        }
+
+        // Staff/system update is a post-import meaningful action: release legacy mute
+        // so status/schedule/photographer notifications are not permanently blocked.
+        $shoot->releaseLegacyImportMuteForPostImportOperation('shoot_updated');
+        $shoot->refresh();
+
+        if ($shoot->suppressesExternalNotifications()) {
             return;
         }
 
