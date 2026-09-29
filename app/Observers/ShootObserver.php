@@ -52,7 +52,14 @@ class ShootObserver
 
         if ($status === Shoot::STATUS_EDITING) {
             if ($rawCount > 0) {
-                GenerateShootMediaArchiveJob::dispatch($shoot->id, 'raw', 'small');
+                // Prebuild the full original raw ZIP so editor/admin full-set
+                // downloads and share packaging can reuse a signature-matched
+                // archive instead of rebuilding on every click. Keep the small
+                // preview archive too for existing client/dashboard paths.
+                app(\App\Services\Shoots\ShootMediaArchiveService::class)
+                    ->queueArchiveGeneration($shoot, 'raw', 'original');
+                app(\App\Services\Shoots\ShootMediaArchiveService::class)
+                    ->queueArchiveGeneration($shoot, 'raw', 'small');
             }
             return;
         }

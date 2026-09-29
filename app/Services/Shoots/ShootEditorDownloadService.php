@@ -38,17 +38,21 @@ class ShootEditorDownloadService
             $fileIdsParam = array_filter(explode(',', $fileIdsParam));
         }
 
-        $filesQuery = $shoot->files()->where('workflow_stage', ShootFile::STAGE_TODO);
-        if (! empty($fileIdsParam)) {
-            $filesQuery->whereIn('id', $fileIdsParam);
+        $isCustomSelection = ! empty($fileIdsParam);
+        // Full-set downloads must use the same file universe as ShootMediaArchiveService
+        // so signature-matched cached ZIPs are reused. Custom selections stay explicit.
+        if ($isCustomSelection) {
+            $allFiles = $shoot->files()
+                ->where('workflow_stage', ShootFile::STAGE_TODO)
+                ->whereIn('id', $fileIdsParam)
+                ->get()
+                ->filter(fn (ShootFile $file) => $file->isRequiredForEditing())
+                // Infected files are withheld from download/delivery (Req 15.7).
+                ->reject(fn (ShootFile $file) => $file->isBlockedFromDelivery())
+                ->values();
+        } else {
+            $allFiles = $this->shootMediaArchiveService->getFilesForType($shoot, 'raw');
         }
-
-        $allFiles = $filesQuery
-            ->get()
-            ->filter(fn (ShootFile $file) => $file->isRequiredForEditing())
-            // Infected files are withheld from download/delivery (Req 15.7).
-            ->reject(fn (ShootFile $file) => $file->isBlockedFromDelivery())
-            ->values();
         $isEditorDownload = $this->shootAuthorizationSupport->hasRole($user, ['editor']);
         $files = $isEditorDownload
             ? $this->shootEditingAssignmentService->filterFilesForEditor($allFiles, $shoot, $user)
@@ -85,9 +89,13 @@ class ShootEditorDownloadService
         }
 
         // Prefer the shared async archive pipeline when this download is the full
-        // raw hand-off set. Building multi-GB ZIPs inline was causing nginx 499/502
-        // timeouts for editors (Cloudflare idle timeout while PHP zipped).
-        if ($this->fileIdsMatch($files, $this->shootMediaArchiveService->getFilesForType($shoot, 'raw'))) {
+        // raw hand-off set. Custom photo selections fall through to a scoped ZIP.
+        // Building multi-GB ZIPs inline was causing nginx 499/502 timeouts for
+        // editors (Cloudflare idle timeout while PHP zipped).
+        $fullRawFiles = $isCustomSelection
+            ? $this->shootMediaArchiveService->getFilesForType($shoot, 'raw')
+            : $allFiles;
+        if ($this->fileIdsMatch($files, $fullRawFiles)) {
             try {
                 $archiveResponse = $this->shootMediaArchiveService->resolveArchiveResponseData(
                     $shoot,
