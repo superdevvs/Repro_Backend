@@ -6,6 +6,7 @@ use App\Models\Invoice;
 use App\Models\Payment;
 use App\Models\Service;
 use App\Models\Shoot;
+use App\Models\ShootFile;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Laravel\Sanctum\Sanctum;
@@ -202,5 +203,69 @@ class ShootListingHistoryTest extends TestCase
             ->assertOk()
             ->assertJsonPath('data.0.address.latitude', null)
             ->assertJsonPath('data.0.address.longitude', null);
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
+    public function history_hydrates_hero_and_previews_without_shipping_file_rows(): void
+    {
+        Sanctum::actingAs($this->admin);
+
+        $shoot = Shoot::factory()->create([
+            'client_id' => $this->client->id,
+            'photographer_id' => $this->photographer->id,
+            'service_id' => $this->service->id,
+            'status' => Shoot::STATUS_DELIVERED,
+            'workflow_status' => Shoot::STATUS_DELIVERED,
+            'scheduled_date' => now()->subDays(2)->toDateString(),
+            'admin_verified_at' => now()->subDay(),
+            'address' => '789 Hero History Ln',
+            'city' => 'Arlington',
+            'state' => 'VA',
+            'zip' => '22201',
+            'hero_image' => null,
+            'base_quote' => 150,
+            'tax_amount' => 0,
+            'total_quote' => 150,
+            'created_by' => (string) $this->admin->id,
+        ]);
+        $shoot->services()->attach($this->service->id, [
+            'price' => 150,
+            'quantity' => 1,
+            'photographer_pay' => 40,
+            'photographer_id' => $this->photographer->id,
+        ]);
+
+        ShootFile::query()->create([
+            'shoot_id' => $shoot->id,
+            'filename' => 'living-room.jpg',
+            'stored_filename' => 'living-room.jpg',
+            'path' => 'shoots/living-room.jpg',
+            'grid_path' => 'shoots/living-room-grid.jpg',
+            'web_path' => 'shoots/living-room-web.jpg',
+            'thumbnail_path' => 'shoots/living-room-thumb.jpg',
+            'file_type' => 'image/jpeg',
+            'mime_type' => 'image/jpeg',
+            'media_type' => 'edited',
+            'file_size' => 4096,
+            'uploaded_by' => $this->photographer->id,
+            'workflow_stage' => ShootFile::STAGE_VERIFIED,
+            'is_cover' => true,
+            'is_hidden' => false,
+        ]);
+
+        $response = $this->getJson('/api/shoots/history?per_page=25');
+
+        $response->assertOk()
+            ->assertJsonPath('data.0.id', $shoot->id);
+
+        $row = collect($response->json('data'))->firstWhere('id', $shoot->id);
+        $this->assertNotNull($row);
+        $this->assertNotEmpty($row['hero_image'] ?? null);
+        $this->assertIsArray($row['preview_images'] ?? null);
+        $this->assertNotEmpty($row['preview_images']);
+        $this->assertSame($row['preview_images'], $row['previewImages'] ?? null);
+        $this->assertStringContainsString('living-room', (string) $row['hero_image']);
+        $this->assertArrayNotHasKey('files', $row);
+        $this->assertArrayNotHasKey('list_preview_files', $row);
     }
 }

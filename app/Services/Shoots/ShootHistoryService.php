@@ -27,6 +27,11 @@ class ShootHistoryService
         'salesRep',
     ];
 
+    public function __construct(
+        protected ShootListingService $listingService,
+        protected ShootPresenter $presenter
+    ) {}
+
     public function history(Request $request, ?User $user): JsonResponse
     {
         try {
@@ -76,9 +81,14 @@ class ShootHistoryService
                 ? $ordering->paginate($query, $sort, $perPage, (int) $request->query('page', 1))
                 : $query->orderByRaw('COALESCE(admin_verified_at, editing_completed_at, scheduled_date, created_at) DESC')->paginate($perPage);
 
-            $clientCounts = $this->loadClientShootCounts($paginator->getCollection(), $user);
+            $pageCollection = $paginator->getCollection();
+            $clientCounts = $this->loadClientShootCounts($pageCollection, $user);
 
-            $collection = $paginator->getCollection()->map(function (Shoot $shoot) use ($clientCounts) {
+            if ($pageCollection->isNotEmpty()) {
+                $this->listingService->eagerLoadListCardPreviewFiles($pageCollection);
+            }
+
+            $collection = $pageCollection->map(function (Shoot $shoot) use ($clientCounts) {
                 return $this->transformHistoryShoot($shoot, $clientCounts);
             });
 
@@ -333,6 +343,7 @@ class ShootHistoryService
     protected function transformHistoryShoot(Shoot $shoot, array $clientCounts): array
     {
         $shoot->loadMissing(['client', 'photographer', 'services', 'payments']);
+        $this->presenter->applyListCardMedia($shoot);
         $client = $shoot->client;
         $requestingRole = strtolower((string) (auth()->user()?->role ?? ''));
         $isEditor = $requestingRole === 'editor';
@@ -425,6 +436,9 @@ class ShootHistoryService
             'mls_id' => $shoot->mls_id,
             'bright_mls_publish_status' => $shoot->bright_mls_publish_status,
             'bright_mls_last_published_at' => $shoot->bright_mls_last_published_at?->toIso8601String(),
+            'hero_image' => $shoot->hero_image,
+            'preview_images' => $shoot->getAttribute('preview_images') ?? [],
+            'previewImages' => $shoot->getAttribute('preview_images') ?? [],
         ];
     }
 

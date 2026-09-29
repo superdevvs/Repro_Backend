@@ -1159,6 +1159,16 @@ class ShootPresenter
     }
 
     /**
+     * Public entry for list/history cards: hydrate hero + preview URLs, then drop
+     * the internal list_preview_files relation so it never leaks into JSON.
+     */
+    public function applyListCardMedia(Shoot $shoot): void
+    {
+        $this->hydrateListCardMedia($shoot);
+        $shoot->unsetRelation('list_preview_files');
+    }
+
+    /**
      * Resolve hero_image + preview_images for list cards without serializing files.
      */
     protected function hydrateListCardMedia(Shoot $shoot): void

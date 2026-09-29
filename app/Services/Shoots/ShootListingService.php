@@ -256,7 +256,7 @@ class ShootListingService
      *
      * @param  \Illuminate\Support\Collection<int, \App\Models\Shoot>  $shoots
      */
-    protected function eagerLoadListCardPreviewFiles($shoots): void
+    public function eagerLoadListCardPreviewFiles($shoots): void
     {
         $ids = $shoots->pluck('id')->filter()->values()->all();
         if ($ids === []) {
