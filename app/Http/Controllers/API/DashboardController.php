@@ -18,6 +18,7 @@ use App\Services\Media\MediaStorage;
 use App\Services\Shoots\ShootEditingAssignmentService;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
+use App\Services\Messaging\UnreadCountService;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -877,10 +878,14 @@ class DashboardController extends Controller
                 return $this->getActivityLogsForRole($role, $userId);
             });
 
+            $includeCalls = in_array($role, ['admin', 'superadmin', 'editing_manager', 'salesrep'], true);
+            $unreadCounts = app(UnreadCountService::class)->forUser($userId, includeCalls: $includeCalls);
+
             return response()->json([
                 'data' => [
                     'activity_log' => $activityLogs,
                     'user_role' => $role,
+                    'unread_counts' => $unreadCounts,
                 ],
             ]);
         } catch (\Exception $e) {
@@ -891,6 +896,12 @@ class DashboardController extends Controller
                 'data' => [
                     'activity_log' => [],
                     'user_role' => $request->user()?->role ?? 'unknown',
+                    'unread_counts' => [
+                        'email' => 0,
+                        'sms' => 0,
+                        'call' => 0,
+                        'total' => 0,
+                    ],
                 ],
             ], 200); // Return empty array instead of 500
         }
@@ -944,7 +955,7 @@ class DashboardController extends Controller
             // Admins and sales reps see all activity logs
             $shootActivityLogs = ShootActivityLog::with(['user:id,name', 'shoot:id,address'])
                 ->latest()
-                ->limit(30)
+                ->limit(120)
                 ->get();
         } elseif ($role === 'client') {
             // Clients only see logs for their own shoots
@@ -954,7 +965,7 @@ class DashboardController extends Controller
                 })
                 ->whereIn('action', $clientVisibleActions)
                 ->latest()
-                ->limit(30)
+                ->limit(120)
                 ->get();
         } elseif ($role === 'photographer') {
             // Photographers only see logs for shoots they're assigned to
@@ -969,7 +980,7 @@ class DashboardController extends Controller
                 })
                 ->whereIn('action', $photographerVisibleActions)
                 ->latest()
-                ->limit(30)
+                ->limit(120)
                 ->get();
         } elseif ($role === 'editor') {
             // Editors only see logs for shoots they're assigned to
@@ -979,7 +990,7 @@ class DashboardController extends Controller
                 })
                 ->whereIn('action', $editorVisibleActions)
                 ->latest()
-                ->limit(30)
+                ->limit(120)
                 ->get();
         } else {
             // Feature-specific notifications below also evaluate secondary roles.
@@ -1006,7 +1017,10 @@ class DashboardController extends Controller
             ->concat($userAccountNotifications)
             ->concat($listingStudioNotifications)
             ->sortByDesc(fn (array $notification) => strtotime((string) ($notification['timestamp'] ?? '')) ?: 0)
-            ->take(50)
+            // Badge unread counts must not silently cap at 50. Source queries already
+            // bound each stream; keep a high ceiling so badges stay accurate without
+            // shipping an unbounded payload.
+            ->take(500)
             ->values();
     }
 
@@ -1030,7 +1044,7 @@ class DashboardController extends Controller
             $emails = (clone $baseQuery)
                 ->where('direction', 'INBOUND')
                 ->latest()
-                ->limit(20)
+                ->limit(80)
                 ->get();
         } elseif ($role === 'salesrep') {
             $emails = (clone $baseQuery)
@@ -1051,7 +1065,7 @@ class DashboardController extends Controller
                         });
                 })
                 ->latest()
-                ->limit(20)
+                ->limit(80)
                 ->get();
         } elseif ($role === 'client') {
             $emails = (clone $baseQuery)
@@ -1062,7 +1076,7 @@ class DashboardController extends Controller
                         ->orWhereHas('shoot', fn ($shootQuery) => $shootQuery->where('client_id', $userId));
                 })
                 ->latest()
-                ->limit(20)
+                ->limit(80)
                 ->get();
         } elseif (in_array($role, ['photographer', 'editor'])) {
             // Photographers/editors only see inbound emails addressed to them
@@ -1070,7 +1084,7 @@ class DashboardController extends Controller
                 ->where('direction', 'INBOUND')
                 ->where('to_address', $user->email)
                 ->latest()
-                ->limit(10)
+                ->limit(40)
                 ->get();
         } else {
             $emails = collect([]);
@@ -1115,7 +1129,7 @@ class DashboardController extends Controller
         $baseQuery = UserActivityLog::query()
             ->with('user:id,name,email,email_status')
             ->latest('occurred_at')
-            ->limit(40);
+            ->limit(80);
 
         if (in_array($role, ['admin', 'superadmin', 'editing_manager'], true)) {
             $logs = $baseQuery

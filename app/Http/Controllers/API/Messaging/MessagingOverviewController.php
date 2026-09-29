@@ -5,19 +5,19 @@ namespace App\Http\Controllers\API\Messaging;
 use App\Http\Controllers\Controller;
 use App\Models\AutomationRule;
 use App\Models\Message;
-use App\Models\MessageChannel;
-use App\Models\MessageThread;
+use App\Services\Messaging\UnreadCountService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 
 class MessagingOverviewController extends Controller
 {
-    public function __invoke(Request $request): JsonResponse
+    public function __invoke(Request $request, UnreadCountService $unreadCounts): JsonResponse
     {
         // Stats for today
         $today = now()->startOfDay();
-        
+        $userId = (int) $request->user()->id;
+
         $totalSentToday = Message::where('channel', 'EMAIL')
             ->whereIn('status', ['SENT', 'DELIVERED'])
             ->whereDate('created_at', $today)
@@ -32,10 +32,7 @@ class MessagingOverviewController extends Controller
             ->where('status', 'SCHEDULED')
             ->count();
 
-        $unreadSmsCount = MessageThread::where('channel', 'SMS')
-            ->where('last_direction', 'INBOUND')
-            ->whereNotNull('unread_for_user_ids_json')
-            ->count();
+        $counts = $unreadCounts->forUser($userId, includeCalls: true);
 
         $activeAutomations = AutomationRule::where('is_active', true)->count();
 
@@ -48,7 +45,12 @@ class MessagingOverviewController extends Controller
             'total_sent_today' => $totalSentToday,
             'total_failed_today' => $totalFailedToday,
             'total_scheduled' => $totalScheduled,
-            'unread_sms_count' => $unreadSmsCount,
+            // Legacy key kept for existing FE cards.
+            'unread_sms_count' => $counts['sms'],
+            'unread_email_count' => $counts['email'],
+            'unread_call_count' => $counts['call'],
+            'unread_total' => $counts['total'],
+            'unread_counts' => $counts,
             'active_automations' => $activeAutomations,
             'recent_activity' => $recentActivity,
         ]);
@@ -65,4 +67,3 @@ class MessagingOverviewController extends Controller
         return ['from' => $from, 'to' => $to];
     }
 }
-

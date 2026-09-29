@@ -46,6 +46,7 @@ use App\Http\Controllers\API\Messaging\EmailMessagingController;
 use App\Http\Controllers\API\Messaging\EmailOpsSummaryController;
 use App\Http\Controllers\API\Messaging\MessageTemplateController;
 use App\Http\Controllers\API\Messaging\MessagingOverviewController;
+use App\Http\Controllers\API\Messaging\MessagingBadgeCountsController;
 use App\Http\Controllers\API\Messaging\MessagingSettingsController;
 use App\Http\Controllers\API\Messaging\SmsContactController;
 use App\Http\Controllers\API\Messaging\SmsMessagingController;
@@ -1160,6 +1161,10 @@ Route::middleware('auth:sanctum')->prefix('photographer/availability')->group(fu
 });
 
 Route::middleware(['auth:sanctum'])->prefix('messaging')->group(function () {
+    // Nav badge counts (Emails / SMS / Calls) — any authenticated user; controller zeros
+    // channels the caller cannot view.
+    Route::get('/badge-counts', MessagingBadgeCountsController::class);
+
     // Email (available to all authenticated users; controller enforces sender policy)
     Route::get('/email/recipients', [EmailMessagingController::class, 'recipients']);
     Route::get('/email/messages', [EmailMessagingController::class, 'messages']);
