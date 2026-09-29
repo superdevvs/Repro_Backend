@@ -294,7 +294,7 @@ class GoogleCalendarEventPayloadBuilder
         $arrivalInstructions = $this->deriveArrivalInstructions($shoot);
         $sections[] = "Arrival Instructions:\n" . ($arrivalInstructions !== null ? $this->formatBodyText($arrivalInstructions) : 'Not provided');
 
-        // On-Site Contact (derived, falling back to client name + contact details).
+        // On-Site Contact (derived; client phone/email never included).
         $sections[] = "On-Site Contact:\n" . $this->deriveOnSiteContact($shoot);
 
         // Internal shoot link: always the last line.
