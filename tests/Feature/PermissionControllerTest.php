@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\Setting;
 use App\Models\User;
+use App\Services\RolePermissionService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
@@ -161,5 +162,38 @@ class PermissionControllerTest extends TestCase
             'resource' => 'robbie',
             'action' => 'view',
         ]);
+    }
+
+    public function test_editor_role_cannot_open_ai_studio(): void
+    {
+        $service = app(RolePermissionService::class);
+        $service->adminPayload();
+        $setting = Setting::query()->where('key', 'permissions.role_map.v1')->firstOrFail();
+        $map = json_decode($setting->value, true);
+        $map['roles']['editor'][] = 'ai-editing-view';
+        $setting->update(['value' => json_encode($map)]);
+
+        $editor = User::factory()->create([
+            'role' => 'editor',
+            'permission_overrides' => ['allow' => ['ai-editing-view'], 'deny' => []],
+        ]);
+        $manager = User::factory()->create(['role' => 'editing_manager']);
+        $elevatedEditor = User::factory()->create([
+            'role' => 'editor',
+            'secondary_roles' => ['admin'],
+        ]);
+
+        $this->assertFalse($service->userCan($editor, 'ai-editing', 'view'));
+        $this->assertTrue($service->userCan($manager, 'ai-editing', 'view'));
+        $this->assertTrue($service->userCan($elevatedEditor, 'ai-editing', 'view'));
+
+        Sanctum::actingAs($editor);
+        $this->getJson('/api/me/permissions')
+            ->assertOk()
+            ->assertJsonMissing(['resource' => 'ai-editing']);
+
+        $saved = json_decode($setting->fresh()->value, true);
+        $this->assertNotContains('ai-editing-view', $saved['roles']['editor']);
+        $this->assertContains('dashboard-editor-view', $saved['roles']['editor']);
     }
 }

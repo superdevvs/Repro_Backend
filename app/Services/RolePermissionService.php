@@ -161,6 +161,7 @@ class RolePermissionService
             $normalized[$roleId] = $this->normalizePermissionIds($incomingIds, $catalogIds);
         }
 
+        $normalized = $this->revokeEditorAiStudio($normalized, $catalogIds);
         $this->savePermissions($normalized);
 
         return $normalized;
@@ -375,6 +376,31 @@ class RolePermissionService
             $permissions[$roleId] = $this->normalizePermissionIds($rolePermissions, $catalogIds);
         }
 
+        return $this->revokeEditorAiStudio($permissions, $catalogIds);
+    }
+
+    /**
+     * Editors do not get AI Studio. A stored grant from the earlier rollout is
+     * removed on read so the role map and the live permission check agree.
+     * Admins and editing managers keep the capability, including when it is
+     * only a secondary role.
+     */
+    private function revokeEditorAiStudio(array $permissions, array $catalogIds): array
+    {
+        $editorPermissions = $permissions['editor'] ?? null;
+        if (! is_array($editorPermissions)) {
+            return $permissions;
+        }
+
+        $studioIds = array_values(array_filter(
+            $catalogIds,
+            fn (string $id) => ($this->permissionRuleForId($id)['resource'] ?? null) === 'ai-editing',
+        ));
+        $permissions['editor'] = $this->normalizePermissionIds(
+            array_values(array_diff($editorPermissions, $studioIds)),
+            $catalogIds,
+        );
+
         return $permissions;
     }
 
@@ -409,6 +435,13 @@ class RolePermissionService
 
         // Deny always wins over role grants and explicit allows.
         $collected = array_diff($collected, $overrides['deny']);
+
+        if (! $roles->contains(fn ($role) => in_array($role, ['superadmin', 'admin', 'editing_manager'], true))) {
+            $collected = array_filter(
+                $collected,
+                fn ($id) => ($this->permissionRuleForId((string) $id)['resource'] ?? null) !== 'ai-editing',
+            );
+        }
 
         return $this->normalizePermissionIds($collected, $catalogIds);
     }
