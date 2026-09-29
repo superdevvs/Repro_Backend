@@ -27,11 +27,11 @@ use Tests\TestCase;
  * TRACKED field differs. The tracked fields are exactly the canonical signature
  * inputs (Req 9.3):
  *
- *   client name, client phone (phone ?: phonenumber), client email, full
- *   address (payload `location`), scheduled_at, photographer (connection
- *   user_id), service names (sorted), per-service scheduled times, notes
- *   (shoot_notes ?: notes), photographer_notes, status, workflow_status,
- *   cancellation state, and the target calendar_id.
+ *   client name, full address (payload `location`), scheduled_at,
+ *   photographer (connection user_id), service names (sorted), per-service
+ *   scheduled times, notes (shoot_notes ?: notes), photographer_notes, status,
+ *   workflow_status, cancellation state, and the target calendar_id.
+ *   Client phone/email are untracked (not rendered in the calendar description).
  *
  * The property therefore has two directions, both asserted here:
  *
@@ -69,8 +69,6 @@ class GoogleCalendarFingerprintPropertyTest extends TestCase
     /** Tracked mutations: each MUST change the fingerprint. */
     private const TRACKED_MUTATIONS = [
         'client_name',
-        'client_phone',
-        'client_email',
         'address',
         'scheduled_at',
         'photographer',
@@ -85,6 +83,8 @@ class GoogleCalendarFingerprintPropertyTest extends TestCase
 
     /** Untracked mutations: each MUST leave the fingerprint unchanged. */
     private const UNTRACKED_MUTATIONS = [
+        'client_phone',
+        'client_email',
         'editor_notes',
         'company_notes',
         'admin_issue_notes',

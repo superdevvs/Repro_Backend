@@ -240,7 +240,7 @@ class GoogleCalendarEventPayloadBuilder
 
     /**
      * defined in the design "Description format specification". Sections are separated by a
-     * single blank line. Phone/Email lines are omitted when missing; the named sections
+     * single blank line. Client phone/email are never included (PII). The named sections
      * (Shoot Notes / Property Access / Arrival Instructions / On-Site Contact) always render,
      * falling back to "Not provided" when empty. Pricing, payment status, and internal note
      * columns (company_notes, editor_notes, admin_issue_notes) are never included.
@@ -250,19 +250,9 @@ class GoogleCalendarEventPayloadBuilder
      */
     protected function buildDescription(Shoot $shoot, string $timezone): ?string
     {
-        $clientName = $this->clientName($shoot);
-        $phone = $this->clientPhone($shoot);
-        $email = $this->clientEmail($shoot);
-
-        // Contact block: client name first, then optional Phone:/Email: labelled lines.
-        $contactLines = [$clientName];
-        if ($phone !== '') {
-            $contactLines[] = "Phone: {$phone}";
-        }
-        if ($email !== '') {
-            $contactLines[] = "Email: {$email}";
-        }
-        $sections = [implode("\n", $contactLines)];
+        // Contact block: client display name only. Client phone/email are PII and must
+        // never appear in the photographer-facing Google Calendar description.
+        $sections = [$this->clientName($shoot)];
 
         $repName = $this->repName($shoot);
         if ($repName !== '') {
@@ -403,40 +393,57 @@ class GoogleCalendarEventPayloadBuilder
 
     /**
      * On-Site Contact: prefer access-contact fields from property_details when present,
-     * otherwise fall back to the client formatted as "{name} ({phone}, {email})".
-     * Returns "Not provided" only when no name can be derived. Never throws.
+     * otherwise fall back to the client display name only. Client phone/email never appear.
+     * When the access contact phone matches the client phone, the phone is omitted (name ok).
+     * Returns "Not provided" when no useful non-PII contact remains. Never throws.
      */
     protected function deriveOnSiteContact(Shoot $shoot): string
     {
         $propertyDetails = $this->propertyDetails($shoot);
         $accessName = trim((string) ($propertyDetails['accessContactName'] ?? $propertyDetails['access_contact_name'] ?? ''));
         $accessPhone = trim((string) ($propertyDetails['accessContactPhone'] ?? $propertyDetails['access_contact_phone'] ?? ''));
+        $clientPhone = $this->clientPhone($shoot);
 
         if ($accessName !== '' || $accessPhone !== '') {
+            // Drop access phone when it is the client's phone — same PII restriction.
+            if ($accessPhone !== '' && $clientPhone !== '' && $this->phonesMatch($accessPhone, $clientPhone)) {
+                $accessPhone = '';
+            }
+
             if ($accessName !== '' && $accessPhone !== '') {
                 return "{$accessName} ({$accessPhone})";
             }
 
-            return $accessName !== '' ? $accessName : $accessPhone;
+            if ($accessName !== '') {
+                return $accessName;
+            }
+
+            if ($accessPhone !== '') {
+                return $accessPhone;
+            }
+            // Access block had only client-matching phone; fall through to client name.
         }
 
         $client = $shoot->client;
         $name = trim((string) ($client?->name ?: $client?->company_name ?: ''));
 
-        if ($name === '') {
-            return 'Not provided';
-        }
+        return $name !== '' ? $name : 'Not provided';
+    }
 
-        $details = array_values(array_filter([
-            $this->clientPhone($shoot),
-            $this->clientEmail($shoot),
-        ], static fn ($value) => $value !== ''));
+    /**
+     * Compare phone numbers by digits only so formatting differences do not reintroduce
+     * client PII into On-Site Contact.
+     */
+    protected function phonesMatch(string $left, string $right): bool
+    {
+        $normalize = static function (string $value): string {
+            return preg_replace('/\D+/', '', $value) ?? '';
+        };
 
-        if ($details === []) {
-            return $name;
-        }
+        $leftDigits = $normalize($left);
+        $rightDigits = $normalize($right);
 
-        return $name . ' (' . implode(', ', $details) . ')';
+        return $leftDigits !== '' && $leftDigits === $rightDigits;
     }
 
     /**

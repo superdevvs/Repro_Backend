@@ -13,24 +13,23 @@ use Mockery\Adapter\Phpunit\MockeryPHPUnitIntegration;
 use Tests\TestCase;
 
 /**
- * Feature: google-calendar-sync-upgrade, Property 2: Description omits empty
- * phone/email lines but always renders named sections.
+ * Feature: google-calendar-sync-upgrade, Property 2: Description never includes
+ * client phone/email and always renders named sections.
  *
- * Validates: Requirements 3.1, 3.2, 3.3, 3.4, 3.5, 3.7, 3.8, 3.9, 3.10
+ * Validates: Requirements 3.1, 3.7, 3.8, 3.9, 3.10 (client PII exclusion)
  *
  * For any shoot, the description produced by
  * GoogleCalendarEventPayloadBuilder::build() (the `description` key):
  *
- *   (a) contains a "Phone:" line iff the client phone (client `phone`, falling
- *       back to `phonenumber`) is non-empty (Req 3.2, 3.3);
- *   (b) contains an "Email:" line iff the client email is non-empty
- *       (Req 3.4, 3.5);
+ *   (a) NEVER contains a "Phone:" labelled line (client phone is PII);
+ *   (b) NEVER contains an "Email:" labelled line (client email is PII);
  *   (c) always renders the "Shoot Notes:", "Property Access:",
  *       "Arrival Instructions:", and "On-Site Contact:" named sections
  *       (Req 3.7, 3.8, 3.9, 3.10);
  *   (d) renders "Not provided" for each named section whose derived value is
  *       empty — for On-Site Contact this happens only when no client display
- *       name can be derived (Req 3.7, 3.8, 3.9, 3.10);
+ *       name can be derived (Req 3.7, 3.8, 3.9, 3.10). On-Site Contact is the
+ *       client display name only (no phone/email);
  *   (e) always starts with the client display name as its first line (Req 3.1).
  *
  * Approach: no PHP property-based testing library is configured for the
@@ -68,12 +67,12 @@ class GoogleCalendarDescriptionSectionsPropertyTest extends TestCase
     }
 
     /**
-     * Feature: google-calendar-sync-upgrade, Property 2: Description omits empty
-     * phone/email lines but always renders named sections.
+     * Feature: google-calendar-sync-upgrade, Property 2: Description never includes
+     * client phone/email and always renders named sections.
      *
-     * Validates: Requirements 3.1, 3.2, 3.3, 3.4, 3.5, 3.7, 3.8, 3.9, 3.10
+     * Validates: Requirements 3.1, 3.7, 3.8, 3.9, 3.10 (client PII exclusion)
      */
-    public function test_description_omits_empty_contact_lines_and_always_renders_named_sections(): void
+    public function test_description_omits_client_pii_and_always_renders_named_sections(): void
     {
         mt_srand(self::SEED);
 
@@ -190,30 +189,28 @@ class GoogleCalendarDescriptionSectionsPropertyTest extends TestCase
                 "[e] first line must be the client display name. {$context}"
             );
 
-            // (a) "Phone:" line present iff client phone is non-empty (Req 3.2, 3.3).
-            $hasPhoneLine = (bool) preg_match('/^Phone: .+$/m', $description);
+            // (a)/(b) Client phone/email must never appear in the description.
+            $this->assertFalse(
+                (bool) preg_match('/^Phone: .+$/m', $description),
+                "[a] Phone line must never appear (client PII). {$context}"
+            );
+            $this->assertFalse(
+                (bool) preg_match('/^Email: .+$/m', $description),
+                "[b] Email line must never appear (client PII). {$context}"
+            );
             if ($expectedPhone !== '') {
-                $this->assertTrue($hasPhoneLine, "[a] Phone line must be present. {$context}");
-                $this->assertStringContainsString(
-                    "Phone: {$expectedPhone}",
+                $this->assertStringNotContainsString(
+                    $expectedPhone,
                     $description,
-                    "[a] Phone line must carry the resolved phone. {$context}"
+                    "[a] client phone token must not leak into description. {$context}"
                 );
-            } else {
-                $this->assertFalse($hasPhoneLine, "[a] Phone line must be omitted when no phone. {$context}");
             }
-
-            // (b) "Email:" line present iff client email is non-empty (Req 3.4, 3.5).
-            $hasEmailLine = (bool) preg_match('/^Email: .+$/m', $description);
             if ($expectedEmail !== '') {
-                $this->assertTrue($hasEmailLine, "[b] Email line must be present. {$context}");
-                $this->assertStringContainsString(
-                    "Email: {$expectedEmail}",
+                $this->assertStringNotContainsString(
+                    $expectedEmail,
                     $description,
-                    "[b] Email line must carry the client email. {$context}"
+                    "[b] client email token must not leak into description. {$context}"
                 );
-            } else {
-                $this->assertFalse($hasEmailLine, "[b] Email line must be omitted when no email. {$context}");
             }
 
             // (c) Named sections are ALWAYS present (Req 3.7, 3.8, 3.9, 3.10).
@@ -253,20 +250,13 @@ class GoogleCalendarDescriptionSectionsPropertyTest extends TestCase
                 "[d] Arrival Instructions body must render derived value or 'Not provided'. {$context}"
             );
 
-            // On-Site Contact: client name + optional (phone, email); "Not provided"
+            // On-Site Contact: client display name only (no phone/email); "Not provided"
             // only when no client display name can be derived.
-            if ($onSiteName === '') {
-                $expectedOnSite = 'Not provided';
-            } else {
-                $details = array_values(array_filter([$expectedPhone, $expectedEmail], static fn ($v) => $v !== ''));
-                $expectedOnSite = $details === []
-                    ? $onSiteName
-                    : $onSiteName . ' (' . implode(', ', $details) . ')';
-            }
+            $expectedOnSite = $onSiteName !== '' ? $onSiteName : 'Not provided';
             $this->assertSame(
                 $expectedOnSite,
                 $onSiteBody,
-                "[d] On-Site Contact body must render client contact or 'Not provided'. {$context}"
+                "[d] On-Site Contact body must render client name only or 'Not provided'. {$context}"
             );
         }
     }
