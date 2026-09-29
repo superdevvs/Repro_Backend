@@ -282,6 +282,176 @@ class ShootMutationActionsTest extends TestCase
     }
 
     #[\PHPUnit\Framework\Attributes\Test]
+    public function undated_on_hold_resume_accepts_schedule_on_resume_payload(): void
+    {
+        Sanctum::actingAs($this->admin);
+
+        $shoot = Shoot::factory()->create([
+            'client_id' => $this->client->id,
+            'photographer_id' => $this->photographer->id,
+            'service_id' => $this->service->id,
+            'status' => 'on_hold',
+            'workflow_status' => Shoot::STATUS_ON_HOLD,
+            'scheduled_at' => null,
+            'scheduled_date' => null,
+            'time' => null,
+            'timezone' => 'America/New_York',
+            'address' => '1 Undated Hold Way',
+            'city' => 'Baltimore',
+            'state' => 'MD',
+            'zip' => '21201',
+        ]);
+        $this->attachPrimaryService($shoot);
+
+        $scheduledAt = now()->addDays(5)->setTime(14, 0)->format('Y-m-d H:i:s');
+
+        $this->postJson("/api/shoots/{$shoot->id}/schedule", [
+            'scheduled_at' => $scheduledAt,
+            'photographer_id' => $this->photographer->id,
+        ])->assertOk()
+            ->assertJsonPath('message', 'Shoot scheduled successfully');
+
+        $shoot->refresh();
+        $this->assertSame(Shoot::STATUS_SCHEDULED, $shoot->status);
+        $this->assertSame(Shoot::STATUS_SCHEDULED, $shoot->workflow_status);
+        $this->assertSame($scheduledAt, $shoot->scheduled_at?->format('Y-m-d H:i:s'));
+        $this->assertDatabaseHas('shoot_activity_logs', [
+            'shoot_id' => $shoot->id,
+            'action' => 'shoot_resumed_from_hold',
+            'user_id' => $this->admin->id,
+        ]);
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
+    public function undated_on_hold_resume_accepts_local_date_and_time_payload(): void
+    {
+        Sanctum::actingAs($this->salesRep);
+
+        $shoot = Shoot::factory()->create([
+            'client_id' => $this->client->id,
+            'photographer_id' => $this->photographer->id,
+            'service_id' => $this->service->id,
+            'rep_id' => $this->salesRep->id,
+            'status' => 'on_hold',
+            'workflow_status' => Shoot::STATUS_ON_HOLD,
+            'scheduled_at' => null,
+            'scheduled_date' => null,
+            'time' => null,
+            'timezone' => 'America/New_York',
+            'address' => '2 Undated Hold Way',
+            'city' => 'Baltimore',
+            'state' => 'MD',
+            'zip' => '21201',
+        ]);
+        $this->attachPrimaryService($shoot);
+
+        $scheduledDay = now()->addDays(6)->toDateString();
+
+        $this->postJson("/api/shoots/{$shoot->id}/schedule", [
+            'scheduled_date' => $scheduledDay,
+            'time' => '11:30',
+            'photographer_id' => $this->photographer->id,
+        ])->assertOk();
+
+        $shoot->refresh();
+        $this->assertSame(Shoot::STATUS_SCHEDULED, $shoot->status);
+        $this->assertSame(Shoot::STATUS_SCHEDULED, $shoot->workflow_status);
+        $this->assertSame($scheduledDay, $shoot->scheduled_date?->toDateString());
+        $this->assertSame('11:30', $shoot->time);
+        $this->assertNotNull($shoot->scheduled_at);
+        $this->assertDatabaseHas('shoot_activity_logs', [
+            'shoot_id' => $shoot->id,
+            'action' => 'shoot_resumed_from_hold',
+            'user_id' => $this->salesRep->id,
+        ]);
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
+    public function undated_on_hold_can_set_appointment_then_resume_without_repeating_date(): void
+    {
+        Sanctum::actingAs($this->salesRep);
+
+        $shoot = Shoot::factory()->create([
+            'client_id' => $this->client->id,
+            'photographer_id' => $this->photographer->id,
+            'service_id' => $this->service->id,
+            'rep_id' => $this->salesRep->id,
+            'status' => 'on_hold',
+            'workflow_status' => Shoot::STATUS_ON_HOLD,
+            'scheduled_at' => null,
+            'scheduled_date' => null,
+            'time' => null,
+            'timezone' => 'America/New_York',
+            'address' => '3 Undated Hold Way',
+            'city' => 'Baltimore',
+            'state' => 'MD',
+            'zip' => '21201',
+        ]);
+        $this->attachPrimaryService($shoot);
+
+        $scheduledDay = now()->addDays(7)->toDateString();
+        $this->patchJson("/api/shoots/{$shoot->id}", [
+            'scheduled_date' => $scheduledDay,
+            'time' => '09:15',
+        ])->assertOk();
+
+        $shoot->refresh();
+        $this->assertSame('on_hold', $shoot->status);
+        $this->assertSame(Shoot::STATUS_ON_HOLD, $shoot->workflow_status);
+        $this->assertSame($scheduledDay, $shoot->scheduled_date?->toDateString());
+
+        // Resume without re-sending the appointment — use the date saved above.
+        $this->postJson("/api/shoots/{$shoot->id}/schedule", [
+            'photographer_id' => $this->photographer->id,
+        ])->assertOk();
+
+        $shoot->refresh();
+        $this->assertSame(Shoot::STATUS_SCHEDULED, $shoot->status);
+        $this->assertSame(Shoot::STATUS_SCHEDULED, $shoot->workflow_status);
+        $this->assertSame($scheduledDay, $shoot->scheduled_date?->toDateString());
+        $this->assertNotNull($shoot->scheduled_at);
+        $this->assertDatabaseHas('shoot_activity_logs', [
+            'shoot_id' => $shoot->id,
+            'action' => 'shoot_resumed_from_hold',
+            'user_id' => $this->salesRep->id,
+        ]);
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
+    public function undated_on_hold_resume_without_schedule_payload_is_rejected(): void
+    {
+        Sanctum::actingAs($this->admin);
+
+        $shoot = Shoot::factory()->create([
+            'client_id' => $this->client->id,
+            'photographer_id' => $this->photographer->id,
+            'service_id' => $this->service->id,
+            'status' => 'on_hold',
+            'workflow_status' => Shoot::STATUS_ON_HOLD,
+            'scheduled_at' => null,
+            'scheduled_date' => null,
+            'time' => null,
+            'timezone' => 'America/New_York',
+            'address' => '4 Undated Hold Way',
+            'city' => 'Baltimore',
+            'state' => 'MD',
+            'zip' => '21201',
+        ]);
+        $this->attachPrimaryService($shoot);
+
+        $this->postJson("/api/shoots/{$shoot->id}/schedule", [
+            'photographer_id' => $this->photographer->id,
+        ])->assertStatus(422)
+            ->assertJsonPath('message', 'scheduled_at is required');
+
+        $shoot->refresh();
+        $this->assertSame('on_hold', $shoot->status);
+        $this->assertSame(Shoot::STATUS_ON_HOLD, $shoot->workflow_status);
+        $this->assertNull($shoot->scheduled_at);
+        $this->assertNull($shoot->scheduled_date);
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
     public function sales_reps_cannot_schedule_or_rewrite_a_shoot_that_is_not_on_hold(): void
     {
         Sanctum::actingAs($this->salesRep);

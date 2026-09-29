@@ -22,7 +22,10 @@ class UpdateShootStatusRequest extends FormRequest
     public function rules(): array
     {
         return [
+            // Schedule-on-resume may send scheduled_at and/or local date+time.
             'scheduled_at' => 'nullable|date',
+            'scheduled_date' => 'nullable|date',
+            'time' => 'nullable|string|max:10',
             'photographer_id' => 'nullable|exists:users,id',
             'reason' => 'nullable|string|max:500',
             'expected_units_revision' => 'nullable|integer|min:0',

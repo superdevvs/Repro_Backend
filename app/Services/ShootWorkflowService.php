@@ -107,6 +107,11 @@ class ShootWorkflowService
     {
         // If shoot is already scheduled, allow updating the scheduled time without transition validation
         $currentStatus = $shoot->workflow_status ?? $shoot->status ?? self::STATUS_ON_HOLD;
+        if ($currentStatus === 'hold_on') {
+            $currentStatus = self::STATUS_ON_HOLD;
+        } elseif ($currentStatus === 'booked') {
+            $currentStatus = self::STATUS_SCHEDULED;
+        }
         $isAlreadyScheduled = in_array($currentStatus, [self::STATUS_SCHEDULED], true);
         $isResumingFromHold = in_array($currentStatus, [self::STATUS_ON_HOLD], true);
 

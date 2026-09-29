@@ -31,16 +31,11 @@ class ScheduleShootAction
         $validated = $request->validated();
         $originalPhotographerId = $shoot->photographer_id;
         $beforeSnapshot = $this->mailService->captureShootSnapshot($shoot);
-        $scheduledAt = $validated['scheduled_at'] ? new \DateTime($validated['scheduled_at']) : null;
-
-        if (! $scheduledAt) {
-            throw ValidationException::withMessages([
-                'scheduled_at' => ['scheduled_at is required'],
-            ]);
-        }
+        $scheduledAt = $this->resolveScheduleInstant($validated, $shoot);
 
         $isMultiUnit = $shoot->units()->exists();
-        $wasOnHold = ($shoot->status === 'hold_on' || $shoot->workflow_status === 'on_hold');
+        $wasOnHold = in_array(strtolower((string) $shoot->status), ['hold_on', 'on_hold'], true)
+            || in_array(strtolower((string) $shoot->workflow_status), ['hold_on', 'on_hold'], true);
         if ($isMultiUnit) {
             $this->resumeUnitPlan($shoot, $scheduledAt, $validated, $user);
         }
@@ -245,6 +240,41 @@ class ScheduleShootAction
             $this->workflowService->schedule($current, $current->scheduled_at ?? $scheduledAt, $user);
         }), 'resume-unit-visit-plan');
         $shoot->refresh();
+    }
+
+    /**
+     * Resolve the appointment for schedule / resume-from-hold.
+     *
+     * Undated On Hold imports have null appointment fields. Accept a schedule-on-resume
+     * payload (scheduled_at or scheduled_date[+time]), or fall back to a date already
+     * saved on the shoot after a prior edit. Still reject when nothing provides a date.
+     */
+    private function resolveScheduleInstant(array $validated, Shoot $shoot): \DateTime
+    {
+        if (! empty($validated['scheduled_at'])) {
+            return new \DateTime($validated['scheduled_at']);
+        }
+
+        $requestDate = $validated['scheduled_date'] ?? null;
+        $requestTime = $validated['time'] ?? null;
+        if (! empty($requestDate)) {
+            return new \DateTime(trim(sprintf('%s %s', $requestDate, $requestTime ?: '00:00:00')));
+        }
+
+        if ($shoot->scheduled_at) {
+            return new \DateTime($shoot->scheduled_at->format('Y-m-d H:i:s'));
+        }
+
+        $existingDate = $shoot->scheduled_date?->toDateString() ?? $shoot->scheduled_date;
+        if (! empty($existingDate)) {
+            $existingTime = $requestTime ?: ($shoot->time ?: '00:00:00');
+
+            return new \DateTime(trim(sprintf('%s %s', $existingDate, $existingTime)));
+        }
+
+        throw ValidationException::withMessages([
+            'scheduled_at' => ['scheduled_at is required'],
+        ]);
     }
 
     private function formatDispatchSummaryForLog(?array $dispatch): array
