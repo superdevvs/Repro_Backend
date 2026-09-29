@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\Shoot;
+use App\Models\ShootFile;
 use App\Models\User;
 use App\Services\Shoots\ShootListingService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -22,6 +23,45 @@ class ShootListingAuthorizationTest extends TestCase
         parent::setUp();
         Bus::fake();
         Http::preventStrayRequests();
+    }
+
+    public function test_include_files_false_omits_file_rows_from_the_list(): void
+    {
+        $photographer = User::factory()->create(['role' => 'photographer']);
+        $shoot = $this->shoot([
+            'photographer_id' => $photographer->id,
+            'status' => Shoot::STATUS_DELIVERED,
+            'workflow_status' => Shoot::STATUS_DELIVERED,
+            'hero_image' => 'shoots/cover.jpg',
+            'raw_photo_count' => 12,
+        ]);
+        ShootFile::query()->create([
+            'shoot_id' => $shoot->id,
+            'filename' => 'secret-raw.CR3',
+            'stored_filename' => 'secret-raw.CR3',
+            'path' => 'shoots/secret-raw.CR3',
+            'file_type' => 'image/x-canon-cr3',
+            'mime_type' => 'image/x-canon-cr3',
+            'file_size' => 2048,
+            'uploaded_by' => $photographer->id,
+            'workflow_stage' => 'todo',
+        ]);
+
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+        $response = $this->actingAs($photographer)->getJson('/api/shoots?tab=delivered&include_files=false&no_cache=true');
+        $queries = collect(DB::getQueryLog())->pluck('query')->implode("\n");
+
+        $response->assertOk();
+        $this->assertSame([], $response->json('data.0.files'));
+        $this->assertSame(12, $response->json('data.0.media_summary.rawUploaded'));
+        $this->assertStringNotContainsString('secret-raw', $response->getContent());
+        $this->assertStringNotContainsString('shoot_files', strtolower($queries));
+
+        DB::flushQueryLog();
+        $withFiles = $this->actingAs($photographer)->getJson('/api/shoots?tab=delivered&include_files=true&no_cache=true');
+        $withFiles->assertOk();
+        $this->assertSame('secret-raw.CR3', $withFiles->json('data.0.files.0.filename'));
     }
 
     public function test_sales_queries_counts_and_filter_metadata_include_every_shoot(): void

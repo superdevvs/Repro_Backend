@@ -193,8 +193,8 @@ class ShootListingService
                 : $query->paginate($perPage, ['*'], 'page', $page);
             $isClientUser = $user && $user->role === 'client';
 
-            $transformedShoots = $shoots->getCollection()->map(function (Shoot $shoot) use ($transformShoot, $isClientUser) {
-                return $transformShoot($shoot, $isClientUser);
+            $transformedShoots = $shoots->getCollection()->map(function (Shoot $shoot) use ($transformShoot, $isClientUser, $needsFiles) {
+                return $transformShoot($shoot, $isClientUser, $needsFiles);
             });
 
             $shoots->setCollection($transformedShoots);

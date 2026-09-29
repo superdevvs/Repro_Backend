@@ -22,9 +22,9 @@ class ShootPresenter
         protected IguideDataVisibilityService $iguideDataVisibility
     ) {}
 
-    public function transformOperationalShoot(Shoot $shoot, bool $isClientUser): array
+    public function transformOperationalShoot(Shoot $shoot, bool $isClientUser, bool $includeFiles = true): array
     {
-        $transformedShoot = $this->transformShoot($shoot);
+        $transformedShoot = $this->transformShoot($shoot, $includeFiles);
         $shootArray = $transformedShoot->toArray();
         $servicesArray = $transformedShoot->getAttribute('services_list')
             ?? $transformedShoot->services->pluck('name')->filter()->values()->all();
@@ -238,7 +238,7 @@ class ShootPresenter
         return (bool) preg_match('/\.(jpg|jpeg|png|webp|gif|tif|tiff|heic|heif)$/i', $filename);
     }
 
-    public function transformShoot(Shoot $shoot): Shoot
+    public function transformShoot(Shoot $shoot, bool $includeFiles = true): Shoot
     {
         $sourceDate = data_get($shoot->external_booking_payload, 'source_dates.completed_date');
         if (is_string($sourceDate)) {
@@ -250,7 +250,11 @@ class ShootPresenter
         $scheduledInstant = $scheduleResolver->forShoot($shoot)?->utc()->toIso8601String();
         $scheduleTimezone = $scheduleResolver->timezoneForShoot($shoot);
         $cancellationFeeWindow = $scheduleResolver->isWithinCancellationFeeWindow($shoot);
-        if (! $shoot->relationLoaded('files')) {
+        if (! $includeFiles) {
+            // List responses pass include_files=false. Loading every file here
+            // turned one delivered page into several megabytes and locked SQLite.
+            $shoot->setRelation('files', collect());
+        } elseif (! $shoot->relationLoaded('files')) {
             $shoot->load(['files' => function ($query) {
                 $query->select(
                     'id',
@@ -291,12 +295,14 @@ class ShootPresenter
         $shoot->append('total_paid', 'remaining_balance', 'total_photographer_pay');
         $requestingUser = auth()->user();
         // Filter before deriving hero images, counters, or serializing loaded files.
-        if ($requestingUser) {
+        if ($includeFiles && $requestingUser) {
             $authorization = app(ShootAuthorizationSupport::class);
             $shoot->setRelation('files', $shoot->files->filter(fn (ShootFile $file) =>
                 $authorization->canInteractWithShootMediaFile($shoot, $file, $requestingUser))->values());
         }
-        $scopedMediaCounts = app(ShootAuthorizationSupport::class)->scopedMediaCounts($shoot, $requestingUser);
+        $scopedMediaCounts = $includeFiles
+            ? app(ShootAuthorizationSupport::class)->scopedMediaCounts($shoot, $requestingUser)
+            : null;
         $releaseAccess = app(ShootClientReleaseAccessService::class);
         $classifier = app(ShootDownloadAssetClassifier::class);
         foreach ($shoot->files as $file) {
@@ -548,9 +554,9 @@ class ShootPresenter
         ];
 
         $shoot->media_summary = $this->buildMediaSummary($shoot);
-        if (! $shoot->hero_image || in_array($requestingRole, ['photographer', 'editor', 'client'], true)) {
+        if ($includeFiles && (! $shoot->hero_image || in_array($requestingRole, ['photographer', 'editor', 'client'], true))) {
             $shoot->hero_image = $this->resolveHeroImage($shoot, false);
-        } else {
+        } elseif ($shoot->hero_image) {
             $shoot->hero_image = $this->fileAccessService->resolvePublicStorageUrl($shoot->hero_image)
                 ?: $shoot->hero_image;
         }

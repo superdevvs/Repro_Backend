@@ -47,7 +47,7 @@ class ShootController extends Controller
         return $this->shootListingService->index(
             $request,
             auth()->user(),
-            fn (Shoot $shoot, bool $isClientUser) => $this->shootPresenter->transformOperationalShoot($shoot, $isClientUser)
+            fn (Shoot $shoot, bool $isClientUser, bool $includeFiles = true) => $this->shootPresenter->transformOperationalShoot($shoot, $isClientUser, $includeFiles)
         );
     }
 
