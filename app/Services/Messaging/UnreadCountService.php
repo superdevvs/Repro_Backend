@@ -40,9 +40,9 @@ class UnreadCountService
     }
 
     /**
-     * Voice has no per-user unread list. Badge count = recent missed inbound
-     * calls plus the Calls inbox "needs attention" set (handoff / callback /
-     * needs_follow_up), windowed to 30 days so the badge stays actionable.
+     * Match VoiceCallController filter=needs_attention so the Calls nav badge
+     * agrees with the Calls inbox. Windowed to 30 days so the badge stays
+     * actionable (voice has no per-user unread list).
      */
     public function countAttentionCalls(?Carbon $since = null): int
     {
@@ -51,18 +51,9 @@ class UnreadCountService
         return VoiceCall::query()
             ->where('created_at', '>=', $since)
             ->where(function ($query) {
-                $query->where(function ($missed) {
-                    $missed->where('direction', 'INBOUND')
-                        ->whereNull('answered_at')
-                        ->where(function ($ended) {
-                            $ended->whereNotNull('ended_at')
-                                ->orWhereIn('status', ['missed', 'failed']);
-                        });
-                })->orWhere(function ($attention) {
-                    $attention->whereIn('disposition', ['handoff_to_staff', 'callback_needed'])
-                        ->orWhere('needs_follow_up', true)
-                        ->orWhereJsonContains('metadata->needs_follow_up', true);
-                });
+                $query->whereIn('disposition', ['handoff_to_staff', 'callback_needed'])
+                    ->orWhere('needs_follow_up', true)
+                    ->orWhereJsonContains('metadata->needs_follow_up', true);
             })
             ->count();
     }

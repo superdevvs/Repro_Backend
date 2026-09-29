@@ -48,7 +48,8 @@ class MessagingUnreadCountsTest extends TestCase
         $this->makeUnreadThread('SMS', [$other->id]);
         $this->makeUnreadThread('EMAIL', []);
 
-        $missed = VoiceCall::query()->create([
+        // Raw missed without needs_attention flags should NOT badge (matches Calls inbox).
+        $missedOnly = VoiceCall::query()->create([
             'direction' => 'INBOUND',
             'status' => 'missed',
             'from_phone' => '+12025550111',
@@ -56,7 +57,7 @@ class MessagingUnreadCountsTest extends TestCase
             'answered_at' => null,
             'ended_at' => now()->subHour(),
         ]);
-        VoiceCall::query()->whereKey($missed->id)->update([
+        VoiceCall::query()->whereKey($missedOnly->id)->update([
             'created_at' => now()->subDay(),
             'updated_at' => now()->subDay(),
         ]);
@@ -64,6 +65,7 @@ class MessagingUnreadCountsTest extends TestCase
         $followUp = VoiceCall::query()->create([
             'direction' => 'INBOUND',
             'status' => 'completed',
+            'disposition' => 'handoff_to_staff',
             'from_phone' => '+12025550112',
             'to_phone' => '+12025550100',
             'answered_at' => now()->subHours(2),
@@ -75,13 +77,29 @@ class MessagingUnreadCountsTest extends TestCase
             'updated_at' => now()->subDays(2),
         ]);
 
+        $callbackNeeded = VoiceCall::query()->create([
+            'direction' => 'INBOUND',
+            'status' => 'completed',
+            'disposition' => 'callback_needed',
+            'from_phone' => '+12025550116',
+            'to_phone' => '+12025550100',
+            'answered_at' => now()->subHours(3),
+            'ended_at' => now()->subHours(3),
+        ]);
+        VoiceCall::query()->whereKey($callbackNeeded->id)->update([
+            'created_at' => now()->subDays(1),
+            'updated_at' => now()->subDays(1),
+        ]);
+
         $stale = VoiceCall::query()->create([
             'direction' => 'INBOUND',
-            'status' => 'missed',
+            'status' => 'completed',
+            'disposition' => 'handoff_to_staff',
             'from_phone' => '+12025550113',
             'to_phone' => '+12025550100',
             'answered_at' => null,
             'ended_at' => now()->subDays(45),
+            'needs_follow_up' => true,
         ]);
         VoiceCall::query()->whereKey($stale->id)->update([
             'created_at' => now()->subDays(45),
@@ -93,7 +111,7 @@ class MessagingUnreadCountsTest extends TestCase
 
         $this->assertSame(1, $counts['email']);
         $this->assertSame(1, $counts['sms']);
-        $this->assertSame(2, $counts['call']);
+        $this->assertSame(2, $counts['call']); // followUp + callbackNeeded; missedOnly and stale excluded
         $this->assertSame(4, $counts['total']);
     }
 
@@ -106,11 +124,13 @@ class MessagingUnreadCountsTest extends TestCase
         $this->makeUnreadThread('SMS', [$admin->id]);
         VoiceCall::query()->create([
             'direction' => 'INBOUND',
-            'status' => 'missed',
+            'status' => 'completed',
+            'disposition' => 'handoff_to_staff',
             'from_phone' => '+12025550114',
             'to_phone' => '+12025550100',
-            'answered_at' => null,
+            'answered_at' => now()->subMinute(),
             'ended_at' => now(),
+            'needs_follow_up' => true,
         ]);
 
         Sanctum::actingAs($admin);
@@ -195,5 +215,40 @@ class MessagingUnreadCountsTest extends TestCase
             ->assertOk()
             ->assertJsonPath('data.unread_counts.call', 0)
             ->assertJsonPath('data.unread_counts.total', 0);
+    }
+
+    public function test_messaging_badge_counts_endpoint_is_user_scoped(): void
+    {
+        $admin = User::factory()->create(['role' => 'admin']);
+        $other = User::factory()->create(['role' => 'admin']);
+
+        $this->makeUnreadThread('EMAIL', [$admin->id]);
+        $this->makeUnreadThread('SMS', [$admin->id]);
+        VoiceCall::query()->create([
+            'direction' => 'INBOUND',
+            'status' => 'completed',
+            'disposition' => 'callback_needed',
+            'from_phone' => '+12025550117',
+            'to_phone' => '+12025550100',
+            'answered_at' => now()->subMinute(),
+            'ended_at' => now(),
+        ]);
+
+        Sanctum::actingAs($admin);
+        $this->getJson('/api/messaging/badge-counts')
+            ->assertOk()
+            ->assertJson([
+                'email' => 1,
+                'sms' => 1,
+                'call' => 1,
+                'total' => 3,
+            ]);
+
+        Sanctum::actingAs($other);
+        $this->getJson('/api/messaging/badge-counts')
+            ->assertOk()
+            ->assertJsonPath('email', 0)
+            ->assertJsonPath('sms', 0)
+            ->assertJsonPath('call', 1);
     }
 }
