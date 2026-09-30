@@ -51,6 +51,10 @@ class FeaturedShootController extends Controller
         $validTokens = array_values(array_filter([
             $settingsService->featuredShootApiKey(),
             config('services.repro_dashboard.api_key'),
+            // The marketing site's server proxy uses one integration key for
+            // booking and these read-only, customer-facing featured feeds.
+            $settingsService->externalBookingApiKey(),
+            config('services.external_booking.api_key'),
         ], fn ($token) => is_string($token) && trim($token) !== ''));
 
         return $providedToken !== '' && collect($validTokens)

@@ -2,12 +2,15 @@
 
 namespace Tests\Feature;
 
+use App\Jobs\GenerateShootMediaArchiveJob;
 use App\Models\FeaturedShootImage;
 use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Models\User;
+use App\Services\ReproApiSettingsService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Facades\Queue;
 use Laravel\Sanctum\Sanctum;
 use PHPUnit\Framework\Attributes\Test;
 use Tests\TestCase;
@@ -15,6 +18,44 @@ use Tests\TestCase;
 class FeaturedShootApiTest extends TestCase
 {
     use RefreshDatabase;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        // Featured metadata fixtures are not downloadable media archives.
+        Queue::fake([GenerateShootMediaArchiveJob::class]);
+    }
+
+    #[Test]
+    public function featured_feeds_accept_the_marketing_booking_key_and_preserve_the_featured_key(): void
+    {
+        config([
+            'services.external_booking.api_key' => 'marketing-booking-token',
+            'services.repro_dashboard.api_key' => 'existing-featured-token',
+        ]);
+
+        foreach (['marketing-booking-token', 'existing-featured-token'] as $token) {
+            $this->withHeader('Authorization', 'Bearer '.$token)
+                ->getJson('/api/v1/featured-shoot')->assertOk()->assertContent('null');
+            $this->withHeader('Authorization', 'Bearer '.$token)
+                ->getJson('/api/v1/featured-shoots')->assertOk()->assertJson(['shoots' => []]);
+        }
+        $this->withHeader('Authorization', 'Bearer invalid-token')
+            ->getJson('/api/v1/featured-shoot')->assertUnauthorized();
+    }
+
+    #[Test]
+    public function featured_feeds_accept_the_configured_marketing_settings_key(): void
+    {
+        $this->mock(ReproApiSettingsService::class, function ($mock) {
+            $mock->shouldReceive('featuredShootApiKey')->andReturnNull();
+            $mock->shouldReceive('externalBookingApiKey')->andReturn('settings-marketing-token');
+        });
+        $this->withHeader('Authorization', 'Bearer settings-marketing-token')
+            ->getJson('/api/v1/featured-shoot')->assertOk();
+        $this->withHeader('Authorization', 'Bearer settings-marketing-token')
+            ->getJson('/api/v1/featured-shoots')->assertOk();
+    }
 
     #[Test]
     public function featured_shoot_endpoint_requires_the_configured_bearer_token(): void
