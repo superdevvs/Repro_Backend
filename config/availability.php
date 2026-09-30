@@ -13,7 +13,7 @@ return [
     // Buffer time in minutes between consecutive shoots
     // This accounts for travel time and prevents back-to-back bookings
     // Minimum 1 hour (60 minutes) gap required between bookings
-    'buffer_time_minutes' => env('PHOTOGRAPHER_BUFFER_TIME', 30),
+    'buffer_time_minutes' => (int) env('PHOTOGRAPHER_BUFFER_TIME', 30),
 
     /*
     |--------------------------------------------------------------------------
