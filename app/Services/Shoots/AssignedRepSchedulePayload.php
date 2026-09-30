@@ -10,7 +10,8 @@ class AssignedRepSchedulePayload
 {
     public function normalize(Shoot $shoot, array $payload): array
     {
-        foreach (['address', 'city', 'state', 'zip', 'client_id', 'photographer_id', 'timezone'] as $field) {
+        // photographer_id is intentionally editable for assigned reps (product decision).
+        foreach (['address', 'city', 'state', 'zip', 'client_id', 'timezone'] as $field) {
             if (array_key_exists($field, $payload)) {
                 abort_unless($this->sameValue($payload[$field], $shoot->{$field}), 403, 'Forbidden');
                 unset($payload[$field]);
@@ -101,17 +102,11 @@ class AssignedRepSchedulePayload
                 $serviceId = (int) $row['service_id'];
                 $item = $byService->get($serviceId);
                 abort_unless(array_key_exists('photographer_id', $row), 403, 'Forbidden');
-                if ($item) {
-                    abort_unless($this->sameValue(
-                        $row['photographer_id'],
-                        $item->photographer_id ?? $shoot->photographer_id
-                    ), 403, 'Forbidden');
-                } else {
-                    abort_unless(isset($incomingServiceIds[$serviceId])
-                        && $this->sameValue($row['photographer_id'], $shoot->photographer_id), 403, 'Forbidden');
-                }
+                // Assigned reps may reassign line photographers; service must already
+                // be on the shoot or part of the incoming bookable plan.
+                abort_unless($item || isset($incomingServiceIds[$serviceId]), 403, 'Forbidden');
             }
-            unset($payload['service_photographers']);
+            // Keep service_photographers so UpdateShootAction can apply the reassignment.
         }
 
         // Keep services as the mutation source of truth so new / removed lines apply.

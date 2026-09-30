@@ -58,8 +58,13 @@ class AssignedRepSchedulePayloadTest extends TestCase
             [['id' => $payload['services'][0]['id'], 'scheduled_at' => '2026-10-05 11:00:00']],
             $normalized['services']
         );
+        $this->assertSame($shoot->photographer_id, $normalized['photographer_id']);
         $this->assertSame(
-            ['scheduled_date', 'time', 'services', 'notify_client'],
+            [['service_id' => $payload['service_photographers'][0]['service_id'], 'photographer_id' => $shoot->photographer_id]],
+            $normalized['service_photographers']
+        );
+        $this->assertSame(
+            ['scheduled_date', 'time', 'photographer_id', 'services', 'service_photographers', 'notify_client'],
             array_keys($normalized)
         );
         $this->assertSame($payload['address'], $shoot->fresh()->address);
@@ -94,7 +99,10 @@ class AssignedRepSchedulePayloadTest extends TestCase
         $this->assertSame($zillow->id, $normalized['services'][1]['id']);
         $this->assertSame(1, $normalized['services'][1]['quantity']);
         $this->assertSame('2026-10-05 11:00:00', $normalized['services'][1]['scheduled_at']);
-        $this->assertArrayNotHasKey('service_photographers', $normalized);
+        $this->assertSame([
+            ['service_id' => $existing->id, 'photographer_id' => $shoot->photographer_id],
+            ['service_id' => $zillow->id, 'photographer_id' => $shoot->photographer_id],
+        ], $normalized['service_photographers']);
     }
 
     public function test_assigned_rep_cannot_add_a_migration_only_service(): void
@@ -146,7 +154,6 @@ class AssignedRepSchedulePayloadTest extends TestCase
         match ($change) {
             'address' => $payload['address'] = 'Another property',
             'client' => $payload['client_id'] = 999999,
-            'assignment' => $payload['service_photographers'][0]['photographer_id'] = 999999,
             'property' => $payload['property_details']['beds'] = 9,
             'unknown_service' => $payload['services'][0]['id'] = 999999,
             'duplicate_service' => $payload['services'][] = $payload['services'][0],
@@ -164,12 +171,45 @@ class AssignedRepSchedulePayloadTest extends TestCase
     public static function forbiddenContext(): array
     {
         return array_map(fn ($change) => [$change], [
-            'address', 'client', 'assignment', 'property',
+            'address', 'client', 'property',
             'unknown_service', 'duplicate_service', 'unknown_service_field', 'unknown_property_field',
         ]);
     }
 
-    public function test_existing_line_price_qty_pay_echoes_are_stripped_even_when_they_drift(): void
+    public function test_assigned_rep_may_reassign_shoot_and_service_photographers(): void
+    {
+        [$shoot, $payload, $existing] = $this->fixture();
+        $payload['photographer_id'] = 424242;
+        $payload['service_photographers'] = [[
+            'service_id' => $existing->id,
+            'photographer_id' => 424242,
+        ]];
+
+        $normalized = app(AssignedRepSchedulePayload::class)->normalize($shoot, $payload);
+
+        $this->assertSame(424242, $normalized['photographer_id']);
+        $this->assertSame([
+            ['service_id' => $existing->id, 'photographer_id' => 424242],
+        ], $normalized['service_photographers']);
+    }
+
+    public function test_service_photographer_for_unknown_service_still_rejected(): void
+    {
+        [$shoot, $payload] = $this->fixture();
+        $payload['service_photographers'] = [[
+            'service_id' => 999999,
+            'photographer_id' => 424242,
+        ]];
+
+        try {
+            app(AssignedRepSchedulePayload::class)->normalize($shoot, $payload);
+            $this->fail('Unknown service photographer rows must stay blocked.');
+        } catch (HttpException $error) {
+            $this->assertSame(403, $error->getStatusCode());
+        }
+    }
+
+        public function test_existing_line_price_qty_pay_echoes_are_stripped_even_when_they_drift(): void
     {
         [$shoot, $payload, $existing] = $this->fixture();
         // Simulate a legacy booked price that no longer matches catalog / FE echo.

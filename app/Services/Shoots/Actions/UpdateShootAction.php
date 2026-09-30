@@ -107,6 +107,11 @@ class UpdateShootAction
             'featured_homepage_images',
             'ghost_user_ids',
             'tour_links',
+            // Product: assigned sales reps may reassign shoot + service-line photographers.
+            'photographer_id',
+            'service_photographers',
+            'notify_client',
+            'notify_photographer',
         ];
         $photographerEditableKeys = [
             'is_featured',
@@ -221,10 +226,10 @@ class UpdateShootAction
                     }
                 }
             } elseif ($assignedRep) {
-                // Assigned sales reps may move an active appointment and edit the
-                // bookable service plan. Overview also submits unchanged context;
-                // verify and discard it instead of granting rights to change clients,
-                // photographers, line pricing, or property data.
+                // Assigned sales reps may move an active appointment, edit the
+                // bookable service plan, and reassign photographers. Overview also
+                // submits unchanged context; verify and discard it instead of
+                // granting rights to change clients, line pricing, or property data.
                 if (! $shoot->isImportDraft()
                     && $shoot->status === Shoot::STATUS_SCHEDULED
                     && $shoot->workflow_status === Shoot::STATUS_SCHEDULED
@@ -237,6 +242,7 @@ class UpdateShootAction
                     $requestKeys = array_keys($request->all());
                     $repEditableKeys = array_merge($repEditableKeys, [
                         'scheduled_date', 'scheduled_at', 'time', 'services', 'service_items',
+                        'photographer_id', 'service_photographers',
                         'notify_client', 'notify_photographer',
                         'confirm_service_detach', 'service_detach_confirmation_token',
                     ]);

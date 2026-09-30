@@ -678,6 +678,82 @@ class ShootMutationActionsTest extends TestCase
     }
 
     #[\PHPUnit\Framework\Attributes\Test]
+    public function assigned_sales_rep_can_reassign_photographer_on_scheduled_shoot(): void
+    {
+        Sanctum::actingAs($this->salesRep);
+
+        $replacement = User::factory()->create([
+            'role' => 'photographer',
+            'name' => 'Rep Reassign Photographer',
+            'email' => 'rep-reassign-photographer@test.com',
+        ]);
+
+        $shoot = Shoot::factory()->create([
+            'client_id' => $this->client->id,
+            'photographer_id' => $this->photographer->id,
+            'service_id' => $this->service->id,
+            'rep_id' => $this->salesRep->id,
+            'status' => Shoot::STATUS_SCHEDULED,
+            'workflow_status' => Shoot::STATUS_SCHEDULED,
+            'scheduled_date' => now()->addDays(3)->toDateString(),
+            'time' => '10:00',
+            'timezone' => 'America/New_York',
+            'address' => '149 Photographer Reassign Ave',
+            'city' => 'Baltimore',
+            'state' => 'MD',
+            'zip' => '21201',
+        ]);
+        $this->attachPrimaryService($shoot);
+
+        // Overview-shaped payload: services without line photographer_id so
+        // service_photographers merge applies the reassignment.
+        $this->patchJson("/api/shoots/{$shoot->id}", [
+            'photographer_id' => $replacement->id,
+            'services' => [
+                ['id' => $this->service->id, 'quantity' => 1],
+            ],
+            'service_photographers' => [
+                ['service_id' => $this->service->id, 'photographer_id' => $replacement->id],
+            ],
+            'notify_client' => false,
+            'notify_photographer' => false,
+        ])->assertOk();
+
+        // Bare photographer_id PATCH (no schedule/services) must also be allowed.
+        $this->patchJson("/api/shoots/{$shoot->id}", [
+            'photographer_id' => $this->photographer->id,
+        ])->assertOk();
+        $this->assertSame($this->photographer->id, (int) $shoot->fresh()->photographer_id);
+
+        $this->patchJson("/api/shoots/{$shoot->id}", [
+            'photographer_id' => $replacement->id,
+            'services' => [
+                ['id' => $this->service->id, 'quantity' => 1],
+            ],
+            'service_photographers' => [
+                ['service_id' => $this->service->id, 'photographer_id' => $replacement->id],
+            ],
+        ])->assertOk();
+
+        $shoot->refresh();
+        $this->assertSame($replacement->id, (int) $shoot->photographer_id);
+        $this->assertSame(
+            $replacement->id,
+            (int) $shoot->serviceItems()->where('service_id', $this->service->id)->value('photographer_id')
+        );
+
+        // Other ACL denials remain: client_id / address still forbidden.
+        $this->patchJson("/api/shoots/{$shoot->id}", [
+            'client_id' => 999999,
+            'photographer_id' => $replacement->id,
+        ])->assertForbidden();
+        $this->patchJson("/api/shoots/{$shoot->id}", [
+            'address' => 'Not Allowed Street',
+            'photographer_id' => $replacement->id,
+        ])->assertForbidden();
+    }
+
+        #[\PHPUnit\Framework\Attributes\Test]
     public function assigned_sales_rep_can_add_service_when_existing_line_price_drifted_from_catalog(): void
     {
         Sanctum::actingAs($this->salesRep);
