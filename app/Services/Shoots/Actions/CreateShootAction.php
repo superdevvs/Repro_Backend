@@ -50,7 +50,10 @@ class CreateShootAction
         $result = DB::transaction(function () use ($validated, $user, $request, $client, $unitBooking, $multiUnit) {
             $userRole = strtolower($user->role ?? '');
             $scheduledAt = !empty($validated['scheduled_at'])
-                ? new \DateTime($validated['scheduled_at'])
+                ? ($this->support->parseScheduleInstant(
+                    $validated['scheduled_at'],
+                    $validated['timezone'] ?? null
+                  ) ?? new \DateTime($validated['scheduled_at']))
                 : null;
             $servicesPayload = $unitBooking['services'] ?? $this->support->mergeServiceItemPayload(
                 $validated['services'],
@@ -113,6 +116,22 @@ class CreateShootAction
                 $photographerId = $validated['photographer_id'] ?? null;
             }
 
+            // Only reinterpret naive wall-clocks when the request explicitly sends timezone.
+            // Do NOT auto-apply the photographer profile timezone (keeps legacy UTC-naive
+            // create payloads working). Z/offset timestamps stay absolute.
+            $scheduleTimezone = trim((string) ($validated['timezone'] ?? ''));
+            if ($scheduleTimezone !== '' && !empty($validated['scheduled_at'])) {
+                $scheduledAt = $this->support->parseScheduleInstant($validated['scheduled_at'], $scheduleTimezone) ?? $scheduledAt;
+            }
+
+            // Admins/superadmins may pass skip_availability_check to suppress booking-CONFLICT
+            // checks only; configured-hours bounds remain enforced (same contract as update).
+            $isPrivilegedScheduler = in_array($userRole, ['admin', 'superadmin', 'editing_manager'], true);
+            $skipConflictCheck = (bool) ($validated['skip_availability_check'] ?? false);
+            if ($skipConflictCheck && ! $isPrivilegedScheduler) {
+                $skipConflictCheck = false;
+            }
+
             if (!$unitBooking && !$treatAsClientRequest && $photographerId && $scheduledAt) {
                 $carbonDate = \Carbon\Carbon::parse($scheduledAt);
                 DB::table('shoots')
@@ -123,21 +142,41 @@ class CreateShootAction
 
                 $durationMinutes = $this->support->calculateShootDurationFromServices($servicesPayload);
                 // Enforce the same backend-authoritative availability bounds as the update path.
-                $this->support->assertWithinAvailabilityBounds($photographerId, $scheduledAt, $durationMinutes);
+                $this->support->assertWithinAvailabilityBounds(
+                    $photographerId,
+                    $scheduledAt,
+                    $durationMinutes,
+                    null,
+                    $skipConflictCheck,
+                    $scheduleTimezone !== '' ? $scheduleTimezone : null
+                );
             }
 
             if (!$treatAsClientRequest) {
                 if ($unitBooking) {
                     foreach ($servicesPayload as $line) {
                         if (! empty($line['photographer_id']) && ! empty($line['scheduled_at'])) {
-                            $this->support->assertWithinAvailabilityBounds((int) $line['photographer_id'], new \DateTime($line['scheduled_at']), (int) $line['duration_minutes']);
+                            $lineTz = $scheduleTimezone !== '' ? $scheduleTimezone : null;
+                            $lineAt = $lineTz
+                                ? ($this->support->parseScheduleInstant($line['scheduled_at'], $lineTz) ?? new \DateTime($line['scheduled_at']))
+                                : new \DateTime($line['scheduled_at']);
+                            $this->support->assertWithinAvailabilityBounds(
+                                (int) $line['photographer_id'],
+                                $lineAt,
+                                (int) $line['duration_minutes'],
+                                null,
+                                $skipConflictCheck,
+                                $lineTz
+                            );
                         }
                     }
                 }
-                $this->support->checkServiceItemPhotographerAvailability(
-                    $servicesPayload,
-                    $photographerId
-                );
+                if (!$skipConflictCheck) {
+                    $this->support->checkServiceItemPhotographerAvailability(
+                        $servicesPayload,
+                        $photographerId
+                    );
+                }
             }
 
             $propertyDetailsPayload = is_array($validated['property_details'] ?? null)

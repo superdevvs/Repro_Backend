@@ -272,15 +272,78 @@ class ShootMutationSupportService
         \DateTime $scheduledAt,
         ?int $durationMinutes = 120,
         ?int $excludeShootId = null,
-        bool $skipConflictCheck = false
+        bool $skipConflictCheck = false,
+        ?string $timezone = null
     ): void {
+        // Do not auto-fill photographer profile timezone — only an explicit request/
+        // shoot timezone should reinterpret wall clocks.
         $this->availabilityService->assertWithinAvailabilityBounds(
             $photographerId,
             Carbon::parse($scheduledAt),
             $durationMinutes,
             $excludeShootId,
-            $skipConflictCheck
+            $skipConflictCheck,
+            $timezone
         );
+    }
+
+    /**
+     * Parse a schedule input into a DateTime.
+     * Naive wall-clock strings (no Z/offset) are interpreted in $timezone.
+     * Offset/Z strings are absolute instants, then projected into $timezone
+     * (mirrors UpdateShootAction) so availability hours use the local clock.
+     */
+    public function parseScheduleInstant(mixed $value, ?string $timezone = null): ?\DateTime
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        $tzName = $this->validTimezoneName($timezone);
+
+        if ($value instanceof \DateTimeInterface) {
+            $carbon = Carbon::instance($value)->copy();
+            if ($tzName
+                && $carbon->utcOffset() === 0
+                && in_array($carbon->timezoneName, ['UTC', 'Z', (string) config('app.timezone', 'UTC')], true)
+            ) {
+                // App-UTC DateTime from a naive wall-clock string: reinterpret clock in booking tz.
+                return $carbon->shiftTimezone($tzName)->toDateTime();
+            }
+            if ($tzName) {
+                return $carbon->setTimezone($tzName)->toDateTime();
+            }
+
+            return $carbon->toDateTime();
+        }
+
+        $trimmed = trim((string) $value);
+        if ($tzName && !preg_match('/(?:Z|[+-]\d{2}:?\d{2})$/i', $trimmed)) {
+            $dt = new \DateTime($trimmed, new \DateTimeZone($tzName));
+        } else {
+            $dt = new \DateTime($trimmed);
+            if ($tzName) {
+                $dt->setTimezone(new \DateTimeZone($tzName));
+            }
+        }
+
+        return $dt;
+    }
+
+    public function resolvePhotographerTimezone(int $photographerId): ?string
+    {
+        $photographer = User::query()->find($photographerId);
+        return $this->validTimezoneName($photographer?->timezone);
+    }
+
+    protected function validTimezoneName(?string $timezone): ?string
+    {
+        $timezone = trim((string) ($timezone ?: ''));
+        if ($timezone !== '' && in_array($timezone, timezone_identifiers_list(), true)) {
+            return $timezone;
+        }
+
+        return null;
     }
 
     public function checkServiceItemPhotographerAvailability(

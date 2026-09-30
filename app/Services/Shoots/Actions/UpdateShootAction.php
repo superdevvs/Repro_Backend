@@ -407,20 +407,22 @@ class UpdateShootAction
                 }, $targetServices);
             }
 
+            $assertTimezone = $scheduleTimezone !== '' ? $scheduleTimezone : null;
             if ($targetPhotographerId && $targetScheduledAt && ! $isMultiUnit) {
                 $this->support->assertWithinAvailabilityBounds(
                     (int) $targetPhotographerId,
                     $targetScheduledAt,
                     $this->support->calculateShootDurationFromServices($targetServices),
                     $shoot->id,
-                    $skipConflictCheck
+                    $skipConflictCheck,
+                    $assertTimezone
                 );
             }
 
             if ($isMultiUnit) {
                 foreach ($targetServices as $line) {
                     if (! empty($line['photographer_id']) && ! empty($line['scheduled_at'])) {
-                        $this->support->assertWithinAvailabilityBounds((int) $line['photographer_id'], new \DateTime($line['scheduled_at']), (int) $line['duration_minutes'], $shoot->id, $skipConflictCheck);
+                        $this->support->assertWithinAvailabilityBounds((int) $line['photographer_id'], new \DateTime($line['scheduled_at']), (int) $line['duration_minutes'], $shoot->id, $skipConflictCheck, $assertTimezone);
                     }
                 }
             }

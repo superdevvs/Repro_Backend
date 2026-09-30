@@ -6,6 +6,7 @@ use App\Models\PhotographerAvailability;
 use App\Models\Shoot;
 use App\Models\ShootService;
 use App\Models\User;
+use App\Services\Schedule\ScheduleInstantResolver;
 use App\Services\ShootWorkflowService;
 use Carbon\Carbon;
 use Illuminate\Support\Collection;
@@ -364,87 +365,32 @@ class PhotographerAvailabilityService
             return false;
         }
 
-        // Check for existing shoot conflicts - check time range overlap, not just exact match
-        $conflictingShoots = Shoot::where('photographer_id', $photographerId)
-            ->whereNotNull('scheduled_at')
-            ->whereDate('scheduled_at', $date->toDateString())
-            ->whereIn('status', [
-                ShootWorkflowService::STATUS_SCHEDULED,
-                ShootWorkflowService::STATUS_IN_PROGRESS,
-                ShootWorkflowService::STATUS_EDITING,
-            ])
-            ->when($excludeShootId, function ($query) use ($excludeShootId) {
-                $query->where('id', '!=', $excludeShootId);
-            })
-            ->orderBy('scheduled_at')
-            ->get();
-
-        // Get buffer time from config
-        $bufferMinutes = config('availability.buffer_time_minutes', 30);
-
-        // Check each shoot for time overlap (with buffer time consideration)
-        $conflictingShootIds = [];
-        foreach ($conflictingShoots as $shoot) {
-            $shootStart = Carbon::parse($shoot->scheduled_at);
-            $shootDuration = $this->calculateShootDuration($shoot);
-            $shootEnd = $shootStart->copy()->addMinutes($shootDuration);
-            
-            // Apply buffer time by expanding the existing shoot window forward and backward
-            $shootEndWithBuffer = $shootEnd->copy()->addMinutes($bufferMinutes);
-            $shootStartWithBuffer = $shootStart->copy()->subMinutes($bufferMinutes);
-            
-            // Conflict if the requested slot starts before the buffered shoot ends
-            // AND the requested slot ends after the buffered shoot starts
-            if ($datetimeLocal < $shootEndWithBuffer && $requestEndTime > $shootStartWithBuffer) {
-                $conflictingShootIds[] = $shoot->id;
-            }
+        // Existing bookings: ScheduleInstantResolver (absolute). Request side: only
+        // reinterpret naive wall-clocks when an EXPLICIT userTimezone is provided.
+        $timezone = $userTimezone; // may be null — do not invent photographer profile tz
+        $requestStart = $timezone
+            ? $this->resolveRequestInstant($datetimeLocal, $timezone)
+            : $datetimeLocal->copy()->utc();
+        $requestEnd = $requestStart->copy()->addMinutes((int) ($durationMinutes ?? 120));
+        $bufferMinutes = (int) config('availability.buffer_time_minutes', 30);
+        if ($timezone) {
+            $localRequest = $requestStart->copy()->setTimezone($this->validTimezoneOrUtc($timezone));
+            $date = $localRequest->copy()->startOfDay();
+            $time = $localRequest->format('H:i');
+            $dayOfWeek = strtolower($localRequest->format('l'));
+            $requestEndTime = $localRequest->copy()->addMinutes((int) ($durationMinutes ?? 120));
+            $datetimeLocal = $localRequest;
         }
 
-        $conflictingServiceItems = ShootService::with(['shoot', 'service'])
-            ->where('photographer_id', $photographerId)
-            ->whereNotNull('scheduled_at')
-            ->whereDate('scheduled_at', $date->toDateString())
-            ->whereIn('workflow_status', [
-                ShootService::WORKFLOW_SCHEDULED,
-                ShootService::WORKFLOW_IN_PROGRESS,
-                ShootService::WORKFLOW_READY,
-            ])
-            ->whereHas('shoot', function ($query) use ($excludeShootId) {
-                $query->whereNotIn('status', [
-                    Shoot::STATUS_CANCELLED,
-                    Shoot::STATUS_DECLINED,
-                    Shoot::STATUS_ON_HOLD,
-                ]);
-
-                if ($excludeShootId) {
-                    $query->where('id', '!=', $excludeShootId);
-                }
-            })
-            ->orderBy('scheduled_at')
-            ->get();
-
-        $conflictingServiceItemIds = [];
-        foreach ($conflictingServiceItems as $item) {
-            $itemStart = Carbon::parse($item->scheduled_at);
-            $itemDuration = $this->calculateServiceItemDuration($item);
-            $itemEnd = $itemStart->copy()->addMinutes($itemDuration);
-            $itemEndWithBuffer = $itemEnd->copy()->addMinutes($bufferMinutes);
-            $itemStartWithBuffer = $itemStart->copy()->subMinutes($bufferMinutes);
-
-            if ($datetimeLocal < $itemEndWithBuffer && $requestEndTime > $itemStartWithBuffer) {
-                $conflictingServiceItemIds[] = $item->id;
-            }
-        }
-        
-        if (!empty($conflictingShootIds) || !empty($conflictingServiceItemIds)) {
+        if ($this->hasBookingConflict($photographerId, $date, $requestStart, $requestEnd, $excludeShootId, $timezone)) {
             Log::warning('Availability check failed: shoot conflict', array_merge($logContext, [
                 'reason' => 'shoot_conflict',
-                'conflicting_shoot_ids' => $conflictingShootIds,
-                'conflicting_shoot_service_ids' => $conflictingServiceItemIds,
                 'buffer_minutes' => $bufferMinutes,
+                'timezone' => $timezone,
+                'request_utc' => $requestStart->toIso8601String(),
                 'result' => false,
             ]));
-            return false; // Conflict found (either direct overlap or buffer violation)
+            return false;
         }
 
         // Check if photographer has any availability slots set up for this date/day
@@ -535,7 +481,7 @@ class PhotographerAvailabilityService
         Log::info('Availability check completed', array_merge($logContext, [
             'result' => $available,
             'has_availability_slots' => $hasAvailabilitySlots,
-            'checked_slots' => $conflictingShoots->count(),
+            'checked_slots' => 'resolved',
         ]));
 
         return $available;
@@ -671,16 +617,28 @@ class PhotographerAvailabilityService
         Carbon $scheduledAt,
         ?int $durationMinutes = null,
         ?int $excludeShootId = null,
-        bool $skipConflictCheck = false
+        bool $skipConflictCheck = false,
+        ?string $timezone = null
     ): void {
         $durationMinutes = $durationMinutes ?? (int) config('availability.default_shoot_duration_minutes', 120);
 
-        // Availability slots are stored in local time; compare in local time.
+        // Availability slots are local clocks. Only project into an EXPLICIT booking
+        // timezone (request/shoot). Do not invent one from the photographer profile.
+        // UpdateShootAction may already have setTimezone — applying the same zone again
+        // is a no-op and must not shiftTimezone.
         $datetimeLocal = $scheduledAt->copy();
+        if ($timezone) {
+            $tz = $this->validTimezoneOrUtc($timezone);
+            if ($tz !== (string) config('app.timezone', 'UTC') && $datetimeLocal->timezoneName !== $tz) {
+                $datetimeLocal->setTimezone($tz);
+            }
+        }
         $date = $datetimeLocal->copy()->startOfDay();
         $time = $datetimeLocal->format('H:i');
         $dayOfWeek = strtolower($datetimeLocal->format('l'));
         $requestEndTime = $datetimeLocal->copy()->addMinutes($durationMinutes);
+        $requestStartUtc = $datetimeLocal->copy()->utc();
+        $requestEndUtc = $requestEndTime->copy()->utc();
 
         // 1) Specific-date or recurring unavailability blocks => outside available hours.
         //    This is part of the configured-hours bound and is always enforced.
@@ -691,7 +649,7 @@ class PhotographerAvailabilityService
         // 2) Conflicts with existing shoots / service items (with buffer) => booking conflict.
         //    Only this step may be skipped by a privileged override; the bound below is not.
         if (!$skipConflictCheck
-            && $this->hasBookingConflict($photographerId, $date, $datetimeLocal, $requestEndTime, $excludeShootId)) {
+            && $this->hasBookingConflict($photographerId, $date, $requestStartUtc, $requestEndUtc, $excludeShootId, $timezone)) {
             throw ValidationException::withMessages([
                 'start_time' => ['The selected time conflicts with another booking for this photographer.'],
             ]);
@@ -748,15 +706,30 @@ class PhotographerAvailabilityService
     protected function hasBookingConflict(
         int $photographerId,
         Carbon $date,
-        Carbon $datetimeLocal,
-        Carbon $requestEndTime,
-        ?int $excludeShootId
+        Carbon $requestStartUtc,
+        Carbon $requestEndUtc,
+        ?int $excludeShootId,
+        ?string $timezone = null
     ): bool {
         $bufferMinutes = (int) config('availability.buffer_time_minutes', 30);
+        $resolver = app(ScheduleInstantResolver::class);
+        // Day-window anchor: explicit booking tz, else the request's current date tz, else app.
+        $windowTz = $this->validTimezoneOrUtc($timezone ?: $date->timezoneName);
 
-        $conflictingShoots = Shoot::where('photographer_id', $photographerId)
+        // Broad UTC window so local-day bookings that cross the UTC date line are included.
+        $dayStartUtc = Carbon::parse($date->toDateString(), $windowTz)
+            ->startOfDay()
+            ->subDay()
+            ->utc();
+        $dayEndUtc = Carbon::parse($date->toDateString(), $windowTz)
+            ->endOfDay()
+            ->addDay()
+            ->utc();
+
+        $conflictingShoots = Shoot::with(['photographer', 'services'])
+            ->where('photographer_id', $photographerId)
             ->whereNotNull('scheduled_at')
-            ->whereDate('scheduled_at', $date->toDateString())
+            ->whereBetween('scheduled_at', [$dayStartUtc->toDateTimeString(), $dayEndUtc->toDateTimeString()])
             ->whereIn('status', [
                 ShootWorkflowService::STATUS_SCHEDULED,
                 ShootWorkflowService::STATUS_IN_PROGRESS,
@@ -768,20 +741,26 @@ class PhotographerAvailabilityService
             ->get();
 
         foreach ($conflictingShoots as $shoot) {
-            $shootStart = Carbon::parse($shoot->scheduled_at);
+            $shootStart = $resolver->forShoot($shoot)?->utc()
+                ?? Carbon::parse($shoot->scheduled_at)->utc();
+            $localDate = $shootStart->copy()->setTimezone($this->validTimezoneOrUtc($shoot->timezone ?: $timezone ?: $windowTz))->toDateString();
+            if ($localDate !== $date->toDateString()) {
+                continue;
+            }
+
             $shootEnd = $shootStart->copy()->addMinutes($this->calculateShootDuration($shoot));
             $shootEndWithBuffer = $shootEnd->copy()->addMinutes($bufferMinutes);
             $shootStartWithBuffer = $shootStart->copy()->subMinutes($bufferMinutes);
 
-            if ($datetimeLocal < $shootEndWithBuffer && $requestEndTime > $shootStartWithBuffer) {
+            if ($requestStartUtc < $shootEndWithBuffer && $requestEndUtc > $shootStartWithBuffer) {
                 return true;
             }
         }
 
-        $conflictingServiceItems = ShootService::with(['shoot', 'service'])
+        $conflictingServiceItems = ShootService::with(['shoot.photographer', 'service', 'photographer'])
             ->where('photographer_id', $photographerId)
             ->whereNotNull('scheduled_at')
-            ->whereDate('scheduled_at', $date->toDateString())
+            ->whereBetween('scheduled_at', [$dayStartUtc->toDateTimeString(), $dayEndUtc->toDateTimeString()])
             ->whereIn('workflow_status', [
                 ShootService::WORKFLOW_SCHEDULED,
                 ShootService::WORKFLOW_IN_PROGRESS,
@@ -801,17 +780,85 @@ class PhotographerAvailabilityService
             ->get();
 
         foreach ($conflictingServiceItems as $item) {
-            $itemStart = Carbon::parse($item->scheduled_at);
+            $shoot = $item->shoot;
+            if (!$shoot) {
+                continue;
+            }
+
+            $itemStart = $resolver->forServiceItem($shoot, $item)?->utc()
+                ?? Carbon::parse($item->scheduled_at)->utc();
+            $localDate = $itemStart->copy()->setTimezone($this->validTimezoneOrUtc($shoot->timezone ?: $timezone ?: $windowTz))->toDateString();
+            if ($localDate !== $date->toDateString()) {
+                continue;
+            }
+
             $itemEnd = $itemStart->copy()->addMinutes($this->calculateServiceItemDuration($item));
             $itemEndWithBuffer = $itemEnd->copy()->addMinutes($bufferMinutes);
             $itemStartWithBuffer = $itemStart->copy()->subMinutes($bufferMinutes);
 
-            if ($datetimeLocal < $itemEndWithBuffer && $requestEndTime > $itemStartWithBuffer) {
+            if ($requestStartUtc < $itemEndWithBuffer && $requestEndUtc > $itemStartWithBuffer) {
                 return true;
             }
         }
 
         return false;
+    }
+
+    /**
+     * Normalize a request datetime to an absolute UTC instant.
+     *
+     * Callers that receive naive wall-clock strings (no Z/offset) must parse them
+     * in the booking timezone first (see ShootMutationSupportService::parseScheduleInstant).
+     * DateTimes already carrying an offset, or absolute UTC instants from Z, are trusted.
+     * When a booking timezone is provided, app-UTC wall clocks are reinterpreted as
+     * local wall time in that zone so FE payloads without Z still compare correctly.
+     */
+    protected function resolveRequestInstant(Carbon $datetime, ?string $timezone): Carbon
+    {
+        $tz = $this->validTimezoneOrUtc($timezone);
+        $copy = $datetime->copy();
+
+        // Already an explicit non-UTC offset (e.g. -04:00) — absolute instant is known.
+        if ($copy->utcOffset() !== 0) {
+            return $copy->utc();
+        }
+
+        // Naive / app-UTC clock face + real booking timezone => local wall clock.
+        // Proper Z timestamps that were already converted by the create/update path
+        // should arrive with the booking zone applied (setTimezone) or as a local
+        // parse; remaining app-UTC values from wall-clock payloads need shiftTimezone.
+        if ($tz !== 'UTC'
+            && in_array($copy->timezoneName, ['UTC', 'Z', (string) config('app.timezone', 'UTC')], true)
+            && $this->looksLikeWallClockUtc($copy, $tz)
+        ) {
+            return $copy->shiftTimezone($tz)->utc();
+        }
+
+        return $copy->utc();
+    }
+
+    /**
+     * Heuristic: a UTC midnight-aligned booking that matches a plausible local
+     * wall clock in $tz is treated as wall-clock. Absolute Z instants that were
+     * converted via setTimezone into $tz will already have a non-UTC offset and
+     * are handled above. Remaining UTC values from `new DateTime(naive)` need shift.
+     */
+    protected function looksLikeWallClockUtc(Carbon $datetime, string $timezone): bool
+    {
+        // If caller already projected into the booking zone via setTimezone, offset != 0.
+        // Pure UTC Carbon from naive string or Z both have offset 0 — prefer shifting
+        // when photographer/booking tz is a real civil zone so 1pm wall clears 10am ET.
+        return !in_array($timezone, ['UTC', 'Z'], true);
+    }
+
+    protected function validTimezoneOrUtc(?string $timezone): string
+    {
+        $timezone = trim((string) ($timezone ?: ''));
+        if ($timezone !== '' && in_array($timezone, timezone_identifiers_list(), true)) {
+            return $timezone;
+        }
+
+        return (string) config('app.timezone', 'UTC');
     }
 
     /**
