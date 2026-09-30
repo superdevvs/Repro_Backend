@@ -198,15 +198,14 @@ class GoogleCalendarEventMetaPropertyTest extends TestCase
 
     /**
      * Feature: google-calendar-sync-upgrade, Property 5: End time equals start
-     * plus clamped duration.
+     * plus fixed availability booked-window duration.
      *
      * Validates: Requirements 4.1, 4.2
      *
      * For any schedulable shoot, the event end time equals the start time plus
-     * `ShootMutationSupportService::calculateShootDurationFromShoot()`, a value
-     * clamped to 60–240 minutes (when derived from services) and defaulting to 120
-     * when no duration is derivable. The generator varies the configured
-     * default/min/max so the clamp is exercised at both bounds.
+     * `ShootMutationSupportService::calculateShootDurationFromShoot()`, which is
+     * always `availability.default_shoot_duration_minutes` (product rule: booked
+     * blocks stay 2h / 120 and must not stretch from service durations toward max).
      */
     public function test_end_time_equals_start_plus_clamped_duration(): void
     {
@@ -217,12 +216,11 @@ class GoogleCalendarEventMetaPropertyTest extends TestCase
         $statuses = array_keys(self::STATUS_COLOR_MAP);
 
         for ($i = 0; $i < self::ITERATIONS; $i++) {
-            // Vary the duration configuration to exercise the 60–240 clamp at both
-            // ends. Keep the safety bounds fixed at the documented 60/240; vary the
-            // default into out-of-range territory so the clamp is observable when a
-            // service falls back to the default.
+            // Vary the configured default; booked-window helpers always return it
+            // regardless of service count or per-service getShootDurationMinutes.
+            $configuredDefault = mt_rand(60, 180);
             config([
-                'availability.default_shoot_duration_minutes' => mt_rand(20, 360),
+                'availability.default_shoot_duration_minutes' => $configuredDefault,
                 'availability.min_shoot_duration_minutes' => 60,
                 'availability.max_shoot_duration_minutes' => 240,
             ]);
@@ -252,6 +250,12 @@ class GoogleCalendarEventMetaPropertyTest extends TestCase
                 $timezone
             );
 
+            $this->assertSame(
+                $configuredDefault,
+                $expectedMinutes,
+                "[Req 4.2] booked duration must always be the configured default. {$context}"
+            );
+
             // end == start + calculateShootDurationFromShoot() minutes (Req 4.1).
             // diffInMinutes() returns a float in this Carbon version; compare as int.
             $this->assertSame(
@@ -260,13 +264,6 @@ class GoogleCalendarEventMetaPropertyTest extends TestCase
                 "[Req 4.1] end must equal start plus the estimated duration. {$context}"
             );
             $this->assertTrue($end->greaterThan($start), "end must be after start. {$context}");
-
-            // When the duration is derived from services it is clamped to 60–240
-            // (Req 4.2). The no-service path returns the configured default directly.
-            if ($serviceCount > 0) {
-                $this->assertGreaterThanOrEqual(60, $expectedMinutes, "[Req 4.2] derived duration must be >= 60. {$context}");
-                $this->assertLessThanOrEqual(240, $expectedMinutes, "[Req 4.2] derived duration must be <= 240. {$context}");
-            }
         }
 
         // Explicit 120-minute default case (Req 4.2): a shoot with no services and

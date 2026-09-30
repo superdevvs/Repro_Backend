@@ -877,23 +877,9 @@ class PhotographerAvailabilityController extends Controller
      */
     protected function calculateShootDurationFromShoot($shoot): int
     {
-        $defaultDurationMinutes = config('availability.default_shoot_duration_minutes', 120);
-        $minDurationMinutes = config('availability.min_shoot_duration_minutes', 60);
-        $maxDurationMinutes = config('availability.max_shoot_duration_minutes', 240);
-
-        $services = $shoot->services;
-        if ($services && $services->isNotEmpty()) {
-            $calculatedDurationMinutes = (int) $services
-                ->map(function ($service) use ($defaultDurationMinutes) {
-                    return method_exists($service, 'getShootDurationMinutes')
-                        ? $service->getShootDurationMinutes()
-                        : $defaultDurationMinutes;
-                })
-                ->max();
-            return min(max($calculatedDurationMinutes, $minDurationMinutes), $maxDurationMinutes);
-        }
-
-        return $defaultDurationMinutes;
+        // Product rule: availability booked blocks are always the configured
+        // default (2h / 120). Do not stretch from service durations.
+        return (int) config('availability.default_shoot_duration_minutes', 120);
     }
     
     /**

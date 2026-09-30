@@ -405,26 +405,10 @@ class ShootMutationSupportService
 
     public function calculateShootDurationFromServices(array $services): int
     {
-        $defaultDurationMinutes = config('availability.default_shoot_duration_minutes', 120);
-        $minDurationMinutes = config('availability.min_shoot_duration_minutes', 60);
-        $maxDurationMinutes = config('availability.max_shoot_duration_minutes', 240);
-
-        $serviceIds = collect($services)->pluck('id')->unique();
-        $serviceModels = Service::whereIn('id', $serviceIds)->get();
-
-        if ($serviceModels->isEmpty()) {
-            return $defaultDurationMinutes;
-        }
-
-        $durationMinutes = (int) $serviceModels
-            ->map(function ($service) use ($defaultDurationMinutes) {
-                return method_exists($service, 'getShootDurationMinutes')
-                    ? $service->getShootDurationMinutes()
-                    : $defaultDurationMinutes;
-            })
-            ->max();
-
-        return min(max($durationMinutes, $minDurationMinutes), $maxDurationMinutes);
+        // Product rule: scheduling conflict windows match availability calendar
+        // booked blocks — always the configured default (2h / 120). Do not stretch
+        // from per-service getShootDurationMinutes up to max_shoot_duration_minutes.
+        return (int) config('availability.default_shoot_duration_minutes', 120);
     }
 
     public function calculateServiceItemDuration(?Service $service): int
@@ -439,24 +423,10 @@ class ShootMutationSupportService
 
     public function calculateShootDurationFromShoot(Shoot $shoot): int
     {
-        $defaultDurationMinutes = config('availability.default_shoot_duration_minutes', 120);
-        $minDurationMinutes = config('availability.min_shoot_duration_minutes', 60);
-        $maxDurationMinutes = config('availability.max_shoot_duration_minutes', 240);
-
-        $services = $shoot->services;
-        if (!$services || $services->isEmpty()) {
-            return $defaultDurationMinutes;
-        }
-
-        $durationMinutes = (int) $services
-            ->map(function ($service) use ($defaultDurationMinutes) {
-                return method_exists($service, 'getShootDurationMinutes')
-                    ? $service->getShootDurationMinutes()
-                    : $defaultDurationMinutes;
-            })
-            ->max();
-
-        return min(max($durationMinutes, $minDurationMinutes), $maxDurationMinutes);
+        // Product rule: booked window / Google Calendar event length matches
+        // availability calendar — always the configured default (2h / 120).
+        // Do not stretch from per-service getShootDurationMinutes.
+        return (int) config('availability.default_shoot_duration_minutes', 120);
     }
 
     public function attachServices(Shoot $shoot, array $services): void

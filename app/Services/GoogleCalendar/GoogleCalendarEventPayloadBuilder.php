@@ -57,9 +57,9 @@ class GoogleCalendarEventPayloadBuilder
 
         $timezone = $this->calendarTimezone($shoot, $user);
         $start = $this->calendarStart($shoot, $scheduledAt, $timezone);
-        // Req 4.1/4.2: end = start + estimated duration. calculateShootDurationFromShoot()
-        // returns the shoot duration in minutes, clamped to the 60-240 range and defaulting
-        // to 120 when no duration can be derived. No behavior change here; documented only.
+        // Req 4.1: end = start + booked-window duration. calculateShootDurationFromShoot()
+        // always returns availability.default_shoot_duration_minutes (120 / 2h) so calendar
+        // events match availability booked blocks and do not stretch toward max (240).
         $end = $start->copy()->addMinutes($this->support->calculateShootDurationFromShoot($shoot));
 
         return array_filter([
