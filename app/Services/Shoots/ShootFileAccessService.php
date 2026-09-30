@@ -36,14 +36,20 @@ class ShootFileAccessService
         // R2-first delivery: raw originals and locked/unpaid media are served via
         // short-lived presigned URLs (never the public CDN domain) once reads are
         // flipped. Local remains a secondary fallback while both stores coexist.
+        // Gallery list passes allowRemoteCalls=false to skip exists probes.
         if ($this->mediaStorage->readFromR2Enabled() || $this->mediaStorage->r2Only()) {
             $key = $this->mediaStorage->normalizeKey($file->path);
-            if ($key && $this->mediaStorage->existsOnR2($key)) {
-                return $this->mediaStorage->temporaryUrl($key);
+            if ($key) {
+                if (! $allowRemoteCalls) {
+                    return $this->mediaStorage->temporaryUrl($key);
+                }
+                if ($this->mediaStorage->existsOnR2($key)) {
+                    return $this->mediaStorage->temporaryUrl($key);
+                }
             }
         }
 
-        if ($file->path && $this->mediaStorage->exists($file->path)) {
+        if ($allowRemoteCalls && $file->path && $this->mediaStorage->exists($file->path)) {
             return $this->resolvePublicStorageUrl($file->path);
         }
 

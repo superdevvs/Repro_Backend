@@ -104,9 +104,12 @@ class ShootMediaReadService
             ])
         );
 
-        // Restricted accounts must observe assignment/link revocation immediately.
-        $canCache = $this->authorizationSupport->canManageShootOperations($user);
-        $cached = $canCache ? Cache::get('authorized_v2_'.$cacheKey) : null;
+        // Staff keep the short authorized cache. Clients may also cache: the key
+        // already includes payment/delivery/file mtimes, so paywall and release
+        // flips invalidate within the same 30s window without sync preview work.
+        $canCache = true;
+        $cacheStoreKey = ($this->authorizationSupport->canManageShootOperations($user) ? 'authorized_v2_' : 'client_v1_').$cacheKey;
+        $cached = Cache::get($cacheStoreKey);
         if ($cached !== null) {
             return ['data' => $cached];
         }
@@ -157,15 +160,20 @@ class ShootMediaReadService
         $mediaUrls = $this->resolveMediaUrls($files);
         $needsWatermark = $this->needsWatermark($shoot, $user);
 
-        $formattedFiles = $files->map(function (ShootFile $file) use ($shoot, $user, $mediaUrls, $needsWatermark) {
+        // List reads must stay fast: never sync-generate optimized/floorplan/
+        // watermark previews here (was ~147s for 129 client edited files).
+        // Queue missing work and serve whatever paths already exist.
+        $allowSyncPreviewGeneration = false;
+
+        $formattedFiles = $files->map(function (ShootFile $file) use ($shoot, $user, $mediaUrls, $needsWatermark, $allowSyncPreviewGeneration) {
             $fileNeedsWatermark = $needsWatermark
                 && $this->shootClientReleaseAccessService->isFileReleaseLocked($shoot, $file, $user);
 
-            return $this->formatFileSafely($file, $mediaUrls, $fileNeedsWatermark);
+            return $this->formatFileSafely($file, $mediaUrls, $fileNeedsWatermark, $allowSyncPreviewGeneration);
         })->values()->all();
 
         if ($canCache) {
-            Cache::put('authorized_v2_'.$cacheKey, $formattedFiles, now()->addSeconds(30));
+            Cache::put($cacheStoreKey, $formattedFiles, now()->addSeconds(30));
         }
 
         return [
@@ -356,10 +364,10 @@ class ShootMediaReadService
         })->values()->all();
     }
 
-    protected function formatFileSafely(ShootFile $file, array $mediaUrls, bool $needsWatermark): array
+    protected function formatFileSafely(ShootFile $file, array $mediaUrls, bool $needsWatermark, bool $allowSyncPreviewGeneration = true): array
     {
         try {
-            return $this->formatFile($file, $mediaUrls, $needsWatermark);
+            return $this->formatFile($file, $mediaUrls, $needsWatermark, $allowSyncPreviewGeneration);
         } catch (\Throwable $exception) {
             $correlationId = (string) Str::uuid();
             Log::warning('Media file could not be fully formatted.', [
@@ -415,9 +423,13 @@ class ShootMediaReadService
         return $isClient && ! $shoot->bypass_paywall && $paymentStatus !== 'paid';
     }
 
-    protected function formatFile(ShootFile $file, array $mediaUrls, bool $needsWatermark): array
+    protected function formatFile(ShootFile $file, array $mediaUrls, bool $needsWatermark, bool $allowSyncPreviewGeneration = true): array
     {
-        $file = $this->ensureFloorplanPreviewForRead($file);
+        if ($allowSyncPreviewGeneration) {
+            $file = $this->ensureFloorplanPreviewForRead($file);
+        } elseif (strtolower((string) $file->media_type) === 'floorplan') {
+            $this->queueFloorplanPreviewIfMissing($file);
+        }
         $needsWatermark = $needsWatermark && $file->shouldBeWatermarked();
         $url = null;
         $thumbUrl = null;
@@ -427,12 +439,19 @@ class ShootMediaReadService
         $originalUrl = null;
         $webUrl = null;
         $placeholderUrl = null;
+        // List payloads skip remote exists probes; stored paths are trusted and
+        // served. Missing objects surface as per-asset 404s rather than blocking
+        // the entire gallery response for minutes.
+        $trustStoredPaths = ! $allowSyncPreviewGeneration;
 
         if ($needsWatermark) {
-            $file = $this->ensureWatermarkedPreviewAvailable($file);
-            $thumbUrl = $this->resolvePreviewPath($file->watermarked_thumbnail_path ?? $file->watermarked_placeholder_path);
+            if ($allowSyncPreviewGeneration) {
+                $file = $this->ensureWatermarkedPreviewAvailable($file);
+            }
+            $thumbUrl = $this->resolvePreviewPath($file->watermarked_thumbnail_path ?? $file->watermarked_placeholder_path, $trustStoredPaths);
             $mediumUrl = $this->resolvePreviewPath(
-                $file->watermarked_web_path ?? $file->watermarked_thumbnail_path ?? $file->watermarked_placeholder_path
+                $file->watermarked_web_path ?? $file->watermarked_thumbnail_path ?? $file->watermarked_placeholder_path,
+                $trustStoredPaths
             );
             $webUrl = $mediumUrl;
             $largeUrl = $mediumUrl;
@@ -441,7 +460,7 @@ class ShootMediaReadService
             $gridUrl = $mediumUrl;
             $url = $mediumUrl ?? $thumbUrl;
             $originalUrl = $url;
-            $placeholderUrl = $this->resolvePreviewPath($file->watermarked_placeholder_path);
+            $placeholderUrl = $this->resolvePreviewPath($file->watermarked_placeholder_path, $trustStoredPaths);
 
             if (! $thumbUrl && ! $mediumUrl && $file->shouldBeWatermarked()) {
                 $this->queueWatermark($file);
@@ -452,35 +471,43 @@ class ShootMediaReadService
             }
 
             if ($this->shouldGenerateOptimizedPreview($file)) {
-                $this->shootFileAccessService->generateOptimizedVersions($file);
-                $file->refresh();
+                if ($allowSyncPreviewGeneration) {
+                    $this->shootFileAccessService->generateOptimizedVersions($file);
+                    $file->refresh();
+                } else {
+                    $this->queueOptimizedPreviewGeneration($file);
+                }
             }
 
-            $originalUrl = $mediaUrls[$file->id] ?? $this->shootFileAccessService->resolveFileUrl($file, true);
+            $originalUrl = $mediaUrls[$file->id] ?? $this->shootFileAccessService->resolveFileUrl($file, ! $trustStoredPaths);
             if (! $originalUrl && $this->isVideoFile($file)) {
                 $originalUrl = url('/api/shoots/'.$file->shoot_id.'/files/'.$file->id.'/preview');
             }
-            $thumbUrl = $this->resolvePreviewPath($file->thumbnail_path ?? $file->placeholder_path);
-            $webUrl = $this->resolvePreviewPath($file->web_path);
+            $thumbUrl = $this->resolvePreviewPath($file->thumbnail_path ?? $file->placeholder_path, $trustStoredPaths);
+            $webUrl = $this->resolvePreviewPath($file->web_path, $trustStoredPaths);
             // The grid rendition (600px, Lanczos + unsharp) is what every card
             // and tile loads; it falls back to `web` for files processed before
             // it existed, which is heavier but never soft.
-            $gridUrl = $this->resolvePreviewPath($file->grid_path ?? null) ?? $webUrl;
+            $gridUrl = $this->resolvePreviewPath($file->grid_path ?? null, $trustStoredPaths) ?? $webUrl;
             $mediumUrl = $webUrl;
             $largeUrl = $webUrl;
-            $placeholderUrl = $this->resolvePreviewPath($file->placeholder_path);
+            $placeholderUrl = $this->resolvePreviewPath($file->placeholder_path, $trustStoredPaths);
 
             if (! $webUrl && $this->shouldGenerateOptimizedPreview($file)) {
-                $generated = $this->shootFileAccessService->generateOptimizedVersions($file);
-                if (! empty($generated)) {
-                    $file->refresh();
-                    $thumbUrl = $this->resolvePreviewPath(
-                        $generated['thumbnail'] ?? $file->thumbnail_path ?? $file->placeholder_path
-                    );
-                    $webUrl = $this->resolvePreviewPath($generated['web'] ?? $file->web_path);
-                    $mediumUrl = $webUrl;
-                    $largeUrl = $webUrl;
-                    $placeholderUrl = $this->resolvePreviewPath($generated['placeholder'] ?? $file->placeholder_path);
+                if ($allowSyncPreviewGeneration) {
+                    $generated = $this->shootFileAccessService->generateOptimizedVersions($file);
+                    if (! empty($generated)) {
+                        $file->refresh();
+                        $thumbUrl = $this->resolvePreviewPath(
+                            $generated['thumbnail'] ?? $file->thumbnail_path ?? $file->placeholder_path
+                        );
+                        $webUrl = $this->resolvePreviewPath($generated['web'] ?? $file->web_path);
+                        $mediumUrl = $webUrl;
+                        $largeUrl = $webUrl;
+                        $placeholderUrl = $this->resolvePreviewPath($generated['placeholder'] ?? $file->placeholder_path);
+                    }
+                } else {
+                    $this->queueOptimizedPreviewGeneration($file);
                 }
             }
 
@@ -619,7 +646,7 @@ class ShootMediaReadService
             if (! $needsWatermark && ! $file->isBlockedFromDelivery() && ! empty($file->metadata['preview_images']) && is_array($file->metadata['preview_images'])) {
                 $previewUrls = [];
                 foreach ($file->metadata['preview_images'] as $previewPath) {
-                    $resolved = is_string($previewPath) ? $this->resolvePreviewPath($previewPath) : null;
+                    $resolved = is_string($previewPath) ? $this->resolvePreviewPath($previewPath, $trustStoredPaths) : null;
                     // Keep page positions stable for the guarded, one-based JPG download.
                     $previewUrls[] = $resolved;
                 }
@@ -766,7 +793,7 @@ class ShootMediaReadService
             ->all();
     }
 
-    protected function resolvePreviewPath(?string $path): ?string
+    protected function resolvePreviewPath(?string $path, bool $trustStoredPaths = false): ?string
     {
         if (! $path) {
             return null;
@@ -778,6 +805,12 @@ class ShootMediaReadService
         $clean = ltrim($path, '/');
         if (Str::startsWith($clean, 'storage/')) {
             $clean = substr($clean, 8);
+        }
+
+        // Gallery list reads trust DB-stored keys and skip remote/local exists
+        // probes (hundreds of HEADs were dominating client getFiles latency).
+        if ($trustStoredPaths) {
+            return $this->shootFileAccessService->resolvePublicStorageUrl($clean);
         }
 
         // Preview/derived assets resolve to the R2 CDN once reads are flipped.
@@ -886,6 +919,61 @@ class ShootMediaReadService
         }
 
         return $this->imageProcessingService->needsPreviewRegeneration($file);
+    }
+
+    protected function queueOptimizedPreviewGeneration(ShootFile $file): void
+    {
+        $cacheKey = 'optimized_preview_queue_'.$file->id;
+
+        if (! Cache::add($cacheKey, true, now()->addMinutes(5))) {
+            return;
+        }
+
+        try {
+            ProcessImageJob::dispatch($file->fresh());
+        } catch (\Exception $e) {
+            Cache::forget($cacheKey);
+            Log::warning('Failed to queue optimized preview generation', [
+                'file_id' => $file->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    protected function queueFloorplanPreviewIfMissing(ShootFile $file): void
+    {
+        $metadata = is_array($file->metadata) ? $file->metadata : [];
+        $hasPreviewImages = ! empty($metadata['preview_images']) && is_array($metadata['preview_images']);
+        if ($file->web_path || $file->thumbnail_path || $hasPreviewImages) {
+            return;
+        }
+
+        $cacheKey = 'floorplan_preview_queue_'.$file->id;
+        if (! Cache::add($cacheKey, true, now()->addMinutes(5))) {
+            return;
+        }
+
+        try {
+            // ensurePreview is sync today; dispatch via afterResponse-safe call on a
+            // worker by reusing ProcessImageJob when the file is image-like, else
+            // best-effort async ensure on the next office/admin touch.
+            dispatch(function () use ($file) {
+                try {
+                    app(FloorplanPreviewService::class)->ensurePreview($file->fresh() ?? $file);
+                } catch (\Throwable $e) {
+                    Log::warning('Async floorplan preview ensure failed', [
+                        'shoot_file_id' => $file->id,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+            })->afterResponse();
+        } catch (\Exception $e) {
+            Cache::forget($cacheKey);
+            Log::warning('Failed to queue floorplan preview generation', [
+                'file_id' => $file->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
     }
 
     protected function queueRawPreviewRefresh(ShootFile $file): void
