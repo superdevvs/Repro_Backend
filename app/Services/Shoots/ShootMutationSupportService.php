@@ -849,7 +849,12 @@ class ShootMutationSupportService
             ->map(fn ($id) => (int) $id)
             ->values();
 
-        $invalidIds = $requestedIds->diff($visibleIds)->values()->all();
+        // Already-booked lines on this shoot may predate the client's current
+        // service-group catalog (catalog swaps, legacy SKUs). Allow retaining
+        // them so reps can remove/add other products without a false 422; only
+        // newly requested ids must be visible to the client.
+        $retainedIds = $retainedIds->map(fn ($id) => (int) $id);
+        $invalidIds = $requestedIds->diff($visibleIds)->diff($retainedIds)->values()->all();
 
         if (!empty($invalidIds)) {
             throw ValidationException::withMessages([
