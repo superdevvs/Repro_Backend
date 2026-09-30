@@ -87,34 +87,95 @@ class ShootRescheduleRequest extends Model
     }
 
     /**
-     * When staff (or an assigned rep) moves the shoot via edit/update, any
-     * still-pending client/photographer reschedule request is stale: approving
-     * it later would overwrite the manual move. Reject those rows in place so
-     * the review queue and shoot activity stay honest.
+     * After staff (or an assigned rep) moves the shoot via edit/update, reconcile
+     * still-pending client/photographer reschedule requests:
+     *
+     * - If the new schedule already matches a request's date/time, mark it
+     *   approved+applied (fulfilled) so it leaves the Requests queue cleanly.
+     * - Otherwise leave it pending so staff can still review it.
+     *
+     * Does not auto-reject, and never touches already-reviewed rows.
      */
-    public static function rejectPendingForManualScheduleChange(
+    public static function reconcilePendingForManualScheduleChange(
         Shoot $shoot,
-        ?User $actor = null,
-        ?string $newDate = null
+        ?User $actor = null
     ): int {
-        $note = $newDate
-            ? "Superseded by manual schedule change to {$newDate}."
-            : 'Superseded by manual schedule change.';
-
         $pending = static::query()
             ->where('shoot_id', $shoot->id)
             ->where('status', self::STATUS_PENDING)
             ->get();
 
+        $fulfilled = 0;
+        $newDate = $shoot->scheduled_date?->toDateString();
+        $newTimeKey = static::normalizeClockTime($shoot->time);
+
         foreach ($pending as $request) {
-            $request->status = self::STATUS_REJECTED;
+            if (! static::matchesManualSchedule($request, $newDate, $newTimeKey)) {
+                continue;
+            }
+
+            $request->status = self::STATUS_APPROVED;
             $request->reviewed_at = now();
+            $request->applied_at = $request->applied_at ?? now();
             $request->approved_by = $actor?->id;
-            $request->review_notes = $note;
+            $request->review_notes = $newDate
+                ? "Fulfilled by manual schedule change to {$newDate}."
+                : 'Fulfilled by manual schedule change.';
             $request->save();
+            $fulfilled++;
         }
 
-        return $pending->count();
+        return $fulfilled;
+    }
+
+    /**
+     * True when the shoot's new schedule already realizes this request.
+     */
+    public static function matchesManualSchedule(
+        self $request,
+        ?string $newDate,
+        ?string $newTimeKey
+    ): bool {
+        $requestedDate = $request->requested_date?->toDateString();
+        if ($requestedDate === null || $newDate === null || $requestedDate !== $newDate) {
+            return false;
+        }
+
+        $requestedTimeKey = static::normalizeClockTime($request->requested_time);
+        // Request with no usable time: date match alone is enough.
+        if ($requestedTimeKey === null) {
+            return true;
+        }
+
+        return $newTimeKey !== null && $requestedTimeKey === $newTimeKey;
+    }
+
+    /**
+     * Normalize booking clock strings ("2:30 PM", "14:30", "14:30:00") to H:i.
+     */
+    public static function normalizeClockTime(mixed $value): ?string
+    {
+        if (! is_string($value)) {
+            return null;
+        }
+
+        $trimmed = trim($value);
+        if ($trimmed === '') {
+            return null;
+        }
+
+        $parsed = date_parse($trimmed);
+        if (($parsed['error_count'] ?? 0) > 0 || ($parsed['hour'] === false) || $parsed['hour'] === null) {
+            return null;
+        }
+
+        $hour = (int) $parsed['hour'];
+        $minute = (int) ($parsed['minute'] ?? 0);
+        if ($hour < 0 || $hour > 23 || $minute < 0 || $minute > 59) {
+            return null;
+        }
+
+        return sprintf('%02d:%02d', $hour, $minute);
     }
 
 }

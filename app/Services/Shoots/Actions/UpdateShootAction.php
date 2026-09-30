@@ -664,18 +664,20 @@ class UpdateShootAction
             if ($originalWorkflow !== $shoot->workflow_status) {
                 $changes['workflow_status'] = ['from' => $originalWorkflow, 'to' => $shoot->workflow_status];
             }
+            $scheduleChanged = $originalScheduledDate !== $shoot->scheduled_date?->toDateString()
+                || $originalTime !== $shoot->time;
             if ($originalScheduledDate !== $shoot->scheduled_date?->toDateString()) {
                 $changes['scheduled_date'] = ['from' => $originalScheduledDate, 'to' => $shoot->scheduled_date?->toDateString()];
-                // Stale pending reschedule requests must not remain approvable after a
-                // manual move — approving them would overwrite this change (51 Warren Rd).
-                \App\Models\ShootRescheduleRequest::rejectPendingForManualScheduleChange(
-                    $shoot,
-                    $user,
-                    $shoot->scheduled_date?->toDateString()
-                );
             }
             if ($originalTime !== $shoot->time) {
                 $changes['time'] = ['from' => $originalTime, 'to' => $shoot->time];
+            }
+            if ($scheduleChanged) {
+                // Matching pending requests are fulfilled by this move; non-matching stay pending.
+                \App\Models\ShootRescheduleRequest::reconcilePendingForManualScheduleChange(
+                    $shoot,
+                    $user
+                );
             }
             if ($originalTimezone !== $shoot->timezone) {
                 $changes['timezone'] = ['from' => $originalTimezone, 'to' => $shoot->timezone];

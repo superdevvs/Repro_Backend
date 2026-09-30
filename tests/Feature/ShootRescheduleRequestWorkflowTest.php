@@ -331,7 +331,7 @@ class ShootRescheduleRequestWorkflowTest extends TestCase
             ->assertJsonPath('data.0.requested_date', self::REQUESTED_DATE . 'T00:00:00.000000Z');
     }
 
-    public function test_manual_schedule_update_rejects_pending_reschedule_requests(): void
+    public function test_manual_schedule_update_leaves_nonmatching_pending_reschedule_requests(): void
     {
         $client = User::factory()->create(['role' => 'client']);
         $admin = User::factory()->create(['role' => 'admin']);
@@ -351,9 +351,39 @@ class ShootRescheduleRequestWorkflowTest extends TestCase
         $this->assertSame('2026-11-06', $shoot->scheduled_date->toDateString());
 
         $record->refresh();
-        $this->assertTrue($record->isRejected());
-        $this->assertSame($admin->id, $record->approved_by);
-        $this->assertStringContainsString('2026-11-06', (string) $record->review_notes);
+        // Non-matching manual move must keep the client request visible in Requests.
+        $this->assertTrue($record->isPending());
+        $this->assertNull($record->approved_by);
+        $this->assertNull($record->reviewed_at);
         $this->assertNull($record->applied_at);
+        $this->assertNull($record->review_notes);
+    }
+
+    public function test_manual_schedule_update_fulfills_matching_pending_reschedule_requests(): void
+    {
+        $client = User::factory()->create(['role' => 'client']);
+        $admin = User::factory()->create(['role' => 'admin']);
+        $photographer = User::factory()->create(['role' => 'photographer']);
+        $shoot = $this->makeShoot($client);
+        $shoot->update(['photographer_id' => $photographer->id, 'timezone' => 'America/New_York']);
+        $record = $this->pendingRequestFor($shoot, $client);
+
+        Sanctum::actingAs($admin);
+        $this->patchJson("/api/shoots/{$shoot->id}", [
+            'scheduled_date' => self::REQUESTED_DATE,
+            'time' => self::REQUESTED_TIME,
+            'skip_availability_check' => true,
+        ])->assertOk();
+
+        $shoot->refresh();
+        $this->assertSame(self::REQUESTED_DATE, $shoot->scheduled_date->toDateString());
+
+        $record->refresh();
+        $this->assertTrue($record->isApproved());
+        $this->assertSame($admin->id, $record->approved_by);
+        $this->assertNotNull($record->reviewed_at);
+        $this->assertNotNull($record->applied_at);
+        $this->assertStringContainsString(self::REQUESTED_DATE, (string) $record->review_notes);
+        $this->assertStringContainsString('Fulfilled', (string) $record->review_notes);
     }
 }
