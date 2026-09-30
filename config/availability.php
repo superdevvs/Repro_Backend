@@ -36,7 +36,7 @@ return [
     'fallback_end_time' => env('AVAILABILITY_FALLBACK_END', '18:00'),
 
     // Default shoot duration in minutes if services don't specify
-    'default_shoot_duration_minutes' => env('DEFAULT_SHOOT_DURATION', 120),
+    'default_shoot_duration_minutes' => (int) env('DEFAULT_SHOOT_DURATION', 120),
 
     // Minimum shoot duration in minutes
     'min_shoot_duration_minutes' => 60,
