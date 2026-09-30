@@ -160,7 +160,7 @@ class ShootListingService
 
             $query = $authorization->scopeAccessibleShootMedia(Shoot::with($eagerLoads), $user);
 
-            $this->applyTabScope($query, $tab);
+            $this->applyTabScope($query, $tab, $user);
             if ($tab === 'scheduled' && in_array($request->query('scheduled_status'), ['requested', 'scheduled'], true)) {
                 // Apply before pagination so a requested tab cannot be an empty
                 // slice of a page occupied by scheduled shoots.
@@ -421,7 +421,7 @@ class ShootListingService
         Cache::put(self::CACHE_REGISTRY_KEY, $keys, now()->addDay());
     }
 
-    protected function applyTabScope(Builder $query, string $tab): void
+    protected function applyTabScope(Builder $query, string $tab, ?User $user = null): void
     {
         if ($tab === 'featured') {
             $query->where(function (Builder $scope) {
@@ -467,9 +467,46 @@ class ShootListingService
                 'photos_uploaded',
             ]));
 
-            $query->where(function (Builder $scope) use ($statuses, $workflowStatuses) {
-                $scope->whereIn('status', $statuses)
-                    ->orWhereIn('workflow_status', $workflowStatuses);
+            $query->where(function (Builder $scope) use ($statuses, $workflowStatuses, $user) {
+                $scope->where(function (Builder $active) use ($statuses, $workflowStatuses) {
+                    $active->whereIn('status', $statuses)
+                        ->orWhereIn('workflow_status', $workflowStatuses);
+                });
+
+                // Keep incomplete editing-lane work on the editor queue after photos
+                // are delivered so video editors can still upload / set embeds.
+                if ($user && $user->role === 'editor') {
+                    $editorId = (int) $user->id;
+                    $deliveredStatuses = [
+                        Shoot::STATUS_DELIVERED,
+                        Shoot::STATUS_READY,
+                        'ready',
+                        'ready_for_client',
+                        'admin_verified',
+                        'client_delivered',
+                        'workflow_completed',
+                        Shoot::STATUS_REVIEW,
+                        'review',
+                    ];
+                    $scope->orWhere(function (Builder $incomplete) use ($editorId, $deliveredStatuses) {
+                        $incomplete
+                            ->where(function (Builder $delivered) use ($deliveredStatuses) {
+                                $delivered->whereIn('status', $deliveredStatuses)
+                                    ->orWhereIn('workflow_status', $deliveredStatuses);
+                            })
+                            ->whereHas('services', function (Builder $serviceQuery) use ($editorId) {
+                                $serviceQuery->where(function (Builder $lane) use ($editorId) {
+                                    $lane->where(function (Builder $photo) use ($editorId) {
+                                        $photo->where('shoot_service.editor_id', $editorId)
+                                            ->whereNull('shoot_service.editing_completed_at');
+                                    })->orWhere(function (Builder $video) use ($editorId) {
+                                        $video->where('shoot_service.video_editor_id', $editorId)
+                                            ->whereNull('shoot_service.video_editing_completed_at');
+                                    });
+                                });
+                            });
+                    });
+                }
             });
 
             return;

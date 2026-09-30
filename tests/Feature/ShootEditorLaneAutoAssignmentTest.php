@@ -101,6 +101,32 @@ class ShootEditorLaneAutoAssignmentTest extends TestCase
         ]);
     }
 
+
+    public function test_bundled_photo_video_service_assigns_video_editor_id(): void
+    {
+        $category = Category::firstOrCreate(['name' => 'Photos & Video']);
+        $bundled = Service::factory()->photoVideoIntake()->create([
+            'category_id' => $category->id,
+            'name' => 'HDR Photos & Video',
+            'price' => 250,
+        ]);
+        $shoot = $this->uploadedShootWithServices([$bundled]);
+
+        $this->workflow->startEditing($shoot);
+        $shoot = $shoot->fresh(['services.category']);
+        $pivot = $shoot->services->first()->pivot;
+
+        $this->assertSame(Shoot::STATUS_EDITING, $shoot->status);
+        $this->assertSame($this->photoEditor->id, (int) $pivot->editor_id);
+        $this->assertSame($this->videoEditor->id, (int) $pivot->video_editor_id);
+        $this->assertNull($shoot->editor_id);
+        $this->assertTrue(
+            $this->assignments->scopeAssignedToEditor(Shoot::query(), $this->videoEditor->id)
+                ->whereKey($shoot->id)
+                ->exists()
+        );
+    }
+
     private function serviceInCategory(string $categoryName, string $serviceName): Service
     {
         $category = Category::firstOrCreate(['name' => $categoryName]);

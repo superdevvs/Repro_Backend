@@ -102,6 +102,19 @@ class UpdateShootAction
         $photographerEditableKeys = [
             'is_featured',
         ];
+        $isEditor = $user->role === 'editor';
+        $assignedEditor = $isEditor
+            && $this->editingAssignmentService->editorHasAssignment($shoot, $user);
+        // Assigned editors may only merge video-tour embed fields on Overview.
+        $editorEditableKeys = [
+            'tour_links',
+        ];
+        $editorEditableTourLinkKeys = [
+            'embeds',
+            'video_link',
+            'featured_embed_id',
+            'featured_embed',
+        ];
         $clientEditableTourLinkKeys = [
             'property_description',
             'property_mls',
@@ -246,13 +259,30 @@ class UpdateShootAction
                 if (! $onlyPhotographerEditableFields) {
                     $this->abortJson('Forbidden', 403);
                 }
+            } elseif ($assignedEditor) {
+                $onlyEditorEditableFields = count($requestKeys) > 0
+                    && count(array_diff($requestKeys, $editorEditableKeys)) === 0;
+
+                if (! $onlyEditorEditableFields) {
+                    $this->abortJson('Forbidden', 403);
+                }
+
+                $requestedTourLinks = $request->input('tour_links', []);
+                if (! is_array($requestedTourLinks)) {
+                    $this->abortJson('Invalid tour_links payload', 422);
+                }
+
+                $invalidTourLinkKeys = array_diff(array_keys($requestedTourLinks), $editorEditableTourLinkKeys);
+                if (! empty($invalidTourLinkKeys)) {
+                    $this->abortJson('Forbidden', 403);
+                }
             } else {
                 if (! $onlyPrivateListing && ! $onlyFeaturedFlag) {
                     $this->abortJson('Forbidden', 403);
                 }
             }
 
-            if (! $ownsShoot && ! $assignedRep && ! $assignedPhotographer && ! $clientCanTogglePrivateListing) {
+            if (! $ownsShoot && ! $assignedRep && ! $assignedPhotographer && ! $clientCanTogglePrivateListing && ! $assignedEditor) {
                 $this->abortJson('Forbidden', 403);
             }
         }

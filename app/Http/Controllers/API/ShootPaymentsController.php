@@ -100,6 +100,20 @@ class ShootPaymentsController extends Controller
             ], 400);
         }
 
+        // Ensure photo/video editing lanes have editors before delivery so a
+        // video-bearing shoot that skipped Send-to-Editing still lands in the
+        // video editor queue while video_editing_completed_at is null.
+        try {
+            app(\App\Services\Shoots\ShootEditingAssignmentService::class)
+                ->autoAssignEditorsForShoot($shoot->fresh(['services.category']) ?? $shoot);
+            $shoot->refresh();
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning('Failed to auto-assign editors before finalize', [
+                'shoot_id' => $shoot->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
         try {
             $shoot->workflowLogs()->create([
                 'user_id' => $user->id,
