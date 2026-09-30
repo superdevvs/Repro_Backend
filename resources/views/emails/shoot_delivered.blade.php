@@ -51,7 +51,7 @@
                 <p class="dark-heading" style="margin:0 0 8px; font-size:16px; line-height:1.4; color:#071223; font-weight:800;">What you can do now</p>
                 <p class="dark-body" style="margin:0; font-size:14px; line-height:1.7; color:#47627f;">
                     @if(!empty($paymentLink))
-                        Complete the remaining balance to unlock downloads. Share links below can be forwarded once the shoot is paid — or sign in and open Completed Shoots.
+                        Complete the remaining balance to unlock downloads and forwardable share links. You can sign in to your client account and open this shoot under Completed Shoots once paid.
                     @else
                         Use the forwardable share links below for MLS-size and full-size downloads, tours, and any video or Zillow links for this property. You can also sign in and open Completed Shoots.
                     @endif

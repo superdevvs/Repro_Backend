@@ -5,6 +5,7 @@ namespace App\Services\SystemEmails;
 use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Services\Media\MediaStorage;
+use App\Services\Shoots\ShootClientReleaseAccessService;
 use App\Services\Shoots\ShootMediaArchiveService;
 use Illuminate\Support\Facades\Log;
 
@@ -13,12 +14,16 @@ use Illuminate\Support\Facades\Log;
  *
  * Labels match the legacy reprophotos-style share pack (MLS zip, full zip, MLS
  * tour, branded tour, optional video / Zillow / property page).
+ *
+ * Share links are omitted while public release is locked (unpaid and no
+ * bypass_paywall) — same gate as EmailShootPhotos / public tours.
  */
 class DeliveryShareLinksBuilder
 {
     public function __construct(
         protected ShootMediaArchiveService $archives,
         protected MediaStorage $media,
+        protected ShootClientReleaseAccessService $releaseAccess,
     ) {
     }
 
@@ -32,6 +37,11 @@ class DeliveryShareLinksBuilder
      */
     public function forShoot(Shoot $shoot): array
     {
+        // Single gate for every email that embeds the share-link block.
+        if ($this->releaseAccess->isPublicReleaseLocked($shoot)) {
+            return $this->emptyShare();
+        }
+
         $tourLinks = $this->normalizeTourLinks($shoot->tour_links ?? null);
         $links = [];
 
@@ -148,6 +158,36 @@ class DeliveryShareLinksBuilder
             'branded_tour_link' => $brandedTour,
             'video_download_link' => $videoUrl,
             'zillow_3d_link' => $zillow,
+        ];
+    }
+
+    /**
+     * @return array{
+     *     links: list<array{key:string,label:string,url:string}>,
+     *     property_url:null,
+     *     completed_shoots_note:string,
+     *     has_links:bool,
+     *     small_zip_link:null,
+     *     full_zip_link:null,
+     *     mls_tour_link:null,
+     *     branded_tour_link:null,
+     *     video_download_link:null,
+     *     zillow_3d_link:null
+     * }
+     */
+    private function emptyShare(): array
+    {
+        return [
+            'links' => [],
+            'property_url' => null,
+            'completed_shoots_note' => '',
+            'has_links' => false,
+            'small_zip_link' => null,
+            'full_zip_link' => null,
+            'mls_tour_link' => null,
+            'branded_tour_link' => null,
+            'video_download_link' => null,
+            'zillow_3d_link' => null,
         ];
     }
 

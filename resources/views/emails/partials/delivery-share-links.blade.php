@@ -11,7 +11,7 @@
         <tr>
             <td class="section-card-bg section-inner" style="background-color:#ffffff; border:1px solid #dbe6f3; border-radius:18px; padding:20px 22px;">
                 <p class="dark-muted" style="margin:0 0 8px; font-size:11px; line-height:1.4; letter-spacing:1.8px; text-transform:uppercase; color:#6c84a2; font-weight:700;">Share &amp; Download Links</p>
-                <p class="dark-body" style="margin:0 0 14px; font-size:14px; line-height:1.7; color:#47627f;">Forward these links — no login required. Downloads unlock after the shoot is paid in full.</p>
+                <p class="dark-body" style="margin:0 0 14px; font-size:14px; line-height:1.7; color:#47627f;">Forward these links — no login required.</p>
                 <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
                     @foreach($shareLinks as $link)
                         <tr>
