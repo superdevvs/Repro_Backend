@@ -244,11 +244,12 @@ class ShootMutationSupportService
         int $photographerId,
         \DateTime $scheduledAt,
         ?int $durationMinutes = 120,
-        ?int $excludeShootId = null
+        ?int $excludeShootId = null,
+        ?string $timezone = null
     ): void {
         $carbonDate = Carbon::parse($scheduledAt);
 
-        if (!$this->availabilityService->isAvailable($photographerId, $carbonDate, $durationMinutes, $excludeShootId)) {
+        if (!$this->availabilityService->isAvailable($photographerId, $carbonDate, $durationMinutes, $excludeShootId, $timezone)) {
             throw ValidationException::withMessages([
                 'photographer_id' => ['Photographer is not available at the selected time.'],
             ]);
@@ -349,7 +350,8 @@ class ShootMutationSupportService
     public function checkServiceItemPhotographerAvailability(
         array $services,
         ?int $fallbackPhotographerId = null,
-        ?int $excludeShootId = null
+        ?int $excludeShootId = null,
+        ?string $timezone = null
     ): void {
         $serviceIds = collect($services)
             ->pluck('id')
@@ -357,6 +359,7 @@ class ShootMutationSupportService
             ->unique()
             ->values();
         $serviceModels = Service::whereIn('id', $serviceIds)->get()->keyBy('id');
+        $explicitTimezone = $this->validTimezoneName($timezone);
 
         foreach ($services as $service) {
             // Fee / hold / non-deliverable lines never reserve photographer time.
@@ -376,12 +379,19 @@ class ShootMutationSupportService
 
             $durationMinutes = $service['duration_minutes'] ?? $this->calculateServiceItemDuration($serviceModel);
 
+            // Naive wall clocks are reinterpreted only when an explicit request/shoot
+            // timezone is provided (parity with assertWithinAvailabilityBounds / create).
+            $scheduledDateTime = $explicitTimezone
+                ? ($this->parseScheduleInstant($scheduledAt, $explicitTimezone) ?? new \DateTime((string) $scheduledAt))
+                : new \DateTime((string) $scheduledAt);
+
             try {
                 $this->checkPhotographerAvailability(
                     (int) $photographerId,
-                    new \DateTime((string) $scheduledAt),
+                    $scheduledDateTime,
                     $durationMinutes,
-                    $excludeShootId
+                    $excludeShootId,
+                    $explicitTimezone
                 );
             } catch (ValidationException $exception) {
                 $serviceName = $serviceModel?->name ?: 'service item';

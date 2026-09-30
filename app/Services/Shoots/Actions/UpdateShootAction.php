@@ -430,7 +430,8 @@ class UpdateShootAction
                 $this->support->checkServiceItemPhotographerAvailability(
                     $targetServices,
                     $targetPhotographerId ? (int) $targetPhotographerId : null,
-                    $shoot->id
+                    $shoot->id,
+                    $assertTimezone
                 );
             }
         }

@@ -174,9 +174,28 @@ class CreateShootAction
                 if (!$skipConflictCheck) {
                     $this->support->checkServiceItemPhotographerAvailability(
                         $servicesPayload,
-                        $photographerId
+                        $photographerId,
+                        null,
+                        $scheduleTimezone !== '' ? $scheduleTimezone : null
                     );
                 }
+            }
+
+            // Zoned bookings store absolute UTC on service lines (parity with update/PATCH).
+            // Do this after availability checks so naive wall clocks in the payload are still
+            // reinterpreted via the explicit timezone above. Shoot scheduled_at is converted
+            // to UTC just before persist (after local date/time are derived).
+            if ($scheduleTimezone !== '') {
+                $servicesPayload = array_map(function (array $service) use ($scheduleTimezone) {
+                    if (! empty($service['scheduled_at'])) {
+                        $instant = $this->support->parseScheduleInstant($service['scheduled_at'], $scheduleTimezone);
+                        if ($instant) {
+                            $service['scheduled_at'] = \Carbon\Carbon::instance($instant)->utc()->format('Y-m-d H:i:s');
+                        }
+                    }
+
+                    return $service;
+                }, $servicesPayload);
             }
 
             $propertyDetailsPayload = is_array($validated['property_details'] ?? null)
@@ -233,6 +252,11 @@ class CreateShootAction
                 ? ($scheduleScope->localTimeForScheduledAt($scheduledAt, $validated['timezone'] ?? null) ?? $scheduledAt->format('H:i'))
                 : ($validated['time'] ?? null);
 
+            // Persist absolute UTC once local civil date/time are derived from the booking zone.
+            if ($scheduleTimezone !== '' && $scheduledAt) {
+                $scheduledAt = \Carbon\Carbon::instance($scheduledAt)->utc()->toDateTime();
+            }
+
             $shoot = Shoot::create([
                 'client_id' => $validated['client_id'],
                 'rep_id' => $repId,
@@ -253,6 +277,7 @@ class CreateShootAction
                 'scheduled_at' => $scheduledAt,
                 'scheduled_date' => $scheduledDate,
                 'time' => $scheduledTime,
+                'timezone' => $scheduleTimezone !== '' ? $scheduleTimezone : null,
                 'status' => $initialStatus,
                 'workflow_status' => $workflowStatus,
                 'base_quote' => $pricingCalculation['base_quote'],

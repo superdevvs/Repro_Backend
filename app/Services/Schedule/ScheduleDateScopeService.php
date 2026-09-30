@@ -43,7 +43,9 @@ class ScheduleDateScopeService
             try {
                 $date = $scheduledAt instanceof CarbonInterface
                     ? $scheduledAt->copy()
-                    : Carbon::parse((string) $scheduledAt, config('app.timezone'));
+                    : ($scheduledAt instanceof \DateTimeInterface
+                        ? Carbon::instance($scheduledAt)->copy()
+                        : Carbon::parse((string) $scheduledAt, config('app.timezone')));
 
                 return $date->setTimezone($timezone)->toDateString();
             } catch (\Throwable $exception) {
@@ -84,7 +86,9 @@ class ScheduleDateScopeService
         try {
             $date = $scheduledAt instanceof CarbonInterface
                 ? $scheduledAt->copy()
-                : Carbon::parse((string) $scheduledAt, config('app.timezone'));
+                : ($scheduledAt instanceof \DateTimeInterface
+                    ? Carbon::instance($scheduledAt)->copy()
+                    : Carbon::parse((string) $scheduledAt, config('app.timezone')));
 
             return $date->setTimezone($this->validTimezone($timezone))->format('H:i');
         } catch (\Throwable) {
