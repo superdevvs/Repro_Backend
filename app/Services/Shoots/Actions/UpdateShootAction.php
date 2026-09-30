@@ -199,20 +199,24 @@ class UpdateShootAction
                     }
                 }
             } elseif ($assignedRep) {
-                // Assigned sales reps may move an active appointment. Overview also
-                // submits unchanged context; verify and discard it instead of granting
-                // rights to change clients, photographers, pricing or property data.
+                // Assigned sales reps may move an active appointment and edit the
+                // bookable service plan. Overview also submits unchanged context;
+                // verify and discard it instead of granting rights to change clients,
+                // photographers, line pricing, or property data.
                 if (! $shoot->isImportDraft()
                     && $shoot->status === Shoot::STATUS_SCHEDULED
                     && $shoot->workflow_status === Shoot::STATUS_SCHEDULED
                     && ! $shoot->units()->exists()
-                    && $request->hasAny(['scheduled_date', 'scheduled_at', 'time'])) {
+                    && $request->hasAny([
+                        'scheduled_date', 'scheduled_at', 'time', 'services', 'service_items',
+                    ])) {
                     $request->replace(app(\App\Services\Shoots\AssignedRepSchedulePayload::class)
                         ->normalize($shoot, $request->all()));
                     $requestKeys = array_keys($request->all());
                     $repEditableKeys = array_merge($repEditableKeys, [
                         'scheduled_date', 'scheduled_at', 'time', 'services', 'service_items',
                         'notify_client', 'notify_photographer',
+                        'confirm_service_detach', 'service_detach_confirmation_token',
                     ]);
                 }
                 $onlyRepEditableFields = $assignedRep

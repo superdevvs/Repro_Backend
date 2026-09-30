@@ -2,9 +2,10 @@
 
 namespace App\Services\Shoots;
 
+use App\Models\Service;
 use App\Models\Shoot;
 
-/** Accept the Overview form's unchanged context without granting edit rights to it. */
+/** Accept Overview form context; allow bookable service plan edits for assigned reps. */
 class AssignedRepSchedulePayload
 {
     public function normalize(Shoot $shoot, array $payload): array
@@ -52,25 +53,37 @@ class AssignedRepSchedulePayload
 
         $items = $shoot->serviceItems()->get();
         $byService = $items->keyBy('service_id');
+        $incomingServiceIds = [];
+
         foreach (['services' => 'id', 'service_items' => 'service_id'] as $field => $idKey) {
             if (! array_key_exists($field, $payload)) {
                 continue;
             }
-            abort_unless(is_array($payload[$field]) && count($payload[$field]) === $items->count()
-                && $byService->count() === $items->count(), 403, 'Forbidden');
+            abort_unless(is_array($payload[$field]), 403, 'Forbidden');
             $seen = [];
             foreach ($payload[$field] as &$row) {
                 abort_unless(is_array($row) && isset($row[$idKey]) && is_scalar($row[$idKey]), 403, 'Forbidden');
-                $item = $byService->get($row[$idKey]);
-                abort_unless($item && ! isset($seen[$item->service_id]), 403, 'Forbidden');
-                $seen[$item->service_id] = true;
+                $serviceId = (int) $row[$idKey];
+                abort_unless($serviceId > 0 && ! isset($seen[$serviceId]), 403, 'Forbidden');
+                $seen[$serviceId] = true;
+                $incomingServiceIds[$serviceId] = true;
                 abort_unless(array_diff(array_keys($row), [$idKey, 'scheduled_at', 'price', 'quantity', 'photographer_pay']) === [], 403, 'Forbidden');
-                foreach (['price', 'quantity', 'photographer_pay'] as $context) {
-                    if (array_key_exists($context, $row)) {
-                        abort_unless($this->sameValue($row[$context], $item->{$context}), 403, 'Forbidden');
-                        unset($row[$context]);
+
+                $item = $byService->get($serviceId);
+                if ($item) {
+                    foreach (['price', 'quantity', 'photographer_pay'] as $context) {
+                        if (array_key_exists($context, $row)) {
+                            abort_unless($this->sameValue($row[$context], $item->{$context}), 403, 'Forbidden');
+                            unset($row[$context]);
+                        }
                     }
+                    continue;
                 }
+
+                // New lines: bookable catalog only. Pricing stays server-owned.
+                $catalog = Service::query()->whereKey($serviceId)->first();
+                abort_unless($catalog && ! $catalog->is_migration_only, 403, 'Forbidden');
+                unset($row['price'], $row['photographer_pay']);
             }
             unset($row);
         }
@@ -81,26 +94,47 @@ class AssignedRepSchedulePayload
                 abort_unless(is_array($row) && isset($row['service_id'])
                     && is_scalar($row['service_id'])
                     && array_diff(array_keys($row), ['service_id', 'photographer_id']) === [], 403, 'Forbidden');
-                $item = $byService->get($row['service_id']);
-                abort_unless($item && array_key_exists('photographer_id', $row)
-                    && $this->sameValue($row['photographer_id'], $item->photographer_id ?? $shoot->photographer_id), 403, 'Forbidden');
+                $serviceId = (int) $row['service_id'];
+                $item = $byService->get($serviceId);
+                abort_unless(array_key_exists('photographer_id', $row), 403, 'Forbidden');
+                if ($item) {
+                    abort_unless($this->sameValue(
+                        $row['photographer_id'],
+                        $item->photographer_id ?? $shoot->photographer_id
+                    ), 403, 'Forbidden');
+                } else {
+                    abort_unless(isset($incomingServiceIds[$serviceId])
+                        && $this->sameValue($row['photographer_id'], $shoot->photographer_id), 403, 'Forbidden');
+                }
             }
             unset($payload['service_photographers']);
         }
 
-        // Start from the existing service plan; only pass explicit schedule changes
-        // through the normal mutation/availability checks.
+        // Keep services as the mutation source of truth so new / removed lines apply.
+        // Also accept service_items-shaped Overview payloads.
         if (isset($payload['services']) && ! isset($payload['service_items'])) {
-            $payload['service_items'] = array_map(fn (array $row) => [
-                'service_id' => $row['id'],
-                ...array_intersect_key($row, array_flip(['scheduled_at'])),
-            ], $payload['services']);
-        }
-        unset($payload['services']);
-        if (isset($payload['service_items'])) {
+            $payload['services'] = array_map(fn (array $row) => array_intersect_key(
+                $row,
+                array_flip(['id', 'scheduled_at', 'quantity'])
+            ), $payload['services']);
+        } elseif (isset($payload['services'])) {
+            $payload['services'] = array_map(fn (array $row) => array_intersect_key(
+                $row,
+                array_flip(['id', 'scheduled_at', 'quantity'])
+            ), $payload['services']);
             $payload['service_items'] = array_map(fn (array $row) => array_intersect_key(
-                $row, array_flip(['service_id', 'scheduled_at'])
+                $row,
+                array_flip(['service_id', 'scheduled_at', 'quantity'])
             ), $payload['service_items']);
+        } elseif (isset($payload['service_items'])) {
+            // Promote to services so adds are not dropped by targetServicesFor's
+            // existing-plan fallback when only service_items arrive.
+            $payload['services'] = array_map(fn (array $row) => array_filter([
+                'id' => $row['service_id'],
+                'scheduled_at' => $row['scheduled_at'] ?? null,
+                'quantity' => $row['quantity'] ?? null,
+            ], fn ($value) => $value !== null), $payload['service_items']);
+            unset($payload['service_items']);
         }
 
         return $payload;

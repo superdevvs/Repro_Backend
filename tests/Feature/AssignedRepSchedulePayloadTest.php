@@ -44,19 +44,99 @@ class AssignedRepSchedulePayloadTest extends TestCase
             'service_photographers' => [['service_id' => $service->id, 'photographer_id' => $shoot->photographer_id]],
             'notify_client' => false,
         ];
-        return [$shoot, $payload];
+        return [$shoot, $payload, $service];
     }
 
     public function test_unchanged_overview_context_is_removed_while_schedule_fields_are_preserved(): void
     {
         [$shoot, $payload] = $this->fixture();
         $normalized = app(AssignedRepSchedulePayload::class)->normalize($shoot, $payload);
-        $this->assertSame([
-            'scheduled_date' => '2026-10-05', 'time' => '11:00', 'notify_client' => false,
-            'service_items' => [['service_id' => $payload['services'][0]['id'], 'scheduled_at' => '2026-10-05 11:00:00']],
-        ], $normalized);
+        $this->assertSame('2026-10-05', $normalized['scheduled_date']);
+        $this->assertSame('11:00', $normalized['time']);
+        $this->assertFalse($normalized['notify_client']);
+        $this->assertSame(
+            [['id' => $payload['services'][0]['id'], 'scheduled_at' => '2026-10-05 11:00:00']],
+            $normalized['services']
+        );
+        $this->assertSame(
+            ['scheduled_date', 'time', 'services', 'notify_client'],
+            array_keys($normalized)
+        );
         $this->assertSame($payload['address'], $shoot->fresh()->address);
         $this->assertSame(250.0, (float) $shoot->serviceItems()->sole()->price);
+    }
+
+    public function test_assigned_rep_may_add_a_bookable_service_to_the_plan(): void
+    {
+        [$shoot, $payload, $existing] = $this->fixture();
+        $zillow = Service::factory()->create([
+            'name' => 'Zillow 3D Home Tour',
+            'price' => 180,
+        ]);
+        $zillow->forceFill(['is_migration_only' => false])->save();
+
+        $payload['services'][] = [
+            'id' => $zillow->id,
+            'price' => 180,
+            'quantity' => 1,
+            'scheduled_at' => '2026-10-05 11:00:00',
+        ];
+        $payload['service_photographers'][] = [
+            'service_id' => $zillow->id,
+            'photographer_id' => $shoot->photographer_id,
+        ];
+
+        $normalized = app(AssignedRepSchedulePayload::class)->normalize($shoot, $payload);
+
+        $this->assertCount(2, $normalized['services']);
+        $this->assertSame($existing->id, $normalized['services'][0]['id']);
+        $this->assertSame('2026-10-05 11:00:00', $normalized['services'][0]['scheduled_at']);
+        $this->assertSame($zillow->id, $normalized['services'][1]['id']);
+        $this->assertSame(1, $normalized['services'][1]['quantity']);
+        $this->assertSame('2026-10-05 11:00:00', $normalized['services'][1]['scheduled_at']);
+        $this->assertArrayNotHasKey('service_photographers', $normalized);
+    }
+
+    public function test_assigned_rep_cannot_add_a_migration_only_service(): void
+    {
+        [$shoot, $payload] = $this->fixture();
+        $legacy = Service::factory()->create(['name' => 'Legacy Migration Service', 'price' => 10]);
+        $legacy->forceFill(['is_migration_only' => true])->save();
+
+        $payload['services'][] = ['id' => $legacy->id, 'quantity' => 1];
+
+        try {
+            app(AssignedRepSchedulePayload::class)->normalize($shoot, $payload);
+            $this->fail('Migration-only services must stay blocked for assigned representatives.');
+        } catch (HttpException $error) {
+            $this->assertSame(403, $error->getStatusCode());
+        }
+    }
+
+    public function test_assigned_rep_may_drop_a_service_from_the_plan_payload(): void
+    {
+        [$shoot, $payload, $existing] = $this->fixture();
+        $extra = Service::factory()->create(['name' => 'Drone Photos', 'price' => 125]);
+        $shoot->services()->attach($extra->id, [
+            'price' => 125, 'quantity' => 1, 'photographer_pay' => 40, 'photographer_id' => $shoot->photographer_id,
+        ]);
+
+        $payload['services'] = [[
+            'id' => $existing->id,
+            'price' => '250.00',
+            'quantity' => 1,
+            'photographer_pay' => 75,
+            'scheduled_at' => '2026-10-05 11:00:00',
+        ]];
+        $payload['service_photographers'] = [[
+            'service_id' => $existing->id,
+            'photographer_id' => $shoot->photographer_id,
+        ]];
+
+        $normalized = app(AssignedRepSchedulePayload::class)->normalize($shoot, $payload);
+        $this->assertSame([
+            ['id' => $existing->id, 'scheduled_at' => '2026-10-05 11:00:00'],
+        ], $normalized['services']);
     }
 
     #[DataProvider('forbiddenContext')]
@@ -71,7 +151,7 @@ class AssignedRepSchedulePayloadTest extends TestCase
             'pay' => $payload['services'][0]['photographer_pay'] = 999,
             'assignment' => $payload['service_photographers'][0]['photographer_id'] = 999999,
             'property' => $payload['property_details']['beds'] = 9,
-            'new_service' => $payload['services'][0]['id'] = 999999,
+            'unknown_service' => $payload['services'][0]['id'] = 999999,
             'duplicate_service' => $payload['services'][] = $payload['services'][0],
             'unknown_service_field' => $payload['services'][0]['editor_id'] = 999999,
             'unknown_property_field' => $payload['property_details']['privateAdminFlag'] = true,
@@ -86,6 +166,9 @@ class AssignedRepSchedulePayloadTest extends TestCase
 
     public static function forbiddenContext(): array
     {
-        return array_map(fn ($change) => [$change], ['address', 'client', 'price', 'quantity', 'pay', 'assignment', 'property', 'new_service', 'duplicate_service', 'unknown_service_field', 'unknown_property_field']);
+        return array_map(fn ($change) => [$change], [
+            'address', 'client', 'price', 'quantity', 'pay', 'assignment', 'property',
+            'unknown_service', 'duplicate_service', 'unknown_service_field', 'unknown_property_field',
+        ]);
     }
 }

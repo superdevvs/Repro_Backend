@@ -559,6 +559,35 @@ class ShootMutationActionsTest extends TestCase
         $this->assertSame('12 Active Lane', $shoot->fresh()->address);
         $this->assertSame(Shoot::STATUS_SCHEDULED, $shoot->fresh()->status);
 
+        // Assigned reps may add bookable services on scheduled shoots, but still
+        // cannot rewrite admin-only fields such as address (covered above).
+        $zillow = Service::factory()->create([
+            'name' => 'Zillow 3D Home Tour',
+            'price' => 180.00,
+        ]);
+        $zillow->forceFill(['is_migration_only' => false])->save();
+
+        $this->patchJson("/api/shoots/{$shoot->id}", [
+            'services' => [
+                ['id' => $this->service->id, 'quantity' => 1, 'price' => 150],
+                ['id' => $zillow->id, 'quantity' => 1],
+            ],
+        ])->assertOk();
+
+        $this->assertTrue($shoot->fresh()->services()->whereKey($zillow->id)->exists());
+        $this->assertSame('12 Active Lane', $shoot->fresh()->address);
+
+        $legacy = Service::factory()->create(['name' => 'Legacy Migration Only', 'price' => 10]);
+        $legacy->forceFill(['is_migration_only' => true])->save();
+        $this->patchJson("/api/shoots/{$shoot->id}", [
+            'services' => [
+                ['id' => $this->service->id, 'quantity' => 1, 'price' => 150],
+                ['id' => $zillow->id, 'quantity' => 1],
+                ['id' => $legacy->id, 'quantity' => 1],
+            ],
+        ])->assertForbidden();
+        $this->assertFalse($shoot->fresh()->services()->whereKey($legacy->id)->exists());
+
         $held = Shoot::factory()->create([
             'client_id' => $this->client->id,
             'photographer_id' => $this->photographer->id,
@@ -570,6 +599,80 @@ class ShootMutationActionsTest extends TestCase
         $this->attachPrimaryService($held);
         $this->patchJson("/api/shoots/{$held->id}", ['status' => 'delivered'])->assertForbidden();
         $this->assertSame('on_hold', $held->fresh()->status);
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
+    public function assigned_sales_rep_can_add_bookable_service_on_scheduled_shoot_but_not_migration_only(): void
+    {
+        Sanctum::actingAs($this->salesRep);
+        $shoot = Shoot::factory()->create([
+            'client_id' => $this->client->id,
+            'photographer_id' => $this->photographer->id,
+            'service_id' => $this->service->id,
+            'rep_id' => $this->salesRep->id,
+            'status' => Shoot::STATUS_SCHEDULED,
+            'workflow_status' => Shoot::STATUS_SCHEDULED,
+            'scheduled_date' => now()->addDays(3)->toDateString(),
+            'time' => '10:00',
+            'timezone' => 'America/New_York',
+            'address' => '1732 Fletchers Way',
+            'city' => 'Baltimore',
+            'state' => 'MD',
+            'zip' => '21201',
+        ]);
+        $this->attachPrimaryService($shoot);
+
+        $zillow = Service::factory()->create([
+            'name' => 'Zillow 3D Home Tour',
+            'price' => 180.00,
+        ]);
+        $zillow->forceFill(['is_migration_only' => false])->save();
+
+        $this->patchJson("/api/shoots/{$shoot->id}", [
+            'services' => [
+                ['id' => $this->service->id, 'price' => 150, 'quantity' => 1],
+                ['id' => $zillow->id, 'quantity' => 1],
+            ],
+            'notify_client' => false,
+        ])->assertOk();
+
+        $shoot->refresh()->load('services');
+        $this->assertTrue($shoot->services->contains('id', $zillow->id));
+        $this->assertEqualsWithDelta(180.0, (float) $shoot->services->firstWhere('id', $zillow->id)->pivot->price, 0.01);
+
+        $legacy = Service::factory()->create(['name' => 'Migration Only Legacy', 'price' => 5]);
+        $legacy->forceFill(['is_migration_only' => true])->save();
+
+        $this->patchJson("/api/shoots/{$shoot->id}", [
+            'services' => [
+                ['id' => $this->service->id, 'price' => 150, 'quantity' => 1],
+                ['id' => $zillow->id, 'quantity' => 1],
+                ['id' => $legacy->id, 'quantity' => 1],
+            ],
+        ])->assertForbidden();
+
+        $this->assertFalse($shoot->fresh()->services()->whereKey($legacy->id)->exists());
+
+        // Complimentary / admin-only fields remain blocked for sales reps.
+        $this->patchJson("/api/shoots/{$shoot->id}", [
+            'complimentary_service_options' => [
+                'idempotency_key' => 'rep-comp-blocked-'.uniqid(),
+                'reason_code' => 'client_accommodation',
+                'pay_photographer' => false,
+                'pay_sales_rep' => false,
+                'service_items' => [
+                    ['service_id' => $this->secondService->id, 'quantity' => 1],
+                ],
+            ],
+        ])->assertForbidden();
+        $this->patchJson("/api/shoots/{$shoot->id}", [
+            'address' => 'Nope',
+            'services' => [
+                ['id' => $this->service->id, 'price' => 150, 'quantity' => 1],
+                ['id' => $zillow->id, 'quantity' => 1],
+            ],
+        ])->assertForbidden();
+        $this->assertSame('1732 Fletchers Way', $shoot->fresh()->address);
     }
 
     #[\PHPUnit\Framework\Attributes\Test]
