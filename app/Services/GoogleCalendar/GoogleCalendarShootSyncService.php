@@ -67,6 +67,8 @@ class GoogleCalendarShootSyncService
             $keptShootLevelUsers->push($userId);
         });
 
+        $deferredFailures = [];
+
         foreach ($assignedPhotographerIds as $userId) {
             $connection = GoogleCalendarConnection::with('user')
                 ->where('user_id', $userId)
@@ -131,12 +133,26 @@ class GoogleCalendarShootSyncService
                     'last_error' => null,
                 ])->save();
             } catch (Throwable $exception) {
-                $this->recordSyncFailure($connection, $exception, [
+                // Collect retryable failures and rethrow after every photographer
+                // has been attempted, so one bad first-push cannot skip the rest.
+                $retry = $this->recordSyncFailure($connection, $exception, [
                     'shoot_id' => $shootId,
                     'user_id' => $userId,
                     'phase' => 'sync_shoot',
+                    // First push (no Google event yet) must fail the job so the
+                    // queue retries — soft-success left brand-new bookings missing
+                    // from photographers' calendars forever.
+                    'had_google_event' => (bool) ($mapping?->google_event_id),
                 ]);
+
+                if ($retry) {
+                    $deferredFailures[] = $exception;
+                }
             }
+        }
+
+        if ($deferredFailures !== []) {
+            throw $deferredFailures[0];
         }
     }
 
@@ -383,12 +399,15 @@ class GoogleCalendarShootSyncService
                 'last_error' => null,
             ])->save();
         } catch (Throwable $exception) {
-            $this->recordSyncFailure($connection, $exception, [
+            if ($this->recordSyncFailure($connection, $exception, [
                 'shoot_id' => $shoot->id,
                 'shoot_service_id' => $serviceItem->id,
                 'user_id' => $userId,
                 'phase' => 'sync_service_item',
-            ]);
+                'had_google_event' => (bool) ($mapping?->google_event_id),
+            ])) {
+                throw $exception;
+            }
         }
     }
 
@@ -489,15 +508,12 @@ class GoogleCalendarShootSyncService
     }
 
     /**
-     * Persist last_error and log. Infrastructure failures (missing APP_KEY / decrypt
-     * with no key) are rethrown so the queue job fails and retries instead of
-     * silently marking DONE in a few milliseconds with no Google API call.
-     * Provider/token failures stay soft so one bad connection does not block
-     * other photographers on the same shoot.
+     * Persist last_error and log. Returns true when the queue job should retry
+     * (infrastructure failure, or first-push with no Google event yet).
      *
      * @param  array<string, mixed>  $context
      */
-    protected function recordSyncFailure(GoogleCalendarConnection $connection, Throwable $exception, array $context): void
+    protected function recordSyncFailure(GoogleCalendarConnection $connection, Throwable $exception, array $context): bool
     {
         $message = $exception->getMessage();
 
@@ -510,14 +526,23 @@ class GoogleCalendarShootSyncService
             'exception' => $exception::class,
         ]);
 
+        $isFirstPush = empty($context['had_google_event']);
+
         if ($this->isInfrastructureFailure($exception)) {
             Log::error('Google Calendar sync blocked by application encryption/config failure; job will retry.', $context);
 
-            throw $exception;
+            return true;
         }
 
         // LOG_LEVEL=error drops warnings; use error so ops see provider failures.
         Log::error('Google Calendar shoot sync failed.', $context);
+
+        // Brand-new bookings (no Google event id yet) must not soft-succeed: a single
+        // transient token/API failure would permanently omit the shoot from the
+        // photographer's calendar until a later unrelated update re-dispatches sync.
+        // Updates to an existing event stay soft so one bad connection cannot fail
+        // the whole multi-photographer job.
+        return $isFirstPush;
     }
 
     protected function isInfrastructureFailure(Throwable $exception): bool
@@ -526,16 +551,18 @@ class GoogleCalendarShootSyncService
             return true;
         }
 
-        // Encrypted casts can surface the missing-key message as a generic RuntimeException
-        // or DecryptException depending on Laravel bootstrap order in long-lived workers.
-        $message = strtolower($exception->getMessage());
-
-        if (str_contains($message, 'no application encryption key')) {
+        // Any failure decrypting the stored OAuth tokens is infrastructure: stale
+        // workers, rotated APP_KEY, or corrupt ciphertext. Rethrow so the job
+        // retries instead of marking DONE in a few ms with no Google API call.
+        if ($exception instanceof DecryptException) {
             return true;
         }
 
-        return $exception instanceof DecryptException
-            && str_contains($message, 'encryption key');
+        // Encrypted casts can also surface the missing-key message as a generic
+        // RuntimeException depending on Laravel bootstrap order in long-lived workers.
+        $message = strtolower($exception->getMessage());
+
+        return str_contains($message, 'no application encryption key');
     }
 
 }

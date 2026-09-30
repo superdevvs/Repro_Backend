@@ -36,10 +36,18 @@ class ShootObserver
         }
     }
 
+    public function created(Shoot $shoot): void
+    {
+        // Cover booking paths that forget an explicit calendar dispatch. CreateShootAction
+        // also dispatches; duplicate afterCommit jobs are idempotent (fingerprint no-op).
+        $this->ensureGoogleCalendarSync($shoot);
+    }
+
     public function updated(Shoot $shoot): void
     {
         $this->ensureCubiCasaOrder($shoot);
         $this->ensureIguideDiscovery($shoot);
+        $this->ensureGoogleCalendarSync($shoot);
 
         if ($shoot->wasChanged(['workflow_status', 'status', 'admin_verified_at', 'completed_at'])) {
             app(CompensationEligibilityService::class)->syncForShoot($shoot);
@@ -77,6 +85,49 @@ class ShootObserver
                 GenerateShootMediaArchiveJob::dispatch($shoot->id, 'edited', 'small');
             }
         }
+    }
+
+    /**
+     * Push (or refresh) the photographer Google Calendar event whenever a shoot
+     * is created or its assignment/schedule/status changes by ANY route.
+     *
+     * Create/Schedule/Update/Approve actions dispatch explicitly, but plain
+     * status PATCHes, AI-chat booking, and service-item photographer assignment
+     * via alternate controllers have historically skipped the push — leaving
+     * brand-new bookings off the photographer's calendar while older linked
+     * events (from connect-time resync) still looked fine.
+     */
+    private function ensureGoogleCalendarSync(Shoot $shoot): void
+    {
+        if ($shoot->isInternalTestShoot()) {
+            return;
+        }
+
+        // created() always attempts; updated() only when assignment/schedule/status moved.
+        if (! $shoot->wasRecentlyCreated
+            && ! $shoot->wasChanged(['photographer_id', 'scheduled_at', 'status', 'workflow_status'])
+        ) {
+            return;
+        }
+
+        $dispatch = static function () use ($shoot): void {
+            try {
+                app(GoogleCalendarSyncDispatcher::class)->dispatchShootSync((int) $shoot->id);
+            } catch (\Throwable $e) {
+                Log::error('Google Calendar lifecycle sync dispatch failed; shoot save completed regardless.', [
+                    'shoot_id' => $shoot->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        };
+
+        if (DB::transactionLevel() > 0) {
+            DB::afterCommit($dispatch);
+
+            return;
+        }
+
+        $dispatch();
     }
 
     /**
