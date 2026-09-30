@@ -91,18 +91,82 @@ class ShootMediaInteractionService
     }
 
     /**
+     * Normalize + validate a display filename. Storage path / stored_filename stay put;
+     * only shoot_files.filename is meant to change.
+     *
+     * Keeps the original extension (appends it when omitted; rejects mismatches).
+     * Rejects path traversal, separators, control chars, and unsafe characters.
+     *
+     * @throws \Illuminate\Validation\ValidationException
+     */
+    public function normalizeDisplayFilename(string $incoming, string $originalFilename): string
+    {
+        $incoming = trim($incoming);
+
+        // Reject path traversal / separators / control chars before any rewrite.
+        if (
+            $incoming === ''
+            || str_contains($incoming, "\0")
+            || str_contains($incoming, '/')
+            || str_contains($incoming, '\\')
+            || str_contains($incoming, '..')
+            || preg_match('/[\r\n\t"]/', $incoming)
+        ) {
+            throw \Illuminate\Validation\ValidationException::withMessages([
+                'filename' => ['Filename is invalid.'],
+            ]);
+        }
+
+        $incoming = trim($incoming, ' .');
+
+        if ($incoming === '') {
+            throw \Illuminate\Validation\ValidationException::withMessages([
+                'filename' => ['Filename is invalid.'],
+            ]);
+        }
+
+        // Portable display names: letters, digits, spaces, dot, dash, underscore, parens, brackets.
+        if (! preg_match('/^[\w\-. ()\[\]]+$/u', $incoming)) {
+            throw \Illuminate\Validation\ValidationException::withMessages([
+                'filename' => ['Filename contains unsafe characters.'],
+            ]);
+        }
+
+        $originalExt = strtolower((string) pathinfo($originalFilename, PATHINFO_EXTENSION));
+        $incomingExt = strtolower((string) pathinfo($incoming, PATHINFO_EXTENSION));
+
+        if ($incomingExt === '') {
+            if ($originalExt !== '') {
+                $incoming .= '.'.$originalExt;
+            }
+        } elseif ($originalExt !== '' && $incomingExt !== $originalExt) {
+            throw \Illuminate\Validation\ValidationException::withMessages([
+                'filename' => ['Extension must match the original ('.$originalExt.').'],
+            ]);
+        }
+
+        if (strlen($incoming) > 255) {
+            throw \Illuminate\Validation\ValidationException::withMessages([
+                'filename' => ['Filename may not be greater than 255 characters.'],
+            ]);
+        }
+
+        return $incoming;
+    }
+
+    /**
      * Update the display filename only. Storage object / stored_filename stay put
      * so downloads keep resolving by path and emit the new name via Content-Disposition.
      *
      * @return array{message: string, data: array{id: int, filename: string, stored_filename: ?string}}
      */
-    public function renameFile(ShootFile $file, string $filename): array
+    public function renameFile(ShootFile $file, string $filename, bool $clearCache = true): array
     {
         $file->filename = $filename;
         $file->save();
 
         $shoot = $file->relationLoaded('shoot') ? $file->shoot : Shoot::find($file->shoot_id);
-        if ($shoot) {
+        if ($clearCache && $shoot) {
             $this->shootMediaMutationSupportService->clearShootFilesCache($shoot, auth()->user());
         }
 
@@ -115,6 +179,44 @@ class ShootMediaInteractionService
                 'filename' => (string) $fresh->filename,
                 'stored_filename' => $fresh->stored_filename,
             ],
+        ];
+    }
+
+    /**
+     * Batch-rename display filenames. Applies what it can; caller handles auth gating
+     * and per-file permission / build failures via the returned failed list.
+     *
+     * @param  list<array{file: ShootFile, filename: string}>  $renames
+     * @return array{updated: list<array{id: int, filename: string, stored_filename: ?string}>, failed: list<array{id: int, error: string}>}
+     */
+    public function batchRenameFiles(Shoot $shoot, array $renames): array
+    {
+        $updated = [];
+        $failed = [];
+
+        foreach ($renames as $item) {
+            /** @var ShootFile $file */
+            $file = $item['file'];
+            $filename = $item['filename'];
+
+            try {
+                $result = $this->renameFile($file, $filename, clearCache: false);
+                $updated[] = $result['data'];
+            } catch (\Throwable $e) {
+                $failed[] = [
+                    'id' => (int) $file->id,
+                    'error' => 'Rename failed.',
+                ];
+            }
+        }
+
+        if ($updated !== []) {
+            $this->shootMediaMutationSupportService->clearShootFilesCache($shoot, auth()->user());
+        }
+
+        return [
+            'updated' => $updated,
+            'failed' => $failed,
         ];
     }
 

@@ -330,57 +330,130 @@ class ShootMediaController extends Controller
             'filename' => ['required', 'string', 'max:255'],
         ]);
 
-        $incoming = trim((string) $request->input('filename'));
-
-        // Reject path traversal / separators / control chars before any rewrite.
-        if (
-            $incoming === ''
-            || str_contains($incoming, "\0")
-            || str_contains($incoming, '/')
-            || str_contains($incoming, '\\')
-            || str_contains($incoming, '..')
-            || preg_match('/[\r\n\t"]/', $incoming)
-        ) {
-            throw ValidationException::withMessages([
-                'filename' => ['Filename is invalid.'],
-            ]);
-        }
-
-        $incoming = trim($incoming, ' .');
-
-        if ($incoming === '') {
-            throw ValidationException::withMessages([
-                'filename' => ['Filename is invalid.'],
-            ]);
-        }
-
-        // Portable display names: letters, digits, spaces, dot, dash, underscore, parens, brackets.
-        if (! preg_match('/^[\w\-. ()\[\]]+$/u', $incoming)) {
-            throw ValidationException::withMessages([
-                'filename' => ['Filename contains unsafe characters.'],
-            ]);
-        }
-
-        $originalExt = strtolower((string) pathinfo((string) $file->filename, PATHINFO_EXTENSION));
-        $incomingExt = strtolower((string) pathinfo($incoming, PATHINFO_EXTENSION));
-
-        if ($incomingExt === '') {
-            if ($originalExt !== '') {
-                $incoming .= '.'.$originalExt;
-            }
-        } elseif ($originalExt !== '' && $incomingExt !== $originalExt) {
-            throw ValidationException::withMessages([
-                'filename' => ['Extension must match the original ('.$originalExt.').'],
-            ]);
-        }
-
-        if (strlen($incoming) > 255) {
-            throw ValidationException::withMessages([
-                'filename' => ['Filename may not be greater than 255 characters.'],
-            ]);
-        }
+        $incoming = $this->shootMediaInteractionService->normalizeDisplayFilename(
+            (string) $request->input('filename'),
+            (string) $file->filename
+        );
 
         return response()->json($this->shootMediaInteractionService->renameFile($file, $incoming));
+    }
+
+    public function batchRenameMedia(Request $request, Shoot $shoot)
+    {
+        $user = auth()->user();
+        if (! $this->shootAuthorizationSupport->hasRole($user, ['admin', 'superadmin', 'editing_manager', 'salesRep', 'editor', 'photographer'])) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        $validated = $request->validate([
+            'file_ids' => ['required', 'array', 'min:1'],
+            'file_ids.*' => ['integer'],
+            'mode' => ['required', 'string', 'in:prefix,suffix,replace,sequence'],
+            'value' => ['nullable', 'string', 'max:255'],
+            'find' => ['nullable', 'string', 'max:255'],
+            'replace' => ['nullable', 'string', 'max:255'],
+            'start' => ['nullable', 'integer', 'min:0'],
+            'digits' => ['nullable', 'integer', 'min:1', 'max:10'],
+            'separator' => ['nullable', 'string', 'max:20'],
+        ]);
+
+        $fileIds = array_values(array_map('intval', $validated['file_ids']));
+        $mode = $validated['mode'];
+        $value = (string) ($validated['value'] ?? '');
+        $find = (string) ($validated['find'] ?? '');
+        $replaceWith = (string) ($validated['replace'] ?? '');
+        $start = (int) ($validated['start'] ?? 1);
+        $digits = (int) ($validated['digits'] ?? 2);
+        $separator = array_key_exists('separator', $validated) && $validated['separator'] !== null
+            ? (string) $validated['separator']
+            : '-';
+
+        if ($mode === 'replace' && $find === '') {
+            throw ValidationException::withMessages([
+                'find' => ['Find text is required for replace mode.'],
+            ]);
+        }
+
+        if (in_array($mode, ['prefix', 'suffix'], true) && $value === '') {
+            throw ValidationException::withMessages([
+                'value' => ['Value is required for '.$mode.' mode.'],
+            ]);
+        }
+
+        $filesById = $shoot->files()->whereIn('id', $fileIds)->get()->keyBy('id');
+
+        $updated = [];
+        $failed = [];
+        $pending = [];
+
+        foreach ($fileIds as $index => $fileId) {
+            $file = $filesById->get($fileId);
+            if (! $file) {
+                $failed[] = ['id' => $fileId, 'error' => 'File not found.'];
+                continue;
+            }
+
+            if (! $this->shootAuthorizationSupport->canInteractWithShootMediaFile($shoot, $file, $user)) {
+                $failed[] = ['id' => $fileId, 'error' => 'Forbidden'];
+                continue;
+            }
+
+            $original = (string) $file->filename;
+            $ext = pathinfo($original, PATHINFO_EXTENSION);
+            $stem = pathinfo($original, PATHINFO_FILENAME);
+
+            try {
+                $suffixExt = $ext !== '' ? '.'.$ext : '';
+                if ($mode === 'prefix') {
+                    $newName = $value.$stem.$suffixExt;
+                } elseif ($mode === 'suffix') {
+                    $newName = $stem.$value.$suffixExt;
+                } elseif ($mode === 'replace') {
+                    $newName = str_replace($find, $replaceWith, $stem).$suffixExt;
+                } else { // sequence
+                    $base = $value !== '' ? $value : $stem;
+                    $number = str_pad((string) ($start + $index), $digits, '0', STR_PAD_LEFT);
+                    $newName = $base.$separator.$number.$suffixExt;
+                }
+
+                $normalized = $this->shootMediaInteractionService->normalizeDisplayFilename($newName, $original);
+                $pending[] = ['file' => $file, 'filename' => $normalized];
+            } catch (ValidationException $e) {
+                $messages = $e->errors();
+                $first = 'Filename is invalid.';
+                foreach ($messages as $list) {
+                    if (! empty($list[0])) {
+                        $first = (string) $list[0];
+                        break;
+                    }
+                }
+                $failed[] = ['id' => $fileId, 'error' => $first];
+            }
+        }
+
+        if ($pending !== []) {
+            $result = $this->shootMediaInteractionService->batchRenameFiles($shoot, $pending);
+            $updated = $result['updated'];
+            $failed = array_merge($failed, $result['failed']);
+        }
+
+        if ($updated === []) {
+            return response()->json([
+                'message' => 'Batch rename failed',
+                'data' => [
+                    'updated' => [],
+                    'failed' => $failed,
+                ],
+            ], 422);
+        }
+
+        return response()->json([
+            'message' => 'Batch rename completed',
+            'data' => [
+                'updated' => $updated,
+                'failed' => $failed,
+            ],
+        ]);
     }
 
     public function reorderMedia(Request $request, Shoot $shoot)

@@ -770,6 +770,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::patch('{file}/rename', [ShootMediaController::class, 'renameMedia']);
         Route::delete('{file}', [ShootMediaController::class, 'deleteMedia']);
         Route::get('{file}/download', [ShootMediaController::class, 'downloadMedia']);
+        Route::post('batch-rename', [ShootMediaController::class, 'batchRenameMedia']);
         Route::post('bulk-download', [ShootMediaController::class, 'bulkDownloadMedia']);
         Route::post('bulk-delete', [ShootMediaController::class, 'bulkDeleteMedia']);
         Route::post('reorder', [ShootMediaController::class, 'reorderMedia']);
