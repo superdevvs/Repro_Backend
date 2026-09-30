@@ -297,6 +297,64 @@ class FeaturedShootApiTest extends TestCase
             ->assertJsonCount(10, 'data.featured_homepage_images');
     }
 
+    #[Test]
+    public function invalid_homepage_images_are_rejected_without_erasing_the_existing_gallery(): void
+    {
+        $admin = User::factory()->admin()->create();
+        Sanctum::actingAs($admin);
+        $shoot = Shoot::factory()->create(['featured_homepage_title' => 'Existing title']);
+        $existing = $this->makeShootFile($shoot, $admin, 'existing.jpg', 'shoots/1/existing.webp');
+        FeaturedShootImage::create(['shoot_id' => $shoot->id, 'shoot_file_id' => $existing->id, 'sort_order' => 1]);
+
+        $invalidFiles = [
+            $this->makeShootFile($shoot, $admin, 'raw.jpg', 'shoots/1/raw.jpg', ['workflow_stage' => 'uploaded']),
+            $this->makeShootFile($shoot, $admin, 'hidden.jpg', 'shoots/1/hidden.jpg', ['is_hidden' => true]),
+            $this->makeShootFile($shoot, $admin, 'quarantined.jpg', 'shoots/1/quarantined.jpg', ['scan_status' => ShootFile::SCAN_STATUS_QUARANTINED]),
+            $this->makeShootFile($shoot, $admin, 'failed.jpg', 'shoots/1/failed.jpg', ['scan_status' => ShootFile::SCAN_STATUS_FAILED]),
+            $this->makeShootFile($shoot, $admin, 'clip.mp4', 'shoots/1/clip.mp4', ['mime_type' => 'video/mp4', 'file_type' => 'video/mp4', 'media_type' => 'video']),
+            $this->makeShootFile(Shoot::factory()->create(), $admin, 'other.jpg', 'shoots/other/other.jpg'),
+        ];
+
+        foreach ($invalidFiles as $invalid) {
+            $this->patchJson('/api/shoots/' . $shoot->id, [
+                'featured_homepage_title' => 'Must roll back',
+                'featured_homepage_images' => [['shoot_file_id' => $invalid->id, 'sort' => 1]],
+            ])->assertUnprocessable()->assertJsonValidationErrors('featured_homepage_images.0.shoot_file_id');
+
+            $this->assertSame('Existing title', $shoot->fresh()->featured_homepage_title);
+            $this->assertSame([$existing->id], $shoot->featuredHomepageImages()->pluck('shoot_file_id')->all());
+        }
+    }
+
+    #[Test]
+    public function reordered_homepage_cover_is_returned_first_by_the_public_feed(): void
+    {
+        config(['services.repro_dashboard.api_key' => 'secret-token']);
+        Storage::fake('public');
+        $admin = User::factory()->admin()->create();
+        Sanctum::actingAs($admin);
+        $shoot = Shoot::factory()->create(['is_featured' => true]);
+        $images = collect(range(1, 3))->map(function ($number) use ($shoot, $admin) {
+            $path = 'shoots/1/cover-' . $number . '.webp';
+            Storage::disk('public')->put($path, (string) $number);
+            return $this->makeShootFile($shoot, $admin, 'cover-' . $number . '.jpg', $path);
+        });
+
+        $this->patchJson('/api/shoots/' . $shoot->id, [
+            'featured_homepage_images' => [
+                ['shoot_file_id' => $images[2]->id, 'sort' => 1, 'alt' => 'Chosen cover', 'focal' => '40% 30%'],
+                ['shoot_file_id' => $images[0]->id, 'sort' => 2, 'alt' => 'First gallery image'],
+                ['shoot_file_id' => $images[1]->id, 'sort' => 3, 'alt' => 'Second gallery image'],
+            ],
+        ])->assertOk()->assertJsonCount(3, 'data.featured_homepage_images');
+
+        $this->withHeader('Authorization', 'Bearer secret-token')->getJson('/api/v1/featured-shoots')
+            ->assertOk()->assertJsonPath('shoots.0.cover_image.alt', 'Chosen cover')
+            ->assertJsonPath('shoots.0.cover_image.focal', '40% 30%')
+            ->assertJsonPath('shoots.0.images.1.alt', 'First gallery image')
+            ->assertJsonCount(3, 'shoots.0.images');
+    }
+
     private function makeShootFile(Shoot $shoot, User $uploader, string $filename, string $path, array $overrides = []): ShootFile
     {
         return ShootFile::create(array_merge([

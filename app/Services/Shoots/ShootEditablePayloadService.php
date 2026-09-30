@@ -681,20 +681,29 @@ class ShootEditablePayloadService
             ->values();
 
         $fileIds = $normalizedImages->pluck('shoot_file_id')->all();
-        $validFileIds = $shoot->files()
+        $files = $shoot->files()
             ->whereIn('id', $fileIds)
-            ->whereIn('workflow_stage', [ShootFile::STAGE_COMPLETED, ShootFile::STAGE_VERIFIED])
-            ->pluck('id')
-            ->map(fn ($id) => (int) $id)
-            ->all();
+            ->get()
+            ->keyBy('id');
+        $payloadService = app(\App\Services\FeaturedShootPayloadService::class);
+
+        // Validate the whole selection before replacing anything. Silently
+        // dropping an ineligible cover reported success but erased the gallery.
+        foreach ($normalizedImages as $index => $image) {
+            if (! $payloadService->isUsableImage($files->get($image['shoot_file_id']))) {
+                throw ValidationException::withMessages([
+                    "featured_homepage_images.{$index}.shoot_file_id" =>
+                        'Choose a visible, completed or verified image from this shoot that is cleared for delivery.',
+                ]);
+            }
+        }
 
         $shoot->featuredHomepageImages()->delete();
 
         $normalizedImages
-            ->filter(fn (array $image) => in_array($image['shoot_file_id'], $validFileIds, true))
             ->values()
-            ->each(function (array $image, int $index) use ($shoot) {
-                $file = $shoot->files()->find($image['shoot_file_id']);
+            ->each(function (array $image, int $index) use ($shoot, $files) {
+                $file = $files->get($image['shoot_file_id']);
                 $metadata = is_array($file?->metadata) ? $file->metadata : [];
 
                 $shoot->featuredHomepageImages()->create([

@@ -93,7 +93,7 @@ class FeaturedShootPayloadService
         ];
     }
 
-    protected function isUsableImage(?ShootFile $file): bool
+    public function isUsableImage(?ShootFile $file): bool
     {
         if (!$file || (bool) ($file->is_hidden ?? false) || $file->isBlockedFromDelivery()) {
             return false;
