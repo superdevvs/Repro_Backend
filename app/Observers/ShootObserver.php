@@ -6,6 +6,8 @@ use App\Jobs\CreateCubiCasaOrderJob;
 use App\Jobs\GenerateShootMediaArchiveJob;
 use App\Jobs\SyncShootIguideJob;
 use App\Models\Shoot;
+use App\Models\GoogleCalendarConnection;
+use App\Models\GoogleCalendarEventMapping;
 use App\Services\CompensationEligibilityService;
 use App\Services\GoogleCalendar\GoogleCalendarSyncDispatcher;
 use Illuminate\Support\Facades\DB;
@@ -40,7 +42,7 @@ class ShootObserver
     {
         // Cover booking paths that forget an explicit calendar dispatch. CreateShootAction
         // also dispatches; duplicate afterCommit jobs are idempotent (fingerprint no-op).
-        $this->ensureGoogleCalendarSync($shoot);
+        $this->ensureGoogleCalendarSync($shoot, true);
     }
 
     public function updated(Shoot $shoot): void
@@ -97,25 +99,34 @@ class ShootObserver
      * brand-new bookings off the photographer's calendar while older linked
      * events (from connect-time resync) still looked fine.
      */
-    private function ensureGoogleCalendarSync(Shoot $shoot): void
+    private function ensureGoogleCalendarSync(Shoot $shoot, bool $created = false): void
     {
-        if ($shoot->isInternalTestShoot()) {
+        if ($shoot->suppressesExternalNotifications()) {
             return;
         }
 
-        // created() always attempts; updated() only when assignment/schedule/status moved.
-        if (! $shoot->wasRecentlyCreated
+        // wasRecentlyCreated remains true on subsequent saves of the same model.
+        // Only the actual created event may bypass the changed-field check.
+        if (! $created
             && ! $shoot->wasChanged(['photographer_id', 'scheduled_at', 'status', 'workflow_status'])
         ) {
             return;
         }
 
-        $dispatch = static function () use ($shoot): void {
+        $shootId = (int) $shoot->id;
+        $dispatch = function () use ($shootId): void {
             try {
-                app(GoogleCalendarSyncDispatcher::class)->dispatchShootSync((int) $shoot->id);
+                // Creation often precedes attaching service assignments. Read the
+                // committed row and assignments so we do not publish half a booking.
+                $committedShoot = Shoot::find($shootId);
+                if (! $committedShoot || ! $this->hasGoogleCalendarWork($committedShoot)) {
+                    return;
+                }
+
+                app(GoogleCalendarSyncDispatcher::class)->dispatchShootSync($shootId);
             } catch (\Throwable $e) {
                 Log::error('Google Calendar lifecycle sync dispatch failed; shoot save completed regardless.', [
-                    'shoot_id' => $shoot->id,
+                    'shoot_id' => $shootId,
                     'error' => $e->getMessage(),
                 ]);
             }
@@ -128,6 +139,34 @@ class ShootObserver
         }
 
         $dispatch();
+    }
+
+    private function hasGoogleCalendarWork(Shoot $shoot): bool
+    {
+        if ($shoot->suppressesExternalNotifications()) {
+            return false;
+        }
+
+        // Existing events still need cleanup when a schedule or assignment is
+        // removed, or a booking moves to a state that should leave the calendar.
+        if (GoogleCalendarEventMapping::where('shoot_id', $shoot->id)->exists()) {
+            return true;
+        }
+
+        $statuses = [strtolower((string) $shoot->status), strtolower((string) $shoot->workflow_status)];
+        if (array_intersect($statuses, [Shoot::STATUS_REQUESTED, Shoot::STATUS_DECLINED, Shoot::STATUS_ON_HOLD, 'hold_on'])) {
+            return false;
+        }
+
+        $serviceItems = $shoot->serviceItems()->get(['photographer_id', 'scheduled_at']);
+        if (! $shoot->scheduled_at && ! $serviceItems->contains(fn ($item) => $item->scheduled_at !== null)) {
+            return false;
+        }
+
+        $photographerIds = $serviceItems->pluck('photographer_id')->push($shoot->photographer_id)->filter()->unique();
+
+        return $photographerIds->isNotEmpty()
+            && GoogleCalendarConnection::whereIn('user_id', $photographerIds)->where('sync_enabled', true)->exists();
     }
 
     /**
