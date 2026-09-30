@@ -378,12 +378,13 @@ class ShootEditingAssignmentService
                     'lane' => $lane,
                     'label' => ucfirst($lane),
                     'editor_id' => $editorId ? (string) $editorId : null,
-                    'editor' => $editor ? [
+                    'editor' => $editor ? array_merge([
                         'id' => (string) $editor->id,
                         'name' => $editor->name,
                         'avatar' => $editor->avatar ?? null,
                         'email' => $editor->email,
-                    ] : null,
+                        'role' => $editor->role,
+                    ], $editor->presentEditingIdentity()) : null,
                     'service_ids' => $services->pluck('service_id')->map(fn ($id) => (string) $id)->values()->all(),
                     'shoot_service_ids' => $services->pluck('shoot_service_id')->map(fn ($id) => (string) $id)->values()->all(),
                     'service_names' => $services->pluck('service_name')->filter()->values()->all(),

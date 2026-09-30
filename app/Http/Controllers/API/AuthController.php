@@ -828,6 +828,7 @@ class AuthController extends Controller
         $payload['email_health'] = $user->email_health;
         $payload['legal_status'] = app(LegalDocumentService::class)->statusFor($user);
         $payload['email_verification'] = app(\App\Services\Users\EmailVerificationPilot::class)->status($user);
+        $payload = array_merge($payload, $user->presentEditingIdentity());
 
         return app(PhotographerAddressPolicy::class)->presentSubjectForViewer($payload, $user, $user);
     }

@@ -408,7 +408,7 @@ class UserController extends Controller
             'Account created',
             sprintf(
                 'Created as %s by %s.',
-                $this->formatRoleLabel($user->role),
+                $this->formatRoleLabel($user->role, $user),
                 $admin->name
             ),
             $admin,
@@ -1040,7 +1040,7 @@ class UserController extends Controller
             $description = sprintf(
                 'Primary role changed from %s to %s%s.',
                 $this->formatRoleLabel((string) $oldRole),
-                $this->formatRoleLabel((string) $user->role),
+                $this->formatRoleLabel((string) $user->role, $user),
                 $secondaryRoleSummary !== '' ? " with secondary roles: {$secondaryRoleSummary}" : ''
             );
 
@@ -1621,8 +1621,7 @@ class UserController extends Controller
         $payload['shootCcEmails'] = $payload['shoot_cc_emails'];
         $payload['email_health'] = $user->email_health;
         $payload = app(PhotographerAddressPolicy::class)->presentSubjectForViewer($payload, $viewer, $user);
-        $payload['editingCapabilities'] = $user->getEditingCapabilities();
-        $payload['editing_capabilities'] = $payload['editingCapabilities'];
+        $payload = array_merge($payload, $user->presentEditingIdentity());
         $payload['client_discount_type'] = $payload['client_discount_type'] ?? null;
         $payload['client_discount_value'] = isset($payload['client_discount_value']) && $payload['client_discount_value'] !== null
             ? (float) $payload['client_discount_value']
@@ -1916,6 +1915,7 @@ class UserController extends Controller
         $payload['shootCcEmails'] = $payload['shoot_cc_emails'];
         $payload['email_health'] = $user->email_health;
         $payload = app(PhotographerAddressPolicy::class)->presentSubjectForViewer($payload, $viewer, $user);
+        $payload = array_merge($payload, $user->presentEditingIdentity());
         if (array_key_exists('zip', $payload)) {
             $payload['zipcode'] = $payload['zip'];
         }
@@ -2109,11 +2109,19 @@ class UserController extends Controller
         };
     }
 
-    protected function formatRoleLabel(?string $role): string
+    protected function formatRoleLabel(?string $role, ?User $user = null): string
     {
+        if ($user && (string) $user->role === (string) $role) {
+            return $user->getRoleDisplayLabel();
+        }
+
         $value = (string) $role;
         if ($value === '') {
             return 'User';
+        }
+
+        if ($value === 'editor') {
+            return 'Editor';
         }
 
         return Str::of($value)
@@ -2202,7 +2210,7 @@ class UserController extends Controller
                 'lifecycle-created-' . $user->id,
                 'account_created',
                 'Account created',
-                sprintf('Created as %s%s.', $this->formatRoleLabel($user->role), $creator),
+                sprintf('Created as %s%s.', $this->formatRoleLabel($user->role, $user), $creator),
                 $user->created_at->toIso8601String(),
                 'lifecycle'
             );

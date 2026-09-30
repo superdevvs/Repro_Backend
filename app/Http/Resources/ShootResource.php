@@ -289,12 +289,13 @@ class ShootResource extends JsonResource
                     if ($pivotEditorId) {
                         $editor = $serviceEditors->get($pivotEditorId);
                         if ($editor) {
-                            $resolvedEditor = [
+                            $resolvedEditor = array_merge([
                                 'id' => (string) $editor->id,
                                 'name' => $editor->name,
                                 'avatar' => $editor->avatar ?? null,
                                 'email' => $editor->email,
-                            ];
+                                'role' => $editor->role,
+                            ], $editor->presentEditingIdentity());
                         }
                     }
                     $categoryName = $service->category?->name ?? $service->category_name ?? $service->name;

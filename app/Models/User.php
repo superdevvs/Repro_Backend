@@ -486,6 +486,90 @@ class User extends Authenticatable
         $this->metadata = $metadata;
     }
 
+    /**
+     * Stable subtype for editors derived from editing_capabilities.
+     * photo | video | photo_video; null when the user is not an editor.
+     */
+    public function getEditorType(): ?string
+    {
+        if ($this->role !== 'editor') {
+            return null;
+        }
+
+        $capabilities = $this->getEditingCapabilities();
+        $hasPhoto = in_array('photo', $capabilities, true);
+        $hasVideo = in_array('video', $capabilities, true);
+
+        if ($hasPhoto && $hasVideo) {
+            return 'photo_video';
+        }
+        if ($hasVideo) {
+            return 'video';
+        }
+        if ($hasPhoto) {
+            return 'photo';
+        }
+
+        return 'photo_video';
+    }
+
+    /**
+     * Human-readable account role label (Photo editor / Video editor / …).
+     * Keeps role=editor for auth; this is display-only.
+     */
+    public function getRoleDisplayLabel(): string
+    {
+        $role = (string) ($this->role ?? '');
+        if ($role === 'editor') {
+            return match ($this->getEditorType()) {
+                'photo' => 'Photo editor',
+                'video' => 'Video editor',
+                default => 'Photo & video editor',
+            };
+        }
+
+        if ($role === '') {
+            return 'User';
+        }
+
+        $normalized = strtolower(str_replace(['_', '-', ' '], '', $role));
+
+        return match ($normalized) {
+            'superadmin' => 'Superadmin',
+            'admin' => 'Admin',
+            'editingmanager' => 'Editing manager',
+            'salesrep' => 'Sales rep',
+            'photographer' => 'Photographer',
+            'client' => 'Client',
+            default => \Illuminate\Support\Str::of($role)
+                ->replace('_', ' ')
+                ->replaceMatches('/([a-z])([A-Z])/', '$1 $2')
+                ->title()
+                ->toString(),
+        };
+    }
+
+    /**
+     * Fields FE uses to label photo vs video editors without inventing a new role.
+     *
+     * @return array{editing_capabilities: list<string>, editingCapabilities: list<string>, editor_type: ?string, editorType: ?string, role_label: string, roleLabel: string}
+     */
+    public function presentEditingIdentity(): array
+    {
+        $capabilities = $this->role === 'editor' ? $this->getEditingCapabilities() : [];
+        $editorType = $this->getEditorType();
+        $roleLabel = $this->getRoleDisplayLabel();
+
+        return [
+            'editing_capabilities' => $capabilities,
+            'editingCapabilities' => $capabilities,
+            'editor_type' => $editorType,
+            'editorType' => $editorType,
+            'role_label' => $roleLabel,
+            'roleLabel' => $roleLabel,
+        ];
+    }
+
     public function resolvedPhone(): ?string
     {
         foreach ([$this->phonenumber, $this->phone] as $candidate) {
