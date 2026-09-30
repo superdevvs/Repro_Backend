@@ -253,6 +253,8 @@ class DashboardController extends Controller
                     'shoot_id',
                     'workflow_stage',
                     'is_cover',
+                    'is_hidden',
+                    'media_type',
                     'url',
                     'path',
                     'dropbox_path',
@@ -269,6 +271,15 @@ class DashboardController extends Controller
                     'filename',
                     'stored_filename'
                 )
+                    // Match ShootListingService::eagerLoadListCardPreviewFiles —
+                    // floorplans/videos must never rank as card heroes.
+                    ->where(function ($scope) {
+                        $scope->where('is_hidden', false)->orWhereNull('is_hidden');
+                    })
+                    ->where(function ($scope) {
+                        $scope->whereNull('media_type')
+                            ->orWhereNotIn('media_type', ['floorplan', 'video']);
+                    })
                     ->orderBy('sort_order', 'asc')
                     ->orderBy('created_at', 'desc');
             }]);
@@ -341,12 +352,12 @@ class DashboardController extends Controller
         });
 
         $renderable = $editedFiles->filter(function (ShootFile $file) {
-            return $this->isRenderableImage($file);
+            return $this->isSuitableDashboardPreviewFile($file);
         });
 
         if ($renderable->isEmpty()) {
             $renderable = $shoot->files->filter(function (ShootFile $file) {
-                return $this->isRenderableImage($file);
+                return $this->isSuitableDashboardPreviewFile($file);
             });
         }
 
@@ -365,11 +376,99 @@ class DashboardController extends Controller
             ->map(function (ShootFile $file) {
                 return $this->resolveFilePreviewUrl($file);
             })
-            ->filter()
+            ->filter(function (?string $url) {
+                return $url && ! $this->isUnsuitableDashboardPreviewUrl($url);
+            })
             ->unique()
             ->values()
             ->take(6)
             ->all();
+    }
+
+    /**
+     * Card heroes must prefer real edited property photos — same exclusions as
+     * ShootListingService list-card previews / ShootPresenter::resolveHeroImage,
+     * plus path heuristics for CubiCasa grids that slip past media_type.
+     */
+    protected function isSuitableDashboardPreviewFile(ShootFile $file): bool
+    {
+        if ($file->is_hidden) {
+            return false;
+        }
+
+        $mediaType = strtolower((string) ($file->media_type ?? ''));
+        if (in_array($mediaType, ['floorplan', 'video'], true)) {
+            return false;
+        }
+
+        if (! $this->isRenderableImage($file)) {
+            return false;
+        }
+
+        $candidates = [
+            $file->filename,
+            $file->stored_filename,
+            $file->path,
+            $file->url,
+            $file->grid_path,
+            $file->web_path,
+            $file->thumbnail_path,
+            $file->placeholder_path,
+        ];
+
+        foreach ($candidates as $candidate) {
+            if (is_string($candidate) && $candidate !== '' && $this->isUnsuitableDashboardPreviewUrl($candidate)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    protected function isUnsuitableDashboardPreviewUrl(string $value): bool
+    {
+        $normalized = strtolower(rawurldecode($value));
+
+        static $floorplanPatterns = [
+            'floorplan',
+            'floor-plan',
+            'floor_plan',
+            '/floorplans/',
+            'floorplans/',
+            'fp_',
+            'fp-',
+            'blueprint',
+            'cubicasa',
+        ];
+
+        foreach ($floorplanPatterns as $pattern) {
+            if (str_contains($normalized, $pattern)) {
+                return true;
+            }
+        }
+
+        // CubiCasa raster exports: `0-5933-keysville-road-…-0-6d830b71_grid.jpg`
+        if (preg_match(
+            '/(?:^|\/)(\d+)-([a-z0-9]+(?:-[a-z0-9]+){3,})-(\d+)-([a-f0-9]{6,})_(?:grid|web|thumbnail)\./i',
+            $normalized
+        )) {
+            return true;
+        }
+
+        static $watermarkedPatterns = [
+            'watermarked_placeholder',
+            '/branding/',
+            'watermark-logos/',
+            '/og-image.jpg',
+        ];
+
+        foreach ($watermarkedPatterns as $pattern) {
+            if (str_contains($normalized, $pattern)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     protected function isRenderableImage(ShootFile $file): bool
