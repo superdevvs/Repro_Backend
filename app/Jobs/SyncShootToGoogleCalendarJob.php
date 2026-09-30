@@ -16,6 +16,12 @@ class SyncShootToGoogleCalendarJob implements ShouldQueue
     use Queueable;
     use SerializesModels;
 
+    /** Infrastructure failures (e.g. missing APP_KEY in a stale worker) should retry. */
+    public int $tries = 5;
+
+    /** @var list<int> */
+    public array $backoff = [10, 30, 60, 120];
+
     public function __construct(
         public int $shootId
     ) {

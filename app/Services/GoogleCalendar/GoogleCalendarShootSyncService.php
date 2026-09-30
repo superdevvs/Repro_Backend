@@ -6,6 +6,8 @@ use App\Models\GoogleCalendarConnection;
 use App\Models\GoogleCalendarEventMapping;
 use App\Models\Shoot;
 use App\Models\ShootService;
+use Illuminate\Contracts\Encryption\DecryptException;
+use Illuminate\Encryption\MissingAppKeyException;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Log;
 use Throwable;
@@ -129,15 +131,11 @@ class GoogleCalendarShootSyncService
                     'last_error' => null,
                 ])->save();
             } catch (Throwable $exception) {
-                Log::warning('Google Calendar shoot sync failed.', [
+                $this->recordSyncFailure($connection, $exception, [
                     'shoot_id' => $shootId,
                     'user_id' => $userId,
-                    'error' => $exception->getMessage(),
+                    'phase' => 'sync_shoot',
                 ]);
-
-                $connection->forceFill([
-                    'last_error' => $exception->getMessage(),
-                ])->save();
             }
         }
     }
@@ -207,15 +205,25 @@ class GoogleCalendarShootSyncService
                     'last_error' => null,
                 ])->save();
             } catch (Throwable $exception) {
-                Log::warning('Google Calendar event removal failed.', [
-                    'shoot_id' => $mapping->shoot_id,
-                    'user_id' => $mapping->user_id,
-                    'error' => $exception->getMessage(),
-                ]);
-
                 $connection->forceFill([
                     'last_error' => $exception->getMessage(),
                 ])->save();
+
+                $context = [
+                    'shoot_id' => $mapping->shoot_id,
+                    'user_id' => $mapping->user_id,
+                    'google_event_id' => $mapping->google_event_id,
+                    'error' => $exception->getMessage(),
+                    'exception' => $exception::class,
+                    'phase' => 'remove_mapping',
+                ];
+
+                if ($this->isInfrastructureFailure($exception)) {
+                    Log::error('Google Calendar event removal blocked by application encryption/config failure; job will retry.', $context);
+                    throw $exception;
+                }
+
+                Log::error('Google Calendar event removal failed.', $context);
 
                 // Keep the mapping so a later resync/retry can still delete the
                 // Google event. Dropping it here would orphan the calendar entry.
@@ -375,16 +383,12 @@ class GoogleCalendarShootSyncService
                 'last_error' => null,
             ])->save();
         } catch (Throwable $exception) {
-            Log::warning('Google Calendar service item sync failed.', [
+            $this->recordSyncFailure($connection, $exception, [
                 'shoot_id' => $shoot->id,
                 'shoot_service_id' => $serviceItem->id,
                 'user_id' => $userId,
-                'error' => $exception->getMessage(),
+                'phase' => 'sync_service_item',
             ]);
-
-            $connection->forceFill([
-                'last_error' => $exception->getMessage(),
-            ])->save();
         }
     }
 
@@ -483,4 +487,55 @@ class GoogleCalendarShootSyncService
         return $status === Shoot::STATUS_CANCELLED
             || $workflowStatus === Shoot::STATUS_CANCELLED;
     }
+
+    /**
+     * Persist last_error and log. Infrastructure failures (missing APP_KEY / decrypt
+     * with no key) are rethrown so the queue job fails and retries instead of
+     * silently marking DONE in a few milliseconds with no Google API call.
+     * Provider/token failures stay soft so one bad connection does not block
+     * other photographers on the same shoot.
+     *
+     * @param  array<string, mixed>  $context
+     */
+    protected function recordSyncFailure(GoogleCalendarConnection $connection, Throwable $exception, array $context): void
+    {
+        $message = $exception->getMessage();
+
+        $connection->forceFill([
+            'last_error' => $message,
+        ])->save();
+
+        $context = array_merge($context, [
+            'error' => $message,
+            'exception' => $exception::class,
+        ]);
+
+        if ($this->isInfrastructureFailure($exception)) {
+            Log::error('Google Calendar sync blocked by application encryption/config failure; job will retry.', $context);
+
+            throw $exception;
+        }
+
+        // LOG_LEVEL=error drops warnings; use error so ops see provider failures.
+        Log::error('Google Calendar shoot sync failed.', $context);
+    }
+
+    protected function isInfrastructureFailure(Throwable $exception): bool
+    {
+        if ($exception instanceof MissingAppKeyException) {
+            return true;
+        }
+
+        // Encrypted casts can surface the missing-key message as a generic RuntimeException
+        // or DecryptException depending on Laravel bootstrap order in long-lived workers.
+        $message = strtolower($exception->getMessage());
+
+        if (str_contains($message, 'no application encryption key')) {
+            return true;
+        }
+
+        return $exception instanceof DecryptException
+            && str_contains($message, 'encryption key');
+    }
+
 }

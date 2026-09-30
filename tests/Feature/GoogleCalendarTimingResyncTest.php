@@ -11,11 +11,13 @@ use App\Services\GoogleCalendar\GoogleCalendarShootSyncService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
+use Mockery\Adapter\Phpunit\MockeryPHPUnitIntegration;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 class GoogleCalendarTimingResyncTest extends TestCase
 {
+    use MockeryPHPUnitIntegration;
     use RefreshDatabase;
 
     protected function setUp(): void
@@ -100,6 +102,83 @@ class GoogleCalendarTimingResyncTest extends TestCase
 
         $this->assertNotSame($originalFingerprint, $mapping->fresh()->sync_fingerprint);
         $this->assertExistingMappingIsStable($sync, $shoot, $mapping);
+    }
+
+
+    #[DataProvider('syncPaths')]
+    public function test_scheduled_at_time_change_updates_existing_event_once(bool $perService): void
+    {
+        [$shoot] = $this->createScheduledShoot($perService);
+        $sync = app(GoogleCalendarShootSyncService::class);
+
+        $sync->syncShoot($shoot->id);
+        $mapping = GoogleCalendarEventMapping::query()->sole();
+        $originalFingerprint = $mapping->sync_fingerprint;
+
+        $sync->syncShoot($shoot->id);
+        Http::assertSentCount(1);
+
+        $shoot->forceFill([
+            'scheduled_at' => '2026-09-10 16:00:00',
+            'scheduled_date' => '2026-09-10',
+            'time' => '16:00:00',
+        ])->save();
+
+        if ($perService) {
+            $shoot->serviceItems()->update(['scheduled_at' => '2026-09-10 16:00:00']);
+        }
+
+        $sync->syncShoot($shoot->id);
+
+        Http::assertSentCount(2);
+        Http::assertSent(fn (Request $request) => $request->method() === 'PATCH'
+            && str_ends_with($request->url(), '/events/timing-event')
+            && $request['start'] === [
+                'dateTime' => '2026-09-10T12:00:00-04:00',
+                'timeZone' => 'America/New_York',
+            ]
+            && $request['end'] === [
+                'dateTime' => '2026-09-10T14:00:00-04:00',
+                'timeZone' => 'America/New_York',
+            ]);
+
+        $this->assertNotSame($originalFingerprint, $mapping->fresh()->sync_fingerprint);
+        $this->assertExistingMappingIsStable($sync, $shoot->fresh(), $mapping);
+    }
+
+    public function test_missing_app_key_is_recorded_and_rethrown_instead_of_silent_success(): void
+    {
+        [$shoot] = $this->createScheduledShoot(false);
+        $connection = GoogleCalendarConnection::query()->where('user_id', $shoot->photographer_id)->sole();
+
+        $calendar = \Mockery::mock(\App\Services\GoogleCalendar\GoogleCalendarService::class);
+        $calendar->shouldReceive('createEvent')
+            ->once()
+            ->andThrow(new \Illuminate\Encryption\MissingAppKeyException(
+                'No application encryption key has been specified.'
+            ));
+
+        $sync = new GoogleCalendarShootSyncService(
+            $calendar,
+            app(\App\Services\GoogleCalendar\GoogleCalendarEventPayloadBuilder::class)
+        );
+
+        try {
+            $sync->syncShoot($shoot->id);
+            $this->fail('Expected MissingAppKeyException to propagate.');
+        } catch (\Illuminate\Encryption\MissingAppKeyException $exception) {
+            $this->assertSame(
+                'No application encryption key has been specified.',
+                $exception->getMessage()
+            );
+        }
+
+        $this->assertSame(
+            'No application encryption key has been specified.',
+            $connection->fresh()->last_error
+        );
+        $this->assertDatabaseCount('google_calendar_event_mappings', 0);
+        Http::assertNothingSent();
     }
 
     private function createScheduledShoot(bool $perService): array

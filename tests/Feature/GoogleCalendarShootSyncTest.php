@@ -482,6 +482,74 @@ class GoogleCalendarShootSyncTest extends TestCase
         $this->assertStringContainsString("View shoot: https://reprodashboard.com/shoots/{$shoot->id}", $description);
     }
 
+
+    public function test_changing_shoot_time_patches_the_existing_google_calendar_event(): void
+    {
+        Sanctum::actingAs($this->admin);
+        $this->createGoogleCalendarConnection($this->photographer, 'photographer-calendar@example.com', 'access-token-time');
+
+        $scheduledAt = now()->addDays(3)->setTime(10, 0, 0);
+        $shoot = Shoot::factory()->create([
+            'client_id' => $this->client->id,
+            'photographer_id' => $this->photographer->id,
+            'service_id' => $this->service->id,
+            'status' => Shoot::STATUS_SCHEDULED,
+            'workflow_status' => Shoot::STATUS_SCHEDULED,
+            'scheduled_at' => $scheduledAt,
+            'scheduled_date' => $scheduledAt->toDateString(),
+            'time' => '10:00:00',
+            'timezone' => null,
+            'address' => '5818 Inman Park Cir',
+            'city' => 'Rockville',
+            'state' => 'MD',
+            'zip' => '20852',
+        ]);
+
+        $shoot->services()->attach($this->service->id, [
+            'price' => 150,
+            'quantity' => 1,
+            'photographer_pay' => 45,
+            'photographer_id' => $this->photographer->id,
+        ]);
+
+        GoogleCalendarEventMapping::create([
+            'shoot_id' => $shoot->id,
+            'user_id' => $this->photographer->id,
+            'calendar_id' => 'primary',
+            'google_event_id' => 'existing-time-event',
+            'sync_fingerprint' => 'old-fingerprint',
+        ]);
+
+        Http::fake([
+            'https://www.googleapis.com/calendar/v3/calendars/*/events/*' => Http::response([
+                'id' => 'existing-time-event',
+            ], 200),
+        ]);
+
+        $newTime = '14:30:00';
+        $this->patchJson("/api/shoots/{$shoot->id}", [
+            'scheduled_date' => $scheduledAt->toDateString(),
+            'time' => $newTime,
+        ])->assertOk();
+
+        $expectedStart = Carbon::parse(
+            $scheduledAt->toDateString().' '.$newTime,
+            'America/New_York'
+        );
+
+        Http::assertSent(function (Request $request) use ($expectedStart) {
+            return $request->method() === 'PATCH'
+                && str_contains($request->url(), '/events/existing-time-event')
+                && ($request['start']['dateTime'] ?? null) === $expectedStart->toRfc3339String()
+                && ($request['start']['timeZone'] ?? null) === 'America/New_York';
+        });
+
+        $this->assertDatabaseHas('shoots', [
+            'id' => $shoot->id,
+            'time' => $newTime,
+        ]);
+    }
+
     protected function createGoogleCalendarConnection(User $user, string $email, string $accessToken): GoogleCalendarConnection
     {
         return GoogleCalendarConnection::create([
