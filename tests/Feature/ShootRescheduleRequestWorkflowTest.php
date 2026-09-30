@@ -28,6 +28,21 @@ class ShootRescheduleRequestWorkflowTest extends TestCase
     private const REQUESTED_DATE = '2026-09-24';
     private const REQUESTED_TIME = '02:30 PM';
 
+
+    private function verifiedUser(array $attributes = []): User
+    {
+        $user = User::factory()->create($attributes);
+        // Observer enrolls new users in the email-verification pilot; clear that so
+        // staff workflow tests hit authorization rather than the pilot 403.
+        $user->forceFill([
+            'email_verified_at' => $user->email_verified_at ?? now(),
+            'email_verification_required_at' => null,
+            'email_verified_email' => null,
+        ])->save();
+
+        return $user->fresh();
+    }
+
     private function makeShoot(User $client): Shoot
     {
         return Shoot::factory()->create([
@@ -51,7 +66,7 @@ class ShootRescheduleRequestWorkflowTest extends TestCase
 
     public function test_a_client_submission_is_pending_and_does_not_move_the_shoot(): void
     {
-        $client = User::factory()->create(['role' => 'client']);
+        $client = $this->verifiedUser(['role' => 'client']);
         $shoot = $this->makeShoot($client);
 
         Sanctum::actingAs($client);
@@ -76,7 +91,7 @@ class ShootRescheduleRequestWorkflowTest extends TestCase
 
     public function test_the_requested_values_are_stored_separately_from_the_confirmed_ones(): void
     {
-        $client = User::factory()->create(['role' => 'client']);
+        $client = $this->verifiedUser(['role' => 'client']);
         $shoot = $this->makeShoot($client);
 
         Sanctum::actingAs($client);
@@ -93,8 +108,8 @@ class ShootRescheduleRequestWorkflowTest extends TestCase
 
     public function test_staff_keep_their_existing_direct_reschedule_ability(): void
     {
-        $client = User::factory()->create(['role' => 'client']);
-        $admin = User::factory()->create(['role' => 'admin']);
+        $client = $this->verifiedUser(['role' => 'client']);
+        $admin = $this->verifiedUser(['role' => 'admin']);
         $shoot = $this->makeShoot($client);
 
         Sanctum::actingAs($admin);
@@ -113,8 +128,8 @@ class ShootRescheduleRequestWorkflowTest extends TestCase
 
     public function test_a_photographer_submission_is_a_request_not_a_direct_change(): void
     {
-        $client = User::factory()->create(['role' => 'client']);
-        $photographer = User::factory()->create(['role' => 'photographer']);
+        $client = $this->verifiedUser(['role' => 'client']);
+        $photographer = $this->verifiedUser(['role' => 'photographer']);
         $shoot = $this->makeShoot($client);
         $shoot->update(['photographer_id' => $photographer->id]);
 
@@ -142,8 +157,8 @@ class ShootRescheduleRequestWorkflowTest extends TestCase
 
     public function test_approval_applies_the_requested_change(): void
     {
-        $client = User::factory()->create(['role' => 'client']);
-        $admin = User::factory()->create(['role' => 'admin']);
+        $client = $this->verifiedUser(['role' => 'client']);
+        $admin = $this->verifiedUser(['role' => 'admin']);
         $shoot = $this->makeShoot($client);
         $record = $this->pendingRequestFor($shoot, $client);
 
@@ -167,8 +182,8 @@ class ShootRescheduleRequestWorkflowTest extends TestCase
         // The route middleware already admitted editing_manager while the
         // controller check did not, so this endpoint returned 403 to a role it
         // had routed through. Reconciled to the route.
-        $client = User::factory()->create(['role' => 'client']);
-        $manager = User::factory()->create(['role' => 'editing_manager']);
+        $client = $this->verifiedUser(['role' => 'client']);
+        $manager = $this->verifiedUser(['role' => 'editing_manager']);
         $shoot = $this->makeShoot($client);
         $record = $this->pendingRequestFor($shoot, $client);
 
@@ -184,8 +199,8 @@ class ShootRescheduleRequestWorkflowTest extends TestCase
 
     public function test_repeated_approval_is_idempotent(): void
     {
-        $client = User::factory()->create(['role' => 'client']);
-        $admin = User::factory()->create(['role' => 'admin']);
+        $client = $this->verifiedUser(['role' => 'client']);
+        $admin = $this->verifiedUser(['role' => 'admin']);
         $shoot = $this->makeShoot($client);
         $record = $this->pendingRequestFor($shoot, $client);
 
@@ -212,8 +227,8 @@ class ShootRescheduleRequestWorkflowTest extends TestCase
 
     public function test_an_approved_request_cannot_be_flipped_to_rejected(): void
     {
-        $client = User::factory()->create(['role' => 'client']);
-        $admin = User::factory()->create(['role' => 'admin']);
+        $client = $this->verifiedUser(['role' => 'client']);
+        $admin = $this->verifiedUser(['role' => 'admin']);
         $shoot = $this->makeShoot($client);
         $record = $this->pendingRequestFor($shoot, $client);
 
@@ -232,8 +247,8 @@ class ShootRescheduleRequestWorkflowTest extends TestCase
 
     public function test_rejection_leaves_the_shoot_unchanged(): void
     {
-        $client = User::factory()->create(['role' => 'client']);
-        $admin = User::factory()->create(['role' => 'admin']);
+        $client = $this->verifiedUser(['role' => 'client']);
+        $admin = $this->verifiedUser(['role' => 'admin']);
         $shoot = $this->makeShoot($client);
         $record = $this->pendingRequestFor($shoot, $client);
 
@@ -255,8 +270,8 @@ class ShootRescheduleRequestWorkflowTest extends TestCase
 
     public function test_a_rejected_request_cannot_later_be_approved(): void
     {
-        $client = User::factory()->create(['role' => 'client']);
-        $admin = User::factory()->create(['role' => 'admin']);
+        $client = $this->verifiedUser(['role' => 'client']);
+        $admin = $this->verifiedUser(['role' => 'admin']);
         $shoot = $this->makeShoot($client);
         $record = $this->pendingRequestFor($shoot, $client);
 
@@ -274,7 +289,7 @@ class ShootRescheduleRequestWorkflowTest extends TestCase
 
     public function test_a_client_cannot_approve_their_own_request(): void
     {
-        $client = User::factory()->create(['role' => 'client']);
+        $client = $this->verifiedUser(['role' => 'client']);
         $shoot = $this->makeShoot($client);
         $record = $this->pendingRequestFor($shoot, $client);
 
@@ -289,8 +304,8 @@ class ShootRescheduleRequestWorkflowTest extends TestCase
 
     public function test_a_photographer_cannot_approve_a_request(): void
     {
-        $client = User::factory()->create(['role' => 'client']);
-        $photographer = User::factory()->create(['role' => 'photographer']);
+        $client = $this->verifiedUser(['role' => 'client']);
+        $photographer = $this->verifiedUser(['role' => 'photographer']);
         $shoot = $this->makeShoot($client);
         $record = $this->pendingRequestFor($shoot, $client);
 
@@ -304,7 +319,7 @@ class ShootRescheduleRequestWorkflowTest extends TestCase
 
     public function test_an_unauthenticated_request_is_rejected(): void
     {
-        $client = User::factory()->create(['role' => 'client']);
+        $client = $this->verifiedUser(['role' => 'client']);
         $shoot = $this->makeShoot($client);
         $record = $this->pendingRequestFor($shoot, $client);
 
@@ -319,8 +334,8 @@ class ShootRescheduleRequestWorkflowTest extends TestCase
 
     public function test_the_request_list_exposes_the_status_for_the_ui(): void
     {
-        $client = User::factory()->create(['role' => 'client']);
-        $admin = User::factory()->create(['role' => 'admin']);
+        $client = $this->verifiedUser(['role' => 'client']);
+        $admin = $this->verifiedUser(['role' => 'admin']);
         $shoot = $this->makeShoot($client);
         $this->pendingRequestFor($shoot, $client);
 
@@ -333,9 +348,9 @@ class ShootRescheduleRequestWorkflowTest extends TestCase
 
     public function test_manual_schedule_update_leaves_nonmatching_pending_reschedule_requests(): void
     {
-        $client = User::factory()->create(['role' => 'client']);
-        $admin = User::factory()->create(['role' => 'admin']);
-        $photographer = User::factory()->create(['role' => 'photographer']);
+        $client = $this->verifiedUser(['role' => 'client']);
+        $admin = $this->verifiedUser(['role' => 'admin']);
+        $photographer = $this->verifiedUser(['role' => 'photographer']);
         $shoot = $this->makeShoot($client);
         $shoot->update(['photographer_id' => $photographer->id, 'timezone' => 'America/New_York']);
         $record = $this->pendingRequestFor($shoot, $client);
@@ -361,9 +376,9 @@ class ShootRescheduleRequestWorkflowTest extends TestCase
 
     public function test_manual_schedule_update_fulfills_matching_pending_reschedule_requests(): void
     {
-        $client = User::factory()->create(['role' => 'client']);
-        $admin = User::factory()->create(['role' => 'admin']);
-        $photographer = User::factory()->create(['role' => 'photographer']);
+        $client = $this->verifiedUser(['role' => 'client']);
+        $admin = $this->verifiedUser(['role' => 'admin']);
+        $photographer = $this->verifiedUser(['role' => 'photographer']);
         $shoot = $this->makeShoot($client);
         $shoot->update(['photographer_id' => $photographer->id, 'timezone' => 'America/New_York']);
         $record = $this->pendingRequestFor($shoot, $client);
@@ -387,10 +402,10 @@ class ShootRescheduleRequestWorkflowTest extends TestCase
         $this->assertStringContainsString('Fulfilled', (string) $record->review_notes);
     }
 
-    public function test_pending_reschedules_office_list_returns_only_pending_rows(): void
+    public function test_pending_reschedules_office_list_returns_pending_then_recent_decided(): void
     {
-        $client = User::factory()->create(['role' => 'client', 'name' => 'Client Ada']);
-        $admin = User::factory()->create(['role' => 'admin']);
+        $client = $this->verifiedUser(['role' => 'client', 'name' => 'Client Ada']);
+        $admin = $this->verifiedUser(['role' => 'admin', 'name' => 'Admin Bea']);
         $shoot = $this->makeShoot($client);
         $shoot->update([
             'address' => '100 Main St',
@@ -400,7 +415,7 @@ class ShootRescheduleRequestWorkflowTest extends TestCase
         ]);
 
         $pending = $this->pendingRequestFor($shoot, $client);
-        ShootRescheduleRequest::create([
+        $rejected = ShootRescheduleRequest::create([
             'shoot_id' => $shoot->id,
             'requested_by' => $client->id,
             'original_date' => self::ORIGINAL_DATE,
@@ -408,15 +423,18 @@ class ShootRescheduleRequestWorkflowTest extends TestCase
             'requested_date' => '2026-10-01',
             'requested_time' => '09:00 AM',
             'reason' => 'already decided',
+            'review_notes' => 'Not workable',
             'status' => ShootRescheduleRequest::STATUS_REJECTED,
-            'reviewed_at' => now(),
+            'reviewed_at' => now()->subHour(),
             'approved_by' => $admin->id,
         ]);
 
         Sanctum::actingAs($admin);
+
+        // Default = pending first, then recent decided (Overview-like context).
         $this->getJson('/api/shoots/pending-reschedules')
             ->assertOk()
-            ->assertJsonCount(1, 'data')
+            ->assertJsonCount(2, 'data')
             ->assertJsonPath('data.0.id', $pending->id)
             ->assertJsonPath('data.0.shoot_id', $shoot->id)
             ->assertJsonPath('data.0.status', ShootRescheduleRequest::STATUS_PENDING)
@@ -427,12 +445,72 @@ class ShootRescheduleRequestWorkflowTest extends TestCase
             ->assertJsonPath('data.0.client_name', 'Client Ada')
             ->assertJsonPath('data.0.requester.name', $client->name)
             ->assertJsonPath('data.0.shoot.location.address', '100 Main St')
-            ->assertJsonPath('data.0.address', '100 Main St, Austin, TX 78701');
+            ->assertJsonPath('data.0.address', '100 Main St, Austin, TX 78701')
+            ->assertJsonPath('data.1.id', $rejected->id)
+            ->assertJsonPath('data.1.status', ShootRescheduleRequest::STATUS_REJECTED)
+            ->assertJsonPath('data.1.review_notes', 'Not workable')
+            ->assertJsonPath('data.1.approver.name', 'Admin Bea');
+
+        // status=pending keeps the actionable-only queue.
+        $this->getJson('/api/shoots/pending-reschedules?status=pending')
+            ->assertOk()
+            ->assertJsonCount(1, 'data')
+            ->assertJsonPath('data.0.id', $pending->id)
+            ->assertJsonPath('data.0.status', ShootRescheduleRequest::STATUS_PENDING);
+
+        // status=rejected returns recent rejected only.
+        $this->getJson('/api/shoots/pending-reschedules?status=rejected')
+            ->assertOk()
+            ->assertJsonCount(1, 'data')
+            ->assertJsonPath('data.0.id', $rejected->id)
+            ->assertJsonPath('data.0.status', ShootRescheduleRequest::STATUS_REJECTED);
+
+        // include=recent is an alias for the default pending+recent payload.
+        $this->getJson('/api/shoots/pending-reschedules?include=recent')
+            ->assertOk()
+            ->assertJsonCount(2, 'data')
+            ->assertJsonPath('data.0.id', $pending->id)
+            ->assertJsonPath('data.1.id', $rejected->id);
+    }
+
+    public function test_pending_reschedules_office_list_excludes_stale_decided_rows(): void
+    {
+        $client = $this->verifiedUser(['role' => 'client']);
+        $admin = $this->verifiedUser(['role' => 'admin']);
+        $shoot = $this->makeShoot($client);
+
+        $stale = ShootRescheduleRequest::create([
+            'shoot_id' => $shoot->id,
+            'requested_by' => $client->id,
+            'original_date' => self::ORIGINAL_DATE,
+            'original_time' => self::ORIGINAL_TIME,
+            'requested_date' => '2026-08-01',
+            'requested_time' => '09:00 AM',
+            'reason' => 'old rejection',
+            'status' => ShootRescheduleRequest::STATUS_REJECTED,
+            'reviewed_at' => now()->subDays(45),
+            'approved_by' => $admin->id,
+        ]);
+        // Force timestamps older than the 30-day recent window.
+        $stale->forceFill([
+            'created_at' => now()->subDays(50),
+            'updated_at' => now()->subDays(45),
+            'reviewed_at' => now()->subDays(45),
+        ])->save(['timestamps' => false]);
+
+        Sanctum::actingAs($admin);
+        $this->getJson('/api/shoots/pending-reschedules')
+            ->assertOk()
+            ->assertJsonCount(0, 'data');
+
+        $this->getJson('/api/shoots/pending-reschedules?status=rejected')
+            ->assertOk()
+            ->assertJsonCount(0, 'data');
     }
 
     public function test_pending_reschedules_office_list_rejects_non_staff(): void
     {
-        $client = User::factory()->create(['role' => 'client']);
+        $client = $this->verifiedUser(['role' => 'client']);
         Sanctum::actingAs($client);
         $this->getJson('/api/shoots/pending-reschedules')
             ->assertForbidden();

@@ -51,12 +51,22 @@ class ShootRescheduleRequestController extends Controller
 
 
     /**
-     * Office/dashboard queue of pending reschedule requests.
+     * Office/dashboard queue of reschedule requests (pending + recent decided).
      *
      * Mirrors pending-cancellations / pending-holds: a flat staff-facing list so
-     * Dashboard → Requests can surface actionable rows without opening each shoot
-     * Overview. Rejected/approved history stays on the per-shoot endpoint.
+     * Dashboard → Requests can surface actionable rows and recent rejected/approved
+     * context without opening each shoot Overview.
+     *
+     * Query:
+     *  - default / status=all / include=recent → all pending, then latest decided
+     *    (approved|rejected) within {@see self::RECENT_DECIDED_DAYS} days, capped at
+     *    {@see self::RECENT_DECIDED_LIMIT}
+     *  - status=pending|approved|rejected → that status only (decided still recent-capped)
      */
+    private const RECENT_DECIDED_DAYS = 30;
+
+    private const RECENT_DECIDED_LIMIT = 50;
+
     public function pendingReschedules(Request $request)
     {
         $this->authorizeReviewer($request);
@@ -66,73 +76,146 @@ class ShootRescheduleRequestController extends Controller
             ->scopeAccessibleShootMedia(Shoot::query(), $user)
             ->select('shoots.id');
 
-        $requests = ShootRescheduleRequest::query()
-            ->pending()
-            ->whereIn('shoot_id', $accessibleShootIds)
-            ->with([
-                'requester:id,name,avatar',
-                'shoot:id,address,city,state,zip,client_id,scheduled_date,time,timezone,status',
-                'shoot.client:id,name',
-            ])
-            ->latest()
-            ->get()
-            ->map(function (ShootRescheduleRequest $row) {
-                $shoot = $row->shoot;
-                $address = $shoot?->address;
-                $fullAddress = null;
-                if ($shoot) {
-                    $parts = array_filter([
-                        $shoot->address,
-                        $shoot->city,
-                        trim(implode(' ', array_filter([$shoot->state, $shoot->zip]))),
-                    ]);
-                    $fullAddress = $parts ? implode(', ', $parts) : null;
-                }
+        // Default → pending + recent decided (Overview-like context for Dashboard).
+        // ?status=pending|approved|rejected|all narrows. ?include=recent is an
+        // alias for the default when status is omitted (explicit status wins).
+        $status = strtolower(trim((string) $request->query('status', '')));
+        if ($status === '') {
+            $status = 'all';
+        }
 
-                return [
-                    'id' => $row->id,
-                    'shoot_id' => $row->shoot_id,
-                    'status' => $row->status,
-                    'original_date' => $row->original_date?->toDateString(),
-                    'original_time' => $row->original_time,
-                    'requested_date' => $row->requested_date?->toDateString(),
-                    'requested_time' => $row->requested_time,
-                    'reason' => $row->reason,
-                    'created_at' => $row->created_at?->toIso8601String(),
-                    'requester' => $row->requester
-                        ? [
-                            'id' => $row->requester->id,
-                            'name' => $row->requester->name,
-                        ]
-                        : null,
-                    'client' => $shoot?->client
-                        ? [
-                            'id' => $shoot->client->id,
-                            'name' => $shoot->client->name,
-                        ]
-                        : null,
-                    'client_name' => $shoot?->client?->name,
-                    'shoot' => $shoot
-                        ? [
-                            'id' => $shoot->id,
-                            'address' => $address,
-                            'location' => [
-                                'address' => $shoot->address,
-                                'city' => $shoot->city,
-                                'state' => $shoot->state,
-                                'zip' => $shoot->zip,
-                                'fullAddress' => $fullAddress,
-                            ],
-                        ]
-                        : null,
-                    'address' => $fullAddress ?: $address,
-                ];
-            })
+        if (! in_array($status, ['pending', 'approved', 'rejected', 'all'], true)) {
+            return response()->json([
+                'message' => 'Invalid status filter. Use pending, approved, rejected, or all.',
+            ], 422);
+        }
+
+        $eager = [
+            'requester:id,name,avatar',
+            'approver:id,name,avatar',
+            'shoot:id,address,city,state,zip,client_id,scheduled_date,time,timezone,status',
+            'shoot.client:id,name',
+        ];
+
+        $base = ShootRescheduleRequest::query()
+            ->whereIn('shoot_id', $accessibleShootIds)
+            ->with($eager);
+
+        if ($status === 'pending') {
+            $rows = (clone $base)->pending()->latest('id')->get();
+        } elseif ($status === 'all') {
+            $pending = (clone $base)->pending()->latest('id')->get();
+            $decided = $this->recentDecidedQuery(clone $base)->get();
+            $rows = $pending->concat($decided)->values();
+        } else {
+            $rows = $this->recentDecidedQuery(
+                (clone $base)->where('status', $status),
+                restrictToDecided: false
+            )->get();
+        }
+
+        $requests = $rows
+            ->map(fn (ShootRescheduleRequest $row) => $this->mapOfficeRescheduleRow($row))
             ->values();
 
         return response()->json([
             'data' => $requests,
         ]);
+    }
+
+    /**
+     * Recent decided rows for the office list (30 days, max 50).
+     *
+     * @param  \Illuminate\Database\Eloquent\Builder  $query
+     * @param  bool  $restrictToDecided  when true, limit to approved|rejected
+     */
+    private function recentDecidedQuery($query, bool $restrictToDecided = true)
+    {
+        $since = now()->subDays(self::RECENT_DECIDED_DAYS);
+
+        if ($restrictToDecided) {
+            $query->whereIn('status', [
+                ShootRescheduleRequest::STATUS_APPROVED,
+                ShootRescheduleRequest::STATUS_REJECTED,
+            ]);
+        }
+
+        return $query
+            ->where(function ($q) use ($since) {
+                $q->where('reviewed_at', '>=', $since)
+                    ->orWhere(function ($inner) use ($since) {
+                        $inner->whereNull('reviewed_at')
+                            ->where('created_at', '>=', $since);
+                    });
+            })
+            ->orderByRaw('COALESCE(reviewed_at, created_at) DESC')
+            ->orderByDesc('id')
+            ->limit(self::RECENT_DECIDED_LIMIT);
+    }
+
+    /**
+     * Flatten a reschedule row for Dashboard → Requests (same shape for pending + decided).
+     */
+    private function mapOfficeRescheduleRow(ShootRescheduleRequest $row): array
+    {
+        $shoot = $row->shoot;
+        $address = $shoot?->address;
+        $fullAddress = null;
+        if ($shoot) {
+            $parts = array_filter([
+                $shoot->address,
+                $shoot->city,
+                trim(implode(' ', array_filter([$shoot->state, $shoot->zip]))),
+            ]);
+            $fullAddress = $parts ? implode(', ', $parts) : null;
+        }
+
+        return [
+            'id' => $row->id,
+            'shoot_id' => $row->shoot_id,
+            'status' => $row->status,
+            'original_date' => $row->original_date?->toDateString(),
+            'original_time' => $row->original_time,
+            'requested_date' => $row->requested_date?->toDateString(),
+            'requested_time' => $row->requested_time,
+            'reason' => $row->reason,
+            'review_notes' => $row->review_notes,
+            'reviewed_at' => $row->reviewed_at?->toIso8601String(),
+            'created_at' => $row->created_at?->toIso8601String(),
+            'requester' => $row->requester
+                ? [
+                    'id' => $row->requester->id,
+                    'name' => $row->requester->name,
+                ]
+                : null,
+            'approver' => $row->approver
+                ? [
+                    'id' => $row->approver->id,
+                    'name' => $row->approver->name,
+                ]
+                : null,
+            'client' => $shoot?->client
+                ? [
+                    'id' => $shoot->client->id,
+                    'name' => $shoot->client->name,
+                ]
+                : null,
+            'client_name' => $shoot?->client?->name,
+            'shoot' => $shoot
+                ? [
+                    'id' => $shoot->id,
+                    'address' => $address,
+                    'location' => [
+                        'address' => $shoot->address,
+                        'city' => $shoot->city,
+                        'state' => $shoot->state,
+                        'zip' => $shoot->zip,
+                        'fullAddress' => $fullAddress,
+                    ],
+                ]
+                : null,
+            'address' => $fullAddress ?: $address,
+        ];
     }
 
     public function store(Request $request, Shoot $shoot)
