@@ -377,22 +377,22 @@ class ShootRescheduleRequestController extends Controller
         if ($shoot->units()->exists()) {
             app(\App\Services\Shoots\MultiUnitRescheduleService::class)->apply($shoot, $request, auth()->user());
         } else {
-            $shoot->scheduled_date = $request->requested_date;
-            if (! empty($request->requested_time)) {
-                $shoot->time = $request->requested_time;
-            }
-
-            $timeStr = $request->requested_time ?? $shoot->time ?? '10:00';
-            $timeParsed = date_parse($timeStr);
-            $hours = $timeParsed['hour'] ?? 10;
-            $minutes = $timeParsed['minute'] ?? 0;
-
-            $scheduledAt = \Carbon\Carbon::parse($request->requested_date)
-                ->setTime($hours, $minutes, 0);
-            $shoot->scheduled_at = $scheduledAt;
-
+            // Match MultiUnitRescheduleService TZ handling: wall-clock in shoot
+            // timezone → UTC instant when zoned; legacy unzoned keeps local clock.
+            $resolved = app(\App\Services\Shoots\MultiUnitRescheduleService::class)
+                ->resolveRequestedWallClock(
+                    $shoot,
+                    $request->requested_date,
+                    $request->requested_time
+                );
+            $shoot->scheduled_date = $resolved['scheduled_date'];
+            // Preserve requested display string when provided; otherwise use
+            // the normalized local H:i from the same parse as scheduled_at.
+            $shoot->time = ! empty($request->requested_time)
+                ? $request->requested_time
+                : $resolved['time'];
+            $shoot->scheduled_at = $resolved['scheduled_at'];
             $shoot->save();
-
         }
 
         // Mark applied before notifying: if a notification throws, the shoot has

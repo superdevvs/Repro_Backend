@@ -177,6 +177,44 @@ class ShootRescheduleRequestWorkflowTest extends TestCase
         $this->assertSame($admin->id, $record->approved_by);
     }
 
+    public function test_single_unit_approval_stores_wall_clock_as_utc_instant_in_shoot_timezone(): void
+    {
+        // Regression: Ajay #156 / Tracy Grubb — single-unit applyScheduleChanges
+        // previously stored ET 10:00 as 10:00Z (Google showed 6am ET).
+        config(['app.timezone' => 'UTC']);
+
+        $client = $this->verifiedUser(['role' => 'client']);
+        $admin = $this->verifiedUser(['role' => 'admin']);
+        $shoot = $this->makeShoot($client);
+        $shoot->update([
+            'timezone' => 'America/New_York',
+            'scheduled_at' => '2026-09-10 14:00:00', // prior 10:00 ET (EDT)
+            'time' => '10:00',
+        ]);
+
+        // Oct 8 2026 is EDT (UTC-4): 10:00 ET => 14:00Z, not 10:00Z.
+        $record = ShootRescheduleRequest::create([
+            'shoot_id' => $shoot->id,
+            'requested_by' => $client->id,
+            'original_date' => self::ORIGINAL_DATE,
+            'original_time' => '10:00',
+            'requested_date' => '2026-10-08',
+            'requested_time' => '10:00',
+            'status' => ShootRescheduleRequest::STATUS_PENDING,
+        ]);
+
+        Sanctum::actingAs($admin);
+        $this->patchJson("/api/shoots/reschedule-requests/{$record->id}", [
+            'status' => 'approved',
+        ])->assertOk()->assertJsonPath('applied', true);
+
+        $shoot->refresh();
+        $this->assertSame('2026-10-08', $shoot->scheduled_date->toDateString());
+        $this->assertSame('10:00', $shoot->time);
+        $this->assertSame('2026-10-08 14:00:00', $shoot->getRawOriginal('scheduled_at'));
+        $this->assertNotSame('2026-10-08 10:00:00', $shoot->getRawOriginal('scheduled_at'));
+    }
+
     public function test_an_editing_manager_may_also_review(): void
     {
         // The route middleware already admitted editing_manager while the

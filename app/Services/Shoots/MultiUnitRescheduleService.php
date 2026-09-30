@@ -23,16 +23,21 @@ class MultiUnitRescheduleService
         if ($request->units_revision === null) {
             throw ValidationException::withMessages(['expected_units_revision' => ['This request predates the unit schedule. Submit a new reschedule request.']]);
         }
-        $hasTimezone = trim((string) $shoot->timezone) !== '';
-        $timezone = $hasTimezone ? $shoot->timezone : config('app.timezone', 'UTC');
-        $local = Carbon::parse($request->requested_date->toDateString().' '.($request->requested_time ?: $shoot->time ?: '10:00'), $timezone);
-        $target = $hasTimezone ? $local->copy()->utc() : $local->copy();
+        $resolved = $this->resolveRequestedWallClock(
+            $shoot,
+            $request->requested_date,
+            $request->requested_time
+        );
+        $hasTimezone = $resolved['has_timezone'];
+        $timezone = $resolved['timezone'];
+        $local = $resolved['local'];
+        $target = $resolved['storage'];
         $seconds = $target->getTimestamp() - $anchor->getTimestamp();
         $changes = [
             'expected_units_revision' => $request->units_revision,
-            'scheduled_at' => $hasTimezone ? $target->toIso8601String() : $target->format('Y-m-d H:i:s'),
-            'scheduled_date' => $local->toDateString(),
-            'time' => $local->format('H:i'),
+            'scheduled_at' => $resolved['scheduled_at'],
+            'scheduled_date' => $resolved['scheduled_date'],
+            'time' => $resolved['time'],
             'service_lines' => $lines->map(function ($line) use ($seconds, $hasTimezone, $timezone) {
                 $scheduled = $line->scheduled_at?->copy()->addSeconds($seconds);
 
@@ -51,5 +56,49 @@ class MultiUnitRescheduleService
         }
         $changes = app(\App\Services\Schedule\ShootScheduleUpdateInput::class)->normalize($shoot, $changes);
         app(ShootEditablePayloadService::class)->apply($shoot, $changes, $actor);
+    }
+
+    /**
+     * Parse a reschedule wall-clock date+time in the shoot timezone.
+     *
+     * Zoned shoots store an absolute UTC instant; legacy unzoned shoots keep
+     * naive local-clock storage (same convention as ScheduleInstantResolver).
+     *
+     * @return array{
+     *   has_timezone: bool,
+     *   timezone: string,
+     *   local: Carbon,
+     *   storage: Carbon,
+     *   scheduled_at: string,
+     *   scheduled_date: string,
+     *   time: string
+     * }
+     */
+    public function resolveRequestedWallClock(Shoot $shoot, mixed $requestedDate, ?string $requestedTime): array
+    {
+        $hasTimezone = trim((string) $shoot->timezone) !== '';
+        $timezone = $hasTimezone ? $shoot->timezone : config('app.timezone', 'UTC');
+        if ($requestedDate instanceof Carbon) {
+            $dateString = $requestedDate->toDateString();
+        } elseif ($requestedDate instanceof \DateTimeInterface) {
+            $dateString = Carbon::instance($requestedDate)->toDateString();
+        } else {
+            $dateString = Carbon::parse((string) $requestedDate)->toDateString();
+        }
+        $local = Carbon::parse(
+            $dateString.' '.($requestedTime ?: $shoot->time ?: '10:00'),
+            $timezone
+        );
+        $storage = $hasTimezone ? $local->copy()->utc() : $local->copy();
+
+        return [
+            'has_timezone' => $hasTimezone,
+            'timezone' => $timezone,
+            'local' => $local,
+            'storage' => $storage,
+            'scheduled_at' => $hasTimezone ? $storage->toIso8601String() : $storage->format('Y-m-d H:i:s'),
+            'scheduled_date' => $local->toDateString(),
+            'time' => $local->format('H:i'),
+        ];
     }
 }
