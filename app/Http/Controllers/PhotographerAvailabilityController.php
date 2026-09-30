@@ -403,6 +403,9 @@ class PhotographerAvailabilityController extends Controller
             ]);
 
             return response()->json(['data' => $allSlots]);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            // validate() throws ValidationException (extends Exception); must stay 422.
+            throw $e;
         } catch (\Exception $e) {
             \App\Services\ApiErrorResponder::log($e, 'error');
 
