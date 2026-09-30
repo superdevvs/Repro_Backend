@@ -34,9 +34,19 @@ class ShootRescheduleRequestController extends Controller
     /**
      * Roles allowed to reschedule a shoot outright, and to review other
      * people's requests. Mirrors the `role:` middleware on the updateStatus
-     * route so the two cannot drift apart.
+     * route (plus salesRep aliases) so the two cannot drift apart.
      */
-    private const STAFF_ROLES = ['admin', 'superadmin', 'editing_manager'];
+    // Keep in step with pending-holds office roles and FE RESCHEDULE_REVIEWER_ROLES
+    // (compared via strtolower). salesRep must see/approve Dashboard Reschedule.
+    private const STAFF_ROLES = [
+        'admin',
+        'superadmin',
+        'editing_manager',
+        'salesrep',
+        'sales_rep',
+        'rep',
+        'representative',
+    ];
 
     public function index(Shoot $shoot)
     {

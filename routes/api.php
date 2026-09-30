@@ -1055,7 +1055,7 @@ Route::middleware('auth:sanctum')->group(function () {
     });
 });
 
-Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager'])->patch(
+Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager,salesRep'])->patch(
     '/shoots/reschedule-requests/{rescheduleRequest}',
     [ShootRescheduleRequestController::class, 'updateStatus']
 );

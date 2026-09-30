@@ -195,6 +195,27 @@ class ShootRescheduleRequestWorkflowTest extends TestCase
         $this->assertSame(self::REQUESTED_DATE, $shoot->refresh()->scheduled_date->toDateString());
     }
 
+    public function test_a_sales_rep_may_also_review(): void
+    {
+        // Dashboard Requests → Reschedule must work for salesRep the same way
+        // as Hold (pending-holds already admits salesRep).
+        $client = $this->verifiedUser(['role' => 'client']);
+        $rep = $this->verifiedUser(['role' => 'salesRep']);
+        $shoot = $this->makeShoot($client);
+        $record = $this->pendingRequestFor($shoot, $client);
+
+        Sanctum::actingAs($rep);
+        $this->getJson('/api/shoots/pending-reschedules')
+            ->assertOk()
+            ->assertJsonPath('data.0.id', $record->id);
+
+        $this->patchJson("/api/shoots/reschedule-requests/{$record->id}", [
+            'status' => 'approved',
+        ])->assertOk();
+
+        $this->assertSame(self::REQUESTED_DATE, $shoot->refresh()->scheduled_date->toDateString());
+    }
+
     // --- Idempotency ------------------------------------------------------
 
     public function test_repeated_approval_is_idempotent(): void
