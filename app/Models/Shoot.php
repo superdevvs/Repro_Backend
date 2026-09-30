@@ -1384,6 +1384,17 @@ class Shoot extends Model
                     'error' => $exception->getMessage(),
                 ]);
             }
+
+            // Status sync also reconciles older records. Only a recently
+            // completed payment (or an explicit zero-charge edit) should send
+            // a summary. An offline intent may have been created days before
+            // an admin confirms it, so use its completion update time.
+            $newSettlement = ($this->total_quote !== null && $totalQuote <= 0.01)
+                || $this->payments()->where('status', Payment::STATUS_COMPLETED)
+                    ->where('updated_at', '>=', now()->subHour())->exists();
+            if ($newSettlement && $this->workflow_status === self::STATUS_DELIVERED && $this->delivery_status === 'delivered') {
+                \App\Jobs\MaybeSendShootSummary::dispatch($this->id)->afterCommit();
+            }
         }
 
         $overpaymentAmount = $totalPaid - $totalQuote;

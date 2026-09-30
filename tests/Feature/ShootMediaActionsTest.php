@@ -1736,6 +1736,17 @@ class ShootMediaActionsTest extends TestCase
         $this->get('/api/public/shoot-media/'.$shoot->id.'/download-zip?type=edited&size=small', [
             'Accept' => 'application/zip, application/json',
         ])->assertForbidden();
+
+        // A previously issued signed link must follow the shoot's current
+        // payment status, including a partial payment or a later refund.
+        DB::table('shoots')->where('id', $shoot->id)->update(['payment_status' => 'partial']);
+        $this->getJson($signedUrl)->assertForbidden()->assertJsonPath('code', 'payment_required');
+
+        DB::table('shoots')->where('id', $shoot->id)->update(['payment_status' => 'unpaid']);
+        $this->getJson($signedUrl)->assertForbidden()->assertJsonPath('code', 'payment_required');
+
+        DB::table('shoots')->where('id', $shoot->id)->update(['payment_status' => 'paid']);
+        $this->getJson($signedUrl)->assertOk()->assertJsonPath('type', 'redirect');
     }
 
     #[\PHPUnit\Framework\Attributes\Test]

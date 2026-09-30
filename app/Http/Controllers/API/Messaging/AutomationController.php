@@ -330,8 +330,12 @@ class AutomationController extends Controller
             'schedule.overdue_days.*' => ['integer', 'min:1', 'max:3660'],
             'schedule.reminder_days' => ['sometimes', 'array'],
             'schedule.reminder_days.*' => ['integer', 'min:1', 'max:30'],
+            'schedule.repeat_after_day' => ['sometimes', 'integer', 'min:1', 'max:30'],
             'schedule.repeat_every_days' => ['sometimes', 'integer', 'min:0'],
         ];
+        if ($data['trigger_type'] === 'SHOOT_PAYMENT_REMINDER') {
+            $scheduleRules['schedule.repeat_every_days'] = ['sometimes', 'integer', 'min:1', 'max:30'];
+        }
         if (in_array($data['trigger_type'], ['SHOOT_REMINDER', 'PHOTOGRAPHER_SHOOT_REMINDER'], true)) {
             $scheduleRules['schedule.offset'] = ['sometimes', 'regex:/^-[1-9]\d*[mhd]$/'];
         }

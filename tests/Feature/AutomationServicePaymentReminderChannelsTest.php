@@ -181,8 +181,8 @@ class AutomationServicePaymentReminderChannelsTest extends TestCase
     public function test_legacy_fallback_sends_compact_sms_without_reusing_email_copy(): void
     {
         $this->seedReminderTemplate();
-        $emailCopy = 'Email invoice details: balance, services, access notes, and payment instructions.';
-        MessageTemplate::where('slug', 'payment-due-reminder')->update(['body_text' => $emailCopy]);
+        $emailCopy = 'Email shoot details: balance, services, access notes, and payment instructions.';
+        MessageTemplate::where('slug', 'shoot-payment-reminder')->update(['body_text' => $emailCopy]);
         AutomationRule::where('trigger_type', 'SHOOT_PAYMENT_REMINDER')->delete();
         MessageTemplate::where('slug', 'shoot-payment-reminder-sms')->delete();
         config(['app.frontend_url' => 'https://reprodashboard.com']);
@@ -267,7 +267,7 @@ class AutomationServicePaymentReminderChannelsTest extends TestCase
     {
         $this->seedReminderTemplate();
         AutomationRule::where('trigger_type', 'SHOOT_PAYMENT_REMINDER')->delete();
-        MessageTemplate::where('slug', 'payment-due-reminder')->update(['is_active' => false]);
+        MessageTemplate::where('slug', 'shoot-payment-reminder')->update(['is_active' => false]);
         $client = User::factory()->create(['email' => 'client@example.com', 'phonenumber' => '+12025550111']);
         $shoot = $this->unpaidShootFor($client);
         $message = $this->fakeMessage(['channel' => 'SMS']);

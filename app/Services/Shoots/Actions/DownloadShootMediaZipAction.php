@@ -35,6 +35,10 @@ class DownloadShootMediaZipAction
 
     public function executePublic(Request $request, Shoot $shoot)
     {
+        if ($this->shootClientReleaseAccessService->isPublicReleaseLocked($shoot)) {
+            return $this->shootClientReleaseAccessService->downloadLockedResponse();
+        }
+
         return $this->executeArchiveDownload($request, $shoot);
     }
 

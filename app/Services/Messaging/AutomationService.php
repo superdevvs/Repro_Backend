@@ -110,8 +110,8 @@ class AutomationService
      * and computed by the pure {@see PaymentReminderScheduler}. Each reminder is upserted keyed by
      * `(shoot_id, scheduled_date)` so re-running this method (e.g. after a payment status change,
      * a redeploy, or a scheduled sweep) never produces a duplicate row for the same date
-     * (Req 12.15). A reminder that has already been sent or cancelled keeps its status; only its
-     * scheduled time is refreshed.
+     * (Req 12.15). Sent reminders remain immutable; future cancelled rows may be reactivated
+     * when a later cadence edit selects that day again.
      *
      * If the shoot is already paid, no reminders are scheduled and any pending reminders are
      * cancelled (stop-on-paid, Req 12.14). If the shoot has no `shoot_ready_notified_at` anchor,
@@ -146,8 +146,8 @@ class AutomationService
 
         // Rolling horizon (Req 4.6): instead of a hard cap measured from the anchor, look ahead a
         // small window from "now" (or the anchor, whichever is later). Combined with the recurring
-        // sweep this makes the monthly cadence effectively unbounded — each sweep rolls the window
-        // forward so the next last-Sunday reminder is always materialized before it is due — while
+        // sweep this makes the recurring cadence effectively unbounded — each sweep rolls the window
+        // forward so the next weekly reminder is always materialized before it is due — while
         // never persisting more than a bounded number of rows. The pure scheduler signature
         // (start, horizonEnd) is unchanged; only the horizon we pass in changes.
         $now = CarbonImmutable::now();
@@ -162,7 +162,7 @@ class AutomationService
                 ->get()->each(function (PaymentReminder $reminder) use ($desired, $now): void {
                     $date = CarbonImmutable::parse($reminder->scheduled_date)->toDateString();
                     $target = $desired->get($date);
-                    if ((! $target && $reminder->scheduled_at->lte($now)) || ($target && $target->lessThan($now->startOfDay()))) {
+                    if (! $target || $target->lessThan($now->startOfDay())) {
                         $reminder->update(['status' => PaymentReminder::STATUS_CANCELLED]);
                     } elseif ($target && ! $target->equalTo($reminder->scheduled_at)) {
                         $reminder->update(['scheduled_at' => $target]);
@@ -173,7 +173,7 @@ class AutomationService
         $reminders = [];
         foreach ($timestamps as $timestamp) {
             // Future-only guard (Req 4.6): never back-date a reminder. When the sweep re-runs months
-            // after the anchor, the Phase 1/2 timestamps (Day 1/3/7/14/21/28) are already in the
+            // after the anchor, earlier cadence timestamps are already in the
             // past and must not be created for an old anchor. On the very first run at anchor time
             // these near-term reminders are still in the future relative to now(), so they ARE
             // created as expected. Already-existing rows are left untouched (we simply skip them),
@@ -182,24 +182,21 @@ class AutomationService
                 continue;
             }
 
-            // firstOrNew (not updateOrCreate) so an already sent/cancelled row is never resurrected
-            // to "pending"; the (shoot_id, scheduled_date) key guarantees no duplicate rows.
+            // Keep sent history immutable. A future row cancelled by a previous cadence edit
+            // can become current again when the admin restores that day; reuse its unique row.
             $reminder = PaymentReminder::firstOrNew([
                 'shoot_id' => $shoot->id,
                 'scheduled_date' => $timestamp->toDateString(),
             ]);
 
-            if ($reminder->exists && $reminder->status !== PaymentReminder::STATUS_PENDING) {
+            if ($reminder->exists && $reminder->status === PaymentReminder::STATUS_SENT) {
                 $reminders[] = $reminder;
 
                 continue;
             }
 
             $reminder->scheduled_at = $timestamp->toDateTimeString();
-
-            if (! $reminder->exists) {
-                $reminder->status = PaymentReminder::STATUS_PENDING;
-            }
+            $reminder->status = PaymentReminder::STATUS_PENDING;
 
             $reminder->save();
             $reminders[] = $reminder;
@@ -254,15 +251,17 @@ class AutomationService
     }
 
     /**
-     * Whether a shoot's payment has been recorded complete.
+     * Whether a shoot should stop receiving balance reminders. A paywall
+     * bypass also disables the payment link, so a reminder cannot offer a
+     * usable way to settle that balance.
      */
     private function isShootPaid(Shoot $shoot): bool
     {
-        return in_array(
+        return (bool) $shoot->bypass_paywall || in_array(
             strtolower((string) $shoot->payment_status),
             ['paid', Shoot::PAYMENT_STATUS_NO_PAYMENT_REQUIRED],
             true
-        );
+        ) || app(ShootSummaryEligibility::class)->isSettled($shoot);
     }
 
     /**
@@ -281,7 +280,7 @@ class AutomationService
      * Build and send a single automated Payment_Reminder for a shoot on both channels (Req 12,
      * Req 5.1/5.2).
      *
-     * Renders the system `payment-due-reminder` template for the shoot's client and dispatches it
+     * Renders the shoot-specific balance reminder for the shoot's client and dispatches it
      * through the same {@see MessagingService} send path the rest of automation uses. Issue #12
      * requires reminders to be delivered as both emails AND texts, so this sends:
      *   - an email when the client has a usable email address, and
@@ -344,7 +343,7 @@ class AutomationService
         }
 
         $template = MessageTemplate::query()
-            ->where('slug', 'payment-due-reminder')
+            ->where('slug', ShootPaymentReminderTemplate::SLUG)
             ->where('is_active', true)
             ->first();
 

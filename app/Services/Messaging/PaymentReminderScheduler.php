@@ -14,10 +14,9 @@ use Carbon\CarbonInterface;
  *
  * Cadence (measured from `shoot_ready_notified_at`):
  * - Phase 1 (fixed): day +1, +3, +7 from the start (day 1 = start + 1 day).
- * - Phase 2 (weekly, rest of first month): every 7 days after day 7 while within 30 days
- *   of the start (i.e. day 14, 21, 28).
- * - Phase 3 (monthly): after the first month, one reminder per month on the last Sunday
- *   of each month, at 09:00.
+ * - Phase 2 (weekly): every 7 days after day 7 for as long as the balance remains.
+ * Old authored rules with an explicit monthly_day_of_week keep their saved
+ * monthly cadence until an operator changes it. The stock rule is migrated.
  */
 class PaymentReminderScheduler
 {
@@ -32,21 +31,31 @@ class PaymentReminderScheduler
     {
         $out = [];
 
-        // Defaults preserve the established first-month cadence. Saved rule
-        // settings replace the list without changing the shoot-ready anchor.
+        // Saved first reminders replace the default without moving the anchor.
         $days = array_values(array_unique(array_map('intval', array_filter(
-            (array) ($config['reminder_days'] ?? [1, 3, 7, 14, 21, 28]),
+            (array) ($config['reminder_days'] ?? [1, 3, 7]),
             fn ($day) => is_numeric($day) && (int) $day >= 1 && (int) $day <= 30,
         ))));
         foreach ($days as $day) {
             $out[] = $start->addDays($day);
         }
 
-        // Phase 3 (monthly): last Sunday of each month after the first month.
-        $month = $start->addMonth()->startOfMonth();
-        while ($month->lessThanOrEqualTo($horizonEnd)) {
-            $out[] = $this->lastWeekdayOf($month, $config);
-            $month = $month->addMonth()->startOfMonth();
+        if (array_key_exists('monthly_day_of_week', $config) && ! array_key_exists('repeat_every_days', $config)) {
+            // Preserve an explicitly authored legacy monthly cadence. The
+            // shipped stock rule is upgraded to weekly by its data migration.
+            $month = $start->addMonth()->startOfMonth();
+            while ($month->lessThanOrEqualTo($horizonEnd)) {
+                $out[] = $this->lastWeekdayOf($month, $config);
+                $month = $month->addMonth()->startOfMonth();
+            }
+        } else {
+            $interval = (int) ($config['repeat_every_days'] ?? 7);
+            $interval = $interval >= 1 && $interval <= 30 ? $interval : 7;
+            $afterDay = (int) ($config['repeat_after_day'] ?? 7);
+            $afterDay = $afterDay >= 1 && $afterDay <= 30 ? $afterDay : 7;
+            for ($day = $afterDay + $interval; $start->addDays($day)->lessThanOrEqualTo($horizonEnd); $day += $interval) {
+                $out[] = $start->addDays($day);
+            }
         }
 
         $out = array_values(array_filter(
@@ -54,7 +63,12 @@ class PaymentReminderScheduler
             fn (CarbonImmutable $t) => $t->lessThanOrEqualTo($horizonEnd)
         ));
 
-        // Keep results ascending regardless of phase generation order.
+        // Custom saved first days may overlap the recurring series.
+        $unique = [];
+        foreach ($out as $timestamp) {
+            $unique[$timestamp->toIso8601String()] = $timestamp;
+        }
+        $out = array_values($unique);
         usort($out, fn (CarbonImmutable $a, CarbonImmutable $b) => $a <=> $b);
 
         return $out;

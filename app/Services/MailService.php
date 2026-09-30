@@ -1262,7 +1262,8 @@ class MailService
         User $user,
         Shoot $shoot,
         array $serviceItemIds = [],
-        bool $isFullOrderDelivery = true
+        bool $isFullOrderDelivery = true,
+        ?int &$acceptedMessageId = null
     ): bool
     {
         if ($shoot->isInternalTestShoot()) {
@@ -1307,7 +1308,7 @@ class MailService
                 ),
                 'require_confirmed_duplicate' => true,
                 'retry_failed' => true,
-            ]);
+            ], $acceptedMessageId);
             if (! $accepted) {
                 return false;
             }
@@ -1327,6 +1328,60 @@ class MailService
                 'error' => $e->getMessage()
             ]);
             
+            return false;
+        }
+    }
+
+    /** Send the final client link pack once a fully delivered shoot is settled. */
+    public function sendShootSummaryEmail(User $user, Shoot $shoot, ?int &$acceptedMessageId = null): bool
+    {
+        if ($shoot->isInternalTestShoot()) {
+            return false;
+        }
+
+        try {
+            $shoot = $shoot->fresh(['client', 'photographer', 'rep', 'services.category', 'payments.refunds']) ?? $shoot;
+            if (! app(\App\Services\Messaging\ShootSummaryEligibility::class)->canSend($shoot)) {
+                return false;
+            }
+
+            $shootData = $this->formatShootData($shoot, $user, 'client');
+            $payload = $this->buildProtectedEmailPayload([
+                'recipient' => $this->formatUserData($user),
+                'account' => $this->formatUserData($shoot->client),
+                'shoot' => $shootData,
+                'meta' => [
+                    'recipient_type' => 'client',
+                    'role_context' => 'client',
+                    'address' => $shootData->location ?? null,
+                    'event_version' => 'full-delivery-and-settled',
+                ],
+            ]);
+
+            return $this->dispatchProtectedEmail(
+                'SHOOT_SUMMARY',
+                $payload,
+                (string) $user->email,
+                $this->resolveShootCcEmailsForRecipient($shoot, $user),
+                [],
+                $this->automatedClientPayload($user, [
+                    'related_shoot_id' => $shoot->id,
+                    'enforce_email_health_gate' => false,
+                ]),
+                [
+                    'idempotency_key' => sprintf('SHOOT_SUMMARY:%d:%d', $shoot->id, $user->id),
+                    'require_confirmed_duplicate' => true,
+                    'retry_failed' => true,
+                ],
+                $acceptedMessageId,
+            );
+        } catch (\Throwable $exception) {
+            Log::error('Failed to send shoot summary email', [
+                'shoot_id' => $shoot->id,
+                'user_id' => $user->id,
+                'error' => $exception->getMessage(),
+            ]);
+
             return false;
         }
     }
@@ -3272,7 +3327,8 @@ class MailService
         array $cc = [],
         array $tags = [],
         array $extraPayload = [],
-        array $options = []
+        array $options = [],
+        ?int &$acceptedMessageId = null
     ): bool {
         $result = $this->systemEmailOrchestrator->send($emailAlias, $payload, [
             'to' => $to,
@@ -3294,15 +3350,17 @@ class MailService
             'canonical_metadata' => $options['canonical_metadata'] ?? [],
         ]);
 
-        if (($options['require_fresh_send'] ?? false) === true) {
-            return (bool) ($result['sent'] ?? false);
+        $accepted = ($options['require_fresh_send'] ?? false) === true
+            ? (bool) ($result['sent'] ?? false)
+            : ((($options['require_confirmed_duplicate'] ?? false) === true && ($result['duplicate'] ?? false))
+                ? in_array(strtolower((string) (($result['dispatch'] ?? null)?->status ?? '')), ['sent', 'delivered'], true)
+                : (bool) ($result['sent'] || $result['duplicate']));
+        if ($accepted) {
+            $id = (int) ($result['message_id'] ?? 0);
+            $acceptedMessageId = $id > 0 ? $id : null;
         }
 
-        if (($options['require_confirmed_duplicate'] ?? false) === true && ($result['duplicate'] ?? false)) {
-            return in_array(strtolower((string) (($result['dispatch'] ?? null)?->status ?? '')), ['sent', 'delivered'], true);
-        }
-
-        return $result['sent'] || $result['duplicate'];
+        return $accepted;
     }
 
     /**

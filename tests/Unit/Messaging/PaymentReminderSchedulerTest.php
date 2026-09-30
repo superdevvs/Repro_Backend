@@ -27,11 +27,10 @@ class PaymentReminderSchedulerTest extends TestCase
         ], $this->format($result));
     }
 
-    public function test_phase_2_weekly_reminders_within_first_month(): void
+    public function test_weekly_reminders_continue_past_the_first_month(): void
     {
         $start = CarbonImmutable::parse('2026-01-01 10:00:00');
-        // Horizon at day 30 — Phase 1 + Phase 2 (day 14/21/28); no monthly yet.
-        $result = (new PaymentReminderScheduler)->schedule($start, $start->addDays(30));
+        $result = (new PaymentReminderScheduler)->schedule($start, $start->addDays(56));
 
         $this->assertSame([
             '2026-01-02 10:00:00', // +1
@@ -40,28 +39,24 @@ class PaymentReminderSchedulerTest extends TestCase
             '2026-01-15 10:00:00', // +14
             '2026-01-22 10:00:00', // +21
             '2026-01-29 10:00:00', // +28
+            '2026-02-05 10:00:00', // +35
+            '2026-02-12 10:00:00', // +42
+            '2026-02-19 10:00:00', // +49
+            '2026-02-26 10:00:00', // +56
         ], $this->format($result));
     }
 
-    public function test_phase_3_monthly_reminders_on_last_sunday_at_9am(): void
+    public function test_default_never_switches_to_calendar_monthly_reminders(): void
     {
         $start = CarbonImmutable::parse('2026-01-01 10:00:00');
-        // Horizon ~3 months out to capture monthly reminders.
-        $result = (new PaymentReminderScheduler)->schedule($start, CarbonImmutable::parse('2026-04-30 23:59:59'));
+        $result = (new PaymentReminderScheduler)->schedule($start, $start->addDays(120));
+        $offsets = array_map(fn (CarbonImmutable $at) => (int) $start->diffInDays($at), $result);
 
-        $formatted = $this->format($result);
-
-        // Phase 3 begins the month AFTER the anchor month (Feb), one per month on last Sunday at 09:00.
-        $this->assertContains('2026-02-22 09:00:00', $formatted); // last Sunday of Feb 2026
-        $this->assertContains('2026-03-29 09:00:00', $formatted); // last Sunday of Mar 2026
-        $this->assertContains('2026-04-26 09:00:00', $formatted); // last Sunday of Apr 2026
-
-        // Each Phase 3 entry must actually be a Sunday at 09:00.
-        foreach ($result as $t) {
-            if ($t->format('H:i') === '09:00') {
-                $this->assertSame(CarbonInterface::SUNDAY, $t->dayOfWeek, "Monthly reminder {$t->toDateTimeString()} is not a Sunday");
-            }
+        $this->assertSame([1, 3, 7], array_slice($offsets, 0, 3));
+        foreach (array_slice($offsets, 3) as $index => $offset) {
+            $this->assertSame(14 + $index * 7, $offset);
         }
+        $this->assertNotContains('2026-02-22 09:00:00', $this->format($result));
     }
 
     public function test_results_are_ascending_and_within_horizon(): void
@@ -112,16 +107,16 @@ class PaymentReminderSchedulerTest extends TestCase
         }
     }
 
-    public function test_explicit_default_settings_preserve_legacy_schedule(): void
+    public function test_explicit_weekly_settings_match_new_default(): void
     {
         $scheduler = new PaymentReminderScheduler;
         $start = CarbonImmutable::parse('2026-07-15 11:45:00');
         $horizon = $start->addMonths(4);
 
         $this->assertSame($this->format($scheduler->schedule($start, $horizon)), $this->format($scheduler->schedule($start, $horizon, [
-            'reminder_days' => [1, 3, 7, 14, 21, 28],
-            'monthly_day_of_week' => 0,
-            'time' => '09:00',
+            'reminder_days' => [1, 3, 7],
+            'repeat_after_day' => 7,
+            'repeat_every_days' => 7,
         ])));
     }
 }

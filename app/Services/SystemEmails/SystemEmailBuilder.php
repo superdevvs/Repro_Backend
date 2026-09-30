@@ -66,7 +66,12 @@ class SystemEmailBuilder
             'SHOOT_REQUEST_DECLINED' => 'Your Shoot Request Was Declined',
             'SHOOT_REQUESTED' => ! empty($meta['is_admin']) ? 'New Shoot Request Needs Review' : 'We Received Your Shoot Request',
             'SHOOT_CANCELLATION_REQUESTED' => 'Shoot Cancellation Request Received',
-            'SHOOT_DELIVERED' => 'Your Shoot Has Been Delivered',
+            'SHOOT_DELIVERED' => ! empty($payload['links']['payment'])
+                ? 'Photos Ready - Balance Due'
+                : 'Your Photos Are Ready',
+            'SHOOT_SUMMARY' => trim((string) ($meta['address'] ?? '')) !== ''
+                ? $meta['address'].' - Shoot Summary'
+                : 'Your Shoot Summary',
             'PAYMENT_CONFIRMATION' => 'Thank You for Your Payment!',
             'PAYMENT_COMPLETED' => 'Your Shoot Balance Is Paid in Full',
             'INVOICE_GENERATED' => 'Weekly Invoice - '.($meta['period'] ?? 'Current Period'),

@@ -19,7 +19,7 @@ class EmailPreviewContext
             default => 'client',
         };
         $now = self::date();
-        $paid = in_array($alias, ['PAYMENT_CONFIRMATION', 'PAYMENT_COMPLETED', 'SHOOT_PAID', 'SHOOT_DELIVERED'], true);
+        $paid = in_array($alias, ['PAYMENT_CONFIRMATION', 'PAYMENT_COMPLETED', 'SHOOT_PAID', 'SHOOT_SUMMARY'], true);
         $recipient = self::person($role);
         $client = self::person('client');
         $photographer = self::person('photographer');
@@ -54,8 +54,8 @@ class EmailPreviewContext
                 'property_prep_url' => 'https://example.com/property-prep',
                 'dashboard_url' => 'https://example.com/shoots/example',
                 'payment_status' => $paid ? 'paid' : 'unpaid', 'remaining_balance' => $paid ? 0 : 369,
-                'status' => $alias === 'SHOOT_DELIVERED' ? 'delivered' : 'scheduled',
-                'workflow_status' => $alias === 'SHOOT_DELIVERED' ? 'delivered' : 'scheduled',
+                'status' => in_array($alias, ['SHOOT_DELIVERED', 'SHOOT_SUMMARY'], true) ? 'delivered' : 'scheduled',
+                'workflow_status' => in_array($alias, ['SHOOT_DELIVERED', 'SHOOT_SUMMARY'], true) ? 'delivered' : 'scheduled',
                 'is_private_listing' => false, 'bypass_paywall' => false,
             ],
             'invoice' => [

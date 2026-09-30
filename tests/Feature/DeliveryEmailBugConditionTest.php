@@ -241,16 +241,16 @@ class DeliveryEmailBugConditionTest extends TestCase
     }
 
     // ---------------------------------------------------------------------
-    // Case F: hero/eyebrow label matches subject
+    // Case F: the unpaid delivery email is clearly labeled Photos Ready.
     // ---------------------------------------------------------------------
-    public function test_case_f_delivered_email_hero_label_matches_subject(): void
+    public function test_case_f_delivered_email_uses_photos_ready_label(): void
     {
         $html = $this->renderDeliveredEmailHtml();
 
         $this->assertStringContainsString(
-            '>Your Shoot Has Been Delivered</p>',
+            '>Photos Ready</p>',
             $html,
-            'The delivered email hero/eyebrow label must match the subject "Your Shoot Has Been Delivered".'
+            'The unpaid delivery email must use the Photos Ready label.'
         );
     }
 }

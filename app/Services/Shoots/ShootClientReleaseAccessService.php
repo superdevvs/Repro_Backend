@@ -16,6 +16,13 @@ class ShootClientReleaseAccessService
 
     public function resolvePaymentStatus(Shoot $shoot): string
     {
+        // An explicit zero-dollar quote has no balance to collect, even when
+        // its stored status is the complimentary "no_payment_required" value.
+        // Keep an unknown (null) quote behind the normal payment gate.
+        if ($shoot->total_quote !== null && (float) $shoot->total_quote <= 0.01) {
+            return 'paid';
+        }
+
         $paymentStatus = $shoot->payment_status;
 
         if (!$paymentStatus || $paymentStatus === 'pending') {

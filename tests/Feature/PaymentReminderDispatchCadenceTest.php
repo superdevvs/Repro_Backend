@@ -24,8 +24,8 @@ use Tests\TestCase;
  * The scheduler/wiring tests prove the cadence *math* and that rows get *created*. This test
  * closes the remaining gap: it runs the real {@see DispatchScheduledMessages} job at each due
  * instant (time-travel via Carbon::setTestNow) and proves the reminders actually *dispatch* on
- * BOTH channels (email + SMS), in the correct Day 1/3/7 → weekly (14/21/28) → monthly
- * (last-Sunday 09:00) order, that each row flips pending → sent exactly once (no re-send on a
+ * BOTH channels (email + SMS), in the correct Day 1/3/7 → weekly thereafter order,
+ * that each row flips pending → sent exactly once (no re-send on a
  * later run), and that once the shoot is marked paid the cadence STOPS — the next due reminder
  * is cancelled rather than sent (Req 5.3/5.4).
  *
@@ -51,7 +51,7 @@ class PaymentReminderDispatchCadenceTest extends TestCase
     }
 
     /**
-     * Seed the active `payment-due-reminder` template the dual-channel send path renders.
+     * Seed the active shoot reminder template the dual-channel send path renders.
      */
     private function seedPaymentReminderTemplate(): void
     {
@@ -172,40 +172,31 @@ class PaymentReminderDispatchCadenceTest extends TestCase
             ->orderBy('scheduled_at')
             ->get();
 
-        // The rolling 3-month horizon yields the full first month plus the first couple of
-        // monthly reminders: Day 1/3/7, weekly 14/21/28, then last-Sunday months.
+        // The rolling 3-month horizon yields Day 1/3/7 and weekly reminders
+        // across the calendar-month boundary.
         $this->assertGreaterThanOrEqual(
             8,
             $scheduled->count(),
-            'expected Day 1/3/7 + weekly 14/21/28 + at least two monthly reminders'
+            'expected Day 1/3/7 + weekly reminders beyond the first month'
         );
 
         $anchorTs = Carbon::parse($anchor);
 
-        // Phase 1 (Day 1/3/7) and Phase 2 (weekly 14/21/28) are the first six, in order.
-        foreach ([1, 3, 7, 14, 21, 28] as $i => $offset) {
+        foreach ([1, 3, 7, 14, 21, 28, 35, 42] as $i => $offset) {
             $this->assertSame(
                 $anchorTs->copy()->addDays($offset)->toDateString(),
                 $scheduled[$i]->scheduled_at->toDateString(),
                 "reminder #{$i} should be Day {$offset} of the cadence"
             );
+            $this->assertSame(
+                $anchorTs->format('H:i'),
+                $scheduled[$i]->scheduled_at->format('H:i'),
+                "reminder #{$i} should keep the anchor time"
+            );
         }
 
-        // Phase 3: the seventh reminder is the first monthly reminder — a last Sunday at 09:00.
-        $firstMonthly = $scheduled[6];
-        $this->assertSame(
-            Carbon::SUNDAY,
-            $firstMonthly->scheduled_at->dayOfWeek,
-            'the first monthly reminder must fall on a Sunday'
-        );
-        $this->assertSame('09:00', $firstMonthly->scheduled_at->format('H:i'), 'monthly reminders fire at 09:00');
-        $this->assertTrue(
-            $firstMonthly->scheduled_at->copy()->addWeek()->month !== $firstMonthly->scheduled_at->month,
-            'the monthly reminder must be the LAST Sunday of its month'
-        );
-
         // Walk the cadence: dispatch at each due instant for the first seven reminders
-        // (Phase 1 → Phase 2 → first Phase 3), asserting exactly one email + one SMS per step.
+        // including the first one beyond 28 days, asserting one send per channel.
         $expectedSends = 0;
         for ($i = 0; $i <= 6; $i++) {
             $reminder = $scheduled[$i];
@@ -238,13 +229,13 @@ class PaymentReminderDispatchCadenceTest extends TestCase
         $this->assertCount($emailCountBeforeRerun, $this->emailSends, 'a re-run must not re-send already-sent reminders');
         $this->assertCount($smsCountBeforeRerun, $this->smsSends, 'a re-run must not re-send already-sent reminders');
 
-        // Confirm there is still a pending reminder in the future (the next monthly one) to prove
+        // Confirm there is still a pending reminder in the future to prove
         // the stop-on-paid path below actually has something to cancel.
         $nextPending = PaymentReminder::where('shoot_id', $shoot->id)
             ->where('status', PaymentReminder::STATUS_PENDING)
             ->orderBy('scheduled_at')
             ->first();
-        $this->assertNotNull($nextPending, 'a later monthly reminder should still be pending');
+        $this->assertNotNull($nextPending, 'a later weekly reminder should still be pending');
 
         // Stop-on-paid (Req 5.3/5.4): the client pays. Advance to the next due reminder and
         // dispatch — the dispatcher must re-check payment and CANCEL the reminder instead of

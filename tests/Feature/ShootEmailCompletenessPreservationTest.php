@@ -307,7 +307,7 @@ class ShootEmailCompletenessPreservationTest extends TestCase
         return [
             'SHOOT_SCHEDULED|Client Booking Confirmation' => 'shoot-scheduled',
             'PHOTOGRAPHER_SHOOT_REMINDER|Photographer Shoot Reminder' => 'photographer-shoot-reminder',
-            'SHOOT_PAYMENT_REMINDER|Shoot Payment Reminder' => 'payment-due-reminder',
+            'SHOOT_PAYMENT_REMINDER|Shoot Payment Reminder' => 'shoot-payment-reminder',
             'WEEKLY_AUTOMATED_INVOICING|Weekly Automated Invoicing' => 'weekly-invoice-generated',
             'WEEKLY_SALES_REPORT|Weekly Sales Reports' => 'weekly-sales-report',
             'INVOICE_SUMMARY|Weekly Client Invoice Summary' => 'weekly-client-invoice-summary',
@@ -325,7 +325,7 @@ class ShootEmailCompletenessPreservationTest extends TestCase
             'automation-shoot-booked-sms', 'automation-shoot-canceled-sms', 'automation-shoot-cancelled-sms',
             'automation-shoot-completed-sms', 'automation-shoot-request-approved-sms',
             'automation-shoot-request-modified-sms', 'automation-shoot-scheduled-sms', 'automation-shoot-updated-sms',
-            'photographer-shoot-reminder', 'shoot-payment-reminder-sms',
+            'photographer-shoot-reminder', 'shoot-payment-reminder', 'shoot-payment-reminder-sms',
             'weekly-client-invoice-summary', 'weekly-rep-invoice-summary',
             // Reviewed manual-notification SMS families remain separate from email.
             'shoot-scheduled-sms', 'shoot-on-hold-sms', 'shoot-cancelled-sms',

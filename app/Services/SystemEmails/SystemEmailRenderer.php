@@ -35,6 +35,10 @@ class SystemEmailRenderer
         // protected email type, render that instead of the hardcoded Blade
         // view. Disabled by default, so behavior is unchanged until enabled.
         $override = $this->resolveOverrideTemplate($definition);
+        if ($override && $this->mustUseProtectedBlade($definition, $payload)
+            && ! ProtectedEmailTemplates::hasScopedRuntimeBlock($override)) {
+            $this->recordOverrideHealth($override, 'unhealthy', 'This email requires the {{system_body_html}} block for current payment and delivery links. Canonical content was used.');
+        }
         if ($override && (! $this->mustUseProtectedBlade($definition, $payload) || ProtectedEmailTemplates::hasScopedRuntimeBlock($override))) {
             $rendered = $this->renderOverride($override, $definition, $payload, $subject);
             if ($rendered !== null && ! $this->violatesProtectedOutcome($definition, $payload, $rendered)) {
@@ -127,7 +131,7 @@ class SystemEmailRenderer
             return false;
         }
 
-        if (! in_array($definition->alias, ['SHOOT_SCHEDULED', 'SHOOT_DELIVERED', 'SHOOT_REQUESTED'], true)) {
+        if (! in_array($definition->alias, ['SHOOT_SCHEDULED', 'SHOOT_DELIVERED', 'SHOOT_SUMMARY', 'SHOOT_REQUESTED'], true)) {
             return false;
         }
 
@@ -156,6 +160,7 @@ class SystemEmailRenderer
             ], true);
 
         return $requiresScopedPhotographerRenderer
+            || in_array($definition->alias, ['SHOOT_DELIVERED', 'SHOOT_SUMMARY'], true)
             || $definition->alias === 'SHOOT_REQUEST_MODIFIED'
             || ($definition->alias === 'SHOOT_REQUESTED'
                 && (bool) Arr::get($payload, 'meta.is_admin', false));
@@ -555,6 +560,9 @@ class SystemEmailRenderer
                 'paymentLink' => $links['payment'] ?? null,
                 'deliveryShare' => $this->deliveryShareForShoot($payload),
             ],
+            'SHOOT_SUMMARY' => $shared + [
+                'deliveryShare' => $this->summaryShareForShoot($payload),
+            ],
             'INVOICE_GENERATED' => $shared + [
                 'photographer' => $recipient,
                 'recipientRole' => $meta->recipient_role ?? null,
@@ -634,6 +642,43 @@ class SystemEmailRenderer
             return app(DeliveryShareLinksBuilder::class)->forShoot($shoot);
         } catch (\Throwable $e) {
             return ['links' => [], 'has_links' => false, 'completed_shoots_note' => ''];
+        }
+    }
+
+    /** Only verified, unlocked links appear in the final client summary. */
+    private function summaryShareForShoot(array $payload): array
+    {
+        $shootId = (int) data_get($payload, 'shoot.id', 0);
+        if ($shootId <= 0) {
+            if (data_get($payload, 'meta.event_version') === 'editor') {
+                $links = [
+                    ['key' => 'small_zip', 'label' => 'Small/MLS-Size Images Download', 'url' => 'https://example.com/download/example-small.zip'],
+                    ['key' => 'full_zip', 'label' => 'Full-Size Images Download', 'url' => 'https://example.com/download/example-full.zip'],
+                    ['key' => 'mls_tour', 'label' => 'MLS-Compliant Tour (non-branded)', 'url' => 'https://example.com/tour/example-mls'],
+                    ['key' => 'branded_tour', 'label' => 'Branded Tour', 'url' => 'https://example.com/tour/example-branded'],
+                    ['key' => 'video', 'label' => 'Video Download', 'url' => 'https://example.com/video/example.mp4'],
+                    ['key' => 'zillow_3d', 'label' => 'Zillow 3D Home Tour', 'url' => 'https://example.com/zillow/example'],
+                ];
+
+                return ['links' => $links, 'additional_links' => [], 'has_links' => true];
+            }
+
+            return ['links' => [], 'has_links' => false];
+        }
+
+        try {
+            $shoot = Shoot::query()->with('files')->find($shootId);
+
+            return $shoot
+                ? app(DeliveryShareLinksBuilder::class)->forShootSummary($shoot)
+                : ['links' => [], 'has_links' => false];
+        } catch (\Throwable $exception) {
+            Log::error('Could not build shoot summary share links', [
+                'shoot_id' => $shootId,
+                'error' => $exception->getMessage(),
+            ]);
+
+            return ['links' => [], 'has_links' => false];
         }
     }
 

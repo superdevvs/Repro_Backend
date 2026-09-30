@@ -483,6 +483,14 @@ class AutomationWorkflowExecutor
 
     private function executeEmailAction(AutomationRule $automation, array $node, array $context): array
     {
+        if ($this->shouldSkipCoreSystemEmailAutomation($automation, $context)) {
+            return [
+                'channel' => 'email',
+                'sent_to' => [],
+                'skipped' => true,
+            ];
+        }
+
         $config = is_array($node['config'] ?? null) ? $node['config'] : [];
         $template = ! empty($config['templateId'])
             ? MessageTemplate::find($config['templateId'])
@@ -493,14 +501,6 @@ class AutomationWorkflowExecutor
         }
         if ($template && ! $template->is_active) {
             return ['channel' => 'email', 'sent_to' => [], 'message_ids' => [], 'skipped' => true, 'reason' => 'Template is disabled.'];
-        }
-
-        if ($this->shouldSkipCoreSystemEmailAutomation($automation, $context)) {
-            return [
-                'channel' => 'email',
-                'sent_to' => [],
-                'skipped' => true,
-            ];
         }
 
         $recipients = $this->resolveActionRecipients($automation, $config, $context, 'email');

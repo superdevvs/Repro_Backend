@@ -306,10 +306,10 @@ class DeliveryEmailFixTest extends TestCase
         $this->assertSame(
             1,
             Message::query()
-                ->where('send_source', 'AUTOMATION')->where('channel', 'EMAIL')->where('status', 'SENT')
+                ->where('send_source', 'SHOOT_DELIVERED')->where('channel', 'EMAIL')->where('status', 'SENT')
                 ->where('related_shoot_id', $shoot->id)->where('to_address', $client->email)
                 ->count(),
-            'The full finalize -> deliver flow must record one accepted saved-workflow email for the client.'
+            'The full finalize -> deliver flow must record one protected Photos Ready email for the client.'
         );
 
         $this->assertSame(
@@ -353,10 +353,10 @@ class DeliveryEmailFixTest extends TestCase
         $this->assertSame(
             1,
             Message::query()
-                ->where('send_source', 'AUTOMATION')->where('channel', 'EMAIL')->where('status', 'SENT')
+                ->where('send_source', 'SHOOT_SUMMARY')->where('channel', 'EMAIL')->where('status', 'SENT')
                 ->where('related_shoot_id', $shoot->id)->where('to_address', $client->email)
                 ->count(),
-            'No-media (fast-forward) full-order delivery must still dispatch the delivery email.'
+            'No-media (fast-forward) full-order delivery must still dispatch the paid Shoot Summary.'
         );
     }
 
@@ -383,19 +383,19 @@ class DeliveryEmailFixTest extends TestCase
             'is_active' => true, 'scope' => 'GLOBAL', 'recipients_json' => ['client'],
         ]);
 
-        // The saved rule owns delivery; its presence suppresses the legacy sender.
+        // The protected sender owns delivery; the saved rule may run other actions.
         (new SendShootReadyEmailJob($shoot->id, null, true, true))
             ->handle($this->app->make(MailService::class), $this->app->make(AutomationService::class));
 
         $this->assertSame(
             1,
             Message::query()
-                ->where('send_source', 'AUTOMATION')->where('channel', 'EMAIL')->where('status', 'SENT')
+                ->where('send_source', 'SHOOT_DELIVERED')->where('channel', 'EMAIL')->where('status', 'SENT')
                 ->where('related_shoot_id', $shoot->id)
                 ->where('to_address', $client->email)
                 ->count(),
             'Exactly one accepted client delivery email must be recorded.'
         );
-        $this->assertSame(0, SystemEmailDispatch::where('email_alias', 'SHOOT_DELIVERED')->where('related_shoot_id', $shoot->id)->count());
+        $this->assertSame(1, SystemEmailDispatch::where('email_alias', 'SHOOT_DELIVERED')->where('related_shoot_id', $shoot->id)->count());
     }
 }

@@ -497,7 +497,8 @@ class ShootEditablePayloadService
             }
 
             if ((float) ($shoot->total_quote ?? 0) <= 0.01) {
-                $shoot->payment_status = 'paid';
+                // syncPaymentStatusFromRecords below owns the transition and its
+                // post-payment notifications after the edited quote is saved.
                 $shoot->bypass_paywall = true;
             } elseif ($previousBypassPaywall && in_array($previousProductStatus, [
                 Shoot::PRODUCT_STATUS_NO_PRODUCT,

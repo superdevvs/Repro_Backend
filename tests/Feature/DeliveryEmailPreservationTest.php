@@ -444,13 +444,14 @@ class DeliveryEmailPreservationTest extends TestCase
             'workflow_status' => Shoot::STATUS_DELIVERED,
         ]);
 
-        // The saved workflow sends through the configured email channel.
+        // The protected delivery path owns the client email; saved automation
+        // may still run its other actions without sending a duplicate email.
         (new SendShootReadyEmailJob($shoot->id, null, true, true))
             ->handle($this->app->make(MailService::class), $this->app->make(AutomationService::class));
 
         $this->assertSame(
             1,
-            Message::query()->where('send_source', 'AUTOMATION')->where('channel', 'EMAIL')->where('status', 'SENT')
+            Message::query()->where('send_source', 'SHOOT_DELIVERED')->where('channel', 'EMAIL')->where('status', 'SENT')
                 ->where('related_shoot_id', $shoot->id)
                 ->where('to_address', $client->email)
                 ->count(),
@@ -462,7 +463,7 @@ class DeliveryEmailPreservationTest extends TestCase
 
         $this->assertSame(
             1,
-            Message::query()->where('send_source', 'AUTOMATION')->where('channel', 'EMAIL')->where('status', 'SENT')
+            Message::query()->where('send_source', 'SHOOT_DELIVERED')->where('channel', 'EMAIL')->where('status', 'SENT')
                 ->where('related_shoot_id', $shoot->id)
                 ->where('to_address', $client->email)
                 ->count(),

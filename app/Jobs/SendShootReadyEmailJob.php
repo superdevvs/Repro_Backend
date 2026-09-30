@@ -8,6 +8,7 @@ use App\Models\User;
 use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
 use App\Services\Messaging\ShootDeliveryNotificationRecorder;
+use App\Services\Messaging\ShootSummaryEligibility;
 use App\Services\Shoots\FinalizeProgressTracker;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -74,6 +75,14 @@ class SendShootReadyEmailJob implements ShouldQueue
             return;
         }
 
+        if ($this->isFullOrderDelivery
+            && ! $automation->hasActiveTrigger('SHOOT_COMPLETED')
+            && ! $automation->shouldUseFallback('SHOOT_COMPLETED')) {
+            $progress->stageSkipped($this->shootId, FinalizeProgressTracker::STAGE_DELIVERY_EMAIL, 'The delivery notification rule is disabled.');
+
+            return;
+        }
+
         $progress->stageRunning($this->shootId, FinalizeProgressTracker::STAGE_DELIVERY_EMAIL);
 
         $shoot->loadMissing(['client', 'photographer', 'rep', 'service']);
@@ -83,23 +92,47 @@ class SendShootReadyEmailJob implements ShouldQueue
         $systemEmailAlreadySent = false;
         $accepted = collect();
         $dispatch = [];
-        if ($client && (! $this->isFullOrderDelivery || $automation->shouldUseFallback('SHOOT_COMPLETED'))) {
+        if ($client && $this->isFullOrderDelivery) {
             try {
-                $sent = false;
-                if ($this->shootServiceId) {
-                    $sent = $mail->sendShootReadyEmail($client, $shoot, [$this->shootServiceId], $this->isFullOrderDelivery);
-                } elseif ($this->isFullOrderDelivery) {
-                    $sent = $mail->sendShootReadyEmail($client, $shoot);
-                }
+                $sendSummary = app(ShootSummaryEligibility::class)->isSettled($shoot);
+                $source = $sendSummary ? 'SHOOT_SUMMARY' : 'SHOOT_DELIVERED';
+                $messageId = null;
+                $sent = $sendSummary
+                    ? $mail->sendShootSummaryEmail($client, $shoot, $messageId)
+                    : $mail->sendShootReadyEmail($client, $shoot, [], true, $messageId);
                 if ($sent) {
-                    $accepted = Message::where('related_shoot_id', $shoot->id)->where('send_source', 'SHOOT_DELIVERED')
+                    $accepted = Message::whereKey($messageId)->where('related_shoot_id', $shoot->id)->where('send_source', $source)
                         ->where('to_address', $client->email)->whereIn('status', ['SENT', 'DELIVERED'])->get();
-                    $systemEmailAlreadySent = $this->isFullOrderDelivery && $accepted->isNotEmpty();
+                    $systemEmailAlreadySent = $accepted->isNotEmpty();
+                    if (! $systemEmailAlreadySent) {
+                        $failure = new \RuntimeException('The protected delivery email has no accepted message. The notification will be retried.');
+                    }
                 } else {
                     $failure = new \RuntimeException('The delivery email was not accepted. The notification will be retried.');
                 }
             } catch (\Throwable $e) {
                 $failure = $e;
+            }
+            if ($failure) {
+                $progress->stageFailed($this->shootId, FinalizeProgressTracker::STAGE_DELIVERY_EMAIL, 'Delivery notification failed and will be retried.');
+                throw $failure;
+            }
+        } elseif ($client && $this->shootServiceId) {
+            // Partial service delivery keeps its existing targeted notification.
+            try {
+                $messageId = null;
+                $sent = $mail->sendShootReadyEmail($client, $shoot, [$this->shootServiceId], false, $messageId);
+                if ($sent) {
+                    $accepted = Message::whereKey($messageId)->where('related_shoot_id', $shoot->id)->where('send_source', 'SHOOT_DELIVERED')
+                        ->where('to_address', $client->email)->whereIn('status', ['SENT', 'DELIVERED'])->get();
+                    if ($accepted->isEmpty()) {
+                        $failure = new \RuntimeException('The partial delivery email has no accepted message. The notification will be retried.');
+                    }
+                } else {
+                    $failure = new \RuntimeException('The partial delivery email was not accepted. The notification will be retried.');
+                }
+            } catch (\Throwable $exception) {
+                $failure = $exception;
             }
         }
 

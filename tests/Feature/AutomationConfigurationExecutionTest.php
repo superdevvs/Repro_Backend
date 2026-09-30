@@ -274,27 +274,27 @@ class AutomationConfigurationExecutionTest extends TestCase
     public function test_payment_cadence_edits_retire_obsolete_pending_rows_and_preserve_sent_history(): void
     {
         Carbon::setTestNow(Carbon::parse('2026-09-01 10:00:00', 'UTC'));
-        $rule = $this->rule('SHOOT_PAYMENT_REMINDER', ['client'], ['reminder_days' => [1, 3, 7], 'time' => '09:00']);
+        $rule = $this->rule('SHOOT_PAYMENT_REMINDER', ['client'], ['reminder_days' => [1, 3, 7], 'repeat_after_day' => 7, 'repeat_every_days' => 7]);
         $shoot = Shoot::factory()->create(['payment_status' => 'unpaid', 'shoot_ready_notified_at' => now()]);
         $service = app(AutomationService::class);
         $service->schedulePaymentReminders($shoot);
         $sent = \App\Models\PaymentReminder::where('shoot_id', $shoot->id)->whereDate('scheduled_date', '2026-09-02')->firstOrFail();
         $sent->update(['status' => 'sent', 'sent_at' => now()]);
         $sentBefore = $sent->fresh()->toArray();
-        $rule->update(['schedule_json' => ['reminder_days' => [1, 7], 'time' => '10:15']]);
+        $rule->update(['schedule_json' => ['reminder_days' => [1, 7], 'repeat_after_day' => 7, 'repeat_every_days' => 7]]);
+        $service->schedulePaymentReminders($shoot);
+        $this->assertSame('cancelled', \App\Models\PaymentReminder::where('shoot_id', $shoot->id)->whereDate('scheduled_date', '2026-09-04')->firstOrFail()->status);
+        $rule->update(['schedule_json' => ['reminder_days' => [1, 3, 7], 'repeat_after_day' => 7, 'repeat_every_days' => 7]]);
         $service->schedulePaymentReminders($shoot);
         $this->assertSame('pending', \App\Models\PaymentReminder::where('shoot_id', $shoot->id)->whereDate('scheduled_date', '2026-09-04')->firstOrFail()->status);
-        $rule->update(['schedule_json' => ['reminder_days' => [1, 3, 7], 'time' => '10:15']]);
-        $service->schedulePaymentReminders($shoot);
-        $this->assertSame('pending', \App\Models\PaymentReminder::where('shoot_id', $shoot->id)->whereDate('scheduled_date', '2026-09-04')->firstOrFail()->status);
-        $rule->update(['schedule_json' => ['reminder_days' => [1, 7], 'time' => '10:15']]);
+        $rule->update(['schedule_json' => ['reminder_days' => [1, 7], 'repeat_after_day' => 7, 'repeat_every_days' => 7]]);
         Carbon::setTestNow(Carbon::parse('2026-09-04 10:00:00', 'UTC'));
         $removed = \App\Models\PaymentReminder::where('shoot_id', $shoot->id)->whereDate('scheduled_date', '2026-09-04')->firstOrFail();
         $this->assertFalse($service->paymentReminderIsCurrent($removed));
         $this->assertSame('cancelled', $removed->fresh()->status);
         $this->assertSame($sentBefore, $sent->fresh()->toArray());
-        $monthly = \App\Models\PaymentReminder::where('shoot_id', $shoot->id)->whereDate('scheduled_date', '2026-10-25')->firstOrFail();
-        $this->assertSame('10:15', $monthly->scheduled_at->format('H:i'));
+        $weekly = \App\Models\PaymentReminder::where('shoot_id', $shoot->id)->whereDate('scheduled_date', '2026-10-06')->firstOrFail();
+        $this->assertSame('10:00', $weekly->scheduled_at->format('H:i'));
         $rule->update(['is_active' => false]);
         Carbon::setTestNow(Carbon::parse('2026-09-08 10:00:00', 'UTC'));
         $due = \App\Models\PaymentReminder::where('shoot_id', $shoot->id)->whereDate('scheduled_date', '2026-09-08')->firstOrFail();
@@ -312,6 +312,49 @@ class AutomationConfigurationExecutionTest extends TestCase
             'name' => 'Invalid schedule', 'scope' => 'SYSTEM', 'trigger_type' => 'PHOTOGRAPHER_SHOOT_REMINDER',
             'schedule_json' => ['offset' => '2h', 'time' => '25:90'],
         ])->assertUnprocessable()->assertJsonValidationErrors(['schedule.offset', 'schedule.time']);
+    }
+
+    public function test_weekly_shoot_reminder_repeat_fields_validate_and_round_trip(): void
+    {
+        Sanctum::actingAs(User::factory()->create(['role' => 'admin']));
+        $rule = $this->rule('SHOOT_PAYMENT_REMINDER', ['client']);
+        $payload = [
+            'name' => 'Weekly shoot balance reminder',
+            'scope' => 'SYSTEM',
+            'trigger_type' => 'SHOOT_PAYMENT_REMINDER',
+        ];
+
+        $this->putJson('/api/messaging/automations/'.$rule->id, $payload + [
+            'schedule_json' => ['reminder_days' => [1, 3, 7], 'repeat_after_day' => 0, 'repeat_every_days' => 31],
+        ])->assertUnprocessable()->assertJsonValidationErrors(['schedule.repeat_after_day', 'schedule.repeat_every_days']);
+
+        $schedule = ['reminder_days' => [1, 3, 7], 'repeat_after_day' => 7, 'repeat_every_days' => 7];
+        $this->putJson('/api/messaging/automations/'.$rule->id, $payload + ['schedule_json' => $schedule])->assertOk();
+        $this->assertSame($schedule, $rule->fresh()->schedule_json);
+    }
+
+    public function test_reminder_cadence_edit_cancels_obsolete_future_pending_rows(): void
+    {
+        Carbon::setTestNow(Carbon::parse('2026-09-01 10:00:00', 'UTC'));
+        $rule = $this->rule('SHOOT_PAYMENT_REMINDER', ['client'], [
+            'reminder_days' => [1, 3, 7], 'repeat_after_day' => 7, 'repeat_every_days' => 7,
+        ]);
+        $shoot = Shoot::factory()->create([
+            'payment_status' => 'unpaid', 'total_quote' => 300, 'shoot_ready_notified_at' => now(),
+        ]);
+        $service = app(AutomationService::class);
+        $service->schedulePaymentReminders($shoot);
+        $obsolete = \App\Models\PaymentReminder::where('shoot_id', $shoot->id)
+            ->whereDate('scheduled_date', '2026-09-15')->firstOrFail();
+
+        $rule->update(['schedule_json' => [
+            'reminder_days' => [1, 3, 7], 'repeat_after_day' => 7, 'repeat_every_days' => 10,
+        ]]);
+        $service->schedulePaymentReminders($shoot);
+
+        $this->assertSame('cancelled', $obsolete->fresh()->status);
+        $this->assertSame('pending', \App\Models\PaymentReminder::where('shoot_id', $shoot->id)
+            ->whereDate('scheduled_date', '2026-09-18')->firstOrFail()->status);
     }
 
     private function recordSmsMessages(): void

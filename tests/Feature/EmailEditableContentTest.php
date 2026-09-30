@@ -58,7 +58,7 @@ class EmailEditableContentTest extends TestCase
             }
             $count++;
         }
-        $this->assertSame(37, $count);
+        $this->assertSame(38, $count);
     }
 
     public function test_existing_custom_body_stays_the_primary_editable_content(): void

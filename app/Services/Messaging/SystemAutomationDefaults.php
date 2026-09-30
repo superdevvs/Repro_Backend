@@ -277,8 +277,8 @@ class SystemAutomationDefaults
         return [
             [
                 'name' => 'Shoot Payment Reminder', 'description' => 'Follow up on unpaid delivered shoots using the saved email and SMS actions.',
-                'trigger_type' => 'SHOOT_PAYMENT_REMINDER', 'template_id' => MessageTemplate::where('slug', 'payment-due-reminder')->value('id'),
-                'schedule_json' => ['reminder_days' => [1, 3, 7, 14, 21, 28], 'monthly_day_of_week' => 0, 'time' => '09:00'],
+                'trigger_type' => 'SHOOT_PAYMENT_REMINDER', 'template_id' => MessageTemplate::where('slug', ShootPaymentReminderTemplate::SLUG)->value('id'),
+                'schedule_json' => ['reminder_days' => [1, 3, 7], 'repeat_after_day' => 7, 'repeat_every_days' => 7],
                 'recipients_json' => ['client'],
             ],
             [
@@ -328,6 +328,7 @@ class SystemAutomationDefaults
 
     private function ensureTemplates(): void
     {
+        ShootPaymentReminderTemplate::installMissing();
         if (\Illuminate\Support\Facades\Schema::hasColumn('message_templates', 'email_type')
             && \Illuminate\Support\Facades\Schema::hasColumn('message_templates', 'override_enabled')) {
             DirectEmailTemplates::installMissing();

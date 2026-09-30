@@ -71,6 +71,7 @@ class EmailTypeRegistry
             'SHOOT_REQUESTED' => new EmailTypeDefinition('SHOOT_REQUESTED', 1, 'booking', 'emails.shoot_requested', 'v1', $shoot, ['client', 'admin']),
             'SHOOT_CANCELLATION_REQUESTED' => new EmailTypeDefinition('SHOOT_CANCELLATION_REQUESTED', 1, 'booking', 'emails.shoot_cancellation_requested', 'v1', $shoot, ['client', 'photographer']),
             'SHOOT_DELIVERED' => new EmailTypeDefinition('SHOOT_DELIVERED', 1, 'delivery', 'emails.shoot_delivered', 'v1', $shoot, ['client']),
+            'SHOOT_SUMMARY' => new EmailTypeDefinition('SHOOT_SUMMARY', 1, 'delivery', 'emails.shoot_summary', 'v1', $shoot, ['client']),
             'PAYMENT_CONFIRMATION' => new EmailTypeDefinition('PAYMENT_CONFIRMATION', 1, 'payment', 'emails.payment_confirmation', 'v1', ['recipient', 'shoot', 'payment', 'branding', 'meta'], ['client']),
             'PAYMENT_COMPLETED' => new EmailTypeDefinition('PAYMENT_COMPLETED', 1, 'payment', 'emails.payment_completed', 'v1', $shoot, ['client']),
             'INVOICE_GENERATED' => new EmailTypeDefinition('INVOICE_GENERATED', 1, 'invoice', 'emails.invoice_generated', 'v1', $invoice, ['photographer', 'rep']),

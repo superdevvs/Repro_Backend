@@ -1,7 +1,9 @@
 @extends('emails.layouts.master')
 
-@section('title', 'Your Shoot Has Been Delivered')
-@section('preheader', 'Your shoot is complete and available to review or download in the dashboard.')
+@section('title', 'Your Photos Are Ready to Review')
+@section('preheader', !empty($paymentLink)
+    ? 'Your shoot is ready to review. Complete the remaining balance to unlock downloads.'
+    : 'Your shoot is ready to review in your dashboard.')
 
 @php
     // Scoped footer cleanup for the delivered email: present a single canonical
@@ -9,16 +11,27 @@
     // default ON in the shared layout, so every other template is unaffected.
     $showWebsiteTile = false;
     $showReviewTile = false;
+    $formattedBalance = $shoot->formatted_remaining_balance
+        ?? '$'.number_format((float) ($shoot->remaining_balance ?? 0), 2);
 @endphp
 
 @section('hero')
-    <p class="dark-muted" style="margin:0 0 12px; font-size:11px; line-height:1.4; letter-spacing:2px; text-transform:uppercase; color:#5d7493; font-weight:700;">Your Shoot Has Been Delivered</p>
-    <p class="hero-title-td dark-title" style="margin:0; font-size:30px; line-height:1.1; font-weight:300; letter-spacing:-1.2px; color:#10192f;">Your shoot has been delivered.</p>
-    <p class="dark-body" style="margin:20px 0 0; font-size:15px; line-height:1.8; color:#667a96;">Your shoot is now complete and available in the dashboard for review and download.</p>
+    <p class="dark-muted" style="margin:0 0 12px; font-size:11px; line-height:1.4; letter-spacing:2px; text-transform:uppercase; color:#5d7493; font-weight:700;">Photos Ready</p>
+    <p class="hero-title-td dark-title" style="margin:0; font-size:30px; line-height:1.1; font-weight:300; letter-spacing:-1.2px; color:#10192f;">Your shoot is ready to review.</p>
+    <p class="dark-body" style="margin:20px 0 0; font-size:15px; line-height:1.8; color:#667a96;">
+        @if(!empty($paymentLink))
+            Open the shoot in your dashboard. Complete the remaining balance to unlock your downloads and receive your Shoot Summary.
+        @else
+            Open the shoot in your dashboard to review your delivered files.
+        @endif
+    </p>
 @endsection
 
 @section('content')
-<p class="dark-body" style="margin:0 0 16px; font-size:16px; line-height:1.75; color:#2d4769;"><strong class="dark-strong" style="color:#071223;">Your shoot is complete and your delivered files are ready for review and download.</strong></p>
+<p class="dark-body" style="margin:0 0 16px; font-size:16px; line-height:1.75; color:#2d4769;"><strong class="dark-strong" style="color:#071223;">Your shoot is complete and ready to review.</strong></p>
+@if(!empty($paymentLink))
+    <p class="dark-body" style="margin:0 0 16px; font-size:15px; line-height:1.7; color:#2d4769;">Remaining balance: <strong>{{ $formattedBalance }}</strong></p>
+@endif
 
     <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:18px 0 8px;">
         <tr>
@@ -51,9 +64,9 @@
                 <p class="dark-heading" style="margin:0 0 8px; font-size:16px; line-height:1.4; color:#071223; font-weight:800;">What you can do now</p>
                 <p class="dark-body" style="margin:0; font-size:14px; line-height:1.7; color:#47627f;">
                     @if(!empty($paymentLink))
-                        Complete the remaining balance to unlock downloads and forwardable share links. You can sign in to your client account and open this shoot under Completed Shoots once paid.
+                        Pay the remaining balance to unlock your files. We will email your Shoot Summary with available download and tour links once payment is complete.
                     @else
-                        Use the forwardable share links below for MLS-size and full-size downloads, tours, and any video or Zillow links for this property. You can also sign in and open Completed Shoots.
+                        Open this shoot under Completed Shoots to review the delivered files.
                     @endif
                 </p>
             </td>
