@@ -19,6 +19,14 @@ class TelnyxSmsProvider implements SmsProviderInterface
      */
     public function send(SmsNumber $number, array $payload): string
     {
+        // Ops kill-switch: env TELNYX_SMS_PAUSED and/or Cache ops.telnyx_sms_paused.
+        // Keep paused after storms until an operator explicitly resumes; failed-run
+        // dedupe alone is not enough while rules are re-enabled mid-outage.
+        if (filter_var(config('services.telnyx.sms_paused', false), FILTER_VALIDATE_BOOLEAN)
+            || \Illuminate\Support\Facades\Cache::get('ops.telnyx_sms_paused') === true) {
+            throw new RuntimeException('Outbound Telnyx SMS paused by ops (ops.telnyx_sms_paused).');
+        }
+
         $to = $this->formatPhoneNumber((string) ($payload['to'] ?? ''));
         $body = trim((string) ($payload['text'] ?? $payload['body_text'] ?? ''));
 

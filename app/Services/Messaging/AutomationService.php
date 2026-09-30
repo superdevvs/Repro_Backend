@@ -887,8 +887,9 @@ class AutomationService
         $tag = $rule->trigger_type.':rule:'.$rule->id.':'.$identity.':'.$scheduledAt->copy()->utc()->toIso8601String();
         // Every message has its own recipient/channel dedupe key. Retry a partially failed
         // run without repeating deliveries that already succeeded.
+        // Any prior attempt for this key (including failed) blocks a re-dispatch so
+        // provider outages / region rejects cannot storm on the next scheduler tick.
         $done = \App\Models\AutomationRun::query()->where('automation_rule_id', $rule->id)
-            ->whereIn('status', ['completed', 'waiting'])
             ->where('context_json->schedule_dispatch_key', $tag)->exists();
         if ($done) {
             return;

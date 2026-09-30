@@ -291,11 +291,23 @@ class MessagingService
             ]);
         } catch (\Throwable $e) {
             // Defensive failure-write: never let recording the failure raise a new fatal error.
+            // Staff inbox reads error_message; keep it concise and actionable, raw provider
+            // text stays in metadata for support (Req: surface carrier failures in Messages).
             try {
+                $staffError = $this->staffFacingSmsError($e);
                 $message->update([
                     'status' => 'FAILED',
                     'failed_at' => now(),
-                    'error_message' => $e->getMessage(),
+                    'error_message' => $staffError,
+                    'hidden_from_inbox' => false,
+                    'metadata' => $this->mergeDeliveryMetadata($message->metadata, [
+                        'provider' => 'TELNYX',
+                        'status' => 'FAILED',
+                        'failed_at' => now()->toIso8601String(),
+                        'error' => $e->getMessage(),
+                        'error_class' => get_class($e),
+                        'staff_error' => $staffError,
+                    ]),
                 ]);
             } catch (\Throwable $writeError) {
                 Log::error('SMS failure-write failed; continuing with provider error', [
@@ -332,6 +344,36 @@ class MessagingService
         }
 
         return 'SMS could not be sent due to a provider error.';
+    }
+
+    /**
+     * Staff-facing Messages inbox copy for a failed outbound SMS.
+     * Prefer specific carrier/ops reasons over raw HTTP JSON dumps.
+     */
+    protected function staffFacingSmsError(\Throwable $e): string
+    {
+        $raw = $e->getMessage();
+        $lower = strtolower($raw);
+
+        if (str_contains($lower, 'ops.telnyx_sms_paused') || str_contains($lower, 'sms paused by ops')) {
+            return 'Outbound SMS paused by ops (TELNYX_SMS_PAUSED / ops.telnyx_sms_paused). Not retried.';
+        }
+
+        if (str_contains($lower, 'invalid destination region') || str_contains($lower, '40309')) {
+            return 'Telnyx rejected destination region (HTTP 409 / 40309). Fix number/region coverage; this attempt will not auto-retry.';
+        }
+
+        if (str_contains($lower, 'unverified') || str_contains($lower, 'not verified')
+            || str_contains($lower, 'toll-free') || str_contains($lower, '40300')) {
+            return 'Telnyx sending number is not verified. Verify the from-number; this attempt will not auto-retry.';
+        }
+
+        $compact = preg_replace('/\s+/', ' ', $raw) ?? $raw;
+        if (strlen($compact) > 280) {
+            $compact = substr($compact, 0, 277).'...';
+        }
+
+        return 'SMS send failed (not auto-retried): '.$compact;
     }
 
     public function listThreads(array $filters = []): Builder

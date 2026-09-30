@@ -152,6 +152,9 @@ return [
         'webhook_tolerance_seconds' => (int) env('TELNYX_WEBHOOK_TOLERANCE_SECONDS', 300),
 
         // AI SMS Agent (Phase B). All flags off-by-default; enable via env on rollout.
+        // Ops outbound SMS pause (2026-09-30 storm). Prefer Cache::forever('ops.telnyx_sms_paused', true)
+        // for immediate effect; env survives config:cache when read via this key.
+        'sms_paused' => env('TELNYX_SMS_PAUSED', false),
         'ai_sms_enabled' => env('TELNYX_AI_SMS_ENABLED', false),
         'ai_takeover_pause_minutes' => (int) env('TELNYX_AI_TAKEOVER_PAUSE_MINUTES', 120),
         'ai_session_idle_ttl_minutes' => (int) env('TELNYX_AI_SESSION_IDLE_TTL_MINUTES', 1440),

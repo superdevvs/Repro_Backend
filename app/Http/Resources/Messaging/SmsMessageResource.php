@@ -25,10 +25,12 @@ class SmsMessageResource extends JsonResource
             'body' => $this->body_text,
             'status' => $this->status,
             'sentAt' => optional($this->created_at)->toIso8601String(),
+            'failedAt' => optional($this->failed_at)->toIso8601String(),
+            'errorMessage' => $this->error_message,
+            'sendSource' => $this->send_source,
             'providerMessageId' => $this->provider_message_id,
             'aiGenerated' => (bool) ($metadata['ai_generated'] ?? false),
             'complianceKeyword' => $metadata['compliance_keyword'] ?? null,
         ];
     }
 }
-

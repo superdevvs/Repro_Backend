@@ -18,17 +18,19 @@ class MessagingOverviewController extends Controller
         $today = now()->startOfDay();
         $userId = (int) $request->user()->id;
 
-        $totalSentToday = Message::where('channel', 'EMAIL')
+        $totalSentToday = Message::whereIn('channel', ['EMAIL', 'SMS'])
             ->whereIn('status', ['SENT', 'DELIVERED'])
             ->whereDate('created_at', $today)
             ->count();
 
-        $totalFailedToday = Message::where('channel', 'EMAIL')
+        // Include SMS: carrier/region rejects must surface on the messaging dashboard
+        // (2026-09-30 property-contact storm left FAILED rows that email-only stats hid).
+        $totalFailedToday = Message::whereIn('channel', ['EMAIL', 'SMS'])
             ->where('status', 'FAILED')
             ->whereDate('created_at', $today)
             ->count();
 
-        $totalScheduled = Message::where('channel', 'EMAIL')
+        $totalScheduled = Message::whereIn('channel', ['EMAIL', 'SMS'])
             ->where('status', 'SCHEDULED')
             ->count();
 
@@ -41,9 +43,15 @@ class MessagingOverviewController extends Controller
             ->limit(10)
             ->get();
 
+        $smsFailedToday = Message::where('channel', 'SMS')
+            ->where('status', 'FAILED')
+            ->whereDate('created_at', $today)
+            ->count();
+
         return response()->json([
             'total_sent_today' => $totalSentToday,
             'total_failed_today' => $totalFailedToday,
+            'sms_failed_today' => $smsFailedToday,
             'total_scheduled' => $totalScheduled,
             // Legacy key kept for existing FE cards.
             'unread_sms_count' => $counts['sms'],

@@ -4,6 +4,7 @@ namespace App\Services\Messaging;
 
 use App\Models\AutomationRule;
 use App\Models\AutomationRun;
+use App\Models\Message;
 use Carbon\Carbon;
 
 /** Shared eligibility and deduplication for database-backed schedules. */
@@ -19,12 +20,31 @@ class ScheduledAutomationDispatcher
         return $now->format('H:i') >= $time;
     }
 
+    /**
+     * True when this schedule key was already attempted for the rule.
+     *
+     * Provider failures (Telnyx 403/409, paused SMS, etc.) must count: otherwise
+     * everyMinute / post-09:00 polling re-dispatches forever and storms recipients.
+     * Any prior AutomationRun for the key blocks a retry; a leftover outbound
+     * Message tagged with the same SCHEDULED_AUTOMATION identity is a second guard
+     * for runs that somehow never persisted.
+     */
     public function alreadyDispatched(AutomationRule $rule, string $key): bool
     {
-        return AutomationRun::query()
+        if (AutomationRun::query()
             ->where('automation_rule_id', $rule->id)
             ->where('context_json->schedule_dispatch_key', $key)
-            ->whereIn('status', ['completed', 'waiting', 'running'])
+            ->exists()) {
+            return true;
+        }
+
+        $tag = 'SCHEDULED_AUTOMATION:'.$rule->id.':'.$key;
+
+        return Message::query()
+            ->where(function ($query) use ($tag) {
+                $query->whereJsonContains('tags_json', $tag)
+                    ->orWhere('tags_json', 'like', '%'.$tag.'%');
+            })
             ->exists();
     }
 

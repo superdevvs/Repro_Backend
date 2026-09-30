@@ -28,10 +28,11 @@ return Application::configure(basePath: dirname(__DIR__))
         // Laravel 11 in this project boots schedules from the application builder.
         $schedule->command('automations:run-system')->everyMinute()->withoutOverlapping();
         $schedule->job(new DispatchScheduledMessages)->everyMinute();
-        $schedule->command('messaging:shoot-reminders')->everyMinute()->withoutOverlapping();
-        // The rules own the delivery times; these polling jobs only discover due work.
-        $schedule->command('messaging:property-contact-reminders')->everyMinute()->withoutOverlapping();
-        $schedule->command('messaging:invoice-reminders')->everyMinute()->withoutOverlapping();
+        // Cadence matches app/Console/Kernel.php. everyMinute + failed-run gaps
+        // previously re-fired property-contact SMS in a loop (2026-09-30 storm).
+        $schedule->command('messaging:shoot-reminders')->everyFiveMinutes()->withoutOverlapping();
+        $schedule->command('messaging:property-contact-reminders')->dailyAt('09:00')->withoutOverlapping();
+        $schedule->command('messaging:invoice-reminders')->dailyAt('09:30')->withoutOverlapping();
         $schedule->command('messaging:payment-reminders-sweep')->weeklyOn(1, '04:30')->withoutOverlapping();
         // Invoice summaries and payouts also run through automations:run-system;
         // their visible rules retain Monday 03:00 and Sunday 05:00 defaults.
