@@ -7,6 +7,7 @@ use App\Models\User;
 use App\Services\PhotographerAvailabilityService;
 use App\Services\AddressLookupService;
 use App\Services\Photographers\RadiusEligibility;
+use App\Services\Schedule\ScheduleInstantResolver;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -801,23 +802,34 @@ class PhotographerAvailabilityController extends Controller
         $photographerId = $validated['photographer_id'];
         $fromDate = \Carbon\Carbon::parse($validated['from_date']);
         $toDate = \Carbon\Carbon::parse($validated['to_date']);
+        $scheduleInstants = app(ScheduleInstantResolver::class);
 
-        // Get shoots (bookings) for this photographer within the date range
+        // UTC instants can fall on the neighboring date. Fetch candidates first,
+        // then apply the requested range to the photographer's local date.
         $shoots = \App\Models\Shoot::where('photographer_id', $photographerId)
             ->whereNotNull('scheduled_at')
-            ->whereDate('scheduled_at', '>=', $fromDate->toDateString())
-            ->whereDate('scheduled_at', '<=', $toDate->toDateString())
+            ->whereBetween('scheduled_at', [
+                $fromDate->copy()->subDay()->startOfDay(),
+                $toDate->copy()->addDay()->endOfDay(),
+            ])
             ->whereIn('status', [
                 \App\Services\ShootWorkflowService::STATUS_SCHEDULED,
                 \App\Services\ShootWorkflowService::STATUS_IN_PROGRESS,
                 \App\Services\ShootWorkflowService::STATUS_EDITING,
             ])
-            ->with(['client:id,name,email,phone', 'services:id,name,price'])
+            ->with(['client:id,name,email,phone', 'services:id,name,price', 'photographer:id,timezone'])
             ->orderBy('scheduled_at')
             ->get();
 
-        $bookedSlots = $shoots->map(function ($shoot) {
-            $scheduledAt = \Carbon\Carbon::parse($shoot->scheduled_at);
+        $bookedSlots = $shoots->map(function ($shoot) use ($scheduleInstants, $fromDate, $toDate) {
+            // Use the same storage policy as shoot details: explicit zones store
+            // instants; legacy records without a zone store the local clock.
+            $scheduledAt = $scheduleInstants->forShoot($shoot);
+            if (! $scheduledAt
+                || $scheduledAt->toDateString() < $fromDate->toDateString()
+                || $scheduledAt->toDateString() > $toDate->toDateString()) {
+                return null;
+            }
             $durationMinutes = $this->calculateShootDurationFromShoot($shoot);
             $endTime = $scheduledAt->copy()->addMinutes($durationMinutes);
 
@@ -850,7 +862,9 @@ class PhotographerAvailabilityController extends Controller
                     'duration_minutes' => $durationMinutes,
                 ],
             ];
-        });
+        })->filter()->sortBy([
+            ['date', 'asc'], ['start_time', 'asc'], ['shoot_id', 'asc'],
+        ])->values();
 
         return response()->json(['data' => $bookedSlots]);
     }
@@ -971,16 +985,25 @@ class PhotographerAvailabilityController extends Controller
                 ?? $metadata['zipcode']
                 ?? '';
 
-            // Get photographer's shoots on this date (to determine origin for distance)
-            $shootsOnDate = \App\Models\Shoot::where('photographer_id', $photographerId)
-                ->whereDate('scheduled_at', $date->toDateString())
+            // Get photographer's shoots on this local date (UTC storage can land on neighbor day)
+            $scheduleInstants = app(ScheduleInstantResolver::class);
+            $candidateShoots = \App\Models\Shoot::where('photographer_id', $photographerId)
                 ->whereNotNull('scheduled_at')
+                ->whereBetween('scheduled_at', [
+                    $date->copy()->subDay()->startOfDay(),
+                    $date->copy()->addDay()->endOfDay(),
+                ])
                 ->whereIn('status', [
                     \App\Services\ShootWorkflowService::STATUS_SCHEDULED,
                     \App\Services\ShootWorkflowService::STATUS_IN_PROGRESS,
                 ])
+                ->with(['services', 'photographer:id,timezone'])
                 ->orderBy('scheduled_at')
                 ->get();
+            $shootsOnDate = $candidateShoots->filter(function ($shoot) use ($scheduleInstants, $date) {
+                $local = $scheduleInstants->forShoot($shoot);
+                return $local && $local->toDateString() === $date->toDateString();
+            })->values();
 
             // Determine origin address for distance calculation
             $originAddress = $homeAddress;
@@ -1000,8 +1023,9 @@ class PhotographerAvailabilityController extends Controller
                     $requestedDateTime->setTime((int) $timeParts[1], (int) $timeParts[2]);
                 }
 
-                $shootsBefore = $shootsOnDate->filter(function ($shoot) use ($requestedDateTime) {
-                    $shootTime = \Carbon\Carbon::parse($shoot->scheduled_at);
+                $shootsBefore = $shootsOnDate->filter(function ($shoot) use ($requestedDateTime, $scheduleInstants) {
+                    $shootTime = $scheduleInstants->forShoot($shoot)
+                        ?? \Carbon\Carbon::parse($shoot->scheduled_at);
                     $duration = $this->calculateShootDurationFromShoot($shoot);
                     $shootEndTime = $shootTime->copy()->addMinutes($duration);
                     return $shootEndTime <= $requestedDateTime;
@@ -1144,9 +1168,10 @@ class PhotographerAvailabilityController extends Controller
                 ])->toArray(),
             ]);
 
-            // Get booked slots for this day
-            $bookedSlots = $shootsOnDate->map(function ($shoot) use ($includeSensitiveSlotFields) {
-                $scheduledAt = \Carbon\Carbon::parse($shoot->scheduled_at);
+            // Get booked slots for this day (local civil clocks via ScheduleInstantResolver)
+            $bookedSlots = $shootsOnDate->map(function ($shoot) use ($includeSensitiveSlotFields, $scheduleInstants) {
+                $scheduledAt = $scheduleInstants->forShoot($shoot)
+                    ?? \Carbon\Carbon::parse($shoot->scheduled_at);
                 $duration = $this->calculateShootDurationFromShoot($shoot);
                 $endTime = $scheduledAt->copy()->addMinutes($duration);
 

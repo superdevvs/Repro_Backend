@@ -111,8 +111,14 @@ class PhotographerAvailabilityService
      */
     protected function getBlockedTimes(int $photographerId, Carbon $date): array
     {
-        $shoots = Shoot::where('photographer_id', $photographerId)
-            ->whereDate('scheduled_at', $date->toDateString())
+        $resolver = app(ScheduleInstantResolver::class);
+        $dayStartUtc = $date->copy()->startOfDay()->subDay();
+        $dayEndUtc = $date->copy()->endOfDay()->addDay();
+        $targetDate = $date->toDateString();
+
+        $shoots = Shoot::with(['photographer', 'services'])
+            ->where('photographer_id', $photographerId)
+            ->whereBetween('scheduled_at', [$dayStartUtc->toDateTimeString(), $dayEndUtc->toDateTimeString()])
             ->whereIn('status', [
                 ShootWorkflowService::STATUS_SCHEDULED,
                 ShootWorkflowService::STATUS_IN_PROGRESS,
@@ -123,11 +129,14 @@ class PhotographerAvailabilityService
 
         $blocked = [];
         foreach ($shoots as $shoot) {
-            $scheduledAt = Carbon::parse($shoot->scheduled_at);
+            $scheduledAt = $resolver->forShoot($shoot);
+            if (! $scheduledAt || $scheduledAt->toDateString() !== $targetDate) {
+                continue;
+            }
             // Use actual shoot duration
             $durationMinutes = $this->calculateShootDuration($shoot);
             $endTime = $scheduledAt->copy()->addMinutes($durationMinutes);
-            
+
             $blocked[] = [
                 'start' => $scheduledAt->format('H:i'),
                 'end' => $endTime->format('H:i'),
@@ -135,9 +144,9 @@ class PhotographerAvailabilityService
             ];
         }
 
-        $serviceItems = ShootService::with(['shoot', 'service'])
+        $serviceItems = ShootService::with(['shoot.photographer', 'service', 'photographer'])
             ->where('photographer_id', $photographerId)
-            ->whereDate('scheduled_at', $date->toDateString())
+            ->whereBetween('scheduled_at', [$dayStartUtc->toDateTimeString(), $dayEndUtc->toDateTimeString()])
             ->whereIn('workflow_status', [
                 ShootService::WORKFLOW_SCHEDULED,
                 ShootService::WORKFLOW_IN_PROGRESS,
@@ -154,7 +163,14 @@ class PhotographerAvailabilityService
             ->get();
 
         foreach ($serviceItems as $item) {
-            $scheduledAt = Carbon::parse($item->scheduled_at);
+            $shoot = $item->shoot;
+            if (! $shoot) {
+                continue;
+            }
+            $scheduledAt = $resolver->forServiceItem($shoot, $item);
+            if (! $scheduledAt || $scheduledAt->toDateString() !== $targetDate) {
+                continue;
+            }
             $endTime = $scheduledAt->copy()->addMinutes($this->calculateServiceItemDuration($item));
 
             $blocked[] = [
@@ -175,8 +191,14 @@ class PhotographerAvailabilityService
      */
     public function getBookedSlots(int $photographerId, Carbon $date): array
     {
-        $shoots = Shoot::where('photographer_id', $photographerId)
-            ->whereDate('scheduled_at', $date->toDateString())
+        $resolver = app(ScheduleInstantResolver::class);
+        $dayStartUtc = $date->copy()->startOfDay()->subDay();
+        $dayEndUtc = $date->copy()->endOfDay()->addDay();
+        $targetDate = $date->toDateString();
+
+        $shoots = Shoot::with(['photographer', 'services'])
+            ->where('photographer_id', $photographerId)
+            ->whereBetween('scheduled_at', [$dayStartUtc->toDateTimeString(), $dayEndUtc->toDateTimeString()])
             ->whereIn('status', [
                 ShootWorkflowService::STATUS_SCHEDULED,
                 ShootWorkflowService::STATUS_IN_PROGRESS,
@@ -188,15 +210,18 @@ class PhotographerAvailabilityService
 
         $bookedSlots = [];
         foreach ($shoots as $shoot) {
-            $scheduledAt = Carbon::parse($shoot->scheduled_at);
+            $scheduledAt = $resolver->forShoot($shoot);
+            if (! $scheduledAt || $scheduledAt->toDateString() !== $targetDate) {
+                continue;
+            }
             $durationMinutes = $this->calculateShootDuration($shoot);
             $endTime = $scheduledAt->copy()->addMinutes($durationMinutes);
-            
+
             $bookedSlots[] = [
                 'id' => $shoot->id,
                 'photographer_id' => $photographerId,
-                'date' => $date->toDateString(),
-                'day_of_week' => strtolower($date->format('l')),
+                'date' => $targetDate,
+                'day_of_week' => strtolower($scheduledAt->format('l')),
                 'start_time' => $scheduledAt->format('H:i'),
                 'end_time' => $endTime->format('H:i'),
                 'status' => 'booked',
@@ -204,9 +229,9 @@ class PhotographerAvailabilityService
             ];
         }
 
-        $serviceItems = ShootService::with(['shoot', 'service'])
+        $serviceItems = ShootService::with(['shoot.photographer', 'service', 'photographer'])
             ->where('photographer_id', $photographerId)
-            ->whereDate('scheduled_at', $date->toDateString())
+            ->whereBetween('scheduled_at', [$dayStartUtc->toDateTimeString(), $dayEndUtc->toDateTimeString()])
             ->whereIn('workflow_status', [
                 ShootService::WORKFLOW_SCHEDULED,
                 ShootService::WORKFLOW_IN_PROGRESS,
@@ -224,14 +249,21 @@ class PhotographerAvailabilityService
             ->get();
 
         foreach ($serviceItems as $item) {
-            $scheduledAt = Carbon::parse($item->scheduled_at);
+            $shoot = $item->shoot;
+            if (! $shoot) {
+                continue;
+            }
+            $scheduledAt = $resolver->forServiceItem($shoot, $item);
+            if (! $scheduledAt || $scheduledAt->toDateString() !== $targetDate) {
+                continue;
+            }
             $endTime = $scheduledAt->copy()->addMinutes($this->calculateServiceItemDuration($item));
 
             $bookedSlots[] = [
                 'id' => 'service_item_' . $item->id,
                 'photographer_id' => $photographerId,
-                'date' => $date->toDateString(),
-                'day_of_week' => strtolower($date->format('l')),
+                'date' => $targetDate,
+                'day_of_week' => strtolower($scheduledAt->format('l')),
                 'start_time' => $scheduledAt->format('H:i'),
                 'end_time' => $endTime->format('H:i'),
                 'status' => 'booked',
