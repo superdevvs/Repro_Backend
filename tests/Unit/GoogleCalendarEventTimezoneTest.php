@@ -169,6 +169,7 @@ class GoogleCalendarEventTimezoneTest extends TestCase
         ]);
         $shoot->setRelation('services', new Collection());
         $shoot->setRelation('serviceItems', new Collection());
+        $shoot->setRelation('units', new Collection());
         $shoot->setRelation('client', new User(['name' => 'Test Client']));
         $shoot->syncOriginal();
 

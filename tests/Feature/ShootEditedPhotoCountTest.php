@@ -2,12 +2,14 @@
 
 namespace Tests\Feature;
 
+use App\Jobs\GenerateShootMediaArchiveJob;
 use App\Models\Service;
 use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Models\User;
 use App\Services\Shoots\ShootMediaMutationSupportService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Queue;
 use Tests\TestCase;
 
 class ShootEditedPhotoCountTest extends TestCase
@@ -21,6 +23,9 @@ class ShootEditedPhotoCountTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+
+        // These counter fixtures have metadata only; archive workers require real file bytes.
+        Queue::fake([GenerateShootMediaArchiveJob::class]);
 
         $this->admin = User::factory()->create(['role' => 'admin']);
         $this->client = User::factory()->create(['role' => 'client']);

@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Jobs\GenerateWatermarkedImageJob;
+use App\Jobs\GenerateShootShareLinkZipJob;
 use App\Jobs\ProcessImageJob;
 use App\Jobs\ScanShootFileJob;
 use App\Jobs\SyncShootFileToDropboxJob;
@@ -123,8 +124,20 @@ class DropboxRetirementMediaTest extends TestCase
         $shoot = Shoot::factory()->create();
         $file = app(ShootMediaStorageService::class)->uploadToTodo($shoot, UploadedFile::fake()->image('share.jpg'), $admin->id);
         $file->forceFill(['scan_status' => ShootFile::SCAN_STATUS_CLEAN])->save();
+        $other = app(ShootMediaStorageService::class)->uploadToTodo($shoot, UploadedFile::fake()->image('other.jpg'), $admin->id);
+        $other->forceFill(['scan_status' => ShootFile::SCAN_STATUS_CLEAN])->save();
         $result = app(ShootShareLinkService::class)->createShootShareLink($shoot, $admin, [$file->id]);
         $record = \App\Models\ShootShareLink::findOrFail($result['share_link_id']);
+        $this->assertSame('preparing', $result['type']);
+        $this->assertNull($record->dropbox_path);
+        $queued = null;
+        Queue::assertPushed(GenerateShootShareLinkZipJob::class, function (GenerateShootShareLinkZipJob $job) use (&$queued, $record, $file) {
+            $queued = $job;
+
+            return $job->shareLinkId === $record->id && $job->fileIds === [(int) $file->id];
+        });
+        $queued->handle(app(ShootShareLinkService::class), app(MediaStorage::class));
+        $record->refresh();
         $this->assertStringStartsWith('share-links/', $record->dropbox_path);
         Storage::disk('local')->assertExists($record->dropbox_path);
         $zip = new \ZipArchive;

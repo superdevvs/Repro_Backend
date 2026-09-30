@@ -773,8 +773,13 @@ class PhotographerAvailabilityService
             ->get();
 
         foreach ($conflictingShoots as $shoot) {
-            $shootStart = $resolver->forShoot($shoot)?->utc()
-                ?? Carbon::parse($shoot->scheduled_at)->utc();
+            // Requests without a timezone are submitted as local wall clocks.
+            // Compare them with unzoned stored bookings on that same clock; the
+            // photographer profile zone must not shift only the stored side.
+            $shootStart = ! $timezone && trim((string) $shoot->timezone) === ''
+                ? Carbon::instance($shoot->scheduled_at)->copy()->utc()
+                : ($resolver->forShoot($shoot)?->utc()
+                    ?? Carbon::parse($shoot->scheduled_at)->utc());
             $localDate = $shootStart->copy()->setTimezone($this->validTimezoneOrUtc($shoot->timezone ?: $timezone ?: $windowTz))->toDateString();
             if ($localDate !== $date->toDateString()) {
                 continue;
@@ -817,8 +822,10 @@ class PhotographerAvailabilityService
                 continue;
             }
 
-            $itemStart = $resolver->forServiceItem($shoot, $item)?->utc()
-                ?? Carbon::parse($item->scheduled_at)->utc();
+            $itemStart = ! $timezone && trim((string) $shoot->timezone) === ''
+                ? Carbon::instance($item->scheduled_at)->copy()->utc()
+                : ($resolver->forServiceItem($shoot, $item)?->utc()
+                    ?? Carbon::parse($item->scheduled_at)->utc());
             $localDate = $itemStart->copy()->setTimezone($this->validTimezoneOrUtc($shoot->timezone ?: $timezone ?: $windowTz))->toDateString();
             if ($localDate !== $date->toDateString()) {
                 continue;

@@ -263,7 +263,12 @@ class ScheduleShootAction
         $requestDate = $validated['scheduled_date'] ?? null;
         $requestTime = $validated['time'] ?? null;
         if (! empty($requestDate)) {
-            return new \DateTime(trim(sprintf('%s %s', $requestDate, $requestTime ?: '00:00:00')));
+            // Date/time form fields are local to the property. The service plan
+            // stores UTC instants, so resolve the zone before deriving its time.
+            return (new \DateTime(
+                trim(sprintf('%s %s', $requestDate, $requestTime ?: '00:00:00')),
+                new \DateTimeZone($shoot->timezone ?: config('app.timezone', 'UTC'))
+            ))->setTimezone(new \DateTimeZone('UTC'));
         }
 
         if ($shoot->scheduled_at) {
@@ -274,7 +279,10 @@ class ScheduleShootAction
         if (! empty($existingDate)) {
             $existingTime = $requestTime ?: ($shoot->time ?: '00:00:00');
 
-            return new \DateTime(trim(sprintf('%s %s', $existingDate, $existingTime)));
+            return (new \DateTime(
+                trim(sprintf('%s %s', $existingDate, $existingTime)),
+                new \DateTimeZone($shoot->timezone ?: config('app.timezone', 'UTC'))
+            ))->setTimezone(new \DateTimeZone('UTC'));
         }
 
         throw ValidationException::withMessages([

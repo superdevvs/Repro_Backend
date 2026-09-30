@@ -12,9 +12,9 @@ use App\Services\ShootActivityLogger;
 use App\Services\Shoots\ShootAuthorizationSupport;
 use App\Services\Shoots\ShootEditingAssignmentService;
 use App\Services\Shoots\ShootEditorDownloadService;
+use App\Services\Shoots\ShootFileAccessService;
+use App\Services\Shoots\ShootMediaArchiveService;
 use App\Services\Shoots\ShootShareLinkService;
-use Illuminate\Database\Eloquent\Collection;
-use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Http\Request;
 use Illuminate\Pagination\LengthAwarePaginator;
 use Mockery;
@@ -88,15 +88,10 @@ class StoredDeliveryErrorSecurityTest extends TestCase
 
     public function test_editor_zip_catch_returns_safe_json_instead_of_storage_or_provider_diagnostics(): void
     {
-        $file = Mockery::mock(ShootFile::class)->makePartial();
-        $file->shouldReceive('isRequiredForEditing')->once()->andReturnTrue();
-        $file->shouldReceive('isBlockedFromDelivery')->once()->andReturnFalse();
-        $relation = Mockery::mock(HasMany::class);
-        $relation->shouldReceive('where')->once()->with('workflow_stage', ShootFile::STAGE_TODO)->andReturnSelf();
-        $relation->shouldReceive('get')->once()->andReturn(new Collection([$file]));
-        $shoot = Mockery::mock(Shoot::class)->makePartial();
+        $file = new ShootFile();
+        $file->id = 912005;
+        $shoot = new Shoot();
         $shoot->id = 912003;
-        $shoot->shouldReceive('files')->once()->andReturn($relation);
         $user = new User(['name' => 'Synthetic Admin', 'role' => 'admin']);
         $user->id = 912004;
         $dropbox = Mockery::mock(ShootMediaStorageService::class);
@@ -105,8 +100,19 @@ class StoredDeliveryErrorSecurityTest extends TestCase
         $authorization = Mockery::mock(ShootAuthorizationSupport::class);
         $authorization->shouldReceive('hasRole')->once()->with($user, ['editor'])->andReturnFalse();
         $share = Mockery::mock(ShootShareLinkService::class);
-        $share->shouldReceive('generateFilesZip')->once()->andThrow(new \RuntimeException(self::CANARY));
-        $service = new ShootEditorDownloadService($dropbox, $activity, $authorization, $share, Mockery::mock(ShootEditingAssignmentService::class), new \App\Services\Shoots\ShootArchiveFilenameFormatter());
+        $archives = Mockery::mock(ShootMediaArchiveService::class);
+        $archives->shouldReceive('getFilesForType')->once()->with($shoot, 'raw')->andReturn(collect([$file]));
+        $archives->shouldReceive('resolveArchiveResponseData')->once()->andThrow(new \Exception(self::CANARY));
+        $service = new ShootEditorDownloadService(
+            $dropbox,
+            $activity,
+            $authorization,
+            $share,
+            Mockery::mock(ShootEditingAssignmentService::class),
+            new \App\Services\Shoots\ShootArchiveFilenameFormatter(),
+            $archives,
+            Mockery::mock(ShootFileAccessService::class)
+        );
 
         $response = $service->downloadRaw(Request::create('/api/shoots/912003/editor-download/raw'), $shoot, $user);
         $this->assertSame(500, $response->getStatusCode());

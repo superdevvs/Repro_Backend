@@ -2,11 +2,13 @@
 
 namespace Tests\Feature;
 
+use App\Jobs\GenerateShootShareLinkZipJob;
 use App\Jobs\ScanShootFileJob;
 use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Models\ShootShareLink;
 use App\Models\User;
+use App\Services\Media\MediaStorage;
 use App\Services\ShootMediaStorageService;
 use App\Services\Shoots\ShootShareLinkService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -96,6 +98,7 @@ class ShootMediaPublicDiskAccessTest extends TestCase
 
     public function test_revoked_and_expired_share_links_cannot_fetch_zip_bytes(): void
     {
+        Queue::fake([ScanShootFileJob::class, GenerateShootShareLinkZipJob::class]);
         $editor = User::factory()->create(['role' => 'editor']);
         $shoot = Shoot::factory()->create([
             'editor_id' => $editor->id,
@@ -107,16 +110,32 @@ class ShootMediaPublicDiskAccessTest extends TestCase
         ]);
         $path = "shoots/{$shoot->id}/todo/raw.jpg";
         Storage::disk('local')->put($path, 'raw-share-bytes');
-        $this->createShootFile($shoot, $path, [
+        $file = $this->createShootFile($shoot, $path, [
             'filename' => 'raw.jpg',
             'stored_filename' => 'raw.jpg',
             'media_type' => 'raw',
             'workflow_stage' => ShootFile::STAGE_TODO,
         ]);
+        $otherPath = "shoots/{$shoot->id}/todo/other.jpg";
+        Storage::disk('local')->put($otherPath, 'other-raw-bytes');
+        $this->createShootFile($shoot, $otherPath, [
+            'media_type' => 'raw',
+            'workflow_stage' => ShootFile::STAGE_TODO,
+        ]);
 
         Sanctum::actingAs($editor);
-        $created = app(ShootShareLinkService::class)->createShootShareLink($shoot, $editor);
+        $created = app(ShootShareLinkService::class)->createShootShareLink($shoot, $editor, [$file->id]);
         $link = ShootShareLink::query()->findOrFail($created['share_link_id']);
+        $this->assertSame('preparing', $created['type']);
+        $this->assertNull($link->dropbox_path);
+        $queued = null;
+        Queue::assertPushed(GenerateShootShareLinkZipJob::class, function (GenerateShootShareLinkZipJob $job) use (&$queued, $link, $file) {
+            $queued = $job;
+
+            return $job->shareLinkId === $link->id && $job->fileIds === [(int) $file->id];
+        });
+        $queued->handle(app(ShootShareLinkService::class), app(MediaStorage::class));
+        $link->refresh();
 
         Storage::disk('public')->assertMissing($link->dropbox_path);
         Storage::disk('local')->assertExists($link->dropbox_path);
@@ -126,8 +145,11 @@ class ShootMediaPublicDiskAccessTest extends TestCase
         $this->assertStringNotContainsString('PK', $alias->getContent());
 
         $valid = $this->get("/api/public/share-links/{$link->public_token}/download");
-        $valid->assertOk();
-        $this->assertStringContainsString('zip', strtolower((string) $valid->headers->get('content-type')));
+        $valid->assertRedirect();
+        $signedDownload = (string) $valid->headers->get('Location');
+        $this->assertStringContainsString('/api/public/shoot-media/file/share-links/', $signedDownload);
+        $signedResponse = $this->get($signedDownload)->assertOk();
+        $this->assertSame(Storage::disk('local')->get($link->dropbox_path), $signedResponse->streamedContent());
 
         $link->revoke($editor->id);
         $this->getJson("/api/public/share-links/{$link->public_token}/download")

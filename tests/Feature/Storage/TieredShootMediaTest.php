@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Storage;
 
+use App\Jobs\GenerateShootShareLinkZipJob;
 use App\Jobs\ProcessImageJob;
 use App\Jobs\ScanShootFileJob;
 use App\Models\Shoot;
@@ -96,6 +97,9 @@ class TieredShootMediaTest extends TestCase
         $path = "shoots/{$shoot->id}/todo/raw.jpg";
         Storage::disk('media_originals')->put($path, 'hdd-original-bytes');
         $file = $this->createFile($shoot, $owner, $path, ['media_type' => 'raw', 'workflow_stage' => ShootFile::STAGE_TODO]);
+        $otherPath = "shoots/{$shoot->id}/todo/other.jpg";
+        Storage::disk('media_originals')->put($otherPath, 'other-hdd-bytes');
+        $this->createFile($shoot, $owner, $otherPath, ['media_type' => 'raw', 'workflow_stage' => ShootFile::STAGE_TODO]);
 
         $archives = app(ShootMediaArchiveService::class);
         $archives->generateArchive($shoot, 'raw', 'original');
@@ -104,15 +108,30 @@ class TieredShootMediaTest extends TestCase
         Storage::disk('local')->assertMissing($archiveKey);
         $zip = new ZipArchive;
         $this->assertTrue($zip->open(Storage::disk('media_originals')->path($archiveKey)));
-        $this->assertSame('hdd-original-bytes', $zip->getFromIndex(0));
+        $this->assertContains('hdd-original-bytes', [$zip->getFromIndex(0), $zip->getFromIndex(1)]);
         $zip->close();
 
         $created = app(ShootShareLinkService::class)->createShootShareLink($shoot, $owner, [$file->id]);
         $link = ShootShareLink::findOrFail($created['share_link_id']);
+        $this->assertSame('preparing', $created['type']);
+        $this->assertNull($link->dropbox_path);
+        $queued = null;
+        Queue::assertPushed(GenerateShootShareLinkZipJob::class, function (GenerateShootShareLinkZipJob $job) use (&$queued, $link, $file) {
+            $queued = $job;
+
+            return $job->shareLinkId === $link->id && $job->fileIds === [(int) $file->id];
+        });
+        $queued->handle(app(ShootShareLinkService::class), app(MediaStorage::class));
+        $link->refresh();
         Storage::disk('media_originals')->assertExists($link->dropbox_path);
         Storage::disk('local')->assertMissing($link->dropbox_path);
-        $response = $this->get("/api/public/share-links/{$link->public_token}/download")->assertOk();
-        $this->assertSame(Storage::disk('media_originals')->get($link->dropbox_path), $response->streamedContent());
+        $response = $this->get("/api/public/share-links/{$link->public_token}/download")->assertRedirect();
+        $signedDownload = (string) $response->headers->get('Location');
+        $this->assertStringContainsString('/api/public/shoot-media/file/share-links/', $signedDownload);
+        $this->assertSame(
+            Storage::disk('media_originals')->get($link->dropbox_path),
+            $this->get($signedDownload)->assertOk()->streamedContent()
+        );
         $link->revoke($owner->id);
         $this->get("/api/public/share-links/{$link->public_token}/download")->assertStatus(410);
     }

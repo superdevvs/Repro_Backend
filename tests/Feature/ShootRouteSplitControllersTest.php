@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Jobs\GenerateShootMediaArchiveJob;
 use App\Models\Payment;
 use App\Models\PublicPaymentAccessToken;
 use App\Models\Service;
@@ -9,7 +10,9 @@ use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Models\ShootShareLink;
 use App\Models\User;
+use App\Services\Shoots\ShootMediaArchiveService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Storage;
 use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
@@ -390,6 +393,9 @@ class ShootRouteSplitControllersTest extends TestCase
     #[\PHPUnit\Framework\Attributes\Test]
     public function editor_download_raw_route_uses_local_zip_fallback_when_realtime_storage_is_unavailable(): void
     {
+        Storage::fake('public');
+        Storage::fake('local');
+        Queue::fake([GenerateShootMediaArchiveJob::class]);
         Storage::disk('public')->put('shoots/123/todo/raw-test.jpg', 'raw-image');
         config()->set('services.dropbox.enabled', false);
         config()->set('services.dropbox.access_token', null);
@@ -427,9 +433,34 @@ class ShootRouteSplitControllersTest extends TestCase
             ->withHeaders(['Origin' => 'https://reprodashboard.com'])
             ->get("/api/shoots/{$shoot->id}/editor-download-raw");
 
-        $response->assertOk();
-        $this->assertStringContainsString('310-route-split-lane-baltimore-md-21201-raw-files.zip', $response->headers->get('content-disposition', ''));
+        $response->assertStatus(202)->assertJsonPath('type', 'preparing');
         $response->assertHeader('Access-Control-Allow-Origin', 'https://reprodashboard.com');
+
+        $queued = null;
+        Queue::assertPushed(GenerateShootMediaArchiveJob::class, function (GenerateShootMediaArchiveJob $job) use (&$queued, $shoot) {
+            if ($job->shootId !== $shoot->id || $job->type !== 'raw' || $job->size !== 'original') {
+                return false;
+            }
+
+            $queued = $job;
+
+            return true;
+        });
+        $queued->handle(app(ShootMediaArchiveService::class));
+
+        $archivePath = app(ShootMediaArchiveService::class)->getArchivePath($shoot, 'raw', 'original');
+        Storage::disk('local')->assertExists($archivePath);
+        $this->assertStringContainsString('310-route-split-lane-baltimore-md-21201', $archivePath);
+        $zip = new \ZipArchive;
+        $this->assertTrue($zip->open(Storage::disk('local')->path($archivePath)));
+        $this->assertSame('raw-image', $zip->getFromIndex(0));
+        $zip->close();
+
+        $this->withHeaders(['Origin' => 'https://reprodashboard.com'])
+            ->get("/api/shoots/{$shoot->id}/editor-download-raw")
+            ->assertOk()
+            ->assertJsonPath('type', 'redirect')
+            ->assertHeader('Access-Control-Allow-Origin', 'https://reprodashboard.com');
     }
 
     #[\PHPUnit\Framework\Attributes\Test]

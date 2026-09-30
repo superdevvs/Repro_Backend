@@ -1028,8 +1028,12 @@ class PhotographerAvailabilityController extends Controller
                         ?? \Carbon\Carbon::parse($shoot->scheduled_at);
                     $duration = $this->calculateShootDurationFromShoot($shoot);
                     $shootEndTime = $shootTime->copy()->addMinutes($duration);
-                    return $shootEndTime <= $requestedDateTime;
-                })->sortByDesc('scheduled_at');
+                    // Both values represent the selected local civil clock. Comparing
+                    // Carbon instances as instants would turn a 9 AM legacy booking
+                    // in the photographer's zone into a later UTC time than a 1 PM
+                    // booking request without an explicit timezone.
+                    return $shootEndTime->format('Y-m-d H:i:s') <= $requestedDateTime->format('Y-m-d H:i:s');
+                })->sortByDesc(fn ($shoot) => $scheduleInstants->forShoot($shoot)?->format('Y-m-d H:i:s'));
 
                 if ($shootsBefore->isNotEmpty()) {
                     $lastShoot = $shootsBefore->first();

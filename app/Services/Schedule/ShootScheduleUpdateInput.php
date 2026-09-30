@@ -214,22 +214,17 @@ class ShootScheduleUpdateInput
                 return $row;
             })->values()->all();
         } else {
-            $seen = [];
+            // An explicit services array is the desired complete service set.
+            // Align retained lines without restoring intentionally removed ones;
+            // the service-change guard must still see and confirm each removal.
             foreach ($payload['services'] as $index => $row) {
                 if (! is_array($row)) {
                     continue;
                 }
                 $id = (int) ($row['id'] ?? $row['service_id'] ?? 0);
-                $seen[$id] = true;
                 if ($id > 0 && isset($alignedByService[$id]) && empty($explicitByService[$id])) {
                     $payload['services'][$index]['scheduled_at'] = $alignedByService[$id];
                 }
-            }
-            foreach ($alignedByService as $id => $iso) {
-                if (! empty($seen[$id]) || ! empty($explicitByService[$id])) {
-                    continue;
-                }
-                $payload['services'][] = ['id' => $id, 'scheduled_at' => $iso];
             }
         }
 

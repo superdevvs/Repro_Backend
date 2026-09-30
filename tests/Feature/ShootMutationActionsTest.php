@@ -358,7 +358,9 @@ class ShootMutationActionsTest extends TestCase
         $this->assertSame(Shoot::STATUS_SCHEDULED, $shoot->workflow_status);
         $this->assertSame($scheduledDay, $shoot->scheduled_date?->toDateString());
         $this->assertSame('11:30', $shoot->time);
-        $this->assertNotNull($shoot->scheduled_at);
+        $expectedInstant = \Carbon\Carbon::parse($scheduledDay.' 11:30', 'America/New_York')->utc();
+        $this->assertTrue($expectedInstant->equalTo($shoot->scheduled_at));
+        $this->assertTrue($expectedInstant->equalTo($shoot->serviceItems()->firstOrFail()->scheduled_at));
         $this->assertDatabaseHas('shoot_activity_logs', [
             'shoot_id' => $shoot->id,
             'action' => 'shoot_resumed_from_hold',
