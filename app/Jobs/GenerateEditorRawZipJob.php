@@ -56,11 +56,14 @@ class GenerateEditorRawZipJob implements ShouldQueue
                 'shoot_id' => $this->shootId,
                 'user_id' => $this->userId,
             ]);
+            Cache::forget($this->lockKey);
 
             return;
         }
 
         if ($media->exists($this->storagePath)) {
+            Cache::forget($this->lockKey);
+
             return;
         }
 
@@ -81,6 +84,7 @@ class GenerateEditorRawZipJob implements ShouldQueue
                 'shoot_id' => $this->shootId,
                 'user_id' => $this->userId,
             ]);
+            Cache::forget($this->lockKey);
 
             return;
         }

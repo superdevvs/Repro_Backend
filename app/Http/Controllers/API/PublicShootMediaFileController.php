@@ -15,7 +15,11 @@ class PublicShootMediaFileController extends Controller
         if ($key === null
             || str_contains($key, '..')
             || str_contains($key, '\\')
-            || ! str_starts_with($key, 'shoots/')) {
+            || ! (
+                str_starts_with($key, 'shoots/')
+                || str_starts_with($key, 'share-links/')
+                || str_starts_with($key, 'editor-downloads/')
+            )) {
             abort(404);
         }
 

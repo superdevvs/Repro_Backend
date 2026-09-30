@@ -566,7 +566,8 @@ class MediaStorage
         if (preg_match('#^https?://#i', $path) === 1) {
             $pathname = parse_url($path, PHP_URL_PATH) ?: '';
             if (str_starts_with($pathname, '/storage/shoots/')
-                || str_starts_with($pathname, '/storage/share-links/')) {
+                || str_starts_with($pathname, '/storage/share-links/')
+                || str_starts_with($pathname, '/storage/editor-downloads/')) {
                 return $this->publicUrl(ltrim(substr($pathname, strlen('/storage/')), '/'));
             }
 
@@ -578,7 +579,9 @@ class MediaStorage
             return null;
         }
 
-        if (str_starts_with($key, 'shoots/') || str_starts_with($key, 'share-links/')) {
+        if (str_starts_with($key, 'shoots/')
+            || str_starts_with($key, 'share-links/')
+            || str_starts_with($key, 'editor-downloads/')) {
             return $this->publicUrl($key);
         }
 
@@ -615,6 +618,20 @@ class MediaStorage
         }
 
         $mime = $mimeType ?: ($headers['Content-Type'] ?? $this->responseMimeType($disk, $key));
+
+        // Advertise Content-Length when the backing store can report size so
+        // browsers/Cloudflare can stream multi-GB archives without hanging on
+        // chunked responses with an unknown length.
+        if (! array_key_exists('Content-Length', $headers)) {
+            try {
+                $size = $disk->size($key);
+                if (is_numeric($size) && (int) $size >= 0) {
+                    $headers['Content-Length'] = (string) (int) $size;
+                }
+            } catch (\Throwable) {
+                // Size is optional; stream without it when the driver cannot report.
+            }
+        }
 
         return response()->stream(function () use ($disk, $key) {
             $stream = $disk->readStream($key);

@@ -73,4 +73,21 @@ class MediaUrlGenerationTest extends TestCase
         $this->assertStringNotContainsString('/storage/shoots/', $url);
         $this->assertNull($media->servingUrl('avatars/logo.png'));
     }
+
+    public function test_serving_url_covers_editor_download_archives(): void
+    {
+        config()->set('media.read_from_r2', false);
+        config()->set('media.r2_only', false);
+
+        $media = new MediaStorage();
+        $url = $media->servingUrl('editor-downloads/145/abc123.zip');
+
+        $this->assertNotNull($url);
+        $this->assertStringContainsString('/api/public/shoot-media/file/editor-downloads/145/abc123.zip', $url);
+        $this->assertStringContainsString('signature=', $url);
+        $this->assertStringNotContainsString('/storage/editor-downloads/', $url);
+
+        $rewritten = $media->servingUrl('https://reprodashboard.com/storage/editor-downloads/145/abc123.zip');
+        $this->assertStringContainsString('/api/public/shoot-media/file/editor-downloads/145/abc123.zip', $rewritten);
+    }
 }
