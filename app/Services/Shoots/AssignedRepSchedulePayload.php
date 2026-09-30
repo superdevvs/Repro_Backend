@@ -8,14 +8,36 @@ use App\Models\Shoot;
 /** Accept Overview form context; allow bookable service plan edits for assigned reps. */
 class AssignedRepSchedulePayload
 {
+    /** FE Overview / modal-save echo keys that must not block schedule or photographer edits. */
+    private const SERVICE_ECHO_KEYS = [
+        'photographer_id',
+        'editor_id',
+        'is_deliverable',
+        'workflow_status',
+        'delivery_status',
+        'name',
+        'service_name',
+        'force_unlock_delivery',
+        'unlock_reason',
+    ];
+
     public function normalize(Shoot $shoot, array $payload): array
     {
         // photographer_id is intentionally editable for assigned reps (product decision).
         foreach (['address', 'city', 'state', 'zip', 'client_id', 'timezone'] as $field) {
-            if (array_key_exists($field, $payload)) {
-                abort_unless($this->sameValue($payload[$field], $shoot->{$field}), 403, 'Forbidden');
-                unset($payload[$field]);
+            if (! array_key_exists($field, $payload)) {
+                continue;
             }
+            // Overview occasionally re-echoes null/'' for timezone while the shoot has a
+            // stored zone — treat empty as unchanged context, not a clear attempt.
+            if ($field === 'timezone'
+                && ($payload[$field] === null || $payload[$field] === '')
+                && filled($shoot->timezone)) {
+                unset($payload[$field]);
+                continue;
+            }
+            abort_unless($this->sameValue($payload[$field], $shoot->{$field}), 403, 'Forbidden');
+            unset($payload[$field]);
         }
 
         $details = $shoot->property_details ?? [];
@@ -46,8 +68,18 @@ class AssignedRepSchedulePayload
                 'accessContactPhone' => $presence === 'other' ? ($details['accessContactPhone'] ?? null) : null,
             ]);
             foreach ($payload['property_details'] as $field => $value) {
-                abort_unless(array_key_exists($field, $expected)
-                    && $this->sameValue($value, $expected[$field]), 403, 'Forbidden');
+                // Overview re-echoes listing metadata (completeAddress, livingArea, …)
+                // that is not part of the sales-rep editable contract. Strip unknown
+                // keys instead of 403ing an otherwise valid photographer/schedule save.
+                if (! array_key_exists($field, $expected)) {
+                    continue;
+                }
+                $incoming = $value;
+                if ($field === 'presenceOption') {
+                    // FE often sends null before the picker defaults; treat as 'self'.
+                    $incoming = in_array($value, ['lockbox', 'other'], true) ? $value : 'self';
+                }
+                abort_unless($this->sameValue($incoming, $expected[$field]), 403, 'Forbidden');
             }
             unset($payload['property_details']);
         }
@@ -55,6 +87,7 @@ class AssignedRepSchedulePayload
         $items = $shoot->serviceItems()->get();
         $byService = $items->keyBy('service_id');
         $incomingServiceIds = [];
+        $liftedPhotographers = [];
 
         foreach (['services' => 'id', 'service_items' => 'service_id'] as $field => $idKey) {
             if (! array_key_exists($field, $payload)) {
@@ -68,6 +101,20 @@ class AssignedRepSchedulePayload
                 abort_unless($serviceId > 0 && ! isset($seen[$serviceId]), 403, 'Duplicate or invalid service id in plan.');
                 $seen[$serviceId] = true;
                 $incomingServiceIds[$serviceId] = true;
+
+                // Overview / modal-save often puts photographer_id on the services row.
+                // Lift it into service_photographers so reassignment still applies, then
+                // strip other known FE echo keys before the schedule/pricing allow-list.
+                if (array_key_exists('photographer_id', $row)) {
+                    $liftedPhotographers[$serviceId] = [
+                        'service_id' => $serviceId,
+                        'photographer_id' => $row['photographer_id'],
+                    ];
+                }
+                foreach (self::SERVICE_ECHO_KEYS as $echoKey) {
+                    unset($row[$echoKey]);
+                }
+
                 abort_unless(array_diff(array_keys($row), [$idKey, 'scheduled_at', 'price', 'quantity', 'photographer_pay']) === [], 403, 'Service lines may only include schedule and pricing context fields.');
 
                 $item = $byService->get($serviceId);
@@ -91,6 +138,24 @@ class AssignedRepSchedulePayload
                 unset($row['price'], $row['photographer_pay']);
             }
             unset($row);
+        }
+
+        if ($liftedPhotographers !== []) {
+            $existingByService = [];
+            foreach ($payload['service_photographers'] ?? [] as $row) {
+                if (is_array($row) && isset($row['service_id']) && is_scalar($row['service_id'])) {
+                    $existingByService[(int) $row['service_id']] = true;
+                }
+            }
+            if (! isset($payload['service_photographers']) || ! is_array($payload['service_photographers'])) {
+                $payload['service_photographers'] = [];
+            }
+            foreach ($liftedPhotographers as $serviceId => $row) {
+                // Explicit service_photographers wins when both shapes are present.
+                if (! isset($existingByService[$serviceId])) {
+                    $payload['service_photographers'][] = $row;
+                }
+            }
         }
 
         if (array_key_exists('service_photographers', $payload)) {

@@ -157,8 +157,7 @@ class AssignedRepSchedulePayloadTest extends TestCase
             'property' => $payload['property_details']['beds'] = 9,
             'unknown_service' => $payload['services'][0]['id'] = 999999,
             'duplicate_service' => $payload['services'][] = $payload['services'][0],
-            'unknown_service_field' => $payload['services'][0]['editor_id'] = 999999,
-            'unknown_property_field' => $payload['property_details']['privateAdminFlag'] = true,
+            'unknown_service_field' => $payload['services'][0]['admin_override_price'] = 1,
         };
         try {
             app(AssignedRepSchedulePayload::class)->normalize($shoot, $payload);
@@ -172,7 +171,7 @@ class AssignedRepSchedulePayloadTest extends TestCase
     {
         return array_map(fn ($change) => [$change], [
             'address', 'client', 'property',
-            'unknown_service', 'duplicate_service', 'unknown_service_field', 'unknown_property_field',
+            'unknown_service', 'duplicate_service', 'unknown_service_field',
         ]);
     }
 
@@ -209,7 +208,7 @@ class AssignedRepSchedulePayloadTest extends TestCase
         }
     }
 
-        public function test_existing_line_price_qty_pay_echoes_are_stripped_even_when_they_drift(): void
+    public function test_existing_line_price_qty_pay_echoes_are_stripped_even_when_they_drift(): void
     {
         [$shoot, $payload, $existing] = $this->fixture();
         // Simulate a legacy booked price that no longer matches catalog / FE echo.
@@ -252,4 +251,70 @@ class AssignedRepSchedulePayloadTest extends TestCase
         $this->assertArrayNotHasKey('photographer_pay', $normalized['services'][0]);
         $this->assertSame(275.0, (float) $shoot->fresh()->serviceItems()->where('service_id', $existing->id)->value('price'));
     }
+
+    public function test_services_row_photographer_id_is_lifted_into_service_photographers(): void
+    {
+        [$shoot, $payload, $existing] = $this->fixture();
+        unset($payload['service_photographers']);
+        $payload['photographer_id'] = 424242;
+        $payload['services'][0]['photographer_id'] = 424242;
+        $payload['services'][0]['editor_id'] = 999;
+        $payload['services'][0]['is_deliverable'] = true;
+
+        $normalized = app(AssignedRepSchedulePayload::class)->normalize($shoot, $payload);
+
+        $this->assertSame(424242, $normalized['photographer_id']);
+        $this->assertSame([
+            ['service_id' => $existing->id, 'photographer_id' => 424242],
+        ], $normalized['service_photographers']);
+        $this->assertSame(
+            [['id' => $existing->id, 'scheduled_at' => '2026-10-05 11:00:00']],
+            $normalized['services']
+        );
+    }
+
+    public function test_explicit_service_photographers_wins_over_services_row_photographer_id(): void
+    {
+        [$shoot, $payload, $existing] = $this->fixture();
+        $payload['services'][0]['photographer_id'] = 111;
+        $payload['service_photographers'] = [[
+            'service_id' => $existing->id,
+            'photographer_id' => 222,
+        ]];
+
+        $normalized = app(AssignedRepSchedulePayload::class)->normalize($shoot, $payload);
+
+        $this->assertSame([
+            ['service_id' => $existing->id, 'photographer_id' => 222],
+        ], $normalized['service_photographers']);
+    }
+
+    public function test_overview_property_details_echo_keys_and_null_presence_are_tolerated(): void
+    {
+        [$shoot, $payload] = $this->fixture();
+        $payload['property_details']['completeAddress'] = $shoot->address;
+        $payload['property_details']['livingArea'] = 1500;
+        $payload['property_details']['presenceOption'] = null;
+        $payload['timezone'] = null;
+
+        $normalized = app(AssignedRepSchedulePayload::class)->normalize($shoot, $payload);
+
+        $this->assertArrayNotHasKey('property_details', $normalized);
+        $this->assertArrayNotHasKey('timezone', $normalized);
+        $this->assertSame('2026-10-05', $normalized['scheduled_date']);
+    }
+
+    public function test_real_property_details_change_still_forbidden(): void
+    {
+        [$shoot, $payload] = $this->fixture();
+        $payload['property_details']['beds'] = 9;
+
+        try {
+            app(AssignedRepSchedulePayload::class)->normalize($shoot, $payload);
+            $this->fail('Real property metric changes must stay forbidden.');
+        } catch (HttpException $error) {
+            $this->assertSame(403, $error->getStatusCode());
+        }
+    }
+
 }
