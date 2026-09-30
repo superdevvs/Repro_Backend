@@ -12,7 +12,9 @@ param(
     [switch]$SkipMigrate,
     [string]$RepositoryPath,
     [switch]$PreparedRelease,
-    [switch]$ConfigureStripeWebhook
+    [switch]$ConfigureStripeWebhook,
+    [ValidatePattern('^[a-f0-9]{64}$')]
+    [string]$ExpectedBackendSourceFingerprint
 )
 
 Set-StrictMode -Version Latest
@@ -129,11 +131,21 @@ function Wait-ForGitHubQuality {
     Write-Host 'GitHub quality passed.'
 }
 
+function Get-BackendSourceFingerprint {
+    $helper = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'backend-source-fingerprint.py')
+    $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($helper))
+    $result = Invoke-Captured -FilePath 'ssh.exe' -Arguments ($script:sshOptions + @($script:serverHost, "printf '%s' '$encoded' | base64 -d | python3 - /var/www/backend --check-processes"))
+    $fingerprint = ($result | Select-Object -Last 1).ToString().Trim()
+    if ($fingerprint -notmatch '^[a-f0-9]{64}$') { throw 'Unable to fingerprint production backend source.' }
+    return $fingerprint
+}
+
 function Deploy-Backend {
     param(
         [Parameter(Mandatory = $true)][string]$RemoteArchive,
         [Parameter(Mandatory = $true)][string]$Commit,
-        [Parameter(Mandatory = $true)][bool]$RunMigrations
+        [Parameter(Mandatory = $true)][bool]$RunMigrations,
+        [Parameter(Mandatory = $true)][string]$SourceFingerprint
     )
     $remoteScript = @'
 set -Eeuo pipefail
@@ -144,6 +156,7 @@ archive="$1"
 commit="$2"
 run_migrations="$3"
 configure_stripe="$4"
+expected_source="$5"
 app="/var/www/backend"
 stamp="$(date +%Y%m%d-%H%M%S)"
 stage="/tmp/repro-backend-$commit"
@@ -153,6 +166,12 @@ preflight="/tmp/repro-stripe-preflight-$commit.php"
 webhook_setup="/tmp/repro-stripe-webhook-$commit.php"
 maintenance=0
 code_replaced=0
+
+# This lock serializes cooperating deployments. The final process and source
+# checks below also detect common tools that do not take the lock.
+command -v flock >/dev/null
+exec 9>"$HOME/.repro-backend-deploy.lock"
+flock -w 300 9 || { echo 'Another backend deployment holds the lock; retry later.' >&2; exit 94; }
 
 case "$archive" in /tmp/repro-backend-*.tar.gz) ;; *) echo "Unsafe archive path" >&2; exit 90 ;; esac
 case "$stage" in /tmp/repro-backend-*) ;; *) echo "Unsafe stage path" >&2; exit 91 ;; esac
@@ -246,6 +265,7 @@ PHP
 php "$preflight"
 
 cd "$app"
+python3 "$stage/scripts/deploy/backend-source-fingerprint.py" "$app" --expected "$expected_source" --check-processes
 php artisan down --retry=60
 maintenance=1
 tar -czf "$backup/source.tar.gz" -C "$app" \
@@ -374,7 +394,7 @@ curl --fail --silent --show-error --output /dev/null https://api.reprodashboard.
 printf '{"commit":"%s","deployed_at":"%s"}\n' "$commit" "$(date -u +%FT%TZ)" > "$app/storage/app/deploy-meta.json"
 echo "backend_deploy_complete:$commit"
 '@
-    Invoke-RemoteBash -Source $remoteScript -Arguments @($RemoteArchive, $Commit, $(if ($RunMigrations) { '1' } else { '0' }), $(if ($ConfigureStripeWebhook) { '1' } else { '0' })) -SharedWebGroup
+    Invoke-RemoteBash -Source $remoteScript -Arguments @($RemoteArchive, $Commit, $(if ($RunMigrations) { '1' } else { '0' }), $(if ($ConfigureStripeWebhook) { '1' } else { '0' }), $SourceFingerprint) -SharedWebGroup
 }
 
 function Deploy-Frontend {
@@ -490,8 +510,22 @@ try {
         }
 
         $commit = ((Invoke-Captured -FilePath 'git.exe' -Arguments @('rev-parse', 'HEAD')) | Select-Object -Last 1).ToString().Trim()
+        $backendSourceFingerprint = $null
+        if ($Component -eq 'Backend') {
+            $backendSourceFingerprint = Get-BackendSourceFingerprint
+            if ($ExpectedBackendSourceFingerprint -and $backendSourceFingerprint -ne $ExpectedBackendSourceFingerprint) {
+                throw 'Production source changed since the reviewed baseline; reconcile before deploying.'
+            }
+        }
         Invoke-Checked -FilePath 'git.exe' -Arguments @('push', 'origin', 'HEAD:main')
         Wait-ForGitHubQuality -Repository $repoSlug -Commit $commit
+
+        Invoke-Checked -FilePath 'git.exe' -Arguments @('fetch', 'origin')
+        $currentMain = ((Invoke-Captured -FilePath 'git.exe' -Arguments @('rev-parse', 'origin/main')) | Select-Object -Last 1).ToString().Trim()
+        if ($currentMain -ne $commit) { throw 'origin/main advanced during quality checks; reconcile before deploying.' }
+        if ($Component -eq 'Backend' -and (Get-BackendSourceFingerprint) -ne $backendSourceFingerprint) {
+            throw 'Production source changed during quality checks; reconcile before deploying.'
+        }
 
         Write-Host 'GitHub quality checks passed. Checking automatic SSH key authentication (no password prompts).'
         Invoke-Ssh -Command "set -eu; test -d '$remoteApp'; test -s '$remoteApp/.env'; command -v base64 >/dev/null; command -v rsync >/dev/null; echo ssh_preflight=passed"
@@ -504,7 +538,7 @@ try {
         Invoke-Scp -LocalPath $archivePath -RemotePath $remoteArchive
 
         if ($Component -eq 'Backend') {
-            Deploy-Backend -RemoteArchive $remoteArchive -Commit $commit -RunMigrations:(-not $SkipMigrate)
+            Deploy-Backend -RemoteArchive $remoteArchive -Commit $commit -RunMigrations:(-not $SkipMigrate) -SourceFingerprint $backendSourceFingerprint
             $apiStatus = (Invoke-WebRequest -Uri 'https://api.reprodashboard.com/up' -Method Get -TimeoutSec 30 -SkipHttpErrorCheck).StatusCode
             if ($apiStatus -ne 200) {
                 throw "Backend health check returned HTTP $apiStatus."
