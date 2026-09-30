@@ -330,7 +330,21 @@ class UploadShootFilesAction
                         return true;
                     }
 
-                    return (string) $item->editor_id === (string) $user->id;
+                    // Photo-lane assignments live on editor_id.
+                    if ((string) ($item->editor_id ?? '') === (string) $user->id) {
+                        return true;
+                    }
+
+                    // Bundled photo_video (and video-capable) services assign the video
+                    // lane on video_editor_id. Mirror canUploadShootMedia — without this,
+                    // chunked complete() 403s video editors after all chunks upload
+                    // (e.g. user 1100 on #145/#377: "You can only upload edits for
+                    // service items assigned to you.").
+                    if ((string) ($item->video_editor_id ?? '') === (string) $user->id) {
+                        return $item->service?->supportsVideoIntake() ?? false;
+                    }
+
+                    return false;
                 })
                 ->values();
 
