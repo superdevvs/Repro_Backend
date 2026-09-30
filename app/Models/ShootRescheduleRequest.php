@@ -85,4 +85,36 @@ class ShootRescheduleRequest extends Model
     {
         return $query->where('status', self::STATUS_PENDING);
     }
+
+    /**
+     * When staff (or an assigned rep) moves the shoot via edit/update, any
+     * still-pending client/photographer reschedule request is stale: approving
+     * it later would overwrite the manual move. Reject those rows in place so
+     * the review queue and shoot activity stay honest.
+     */
+    public static function rejectPendingForManualScheduleChange(
+        Shoot $shoot,
+        ?User $actor = null,
+        ?string $newDate = null
+    ): int {
+        $note = $newDate
+            ? "Superseded by manual schedule change to {$newDate}."
+            : 'Superseded by manual schedule change.';
+
+        $pending = static::query()
+            ->where('shoot_id', $shoot->id)
+            ->where('status', self::STATUS_PENDING)
+            ->get();
+
+        foreach ($pending as $request) {
+            $request->status = self::STATUS_REJECTED;
+            $request->reviewed_at = now();
+            $request->approved_by = $actor?->id;
+            $request->review_notes = $note;
+            $request->save();
+        }
+
+        return $pending->count();
+    }
+
 }

@@ -662,6 +662,13 @@ class UpdateShootAction
             }
             if ($originalScheduledDate !== $shoot->scheduled_date?->toDateString()) {
                 $changes['scheduled_date'] = ['from' => $originalScheduledDate, 'to' => $shoot->scheduled_date?->toDateString()];
+                // Stale pending reschedule requests must not remain approvable after a
+                // manual move — approving them would overwrite this change (51 Warren Rd).
+                \App\Models\ShootRescheduleRequest::rejectPendingForManualScheduleChange(
+                    $shoot,
+                    $user,
+                    $shoot->scheduled_date?->toDateString()
+                );
             }
             if ($originalTime !== $shoot->time) {
                 $changes['time'] = ['from' => $originalTime, 'to' => $shoot->time];
