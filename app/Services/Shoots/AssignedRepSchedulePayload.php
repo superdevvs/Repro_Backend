@@ -19,11 +19,85 @@ class AssignedRepSchedulePayload
         'service_name',
         'force_unlock_delivery',
         'unlock_reason',
+        'label',
+        'type',
+        'icon',
+        'category',
+    ];
+
+    /**
+     * Top-level Overview Save echoes that survive address/property normalize and then
+     * 403 UpdateShootAction's assigned-rep allow-list. Strip unconditionally — reps
+     * cannot edit these via PATCH Overview (sameValue optional; safest = unset).
+     * Keep photographer_id / service_photographers / schedule / services / notify_*.
+     */
+    private const TOP_LEVEL_ECHO_KEYS = [
+        'status',
+        'workflow_status',
+        'listing_type',
+        'property_status',
+        'notes',
+        'shoot_notes',
+        'company_notes',
+        'photographer_notes',
+        'editor_notes',
+        'base_quote',
+        'total_quote',
+        'tax_amount',
+        'tax_percent',
+        'tax_region',
+        'payment_status',
+        'payment_type',
+        'editor_id',
+        'video_editor_id',
+        'id',
+        'service_id',
+        'created_by',
+        'updated_by',
+        'created_at',
+        'updated_at',
+        'presenceOption',
+        'lockboxCode',
+        'lockboxLocation',
+        'access_notes',
+        'accessContactName',
+        'accessContactPhone',
+        'unit_count',
+        'delivery_status',
+        'is_flagged',
+        'bypass_paywall',
+        'discount_type',
+        'discount_value',
+        'discount_amount',
+        'package_name',
+        'hero_image',
+        'latitude',
+        'longitude',
+        'mls_id',
+        'property_slug',
     ];
 
     public function normalize(Shoot $shoot, array $payload): array
     {
         // photographer_id is intentionally editable for assigned reps (product decision).
+        foreach (self::TOP_LEVEL_ECHO_KEYS as $echoKey) {
+            unset($payload[$echoKey]);
+        }
+
+        // Overview may re-echo full tour_links; assigned reps may only keep realtor_client_id.
+        if (array_key_exists('tour_links', $payload)) {
+            if (! is_array($payload['tour_links'])) {
+                unset($payload['tour_links']);
+            } else {
+                $payload['tour_links'] = array_intersect_key(
+                    $payload['tour_links'],
+                    array_flip(['realtor_client_id'])
+                );
+                if ($payload['tour_links'] === []) {
+                    unset($payload['tour_links']);
+                }
+            }
+        }
         foreach (['address', 'city', 'state', 'zip', 'client_id', 'timezone'] as $field) {
             if (! array_key_exists($field, $payload)) {
                 continue;

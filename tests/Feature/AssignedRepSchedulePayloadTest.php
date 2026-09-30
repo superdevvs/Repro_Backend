@@ -289,6 +289,51 @@ class AssignedRepSchedulePayloadTest extends TestCase
         ], $normalized['service_photographers']);
     }
 
+    public function test_overview_top_level_readonly_echoes_are_stripped_without_403(): void
+    {
+        [$shoot, $payload] = $this->fixture();
+        $payload['status'] = 'scheduled';
+        $payload['workflow_status'] = 'scheduled';
+        $payload['listing_type'] = 'for_sale';
+        $payload['property_status'] = 'available';
+        $payload['notes'] = 'echo';
+        $payload['base_quote'] = '199.00';
+        $payload['total_quote'] = '210.94';
+        $payload['tax_amount'] = '11.94';
+        $payload['payment_status'] = 'unpaid';
+        $payload['editor_id'] = null;
+        $payload['video_editor_id'] = null;
+        $payload['id'] = $shoot->id;
+        $payload['service_id'] = 2;
+        $payload['created_by'] = 'Office';
+        $payload['presenceOption'] = 'self';
+        $payload['lockboxCode'] = null;
+        $payload['access_notes'] = null;
+        $payload['unit_count'] = 0;
+        $payload['tour_links'] = [
+            'property_description' => 'echo',
+            'realtor_client_id' => $shoot->client_id,
+            'video_link' => 'https://example.test/v',
+        ];
+
+        $normalized = app(AssignedRepSchedulePayload::class)->normalize($shoot, $payload);
+
+        foreach ([
+            'status', 'workflow_status', 'listing_type', 'property_status', 'notes',
+            'base_quote', 'total_quote', 'tax_amount', 'payment_status', 'editor_id',
+            'video_editor_id', 'id', 'service_id', 'created_by', 'presenceOption',
+            'lockboxCode', 'access_notes', 'unit_count',
+        ] as $key) {
+            $this->assertArrayNotHasKey($key, $normalized);
+        }
+        $this->assertSame(
+            ['realtor_client_id' => $shoot->client_id],
+            $normalized['tour_links']
+        );
+        $this->assertSame($shoot->photographer_id, $normalized['photographer_id']);
+        $this->assertSame('2026-10-05', $normalized['scheduled_date']);
+    }
+
     public function test_overview_property_details_echo_keys_and_null_presence_are_tolerated(): void
     {
         [$shoot, $payload] = $this->fixture();
