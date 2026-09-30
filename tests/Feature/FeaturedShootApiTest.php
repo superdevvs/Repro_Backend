@@ -7,6 +7,8 @@ use App\Models\FeaturedShootImage;
 use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Models\User;
+use App\Jobs\ProcessUpdatedShootSideEffectsJob;
+use App\Jobs\SyncShootToGoogleCalendarJob;
 use App\Services\ReproApiSettingsService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Storage;
@@ -353,6 +355,44 @@ class FeaturedShootApiTest extends TestCase
             ->assertJsonPath('shoots.0.cover_image.focal', '40% 30%')
             ->assertJsonPath('shoots.0.images.1.alt', 'First gallery image')
             ->assertJsonCount(3, 'shoots.0.images');
+    }
+
+    #[Test]
+    public function homepage_marketing_changes_do_not_queue_booking_notifications_or_calendar_sync(): void
+    {
+        $admin = User::factory()->admin()->create();
+        Sanctum::actingAs($admin);
+        $shoot = Shoot::factory()->create();
+        $file = $this->makeShootFile($shoot, $admin, 'cover.jpg', 'shoots/1/cover.webp');
+        Queue::fake([ProcessUpdatedShootSideEffectsJob::class, SyncShootToGoogleCalendarJob::class]);
+
+        foreach ([
+            ['featured_homepage_images' => [['shoot_file_id' => $file->id, 'sort' => 1]]],
+            ['is_featured' => true, 'featured_homepage_title' => 'Public title', 'featured_homepage_location' => 'Arlington, VA'],
+            ['featured_homepage_subtitle' => 'Photos and video', 'featured_homepage_cta_label' => 'View project', 'featured_homepage_cta_href' => '/projects/example'],
+        ] as $payload) {
+            $this->patchJson('/api/shoots/' . $shoot->id, $payload)->assertOk();
+        }
+
+        Queue::assertNotPushed(ProcessUpdatedShootSideEffectsJob::class);
+        Queue::assertNotPushed(SyncShootToGoogleCalendarJob::class);
+    }
+
+    #[Test]
+    public function booking_edits_still_queue_side_effects_when_combined_with_marketing_changes(): void
+    {
+        $admin = User::factory()->admin()->create();
+        Sanctum::actingAs($admin);
+        $shoot = Shoot::factory()->create();
+        Queue::fake([ProcessUpdatedShootSideEffectsJob::class, SyncShootToGoogleCalendarJob::class]);
+
+        $this->patchJson('/api/shoots/' . $shoot->id, [
+            'featured_homepage_title' => 'Public title',
+            'notes' => 'Updated appointment instructions',
+        ])->assertOk();
+
+        Queue::assertPushed(ProcessUpdatedShootSideEffectsJob::class);
+        Queue::assertPushed(SyncShootToGoogleCalendarJob::class);
     }
 
     private function makeShootFile(Shoot $shoot, User $uploader, string $filename, string $path, array $overrides = []): ShootFile

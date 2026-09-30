@@ -76,6 +76,15 @@ class UpdateShootAction
         $requestKeys = array_keys($request->all());
         $onlyPrivateListing = count($requestKeys) > 0 && count(array_diff($requestKeys, ['is_private_listing'])) === 0;
         $onlyFeaturedFlag = count($requestKeys) > 0 && count(array_diff($requestKeys, ['is_featured'])) === 0;
+        $onlyFeaturedMarketing = count($requestKeys) > 0 && count(array_diff($requestKeys, [
+            'is_featured',
+            'featured_homepage_title',
+            'featured_homepage_location',
+            'featured_homepage_subtitle',
+            'featured_homepage_cta_label',
+            'featured_homepage_cta_href',
+            'featured_homepage_images',
+        ])) === 0;
         $clientEditableKeys = [
             'is_private_listing',
             'timezone',
@@ -875,7 +884,7 @@ class UpdateShootAction
             && $shoot->photographer_id !== null;
         $photographerNewlyAssigned = $originalPhotographerId !== $shoot->photographer_id && $shoot->photographer_id && ! $originalPhotographerId;
 
-        if (! $onlyFeaturedFlag) {
+        if (! $onlyFeaturedMarketing) {
             $this->registerDeferredSideEffects(
                 $shoot->id,
                 $changesSummary,
@@ -896,7 +905,9 @@ class UpdateShootAction
             $this->dispatchCreatedAdditionalWorkSideEffects($createdReturnVisit);
         }
 
-        $this->googleCalendarSyncDispatcher->dispatchShootSync($shoot->id);
+        if (! $onlyFeaturedMarketing) {
+            $this->googleCalendarSyncDispatcher->dispatchShootSync($shoot->id);
+        }
         if ($createdReturnVisit && ! $returnVisitReplayed) {
             $this->googleCalendarSyncDispatcher->dispatchShootSync($createdReturnVisit->id);
         }
