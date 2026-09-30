@@ -24,6 +24,9 @@ use App\Services\ExternalBooking\ExternalBookingScheduleNormalizer;
 use App\Services\ExternalBooking\ExternalBookingAutoMapper;
 use App\Services\ExternalBooking\ExternalBookingWarningBuilder;
 use App\Services\ExternalBooking\ExternalBookingNotificationService;
+use App\Services\ExternalBooking\ExternalBookingSubmission;
+use App\Services\ExternalBooking\ExternalBookingPricing;
+use App\Support\LockedWrite;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
@@ -81,7 +84,11 @@ class ExternalBookingController extends Controller
         $warnings   = $this->warningBuilder->build($normalized, $mapping);
 
         try {
-            $result = DB::transaction(function () use ($validated, $request, $data, $normalized, $mapping, $warnings) {
+            $result = LockedWrite::run(fn () => DB::transaction(function () use ($validated, $request, $data, $normalized, $mapping, $warnings) {
+                $submission = app(ExternalBookingSubmission::class);
+                if ($response = $submission->claim($validated)) {
+                    return ['replayed_response' => $response];
+                }
                 $createAccount = $this->shouldCreateAccount($validated);
 
                 // 1. Find or create client by email
@@ -89,7 +96,11 @@ class ExternalBookingController extends Controller
                 $this->shootSupport->ensureClientCanBookServices($client->id, $validated['services']);
 
                 // 2. Calculate pricing from service catalog and client defaults
-                $services = $validated['services'];
+                $services = app(ExternalBookingPricing::class)->resolve(
+                    $validated['services'],
+                    isset($validated['sqft']) ? (int) $validated['sqft'] : null
+                );
+                $this->shootSupport->assertNewServiceQuantitiesAllowed($services);
                 $pricingCalculation = $this->shootSupport->buildPricingCalculation(
                     $services,
                     $client,
@@ -153,12 +164,17 @@ class ExternalBookingController extends Controller
                     'product_status' => $isNoCharge ? Shoot::PRODUCT_STATUS_ZERO_DOLLAR_PRODUCT : Shoot::PRODUCT_STATUS_HAS_PRODUCT,
                     'created_by' => "External ({$source})",
                     'updated_by' => "External ({$source})",
-                    'shoot_notes' => $validated['notes'] ?? null,
+                    'shoot_notes' => $this->externalShootNotes($validated),
                 ]);
 
                 // 8. Attach services with catalog prices plus per-service photographer /
                 //    schedule assignments where the mapping was safe (null otherwise) (2.17).
-                $this->shootSupport->attachServices($shoot, $this->buildServicesPayload($normalized, $mapping));
+                $prices = collect($services)->keyBy('id');
+                $servicePayload = array_map(fn (array $line) => [
+                    ...$line,
+                    'price' => $prices->get($line['id'])['price'],
+                ], $this->buildServicesPayload($normalized, $mapping));
+                $this->shootSupport->attachServices($shoot, $servicePayload);
 
                 if (!empty($pricingCalculation['coupon_code']) && $pricingCalculation['coupon_discount_amount'] > 0) {
                     $coupon = $this->shootSupport->resolveCoupon($pricingCalculation['coupon_code']);
@@ -184,7 +200,7 @@ class ExternalBookingController extends Controller
                     $shoot->ghostUsers()->syncWithoutDetaching([$client->id]);
                 }
 
-                return [
+                $result = [
                     'shoot' => $shoot,
                     'client' => $client,
                     'is_new_client' => $createAccount && $client->wasRecentlyCreated,
@@ -192,7 +208,18 @@ class ExternalBookingController extends Controller
                     'account_setup_required' => $createAccount && $client->wasRecentlyCreated,
                     'is_guest_booking' => !$createAccount,
                 ];
-            });
+                $submission->complete($validated, $this->bookingResponseData($result));
+
+                return $result;
+            }), 'external-booking-submit');
+
+            if (isset($result['replayed_response'])) {
+                return response()->json([
+                    'message' => 'Shoot request submitted successfully. It will be reviewed by our team.',
+                    'data' => $result['replayed_response'],
+                    'idempotent_replay' => true,
+                ]);
+            }
 
             $shoot = $result['shoot'];
 
@@ -212,18 +239,10 @@ class ExternalBookingController extends Controller
 
             return response()->json([
                 'message' => 'Shoot request submitted successfully. It will be reviewed by our team.',
-                'data' => [
-                    'shoot_id' => $shoot->id,
-                    'status' => 'requested',
-                    'client_id' => $result['client']->id,
-                    'is_new_client' => $result['is_new_client'],
-                    'account_created' => $result['account_created'],
-                    'account_setup_required' => $result['account_setup_required'],
-                    'is_guest_booking' => $result['is_guest_booking'],
-                    'total_quote' => $shoot->total_quote,
-                ],
+                'data' => $this->bookingResponseData($result),
             ], 201);
-
+        } catch (ValidationException $e) {
+            throw $e;
         } catch (\Exception $e) {
             \App\Services\ApiErrorResponder::log($e, 'error');
 
@@ -232,6 +251,31 @@ class ExternalBookingController extends Controller
                 'error' => config('app.debug') ? \App\Services\ApiErrorResponder::publicMessage($e) : 'Internal server error',
             ], 500);
         }
+    }
+
+    protected function bookingResponseData(array $result): array
+    {
+        return [
+            'shoot_id' => $result['shoot']->id,
+            'status' => 'requested',
+            'client_id' => $result['client']->id,
+            'is_new_client' => $result['is_new_client'],
+            'account_created' => $result['account_created'],
+            'account_setup_required' => $result['account_setup_required'],
+            'is_guest_booking' => $result['is_guest_booking'],
+            'total_quote' => $result['shoot']->total_quote,
+        ];
+    }
+
+    protected function externalShootNotes(array $input): ?string
+    {
+        $notes = array_filter([
+            $input['notes'] ?? null,
+            isset($input['lockbox_code']) && $input['lockbox_code'] !== '' ? 'Lockbox code: '.$input['lockbox_code'] : null,
+            isset($input['lockbox_location']) && $input['lockbox_location'] !== '' ? 'Lockbox location: '.$input['lockbox_location'] : null,
+        ], fn ($value) => $value !== null && $value !== '');
+
+        return $notes ? implode("\n", $notes) : null;
     }
 
     /**

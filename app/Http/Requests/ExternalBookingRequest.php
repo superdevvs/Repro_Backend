@@ -34,7 +34,7 @@ class ExternalBookingRequest extends FormRequest
 
             // Services: array of service IDs (uses catalog prices)
             'services' => 'required|array|min:1',
-            'services.*.id' => 'required|exists:services,id',
+            'services.*.id' => 'required|distinct|exists:services,id',
             'services.*.quantity' => 'nullable|integer|min:1',
 
             // Scheduling (optional — becomes hold-on if missing)
@@ -68,9 +68,12 @@ class ExternalBookingRequest extends FormRequest
 
             // Notes
             'notes' => 'nullable|string|max:5000',
+            'lockbox_code' => 'nullable|string|max:100',
+            'lockbox_location' => 'nullable|string|max:255',
 
             // Source tracking
             'source' => 'nullable|string|max:100',
+            'external_reference' => 'nullable|string|max:100',
 
             // Account preference
             'create_account' => 'sometimes|boolean',
