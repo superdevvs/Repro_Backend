@@ -446,6 +446,17 @@ class ShootEditingAssignmentService
             return self::LANE_PHOTO;
         }
 
+        // Defense-in-depth: mis-tagged raw video (media_type=raw) still belongs
+        // on the video lane so video editors can download/share it.
+        $name = strtolower((string) ($file->filename ?? $file->stored_filename ?? ''));
+        $mime = strtolower((string) ($file->file_type ?? $file->mime_type ?? ''));
+        if ($mime !== '' && str_starts_with($mime, 'video/')) {
+            return self::LANE_VIDEO;
+        }
+        if ($name !== '' && preg_match('/\.(mp4|mov|avi|mkv|wmv|webm)$/', $name) === 1) {
+            return self::LANE_VIDEO;
+        }
+
         return self::LANE_PHOTO;
     }
 

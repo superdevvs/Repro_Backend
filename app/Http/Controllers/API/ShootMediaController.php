@@ -873,7 +873,7 @@ class ShootMediaController extends Controller
         }
 
         return response()->json([
-            'data' => $this->shootShareLinkReadService->listLinks($shoot),
+            'data' => $this->shootShareLinkReadService->listLinks($shoot, $request->user()),
         ]);
     }
 

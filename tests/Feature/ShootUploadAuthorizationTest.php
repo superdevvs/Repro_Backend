@@ -209,7 +209,70 @@ class ShootUploadAuthorizationTest extends TestCase
             ->assertJsonPath('uploaded_files.0.filename', 'legacy.jpg');
     }
 
-    private function canonicalSuccess(string $filename): array
+    public function test_video_editor_can_upload_edited_media_when_assigned_via_video_editor_id(): void
+    {
+        $photoEditor = User::factory()->create(['role' => 'editor']);
+        $videoEditor = User::factory()->create(['role' => 'editor']);
+        $peerEditor = User::factory()->create(['role' => 'editor']);
+        $shoot = Shoot::factory()->create(['editor_id' => null]);
+        $service = Service::factory()->photoVideoIntake()->create(['requires_editing' => true]);
+        $item = ShootService::query()->create([
+            'shoot_id' => $shoot->id,
+            'service_id' => $service->id,
+            'editor_id' => $photoEditor->id,
+            'video_editor_id' => $videoEditor->id,
+            'price' => 100,
+            'quantity' => 1,
+        ]);
+        $support = app(ShootAuthorizationSupport::class);
+
+        // Mirror production #145/#377: FE sends shoot_service_id on edited upload.
+        $this->assertTrue($support->canUploadShootMedia($shoot, $videoEditor, 'edited', $item->id));
+        $this->assertTrue($support->canUploadShootMedia($shoot, $photoEditor, 'edited', $item->id));
+        $this->assertTrue($support->canUploadShootMedia($shoot, $videoEditor, 'edited'));
+        $this->assertFalse($support->canUploadShootMedia($shoot, $peerEditor, 'edited', $item->id));
+        $this->assertFalse($support->canUploadShootMedia($shoot, $videoEditor, 'raw', $item->id));
+
+        Sanctum::actingAs($videoEditor);
+        $action = Mockery::mock(UploadShootFilesAction::class);
+        $action->shouldReceive('execute')
+            ->once()
+            ->withArgs(function (Request $request, Shoot $target, User $actor) use ($shoot, $videoEditor, $item) {
+                return (int) $target->id === (int) $shoot->id
+                    && (int) $actor->id === (int) $videoEditor->id
+                    && (int) $request->input('shoot_service_id') === (int) $item->id
+                    && $request->input('upload_type') === 'edited';
+            })
+            ->andReturn($this->canonicalSuccess('edited-video.mp4'));
+        app()->instance(UploadShootFilesAction::class, $action);
+
+        $this->postJson("/api/shoots/{$shoot->id}/upload", [
+            'upload_type' => 'edited',
+            'shoot_service_id' => $item->id,
+        ])->assertOk()
+            ->assertJsonPath('success_count', 1)
+            ->assertJsonPath('uploaded_files.0.filename', 'edited-video.mp4');
+    }
+
+    public function test_video_editor_id_on_non_video_intake_service_does_not_grant_upload(): void
+    {
+        $videoEditor = User::factory()->create(['role' => 'editor']);
+        $shoot = Shoot::factory()->create(['editor_id' => null]);
+        $service = Service::factory()->unbracketedPhoto()->create(['requires_editing' => true]);
+        $item = ShootService::query()->create([
+            'shoot_id' => $shoot->id,
+            'service_id' => $service->id,
+            'editor_id' => null,
+            'video_editor_id' => $videoEditor->id,
+            'price' => 100,
+            'quantity' => 1,
+        ]);
+        $support = app(ShootAuthorizationSupport::class);
+
+        $this->assertFalse($support->canUploadShootMedia($shoot, $videoEditor, 'edited', $item->id));
+    }
+
+        private function canonicalSuccess(string $filename): array
     {
         return [
             'status' => 200,

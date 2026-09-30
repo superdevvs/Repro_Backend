@@ -105,7 +105,7 @@ class ShootShareLinkService
      * @param  array<int, int|string>  $fileIds
      * @return \Illuminate\Support\Collection<int, ShootFile>
      */
-    public function selectEditorShareFiles(Shoot $shoot, string $normalizedMediaStage, array $fileIds = []): \Illuminate\Support\Collection
+    public function selectEditorShareFiles(Shoot $shoot, string $normalizedMediaStage, array $fileIds = [], ?User $editor = null): \Illuminate\Support\Collection
     {
         $isEditedStage = $normalizedMediaStage === self::MEDIA_STAGE_EDITED;
         $workflowStages = $isEditedStage
@@ -114,20 +114,34 @@ class ShootShareLinkService
 
         $filesQuery = $shoot->files()->whereIn('workflow_stage', $workflowStages);
         if ($normalizedMediaStage === self::MEDIA_STAGE_RAW_VIDEO) {
-            $filesQuery->where('media_type', 'video');
+            $filesQuery->where(function ($query) {
+                $query->where('media_type', 'video')
+                    ->orWhere('file_type', 'like', 'video/%');
+            });
         } elseif ($normalizedMediaStage === self::MEDIA_STAGE_RAW_PHOTO) {
             $filesQuery->where(function ($query) {
                 $query->whereNull('media_type')
                     ->orWhere('media_type', '!=', 'video');
+            })->where(function ($query) {
+                $query->whereNull('file_type')
+                    ->orWhere('file_type', 'not like', 'video/%');
             });
         }
         if (!empty($fileIds)) {
             $filesQuery->whereIn('id', $fileIds);
         }
 
-        return $filesQuery->inDeliveryOrder()->get()
+        $files = $filesQuery->inDeliveryOrder()->get()
             ->filter(fn (ShootFile $file) => $file->isRequiredForEditing())
             ->values();
+
+        // Lane-scoped editors (video_editor_id vs editor_id) only share their lane.
+        if ($editor && $editor->role === 'editor') {
+            $files = app(ShootEditingAssignmentService::class)
+                ->filterFilesForEditor($files, $shoot, $editor);
+        }
+
+        return $files;
     }
 
     public function createShootShareLink(
@@ -138,10 +152,11 @@ class ShootShareLinkService
     ): array
     {
         $normalizedMediaStage = $this->normalizeMediaStage($mediaStage);
+        $normalizedMediaStage = $this->coerceMediaStageForEditor($shoot, $user, $normalizedMediaStage);
         $isEditedStage = $normalizedMediaStage === self::MEDIA_STAGE_EDITED;
         $stageLabel = $isEditedStage ? 'edited' : 'raw';
 
-        $files = $this->selectEditorShareFiles($shoot, $normalizedMediaStage, $fileIds);
+        $files = $this->selectEditorShareFiles($shoot, $normalizedMediaStage, $fileIds, $user);
         $fileCount = $files->count();
 
         if (!empty($fileIds) && $fileCount === 0) {
@@ -329,6 +344,31 @@ class ShootShareLinkService
         $payload['reused'] = false;
 
         return $payload;
+    }
+
+    /**
+     * Video-only editors requesting a generic "raw" share package must not receive
+     * photo raws (or the full raw archive). Coerce to raw_video / raw_photo from
+     * their assigned lanes on this shoot.
+     */
+    protected function coerceMediaStageForEditor(Shoot $shoot, User $user, string $normalizedMediaStage): string
+    {
+        if ($normalizedMediaStage !== self::MEDIA_STAGE_RAW || $user->role !== 'editor') {
+            return $normalizedMediaStage;
+        }
+
+        $lanes = app(ShootEditingAssignmentService::class)->getAssignedLanesForEditor($shoot, $user);
+        $hasPhoto = in_array(ShootEditingAssignmentService::LANE_PHOTO, $lanes, true);
+        $hasVideo = in_array(ShootEditingAssignmentService::LANE_VIDEO, $lanes, true);
+
+        if ($hasVideo && ! $hasPhoto) {
+            return self::MEDIA_STAGE_RAW_VIDEO;
+        }
+        if ($hasPhoto && ! $hasVideo) {
+            return self::MEDIA_STAGE_RAW_PHOTO;
+        }
+
+        return $normalizedMediaStage;
     }
 
     protected function normalizeMediaStage(string $mediaStage): string

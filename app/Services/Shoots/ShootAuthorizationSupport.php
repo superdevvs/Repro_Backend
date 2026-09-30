@@ -242,7 +242,19 @@ class ShootAuthorizationSupport
             return true;
         }
 
-        return (string) $serviceItem->editor_id === (string) $user->id;
+        // Photo-lane (and non-bundled) assignments live on editor_id.
+        if ((string) ($serviceItem->editor_id ?? '') === (string) $user->id) {
+            return true;
+        }
+
+        // Bundled photo_video (and video-capable) services assign the video lane
+        // on video_editor_id. FE always sends shoot_service_id for edited uploads,
+        // so omitting this check 403s video editors (e.g. user 1100 on #145/#377).
+        if ((string) ($serviceItem->video_editor_id ?? '') === (string) $user->id) {
+            return $serviceItem->service?->supportsVideoIntake() ?? false;
+        }
+
+        return false;
     }
 
     public function canViewShootDetails(Shoot $shoot, ?User $user = null): bool
@@ -337,7 +349,8 @@ class ShootAuthorizationSupport
             }
 
             return (string) $shoot->editor_id === (string) $user->id
-                || (string) $item->editor_id === (string) $user->id;
+                || (string) ($item->editor_id ?? '') === (string) $user->id
+                || (string) ($item->video_editor_id ?? '') === (string) $user->id;
         });
         $brackets = app(BracketModeResolver::class);
         $expectedRaw = (int) $items->sum(fn ($item) => $brackets->expectedRawForService($item) ?? 0);

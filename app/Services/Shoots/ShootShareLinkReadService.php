@@ -4,6 +4,7 @@ namespace App\Services\Shoots;
 
 use App\Models\Shoot;
 use App\Models\ShootShareLink;
+use App\Models\User;
 
 class ShootShareLinkReadService
 {
@@ -58,12 +59,22 @@ class ShootShareLinkReadService
         return false;
     }
 
-    public function listLinks(Shoot $shoot): array
+    public function listLinks(Shoot $shoot, ?User $viewer = null): array
     {
-        return $shoot->shareLinks()
+        $links = $shoot->shareLinks()
             ->with('creator:id,name')
             ->orderBy('created_at', 'desc')
-            ->get()
+            ->get();
+
+        // Editors only see their own share packages so photo-editor raw_photo /
+        // raw links are not exposed on the video-editor shoot detail.
+        if ($viewer && $viewer->role === 'editor') {
+            $links = $links
+                ->filter(fn (ShootShareLink $link) => (string) $link->created_by === (string) $viewer->id)
+                ->values();
+        }
+
+        return $links
             ->map(fn (ShootShareLink $link) => $this->formatLink($link))
             ->all();
     }
