@@ -34,6 +34,23 @@ return [
         'cr3',
         'nef',
         'arw',
+        // Adobe DNG and other camera RAW formats accepted by raw upload /
+        // studio / FE FULL_UPLOAD_ACCEPT. Missing `dng` caused shoot 138
+        // photographer batch 2ac1ab32 to return HTTP 422 "File type not allowed".
+        'dng',
+        'raf',
+        'rw2',
+        'orf',
+        'pef',
+        'srw',
+        '3fr',
+        'fff',
+        'iiq',
+        'rwl',
+        'x3f',
+        'nrw',
+        'srf',
+        'sr2',
         'tiff',
         'tif',
         'bmp',

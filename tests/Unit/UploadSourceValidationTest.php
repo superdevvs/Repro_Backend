@@ -50,8 +50,9 @@ class UploadSourceValidationTest extends TestCase
     #[Test]
     public function it_accepts_an_import_only_extension(): void
     {
-        // .dng is not in config but is an accepted cloud-import RAW format.
-        $this->assertFilename('capture.dng', 'application/octet-stream');
+        // .webp stays import-only relative to the pinned config above; cloud
+        // import merges IMPORT_ONLY_EXTENSIONS on top of uploads.allowed_types.
+        $this->assertFilename('capture.webp', 'image/webp');
         $this->assertTrue(true);
     }
 

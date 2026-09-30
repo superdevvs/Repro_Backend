@@ -144,4 +144,27 @@ class UploadValidationServiceTest extends TestCase
         $this->assertFalse($this->service->isStaffRole(''));
         $this->assertFalse($this->service->isStaffRole(null));
     }
+
+    #[Test]
+    public function it_accepts_dng_when_listed_in_uploads_config(): void
+    {
+        config(['uploads.allowed_types' => ['jpg', 'jpeg', 'png', 'dng', 'zip']]);
+
+        $file = $this->upload('312 Obrechet Rd-61627_0186.DNG', 2 * 1024 * 1024);
+
+        $this->service->validate($file, 'files', 'photographer');
+
+        $this->assertTrue($this->service->isAllowedType($file));
+    }
+
+    #[Test]
+    public function default_uploads_config_includes_dng(): void
+    {
+        // Reload the real config file (setUp pins a narrow list for other cases).
+        $configured = require base_path('config/uploads.php');
+        $types = array_map('strtolower', (array) ($configured['allowed_types'] ?? []));
+
+        $this->assertContains('dng', $types);
+        $this->assertContains('cr3', $types);
+    }
 }
