@@ -11,10 +11,10 @@ use Illuminate\Support\Facades\Artisan;
 use Tests\TestCase;
 
 /**
- * Continuous monthly cadence via the rolling-horizon sweep (Req 4.6).
+ * Continuous weekly cadence via the rolling-horizon sweep (Req 4.6).
  *
- * Verifies that re-running scheduling on a recurring sweep keeps the monthly (last-Sunday)
- * reminder rolling forward with no fixed 6-month stop, only ever persists future-dated rows
+ * Verifies that re-running scheduling on a recurring sweep keeps weekly
+ * reminders rolling forward with no fixed 6-month stop, only ever persists future-dated rows
  * (never back-dating Day 1/3/7 for an old anchor), never creates duplicate
  * (shoot_id, scheduled_date) rows, and that the sweep command targets exactly the unpaid,
  * ready-notified shoots.
@@ -46,10 +46,10 @@ class PaymentRemindersSweepTest extends TestCase
     }
 
     /**
-     * (a) For an unpaid shoot, repeated sweep runs at advancing "now" times keep the next upcoming
-     *     last-Sunday reminder scheduled — the cadence does NOT stop at the old 6-month horizon.
+     * (a) For an unpaid shoot, repeated sweep runs at advancing "now" times keep the next two
+     *     weekly reminders scheduled — the cadence does NOT stop at the old 6-month horizon.
      */
-    public function test_repeated_sweeps_keep_next_monthly_reminder_scheduled_past_six_months(): void
+    public function test_repeated_sweeps_keep_weekly_reminders_scheduled_past_six_months(): void
     {
         $anchor = '2026-01-01 10:00:00';
         $shoot = $this->unpaidAnchoredShoot($anchor);
@@ -58,34 +58,39 @@ class PaymentRemindersSweepTest extends TestCase
         Carbon::setTestNow($anchor);
         $this->service()->schedulePaymentReminders($shoot->fresh());
 
-        // Helper: assert a future, pending, last-Sunday (Phase 3) reminder exists relative to now.
-        $assertFutureMonthlyExists = function (string $whenContext) {
+        // Find the first weekly date after now, measured from the original delivery anchor.
+        $assertFutureWeeklyExists = function (string $whenContext) use ($anchor, $shoot): void {
             $now = Carbon::now();
-            $futureMonthly = PaymentReminder::where('status', PaymentReminder::STATUS_PENDING)
-                ->where('scheduled_at', '>', $now)
-                ->get()
-                ->first(fn (PaymentReminder $r) => $r->scheduled_at->dayOfWeek === Carbon::SUNDAY);
+            $nextAt = Carbon::parse($anchor)->addDays(7);
+            while ($nextAt->lessThanOrEqualTo($now)) {
+                $nextAt->addDays(7);
+            }
 
-            $this->assertNotNull(
-                $futureMonthly,
-                "expected an upcoming last-Sunday reminder to be scheduled {$whenContext}"
-            );
+            foreach ([$nextAt, $nextAt->copy()->addDays(7)] as $expected) {
+                $row = PaymentReminder::where('shoot_id', $shoot->id)
+                    ->where('scheduled_date', $expected->toDateString())
+                    ->first();
+                $this->assertNotNull($row, "expected a weekly reminder at {$expected} {$whenContext}");
+                $this->assertSame(PaymentReminder::STATUS_PENDING, $row->status);
+                $this->assertTrue($row->scheduled_at->equalTo($expected));
+                $this->assertTrue($row->scheduled_at->greaterThan($now));
+            }
         };
 
         // Advance well past the old 6-month cap (anchor + 5 months) and sweep.
         Carbon::setTestNow('2026-06-01 00:00:00');
         Artisan::call('messaging:payment-reminders-sweep');
-        $assertFutureMonthlyExists('at 2026-06-01 (past the legacy 6-month horizon edge)');
+        $assertFutureWeeklyExists('at 2026-06-01 (past the legacy 6-month horizon edge)');
 
         // Advance even further (anchor + 11 months) — beyond any 6-month stop — and sweep again.
         Carbon::setTestNow('2026-12-01 00:00:00');
         Artisan::call('messaging:payment-reminders-sweep');
-        $assertFutureMonthlyExists('at 2026-12-01 (nearly a year after the anchor)');
+        $assertFutureWeeklyExists('at 2026-12-01 (nearly a year after the anchor)');
 
         // And a full year+ later, still rolling forward.
         Carbon::setTestNow('2027-03-01 00:00:00');
         Artisan::call('messaging:payment-reminders-sweep');
-        $assertFutureMonthlyExists('at 2027-03-01 (over a year after the anchor)');
+        $assertFutureWeeklyExists('at 2027-03-01 (over a year after the anchor)');
     }
 
     /**
@@ -103,7 +108,7 @@ class PaymentRemindersSweepTest extends TestCase
         $this->service()->schedulePaymentReminders($shoot->fresh());
 
         $rows = PaymentReminder::where('shoot_id', $shoot->id)->get();
-        $this->assertNotEmpty($rows, 'a late run should still materialize upcoming monthly reminders');
+        $this->assertNotEmpty($rows, 'a late run should still materialize upcoming weekly reminders');
 
         foreach ($rows as $row) {
             $this->assertTrue(

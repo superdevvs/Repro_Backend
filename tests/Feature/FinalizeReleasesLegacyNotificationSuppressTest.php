@@ -5,14 +5,18 @@ namespace Tests\Feature;
 use App\Jobs\FinalizeShootJob;
 use App\Jobs\SendShootReadyEmailJob;
 use App\Models\Invoice;
+use App\Models\Message;
+use App\Models\MessageChannel;
 use App\Models\Service;
 use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Models\User;
+use App\Services\Messaging\OutboundDeliveryGuard;
 use App\Services\ShootActivityLogger;
 use App\Services\Shoots\FinalizeProgressTracker;
 use App\Services\Shoots\ShootNotificationDispatchService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Queue;
 use Tests\TestCase;
 
@@ -124,6 +128,17 @@ class FinalizeReleasesLegacyNotificationSuppressTest extends TestCase
 
     public function test_delivery_email_job_releases_legacy_mute_instead_of_skipping(): void
     {
+        Mail::fake();
+        OutboundDeliveryGuard::allowFakeProviderPipelineForTesting();
+        MessageChannel::create([
+            'type' => 'EMAIL',
+            'provider' => 'LOCAL_SMTP',
+            'display_name' => 'Test delivery',
+            'from_email' => 'delivery@example.test',
+            'is_default' => true,
+            'owner_scope' => 'GLOBAL',
+        ]);
+
         $client = User::factory()->create(['role' => 'client', 'email' => 'client@example.com']);
         $shoot = $this->createLegacyMutedDeliverableShoot($client);
 
@@ -135,6 +150,8 @@ class FinalizeReleasesLegacyNotificationSuppressTest extends TestCase
 
         $shoot->refresh();
         $this->assertFalse($shoot->suppressesExternalNotifications());
+        $this->assertSame(1, Message::where('related_shoot_id', $shoot->id)
+            ->where('send_source', 'SHOOT_DELIVERED')->where('status', 'SENT')->count());
         $this->assertSame(
             'delivery_email_full_order',
             data_get($shoot->external_booking_payload, 'legacy_migration.notifications_released_reason')

@@ -969,9 +969,10 @@ class ShootFilesTest extends TestCase
     }
 
     #[Test]
-    public function local_media_with_legacy_remote_metadata_generates_web_preview_instead_of_using_original_for_display(): void
+    public function local_media_with_legacy_remote_metadata_queues_web_preview_and_uses_it_after_processing(): void
     {
         Storage::fake('public');
+        Queue::fake([ProcessImageJob::class, GenerateShootMediaArchiveJob::class, ScanShootFileJob::class]);
 
         $shoot = $this->createShoot([
             'payment_status' => 'paid',
@@ -982,24 +983,7 @@ class ShootFilesTest extends TestCase
         Storage::disk('public')->put('remote/final.jpg', 'local-original');
         \Illuminate\Support\Facades\Http::fake();
 
-        app()->instance(ImageProcessingService::class, new class extends ImageProcessingService {
-            public function processImageFromPath(int $shootId, string $fileName, string $sourcePath): array
-            {
-                $paths = [
-                    'thumbnail' => "shoots/{$shootId}/completed/generated-thumb.jpg",
-                    'web' => "shoots/{$shootId}/completed/generated-web.jpg",
-                    'placeholder' => "shoots/{$shootId}/completed/generated-placeholder.jpg",
-                ];
-
-                foreach ($paths as $path) {
-                    Storage::disk('local')->put($path, 'generated-preview');
-                }
-
-                return $paths;
-            }
-        });
-
-        $this->createShootFile($shoot, [
+        $file = $this->createShootFile($shoot, [
             'filename' => 'final.jpg',
             'path' => 'remote/final.jpg',
             'storage_path' => null,
@@ -1013,10 +997,26 @@ class ShootFilesTest extends TestCase
             ->json('data.0');
 
         $this->assertFalse($payload['uses_watermark']);
-        $this->assertStringContainsString('/api/public/shoot-media/file/shoots/' . $shoot->id . '/completed/generated-web.jpg', $payload['url']);
-        $this->assertStringContainsString('/api/public/shoot-media/file/shoots/' . $shoot->id . '/completed/generated-web.jpg', $payload['web_url']);
-        $this->assertStringContainsString('/api/public/shoot-media/file/shoots/' . $shoot->id . '/completed/generated-thumb.jpg', $payload['thumb_url']);
+        $this->assertStringContainsString('/storage/remote/final.jpg', $payload['url']);
+        $this->assertArrayNotHasKey('web_url', $payload);
         $this->assertStringContainsString('/storage/remote/final.jpg', $payload['original_url']);
+        Queue::assertPushed(ProcessImageJob::class, 1);
+
+        // The worker writes preview paths later; a fresh list then prefers them.
+        $file->forceFill([
+            'web_path' => "shoots/{$shoot->id}/completed/generated-web.jpg",
+            'thumbnail_path' => "shoots/{$shoot->id}/completed/generated-thumb.jpg",
+        ])->save();
+        \Illuminate\Support\Facades\Cache::flush();
+
+        $processedPayload = $this->getJson('/api/shoots/' . $shoot->id . '/files?type=edited')
+            ->assertOk()
+            ->json('data.0');
+
+        $this->assertStringContainsString('/api/public/shoot-media/file/shoots/' . $shoot->id . '/completed/generated-web.jpg', $processedPayload['url']);
+        $this->assertStringContainsString('/api/public/shoot-media/file/shoots/' . $shoot->id . '/completed/generated-web.jpg', $processedPayload['web_url']);
+        $this->assertStringContainsString('/api/public/shoot-media/file/shoots/' . $shoot->id . '/completed/generated-thumb.jpg', $processedPayload['thumb_url']);
+        $this->assertStringContainsString('/storage/remote/final.jpg', $processedPayload['original_url']);
         \Illuminate\Support\Facades\Http::assertNothingSent();
     }
 }
