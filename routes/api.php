@@ -1198,10 +1198,10 @@ Route::middleware(['auth:sanctum'])->prefix('messaging')->group(function () {
         Route::post('/templates/{template}/preview', [MessageTemplateController::class, 'preview']);
 
         // Manual shoot notifications (Req 12.1, 12.5, 12.6, 12.7) — wraps ManualNotificationService;
-        // shares this group's role:superadmin,admin restriction with the template routes above.
+        // manual-send/preview stay admin/superadmin only. Recipients GET is mounted below so
+        // assigned sales_reps can load Overview notify pickers without gaining send rights.
         Route::post('/notifications/manual-send', [MessageTemplateController::class, 'manualSend']);
         Route::post('/notifications/manual-preview', [MessageTemplateController::class, 'manualPreview']);
-        Route::get('/notifications/recipients', [MessageTemplateController::class, 'notificationRecipients']);
 
         // Automations
         Route::get('/automations', [AutomationController::class, 'index']);
@@ -1230,6 +1230,11 @@ Route::middleware(['auth:sanctum'])->prefix('messaging')->group(function () {
         Route::post('/settings/sms/test-connection', [MessagingSettingsController::class, 'testSmsConnection']);
         Route::post('/settings/sms/test-send', [MessagingSettingsController::class, 'testSmsSend']);
         Route::delete('/settings/sms/numbers/{smsNumber}', [MessagingSettingsController::class, 'deleteSmsNumber']);
+    });
+
+    // Overview notify-recipient picker: admin/superadmin or assigned sales_rep (controller enforces rep_id).
+    Route::middleware('role:superadmin,admin,sales_rep')->group(function () {
+        Route::get('/notifications/recipients', [MessageTemplateController::class, 'notificationRecipients']);
     });
 
     Route::middleware('role:superadmin,admin,editing_manager,sales_rep,photographer')->group(function () {

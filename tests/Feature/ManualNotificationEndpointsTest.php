@@ -19,7 +19,8 @@ use Tests\TestCase;
  * Verifies that:
  *  - manual-send routes through MessagingService::sendEmail / sendSms with the right payload
  *  - manual-preview returns rendered subject/body without dispatching
- *  - admin role middleware on the messaging template route group still applies
+ *  - admin role middleware on the messaging template route group still applies to send/preview
+ *  - notification recipients GET allows admin/superadmin and assigned sales_rep only
  */
 class ManualNotificationEndpointsTest extends TestCase
 {
@@ -304,4 +305,62 @@ class ManualNotificationEndpointsTest extends TestCase
             $tos
         );
     }
+
+    public function test_assigned_sales_rep_can_list_notification_recipients(): void
+    {
+        $rep = User::factory()->create(['role' => 'salesRep']);
+        $client = User::factory()->create(['role' => 'client', 'email' => 'rep-client@example.com']);
+        $photographer = User::factory()->create([
+            'role' => 'photographer',
+            'email' => 'rep-photo@example.com',
+        ]);
+        $shoot = Shoot::factory()->create([
+            'client_id' => $client->id,
+            'photographer_id' => $photographer->id,
+            'rep_id' => $rep->id,
+        ]);
+
+        $response = $this->actingAs($rep, 'sanctum')
+            ->getJson('/api/messaging/notifications/recipients?shoot_id='.$shoot->id);
+
+        $response->assertOk();
+        $response->assertJsonPath('shoot_id', $shoot->id);
+        $this->assertNotEmpty($response->json('recipients'));
+    }
+
+    public function test_unassigned_sales_rep_cannot_list_notification_recipients(): void
+    {
+        $rep = User::factory()->create(['role' => 'salesRep']);
+        $otherRep = User::factory()->create(['role' => 'salesRep']);
+        $shoot = Shoot::factory()->create(['rep_id' => $otherRep->id]);
+
+        $response = $this->actingAs($rep, 'sanctum')
+            ->getJson('/api/messaging/notifications/recipients?shoot_id='.$shoot->id);
+
+        $response->assertForbidden();
+    }
+
+    public function test_sales_rep_still_cannot_manual_send_or_preview(): void
+    {
+        $rep = User::factory()->create(['role' => 'salesRep']);
+        $shoot = Shoot::factory()->create(['rep_id' => $rep->id]);
+
+        $this->actingAs($rep, 'sanctum')
+            ->postJson('/api/messaging/notifications/manual-send', [
+                'shoot_id' => $shoot->id,
+                'type' => 'shoot_scheduled',
+                'recipient_type' => 'client',
+                'channel' => 'email',
+            ])
+            ->assertForbidden();
+
+        $this->actingAs($rep, 'sanctum')
+            ->postJson('/api/messaging/notifications/manual-preview', [
+                'shoot_id' => $shoot->id,
+                'type' => 'shoot_scheduled',
+                'recipient_type' => 'client',
+            ])
+            ->assertForbidden();
+    }
+
 }

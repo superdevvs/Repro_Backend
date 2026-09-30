@@ -307,11 +307,42 @@ class MessageTemplateController extends Controller
         ]);
 
         $shoot = Shoot::with(['client', 'photographer', 'services'])->findOrFail($data['shoot_id']);
+        $this->authorizeNotificationRecipients($request, $shoot);
 
         return response()->json([
             'shoot_id' => $shoot->id,
             'recipients' => $manual->listRecipients($shoot, $data['recipient_type'] ?? null),
         ]);
+    }
+
+    /**
+     * Admins/superadmins may list recipients for any shoot. Sales reps may only
+     * list recipients for shoots where they are the assigned rep (rep_id).
+     */
+    protected function authorizeNotificationRecipients(Request $request, Shoot $shoot): void
+    {
+        $user = $request->user();
+        abort_unless($user !== null, 401, 'Unauthorized');
+
+        $normalize = static fn (?string $role): string => strtolower(str_replace(['_', '-'], '', (string) $role));
+        $role = $normalize($user->role);
+        $secondary = collect(is_array($user->secondary_roles) ? $user->secondary_roles : [])
+            ->map($normalize)
+            ->filter()
+            ->all();
+
+        $isAdmin = in_array($role, ['admin', 'superadmin'], true)
+            || ! empty(array_intersect($secondary, ['admin', 'superadmin']));
+        if ($isAdmin) {
+            return;
+        }
+
+        $isSalesRep = $role === 'salesrep' || in_array('salesrep', $secondary, true);
+        abort_unless(
+            $isSalesRep && (string) $shoot->rep_id === (string) $user->id,
+            403,
+            'Forbidden'
+        );
     }
 
     /**
