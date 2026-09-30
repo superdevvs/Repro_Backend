@@ -871,6 +871,8 @@ class UpdateShootAction
         // Bust the per-date schedule buckets for both the old and the new calendar day so a
         // reschedule via update reflects in the Schedule_View immediately (Req 8.1, 8.3).
         $scheduleScope->invalidateDates([
+            // Dashboard overview caches future appointments in today's bucket.
+            now()->toDateString(),
             $previousLocalDate,
             $scheduleScope->localDateForShoot($shoot),
             $createdReturnVisit ? $scheduleScope->localDateForShoot($createdReturnVisit) : null,

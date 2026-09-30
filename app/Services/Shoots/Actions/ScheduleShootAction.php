@@ -86,14 +86,15 @@ class ScheduleShootAction
         }
 
         if (! $isMultiUnit) {
-            $this->workflowService->schedule($shoot, $scheduledAt, $user);
-            $shoot->serviceItems()
-                ->whereNull('scheduled_at')
-                ->update([
-                    'scheduled_at' => \Carbon\Carbon::parse($scheduledAt)->format('Y-m-d H:i:s'),
-                    'workflow_status' => 'scheduled',
-                    'updated_at' => now(),
-                ]);
+            // Services own the schedule. Align booking-defining lines to the
+            // requested instant, then derive shoot scheduled_* from earliest.
+            $scheduleInstant = \Carbon\Carbon::parse($scheduledAt)->utc();
+            $fromServices = app(\App\Services\Schedule\ShootScheduleFromServices::class);
+            $fromServices->alignBookingDefiningServices($shoot, $scheduleInstant);
+            $shoot->unsetRelation('serviceItems');
+            $shoot->load('serviceItems');
+            $derived = $fromServices->earliestInstant($shoot->serviceItems) ?? $scheduleInstant;
+            $this->workflowService->schedule($shoot, $derived, $user);
         }
 
         if (! $shoot->dropbox_raw_folder) {

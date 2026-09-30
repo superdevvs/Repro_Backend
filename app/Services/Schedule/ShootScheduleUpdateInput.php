@@ -3,6 +3,8 @@
 namespace App\Services\Schedule;
 
 use App\Models\Shoot;
+use App\Services\Shoots\MultiUnitBookingService;
+use App\Services\Shoots\ShootMutationSupportService;
 use Carbon\Carbon;
 use Illuminate\Validation\ValidationException;
 
@@ -10,6 +12,11 @@ use Illuminate\Validation\ValidationException;
 class ShootScheduleUpdateInput
 {
     public function normalize(Shoot $shoot, array $payload): array
+    {
+        return $this->synchronizeAroundServices($shoot, $this->normalizeTimestamps($shoot, $payload));
+    }
+
+    private function normalizeTimestamps(Shoot $shoot, array $payload): array
     {
         $timezone = trim((string) (array_key_exists('timezone', $payload) ? $payload['timezone'] : $shoot->timezone));
         // Existing unzoned bookings use wall-clock storage. Do not reinterpret them.
@@ -63,6 +70,218 @@ class ShootScheduleUpdateInput
             'scheduled_date' => $local->toDateString(),
             'time' => $local->format('H:i:s'),
         ]);
+    }
+
+    /**
+     * Services are the schedule source of truth. When the booking-level appointment
+     * moves, align the booking-defining service lines; then always recompute shoot
+     * scheduled_at/date/time from the earliest scheduled service.
+     */
+    private function synchronizeAroundServices(Shoot $shoot, array $payload): array
+    {
+        if (app(MultiUnitBookingService::class)->handles($shoot, $payload)) {
+            return $payload;
+        }
+
+        $status = $shoot->workflow_status ?: $shoot->status;
+        if (! in_array($status, [Shoot::STATUS_REQUESTED, Shoot::STATUS_SCHEDULED], true)) {
+            return $payload;
+        }
+
+        $fromServices = app(ShootScheduleFromServices::class);
+        $support = app(ShootMutationSupportService::class);
+        $bookingChanged = $this->bookingScheduleChanged($shoot, $payload, $support);
+
+        if ($bookingChanged && ! empty($payload['scheduled_at'])) {
+            $payload = $this->injectAlignedServices(
+                $shoot,
+                $payload,
+                Carbon::parse($payload['scheduled_at'])->utc()
+            );
+        }
+
+        if (! array_intersect(['services', 'service_items', 'service_lines'], array_keys($payload))) {
+            return $payload;
+        }
+
+        $earliest = $this->earliestFromPayload($shoot, $payload, $support);
+        if (! $earliest) {
+            return $payload;
+        }
+
+        $timezone = trim((string) ($payload['timezone'] ?? $shoot->timezone));
+
+        return array_replace($payload, $fromServices->shootFieldsFromInstant($earliest, $timezone !== '' ? $timezone : null));
+    }
+
+    private function bookingScheduleChanged(Shoot $shoot, array $payload, ShootMutationSupportService $support): bool
+    {
+        if (array_key_exists('scheduled_at', $payload)) {
+            return $support->normalizeDateTimeForDatabase($payload['scheduled_at'])
+                !== $shoot->scheduled_at?->format('Y-m-d H:i:s');
+        }
+
+        if (array_key_exists('scheduled_date', $payload)) {
+            $incoming = $payload['scheduled_date']
+                ? Carbon::parse($payload['scheduled_date'])->toDateString()
+                : null;
+            if ($incoming !== $shoot->scheduled_date?->toDateString()) {
+                return true;
+            }
+        }
+
+        if (array_key_exists('time', $payload)) {
+            $incoming = $payload['time']
+                ? Carbon::parse($payload['time'])->format('H:i:s')
+                : null;
+            $current = $shoot->time ? Carbon::parse($shoot->time)->format('H:i:s') : null;
+
+            return $incoming !== $current;
+        }
+
+        return false;
+    }
+
+    /**
+     * Ensure booking-defining service lines in the payload carry the moved
+     * schedule so attachServices persists them. Explicit per-service
+     * scheduled_at in the same payload wins for that line.
+     */
+    private function injectAlignedServices(Shoot $shoot, array $payload, Carbon $instant): array
+    {
+        $fromServices = app(ShootScheduleFromServices::class);
+        $defining = $fromServices->bookingDefiningItems($shoot);
+        $nullDeliverable = $shoot->serviceItems
+            ->filter(fn ($item) => $item->scheduled_at === null && $item->is_deliverable !== false);
+
+        $stamps = $defining->map(fn ($item) => $item->scheduled_at?->format('Y-m-d H:i:s'))
+            ->filter()
+            ->unique()
+            ->values();
+        $shootStamp = $shoot->scheduled_at?->format('Y-m-d H:i:s');
+        $sharedOrMatched = $stamps->count() <= 1
+            || ($shootStamp && $defining->every(
+                fn ($item) => $item->scheduled_at?->format('Y-m-d H:i:s') === $shootStamp
+            ));
+
+        $targetIso = $instant->copy()->utc()->toIso8601String();
+        $alignedByService = [];
+
+        if ($sharedOrMatched || $defining->isEmpty()) {
+            foreach ($defining->merge($nullDeliverable) as $item) {
+                $alignedByService[(int) $item->service_id] = $targetIso;
+            }
+        } else {
+            $anchor = $shoot->scheduled_at?->copy()->utc()
+                ?? $fromServices->earliestInstant($defining);
+            $deltaSeconds = $anchor ? ($instant->copy()->utc()->getTimestamp() - $anchor->getTimestamp()) : 0;
+            foreach ($defining as $item) {
+                $alignedByService[(int) $item->service_id] = $item->scheduled_at
+                    ->copy()->utc()->addSeconds($deltaSeconds)->toIso8601String();
+            }
+            foreach ($nullDeliverable as $item) {
+                $alignedByService[(int) $item->service_id] = $targetIso;
+            }
+        }
+
+        if ($alignedByService === []) {
+            return $payload;
+        }
+
+        $explicitByService = [];
+        foreach (['services' => 'id', 'service_items' => 'service_id'] as $collection => $idKey) {
+            foreach ($payload[$collection] ?? [] as $row) {
+                if (! is_array($row)) {
+                    continue;
+                }
+                $id = (int) ($row[$idKey] ?? $row['service_id'] ?? $row['id'] ?? 0);
+                if ($id > 0 && array_key_exists('scheduled_at', $row) && $row['scheduled_at'] !== null && $row['scheduled_at'] !== '') {
+                    $explicitByService[$id] = true;
+                }
+            }
+        }
+
+        if (! isset($payload['services'])) {
+            $payload['services'] = $shoot->serviceItems->map(function ($item) use ($alignedByService, $explicitByService) {
+                $id = (int) $item->service_id;
+                $row = ['id' => $id];
+                if (isset($alignedByService[$id]) && empty($explicitByService[$id])) {
+                    $row['scheduled_at'] = $alignedByService[$id];
+                } elseif ($item->scheduled_at) {
+                    $row['scheduled_at'] = $item->scheduled_at->copy()->utc()->toIso8601String();
+                }
+
+                return $row;
+            })->values()->all();
+        } else {
+            $seen = [];
+            foreach ($payload['services'] as $index => $row) {
+                if (! is_array($row)) {
+                    continue;
+                }
+                $id = (int) ($row['id'] ?? $row['service_id'] ?? 0);
+                $seen[$id] = true;
+                if ($id > 0 && isset($alignedByService[$id]) && empty($explicitByService[$id])) {
+                    $payload['services'][$index]['scheduled_at'] = $alignedByService[$id];
+                }
+            }
+            foreach ($alignedByService as $id => $iso) {
+                if (! empty($seen[$id]) || ! empty($explicitByService[$id])) {
+                    continue;
+                }
+                $payload['services'][] = ['id' => $id, 'scheduled_at' => $iso];
+            }
+        }
+
+        if (isset($payload['service_items'])) {
+            foreach ($payload['service_items'] as $index => $row) {
+                if (! is_array($row)) {
+                    continue;
+                }
+                $id = (int) ($row['service_id'] ?? $row['id'] ?? 0);
+                if ($id > 0 && isset($alignedByService[$id]) && empty($explicitByService[$id])) {
+                    $payload['service_items'][$index]['scheduled_at'] = $alignedByService[$id];
+                }
+            }
+        }
+
+        return $payload;
+    }
+
+    private function earliestFromPayload(Shoot $shoot, array $payload, ShootMutationSupportService $support): ?Carbon
+    {
+        $current = $shoot->serviceItems->keyBy(fn ($item) => (int) $item->service_id);
+        $services = $payload['services'] ?? $current->map(fn ($item) => [
+            'id' => $item->service_id,
+            'scheduled_at' => $item->scheduled_at?->format('Y-m-d H:i:s'),
+        ])->values()->all();
+
+        $merged = $support->mergeServiceItemPayload(
+            $services,
+            $payload['service_items'] ?? null,
+            null,
+            null,
+            true
+        );
+
+        // Preserve omitted scheduled_at from current rows so earliest reflects the
+        // full booking after a partial service_items edit.
+        foreach ($merged as $index => $service) {
+            $id = (int) ($service['id'] ?? 0);
+            if (! array_key_exists('scheduled_at', $service) && $current->has($id)) {
+                $merged[$index]['scheduled_at'] = $current->get($id)->scheduled_at?->format('Y-m-d H:i:s');
+            }
+        }
+
+        // service_lines (multi-unit) are handled earlier; for single-unit also
+        // honor any service_lines shaped rows if present without multi-unit flag.
+        foreach ($payload['service_lines'] ?? [] as $line) {
+            if (! empty($line['scheduled_at'])) {
+                $merged[] = ['id' => (int) ($line['service_id'] ?? 0), 'scheduled_at' => $line['scheduled_at']];
+            }
+        }
+
+        return app(ShootScheduleFromServices::class)->earliestInstant($merged);
     }
 
     private function parse(string $value, string $timezone, ?Carbon $original, string $field): Carbon
