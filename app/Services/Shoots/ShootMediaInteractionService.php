@@ -90,6 +90,34 @@ class ShootMediaInteractionService
         ];
     }
 
+    /**
+     * Update the display filename only. Storage object / stored_filename stay put
+     * so downloads keep resolving by path and emit the new name via Content-Disposition.
+     *
+     * @return array{message: string, data: array{id: int, filename: string, stored_filename: ?string}}
+     */
+    public function renameFile(ShootFile $file, string $filename): array
+    {
+        $file->filename = $filename;
+        $file->save();
+
+        $shoot = $file->relationLoaded('shoot') ? $file->shoot : Shoot::find($file->shoot_id);
+        if ($shoot) {
+            $this->shootMediaMutationSupportService->clearShootFilesCache($shoot, auth()->user());
+        }
+
+        $fresh = $file->fresh();
+
+        return [
+            'message' => 'Filename updated',
+            'data' => [
+                'id' => (int) $fresh->id,
+                'filename' => (string) $fresh->filename,
+                'stored_filename' => $fresh->stored_filename,
+            ],
+        ];
+    }
+
     public function bulkDelete(Shoot $shoot, iterable $files): array
     {
         $errors = [];

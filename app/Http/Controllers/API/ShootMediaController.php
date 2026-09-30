@@ -315,6 +315,74 @@ class ShootMediaController extends Controller
         ));
     }
 
+    public function renameMedia(Request $request, Shoot $shoot, ShootFile $file)
+    {
+        $user = auth()->user();
+        $this->shootAuthorizationSupport->ensureFileBelongsToShoot($shoot, $file);
+        if (
+            ! $this->shootAuthorizationSupport->hasRole($user, ['admin', 'superadmin', 'editing_manager', 'salesRep', 'editor', 'photographer'])
+            || ! $this->shootAuthorizationSupport->canInteractWithShootMediaFile($shoot, $file, $user)
+        ) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        $request->validate([
+            'filename' => ['required', 'string', 'max:255'],
+        ]);
+
+        $incoming = trim((string) $request->input('filename'));
+
+        // Reject path traversal / separators / control chars before any rewrite.
+        if (
+            $incoming === ''
+            || str_contains($incoming, "\0")
+            || str_contains($incoming, '/')
+            || str_contains($incoming, '\\')
+            || str_contains($incoming, '..')
+            || preg_match('/[\r\n\t"]/', $incoming)
+        ) {
+            throw ValidationException::withMessages([
+                'filename' => ['Filename is invalid.'],
+            ]);
+        }
+
+        $incoming = trim($incoming, ' .');
+
+        if ($incoming === '') {
+            throw ValidationException::withMessages([
+                'filename' => ['Filename is invalid.'],
+            ]);
+        }
+
+        // Portable display names: letters, digits, spaces, dot, dash, underscore, parens, brackets.
+        if (! preg_match('/^[\w\-. ()\[\]]+$/u', $incoming)) {
+            throw ValidationException::withMessages([
+                'filename' => ['Filename contains unsafe characters.'],
+            ]);
+        }
+
+        $originalExt = strtolower((string) pathinfo((string) $file->filename, PATHINFO_EXTENSION));
+        $incomingExt = strtolower((string) pathinfo($incoming, PATHINFO_EXTENSION));
+
+        if ($incomingExt === '') {
+            if ($originalExt !== '') {
+                $incoming .= '.'.$originalExt;
+            }
+        } elseif ($originalExt !== '' && $incomingExt !== $originalExt) {
+            throw ValidationException::withMessages([
+                'filename' => ['Extension must match the original ('.$originalExt.').'],
+            ]);
+        }
+
+        if (strlen($incoming) > 255) {
+            throw ValidationException::withMessages([
+                'filename' => ['Filename may not be greater than 255 characters.'],
+            ]);
+        }
+
+        return response()->json($this->shootMediaInteractionService->renameFile($file, $incoming));
+    }
+
     public function reorderMedia(Request $request, Shoot $shoot)
     {
         $this->shootAuthorizationSupport->ensureShootAccess($shoot, $request->user());

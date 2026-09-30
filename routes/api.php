@@ -767,6 +767,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('{file}/cover', [ShootMediaController::class, 'setCoverMedia']);
         Route::post('{file}/flag', [ShootMediaController::class, 'flagMedia']);
         Route::post('{file}/comment', [ShootMediaController::class, 'commentMedia']);
+        Route::patch('{file}/rename', [ShootMediaController::class, 'renameMedia']);
         Route::delete('{file}', [ShootMediaController::class, 'deleteMedia']);
         Route::get('{file}/download', [ShootMediaController::class, 'downloadMedia']);
         Route::post('bulk-download', [ShootMediaController::class, 'bulkDownloadMedia']);
