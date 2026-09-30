@@ -386,4 +386,56 @@ class ShootRescheduleRequestWorkflowTest extends TestCase
         $this->assertStringContainsString(self::REQUESTED_DATE, (string) $record->review_notes);
         $this->assertStringContainsString('Fulfilled', (string) $record->review_notes);
     }
+
+    public function test_pending_reschedules_office_list_returns_only_pending_rows(): void
+    {
+        $client = User::factory()->create(['role' => 'client', 'name' => 'Client Ada']);
+        $admin = User::factory()->create(['role' => 'admin']);
+        $shoot = $this->makeShoot($client);
+        $shoot->update([
+            'address' => '100 Main St',
+            'city' => 'Austin',
+            'state' => 'TX',
+            'zip' => '78701',
+        ]);
+
+        $pending = $this->pendingRequestFor($shoot, $client);
+        ShootRescheduleRequest::create([
+            'shoot_id' => $shoot->id,
+            'requested_by' => $client->id,
+            'original_date' => self::ORIGINAL_DATE,
+            'original_time' => self::ORIGINAL_TIME,
+            'requested_date' => '2026-10-01',
+            'requested_time' => '09:00 AM',
+            'reason' => 'already decided',
+            'status' => ShootRescheduleRequest::STATUS_REJECTED,
+            'reviewed_at' => now(),
+            'approved_by' => $admin->id,
+        ]);
+
+        Sanctum::actingAs($admin);
+        $this->getJson('/api/shoots/pending-reschedules')
+            ->assertOk()
+            ->assertJsonCount(1, 'data')
+            ->assertJsonPath('data.0.id', $pending->id)
+            ->assertJsonPath('data.0.shoot_id', $shoot->id)
+            ->assertJsonPath('data.0.status', ShootRescheduleRequest::STATUS_PENDING)
+            ->assertJsonPath('data.0.requested_date', self::REQUESTED_DATE)
+            ->assertJsonPath('data.0.requested_time', self::REQUESTED_TIME)
+            ->assertJsonPath('data.0.original_date', self::ORIGINAL_DATE)
+            ->assertJsonPath('data.0.client.name', 'Client Ada')
+            ->assertJsonPath('data.0.client_name', 'Client Ada')
+            ->assertJsonPath('data.0.requester.name', $client->name)
+            ->assertJsonPath('data.0.shoot.location.address', '100 Main St')
+            ->assertJsonPath('data.0.address', '100 Main St, Austin, TX 78701');
+    }
+
+    public function test_pending_reschedules_office_list_rejects_non_staff(): void
+    {
+        $client = User::factory()->create(['role' => 'client']);
+        Sanctum::actingAs($client);
+        $this->getJson('/api/shoots/pending-reschedules')
+            ->assertForbidden();
+    }
+
 }

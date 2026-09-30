@@ -657,6 +657,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/shoots/history/export', [ShootController::class, 'exportHistory']);
     // Pending cancellations must come before /shoots/{shoot} to avoid route conflict
     Route::get('/shoots/pending-cancellations', [ShootWorkflowController::class, 'pendingCancellations']);
+    Route::get('/shoots/pending-reschedules', [ShootRescheduleRequestController::class, 'pendingReschedules']);
     Route::get('/shoots/pending-holds', [ShootWorkflowController::class, 'pendingHolds']);
     Route::get('/shoots/{shoot}', [ShootController::class, 'show']);
     Route::get('/shoots/{shoot}/invoice', [ShootPaymentsController::class, 'getOrCreateInvoice']);

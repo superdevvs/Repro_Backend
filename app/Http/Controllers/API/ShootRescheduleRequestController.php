@@ -49,6 +49,92 @@ class ShootRescheduleRequestController extends Controller
         ]);
     }
 
+
+    /**
+     * Office/dashboard queue of pending reschedule requests.
+     *
+     * Mirrors pending-cancellations / pending-holds: a flat staff-facing list so
+     * Dashboard → Requests can surface actionable rows without opening each shoot
+     * Overview. Rejected/approved history stays on the per-shoot endpoint.
+     */
+    public function pendingReschedules(Request $request)
+    {
+        $this->authorizeReviewer($request);
+
+        $user = $request->user();
+        $accessibleShootIds = $this->authorization
+            ->scopeAccessibleShootMedia(Shoot::query(), $user)
+            ->select('shoots.id');
+
+        $requests = ShootRescheduleRequest::query()
+            ->pending()
+            ->whereIn('shoot_id', $accessibleShootIds)
+            ->with([
+                'requester:id,name,avatar',
+                'shoot:id,address,city,state,zip,client_id,scheduled_date,time,timezone,status',
+                'shoot.client:id,name',
+            ])
+            ->latest()
+            ->get()
+            ->map(function (ShootRescheduleRequest $row) {
+                $shoot = $row->shoot;
+                $address = $shoot?->address;
+                $fullAddress = null;
+                if ($shoot) {
+                    $parts = array_filter([
+                        $shoot->address,
+                        $shoot->city,
+                        trim(implode(' ', array_filter([$shoot->state, $shoot->zip]))),
+                    ]);
+                    $fullAddress = $parts ? implode(', ', $parts) : null;
+                }
+
+                return [
+                    'id' => $row->id,
+                    'shoot_id' => $row->shoot_id,
+                    'status' => $row->status,
+                    'original_date' => $row->original_date?->toDateString(),
+                    'original_time' => $row->original_time,
+                    'requested_date' => $row->requested_date?->toDateString(),
+                    'requested_time' => $row->requested_time,
+                    'reason' => $row->reason,
+                    'created_at' => $row->created_at?->toIso8601String(),
+                    'requester' => $row->requester
+                        ? [
+                            'id' => $row->requester->id,
+                            'name' => $row->requester->name,
+                        ]
+                        : null,
+                    'client' => $shoot?->client
+                        ? [
+                            'id' => $shoot->client->id,
+                            'name' => $shoot->client->name,
+                        ]
+                        : null,
+                    'client_name' => $shoot?->client?->name,
+                    'shoot' => $shoot
+                        ? [
+                            'id' => $shoot->id,
+                            'address' => $address,
+                            'location' => [
+                                'address' => $shoot->address,
+                                'city' => $shoot->city,
+                                'state' => $shoot->state,
+                                'zip' => $shoot->zip,
+                                'fullAddress' => $fullAddress,
+                            ],
+                        ]
+                        : null,
+                    'address' => $fullAddress ?: $address,
+                ];
+            })
+            ->values();
+
+        return response()->json([
+            'data' => $requests,
+        ]);
+    }
+
     public function store(Request $request, Shoot $shoot)
     {
         abort_unless($this->authorization->canSubmitShootRequest($shoot, $request->user()), 403, 'Forbidden');
