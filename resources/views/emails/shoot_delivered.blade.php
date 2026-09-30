@@ -51,14 +51,16 @@
                 <p class="dark-heading" style="margin:0 0 8px; font-size:16px; line-height:1.4; color:#071223; font-weight:800;">What you can do now</p>
                 <p class="dark-body" style="margin:0; font-size:14px; line-height:1.7; color:#47627f;">
                     @if(!empty($paymentLink))
-                        Complete the remaining balance to unlock the full delivery, then return to the dashboard to review and download everything for this property.
+                        Complete the remaining balance to unlock downloads. Share links below can be forwarded once the shoot is paid — or sign in and open Completed Shoots.
                     @else
-                        Preview the completed files, download MLS Optimized images for listing uploads, use Print Resolution images for large-format or design needs, and manage everything for this property from the dashboard.
+                        Use the forwardable share links below for MLS-size and full-size downloads, tours, and any video or Zillow links for this property. You can also sign in and open Completed Shoots.
                     @endif
                 </p>
             </td>
         </tr>
     </table>
+
+    @include('emails.partials.delivery-share-links', ['deliveryShare' => $deliveryShare ?? null])
 
     @include('emails.partials.shoot-summary', ['shoot' => $shoot, 'showNotes' => false, 'showFinancials' => false])
 @endsection

@@ -392,12 +392,15 @@ class TemplateVariableResolver
         $assignedPhotographers = $this->formatAssignedPhotographers($shoot);
         $photographerName = $this->resolveLoadedPhotographerName($shoot);
         [$photographerFirstName, $photographerLastName] = $this->splitName($photographerName);
-        $smallZipLink = ($shoot->exists && $shoot->id && $this->canUseApplicationContainer())
-            ? app(\App\Services\Shoots\ShootMediaArchiveService::class)->buildPublicDownloadUrl($shoot, 'edited', 'small')
-            : null;
-        $fullZipLink = ($shoot->exists && $shoot->id && $this->canUseApplicationContainer())
-            ? app(\App\Services\Shoots\ShootMediaArchiveService::class)->buildPublicDownloadUrl($shoot, 'edited', 'original')
-            : null;
+        $deliveryShare = ($shoot->exists && $shoot->id && $this->canUseApplicationContainer())
+            ? app(\App\Services\SystemEmails\DeliveryShareLinksBuilder::class)->forShoot($shoot)
+            : [];
+        $smallZipLink = $deliveryShare['small_zip_link'] ?? null;
+        $fullZipLink = $deliveryShare['full_zip_link'] ?? null;
+        $mlsTourLink = $deliveryShare['mls_tour_link'] ?? null;
+        $brandedTourLink = $deliveryShare['branded_tour_link'] ?? null;
+        $videoDownloadLink = $deliveryShare['video_download_link'] ?? null;
+        $zillow3dLink = $deliveryShare['zillow_3d_link'] ?? null;
 
         return [
             'shoot_id' => $shoot->id,
@@ -421,7 +424,10 @@ class TemplateVariableResolver
                 ?? $this->getDateAttribute($shoot, 'editing_completed_at')?->format('M j, Y')
                 ?? $this->getDateAttribute($shoot, 'admin_verified_at')?->format('M j, Y'),
             'photo_count' => $shoot->edited_photo_count ?? $shoot->expected_final_count ?? null,
-            'mls_tour_link' => $shoot->iguide_tour_url ?? null,
+            'mls_tour_link' => $mlsTourLink,
+            'branded_tour_link' => $brandedTourLink,
+            'video_download_link' => $videoDownloadLink,
+            'zillow_3d_link' => $zillow3dLink,
             'pay_link' => $paymentLink,
             'payment_link' => $paymentLink,
             'cancellation_reason' => $shoot->cancellation_reason ?? null,

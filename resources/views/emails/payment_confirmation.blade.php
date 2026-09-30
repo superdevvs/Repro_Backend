@@ -61,11 +61,13 @@
         @include('emails.partials.shoot-summary', ['shoot' => $shoot])
     @endif
 
+    @include('emails.partials.delivery-share-links', ['deliveryShare' => $deliveryShare ?? null])
+
     <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-bottom:18px;">
         <tr>
             <td class="callout-success-bg" style="padding:18px 20px; border-radius:14px; border:1px solid #d9e7ff; background-color:#eff6ff;">
                 <p class="dark-heading" style="margin:0 0 8px; font-size:16px; line-height:1.4; color:#071223; font-weight:800;">What happens next</p>
-                <p class="dark-body" style="margin:0; font-size:14px; line-height:1.7; color:#47627f;">Your shoot will continue moving through production. Once the media package is complete, you will receive another email letting you know the files are ready.</p>
+                <p class="dark-body" style="margin:0; font-size:14px; line-height:1.7; color:#47627f;">@if(!empty($deliveryShare['has_links']))Your payment unlocks the forwardable download and tour links above. You can also sign in anytime and open this shoot under Completed Shoots.@else Your shoot will continue moving through production. Once the media package is complete, you will receive another email with download and tour links.@endif</p>
             </td>
         </tr>
     </table>

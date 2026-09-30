@@ -2,6 +2,8 @@
 
 namespace App\Services\SystemEmails;
 
+use App\Models\Shoot;
+
 use App\Models\MessageTemplate;
 use App\Services\Messaging\TemplateRenderer;
 use App\Services\Messaging\TemplateVariableResolver;
@@ -551,6 +553,7 @@ class SystemEmailRenderer
             ],
             'SHOOT_DELIVERED' => $shared + [
                 'paymentLink' => $links['payment'] ?? null,
+                'deliveryShare' => $this->deliveryShareForShoot($payload),
             ],
             'INVOICE_GENERATED' => $shared + [
                 'photographer' => $recipient,
@@ -567,8 +570,15 @@ class SystemEmailRenderer
                 'period' => $meta->period ?? null,
                 'roleLabel' => $meta->role_label ?? null,
             ],
+            'PAYMENT_CONFIRMATION' => $shared + [
+                'deliveryShare' => $this->deliveryShareForShoot($payload),
+            ],
+            'PAYMENT_COMPLETED' => $shared + [
+                'deliveryShare' => $this->deliveryShareForShoot($payload),
+            ],
             'SHOOT_PAID' => $shared + [
                 'amount' => $meta->amount ?? null,
+                'deliveryShare' => $this->deliveryShareForShoot($payload),
             ],
             'PHOTOGRAPHER_CHANGED' => $shared + [
                 'changesSummary' => $meta->changes_summary ?? null,
@@ -601,6 +611,30 @@ class SystemEmailRenderer
             ],
             default => $shared,
         };
+    }
+
+
+    /**
+     * @param  array<string, mixed>  $payload
+     * @return array<string, mixed>
+     */
+    private function deliveryShareForShoot(array $payload): array
+    {
+        $shootId = (int) data_get($payload, 'shoot.id', 0);
+        if ($shootId <= 0) {
+            return ['links' => [], 'has_links' => false, 'completed_shoots_note' => ''];
+        }
+
+        try {
+            $shoot = Shoot::query()->with('files')->find($shootId);
+            if (!$shoot) {
+                return ['links' => [], 'has_links' => false, 'completed_shoots_note' => ''];
+            }
+
+            return app(DeliveryShareLinksBuilder::class)->forShoot($shoot);
+        } catch (\Throwable $e) {
+            return ['links' => [], 'has_links' => false, 'completed_shoots_note' => ''];
+        }
     }
 
     private function objectify(mixed $value): mixed

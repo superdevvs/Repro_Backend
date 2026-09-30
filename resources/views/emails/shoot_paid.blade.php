@@ -29,6 +29,8 @@
         </tr>
     </table>
 
+    @include('emails.partials.delivery-share-links', ['deliveryShare' => $deliveryShare ?? null])
+
     @include('emails.partials.shoot-summary', ['shoot' => $shoot, 'showNotes' => false])
 @endsection
 

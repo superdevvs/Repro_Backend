@@ -10,6 +10,7 @@
 
 @section('content')
     <p class="dark-body" style="margin:0 0 16px; font-size:16px; line-height:1.75; color:#2d4769;">No balance remains for this shoot. Your separate payment receipt contains the transaction details for your records.</p>
+    @include('emails.partials.delivery-share-links', ['deliveryShare' => $deliveryShare ?? null])
     @include('emails.partials.shoot-summary', ['shoot' => $shoot, 'showFinancials' => false])
 @endsection
 
