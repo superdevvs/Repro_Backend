@@ -79,4 +79,17 @@ return [
 
     'signed_url_ttl' => (int) env('MEDIA_SIGNED_URL_TTL', 604800),
 
+    /*
+    |--------------------------------------------------------------------------
+    | Bright MLS media URL TTL
+    |--------------------------------------------------------------------------
+    |
+    | Bright Media Sync fetches listing photos server-side after agents open the
+    | import redirect. Keep this longer than the default in-app signed TTL so a
+    | publish remains importable for several weeks.
+    |
+    */
+
+    'bright_mls_signed_url_ttl' => (int) env('MEDIA_BRIGHT_MLS_SIGNED_URL_TTL', 2592000),
+
 ];

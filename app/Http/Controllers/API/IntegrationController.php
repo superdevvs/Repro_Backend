@@ -1255,61 +1255,94 @@ class IntegrationController extends Controller
     private function resolveBrightMlsMediaUrl(?string $candidateUrl, ?ShootFile $file = null): ?string
     {
         $candidateUrl = is_string($candidateUrl) ? trim($candidateUrl) : null;
+        $media = app(\App\Services\Media\MediaStorage::class);
+        $ttl = (int) config('media.bright_mls_signed_url_ttl', 2592000);
 
-        // 1. If candidate is already a full HTTP URL, use it directly
+        // Prefer the ShootFile so we always mint a currently-valid signed URL for
+        // private-disk media. FE-supplied /storage or unsigned public-file URLs
+        // are not fetchable by Bright after the private-disk cutover.
+        if ($file) {
+            $fromFile = $this->signedBrightMlsUrlForFile($file, $media, $ttl);
+            if ($fromFile) {
+                return $fromFile;
+            }
+        }
+
         if ($candidateUrl && Str::startsWith($candidateUrl, ['http://', 'https://'])) {
+            if ($this->isAppPrivateMediaUrl($candidateUrl)) {
+                $key = $this->extractMediaKeyFromAppUrl($candidateUrl);
+                if ($key && $media->exists($key)) {
+                    return $media->signedAppUrl($key, $ttl);
+                }
+
+                return null;
+            }
+
             return $candidateUrl;
         }
 
-        // 2. If we have a ShootFile record, try its fields in priority order
-        if ($file) {
-            // Try fields that may already be full HTTP URLs
-            foreach (['url', 'web_path', 'storage_path', 'path'] as $field) {
-                $value = $file->{$field} ?? null;
-                if ($value && Str::startsWith($value, ['http://', 'https://'])) {
-                    return $value;
-                }
-            }
-
-            // When reads are flipped to R2, delivered media is publicly fetchable
-            // via the CDN custom domain — prefer that for MLS server-side fetches.
-            $media = app(\App\Services\Media\MediaStorage::class);
-            if ($media->readFromR2Enabled() || $media->r2Only()) {
-                foreach (['web_path', 'storage_path', 'path'] as $field) {
-                    $key = $media->normalizeKey($file->{$field} ?? null);
-                    if ($key && $media->existsOnR2($key)) {
-                        return $media->publicUrl($key);
-                    }
-                }
-            }
-
-
-
-            // Fallback: convert storage-relative paths to full URLs (works when
-            // files are stored locally and the storage symlink is in place)
-            foreach (['web_path', 'storage_path', 'path'] as $field) {
-                $value = $file->{$field} ?? null;
-                if ($value && !Str::startsWith($value, ['http://', 'https://'])) {
-                    return $this->storagePathToUrl($value);
-                }
-            }
-        }
-
-        // 3. If candidate is a relative storage path, convert to full URL
         if ($candidateUrl) {
-            return $this->storagePathToUrl($candidateUrl);
+            $key = $media->normalizeKey($candidateUrl);
+            if ($key && $media->exists($key)) {
+                return $media->signedAppUrl($key, $ttl);
+            }
         }
 
         return null;
     }
 
-    private function storagePathToUrl(string $path): string
+    private function signedBrightMlsUrlForFile(ShootFile $file, \App\Services\Media\MediaStorage $media, int $ttl): ?string
     {
-        $path = ltrim($path, '/');
-        // URL-encode each path segment individually to handle spaces/special chars
-        $segments = explode('/', $path);
-        $encoded = implode('/', array_map('rawurlencode', $segments));
-        return url('storage/' . $encoded);
+        foreach (['web_path', 'path', 'storage_path'] as $field) {
+            $value = $file->{$field} ?? null;
+            if (is_string($value) && Str::startsWith($value, ['http://', 'https://'])) {
+                if (!$this->isAppPrivateMediaUrl($value)) {
+                    return $value;
+                }
+                $key = $this->extractMediaKeyFromAppUrl($value);
+                if ($key && $media->exists($key)) {
+                    return $media->signedAppUrl($key, $ttl);
+                }
+                continue;
+            }
+
+            $key = $media->normalizeKey(is_string($value) ? $value : null);
+            if ($key && $media->exists($key)) {
+                return $media->signedAppUrl($key, $ttl);
+            }
+        }
+
+        return null;
+    }
+
+    private function isAppPrivateMediaUrl(string $url): bool
+    {
+        $path = (string) (parse_url($url, PHP_URL_PATH) ?: '');
+
+        return str_contains($path, '/api/public/shoot-media/file/')
+            || str_contains($path, '/storage/shoots/')
+            || str_contains($path, '/storage/share-links/')
+            || str_contains($path, '/storage/editor-downloads/');
+    }
+
+    private function extractMediaKeyFromAppUrl(string $url): ?string
+    {
+        $path = (string) (parse_url($url, PHP_URL_PATH) ?: '');
+        $markers = [
+            '/api/public/shoot-media/file/',
+            '/storage/',
+        ];
+
+        foreach ($markers as $marker) {
+            $pos = strpos($path, $marker);
+            if ($pos === false) {
+                continue;
+            }
+            $relative = rawurldecode(substr($path, $pos + strlen($marker)));
+            return app(\App\Services\Media\MediaStorage::class)->normalizeKey($relative);
+        }
+
+        return null;
     }
 
     /**

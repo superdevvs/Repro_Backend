@@ -893,34 +893,17 @@ class BrightMlsService
                 return null;
             }
 
-            // Build photo options from shoot files
+            // Build photo options from shoot files. Media lives on the private
+            // disk, so Bright must receive long-lived app-signed URLs — bare
+            // /storage/... paths 404 and unsigned /api/public/shoot-media/file
+            // routes 403 under the signed middleware.
             $photoOptions = $photos->map(function ($file) {
                 $commentDescription = $this->latestMediaCommentDescription($file);
-                // Try fields that are already full HTTP URLs
-                foreach (['url', 'web_path', 'storage_path', 'path'] as $field) {
-                    $val = $file->{$field} ?? null;
-                    if ($val && str_starts_with($val, 'http')) {
-                        return [
-                            'url' => $val,
-                            'filename' => $this->normalizeBrightMlsPhotoFilename(
-                                $file->filename ?? null,
-                                $val,
-                                $file->id
-                            ),
-                            'description' => $commentDescription,
-                            'roomType' => '',
-                            'selected' => true,
-                        ];
-                    }
+                $url = $this->resolvePublishableMediaUrl($file);
+                if (!$url) {
+                    return null;
                 }
 
-
-
-                // Fallback: convert relative path to storage URL
-                $url = $file->storage_path ?? $file->path ?? null;
-                if ($url && !str_starts_with($url, 'http')) {
-                    $url = \Illuminate\Support\Facades\Storage::disk('public')->url($url);
-                }
                 return [
                     'url' => $url,
                     'filename' => $this->normalizeBrightMlsPhotoFilename(
@@ -932,7 +915,7 @@ class BrightMlsService
                     'roomType' => '',
                     'selected' => true,
                 ];
-            })->filter(fn($p) => !empty($p['url']))->values()->all();
+            })->filter()->values()->all();
 
             // Build document options (floorplans from iGUIDE)
             $documentOptions = [];
@@ -1334,6 +1317,49 @@ class BrightMlsService
         }
 
         return substr($trimmed, 0, $maxLength);
+    }
+
+
+    /**
+     * Build a Bright-fetchable HTTPS URL for a shoot file.
+     * Prefers MLS/web derivatives, then the completed master.
+     */
+    private function resolvePublishableMediaUrl(\App\Models\ShootFile $file): ?string
+    {
+        $media = app(\App\Services\Media\MediaStorage::class);
+        $ttl = (int) config('media.bright_mls_signed_url_ttl', 2592000);
+
+        foreach (['web_path', 'path', 'storage_path'] as $field) {
+            $raw = $file->{$field} ?? null;
+            if (is_string($raw) && str_starts_with($raw, 'http')) {
+                if ($this->isExternallyFetchableUrl($raw)) {
+                    return $raw;
+                }
+                continue;
+            }
+
+            $key = $media->normalizeKey(is_string($raw) ? $raw : null);
+            if ($key && $media->exists($key)) {
+                return $media->signedAppUrl($key, $ttl);
+            }
+        }
+
+        return null;
+    }
+
+    private function isExternallyFetchableUrl(string $url): bool
+    {
+        $path = (string) (parse_url($url, PHP_URL_PATH) ?: '');
+        // Our private media endpoints require a signature; unsigned copies are dead.
+        if (str_contains($path, '/api/public/shoot-media/file/')) {
+            return is_string(parse_url($url, PHP_URL_QUERY))
+                && str_contains((string) parse_url($url, PHP_URL_QUERY), 'signature=');
+        }
+        if (str_contains($path, '/storage/shoots/')) {
+            return false;
+        }
+
+        return (bool) filter_var($url, FILTER_VALIDATE_URL);
     }
 
     private function latestMediaCommentDescription(\App\Models\ShootFile $file): string
