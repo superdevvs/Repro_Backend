@@ -676,6 +676,65 @@ class ShootMutationActionsTest extends TestCase
     }
 
     #[\PHPUnit\Framework\Attributes\Test]
+    public function assigned_sales_rep_can_add_service_when_existing_line_price_drifted_from_catalog(): void
+    {
+        Sanctum::actingAs($this->salesRep);
+        $shoot = Shoot::factory()->create([
+            'client_id' => $this->client->id,
+            'photographer_id' => $this->photographer->id,
+            'service_id' => $this->service->id,
+            'rep_id' => $this->salesRep->id,
+            'status' => Shoot::STATUS_SCHEDULED,
+            'workflow_status' => Shoot::STATUS_SCHEDULED,
+            'scheduled_date' => now()->addDays(3)->toDateString(),
+            'time' => '10:00',
+            'timezone' => 'America/New_York',
+            'address' => '1732 Fletchers Drive',
+            'city' => 'Point of Rocks',
+            'state' => 'MD',
+            'zip' => '21777',
+        ]);
+        // Legacy booked HDR price that no longer matches catalog (175).
+        $shoot->services()->attach($this->service->id, [
+            'price' => 275,
+            'quantity' => 1,
+            'photographer_pay' => 45,
+            'photographer_id' => $this->photographer->id,
+        ]);
+
+        $zillow = Service::factory()->create([
+            'name' => 'Zillow 3D w/Floor plans',
+            'price' => 150.00,
+        ]);
+        $zillow->forceFill(['is_migration_only' => false])->save();
+
+        $this->patchJson("/api/shoots/{$shoot->id}", [
+            'services' => [
+                // FE/catalog echo of 175 must not 403 against booked 275.
+                ['id' => $this->service->id, 'price' => 175, 'quantity' => 1],
+                ['id' => $zillow->id, 'price' => 100, 'quantity' => 1],
+            ],
+            'notify_client' => true,
+            'notify_photographer' => true,
+        ])->assertOk();
+
+        $shoot->refresh()->load(['services', 'serviceItems']);
+        $this->assertTrue($shoot->services->contains('id', $zillow->id));
+        $this->assertEqualsWithDelta(
+            275.0,
+            (float) $shoot->serviceItems()->where('service_id', $this->service->id)->value('price'),
+            0.01,
+            'Existing HDR booked price must be preserved when a rep adds another service.'
+        );
+        $this->assertEqualsWithDelta(
+            150.0,
+            (float) $shoot->serviceItems()->where('service_id', $zillow->id)->value('price'),
+            0.01,
+            'New bookable service should take catalog price from the server.'
+        );
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
     public function scheduling_honors_saved_recipients_when_scheduled_automation_did_not_send_client_email(): void
     {
         Sanctum::actingAs($this->admin);

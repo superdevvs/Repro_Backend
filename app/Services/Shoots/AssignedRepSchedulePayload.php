@@ -59,30 +59,34 @@ class AssignedRepSchedulePayload
             if (! array_key_exists($field, $payload)) {
                 continue;
             }
-            abort_unless(is_array($payload[$field]), 403, 'Forbidden');
+            abort_unless(is_array($payload[$field]), 403, 'Invalid service plan payload.');
             $seen = [];
             foreach ($payload[$field] as &$row) {
-                abort_unless(is_array($row) && isset($row[$idKey]) && is_scalar($row[$idKey]), 403, 'Forbidden');
+                abort_unless(is_array($row) && isset($row[$idKey]) && is_scalar($row[$idKey]), 403, 'Each service line needs a valid service id.');
                 $serviceId = (int) $row[$idKey];
-                abort_unless($serviceId > 0 && ! isset($seen[$serviceId]), 403, 'Forbidden');
+                abort_unless($serviceId > 0 && ! isset($seen[$serviceId]), 403, 'Duplicate or invalid service id in plan.');
                 $seen[$serviceId] = true;
                 $incomingServiceIds[$serviceId] = true;
-                abort_unless(array_diff(array_keys($row), [$idKey, 'scheduled_at', 'price', 'quantity', 'photographer_pay']) === [], 403, 'Forbidden');
+                abort_unless(array_diff(array_keys($row), [$idKey, 'scheduled_at', 'price', 'quantity', 'photographer_pay']) === [], 403, 'Service lines may only include schedule and pricing context fields.');
 
                 $item = $byService->get($serviceId);
                 if ($item) {
-                    foreach (['price', 'quantity', 'photographer_pay'] as $context) {
-                        if (array_key_exists($context, $row)) {
-                            abort_unless($this->sameValue($row[$context], $item->{$context}), 403, 'Forbidden');
-                            unset($row[$context]);
-                        }
-                    }
+                    // Existing lines: price/qty/pay are server-owned. Overview may
+                    // re-echo catalog prices that drifted from the booked line
+                    // (e.g. HDR 275 booked vs 175 catalog). Strip those echoes
+                    // instead of sameValue-aborting — otherwise adding a service
+                    // like Zillow 3D falsely 403s even though pricing is unchanged.
+                    unset($row['price'], $row['quantity'], $row['photographer_pay']);
                     continue;
                 }
 
                 // New lines: bookable catalog only. Pricing stays server-owned.
                 $catalog = Service::query()->whereKey($serviceId)->first();
-                abort_unless($catalog && ! $catalog->is_migration_only, 403, 'Forbidden');
+                abort_unless(
+                    $catalog && ! $catalog->is_migration_only,
+                    403,
+                    'Only bookable catalog services can be added to this shoot.'
+                );
                 unset($row['price'], $row['photographer_pay']);
             }
             unset($row);

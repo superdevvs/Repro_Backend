@@ -146,9 +146,6 @@ class AssignedRepSchedulePayloadTest extends TestCase
         match ($change) {
             'address' => $payload['address'] = 'Another property',
             'client' => $payload['client_id'] = 999999,
-            'price' => $payload['services'][0]['price'] = 0,
-            'quantity' => $payload['services'][0]['quantity'] = 2,
-            'pay' => $payload['services'][0]['photographer_pay'] = 999,
             'assignment' => $payload['service_photographers'][0]['photographer_id'] = 999999,
             'property' => $payload['property_details']['beds'] = 9,
             'unknown_service' => $payload['services'][0]['id'] = 999999,
@@ -167,8 +164,52 @@ class AssignedRepSchedulePayloadTest extends TestCase
     public static function forbiddenContext(): array
     {
         return array_map(fn ($change) => [$change], [
-            'address', 'client', 'price', 'quantity', 'pay', 'assignment', 'property',
+            'address', 'client', 'assignment', 'property',
             'unknown_service', 'duplicate_service', 'unknown_service_field', 'unknown_property_field',
         ]);
+    }
+
+    public function test_existing_line_price_qty_pay_echoes_are_stripped_even_when_they_drift(): void
+    {
+        [$shoot, $payload, $existing] = $this->fixture();
+        // Simulate a legacy booked price that no longer matches catalog / FE echo.
+        $shoot->services()->updateExistingPivot($existing->id, [
+            'price' => 275,
+            'quantity' => 1,
+            'photographer_pay' => 90,
+        ]);
+        $zillow = Service::factory()->create(['name' => 'Zillow 3D Home Tour', 'price' => 180]);
+        $zillow->forceFill(['is_migration_only' => false])->save();
+
+        $payload['services'] = [
+            [
+                'id' => $existing->id,
+                // Catalog / FE echo that drifts from the booked 275 line.
+                'price' => 175,
+                'quantity' => 2,
+                'photographer_pay' => 40,
+                'scheduled_at' => '2026-10-05 11:00:00',
+            ],
+            [
+                'id' => $zillow->id,
+                'price' => 180,
+                'quantity' => 1,
+                'scheduled_at' => '2026-10-05 11:00:00',
+            ],
+        ];
+        $payload['service_photographers'] = [
+            ['service_id' => $existing->id, 'photographer_id' => $shoot->photographer_id],
+            ['service_id' => $zillow->id, 'photographer_id' => $shoot->photographer_id],
+        ];
+
+        $normalized = app(AssignedRepSchedulePayload::class)->normalize($shoot->fresh(), $payload);
+
+        $this->assertSame([
+            ['id' => $existing->id, 'scheduled_at' => '2026-10-05 11:00:00'],
+            ['id' => $zillow->id, 'quantity' => 1, 'scheduled_at' => '2026-10-05 11:00:00'],
+        ], $normalized['services']);
+        $this->assertArrayNotHasKey('price', $normalized['services'][0]);
+        $this->assertArrayNotHasKey('photographer_pay', $normalized['services'][0]);
+        $this->assertSame(275.0, (float) $shoot->fresh()->serviceItems()->where('service_id', $existing->id)->value('price'));
     }
 }
