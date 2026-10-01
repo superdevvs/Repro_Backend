@@ -23,6 +23,8 @@ use App\Models\ShootFile;
  * Padding matters: unpadded positions sort as 1, 10, 11, 2 — worse than no
  * prefix at all. Width is the digit count of the set size with a floor of 3, so
  * a typical shoot reads 001_, 002_ … and a 1200-image set still pads to 0001_.
+ * AI-edited address_counter_edited names already carry their sequence and are
+ * returned as-is, without a second prefix.
  */
 class DeliveryFilenameFormatter
 {
@@ -52,6 +54,7 @@ class DeliveryFilenameFormatter
     public function formatForFile(ShootFile $file, int $position, int $total, ?string $fallback = null): string
     {
         $name = $this->baseNameFor($file, $fallback);
+        if ($this->hasEditedName($file)) return $name;
         $unit = $file->shoot_service_id ? $file->serviceItem?->unit : null;
         if ($unit) $name = 'unit-'.$unit->id.'_'.$this->safeSegment($unit->label).'_'.$name;
 
@@ -79,6 +82,7 @@ class DeliveryFilenameFormatter
      */
     public function baseNameFor(ShootFile $file, ?string $fallback = null): string
     {
+        if ($this->hasEditedName($file)) return $this->sanitizeBaseName($file->filename);
         foreach ([$file->original_name ?? null, $file->filename, $file->stored_filename, $fallback] as $candidate) {
             if (is_string($candidate) && trim($candidate) !== '') {
                 return $this->sanitizeBaseName($candidate);
@@ -86,6 +90,11 @@ class DeliveryFilenameFormatter
         }
 
         return 'file-' . (int) $file->id;
+    }
+
+    private function hasEditedName(ShootFile $file): bool
+    {
+        return $file->is_ai_edited && preg_match('/_\d+_edited\.jpg$/D', (string) $file->filename) === 1;
     }
 
     /**

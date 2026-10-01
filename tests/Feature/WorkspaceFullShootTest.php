@@ -95,6 +95,13 @@ class WorkspaceFullShootTest extends TestCase
         $this->assertCount(5, $workspace->outputs[0]['sourceFileIds']);
         $files = ShootFile::where('shoot_id', $workspace->shoot_id)->where('is_ai_edited', true)->get();
         $this->assertCount(2, $files);
+        $names = app(\App\Services\Studio\AiEditedFilename::class);
+        $shoot = Shoot::findOrFail($workspace->shoot_id);
+        $this->assertSame([$names->format($shoot, 1), $names->format($shoot, 2)], $files->pluck('filename')->all());
+        $this->assertSame($files->pluck('filename')->all(), array_column($workspace->outputs, 'name'));
+        $formatter = app(\App\Services\Shoots\DeliveryFilenameFormatter::class);
+        $this->assertSame($files->first()->filename, $formatter->formatForFile($files->first(), 9, 10));
+        $this->assertSame(3, $names->next($workspace->shoot_id)['number']);
         $this->assertTrue($files->every(fn ($file) => $file->workflow_stage === 'verified' && ! $file->ai_editing_metadata['requires_review']));
         $this->assertSame(6, ShootFile::where('shoot_id', $workspace->shoot_id)->where('workflow_stage', 'todo')->count());
         $this->assertCount(2, $workspace->present()['photoGroups']);

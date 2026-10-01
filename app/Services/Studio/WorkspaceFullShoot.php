@@ -123,7 +123,8 @@ class WorkspaceFullShoot
             $stored['sourceFileIds'] = $group['sourceFileIds'];
             $stored['sourceMediaIds'] = $group['sourceMediaIds'];
             $state->assertActive();
-            app(WorkspaceShootPublisher::class)->publish($workspace, $items[$group['mediaId']], $stored, $outputKey);
+            $published = app(WorkspaceShootPublisher::class)->publish($workspace, $items[$group['mediaId']], $stored, $outputKey);
+            $stored['name'] = $published?->filename ?? $group['name'];
             DB::transaction(function () use ($workspace, $operationId, $group, $stored, $outputKey) {
                 $record = StudioWorkspace::lockForUpdate()->findOrFail($workspace->id);
                 if (! $record->isBusy() || ($record->operation['id'] ?? null) !== $operationId) {
@@ -131,7 +132,7 @@ class WorkspaceFullShoot
                 }
                 $outputs = $record->outputs ?? [];
                 if (! collect($outputs)->contains('id', $outputKey)) {
-                    $outputs[] = array_merge($stored, ['id' => $outputKey, 'mediaId' => $group['mediaId'], 'name' => $group['name'],
+                    $outputs[] = array_merge($stored, ['id' => $outputKey, 'mediaId' => $group['mediaId'],
                         'thumbnailUrl' => $stored['url'], 'kind' => 'image', 'status' => 'completed',
                         'version' => (int) collect($outputs)->where('mediaId', $group['mediaId'])->max('version') + 1]);
                 }

@@ -100,7 +100,10 @@ class WorkspaceProcessor
                 $stored['sourceFileIds'] = $sourceGroup['sourceFileIds'] ?? [];
             }
             if ($type !== 'prepare' && ! $workspace->isVideo()) {
-                app(WorkspaceShootPublisher::class)->publish($workspace, $item, $stored, $operationId.'-'.$item['id']);
+                $published = app(WorkspaceShootPublisher::class)->publish($workspace, $item, $stored, $operationId.'-'.$item['id']);
+                if ($published) {
+                    $stored['name'] = $published->filename;
+                }
             }
             $this->mutate($workspace, $operationId, function (StudioWorkspace $w) use ($type, $item, $stored, $frame, $index, $items, $operationId): void {
                 $field = $type === 'prepare' ? 'prepared_frames' : 'outputs';
