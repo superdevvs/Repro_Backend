@@ -308,6 +308,7 @@ class SmsAiAgentService
                     'contact_phone' => $to,
                     'contact_name' => $contact->name,
                     'contact_type' => $contact->type,
+                    'contact_user_id' => $contact->user_id,
                     'metadata' => array_merge(['ai_generated' => !isset($extraMetadata['compliance_keyword'])], $extraMetadata),
                     'bypass_opt_out' => $bypassOptOut,
                     'send_source' => isset($extraMetadata['compliance_keyword']) ? 'SMS_COMPLIANCE' : 'AI_SMS_AGENT',

@@ -29,6 +29,7 @@ class InboundSmsComplianceTest extends TestCase
             'phonenumber' => '+12025550188',
             'sms_opt_out' => $keyword !== 'STOP',
             'sms_ai_enabled' => false,
+            'metadata' => ['preferences' => ['notificationSMS' => false]],
         ]);
         $contact = Contact::create([
             'name' => 'SMS Client', 'phone' => $user->phonenumber, 'type' => 'client',

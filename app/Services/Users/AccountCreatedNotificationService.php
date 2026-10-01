@@ -194,7 +194,7 @@ class AccountCreatedNotificationService
                 ['client' => $user, 'recipient' => $user, 'recipient_type' => $this->normalizeRole($user->role)]
             ));
             $rendered = app(TemplateRenderer::class)->render($template, $variables);
-            $this->messagingService->sendSms([
+            $message = $this->messagingService->sendSms([
                 'to' => $phone,
                 'body_text' => $rendered['body_text'],
                 'template_id' => $template->id,
@@ -209,7 +209,7 @@ class AccountCreatedNotificationService
                 'user_id' => $actor?->id ?? $user->id,
             ]);
 
-            return $this->channel(true, true);
+            return $this->channel(true, $message->status !== 'BLOCKED');
         } catch (\Throwable $exception) {
             $this->logFailure('sms', $user, $exception);
 

@@ -132,11 +132,23 @@ class ManualNotificationService
                 $sender,
                 $template,
                 $recipient,
-                stampReady: $type === 'shoot_ready' && $messages === [],
+                stampReady: $type === 'shoot_ready' && ! collect($messages)->contains(fn (Message $message) => $message->status !== 'BLOCKED'),
             );
         }
 
-        return $messages[array_key_last($messages)];
+        $result = $messages[array_key_last($messages)];
+        if (count($messages) > 1) {
+            $blocked = collect($messages)->where('status', 'BLOCKED')->count();
+            $result->metadata = array_replace_recursive((array) $result->metadata, ['manual_delivery' => [
+                'sent_count' => count($messages) - $blocked,
+                'blocked_count' => $blocked,
+            ]]);
+            if ($result->exists) {
+                $result->save();
+            }
+        }
+
+        return $result;
     }
 
     /**
@@ -200,6 +212,7 @@ class ManualNotificationService
 
         $message = $this->dispatchForChannel($channel, [
             'to'               => $address,
+            'notification_type' => $type,
             'subject'          => $rendered['subject'] ?? $template->subject,
             'body_html'        => $rendered['body_html'] ?? $rendered['html'] ?? null,
             'body_text'        => $rendered['body_text'] ?? $rendered['text'] ?? null,
@@ -217,7 +230,7 @@ class ManualNotificationService
         ]);
 
         // AC 12.10 — stamp once per manual shoot_ready dispatch, not per photographer copy.
-        if ($stampReady && $type === 'shoot_ready') {
+        if ($stampReady && $type === 'shoot_ready' && $message->status !== 'BLOCKED') {
             $shoot->forceFill(['shoot_ready_notified_at' => now()])->save();
             $this->automationService->schedulePaymentReminders($shoot->refresh());
         }

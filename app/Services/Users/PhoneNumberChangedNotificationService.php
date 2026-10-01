@@ -54,7 +54,7 @@ class PhoneNumberChangedNotificationService
     private function send(User $user, ?User $actor, string $to, string $body, string $source): array
     {
         try {
-            $this->messagingService->sendSms([
+            $message = $this->messagingService->sendSms([
                 'to' => $to,
                 'body_text' => $body,
                 'send_source' => $source,
@@ -68,7 +68,7 @@ class PhoneNumberChangedNotificationService
                 'user_id' => $actor?->id ?? $user->id,
             ]);
 
-            return ['sent' => true, 'error' => null];
+            return ['sent' => $message->status !== 'BLOCKED', 'error' => null];
         } catch (\Throwable $exception) {
             ApiErrorResponder::log($exception, 'warning');
 

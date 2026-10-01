@@ -8,6 +8,7 @@ use App\Http\Resources\Messaging\SmsContactResource;
 use App\Http\Resources\Messaging\SmsMessageResource;
 use App\Http\Resources\Messaging\SmsThreadResource;
 use App\Models\Contact;
+use App\Models\Message;
 use App\Models\MessageThread;
 use App\Models\Shoot;
 use App\Models\SmsGroup;
@@ -350,6 +351,7 @@ class SmsMessagingController extends Controller
                 'contact_phone' => $toNumber,
                 'contact_name' => $contact->name,
                 'contact_type' => $contact->type,
+                'contact_user_id' => $contact->user_id,
             ]);
         } catch (SmsSendException $e) {
             return response()->json([
@@ -365,6 +367,10 @@ class SmsMessagingController extends Controller
                 'error' => 'sms_send_failed',
                 'message' => 'SMS could not be sent. Please try again.',
             ], 422);
+        }
+
+        if ($message->status === 'BLOCKED') {
+            return $this->blockedSmsResponse($message);
         }
 
         // Staff manual reply pauses AI on this thread (per-thread takeover).
@@ -438,6 +444,10 @@ class SmsMessagingController extends Controller
             }
             try {
                 $message = $this->messaging->sendSms($this->smsPayload($request, $destination, $data));
+                if ($message->status === 'BLOCKED') {
+                    $results[] = ['to' => $destination['phone'], 'status' => 'failed', 'error' => $this->blockedSmsError($message)];
+                    continue;
+                }
                 $sent++;
                 $primaryThread ??= $message->thread->load(['contact', 'assignedTo']);
                 $primaryMessage ??= $message;
@@ -522,7 +532,11 @@ class SmsMessagingController extends Controller
                 'valid' => true,
             ];
             try {
-                $this->messaging->sendSms($this->smsPayload($request, $destination, $data, hidden: true));
+                $message = $this->messaging->sendSms($this->smsPayload($request, $destination, $data, hidden: true));
+                if ($message->status === 'BLOCKED') {
+                    $results[] = ['to' => $normalized, 'status' => 'failed', 'error' => $this->blockedSmsError($message)];
+                    continue;
+                }
                 $sent++;
                 $results[] = ['to' => $normalized, 'status' => 'sent'];
             } catch (SmsSendException $e) {
@@ -638,6 +652,10 @@ class SmsMessagingController extends Controller
             ], 422);
         }
 
+        if ($message->status === 'BLOCKED') {
+            return $this->blockedSmsResponse($message);
+        }
+
         $thread = $message->thread->load(['contact', 'assignedTo']);
 
         return response()->json([
@@ -678,6 +696,10 @@ class SmsMessagingController extends Controller
                     'contact_type' => $destination['type'] ?? null,
                     'contact_user_id' => $destination['user_id'] ?? null,
                 ]);
+                if ($message->status === 'BLOCKED') {
+                    $results[] = ['to' => $destination['phone'], 'status' => 'failed', 'error' => $this->blockedSmsError($message)];
+                    continue;
+                }
                 $thread = $message->thread->load(['contact', 'assignedTo']);
                 $sent++;
                 $firstMessage ??= $message;
@@ -740,6 +762,20 @@ class SmsMessagingController extends Controller
             'message' => $firstMessage ? SmsMessageResource::make($firstMessage) : null,
             'thread' => $firstThread ? SmsThreadResource::make($firstThread) : null,
         ]);
+    }
+
+    private function blockedSmsError(Message $message): string
+    {
+        return $message->error_message ?: 'SMS delivery is disabled for this recipient.';
+    }
+
+    private function blockedSmsResponse(Message $message): JsonResponse
+    {
+        return response()->json([
+            'success' => false,
+            'error' => 'sms_send_blocked',
+            'message' => $this->blockedSmsError($message),
+        ], 422);
     }
 
     /**
@@ -982,4 +1018,3 @@ class SmsMessagingController extends Controller
         $thread->update(['unread_for_user_ids_json' => $remaining]);
     }
 }
-

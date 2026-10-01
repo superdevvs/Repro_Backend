@@ -306,9 +306,19 @@ class AutomationService
             $context['tags_json'] = ['PAYMENT_REMINDER:shoot:'.$shoot->id, $tag];
             $result = $this->handleEvent('SHOOT_PAYMENT_REMINDER', $context);
 
-            return Message::whereIn('id', $result['message_ids'] ?? [])
+            $accepted = Message::whereIn('id', $result['message_ids'] ?? [])
                 ->whereIn('status', ['SENT', 'DELIVERED', 'QUEUED', 'SCHEDULED'])
                 ->orderByRaw("CASE WHEN channel = 'EMAIL' THEN 0 ELSE 1 END")->latest('id')->first();
+
+            if ($accepted || ($result['failed_run_count'] ?? 0) > 0 || ($result['waiting_run_count'] ?? 0) > 0) {
+                return $accepted;
+            }
+
+            // A completed SMS-only reminder declined by its recipient is terminal.
+            // Failed or waiting email actions must remain eligible for their own delivery.
+            return Message::whereIn('id', $result['blocked_message_ids'] ?? [])
+                ->where('status', 'BLOCKED')->where('metadata->delivery->blocked_reason', 'notification_preferences')
+                ->latest('id')->first();
         }
 
         $client = $shoot->client;
@@ -346,6 +356,7 @@ class AutomationService
 
         $emailMessage = null;
         $smsMessage = null;
+        $emailFailed = false;
 
         // Channel 1 — email. Best-effort: a failure here is logged and must not prevent the SMS.
         if ($email !== '' && $template !== null) {
@@ -366,6 +377,7 @@ class AutomationService
                     'tags_json' => ['PAYMENT_REMINDER:shoot:'.$shoot->id],
                 ]);
             } catch (\Throwable $exception) {
+                $emailFailed = true;
                 Log::error('Payment reminder email send failed', [
                     'shoot_id' => $shoot->id,
                     'error' => \App\Services\ApiErrorResponder::publicMessage($exception, 'Automation could not complete. Review its configuration and try again.'),
@@ -396,6 +408,7 @@ class AutomationService
                     $smsRendered = $this->templateRenderer->render($smsTemplate, $context);
                     $smsMessage = $this->messagingService->sendSms([
                         'to' => $phone,
+                        'sms_category' => 'payments',
                         'body_text' => $smsRendered['body_text'] ?? null,
                         'send_source' => 'AUTOMATION',
                         'template_id' => $smsTemplate->id,
@@ -422,7 +435,7 @@ class AutomationService
         // Primary record = email Message so DispatchScheduledMessages links message_id and marks
         // the row sent unchanged. If only SMS sent, return it so the row is still marked sent.
         // Null only when neither channel sent anything (dispatcher then leaves the row).
-        return $emailMessage ?? $smsMessage;
+        return $emailMessage ?? ($emailFailed && $smsMessage?->status === 'BLOCKED' ? null : $smsMessage);
     }
 
     /**
@@ -611,6 +624,7 @@ class AutomationService
             }
         } elseif ($rule->template->channel === 'SMS') {
             // SMS doesn't support scheduling in our current setup
+            $payload['automation_trigger'] = $rule->trigger_type;
             $this->messagingService->sendSms($payload);
         }
     }

@@ -952,6 +952,7 @@ class AutomationWorkflowExecutor
         $recipients = $this->resolveActionRecipients($automation, $config, $context, 'sms');
         $sentTo = [];
         $messageIds = [];
+        $blockedMessageIds = [];
         $failedTo = [];
         $errorMessage = null;
 
@@ -967,6 +968,8 @@ class AutomationWorkflowExecutor
 
                     return $this->messagingService->sendSms([
                         'to' => $recipient['phone'],
+                        'automation_trigger' => $automation->trigger_type,
+                        'contact_user_id' => $recipient['id'] ?? null,
                         'sms_number_id' => $smsNumberId,
                         'template_id' => $template?->id,
                         'body_text' => $rendered['body_text'] ?? '',
@@ -990,6 +993,9 @@ class AutomationWorkflowExecutor
                         $messageIds[] = $message->id;
                     }
                 }
+                if ($message?->status === 'BLOCKED') {
+                    $blockedMessageIds[] = $message->id;
+                }
             } catch (\Throwable $exception) {
                 $failedTo[] = $recipient['phone'];
                 $errorMessage ??= \App\Services\ApiErrorResponder::publicMessage($exception, 'Automation could not complete. Review its configuration and try again.');
@@ -1001,6 +1007,7 @@ class AutomationWorkflowExecutor
             'sent_to' => $sentTo,
             'failed_to' => $failedTo,
             'message_ids' => $messageIds,
+            'blocked_message_ids' => $blockedMessageIds,
             'error_message' => $errorMessage,
         ];
     }
@@ -1515,6 +1522,7 @@ class AutomationWorkflowExecutor
             'active_rule_count' => $activeRuleCount,
             'run_count' => count($runs),
             'message_ids' => collect($runs)->filter(fn ($run) => $run instanceof AutomationRun)->flatMap(fn ($run) => $run->steps)->flatMap(fn ($step) => $step->output_json['message_ids'] ?? [])->unique()->values()->all(),
+            'blocked_message_ids' => collect($runs)->filter(fn ($run) => $run instanceof AutomationRun)->flatMap(fn ($run) => $run->steps)->flatMap(fn ($step) => $step->output_json['blocked_message_ids'] ?? [])->unique()->values()->all(),
             'completed_run_count' => $completedRunCount,
             'waiting_run_count' => $waitingRunCount,
             'failed_run_count' => $failedRunCount,
