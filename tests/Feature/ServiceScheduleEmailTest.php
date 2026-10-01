@@ -82,4 +82,31 @@ class ServiceScheduleEmailTest extends TestCase
         $this->assertSame('9:00 AM', $data->time);
         $this->assertCount(1, $data->services);
     }
+
+    public function test_zoned_utc_scheduled_at_renders_local_wall_clock(): void
+    {
+        $photographer = User::factory()->photographer()->create();
+        $service = Service::factory()->create(['name' => '10-12 Drone/Aerial Photos']);
+        $shoot = Shoot::factory()->create([
+            'photographer_id' => $photographer->id,
+            'scheduled_date' => '2026-10-01',
+            'scheduled_at' => '2026-10-01 14:00:00',
+            'time' => '10:00:00',
+            'timezone' => 'America/New_York',
+            'status' => 'scheduled',
+            'workflow_status' => 'scheduled',
+        ]);
+        $shoot->services()->attach($service->id, [
+            'scheduled_at' => '2026-10-01 14:00:00',
+            'photographer_id' => $photographer->id,
+            'price' => 199,
+            'quantity' => 1,
+        ]);
+
+        $variables = app(TemplateVariableResolver::class)->resolve(['shoot' => $shoot->fresh(['services'])]);
+        $this->assertSame('Oct 1, 2026', $variables['shoot_date']);
+        $this->assertSame('10:00 AM', $variables['shoot_time']);
+        $this->assertStringContainsString('Oct 1, 2026 at 10:00 AM', $variables['services_provided']);
+        $this->assertStringNotContainsString('2:00 PM', $variables['services_provided']);
+    }
 }

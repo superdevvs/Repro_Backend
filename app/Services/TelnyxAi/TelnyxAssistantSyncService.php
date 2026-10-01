@@ -10,6 +10,7 @@ use RuntimeException;
 class TelnyxAssistantSyncService
 {
     private const POLICY_MARKER = '## RePro voice call-control policy';
+
     private const KNOWLEDGE_POLICY_MARKER = '## RePro support knowledge policy v1';
 
     public function __construct(
@@ -70,7 +71,7 @@ class TelnyxAssistantSyncService
     {
         $assistantId = $this->assistantId();
         $current = $this->currentAssistant($assistantId);
-        $desiredTools = $this->desiredTools($current['tools'] ?? []);
+        $desiredTools = $this->versionTools($current['tools'] ?? []);
         $desiredToolNames = $this->registry->allowedTools();
         $configuredToolNames = $this->toolNames($current['tools'] ?? []);
         $payload = [
@@ -96,7 +97,8 @@ class TelnyxAssistantSyncService
             'configured_tools' => $configuredToolNames,
             'desired_tools' => $desiredToolNames,
             'missing_tools' => array_values(array_diff($desiredToolNames, $configuredToolNames)),
-            'removed_webhook_tools' => array_values(array_diff($this->webhookToolNames($current['tools'] ?? []), $desiredToolNames)),
+            'removed_webhook_tools' => [],
+            'retained_extra_webhook_tools' => array_values(array_diff($this->webhookToolNames($current['tools'] ?? []), $desiredToolNames)),
             'automatic_recording_will_be_disabled' => (bool) data_get($current, 'telephony_settings.recording_settings.enabled', false),
             'promote_to_main' => $promoteToMain,
             'version_name' => $payload['version_name'],
@@ -137,6 +139,7 @@ class TelnyxAssistantSyncService
         array_unshift($rules, [
             'match' => [[
                 'attribute' => 'telnyx_end_user_target',
+                'operator' => 'in',
                 'values' => $numbers,
             ]],
             'serve' => ['version_id' => $versionId],
@@ -198,9 +201,7 @@ class TelnyxAssistantSyncService
             throw new RuntimeException('TELNYX_TOOL_BRIDGE_SECRET is not configured.');
         }
 
-        // Telnyx merges posted tools into the current version, so only send
-        // webhook tools that are not already configured. Re-sending hangup or
-        // existing webhooks is rejected as a duplicate.
+        // Build missing definitions separately from the full inline replacement.
         $tools = [];
         $configuredNames = $this->toolNames($currentTools);
         foreach ($this->registry->allowedTools() as $name) {
@@ -211,6 +212,7 @@ class TelnyxAssistantSyncService
 
             $tools[] = [
                 'type' => 'webhook',
+                'timeout_ms' => 5250,
                 'webhook' => [
                     'name' => $name,
                     'description' => $definition['description'],
@@ -222,12 +224,28 @@ class TelnyxAssistantSyncService
                     ]],
                     'body_parameters' => $definition['schema'],
                     'async' => false,
-                    'timeout_ms' => 5250,
                 ],
             ];
         }
 
         return $tools;
+    }
+
+    /** @return list<array<string,mixed>> */
+    public function versionTools(array $currentTools = []): array
+    {
+        // Telnyx replaces inline tools on update. GET also includes shared tools:
+        // omit those here and omit tool_ids so their attachments stay unchanged.
+        $inline = [];
+        foreach ($currentTools as $tool) {
+            if (! is_array($tool) || ($tool['shared'] ?? false) === true) {
+                continue;
+            }
+            unset($tool['tool_id'], $tool['shared'], $tool['id'], $tool['created_at'], $tool['updated_at'], $tool['version_id']);
+            $inline[] = $tool;
+        }
+
+        return [...$inline, ...$this->desiredTools($currentTools)];
     }
 
     /** @return list<string> */
@@ -368,9 +386,6 @@ class TelnyxAssistantSyncService
 
     private function desiredInstructions(string $current): string
     {
-        $beforeMarker = str_contains($current, self::POLICY_MARKER)
-            ? trim((string) strstr($current, self::POLICY_MARKER, true))
-            : trim($current);
         $policy = <<<'PROMPT'
 ## RePro voice call-control policy
 - At the start of every call, identify yourself as Robbie, RePro's AI assistant.
@@ -390,7 +405,16 @@ class TelnyxAssistantSyncService
 - Do not ask for passwords, reset links, payment card details or property access codes. Only claim a handoff or notification succeeded when the appropriate tool confirms it.
 PROMPT;
 
-        return trim($beforeMarker."\n\n".$policy);
+        // Operators can append instructions after either marker. Add missing
+        // reviewed sections without rebuilding or truncating their live text.
+        if (! str_contains($current, self::POLICY_MARKER)) {
+            $current .= "\n\n".trim((string) strstr($policy, self::KNOWLEDGE_POLICY_MARKER, true));
+        }
+        if (! str_contains($current, self::KNOWLEDGE_POLICY_MARKER)) {
+            $current .= "\n\n".substr($policy, strpos($policy, self::KNOWLEDGE_POLICY_MARKER));
+        }
+
+        return $current;
     }
 
     private function toolBridgeBaseUrl(): string

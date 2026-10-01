@@ -70,6 +70,7 @@ class VoiceWebhookProcessor
             'call.initiated' => $this->handleInitiated($data),
             'call.gather.ended', 'call.dtmf.received' => $this->handleMenuInput($data),
             'call.assistant.transcript' => $this->handleTranscript($data),
+            'call.ai_gather.message_history_updated' => $this->handleGatherHistory($data),
             'call.ai_assistant.message_history.updated',
             'call.ai_assistant.message_history_updated',
             'call.assistant.message_history.updated' => $this->handleMessageHistory($data),
@@ -222,6 +223,13 @@ class VoiceWebhookProcessor
         return $voiceCall;
     }
 
+    private function handleGatherHistory(array $data): ?VoiceCall
+    {
+        $call = $this->findCall($data);
+
+        return $call ? app(\App\Services\Voice\VoiceConversationHistoryService::class)->ingest($call, $data) : null;
+    }
+
     private function handleMessageHistory(array $data): ?VoiceCall
     {
         $voiceCall = $this->findCall($data);
@@ -262,6 +270,8 @@ class VoiceWebhookProcessor
         if (! $voiceCall) {
             return null;
         }
+
+        $voiceCall = app(\App\Services\Voice\VoiceConversationHistoryService::class)->ingest($voiceCall, $data, true);
 
         $payload = $this->payload($data);
         $voiceCall->forceFill([

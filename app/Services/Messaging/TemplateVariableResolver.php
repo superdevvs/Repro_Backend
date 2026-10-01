@@ -373,7 +373,7 @@ class TemplateVariableResolver
         $shootTime = $this->formatShootTime($shoot);
         $emailSchedule = \App\Support\ShootEmailSchedule::summarize(
             collect($shoot->relationLoaded('services') ? $shoot->getRelation('services') : [])->map(fn ($service) => $service->pivot?->scheduled_at),
-            $shootDate, $shootTime
+            $shootDate, $shootTime, $shoot->timezone
         );
         $shootDate = $emailSchedule['date'];
         $shootTime = $emailSchedule['time'];
@@ -473,7 +473,7 @@ class TemplateVariableResolver
                 }
 
                 $line = implode(' - ', array_filter($lineParts, fn ($part) => $part !== ''));
-                $schedule = \App\Support\ShootEmailSchedule::format($service->pivot?->scheduled_at);
+                $schedule = \App\Support\ShootEmailSchedule::format($service->pivot?->scheduled_at, $shoot->timezone);
                 if ($schedule !== null) {
                     $line .= ' (Scheduled: '.$schedule.')';
                 }

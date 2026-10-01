@@ -185,7 +185,7 @@ class SupportKnowledgeBase
 
     private function tokens(string $value): array
     {
-        $stopWords = ['a', 'an', 'the', 'i', 'my', 'me', 'we', 'our', 'your', 'you', 'to', 'of', 'and', 'or', 'for', 'in', 'on', 'at', 'is', 'are', 'be', 'it', 'this', 'that', 'do', 'does', 'how', 'can', 'what', 'where', 'why', 'with', 'please', 'want', 'need', 'not', 'get', 'use', 'see'];
+        $stopWords = ['a', 'an', 'the', 'i', 'my', 'me', 'we', 'our', 'your', 'you', 'to', 'of', 'and', 'or', 'for', 'from', 'in', 'on', 'at', 'is', 'are', 'be', 'it', 'this', 'that', 'do', 'does', 'how', 'can', 'what', 'where', 'why', 'with', 'please', 'want', 'need', 'not', 'get', 'use', 'see'];
 
         return array_values(array_unique(array_filter(explode(' ', $this->normalize($value)), fn (string $token) => strlen($token) > 1 && ! in_array($token, $stopWords, true))));
     }

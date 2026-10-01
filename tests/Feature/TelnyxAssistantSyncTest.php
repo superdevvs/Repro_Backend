@@ -96,8 +96,8 @@ class TelnyxAssistantSyncTest extends TestCase
     public function test_apply_does_not_duplicate_existing_named_tools(): void
     {
         $assistant = $this->currentAssistant();
-        $assistant['tools'][] = ['name' => 'verify_caller'];
-        $assistant['tools'][] = ['type' => 'handoff', 'name' => 'handoff_to_staff'];
+        $assistant['tools'][] = ['name' => 'verify_caller', 'shared' => true];
+        $assistant['tools'][] = ['type' => 'handoff', 'name' => 'handoff_to_staff', 'shared' => true];
 
         Http::fake(function (Request $request) use ($assistant) {
             if ($request->method() === 'GET') {
@@ -142,6 +142,68 @@ class TelnyxAssistantSyncTest extends TestCase
         Http::assertSent(fn (Request $request) => $request->method() === 'POST'
             && $request['promote_to_main'] === true
             && collect($request['tools'] ?? [])->contains(fn ($tool) => data_get($tool, 'webhook.name') === 'get_shoot_details'));
+    }
+
+    public function test_apply_preserves_inline_definitions_and_shared_attachments_when_provider_replaces_inline_tools(): void
+    {
+        $assistant = $this->currentAssistant();
+        $existing = ['type' => 'webhook', 'timeout_ms' => 7300, 'shared' => false, 'tool_id' => 'inline-original',
+            'webhook' => ['name' => 'get_shoot_details', 'url' => 'https://example.test/existing', 'headers' => [['name' => 'Authorization', 'value' => 'existing-secret']], 'body_parameters' => ['type' => 'object', 'properties' => ['custom' => ['type' => 'string']]]]];
+        $assistant['tools'][] = $existing;
+        $assistant['tools'][] = ['type' => 'webhook', 'shared' => false, 'tool_id' => 'inline-custom', 'webhook' => ['name' => 'operator_lookup', 'url' => 'https://example.test/custom']];
+        $preserved = $existing;
+        unset($preserved['shared'], $preserved['tool_id']);
+        $shared = array_values(array_filter($assistant['tools'], fn ($tool) => ($tool['shared'] ?? false) === true));
+        Http::fake(function (Request $request) use ($assistant, $shared, $preserved) {
+            if ($request->method() === 'GET') {
+                return Http::response($assistant);
+            }
+            $this->assertArrayNotHasKey('tool_ids', $request->data());
+            $posted = collect($request['tools']);
+            $this->assertSame($preserved, $posted->first(fn ($tool) => data_get($tool, 'webhook.name') === 'get_shoot_details'));
+            $this->assertFalse($posted->contains(fn ($tool) => ($tool['shared'] ?? false) === true || ($tool['type'] ?? '') === 'hangup'));
+            $knowledge = $posted->first(fn ($tool) => data_get($tool, 'webhook.name') === 'search_support_knowledge');
+            $this->assertSame(5250, $knowledge['timeout_ms']);
+            $this->assertArrayNotHasKey('timeout_ms', $knowledge['webhook']);
+            // Current provider contract: replacement inline array plus unchanged shared tools.
+            $resultingTools = [...$request['tools'], ...$shared];
+            $names = app(TelnyxAssistantSyncService::class)->toolNames($resultingTools);
+            $this->assertCount(15, $names);
+            $this->assertContains('operator_lookup', $names);
+            $this->assertContains('Default hangup', $names);
+            $this->assertContains('verify_caller', $names);
+
+            return Http::response(['version_id' => 'preserved-version', 'tools' => $resultingTools]);
+        });
+        $result = app(TelnyxAssistantSyncService::class)->sync(true, 'preserved-version');
+        $this->assertSame([], $result['removed_webhook_tools']);
+        $this->assertSame(['operator_lookup'], $result['retained_extra_webhook_tools']);
+        Http::assertSentCount(2);
+    }
+
+    public function test_sync_preserves_operator_instructions_after_policy_markers_and_does_not_duplicate_sections(): void
+    {
+        $assistant = $this->currentAssistant();
+        $original = "You are Robbie.\n## RePro voice call-control policy\nExisting reviewed controls.\nOperator-added guidance  \n";
+        $assistant['instructions'] = $original;
+        Http::fake(function (Request $request) use (&$assistant, $original) {
+            if ($request->method() === 'GET') {
+                return Http::response($assistant);
+            }
+            $instructions = $request['instructions'];
+            $this->assertStringStartsWith($original, $instructions);
+            $this->assertSame(1, substr_count($instructions, '## RePro voice call-control policy'));
+            $this->assertSame(1, substr_count($instructions, '## RePro support knowledge policy v1'));
+            if (str_contains($assistant['instructions'], '## RePro support knowledge policy v1')) {
+                $this->assertSame($assistant['instructions'], $instructions);
+            }
+            $assistant['instructions'] = $instructions;
+
+            return Http::response(['version_id' => 'preserved-instructions']);
+        });
+        app(TelnyxAssistantSyncService::class)->sync(true, 'first-sync');
+        app(TelnyxAssistantSyncService::class)->sync(true, 'repeat-sync');
+        Http::assertSentCount(4);
     }
 
     public function test_admin_can_sync_and_promote_assistant_via_http(): void
@@ -189,6 +251,7 @@ class TelnyxAssistantSyncTest extends TestCase
         $this->assertSame(['+12025550123'], $result['targets']);
         Http::assertSent(fn (Request $request) => $request->method() === 'POST'
             && data_get($request->data(), 'rules.0.match.0.attribute') === 'telnyx_end_user_target'
+            && data_get($request->data(), 'rules.0.match.0.operator') === 'in'
             && data_get($request->data(), 'rules.0.match.0.values') === ['+12025550123']
             && data_get($request->data(), 'rules.0.serve.version_id') === 'version-safe-1');
     }
@@ -201,10 +264,10 @@ class TelnyxAssistantSyncTest extends TestCase
             'instructions' => 'You are Robbie.',
             'model' => 'moonshotai/Kimi-K2.5',
             'tools' => [
-                ['type' => 'hangup'],
-                ['type' => 'webhook', 'webhook' => ['name' => 'verify_caller']],
-                ['type' => 'webhook', 'webhook' => ['name' => 'handoff_to_staff']],
-                ['type' => 'webhook', 'webhook' => ['name' => 'transfer_to_staff']],
+                ['type' => 'hangup', 'name' => 'Default hangup', 'shared' => true],
+                ['type' => 'webhook', 'shared' => true, 'webhook' => ['name' => 'verify_caller']],
+                ['type' => 'webhook', 'shared' => true, 'webhook' => ['name' => 'handoff_to_staff']],
+                ['type' => 'webhook', 'shared' => true, 'webhook' => ['name' => 'transfer_to_staff']],
             ],
             'telephony_settings' => [
                 'recording_settings' => [

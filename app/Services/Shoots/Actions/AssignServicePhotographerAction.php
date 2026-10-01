@@ -16,8 +16,7 @@ class AssignServicePhotographerAction
     public function __construct(
         protected ShootMutationSupportService $shootMutationSupportService,
         protected ShootActivityLogger $activityLogger,
-    ) {
-    }
+    ) {}
 
     public function execute(Shoot $shoot, array $payload, User $actor): Shoot
     {
@@ -35,10 +34,10 @@ class AssignServicePhotographerAction
         if (RadiusEligibility::enforced()) {
             $radiusViolations = $this->collectRadiusViolations($shoot, $assignments);
 
-            if (!empty($radiusViolations)) {
+            if (! empty($radiusViolations)) {
                 $override = filter_var($payload['override'] ?? false, FILTER_VALIDATE_BOOLEAN);
 
-                if (!$override) {
+                if (! $override) {
                     throw ValidationException::withMessages([
                         'service_photographers' => array_map(fn ($v) => $v['message'], $radiusViolations),
                     ]);
@@ -101,7 +100,7 @@ class AssignServicePhotographerAction
             ?? $payload;
 
         return collect($assignments)
-            ->filter(fn ($assignment) => is_array($assignment) && (!empty($assignment['service_id']) || !empty($assignment['shoot_service_id'])))
+            ->filter(fn ($assignment) => is_array($assignment) && (! empty($assignment['service_id']) || ! empty($assignment['shoot_service_id'])))
             ->map(fn (array $assignment) => [
                 'service_id' => isset($assignment['service_id']) ? (int) $assignment['service_id'] : null,
                 'shoot_service_id' => isset($assignment['shoot_service_id']) ? (int) $assignment['shoot_service_id'] : null,
@@ -198,7 +197,7 @@ class AssignServicePhotographerAction
 
         foreach ($photographerIds as $photographerId) {
             $photographer = $photographers->get($photographerId);
-            if (!$photographer) {
+            if (! $photographer) {
                 continue;
             }
 
@@ -211,7 +210,7 @@ class AssignServicePhotographerAction
             $distance = $this->resolveAssignmentDistanceMiles($shoot, $photographer, $metadata);
             $eval = RadiusEligibility::evaluate($radius, $distance);
 
-            if (!$eval['eligible']) {
+            if (! $eval['eligible']) {
                 $name = $photographer->name ?: "Photographer #{$photographerId}";
                 $violations[] = [
                     'photographer_id' => $photographerId,
@@ -258,19 +257,8 @@ class AssignServicePhotographerAction
      */
     protected function resolveRadiusMiles(array $metadata): ?float
     {
-        $explicit = RadiusEligibility::radiusFromMetadata($metadata);
-        if ($explicit !== null) {
-            return $explicit;
-        }
-
-        $range = $metadata['travel_range'] ?? $metadata['travelRange'] ?? null;
-        if (!is_numeric($range)) {
-            return null;
-        }
-
-        $unit = strtolower((string) ($metadata['travel_range_unit'] ?? $metadata['travelRangeUnit'] ?? 'miles'));
-
-        return $unit === 'km' ? round(((float) $range) * 0.621371, 1) : (float) $range;
+        // Shared with for-booking (RadiusEligibility::radiusFromMetadata now includes travel_range).
+        return RadiusEligibility::radiusFromMetadata($metadata);
     }
 
     /** Human-readable reason for a radius-blocked assignment. */
@@ -330,7 +318,7 @@ class AssignServicePhotographerAction
         $shootLat = $shoot->latitude ?? null;
         $shootLng = $shoot->longitude ?? null;
 
-        if (!is_numeric($shootLat) || !is_numeric($shootLng)) {
+        if (! is_numeric($shootLat) || ! is_numeric($shootLng)) {
             $tokens = strtolower(trim("{$shootAddress} {$shootCity} {$shootState} {$shootZip}"));
             if (str_contains($tokens, '6424') && str_contains($tokens, 'vale')) {
                 $shootLat = 38.8213;

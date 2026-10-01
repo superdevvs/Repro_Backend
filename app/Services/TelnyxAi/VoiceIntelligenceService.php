@@ -16,7 +16,9 @@ use Illuminate\Support\Facades\Log;
 class VoiceIntelligenceService
 {
     private const DEBOUNCE_SECONDS = 12;
+
     private const MAX_MIDCALL_RUNS = 8;
+
     private const LOOPING_REPEAT_THRESHOLD = 3;
 
     public function __construct(
@@ -24,14 +26,13 @@ class VoiceIntelligenceService
         private readonly VoiceLlmUsageRecorder $usage,
         private readonly VoiceMemoryService $memory,
         private readonly ?LlmClient $llm = null,
-    ) {
-    }
+    ) {}
 
     /**
      * Called by the live stream on every realtime update. Evaluates triggers
      * and, if one fires (and debounce/budget allow), runs enrichment.
      *
-     * @param array<string,mixed> $signals
+     * @param  array<string,mixed>  $signals
      */
     public function onRealtimeUpdate(VoiceCall $call, array $signals): void
     {
@@ -54,6 +55,7 @@ class VoiceIntelligenceService
             $this->enrich($call->fresh(), ['cockpit_opened'], final: false);
             $intel = $call->fresh()->metadata['intel_live'] ?? $intel;
         }
+
         return $intel;
     }
 
@@ -62,7 +64,7 @@ class VoiceIntelligenceService
      */
     public function finalize(VoiceCall $call): ?array
     {
-        if (!$this->layerEnabled()) {
+        if (! $this->layerEnabled()) {
             return null;
         }
 
@@ -73,7 +75,7 @@ class VoiceIntelligenceService
      * Evaluate which triggers fire for the current signals. Public so the
      * log-only validation path and tests can inspect it.
      *
-     * @param array<string,mixed> $signals
+     * @param  array<string,mixed>  $signals
      * @return array<int,string>
      */
     public function evaluateTriggers(VoiceCall $call, array $signals): array
@@ -120,17 +122,17 @@ class VoiceIntelligenceService
     /**
      * Run an enrichment pass if debounce + budget allow.
      *
-     * @param array<int,string> $triggers
+     * @param  array<int,string>  $triggers
      */
     public function enrich(VoiceCall $call, array $triggers, bool $final): ?array
     {
-        if (!$this->layerEnabled()) {
+        if (! $this->layerEnabled()) {
             return null;
         }
 
         $meta = $call->metadata['intel_meta'] ?? [];
 
-        if (!$final) {
+        if (! $final) {
             // Debounce: at most one run per DEBOUNCE_SECONDS per call.
             $lastRun = $meta['last_run_at'] ?? null;
             if ($lastRun) {
@@ -152,6 +154,7 @@ class VoiceIntelligenceService
         $budget = (float) ($this->intelligenceConfig()['monthly_llm_budget_usd'] ?? 0);
         if ($this->usage->isBudgetExceeded($budget)) {
             $this->markMeta($call, 'budget_paused', true);
+
             return $call->metadata['intel_live'] ?? null;
         }
 
@@ -185,15 +188,17 @@ class VoiceIntelligenceService
      */
     public function layerEnabled(): bool
     {
-        if (!(bool) env('VOICE_INSIGHTS_LLM_ENABLED', true)) {
+        if (! (bool) env('VOICE_INSIGHTS_LLM_ENABLED', true)) {
             return false;
         }
+
         return (bool) ($this->intelligenceConfig()['enabled'] ?? true);
     }
 
     public function budgetPaused(): bool
     {
         $budget = (float) ($this->intelligenceConfig()['monthly_llm_budget_usd'] ?? 0);
+
         return $this->usage->isBudgetExceeded($budget);
     }
 
@@ -204,7 +209,7 @@ class VoiceIntelligenceService
      * falls back to deterministic heuristics so the layer is testable and works
      * in "log-only" mode without an API key.
      *
-     * @param array<int,string> $triggers
+     * @param  array<int,string>  $triggers
      */
     private function runModel(VoiceCall $call, array $triggers, bool $final): array
     {
@@ -214,6 +219,7 @@ class VoiceIntelligenceService
         if ($this->llm === null || $apiKey === '') {
             // Log-only / heuristic mode — still records a zero-cost usage row for auditability.
             $this->usage->record($call, $final ? 'final_summary' : 'realtime_enrichment', 'heuristic', 0, 0);
+
             return $heuristic;
         }
 
@@ -247,7 +253,7 @@ class VoiceIntelligenceService
     /**
      * Deterministic enrichment from transcript + signals.
      *
-     * @param array<int,string> $triggers
+     * @param  array<int,string>  $triggers
      */
     private function heuristic(VoiceCall $call, array $triggers, bool $final): array
     {
@@ -262,9 +268,7 @@ class VoiceIntelligenceService
         };
 
         $looping = $this->detectLooping($chunks);
-        $robbieQuality = $looping
-            ? 'looping'
-            : (in_array('low_confidence', $triggers, true) ? 'ok' : 'good');
+        $robbieQuality = $looping ? 'looping' : 'unknown';
 
         $transferRequested = in_array('transfer_requested', $triggers, true)
             || in_array('keyword', $triggers, true);
@@ -290,14 +294,18 @@ class VoiceIntelligenceService
         ];
 
         if ($final) {
-            $result['summary_text'] = $call->summary
-                ?: 'Call handled by Robbie. ' . count($chunks) . ' transcript turns captured.';
-            $result['quality_score'] = match ($robbieQuality) {
-                'excellent', 'good' => 'Good',
-                'ok' => 'Average',
-                default => 'Poor',
+            $handler = match ($call->handled_by) {
+                'human' => 'the team',
+                'mixed' => 'Robbie and the team',
+                'ai' => 'Robbie',
+                default => null,
             };
-            $result['issue_resolved'] = $transferRequested ? 'partial' : 'yes';
+            $segmentCount = count($chunks);
+            $result['summary_text'] = $call->summary
+                ?: ($handler ? 'Call handled by '.$handler.'. ' : 'Call ended. ').$segmentCount.' transcript segment'.($segmentCount === 1 ? '' : 's').' saved.';
+            // Trigger heuristics can flag a concern, but cannot establish service quality or resolution.
+            $result['quality_score'] = 'Unknown';
+            $result['issue_resolved'] = 'unknown';
             $result['follow_up_at'] = $transferRequested ? now()->addDay()->toIso8601String() : null;
             $result['auto_scheduled_callback_id'] = $call->scheduled_voice_call_id;
         }
@@ -320,7 +328,7 @@ class VoiceIntelligenceService
         if (in_array('low_confidence', $triggers, true)) {
             $suggestions[] = [
                 'label' => 'Ask to repeat',
-                'spoken' => "I want to make sure I get this right — could you say that once more?",
+                'spoken' => 'I want to make sure I get this right — could you say that once more?',
                 'why' => 'Recent transcript confidence dropped below threshold.',
             ];
         }
@@ -353,6 +361,7 @@ class VoiceIntelligenceService
                 'why' => 'Negative sentiment or escalation language detected on this call.',
             ];
         }
+
         return null;
     }
 
@@ -366,6 +375,7 @@ class VoiceIntelligenceService
         }
 
         $tail = array_slice($assistantLines, -self::LOOPING_REPEAT_THRESHOLD);
+
         return count(array_unique($tail)) === 1;
     }
 
@@ -384,9 +394,10 @@ class VoiceIntelligenceService
     private function systemPrompt(bool $final): string
     {
         $base = 'You are Robbie, a co-pilot for a live phone agent. Given a Robbie Context Object, return ONLY compact JSON.';
+
         return $final
-            ? $base . ' Produce final-call fields: summary_text, quality_score (Good/Average/Poor), issue_resolved (yes/no/partial), follow_up_at, customer_mood, robbie_quality.'
-            : $base . ' Produce: customer_mood, robbie_quality, intent, intent_confidence, suggested_replies (each with label, spoken, why), next_best_action, risk, sales_opportunity, human_takeover_recommended.';
+            ? $base.' Produce final-call fields: summary_text, quality_score (Good/Average/Poor), issue_resolved (yes/no/partial), follow_up_at, customer_mood, robbie_quality.'
+            : $base.' Produce: customer_mood, robbie_quality, intent, intent_confidence, suggested_replies (each with label, spoken, why), next_best_action, risk, sales_opportunity, human_takeover_recommended.';
     }
 
     private function maybeLoadMemory(VoiceCall $call, array $triggers, bool $final): void
@@ -422,6 +433,7 @@ class VoiceIntelligenceService
     private function intelligenceConfig(): array
     {
         $all = $this->settings->all();
+
         return is_array($all['intelligence'] ?? null) ? $all['intelligence'] : [];
     }
 }

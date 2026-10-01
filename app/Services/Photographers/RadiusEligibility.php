@@ -43,7 +43,7 @@ class RadiusEligibility
      */
     public static function distanceMiles($lat1, $lng1, $lat2, $lng2): ?float
     {
-        if (!is_numeric($lat1) || !is_numeric($lng1) || !is_numeric($lat2) || !is_numeric($lng2)) {
+        if (! is_numeric($lat1) || ! is_numeric($lng1) || ! is_numeric($lat2) || ! is_numeric($lng2)) {
             return null;
         }
         $dLat = deg2rad((float) $lat2 - (float) $lat1);
@@ -51,6 +51,7 @@ class RadiusEligibility
         $a = sin($dLat / 2) ** 2
             + cos(deg2rad((float) $lat1)) * cos(deg2rad((float) $lat2)) * sin($dLng / 2) ** 2;
         $c = 2 * atan2(sqrt($a), sqrt(1 - $a));
+
         return round(self::EARTH_RADIUS_MILES * $c, 1);
     }
 
@@ -64,7 +65,7 @@ class RadiusEligibility
         $radius = is_numeric($radiusMiles) ? (float) $radiusMiles : null;
 
         // Enforcement OFF → never gate (historical behavior).
-        if (!self::enforced()) {
+        if (! self::enforced()) {
             return ['eligible' => true, 'reason' => 'enforcement_off', 'distance' => $distanceMiles, 'radius' => $radius];
         }
 
@@ -87,24 +88,42 @@ class RadiusEligibility
             : ['eligible' => false, 'reason' => 'outside_radius', 'distance' => $distanceMiles, 'radius' => $radius];
     }
 
-    /** Read a service-radius (miles) from a photographer metadata array. */
+    /**
+     * Read a service-radius (miles) from a photographer metadata array.
+     *
+     * Prefers explicit service_radius_miles, then falls back to profile Max Distance
+     * (travel_range + travel_range_unit), converting km→miles. Keeps for-booking and
+     * assignment radius gates reading the same profile fields.
+     */
     public static function radiusFromMetadata(?array $metadata): ?float
     {
-        if (!is_array($metadata)) {
+        if (! is_array($metadata)) {
             return null;
         }
         $value = $metadata['service_radius_miles'] ?? $metadata['serviceRadius'] ?? $metadata['serviceRadiusMiles'] ?? null;
-        return is_numeric($value) ? (float) $value : null;
+        if (is_numeric($value)) {
+            return (float) $value;
+        }
+
+        $range = $metadata['travel_range'] ?? $metadata['travelRange'] ?? null;
+        if (! is_numeric($range)) {
+            return null;
+        }
+
+        $unit = strtolower((string) ($metadata['travel_range_unit'] ?? $metadata['travelRangeUnit'] ?? 'miles'));
+
+        return $unit === 'km' ? round(((float) $range) * 0.621371, 1) : (float) $range;
     }
 
     /** Read [lat, lng] from a photographer metadata array, or [null, null]. */
     public static function coordsFromMetadata(?array $metadata): array
     {
-        if (!is_array($metadata)) {
+        if (! is_array($metadata)) {
             return [null, null];
         }
         $lat = $metadata['latitude'] ?? $metadata['lat'] ?? null;
         $lng = $metadata['longitude'] ?? $metadata['lng'] ?? null;
+
         return [is_numeric($lat) ? (float) $lat : null, is_numeric($lng) ? (float) $lng : null];
     }
 }

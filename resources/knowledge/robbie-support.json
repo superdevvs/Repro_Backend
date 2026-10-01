@@ -1,5 +1,5 @@
 {
-  "version": "2026-10-01.1",
+  "version": "2026-10-01.2",
   "reviewed_at": "2026-10-01",
   "articles": [
     {
@@ -370,13 +370,9 @@
       "title": "Download photos, videos and floorplans",
       "category": "Delivery",
       "roles": [
-        "client",
-        "salesRep",
-        "admin",
-        "superadmin",
-        "editing_manager"
+        "*"
       ],
-      "summary": "Use the Download Center for delivered files and links.",
+      "summary": "Use the Download Center for delivered files and links after signing in to an account with access to the shoot. These general steps do not confirm that any particular shoot or file is available.",
       "keywords": [
         "download",
         "save photos",
@@ -388,7 +384,7 @@
         "video files"
       ],
       "steps": [
-        "Open the shoot from Shoot History and choose Download when it is available.",
+        "Sign in and open a shoot your account can access from Shoot History. Choose Download when it is available.",
         "In Download Center, select the unit if this is a multi-unit property.",
         "For photos, choose High res for full resolution or MLS / small for smaller files. Use the appropriate service group when shown.",
         "Use the available video and floorplan download buttons, or copy and open hosted links. Wait for the current download to finish preparing."

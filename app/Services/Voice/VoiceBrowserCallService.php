@@ -301,7 +301,12 @@ class VoiceBrowserCallService
                 return;
             }
             $call->update(['metadata' => array_merge($call->metadata ?? [], ['browser_transcription_pending' => true])]);
-            $this->gateway->command('transcription-start:'.$call->id.':'.($call->metadata['recording_generation'] ?? 0), '/calls/'.rawurlencode($customer->call_control_id).'/actions/transcription_start', ['transcription_engine' => 'Telnyx', 'transcription_tracks' => 'both']);
+            $this->gateway->command('transcription-start:'.$call->id.':'.($call->metadata['recording_generation'] ?? 0), '/calls/'.rawurlencode($customer->call_control_id).'/actions/transcription_start', [
+                'transcription_engine' => 'Telnyx', 'transcription_tracks' => 'both',
+                'transcription_engine_config' => [
+                    'transcription_engine' => 'Telnyx', 'transcription_model' => 'openai/whisper-large-v3-turbo', 'language' => 'auto_detect',
+                ],
+            ]);
             $call->refresh()->update(['metadata' => array_merge($call->metadata ?? [], ['browser_transcription_enabled' => true, 'browser_transcription_pending' => false])]);
         }
     }
@@ -464,6 +469,7 @@ class VoiceBrowserCallService
         if ($leg->role === 'customer' && in_array($type, [
             'call.recording.saved', 'call.assistant.transcript', 'call.ai_assistant.message_history.updated',
             'call.ai_assistant.message_history_updated', 'call.assistant.message_history.updated',
+            'call.ai_gather.message_history_updated',
             'call.summary.created', 'call.conversation_insights.generated',
         ], true)) {
             return null;
@@ -826,7 +832,7 @@ class VoiceBrowserCallService
         if ($text === '') {
             return;
         }
-        $speaker = ($payload['transcription_track'] ?? $transcription['track'] ?? 'inbound') === 'outbound' ? 'agent' : 'customer';
+        $speaker = ($transcription['transcription_track'] ?? $payload['transcription_track'] ?? $transcription['track'] ?? 'inbound') === 'outbound' ? 'agent' : 'customer';
         // The outer webhook may fail after this method returns. Persist the
         // deduplication marker and both display projections together so replay
         // cannot append twice, or leave the row and flat transcript inconsistent.

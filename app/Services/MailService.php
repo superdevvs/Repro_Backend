@@ -2,21 +2,14 @@
 
 namespace App\Services;
 
-use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Hash;
-use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Collection;
-use Illuminate\Support\Arr;
-use Illuminate\Support\Str;
-use Carbon\CarbonInterface;
-use App\Models\ClientEmailVerificationToken;
-use App\Models\MessageTemplate;
-use App\Models\Invoice;
-use App\Models\PhotographerEquipment;
-use App\Models\User;
-use App\Models\Shoot;
-use App\Models\Payment;
 use App\Exceptions\Messaging\EmailProviderRejectedException;
+use App\Models\ClientEmailVerificationToken;
+use App\Models\Invoice;
+use App\Models\MessageTemplate;
+use App\Models\Payment;
+use App\Models\PhotographerEquipment;
+use App\Models\Shoot;
+use App\Models\User;
 use App\Services\Messaging\MessagingService;
 use App\Services\Messaging\ShootEmailMatrix;
 use App\Services\Messaging\TemplateRenderer;
@@ -25,24 +18,35 @@ use App\Services\SystemEmails\SystemEmailOrchestrator;
 use App\Services\Users\ClientEmailVerificationLinkService;
 use App\Services\Users\EmailHealthService;
 use App\Support\SupportContact;
+use Carbon\CarbonInterface;
+use Illuminate\Support\Arr;
+use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 
 class MailService
 {
     private const SHOOT_DELIVERED_SUBJECT = 'Your Shoot Has Been Delivered';
+
     private const SHOOT_REMINDER_SUBJECT = 'Shoot Reminder: 24 Hours to Go';
+
     private const SHOOT_REMOVED_SUBJECT = 'Photo Shoot Removed from Schedule';
+
     private const SHOOT_REQUEST_DECLINED_SUBJECT = 'Your Shoot Request Was Declined';
+
     private const SHOOT_CANCELLED_SUBJECT = 'Your Shoot Has Been Cancelled';
+
     private const SHOOT_CANCELLATION_REQUESTED_SUBJECT = 'Shoot Cancellation Request Received';
+
     private const SHOOT_PAID_SUBJECT = 'Payment Confirmed for Your Shoot';
+
     private const PHOTOGRAPHER_CHANGED_SUBJECT = 'Photographer Assignment Updated';
 
     public function __construct(
         private readonly ClientEmailVerificationLinkService $clientEmailVerificationLinkService,
         private readonly SystemEmailOrchestrator $systemEmailOrchestrator,
         private readonly EmailContextBuilder $emailContextBuilder,
-    ) {
-    }
+    ) {}
 
     /**
      * Send account created email
@@ -54,8 +58,7 @@ class MailService
         ?string $equipmentVerificationLink = null,
         int $pendingEquipmentCount = 0,
         bool $includePasswordCreationLink = false
-    ): bool
-    {
+    ): bool {
         try {
             $accountPasswordLink = $includePasswordCreationLink
                 ? $this->passwordCreationLink($resetLink)
@@ -74,7 +77,7 @@ class MailService
                     'recipient_type' => $this->accountRecipientType($user),
                     'pending_equipment_count' => $pendingEquipmentCount,
                     'include_password_creation_link' => $includePasswordCreationLink,
-                    'event_version' => sha1($accountPasswordLink . '|' . ($verificationLink ?? '') . '|' . ($equipmentVerificationLink ?? '') . '|' . $pendingEquipmentCount . '|' . (int) $includePasswordCreationLink),
+                    'event_version' => sha1($accountPasswordLink.'|'.($verificationLink ?? '').'|'.($equipmentVerificationLink ?? '').'|'.$pendingEquipmentCount.'|'.(int) $includePasswordCreationLink),
                 ],
             ]);
 
@@ -85,17 +88,17 @@ class MailService
 
             Log::info('Account created email sent', [
                 'user_id' => $user->id,
-                'email' => $user->email
+                'email' => $user->email,
             ]);
-            
+
             return true;
         } catch (\Exception $e) {
             Log::error('Failed to send account created email', [
                 'user_id' => $user->id,
                 'email' => $user->email,
-                'error' => $e->getMessage()
+                'error' => $e->getMessage(),
             ]);
-            
+
             return false;
         }
     }
@@ -115,7 +118,7 @@ class MailService
                 'meta' => [
                     'recipient_type' => 'photographer',
                     'pending_equipment_count' => $pendingEquipmentCount,
-                    'event_version' => 'equipment_verification_' . now()->timestamp,
+                    'event_version' => 'equipment_verification_'.now()->timestamp,
                 ],
             ]);
 
@@ -162,14 +165,14 @@ class MailService
                     'equipment_name' => $equipment->name,
                     'equipment_serial_number' => $equipment->serial_number,
                     'verified_at' => $equipment->verified_at,
-                    'event_version' => sha1($equipment->id . '|' . optional($equipment->verified_at)->timestamp),
+                    'event_version' => sha1($equipment->id.'|'.optional($equipment->verified_at)->timestamp),
                 ],
             ]);
 
             $this->dispatchProtectedEmail('PHOTOGRAPHER_EQUIPMENT_APPROVED', $payload, $photographer->email, [], [], [
                 'related_account_id' => $photographer->id,
             ], [
-                'idempotency_key' => 'photographer-equipment-approved-' . $equipment->id . '-' . optional($equipment->verified_at)->timestamp,
+                'idempotency_key' => 'photographer-equipment-approved-'.$equipment->id.'-'.optional($equipment->verified_at)->timestamp,
                 'canonical_metadata' => [
                     'equipment_id' => $equipment->id,
                 ],
@@ -214,14 +217,14 @@ class MailService
                     'equipment_serial_number' => $equipment->serial_number,
                     'rejected_at' => $equipment->rejected_at,
                     'rejection_reason' => $equipment->rejection_reason,
-                    'event_version' => sha1($equipment->id . '|' . optional($equipment->rejected_at)->timestamp . '|' . ($equipment->rejection_reason ?? '')),
+                    'event_version' => sha1($equipment->id.'|'.optional($equipment->rejected_at)->timestamp.'|'.($equipment->rejection_reason ?? '')),
                 ],
             ]);
 
             $this->dispatchProtectedEmail('PHOTOGRAPHER_EQUIPMENT_REJECTED', $payload, $photographer->email, [], [], [
                 'related_account_id' => $photographer->id,
             ], [
-                'idempotency_key' => 'photographer-equipment-rejected-' . $equipment->id . '-' . optional($equipment->rejected_at)->timestamp,
+                'idempotency_key' => 'photographer-equipment-rejected-'.$equipment->id.'-'.optional($equipment->rejected_at)->timestamp,
                 'canonical_metadata' => [
                     'equipment_id' => $equipment->id,
                 ],
@@ -255,7 +258,7 @@ class MailService
         }
 
         return rtrim((string) config('app.frontend_url', 'https://reprodashboard.com'), '/')
-            . '/photographer-account?' . http_build_query($query);
+            .'/photographer-account?'.http_build_query($query);
     }
 
     private function accountRecipientType(User $user): string
@@ -281,11 +284,11 @@ class MailService
             $verificationToken = $context['verification_token'] ?? null;
             $verificationLink = $context['verification_link'] ?? null;
 
-            if (!$verificationToken instanceof ClientEmailVerificationToken) {
+            if (! $verificationToken instanceof ClientEmailVerificationToken) {
                 $verificationToken = $this->clientEmailVerificationLinkService->issueVerificationToken($user, $context);
             }
 
-            if (!is_string($verificationLink) || trim($verificationLink) === '') {
+            if (! is_string($verificationLink) || trim($verificationLink) === '') {
                 $verificationLink = $this->clientEmailVerificationLinkService->buildUrlForIssuedToken($user, $verificationToken);
             }
 
@@ -298,7 +301,7 @@ class MailService
                 ],
                 'meta' => [
                     'recipient_type' => $this->accountRecipientType($user),
-                    'event_version' => 'verification_token_' . $verificationToken->id,
+                    'event_version' => 'verification_token_'.$verificationToken->id,
                     'verification_token_id' => $verificationToken->id,
                     'verification_expires_at' => $verificationToken->expires_at?->toIso8601String(),
                     'verification_issued_context' => $verificationToken->issued_context,
@@ -344,7 +347,7 @@ class MailService
                 'error' => $exception->getMessage(),
             ]);
 
-            if (!empty($context['throw_on_failure'])) {
+            if (! empty($context['throw_on_failure'])) {
                 throw $exception;
             }
 
@@ -358,15 +361,15 @@ class MailService
             $dashboardUrl = rtrim((string) config('app.frontend_url', 'https://reprodashboard.com'), '/');
             $verificationTokenId = $context['verification_token_id'] ?? null;
             $eventVersion = $verificationTokenId !== null
-                ? 'verification_confirmed_' . $verificationTokenId
-                : 'verification_confirmed_' . sha1(strtolower((string) $user->email));
+                ? 'verification_confirmed_'.$verificationTokenId
+                : 'verification_confirmed_'.sha1(strtolower((string) $user->email));
 
             $payload = $this->buildProtectedEmailPayload([
                 'recipient' => $this->formatUserData($user),
                 'account' => $this->formatUserData($user),
                 'links' => [
                     'dashboard' => $dashboardUrl,
-                    'settings' => $dashboardUrl . '/settings',
+                    'settings' => $dashboardUrl.'/settings',
                 ],
                 'meta' => [
                     'recipient_type' => $this->accountRecipientType($user),
@@ -415,8 +418,7 @@ class MailService
         Shoot $shoot,
         string $paymentLink,
         ?bool $shouldNotifyPhotographer = true
-    ): bool
-    {
+    ): bool {
         if ($shoot->isInternalTestShoot()) {
             return false;
         }
@@ -457,9 +459,9 @@ class MailService
                 'user_id' => $user->id,
                 'shoot_id' => $shoot->id,
                 'email' => $user->email,
-                'error' => $e->getMessage()
+                'error' => $e->getMessage(),
             ]);
-            
+
             return false;
         }
     }
@@ -515,8 +517,7 @@ class MailService
         string $paymentLink,
         bool $isPhotographer,
         array $cc = []
-    ): bool
-    {
+    ): bool {
         try {
             $normalizedEmail = $this->normalizeDeliverableEmail($recipient->email);
             $recipientShootData = $isPhotographer
@@ -569,7 +570,7 @@ class MailService
                 'require_confirmed_duplicate' => true,
             ]);
 
-            if (!$sent) {
+            if (! $sent) {
                 return false;
             }
 
@@ -611,8 +612,7 @@ class MailService
         ?string $changesSummary = null,
         ?bool $notifyClient = null,
         ?bool $notifyPhotographer = null
-    ): bool
-    {
+    ): bool {
         if ($shoot->isInternalTestShoot()) {
             return false;
         }
@@ -630,7 +630,7 @@ class MailService
                 : $shootData;
             $sentClient = false;
             $sentPhotographer = false;
-            
+
             if ($shouldNotifyClient) {
                 $normalizedEmail = $this->normalizeDeliverableEmail($user->email);
 
@@ -647,7 +647,7 @@ class MailService
                             'role_context' => $isPrimaryRecipientPhotographer ? 'photographer' : 'client',
                             'shoot_service_ids' => $primaryShootData->service_item_ids ?? [],
                             'changes_summary' => $normalizedChangesSummary,
-                            'event_version' => sha1($normalizedChangesSummary . '|' . ($shoot->updated_at?->toIso8601String() ?? $shoot->id)),
+                            'event_version' => sha1($normalizedChangesSummary.'|'.($shoot->updated_at?->toIso8601String() ?? $shoot->id)),
                         ],
                     ]);
                     $this->dispatchProtectedEmail('SHOOT_UPDATED', $payload, $normalizedEmail, $clientCcEmails, [], $this->automatedClientPayload($user, [
@@ -656,18 +656,18 @@ class MailService
                         'idempotency_key' => sprintf('SHOOT_UPDATED:%d:%d:client:%s', $shoot->id, $user->id, sha1($normalizedChangesSummary)),
                     ]);
                     $sentClient = true;
-                    
+
                     Log::info('Shoot updated email sent', [
                         'user_id' => $user->id,
                         'shoot_id' => $shoot->id,
-                        'email' => $normalizedEmail
+                        'email' => $normalizedEmail,
                     ]);
                 }
             } else {
                 Log::info('Shoot updated email skipped for client', [
                     'user_id' => $user->id,
                     'shoot_id' => $shoot->id,
-                    'email' => $user->email
+                    'email' => $user->email,
                 ]);
             }
 
@@ -686,6 +686,7 @@ class MailService
 
                     if ($normalizedEmail === null) {
                         $this->logSkippedShootEmailDelivery('SHOOT_UPDATED', $shoot, $photographer, 'photographer');
+
                         continue;
                     }
 
@@ -699,7 +700,7 @@ class MailService
                             'role_context' => 'photographer',
                             'shoot_service_ids' => $photographerShootData->service_item_ids ?? [],
                             'changes_summary' => $photographerChangesSummary,
-                            'event_version' => sha1($photographerChangesSummary . '|' . ($shoot->updated_at?->toIso8601String() ?? $shoot->id)),
+                            'event_version' => sha1($photographerChangesSummary.'|'.($shoot->updated_at?->toIso8601String() ?? $shoot->id)),
                         ],
                     ]);
                     $this->dispatchProtectedEmail('SHOOT_UPDATED', $payload, $normalizedEmail, [], [], [
@@ -726,8 +727,8 @@ class MailService
                     'excluded_user_id' => $user->id,
                 ]);
             }
-            
-            if (!$shouldNotifyClient && !$shouldNotifyPhotographer) {
+
+            if (! $shouldNotifyClient && ! $shouldNotifyPhotographer) {
                 return true;
             }
 
@@ -737,7 +738,7 @@ class MailService
                 'user_id' => $user->id,
                 'shoot_id' => $shoot->id,
                 'email' => $user->email,
-                'error' => $e->getMessage()
+                'error' => $e->getMessage(),
             ]);
 
             return false;
@@ -846,7 +847,7 @@ class MailService
 
     private function normalizeDeliverableEmail(?string $email): ?string
     {
-        if (!is_string($email)) {
+        if (! is_string($email)) {
             return null;
         }
 
@@ -883,8 +884,7 @@ class MailService
         array $tags = [],
         ?bool $shouldNotifyPhotographer = true,
         array $serviceItemIds = []
-    ): bool
-    {
+    ): bool {
         if ($shoot->isInternalTestShoot()) {
             return false;
         }
@@ -999,11 +999,11 @@ class MailService
             ]), [
                 'idempotency_key' => sprintf('SHOOT_REMOVED:%d:%d:client', $shoot->id, $user->id),
             ]);
-            
+
             Log::info('Shoot removed email sent', [
                 'user_id' => $user->id,
                 'shoot_id' => $shoot->id,
-                'email' => $user->email
+                'email' => $user->email,
             ]);
 
             if ($this->shouldSendAssignedPhotographerEmails($shoot, $user, ShootEmailMatrix::SHOOT_REMOVED)) {
@@ -1032,16 +1032,16 @@ class MailService
                     ]);
                 }
             }
-            
+
             return true;
         } catch (\Exception $e) {
             Log::error('Failed to send shoot removed email', [
                 'user_id' => $user->id,
                 'shoot_id' => $shoot->id,
                 'email' => $user->email,
-                'error' => $e->getMessage()
+                'error' => $e->getMessage(),
             ]);
-            
+
             return false;
         }
     }
@@ -1264,8 +1264,7 @@ class MailService
         array $serviceItemIds = [],
         bool $isFullOrderDelivery = true,
         ?int &$acceptedMessageId = null
-    ): bool
-    {
+    ): bool {
         if ($shoot->isInternalTestShoot()) {
             return false;
         }
@@ -1312,22 +1311,22 @@ class MailService
             if (! $accepted) {
                 return false;
             }
-            
+
             Log::info('Shoot ready email sent', [
                 'user_id' => $user->id,
                 'shoot_id' => $shoot->id,
-                'email' => $user->email
+                'email' => $user->email,
             ]);
-            
+
             return true;
         } catch (\Exception $e) {
             Log::error('Failed to send shoot ready email', [
                 'user_id' => $user->id,
                 'shoot_id' => $shoot->id,
                 'email' => $user->email,
-                'error' => $e->getMessage()
+                'error' => $e->getMessage(),
             ]);
-            
+
             return false;
         }
     }
@@ -1414,13 +1413,14 @@ class MailService
             ]), [
                 'idempotency_key' => $this->paymentReceiptIdempotencyKey($user, $payment),
             ]);
-            
+
             Log::info('Payment confirmation email queued', [
                 'user_id' => $user->id,
                 'shoot_id' => $shoot->id,
                 'payment_id' => $payment->id,
-                'email' => $user->email
+                'email' => $user->email,
             ]);
+
             return true;
         } catch (\Exception $e) {
             Log::error('Failed to send payment confirmation email', [
@@ -1428,9 +1428,9 @@ class MailService
                 'shoot_id' => $shoot->id,
                 'payment_id' => $payment->id,
                 'email' => $user->email,
-                'error' => $e->getMessage()
+                'error' => $e->getMessage(),
             ]);
-            
+
             return false;
         }
     }
@@ -1576,20 +1576,20 @@ class MailService
                     'body_text' => $rendered['text'],
                 ])
             );
-            
+
             Log::info('Terms accepted email sent', [
                 'user_id' => $user->id,
-                'email' => $user->email
+                'email' => $user->email,
             ]);
-            
+
             return true;
         } catch (\Exception $e) {
             Log::error('Failed to send terms accepted email', [
                 'user_id' => $user->id,
                 'email' => $user->email,
-                'error' => $e->getMessage()
+                'error' => $e->getMessage(),
             ]);
-            
+
             return false;
         }
     }
@@ -1983,8 +1983,7 @@ class MailService
         ?User $recipient = null,
         ?string $roleContext = null,
         array $serviceItemIds = []
-    ): object
-    {
+    ): object {
         $shoot->loadMissing(['client', 'photographer', 'rep', 'services.category']);
 
         $fullAddress = $this->formatFullAddress($shoot);
@@ -2007,12 +2006,12 @@ class MailService
         $notesText = $this->formatNotes($shoot);
         $serviceRows = $this->formatDetailedServices($shoot, $recipient, $roleContext, $serviceItemIds);
         $emailSchedule = \App\Support\ShootEmailSchedule::summarize(
-            array_column($serviceRows, 'scheduled_at'), $dateStr, $formattedTime
+            array_column($serviceRows, 'scheduled_at'), $dateStr, $formattedTime, $shoot->timezone
         );
         $dateStr = $emailSchedule['date'];
         $formattedTime = $emailSchedule['time'];
         $assignedPhotographers = $this->formatAssignedPhotographers($shoot, $serviceRows);
-        $packageRows = ($recipient || !empty($serviceItemIds))
+        $packageRows = ($recipient || ! empty($serviceItemIds))
             ? $this->formatPackagesFromServiceRows($serviceRows)
             : $this->formatPackages($shoot);
         $resolvedServiceItemIds = collect($serviceRows)
@@ -2039,7 +2038,7 @@ class MailService
             'primary_photographer' => $shoot->photographer?->name,
             'photographer' => $shoot->photographer ? $shoot->photographer->name : 'TBD',
             'photographers' => $assignedPhotographers,
-            'photographers_label' => !empty($assignedPhotographers) ? implode(', ', $assignedPhotographers) : 'TBD',
+            'photographers_label' => ! empty($assignedPhotographers) ? implode(', ', $assignedPhotographers) : 'TBD',
             'client_name' => $shoot->client ? $shoot->client->name : 'N/A',
             'client_email' => $shoot->client?->email,
             'client_phone' => $shoot->client?->phonenumber,
@@ -2088,23 +2087,23 @@ class MailService
         $noteContents = [];
 
         // Check shoot_notes field first
-        if (!empty($shoot->shoot_notes)) {
+        if (! empty($shoot->shoot_notes)) {
             $noteContents[] = $shoot->shoot_notes;
         }
 
         // Check notes relationship
         if ($shoot->relationLoaded('notes') && $shoot->notes) {
             foreach ($shoot->notes as $note) {
-                if (!empty($note->content) && $note->visibility === 'client_visible') {
+                if (! empty($note->content) && $note->visibility === 'client_visible') {
                     $noteContents[] = $note->content;
                 }
             }
-        } elseif (!$shoot->relationLoaded('notes')) {
+        } elseif (! $shoot->relationLoaded('notes')) {
             // Load notes if not loaded
             $shoot->load('notes');
             if ($shoot->notes) {
                 foreach ($shoot->notes as $note) {
-                    if (!empty($note->content) && $note->visibility === 'client_visible') {
+                    if (! empty($note->content) && $note->visibility === 'client_visible') {
                         $noteContents[] = $note->content;
                     }
                 }
@@ -2114,7 +2113,7 @@ class MailService
         // Legacy scalar notes may also exist as client-visible relation rows.
         $noteContents = array_unique(array_filter(array_map('trim', $noteContents), fn ($note) => $note !== ''));
 
-        return !empty($noteContents) ? implode("\n", $noteContents) : '';
+        return ! empty($noteContents) ? implode("\n", $noteContents) : '';
     }
 
     /**
@@ -2129,7 +2128,7 @@ class MailService
             'status' => $payment->status,
             'payment_method' => $payment->payment_method ?? 'Card',
             'transaction_id' => $this->paymentProviderTransactionReference($payment),
-            'created_at' => $payment->created_at->format('M j, Y g:i A')
+            'created_at' => $payment->created_at->format('M j, Y g:i A'),
         ];
     }
 
@@ -2171,52 +2170,52 @@ class MailService
     private function formatPackages(Shoot $shoot): array
     {
         $packages = [];
-        
+
         // Load services relationship if not already loaded
-        if (!$shoot->relationLoaded('services')) {
+        if (! $shoot->relationLoaded('services')) {
             $shoot->load('services');
         }
-        
+
         // Get all services from the shoot (many-to-many relationship)
         if ($shoot->services && $shoot->services->count() > 0) {
             foreach ($shoot->services as $service) {
                 $servicePrice = (float) ($service->pivot->price ?? $service->price ?? 0);
                 $quantity = (int) ($service->pivot->quantity ?? 1);
                 $serviceName = $service->name ?? $service->service_name ?? 'Service';
-                
+
                 $packages[] = [
-                    'name' => $serviceName . ($quantity > 1 ? " x{$quantity}" : ''),
-                    'price' => $servicePrice * $quantity
+                    'name' => $serviceName.($quantity > 1 ? " x{$quantity}" : ''),
+                    'price' => $servicePrice * $quantity,
                 ];
             }
         } elseif ($shoot->service) {
             // Fallback to single service relationship (legacy)
             $packages[] = [
                 'name' => $shoot->service->name ?? 'Photography Service',
-                'price' => $shoot->base_quote ?? 0
+                'price' => $shoot->base_quote ?? 0,
             ];
         } elseif ($shoot->service_category) {
             // Fallback to service category
             $categoryNames = [
                 'P' => 'Photography Package',
                 'iGuide' => 'iGuide Virtual Tour',
-                'Video' => 'Video Package'
+                'Video' => 'Video Package',
             ];
-            
+
             $packages[] = [
                 'name' => $categoryNames[$shoot->service_category] ?? $shoot->service_category,
-                'price' => $shoot->base_quote ?? 0
+                'price' => $shoot->base_quote ?? 0,
             ];
         }
-        
+
         // If still no packages, add a generic one based on quote
         if (empty($packages) && ($shoot->base_quote ?? 0) > 0) {
             $packages[] = [
                 'name' => 'Photography Services',
-                'price' => $shoot->base_quote
+                'price' => $shoot->base_quote,
             ];
         }
-        
+
         return $packages;
     }
 
@@ -2225,8 +2224,7 @@ class MailService
         ?User $recipient = null,
         ?string $roleContext = null,
         array $serviceItemIds = []
-    ): array
-    {
+    ): array {
         $shoot->loadMissing(['services.category', 'units']);
         $serviceItemScope = collect($serviceItemIds)
             ->map(fn ($id) => (int) $id)
@@ -2248,7 +2246,7 @@ class MailService
 
         foreach ($shoot->services ?? [] as $service) {
             $shootServiceId = (int) ($service->pivot->id ?? 0);
-            if ($serviceItemScope->isNotEmpty() && (!$shootServiceId || !$serviceItemScope->contains($shootServiceId))) {
+            if ($serviceItemScope->isNotEmpty() && (! $shootServiceId || ! $serviceItemScope->contains($shootServiceId))) {
                 continue;
             }
 
@@ -2261,7 +2259,7 @@ class MailService
             if (
                 $recipient
                 && $roleContext === 'photographer'
-                && (!$resolvedPhotographerId || (int) $resolvedPhotographerId !== (int) $recipient->id)
+                && (! $resolvedPhotographerId || (int) $resolvedPhotographerId !== (int) $recipient->id)
             ) {
                 continue;
             }
@@ -2269,7 +2267,7 @@ class MailService
             if (
                 $recipient
                 && $roleContext === 'editor'
-                && (!$resolvedEditorId || (int) $resolvedEditorId !== (int) $recipient->id)
+                && (! $resolvedEditorId || (int) $resolvedEditorId !== (int) $recipient->id)
             ) {
                 continue;
             }
@@ -2287,28 +2285,30 @@ class MailService
             }
 
             $meta = [];
-            if (!empty($service->category?->name)) {
+            if (! empty($service->category?->name)) {
                 $meta[] = $service->category->name;
             }
             if ($quantity > 1) {
-                $meta[] = 'Qty ' . $quantity;
+                $meta[] = 'Qty '.$quantity;
             }
             if ($unitPrice > 0 && $roleContext !== 'photographer') {
-                $meta[] = $this->formatCurrency($unitPrice) . ' each';
+                $meta[] = $this->formatCurrency($unitPrice).' each';
             }
 
             $serviceName = $service->name ?? $service->service_name ?? 'Service';
             $scheduledAt = $service->pivot->scheduled_at ?? $shoot->scheduled_at;
             $unit = $shoot->units->firstWhere('id', $service->pivot->shoot_unit_id);
-            if ($unit) $serviceName = $unit->label.' · '.$serviceName;
-            $formattedSchedule = $this->formatServiceSchedule($scheduledAt);
+            if ($unit) {
+                $serviceName = $unit->label.' · '.$serviceName;
+            }
+            $formattedSchedule = $this->formatServiceSchedule($scheduledAt, $shoot->timezone);
 
             $rows[] = [
                 'shoot_service_id' => $shootServiceId ?: null,
                 'shoot_unit_id' => $unit?->id,
                 'unit_label' => $unit?->label,
                 'name' => $serviceName,
-                'display_name' => $serviceName . ($quantity > 1 ? " x{$quantity}" : ''),
+                'display_name' => $serviceName.($quantity > 1 ? " x{$quantity}" : ''),
                 'quantity' => $quantity,
                 'category' => $service->category?->name,
                 'unit_price' => $roleContext === 'photographer' ? null : $unitPrice,
@@ -2327,7 +2327,7 @@ class MailService
             ];
         }
 
-        if (empty($rows) && (!$recipient || !$roleContext) && $serviceItemScope->isEmpty()) {
+        if (empty($rows) && (! $recipient || ! $roleContext) && $serviceItemScope->isEmpty()) {
             foreach ($this->formatPackages($shoot) as $package) {
                 $rows[] = [
                     'name' => $package['name'],
@@ -2367,21 +2367,9 @@ class MailService
             ->all();
     }
 
-    private function formatServiceSchedule(mixed $scheduledAt): string
+    private function formatServiceSchedule(mixed $scheduledAt, ?string $timezone = null): string
     {
-        if (!$scheduledAt) {
-            return 'TBD';
-        }
-
-        try {
-            $date = $scheduledAt instanceof \DateTimeInterface
-                ? \Carbon\Carbon::instance($scheduledAt)
-                : \Carbon\Carbon::parse((string) $scheduledAt);
-
-            return $date->format('M j, Y \a\t g:i A');
-        } catch (\Throwable) {
-            return (string) $scheduledAt;
-        }
+        return \App\Support\ShootEmailSchedule::format($scheduledAt, $timezone) ?? 'TBD';
     }
 
     private function serviceScopeHash(object $shootData): string
@@ -2408,7 +2396,7 @@ class MailService
     private function shouldSendAssignedPhotographerEmails(Shoot $shoot, User $primaryRecipient, string $event): bool
     {
         return ShootEmailMatrix::includesPhotographer($event)
-            && !$this->isPhotographerRecipient($primaryRecipient, $shoot);
+            && ! $this->isPhotographerRecipient($primaryRecipient, $shoot);
     }
 
     private function resolveAssignedPhotographers(Shoot $shoot, ?int $excludeUserId = null): Collection
@@ -2419,7 +2407,7 @@ class MailService
         $hasServices = $services->isNotEmpty();
         $hasServicesWithoutPhotographer = $services->contains(fn ($service) => empty($service->pivot->photographer_id));
         $parentPhotographerId = ($shoot->photographer_id || $shoot->photographer?->id)
-            && (!$hasServices || $hasServicesWithoutPhotographer)
+            && (! $hasServices || $hasServicesWithoutPhotographer)
                 ? ($shoot->photographer_id ?? $shoot->photographer?->id)
                 : null;
 
@@ -2529,7 +2517,7 @@ class MailService
             return $paymentStatus;
         }
 
-        if (!$shoot->relationLoaded('payments')) {
+        if (! $shoot->relationLoaded('payments')) {
             $shoot->loadMissing('payments');
         }
 
@@ -2581,7 +2569,7 @@ class MailService
 
         if (str_contains($urlWithoutFragment, '#')) {
             [$urlWithoutFragment, $fragment] = explode('#', $urlWithoutFragment, 2);
-            $fragment = '#' . $fragment;
+            $fragment = '#'.$fragment;
         }
 
         $baseUrl = $urlWithoutFragment;
@@ -2594,7 +2582,7 @@ class MailService
         parse_str($queryString, $query);
         $query['mode'] = 'create';
 
-        return $baseUrl . '?' . http_build_query($query, '', '&', PHP_QUERY_RFC3986) . $fragment;
+        return $baseUrl.'?'.http_build_query($query, '', '&', PHP_QUERY_RFC3986).$fragment;
     }
 
     /**
@@ -2603,10 +2591,11 @@ class MailService
     public function generatePasswordResetLink(User $user, ?string $token = null): string
     {
         $frontendUrl = config('app.frontend_url', 'https://reprodashboard.com');
-        if (!$token) {
+        if (! $token) {
             $token = \Illuminate\Support\Str::random(64);
         }
-        return "{$frontendUrl}/reset-password?token={$token}&email=" . urlencode($user->email);
+
+        return "{$frontendUrl}/reset-password?token={$token}&email=".urlencode($user->email);
     }
 
     /**
@@ -2639,20 +2628,20 @@ class MailService
             ]), [
                 'idempotency_key' => sprintf('PASSWORD_RESET:%d:%s', $user->id, sha1($resetLink)),
             ]);
-            
+
             Log::info('Password reset email sent', [
                 'user_id' => $user->id,
-                'email' => $user->email
+                'email' => $user->email,
             ]);
-            
+
             return true;
         } catch (\Exception $e) {
             Log::error('Failed to send password reset email', [
                 'user_id' => $user->id,
                 'email' => $user->email,
-                'error' => $e->getMessage()
+                'error' => $e->getMessage(),
             ]);
-            
+
             return false;
         }
     }
@@ -2675,21 +2664,21 @@ class MailService
                 return false;
             }
             $this->sendViaCakemail($salesRep->email, $rendered['subject'], $rendered['html'], 'WEEKLY_SALES_REPORT', [], [], ['body_text' => $rendered['text']]);
-            
+
             Log::info('Weekly sales report email sent', [
                 'sales_rep_id' => $salesRep->id,
                 'email' => $salesRep->email,
                 'period' => $reportData['period'] ?? null,
             ]);
-            
+
             return true;
         } catch (\Exception $e) {
             Log::error('Failed to send weekly sales report email', [
                 'sales_rep_id' => $salesRep->id,
                 'email' => $salesRep->email,
-                'error' => $e->getMessage()
+                'error' => $e->getMessage(),
             ]);
-            
+
             return false;
         }
     }
@@ -2703,14 +2692,15 @@ class MailService
             $invoice->loadMissing(['photographer', 'salesRep', 'items']);
 
             $recipient = $invoice->photographer ?? $invoice->salesRep;
-            if (!$recipient || empty($recipient->email)) {
+            if (! $recipient || empty($recipient->email)) {
                 Log::warning('Cannot send invoice email: recipient not found', [
-                    'invoice_id' => $invoice->id
+                    'invoice_id' => $invoice->id,
                 ]);
+
                 return false;
             }
 
-            if (!$recipient) {
+            if (! $recipient) {
                 Log::warning('Cannot send invoice pending approval email: payee not found', [
                     'invoice_id' => $invoice->id,
                 ]);
@@ -2737,21 +2727,21 @@ class MailService
             ], [
                 'idempotency_key' => sprintf('INVOICE_GENERATED:%d:%d:%s', $invoice->id, $recipient->id, sha1($period)),
             ]);
-            
+
             Log::info('Invoice generated email sent', [
                 'invoice_id' => $invoice->id,
                 'recipient_id' => $recipient->id,
                 'email' => $recipient->email,
                 'recipient_role' => $invoice->photographer ? 'photographer' : 'sales_rep',
             ]);
-            
+
             return true;
         } catch (\Exception $e) {
             Log::error('Failed to send invoice generated email', [
                 'invoice_id' => $invoice->id,
-                'error' => $e->getMessage()
+                'error' => $e->getMessage(),
             ]);
-            
+
             return false;
         }
     }
@@ -2763,11 +2753,12 @@ class MailService
     {
         try {
             $admins = User::whereIn('role', ['admin', 'superadmin'])->get();
-            
+
             if ($admins->isEmpty()) {
                 Log::warning('No admins found to send invoice approval email', [
-                    'invoice_id' => $invoice->id
+                    'invoice_id' => $invoice->id,
                 ]);
+
                 return false;
             }
 
@@ -2797,19 +2788,19 @@ class MailService
                     'idempotency_key' => sprintf('INVOICE_PENDING_APPROVAL:%d:%d:%s', $invoice->id, $admin->id, sha1($period.'|'.$payload['meta']['event_version'])),
                 ]);
             }
-            
+
             Log::info('Invoice pending approval emails sent', [
                 'invoice_id' => $invoice->id,
-                'admin_count' => $admins->count()
+                'admin_count' => $admins->count(),
             ]);
-            
+
             return true;
         } catch (\Exception $e) {
             Log::error('Failed to send invoice pending approval emails', [
                 'invoice_id' => $invoice->id,
-                'error' => $e->getMessage()
+                'error' => $e->getMessage(),
             ]);
-            
+
             return false;
         }
     }
@@ -2822,10 +2813,11 @@ class MailService
         try {
             $recipient = $this->resolveInvoicePayee($invoice);
             $roleLabel = $this->resolveInvoicePayeeLabel($invoice);
-            if (!$recipient) {
+            if (! $recipient) {
                 Log::warning('Cannot send invoice approved email: payee not found', [
-                    'invoice_id' => $invoice->id
+                    'invoice_id' => $invoice->id,
                 ]);
+
                 return false;
             }
 
@@ -2846,20 +2838,20 @@ class MailService
             ], [
                 'idempotency_key' => sprintf('INVOICE_APPROVED:%d:%d:%s', $invoice->id, $recipient->id, sha1($period.'|'.$payload['meta']['event_version'])),
             ]);
-            
+
             Log::info('Invoice approved email sent', [
                 'invoice_id' => $invoice->id,
                 'recipient_id' => $recipient->id,
-                'email' => $recipient->email
+                'email' => $recipient->email,
             ]);
-            
+
             return true;
         } catch (\Exception $e) {
             Log::error('Failed to send invoice approved email', [
                 'invoice_id' => $invoice->id,
-                'error' => $e->getMessage()
+                'error' => $e->getMessage(),
             ]);
-            
+
             return false;
         }
     }
@@ -2872,10 +2864,11 @@ class MailService
         try {
             $recipient = $this->resolveInvoicePayee($invoice);
             $roleLabel = $this->resolveInvoicePayeeLabel($invoice);
-            if (!$recipient) {
+            if (! $recipient) {
                 Log::warning('Cannot send invoice rejected email: payee not found', [
-                    'invoice_id' => $invoice->id
+                    'invoice_id' => $invoice->id,
                 ]);
+
                 return false;
             }
 
@@ -2896,20 +2889,20 @@ class MailService
             ], [
                 'idempotency_key' => sprintf('INVOICE_REJECTED:%d:%d:%s', $invoice->id, $recipient->id, sha1($period.'|'.$payload['meta']['event_version'])),
             ]);
-            
+
             Log::info('Invoice rejected email sent', [
                 'invoice_id' => $invoice->id,
                 'recipient_id' => $recipient->id,
-                'email' => $recipient->email
+                'email' => $recipient->email,
             ]);
-            
+
             return true;
         } catch (\Exception $e) {
             Log::error('Failed to send invoice rejected email', [
                 'invoice_id' => $invoice->id,
-                'error' => $e->getMessage()
+                'error' => $e->getMessage(),
             ]);
-            
+
             return false;
         }
     }
@@ -2961,9 +2954,9 @@ class MailService
                 'user_id' => $user->id,
                 'shoot_id' => $shoot->id,
                 'email' => $user->email ?? null,
-                'error' => $e->getMessage()
+                'error' => $e->getMessage(),
             ]);
-            
+
             return false;
         }
     }
@@ -3074,7 +3067,7 @@ class MailService
                     'changes_summary' => $normalizedChangesSummary,
                     'previous_photographer' => [],
                     'is_assigned_after_change' => $isAssignedAfterChange,
-                    'event_version' => sha1($normalizedChangesSummary . '|' . ($shoot->updated_at?->toIso8601String() ?? $shoot->id)),
+                    'event_version' => sha1($normalizedChangesSummary.'|'.($shoot->updated_at?->toIso8601String() ?? $shoot->id)),
                 ],
             ]);
 
@@ -3207,22 +3200,22 @@ class MailService
             ]), [
                 'idempotency_key' => sprintf('CANCELLATION_FEE_INVOICE:%d:%d', $invoice->id, $client->id),
             ]);
-            
+
             Log::info('Cancellation fee invoice email sent', [
                 'client_id' => $client->id,
                 'invoice_id' => $invoice->id,
-                'email' => $client->email
+                'email' => $client->email,
             ]);
-            
+
             return true;
         } catch (\Exception $e) {
             Log::error('Failed to send cancellation fee invoice email', [
                 'client_id' => $client->id,
                 'invoice_id' => $invoice->id,
                 'email' => $client->email,
-                'error' => $e->getMessage()
+                'error' => $e->getMessage(),
             ]);
-            
+
             return false;
         }
     }
@@ -3299,7 +3292,7 @@ class MailService
 
     private function formatUserData(?User $user): array
     {
-        if (!$user) {
+        if (! $user) {
             return [];
         }
 
@@ -3520,7 +3513,7 @@ HTML;
 
         foreach ($textChanges as $change) {
             $text = e((string) ($change['text'] ?? ''));
-            $html .= '<p class="change-summary-block" style="margin:0 0 12px; font-size:14px; line-height:1.7; color:#2d4769;">' . $text . '</p>';
+            $html .= '<p class="change-summary-block" style="margin:0 0 12px; font-size:14px; line-height:1.7; color:#2d4769;">'.$text.'</p>';
         }
 
         return $html !== ''
@@ -3535,7 +3528,7 @@ HTML;
     {
         $line = trim($line);
 
-        if (!str_contains($line, ':')) {
+        if (! str_contains($line, ':')) {
             return [
                 'type' => 'text',
                 'text' => $line,
@@ -3583,7 +3576,7 @@ HTML;
         }
 
         if (strcasecmp($after, 'Removed') === 0) {
-            return '<span style="text-decoration:line-through; color:#8c5f68;">' . e($before) . '</span>';
+            return '<span style="text-decoration:line-through; color:#8c5f68;">'.e($before).'</span>';
         }
 
         if (strcasecmp($label, 'Services') !== 0) {
@@ -3620,7 +3613,7 @@ HTML;
                 return e($item);
             }
 
-            return '<span style="text-decoration:line-through; color:#8c5f68;">' . e($item) . '</span>';
+            return '<span style="text-decoration:line-through; color:#8c5f68;">'.e($item).'</span>';
         }, $beforeItems);
 
         return implode(', ', $parts);
@@ -3628,7 +3621,10 @@ HTML;
 
     private function formatStatusValue(?string $value): string
     {
-        if (!$value) return '';
+        if (! $value) {
+            return '';
+        }
+
         return ucwords(str_replace(['_', '-'], ' ', $value));
     }
 
@@ -3655,9 +3651,9 @@ HTML;
                 $parts[] = $time;
             }
         }
+
         return implode(' at ', $parts) ?: 'TBD';
     }
-
 
     private function formatFullAddress(Shoot $shoot): string
     {
@@ -3676,7 +3672,7 @@ HTML;
     private function formatServicesForComparison(Shoot $shoot): array
     {
         $shoot->loadMissing('services');
-        if (!$shoot->services || $shoot->services->isEmpty()) {
+        if (! $shoot->services || $shoot->services->isEmpty()) {
             return [];
         }
 
@@ -3720,10 +3716,10 @@ HTML;
             ];
         })->map(function (array $service) use ($photographerNamesById, $editorNamesById) {
             if ($service['photographer_id']) {
-                $service['photographer_name'] = (string) ($photographerNamesById->get($service['photographer_id']) ?: 'Photographer #' . $service['photographer_id']);
+                $service['photographer_name'] = (string) ($photographerNamesById->get($service['photographer_id']) ?: 'Photographer #'.$service['photographer_id']);
             }
             if ($service['editor_id']) {
-                $service['editor_name'] = (string) ($editorNamesById->get($service['editor_id']) ?: 'Editor #' . $service['editor_id']);
+                $service['editor_name'] = (string) ($editorNamesById->get($service['editor_id']) ?: 'Editor #'.$service['editor_id']);
             }
 
             return $service;
@@ -3732,32 +3728,40 @@ HTML;
 
     private function formatServiceSummary(array $services): string
     {
-        if (empty($services)) return 'None';
+        if (empty($services)) {
+            return 'None';
+        }
+
         return collect($services)->map(function ($s) {
             $name = $s['name'] ?? 'Service';
             $qty = $s['quantity'] ?? 1;
             $price = $s['price'] ?? 0;
             $line = $name;
-            if ($qty > 1) $line .= " x{$qty}";
-            if ($price > 0) $line .= ' ($' . number_format($price * $qty, 2) . ')';
-            if (!empty($s['photographer_name'])) {
-                $line .= ' - Photographer: ' . $s['photographer_name'];
+            if ($qty > 1) {
+                $line .= " x{$qty}";
             }
-            if (!empty($s['editor_name'])) {
-                $line .= ' - Editor: ' . $s['editor_name'];
+            if ($price > 0) {
+                $line .= ' ($'.number_format($price * $qty, 2).')';
             }
-            if (!empty($s['scheduled_at'])) {
-                $line .= ' - Time: ' . $this->formatDateTimeValue($s['scheduled_at']);
+            if (! empty($s['photographer_name'])) {
+                $line .= ' - Photographer: '.$s['photographer_name'];
             }
-            if (!empty($s['workflow_status'])) {
-                $line .= ' - Workflow: ' . $this->formatStatusValue($s['workflow_status']);
+            if (! empty($s['editor_name'])) {
+                $line .= ' - Editor: '.$s['editor_name'];
             }
-            if (!empty($s['delivery_status'])) {
-                $line .= ' - Delivery: ' . $this->formatStatusValue($s['delivery_status']);
+            if (! empty($s['scheduled_at'])) {
+                $line .= ' - Time: '.$this->formatDateTimeValue($s['scheduled_at']);
+            }
+            if (! empty($s['workflow_status'])) {
+                $line .= ' - Workflow: '.$this->formatStatusValue($s['workflow_status']);
+            }
+            if (! empty($s['delivery_status'])) {
+                $line .= ' - Delivery: '.$this->formatStatusValue($s['delivery_status']);
             }
             if (array_key_exists('is_deliverable', $s) && $s['is_deliverable'] !== null) {
-                $line .= ' - Deliverable: ' . $this->formatBooleanValue((bool) $s['is_deliverable']);
+                $line .= ' - Deliverable: '.$this->formatBooleanValue((bool) $s['is_deliverable']);
             }
+
             return $line;
         })->implode(', ');
     }
@@ -3769,7 +3773,7 @@ HTML;
         }
 
         return collect($users)
-            ->map(fn (array $user) => trim((string) ($user['name'] ?? 'User #' . ($user['id'] ?? ''))))
+            ->map(fn (array $user) => trim((string) ($user['name'] ?? 'User #'.($user['id'] ?? ''))))
             ->filter()
             ->values()
             ->implode(', ');
@@ -3777,14 +3781,18 @@ HTML;
 
     private function normalizeChangeText(?string $value): string
     {
-        if ($value === null || trim($value) === '') return '';
+        if ($value === null || trim($value) === '') {
+            return '';
+        }
+
         return trim($value);
     }
 
     private function formatCurrency($value): string
     {
         $num = (float) ($value ?? 0);
-        return '$' . number_format($num, 2);
+
+        return '$'.number_format($num, 2);
     }
 
     private function formatDiscountValue($type, $value): string
@@ -3795,7 +3803,7 @@ HTML;
 
         $formatted = number_format((float) $value, 2);
 
-        return ((string) $type === 'percent') ? "{$formatted}%" : '$' . $formatted;
+        return ((string) $type === 'percent') ? "{$formatted}%" : '$'.$formatted;
     }
 
     private function formatDateTimeValue($value): string
@@ -3813,14 +3821,20 @@ HTML;
 
     private function formatNumberValue($value, int $decimals = 0): string
     {
-        if ($value === null || $value === '') return '';
+        if ($value === null || $value === '') {
+            return '';
+        }
+
         return number_format((float) $value, $decimals);
     }
 
     private function formatSquareFootage($value): string
     {
-        if ($value === null || $value === '') return '';
-        return number_format((int) $value) . ' sqft';
+        if ($value === null || $value === '') {
+            return '';
+        }
+
+        return number_format((int) $value).' sqft';
     }
 
     private function formatBooleanValue(bool $value): string
@@ -3833,6 +3847,7 @@ HTML;
         if (is_string($pd)) {
             $pd = json_decode($pd, true) ?? [];
         }
+
         return is_array($pd) ? $pd : [];
     }
 
@@ -3843,7 +3858,7 @@ HTML;
             $value = is_array($decoded) ? $decoded : [];
         }
 
-        if (!is_array($value)) {
+        if (! is_array($value)) {
             return [];
         }
 
@@ -3866,7 +3881,7 @@ HTML;
             ->where('is_active', true)
             ->first();
 
-        if (!$template) {
+        if (! $template) {
             return null;
         }
 
@@ -3895,7 +3910,7 @@ HTML;
 
     private function buildInvoiceItemsHtml(\App\Models\Invoice $invoice): string
     {
-        if (!$invoice->items || $invoice->items->isEmpty()) {
+        if (! $invoice->items || $invoice->items->isEmpty()) {
             return '<p style="margin: 0;">Line items will appear here once charges or expenses are attached to the invoice.</p>';
         }
 
@@ -3916,7 +3931,7 @@ HTML;
 
     private function buildInvoiceItemsText(\App\Models\Invoice $invoice): string
     {
-        if (!$invoice->items || $invoice->items->isEmpty()) {
+        if (! $invoice->items || $invoice->items->isEmpty()) {
             return '- No line items have been attached yet.';
         }
 
@@ -3937,9 +3952,8 @@ HTML;
         array $cc = [],
         array $tags = [],
         array $extraPayload = []
-    ): void
-    {
-        if (!is_string($to) || trim($to) === '') {
+    ): void {
+        if (! is_string($to) || trim($to) === '') {
             throw new \InvalidArgumentException('Recipient email is required to send mail.');
         }
 
@@ -4001,7 +4015,7 @@ HTML;
         $shoot->loadMissing('client');
         $client = $shoot->client;
 
-        if (!$client) {
+        if (! $client) {
             return [];
         }
 
@@ -4021,7 +4035,6 @@ HTML;
     }
 
     /**
-     * @param  mixed  $emails
      * @return array<int, string>
      */
     private function sanitizeEmailAddresses(mixed $emails, ?string $exclude = null): array
@@ -4067,7 +4080,7 @@ HTML;
                 default => ucfirst((string) $payment->payment_method),
             };
             $dashboardUrl = rtrim((string) config('app.frontend_url', 'https://reprodashboard.com'), '/');
-            $shootUrl = $dashboardUrl . '/shoots/' . $shoot->id;
+            $shootUrl = $dashboardUrl.'/shoots/'.$shoot->id;
 
             $recipients = collect()
                 ->merge(User::query()->whereIn('role', ['admin', 'superadmin'])->get());
@@ -4084,6 +4097,7 @@ HTML;
                     'shoot_id' => $shoot->id,
                     'payment_id' => $payment->id,
                 ]);
+
                 return false;
             }
 
@@ -4148,11 +4162,12 @@ HTML;
 
         try {
             $shoot = $shoot->fresh(['client', 'photographer', 'rep', 'services.category']) ?? $shoot;
-            if (!$shoot->client || !filter_var($shoot->client->email, FILTER_VALIDATE_EMAIL)) {
+            if (! $shoot->client || ! filter_var($shoot->client->email, FILTER_VALIDATE_EMAIL)) {
                 Log::warning('Skipping offline payment intent declined email: missing client email', [
                     'shoot_id' => $shoot->id,
                     'payment_id' => $payment->id,
                 ]);
+
                 return false;
             }
 
@@ -4163,7 +4178,7 @@ HTML;
                 default => ucfirst((string) $payment->payment_method),
             };
             $dashboardUrl = rtrim((string) config('app.frontend_url', 'https://reprodashboard.com'), '/');
-            $shootUrl = $dashboardUrl . '/shoots/' . $shoot->id;
+            $shootUrl = $dashboardUrl.'/shoots/'.$shoot->id;
 
             $payload = $this->buildProtectedEmailPayload([
                 'recipient' => $this->formatUserData($shoot->client),

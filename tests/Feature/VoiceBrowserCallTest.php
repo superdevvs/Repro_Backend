@@ -200,6 +200,21 @@ class VoiceBrowserCallTest extends TestCase
         $this->assertDatabaseHas('voice_call_transcripts', ['voice_call_id' => $call->id, 'speaker' => 'agent', 'text' => 'Staff reply']);
     }
 
+    public function test_provider_nested_transcription_tracks_preserve_customer_and_staff_attribution(): void
+    {
+        $call = $this->activeHuman();
+        $call->update(['recording_consent_given' => true, 'metadata' => ['browser_transcription_enabled' => true]]);
+        $this->event('call.transcription', 'origin-2', ['transcription_data' => [
+            'transcript' => 'Customer question', 'is_final' => true, 'transcription_track' => 'inbound',
+        ]]);
+        $this->event('call.transcription', 'origin-2', ['transcription_data' => [
+            'transcript' => 'Team answer', 'is_final' => true, 'transcription_track' => 'outbound',
+        ]]);
+        $this->assertDatabaseHas('voice_call_transcripts', ['voice_call_id' => $call->id, 'speaker' => 'customer', 'text' => 'Customer question']);
+        $this->assertDatabaseHas('voice_call_transcripts', ['voice_call_id' => $call->id, 'speaker' => 'agent', 'text' => 'Team answer']);
+        $this->assertDatabaseCount('voice_call_transcripts', 2);
+    }
+
     public function test_customer_hangup_ends_staff_and_late_join_does_not_revive_call(): void
     {
         $call = $this->activeHuman();
@@ -335,6 +350,11 @@ class VoiceBrowserCallTest extends TestCase
         $this->assertCount(1, Http::recorded(fn ($r) => str_ends_with($r->url(), '/record_start')));
         $ids = Http::recorded(fn ($r) => str_ends_with($r->url(), '/transcription_start'))->map(fn ($pair) => $pair[0]['command_id'])->all();
         $this->assertCount(1, array_unique($ids));
+        Http::assertSent(fn ($r) => str_ends_with($r->url(), '/calls/origin-2/actions/transcription_start')
+            && $r['transcription_engine'] === 'Telnyx' && $r['transcription_tracks'] === 'both'
+            && $r['transcription_engine_config'] === [
+                'transcription_engine' => 'Telnyx', 'transcription_model' => 'openai/whisper-large-v3-turbo', 'language' => 'auto_detect',
+            ]);
         config(['services.telnyx.voice.browser_enabled' => false, 'services.telnyx.voice.recording_enabled' => false]);
         $call->refresh()->update(['recording_consent_given' => false, 'metadata' => array_merge($call->metadata, ['recording_stop_pending' => true])]);
         $this->getJson('/api/voice/calls/'.$call->id.'/browser')->assertOk()->assertJsonPath('capabilities.can_end', true)->assertJsonPath('recording.active', true);

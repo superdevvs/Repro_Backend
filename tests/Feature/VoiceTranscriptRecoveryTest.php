@@ -10,6 +10,7 @@ use App\Models\VoiceTranscriptRecovery;
 use App\Services\Voice\VoiceTranscriptRecoveryService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
 use Tests\TestCase;
@@ -23,6 +24,8 @@ class VoiceTranscriptRecoveryTest extends TestCase
     private int $recordingStatus = 200;
 
     private bool $transcriptionTimeout = false;
+
+    private array $transcriptionError = [];
 
     protected function setUp(): void
     {
@@ -39,6 +42,10 @@ class VoiceTranscriptRecoveryTest extends TestCase
             if (str_ends_with($request->url(), '/ai/audio/transcriptions')) {
                 if ($this->transcriptionTimeout) {
                     throw new \Illuminate\Http\Client\ConnectionException('Timed out');
+                }
+
+                if ($this->transcriptionError !== []) {
+                    return Http::response($this->transcriptionError, 400, ['x-request-id' => 'provider-request-123']);
                 }
 
                 return Http::response(['text' => 'Complete recorded audio transcript.']);
@@ -130,6 +137,35 @@ class VoiceTranscriptRecoveryTest extends TestCase
         $this->getJson('/api/voice/calls/'.$call->id.'/transcript')->assertOk()->assertJsonPath('can_retry_recording', false)
             ->assertJsonPath('transcript', 'Original legacy text.')->assertJsonPath('recovery.attempt', 3);
         Http::assertSentCount(3);
+    }
+
+    public function test_provider_rejection_logs_bounded_diagnostics_without_signed_links_credentials_or_request_data(): void
+    {
+        config(['services.telnyx.api_key' => 'provider-secret']);
+        $call = $this->recordedCall();
+        $this->transcriptionError = ['errors' => [[
+            'code' => 'invalid_audio', 'title' => 'Download rejected',
+            'detail' => 'Cannot load https://recordings.example.test/private.mp3?signature=secret using provider-secret for +13016375700 and person@example.test',
+            'request' => ['file_url' => 'must-not-log', 'authorization' => 'must-not-log'],
+        ]], 'request_body' => 'must-not-log'];
+        Log::shouldReceive('error')->once()->with('Call transcript recovery provider rejection.', \Mockery::on(function ($context) use ($call) {
+            $json = json_encode($context);
+
+            return $context['voice_call_id'] === $call->id && $context['provider_status'] === 400
+                && $context['diagnostics']['request_id'] === 'provider-request-123'
+                && $context['diagnostics']['errors'][0]['code'] === 'invalid_audio'
+                && str_contains($json, '<redacted-url>') && str_contains($json, '<redacted-credential>')
+                && ! str_contains($json, 'private.mp3') && ! str_contains($json, 'provider-secret')
+                && ! str_contains($json, 'person@example.test') && ! str_contains($json, '13016375700')
+                && ! str_contains($json, 'must-not-log');
+        }));
+        $this->postJson($this->url($call), ['idempotency_key' => 'diagnosable-failure'])->assertAccepted();
+        $recovery = VoiceTranscriptRecovery::firstOrFail();
+        app(VoiceTranscriptRecoveryService::class)->run($recovery->id);
+        $this->assertSame('failed', $recovery->fresh()->status);
+        $this->assertSame(1, $recovery->fresh()->attempt);
+        $this->assertStringNotContainsString('private.mp3', $recovery->fresh()->error);
+        $this->assertDatabaseCount('voice_call_transcripts', 0);
     }
 
     public function test_worker_rechecks_permission_and_consent_and_stuck_work_becomes_explicitly_uncertain(): void

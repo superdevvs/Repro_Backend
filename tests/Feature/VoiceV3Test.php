@@ -156,6 +156,34 @@ class VoiceV3Test extends TestCase
 
     // ---- intelligence ------------------------------------------------------
 
+    public function test_final_fallback_summary_uses_the_actual_call_handler_and_preserves_existing_summary(): void
+    {
+        config(['services.openai.api_key' => '']);
+        $this->settings();
+        foreach (['human' => 'the team', 'mixed' => 'Robbie and the team', 'ai' => 'Robbie'] as $handler => $label) {
+            $call = $this->makeCall();
+            $call->update(['handled_by' => $handler, 'metadata' => ['live' => ['transcript_chunks' => [['speaker' => 'customer', 'text' => 'Hello']]]]]);
+            $result = app(VoiceIntelligenceService::class)->finalize($call->fresh());
+            $this->assertSame('Call handled by '.$label.'. 1 transcript segment saved.', $result['summary_text']);
+            $call->update(['summary' => 'Staff saved a specific recap.']);
+            $this->assertSame('Staff saved a specific recap.', app(VoiceIntelligenceService::class)->finalize($call->fresh())['summary_text']);
+        }
+    }
+
+    public function test_heuristic_finalization_does_not_claim_quality_or_resolution_without_evidence(): void
+    {
+        config(['services.openai.api_key' => '']);
+        $this->settings();
+        foreach ([[], ['transfer_requested'], ['low_confidence']] as $triggers) {
+            $call = $this->makeCall();
+            $result = app(VoiceIntelligenceService::class)->enrich($call, $triggers, final: true);
+            $this->assertSame('Unknown', $result['quality_score']);
+            $this->assertSame('unknown', $result['issue_resolved']);
+            $this->assertSame('unknown', $result['robbie_quality']);
+            $this->assertSame('unknown', data_get($call->fresh()->metadata, 'intel_final.issue_resolved'));
+        }
+    }
+
     public function test_intelligence_does_not_run_when_no_trigger_fires(): void
     {
         $this->settings();

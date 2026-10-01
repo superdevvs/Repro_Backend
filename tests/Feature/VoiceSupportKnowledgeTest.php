@@ -56,6 +56,24 @@ class VoiceSupportKnowledgeTest extends TestCase
         Http::assertNothingSent();
     }
 
+    public function test_unverified_caller_can_get_general_download_steps_without_private_guides_or_account_verification(): void
+    {
+        $client = User::factory()->create(['role' => 'client']);
+        $call = $this->voiceCall($client, false);
+        foreach (['How do I download photos?', 'Where can I download photos from my completed shoot?', 'how to download shoot photos'] as $question) {
+            $this->withHeader('X-Telnyx-Call-Control-Id', $call->call_control_id)
+                ->postJson('/api/telnyx-ai/tools/search_support_knowledge', ['query' => $question])
+                ->assertOk()->assertJsonPath('result.scope', 'public')->assertJsonPath('result.found', true)
+                ->assertJsonPath('result.articles.0.id', 'media-download')
+                ->assertJsonPath('result.articles.0.steps.0', 'Sign in and open a shoot your account can access from Shoot History. Choose Download when it is available.');
+        }
+        $this->postJson('/api/telnyx-ai/tools/search_support_knowledge', ['query' => 'How do I recover an admin call transcript?'])
+            ->assertOk()->assertJsonPath('result.scope', 'public')->assertJsonPath('result.found', false);
+        $this->assertNull($call->fresh()->verified_at);
+        $this->assertDatabaseCount('shoots', 0);
+        Http::assertNothingSent();
+    }
+
     public function test_admin_guidance_requires_verified_persisted_account_and_respects_revoked_permission(): void
     {
         $admin = User::factory()->create(['role' => 'admin']);

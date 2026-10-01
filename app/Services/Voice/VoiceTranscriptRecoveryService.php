@@ -108,6 +108,12 @@ class VoiceTranscriptRecoveryService
             $response = Http::withToken(config('services.telnyx.api_key'))->acceptJson()->asMultipart()->connectTimeout(5)->timeout(45)
                 ->post($base.'/ai/audio/transcriptions', ['file_url' => $url, 'model' => $recovery->model, 'response_format' => 'json']);
             if (! $response->successful()) {
+                \Illuminate\Support\Facades\Log::error('Call transcript recovery provider rejection.', [
+                    'recovery_id' => $recovery->id,
+                    'voice_call_id' => $call->id,
+                    'provider_status' => $response->status(),
+                    'diagnostics' => $this->providerDiagnostics($response),
+                ]);
                 $this->fail($recovery, 'failed', 'The transcription provider rejected recovery (HTTP '.$response->status().'). The recording may exceed provider limits or be unavailable.');
 
                 return;
@@ -162,5 +168,46 @@ class VoiceTranscriptRecoveryService
     private function fail(VoiceTranscriptRecovery $recovery, string $status, string $message): void
     {
         LockedWrite::run(fn () => $recovery->update(['status' => $status, 'error' => $message, 'completed_at' => now()]));
+    }
+
+    /** Retain useful provider failure evidence without persisting signed audio links or request bodies. */
+    private function providerDiagnostics(\Illuminate\Http\Client\Response $response): array
+    {
+        $sanitize = static function (mixed $value): ?string {
+            if (! is_string($value) && ! is_numeric($value)) {
+                return null;
+            }
+            $value = (string) $value;
+            $key = (string) config('services.telnyx.api_key');
+            if ($key !== '') {
+                $value = str_replace($key, '<redacted-credential>', $value);
+            }
+            $value = preg_replace('~https?://[^\s"<>]+~i', '<redacted-url>', $value);
+            $value = preg_replace('~\bBearer\s+\S+~i', '<redacted-credential>', $value);
+            $value = preg_replace('~[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}~i', '<redacted-email>', $value);
+            $value = preg_replace('~\+?[0-9][0-9 ()-]{8,}[0-9]~', '<redacted-phone>', $value);
+            $value = preg_replace('~\b[A-Za-z0-9_=.-]{40,}\b~', '<redacted-token>', $value);
+
+            return mb_substr(preg_replace('/[\x00-\x1F\x7F]/', ' ', $value), 0, 700);
+        };
+        $body = $response->json();
+        $details = [];
+        if (is_array($body)) {
+            foreach (array_slice(is_array($body['errors'] ?? null) ? $body['errors'] : [], 0, 3) as $error) {
+                if (is_array($error)) {
+                    $details[] = array_filter(array_map($sanitize, array_intersect_key($error, array_flip(['code', 'title', 'detail']))));
+                }
+            }
+            if (is_array($body['error'] ?? null)) {
+                $details[] = array_filter(array_map($sanitize, array_intersect_key($body['error'], array_flip(['code', 'type', 'message']))));
+            }
+            foreach (['error', 'detail', 'message'] as $field) {
+                if (is_scalar($body[$field] ?? null)) {
+                    $details[] = [$field => $sanitize($body[$field])];
+                }
+            }
+        }
+
+        return ['request_id' => $sanitize($response->header('x-request-id')), 'errors' => array_slice($details, 0, 4)];
     }
 }
