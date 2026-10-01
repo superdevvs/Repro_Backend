@@ -128,6 +128,138 @@ class BookingAvailabilityPrivacyTest extends TestCase
     }
 
     #[\PHPUnit\Framework\Attributes\Test]
+    public function real_staff_bearer_token_resolves_on_the_public_booking_route(): void
+    {
+        $shoot = $this->createPreviousShoot();
+        $shoot->client->update(['name' => 'Bearer Overlay Client']);
+        $service = Service::factory()->create(['name' => 'Exterior photos']);
+        $shoot->services()->attach($service->id, ['price' => 100, 'quantity' => 1, 'duration_minutes' => 60]);
+        $admin = User::factory()->superAdmin()->create();
+
+        $slot = $this->withToken($admin->createToken('staff-browser')->plainTextToken)
+            ->postJson('/api/photographer/availability/for-booking', $this->payload())
+            ->assertOk()->json('data.0.booked_slots.0');
+
+        $this->assertSame($shoot->id, $slot['shoot_id']);
+        $this->assertSame('Bearer Overlay Client', $slot['client_name']);
+        $this->assertSame('12 Previous Client Street', $slot['address']);
+        $this->assertSame('Exterior photos', $slot['services'][0]['name']);
+        $this->assertSame('09:00', $slot['start_time']);
+        $this->assertSame('10:00', $slot['end_time']);
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
+    public function real_client_bearer_token_keeps_other_booking_details_private(): void
+    {
+        $this->createPreviousShoot();
+        $client = User::factory()->create(['role' => 'client']);
+        $data = $this->withToken($client->createToken('client-browser')->plainTextToken)
+            ->postJson('/api/photographer/availability/for-booking', $this->payload())
+            ->assertOk()->json('data.0');
+
+        $this->assertNull($data['service_area_label']);
+        $this->assertPrivateBookedSlot($data['booked_slots'][0]);
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
+    public function invalid_bearer_token_still_gets_only_the_public_booking_payload(): void
+    {
+        $this->createPreviousShoot();
+        $slot = $this->withToken('999999|invalid-token')
+            ->postJson('/api/photographer/availability/for-booking', $this->payload())
+            ->assertOk()->json('data.0.booked_slots.0');
+
+        $this->assertPrivateBookedSlot($slot);
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
+    public function real_bearer_token_cannot_bypass_an_inactive_account_gate(): void
+    {
+        $admin = User::factory()->superAdmin()->create(['account_status' => 'inactive']);
+        $this->withToken($admin->createToken('stale-browser')->plainTextToken)
+            ->postJson('/api/photographer/availability/for-booking', $this->payload())
+            ->assertUnauthorized();
+        $this->assertSame(0, $admin->tokens()->count());
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
+    public function staff_impersonating_a_client_receives_only_the_client_booking_payload(): void
+    {
+        $this->createPreviousShoot();
+        $admin = User::factory()->superAdmin()->create();
+        $client = User::factory()->create(['role' => 'client']);
+        $slot = $this->withToken($admin->createToken('admin-browser')->plainTextToken)
+            ->withHeader('X-Impersonate-User-Id', (string) $client->id)
+            ->postJson('/api/photographer/availability/for-booking', $this->payload())
+            ->assertOk()->json('data.0.booked_slots.0');
+
+        $this->assertPrivateBookedSlot($slot);
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
+    public function impersonation_cannot_bypass_an_inactive_original_staff_account(): void
+    {
+        $admin = User::factory()->superAdmin()->create(['account_status' => 'inactive']);
+        $client = User::factory()->create(['role' => 'client']);
+        $this->withToken($admin->createToken('stale-admin-browser')->plainTextToken)
+            ->withHeader('X-Impersonate-User-Id', (string) $client->id)
+            ->postJson('/api/photographer/availability/for-booking', $this->payload())
+            ->assertUnauthorized();
+        $this->assertSame(0, $admin->tokens()->count());
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
+    public function impersonation_cannot_bypass_an_inactive_target_account(): void
+    {
+        $admin = User::factory()->superAdmin()->create();
+        $client = User::factory()->create(['role' => 'client', 'account_status' => 'inactive']);
+        $this->withToken($admin->createToken('admin-browser')->plainTextToken)
+            ->withHeader('X-Impersonate-User-Id', (string) $client->id)
+            ->postJson('/api/photographer/availability/for-booking', $this->payload())
+            ->assertUnauthorized();
+        $this->assertSame(1, $admin->tokens()->count());
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
+    public function optional_bearer_auth_enforces_email_verification_for_the_original_actor(): void
+    {
+        $client = User::factory()->create(['role' => 'client']);
+        $this->artisan('auth:start-email-verification-pilot', ['--apply' => true])->assertSuccessful();
+        $admin = User::factory()->superAdmin()->unverified()->create();
+        $token = $admin->createToken('unverified-browser')->plainTextToken;
+        $this->travel(14)->days();
+
+        $this->withToken($token)->postJson('/api/photographer/availability/for-booking', $this->payload())
+            ->assertForbidden()->assertJsonPath('code', 'email_verification_required');
+        $this->app['auth']->forgetGuards();
+        $this->withToken($token)->withHeader('X-Impersonate-User-Id', (string) $client->id)
+            ->postJson('/api/photographer/availability/for-booking', $this->payload())
+            ->assertForbidden()->assertJsonPath('code', 'email_verification_required');
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
+    public function optional_bearer_auth_enforces_email_verification_for_an_impersonated_target(): void
+    {
+        $admin = User::factory()->superAdmin()->create();
+        $this->artisan('auth:start-email-verification-pilot', ['--apply' => true])->assertSuccessful();
+        $client = User::factory()->unverified()->create();
+        $this->travel(14)->days();
+
+        $this->withToken($admin->createToken('admin-browser')->plainTextToken)
+            ->withHeader('X-Impersonate-User-Id', (string) $client->id)
+            ->postJson('/api/photographer/availability/for-booking', $this->payload())
+            ->assertForbidden()->assertJsonPath('code', 'email_verification_required');
+    }
+
+    private function assertPrivateBookedSlot(array $slot): void
+    {
+        foreach (['shoot_id', 'client_name', 'address', 'city', 'state', 'zip', 'services'] as $field) {
+            $this->assertArrayNotHasKey($field, $slot);
+        }
+        $this->assertSame('09:00', $slot['start_time']);
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
     public function booked_overlay_details_match_the_saved_service_window_in_both_staff_apis(): void
     {
         config(['availability.default_shoot_duration_minutes' => 60]);

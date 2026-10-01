@@ -893,6 +893,34 @@ class PhotographerAvailabilityController extends Controller
      */
     public function getPhotographersForBooking(Request $request)
     {
+        // This route remains public. Resolve optional bearer authentication explicitly;
+        // the default web guard does not read tokens without auth:sanctum middleware.
+        // Prefer the request user so API impersonation keeps the target's permissions.
+        $authUser = $request->user() ?? auth('sanctum')->user();
+        if ($authUser !== null) {
+            $actors = collect([$request->attributes->get('original_admin_user'), $authUser])
+                ->filter()->unique('id');
+            foreach ($actors as $actor) {
+                // Match protected API account gates for both the original actor and target.
+                if (! $actor->isAccountEligibleForAuthentication()) {
+                    $actor->currentAccessToken()?->delete();
+                    auth('web')->logout();
+
+                    return response()->json(['message' => 'This account is no longer active.'], 401);
+                }
+                // The verification middleware skips public routes; use its shared policy here.
+                $verification = app(\App\Services\Users\EmailVerificationPilot::class)->status($actor);
+                if ($verification['required']) {
+                    return response()->json([
+                        'message' => 'Verify your current email address to continue.',
+                        'code' => 'email_verification_required',
+                        'email_verification' => $verification,
+                    ], 403);
+                }
+            }
+            $request->setUserResolver(fn ($guard = null) => $authUser);
+        }
+
         $validated = $request->validate([
             'date' => 'required|date',
             'time' => 'sometimes|string',
@@ -908,12 +936,7 @@ class PhotographerAvailabilityController extends Controller
             'require_all_services' => 'sometimes|boolean', // If true, photographer must have ALL services
         ]);
 
-        // Determine whether the caller is authenticated privileged staff. The route is public
-        // (no auth middleware), but Sanctum still populates the user when a valid bearer token is
-        // sent — the internal staff booking UI sends one. Public/anonymous callers (no token) and
-        // non-staff roles (e.g. clients) must receive a sanitized payload that omits other
-        // clients' shoot identifiers and property addresses.
-        $authUser = $request->user();
+        // Public/anonymous callers and clients receive no other clients' booking details.
         $privilegedRoles = ['admin', 'superadmin', 'editing_manager', 'salesRep', 'rep', 'representative', 'photographer', 'editor'];
         $includeSensitiveSlotFields = $authUser !== null && in_array($authUser->role, $privilegedRoles, true);
         $isAuthenticatedClient = $authUser !== null && strtolower((string) $authUser->role) === 'client';
