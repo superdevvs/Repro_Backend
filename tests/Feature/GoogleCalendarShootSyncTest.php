@@ -131,6 +131,8 @@ class GoogleCalendarShootSyncTest extends TestCase
                 && !str_contains($description, 'Internal dispatch detail');
         });
 
+        $this->assertSame([60, 60], $shoot->serviceItems()->orderBy('id')->pluck('duration_minutes')->all());
+
         $this->assertSame(
             1,
             GoogleCalendarEventMapping::query()->where('shoot_id', $shoot->id)->count()
