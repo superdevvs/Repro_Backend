@@ -12,7 +12,10 @@ class StudioWorkspaceLock extends WithoutOverlapping
     {
         $lock = Cache::store('database')->lock($this->getLockKey($job), $this->expiresAfter);
         if (! $lock->get()) {
-            $job->release($this->releaseAfter);
+            if ($this->releaseAfter !== null) {
+                $job->release($this->releaseAfter);
+            }
+
             return;
         }
         try {
