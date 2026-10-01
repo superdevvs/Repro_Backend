@@ -12,7 +12,7 @@ class AiEditedFilename
     {
         $address = Str::slug((string) $shoot->address) ?: 'shoot-'.$shoot->id;
 
-        return substr($address, 0, 100).'_'.str_pad((string) max(1, $number), 3, '0', STR_PAD_LEFT).'_edited.jpg';
+        return substr($address, 0, 100).'_'.str_pad((string) max(1, $number), 3, '0', STR_PAD_LEFT).'.jpg';
     }
 
     /** Call within the publisher transaction so concurrent editors cannot allocate the same number. */

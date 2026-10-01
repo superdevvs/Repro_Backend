@@ -78,6 +78,7 @@ class WorkspaceFullShootTest extends TestCase
     public function test_original_exposures_are_merged_per_stack_and_return_to_edited_without_duplicate_jobs(): void
     {
         $workspace = $this->workspace();
+        Shoot::findOrFail($workspace->shoot_id)->update(['address' => '2912 Park Avenue']);
         $this->provider();
         $processor = app(WorkspaceProcessor::class);
         $processor->process($workspace, 'operation-1');
@@ -96,8 +97,7 @@ class WorkspaceFullShootTest extends TestCase
         $files = ShootFile::where('shoot_id', $workspace->shoot_id)->where('is_ai_edited', true)->get();
         $this->assertCount(2, $files);
         $names = app(\App\Services\Studio\AiEditedFilename::class);
-        $shoot = Shoot::findOrFail($workspace->shoot_id);
-        $this->assertSame([$names->format($shoot, 1), $names->format($shoot, 2)], $files->pluck('filename')->all());
+        $this->assertSame(['2912-park-avenue_001.jpg', '2912-park-avenue_002.jpg'], $files->pluck('filename')->all());
         $this->assertSame($files->pluck('filename')->all(), array_column($workspace->outputs, 'name'));
         $formatter = app(\App\Services\Shoots\DeliveryFilenameFormatter::class);
         $this->assertSame($files->first()->filename, $formatter->formatForFile($files->first(), 9, 10));

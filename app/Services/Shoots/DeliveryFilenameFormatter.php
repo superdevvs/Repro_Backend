@@ -23,8 +23,8 @@ use App\Models\ShootFile;
  * Padding matters: unpadded positions sort as 1, 10, 11, 2 — worse than no
  * prefix at all. Width is the digit count of the set size with a floor of 3, so
  * a typical shoot reads 001_, 002_ … and a 1200-image set still pads to 0001_.
- * AI-edited address_counter_edited names already carry their sequence and are
- * returned as-is, without a second prefix.
+ * AI-edited address_counter names (including the older _edited suffix) already
+ * carry their sequence and are returned as-is, without a second prefix.
  */
 class DeliveryFilenameFormatter
 {
@@ -94,7 +94,7 @@ class DeliveryFilenameFormatter
 
     private function hasEditedName(ShootFile $file): bool
     {
-        return $file->is_ai_edited && preg_match('/_\d+_edited\.jpg$/D', (string) $file->filename) === 1;
+        return $file->is_ai_edited && preg_match('/_\d+(?:_edited)?\.jpg$/D', (string) $file->filename) === 1;
     }
 
     /**
