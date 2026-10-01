@@ -23,7 +23,7 @@ class AutomationWorkflowExecutorRecipientTest extends TestCase
     public function test_request_actions_route_legacy_photographer_targets_to_sales_rep(): void
     {
         $executor = $this->makeExecutor();
-        foreach (['SHOOT_REQUESTED', 'SHOOT_CANCELLATION_REQUESTED', 'SHOOT_ON_HOLD', 'HOLD_REQUESTED', 'SHOOT_RESCHEDULE_REQUESTED'] as $trigger) {
+        foreach (['SHOOT_REQUESTED', 'SHOOT_CANCELLATION_REQUESTED', 'HOLD_REQUESTED', 'SHOOT_RESCHEDULE_REQUESTED'] as $trigger) {
             $automation = new AutomationRule(['trigger_type' => $trigger, 'recipients_json' => ['client', 'photographer']]);
             $context = [
                 'client' => ['email' => 'client@example.com'],
@@ -37,6 +37,34 @@ class AutomationWorkflowExecutorRecipientTest extends TestCase
                 $this->assertSame(['rep@example.com'], array_column($this->resolveActionRecipients($executor, $automation, ['recipientMode' => 'context', 'contextKey' => $alias], $context), 'email'), $trigger.':'.$alias);
             }
         }
+    }
+
+    public function test_actual_hold_role_and_context_targets_keep_all_assigned_photographers(): void
+    {
+        $executor = $this->makeExecutor();
+        $automation = new AutomationRule(['trigger_type' => 'SHOOT_ON_HOLD', 'recipients_json' => ['client', 'photographer']]);
+        $context = [
+            'client' => ['email' => 'client@example.com'],
+            'photographer' => ['email' => 'superseded@example.com'],
+            'photographers' => [
+                ['email' => 'first@example.com', 'phonenumber' => '+12025550101'],
+                ['email' => 'second@example.com', 'phonenumber' => '+12025550102'],
+            ],
+            'rep' => ['email' => 'rep@example.com'],
+        ];
+
+        $this->assertSame(['client@example.com', 'first@example.com', 'second@example.com'], array_column($this->resolveActionRecipients($executor, $automation, [], $context), 'email'));
+        $configs = [['recipientMode' => 'roles', 'recipientRoles' => ['photographer']]];
+        foreach (['photographer', 'previous_photographer', 'new_photographer', 'Photographer'] as $alias) {
+            $configs[] = ['recipientMode' => 'context', 'contextKey' => $alias];
+        }
+        foreach ($configs as $config) {
+            $recipients = $this->resolveActionRecipients($executor, $automation, $config, $context);
+            $this->assertSame(['first@example.com', 'second@example.com'], array_column($recipients, 'email'));
+            $this->assertSame('+12025550102', $recipients[1]['phone']);
+        }
+
+        $this->assertSame(['client@example.com'], array_column($this->resolveActionRecipients($executor, $automation, ['recipientMode' => 'roles', 'recipientRoles' => ['client']], $context), 'email'));
     }
 
     public function test_completed_cancellation_keeps_photographer_role_and_context_targets_and_adds_rep(): void
