@@ -1144,7 +1144,7 @@
       ],
       "steps": [
         "Open Calls, then People to find a client, rep, photographer or team contact. Search by name, company or phone, narrow by role and use the page controls for more results.",
-        "Choose Call beside the intended person, or New call to enter another number. Review the destination and business line before starting. The normal Call action starts a human call; AI calling is a separate choice.",
+        "Choose Call beside the intended person, or the Call button beside the top tabs to enter another number. Review the destination and business line before starting. The normal Call action starts a human call; AI calling is a separate choice.",
         "Allow the microphone prompt when requested. The app connects the browser and starts the call through one flow. Keep the call open while it is connecting; Cancel stops a start that is still pending.",
         "For a shared incoming call, choose Answer in browser, or answer your verified phone and press 1 when prompted. The first successful claim receives the caller. Another admin may have answered by the time you open an alert.",
         "Use the active call controls to mute, hold, use the keypad or end the call. Review the conversation and recap afterward."
@@ -1187,7 +1187,7 @@
         "forwarding"
       ],
       "steps": [
-        "Open Calls → Settings → Audio & alerts. Turn on Available for incoming calls when you can answer.",
+        "Open Calls and choose Audio & alerts in the top tabs. Scroll the tab row or use its arrows if that tab is outside the visible area. Turn on Available for incoming calls when you can answer.",
         "Under Call alerts on this device, choose a recognizable device name, select Enable this device and allow notifications. Keep Incoming call alerts on my devices enabled.",
         "Select Send test alert and check for the actual system notification. A push-service acceptance message alone does not confirm that the notification appeared.",
         "On iPhone or iPad, install the dashboard from Safari’s Share menu → Add to Home Screen, open that app and enable its alerts. Notification support and permissions depend on your browser and device.",
@@ -1196,6 +1196,7 @@
       ],
       "troubleshooting": [
         "If notifications are blocked, enable them in site/device settings. Check connectivity, system volume, Focus / Do Not Disturb and battery restrictions. Test each browser and phone separately.",
+        "If Enable this device reports Registration failed - push service error, the browser has not created its push channel and this device is not enabled. Fully close and reopen the browser, check for browser updates, then retry on this REPro page. Send test alert appears only after registration succeeds. Google Voice settings do not enable REPro browser alerts.",
         "If setup reports a blocker or a queued test never finishes, an administrator must check push configuration and the notification queue worker. Repeatedly enabling the same device is not a delivery guarantee.",
         "A verified carrier number is distinct from browser push. An expired verification code must be requested again. A busy or unavailable admin is not offered a second call.",
         "Logging out or losing Calls permission revokes this device’s alerts. Sign in again and enable the device if necessary."
