@@ -2993,9 +2993,10 @@ class MailService
     }
 
     /**
-     * Send shoot cancelled email
+     * Final cancellation informs the client, rep, and effective assigned photographers.
+     * Explicit automation audiences pass false to send only to the supplied recipient.
      */
-    public function sendShootCancelledEmail(User $user, Shoot $shoot, bool $sendRepEmail = true): bool
+    public function sendShootCancelledEmail(User $user, Shoot $shoot, bool $sendStakeholderEmails = true): bool
     {
         if ($shoot->isInternalTestShoot()) {
             return false;
@@ -3004,6 +3005,9 @@ class MailService
         try {
             $shoot = $shoot->fresh(['client', 'photographer', 'rep', 'services.category']) ?? $shoot;
             $recipientType = $this->requestStaffRecipientType($user, $shoot);
+            if ($recipientType === null && $this->isPhotographerRecipient($user, $shoot)) {
+                $recipientType = 'photographer';
+            }
             if ($recipientType === null) {
                 return false;
             }
@@ -3033,9 +3037,18 @@ class MailService
                 'email' => $user->email,
             ]);
 
-            $rep = app(\App\Services\Shoots\ShootSalesRepResolver::class)->resolve($shoot);
-            if ($sendRepEmail && $rep && filled($rep->email) && (int) $rep->id !== (int) $user->id) {
-                $this->sendShootCancelledEmail($rep, $shoot, false);
+            if ($sendStakeholderEmails) {
+                $stakeholders = collect([
+                    $shoot->client,
+                    app(\App\Services\Shoots\ShootSalesRepResolver::class)->resolve($shoot),
+                ]);
+                if (ShootEmailMatrix::includesPhotographer(ShootEmailMatrix::SHOOT_CANCELLED)) {
+                    $stakeholders = $stakeholders->merge($this->resolveAssignedPhotographers($shoot));
+                }
+                foreach ($stakeholders->filter(fn ($recipient) => $recipient instanceof User && filled($recipient->email))
+                    ->unique('id')->reject(fn (User $recipient) => (int) $recipient->id === (int) $user->id) as $recipient) {
+                    $this->sendShootCancelledEmail($recipient, $shoot, false);
+                }
             }
 
             return $sent;

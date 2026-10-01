@@ -743,6 +743,14 @@ class AutomationWorkflowExecutor
                 if ($shoot && $rep && in_array('rep', $recipientTypes, true) && $this->mailService->sendShootCancelledEmail($rep, $shoot, false)) {
                     $sentTo[] = $rep->email;
                 }
+                if ($shoot && in_array('photographer', $recipientTypes, true)) {
+                    foreach (ShootRequestRecipientRouting::cancellationPhotographers($shoot) as $photographer) {
+                        if (! in_array($photographer->email, $sentTo, true)
+                            && $this->mailService->sendShootCancelledEmail($photographer, $shoot, false)) {
+                            $sentTo[] = $photographer->email;
+                        }
+                    }
+                }
                 if ($shoot && in_array('admin', $recipientTypes, true)) {
                     foreach ($this->adminRecipients() as $admin) {
                         if ($this->mailService->sendShootCancelledEmail($admin, $shoot, false)) {
@@ -1066,6 +1074,10 @@ class AutomationWorkflowExecutor
 
         if ($recipientMode === 'context' && ! empty($config['contextKey'])) {
             $contextKey = ShootRequestRecipientRouting::role($automation->trigger_type, $this->normalizeRoleName((string) $config['contextKey']));
+
+            if (ShootRequestRecipientRouting::isCompletedCancellation($automation->trigger_type) && $contextKey === 'photographer') {
+                return $this->resolveRecipientsByRoles($automation, ['photographer', 'rep'], $context, $mode);
+            }
 
             if (! $this->shouldIncludeRoleRecipient($contextKey, $automation, $context)) {
                 return [];

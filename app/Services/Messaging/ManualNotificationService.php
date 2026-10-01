@@ -558,8 +558,8 @@ class ManualNotificationService
 
     private function validateRouting(string $type, string $recipientType): void
     {
-        if (in_array($type, ['shoot_on_hold', 'shoot_cancelled'], true) && $recipientType === 'photographer') {
-            throw new InvalidArgumentException('Hold and cancellation notifications go to the sales rep. Select Sales Rep as the recipient.');
+        if ($type === 'shoot_on_hold' && $recipientType === 'photographer') {
+            throw new InvalidArgumentException('Hold notifications go to the sales rep. Select Sales Rep as the recipient.');
         }
     }
 

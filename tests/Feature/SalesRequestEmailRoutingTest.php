@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\Message;
+use App\Models\Service;
 use App\Models\Shoot;
 use App\Models\User;
 use App\Services\MailService;
@@ -56,19 +57,59 @@ class SalesRequestEmailRoutingTest extends TestCase
         $this->assertStringNotContainsString('pause any prep', $this->deliveries[0]['body_html']);
     }
 
-    public function test_cancellation_receipt_copies_account_rep_instead_of_photographer(): void
+    public function test_final_cancellation_notifies_client_account_rep_and_assigned_photographer(): void
     {
         [$shoot, $client, $rep, $photographer] = $this->fixture(true);
         $this->assertTrue(app(MailService::class)->sendShootCancelledEmail($client, $shoot));
-        $this->assertSame([$client->email, $rep->email], array_column($this->deliveries, 'to'));
-        $this->assertNotContains($photographer->email, array_column($this->deliveries, 'to'));
+        $this->assertSame([$client->email, $rep->email, $photographer->email], array_column($this->deliveries, 'to'));
+        $this->assertSame(['client', 'rep', 'photographer'], array_column($this->deliveries, 'contact_type'));
     }
 
     public function test_cancellation_explicit_recipient_does_not_fan_out(): void
     {
-        [$shoot, $client] = $this->fixture();
-        $this->assertTrue(app(MailService::class)->sendShootCancelledEmail($client, $shoot, false));
-        $this->assertSame([$client->email], array_column($this->deliveries, 'to'));
+        [$shoot, $client, $rep, $photographer] = $this->fixture();
+        foreach ([$client, $rep, $photographer] as $recipient) {
+            $this->deliveries = [];
+            $this->assertTrue(app(MailService::class)->sendShootCancelledEmail($recipient, $shoot, false));
+            $this->assertSame([$recipient->email], array_column($this->deliveries, 'to'));
+        }
+    }
+
+    public function test_final_cancellation_includes_each_service_photographer_and_excludes_unassigned_users(): void
+    {
+        [$shoot, $client, $rep, $photographer] = $this->fixture();
+        $second = User::factory()->photographer()->create();
+        $unassigned = User::factory()->photographer()->create();
+        foreach ([$photographer, $second] as $assigned) {
+            $service = Service::factory()->create();
+            $shoot->services()->attach($service->id, ['price' => 100, 'quantity' => 1, 'photographer_id' => $assigned->id]);
+        }
+        $mail = app(MailService::class);
+        $this->assertTrue($mail->sendShootCancelledEmail($client, $shoot));
+        $this->assertSame([$client->email, $rep->email, $photographer->email, $second->email], array_column($this->deliveries, 'to'));
+        $this->assertFalse($mail->sendShootCancelledEmail($unassigned, $shoot, false));
+        $this->assertCount(4, $this->deliveries);
+    }
+
+    public function test_final_cancellation_uses_effective_service_assignments_instead_of_superseded_parent_photographer(): void
+    {
+        [$shoot, $client, $rep, $oldPhotographer] = $this->fixture();
+        $assigned = User::factory()->photographer()->create();
+        $service = Service::factory()->create();
+        $shoot->services()->attach($service->id, ['price' => 100, 'quantity' => 1, 'photographer_id' => $assigned->id]);
+        $mail = app(MailService::class);
+        $this->assertTrue($mail->sendShootCancelledEmail($client, $shoot));
+        $this->assertSame([$client->email, $rep->email, $assigned->email], array_column($this->deliveries, 'to'));
+        $this->assertFalse($mail->sendShootCancelledEmail($oldPhotographer, $shoot, false));
+    }
+
+    public function test_final_cancellation_deduplicates_a_sales_rep_who_is_also_the_assigned_photographer(): void
+    {
+        [$shoot, $client, $rep] = $this->fixture();
+        $rep->update(['secondary_roles' => ['photographer']]);
+        $shoot->update(['photographer_id' => $rep->id]);
+        $this->assertTrue(app(MailService::class)->sendShootCancelledEmail($client, $shoot));
+        $this->assertSame([$client->email, $rep->email], array_column($this->deliveries, 'to'));
     }
 
     public function test_booking_request_staff_email_targets_the_rep(): void
@@ -94,10 +135,10 @@ class SalesRequestEmailRoutingTest extends TestCase
         $this->assertNull($resolver->resolve($shoot->fresh()));
     }
 
-    public function test_manual_hold_and_cancellation_sends_reject_photographer(): void
+    public function test_manual_hold_sends_reject_photographer(): void
     {
         [$shoot] = $this->fixture();
-        foreach (['shoot_on_hold', 'shoot_cancelled'] as $type) {
+        foreach (['shoot_on_hold'] as $type) {
             try {
                 app(ManualNotificationService::class)->send($shoot, $type, 'photographer', 'email', $shoot->client);
                 $this->fail('Photographer routing must be rejected.');

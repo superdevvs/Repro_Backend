@@ -20,7 +20,7 @@ use Tests\TestCase;
  * Validates: Requirements 12.6, 12.7
  *
  * Universal invariant under test, for any defined notification type and any
- * allowed recipient/channel selection (hold and cancellation use client or rep):
+ * allowed recipient/channel selection (holds use client or rep):
  *
  *   (12.6) The notification is delivered to the SELECTED recipient. When
  *          recipientType = client the dispatch targets the shoot's client;
@@ -138,7 +138,7 @@ class RecipientChannelRoutingPropertyTest extends TestCase
 
         $types = array_keys(ManualNotificationService::TYPES);
         foreach (['shoot_on_hold', 'shoot_cancelled'] as $type) {
-            foreach (['client', 'rep'] as $recipient) {
+            foreach ($type === 'shoot_on_hold' ? ['client', 'rep'] : self::RECIPIENT_TYPES as $recipient) {
                 foreach (self::CHANNELS as $channel) {
                     $cases["edge_{$type}_{$recipient}_{$channel}"] = compact('type', 'recipient', 'channel') + ['label' => 'request routing'];
                 }
@@ -146,7 +146,7 @@ class RecipientChannelRoutingPropertyTest extends TestCase
         }
         for ($i = 0; $i < self::RANDOM_ITERATIONS; $i++) {
             $type = $types[mt_rand(0, count($types) - 1)];
-            $allowedRecipients = in_array($type, ['shoot_on_hold', 'shoot_cancelled'], true) ? ['client', 'rep'] : self::RECIPIENT_TYPES;
+            $allowedRecipients = $type === 'shoot_on_hold' ? ['client', 'rep'] : self::RECIPIENT_TYPES;
             $recipient = $allowedRecipients[mt_rand(0, count($allowedRecipients) - 1)];
             $channel = self::CHANNELS[mt_rand(0, count(self::CHANNELS) - 1)];
 

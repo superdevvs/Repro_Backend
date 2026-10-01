@@ -79,7 +79,7 @@ class EmailTypeRegistry
             'INVOICE_APPROVED' => new EmailTypeDefinition('INVOICE_APPROVED', 1, 'invoice', 'emails.invoice_approved', 'v1', $invoice, ['photographer', 'rep']),
             'INVOICE_REJECTED' => new EmailTypeDefinition('INVOICE_REJECTED', 1, 'invoice', 'emails.invoice_rejected', 'v1', $invoice, ['photographer', 'rep']),
             'SHOOT_PAID' => new EmailTypeDefinition('SHOOT_PAID', 1, 'payment', 'emails.shoot_paid', 'v1', ['recipient', 'shoot', 'branding', 'meta'], ['client']),
-            'SHOOT_CANCELLED' => new EmailTypeDefinition('SHOOT_CANCELLED', 1, 'booking', 'emails.shoot_cancelled', 'v1', $shoot, ['client', 'rep', 'admin']),
+            'SHOOT_CANCELLED' => new EmailTypeDefinition('SHOOT_CANCELLED', 1, 'booking', 'emails.shoot_cancelled', 'v1', $shoot, ['client', 'rep', 'photographer', 'admin']),
             'PHOTOGRAPHER_CHANGED' => new EmailTypeDefinition('PHOTOGRAPHER_CHANGED', 1, 'booking', 'emails.photographer_changed', 'v1', $shoot, ['photographer']),
             'CANCELLATION_FEE_INVOICE' => new EmailTypeDefinition('CANCELLATION_FEE_INVOICE', 1, 'invoice', 'emails.cancellation_fee_invoice', 'v1', ['recipient', 'invoice', 'shoot', 'branding', 'meta'], ['client']),
             'OFFLINE_PAYMENT_INTENT_SUBMITTED' => new EmailTypeDefinition('OFFLINE_PAYMENT_INTENT_SUBMITTED', 1, 'payment', 'emails.offline_payment_intent_submitted', 'v1', ['recipient', 'shoot', 'payment', 'branding', 'meta'], ['admin', 'rep']),

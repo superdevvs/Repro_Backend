@@ -20,10 +20,10 @@ use Tests\TestCase;
 
 class AutomationWorkflowExecutorRecipientTest extends TestCase
 {
-    public function test_request_and_cancellation_actions_route_legacy_photographer_targets_to_sales_rep(): void
+    public function test_request_actions_route_legacy_photographer_targets_to_sales_rep(): void
     {
         $executor = $this->makeExecutor();
-        foreach (['SHOOT_REQUESTED', 'SHOOT_CANCELLATION_REQUESTED', 'SHOOT_CANCELLED', 'SHOOT_CANCELED', 'SHOOT_ON_HOLD', 'HOLD_REQUESTED', 'SHOOT_RESCHEDULE_REQUESTED'] as $trigger) {
+        foreach (['SHOOT_REQUESTED', 'SHOOT_CANCELLATION_REQUESTED', 'SHOOT_ON_HOLD', 'HOLD_REQUESTED', 'SHOOT_RESCHEDULE_REQUESTED'] as $trigger) {
             $automation = new AutomationRule(['trigger_type' => $trigger, 'recipients_json' => ['client', 'photographer']]);
             $context = [
                 'client' => ['email' => 'client@example.com'],
@@ -33,6 +33,27 @@ class AutomationWorkflowExecutorRecipientTest extends TestCase
             $this->assertSame(['client@example.com', 'rep@example.com'], array_column($this->resolveActionRecipients($executor, $automation, [], $context), 'email'), $trigger);
             $this->assertSame(['rep@example.com'], array_column($this->resolveActionRecipients($executor, $automation, ['recipientMode' => 'roles', 'recipientRoles' => ['photographer', 'rep']], $context), 'email'), $trigger);
             $this->assertSame(['rep@example.com'], array_column($this->resolveActionRecipients($executor, $automation, ['recipientMode' => 'context', 'contextKey' => 'photographer'], $context), 'email'), $trigger);
+            foreach (['previous_photographer', 'new_photographer', 'Photographer'] as $alias) {
+                $this->assertSame(['rep@example.com'], array_column($this->resolveActionRecipients($executor, $automation, ['recipientMode' => 'context', 'contextKey' => $alias], $context), 'email'), $trigger.':'.$alias);
+            }
+        }
+    }
+
+    public function test_completed_cancellation_keeps_photographer_role_and_context_targets_and_adds_rep(): void
+    {
+        foreach (['SHOOT_CANCELLED', 'SHOOT_CANCELED'] as $trigger) {
+            $automation = new AutomationRule(['trigger_type' => $trigger, 'recipients_json' => ['client', 'photographer']]);
+            $context = [
+                'client' => ['email' => 'client@example.com'],
+                'photographers' => [['email' => 'first@example.com'], ['email' => 'second@example.com']],
+                'rep' => ['email' => 'rep@example.com'],
+            ];
+            $executor = $this->makeExecutor();
+            $this->assertSame(['client@example.com', 'first@example.com', 'second@example.com', 'rep@example.com'], array_column($this->resolveActionRecipients($executor, $automation, [], $context), 'email'));
+            foreach ([['recipientMode' => 'roles', 'recipientRoles' => ['photographer']], ['recipientMode' => 'context', 'contextKey' => 'photographer']] as $config) {
+                $this->assertSame(['first@example.com', 'second@example.com', 'rep@example.com'], array_column($this->resolveActionRecipients($executor, $automation, $config, $context), 'email'));
+            }
+            $this->assertSame(['rep@example.com'], array_column($this->resolveActionRecipients($executor, $automation, ['recipientMode' => 'roles', 'recipientRoles' => ['rep']], $context), 'email'));
         }
     }
 

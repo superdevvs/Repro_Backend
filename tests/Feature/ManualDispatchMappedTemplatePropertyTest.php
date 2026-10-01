@@ -130,7 +130,7 @@ class ManualDispatchMappedTemplatePropertyTest extends TestCase
 
         // Deterministic: every (type, recipient, channel) combination.
         foreach (array_keys(ManualNotificationService::TYPES) as $type) {
-            $allowedRecipients = in_array($type, ['shoot_on_hold', 'shoot_cancelled'], true) ? ['client', 'rep'] : self::RECIPIENT_TYPES;
+            $allowedRecipients = $type === 'shoot_on_hold' ? ['client', 'rep'] : self::RECIPIENT_TYPES;
             foreach ($allowedRecipients as $recipient) {
                 foreach (self::CHANNELS as $channel) {
                     $cases[] = [$type, $recipient, $channel];
@@ -143,7 +143,7 @@ class ManualDispatchMappedTemplatePropertyTest extends TestCase
         $types = array_keys(ManualNotificationService::TYPES);
         for ($i = 0; $i < self::VALID_RANDOM_ITERATIONS; $i++) {
             $type = $types[$i % count($types)];
-            $allowedRecipients = in_array($type, ['shoot_on_hold', 'shoot_cancelled'], true) ? ['client', 'rep'] : self::RECIPIENT_TYPES;
+            $allowedRecipients = $type === 'shoot_on_hold' ? ['client', 'rep'] : self::RECIPIENT_TYPES;
             $cases[] = [
                 $type,
                 $allowedRecipients[mt_rand(0, count($allowedRecipients) - 1)],

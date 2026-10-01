@@ -20,7 +20,7 @@ final class ShootEmailMatrix
         self::SHOOT_REMINDER => ['client' => true, 'photographer' => true],
         self::SHOOT_DELIVERED => ['client' => true, 'photographer' => false],
         self::SHOOT_REMOVED => ['client' => true, 'photographer' => true],
-        self::SHOOT_CANCELLED => ['client' => true, 'photographer' => false],
+        self::SHOOT_CANCELLED => ['client' => true, 'photographer' => true],
         self::SHOOT_PAID => ['client' => true, 'photographer' => false],
         self::PAYMENT_CONFIRM => ['client' => true, 'photographer' => false],
         self::PHOTOGRAPHER_CHANGED => ['client' => false, 'photographer' => true],

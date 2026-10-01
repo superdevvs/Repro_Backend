@@ -131,7 +131,7 @@ class ManualNotificationShootReadyTimestampPropertyTest extends TestCase
         $cases = [];
         foreach (array_keys(ManualNotificationService::TYPES) as $type) {
             $cases[] = ['type' => $type, 'recipient' => 'client', 'channel' => 'email'];
-            $recipient = in_array($type, ['shoot_on_hold', 'shoot_cancelled'], true) ? 'rep' : 'photographer';
+            $recipient = $type === 'shoot_on_hold' ? 'rep' : 'photographer';
             $cases[] = ['type' => $type, 'recipient' => $recipient, 'channel' => 'sms'];
         }
 
@@ -151,13 +151,13 @@ class ManualNotificationShootReadyTimestampPropertyTest extends TestCase
         mt_srand(20260616);
 
         $types = array_keys(ManualNotificationService::TYPES);
-        $recipients = ['client', 'photographer'];
+        $recipients = ['client', 'photographer', 'rep'];
         $channels = ['email', 'sms'];
 
         $cases = [];
         for ($i = 0; $i < $count; $i++) {
             $type = $types[mt_rand(0, count($types) - 1)];
-            $allowedRecipients = in_array($type, ['shoot_on_hold', 'shoot_cancelled'], true) ? ['client', 'rep'] : $recipients;
+            $allowedRecipients = $type === 'shoot_on_hold' ? ['client', 'rep'] : $recipients;
             $cases[] = [
                 'type'      => $type,
                 'recipient' => $allowedRecipients[mt_rand(0, count($allowedRecipients) - 1)],

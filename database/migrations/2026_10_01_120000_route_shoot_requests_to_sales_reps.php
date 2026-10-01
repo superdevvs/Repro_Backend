@@ -42,6 +42,12 @@ return new class extends Migration
                     }
                     if (isset($node['config']['contextKey'])) {
                         $node['config']['contextKey'] = ShootRequestRecipientRouting::role($rule->trigger_type, (string) $node['config']['contextKey']);
+                        if (ShootRequestRecipientRouting::isCompletedCancellation($rule->trigger_type)
+                            && ($node['config']['recipientMode'] ?? '') === 'context'
+                            && $node['config']['contextKey'] === 'photographer') {
+                            $node['config']['recipientMode'] = 'roles';
+                            $node['config']['recipientRoles'] = ['photographer', 'rep'];
+                        }
                     }
                 }
                 unset($node);

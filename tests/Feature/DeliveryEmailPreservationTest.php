@@ -318,13 +318,12 @@ class DeliveryEmailPreservationTest extends TestCase
         $this->assertSame($client->email, $shoot->client->email);
         $dispatches = Message::where('send_source', 'AUTOMATION')->where('channel', 'EMAIL')
             ->where('related_shoot_id', $shoot->id)->get();
-        $this->assertCount(2, $dispatches, 'Each recipient receives exactly one cancellation.');
-        foreach ([$client, $rep] as $recipient) {
+        $this->assertCount(3, $dispatches, 'Each recipient receives exactly one cancellation.');
+        foreach ([$client, $rep, $photographer] as $recipient) {
             $dispatch = $dispatches->firstWhere('to_address', $recipient->email);
             $this->assertNotNull($dispatch);
             $this->assertSame('SENT', $dispatch->status);
         }
-        $this->assertNull($dispatches->firstWhere('to_address', $photographer->email));
     }
 
     // ---------------------------------------------------------------------

@@ -810,11 +810,11 @@ class MessagingSystemSeeder extends Seeder
             ],
             [
                 'name' => 'Shoot Cancelled Notification',
-                'description' => 'Notify client and sales representative when shoot is cancelled',
+                'description' => 'Notify client, sales representative and assigned photographers when shoot is cancelled',
                 'trigger_type' => 'SHOOT_CANCELED',
                 'is_active' => true,
                 'scope' => 'SYSTEM',
-                'recipients_json' => ['client', 'rep'],
+                'recipients_json' => ['client', 'rep', 'photographer'],
             ],
             [
                 'name' => 'Shoot Removed Notification',

@@ -31,13 +31,30 @@ class AutomationServiceRecipientTest extends TestCase
         $this->assertSame('+12025550123', $recipients[1]['phone']);
     }
 
-    public function test_cancellation_and_hold_rules_never_fall_back_to_photographers_without_a_rep(): void
+    public function test_pending_cancellation_and_hold_rules_never_fall_back_to_photographers_without_a_rep(): void
     {
-        foreach (['SHOOT_CANCELLATION_REQUESTED', 'SHOOT_CANCELLED', 'SHOOT_CANCELED', 'SHOOT_ON_HOLD', 'HOLD_REQUESTED', 'SHOOT_RESCHEDULE_REQUESTED'] as $trigger) {
+        foreach (['SHOOT_CANCELLATION_REQUESTED', 'SHOOT_ON_HOLD', 'HOLD_REQUESTED', 'SHOOT_RESCHEDULE_REQUESTED'] as $trigger) {
             $rule = new AutomationRule(['trigger_type' => $trigger, 'recipients_json' => ['photographer']]);
             $this->assertSame([], $this->resolveRecipients($this->makeService(), $rule, [
                 'photographer' => ['email' => 'photographer@example.com'],
             ]), $trigger);
+        }
+    }
+
+    public function test_completed_cancellation_keeps_photographers_and_adds_sales_rep(): void
+    {
+        foreach (['SHOOT_CANCELLED', 'SHOOT_CANCELED'] as $trigger) {
+            $rule = new AutomationRule(['trigger_type' => $trigger, 'recipients_json' => ['client', 'photographer']]);
+            $recipients = $this->resolveRecipients($this->makeService(), $rule, [
+                'client' => ['email' => 'client@example.com'],
+                'photographers' => [
+                    ['email' => 'first@example.com', 'phonenumber' => '+12025550101'],
+                    ['email' => 'second@example.com', 'phonenumber' => '+12025550102'],
+                ],
+                'rep' => ['email' => 'rep@example.com', 'phonenumber' => '+12025550103'],
+            ]);
+            $this->assertSame(['client@example.com', 'first@example.com', 'second@example.com', 'rep@example.com'], array_column($recipients, 'email'));
+            $this->assertSame('+12025550102', $recipients[2]['phone']);
         }
     }
 

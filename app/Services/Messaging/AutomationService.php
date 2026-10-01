@@ -576,7 +576,7 @@ class AutomationService
         }
 
         $payload = [
-            'to' => $recipient['email'] ?? $recipient['phone'] ?? null,
+            'to' => $rule->template->channel === 'SMS' ? ($recipient['phone'] ?? null) : ($recipient['email'] ?? null),
             'cc' => $this->resolveRelatedShootCcEmails($recipient, $context),
             'subject' => $rendered['subject'] ?? $rule->template->subject,
             'body_html' => $rendered['body_html'] ?? null,
@@ -708,6 +708,7 @@ class AutomationService
                     foreach ($this->resolvePhotographerRecipients($rule, $context) as $photographer) {
                         $recipients[] = [
                             'email' => $photographer['email'] ?? $photographer->email ?? null,
+                            'phone' => $photographer['phonenumber'] ?? $photographer->phonenumber ?? $photographer['phone'] ?? $photographer->phone ?? null,
                             'name' => $photographer['name'] ?? $photographer->name ?? 'Photographer',
                             'type' => 'photographer',
                         ];

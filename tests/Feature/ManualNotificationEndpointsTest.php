@@ -53,6 +53,24 @@ class ManualNotificationEndpointsTest extends TestCase
         $this->assertSame([$rep->email, $rep->email], array_column($deliveries, 'to'));
     }
 
+    public function test_admin_can_preview_and_send_final_cancellation_to_assigned_photographer(): void
+    {
+        $admin = User::factory()->create(['role' => 'admin']);
+        $photographer = User::factory()->photographer()->create();
+        $shoot = Shoot::factory()->create(['photographer_id' => $photographer->id]);
+        $this->template('shoot-cancelled');
+        $this->mock(MessagingService::class, function (MockInterface $mock) use ($photographer): void {
+            $mock->shouldReceive('sendEmail')->once()
+                ->withArgs(fn (array $payload) => $payload['to'] === $photographer->email && $payload['contact_type'] === 'photographer')
+                ->andReturn(Message::make(['id' => 1, 'channel' => 'EMAIL', 'status' => 'SENT']));
+        });
+        $payload = ['shoot_id' => $shoot->id, 'type' => 'shoot_cancelled', 'recipient_type' => 'photographer', 'recipient_user_id' => $photographer->id, 'channel' => 'email'];
+        $this->actingAs($admin, 'sanctum')->postJson('/api/messaging/notifications/manual-preview', $payload)
+            ->assertOk()->assertJsonPath('recipients.0.id', $photographer->id);
+        $this->actingAs($admin, 'sanctum')->postJson('/api/messaging/notifications/manual-send', $payload)
+            ->assertOk()->assertJsonPath('recipient_type', 'photographer');
+    }
+
     private function template(string $slug, array $overrides = []): MessageTemplate
     {
         return MessageTemplate::create(array_merge([
