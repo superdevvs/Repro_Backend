@@ -303,6 +303,12 @@ class DashboardController extends Controller
                 'city_state_zip' => $this->formatLocationLine($shoot),
                 'status' => $shoot->status,
                 'workflow_status' => $shoot->workflow_status,
+                // Same payment truth as shoot detail header (ShootPresenter / payment_status).
+                // Required for Delivered cards — overview was omitting this so pills defaulted to Unpaid,
+                // including historical imports that are paid in the old dashboard ($ paid on record).
+                'payment_status' => $shoot->payment_status,
+                'total_paid' => $shoot->total_paid,
+                'total_quote' => $shoot->total_quote,
                 'client_name' => optional($shoot->client)->name,
                 'client_id' => $shoot->client_id,
                 'client_phone' => optional($shoot->client)->phonenumber,
