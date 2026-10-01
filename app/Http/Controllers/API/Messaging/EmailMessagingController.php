@@ -6,8 +6,8 @@ use App\Http\Controllers\Controller;
 use App\Models\Contact;
 use App\Models\Invoice;
 use App\Models\Message;
-use App\Models\MessageThread;
 use App\Models\MessageTemplate;
+use App\Models\MessageThread;
 use App\Models\Shoot;
 use App\Models\User;
 use App\Services\Messaging\InternalMessageNotificationService;
@@ -18,8 +18,8 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\UploadedFile;
-use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 
@@ -30,11 +30,11 @@ class EmailMessagingController extends Controller
     public function __construct(
         private readonly MessagingService $messaging,
         private readonly InternalMessageNotificationService $internalNotifications,
-    ) {
-    }
+    ) {}
 
     public function messages(Request $request): JsonResponse
     {
+        app(\App\Services\Messaging\DashboardMessagingPolicy::class)->authorizeEmail(request()->user());
         $user = $request->user();
 
         $filters = [
@@ -58,10 +58,12 @@ class EmailMessagingController extends Controller
             ->getMessageLogs($filters)
             ->with(['template', 'channelConfig', 'shoot.client', 'shoot.rep', 'invoice']);
 
-        if (!$this->isAdminUser($user)) {
+        $messagesQuery->whereNotIn('messages.id', \App\Models\SupportTicketMessage::whereNotNull('source_message_id')->select('source_message_id'));
+        if (! $this->isAdminUser($user)) {
             $this->applyMessageVisibilityScope($messagesQuery, $user);
         }
 
+        $request->validate(['per_page' => ['nullable', 'integer', 'min:1', 'max:100']]);
         $messages = $messagesQuery->paginate($request->query('per_page', 25));
 
         return response()->json($messages);
@@ -69,12 +71,14 @@ class EmailMessagingController extends Controller
 
     public function threads(Request $request): JsonResponse
     {
+        app(\App\Services\Messaging\DashboardMessagingPolicy::class)->authorizeEmail(request()->user());
         $user = $request->user();
 
         $threadsQuery = $this->messaging
             ->listThreads(['channel' => 'EMAIL']);
 
-        if (!$this->isAdminUser($user)) {
+        $threadsQuery->whereDoesntHave('messages', fn ($q) => $q->whereIn('id', \App\Models\SupportTicketMessage::whereNotNull('source_message_id')->select('source_message_id')));
+        if (! $this->isAdminUser($user)) {
             $threadsQuery->whereHas('messages', function (Builder $query) use ($user) {
                 $this->applyMessageVisibilityScope($query, $user);
             });
@@ -87,12 +91,15 @@ class EmailMessagingController extends Controller
 
     public function markThreadRead(MessageThread $thread, Request $request): JsonResponse
     {
+        app(\App\Services\Messaging\DashboardMessagingPolicy::class)->authorizeEmail(request()->user());
         $user = $request->user();
+        abort_if($thread->messages()->whereIn('id', \App\Models\SupportTicketMessage::whereNotNull('source_message_id')->select('source_message_id'))->exists(), 404, 'Open this conversation in Support.');
+        abort_unless($thread->channel === 'EMAIL', 404);
         $canAccess = $thread->messages()
             ->get()
             ->contains(fn (Message $message) => $this->canAccessMessage($user, $message));
 
-        if (!$canAccess) {
+        if (! $canAccess) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
@@ -106,8 +113,9 @@ class EmailMessagingController extends Controller
 
     public function recipients(Request $request): JsonResponse
     {
+        app(\App\Services\Messaging\DashboardMessagingPolicy::class)->authorizeEmail(request()->user(), true);
         $user = $request->user();
-        if (!$this->canSendOutbound($user->role)) {
+        if (! $this->canSendOutbound($user->role)) {
             return response()->json(['message' => 'Recipient directory is only available for outbound messaging roles.'], 403);
         }
 
@@ -126,8 +134,8 @@ class EmailMessagingController extends Controller
             ->when(
                 $search !== '',
                 fn ($query) => $query->where(function ($inner) use ($search) {
-                    $inner->where('to_address', 'like', '%' . $search . '%')
-                        ->orWhere('subject', 'like', '%' . $search . '%');
+                    $inner->where('to_address', 'like', '%'.$search.'%')
+                        ->orWhere('subject', 'like', '%'.$search.'%');
                 })
             )
             ->latest('created_at')
@@ -137,7 +145,7 @@ class EmailMessagingController extends Controller
         foreach ($recentMessages as $message) {
             $contact = $message->thread?->contact;
             $results->push([
-                'id' => 'recent-' . $message->id,
+                'id' => 'recent-'.$message->id,
                 'email' => strtolower($message->to_address),
                 'name' => $contact?->name ?: $message->sender_display_name ?: $message->to_address,
                 'kind' => 'recent',
@@ -153,9 +161,9 @@ class EmailMessagingController extends Controller
 
         if ($search !== '') {
             $contactQuery->where(function ($query) use ($search) {
-                $query->where('email', 'like', '%' . $search . '%')
-                    ->orWhere('name', 'like', '%' . $search . '%')
-                    ->orWhere('comment', 'like', '%' . $search . '%');
+                $query->where('email', 'like', '%'.$search.'%')
+                    ->orWhere('name', 'like', '%'.$search.'%')
+                    ->orWhere('comment', 'like', '%'.$search.'%');
             });
         }
 
@@ -178,11 +186,11 @@ class EmailMessagingController extends Controller
 
         foreach ($contacts as $contact) {
             $results->push([
-                'id' => 'contact-' . $contact->id,
+                'id' => 'contact-'.$contact->id,
                 'email' => strtolower((string) $contact->email),
                 'name' => $contact->name ?: $contact->email,
                 'kind' => 'contact',
-                'subtitle' => $contact->type ? Str::headline((string) $contact->type) . ' contact' : 'Known contact',
+                'subtitle' => $contact->type ? Str::headline((string) $contact->type).' contact' : 'Known contact',
                 'related_user_id' => $contact->user_id,
                 'related_account_id' => $contact->account_id,
             ]);
@@ -194,9 +202,9 @@ class EmailMessagingController extends Controller
 
         if ($search !== '') {
             $userQuery->where(function ($query) use ($search) {
-                $query->where('email', 'like', '%' . $search . '%')
-                    ->orWhere('name', 'like', '%' . $search . '%')
-                    ->orWhere('company_name', 'like', '%' . $search . '%');
+                $query->where('email', 'like', '%'.$search.'%')
+                    ->orWhere('name', 'like', '%'.$search.'%')
+                    ->orWhere('company_name', 'like', '%'.$search.'%');
             });
         }
 
@@ -222,7 +230,7 @@ class EmailMessagingController extends Controller
             ]);
 
             $results->push([
-                'id' => 'user-' . $recipientUser->id,
+                'id' => 'user-'.$recipientUser->id,
                 'email' => strtolower((string) $recipientUser->email),
                 'name' => $recipientUser->name ?: $recipientUser->email,
                 'kind' => $kind,
@@ -240,7 +248,7 @@ class EmailMessagingController extends Controller
         ];
 
         $payload = $results
-            ->filter(fn ($entry) => !empty($entry['email']) && filter_var($entry['email'], FILTER_VALIDATE_EMAIL))
+            ->filter(fn ($entry) => ! empty($entry['email']) && filter_var($entry['email'], FILTER_VALIDATE_EMAIL))
             ->unique(fn ($entry) => strtolower((string) $entry['email']))
             ->sortBy(fn ($entry) => [
                 $groupPriority[$entry['kind']] ?? 99,
@@ -256,114 +264,48 @@ class EmailMessagingController extends Controller
     public function compose(Request $request): JsonResponse
     {
         $user = $request->user();
-        $canSendOutbound = $this->canSendOutbound($user->role);
-        $isInternalReply = $request->filled('in_reply_to_message_id');
-
-        $rules = [
-            'to' => $this->emailRecipientRule($canSendOutbound && !$isInternalReply, $canSendOutbound),
-            'cc' => ['nullable', 'array'],
-            'cc.*' => ['email'],
-            'bcc' => ['nullable', 'array'],
-            'bcc.*' => ['email'],
-            'subject' => ['nullable', 'string'],
-            'body_html' => ['nullable', 'string'],
-            'body_text' => ['nullable', 'string'],
-            'reply_to' => ['nullable', 'email'],
-            'template_id' => ['nullable', 'exists:message_templates,id'],
+        if (! \App\Services\Messaging\DashboardMessagingPolicy::staffRole($user->role) || $request->filled('in_reply_to_message_id')) {
+            return app(\App\Services\SupportLegacyComposeService::class)->submit($request);
+        }
+        app(\App\Services\Messaging\DashboardMessagingPolicy::class)->authorizeEmail($user, true);
+        $data = $request->validate([
+            'to' => $this->emailRecipientRule(true, true),
+            'cc' => ['nullable', 'array'], 'cc.*' => ['email'],
+            'bcc' => ['nullable', 'array'], 'bcc.*' => ['email'],
+            'subject' => ['nullable', 'string'], 'body_html' => ['nullable', 'string'], 'body_text' => ['nullable', 'string'],
+            'reply_to' => ['nullable', 'email'], 'template_id' => ['nullable', 'exists:message_templates,id'],
             'channel_id' => ['nullable', 'exists:message_channels,id'],
             'related_shoot_id' => ['nullable', 'integer', 'exists:shoots,id'],
             'related_shoot_context_type' => ['nullable', 'in:new_shoot,previous_shoot'],
             'related_account_id' => ['nullable', 'integer', 'exists:users,id'],
             'related_invoice_id' => ['nullable', 'integer', 'exists:invoices,id'],
-            'in_reply_to_message_id' => ['nullable', 'integer', 'exists:messages,id'],
-            'variables' => ['nullable', 'array'],
-            'attachments' => ['nullable', 'array'],
-            'attachments.*' => ['file', 'max:10240'],
-        ];
-
-        $data = $request->validate($rules);
-
-        if ($isInternalReply) {
-            $data = array_merge($data, $this->extractUploadedAttachments($request));
-
-            if (empty($data['body_html']) && empty($data['body_text']) && empty($data['template_id'])) {
-                throw ValidationException::withMessages([
-                    'body_text' => 'A reply message is required.',
-                ]);
-            }
-
-            $data = $this->applyTemplateIfNeeded($data);
-
-            return $this->storeInternalReply($user, $data);
+            'variables' => ['nullable', 'array'], 'attachments' => ['nullable', 'array'], 'attachments.*' => ['file', 'max:10240'],
+        ]);
+        if (empty($data['body_html']) && empty($data['body_text']) && empty($data['template_id'])) {
+            throw ValidationException::withMessages(['body_text' => 'Either HTML or text body is required.']);
         }
-
-        $relatedShoot = null;
-
-        if (!$canSendOutbound) {
-            $relatedShoot = $this->resolveRequiredShootForContactMessage($user, $data);
-            $data['related_shoot_id'] = (int) $relatedShoot->id;
-            $data['related_account_id'] = (int) $relatedShoot->client_id;
-        }
-
         $data['cc'] = $this->mergeShootCcEmails($data);
         $data['bcc'] = $this->normalizeEmailAddresses($data['bcc'] ?? []);
-        $data = array_merge($data, $this->extractUploadedAttachments($request));
-
-        if (empty($data['body_html']) && empty($data['body_text']) && empty($data['template_id'])) {
-            throw ValidationException::withMessages([
-                'body_text' => 'Either HTML or text body is required.',
-            ]);
-        }
-
-        $data = $this->applyTemplateIfNeeded($data);
+        $data = $this->applyTemplateIfNeeded(array_merge($data, $this->extractUploadedAttachments($request)));
         $addresses = $this->normalizeComposeAddresses($data['to'] ?? null);
-        if ($canSendOutbound && count($addresses) > 1) {
+        if (count($addresses) > 1) {
             return $this->composeMany($user, $data, $addresses);
         }
-        if (count($addresses) === 1) {
-            $data['to'] = $addresses[0];
-        }
-
-        $senderDisplayName = $user->name ?: $user->email;
-        $senderAccountId = $canSendOutbound ? null : $user->id;
-        if (!$canSendOutbound) {
-            $senderDisplayName = sprintf('%s (Account #%s)', $senderDisplayName, $user->id);
-        }
-
-        $payload = array_merge($data, [
-            'user_id' => $user->id,
-            'send_source' => 'MANUAL',
-            'sender_user_id' => $user->id,
-            'sender_account_id' => $senderAccountId,
-            'sender_role' => $user->role,
-            'sender_display_name' => $senderDisplayName,
-        ]);
-
-        if ($canSendOutbound) {
-            $payload['contact_email'] = $data['to'];
-            $message = $this->messaging->sendEmail($payload);
-        } else {
-            $payload['from'] = $user->email;
-            $payload['to'] = config('mail.contact_address', 'contact@reprophotos.com');
-            $payload['reply_to'] = $data['reply_to'] ?? $user->email;
-            $payload['contact_email'] = $user->email;
-            $payload['contact_name'] = $user->name ?? $user->email;
-            $payload['contact_type'] = $user->role;
-            $payload['contact_user_id'] = $user->id;
-            $payload['contact_account_id'] = $user->id;
-            $payload['related_account_id'] = (int) ($relatedShoot?->client_id ?? $data['related_account_id']);
-
-            $message = $this->messaging->storeInternalEmail($payload, 'INBOUND');
-            $this->internalNotifications->queueFor($message);
-        }
+        $data['to'] = $addresses[0];
+        $message = $this->messaging->sendEmail(array_merge($data, [
+            'user_id' => $user->id, 'send_source' => 'MANUAL', 'sender_user_id' => $user->id,
+            'sender_account_id' => null, 'sender_role' => $user->role, 'sender_display_name' => $user->name ?: $user->email,
+            'contact_email' => $data['to'],
+        ]));
 
         return response()->json($message);
     }
 
     public function schedule(Request $request): JsonResponse
     {
+        app(\App\Services\Messaging\DashboardMessagingPolicy::class)->authorizeEmail(request()->user(), true);
         $user = $request->user();
-        if (!$this->canSendOutbound($user->role)) {
+        if (! $this->canSendOutbound($user->role)) {
             return response()->json(['message' => 'Only outbound messaging roles can schedule emails.'], 403);
         }
 
@@ -420,10 +362,12 @@ class EmailMessagingController extends Controller
 
     public function retry(Message $message): JsonResponse
     {
-        if (!in_array(request()->user()->role, ['admin', 'superadmin'], true)) {
+        app(\App\Services\Messaging\DashboardMessagingPolicy::class)->authorizeEmail(request()->user(), true);
+        if (! \App\Services\Messaging\DashboardMessagingPolicy::staffRole(request()->user()->role)) {
             return response()->json(['message' => 'Only admins can retry emails.'], 403);
         }
 
+        abort_if($message->provider === 'INTERNAL', 422, 'Reply to this dashboard conversation in Support.');
         if ($message->channel !== 'EMAIL') {
             abort(400, 'Can only retry email messages.');
         }
@@ -444,9 +388,12 @@ class EmailMessagingController extends Controller
 
     public function show(Message $message): JsonResponse
     {
+        app(\App\Services\Messaging\DashboardMessagingPolicy::class)->authorizeEmail(request()->user());
         $user = request()->user();
+        abort_unless($message->channel === 'EMAIL', 404);
+        abort_if(\App\Models\SupportTicketMessage::where('source_message_id', $message->id)->exists(), 404, 'Open this conversation in Support.');
 
-        if (!$this->canAccessMessage($user, $message)) {
+        if (! $this->canAccessMessage($user, $message)) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
@@ -463,10 +410,12 @@ class EmailMessagingController extends Controller
 
     public function cancel(Message $message): JsonResponse
     {
-        if (!in_array(request()->user()->role, ['admin', 'superadmin'], true)) {
+        app(\App\Services\Messaging\DashboardMessagingPolicy::class)->authorizeEmail(request()->user(), true);
+        if (! \App\Services\Messaging\DashboardMessagingPolicy::staffRole(request()->user()->role)) {
             return response()->json(['message' => 'Only admins can cancel emails.'], 403);
         }
 
+        abort_if($message->channel !== 'EMAIL' || $message->provider === 'INTERNAL', 422, 'Only scheduled outgoing email can be cancelled here.');
         if ($message->status !== 'SCHEDULED') {
             return response()->json(['error' => 'Can only cancel scheduled messages'], 400);
         }
@@ -476,97 +425,6 @@ class EmailMessagingController extends Controller
         return response()->json($message->fresh());
     }
 
-    /**
-     * Store a reply inside an existing dashboard conversation. The separate
-     * queued notification email contains only a short preview and link.
-     *
-     * @param  array<string, mixed>  $data
-     */
-    private function storeInternalReply(User $user, array $data): JsonResponse
-    {
-        $original = Message::query()
-            ->with(['shoot.client', 'thread.contact.user'])
-            ->findOrFail((int) $data['in_reply_to_message_id']);
-
-        if (!$this->isLinkedInternalContactMessage($original) || !$this->canAccessMessage($user, $original)) {
-            return response()->json(['message' => 'This dashboard conversation is not available to you.'], 403);
-        }
-
-        $client = $original->shoot?->client;
-        if (!$client && $original->related_account_id) {
-            $candidate = User::query()->find((int) $original->related_account_id);
-            if ($candidate && $this->normalizedRole($candidate->role) === 'client') {
-                $client = $candidate;
-            }
-        }
-
-        if (!$client instanceof User) {
-            throw ValidationException::withMessages([
-                'in_reply_to_message_id' => 'This conversation no longer has an associated client account.',
-            ]);
-        }
-
-        $isClient = $this->normalizedRole($user->role) === 'client';
-        if ($isClient && (int) $user->id !== (int) $client->id) {
-            return response()->json(['message' => 'This dashboard conversation is not available to you.'], 403);
-        }
-
-        if (!$isClient && !$this->userHasAnyNormalizedRole($user, ['admin', 'superadmin', 'salesrep', 'editingmanager'])) {
-            return response()->json(['message' => 'Only conversation staff or the client can reply here.'], 403);
-        }
-
-        $senderDisplayName = trim((string) ($user->name ?: $user->email));
-        $subject = trim((string) ($data['subject'] ?? ''));
-        if ($subject === '') {
-            $originalSubject = trim((string) ($original->subject ?? ''));
-            $subject = $originalSubject !== '' ? 'Re: ' . preg_replace('/^Re:\s*/i', '', $originalSubject) : 'Dashboard message reply';
-        }
-
-        $payload = array_merge($data, [
-            'from' => $user->email,
-            'to' => $isClient
-                ? config('mail.contact_address', 'contact@reprophotos.com')
-                : $client->email,
-            'reply_to' => $user->email,
-            'subject' => $subject,
-            'user_id' => $user->id,
-            'send_source' => 'MANUAL',
-            'sender_user_id' => $user->id,
-            'sender_account_id' => $isClient ? $client->id : null,
-            'sender_role' => $user->role,
-            'sender_display_name' => $senderDisplayName,
-            'contact_email' => $client->email,
-            'contact_phone' => $original->thread?->contact?->phone
-                ?: config('mail.contact_address', 'contact@reprophotos.com'),
-            'contact_name' => $client->name ?: $client->email,
-            'contact_type' => 'client',
-            'contact_user_id' => $client->id,
-            'contact_account_id' => $client->id,
-            'related_shoot_id' => $original->related_shoot_id,
-            'related_shoot_context_type' => $original->related_shoot_context_type,
-            'related_account_id' => $client->id,
-            'related_invoice_id' => $original->related_invoice_id,
-            'metadata' => array_merge(is_array($original->metadata) ? $original->metadata : [], [
-                'internal_reply_to_message_id' => (int) $original->id,
-                'internal_conversation' => true,
-            ]),
-        ]);
-
-        unset($payload['in_reply_to_message_id'], $payload['cc'], $payload['bcc'], $payload['channel_id']);
-
-        $message = $this->messaging->storeInternalEmail(
-            $payload,
-            $isClient ? 'INBOUND' : 'OUTBOUND',
-        );
-
-        $this->internalNotifications->queueFor($message);
-
-        return response()->json($message);
-    }
-
-    /**
-     * @return array<int, string|\Closure>
-     */
     private function emailRecipientRule(bool $required, bool $allowMany): array
     {
         return [
@@ -577,12 +435,12 @@ class EmailMessagingController extends Controller
                 }
 
                 $items = is_array($value) ? $value : [$value];
-                if (!$allowMany && is_array($value)) {
+                if (! $allowMany && is_array($value)) {
                     $fail('Multiple recipients are only available when sending email.');
 
                     return;
                 }
-                if (!is_string($value) && !is_array($value)) {
+                if (! is_string($value) && ! is_array($value)) {
                     $fail('Recipients must be an email address or a list of email addresses.');
 
                     return;
@@ -593,7 +451,7 @@ class EmailMessagingController extends Controller
                     return;
                 }
                 foreach ($items as $email) {
-                    if (!is_string($email) || !filter_var(trim($email), FILTER_VALIDATE_EMAIL)) {
+                    if (! is_string($email) || ! filter_var(trim($email), FILTER_VALIDATE_EMAIL)) {
                         $fail('Each recipient must be a valid email address.');
 
                         return;
@@ -754,21 +612,21 @@ class EmailMessagingController extends Controller
     {
         $client = null;
 
-        if (!empty($data['related_shoot_id'])) {
+        if (! empty($data['related_shoot_id'])) {
             $client = Shoot::query()
                 ->with('client')
                 ->find($data['related_shoot_id'])
                 ?->client;
         }
 
-        if (!$client && !empty($data['related_account_id'])) {
+        if (! $client && ! empty($data['related_account_id'])) {
             $account = User::find($data['related_account_id']);
             if ($account && $account->role === 'client') {
                 $client = $account;
             }
         }
 
-        if (!$client && !empty($data['related_invoice_id'])) {
+        if (! $client && ! empty($data['related_invoice_id'])) {
             $invoice = Invoice::query()
                 ->with(['client', 'shoot.client'])
                 ->find($data['related_invoice_id']);
@@ -780,7 +638,6 @@ class EmailMessagingController extends Controller
     }
 
     /**
-     * @param  mixed  $emails
      * @return array<int, string>
      */
     private function normalizeEmailAddresses(mixed $emails, ?string $exclude = null): array
@@ -808,7 +665,7 @@ class EmailMessagingController extends Controller
         }
 
         $template = MessageTemplate::find($data['template_id']);
-        if (!$template) {
+        if (! $template) {
             return $data;
         }
 
@@ -822,18 +679,18 @@ class EmailMessagingController extends Controller
         $variables = $resolver->resolve($context);
         $renderTemplate = clone $template;
 
-        if (!empty($data['subject'])) {
+        if (! empty($data['subject'])) {
             $renderTemplate->subject = $data['subject'];
         }
-        if (!empty($data['body_html'])) {
+        if (! empty($data['body_html'])) {
             $renderTemplate->body_html = $data['body_html'];
         }
-        if (!empty($data['body_text'])) {
+        if (! empty($data['body_text'])) {
             $renderTemplate->body_text = $data['body_text'];
         }
 
         $rendered = $renderer->render($renderTemplate, $variables);
-        if (!empty($rendered['missing'])) {
+        if (! empty($rendered['missing'])) {
             Log::warning('Compose email missing template variables', [
                 'template_id' => $template->id,
                 'missing' => $rendered['missing'],
@@ -857,7 +714,7 @@ class EmailMessagingController extends Controller
             $files = [$files];
         }
 
-        if (!is_array($files) || $files === []) {
+        if (! is_array($files) || $files === []) {
             return [];
         }
 
@@ -866,7 +723,7 @@ class EmailMessagingController extends Controller
         $storedAttachments = [];
 
         foreach ($files as $file) {
-            if (!$file instanceof UploadedFile) {
+            if (! $file instanceof UploadedFile) {
                 continue;
             }
 
@@ -897,7 +754,7 @@ class EmailMessagingController extends Controller
 
     private function canSendOutbound(?string $role): bool
     {
-        return in_array($this->normalizedRole($role), ['admin', 'superadmin'], true);
+        return \App\Services\Messaging\DashboardMessagingPolicy::staffRole($role);
     }
 
     private function normalizedRole(?string $role): string
@@ -907,7 +764,7 @@ class EmailMessagingController extends Controller
 
     private function isAdminUser(User $user): bool
     {
-        return $this->userHasAnyNormalizedRole($user, ['admin', 'superadmin']);
+        return \App\Services\Messaging\DashboardMessagingPolicy::staffRole($user->role);
     }
 
     private function isEditingManagerUser(User $user): bool
@@ -946,13 +803,13 @@ class EmailMessagingController extends Controller
 
         $shoot = $shootQuery->first();
 
-        if (!$shoot) {
+        if (! $shoot) {
             throw ValidationException::withMessages([
                 'related_shoot_id' => 'The selected shoot is not available for this contact message.',
             ]);
         }
 
-        if (!$shoot->client_id) {
+        if (! $shoot->client_id) {
             throw ValidationException::withMessages([
                 'related_shoot_id' => 'The selected shoot does not have an associated client account.',
             ]);
@@ -1065,7 +922,7 @@ class EmailMessagingController extends Controller
 
     private function canAccessLinkedInternalContactMessage(User $user, Message $message): bool
     {
-        if (!$this->isLinkedInternalContactMessage($message)) {
+        if (! $this->isLinkedInternalContactMessage($message)) {
             return false;
         }
 
@@ -1073,7 +930,7 @@ class EmailMessagingController extends Controller
             return true;
         }
 
-        if (!$this->isSalesRepUser($user)) {
+        if (! $this->isSalesRepUser($user)) {
             return false;
         }
 
@@ -1084,7 +941,7 @@ class EmailMessagingController extends Controller
             return true;
         }
 
-        if (!$shoot?->client) {
+        if (! $shoot?->client) {
             return false;
         }
 
@@ -1093,7 +950,7 @@ class EmailMessagingController extends Controller
 
     private function isLinkedInternalContactMessage(Message $message): bool
     {
-        return $message->provider === 'INTERNAL' && !empty($message->related_shoot_id);
+        return $message->provider === 'INTERNAL' && ! empty($message->related_shoot_id);
     }
 
     private function applyMessageVisibilityScope(Builder $query, User $user): void
@@ -1243,4 +1100,3 @@ class EmailMessagingController extends Controller
         ]));
     }
 }
-

@@ -111,6 +111,31 @@ class VoiceSupportKnowledgeTest extends TestCase
         $this->assertDatabaseCount('tool_bridge_invocations', 1);
     }
 
+    public function test_support_routing_guidance_uses_verified_primary_role_and_keeps_general_help_public(): void
+    {
+        $manager = User::factory()->create(['role' => 'editing_manager']);
+        $call = $this->voiceCall($manager, false);
+        $public = $this->withHeader('X-Telnyx-Call-Control-Id', $call->call_control_id)
+            ->postJson('/api/telnyx-ai/tools/search_support_knowledge', ['query' => 'contact support'])
+            ->assertOk()->assertJsonPath('result.scope', 'public')->assertJsonPath('result.articles.0.id', 'support-contact')
+            ->json('result.articles.0');
+        $this->assertStringContainsString('New request', $public['steps'][0]);
+        $this->assertStringContainsString('configured inbound email connector', implode(' ', $public['troubleshooting']));
+        $this->assertNull($call->fresh()->verified_at);
+        $call->update(['verified_at' => now()]);
+        $staff = $this->postJson('/api/telnyx-ai/tools/search_support_knowledge', ['query' => 'assign request'])
+            ->assertOk()->assertJsonPath('result.scope', 'editing_manager')->assertJsonPath('result.articles.0.id', 'admin-support-inbox')
+            ->json('result.articles.0');
+        $this->assertStringContainsString('support staff member', $staff['steps'][1]);
+        $this->assertStringContainsString('permissions', implode(' ', $staff['troubleshooting']));
+        $manager->update(['role' => 'salesRep']);
+        $this->postJson('/api/telnyx-ai/tools/search_support_knowledge', ['query' => 'assign request'])
+            ->assertOk()->assertJsonPath('result.scope', 'salesRep')->assertJsonMissing(['id' => 'admin-support-inbox']);
+        $this->assertSame(0, ToolBridgeInvocation::where('tool', 'verify_caller')->count());
+        $this->assertDatabaseCount('support_tickets', 0);
+        Http::assertNothingSent();
+    }
+
     public function test_public_upload_booking_and_navigation_help_needs_no_code_but_private_details_remain_gated(): void
     {
         $call = $this->voiceCall(User::factory()->create(['role' => 'client']), false);

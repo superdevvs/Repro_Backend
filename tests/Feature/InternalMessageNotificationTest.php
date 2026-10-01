@@ -6,14 +6,17 @@ use App\Jobs\SendInternalMessageNotificationEmail;
 use App\Models\Message;
 use App\Models\MessageChannel;
 use App\Models\Shoot;
+use App\Models\SupportTicket;
 use App\Models\SystemEmailDispatch;
 use App\Models\User;
 use App\Services\Messaging\MessagingService;
 use App\Services\Messaging\OutboundDeliveryGuard;
 use App\Services\Messaging\Providers\LocalSmtpProvider;
+use App\Services\SupportTicketService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Str;
 use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
 
@@ -28,16 +31,17 @@ class InternalMessageNotificationTest extends TestCase
         OutboundDeliveryGuard::allowFakeProviderPipelineForTesting();
     }
 
-    public function test_client_message_queues_assigned_rep_and_all_active_admins_once(): void
+    public function test_client_submission_creates_private_support_with_authorized_staff_notifications_only(): void
     {
         Queue::fake();
 
         $admin = User::factory()->create(['role' => 'admin']);
         $superAdmin = User::factory()->create(['role' => 'superadmin']);
+        $editingManager = User::factory()->create(['role' => 'editing_manager', 'permission_overrides' => ['allow' => ['support-view', 'support-manage']]]);
         $salesRep = User::factory()->create(['role' => 'salesRep']);
-        User::factory()->create(['role' => 'salesRep']);
-        User::factory()->create(['role' => 'admin', 'account_status' => 'inactive']);
-        User::factory()->create([
+        $otherRep = User::factory()->create(['role' => 'salesRep']);
+        $inactiveAdmin = User::factory()->create(['role' => 'admin', 'account_status' => 'inactive']);
+        $emailOptOutAdmin = User::factory()->create([
             'role' => 'admin',
             'metadata' => ['preferences' => ['notificationEmail' => false]],
         ]);
@@ -50,50 +54,47 @@ class InternalMessageNotificationTest extends TestCase
             'body_text' => 'Can someone check the delivery status?',
             'related_shoot_id' => $shoot->id,
             'related_shoot_context_type' => 'new_shoot',
-        ])->assertOk();
+        ])->assertCreated()->assertJsonPath('data.requester.id', $client->id);
 
-        $messageId = (int) $response->json('id');
-        $recipientIds = collect(Queue::pushed(SendInternalMessageNotificationEmail::class))
-            ->map(fn (SendInternalMessageNotificationEmail $job) => $job->recipientId)
-            ->sort()
-            ->values()
-            ->all();
-
-        $this->assertSame(
-            collect([$admin->id, $superAdmin->id, $salesRep->id])->sort()->values()->all(),
-            $recipientIds,
-        );
-        Queue::assertPushed(
-            SendInternalMessageNotificationEmail::class,
-            fn (SendInternalMessageNotificationEmail $job) => $job->messageId === $messageId,
-        );
+        $ticket = SupportTicket::findOrFail($response->json('support_ticket_id'));
+        $url = '/messaging/email/inbox?tab=support&ticket='.$ticket->id;
+        $response->assertJsonPath('redirect_url', $url);
+        $this->assertSame($client->id, $ticket->requester_id);
+        $this->assertSame('Can someone check the delivery status?', $ticket->messages()->firstOrFail()->body);
+        foreach ([$admin, $superAdmin, $editingManager, $emailOptOutAdmin] as $staff) {
+            $this->assertSame([$url], app(SupportTicketService::class)->notifications($staff)->pluck('actionUrl')->all());
+        }
+        foreach ([$salesRep, $otherRep, $inactiveAdmin] as $other) {
+            $this->assertCount(0, app(SupportTicketService::class)->notifications($other));
+            $this->assertSame(0, app(SupportTicketService::class)->visible($other)->count());
+        }
+        $this->assertDatabaseCount('messages', 0);
+        Queue::assertNotPushed(SendInternalMessageNotificationEmail::class);
     }
 
-    public function test_unassigned_client_notifies_admins_without_any_sales_rep(): void
+    public function test_general_dashboard_request_needs_no_shoot_or_email_template(): void
     {
         Queue::fake();
 
         $admin = User::factory()->create(['role' => 'admin']);
-        User::factory()->create(['role' => 'salesRep']);
+        $salesRep = User::factory()->create(['role' => 'salesRep']);
         $client = User::factory()->create(['role' => 'client', 'created_by_id' => null]);
-        $shoot = Shoot::factory()->create(['client_id' => $client->id, 'rep_id' => null]);
 
         Sanctum::actingAs($client);
-        $this->postJson('/api/messaging/email/compose', [
-            'body_text' => 'Unassigned client question',
-            'related_shoot_id' => $shoot->id,
-            'related_shoot_context_type' => 'new_shoot',
-        ])->assertOk();
+        $response = $this->postJson('/api/messaging/email/compose', [
+            'body_html' => '<p>General dashboard &amp; profile question</p>',
+        ])->assertCreated()->assertJsonPath('data.subject', 'Dashboard support request');
 
-        $this->assertSame(
-            [$admin->id],
-            collect(Queue::pushed(SendInternalMessageNotificationEmail::class))
-                ->map(fn (SendInternalMessageNotificationEmail $job) => $job->recipientId)
-                ->all(),
-        );
+        $ticket = SupportTicket::findOrFail($response->json('support_ticket_id'));
+        $this->assertSame('General dashboard & profile question', $ticket->messages()->firstOrFail()->body);
+        $this->assertCount(1, app(SupportTicketService::class)->notifications($admin));
+        $this->assertCount(0, app(SupportTicketService::class)->notifications($salesRep));
+        $this->assertDatabaseCount('shoots', 0);
+        $this->assertDatabaseCount('messages', 0);
+        Queue::assertNotPushed(SendInternalMessageNotificationEmail::class);
     }
 
-    public function test_a_user_qualifying_as_admin_and_assigned_rep_receives_only_one_job(): void
+    public function test_a_primary_admin_also_assigned_as_rep_sees_one_support_notification(): void
     {
         Queue::fake();
 
@@ -109,16 +110,15 @@ class InternalMessageNotificationTest extends TestCase
             'body_text' => 'Please take a look',
             'related_shoot_id' => $shoot->id,
             'related_shoot_context_type' => 'new_shoot',
-        ])->assertOk();
+        ])->assertCreated();
 
-        Queue::assertPushed(SendInternalMessageNotificationEmail::class, 1);
-        Queue::assertPushed(
-            SendInternalMessageNotificationEmail::class,
-            fn (SendInternalMessageNotificationEmail $job) => $job->recipientId === $adminRep->id,
-        );
+        $notifications = app(SupportTicketService::class)->notifications($adminRep);
+        $this->assertCount(1, $notifications);
+        $this->assertSame('support_updated', $notifications->first()['action']);
+        Queue::assertNotPushed(SendInternalMessageNotificationEmail::class);
     }
 
-    public function test_staff_reply_stays_internal_marks_client_unread_and_queues_client_notification(): void
+    public function test_staff_reply_to_legacy_contact_imports_private_support_and_notifies_the_requester_in_app(): void
     {
         Queue::fake();
 
@@ -133,34 +133,25 @@ class InternalMessageNotificationTest extends TestCase
             'body_text' => 'We are checking this now.',
         ])->assertOk();
 
-        $reply = Message::query()->findOrFail((int) $response->json('id'));
-        $this->assertSame('INTERNAL', $reply->provider);
-        $this->assertSame('OUTBOUND', $reply->direction);
-        $this->assertSame($client->email, $reply->to_address);
-        $this->assertSame($original->thread_id, $reply->thread_id);
-        $this->assertSame($original->id, $reply->metadata['internal_reply_to_message_id'] ?? null);
-        $this->assertContains($client->id, $reply->thread->fresh()->unread_for_user_ids_json);
-
-        Queue::assertPushed(SendInternalMessageNotificationEmail::class, 1);
-        Queue::assertPushed(
-            SendInternalMessageNotificationEmail::class,
-            fn (SendInternalMessageNotificationEmail $job) => $job->messageId === $reply->id
-                && $job->recipientId === $client->id,
-        );
+        $ticket = SupportTicket::findOrFail($response->json('support_ticket_id'));
+        $this->assertSame($client->id, $ticket->requester_id);
+        $this->assertSame([$original->body_text, 'We are checking this now.'], $ticket->messages()->orderBy('id')->pluck('body')->all());
+        $this->assertSame($original->id, $ticket->messages()->oldest('id')->firstOrFail()->source_message_id);
+        $this->assertSame($admin->id, $ticket->messages()->latest('id')->firstOrFail()->author_id);
+        $this->assertDatabaseCount('messages', 1);
+        Queue::assertNotPushed(SendInternalMessageNotificationEmail::class);
 
         Sanctum::actingAs($client);
-        $this->getJson("/api/messaging/email/messages/{$reply->id}")->assertOk();
+        $this->getJson('/api/support/tickets/'.$ticket->id)->assertOk()->assertJsonFragment(['body' => 'We are checking this now.']);
         $this->getJson('/api/notifications')
             ->assertOk()
             ->assertJsonFragment([
-                'action' => 'internal_message_received',
-                'actionUrl' => "/messaging/email/inbox?message={$reply->id}",
+                'action' => 'support_updated',
+                'actionUrl' => '/messaging/email/inbox?tab=support&ticket='.$ticket->id,
             ]);
-        $this->postJson("/api/messaging/email/threads/{$reply->thread_id}/mark-read")->assertOk();
-        $this->assertNotContains($client->id, $reply->thread->fresh()->unread_for_user_ids_json ?? []);
     }
 
-    public function test_assigned_sales_rep_reply_notifies_client_and_client_reply_notifies_staff(): void
+    public function test_assigned_rep_cannot_reply_to_client_support_but_requester_reply_notifies_staff(): void
     {
         Queue::fake();
 
@@ -171,38 +162,28 @@ class InternalMessageNotificationTest extends TestCase
         $original = $this->internalClientMessage($client, $shoot);
 
         Sanctum::actingAs($salesRep);
-        $repResponse = $this->postJson('/api/messaging/email/compose', [
+        $this->postJson('/api/messaging/email/compose', [
             'in_reply_to_message_id' => $original->id,
             'body_text' => 'Your sales rep is following up.',
-        ])->assertOk();
-        $repReply = Message::query()->findOrFail((int) $repResponse->json('id'));
-
-        $this->assertSame('OUTBOUND', $repReply->direction);
-        Queue::assertPushed(
-            SendInternalMessageNotificationEmail::class,
-            fn (SendInternalMessageNotificationEmail $job) => $job->messageId === $repReply->id
-                && $job->recipientId === $client->id,
-        );
+        ])->assertNotFound();
+        $this->assertDatabaseCount('support_tickets', 0);
 
         Queue::fake();
         Sanctum::actingAs($client);
         $clientResponse = $this->postJson('/api/messaging/email/compose', [
-            'in_reply_to_message_id' => $repReply->id,
+            'in_reply_to_message_id' => $original->id,
             'body_text' => 'Thanks, I have one more question.',
         ])->assertOk();
-        $clientReply = Message::query()->findOrFail((int) $clientResponse->json('id'));
-
-        $this->assertSame('INBOUND', $clientReply->direction);
-        $this->assertSame($original->thread_id, $clientReply->thread_id);
-        $queuedRecipientIds = collect(Queue::pushed(SendInternalMessageNotificationEmail::class))
-            ->map(fn (SendInternalMessageNotificationEmail $job) => $job->recipientId)
-            ->sort()
-            ->values()
-            ->all();
-        $this->assertSame(collect([$admin->id, $salesRep->id])->sort()->values()->all(), $queuedRecipientIds);
+        $ticket = SupportTicket::findOrFail($clientResponse->json('support_ticket_id'));
+        $this->assertSame($client->id, $ticket->requester_id);
+        $this->assertSame('Thanks, I have one more question.', $ticket->messages()->latest('id')->firstOrFail()->body);
+        $this->assertCount(2, app(SupportTicketService::class)->notifications($admin));
+        $this->assertCount(0, app(SupportTicketService::class)->notifications($salesRep));
+        $this->assertDatabaseCount('messages', 1);
+        Queue::assertNotPushed(SendInternalMessageNotificationEmail::class);
     }
 
-    public function test_staff_reply_uses_secondary_roles_when_choosing_the_client_recipient(): void
+    public function test_secondary_admin_role_does_not_grant_staff_access_to_another_requester(): void
     {
         Queue::fake();
 
@@ -215,21 +196,17 @@ class InternalMessageNotificationTest extends TestCase
         $original = $this->internalClientMessage($client, $shoot);
 
         Sanctum::actingAs($staff);
-        $response = $this->postJson('/api/messaging/email/compose', [
+        $this->postJson('/api/messaging/email/compose', [
             'in_reply_to_message_id' => $original->id,
             'body_text' => 'Replying while using the admin role.',
-        ])->assertOk();
+        ])->assertNotFound();
 
-        $replyId = (int) $response->json('id');
-        Queue::assertPushed(
-            SendInternalMessageNotificationEmail::class,
-            fn (SendInternalMessageNotificationEmail $job) => $job->messageId === $replyId
-                && $job->recipientId === $client->id,
-        );
-        Queue::assertPushed(SendInternalMessageNotificationEmail::class, 1);
+        $this->assertDatabaseCount('support_tickets', 0);
+        $this->assertDatabaseCount('messages', 1);
+        Queue::assertNotPushed(SendInternalMessageNotificationEmail::class);
     }
 
-    public function test_sales_rep_in_app_notifications_are_scoped_to_their_assigned_client(): void
+    public function test_rep_notifications_hide_other_clients_legacy_contact_but_show_own_support_replies(): void
     {
         $assignedRep = User::factory()->create(['role' => 'salesRep']);
         $otherRep = User::factory()->create(['role' => 'salesRep']);
@@ -237,17 +214,31 @@ class InternalMessageNotificationTest extends TestCase
         $shoot = Shoot::factory()->create(['client_id' => $client->id, 'rep_id' => $assignedRep->id]);
         $message = $this->internalClientMessage($client, $shoot);
 
-        Sanctum::actingAs($assignedRep);
-        $this->getJson('/api/notifications')
-            ->assertOk()
-            ->assertJsonFragment(['id' => 'email-' . $message->id]);
+        foreach ([$assignedRep, $otherRep] as $rep) {
+            Sanctum::actingAs($rep);
+            $payload = $this->getJson('/api/notifications')->assertOk()
+                ->assertJsonPath('data.unread_counts.email', 0)->json('data.activity_log');
+            $this->assertFalse(collect($payload)->contains('id', 'email-'.$message->id));
+        }
 
+        $admin = User::factory()->create(['role' => 'admin']);
+        $tickets = app(SupportTicketService::class);
+        $ownRequest = $tickets->create($assignedRep, ['request_key' => (string) Str::uuid(),
+            'subject' => 'My dashboard question', 'category' => 'account', 'body' => 'I need help with my profile.']);
+        $tickets->reply($admin, $ownRequest->id, ['request_key' => (string) Str::uuid(), 'body' => 'Here are the steps for your profile.']);
+
+        Sanctum::actingAs($assignedRep);
+        $this->getJson('/api/notifications')->assertOk()->assertJsonFragment([
+            'action' => 'support_updated',
+            'actionUrl' => '/messaging/email/inbox?tab=support&ticket='.$ownRequest->id,
+        ])->assertJsonMissing(['id' => 'email-'.$message->id]);
         Sanctum::actingAs($otherRep);
-        $payload = $this->getJson('/api/notifications')->assertOk()->json('data.activity_log');
-        $this->assertFalse(collect($payload)->contains('id', 'email-' . $message->id));
+        $this->getJson('/api/notifications')->assertOk()->assertJsonMissing([
+            'actionUrl' => '/messaging/email/inbox?tab=support&ticket='.$ownRequest->id,
+        ]);
     }
 
-    public function test_staff_reply_skips_client_with_disabled_preference_or_inactive_account(): void
+    public function test_staff_reply_is_saved_without_email_for_opted_out_or_inactive_requesters(): void
     {
         Queue::fake();
 
@@ -269,12 +260,16 @@ class InternalMessageNotificationTest extends TestCase
                 Shoot::factory()->create(['client_id' => $client->id]),
             );
             Sanctum::actingAs($admin);
-            $this->postJson('/api/messaging/email/compose', [
+            $response = $this->postJson('/api/messaging/email/compose', [
                 'in_reply_to_message_id' => $original->id,
                 'body_text' => 'Staff response',
             ])->assertOk();
+            $ticket = SupportTicket::findOrFail($response->json('support_ticket_id'));
+            $this->assertSame($client->id, $ticket->requester_id);
+            $this->assertSame('Staff response', $ticket->messages()->latest('id')->firstOrFail()->body);
         }
 
+        $this->assertDatabaseCount('messages', 2);
         Queue::assertNotPushed(SendInternalMessageNotificationEmail::class);
     }
 
@@ -298,7 +293,7 @@ class InternalMessageNotificationTest extends TestCase
         $source = $this->internalClientMessage(
             $client,
             $shoot,
-            'Hello <script>alert("x")</script> ' . str_repeat('private detail ', 40),
+            'Hello <script>alert("x")</script> '.str_repeat('private detail ', 40),
         );
 
         $job = new SendInternalMessageNotificationEmail($source->id, $admin->id);

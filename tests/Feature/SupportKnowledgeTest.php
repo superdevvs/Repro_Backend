@@ -135,6 +135,60 @@ class SupportKnowledgeTest extends TestCase
         $this->getJson('/api/ai/knowledge/admin-call-transcript')->assertNotFound();
     }
 
+    public function test_nonstaff_support_guides_use_requester_conversations_and_keep_help_in_robbie(): void
+    {
+        $this->mock(LlmClient::class)->shouldNotReceive('chatCompletion');
+        $this->mock(ShootOperatorService::class)->shouldNotReceive('handle');
+        $knowledge = app(SupportKnowledgeBase::class);
+        foreach (['client', 'salesRep', 'photographer', 'editor'] as $role) {
+            $user = User::factory()->create(['role' => $role]);
+            $answer = $this->actingAs($user, 'sanctum')->postJson('/api/ai/chat', ['message' => 'I need to talk to a human'])
+                ->assertOk()->assertJsonPath('messages.1.metadata.topic', 'support-contact')->json('messages.1.content');
+            $this->assertStringContainsString('Open Messaging and choose Support', $answer);
+            $this->assertStringContainsString('New request', $answer);
+            $this->assertStringContainsString('a shoot is not required', $answer);
+            $this->assertStringContainsString('Open your request', $answer);
+            $this->assertStringContainsString('/messaging/email/inbox?tab=support', $answer);
+            $this->assertStringContainsString('/chat-with-reproai?tab=help', $answer);
+            $this->assertStringContainsString('configured inbound email connector', $answer);
+            $this->assertStringNotContainsString('Assigned to', $answer);
+            $this->assertNull($knowledge->find('admin-support-inbox', $user));
+            $help = $knowledge->find('robbie-help', $user);
+            $this->assertStringContainsString('Messaging > Support', implode(' ', $help['steps']));
+        }
+        foreach ([null, new User(['role' => 'other']), new User(['role' => 'client', 'secondary_roles' => ['admin']])] as $user) {
+            $guide = $knowledge->find('support-contact', $user);
+            $this->assertStringContainsString('New request', $guide['steps'][0]);
+            $this->assertNull($knowledge->find('admin-support-inbox', $user));
+        }
+        $this->assertDatabaseCount('support_tickets', 0);
+    }
+
+    public function test_support_staff_guides_include_editing_manager_with_conditional_triage_and_separate_email_tools(): void
+    {
+        $knowledge = app(SupportKnowledgeBase::class);
+        foreach (['admin', 'superadmin', 'editing_manager'] as $role) {
+            $user = User::factory()->create(['role' => $role]);
+            $guide = $this->actingAs($user, 'sanctum')->getJson('/api/ai/knowledge/admin-support-inbox')
+                ->assertOk()->json('data');
+            $answer = $knowledge->formatAnswer($guide);
+            $this->assertStringContainsString('View Support and Triage Support', $answer);
+            $this->assertStringContainsString('editing-manager account', $answer);
+            $this->assertStringContainsString('Existing email tools remain available according to your permissions', $answer);
+            $this->assertStringContainsString('Internal note', $answer);
+            $this->assertStringNotContainsString('admins only', $answer);
+            $this->assertStringContainsString('configured inbound email connector', $answer);
+            $contact = $knowledge->find('support-contact', $user);
+            $this->assertStringContainsString('Support inbox', $contact['steps'][0]);
+            $this->assertStringContainsString('Support triage does not grant extra email permissions', implode(' ', $contact['steps']));
+        }
+        $manager = new User(['role' => 'editing_manager']);
+        $this->assertNull($knowledge->find('admin-call-transcript', $manager));
+        $this->assertStringContainsString('Messaging > Support', $knowledge->grounding('support', $manager));
+        $this->assertStringContainsString('Do not direct clients, reps, photographers or editors to email Compose', $knowledge->grounding('support', new User(['role' => 'client'])));
+        $this->assertDatabaseCount('support_tickets', 0);
+    }
+
     public function test_new_staff_roles_have_help_only_chat_and_cannot_call_transactional_action_route(): void
     {
         $this->mock(LlmClient::class)->shouldNotReceive('chatCompletion');

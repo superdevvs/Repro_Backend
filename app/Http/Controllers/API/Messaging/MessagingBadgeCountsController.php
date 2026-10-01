@@ -26,8 +26,7 @@ class MessagingBadgeCountsController extends Controller
         }
 
         $userId = (int) $user->id;
-        $canEmail = $permissions->userCan($user, 'messaging-email', 'view')
-            || $permissions->userCan($user, 'messaging-overview', 'view');
+        $canEmail = app(\App\Services\Messaging\DashboardMessagingPolicy::class)->canEmail($user);
         $canSms = $permissions->userCan($user, 'messaging-sms', 'view');
         $canCalls = $permissions->userCan($user, 'voice-calls', 'view');
 

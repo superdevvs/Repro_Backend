@@ -11,7 +11,7 @@ class SupportTicketMessage extends Model
 
     protected function casts(): array
     {
-        return ['internal' => 'boolean'];
+        return ['internal' => 'boolean', 'attachments_json' => 'array'];
     }
 
     public function ticket(): BelongsTo

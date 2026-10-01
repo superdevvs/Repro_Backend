@@ -12,13 +12,13 @@ use App\Models\User;
 use App\Models\UserActivityLog;
 use App\Models\WorkflowLog;
 use App\Services\Invoices\InvoiceAdjustmentService;
+use App\Services\Media\MediaStorage;
+use App\Services\Messaging\UnreadCountService;
 use App\Services\Schedule\ScheduleDateScopeService;
 use App\Services\Schedule\ScheduleInstantResolver;
-use App\Services\Media\MediaStorage;
 use App\Services\Shoots\ShootEditingAssignmentService;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
-use App\Services\Messaging\UnreadCountService;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -993,11 +993,20 @@ class DashboardController extends Controller
             $isImpersonating = $request->attributes->get('is_impersonating', false);
 
             // Cache key includes user ID and role for proper access control
-            $cacheKey = 'notifications_'.$role.'_'.$userId.($isImpersonating ? '_impersonate' : '');
+            $cacheKey = 'notifications_support_v2_'.$role.'_'.$userId.($isImpersonating ? '_impersonate' : '');
 
             $activityLogs = Cache::remember($cacheKey, now()->addSeconds(15), function () use ($role, $userId) {
                 return $this->getActivityLogsForRole($role, $userId);
             });
+            if (! app(\App\Services\Messaging\DashboardMessagingPolicy::class)->canEmail($user)) {
+                $activityLogs = $activityLogs->reject(fn ($item) => str_starts_with((string) ($item['id'] ?? ''), 'email-'));
+            }
+            // Imported history must disappear from any still-cached email feed immediately.
+            $emailIds = $activityLogs->map(fn ($item) => str_starts_with((string) ($item['id'] ?? ''), 'email-') ? (int) substr($item['id'], 6) : null)->filter()->all();
+            if ($emailIds !== []) {
+                $convertedIds = \App\Models\SupportTicketMessage::whereIn('source_message_id', $emailIds)->pluck('source_message_id')->map(fn ($id) => 'email-'.$id)->all();
+                $activityLogs = $activityLogs->reject(fn ($item) => in_array($item['id'] ?? null, $convertedIds, true));
+            }
             // Recheck support visibility on every request, including permission revocation.
             $activityLogs = $activityLogs->concat(app(\App\Services\SupportTicketService::class)->notifications($user))
                 ->sortByDesc(fn (array $item) => strtotime((string) ($item['timestamp'] ?? '')) ?: 0)->values();
@@ -1154,11 +1163,12 @@ class DashboardController extends Controller
     protected function getEmailNotificationsForRole(string $role, int $userId): Collection
     {
         $user = User::find($userId);
-        if (! $user) {
+        if (! $user || ! app(\App\Services\Messaging\DashboardMessagingPolicy::class)->canEmail($user)) {
             return collect([]);
         }
 
         $baseQuery = Message::query()
+            ->whereNotIn('messages.id', \App\Models\SupportTicketMessage::whereNotNull('source_message_id')->select('source_message_id'))
             ->where('channel', 'EMAIL')
             ->whereIn('status', ['SENT', 'DELIVERED']);
 

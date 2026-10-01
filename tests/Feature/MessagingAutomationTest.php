@@ -45,39 +45,17 @@ class MessagingAutomationTest extends TestCase
         OutboundDeliveryGuard::allowFakeProviderPipelineForTesting();
     }
 
-    public function test_non_admin_compose_creates_internal_message(): void
+    public function test_non_admin_compose_creates_support_without_email_dispatch(): void
     {
+        Mail::fake();
         $user = User::factory()->create(['role' => 'client', 'email' => 'client@example.com']);
-        $shoot = Shoot::factory()->create([
-            'client_id' => $user->id,
-            'workflow_status' => Shoot::STATUS_SCHEDULED,
-            'status' => Shoot::STATUS_SCHEDULED,
-        ]);
-
         Sanctum::actingAs($user);
-
         $response = $this->postJson('/api/messaging/email/compose', [
-            'subject' => 'Need help',
-            'body_text' => 'Hello admin',
-            'related_shoot_id' => $shoot->id,
-            'related_shoot_context_type' => 'new_shoot',
-        ]);
-
-        $response->assertOk();
-
-        $message = Message::first();
-        $this->assertNotNull($message);
-        $this->assertSame('INTERNAL', $message->provider);
-        $this->assertSame('INBOUND', $message->direction);
-        $this->assertSame('SENT', $message->status);
-        $this->assertSame('MANUAL', $message->send_source);
-        $this->assertSame($user->email, $message->from_address);
-        $this->assertSame(config('mail.contact_address', 'contact@reprophotos.com'), $message->to_address);
-        $this->assertSame($user->id, $message->sender_user_id);
-        $this->assertSame($shoot->id, $message->related_shoot_id);
-        $this->assertSame('new_shoot', $message->related_shoot_context_type);
-        $this->assertSame($user->id, $message->related_account_id);
-        $this->assertStringContainsString((string) $user->id, (string) $message->sender_display_name);
+            'subject' => 'Need help', 'body_text' => 'Hello admin',
+        ])->assertCreated()->assertJsonPath('data.requester.id', $user->id);
+        $this->assertDatabaseHas('support_ticket_messages', ['support_ticket_id' => $response->json('support_ticket_id'), 'body' => 'Hello admin']);
+        $this->assertDatabaseCount('messages', 0);
+        Mail::assertNothingSent();
     }
 
     public function test_admin_compose_sends_external_email(): void

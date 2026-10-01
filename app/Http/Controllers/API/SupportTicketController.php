@@ -49,7 +49,7 @@ class SupportTicketController extends Controller
     {
         abort_unless($this->tickets->canManage($request->user()), 403);
 
-        return response()->json(['data' => User::whereIn('role', ['admin', 'superadmin'])->orderBy('name')->get()
+        return response()->json(['data' => User::whereIn('role', ['admin', 'superadmin', 'editing_manager', 'editing-manager', 'editingManager'])->orderBy('name')->get()
             ->filter(fn ($user) => $this->tickets->canManage($user))->map(fn ($user) => $user->only(['id', 'name']))->values()]);
     }
 
@@ -67,6 +67,7 @@ class SupportTicketController extends Controller
                 'id' => $message->id, 'body' => $message->body, 'kind' => $message->kind,
                 'internal' => $message->internal, 'author' => $message->author?->only(['id', 'name']),
                 'created_at' => $message->created_at->toIso8601String(),
+                'attachments' => app(\App\Services\SupportAttachmentService::class)->payload($message),
             ]), 'meta' => ['current_page' => $messages->currentPage(), 'last_page' => $messages->lastPage(), 'total' => $messages->total()]]);
     }
 
@@ -76,8 +77,9 @@ class SupportTicketController extends Controller
             'request_key' => ['required', 'uuid'], 'subject' => ['required', 'string', 'min:3', 'max:180'],
             'body' => ['required', 'string', 'min:10', 'max:8000'], 'category' => ['required', Rule::in(self::CATEGORIES)],
             'page_path' => ['nullable', 'string', 'max:240', 'regex:~^/[A-Za-z0-9/_-]*$~'],
+            ...\App\Services\SupportAttachmentService::rules(),
         ]);
-        $ticket = $this->tickets->create($request->user(), $data);
+        $ticket = app(\App\Services\SupportAttachmentService::class)->submit($request, $data, fn ($prepared) => $this->tickets->create($request->user(), $prepared));
 
         return response()->json(['data' => $this->tickets->payload($ticket, $request->user()),
             'message' => 'Request saved. The support team can see it in their dashboard.'], 201);
@@ -88,10 +90,40 @@ class SupportTicketController extends Controller
         $data = $request->validate([
             'request_key' => ['required', 'uuid'], 'body' => ['required', 'string', 'min:1', 'max:8000'],
             'internal' => ['sometimes', 'boolean'],
+            ...\App\Services\SupportAttachmentService::rules(),
         ]);
-        $item = $this->tickets->reply($request->user(), $ticket, $data);
+        $item = app(\App\Services\SupportAttachmentService::class)->submit($request, $data, fn ($prepared) => $this->tickets->reply($request->user(), $ticket, $prepared));
 
         return response()->json(['data' => $this->tickets->payload($item, $request->user())]);
+    }
+
+    public function legacyMessage(Request $request, int $message)
+    {
+        $source = \App\Models\SupportTicketMessage::where('source_message_id', $message)->firstOrFail();
+        $ticket = $this->tickets->find($request->user(), $source->support_ticket_id);
+        abort_if($source->internal && ! $this->tickets->canManage($request->user()), 404);
+
+        return response()->json(['support_ticket_id' => $ticket->id, 'redirect_url' => '/messaging/email/inbox?tab=support&ticket='.$ticket->id]);
+    }
+
+    public function attachment(Request $request, int $ticket, int $message, int $index)
+    {
+        $item = $this->tickets->find($request->user(), $ticket);
+        $entry = $item->messages()->whereKey($message)
+            ->when(! $this->tickets->canManage($request->user()), fn ($q) => $q->where('internal', false))->firstOrFail();
+        $file = ($entry->attachments_json ?? [])[$index] ?? null;
+        abort_unless(is_array($file), 404);
+        $path = $file['storage_path'] ?? '';
+        $disk = $file['disk'] ?? 'local';
+        // Never resolve arbitrary URLs, absolute paths, traversal or another private namespace.
+        abort_unless(is_string($path) && preg_match('~^(?:support|messaging)-attachments/[A-Za-z0-9/_.-]+$~D', $path)
+            && ! str_contains($path, '..') && is_string($disk) && config('filesystems.disks.'.$disk), 404);
+        $storage = \Illuminate\Support\Facades\Storage::disk($disk);
+        abort_unless($storage->exists($path), 404, 'This saved attachment is no longer available.');
+
+        return $storage->download($path, basename(str_replace('\\', '/', (string) ($file['name'] ?? 'Attachment'))), [
+            'Content-Type' => 'application/octet-stream', 'X-Content-Type-Options' => 'nosniff', 'Cache-Control' => 'private, no-store',
+        ]);
     }
 
     public function update(Request $request, int $ticket)

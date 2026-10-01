@@ -39,6 +39,7 @@ class MessagingOverviewController extends Controller
         $activeAutomations = AutomationRule::where('is_active', true)->count();
 
         $recentActivity = Message::with(['thread.contact', 'template', 'channelConfig'])
+            ->whereNotIn('messages.id', \App\Models\SupportTicketMessage::whereNotNull('source_message_id')->select('source_message_id'))
             ->orderByDesc('created_at')
             ->limit(10)
             ->get();

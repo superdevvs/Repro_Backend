@@ -114,7 +114,7 @@ class SupportTicketTest extends TestCase
         $this->assertCount(1, $service->notifications($admin));
         $this->assertCount(0, $service->notifications($other));
         $this->actingAs($user, 'sanctum')->getJson('/api/notifications')->assertOk()
-            ->assertJsonFragment(['actionUrl' => '/support?ticket='.$ticket->id]);
+            ->assertJsonFragment(['actionUrl' => '/messaging/email/inbox?tab=support&ticket='.$ticket->id]);
     }
 
     public function test_search_treats_wildcards_literally_and_inactive_administrators_cannot_be_assigned(): void
