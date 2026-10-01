@@ -324,13 +324,14 @@ class PhotographerAvailabilityService
      * 
      * @param int $photographerId
      * @param Carbon $datetime Requested date and time (in UTC or user timezone)
-     * @param int|null $durationMinutes Duration of the requested slot in minutes (default: 120)
+     * @param int|null $durationMinutes Requested slot duration; null uses the configured default.
      * @param int|null $excludeShootId Shoot ID to exclude from conflict check (for updates)
      * @param string|null $userTimezone User's timezone (defaults to photographer's timezone or system default)
      * @return bool
      */
-    public function isAvailable(int $photographerId, Carbon $datetime, ?int $durationMinutes = 120, ?int $excludeShootId = null, ?string $userTimezone = null): bool
+    public function isAvailable(int $photographerId, Carbon $datetime, ?int $durationMinutes = null, ?int $excludeShootId = null, ?string $userTimezone = null): bool
     {
+        $durationMinutes ??= app(\App\Services\Shoots\ShootDurationResolver::class)->defaultMinutes();
         // Use local time for comparison since availability slots are stored in local time
         // Do NOT convert to UTC - this was causing timezone mismatch issues
         $datetimeLocal = $datetime->copy();
@@ -403,14 +404,14 @@ class PhotographerAvailabilityService
         $requestStart = $timezone
             ? $this->resolveRequestInstant($datetimeLocal, $timezone)
             : $datetimeLocal->copy()->utc();
-        $requestEnd = $requestStart->copy()->addMinutes((int) ($durationMinutes ?? 120));
+        $requestEnd = $requestStart->copy()->addMinutes($durationMinutes);
         $bufferMinutes = (int) config('availability.buffer_time_minutes', 30);
         if ($timezone) {
             $localRequest = $requestStart->copy()->setTimezone($this->validTimezoneOrUtc($timezone));
             $date = $localRequest->copy()->startOfDay();
             $time = $localRequest->format('H:i');
             $dayOfWeek = strtolower($localRequest->format('l'));
-            $requestEndTime = $localRequest->copy()->addMinutes((int) ($durationMinutes ?? 120));
+            $requestEndTime = $localRequest->copy()->addMinutes($durationMinutes);
             $datetimeLocal = $localRequest;
         }
 
@@ -572,28 +573,19 @@ class PhotographerAvailabilityService
 
     /**
      * Availability booked-block / conflict duration in minutes.
-     * Always the configured default (2h / 120); never stretched from services.
+     * Uses the same appointment duration as booking and calendar events.
      *
      * @param Shoot $shoot
      * @return int Duration in minutes
      */
     protected function calculateShootDuration(Shoot $shoot): int
     {
-        // Product rule: availability booked blocks / conflict windows are always
-        // the configured default (2h / 120). Do not stretch from service durations
-        // up to max_shoot_duration_minutes.
-        return (int) config('availability.default_shoot_duration_minutes', 120);
+        return app(\App\Services\Shoots\ShootDurationResolver::class)->forShoot($shoot);
     }
 
     protected function calculateServiceItemDuration(ShootService $item): int
     {
-        $defaultDurationMinutes = config('availability.default_shoot_duration_minutes', 120);
-        $service = $item->relationLoaded('service') ? $item->service : $item->service()->first();
-        if (!$service || !method_exists($service, 'getShootDurationMinutes')) {
-            return $defaultDurationMinutes;
-        }
-
-        return $service->getShootDurationMinutes();
+        return app(\App\Services\Shoots\ShootDurationResolver::class)->forServiceItem($item);
     }
 
     /**
@@ -636,7 +628,7 @@ class PhotographerAvailabilityService
         bool $skipConflictCheck = false,
         ?string $timezone = null
     ): void {
-        $durationMinutes = $durationMinutes ?? (int) config('availability.default_shoot_duration_minutes', 120);
+        $durationMinutes ??= app(\App\Services\Shoots\ShootDurationResolver::class)->defaultMinutes();
 
         // Availability slots are local clocks. Only project into an EXPLICIT booking
         // timezone (request/shoot). Do not invent one from the photographer profile.

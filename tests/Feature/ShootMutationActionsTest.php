@@ -122,6 +122,47 @@ class ShootMutationActionsTest extends TestCase
         });
     }
 
+    public function test_booking_snapshots_default_and_requested_service_durations(): void
+    {
+        config(['availability.default_shoot_duration_minutes' => 60]);
+        Sanctum::actingAs($this->client);
+        foreach ([null => 60, 30 => 30, 90 => 90] as $submitted => $expected) {
+            $line = ['id' => $this->service->id, 'quantity' => 1];
+            if ($submitted !== '') {
+                $line['duration_minutes'] = $submitted;
+            }
+            $response = $this->postJson('/api/shoots', [
+                'address' => '123 Duration St', 'city' => 'Washington', 'state' => 'DC', 'zip' => '20001',
+                'services' => [$line],
+            ])->assertCreated();
+            $shoot = Shoot::findOrFail($response->json('data.id'));
+            $this->assertSame($expected, $shoot->serviceItems()->sole()->duration_minutes);
+        }
+    }
+
+    public function test_service_duration_edits_persist_and_omitted_edits_preserve_the_snapshot(): void
+    {
+        Sanctum::actingAs($this->admin);
+        $shoot = Shoot::factory()->create([
+            'client_id' => $this->client->id, 'photographer_id' => null,
+            'scheduled_at' => null, 'scheduled_date' => null, 'time' => null,
+            'status' => Shoot::STATUS_ON_HOLD, 'workflow_status' => Shoot::STATUS_ON_HOLD,
+        ]);
+        $shoot->services()->attach($this->service->id, ['price' => 150, 'quantity' => 1, 'duration_minutes' => 90]);
+        $endpoint = '/api/shoots/'.$shoot->id;
+        $this->patchJson($endpoint, ['service_items' => [['service_id' => $this->service->id, 'duration_minutes' => 30]]])->assertOk();
+        $this->assertSame(30, $shoot->serviceItems()->sole()->duration_minutes);
+        $this->patchJson($endpoint, ['services' => [['id' => $this->service->id]]])->assertOk();
+        $this->assertSame(30, $shoot->serviceItems()->sole()->duration_minutes);
+        $this->patchJson($endpoint, ['services' => [['id' => $this->service->id, 'duration_minutes' => 90]]])->assertOk();
+        $this->assertSame(90, $shoot->serviceItems()->sole()->duration_minutes);
+        foreach ([29, 241, 'invalid'] as $minutes) {
+            $this->patchJson($endpoint, ['service_items' => [['service_id' => $this->service->id, 'duration_minutes' => $minutes]]])
+                ->assertUnprocessable()->assertJsonValidationErrors('service_items.0.duration_minutes');
+        }
+        $this->assertSame(90, $shoot->serviceItems()->sole()->duration_minutes);
+    }
+
     #[\PHPUnit\Framework\Attributes\Test]
     public function admin_booking_is_rejected_when_selected_client_has_no_primary_email(): void
     {

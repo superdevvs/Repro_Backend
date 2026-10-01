@@ -17,8 +17,8 @@ class Service extends Model
     public function getBookingDurationDefaultsAttribute(): array
     {
         return [
-            'default_minutes' => (int) config('availability.default_shoot_duration_minutes', 120),
-            'min_minutes' => (int) config('availability.min_shoot_duration_minutes', 60),
+            'default_minutes' => (int) config('availability.default_shoot_duration_minutes', 60),
+            'min_minutes' => (int) config('availability.min_shoot_duration_minutes', 30),
             'max_minutes' => (int) config('availability.max_shoot_duration_minutes', 240),
         ];
     }
@@ -356,8 +356,8 @@ class Service extends Model
      */
     public function getShootDurationMinutes(?int $sqft = null): int
     {
-        $defaultDurationMinutes = config('availability.default_shoot_duration_minutes', 120);
-        $minDurationMinutes = config('availability.min_shoot_duration_minutes', 60);
+        $defaultDurationMinutes = config('availability.default_shoot_duration_minutes', 60);
+        $minDurationMinutes = config('availability.min_shoot_duration_minutes', 30);
         $maxDurationMinutes = config('availability.max_shoot_duration_minutes', 240);
 
         $explicitDuration = $this->getAttribute('shoot_duration_minutes')

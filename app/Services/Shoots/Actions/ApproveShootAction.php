@@ -115,7 +115,7 @@ class ApproveShootAction
         }
         if (! $skipAvailabilityCheck) {
             if (! empty($targetPhotographerId) && ! $isMultiUnit) {
-                $durationMinutes = $this->support->calculateShootDurationFromServices($targetServices);
+                $durationMinutes = $this->support->calculateShootDurationFromServices($targetServices, $shoot->propertySqft(), $scheduledAt, null, (int) $targetPhotographerId);
                 $this->support->checkPhotographerAvailability((int) $targetPhotographerId, $scheduledAt, $durationMinutes, $shoot->id);
             }
 

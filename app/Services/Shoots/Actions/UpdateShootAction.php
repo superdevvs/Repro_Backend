@@ -457,7 +457,7 @@ class UpdateShootAction
                 $this->support->assertWithinAvailabilityBounds(
                     (int) $targetPhotographerId,
                     $targetScheduledAt,
-                    $this->support->calculateShootDurationFromServices($targetServices),
+                    $this->support->calculateShootDurationFromServices($targetServices, $shoot->propertySqft(), $targetScheduledAt, $assertTimezone, (int) $targetPhotographerId),
                     $shoot->id,
                     $skipConflictCheck,
                     $assertTimezone

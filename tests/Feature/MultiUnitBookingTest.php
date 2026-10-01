@@ -50,6 +50,29 @@ class MultiUnitBookingTest extends TestCase
         ];
     }
 
+    public function test_unit_service_duration_is_editable_and_omission_preserves_the_booked_length(): void
+    {
+        config(['availability.default_shoot_duration_minutes' => 60]);
+        $payload = $this->payload(1);
+        $payload['service_lines'][0]['duration_minutes'] = 30;
+        $this->persist($payload);
+        $this->assertSame(30, $this->shoot->serviceItems()->sole()->duration_minutes);
+
+        $edit = $this->existingPayload();
+        $edit['service_lines'][0]['duration_minutes'] = 90;
+        $endpoint = '/api/shoots/'.$this->shoot->id;
+        $this->patchJson($endpoint, $edit)->assertOk();
+        $this->shoot->refresh();
+        $this->assertSame(90, $this->shoot->serviceItems()->sole()->duration_minutes);
+        $this->patchJson($endpoint, $this->existingPayload())->assertOk();
+        $this->shoot->refresh();
+        $this->assertSame(90, $this->shoot->serviceItems()->sole()->duration_minutes);
+        $edit = $this->existingPayload();
+        $edit['service_lines'][0]['duration_minutes'] = 241;
+        $this->patchJson($endpoint, $edit)->assertUnprocessable()->assertJsonValidationErrors('service_lines.0.duration_minutes');
+        $this->assertSame(90, $this->shoot->serviceItems()->sole()->duration_minutes);
+    }
+
     private function persist(array $payload): void
     {
         $service = app(MultiUnitBookingService::class);

@@ -243,7 +243,7 @@ class ShootMutationSupportService
     public function checkPhotographerAvailability(
         int $photographerId,
         \DateTime $scheduledAt,
-        ?int $durationMinutes = 120,
+        ?int $durationMinutes = null,
         ?int $excludeShootId = null,
         ?string $timezone = null
     ): void {
@@ -271,7 +271,7 @@ class ShootMutationSupportService
     public function assertWithinAvailabilityBounds(
         int $photographerId,
         \DateTime $scheduledAt,
-        ?int $durationMinutes = 120,
+        ?int $durationMinutes = null,
         ?int $excludeShootId = null,
         bool $skipConflictCheck = false,
         ?string $timezone = null
@@ -403,30 +403,19 @@ class ShootMutationSupportService
         }
     }
 
-    public function calculateShootDurationFromServices(array $services): int
+    public function calculateShootDurationFromServices(array $services, ?int $sqft = null, ?\DateTimeInterface $appointmentStart = null, ?string $timezone = null, ?int $photographerId = null): int
     {
-        // Product rule: scheduling conflict windows match availability calendar
-        // booked blocks — always the configured default (2h / 120). Do not stretch
-        // from per-service getShootDurationMinutes up to max_shoot_duration_minutes.
-        return (int) config('availability.default_shoot_duration_minutes', 120);
+        return app(ShootDurationResolver::class)->forServices($services, $sqft, $appointmentStart, $timezone, $photographerId);
     }
 
     public function calculateServiceItemDuration(?Service $service): int
     {
-        $defaultDurationMinutes = config('availability.default_shoot_duration_minutes', 120);
-        if (!$service || !method_exists($service, 'getShootDurationMinutes')) {
-            return $defaultDurationMinutes;
-        }
-
-        return $service->getShootDurationMinutes();
+        return app(ShootDurationResolver::class)->forService($service);
     }
 
-    public function calculateShootDurationFromShoot(Shoot $shoot): int
+    public function calculateShootDurationFromShoot(Shoot $shoot, ?int $photographerId = null): int
     {
-        // Product rule: booked window / Google Calendar event length matches
-        // availability calendar — always the configured default (2h / 120).
-        // Do not stretch from per-service getShootDurationMinutes.
-        return (int) config('availability.default_shoot_duration_minutes', 120);
+        return app(ShootDurationResolver::class)->forShoot($shoot, $photographerId);
     }
 
     public function attachServices(Shoot $shoot, array $services): void
@@ -505,6 +494,8 @@ class ShootMutationSupportService
                             ?? 0)
                         : ($currentItem?->nominal_value_snapshot),
                     'quantity' => $service['quantity'] ?? $currentItem?->quantity ?? 1,
+                    'duration_minutes' => $service['duration_minutes'] ?? $currentItem?->duration_minutes
+                        ?? app(ShootDurationResolver::class)->forService($serviceModel, $shoot->propertySqft()),
                     'photographer_pay' => $service['photographer_pay'] ?? $currentItem?->photographer_pay,
                     'photographer_id' => ($serviceModel && ! $serviceModel->requiresPhotographer())
                         ? null
@@ -611,6 +602,7 @@ class ShootMutationSupportService
                 ]);
 
                 foreach ([
+                    'duration_minutes',
                     'photographer_id',
                     'editor_id',
                     'workflow_status',
@@ -645,6 +637,7 @@ class ShootMutationSupportService
                 'id' => $serviceId,
                 'price' => $item['price'] ?? $service['price'] ?? null,
                 'quantity' => $item['quantity'] ?? $service['quantity'] ?? null,
+                'duration_minutes' => $item['duration_minutes'] ?? $service['duration_minutes'] ?? null,
                 'photographer_id' => array_key_exists('photographer_id', $item)
                     ? $item['photographer_id']
                     : ($service['photographer_id'] ?? $photographerAssignment['photographer_id'] ?? null),

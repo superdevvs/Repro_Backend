@@ -10,9 +10,13 @@ use Illuminate\Validation\ValidationException;
 
 class MultiUnitRescheduleService
 {
-    public function apply(Shoot $shoot, ShootRescheduleRequest $request, User $actor): void
+    public function apply(Shoot $shoot, ShootRescheduleRequest $request, User $actor, array $durationChanges = []): void
     {
         $lines = $shoot->serviceItems()->get();
+        $durations = collect($durationChanges)->keyBy('shoot_service_id');
+        if ($durations->keys()->diff($lines->pluck('id'))->isNotEmpty()) {
+            throw ValidationException::withMessages(['service_lines' => ['A duration can only be changed for a service line on this shoot.']]);
+        }
         $anchor = $shoot->scheduled_at ?? $lines->whereNotNull('scheduled_at')->sortBy('scheduled_at')->first()?->scheduled_at;
         if (! $anchor) {
             throw ValidationException::withMessages(['service_lines' => ['Assign the initial unit service schedules before moving the booking.']]);
@@ -38,11 +42,12 @@ class MultiUnitRescheduleService
             'scheduled_at' => $resolved['scheduled_at'],
             'scheduled_date' => $resolved['scheduled_date'],
             'time' => $resolved['time'],
-            'service_lines' => $lines->map(function ($line) use ($seconds, $hasTimezone, $timezone) {
+            'service_lines' => $lines->map(function ($line) use ($seconds, $hasTimezone, $timezone, $durations) {
                 $scheduled = $line->scheduled_at?->copy()->addSeconds($seconds);
 
                 return [
                     'shoot_service_id' => $line->id, 'client_key' => $line->client_key,
+                    'duration_minutes' => $durations->get($line->id)['duration_minutes'] ?? $line->duration_minutes,
                     'shoot_unit_id' => $line->shoot_unit_id, 'service_id' => $line->service_id,
                     'scheduled_at' => $scheduled ? ($hasTimezone ? $scheduled->setTimezone($timezone)->toIso8601String() : $scheduled->format('Y-m-d H:i:s')) : null,
                 ];

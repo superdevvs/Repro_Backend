@@ -42,6 +42,7 @@ class ShootEditablePayloadService
             'services.*.photographer_id' => 'nullable|integer|exists:users,id',
             'services.*.editor_id' => 'nullable|integer|exists:users,id',
             'services.*.scheduled_at' => 'nullable|date',
+            'services.*.duration_minutes' => 'nullable|integer|min:30|max:240',
             'services.*.is_deliverable' => 'nullable|boolean',
             'service_items' => 'nullable|array',
             'service_items.*.service_id' => 'required_with:service_items|integer|distinct|exists:services,id',
@@ -50,6 +51,7 @@ class ShootEditablePayloadService
             'service_items.*.photographer_id' => 'nullable|integer|exists:users,id',
             'service_items.*.editor_id' => 'nullable|integer|exists:users,id',
             'service_items.*.scheduled_at' => 'nullable|date',
+            'service_items.*.duration_minutes' => 'nullable|integer|min:30|max:240',
             'service_items.*.is_deliverable' => 'nullable|boolean',
             'service_items.*.workflow_status' => ['nullable', Rule::in(['pending', 'scheduled', 'in_progress', 'ready', 'delivered', 'cancelled'])],
             'service_items.*.delivery_status' => ['nullable', Rule::in(['not_started', 'ready', 'delivered', 'cancelled'])],
@@ -738,6 +740,7 @@ class ShootEditablePayloadService
                 'photographer_id' => $service->pivot?->photographer_id,
                 'editor_id' => $service->pivot?->editor_id,
                 'scheduled_at' => $service->pivot?->scheduled_at,
+                'duration_minutes' => $service->pivot?->duration_minutes,
                 'workflow_status' => $service->pivot?->workflow_status,
                 'delivery_status' => $service->pivot?->delivery_status,
                 'is_deliverable' => $service->pivot?->is_deliverable,
@@ -782,6 +785,9 @@ class ShootEditablePayloadService
             $currentItem = $currentItems->get($serviceId);
             $serviceModel = $serviceModels->get($serviceId);
             $submittedPrice = $service['price'] ?? null;
+            $service['duration_minutes'] = $service['duration_minutes']
+                ?? $currentItem?->duration_minutes
+                ?? app(ShootDurationResolver::class)->forService($serviceModel, $sqft);
 
             if (! $canOverrideLinePrice || $submittedPrice === null) {
                 $service['price'] = $currentItem?->price
