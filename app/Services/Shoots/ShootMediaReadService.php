@@ -87,6 +87,9 @@ class ShootMediaReadService
         $this->authorizationSupport->ensureShootAccess($shoot, $request->user());
         $type = strtolower((string) $request->query('type', ''));
         $user = $request->user();
+        if ($user?->role === 'editor') {
+            $shoot->loadMissing(['services.category', 'serviceItems.service']);
+        }
         if ($type === 'raw' && $this->authorizationSupport->isClientUser($user)) {
             return ['data' => [], 'count' => 0];
         }
@@ -166,6 +169,7 @@ class ShootMediaReadService
         $allowSyncPreviewGeneration = false;
 
         $formattedFiles = $files->map(function (ShootFile $file) use ($shoot, $user, $mediaUrls, $needsWatermark, $allowSyncPreviewGeneration) {
+            $file->setRelation('shoot', $shoot);
             $fileNeedsWatermark = $needsWatermark
                 && $this->shootClientReleaseAccessService->isFileReleaseLocked($shoot, $file, $user);
 
@@ -298,6 +302,7 @@ class ShootMediaReadService
 
     protected function getEditorScopedMediaPayload(Shoot $shoot, string $type, User $user): array
     {
+        $shoot->loadMissing(['services.category', 'serviceItems.service']);
         $normalizedType = strtolower($type);
         $filesQuery = $shoot->files()->orderBy('sort_order', 'asc')->orderBy('created_at', 'desc');
 
@@ -327,7 +332,8 @@ class ShootMediaReadService
 
         $mediaUrls = $this->resolveMediaUrls($files);
 
-        return $files->map(function (ShootFile $file) use ($mediaUrls) {
+        return $files->map(function (ShootFile $file) use ($mediaUrls, $shoot) {
+            $file->setRelation('shoot', $shoot);
             return $this->formatFileSafely($file, $mediaUrls, false);
         })->values()->all();
     }
@@ -367,7 +373,7 @@ class ShootMediaReadService
     protected function formatFileSafely(ShootFile $file, array $mediaUrls, bool $needsWatermark, bool $allowSyncPreviewGeneration = true): array
     {
         try {
-            return $this->formatFile($file, $mediaUrls, $needsWatermark, $allowSyncPreviewGeneration);
+            $data = $this->formatFile($file, $mediaUrls, $needsWatermark, $allowSyncPreviewGeneration);
         } catch (\Throwable $exception) {
             $correlationId = (string) Str::uuid();
             Log::warning('Media file could not be fully formatted.', [
@@ -377,7 +383,7 @@ class ShootMediaReadService
                 'exception' => $exception::class,
             ]);
 
-            return [
+            $data = [
                 'id' => $file->id,
                 'shoot_id' => $file->shoot_id,
                 'shoot_service_id' => $file->shoot_service_id,
@@ -395,6 +401,13 @@ class ShootMediaReadService
                 'correlation_id' => $correlationId,
             ];
         }
+
+        if (auth()->user()?->role === 'editor') {
+            $data['can_delete'] = $file->shoot
+                && app(ShootMediaDeletionPolicy::class)->allows($file->shoot, $file, auth()->user());
+        }
+
+        return $data;
     }
 
     protected function filterFilesForPhotographer(Collection $files, Shoot $shoot, User $user): Collection

@@ -5,12 +5,46 @@ namespace App\Services\Shoots;
 use App\Models\AccountLink;
 use App\Models\Shoot;
 use App\Models\ShootFile;
+use App\Models\ShootUnit;
+use App\Models\Service;
 use App\Models\User;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Str;
 
 class ShootAuthorizationSupport
 {
+    public const VIDEO_TOUR_LINK_KEYS = [
+        'video_link', 'video_branded', 'video_mls', 'video_generic',
+        'embeds', 'featured_embed_id', 'featured_embed',
+    ];
+
+    public function canEditVideoTourLinks(Shoot $shoot, ?User $user, ?ShootUnit $unit = null): bool
+    {
+        if (! $this->hasRole($user, ['editor']) || ! $this->canViewShootDetails($shoot, $user)) {
+            return false;
+        }
+
+        $shoot->loadMissing('serviceItems.service');
+        $items = $unit ? $shoot->serviceItems->where('shoot_unit_id', $unit->id) : $shoot->serviceItems;
+        if ($items->contains(function ($item) use ($user) {
+            $intake = $item->service?->uploadIntakeType();
+
+            return ($intake === Service::INTAKE_PHOTO_VIDEO && (string) $item->video_editor_id === (string) $user->id)
+                || ((string) $item->editor_id === (string) $user->id
+                    && (! $item->video_editor_id || (string) $item->video_editor_id === (string) $user->id)
+                    && ($intake === Service::INTAKE_VIDEO || $user->canEditLane('video')));
+        })) {
+            return true;
+        }
+
+        if (! $user->canEditLane('video')) {
+            return false;
+        }
+        return (string) $shoot->editor_id === (string) $user->id
+            && (! $unit || $items->isNotEmpty())
+            && $items->every(fn ($item) => ! $item->editor_id && ! $item->video_editor_id);
+    }
+
     private const CLIENT_DELIVERED_STATUSES = [
         Shoot::STATUS_DELIVERED,
         'ready_for_client',

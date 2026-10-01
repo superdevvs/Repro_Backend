@@ -155,7 +155,7 @@ class ShootEditingAssignmentService
         }
 
         if ($file->shoot_service_id) {
-            $serviceItem = $shoot->serviceItems()
+            $serviceItem = $shoot->relationLoaded('serviceItems') ? $shoot->serviceItems->find($file->shoot_service_id) : $shoot->serviceItems()
                 ->whereKey($file->shoot_service_id)
                 ->first();
 
