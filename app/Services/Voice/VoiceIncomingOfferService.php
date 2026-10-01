@@ -247,9 +247,11 @@ class VoiceIncomingOfferService
             if (! empty($result['call_control_id'])) {
                 $phone->update(['call_control_id' => $result['call_control_id']]);
             }
-            // The shared winner may have changed while the provider was responding.
-            if (! $phone->fresh()->accepted_at && ($offer->fresh()->status !== 'waiting' || $offer->expires_at->isPast() || ! $this->live($offer->voiceCall->fresh()))) {
-                $this->cancelPhone($phone->fresh());
+            // Cancellation can arrive before the carrier returns its new call ID.
+            $phone->refresh();
+            if (! $phone->accepted_at && (in_array($phone->state, ['cancel_requested', 'cancelled'], true)
+                || $offer->fresh()->status !== 'waiting' || $offer->expires_at->isPast() || ! $this->live($offer->voiceCall->fresh()))) {
+                $this->cancelPhone($phone);
             }
         });
     }
