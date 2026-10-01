@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\PhotographerAvailability;
 use App\Models\ServiceArea;
+use App\Models\Service;
 use App\Models\Shoot;
 use App\Models\User;
 use App\Services\AddressLookupService;
@@ -65,6 +66,8 @@ class BookingAvailabilityPrivacyTest extends TestCase
         $this->assertArrayNotHasKey('previous_shoot_id', $data);
         $this->assertArrayNotHasKey('shoot_id', $data['booked_slots'][0]);
         $this->assertArrayNotHasKey('address', $data['booked_slots'][0]);
+        $this->assertArrayNotHasKey('client_name', $data['booked_slots'][0]);
+        $this->assertArrayNotHasKey('services', $data['booked_slots'][0]);
         $this->assertArrayNotHasKey('city', $data['booked_slots'][0]);
         $this->assertArrayNotHasKey('state', $data['booked_slots'][0]);
         $this->assertArrayNotHasKey('zip', $data['booked_slots'][0]);
@@ -95,6 +98,8 @@ class BookingAvailabilityPrivacyTest extends TestCase
         $this->assertStringNotContainsString('Arlington', (string) $encoded);
         $this->assertStringNotContainsString('22201', (string) $encoded);
         $this->assertStringNotContainsString('Northern Virginia', (string) $encoded);
+        $this->assertArrayNotHasKey('client_name', $data['booked_slots'][0]);
+        $this->assertArrayNotHasKey('services', $data['booked_slots'][0]);
     }
 
     #[\PHPUnit\Framework\Attributes\Test]
@@ -120,6 +125,58 @@ class BookingAvailabilityPrivacyTest extends TestCase
         $this->assertSame($previousShoot->id, $data['previous_shoot_id']);
         $this->assertSame($previousShoot->id, $data['booked_slots'][0]['shoot_id']);
         $this->assertSame('12 Previous Client Street', $data['booked_slots'][0]['address']);
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
+    public function booked_overlay_details_match_the_saved_service_window_in_both_staff_apis(): void
+    {
+        config(['availability.default_shoot_duration_minutes' => 60]);
+        $shoot = $this->createPreviousShoot();
+        $shoot->client->update(['name' => 'Overlay Client']);
+        $service = Service::factory()->create(['name' => 'Exterior photos']);
+        $shoot->services()->attach($service->id, ['price' => 100, 'quantity' => 1, 'duration_minutes' => 90]);
+        Sanctum::actingAs(User::factory()->admin()->create());
+
+        $booking = $this->postJson('/api/photographer/availability/for-booking', $this->payload())->assertOk()->json('data.0.booked_slots.0');
+        $check = collect($this->postJson('/api/photographer/availability/check', ['photographer_id' => $this->photographer->id, 'date' => '2026-09-15'])->assertOk()->json('data'))
+            ->firstWhere('status', 'booked');
+        foreach ([$booking, $check] as $slot) {
+            $this->assertSame('Overlay Client', $slot['client_name']);
+            $this->assertSame('12 Previous Client Street', $slot['address']);
+            $this->assertSame('Exterior photos', $slot['services'][0]['name']);
+            $this->assertSame('09:00', $slot['start_time']);
+            $this->assertSame('10:30', $slot['end_time']);
+        }
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
+    public function availability_suggestion_requires_the_entire_selected_duration_to_fit(): void
+    {
+        Sanctum::actingAs(User::factory()->admin()->create());
+        foreach ([[30, true], [60, true], [90, false]] as [$minutes, $expected]) {
+            $data = $this->postJson('/api/photographer/availability/for-booking', [
+                ...$this->payload(), 'time' => '17:00', 'duration_minutes' => $minutes,
+            ])->assertOk()->json('data.0');
+            $this->assertSame($expected, $data['is_available_at_time']);
+        }
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
+    public function separately_assigned_service_visit_exposes_details_only_to_staff(): void
+    {
+        $shoot = $this->createPreviousShoot();
+        $shoot->update(['photographer_id' => User::factory()->photographer()->create()->id]);
+        $service = Service::factory()->create(['name' => 'Drone photos']);
+        $shoot->services()->attach($service->id, ['price' => 100, 'quantity' => 1, 'duration_minutes' => 30, 'scheduled_at' => '2026-09-15 11:00:00', 'photographer_id' => $this->photographer->id, 'workflow_status' => 'scheduled']);
+        Sanctum::actingAs(User::factory()->admin()->create());
+        $slot = $this->postJson('/api/photographer/availability/for-booking', $this->payload())->assertOk()->json('data.0.booked_slots.0');
+        $this->assertSame('Drone photos', $slot['services'][0]['name']);
+        $this->assertSame('11:00', $slot['start_time']);
+        $this->assertSame('11:30', $slot['end_time']);
+        Sanctum::actingAs(User::factory()->create(['role' => 'client']));
+        $slot = $this->postJson('/api/photographer/availability/for-booking', $this->payload())->assertOk()->json('data.0.booked_slots.0');
+        foreach (['shoot_id', 'client_name', 'address', 'services'] as $field) $this->assertArrayNotHasKey($field, $slot);
+        $this->assertSame('11:30', $slot['end_time']);
     }
 
     #[\PHPUnit\Framework\Attributes\Test]

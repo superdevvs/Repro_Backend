@@ -5,6 +5,7 @@ namespace App\Services\GoogleCalendar;
 use App\Models\Shoot;
 use App\Models\ShootService;
 use App\Models\User;
+use App\Services\Shoots\ShootDurationResolver;
 use App\Services\Shoots\ShootMutationSupportService;
 use Carbon\Carbon;
 use RuntimeException;
@@ -45,11 +46,9 @@ class GoogleCalendarEventPayloadBuilder
     {
         $shoot->loadMissing('services', 'serviceItems.service', 'serviceItems.unit', 'client', 'rep', 'units');
 
-        $scheduledAt = $shoot->scheduled_at ?: $shoot->serviceItems
-            ->pluck('scheduled_at')
-            ->filter()
-            ->sortBy(fn ($value) => $value->getTimestamp())
-            ->first();
+        $durations = app(ShootDurationResolver::class);
+        $photographerId = $durations->photographerIdForCalendar($shoot, $user?->id);
+        $scheduledAt = $durations->scheduledAtForShoot($shoot, $photographerId);
 
         if (!$scheduledAt) {
             throw new RuntimeException('Scheduled shoots are required for Google Calendar sync.');
@@ -57,10 +56,9 @@ class GoogleCalendarEventPayloadBuilder
 
         $timezone = $this->calendarTimezone($shoot, $user);
         $start = $this->calendarStart($shoot, $scheduledAt, $timezone);
-        // Req 4.1: end = start + booked-window duration. calculateShootDurationFromShoot()
-        // always returns availability.default_shoot_duration_minutes (120 / 2h) so calendar
-        // events match availability booked blocks and do not stretch toward max (240).
-        $end = $start->copy()->addMinutes($this->support->calculateShootDurationFromShoot($shoot));
+        // Share the appointment window with booking checks: default 60 minutes,
+        // retaining longer booked service durations and same-day scheduled visits.
+        $end = $start->copy()->addMinutes($this->support->calculateShootDurationFromShoot($shoot, $photographerId));
 
         return array_filter([
             'summary' => $this->buildTitle($shoot),
@@ -501,15 +499,7 @@ class GoogleCalendarEventPayloadBuilder
 
     protected function calculateServiceItemDuration(ShootService $serviceItem): int
     {
-        if ($serviceItem->duration_minutes) return (int) $serviceItem->duration_minutes;
-        $defaultDurationMinutes = config('availability.default_shoot_duration_minutes', 120);
-        $service = $serviceItem->relationLoaded('service') ? $serviceItem->service : $serviceItem->service()->first();
-
-        if (!$service || !method_exists($service, 'getShootDurationMinutes')) {
-            return $defaultDurationMinutes;
-        }
-
-        return $service->getShootDurationMinutes($serviceItem->unit?->sqft);
+        return app(ShootDurationResolver::class)->forServiceItem($serviceItem);
     }
 
 

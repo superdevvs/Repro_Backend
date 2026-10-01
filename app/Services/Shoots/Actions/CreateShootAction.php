@@ -62,6 +62,11 @@ class CreateShootAction
                 $scheduledAt
             );
             if (! $unitBooking) {
+                $propertyDetails = $validated['property_details'] ?? [];
+                $sqft = $propertyDetails['sqft'] ?? $propertyDetails['squareFeet'] ?? $propertyDetails['square_feet'] ?? null;
+                $servicesPayload = app(\App\Services\Shoots\ShootDurationResolver::class)->withDurations(
+                    $servicesPayload, is_numeric($sqft) ? (int) $sqft : null
+                );
                 $this->support->assertNewServiceQuantitiesAllowed($servicesPayload);
             }
             $pricingCalculation = $this->support->buildPricingCalculation(
@@ -140,7 +145,7 @@ class CreateShootAction
                     ->lockForUpdate()
                     ->get();
 
-                $durationMinutes = $this->support->calculateShootDurationFromServices($servicesPayload);
+                $durationMinutes = $this->support->calculateShootDurationFromServices($servicesPayload, null, $scheduledAt, $scheduleTimezone ?: null, (int) $photographerId);
                 // Enforce the same backend-authoritative availability bounds as the update path.
                 $this->support->assertWithinAvailabilityBounds(
                     $photographerId,
