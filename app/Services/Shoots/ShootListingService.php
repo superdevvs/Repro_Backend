@@ -86,7 +86,7 @@ class ShootListingService
                 'date_range', 'scheduled_start', 'scheduled_end',
                 'completed_start', 'completed_end', 'custom_start', 'custom_end',
                 'date_from', 'date_to', 'private_listing', 'listing_scope', 'include_hidden',
-                'bracket', 'missing', 'limit', 'scheduled_status', 'sort',
+                'bracket', 'missing', 'limit', 'scheduled_status', 'sort', 'dashboard_open',
             ]);
             $filterParams = array_filter($filterParams, function ($value) {
                 return $value !== null && $value !== '';
@@ -160,7 +160,9 @@ class ShootListingService
 
             $query = $authorization->scopeAccessibleShootMedia(Shoot::with($eagerLoads), $user);
 
-            $this->applyTabScope($query, $tab, $user);
+            $dashboardOpen = $tab === 'completed' && $request->boolean('dashboard_open')
+                && $authorization->hasRole($user, ['admin', 'superadmin', 'editing_manager', 'editor', 'photographer', 'salesRep']);
+            $this->applyTabScope($query, $tab, $user, $dashboardOpen);
             if ($tab === 'scheduled' && in_array($request->query('scheduled_status'), ['requested', 'scheduled'], true)) {
                 // Apply before pagination so a requested tab cannot be an empty
                 // slice of a page occupied by scheduled shoots.
@@ -421,7 +423,7 @@ class ShootListingService
         Cache::put(self::CACHE_REGISTRY_KEY, $keys, now()->addDay());
     }
 
-    protected function applyTabScope(Builder $query, string $tab, ?User $user = null): void
+    protected function applyTabScope(Builder $query, string $tab, ?User $user = null, bool $dashboardOpen = false): void
     {
         if ($tab === 'featured') {
             $query->where(function (Builder $scope) {
@@ -467,10 +469,20 @@ class ShootListingService
                 'photos_uploaded',
             ]));
 
-            $query->where(function (Builder $scope) use ($statuses, $workflowStatuses, $user) {
-                $scope->where(function (Builder $active) use ($statuses, $workflowStatuses) {
-                    $active->whereIn('status', $statuses)
-                        ->orWhereIn('workflow_status', $workflowStatuses);
+            if ($dashboardOpen) {
+                // Ready is edited work awaiting finalization, although ordinary
+                // history groups it with delivered. Keep that lane paginatable
+                // without pulling the entire delivered history into a dashboard.
+                $workflowStatuses[] = Shoot::STATUS_READY;
+            }
+            $query->where(function (Builder $scope) use ($statuses, $workflowStatuses, $user, $dashboardOpen) {
+                $scope->where(function (Builder $active) use ($statuses, $workflowStatuses, $dashboardOpen) {
+                    if ($dashboardOpen) {
+                        $active->whereIn(DB::raw("LOWER(COALESCE(NULLIF(workflow_status, ''), status, ''))"), $workflowStatuses);
+                    } else {
+                        $active->whereIn('status', $statuses)
+                            ->orWhereIn('workflow_status', $workflowStatuses);
+                    }
                 });
 
                 // Keep incomplete editing-lane work on the editor queue after photos
