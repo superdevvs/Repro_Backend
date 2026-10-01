@@ -10,7 +10,7 @@ use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
-use Illuminate\Queue\Middleware\WithoutOverlapping;
+use App\Jobs\Middleware\StudioWorkspaceLock;
 use Illuminate\Queue\SerializesModels;
 
 class ProcessStudioWorkspace implements ShouldQueue
@@ -32,7 +32,7 @@ class ProcessStudioWorkspace implements ShouldQueue
 
     public function middleware(): array
     {
-        return [(new WithoutOverlapping('studio-workspace:'.$this->workspaceId))->releaseAfter(30)->expireAfter(7260)];
+        return [(new StudioWorkspaceLock('studio-workspace:'.$this->workspaceId))->releaseAfter(30)->expireAfter(7260)];
     }
 
     public function handle(WorkspaceProcessor $processor): void
@@ -51,7 +51,13 @@ class ProcessStudioWorkspace implements ShouldQueue
         }
         try {
             $processor->process($workspace, $this->operationId);
-        } catch (FalTerminalException|StudioClientAccessPaused|\App\Exceptions\StudioProviderException|\App\Exceptions\OpenAiImageException|\App\Services\Studio\Providers\FotelloException $exception) {
+        } catch (\App\Services\Studio\Providers\FotelloException $exception) {
+            if ($exception->retryable && ! $exception->ambiguousOutcome) {
+                throw $exception;
+            }
+            $this->failed($exception);
+            $this->fail($exception);
+        } catch (FalTerminalException|StudioClientAccessPaused|\App\Exceptions\StudioProviderException|\App\Exceptions\OpenAiImageException $exception) {
             // Invalid provider requests and a paused rollout cannot recover on an automatic retry.
             // Persist the friendly failure even when handle() runs without a queue job.
             $this->failed($exception);

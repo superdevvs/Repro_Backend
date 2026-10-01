@@ -46,10 +46,17 @@ class StudioWorkspace extends Model
     public function present(): array
     {
         $generation = $this->generationProgress();
+        $grouped = isset($this->operation['providerState']['full-shoot-groups']) || collect($this->outputs ?? [])->contains(fn ($output) => ! empty($output['sourceMediaIds']));
+        $legacyFullShoot = $this->preset_id === 'full-shoot' && ! $grouped && (
+            ! empty($this->outputs) || collect(array_keys($this->operation['providerState'] ?? []))->contains(fn ($key) => str_starts_with($key, 'photo-listing-'))
+        );
 
         return [
             'shootId' => $this->shoot_id, 'parentWorkspaceId' => $this->parent_workspace_id,
             'id' => $this->id, 'name' => $this->name, 'presetId' => $this->preset_id,
+            'photoGroups' => $this->preset_id === 'full-shoot' && $this->shoot_id && ! $legacyFullShoot
+                ? ($this->operation['providerState']['full-shoot-groups'] ?? app(\App\Services\Studio\FullShootPhotoGroups::class)->forWorkspace($this)) : null,
+            'requiresReview' => $legacyFullShoot,
             'media' => array_map([\App\Services\Studio\WorkspaceMediaService::class, 'withUploadPreview'], $this->media ?? []), 'config' => self::normalizeConfigStrings($this->config ?? []), 'status' => $this->status,
             'progress' => $generation['progress'] ?? $this->progress, 'generation' => $generation ? \Illuminate\Support\Arr::except($generation, ['progress']) : null,
             'error' => $this->error, 'version' => $this->version,
@@ -81,6 +88,9 @@ class StudioWorkspace extends Model
 
     private function generationProgress(): ?array
     {
+        if ($this->status === 'generating' && $this->preset_id === 'full-shoot') {
+            return $this->operation['providerState']['full-shoot-progress'] ?? null;
+        }
         if ($this->status !== 'generating' || ! $this->isVideo() || ($this->operation['type'] ?? null) !== 'generate') {
             return null;
         }

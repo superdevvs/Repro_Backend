@@ -64,7 +64,17 @@ class ShootEditingDispatchService
             foreach ($existing as $workspace) {
                 $this->media->authorize($workspace->media, $user, $workspace->team_id);
             }
-            return ['workspaces' => $existing->map->present()->all(), 'mode' => 'ai'];
+            return LockedWrite::run(fn () => DB::transaction(function () use ($existing, $data) {
+                $workspaces = StudioWorkspace::whereIn('id', $existing->modelKeys())->lockForUpdate()->get();
+                foreach ($workspaces as $workspace) {
+                    if ($data['mode'] === 'ai' && $workspace->status === 'failed' && ($workspace->operation['type'] ?? null) === 'generate') {
+                        $this->photos->assertFullWorkspace($workspace);
+                        $workspace->update(['status' => 'generating', 'error' => null, 'version' => $workspace->version + 1]);
+                        ProcessStudioWorkspace::dispatch($workspace->id, $workspace->operation['id'])->beforeCommit();
+                    }
+                }
+                return ['workspaces' => $workspaces->map->present()->all(), 'mode' => 'ai'];
+            }), 'shoot.editing.resume');
         }
         if ($data['mode'] === 'editor') {
             abort_unless($initial, 422, 'Use Send to Editing to assign the shoot to editors.');

@@ -37,6 +37,16 @@ class WorkspaceProcessor
         $this->media->authorize($workspace->media, \App\Models\User::findOrFail($workspace->created_by), $workspace->team_id);
         app(\App\Services\Shoots\ShootPhotoSet::class)->assertFullWorkspace($workspace);
         $type = $workspace->operation['type'];
+        // Old paid single-image checkpoints must remain resumable without submitting a second batch.
+        $legacyFotello = collect(array_keys($workspace->operation['providerState'] ?? []))->contains(fn ($key) => str_starts_with($key, 'photo-listing-'));
+        if ($type === 'generate' && $workspace->preset_id === 'full-shoot' && $workspace->shoot_id && ! $legacyFotello) {
+            if (app(WorkspaceFullShoot::class)->run($workspace, $operationId)) {
+                $this->finish($workspace, $operationId, 'completed');
+            } elseif ($this->active($workspace, $operationId)) {
+                \App\Jobs\ProcessStudioWorkspace::dispatch($workspace->id, $operationId)->delay(now()->addSeconds(10));
+            }
+            return;
+        }
         $items = $workspace->media;
         if (in_array($type, ['revision', 'upscale'], true)) {
             $items = array_values(array_filter($items, fn ($m) => $m['id'] === $workspace->operation['payload']['mediaId']));
@@ -84,6 +94,11 @@ class WorkspaceProcessor
                 return;
             }
             $stored = $this->media->store($workspace, $result, $operationId.'-'.substr(hash('sha256', $item['id']), 0, 16));
+            $sourceGroup = collect($workspace->outputs ?? [])->first(fn ($output) => $output['mediaId'] === $item['id'] && ! empty($output['sourceMediaIds']));
+            if ($sourceGroup) {
+                $stored['sourceMediaIds'] = $sourceGroup['sourceMediaIds'];
+                $stored['sourceFileIds'] = $sourceGroup['sourceFileIds'] ?? [];
+            }
             if ($type !== 'prepare' && ! $workspace->isVideo()) {
                 app(WorkspaceShootPublisher::class)->publish($workspace, $item, $stored, $operationId.'-'.$item['id']);
             }
@@ -94,7 +109,7 @@ class WorkspaceProcessor
                 if ($type === 'prepare') {
                     $records = array_values(array_filter($records, fn ($r) => $r['mediaId'] !== $item['id']));
                 }
-                $records[] = ['id' => $operationId.'-'.$item['id'], 'mediaId' => $item['id'], 'url' => $stored['url'], 'thumbnailUrl' => $stored['url'], 'path' => $stored['path'], 'kind' => 'image', 'method' => $frame['method'], 'ratio' => $w->config['ratio'], 'status' => 'completed', 'version' => $version];
+                $records[] = array_merge($stored, ['id' => $operationId.'-'.$item['id'], 'mediaId' => $item['id'], 'url' => $stored['url'], 'thumbnailUrl' => $stored['url'], 'path' => $stored['path'], 'kind' => 'image', 'method' => $frame['method'], 'ratio' => $w->config['ratio'], 'status' => 'completed', 'version' => $version]);
                 // A frame revision is also the current prepared frame for the next reel render.
                 if ($type === 'revision' && $w->isVideo()) {
                     $prepared = array_values(array_filter($w->prepared_frames ?? [], fn ($r) => $r['mediaId'] !== $item['id']));

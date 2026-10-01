@@ -208,8 +208,7 @@ class WorkspacePhotoEnhancementTest extends TestCase
         }
         unset($item);
         $workspace->update(['media' => $items, 'config' => array_replace($workspace->config, ['frames' => []])]);
-        $this->client->shouldReceive('createListing')->once()->with(Mockery::on(fn ($body) => $body['num_total_brackets'] === 2))->andReturn(['id' => 'listing-10']);
-        $this->client->shouldReceive('createListing')->once()->with(Mockery::on(fn ($body) => $body['num_total_brackets'] === 1))->andReturn(['id' => 'listing-20']);
+        $this->client->shouldReceive('createListing')->twice()->with(Mockery::on(fn ($body) => $body['num_total_brackets'] === 1))->andReturn(['id' => 'listing-10'], ['id' => 'listing-20']);
         foreach ([['a', 'listing-10'], ['b', 'listing-20'], ['c', 'listing-10']] as [$id, $listing]) {
             $this->client->shouldReceive('createUpload')->once()->with(Mockery::on(fn ($body) => $body['listingId'] === $listing && $body['filename'] === $this->key($id).'.jpg'))->andReturn($this->upload($id));
             $this->client->shouldReceive('uploadBytes')->once()->with($this->upload($id), $this->source);

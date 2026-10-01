@@ -39,8 +39,7 @@ class WorkspacePhotoEnhancement
         $client = app()->makeWith(FotelloClient::class, ['configuration' => $credentials]);
         // Keep shoots distinct even when an administrator edits multiple shoots in one workspace.
         $listingKey = 'photo-listing-'.($item['shootId'] ?? 'uploads');
-        $shootMedia = collect($workspace->media)->filter(fn ($media) => ($media['shootId'] ?? 'uploads') === ($item['shootId'] ?? 'uploads'));
-        $listing = $this->once($state, $listingKey, fn () => $client->createListing(['name' => mb_substr($workspace->name, 0, 200), 'num_total_brackets' => $shootMedia->count()]));
+        $listing = $this->once($state, $listingKey, fn () => $client->createListing(['name' => mb_substr($workspace->name, 0, 200), 'num_total_brackets' => 1]));
         $key = 'photo-'.hash('sha256', $item['id']);
         $savedUpload = $state->get($key.'-upload');
         if (! $state->get($key.'-uploaded') && ! $state->get($key.'-enhance') && isset($savedUpload['expires'])) {
@@ -80,7 +79,7 @@ class WorkspacePhotoEnhancement
         } while (true);
     }
 
-    private function once(WorkspaceProviderState $state, string $key, callable $submit): array
+    public function once(WorkspaceProviderState $state, string $key, callable $submit): array
     {
         if ($saved = $state->get($key)) {
             if (isset($saved['id'])) {
@@ -102,7 +101,7 @@ class WorkspacePhotoEnhancement
         return $result;
     }
 
-    private function sceneType(StudioWorkspace $workspace, string $source): string
+    public function sceneType(StudioWorkspace $workspace, string $source): string
     {
         $selected = $workspace->config['adjustments']['sceneType'] ?? 'auto';
         if (in_array($selected, ['interior', 'exterior'], true)) {
