@@ -24,7 +24,7 @@ use Tests\TestCase;
  * `SendShootReadyEmailJob` must also start the payment-reminder cadence. For a successful
  * full-order delivery the job must:
  *   (1) stamp `shoot_ready_notified_at` when it is not already set (the cadence anchor) — Req 4.2, and
- *   (2) start the cadence by creating pending PaymentReminder rows at Day 1/3/7 (at minimum) — Req 4.4.
+ *   (2) start the cadence by creating pending PaymentReminder rows at Day 1/2/4/7 (at minimum) — Req 4.4.
  *
  * If the anchor is already set, the job must NOT move it (anchor stability, Req 4.2) and must NOT
  * duplicate reminder rows (the (shoot_id, scheduled_date) upsert is idempotent — Req 4.5). A shoot
@@ -53,7 +53,7 @@ class SendShootReadyEmailJobCadenceWiringTest extends TestCase
         ]);
 
         // ShootFactory defaults payment_status to 'paid', so set 'unpaid' explicitly.
-        return Shoot::factory()->create([
+        return Shoot::factory()->state(['status' => Shoot::STATUS_DELIVERED, 'workflow_status' => Shoot::STATUS_DELIVERED, 'delivery_status' => 'delivered'])->create([
             'client_id' => $client->id,
             'payment_status' => 'unpaid',
             'shoot_ready_notified_at' => $anchor,
@@ -90,10 +90,10 @@ class SendShootReadyEmailJobCadenceWiringTest extends TestCase
             'all freshly scheduled reminders should be pending'
         );
 
-        // Req 4.4 — the Day 1/3/7 timestamps relative to the anchor are present.
+        // Req 4.4 — the Day 1/2/4/7 timestamps relative to the anchor are present.
         $anchor = $fresh->shoot_ready_notified_at->copy();
         $dates = $reminders->pluck('scheduled_date')->map(fn ($d) => $d->format('Y-m-d'))->all();
-        foreach ([1, 3, 7] as $offset) {
+        foreach ([1, 2, 4, 7] as $offset) {
             $expected = $anchor->copy()->addDays($offset)->format('Y-m-d');
             $this->assertContains($expected, $dates, "expected a Day {$offset} reminder at {$expected}");
         }
@@ -145,7 +145,7 @@ class SendShootReadyEmailJobCadenceWiringTest extends TestCase
         $this->mockMail();
 
         $client = User::factory()->create(['email' => 'paid@example.com', 'name' => 'Paid Client']);
-        $shoot = Shoot::factory()->create([
+        $shoot = Shoot::factory()->state(['status' => Shoot::STATUS_DELIVERED, 'workflow_status' => Shoot::STATUS_DELIVERED, 'delivery_status' => 'delivered'])->create([
             'client_id' => $client->id,
             'payment_status' => 'paid',
             'shoot_ready_notified_at' => null,

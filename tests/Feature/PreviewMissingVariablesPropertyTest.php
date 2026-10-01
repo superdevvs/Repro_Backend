@@ -149,7 +149,7 @@ class PreviewMissingVariablesPropertyTest extends TestCase
     public function test_fully_resolvable_templates_report_no_missing_variables(): void
     {
         foreach (array_keys(ManualNotificationService::TYPES) as $type) {
-            foreach (self::RECIPIENT_TYPES as $recipientType) {
+            foreach ($this->allowedRecipients($type) as $recipientType) {
                 $context = "type={$type}, recipient={$recipientType}";
 
                 $shoot = $this->shootForCase();
@@ -187,8 +187,8 @@ class PreviewMissingVariablesPropertyTest extends TestCase
             ['shoot_scheduled', 'client', self::RESOLVABLE_POOL, []],
             // Single unresolvable, no resolvable required vars.
             ['shoot_scheduled', 'client', [], ['mystery_field']],
-            // Mixed: one resolvable + one unresolvable, photographer recipient.
-            ['shoot_cancelled', 'photographer', ['recipient_name'], ['mystery_field']],
+            // Mixed: one resolvable + one unresolvable, assigned sales rep recipient.
+            ['shoot_cancelled', 'rep', ['recipient_name'], ['mystery_field']],
             // All-unresolvable required set.
             ['payment_due', 'client', [], ['zz_alpha', 'zz_beta', 'zz_gamma']],
             // Mix with the full resolvable pool plus one unresolvable.
@@ -196,7 +196,7 @@ class PreviewMissingVariablesPropertyTest extends TestCase
             // Empty required set — nothing to report.
             ['payment_receipt', 'photographer', [], []],
             // On-hold type, mixed.
-            ['shoot_on_hold', 'photographer', ['recipient_email', 'current_date'], ['zz_hold']],
+            ['shoot_on_hold', 'rep', ['recipient_email', 'current_date'], ['zz_hold']],
         ];
 
         // Seeded PRNG so the generator is reproducible across runs.
@@ -204,7 +204,8 @@ class PreviewMissingVariablesPropertyTest extends TestCase
 
         for ($i = 0; $i < self::RANDOM_ITERATIONS; $i++) {
             $type = $types[mt_rand(0, count($types) - 1)];
-            $recipientType = self::RECIPIENT_TYPES[mt_rand(0, count(self::RECIPIENT_TYPES) - 1)];
+            $allowedRecipients = $this->allowedRecipients($type);
+            $recipientType = $allowedRecipients[mt_rand(0, count($allowedRecipients) - 1)];
 
             // Random resolvable subset (0..all) drawn from the resolvable pool.
             $resolvable = $this->randomSubset(self::RESOLVABLE_POOL);
@@ -220,6 +221,13 @@ class PreviewMissingVariablesPropertyTest extends TestCase
         }
 
         return $cases;
+    }
+
+    private function allowedRecipients(string $type): array
+    {
+        return in_array($type, ['shoot_on_hold', 'shoot_cancelled'], true)
+            ? ['client', 'rep']
+            : self::RECIPIENT_TYPES;
     }
 
     /**
@@ -281,7 +289,7 @@ class PreviewMissingVariablesPropertyTest extends TestCase
     }
 
     /**
-     * Build a Shoot whose client and photographer both carry a name + email so any recipient
+     * Build a shoot whose client, photographer and sales rep carry a name and email so any allowed recipient
      * choice resolves the recipient_* variables to non-empty values.
      */
     private function shootForCase(): Shoot
@@ -295,10 +303,16 @@ class PreviewMissingVariablesPropertyTest extends TestCase
             'name'  => 'Pat Photographer',
             'role'  => 'photographer',
         ]);
+        $rep = User::factory()->create([
+            'email' => 'rep+'.uniqid('', true).'@example.com',
+            'name' => 'Sam Sales',
+            'role' => 'salesRep',
+        ]);
 
         return Shoot::factory()->create([
             'client_id'       => $client->id,
             'photographer_id' => $photographer->id,
+            'rep_id' => $rep->id,
         ]);
     }
 }

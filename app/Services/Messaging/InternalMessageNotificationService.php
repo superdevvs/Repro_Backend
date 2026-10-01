@@ -4,7 +4,6 @@ namespace App\Services\Messaging;
 
 use App\Jobs\SendInternalMessageNotificationEmail;
 use App\Models\Message;
-use App\Models\Shoot;
 use App\Models\User;
 use App\Services\SystemEmails\EmailContextBuilder;
 use App\Services\SystemEmails\SystemEmailOrchestrator;
@@ -16,8 +15,7 @@ class InternalMessageNotificationService
     public function __construct(
         private readonly EmailContextBuilder $contextBuilder,
         private readonly SystemEmailOrchestrator $orchestrator,
-    ) {
-    }
+    ) {}
 
     /**
      * Queue one independently retryable notification per eligible recipient.
@@ -46,7 +44,7 @@ class InternalMessageNotificationService
     {
         $message->loadMissing(['shoot.client', 'thread.contact.user', 'creator']);
 
-        if (!$this->isNotifiableInternalMessage($message)) {
+        if (! $this->isNotifiableInternalMessage($message)) {
             return collect();
         }
 
@@ -89,7 +87,7 @@ class InternalMessageNotificationService
             ->pluck('id')
             ->map(fn ($id) => (int) $id);
 
-        if (!$eligibleRecipientIds->contains((int) $recipient->id)) {
+        if (! $eligibleRecipientIds->contains((int) $recipient->id)) {
             return [
                 'sent' => false,
                 'duplicate' => false,
@@ -104,7 +102,7 @@ class InternalMessageNotificationService
         $senderName = trim((string) ($message->creator?->name ?: $message->sender_display_name ?: $message->from_address ?: 'A dashboard user'));
         $senderRole = $this->roleLabel((string) $message->sender_role);
         $messageUrl = rtrim((string) config('app.frontend_url', 'https://reprodashboard.com'), '/')
-            . '/messaging/email/inbox?message=' . $message->id;
+            .'/messaging/email/inbox?message='.$message->id;
 
         $payload = $this->contextBuilder->build([
             'recipient' => [
@@ -136,7 +134,7 @@ class InternalMessageNotificationService
                 'message_subject' => trim((string) ($message->subject ?? '')),
                 'internal_message_id' => (int) $message->id,
                 'thread_id' => $message->thread_id ? (int) $message->thread_id : null,
-                'event_version' => 'internal-message-' . $message->id,
+                'event_version' => 'internal-message-'.$message->id,
             ],
         ]);
 
@@ -172,19 +170,19 @@ class InternalMessageNotificationService
 
     public function canReceiveNotificationEmail(User $user): bool
     {
-        if (!$user->isAccountEligibleForAuthentication()) {
+        if (! $user->isAccountEligibleForAuthentication()) {
             return false;
         }
 
         $email = trim((string) $user->email);
-        if ($email === '' || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        if ($email === '' || ! filter_var($email, FILTER_VALIDATE_EMAIL)) {
             return false;
         }
 
         $metadata = is_array($user->metadata) ? $user->metadata : [];
         $preferences = is_array($metadata['preferences'] ?? null) ? $metadata['preferences'] : [];
 
-        if (!array_key_exists('notificationEmail', $preferences)) {
+        if (! array_key_exists('notificationEmail', $preferences)) {
             return true;
         }
 
@@ -193,10 +191,11 @@ class InternalMessageNotificationService
 
     private function isNotifiableInternalMessage(Message $message): bool
     {
-        return $message->channel === 'EMAIL'
+        return ! \App\Models\SupportTicketMessage::where('source_message_id', $message->id)->exists()
+            && $message->channel === 'EMAIL'
             && $message->provider === 'INTERNAL'
             && $message->send_source === 'MANUAL'
-            && !empty($message->related_shoot_id);
+            && ! empty($message->related_shoot_id);
     }
 
     /**
@@ -229,13 +228,13 @@ class InternalMessageNotificationService
             ?? $metadata['rep_id']
             ?? null;
 
-        if (!is_numeric($candidateId)) {
+        if (! is_numeric($candidateId)) {
             return null;
         }
 
         $candidate = User::query()->find((int) $candidateId);
 
-        if (!$candidate || !$this->userHasAnyRole($candidate, ['salesrep'])) {
+        if (! $candidate || ! $this->userHasAnyRole($candidate, ['salesrep'])) {
             return null;
         }
 

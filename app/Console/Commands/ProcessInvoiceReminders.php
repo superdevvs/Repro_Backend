@@ -8,6 +8,7 @@ use App\Models\Shoot;
 use App\Models\User;
 use App\Services\Messaging\AutomationService;
 use App\Services\Messaging\ScheduledAutomationDispatcher;
+use App\Services\Messaging\ShootPaymentReminderEligibility;
 use Carbon\Carbon;
 use Illuminate\Console\Command;
 
@@ -125,7 +126,12 @@ class ProcessInvoiceReminders extends Command
         string $tag,
         string $key
     ): bool {
-        if ($invoice->suppressesExternalNotifications() || $invoice->balanceDue() <= 0) {
+        // A shoot invoice must never bypass delivery eligibility or create a
+        // second reminder series based on its accounting due date. This also
+        // suppresses inconsistent legacy client/shoot associations without
+        // guessing another property or exposing another client's shoot.
+        if (app(ShootPaymentReminderEligibility::class)->invoiceHasShoot($invoice)
+            || $invoice->suppressesExternalNotifications() || $invoice->balanceDue() <= 0) {
             return false;
         }
 
@@ -249,15 +255,7 @@ class ProcessInvoiceReminders extends Command
 
     private function resolveClient(Invoice $invoice): ?User
     {
-        if ($invoice->client) {
-            return $invoice->client;
-        }
-
-        if ($invoice->shoot?->client) {
-            return $invoice->shoot->client;
-        }
-
-        return $invoice->shoots?->first()?->client;
+        return $invoice->client;
     }
 
     private function resolveRep(Invoice $invoice, ?User $client): ?User

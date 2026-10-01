@@ -6,7 +6,8 @@ use App\Models\User;
 use App\Models\VoiceBrowserSession;
 use App\Services\RolePermissionService;
 use App\Support\LockedWrite;
-use Illuminate\Support\Facades\Cache;
+use App\Support\VoiceCache;
+use App\Support\VoiceLocks;
 use Illuminate\Support\Str;
 use RuntimeException;
 
@@ -61,7 +62,7 @@ class VoiceBrowserSessionService
         $config = $this->configuration($user);
         abort_unless($config['ready'], 422, implode(' ', $config['blockers']));
 
-        return Cache::lock('voice-browser-session:'.$user->id.':'.$deviceId, 50)->block(5, function () use ($user, $deviceId): array {
+        return VoiceLocks::lock('voice-browser-session:'.$user->id.':'.$deviceId, 50)->block(5, function () use ($user, $deviceId): array {
             $session = VoiceBrowserSession::query()->where('user_id', $user->id)->where('device_id', $deviceId)
                 ->whereNull('revoked_at')->where('status', 'ready')->where('expires_at', '>', now())->latest()->first();
             if ($session) {
@@ -141,15 +142,15 @@ class VoiceBrowserSessionService
         $attemptKey = 'voice-browser-presence-attempt:'.$session->id;
         $attempt = (string) Str::uuid();
         $writeLock = 'voice-browser-presence-write:'.$session->id;
-        Cache::lock($writeLock, 10)->block(1, fn () => Cache::put($attemptKey, $attempt, 30));
+        VoiceLocks::lock($writeLock, 10)->block(1, fn () => VoiceCache::store()->put($attemptKey, $attempt, 30));
         // Legacy registered=true is also only a transport hint. Availability
         // requires the carrier to confirm this session's server-owned identity.
         if (! ($transportConnected ?? $registered)) {
-            Cache::forget($cacheKey);
+            VoiceCache::store()->forget($cacheKey);
             $registered = false;
         } else {
             try {
-                $registered = Cache::remember($cacheKey, 10, function () use ($session): bool {
+                $registered = VoiceCache::store()->remember($cacheKey, 10, function () use ($session): bool {
                     if (! filled($session->credential_id) || ! filled($session->sip_username)) {
                         return false;
                     }
@@ -169,8 +170,8 @@ class VoiceBrowserSessionService
         }
         // Provider I/O must not hold a SQLite write transaction. Recheck in the
         // write predicate so a concurrent revocation/expiry cannot be revived.
-        Cache::lock($writeLock, 10)->block(1, function () use ($session, $attemptKey, $attempt, $credentialId, $registered): void {
-            if (Cache::get($attemptKey) !== $attempt) {
+        VoiceLocks::lock($writeLock, 10)->block(1, function () use ($session, $attemptKey, $attempt, $credentialId, $registered): void {
+            if (VoiceCache::store()->get($attemptKey) !== $attempt) {
                 return; // A newer disconnect or presence request wins.
             }
             $updated = LockedWrite::run(fn () => VoiceBrowserSession::query()->whereKey($session->id)
@@ -191,7 +192,7 @@ class VoiceBrowserSessionService
 
     public function revoke(VoiceBrowserSession $session): void
     {
-        Cache::lock('voice-browser-revoke:'.$session->id, 40)->block(5, function () use ($session): void {
+        VoiceLocks::lock('voice-browser-revoke:'.$session->id, 40)->block(5, function () use ($session): void {
             $session->refresh();
             if ($session->revoked_at && $session->status === 'revoked') {
                 return;

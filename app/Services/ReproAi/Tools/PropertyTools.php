@@ -8,6 +8,8 @@ use Illuminate\Support\Facades\Log;
 
 class PropertyTools
 {
+    public function __construct(private readonly RobbieRecordAccess $access) {}
+
     /**
      * Get property details
      * 
@@ -28,7 +30,8 @@ class PropertyTools
                 ];
             }
 
-            $query = Shoot::with(['client', 'services', 'photographer']);
+            $actor = $this->access->actor($context);
+            $query = $this->access->query($actor)->with(['client', 'services', 'photographer']);
             
             if ($propertyId) {
                 $query->where('id', $propertyId);
@@ -38,7 +41,7 @@ class PropertyTools
             
             $shoot = $query->first();
             
-            if (!$shoot) {
+            if (!$shoot || ! $this->access->canRead($shoot, $actor)) {
                 return [
                     'success' => false,
                     'error' => 'Property not found',
@@ -56,16 +59,16 @@ class PropertyTools
                         'state' => $shoot->state,
                         'zip' => $shoot->zip,
                     ],
-                    'client' => [
+                    'client' => $this->access->canReadBilling($shoot, $actor) ? [
                         'id' => $shoot->client_id,
                         'name' => $shoot->client->name ?? 'Unknown',
-                    ],
+                    ] : null,
                     'status' => $shoot->status,
                     'workflow_status' => $shoot->workflow_status,
                     'scheduled_date' => $shoot->scheduled_date?->toDateString(),
                     'time' => $shoot->time,
                     'services' => $shoot->services->pluck('name')->toArray(),
-                    'notes' => $shoot->notes ?? $shoot->shoot_notes ?? null,
+                    'notes' => $this->access->description($shoot, $actor),
                 ],
             ];
         } catch (\Exception $e) {
@@ -91,7 +94,11 @@ class PropertyTools
     public function getPortfolioOverview(array $params, array $context = []): array
     {
         try {
-            $userId = $params['user_id'] ?? $context['user_id'] ?? auth()->id();
+            $actor = $this->access->actor($context);
+            $userId = $params['user_id'] ?? $actor?->id;
+            if (! $actor || ((string) $userId !== (string) $actor->id && ! $this->access->isStaff($actor))) {
+                return ['success' => false, 'error' => 'You do not have access to this portfolio.'];
+            }
             
             if (!$userId) {
                 return [
@@ -100,7 +107,7 @@ class PropertyTools
                 ];
             }
 
-            $shoots = Shoot::where('client_id', $userId)->get();
+            $shoots = $this->access->query($actor)->where('client_id', $userId)->get()->filter(fn (Shoot $shoot) => $this->access->canRead($shoot, $actor));
             
             $totalShoots = $shoots->count();
             $scheduledShoots = $shoots->where('status', 'scheduled')->count();
@@ -159,7 +166,7 @@ class PropertyTools
                 ];
             }
 
-            $shoot = Shoot::with(['services', 'client'])->find($propertyId);
+            $shoot = $this->access->find($propertyId, $this->access->actor($context), ['services', 'client']);
             
             if (!$shoot) {
                 return [

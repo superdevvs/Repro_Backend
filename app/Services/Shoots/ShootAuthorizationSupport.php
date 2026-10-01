@@ -5,12 +5,46 @@ namespace App\Services\Shoots;
 use App\Models\AccountLink;
 use App\Models\Shoot;
 use App\Models\ShootFile;
+use App\Models\ShootUnit;
+use App\Models\Service;
 use App\Models\User;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Str;
 
 class ShootAuthorizationSupport
 {
+    public const VIDEO_TOUR_LINK_KEYS = [
+        'video_link', 'video_branded', 'video_mls', 'video_generic',
+        'embeds', 'featured_embed_id', 'featured_embed',
+    ];
+
+    public function canEditVideoTourLinks(Shoot $shoot, ?User $user, ?ShootUnit $unit = null): bool
+    {
+        if (! $this->hasRole($user, ['editor']) || ! $this->canViewShootDetails($shoot, $user)) {
+            return false;
+        }
+
+        $shoot->loadMissing('serviceItems.service');
+        $items = $unit ? $shoot->serviceItems->where('shoot_unit_id', $unit->id) : $shoot->serviceItems;
+        if ($items->contains(function ($item) use ($user) {
+            $intake = $item->service?->uploadIntakeType();
+
+            return ($intake === Service::INTAKE_PHOTO_VIDEO && (string) $item->video_editor_id === (string) $user->id)
+                || ((string) $item->editor_id === (string) $user->id
+                    && (! $item->video_editor_id || (string) $item->video_editor_id === (string) $user->id)
+                    && ($intake === Service::INTAKE_VIDEO || $user->canEditLane('video')));
+        })) {
+            return true;
+        }
+
+        if (! $user->canEditLane('video')) {
+            return false;
+        }
+        return (string) $shoot->editor_id === (string) $user->id
+            && (! $unit || $items->isNotEmpty())
+            && $items->every(fn ($item) => ! $item->editor_id && ! $item->video_editor_id);
+    }
+
     private const CLIENT_DELIVERED_STATUSES = [
         Shoot::STATUS_DELIVERED,
         'ready_for_client',
@@ -306,6 +340,51 @@ class ShootAuthorizationSupport
     public function canManageShootOperations(?User $user): bool
     {
         return $this->hasRole($user, ['admin', 'superadmin', 'editing_manager']);
+    }
+
+    /** Request review is an office/sales duty, independent of media workflow writes. */
+    public function canReviewShootRequests(?User $user): bool
+    {
+        if (! $user) {
+            return false;
+        }
+
+        $roles = [$user->role, ...(is_array($user->secondary_roles) ? $user->secondary_roles : [])];
+
+        foreach ($roles as $role) {
+            if (in_array($this->normalizeRole((string) $role), ['admin', 'superadmin', 'editing_manager', 'sales_rep'], true)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    public function canTriageShootRequests(Shoot $shoot, ?User $user): bool
+    {
+        if ($shoot->isImportDraft()) {
+            return $this->canManageShootOperations($user) && $this->canViewShootDetails($shoot, $user);
+        }
+
+        return $this->canReviewShootRequests($user);
+    }
+
+    public function canViewShootRequests(Shoot $shoot, ?User $user): bool
+    {
+        return $this->canTriageShootRequests($shoot, $user) || $this->canViewShootDetails($shoot, $user);
+    }
+
+    public function scopeAccessibleShootRequests(Builder $query, ?User $user): Builder
+    {
+        if (! $this->canReviewShootRequests($user)) {
+            return $this->scopeAccessibleShootMedia($query, $user);
+        }
+
+        // Keep this scope consistent with canTriageShootRequests even when a
+        // caller has removed the model's private-import-draft global scope.
+        return $this->hasRole($user, ['admin', 'superadmin'])
+            ? $query
+            : $query->where($query->getModel()->qualifyColumn('status'), '!=', Shoot::STATUS_IMPORT_DRAFT);
     }
 
     /** Viewing a linked/shared delivery never grants the recipient workflow writes. */

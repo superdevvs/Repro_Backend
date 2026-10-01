@@ -130,7 +130,8 @@ class ManualDispatchMappedTemplatePropertyTest extends TestCase
 
         // Deterministic: every (type, recipient, channel) combination.
         foreach (array_keys(ManualNotificationService::TYPES) as $type) {
-            foreach (self::RECIPIENT_TYPES as $recipient) {
+            $allowedRecipients = self::RECIPIENT_TYPES;
+            foreach ($allowedRecipients as $recipient) {
                 foreach (self::CHANNELS as $channel) {
                     $cases[] = [$type, $recipient, $channel];
                 }
@@ -141,9 +142,11 @@ class ManualDispatchMappedTemplatePropertyTest extends TestCase
         // then re-randomize recipient + channel.
         $types = array_keys(ManualNotificationService::TYPES);
         for ($i = 0; $i < self::VALID_RANDOM_ITERATIONS; $i++) {
+            $type = $types[$i % count($types)];
+            $allowedRecipients = self::RECIPIENT_TYPES;
             $cases[] = [
-                $types[$i % count($types)],
-                self::RECIPIENT_TYPES[mt_rand(0, count(self::RECIPIENT_TYPES) - 1)],
+                $type,
+                $allowedRecipients[mt_rand(0, count($allowedRecipients) - 1)],
                 self::CHANNELS[mt_rand(0, count(self::CHANNELS) - 1)],
             ];
         }
@@ -204,10 +207,12 @@ class ManualDispatchMappedTemplatePropertyTest extends TestCase
             'name'        => 'Pat Photographer',
             'role'        => 'photographer',
         ]);
+        $rep = User::factory()->create(['role' => 'salesRep', 'phonenumber' => '+12025550191']);
 
         return Shoot::factory()->create([
             'client_id'       => $client->id,
             'photographer_id' => $photographer->id,
+            'rep_id' => $rep->id,
         ]);
     }
 

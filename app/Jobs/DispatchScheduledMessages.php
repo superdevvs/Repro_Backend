@@ -117,6 +117,15 @@ class DispatchScheduledMessages implements ShouldBeUnique, ShouldQueue
                 throw $exception;
             }
 
+            if ($message?->status === 'BLOCKED' && data_get($message->metadata, 'delivery.blocked_reason') === 'notification_preferences') {
+                $locked->forceFill([
+                    'status' => PaymentReminder::STATUS_CANCELLED,
+                    'message_id' => $message->id,
+                ])->save();
+
+                return;
+            }
+
             // A disabled action, suppressed recipient or provider failure is not a send.
             if (! $message || ! in_array(strtoupper((string) $message->status), ['SENT', 'DELIVERED', 'QUEUED', 'SCHEDULED'], true)) {
                 return;

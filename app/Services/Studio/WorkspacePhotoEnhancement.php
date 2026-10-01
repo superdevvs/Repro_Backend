@@ -39,8 +39,7 @@ class WorkspacePhotoEnhancement
         $client = app()->makeWith(FotelloClient::class, ['configuration' => $credentials]);
         // Keep shoots distinct even when an administrator edits multiple shoots in one workspace.
         $listingKey = 'photo-listing-'.($item['shootId'] ?? 'uploads');
-        $shootMedia = collect($workspace->media)->filter(fn ($media) => ($media['shootId'] ?? 'uploads') === ($item['shootId'] ?? 'uploads'));
-        $listing = $this->once($state, $listingKey, fn () => $client->createListing(['name' => mb_substr($workspace->name, 0, 200), 'num_total_brackets' => $shootMedia->count()]));
+        $listing = $this->once($state, $listingKey, fn () => $client->createListing(['name' => mb_substr($workspace->name, 0, 200), 'num_total_brackets' => 1]));
         $key = 'photo-'.hash('sha256', $item['id']);
         $savedUpload = $state->get($key.'-upload');
         if (! $state->get($key.'-uploaded') && ! $state->get($key.'-enhance') && isset($savedUpload['expires'])) {
@@ -49,7 +48,7 @@ class WorkspacePhotoEnhancement
                 $state->put($key.'-upload', null);
             }
         }
-        $upload = $this->once($state, $key.'-upload', fn () => $client->createUpload(['filename' => $key.'.jpg', 'listingId' => $listing['id']]));
+        $upload = $this->uploadSlot($state, $key.'-upload', fn () => $client->createUpload(['filename' => $key.'.jpg', 'listingId' => $listing['id']]));
         if (! $state->get($key.'-uploaded')) {
             $client->uploadBytes($upload, $source);
             $state->put($key.'-uploaded', true);
@@ -80,7 +79,18 @@ class WorkspacePhotoEnhancement
         } while (true);
     }
 
-    private function once(WorkspaceProviderState $state, string $key, callable $submit): array
+    /** An unused upload reservation can be replaced; it neither uploads pixels nor starts an edit. */
+    public function uploadSlot(WorkspaceProviderState $state, string $key, callable $reserve): array
+    {
+        $saved = $state->get($key);
+        if ($saved && ! isset($saved['id'])) {
+            $state->put($key, null);
+        }
+
+        return $this->once($state, $key, $reserve);
+    }
+
+    public function once(WorkspaceProviderState $state, string $key, callable $submit): array
     {
         if ($saved = $state->get($key)) {
             if (isset($saved['id'])) {
@@ -102,7 +112,7 @@ class WorkspacePhotoEnhancement
         return $result;
     }
 
-    private function sceneType(StudioWorkspace $workspace, string $source): string
+    public function sceneType(StudioWorkspace $workspace, string $source): string
     {
         $selected = $workspace->config['adjustments']['sceneType'] ?? 'auto';
         if (in_array($selected, ['interior', 'exterior'], true)) {

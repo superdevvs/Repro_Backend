@@ -7,7 +7,7 @@ use App\Models\VoiceStaffPhone;
 use App\Services\Messaging\MessagingService;
 use App\Services\TelnyxAi\VoiceNumberSettingsResolver;
 use App\Support\LockedWrite;
-use Illuminate\Support\Facades\Cache;
+use App\Support\VoiceLocks;
 use Illuminate\Support\Facades\Hash;
 
 class VoiceStaffPhoneService
@@ -37,7 +37,7 @@ class VoiceStaffPhoneService
         abort_unless(preg_match('/^\+[1-9]\d{7,14}$/', $destination), 422, 'Enter a valid phone number.');
         abort_if($destination === $numbers->normalize((string) config('services.telnyx.from_number')) || $numbers->matching($destination)->isNotEmpty(), 422, 'Use your personal staff phone, not a business line.');
 
-        return Cache::lock('voice-phone-verify:'.$user->id, 30)->block(3, function () use ($user, $destination): array {
+        return VoiceLocks::lock('voice-phone-verify:'.$user->id, 30)->block(3, function () use ($user, $destination): array {
             $phone = VoiceStaffPhone::firstOrCreate(['user_id' => $user->id]);
             abort_if($phone->verification_expires_at?->gt(now()->addMinutes(9)), 429, 'Wait a minute before requesting another code.');
             $code = (string) random_int(100000, 999999);
@@ -56,7 +56,7 @@ class VoiceStaffPhoneService
 
     public function verify(User $user, string $code): array
     {
-        return Cache::lock('voice-phone-verify:'.$user->id, 15)->block(3, function () use ($user, $code): array {
+        return VoiceLocks::lock('voice-phone-verify:'.$user->id, 15)->block(3, function () use ($user, $code): array {
             $phone = VoiceStaffPhone::where('user_id', $user->id)->first();
             abort_unless($phone && $phone->verification_expires_at?->isFuture() && $phone->verification_hash && $phone->verification_attempts < 5, 422, 'Request a new verification code.');
             $phone->increment('verification_attempts');

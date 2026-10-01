@@ -18,6 +18,104 @@ class ManualNotificationServiceTest extends TestCase
 {
     use RefreshDatabase;
 
+    public function test_hold_and_cancellation_rep_previews_match_email_and_sms_sends(): void
+    {
+        $admin = User::factory()->create(['role' => 'admin']);
+        $rep = User::factory()->create(['role' => 'salesRep', 'name' => 'Sam Sales', 'phonenumber' => '+12025550191']);
+        $client = User::factory()->create(['metadata' => ['accountRepId' => (string) $rep->id]]);
+        $photographer = User::factory()->photographer()->create();
+        $shoot = Shoot::factory()->create(['client_id' => $client->id, 'rep_id' => null, 'photographer_id' => $photographer->id]);
+
+        foreach (['shoot_on_hold', 'shoot_cancelled'] as $type) {
+            $this->template(ManualNotificationService::TYPES[$type], ['body_html' => '<p>Review this request, {{recipient_first_name}}.</p>']);
+            foreach (['email', 'sms'] as $channel) {
+                $this->mockMessaging($captured, $channel === 'sms' ? 'sendSms' : 'sendEmail');
+                $service = app(ManualNotificationService::class);
+                $preview = $service->preview($shoot, $type, 'rep', $channel, $rep->id);
+                $this->assertSame([$rep->id], array_column($preview['recipients'], 'id'));
+                $service->send($shoot, $type, 'rep', $channel, $admin, $rep->id);
+                $this->assertSame($channel === 'sms' ? $rep->phonenumber : $rep->email, $captured['to']);
+                $this->assertSame('rep', $captured['contact_type']);
+                $this->assertSame($rep->id, $captured['contact_user_id']);
+                $this->assertSame($preview['body_text'], $captured['body_text']);
+                $this->assertSame($preview['body_html'], $captured['body_html']);
+                $this->assertNotSame($photographer->email, $captured['to']);
+            }
+        }
+    }
+
+    public function test_rep_notification_cannot_preview_or_send_to_an_unassigned_recipient_id(): void
+    {
+        $rep = User::factory()->create(['role' => 'salesRep']);
+        $otherRep = User::factory()->create(['role' => 'salesRep']);
+        $photographer = User::factory()->photographer()->create();
+        $admin = User::factory()->create(['role' => 'admin']);
+        $shoot = Shoot::factory()->create(['rep_id' => $rep->id, 'photographer_id' => $photographer->id]);
+        $this->mock(MessagingService::class, function (MockInterface $mock): void {
+            $mock->shouldNotReceive('sendEmail');
+            $mock->shouldNotReceive('sendSms');
+        });
+        $service = app(ManualNotificationService::class);
+        foreach (['shoot_on_hold', 'shoot_cancelled'] as $type) {
+            $this->template(ManualNotificationService::TYPES[$type]);
+            foreach ([$otherRep->id, $photographer->id] as $wrongId) {
+                foreach (['email', 'sms'] as $channel) {
+                    foreach (['preview', 'send'] as $operation) {
+                        try {
+                            if ($operation === 'preview') {
+                                $service->preview($shoot, $type, 'rep', $channel, $wrongId);
+                            } else {
+                                $service->send($shoot, $type, 'rep', $channel, $admin, $wrongId);
+                            }
+                            $this->fail('Unassigned recipient must be rejected before rendering or dispatch.');
+                        } catch (\RuntimeException $exception) {
+                            $this->assertStringContainsString('has no rep to notify', $exception->getMessage());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    public function test_hold_photographer_previews_match_selected_email_and_sms_sends(): void
+    {
+        $photographer = User::factory()->photographer()->create(['phonenumber' => '+12025550193']);
+        $shoot = Shoot::factory()->create(['photographer_id' => $photographer->id]);
+        $admin = User::factory()->create(['role' => 'admin']);
+        $this->template('shoot-on-hold');
+        foreach (['email', 'sms'] as $channel) {
+            $this->mockMessaging($captured, $channel === 'sms' ? 'sendSms' : 'sendEmail');
+            $service = app(ManualNotificationService::class);
+            $preview = $service->preview($shoot, 'shoot_on_hold', 'photographer', $channel, $photographer->id);
+            $service->send($shoot, 'shoot_on_hold', 'photographer', $channel, $admin, $photographer->id);
+            $this->assertSame([$photographer->id], array_column($preview['recipients'], 'id'));
+            $this->assertSame($channel === 'sms' ? $photographer->phonenumber : $photographer->email, $captured['to']);
+            $this->assertSame('photographer', $captured['contact_type']);
+            $this->assertSame($preview['body_text'], $captured['body_text']);
+            $this->assertSame($preview['body_html'], $captured['body_html']);
+        }
+    }
+
+    public function test_final_cancellation_photographer_preview_matches_selected_email_and_sms_send(): void
+    {
+        $admin = User::factory()->create(['role' => 'admin']);
+        $photographer = User::factory()->photographer()->create(['phonenumber' => '+12025550192']);
+        $rep = User::factory()->create(['role' => 'salesRep']);
+        $shoot = Shoot::factory()->create(['photographer_id' => $photographer->id, 'rep_id' => $rep->id]);
+        $this->template('shoot-cancelled');
+        foreach (['email', 'sms'] as $channel) {
+            $this->mockMessaging($captured, $channel === 'sms' ? 'sendSms' : 'sendEmail');
+            $service = app(ManualNotificationService::class);
+            $preview = $service->preview($shoot, 'shoot_cancelled', 'photographer', $channel, $photographer->id);
+            $this->assertSame([$photographer->id], array_column($preview['recipients'], 'id'));
+            $service->send($shoot, 'shoot_cancelled', 'photographer', $channel, $admin, $photographer->id);
+            $this->assertSame($channel === 'sms' ? $photographer->phonenumber : $photographer->email, $captured['to']);
+            $this->assertSame('photographer', $captured['contact_type']);
+            $this->assertSame($preview['body_text'], $captured['body_text']);
+            $this->assertSame($preview['body_html'], $captured['body_html']);
+        }
+    }
+
     private function template(string $slug, array $overrides = []): MessageTemplate
     {
         return MessageTemplate::create(array_merge([

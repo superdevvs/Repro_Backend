@@ -1,5 +1,5 @@
 {
-  "version": "2026-10-01.2",
+  "version": "2026-10-01.5",
   "reviewed_at": "2026-10-01",
   "articles": [
     {
@@ -47,13 +47,7 @@
       "title": "Update your profile and verify your email",
       "category": "Account",
       "roles": [
-        "client",
-        "salesRep",
-        "photographer",
-        "editor",
-        "admin",
-        "superadmin",
-        "editing_manager"
+        "*"
       ],
       "summary": "Keep account contact details accurate so the team can reach you.",
       "keywords": [
@@ -90,6 +84,60 @@
       ]
     },
     {
+      "id": "account-profile-picture",
+      "title": "Upload or change your profile picture",
+      "category": "Account",
+      "roles": [
+        "*"
+      ],
+      "summary": "Choose a profile photo from your device and confirm it is saved to your own account.",
+      "keywords": [
+        "profile picture",
+        "profile photo",
+        "profile image",
+        "avatar",
+        "change photo",
+        "upload profile picture",
+        "upload profile photo",
+        "update avatar",
+        "change avatar",
+        "headshot",
+        "display picture",
+        "account photo"
+      ],
+      "steps": [
+        "Sign in, open your account menu using the small profile picture, and choose Profile when available. Photographers choose Settings, then Account; editors choose Settings, then Profile. If your Settings page has a Profile tab, use that tab for your photo.",
+        "Select Change Photo beside your current picture. On Settings > Profile, first select the picture to open the Profile Picture panel, then choose Change Photo. These controls also work by tapping on a phone.",
+        "Choose a JPG, PNG or WebP image from your device that is smaller than 5 MB, and wait for Uploading to finish.",
+        "Clients using the Profile page must select Update My Info to save the uploaded photo. On the other account pages, the photo saves automatically; wait for the save confirmation.",
+        "Reopen the account page to confirm the new picture remains. These are instructions for changing your own photo; Robbie has not changed it for you."
+      ],
+      "troubleshooting": [
+        "For File too large, resize or compress the image below 5 MB. For Invalid file type or an unsupported image, use a JPG, PNG or WebP file instead.",
+        "An uploaded preview alone does not confirm the profile was saved. Clients should check Update My Info; on other pages, check for a save error before leaving.",
+        "If the upload requires authentication, sign in again and retry. If the picture disappears after reopening the page or you see Upload failed or Avatar save failed, note the error and contact support."
+      ],
+      "escalation": "Share your role, the page used, image type and size, and the visible error. Do not send passwords or verification codes.",
+      "links": [
+        {
+          "label": "Open your profile photo settings",
+          "url": "/profile?tab=profile"
+        }
+      ],
+      "sources": [
+        "frontend/src/components/layout/Navbar.tsx",
+        "frontend/src/pages/Profile.tsx",
+        "frontend/src/pages/profileNavigation.ts",
+        "frontend/src/pages/Settings.tsx",
+        "frontend/src/pages/PhotographerAccount.tsx",
+        "frontend/src/pages/photographerAccountNavigation.ts",
+        "frontend/src/components/profile/ClientProfile.tsx",
+        "frontend/src/components/profile/AdminProfile.tsx",
+        "frontend/src/components/profile/ImageUpload.tsx",
+        "backend/app/Http/Controllers/API/MediaUploadController.php"
+      ]
+    },
+    {
       "id": "support-contact",
       "title": "Contact a support team member",
       "category": "Support",
@@ -110,7 +158,7 @@
         "speak to"
       ],
       "steps": [
-        "Open Support from the dashboard menu or Support requests in Help & guides, then select New request.",
+        "Open Messaging and choose Support, then select New request. You can also use Support requests in Help & guides.",
         "Enter a short subject, choose a topic, and describe what you tried, what happened, the page and any relevant shoot or invoice reference. Include the visible error and date/time with timezone.",
         "Select Submit request. Only a saved request receives a SUP reference. Open that request to read replies, send updates or mark it resolved. A reply to a resolved request reopens it.",
         "Use search, the status filter and Previous or Next to find older requests. Use Older messages within a long conversation.",
@@ -124,11 +172,11 @@
       "links": [
         {
           "label": "Open Support requests",
-          "url": "/support"
+          "url": "/messaging/email/inbox?tab=support"
         },
         {
           "label": "Create a support request",
-          "url": "/support?new=1"
+          "url": "/messaging/email/inbox?tab=support&new=1"
         },
         {
           "label": "Call support",
@@ -143,7 +191,9 @@
         "backend/app/Support/SupportContact.php",
         "backend/app/Services/ReproAi/Flows/SupportFaqFlow.php",
         "backend/app/Services/SupportTicketService.php",
-        "frontend/src/pages/Support.tsx"
+        "frontend/src/pages/Support.tsx",
+        "frontend/src/pages/messaging/EmailInbox.tsx",
+        "frontend/src/pages/messaging/messagingSupport.ts"
       ]
     },
     {
@@ -193,11 +243,7 @@
       "title": "Book a shoot",
       "category": "Booking",
       "roles": [
-        "client",
-        "salesRep",
-        "admin",
-        "superadmin",
-        "editing_manager"
+        "*"
       ],
       "summary": "Enter the property, choose services and schedule, then review before submitting.",
       "keywords": [
@@ -211,7 +257,7 @@
         "book a shoot"
       ],
       "steps": [
-        "Choose Book Shoot. Staff should select the correct client; clients book under their own account.",
+        "If Book Shoot is available to your role, choose it. Clients book under their own account; authorized staff select the intended client.",
         "Enter the property address and required property information, then choose the services you need.",
         "Select the available date, time and photographer where the selected services require them. Review any per-service schedule.",
         "Review the property, services, schedule and total, submit once, and wait for the confirmation before making another booking."
@@ -237,11 +283,7 @@
       "title": "Book or review a property with multiple units",
       "category": "Booking",
       "roles": [
-        "client",
-        "salesRep",
-        "admin",
-        "superadmin",
-        "editing_manager"
+        "*"
       ],
       "summary": "Review each unit's details and services before confirming the combined booking.",
       "keywords": [
@@ -283,11 +325,7 @@
       "title": "Request a reschedule or cancellation",
       "category": "Booking",
       "roles": [
-        "client",
-        "salesRep",
-        "admin",
-        "superadmin",
-        "editing_manager"
+        "*"
       ],
       "summary": "Open the correct shoot and use the actions available to your role.",
       "keywords": [
@@ -326,11 +364,7 @@
       "title": "Prepare the property and access details",
       "category": "Booking",
       "roles": [
-        "client",
-        "salesRep",
-        "admin",
-        "superadmin",
-        "editing_manager"
+        "*"
       ],
       "summary": "Check the shoot details and coordinate access before the appointment.",
       "keywords": [
@@ -410,11 +444,7 @@
       "title": "Photos are not ready or the Download button is missing",
       "category": "Delivery",
       "roles": [
-        "client",
-        "salesRep",
-        "admin",
-        "superadmin",
-        "editing_manager"
+        "*"
       ],
       "summary": "Delivery, service release and payment status determine what can be downloaded.",
       "keywords": [
@@ -455,11 +485,7 @@
       "title": "Share tour links or use media in your MLS",
       "category": "Delivery",
       "roles": [
-        "client",
-        "salesRep",
-        "admin",
-        "superadmin",
-        "editing_manager"
+        "*"
       ],
       "summary": "Copy the delivered link that matches your use and follow your MLS requirements.",
       "keywords": [
@@ -499,13 +525,7 @@
       "title": "Report missing shots or request a correction",
       "category": "Delivery",
       "roles": [
-        "client",
-        "salesRep",
-        "photographer",
-        "editor",
-        "admin",
-        "superadmin",
-        "editing_manager"
+        "*"
       ],
       "summary": "Identify the exact shoot and files so the team can review the request.",
       "keywords": [
@@ -545,9 +565,7 @@
       "title": "Review an invoice or payment problem",
       "category": "Billing",
       "roles": [
-        "client",
-        "admin",
-        "superadmin"
+        "*"
       ],
       "summary": "Check the current invoice and payment state before attempting another payment.",
       "keywords": [
@@ -630,11 +648,7 @@
       "title": "Find Listing Studio and check a request",
       "category": "Delivery",
       "roles": [
-        "client",
-        "salesRep",
-        "admin",
-        "superadmin",
-        "editing_manager"
+        "*"
       ],
       "summary": "Listing Studio availability depends on your account and the services enabled for it.",
       "keywords": [
@@ -792,10 +806,7 @@
       "title": "Find your assigned shoots and schedule",
       "category": "Photography",
       "roles": [
-        "photographer",
-        "admin",
-        "superadmin",
-        "editing_manager"
+        "*"
       ],
       "summary": "Review assignment, property details and schedule before traveling.",
       "keywords": [
@@ -807,7 +818,7 @@
         "shoot address"
       ],
       "steps": [
-        "Open Dashboard or Shoot History and locate your assigned shoot.",
+        "For photographer accounts, open Dashboard or Shoot History and locate a shoot assigned to you.",
         "Review the property address, scheduled date/time, services and relevant notes.",
         "Check the service or unit assignment if other photographers are working on the same shoot.",
         "If the assignment, access or schedule is incorrect, contact operations before changing your plans."
@@ -833,10 +844,7 @@
       "title": "Set availability or block time",
       "category": "Photography",
       "roles": [
-        "photographer",
-        "salesRep",
-        "admin",
-        "superadmin"
+        "*"
       ],
       "summary": "Use Availability for date-specific or repeating schedules.",
       "keywords": [
@@ -849,7 +857,7 @@
         "add schedule"
       ],
       "steps": [
-        "Open Availability and select the intended photographer where a selector is available.",
+        "If Availability is available to your role, open it and select your own schedule, or a photographer you are authorized to manage.",
         "Use Add Schedule for a date range or enable the weekly repeating option and select the relevant days.",
         "Set the start/end time and Available or Unavailable state, then choose Add Schedule.",
         "Use the calendar to verify the saved range; use Block Time for an unavailable period when that control is available."
@@ -876,10 +884,7 @@
       "title": "Connect or troubleshoot your calendar",
       "category": "Photography",
       "roles": [
-        "photographer",
-        "admin",
-        "superadmin",
-        "editing_manager"
+        "*"
       ],
       "summary": "Check the calendar connection and compare the dashboard schedule when events differ.",
       "keywords": [
@@ -892,7 +897,7 @@
         "timezone"
       ],
       "steps": [
-        "Open Availability and its calendar sync controls.",
+        "If Availability is available to your role, open it and its calendar sync controls.",
         "Choose the calendar option offered. For Google connection, complete the authorization using the intended account.",
         "Review the displayed connection status or export result.",
         "Compare a specific event against the shoot schedule and timezone in the dashboard."
@@ -919,10 +924,7 @@
       "title": "Upload shoot files and recover failed files",
       "category": "Photography",
       "roles": [
-        "photographer",
-        "admin",
-        "superadmin",
-        "editing_manager"
+        "*"
       ],
       "summary": "Upload to the correct shoot and service, and use per-file results to recover failures.",
       "keywords": [
@@ -935,7 +937,7 @@
         "stuck upload"
       ],
       "steps": [
-        "Open the assigned shoot and its Media area, then confirm the intended unit/service and raw upload section.",
+        "For assigned photographers or staff with upload permission, open the shoot and its Media area, then confirm the intended unit/service and raw upload section.",
         "Choose files and review the displayed size/type limits and classifications.",
         "Choose Upload Files and keep the page open while transfer and server processing finish.",
         "Review the accepted and failed file results. Retry the remaining eligible files rather than re-uploading the entire successful batch."
@@ -1002,10 +1004,7 @@
       "title": "Upload edited files and submit for review",
       "category": "Editing",
       "roles": [
-        "editor",
-        "editing_manager",
-        "admin",
-        "superadmin"
+        "*"
       ],
       "summary": "Keep edited files tied to the assigned shoot/service and confirm submission separately from transfer.",
       "keywords": [
@@ -1017,7 +1016,7 @@
         "my pay"
       ],
       "steps": [
-        "Open the assigned shoot and confirm the correct unit and service.",
+        "For assigned editors or staff with edited-upload permission, open the shoot and confirm the correct unit and service.",
         "Use the edited upload area, select files and check classification and displayed limits.",
         "Use Upload Edited Files or the available upload-and-submit action, then review the per-file result.",
         "If submission is separate, complete the available submit action and check the resulting workflow state."
@@ -1142,7 +1141,7 @@
       ],
       "steps": [
         "Open Calls, then People to find a client, rep, photographer or team contact. Search by name, company or phone, narrow by role and use the page controls for more results.",
-        "Choose Call beside the intended person, or New call to enter another number. Review the destination and business line before starting. The normal Call action starts a human call; AI calling is a separate choice.",
+        "Choose Call beside the intended person, or the Call button beside the top tabs to enter another number. Review the destination and business line before starting. The normal Call action starts a human call; AI calling is a separate choice.",
         "Allow the microphone prompt when requested. The app connects the browser and starts the call through one flow. Keep the call open while it is connecting; Cancel stops a start that is still pending.",
         "For a shared incoming call, choose Answer in browser, or answer your verified phone and press 1 when prompted. The first successful claim receives the caller. Another admin may have answered by the time you open an alert.",
         "Use the active call controls to mute, hold, use the keypad or end the call. Review the conversation and recap afterward."
@@ -1185,7 +1184,7 @@
         "forwarding"
       ],
       "steps": [
-        "Open Calls → Settings → Audio & alerts. Turn on Available for incoming calls when you can answer.",
+        "Open Calls and choose Audio & alerts in the top tabs. Scroll the tab row or use its arrows if that tab is outside the visible area. Turn on Available for incoming calls when you can answer.",
         "Under Call alerts on this device, choose a recognizable device name, select Enable this device and allow notifications. Keep Incoming call alerts on my devices enabled.",
         "Select Send test alert and check for the actual system notification. A push-service acceptance message alone does not confirm that the notification appeared.",
         "On iPhone or iPad, install the dashboard from Safari’s Share menu → Add to Home Screen, open that app and enable its alerts. Notification support and permissions depend on your browser and device.",
@@ -1194,6 +1193,7 @@
       ],
       "troubleshooting": [
         "If notifications are blocked, enable them in site/device settings. Check connectivity, system volume, Focus / Do Not Disturb and battery restrictions. Test each browser and phone separately.",
+        "If Enable this device reports Registration failed - push service error, the browser has not created its push channel and this device is not enabled. Fully close and reopen the browser, check for browser updates, then retry on this REPro page. Send test alert appears only after registration succeeds. Google Voice settings do not enable REPro browser alerts.",
         "If setup reports a blocker or a queued test never finishes, an administrator must check push configuration and the notification queue worker. Repeatedly enabling the same device is not a delivery guarantee.",
         "A verified carrier number is distinct from browser push. An expired verification code must be requested again. A busy or unavailable admin is not offered a second call.",
         "Logging out or losing Calls permission revokes this device’s alerts. Sign in again and enable the device if necessary."
@@ -1263,7 +1263,7 @@
       "roles": [
         "*"
       ],
-      "summary": "Ask a specific how-to question and use the linked guide for the next step.",
+      "summary": "Ask a how-to question and get general dashboard steps immediately, without a verification code.",
       "keywords": [
         "robbie",
         "help guides",
@@ -1276,11 +1276,12 @@
         "Open Chat With Robbie and use Help & guides to search the knowledge base available to your role.",
         "Ask a specific question such as how to download photos, recover an upload or check an invoice.",
         "Follow the answer's guide and page links; describe the exact step and visible error if you are still stuck.",
-        "For account-specific decisions or unsupported issues, use the support contact guidance."
+        "General download, upload, booking and navigation help does not require an identity code. Private account or property details and actions need authorized account access; phone Robbie verifies identity before accessing those records."
       ],
       "troubleshooting": [
         "For reps, photographers and editors, Robbie support chat provides instructions; it does not perform bookings, payments or file changes.",
-        "A guide explains the workflow and is not live confirmation of a booking, payment, assignment or support ticket."
+        "A guide explains the workflow and is not live confirmation of a booking, payment, assignment or support ticket.",
+        "Robbie must not say a code, message, booking or other action was sent or completed unless the appropriate tool confirms it."
       ],
       "escalation": "If Robbie cannot match your question, include your role, page and error when contacting support. Never share passwords or access credentials.",
       "links": [
@@ -1314,7 +1315,7 @@
         "support request"
       ],
       "steps": [
-        "Open Support inbox and find a request using its subject or SUP reference. Narrow by status and use Previous or Next for older requests.",
+        "Open Messaging and choose Support. Find a request using its subject or SUP reference. Narrow by status and use Previous or Next for older requests.",
         "Choose an available administrator under Assigned to, set Status and choose Normal or Urgent priority.",
         "Write a Reply to send an update visible to the requester. Select Internal note · admins only for staff investigation that must not appear to the requester.",
         "Use Waiting when more information is needed and Resolved after checking the affected workflow. A new requester reply to a waiting or resolved case reopens it.",
@@ -1329,11 +1330,13 @@
       "links": [
         {
           "label": "Open Support inbox",
-          "url": "/support"
+          "url": "/messaging/email/inbox?tab=support"
         }
       ],
       "sources": [
         "frontend/src/pages/Support.tsx",
+        "frontend/src/pages/messaging/EmailInbox.tsx",
+        "frontend/src/pages/messaging/messagingSupport.ts",
         "backend/app/Services/SupportTicketService.php",
         "backend/app/Http/Controllers/API/SupportTicketController.php"
       ]
@@ -1379,6 +1382,54 @@
         "frontend/src/pages/voice/CallsFollowUps.tsx",
         "frontend/src/pages/voice/ScheduleVoiceCallDialog.tsx",
         "backend/app/Http/Controllers/API/Voice/ScheduledVoiceCallController.php"
+      ]
+    },
+    {
+      "id": "dashboard-navigation",
+      "title": "Find dashboard pages and navigation",
+      "category": "Account",
+      "roles": [
+        "*"
+      ],
+      "summary": "Use the dashboard navigation to find the pages available to your signed-in account and role.",
+      "keywords": [
+        "navigation",
+        "navigate",
+        "menu",
+        "sidebar",
+        "dashboard navigation",
+        "find a page",
+        "dashboard pages"
+      ],
+      "steps": [
+        "On desktop, use the dashboard sidebar. On a phone, open Menu for the available pages.",
+        "Choose Shoot History to find shoots your account can access; clear search or date filters if a record is missing. Book Shoot appears for roles allowed to book.",
+        "Open Messaging and choose Support for support requests. Use Chat With Robbie, then Help & guides, for reviewed instructions.",
+        "If a page or action is missing, confirm your account and role and ask support to review access. A guide or copied link does not grant permission."
+      ],
+      "troubleshooting": [
+        "Navigation differs by role and permission; not every account has upload, booking, billing or staff controls.",
+        "These are general navigation steps. Robbie does not need a verification code to explain them and has not looked up private records."
+      ],
+      "escalation": "Tell support the page you were trying to find and the visible error. Do not share passwords or access codes.",
+      "links": [
+        {
+          "label": "Open Shoot History",
+          "url": "/shoot-history"
+        },
+        {
+          "label": "Open Support",
+          "url": "/messaging/email/inbox?tab=support"
+        },
+        {
+          "label": "Open Help & guides",
+          "url": "/chat-with-reproai?tab=help"
+        }
+      ],
+      "sources": [
+        "frontend/src/components/layout/sidebar/SidebarLinks.tsx",
+        "frontend/src/components/layout/MobileMenu.tsx",
+        "frontend/src/pages/messaging/EmailInbox.tsx"
       ]
     }
   ]

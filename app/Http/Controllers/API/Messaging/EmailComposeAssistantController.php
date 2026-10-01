@@ -11,6 +11,7 @@ class EmailComposeAssistantController extends Controller
 {
     public function __invoke(Request $request, EmailComposeAssistant $assistant): JsonResponse
     {
+        app(\App\Services\Messaging\DashboardMessagingPolicy::class)->authorizeEmail($request->user(), true);
         $validated = $request->validate([
             'mode' => ['required', 'string', 'in:write,shorter,warmer,clearer,subject,from_shoot'],
             'instruction' => ['nullable', 'string', 'max:2000'],

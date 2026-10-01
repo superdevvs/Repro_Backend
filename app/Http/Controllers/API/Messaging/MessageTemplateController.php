@@ -252,7 +252,21 @@ class MessageTemplateController extends Controller
             $data['recipient_user_id'] ?? null,
         );
 
-        $recipients = $manual->listRecipients($shoot, $data['recipient_type']);
+        $blockedCount = (int) data_get($message->metadata, 'manual_delivery.blocked_count', $message->status === 'BLOCKED' ? 1 : 0);
+        $sentCount = (int) data_get($message->metadata, 'manual_delivery.sent_count', $message->status === 'BLOCKED' ? 0 : 1);
+        if ($blockedCount > 0) {
+            return response()->json([
+                'status' => $sentCount > 0 ? 'partial' : 'blocked',
+                'message' => $sentCount > 0
+                    ? "{$sentCount} notifications sent; {$blockedCount} blocked by recipient notification settings."
+                    : ($message->error_message ?: 'This notification was not sent.'),
+                'message_id' => $message->id,
+                'sent_count' => $sentCount,
+                'blocked_count' => $blockedCount,
+            ], 422);
+        }
+
+        $recipients = $manual->listRecipients($shoot, $data['recipient_type'], $data['type']);
         if (! empty($data['recipient_user_id'])) {
             $recipients = array_values(array_filter(
                 $recipients,
@@ -303,7 +317,7 @@ class MessageTemplateController extends Controller
     {
         $data = $request->validate([
             'shoot_id' => ['required', 'integer', 'exists:shoots,id'],
-            'recipient_type' => ['nullable', Rule::in(['client', 'photographer'])],
+            'recipient_type' => ['nullable', Rule::in(['client', 'photographer', 'rep'])],
         ]);
 
         $shoot = Shoot::with(['client', 'photographer', 'services'])->findOrFail($data['shoot_id']);
@@ -355,7 +369,7 @@ class MessageTemplateController extends Controller
         $rules = [
             'shoot_id' => ['required', 'integer', 'exists:shoots,id'],
             'type' => ['required', 'string', Rule::in(array_keys(ManualNotificationService::TYPES))],
-            'recipient_type' => ['required', Rule::in(['client', 'photographer'])],
+            'recipient_type' => ['required', Rule::in(['client', 'photographer', 'rep'])],
             'channel' => [$requireChannel ? 'required' : 'nullable', Rule::in(['email', 'sms'])],
             'recipient_user_id' => ['nullable', 'integer', 'exists:users,id'],
         ];

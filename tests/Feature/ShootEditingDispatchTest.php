@@ -49,6 +49,21 @@ class ShootEditingDispatchTest extends TestCase
         Queue::assertPushed(ProcessStudioWorkspace::class, 2);
     }
 
+    public function test_sending_a_failed_intake_resumes_its_saved_operation_once(): void
+    {
+        [$shoot] = $this->shoot();
+        $first = $this->send($shoot)->assertAccepted();
+        $workspace = StudioWorkspace::findOrFail($first->json('data.workspaces.0.id'));
+        $operation = $workspace->operation;
+        $workspace->update(['status' => 'failed', 'error' => 'worker failed']);
+        $this->send($shoot)->assertAccepted()->assertJsonPath('data.workspaces.0.status', 'generating');
+        $this->send($shoot)->assertAccepted();
+        $this->assertSame($operation, $workspace->fresh()->operation);
+        $this->assertNull($workspace->fresh()->error);
+        $this->assertSame(1, StudioWorkspace::count());
+        Queue::assertPushed(ProcessStudioWorkspace::class, 2);
+    }
+
     public function test_addon_targets_are_required_and_linked_under_the_same_shoot(): void
     {
         [$shoot, $files] = $this->shoot(['Photos', 'Virtual Staging', 'Green Grass']);

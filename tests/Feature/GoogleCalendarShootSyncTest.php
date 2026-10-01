@@ -121,7 +121,7 @@ class GoogleCalendarShootSyncTest extends TestCase
                     'timeZone' => 'America/New_York',
                 ]
                 && ($request['end'] ?? null) === [
-                    'dateTime' => $expectedStart->copy()->addMinutes(120)->toRfc3339String(),
+                    'dateTime' => $expectedStart->copy()->addMinutes(60)->toRfc3339String(),
                     'timeZone' => 'America/New_York',
                 ]
                 && ($request['location'] ?? null) === '100 Sync Street, Baltimore, MD 21201'
@@ -130,6 +130,8 @@ class GoogleCalendarShootSyncTest extends TestCase
                 && str_contains($description, 'Bring the wide-angle lens.')
                 && !str_contains($description, 'Internal dispatch detail');
         });
+
+        $this->assertSame([60, 60], $shoot->serviceItems()->orderBy('id')->pluck('duration_minutes')->all());
 
         $this->assertSame(
             1,

@@ -562,6 +562,16 @@ class CakemailProvider implements EmailProviderInterface
      */
     public function registerWebhook(string $event, string $url): ?string
     {
+        // Keep legacy application callers while sending CakeMail's case-sensitive event names.
+        $event = match (strtolower(trim($event))) {
+            'email.delivered' => 'Email.Delivered',
+            'email.opened' => 'Email.Opened',
+            'email.clicked' => 'Email.Clicked',
+            'email.bounced' => 'Email.Bounced',
+            'email.unsubscribed' => 'Email.Unsubscribed',
+            default => $event,
+        };
+
         $token = $this->getAccessToken();
 
         if (! $token) {

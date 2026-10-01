@@ -105,6 +105,7 @@ class VapiVoiceTest extends TestCase
     public function test_vapi_tool_call_creates_confirmation_invocation_for_risky_tool(): void
     {
         $call = $this->createInboundCall();
+        $call->update(['verified_at' => now()]);
 
         $this->postJson('/api/webhooks/vapi', [
             'message' => [
@@ -142,6 +143,20 @@ class VapiVoiceTest extends TestCase
 
         $this->assertSame(1, VoiceCallEvent::query()->where('provider', 'vapi')->count());
         $this->assertSame(1, VoiceCall::query()->where('vapi_call_id', 'vapi-call-1')->count());
+    }
+
+    public function test_late_tool_webhook_cannot_reopen_a_closed_call(): void
+    {
+        $call = $this->createInboundCall();
+        foreach (['completed', 'canceled', 'no_answer'] as $status) {
+            $call->update(['status' => $status, 'ended_at' => $status === 'completed' ? now() : null]);
+            $this->postJson('/api/webhooks/vapi', ['message' => [
+                'type' => 'tool-calls', 'call' => $this->vapiCall(),
+                'toolCallList' => [['id' => 'late-tool-'.$status, 'function' => ['name' => 'get_pricing', 'arguments' => []]]],
+            ]])->assertOk()->assertJsonPath('tool_response.result.error', 'trusted_call_not_found');
+            $this->assertSame($status, $call->fresh()->status);
+        }
+        $this->assertDatabaseCount('voice_call_tool_invocations', 0);
     }
 
     public function test_vapi_outbound_remains_available_only_when_explicitly_selected(): void

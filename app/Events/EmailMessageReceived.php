@@ -3,8 +3,8 @@
 namespace App\Events;
 
 use App\Models\Message;
-use Illuminate\Broadcasting\PrivateChannel;
 use Illuminate\Broadcasting\InteractsWithSockets;
+use Illuminate\Broadcasting\PrivateChannel;
 use Illuminate\Contracts\Broadcasting\ShouldBroadcast;
 use Illuminate\Foundation\Events\Dispatchable;
 use Illuminate\Queue\SerializesModels;
@@ -15,13 +15,16 @@ class EmailMessageReceived implements ShouldBroadcast
     use InteractsWithSockets;
     use SerializesModels;
 
-    public function __construct(public Message $message)
+    public function __construct(public Message $message) {}
+
+    public function broadcastWhen(): bool
     {
+        return ! \App\Models\SupportTicketMessage::where('source_message_id', $this->message->id)->exists();
     }
 
     public function broadcastOn(): array
     {
-        $isInternal = $this->message->provider === 'INTERNAL' && !empty($this->message->related_shoot_id);
+        $isInternal = $this->message->provider === 'INTERNAL' && ! empty($this->message->related_shoot_id);
 
         if ($isInternal) {
             $this->message->loadMissing('thread');
@@ -30,7 +33,7 @@ class EmailMessageReceived implements ShouldBroadcast
                 ->map(fn ($userId) => (int) $userId)
                 ->filter()
                 ->unique()
-                ->map(fn ($userId) => new PrivateChannel('email.user.' . $userId))
+                ->map(fn ($userId) => new PrivateChannel('email.user.'.$userId))
                 ->values()
                 ->all();
         }
@@ -41,7 +44,7 @@ class EmailMessageReceived implements ShouldBroadcast
         if ($this->message->to_address) {
             $recipient = \App\Models\User::where('email', $this->message->to_address)->first();
             if ($recipient) {
-                $channels[] = new PrivateChannel('email.user.' . $recipient->id);
+                $channels[] = new PrivateChannel('email.user.'.$recipient->id);
             }
         }
 

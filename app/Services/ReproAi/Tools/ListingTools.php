@@ -7,6 +7,8 @@ use Illuminate\Support\Facades\Log;
 
 class ListingTools
 {
+    public function __construct(private readonly RobbieRecordAccess $access) {}
+
     /**
      * Get listing details
      * Note: Using Shoot model as listing representation for now
@@ -30,7 +32,7 @@ class ListingTools
 
             // For now, use Shoot model as listing representation
             // In a real system, you'd have a separate Listing model
-            $shoot = $this->resolveListing($params, ['client', 'services']);
+            $shoot = $this->resolveListing($params, $context, ['client', 'services']);
             
             if (!$shoot) {
                 return [
@@ -45,7 +47,7 @@ class ListingTools
                     'id' => $shoot->id,
                     'address' => "{$shoot->address}, {$shoot->city}, {$shoot->state} {$shoot->zip}",
                     'title' => "Property at {$shoot->address}",
-                    'description' => $shoot->notes ?? $shoot->shoot_notes ?? 'No description available.',
+                    'description' => $this->access->description($shoot, $this->access->actor($context)) ?? 'No description available.',
                     'status' => $shoot->status,
                     'scheduled_date' => $shoot->scheduled_date?->toDateString(),
                     'services' => $shoot->services->pluck('name')->toArray(),
@@ -84,7 +86,7 @@ class ListingTools
                 ];
             }
 
-            $shoot = $this->resolveListing($params);
+            $shoot = $this->resolveListing($params, $context);
             
             if (!$shoot) {
                 return [
@@ -93,10 +95,16 @@ class ListingTools
                 ];
             }
 
+            $actor = $this->access->actor($context);
+            if (! $this->access->canChangeNote($shoot, $actor, 'shoot_notes')) {
+                return ['success' => false, 'error' => 'You do not have permission to update this listing.'];
+            }
             $updates = [];
             
             if (isset($params['description'])) {
-                $updates['notes'] = $params['description'];
+                if ($this->access->canChangeNote($shoot, $actor, 'notes')) {
+                    $updates['notes'] = $params['description'];
+                }
                 $updates['shoot_notes'] = $params['description'];
             }
 
@@ -133,17 +141,21 @@ class ListingTools
     public function getListingsNeedingMedia(array $params, array $context = []): array
     {
         try {
-            $userId = $context['user_id'] ?? auth()->id();
+            $actor = $this->access->actor($context);
+            if (! $actor) return ['success' => false, 'error' => 'An authorized account is required.'];
+            $userId = $actor->id;
             
             // Find shoots with missing media or old media
-            $shoots = Shoot::where('client_id', $userId)
+            $shoots = $this->access->query($actor)->where('client_id', $userId)
                 ->where(function ($query) {
                     $query->where('missing_raw', true)
                         ->orWhere('missing_final', true)
                         ->orWhereNull('hero_image');
                 })
                 ->with('services')
-                ->get();
+                ->get()
+                ->filter(fn (Shoot $shoot) => $this->access->canRead($shoot, $actor))
+                ->values();
 
             return [
                 'success' => true,
@@ -171,18 +183,15 @@ class ListingTools
         }
     }
 
-    private function resolveListing(array $params, array $relations = []): ?Shoot
+    private function resolveListing(array $params, array $context, array $relations = []): ?Shoot
     {
         $listingId = $params['listing_id'] ?? null;
         $address = $params['address'] ?? null;
 
-        $baseQuery = Shoot::query();
-        if (!empty($relations)) {
-            $baseQuery->with($relations);
-        }
+        $actor = $this->access->actor($context);
 
         if ($listingId) {
-            return $baseQuery->find($listingId);
+            return $this->access->find($listingId, $actor, $relations);
         }
 
         if (!$address) {
@@ -190,7 +199,7 @@ class ListingTools
         }
 
         $parts = $this->parseAddressParts($address);
-        $query = Shoot::query();
+        $query = $this->access->query($actor);
         if (!empty($relations)) {
             $query->with($relations);
         }
@@ -209,17 +218,17 @@ class ListingTools
         }
 
         $shoot = $query->orderBy('created_at', 'desc')->first();
-        if ($shoot) {
+        if ($shoot && $this->access->canRead($shoot, $actor)) {
             return $shoot;
         }
 
-        $fallbackQuery = Shoot::query();
+        $fallbackQuery = $this->access->query($actor);
         if (!empty($relations)) {
             $fallbackQuery->with($relations);
         }
         $raw = $parts['raw'] ?? $address;
 
-        return $fallbackQuery
+        $fallback = $fallbackQuery
             ->where(function ($builder) use ($raw) {
                 $builder->where('address', 'like', '%' . $raw . '%')
                     ->orWhere('city', 'like', '%' . $raw . '%')
@@ -227,6 +236,8 @@ class ListingTools
             })
             ->orderBy('created_at', 'desc')
             ->first();
+
+        return $fallback && $this->access->canRead($fallback, $actor) ? $fallback : null;
     }
 
     private function parseAddressParts(string $address): array

@@ -24,6 +24,8 @@
         <env name="APP_MAINTENANCE_DRIVER" value="file"/>
         <env name="BCRYPT_ROUNDS" value="4"/>
         <env name="CACHE_STORE" value="array"/>
+        <env name="VOICE_LOCK_STORE" value="array" force="true"/>
+        <env name="VOICE_CACHE_STORE" value="array" force="true"/>
         <!-- force: without it these are ignored whenever the surrounding
              environment already defines DB_*, which let CI run the suite against
              a persistent sqlite file. Tables then leaked between tests and

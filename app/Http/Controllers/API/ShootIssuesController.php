@@ -66,7 +66,7 @@ class ShootIssuesController extends Controller
     public function getIssues($shootId, Request $request)
     {
         $shoot = Shoot::findOrFail($shootId);
-        $this->shootAuthorizationSupport->ensureShootAccess($shoot, $request->user());
+        abort_unless($this->shootAuthorizationSupport->canViewShootRequests($shoot, $request->user()), 403, 'Forbidden');
 
         return response()->json([
             'data' => $this->shootIssueParsingService->parseShootRequests($shoot, $request->user()),
@@ -77,7 +77,9 @@ class ShootIssuesController extends Controller
     {
         $shoot = Shoot::findOrFail($shootId);
         $user = $request->user();
-        abort_unless($this->shootAuthorizationSupport->canSubmitShootRequest($shoot, $user), 403, 'Forbidden');
+        abort_unless($this->shootAuthorizationSupport->canSubmitShootRequest($shoot, $user)
+            || ($this->shootAuthorizationSupport->canTriageShootRequests($shoot, $user)
+                && (string) $shoot->rep_id === (string) $user->id), 403, 'Forbidden');
 
         $validated = $request->validate([
             'note' => 'required|string',
@@ -89,7 +91,7 @@ class ShootIssuesController extends Controller
         ]);
 
         $assignedToRole = $validated['assignedToRole'] ?? null;
-        if (! $this->shootAuthorizationSupport->canManageShootOperations($user)) {
+        if (! $this->shootAuthorizationSupport->canTriageShootRequests($shoot, $user)) {
             $assignedToRole = null;
             $validated['assignedToUserId'] = null;
         }
@@ -132,11 +134,12 @@ class ShootIssuesController extends Controller
     public function updateIssue($shootId, $issueId, Request $request)
     {
         $shoot = Shoot::findOrFail($shootId);
-        abort_unless($this->shootAuthorizationSupport->canResolveShootIssues($shoot, $request->user()), 403, 'Forbidden');
+        $canTriage = $this->shootAuthorizationSupport->canTriageShootRequests($shoot, $request->user());
+        abort_unless($canTriage || $this->shootAuthorizationSupport->canResolveShootIssues($shoot, $request->user()), 403, 'Forbidden');
         $visibleIssue = collect($this->shootIssueParsingService->parseShootRequests($shoot, $request->user()))
             ->firstWhere('id', (string) $issueId);
         abort_unless($visibleIssue, 404, 'Request not found');
-        if (! $this->shootAuthorizationSupport->canManageShootOperations($request->user())) {
+        if (! $canTriage) {
             abort_if(! empty($visibleIssue['assignedToRole'])
                 && ! $this->shootAuthorizationSupport->hasRole($request->user(), [$visibleIssue['assignedToRole']]), 403, 'Forbidden');
         }
@@ -166,11 +169,7 @@ class ShootIssuesController extends Controller
     {
         $shoot = Shoot::findOrFail($shootId);
         $user = $request->user();
-        $this->shootAuthorizationSupport->ensureShootAccess($shoot, $user);
-
-        if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager'], true)) {
-            return response()->json(['message' => 'Only admins can assign requests'], 403);
-        }
+        abort_unless($this->shootAuthorizationSupport->canTriageShootRequests($shoot, $user), 403, 'Only office staff and sales reps can assign requests');
 
         $validated = $request->validate([
             'assignedToRole' => 'required|in:editor,photographer',
@@ -183,6 +182,7 @@ class ShootIssuesController extends Controller
             (string) $issueId,
             $validated['assignedToRole'],
             isset($validated['assignedToUserId']) ? (int) $validated['assignedToUserId'] : null,
+            $user,
         );
 
         if (!$updatedRequest) {
@@ -199,7 +199,8 @@ class ShootIssuesController extends Controller
     public function getClientRequests(Request $request)
     {
         $user = $request->user();
-        if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager', 'editor', 'photographer', 'client'], true)) {
+        $canReview = $this->shootAuthorizationSupport->canReviewShootRequests($user);
+        if (! $canReview && ! $this->shootAuthorizationSupport->hasRole($user, ['editor', 'photographer', 'client'])) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
@@ -207,16 +208,16 @@ class ShootIssuesController extends Controller
             ->where('admin_issue_notes', 'like', '%[Request from%')
             ->with(['client:id,name']);
 
-        if ($user->role === 'editor') {
+        if (! $canReview && $user->role === 'editor') {
             $this->shootEditingAssignmentService->scopeAssignedToEditor($shootsQuery, $user->id);
-        } elseif ($user->role === 'photographer') {
+        } elseif (! $canReview && $user->role === 'photographer') {
             $shootsQuery->where(function ($query) use ($user) {
                 $query->where('photographer_id', $user->id)
                     ->orWhereHas('services', function ($serviceQuery) use ($user) {
                         $serviceQuery->where('shoot_service.photographer_id', $user->id);
                     });
             });
-        } elseif ($user->role === 'client') {
+        } elseif (! $canReview && $user->role === 'client') {
             $linkedClientIds = AccountLink::query()
                 ->where('main_account_id', $user->id)
                 ->where('status', 'active')
@@ -231,7 +232,7 @@ class ShootIssuesController extends Controller
             ])));
         }
 
-        $shoots = $this->shootAuthorizationSupport->scopeAccessibleShootMedia($shootsQuery, $user)->get();
+        $shoots = $this->shootAuthorizationSupport->scopeAccessibleShootRequests($shootsQuery, $user)->get();
 
         return response()->json([
             'data' => $this->shootIssueParsingService->parseClientRequests($shoots, $user),

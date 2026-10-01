@@ -8,8 +8,8 @@ use App\Models\VoiceCall;
 use App\Models\VoicePushDelivery;
 use App\Models\VoicePushSubscription;
 use App\Support\LockedWrite;
+use App\Support\VoiceLocks;
 use Carbon\CarbonInterface;
-use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Minishlink\WebPush\VAPID;
@@ -145,7 +145,7 @@ class VoicePushService
     {
         // Duplicate/retried queue jobs must not send concurrently. The shared cache
         // lock outlives the bounded HTTP request and is released on exceptions.
-        Cache::lock('voice-push-delivery:'.$id, 30)->get(fn () => $this->deliverOnce($id));
+        VoiceLocks::lock('voice-push-delivery:'.$id, 30)->get(fn () => $this->deliverOnce($id));
     }
 
     private function deliverOnce(string $id): void

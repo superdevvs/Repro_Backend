@@ -12,6 +12,7 @@ use App\Models\ShootService;
 use App\Models\User;
 use App\Services\MailService;
 use App\Services\Schedule\ScheduleInstantResolver;
+use App\Services\Shoots\ShootSalesRepResolver;
 use Carbon\Carbon;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\Log;
@@ -22,19 +23,7 @@ class AutomationService
 
     private const ADMIN_ROLES = ['admin', 'superadmin', 'super_admin', 'editing_manager'];
 
-    /**
-     * Rolling look-ahead window (in months, measured from "now") for materializing the monthly
-     * (last-Sunday) phase of the payment-reminder cadence (Req 4.6).
-     *
-     * The cadence has no natural end: a shoot that stays unpaid keeps receiving one reminder per
-     * month on the last Sunday for as long as it remains unpaid. To keep that effectively
-     * unbounded cadence from ever materializing an infinite number of rows, scheduling only looks
-     * ahead this many months from the current time (or the anchor, whichever is later) and is
-     * re-run on a recurring sweep (`messaging:payment-reminders-sweep`) on a cadence SHORTER than
-     * this window — so the next last-Sunday reminder is always materialized before it is due,
-     * while only a bounded number of pending rows exist at any moment. The
-     * (shoot_id, scheduled_date) upsert makes every re-run idempotent.
-     */
+    /** Bound the weekly series; a recurring sweep extends it while the balance remains. */
     private const PAYMENT_REMINDER_LOOKAHEAD_MONTHS = 3;
 
     public function __construct(
@@ -106,7 +95,7 @@ class AutomationService
     /**
      * Persist the automated Payment_Reminder schedule for a shoot (Req 12.11-12.15).
      *
-     * The cadence is anchored to the shoot's `shoot_ready_notified_at` timestamp (Req 12.10/12.11)
+     * The cadence starts after full delivery and an accepted ready notice, using the later timestamp
      * and computed by the pure {@see PaymentReminderScheduler}. Each reminder is upserted keyed by
      * `(shoot_id, scheduled_date)` so re-running this method (e.g. after a payment status change,
      * a redeploy, or a scheduled sweep) never produces a duplicate row for the same date
@@ -123,7 +112,7 @@ class AutomationService
     {
         // Stop-on-paid (Req 12.14): a paid shoot gets no new reminders and any pending ones are
         // cancelled. Re-running the scheduler after payment therefore self-heals the schedule.
-        if ($shoot->suppressesExternalNotifications() || $this->isShootPaid($shoot)) {
+        if (! app(ShootPaymentReminderEligibility::class)->isEligible($shoot)) {
             $this->cancelPaymentReminders($shoot);
 
             return [];
@@ -131,10 +120,11 @@ class AutomationService
 
         $paymentRule = AutomationRule::active()->forTrigger('SHOOT_PAYMENT_REMINDER')->first();
         if (! $paymentRule && AutomationRule::forTrigger('SHOOT_PAYMENT_REMINDER')->exists()) {
+            $this->cancelPaymentReminders($shoot);
             return [];
         }
 
-        $anchor = $shoot->shoot_ready_notified_at;
+        $anchor = app(ShootPaymentReminderEligibility::class)->reminderAnchor($shoot);
         if ($anchor === null) {
             // Cadence is anchored to shoot_ready_notified_at; without it there is nothing to schedule.
             return [];
@@ -156,19 +146,17 @@ class AutomationService
 
         $scheduler = $this->paymentReminderScheduler ?? new PaymentReminderScheduler;
         $timestamps = $scheduler->schedule($start, $horizonEnd, $paymentRule?->schedule_json ?? []);
-        if ($paymentRule) {
-            $desired = collect($timestamps)->keyBy(fn ($timestamp) => $timestamp->toDateString());
-            PaymentReminder::where('shoot_id', $shoot->id)->where('status', PaymentReminder::STATUS_PENDING)
-                ->get()->each(function (PaymentReminder $reminder) use ($desired, $now): void {
-                    $date = CarbonImmutable::parse($reminder->scheduled_date)->toDateString();
-                    $target = $desired->get($date);
-                    if (! $target || $target->lessThan($now->startOfDay())) {
-                        $reminder->update(['status' => PaymentReminder::STATUS_CANCELLED]);
-                    } elseif ($target && ! $target->equalTo($reminder->scheduled_at)) {
-                        $reminder->update(['scheduled_at' => $target]);
-                    }
-                });
-        }
+        $desired = collect($timestamps)->keyBy(fn ($timestamp) => $timestamp->toDateString());
+        PaymentReminder::where('shoot_id', $shoot->id)->where('status', PaymentReminder::STATUS_PENDING)
+            ->get()->each(function (PaymentReminder $reminder) use ($desired, $now): void {
+                $date = CarbonImmutable::parse($reminder->scheduled_date)->toDateString();
+                $target = $desired->get($date);
+                if (! $target || $target->lessThan($now->startOfDay())) {
+                    $reminder->update(['status' => PaymentReminder::STATUS_CANCELLED]);
+                } elseif ($target && ! $target->equalTo($reminder->scheduled_at)) {
+                    $reminder->update(['scheduled_at' => $target]);
+                }
+            });
 
         $reminders = [];
         foreach ($timestamps as $timestamp) {
@@ -209,12 +197,10 @@ class AutomationService
     public function paymentReminderIsCurrent(PaymentReminder $reminder): bool
     {
         $configured = AutomationRule::forTrigger('SHOOT_PAYMENT_REMINDER')->exists();
-        if (! $configured) {
-            return true;
-        }
         $rule = AutomationRule::active()->forTrigger('SHOOT_PAYMENT_REMINDER')->first();
         $shoot = $reminder->shoot;
-        if (! $rule || ! $shoot || ! $shoot->shoot_ready_notified_at || $reminder->scheduled_at->lt(now()->startOfDay())) {
+        if (($configured && ! $rule) || ! $shoot || ! app(ShootPaymentReminderEligibility::class)->isEligible($shoot)
+            || ! $reminder->scheduled_at || $reminder->scheduled_at->lt(now()->startOfDay())) {
             $reminder->update(['status' => PaymentReminder::STATUS_CANCELLED]);
 
             return false;
@@ -298,9 +284,13 @@ class AutomationService
      */
     public function sendPaymentReminder(Shoot $shoot): ?Message
     {
-        if ($shoot->suppressesExternalNotifications()) {
+        if (! app(ShootPaymentReminderEligibility::class)->isEligible($shoot)) {
             $this->cancelPaymentReminders($shoot);
 
+            return null;
+        }
+
+        if (app(ShootPaymentReminderEligibility::class)->reminderAnchor($shoot)->addDay()->isFuture()) {
             return null;
         }
 
@@ -316,9 +306,19 @@ class AutomationService
             $context['tags_json'] = ['PAYMENT_REMINDER:shoot:'.$shoot->id, $tag];
             $result = $this->handleEvent('SHOOT_PAYMENT_REMINDER', $context);
 
-            return Message::whereIn('id', $result['message_ids'] ?? [])
+            $accepted = Message::whereIn('id', $result['message_ids'] ?? [])
                 ->whereIn('status', ['SENT', 'DELIVERED', 'QUEUED', 'SCHEDULED'])
                 ->orderByRaw("CASE WHEN channel = 'EMAIL' THEN 0 ELSE 1 END")->latest('id')->first();
+
+            if ($accepted || ($result['failed_run_count'] ?? 0) > 0 || ($result['waiting_run_count'] ?? 0) > 0) {
+                return $accepted;
+            }
+
+            // A completed SMS-only reminder declined by its recipient is terminal.
+            // Failed or waiting email actions must remain eligible for their own delivery.
+            return Message::whereIn('id', $result['blocked_message_ids'] ?? [])
+                ->where('status', 'BLOCKED')->where('metadata->delivery->blocked_reason', 'notification_preferences')
+                ->latest('id')->first();
         }
 
         $client = $shoot->client;
@@ -356,6 +356,7 @@ class AutomationService
 
         $emailMessage = null;
         $smsMessage = null;
+        $emailFailed = false;
 
         // Channel 1 — email. Best-effort: a failure here is logged and must not prevent the SMS.
         if ($email !== '' && $template !== null) {
@@ -376,6 +377,7 @@ class AutomationService
                     'tags_json' => ['PAYMENT_REMINDER:shoot:'.$shoot->id],
                 ]);
             } catch (\Throwable $exception) {
+                $emailFailed = true;
                 Log::error('Payment reminder email send failed', [
                     'shoot_id' => $shoot->id,
                     'error' => \App\Services\ApiErrorResponder::publicMessage($exception, 'Automation could not complete. Review its configuration and try again.'),
@@ -406,6 +408,7 @@ class AutomationService
                     $smsRendered = $this->templateRenderer->render($smsTemplate, $context);
                     $smsMessage = $this->messagingService->sendSms([
                         'to' => $phone,
+                        'sms_category' => 'payments',
                         'body_text' => $smsRendered['body_text'] ?? null,
                         'send_source' => 'AUTOMATION',
                         'template_id' => $smsTemplate->id,
@@ -432,7 +435,7 @@ class AutomationService
         // Primary record = email Message so DispatchScheduledMessages links message_id and marks
         // the row sent unchanged. If only SMS sent, return it so the row is still marked sent.
         // Null only when neither channel sent anything (dispatcher then leaves the row).
-        return $emailMessage ?? $smsMessage;
+        return $emailMessage ?? ($emailFailed && $smsMessage?->status === 'BLOCKED' ? null : $smsMessage);
     }
 
     /**
@@ -564,6 +567,13 @@ class AutomationService
             'recipient_email' => $recipient['email'] ?? null,
             'recipient_phone' => $recipient['phone'] ?? null,
         ]));
+        if ($rule->template->channel === 'EMAIL') {
+            $resolvedContext = app(\App\Services\SystemEmails\BookingInvoiceContext::class)
+                ->forAutomationEmail($rule->trigger_type, $recipient, $resolvedContext);
+            if ($resolvedContext === null) {
+                return;
+            }
+        }
         $rendered = $this->templateRenderer->render($rule->template, $resolvedContext);
 
         if (! empty($rendered['missing'])) {
@@ -575,7 +585,7 @@ class AutomationService
         }
 
         $payload = [
-            'to' => $recipient['email'] ?? $recipient['phone'] ?? null,
+            'to' => $rule->template->channel === 'SMS' ? ($recipient['phone'] ?? null) : ($recipient['email'] ?? null),
             'cc' => $this->resolveRelatedShootCcEmails($recipient, $context),
             'subject' => $rendered['subject'] ?? $rule->template->subject,
             'body_html' => $rendered['body_html'] ?? null,
@@ -614,6 +624,7 @@ class AutomationService
             }
         } elseif ($rule->template->channel === 'SMS') {
             // SMS doesn't support scheduling in our current setup
+            $payload['automation_trigger'] = $rule->trigger_type;
             $this->messagingService->sendSms($payload);
         }
     }
@@ -674,9 +685,11 @@ class AutomationService
     private function resolveRecipients(AutomationRule $rule, array $context): array
     {
         $recipients = [];
-        $recipientTypes = $rule->recipients_json ?? [];
+        $context = ShootRequestRecipientRouting::context($rule->trigger_type, $context);
+        $configuredRoles = $rule->recipients_json ?? [];
+        $recipientTypes = ShootRequestRecipientRouting::roles($rule->trigger_type, $configuredRoles['roles'] ?? $configuredRoles);
 
-        if (in_array($rule->trigger_type, ['SHOOT_REQUESTED', 'SHOOT_REQUEST_APPROVED', 'SHOOT_REQUEST_MODIFIED', 'SHOOT_REQUEST_DECLINED'], true)) {
+        if (in_array($rule->trigger_type, ['SHOOT_REQUEST_APPROVED', 'SHOOT_REQUEST_MODIFIED', 'SHOOT_REQUEST_DECLINED'], true)) {
             $recipientTypes = array_values(array_filter($recipientTypes, fn ($type) => $type === 'client'));
         }
 
@@ -705,6 +718,7 @@ class AutomationService
                     foreach ($this->resolvePhotographerRecipients($rule, $context) as $photographer) {
                         $recipients[] = [
                             'email' => $photographer['email'] ?? $photographer->email ?? null,
+                            'phone' => $photographer['phonenumber'] ?? $photographer->phonenumber ?? $photographer['phone'] ?? $photographer->phone ?? null,
                             'name' => $photographer['name'] ?? $photographer->name ?? 'Photographer',
                             'type' => 'photographer',
                         ];
@@ -738,6 +752,7 @@ class AutomationService
                         $rep = $context['rep'];
                         $recipients[] = [
                             'email' => $rep['email'] ?? $rep->email ?? null,
+                            'phone' => $rep['phonenumber'] ?? $rep->phonenumber ?? $rep['phone'] ?? $rep->phone ?? null,
                             'name' => $rep['name'] ?? $rep->name ?? 'Rep',
                             'type' => 'rep',
                         ];
@@ -835,16 +850,20 @@ class AutomationService
             $minutes = (int) $matches[1] * match ($matches[2]) {
                 'd' => 1440, 'h' => 60, default => 1
             };
-            $target = Carbon::now()->addMinutes($minutes);
+            $now = Carbon::now();
+            $target = $now->copy()->addMinutes($minutes);
             $shoots = Shoot::query()
-                ->whereNotIn('status', ['cancelled', 'canceled', 'declined', 'completed', 'delivered'])
+                ->whereNotIn('status', ['cancelled', 'canceled', 'declined', 'completed', 'delivered', 'hold_on', 'on_hold', 'requested'])
                 ->where(function ($query) {
-                    $query->whereNull('workflow_status')->orWhereNotIn('workflow_status', ['cancelled', 'canceled', 'declined', 'completed', 'delivered']);
+                    $query->whereNull('workflow_status')->orWhereNotIn('workflow_status', ['cancelled', 'canceled', 'declined', 'completed', 'delivered', 'hold_on', 'on_hold', 'requested']);
                 })
                 ->where(function ($query) use ($target) {
                     $query->whereBetween('scheduled_at', [$target->copy()->subDay(), $target->copy()->addDay()])
                         ->orWhereBetween('scheduled_date', [$target->copy()->subDay()->toDateString(), $target->copy()->addDay()->toDateString()])
-                        ->orWhereHas('serviceItems', fn ($items) => $items->whereBetween('scheduled_at', [$target->copy()->subDay(), $target->copy()->addDay()]));
+                        ->orWhereHas('serviceItems', fn ($items) => $items->whereBetween('scheduled_at', [$target->copy()->subDay(), $target->copy()->addDay()]))
+                        ->orWhereBetween('scheduled_at', [now()->subDay(), now()->addDays(3)])
+                        ->orWhereBetween('scheduled_date', [now()->subDay()->toDateString(), now()->addDays(3)->toDateString()])
+                        ->orWhereHas('serviceItems', fn ($items) => $items->whereBetween('scheduled_at', [now()->subDay(), now()->addDays(3)]));
                 })
                 ->with(['client', 'photographer', 'rep', 'services', 'serviceItems.service.category', 'serviceItems.photographer', 'serviceItems.editor', 'notes'])
                 ->get();
@@ -855,11 +874,11 @@ class AutomationService
                 $scheduledItems = $shoot->serviceItems->filter(fn ($item) => $item->scheduled_at !== null);
                 if ($scheduledItems->isNotEmpty()) {
                     foreach ($scheduledItems as $item) {
-                        if (in_array($item->workflow_status, ['cancelled', 'completed', 'delivered'], true)) {
+                        if (in_array($item->workflow_status, ['cancelled', 'completed', 'delivered', 'hold_on', 'on_hold'], true)) {
                             continue;
                         }
                         $at = app(ScheduleInstantResolver::class)->forServiceItem($shoot, $item);
-                        if ($at && $at->betweenIncluded($target->copy()->subMinutes(5), $target)) {
+                        if ($at && $at->gt($now)) {
                             $context = $this->buildShootContext($shoot);
                             $photographer = $this->resolveServiceItemPhotographer($shoot, $item);
                             $context['shoot_service_id'] = $item->id;
@@ -867,17 +886,50 @@ class AutomationService
                             $context['shoot_services'] = $item->service?->name ?? $context['shoot_services'];
                             $context['photographer'] = $photographer;
                             $context['photographers'] = $photographer ? [$photographer] : [];
-                            $this->dispatchConfiguredReminder($rule, $context, $at, 'service:'.$item->id);
+                            $this->dispatchDueAppointmentReminders($rule, $context, $at, 'service:'.$item->id, $schedule, $now);
                         }
                     }
 
                     continue;
                 }
                 $at = $this->resolveShootDateTime($shoot);
-                if ($at && $at->betweenIncluded($target->copy()->subMinutes(5), $target)) {
-                    $this->dispatchConfiguredReminder($rule, $this->buildShootContext($shoot), $at, 'shoot:'.$shoot->id);
+                if ($at && $at->gt($now)) {
+                    $this->dispatchDueAppointmentReminders($rule, $this->buildShootContext($shoot), $at, 'shoot:'.$shoot->id, $schedule, $now);
                 }
             }
+        }
+    }
+
+    private function dispatchDueAppointmentReminders(AutomationRule $rule, array $context, Carbon $scheduledAt, string $identity, array $schedule, Carbon $now): void
+    {
+        $occurrences = app(ShootAppointmentReminderSchedule::class)->occurrences($scheduledAt, $schedule, $rule->trigger_type === 'SHOOT_REMINDER');
+        foreach ($occurrences as $stage => $occurrence) {
+            if (! $occurrence['at']->betweenIncluded($now->copy()->subMinutes(5), $now)) {
+                continue;
+            }
+            $stageContext = $context;
+            if ($occurrence['audience']) {
+                $stageContext['appointment_reminder_audience'] = $occurrence['audience'];
+            }
+            // One client email covers every service at this appointment. Staff and SMS
+            // keep their existing per-service delivery keys and timing.
+            $stageIdentity = $identity;
+            if ($occurrence['audience'] === 'client_email') {
+                $stageIdentity = 'shoot:'.$context['shoot_id'].':'.$stage;
+                $shoot = $context['shoot'];
+                $items = $shoot->serviceItems->filter(function ($item) use ($shoot, $scheduledAt) {
+                    return $item->scheduled_at && ! in_array($item->workflow_status, ['cancelled', 'completed', 'delivered', 'hold_on', 'on_hold'], true)
+                        && app(ScheduleInstantResolver::class)->forServiceItem($shoot, $item)?->equalTo($scheduledAt);
+                });
+                if ($items->isNotEmpty()) {
+                    $stageContext['service_items'] = $items->map(fn ($item) => $this->formatServiceItemContext($shoot, $item))->values()->all();
+                    $stageContext['shoot_services'] = $items->map(fn ($item) => $item->service?->name)->filter()->unique()->implode(', ');
+                    $stageContext['photographers'] = $items->map(fn ($item) => $this->resolveServiceItemPhotographer($shoot, $item))
+                        ->filter()->unique('id')->values()->all();
+                    $stageContext['photographer'] = $stageContext['photographers'][0] ?? null;
+                }
+            }
+            $this->dispatchConfiguredReminder($rule, $stageContext, $scheduledAt, $stageIdentity);
         }
     }
 
@@ -946,7 +998,7 @@ class AutomationService
             'service_items' => $this->formatServiceItemsContext($shoot),
             'shoot_notes' => $this->formatShootNotes($shoot),
             'client' => $shoot->client,
-            'rep' => $shoot->rep,
+            'rep' => app(ShootSalesRepResolver::class)->resolve($shoot),
             'photographer' => $assignedPhotographers[0] ?? $shoot->photographer,
             'photographers' => $assignedPhotographers,
             'photographer_service_items' => $this->groupServiceItemsByRole($shoot, 'photographer'),

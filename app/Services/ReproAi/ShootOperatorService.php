@@ -511,24 +511,31 @@ class ShootOperatorService
 
     protected function resolveShoot(string $message, array $context, User $user): array
     {
-        $contextShootId = Arr::get($context, 'targetShootId') ?? Arr::get($context, 'entityId');
-        if ($contextShootId) {
-            $shoot = Shoot::find($contextShootId);
-            if ($shoot && $this->canAccessShoot($shoot, $user)) {
-                return ['shoot' => $shoot, 'candidates' => collect([$shoot])];
-            }
-        }
-
-        if (preg_match('/#?\b(\d{1,8})\b/', $message, $matches)) {
+        // Street numbers are not shoot IDs. Explicit IDs are authoritative and
+        // must not fall back to a different record when missing or inaccessible.
+        if (preg_match('/(?:#\s*|\bshoot\s+(?:(?:id|number|no\.?)\s*)?)(\d{1,8})\b/i', $message, $matches)
+            || preg_match('/^\s*(\d{1,8})\s*$/', $message, $matches)) {
             $shoot = Shoot::find((int) $matches[1]);
-            if ($shoot && $this->canAccessShoot($shoot, $user)) {
-                return ['shoot' => $shoot, 'candidates' => collect([$shoot])];
-            }
+
+            return ['shoot' => $shoot && $this->canAccessShoot($shoot, $user) ? $shoot : null, 'candidates' => collect()];
         }
 
-        $addressNeedle = trim((string) (Arr::get($context, 'address') ?? Arr::get($context, 'targetShootAddress') ?? $message));
+        $messageAddress = preg_match('/\b\d{1,8}[a-z]?\s+[a-z][^?!]*/i', $message, $addressMatch)
+            ? trim($addressMatch[0]) : null;
+        $explicitAddress = $messageAddress ?? Arr::get($context, 'address') ?? Arr::get($context, 'targetShootAddress');
+        $contextShootId = Arr::get($context, 'targetShootId') ?? Arr::get($context, 'entityId');
+        if ($contextShootId && ! $explicitAddress) {
+            $shoot = Shoot::find($contextShootId);
+
+            return ['shoot' => $shoot && $this->canAccessShoot($shoot, $user) ? $shoot : null, 'candidates' => collect()];
+        }
+
+        $addressNeedle = trim((string) ($explicitAddress ?? $message));
         $query = $this->visibleShootsQuery($user);
 
+        if ($explicitAddress && preg_match('/^\d+[a-z]?/i', $addressNeedle, $streetNumber)) {
+            $query->where('address', 'like', $streetNumber[0].' %');
+        }
         $candidates = $query
             ->orderByDesc('updated_at')
             ->limit(30)
@@ -538,7 +545,10 @@ class ShootOperatorService
         if ($normalizedNeedle !== '') {
             $matches = $candidates->filter(function (Shoot $shoot) use ($normalizedNeedle) {
                 $candidate = $this->normalizeAddress("{$shoot->address} {$shoot->city} {$shoot->state} {$shoot->zip}");
-                return str_contains($candidate, $normalizedNeedle) || str_contains($normalizedNeedle, $candidate);
+                $street = $this->normalizeAddress($shoot->address);
+                return str_contains(' '.$candidate.' ', ' '.$normalizedNeedle.' ')
+                    || str_contains(' '.$normalizedNeedle.' ', ' '.$candidate.' ')
+                    || ($street !== '' && str_contains(' '.$normalizedNeedle.' ', ' '.$street.' '));
             })->values();
 
             if ($matches->count() === 1) {
@@ -554,7 +564,7 @@ class ShootOperatorService
             || (bool) $contextShootId;
 
         return [
-            'shoot' => $hasShootContext ? $candidates->first() : null,
+            'shoot' => $hasShootContext && ! $explicitAddress ? $candidates->first() : null,
             'candidates' => $candidates->take(5),
         ];
     }

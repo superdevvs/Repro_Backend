@@ -83,6 +83,7 @@ class IguideDataVisibilityService
             'The iGUIDE offline package must be a .zip file.',
             'The uploaded ZIP could not be read.',
             'The ZIP must be no larger than 256 MiB.',
+            'The ZIP must be no larger than 1 GiB.',
             'The uploaded file is not a valid ZIP archive.',
             'The ZIP archive is malformed or inconsistent.',
             'The ZIP contains an unsafe number of entries.',

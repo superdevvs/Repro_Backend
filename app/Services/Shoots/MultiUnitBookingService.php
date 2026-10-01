@@ -38,6 +38,7 @@ class MultiUnitBookingService
             'service_lines.*.price' => 'nullable|numeric|min:0',
             'service_lines.*.quantity' => 'nullable|integer|min:1',
             'service_lines.*.scheduled_at' => 'nullable|date',
+            'service_lines.*.duration_minutes' => 'nullable|integer|min:30|max:240',
             'service_lines.*.photographer_id' => 'nullable|integer|exists:users,id',
             'service_lines.*.editor_id' => 'nullable|integer|exists:users,id',
             'service_lines.*.is_deliverable' => 'nullable|boolean',
@@ -183,7 +184,9 @@ class MultiUnitBookingService
                 'shoot_unit_id' => $unit['id'], 'quantity' => $quantity,
                 'price' => $canOverride && isset($line['price']) ? (float) $line['price'] : ($current?->price ?? $pricing[$priceKey]['price']),
                 'photographer_pay' => $current?->photographer_pay ?? $pricing[$priceKey]['photographer_pay'],
-                'duration_minutes' => $current?->duration_minutes ?? $pricing[$priceKey]['duration_minutes'],
+                'duration_minutes' => $line['duration_minutes'] ?? ($current
+                    ? app(ShootDurationResolver::class)->forServiceItem($current)
+                    : $pricing[$priceKey]['duration_minutes']),
                 'contracted_photo_count' => $current ? $current->contracted_photo_count : $pricing[$priceKey]['contracted_photo_count'],
                 'photographer_required' => $service->requiresPhotographer(),
                 'scheduled_at' => array_key_exists('scheduled_at', $line) ? $line['scheduled_at'] : ($current ? $current->scheduled_at?->format('Y-m-d H:i:s') : ($data['scheduled_at'] ?? $shoot?->scheduled_at?->format('Y-m-d H:i:s'))),

@@ -244,6 +244,34 @@ class VoiceIncomingOfferTest extends TestCase
         $this->assertDatabaseCount('voice_browser_calls', 1);
     }
 
+    public function test_cancel_during_phone_dial_hangs_up_late_leg_and_keeps_offer_available_for_other_staff(): void
+    {
+        $this->verifiedPhone();
+        $other = User::factory()->create(['role' => 'admin']);
+        $otherSession = $this->device($other);
+        $offer = $this->offer();
+        $this->duringPhoneDial = function () use ($offer): void {
+            app(VoiceIncomingOfferService::class)->cancel($offer->fresh(), $this->admin, 'phone');
+            $this->assertSame('cancelled', VoicePhoneOffer::firstOrFail()->state);
+            $this->assertNull(VoicePhoneOffer::firstOrFail()->call_control_id);
+        };
+
+        $this->postJson('/api/voice/incoming-offers/'.$offer->id.'/claim', ['device' => 'phone', 'idempotency_key' => 'phone'])->assertOk();
+        $this->assertSame('waiting', $offer->fresh()->status);
+        $phone = VoicePhoneOffer::firstOrFail();
+        $this->assertSame('cancelled', $phone->state);
+        $this->assertSame('leg-1', $phone->call_control_id);
+        Http::assertSent(fn ($r) => str_ends_with($r->url(), '/calls/leg-1/actions/hangup'));
+        $this->assertDatabaseCount('voice_browser_calls', 0);
+        $this->postJson('/api/voice/incoming-offers/'.$offer->id.'/claim', ['device' => 'phone', 'idempotency_key' => 'phone'])->assertConflict();
+        $this->assertSame(1, $this->dials);
+
+        $this->actingAs($other, 'sanctum')->postJson('/api/voice/incoming-offers/'.$offer->id.'/claim', [
+            'device' => 'browser', 'session_id' => $otherSession->id, 'idempotency_key' => 'other-answer',
+        ])->assertOk();
+        $this->assertSame($other->id, $offer->fresh()->claimed_by_id);
+    }
+
     public function test_cancel_before_start_is_durable_and_cannot_dial_customer(): void
     {
         $this->postJson('/api/voice/calls/human/cancel', ['idempotency_key' => 'cancel-before'])->assertOk();

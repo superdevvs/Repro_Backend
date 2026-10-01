@@ -6,6 +6,8 @@ use App\Models\VoiceCall;
 use App\Models\VoiceCallToolInvocation;
 use App\Services\ReproAi\ToolDispatcher;
 use App\Services\TelnyxAi\ToolBridgeRegistry;
+use App\Support\VoiceLocks;
+use Illuminate\Contracts\Cache\LockTimeoutException;
 use Throwable;
 
 class VoiceToolBridge
@@ -35,17 +37,63 @@ class VoiceToolBridge
     public function __construct(
         private readonly ToolBridgeRegistry $registry,
         private readonly ToolDispatcher $dispatcher,
-    ) {
-    }
+    ) {}
 
     public function handle(VoiceCall $call, string $tool, array $arguments, ?string $providerToolCallId = null): array
     {
+        if ($providerToolCallId !== null && $providerToolCallId !== '') {
+            try {
+                return VoiceLocks::lock('voice:legacy-tool:'.hash('sha256', $call->id.'|'.$providerToolCallId), $tool === 'verify_caller' ? 120 : 30)
+                    ->block(5, fn () => $this->execute($call, $tool, $arguments, $providerToolCallId));
+            } catch (LockTimeoutException) {
+                return ['success' => false, 'error' => 'tool_temporarily_unavailable'];
+            }
+        }
+
+        return $this->execute($call, $tool, $arguments, $providerToolCallId);
+    }
+
+    private function execute(VoiceCall $call, string $tool, array $arguments, ?string $providerToolCallId): array
+    {
+        // Provider payloads and stale in-memory models cannot grant verification.
+        $call = $call->fresh();
+        if (! $call || $call->ended_at !== null || in_array(strtolower((string) $call->status), ['completed', 'failed', 'missed', 'cancelled', 'canceled', 'busy', 'no-answer', 'no_answer', 'ended'], true)) {
+            return ['success' => false, 'error' => 'trusted_call_not_found'];
+        }
         $normalizedTool = self::ALIASES[$tool] ?? $tool;
+        $user = $call->callerUser ?: $call->callerContact?->user;
+        $eligible = ! ($call->caller_user_id && ! $call->callerUser) && (! $user || $user->isAccountEligibleForAuthentication());
+        if (! $this->isAllowed($tool, $normalizedTool)) {
+            return ['success' => false, 'error' => 'tool_not_allowed', 'message' => 'This tool is not enabled for Robbie voice calls.'];
+        }
+        // Static pricing and the registry's public help/verification tools remain
+        // available without a code. Every private tool is gated before replay.
+        if ($normalizedTool !== 'get_pricing' && $this->registry->requiresVerified($normalizedTool) && ($call->verified_at === null || ! $eligible)) {
+            return ['success' => false, 'error' => 'unverified_caller', 'message' => 'Verify the caller before accessing private records or making changes.'];
+        }
         $existing = $providerToolCallId
-            ? VoiceCallToolInvocation::query()->where('provider_tool_call_id', $providerToolCallId)->first()
+            ? VoiceCallToolInvocation::query()->where('voice_call_id', $call->id)->where('provider_tool_call_id', $providerToolCallId)->first()
             : null;
 
-        if ($existing && $existing->output_payload) {
+        $auditArguments = $arguments;
+        if ($normalizedTool === 'verify_caller') {
+            foreach (['otp_code', 'value'] as $secretKey) {
+                if (isset($auditArguments[$secretKey])) {
+                    $auditArguments[$secretKey] = 'receipt:'.hash_hmac('sha256', (string) $auditArguments[$secretKey], (string) config('app.key'));
+                }
+            }
+        }
+        if ($existing && (($existing->tool_name !== $tool) || $existing->input_payload != $auditArguments)) {
+            return ['success' => false, 'error' => 'tool_call_conflict', 'message' => 'The tool call ID was reused for a different request.'];
+        }
+        // Re-evaluate read authorization after role, ownership or permission changes.
+        $freshRead = in_array($normalizedTool, ['get_shoot_details', 'list_shoots', 'get_payment_status', 'get_availability', 'search_support_knowledge'], true);
+        if ($existing && $existing->output_payload && ! $freshRead) {
+            if ($normalizedTool === 'verify_caller' && data_get($existing->output_payload, 'result.result.verified') === true
+                && ($call->verified_at === null || ! $eligible)) {
+                return ['success' => false, 'error' => 'verification_failed'];
+            }
+
             return $existing->output_payload;
         }
 
@@ -54,20 +102,13 @@ class VoiceToolBridge
             'tool_name' => $tool,
             'provider_tool_call_id' => $providerToolCallId,
             'status' => VoiceCallToolInvocation::STATUS_PENDING,
-            'input_payload' => $arguments,
+            'input_payload' => $auditArguments,
             'requires_confirmation' => $this->requiresConfirmation($tool),
         ]);
 
-        if (!$this->isAllowed($tool, $normalizedTool)) {
-            return $this->finish($invocation, [
-                'success' => false,
-                'error' => 'tool_not_allowed',
-                'message' => 'This tool is not enabled for Robbie voice calls.',
-            ], VoiceCallToolInvocation::STATUS_DENIED, 'tool_not_allowed');
-        }
-
         if ($this->requiresConfirmation($tool)) {
             $message = $this->confirmationMessage($tool);
+
             return $this->finish($invocation, [
                 'success' => false,
                 'requires_confirmation' => true,
@@ -89,16 +130,17 @@ class VoiceToolBridge
         try {
             $result = $this->dispatcher->dispatch($normalizedTool, $arguments, [
                 'channel' => 'VOICE',
+                'trusted_voice_call' => $normalizedTool === 'verify_caller' ? $call : null,
                 'voice_call_id' => $call->id,
-                'phone_e164' => $call->direction === 'OUTBOUND' ? $call->to_phone : $call->from_phone,
+                'phone_e164' => strtoupper((string) $call->direction) === 'OUTBOUND' ? $call->to_phone : $call->from_phone,
                 'contact_id' => $call->caller_contact_id,
-                'user_id' => $call->caller_user_id,
-                'verified' => (bool) $call->verified_at,
+                'user_id' => $eligible && $call->verified_at !== null ? $call->caller_user_id : null,
+                'verified' => $eligible && (bool) $call->verified_at,
                 'vapi_call_id' => $call->vapi_call_id,
             ]);
 
             return $this->finish($invocation, [
-                'success' => !isset($result['error']) && ($result['ok'] ?? true) !== false,
+                'success' => ! isset($result['error']) && ($result['ok'] ?? true) !== false && ($result['success'] ?? true) !== false,
                 'result' => $result,
                 'tool_invocation_id' => $invocation->id,
             ], VoiceCallToolInvocation::STATUS_EXECUTED);

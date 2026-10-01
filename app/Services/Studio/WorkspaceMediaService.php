@@ -150,7 +150,12 @@ class WorkspaceMediaService
         return $bytes;
     }
 
-    public function bytes(array $media): string
+    public function originalBytes(array $media): string
+    {
+        return $this->bytes($media, false);
+    }
+
+    public function bytes(array $media, bool $decode = true): string
     {
         if (! empty($media['stackFileIds'])) {
             $path = app(WorkspaceHdrService::class)->path($media);
@@ -168,7 +173,7 @@ class WorkspaceMediaService
                 }
                 $path = $this->files->findLocalFilePath($file);
                 if (! $path) {
-                    $path = $this->files->downloadFromDropbox($file);
+                    $path = $this->files->downloadStoredFileToTemp($file->storage_path ?: $file->path);
                     if ($path) {
                         $cleanup[] = $path;
                     }
@@ -185,7 +190,7 @@ class WorkspaceMediaService
             if (! $path || ! is_file($path)) {
                 throw new RuntimeException('The original source file could not be read.');
             }
-            if ($this->raw->isRawFile($name)) {
+            if ($decode && $this->raw->isRawFile($name)) {
                 $jpeg = $this->raw->extractFullSizeJpeg($path);
                 if (! $jpeg) {
                     throw new RuntimeException('This RAW file does not contain a supported image preview.');
@@ -194,7 +199,7 @@ class WorkspaceMediaService
                 $path = $jpeg;
             }
             $bytes = file_get_contents($path);
-            if (! $bytes || ! @getimagesizefromstring($bytes)) {
+            if (! $bytes || ($decode && ! @getimagesizefromstring($bytes))) {
                 throw new RuntimeException('The source is not a decodable image.');
             }
 

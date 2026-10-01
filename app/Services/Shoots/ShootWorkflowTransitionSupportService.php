@@ -53,17 +53,14 @@ class ShootWorkflowTransitionSupportService
             }
         }
 
-        if (
-            $shoot->photographer
-            && $shoot->photographer->email
-            && (! $shoot->client || (int) $shoot->photographer->id !== (int) $shoot->client->id)
-        ) {
+        $rep = app(ShootSalesRepResolver::class)->resolve($shoot);
+        if ($rep && $rep->email && (int) $rep->id !== (int) $shoot->client_id) {
             try {
-                $this->mailService->sendShootCancellationRequestedEmail($shoot->photographer, $shoot);
+                $this->mailService->sendShootCancellationRequestedEmail($rep, $shoot);
             } catch (\Throwable $e) {
-                Log::warning('Failed to send cancellation request email to photographer', [
+                Log::warning('Failed to send cancellation request email to sales rep', [
                     'shoot_id' => $shoot->id,
-                    'photographer_id' => $shoot->photographer->id,
+                    'rep_id' => $rep->id,
                     'error' => $e->getMessage(),
                 ]);
             }
@@ -117,11 +114,13 @@ class ShootWorkflowTransitionSupportService
     public function sendCancellationRejectionSideEffects(Shoot $shoot, User $user, ?string $reason = null): void
     {
         $shoot->loadMissing(['client', 'photographer', 'rep', 'services']);
+        $status = (string) ($shoot->workflow_status ?: $shoot->status);
+        $statusLabel = in_array($status, ['on_hold', 'hold_on'], true) ? 'on hold' : str_replace('_', ' ', $status);
         $this->notifyUser(
             $shoot->client,
             'cancellation_rejected',
             'Cancellation request rejected',
-            'Your cancellation request was rejected. The shoot remains scheduled.',
+            'Your cancellation request was rejected. The shoot remains '.$statusLabel.'.',
             [
                 'shoot_id' => $shoot->id,
                 'rejected_by' => $user->id,
@@ -185,7 +184,7 @@ class ShootWorkflowTransitionSupportService
         $recipients = User::query()
             ->whereIn('role', ['admin', 'superadmin'])
             ->get()
-            ->push($shoot->rep)
+            ->push(app(ShootSalesRepResolver::class)->resolve($shoot))
             ->filter()
             ->unique('id');
 

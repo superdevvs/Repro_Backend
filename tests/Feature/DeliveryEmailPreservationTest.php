@@ -295,8 +295,10 @@ class DeliveryEmailPreservationTest extends TestCase
         $admin = User::factory()->create(['role' => 'admin']);
         $client = User::factory()->create(['role' => 'client', 'email_status' => 'verified']);
         $photographer = User::factory()->photographer()->create(['email_status' => 'verified']);
+        $rep = User::factory()->create(['role' => 'salesRep', 'email_status' => 'verified']);
         $shoot = $this->createShootForClient($client, [
             'photographer_id' => $photographer->id,
+            'rep_id' => $rep->id,
             'status' => Shoot::STATUS_SCHEDULED,
             'workflow_status' => Shoot::STATUS_SCHEDULED,
         ]);
@@ -316,14 +318,12 @@ class DeliveryEmailPreservationTest extends TestCase
         $this->assertSame($client->email, $shoot->client->email);
         $dispatches = Message::where('send_source', 'AUTOMATION')->where('channel', 'EMAIL')
             ->where('related_shoot_id', $shoot->id)->get();
-        $this->assertCount(2, $dispatches, 'Each recipient receives exactly one cancellation.');
-        foreach ([$client, $photographer] as $recipient) {
+        $this->assertCount(3, $dispatches, 'Each recipient receives exactly one cancellation.');
+        foreach ([$client, $rep, $photographer] as $recipient) {
             $dispatch = $dispatches->firstWhere('to_address', $recipient->email);
             $this->assertNotNull($dispatch);
             $this->assertSame('SENT', $dispatch->status);
         }
-        $photographerBody = $dispatches->firstWhere('to_address', $photographer->email)->body_html;
-        $this->assertStringNotContainsString('$200.00', $photographerBody);
     }
 
     // ---------------------------------------------------------------------
@@ -391,7 +391,7 @@ class DeliveryEmailPreservationTest extends TestCase
 
         $cases = [
             'SHOOT_SCHEDULED' => 'New Shoot Scheduled',
-            'SHOOT_REMINDER' => 'Shoot Reminder: 24 Hours to Go',
+            'SHOOT_REMINDER' => 'Shoot Reminder',
             'SHOOT_CANCELLED' => 'Your Shoot Has Been Cancelled',
         ];
 

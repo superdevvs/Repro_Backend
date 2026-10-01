@@ -73,7 +73,7 @@ class SupportFaqFlow
                 $content .= "\n- [".$item['title'].']('.$item['url'].')';
             }
         }
-        $content .= "\n\nYou can [create a support request](/support?new=1) and follow its replies in the dashboard. For a team member, call or text **".SupportContact::PHONE_DISPLAY.'** or email **'.SupportContact::EMAIL.'**. This chat has not created a ticket or notified support. Do not include passwords, payment card details or access codes.';
+        $content .= "\n\nYou can [create a support request](/messaging/email/inbox?tab=support&new=1) and follow its replies in the dashboard. For a team member, call or text **".SupportContact::PHONE_DISPLAY.'** or email **'.SupportContact::EMAIL.'**. This chat has not created a ticket or notified support. Do not include passwords, payment card details or access codes.';
 
         return [
             'assistant_messages' => [[

@@ -54,7 +54,7 @@ class ScheduleShootAction
 
             // Non-deliverable lines (fees, holds, etc.) must not block resume/schedule
             // availability — they do not consume photographer calendar time.
-            $targetServices = $shoot->services->map(function ($service) use ($scheduledAt) {
+            $targetServices = $shoot->services->map(function ($service) use ($scheduledAt, $shoot) {
                 return [
                     'id' => (int) $service->id,
                     'photographer_id' => $service->pivot?->photographer_id,
@@ -62,7 +62,7 @@ class ScheduleShootAction
                     'price' => $service->pivot?->price,
                     'quantity' => $service->pivot?->quantity ?? 1,
                     'is_deliverable' => (bool) ($service->pivot?->is_deliverable ?? true),
-                    'duration_minutes' => $service->pivot?->duration_minutes,
+                    'duration_minutes' => $service->pivot?->duration_minutes ?? $service->getShootDurationMinutes($shoot->propertySqft(), false),
                 ];
             })->values()->all();
             $this->support->checkServiceItemPhotographerAvailability($targetServices, (int) $photographerId, $shoot->id);
@@ -102,6 +102,7 @@ class ScheduleShootAction
         }
 
         $shoot->refresh();
+        app(\App\Services\InvoiceService::class)->generateForShoot($shoot);
         $shoot->load(['client', 'rep', 'photographer', 'services', 'createdByUser']);
 
         $context = $this->automationService->buildShootContext($shoot);

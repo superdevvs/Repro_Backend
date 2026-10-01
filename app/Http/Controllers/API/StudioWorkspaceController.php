@@ -88,7 +88,9 @@ class StudioWorkspaceController extends StudioController
         abort_if(str_starts_with($path, '/') || str_contains($path, '..') || str_contains($path, '\\'), 404);
         abort_unless($disk->exists($path), 404, 'This output file is no longer available.');
 
-        return $disk->download($path, basename($path), ['Cache-Control' => 'private, no-store']);
+        $filename = basename(str_replace('\\', '/', (string) ($item['name'] ?? basename($path))));
+
+        return $disk->download($path, $filename, ['Cache-Control' => 'private, no-store']);
     }
 
     public function update(Request $request, string $workspace): JsonResponse

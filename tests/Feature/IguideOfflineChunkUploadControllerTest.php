@@ -29,6 +29,37 @@ class IguideOfflineChunkUploadControllerTest extends TestCase
     use RefreshDatabase;
 
     #[Test]
+    public function resumable_uploads_accept_large_official_packages_up_to_one_gibibyte(): void
+    {
+        $admin = User::factory()->admin()->create();
+        Sanctum::actingAs($admin);
+
+        // The reported official export was 868,999,851 bytes. Session creation
+        // must accept it before any chunks or queue jobs are needed.
+        foreach ([868999851, 1073741824] as $size) {
+            $shoot = Shoot::factory()->create();
+            $this->postJson($this->uploadsUrl($shoot), [
+                'filename' => 'official-offline_en.zip',
+                'size_bytes' => $size,
+            ], ['Idempotency-Key' => (string) Str::uuid()])
+                ->assertCreated()
+                ->assertJsonPath('upload.size_bytes', $size)
+                ->assertJsonPath('upload.total_chunks', (int) ceil($size / (5 * 1024 * 1024)));
+        }
+
+        $shoot = Shoot::factory()->create();
+        $this->postJson($this->uploadsUrl($shoot), [
+            'filename' => 'too-large.zip',
+            'size_bytes' => 1073741825,
+        ], ['Idempotency-Key' => (string) Str::uuid()])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('size_bytes')
+            ->assertJsonPath('errors.size_bytes.0', 'The ZIP must be no larger than 1 GiB.');
+
+        $this->assertDatabaseCount('iguide_offline_upload_sessions', 2);
+    }
+
+    #[Test]
     public function validation_errors_expose_the_resumable_headers_to_the_browser(): void
     {
         $admin = User::factory()->admin()->create();

@@ -12,13 +12,13 @@ use App\Models\User;
 use App\Models\UserActivityLog;
 use App\Models\WorkflowLog;
 use App\Services\Invoices\InvoiceAdjustmentService;
+use App\Services\Media\MediaStorage;
+use App\Services\Messaging\UnreadCountService;
 use App\Services\Schedule\ScheduleDateScopeService;
 use App\Services\Schedule\ScheduleInstantResolver;
-use App\Services\Media\MediaStorage;
 use App\Services\Shoots\ShootEditingAssignmentService;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
-use App\Services\Messaging\UnreadCountService;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -39,7 +39,7 @@ class DashboardController extends Controller
         }
 
         // Cache key includes user role to ensure proper access control
-        $cacheKey = 'dashboard_overview_'.$user->role.'_'.$user->id;
+        $cacheKey = 'dashboard_overview_deliveries_v2_'.$user->role.'_'.$user->id;
         $todayDate = now()->startOfDay()->toDateString();
 
         $data = app(ScheduleDateScopeService::class)->rememberForDate($todayDate, $cacheKey, 60, function () {
@@ -56,7 +56,8 @@ class DashboardController extends Controller
                         'scheduled_date', 'time', 'status', 'workflow_status', 'is_flagged', 'admin_issue_notes',
                         'editing_completed_at', 'submitted_for_review_at', 'shoot_notes', 'company_notes',
                         'photographer_notes', 'editor_notes', 'property_details', 'created_by', 'hero_image',
-                        'scheduled_at', 'timezone', 'payment_status', 'total_paid', 'total_quote'],
+                        'scheduled_at', 'timezone', 'payment_status', 'total_paid', 'total_quote',
+                        'cancellation_requested_at', 'cancellation_reason', 'hold_requested_at', 'hold_requested_by', 'hold_reason'],
                     [
                         'client:id,name,company_name,phonenumber',
                         'photographer:id,name,avatar,timezone',
@@ -159,6 +160,7 @@ class DashboardController extends Controller
             return [
                 'stats' => $stats,
                 'upcoming_shoots' => $upcomingShoots->values()->all(), // Convert Collection to array
+                'latest_deliveries' => $this->formatShoots($this->latestDeliveredShoots(), $today, true)->values()->all(),
                 'photographers' => $photographers,
                 'activity_log' => $activity->values()->all(), // Convert Collection to array
                 'issues' => $issues->values()->all(), // Convert Collection to array
@@ -303,6 +305,7 @@ class DashboardController extends Controller
                 'city_state_zip' => $this->formatLocationLine($shoot),
                 'status' => $shoot->status,
                 'workflow_status' => $shoot->workflow_status,
+                'completed_at' => optional($shoot->completed_at)->toIso8601String(),
                 // Same payment truth as shoot detail header (ShootPresenter / payment_status).
                 // Required for Delivered cards — overview was omitting this so pills defaulted to Unpaid,
                 // including historical imports that are paid in the old dashboard ($ paid on record).
@@ -334,6 +337,9 @@ class DashboardController extends Controller
                 // Cancellation fields (present when cancellation_requested_at is selected)
                 'cancellation_reason' => $shoot->cancellation_reason ?? null,
                 'cancellation_requested_at' => optional($shoot->cancellation_requested_at)?->toIso8601String(),
+                'hold_requested_at' => optional($shoot->hold_requested_at)?->toIso8601String(),
+                'hold_requested_by' => $shoot->hold_requested_by ?? null,
+                'hold_reason' => $shoot->hold_reason ?? null,
             ];
 
             if ($includeMedia) {
@@ -654,6 +660,18 @@ class DashboardController extends Controller
             ->values();
     }
 
+    protected function latestDeliveredShoots(): Collection
+    {
+        return Shoot::query()
+            ->where('status', Shoot::STATUS_DELIVERED)
+            ->with(['client', 'photographer', 'service.category', 'services.category', 'payments'])
+            // Import and payment updates must never make old deliveries look recent.
+            ->orderByRaw("COALESCE(NULLIF(completed_at, ''), NULLIF(editing_completed_at, ''), NULLIF(scheduled_at, ''), scheduled_date) DESC")
+            ->orderByDesc('id')
+            ->limit(6)
+            ->get();
+    }
+
     protected function buildWorkflowColumns(Carbon $today): array
     {
         $scheduleScope = app(ScheduleDateScopeService::class);
@@ -697,6 +715,7 @@ class DashboardController extends Controller
                 'editing_completed_at', 'submitted_for_review_at', 'shoot_notes', 'company_notes',
                 'photographer_notes', 'editor_notes', 'property_details', 'created_by', 'hero_image',
                 'scheduled_at', 'timezone',
+                'cancellation_requested_at', 'cancellation_reason', 'hold_requested_at', 'hold_requested_by', 'hold_reason',
                 // Required for Delivered Paid/Unpaid pills — same fields as shoot detail header.
                 'payment_status', 'total_paid', 'total_quote'];
 
@@ -979,11 +998,23 @@ class DashboardController extends Controller
             $isImpersonating = $request->attributes->get('is_impersonating', false);
 
             // Cache key includes user ID and role for proper access control
-            $cacheKey = 'notifications_'.$role.'_'.$userId.($isImpersonating ? '_impersonate' : '');
+            $cacheKey = 'notifications_support_v2_'.$role.'_'.$userId.($isImpersonating ? '_impersonate' : '');
 
             $activityLogs = Cache::remember($cacheKey, now()->addSeconds(15), function () use ($role, $userId) {
                 return $this->getActivityLogsForRole($role, $userId);
             });
+            // Only email-{numeric id} identifies an inbox Message. Preserve the
+            // separately scoped email-issue-* account verification and bounce alerts.
+            $isEmailMessage = static fn ($item): bool => preg_match('/\Aemail-[0-9]+\z/', (string) ($item['id'] ?? '')) === 1;
+            if (! app(\App\Services\Messaging\DashboardMessagingPolicy::class)->canEmail($user)) {
+                $activityLogs = $activityLogs->reject($isEmailMessage);
+            }
+            // Imported history must disappear from any still-cached email feed immediately.
+            $emailIds = $activityLogs->map(fn ($item) => $isEmailMessage($item) ? (int) substr($item['id'], 6) : null)->filter()->all();
+            if ($emailIds !== []) {
+                $convertedIds = \App\Models\SupportTicketMessage::whereIn('source_message_id', $emailIds)->pluck('source_message_id')->map(fn ($id) => 'email-'.$id)->all();
+                $activityLogs = $activityLogs->reject(fn ($item) => in_array($item['id'] ?? null, $convertedIds, true));
+            }
             // Recheck support visibility on every request, including permission revocation.
             $activityLogs = $activityLogs->concat(app(\App\Services\SupportTicketService::class)->notifications($user))
                 ->sortByDesc(fn (array $item) => strtotime((string) ($item['timestamp'] ?? '')) ?: 0)->values();
@@ -1140,11 +1171,12 @@ class DashboardController extends Controller
     protected function getEmailNotificationsForRole(string $role, int $userId): Collection
     {
         $user = User::find($userId);
-        if (! $user) {
+        if (! $user || ! app(\App\Services\Messaging\DashboardMessagingPolicy::class)->canEmail($user)) {
             return collect([]);
         }
 
         $baseQuery = Message::query()
+            ->whereNotIn('messages.id', \App\Models\SupportTicketMessage::whereNotNull('source_message_id')->select('source_message_id'))
             ->where('channel', 'EMAIL')
             ->whereIn('status', ['SENT', 'DELIVERED']);
 

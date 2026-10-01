@@ -2,22 +2,26 @@
 
 namespace App\Services\ReproAi\Tools;
 
-use App\Models\Shoot;
-use App\Models\ShootFile;
-use App\Models\AiEditingJob;
-use App\Services\AutoenhanceService;
 use App\Jobs\ProcessAutoenhanceEditingJob;
 use App\Jobs\ProcessFalEditingJob;
+use App\Models\AiEditingJob;
+use App\Models\Shoot;
+use App\Models\ShootFile;
+use App\Models\User;
+use App\Services\AutoenhanceService;
 use App\Services\FalService;
+use App\Services\Shoots\ShootAuthorizationSupport;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 
 class AiEditingTools
 {
     private AutoenhanceService $autoenhanceService;
+
     private FalService $falService;
 
-    public function __construct()
+    public function __construct(private readonly RobbieRecordAccess $access)
     {
         $this->autoenhanceService = app(AutoenhanceService::class);
         $this->falService = app(FalService::class);
@@ -25,9 +29,9 @@ class AiEditingTools
 
     /**
      * Submit images for AI editing
-     * 
-     * @param array $params Parameters from AI tool call
-     * @param array $context Additional context
+     *
+     * @param  array  $params  Parameters from AI tool call
+     * @param  array  $context  Additional context
      * @return array Result of the operation
      */
     public function submitAiEditing(array $params = [], array $context = []): array
@@ -36,25 +40,26 @@ class AiEditingTools
             $shootId = $params['shoot_id'] ?? null;
             $editingType = $params['editing_type'] ?? 'enhance';
             $fileIds = $params['file_ids'] ?? null;
-            $userId = $context['user_id'] ?? null;
+            $actor = $this->access->actor($context);
+            $userId = $actor?->id;
             $provider = $this->resolveProvider($params['provider'] ?? null);
 
-            if (!$shootId) {
+            if (! $shootId) {
                 return [
                     'success' => false,
                     'error' => 'Shoot ID is required',
                 ];
             }
 
-            if (!$userId) {
+            if (! $this->canUseEditing($actor)) {
                 return [
                     'success' => false,
-                    'error' => 'User ID is required',
+                    'error' => 'You do not have permission to use AI editing',
                 ];
             }
 
-            $shoot = Shoot::find($shootId);
-            if (!$shoot) {
+            $shoot = $this->access->find($shootId, $actor);
+            if (! $shoot) {
                 return [
                     'success' => false,
                     'error' => 'Shoot not found',
@@ -62,18 +67,20 @@ class AiEditingTools
             }
 
             // If file_ids not provided, get all image files from the shoot
-            if (!$fileIds) {
+            if (! $fileIds) {
                 $files = $shoot->files()
-                    ->whereIn('file_type', ['image', 'jpg', 'jpeg', 'png'])
-                    ->orWhere(function($query) {
-                        $query->where('filename', 'like', '%.jpg')
-                            ->orWhere('filename', 'like', '%.jpeg')
-                            ->orWhere('filename', 'like', '%.png')
-                            ->orWhere('filename', 'like', '%.gif');
+                    ->where(function ($query) {
+                        $query->whereIn('file_type', ['image', 'jpg', 'jpeg', 'png'])
+                            ->orWhere(function ($query) {
+                                $query->where('filename', 'like', '%.jpg')
+                                    ->orWhere('filename', 'like', '%.jpeg')
+                                    ->orWhere('filename', 'like', '%.png')
+                                    ->orWhere('filename', 'like', '%.gif');
+                            });
                     })
                     ->limit(100) // Limit to 100 files if not specified (matches wizard MAX_BATCH_SIZE)
                     ->get();
-                
+
                 $fileIds = $files->pluck('id')->toArray();
             }
 
@@ -87,7 +94,9 @@ class AiEditingTools
             // Validate files belong to shoot
             $validFiles = ShootFile::where('shoot_id', $shootId)
                 ->whereIn('id', $fileIds)
-                ->get();
+                ->limit(100)
+                ->get()
+                ->filter(fn (ShootFile $file) => app(ShootAuthorizationSupport::class)->canInteractWithShootMediaFile($shoot, $file, $actor));
 
             if ($validFiles->isEmpty()) {
                 return [
@@ -100,14 +109,14 @@ class AiEditingTools
             foreach ($validFiles as $file) {
                 // Get image URL
                 $imageUrl = $file->storage_path ?? $file->dropbox_path ?? $file->path;
-                if (!$imageUrl) {
+                if (! $imageUrl) {
                     continue;
                 }
 
                 // Construct full URL if needed
-                if (!filter_var($imageUrl, FILTER_VALIDATE_URL)) {
+                if (! filter_var($imageUrl, FILTER_VALIDATE_URL)) {
                     $baseUrl = config('app.url');
-                    $imageUrl = $baseUrl . '/' . ltrim($imageUrl, '/');
+                    $imageUrl = $baseUrl.'/'.ltrim($imageUrl, '/');
                 }
 
                 // Create AI editing job
@@ -138,7 +147,7 @@ class AiEditingTools
 
             return [
                 'success' => true,
-                'message' => "Submitted {$validFiles->count()} image(s) to " . $this->providerLabel($provider),
+                'message' => "Submitted {$validFiles->count()} image(s) to ".$this->providerLabel($provider),
                 'jobs' => $jobs,
                 'editing_type' => $editingType,
                 'provider' => $provider,
@@ -160,9 +169,9 @@ class AiEditingTools
 
     /**
      * Get AI editing job status
-     * 
-     * @param array $params Parameters from AI tool call
-     * @param array $context Additional context
+     *
+     * @param  array  $params  Parameters from AI tool call
+     * @param  array  $context  Additional context
      * @return array Job status
      */
     public function getAiEditingStatus(array $params = [], array $context = []): array
@@ -170,23 +179,18 @@ class AiEditingTools
         try {
             $jobId = $params['job_id'] ?? null;
             $shootId = $params['shoot_id'] ?? null;
-            $userId = $context['user_id'] ?? null;
+            $actor = $this->access->actor($context);
+            if (! $this->canUseEditing($actor)) {
+                return ['success' => false, 'error' => 'You do not have permission to use AI editing'];
+            }
 
             if ($jobId) {
-                $job = AiEditingJob::with(['shoot', 'shootFile'])->find($jobId);
-                
-                if (!$job) {
+                $job = $this->jobsFor($actor)->with(['shoot', 'shootFile'])->find($jobId);
+
+                if (! $job) {
                     return [
                         'success' => false,
                         'error' => 'Job not found',
-                    ];
-                }
-
-                // Check permissions
-                if ($userId && $job->user_id != $userId && !in_array($context['user_role'] ?? '', ['admin', 'superadmin'])) {
-                    return [
-                        'success' => false,
-                        'error' => 'You do not have permission to view this job',
                     ];
                 }
 
@@ -208,12 +212,8 @@ class AiEditingTools
             }
 
             if ($shootId) {
-                $query = AiEditingJob::where('shoot_id', $shootId)
+                $query = $this->jobsFor($actor)->where('shoot_id', $shootId)
                     ->whereIn('provider', ['autoenhance', 'fal']);
-                
-                if ($userId && !in_array($context['user_role'] ?? '', ['admin', 'superadmin'])) {
-                    $query->where('user_id', $userId);
-                }
 
                 $jobs = $query->orderBy('created_at', 'desc')
                     ->limit(20)
@@ -254,9 +254,9 @@ class AiEditingTools
 
     /**
      * Get available editing types
-     * 
-     * @param array $params Parameters from AI tool call
-     * @param array $context Additional context
+     *
+     * @param  array  $params  Parameters from AI tool call
+     * @param  array  $context  Additional context
      * @return array Available editing types
      */
     public function getEditingTypes(array $params = [], array $context = []): array
@@ -297,34 +297,31 @@ class AiEditingTools
             return null;
         }
 
-        $query = Shoot::query();
-
-        $isPrivileged = in_array($userRole, ['admin', 'superadmin', 'editor', 'editing_manager'], true);
-        if ($userId && !$isPrivileged) {
-            $query->where(function ($q) use ($userId) {
-                $q->where('client_id', $userId)
-                  ->orWhere('rep_id', $userId)
-                  ->orWhere('editor_id', $userId)
-                  ->orWhere('photographer_id', $userId);
-            });
+        $actor = $this->flowActor($userId);
+        if (! $actor) {
+            return null;
         }
+        $query = $this->access->query($actor);
 
         $parts = array_values(array_filter(array_map('trim', explode(',', $address))));
         $query->where(function ($q) use ($parts, $address) {
             if (count($parts) === 0) {
                 $q->where('address', 'like', "%{$address}%");
+
                 return;
             }
-            $q->where('address', 'like', '%' . $parts[0] . '%');
+            $q->where('address', 'like', '%'.$parts[0].'%');
             if (isset($parts[1])) {
                 $q->where(function ($q2) use ($parts) {
-                    $q2->where('city', 'like', '%' . $parts[1] . '%')
-                       ->orWhereNull('city');
+                    $q2->where('city', 'like', '%'.$parts[1].'%')
+                        ->orWhereNull('city');
                 });
             }
         });
 
-        return $query->orderByDesc('created_at')->first();
+        $shoot = $query->orderByDesc('created_at')->first();
+
+        return $shoot && $this->access->canRead($shoot, $actor) ? $shoot : null;
     }
 
     /**
@@ -332,6 +329,12 @@ class AiEditingTools
      */
     public function countRawPhotos(int $shootId): int
     {
+        $actor = $this->flowActor();
+        $shoot = $actor ? $this->access->find($shootId, $actor) : null;
+        if (! $shoot) {
+            return 0;
+        }
+
         return ShootFile::where('shoot_id', $shootId)
             ->where(function ($query) {
                 $query->whereIn('file_type', ['image', 'jpg', 'jpeg', 'png'])
@@ -341,6 +344,8 @@ class AiEditingTools
                     ->orWhere('filename', 'like', '%.tif')
                     ->orWhere('filename', 'like', '%.tiff');
             })
+            ->get()
+            ->filter(fn (ShootFile $file) => app(ShootAuthorizationSupport::class)->canInteractWithShootMediaFile($shoot, $file, $actor))
             ->count();
     }
 
@@ -351,10 +356,8 @@ class AiEditingTools
      */
     public function summarizeEditingForShoot(int $shootId, ?int $userId = null): array
     {
-        $query = AiEditingJob::where('shoot_id', $shootId);
-        if ($userId) {
-            $query->where('user_id', $userId);
-        }
+        $actor = $this->flowActor($userId);
+        $query = $this->jobsFor($actor)->where('shoot_id', $shootId);
 
         $summary = [
             'pending' => 0,
@@ -385,12 +388,12 @@ class AiEditingTools
     public function retryFailedJobsForShoot(int $shootId, ?int $userId = null): array
     {
         try {
-            $query = AiEditingJob::where('shoot_id', $shootId)
-                ->where('status', AiEditingJob::STATUS_FAILED);
-
-            if ($userId) {
-                $query->where('user_id', $userId);
+            $actor = $this->flowActor($userId);
+            if (! $actor) {
+                return ['success' => false, 'retried' => 0, 'error' => 'You do not have permission to use AI editing'];
             }
+            $query = $this->jobsFor($actor)->where('shoot_id', $shootId)
+                ->where('status', AiEditingJob::STATUS_FAILED);
 
             $failed = $query->get();
             $retried = 0;
@@ -422,6 +425,7 @@ class AiEditingTools
                 'error' => $e->getMessage(),
                 'shoot_id' => $shootId,
             ]);
+
             return [
                 'success' => false,
                 'retried' => 0,
@@ -443,6 +447,9 @@ class AiEditingTools
      */
     public function submitStagedQuickEdit(array $stagedIds, int $userId, string $mode, array $params = []): array
     {
+        if (! $this->flowActor($userId)) {
+            return ['success' => false, 'jobs' => [], 'skipped' => [], 'error' => 'You do not have permission to use AI editing'];
+        }
         $jobs = [];
         $skipped = [];
         $provider = $this->resolveProvider($params['provider'] ?? null);
@@ -455,14 +462,16 @@ class AiEditingTools
             $dir = "autoenhance-uploads/{$userId}/staging";
             try {
                 $matches = collect(Storage::disk('public')->files($dir))
-                    ->filter(fn ($p) => str_starts_with(basename($p), $stagedId . '.'))
+                    ->filter(fn ($p) => str_starts_with(basename($p), $stagedId.'.'))
                     ->values();
             } catch (\Throwable $e) {
                 $skipped[] = ['staged_id' => $stagedId, 'reason' => $e->getMessage()];
+
                 continue;
             }
             if ($matches->isEmpty()) {
                 $skipped[] = ['staged_id' => $stagedId, 'reason' => 'staged file missing'];
+
                 continue;
             }
 
@@ -471,6 +480,7 @@ class AiEditingTools
                 $contents = (string) Storage::disk('public')->get($storedPath);
             } catch (\Throwable $e) {
                 $skipped[] = ['staged_id' => $stagedId, 'reason' => $e->getMessage()];
+
                 continue;
             }
 
@@ -483,7 +493,10 @@ class AiEditingTools
                 default => 'image/jpeg',
             };
             $publicUrl = null;
-            try { $publicUrl = Storage::disk('public')->url($storedPath); } catch (\Throwable $e) {}
+            try {
+                $publicUrl = Storage::disk('public')->url($storedPath);
+            } catch (\Throwable $e) {
+            }
 
             try {
                 $editingJob = AiEditingJob::create([
@@ -517,7 +530,7 @@ class AiEditingTools
                         : ($result['image_id'] ?? null))
                     : null;
 
-                if (!is_array($result) || !$providerJobId) {
+                if (! is_array($result) || ! $providerJobId) {
                     $errorMessage = is_array($result)
                         ? ($result['error'] ?? 'AI editing submission failed')
                         : 'AI editing submission failed';
@@ -527,6 +540,7 @@ class AiEditingTools
                         $editingJob->save();
                     }
                     $skipped[] = ['staged_id' => $stagedId, 'name' => $name, 'reason' => $editingJob->error_message ?? 'submission_failed'];
+
                     continue;
                 }
 
@@ -564,10 +578,10 @@ class AiEditingTools
      */
     public function getRecentJobsForUser(int $userId, int $limit = 10): array
     {
-        $jobs = AiEditingJob::where('user_id', $userId)
+        $jobs = $this->jobsFor($this->flowActor($userId))->where('user_id', $userId)
             ->whereIn('provider', ['autoenhance', 'fal'])
             ->orderByDesc('id')
-            ->limit($limit)
+            ->limit(max(1, min(100, $limit)))
             ->get();
 
         return $jobs->map(function (AiEditingJob $job) {
@@ -595,9 +609,10 @@ class AiEditingTools
         if (empty($ids)) {
             return [];
         }
-        $jobs = AiEditingJob::where('user_id', $userId)
+        $jobs = $this->jobsFor($this->flowActor($userId))->where('user_id', $userId)
             ->whereIn('id', $ids)
             ->get();
+
         return $jobs->map(fn (AiEditingJob $job) => [
             'id' => $job->id,
             'status' => $job->status,
@@ -622,10 +637,11 @@ class AiEditingTools
         }
         $cancelled = 0;
         $skipped = [];
-        $jobs = AiEditingJob::where('user_id', $userId)->whereIn('id', $ids)->get();
+        $jobs = $this->jobsFor($this->flowActor($userId))->where('user_id', $userId)->whereIn('id', $ids)->get();
         foreach ($jobs as $job) {
-            if (!in_array($job->status, [AiEditingJob::STATUS_PENDING, AiEditingJob::STATUS_PROCESSING], true)) {
+            if (! in_array($job->status, [AiEditingJob::STATUS_PENDING, AiEditingJob::STATUS_PROCESSING], true)) {
                 $skipped[] = ['id' => $job->id, 'reason' => 'not_in_progress'];
+
                 continue;
             }
             try {
@@ -639,6 +655,7 @@ class AiEditingTools
                 $skipped[] = ['id' => $job->id, 'reason' => $e->getMessage()];
             }
         }
+
         return ['cancelled' => $cancelled, 'skipped' => $skipped];
     }
 
@@ -656,10 +673,11 @@ class AiEditingTools
         }
         $retried = 0;
         $skipped = [];
-        $jobs = AiEditingJob::where('user_id', $userId)->whereIn('id', $ids)->get();
+        $jobs = $this->jobsFor($this->flowActor($userId))->where('user_id', $userId)->whereIn('id', $ids)->get();
         foreach ($jobs as $job) {
-            if (!in_array($job->status, [AiEditingJob::STATUS_FAILED, AiEditingJob::STATUS_CANCELLED], true)) {
+            if (! in_array($job->status, [AiEditingJob::STATUS_FAILED, AiEditingJob::STATUS_CANCELLED], true)) {
                 $skipped[] = ['id' => $job->id, 'reason' => 'not_failed_or_cancelled'];
+
                 continue;
             }
             try {
@@ -681,7 +699,36 @@ class AiEditingTools
                 $skipped[] = ['id' => $job->id, 'reason' => $e->getMessage()];
             }
         }
+
         return ['retried' => $retried, 'skipped' => $skipped];
+    }
+
+    private function canUseEditing(?User $actor): bool
+    {
+        // Match the paid Autoenhance routes. Read-only shoot sharing never
+        // grants the ability to submit images to a paid external provider.
+        return app(ShootAuthorizationSupport::class)->hasRole($actor, ['admin', 'superadmin', 'editing_manager', 'editor']);
+    }
+
+    private function flowActor(?int $claimedUserId = null): ?User
+    {
+        $actor = $this->access->actor([]);
+
+        return $this->canUseEditing($actor) && ($claimedUserId === null || $claimedUserId === (int) $actor->id) ? $actor : null;
+    }
+
+    private function jobsFor(?User $actor): Builder
+    {
+        $query = AiEditingJob::query();
+        if (! $this->canUseEditing($actor)) {
+            return $query->whereRaw('1 = 0');
+        }
+        if (! $this->access->isStaff($actor)) {
+            $query->where('user_id', $actor->id);
+        }
+
+        return $query->where(fn (Builder $scope) => $scope->whereNull('shoot_id')
+            ->orWhereIn('shoot_id', $this->access->query($actor)->select('shoots.id')));
     }
 
     private function resolveProvider(?string $provider = null): string

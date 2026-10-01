@@ -15,7 +15,8 @@ class UnreadCountService
      */
     public function forUser(int $userId, bool $includeCalls = true): array
     {
-        $email = $this->countUnreadThreads('EMAIL', $userId);
+        $user = \App\Models\User::find($userId);
+        $email = $user && app(DashboardMessagingPolicy::class)->canEmail($user) ? $this->countUnreadThreads('EMAIL', $userId) : 0;
         $sms = $this->countUnreadThreads('SMS', $userId);
         $call = $includeCalls ? $this->countAttentionCalls() : 0;
 
@@ -31,6 +32,7 @@ class UnreadCountService
     {
         return MessageThread::query()
             ->where('channel', strtoupper($channel))
+            ->when(strtoupper($channel) === 'EMAIL', fn ($q) => $q->whereDoesntHave('messages', fn ($messages) => $messages->whereIn('id', \App\Models\SupportTicketMessage::whereNotNull('source_message_id')->select('source_message_id'))))
             ->where(function ($query) use ($userId) {
                 // IDs may be stored as int or string depending on encoder / DB.
                 $query->whereJsonContains('unread_for_user_ids_json', $userId)

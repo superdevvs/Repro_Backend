@@ -26,6 +26,38 @@ class IguideOfflinePackageControllerTest extends TestCase
     /** @var list<string> */
     private array $temporaryFiles = [];
 
+    #[Test]
+    public function direct_uploads_accept_large_official_packages_and_reject_more_than_one_gibibyte(): void
+    {
+        Storage::fake('local');
+        Queue::fake();
+        $admin = User::factory()->admin()->create();
+        Sanctum::actingAs($admin);
+        $contents = file_get_contents($this->zip(['index.html' => '<html>Tour</html>'])->getRealPath());
+
+        foreach ([868999851, 1073741824, 1073741825] as $size) {
+            $shoot = Shoot::factory()->create();
+            // Keep a real, structurally valid archive while reporting each
+            // boundary size instead of allocating gigabytes in the test suite.
+            $upload = UploadedFile::fake()->createWithContent('official-offline_en.zip', $contents);
+            $upload->sizeToReport = $size;
+            $response = $this->post("/api/integrations/shoots/{$shoot->id}/iguide/offline-package", [
+                'package' => $upload,
+            ], ['Accept' => 'application/json']);
+
+            if ($size <= 1073741824) {
+                $response->assertAccepted()
+                    ->assertJsonPath('manual_offline_package.size_bytes', $size);
+                $this->assertSame($size, (int) $shoot->files()->sole()->file_size);
+            } else {
+                $response->assertUnprocessable()
+                    ->assertJsonValidationErrors('package')
+                    ->assertJsonPath('errors.package.0', 'The ZIP must be no larger than 1 GiB.');
+                $this->assertSame(0, $shoot->files()->count());
+            }
+        }
+    }
+
     protected function tearDown(): void
     {
         foreach ($this->temporaryFiles as $path) {

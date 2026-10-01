@@ -5,7 +5,7 @@ namespace App\Services\TelnyxAi;
 use App\Models\VoiceCall;
 use App\Services\Messaging\AiSms\SmsContextResolverService;
 use App\Support\LockedWrite;
-use Illuminate\Support\Facades\Cache;
+use App\Support\VoiceLocks;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
 use RuntimeException;
@@ -194,7 +194,7 @@ class TelnyxVoiceCallService
 
     public function startAssistant(VoiceCall $voiceCall, array $dynamicVariables): bool
     {
-        return Cache::lock("telnyx:assistant-start:{$voiceCall->id}", 20)->block(5, function () use ($voiceCall, $dynamicVariables): bool {
+        return VoiceLocks::lock("telnyx:assistant-start:{$voiceCall->id}", 20)->block(5, function () use ($voiceCall, $dynamicVariables): bool {
             $voiceCall->refresh();
             $metadata = $voiceCall->metadata ?? [];
             if (! empty($metadata['assistant_started_at'])) {
@@ -262,7 +262,7 @@ class TelnyxVoiceCallService
 
     public function setRecordingConsent(VoiceCall $voiceCall, bool $consented, ?string $operationId = null): array
     {
-        return Cache::lock('voice-recording-control:'.$voiceCall->id, 75)->block(5, function () use ($voiceCall, $consented, $operationId): array {
+        return VoiceLocks::lock('voice-recording-control:'.$voiceCall->id, 75)->block(5, function () use ($voiceCall, $consented, $operationId): array {
             $voiceCall->refresh();
             $this->updateRecordingState($voiceCall, function (array $metadata) use ($consented, $operationId): array {
                 if (($metadata['recording_consent']['consented'] ?? null) !== $consented) {
@@ -306,7 +306,7 @@ class TelnyxVoiceCallService
     /** Stop both media captures independently; a failed stop must remain retryable. */
     public function stopRecording(VoiceCall $voiceCall, ?string $operationId = null): array
     {
-        return Cache::lock('voice-recording-control:'.$voiceCall->id, 75)->block(5, fn (): array => $this->performRecordingStop($voiceCall));
+        return VoiceLocks::lock('voice-recording-control:'.$voiceCall->id, 75)->block(5, fn (): array => $this->performRecordingStop($voiceCall));
     }
 
     private function performRecordingStop(VoiceCall $voiceCall): array

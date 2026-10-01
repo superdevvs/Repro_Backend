@@ -118,17 +118,12 @@ class UpdateShootAction
         ];
         $isEditor = $user->role === 'editor';
         $assignedEditor = $isEditor
-            && $this->editingAssignmentService->editorHasAssignment($shoot, $user);
-        // Assigned editors may only merge video-tour embed fields on Overview.
+            && $this->authorizationSupport->canEditVideoTourLinks($shoot, $user);
+        // Assigned video editors may only merge video links and embeds.
         $editorEditableKeys = [
             'tour_links',
         ];
-        $editorEditableTourLinkKeys = [
-            'embeds',
-            'video_link',
-            'featured_embed_id',
-            'featured_embed',
-        ];
+        $editorEditableTourLinkKeys = \App\Services\Shoots\ShootAuthorizationSupport::VIDEO_TOUR_LINK_KEYS;
         $clientEditableTourLinkKeys = [
             'property_description',
             'property_mls',
@@ -457,7 +452,7 @@ class UpdateShootAction
                 $this->support->assertWithinAvailabilityBounds(
                     (int) $targetPhotographerId,
                     $targetScheduledAt,
-                    $this->support->calculateShootDurationFromServices($targetServices),
+                    $this->support->calculateShootDurationFromServices($targetServices, $shoot->propertySqft(), $targetScheduledAt, $assertTimezone, (int) $targetPhotographerId),
                     $shoot->id,
                     $skipConflictCheck,
                     $assertTimezone

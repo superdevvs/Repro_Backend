@@ -535,10 +535,13 @@ class MailService
                 return false;
             }
 
+            $bookingInvoice = $isPhotographer ? []
+                : app(\App\Services\SystemEmails\BookingInvoiceContext::class)->forClient($shoot, $recipient);
             $payload = $this->buildProtectedEmailPayload([
                 'recipient' => $this->formatUserData($recipient),
                 'account' => $this->formatUserData($shoot->client),
                 'shoot' => $recipientShootData,
+                'invoice' => $bookingInvoice,
                 'links' => [
                     'payment' => $paymentLink,
                     'dashboard' => $recipientShootData->dashboard_url ?? null,
@@ -555,6 +558,7 @@ class MailService
             $sent = $this->dispatchProtectedEmail('SHOOT_SCHEDULED', $payload, $normalizedEmail, $cc, [], [
                 'related_shoot_id' => $shoot->id,
                 'related_account_id' => $isPhotographer ? null : $recipient->id,
+                'related_invoice_id' => $bookingInvoice['id'] ?? null,
             ], [
                 'idempotency_key' => sprintf(
                     'SHOOT_SCHEDULED:%d:%d:%s:%s',
@@ -1154,7 +1158,10 @@ class MailService
             $shootData = $this->formatShootData($shoot);
             $admins = User::query()
                 ->whereIn('role', ['admin', 'superadmin'])
-                ->get();
+                ->get()
+                ->push(app(\App\Services\Shoots\ShootSalesRepResolver::class)->resolve($shoot))
+                ->filter(fn ($recipient) => $recipient && filled($recipient->email))
+                ->unique('id');
 
             if ($admins->isEmpty()) {
                 Log::warning('No admins found to send shoot requested fallback notification.', [
@@ -1167,24 +1174,7 @@ class MailService
             $sent = false;
 
             foreach ($admins as $admin) {
-                $payload = $this->buildProtectedEmailPayload([
-                    'recipient' => $this->formatUserData($admin),
-                    'account' => $this->formatUserData($shoot->client),
-                    'shoot' => $shootData,
-                    'meta' => [
-                        'recipient_type' => 'admin',
-                        'is_admin' => true,
-                        'event_version' => $shoot->created_at?->toIso8601String() ?? $shoot->id,
-                    ],
-                ]);
-
-                $this->dispatchProtectedEmail('SHOOT_REQUESTED', $payload, $admin->email, [], [], [
-                    'related_shoot_id' => $shoot->id,
-                ], [
-                    'idempotency_key' => sprintf('SHOOT_REQUESTED:%d:%d:admin', $shoot->id, $admin->id),
-                ]);
-
-                $sent = true;
+                $sent = $this->sendShootRequestedStaffEmail($admin, $shoot) || $sent;
             }
 
             Log::info('Shoot requested fallback emails sent to admins.', [
@@ -1203,9 +1193,50 @@ class MailService
         }
     }
 
-    /**
-     * Send shoot cancellation requested email
-     */
+    public function sendShootRequestedStaffEmail(User $recipient, Shoot $shoot): bool
+    {
+        if ($shoot->isInternalTestShoot() || blank($recipient->email)) {
+            return false;
+        }
+        $shoot->loadMissing(['client', 'rep', 'services.category']);
+        $type = $this->requestStaffRecipientType($recipient, $shoot);
+        if (! in_array($type, ['admin', 'rep'], true)) {
+            return false;
+        }
+        $payload = $this->buildProtectedEmailPayload([
+            'recipient' => $this->formatUserData($recipient),
+            'account' => $this->formatUserData($shoot->client),
+            'shoot' => $this->formatShootData($shoot),
+            'meta' => [
+                'recipient_type' => $type,
+                'is_admin' => true,
+                'event_version' => $shoot->created_at?->toIso8601String() ?? $shoot->id,
+            ],
+        ]);
+
+        return $this->dispatchProtectedEmail('SHOOT_REQUESTED', $payload, $recipient->email, [], [], [
+            'related_shoot_id' => $shoot->id,
+        ], [
+            'idempotency_key' => sprintf('SHOOT_REQUESTED:%d:%d:%s', $shoot->id, $recipient->id, $type),
+        ]);
+    }
+
+    private function requestStaffRecipientType(User $user, Shoot $shoot): ?string
+    {
+        if ((int) $user->id === (int) $shoot->client_id) {
+            return 'client';
+        }
+        if ((int) $user->id === (int) app(\App\Services\Shoots\ShootSalesRepResolver::class)->resolve($shoot)?->id) {
+            return 'rep';
+        }
+        if (app(\App\Services\Shoots\ShootAuthorizationSupport::class)->hasRole($user, ['admin', 'superadmin', 'editing_manager'])) {
+            return 'admin';
+        }
+
+        return null;
+    }
+
+    /** Send the client receipt or sales rep review email. */
     public function sendShootCancellationRequestedEmail(User $user, Shoot $shoot): bool
     {
         if ($shoot->isInternalTestShoot()) {
@@ -1216,20 +1247,24 @@ class MailService
             $shoot = $shoot->fresh(['client', 'photographer', 'rep', 'services.category']) ?? $shoot;
             $shootData = $this->formatShootData($shoot);
             $clientCcEmails = $this->resolveShootCcEmailsForRecipient($shoot, $user);
-            $isPhotographer = $this->isPhotographerRecipient($user, $shoot);
+            $recipientType = $this->requestStaffRecipientType($user, $shoot);
+            if ($recipientType === null) {
+                return false;
+            }
 
             $payload = $this->buildProtectedEmailPayload([
                 'recipient' => $this->formatUserData($user),
                 'account' => $this->formatUserData($shoot->client),
                 'shoot' => $shootData,
                 'meta' => [
-                    'recipient_type' => $isPhotographer ? 'photographer' : 'client',
-                    'is_photographer' => $isPhotographer,
+                    'recipient_type' => $recipientType,
+                    'is_photographer' => false,
+                    'is_reviewer' => $recipientType !== 'client',
                     'cancellation_reason' => $shoot->cancellation_reason,
                     'event_version' => sha1((string) $shoot->cancellation_reason),
                 ],
             ]);
-            $this->dispatchProtectedEmail('SHOOT_CANCELLATION_REQUESTED', $payload, $user->email, $clientCcEmails, [], $this->automatedClientPayload($isPhotographer ? null : $user, [
+            $sent = $this->dispatchProtectedEmail('SHOOT_CANCELLATION_REQUESTED', $payload, $user->email, $clientCcEmails, [], $this->automatedClientPayload($user, [
                 'related_shoot_id' => $shoot->id,
             ]), [
                 'idempotency_key' => sprintf('SHOOT_CANCELLATION_REQUESTED:%d:%d:%s', $shoot->id, $user->id, sha1((string) $shoot->cancellation_reason)),
@@ -1239,10 +1274,10 @@ class MailService
                 'user_id' => $user->id,
                 'shoot_id' => $shoot->id,
                 'email' => $user->email,
-                'is_photographer' => $isPhotographer,
+                'recipient_type' => $recipientType,
             ]);
 
-            return true;
+            return $sent;
         } catch (\Exception $e) {
             Log::error('Failed to send shoot cancellation requested email', [
                 'user_id' => $user->id,
@@ -1271,6 +1306,9 @@ class MailService
 
         try {
             $shoot = $shoot->fresh(['client', 'photographer', 'rep', 'services.category', 'payments']) ?? $shoot;
+            if ((int) $shoot->client_id !== (int) $user->id) {
+                return false;
+            }
             $shootData = $this->formatShootData($shoot, $user, 'client', $serviceItemIds);
             $clientCcEmails = $this->resolveShootCcEmailsForRecipient($shoot, $user);
             $paymentLink = $this->shouldShowShootReadyPaymentLink($shoot)
@@ -1340,7 +1378,8 @@ class MailService
 
         try {
             $shoot = $shoot->fresh(['client', 'photographer', 'rep', 'services.category', 'payments.refunds']) ?? $shoot;
-            if (! app(\App\Services\Messaging\ShootSummaryEligibility::class)->canSend($shoot)) {
+            if ((int) $shoot->client_id !== (int) $user->id
+                || ! app(\App\Services\Messaging\ShootSummaryEligibility::class)->canSend($shoot)) {
                 return false;
             }
 
@@ -2066,7 +2105,7 @@ class MailService
             'access_details' => $this->buildAccessRows($propertyDetails),
             'company_notes' => $shoot->company_notes,
             'photographer_notes' => $shoot->photographer_notes,
-            'dashboard_url' => 'https://reprodashboard.com',
+            'dashboard_url' => rtrim((string) config('app.frontend_url', config('app.url')), '/').'/shoots/'.$shoot->id,
             'website_url' => 'https://reprophotos.com',
             'property_prep_url' => 'https://reprophotos.com/tips-to-get-your-property-camera-ready/',
             'review_url' => 'https://www.google.com/maps/place/R%2FE+Pro+Photos/reviews',
@@ -2962,9 +3001,10 @@ class MailService
     }
 
     /**
-     * Send shoot cancelled email
+     * Final cancellation informs the client, rep, and effective assigned photographers.
+     * Explicit automation audiences pass false to send only to the supplied recipient.
      */
-    public function sendShootCancelledEmail(User $user, Shoot $shoot): bool
+    public function sendShootCancelledEmail(User $user, Shoot $shoot, bool $sendStakeholderEmails = true): bool
     {
         if ($shoot->isInternalTestShoot()) {
             return false;
@@ -2972,7 +3012,13 @@ class MailService
 
         try {
             $shoot = $shoot->fresh(['client', 'photographer', 'rep', 'services.category']) ?? $shoot;
-            $recipientType = (int) $user->id === (int) $shoot->client_id ? 'client' : 'photographer';
+            $recipientType = $this->requestStaffRecipientType($user, $shoot);
+            if ($recipientType === null && $this->isPhotographerRecipient($user, $shoot)) {
+                $recipientType = 'photographer';
+            }
+            if ($recipientType === null) {
+                return false;
+            }
             $shootData = $this->formatShootData($shoot, $user, $recipientType);
             $clientCcEmails = $this->resolveShootCcEmailsForRecipient($shoot, $user);
 
@@ -2999,30 +3045,17 @@ class MailService
                 'email' => $user->email,
             ]);
 
-            if ($this->shouldSendAssignedPhotographerEmails($shoot, $user, ShootEmailMatrix::SHOOT_CANCELLED)) {
-                foreach ($this->resolveAssignedPhotographers($shoot, $user->id) as $photographer) {
-                    $photographerShootData = $this->formatShootData($shoot, $photographer, 'photographer');
-                    $payload = $this->buildProtectedEmailPayload([
-                        'recipient' => $this->formatUserData($photographer),
-                        'account' => $this->formatUserData($shoot->client),
-                        'shoot' => $photographerShootData,
-                        'meta' => [
-                            'recipient_type' => 'photographer',
-                            'is_photographer' => true,
-                            'shoot_service_ids' => $photographerShootData->service_item_ids ?? [],
-                            'event_version' => $shoot->updated_at?->toIso8601String() ?? $shoot->id,
-                        ],
-                    ]);
-                    $this->dispatchProtectedEmail('SHOOT_CANCELLED', $payload, $photographer->email, [], [], [
-                        'related_shoot_id' => $shoot->id,
-                    ], [
-                        'idempotency_key' => sprintf('SHOOT_CANCELLED:%d:%d:photographer', $shoot->id, $photographer->id),
-                    ]);
-                    Log::info('Shoot cancelled email sent to photographer', [
-                        'photographer_id' => $photographer->id,
-                        'shoot_id' => $shoot->id,
-                        'email' => $photographer->email,
-                    ]);
+            if ($sendStakeholderEmails) {
+                $stakeholders = collect([
+                    $shoot->client,
+                    app(\App\Services\Shoots\ShootSalesRepResolver::class)->resolve($shoot),
+                ]);
+                if (ShootEmailMatrix::includesPhotographer(ShootEmailMatrix::SHOOT_CANCELLED)) {
+                    $stakeholders = $stakeholders->merge($this->resolveAssignedPhotographers($shoot));
+                }
+                foreach ($stakeholders->filter(fn ($recipient) => $recipient instanceof User && filled($recipient->email))
+                    ->unique('id')->reject(fn (User $recipient) => (int) $recipient->id === (int) $user->id) as $recipient) {
+                    $this->sendShootCancelledEmail($recipient, $shoot, false);
                 }
             }
 

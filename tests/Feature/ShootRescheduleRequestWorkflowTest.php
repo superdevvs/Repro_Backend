@@ -126,6 +126,99 @@ class ShootRescheduleRequestWorkflowTest extends TestCase
         $this->assertSame(self::REQUESTED_TIME, $shoot->time);
     }
 
+    public function test_staff_reschedule_updates_only_selected_durations_and_inherited_service_times(): void
+    {
+        $client = $this->verifiedUser(['role' => 'client']);
+        $shoot = $this->makeShoot($client);
+        $shoot->update(['scheduled_at' => '2026-09-10 10:00:00', 'timezone' => 'UTC']);
+        $photo = \App\Models\Service::factory()->create();
+        $drone = \App\Models\Service::factory()->create();
+        $shoot->services()->attach($photo->id, ['price' => 100, 'quantity' => 1, 'duration_minutes' => 60, 'scheduled_at' => '2026-09-10 10:00:00']);
+        $shoot->services()->attach($drone->id, ['price' => 50, 'quantity' => 1, 'duration_minutes' => 75, 'scheduled_at' => '2026-09-11 11:00:00']);
+        Sanctum::actingAs($this->verifiedUser(['role' => 'admin']));
+        $this->postJson("/api/shoots/{$shoot->id}/reschedule", [
+            'requested_date' => self::REQUESTED_DATE, 'requested_time' => self::REQUESTED_TIME,
+            'services' => [['id' => $photo->id, 'duration_minutes' => 30]],
+        ])->assertCreated()->assertJsonPath('applied', true);
+        $items = $shoot->serviceItems()->get()->keyBy('service_id');
+        $this->assertSame(30, $items[$photo->id]->duration_minutes);
+        $this->assertSame('2026-09-24 14:30:00', $items[$photo->id]->scheduled_at->format('Y-m-d H:i:s'));
+        $this->assertSame(75, $items[$drone->id]->duration_minutes);
+        $this->assertSame('2026-09-11 11:00:00', $items[$drone->id]->scheduled_at->format('Y-m-d H:i:s'));
+        $this->assertSame(30, app(\App\Services\Shoots\ShootDurationResolver::class)->forShoot($shoot->fresh()));
+    }
+
+    public function test_duration_only_reschedule_dispatches_calendar_sync(): void
+    {
+        $client = $this->verifiedUser(['role' => 'client']);
+        $shoot = $this->makeShoot($client);
+        $shoot->update(['scheduled_at' => '2026-09-10 10:00:00', 'timezone' => 'UTC']);
+        $service = \App\Models\Service::factory()->create();
+        $shoot->services()->attach($service->id, ['price' => 100, 'quantity' => 1, 'duration_minutes' => 60, 'scheduled_at' => '2026-09-10 10:00:00']);
+        $dispatcher = \Mockery::mock(\App\Services\GoogleCalendar\GoogleCalendarSyncDispatcher::class)->makePartial();
+        $dispatcher->shouldReceive('dispatchShootSync')->atLeast()->once()->with($shoot->id);
+        $this->app->instance(\App\Services\GoogleCalendar\GoogleCalendarSyncDispatcher::class, $dispatcher);
+        Sanctum::actingAs($this->verifiedUser(['role' => 'admin']));
+        $this->postJson("/api/shoots/{$shoot->id}/reschedule", [
+            'requested_date' => self::ORIGINAL_DATE, 'requested_time' => self::ORIGINAL_TIME,
+            'services' => [['id' => $service->id, 'duration_minutes' => 30]],
+        ])->assertCreated();
+        $this->assertSame(30, $shoot->serviceItems()->first()->duration_minutes);
+    }
+
+    public function test_invalid_duration_or_foreign_service_cannot_partially_reschedule(): void
+    {
+        $client = $this->verifiedUser(['role' => 'client']);
+        $shoot = $this->makeShoot($client);
+        $service = \App\Models\Service::factory()->create();
+        $shoot->services()->attach($service->id, ['price' => 100, 'quantity' => 1, 'duration_minutes' => 60]);
+        $foreign = \App\Models\Service::factory()->create();
+        Sanctum::actingAs($this->verifiedUser(['role' => 'admin']));
+        foreach ([['id' => $service->id, 'duration_minutes' => 0], ['id' => $foreign->id, 'duration_minutes' => 30]] as $change) {
+            $this->postJson("/api/shoots/{$shoot->id}/reschedule", [
+                'requested_date' => self::REQUESTED_DATE, 'requested_time' => self::REQUESTED_TIME, 'services' => [$change],
+            ])->assertUnprocessable();
+            $this->assertSame(self::ORIGINAL_DATE, $shoot->fresh()->scheduled_date->toDateString());
+            $this->assertSame(60, $shoot->serviceItems()->first()->duration_minutes);
+            $this->assertDatabaseCount('shoot_reschedule_requests', 0);
+        }
+    }
+
+    public function test_extending_a_service_into_another_booking_rolls_back_the_reschedule(): void
+    {
+        config(['availability.default_shoot_duration_minutes' => 60]);
+        $client = $this->verifiedUser(['role' => 'client']);
+        $photographer = $this->verifiedUser(['role' => 'photographer', 'timezone' => 'UTC']);
+        $shoot = $this->makeShoot($client);
+        $shoot->update(['photographer_id' => $photographer->id, 'scheduled_at' => '2026-09-10 10:00:00', 'timezone' => 'UTC']);
+        $service = \App\Models\Service::factory()->create();
+        $shoot->services()->attach($service->id, ['price' => 100, 'quantity' => 1, 'duration_minutes' => 30]);
+        Shoot::factory()->create(['photographer_id' => $photographer->id, 'scheduled_at' => '2026-09-24 15:00:00', 'timezone' => 'UTC', 'status' => 'scheduled']);
+        Sanctum::actingAs($this->verifiedUser(['role' => 'admin']));
+        $this->postJson("/api/shoots/{$shoot->id}/reschedule", [
+            'requested_date' => self::REQUESTED_DATE, 'requested_time' => self::REQUESTED_TIME,
+            'services' => [['id' => $service->id, 'duration_minutes' => 90]],
+        ])->assertUnprocessable()->assertJsonValidationErrors('start_time');
+        $this->assertSame(30, $shoot->serviceItems()->first()->duration_minutes);
+        $this->assertSame(self::ORIGINAL_DATE, $shoot->fresh()->scheduled_date->toDateString());
+        $this->assertDatabaseCount('shoot_reschedule_requests', 0);
+    }
+
+    public function test_client_cannot_apply_duration_changes_through_pending_reschedule(): void
+    {
+        $client = $this->verifiedUser(['role' => 'client']);
+        $shoot = $this->makeShoot($client);
+        $service = \App\Models\Service::factory()->create();
+        $shoot->services()->attach($service->id, ['price' => 100, 'quantity' => 1, 'duration_minutes' => 60]);
+        Sanctum::actingAs($client);
+        $this->postJson("/api/shoots/{$shoot->id}/reschedule", [
+            'requested_date' => self::REQUESTED_DATE, 'requested_time' => self::REQUESTED_TIME,
+            'services' => [['id' => $service->id, 'duration_minutes' => 30]],
+        ])->assertUnprocessable();
+        $this->assertSame(60, $shoot->serviceItems()->first()->duration_minutes);
+        $this->assertDatabaseCount('shoot_reschedule_requests', 0);
+    }
+
     public function test_a_photographer_submission_is_a_request_not_a_direct_change(): void
     {
         $client = $this->verifiedUser(['role' => 'client']);

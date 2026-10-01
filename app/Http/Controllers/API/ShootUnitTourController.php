@@ -27,12 +27,18 @@ class ShootUnitTourController extends Controller
         $this->access->ensureShootAccess($shoot, $request->user());
         $ownsShoot = $request->user()?->role === 'client' && (string) $shoot->client_id === (string) $request->user()->id;
         $assignedRep = in_array(strtolower((string) $request->user()?->role), ['salesrep', 'sales_rep'], true) && (string) $shoot->rep_id === (string) $request->user()->id;
-        abort_unless($this->access->canManageShootOperations($request->user()) || (! $operator && ($ownsShoot || $assignedRep)), 403);
+        $videoEditor = ! $operator && $this->access->canEditVideoTourLinks($shoot, $request->user(), $unit);
+        abort_unless($this->access->canManageShootOperations($request->user()) || (! $operator && ($ownsShoot || $assignedRep || $videoEditor)), 403);
     }
 
     public function update(Request $request, Shoot $shoot, ShootUnit $unit)
     {
         $this->authorizeUnit($request, $shoot, $unit);
+        $isVideoEditor = $request->user()->role === 'editor';
+        if ($isVideoEditor) {
+            abort_if(array_diff(array_keys($request->all()), ['tour_links']), 403);
+            abort_if(is_array($request->input('tour_links')) && array_diff(array_keys($request->input('tour_links')), ShootAuthorizationSupport::VIDEO_TOUR_LINK_KEYS), 403);
+        }
         $data = $request->validate([
             'shoot_service_id' => 'sometimes|nullable|integer', 'tour_links' => 'sometimes|array', 'tour_links.*' => 'nullable',
             'tour_links.realtor_client_id' => 'sometimes|nullable|integer|exists:users,id',
@@ -47,7 +53,7 @@ class ShootUnitTourController extends Controller
             'iguide_work_order_id' => 'sometimes|nullable|string|max:255',
         ]);
         $isOperator = $this->access->canManageShootOperations($request->user());
-        if (! $isOperator) {
+        if (! $isOperator && ! $isVideoEditor) {
             abort_if($request->hasAny(['iguide_property_id', 'iguide_work_order_id', 'reset_building_defaults']), 403);
             $allowed = ['property_mls', 'property_price', 'property_lot_size', 'property_description', 'realtor_client_id'];
             if ($request->user()->role !== 'client') {
@@ -85,6 +91,9 @@ class ShootUnitTourController extends Controller
             if ($dimensionsChanged) Shoot::whereKey($shoot->id)->increment('units_revision');
         }), 'shoot-unit.tour-update');
         $unit->refresh();
+        if ($isVideoEditor) {
+            return response()->json(['data' => ['id' => $unit->id, 'tour_links' => Arr::only($unit->tour_links ?? [], ShootAuthorizationSupport::VIDEO_TOUR_LINK_KEYS)]]);
+        }
         if (! $isOperator) {
             $lines = $unit->serviceItems()->where('is_deliverable', true)->whereNotIn('delivery_status', ['cancelled'])->get();
             $safe = $this->scope->releasedTourData($unit, $lines->filter(fn ($line) => $this->scope->isReleased($line))->pluck('id')->all(), $lines->count());

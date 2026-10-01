@@ -9,11 +9,10 @@ use App\Services\TelnyxAi\ConfirmationTokenService;
 use App\Services\TelnyxAi\ToolBridgeRedactor;
 use App\Services\TelnyxAi\ToolBridgeRegistry;
 use App\Services\TelnyxAi\VoiceToolContextResolver;
+use App\Support\VoiceLocks;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Arr;
-use Illuminate\Support\Facades\Cache;
-use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
@@ -91,7 +90,7 @@ class TelnyxToolBridgeController extends Controller
             $idempotencyKey = Str::uuid()->toString();
         }
 
-        $lock = Cache::lock('telnyx:tool-execution:'.hash('sha256', $idempotencyKey), 30);
+        $lock = VoiceLocks::lock('telnyx:tool-execution:'.hash('sha256', $idempotencyKey), $tool === 'verify_caller' ? 120 : 30);
         try {
             return $lock->block(5, fn (): JsonResponse => $this->execute(
                 $tool,
@@ -111,9 +110,15 @@ class TelnyxToolBridgeController extends Controller
     {
         $started = microtime(true);
         $existing = ToolBridgeInvocation::query()->where('idempotency_key', $idempotencyKey)->first();
-        // Knowledge is read-only and permission-scoped. Recompute it on provider
-        // retries so a revoked verification/role/permission cannot replay a guide.
-        if ($existing && $existing->response_json && $tool !== 'search_support_knowledge') {
+        // Read-only results must re-evaluate current ownership and permissions;
+        // mutations and accepted OTP sends keep their idempotent receipt.
+        $freshRead = in_array($tool, ['search_support_knowledge', 'get_shoot_details', 'list_shoots', 'get_payment_status', 'get_availability'], true);
+        if ($existing && $existing->response_json && ! $freshRead) {
+            if ($tool === 'verify_caller' && data_get($existing->response_json, 'result.result.verified') === true
+                && ! ($this->contexts->resolve(request())['context']['verified'] ?? false)) {
+                return response()->json(['ok' => false, 'error' => 'verification_failed'], 200);
+            }
+
             return response()->json($existing->response_json, 200);
         }
 

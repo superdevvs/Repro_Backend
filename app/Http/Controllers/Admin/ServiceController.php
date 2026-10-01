@@ -22,6 +22,7 @@ class ServiceController extends Controller
             'pricing_type' => 'nullable|in:fixed,variable',
             'allow_multiple' => 'nullable|boolean',
             'delivery_time' => 'required|integer|min:1',
+            'shoot_duration_minutes' => 'sometimes|integer|min:30|max:240',
             'category_id' => 'required|exists:categories,id',
             'icon' => 'nullable|string',
             'photographer_required' => 'nullable|boolean',
@@ -48,6 +49,7 @@ class ServiceController extends Controller
         }
 
         $validated = $request->validate($rules);
+        $validated['shoot_duration_minutes'] ??= (int) config('availability.default_shoot_duration_minutes', 60);
 
         // Ensure category_id is not null
         if (empty($validated['category_id'])) {
@@ -144,6 +146,7 @@ class ServiceController extends Controller
             'pricing_type' => 'nullable|in:fixed,variable',
             'allow_multiple' => 'nullable|boolean',
             'delivery_time' => 'sometimes|integer',
+            'shoot_duration_minutes' => 'sometimes|integer|min:30|max:240',
             'category_id' => 'sometimes|exists:categories,id',
             'icon' => 'nullable|string',
             'photographer_required' => 'nullable|boolean',
@@ -345,8 +348,8 @@ class ServiceController extends Controller
             'price' => $service->getPriceForSqft($sqft),
             'photographer_pay' => $service->getPhotographerPayForSqft($sqft),
             'duration' => $service->getDurationForSqft($sqft),
+            'shoot_duration_minutes' => $service->getShootDurationMinutes($sqft === null ? null : (int) $sqft),
             'pricing_type' => $service->pricing_type,
         ]);
     }
 }
-

@@ -7,6 +7,7 @@ use App\Http\Controllers\Controller;
 use App\Models\IguideOfflineUploadSession;
 use App\Models\Shoot;
 use App\Services\IguideOfflineChunkUploadService;
+use App\Services\IguideOfflinePackageService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
@@ -18,8 +19,10 @@ class IguideOfflineChunkUploadController extends Controller
     {
         $validated = $request->validate([
             'filename' => ['required', 'string', 'max:255'],
-            'size_bytes' => ['required', 'integer', 'min:1', 'max:268435456'],
+            'size_bytes' => ['required', 'integer', 'min:1', 'max:'.IguideOfflinePackageService::MAX_COMPRESSED_BYTES],
             'sha256' => ['nullable', 'string', 'regex:/^[a-fA-F0-9]{64}$/'],
+        ], [
+            'size_bytes.max' => 'The ZIP must be no larger than 1 GiB.',
         ]);
         $idempotencyKey = trim((string) $request->header('Idempotency-Key', ''));
         if (! Str::isUuid($idempotencyKey)) {

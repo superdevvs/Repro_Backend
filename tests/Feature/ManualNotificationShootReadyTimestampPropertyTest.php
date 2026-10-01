@@ -105,10 +105,15 @@ class ManualNotificationShootReadyTimestampPropertyTest extends TestCase
             'name'        => 'Pat Photographer',
             'phonenumber' => '+1555200' . str_pad((string) $n, 4, '0', STR_PAD_LEFT),
         ]);
+        $rep = User::factory()->create([
+            'email' => "rep{$n}@example.com", 'role' => 'salesRep',
+            'phonenumber' => '+1555300'.str_pad((string) $n, 4, '0', STR_PAD_LEFT),
+        ]);
 
         return Shoot::factory()->create([
             'client_id'               => $client->id,
             'photographer_id'         => $photographer->id,
+            'rep_id'                  => $rep->id,
             'scheduled_date'          => self::FIXED_SHOOT_DATE,
             'shoot_ready_notified_at' => null,
         ]);
@@ -126,7 +131,8 @@ class ManualNotificationShootReadyTimestampPropertyTest extends TestCase
         $cases = [];
         foreach (array_keys(ManualNotificationService::TYPES) as $type) {
             $cases[] = ['type' => $type, 'recipient' => 'client', 'channel' => 'email'];
-            $cases[] = ['type' => $type, 'recipient' => 'photographer', 'channel' => 'sms'];
+            $recipient = 'photographer';
+            $cases[] = ['type' => $type, 'recipient' => $recipient, 'channel' => 'sms'];
         }
 
         return $cases;
@@ -145,14 +151,16 @@ class ManualNotificationShootReadyTimestampPropertyTest extends TestCase
         mt_srand(20260616);
 
         $types = array_keys(ManualNotificationService::TYPES);
-        $recipients = ['client', 'photographer'];
+        $recipients = ['client', 'photographer', 'rep'];
         $channels = ['email', 'sms'];
 
         $cases = [];
         for ($i = 0; $i < $count; $i++) {
+            $type = $types[mt_rand(0, count($types) - 1)];
+            $allowedRecipients = $recipients;
             $cases[] = [
-                'type'      => $types[mt_rand(0, count($types) - 1)],
-                'recipient' => $recipients[mt_rand(0, count($recipients) - 1)],
+                'type'      => $type,
+                'recipient' => $allowedRecipients[mt_rand(0, count($allowedRecipients) - 1)],
                 'channel'   => $channels[mt_rand(0, count($channels) - 1)],
             ];
         }

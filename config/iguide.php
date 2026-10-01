@@ -3,7 +3,7 @@
 return [
     'offline_upload' => [
         'chunk_size_bytes' => 5 * 1024 * 1024,
-        'max_size_bytes' => 256 * 1024 * 1024,
+        'max_size_bytes' => \App\Services\IguideOfflinePackageService::MAX_COMPRESSED_BYTES,
         'inactive_ttl_hours' => 24,
         'hard_ttl_days' => 7,
         'terminal_retention_days' => 7,

@@ -31,26 +31,9 @@ class ShootRescheduleRequestController extends Controller
 {
     public function __construct(protected ShootAuthorizationSupport $authorization) {}
 
-    /**
-     * Roles allowed to reschedule a shoot outright, and to review other
-     * people's requests. Mirrors the `role:` middleware on the updateStatus
-     * route (plus salesRep aliases) so the two cannot drift apart.
-     */
-    // Keep in step with pending-holds office roles and FE RESCHEDULE_REVIEWER_ROLES
-    // (compared via strtolower). salesRep must see/approve Dashboard Reschedule.
-    private const STAFF_ROLES = [
-        'admin',
-        'superadmin',
-        'editing_manager',
-        'salesrep',
-        'sales_rep',
-        'rep',
-        'representative',
-    ];
-
     public function index(Shoot $shoot)
     {
-        $this->authorization->ensureShootAccess($shoot, auth()->user());
+        abort_unless($this->authorization->canViewShootRequests($shoot, auth()->user()), 403, 'Forbidden');
         $requests = $shoot->rescheduleRequests()
             ->with(['requester:id,name,avatar', 'approver:id,name,avatar'])->latest()->get();
 
@@ -83,7 +66,7 @@ class ShootRescheduleRequestController extends Controller
 
         $user = $request->user();
         $accessibleShootIds = $this->authorization
-            ->scopeAccessibleShootMedia(Shoot::query(), $user)
+            ->scopeAccessibleShootRequests(Shoot::query(), $user)
             ->select('shoots.id');
 
         // Default → pending + recent decided (Overview-like context for Dashboard).
@@ -236,10 +219,19 @@ class ShootRescheduleRequestController extends Controller
             'requested_time' => 'nullable|string|max:25',
             'reason' => 'nullable|string|max:2000',
             'expected_units_revision' => 'nullable|integer|min:0',
+            'services' => 'sometimes|array',
+            'services.*.id' => 'required|integer|distinct',
+            'services.*.duration_minutes' => 'required|integer|min:30|max:240',
+            'service_lines' => 'sometimes|array',
+            'service_lines.*.shoot_service_id' => 'required|integer|distinct',
+            'service_lines.*.duration_minutes' => 'required|integer|min:30|max:240',
         ]);
 
         $user = $request->user();
         $canApplyDirectly = $this->userCanReviewRequests($user);
+        if (! $canApplyDirectly && (! empty($validated['services']) || ! empty($validated['service_lines']))) {
+            throw \Illuminate\Validation\ValidationException::withMessages(['services' => ['Only scheduling staff can change service durations when rescheduling.']]);
+        }
 
         $record = \App\Support\LockedWrite::run(fn () => DB::transaction(function () use ($shoot, $validated, $user, $canApplyDirectly) {
             $shoot = Shoot::query()->lockForUpdate()->findOrFail($shoot->id);
@@ -267,7 +259,7 @@ class ShootRescheduleRequestController extends Controller
 
             // A pending request must not move the shoot. That was the bug.
             if ($canApplyDirectly) {
-                $this->applyScheduleChanges($shoot, $record);
+                $this->applyScheduleChanges($shoot, $record, $validated);
             } else {
                 $this->logRequestSubmitted($shoot, $record);
             }
@@ -287,7 +279,7 @@ class ShootRescheduleRequestController extends Controller
     public function updateStatus(Request $request, ShootRescheduleRequest $rescheduleRequest)
     {
         $this->authorizeReviewer($request);
-        $this->authorization->ensureShootAccess($rescheduleRequest->shoot, $request->user());
+        abort_unless($this->authorization->canTriageShootRequests($rescheduleRequest->shoot, $request->user()), 403, 'Forbidden');
 
         $validated = $request->validate([
             'status' => 'required|in:approved,rejected',
@@ -362,7 +354,7 @@ class ShootRescheduleRequestController extends Controller
         ]);
     }
 
-    private function applyScheduleChanges(Shoot $shoot, ShootRescheduleRequest $request): void
+    private function applyScheduleChanges(Shoot $shoot, ShootRescheduleRequest $request, array $durationChanges = []): void
     {
         // Second line of defence for idempotency: whichever path calls this, the
         // change is written at most once per request row.
@@ -375,7 +367,10 @@ class ShootRescheduleRequestController extends Controller
         $beforeSnapshot = $mailService->captureShootSnapshot($shoot);
 
         if ($shoot->units()->exists()) {
-            app(\App\Services\Shoots\MultiUnitRescheduleService::class)->apply($shoot, $request, auth()->user());
+            if (! empty($durationChanges['services'])) {
+                throw \Illuminate\Validation\ValidationException::withMessages(['services' => ['Identify each unit service by its booked service line.']]);
+            }
+            app(\App\Services\Shoots\MultiUnitRescheduleService::class)->apply($shoot, $request, auth()->user(), $durationChanges['service_lines'] ?? []);
         } else {
             // Match MultiUnitRescheduleService TZ handling: wall-clock in shoot
             // timezone → UTC instant when zoned; legacy unzoned keeps local clock.
@@ -385,6 +380,54 @@ class ShootRescheduleRequestController extends Controller
                     $request->requested_date,
                     $request->requested_time
                 );
+            if (! empty($durationChanges['service_lines'])) {
+                throw \Illuminate\Validation\ValidationException::withMessages(['service_lines' => ['Use service durations for this single-property booking.']]);
+            }
+            $lines = $shoot->serviceItems()->get();
+            foreach ($durationChanges['services'] ?? [] as $change) {
+                $line = $lines->firstWhere('service_id', (int) $change['id']);
+                if (! $line) {
+                    throw \Illuminate\Validation\ValidationException::withMessages(['services' => ['A duration can only be changed for a service already on this shoot.']]);
+                }
+                $line->duration_minutes = (int) $change['duration_minutes'];
+            }
+            // Lines inherited from the order follow the new appointment; independently
+            // scheduled visits keep their own dates and times.
+            $oldStart = $shoot->scheduled_at?->format('Y-m-d H:i:s');
+            foreach ($lines as $line) {
+                if ($line->workflow_status === 'cancelled' || $line->delivery_status === 'cancelled') {
+                    continue;
+                }
+                if ($line->scheduled_at === null || $line->scheduled_at->format('Y-m-d H:i:s') === $oldStart) {
+                    $line->scheduled_at = $resolved['scheduled_at'];
+                }
+            }
+            $proposed = clone $shoot;
+            $proposed->scheduled_at = $resolved['scheduled_at'];
+            $proposed->setRelation('serviceItems', $lines);
+            $durations = app(\App\Services\Shoots\ShootDurationResolver::class);
+            $support = app(\App\Services\Shoots\ShootMutationSupportService::class);
+            $zone = $resolved['has_timezone'] ? $resolved['timezone'] : null;
+            if ($shoot->photographer_id) {
+                $support->assertWithinAvailabilityBounds((int) $shoot->photographer_id, $resolved['local'], $durations->forShoot($proposed), $shoot->id, false, $zone);
+            }
+            foreach ($lines as $line) {
+                $line->loadMissing('service');
+                if (! $line->scheduled_at || ! $line->photographer_id || ! ($line->is_deliverable ?? true) || $line->workflow_status === 'cancelled' || $line->delivery_status === 'cancelled' || ! $line->service?->requiresPhotographer()) {
+                    continue;
+                }
+                $local = $line->scheduled_at->copy();
+                if ($zone) {
+                    $local->setTimezone($zone);
+                }
+                $support->assertWithinAvailabilityBounds((int) $line->photographer_id, $local, $durations->forServiceItem($line), $shoot->id, false, $zone);
+            }
+            foreach ($lines as $line) {
+                if ($line->isDirty()) {
+                    $line->save();
+                }
+            }
+            $shoot->unsetRelation('services')->unsetRelation('serviceItems');
             $shoot->scheduled_date = $resolved['scheduled_date'];
             // Preserve requested display string when provided; otherwise use
             // the normalized local H:i from the same parse as scheduled_at.
@@ -393,6 +436,10 @@ class ShootRescheduleRequestController extends Controller
                 : $resolved['time'];
             $shoot->scheduled_at = $resolved['scheduled_at'];
             $shoot->save();
+        }
+
+        if (! empty($durationChanges['services']) || ! empty($durationChanges['service_lines'])) {
+            app(\App\Services\GoogleCalendar\GoogleCalendarSyncDispatcher::class)->dispatchShootSync($shoot->id);
         }
 
         // Mark applied before notifying: if a notification throws, the shoot has
@@ -499,27 +546,7 @@ class ShootRescheduleRequestController extends Controller
      */
     private function userCanReviewRequests(?User $user): bool
     {
-        if (! $user) {
-            return false;
-        }
-
-        $role = strtolower((string) ($user->role ?? ''));
-
-        if (in_array($role, self::STAFF_ROLES, true)) {
-            return true;
-        }
-
-        // Some staff carry their privileges as secondary roles.
-        $secondary = $user->secondary_roles;
-        if (is_array($secondary)) {
-            foreach ($secondary as $secondaryRole) {
-                if (in_array(strtolower((string) $secondaryRole), self::STAFF_ROLES, true)) {
-                    return true;
-                }
-            }
-        }
-
-        return false;
+        return $this->authorization->canReviewShootRequests($user);
     }
 
     private function authorizeReviewer(Request $request): void

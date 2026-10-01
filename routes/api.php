@@ -28,16 +28,14 @@ use App\Http\Controllers\API\IguideOfflineChunkUploadController;
 use App\Http\Controllers\API\IguideOfflinePackageController;
 use App\Http\Controllers\API\IguideOfflineViewerAssetController;
 use App\Http\Controllers\API\IguideOfflineViewerLinkController;
-use App\Http\Controllers\API\ShortLinkController;
-use App\Http\Controllers\API\ShortLinkSettingsController;
 use App\Http\Controllers\API\ImageDownloadController;
 use App\Http\Controllers\API\ImageProcessingController;
 use App\Http\Controllers\API\IntegrationController;
 use App\Http\Controllers\API\IpLocationController;
 use App\Http\Controllers\API\LegalDocumentController;
 use App\Http\Controllers\API\LinkPreviewController;
-use App\Http\Controllers\API\ListingVideoController;
 use App\Http\Controllers\API\ListingStudioRequestController;
+use App\Http\Controllers\API\ListingVideoController;
 use App\Http\Controllers\API\MediaUploadController;
 use App\Http\Controllers\API\Messaging\AutomationController;
 use App\Http\Controllers\API\Messaging\ClientConfirmationRecoveryController;
@@ -45,8 +43,8 @@ use App\Http\Controllers\API\Messaging\EmailComposeAssistantController;
 use App\Http\Controllers\API\Messaging\EmailMessagingController;
 use App\Http\Controllers\API\Messaging\EmailOpsSummaryController;
 use App\Http\Controllers\API\Messaging\MessageTemplateController;
-use App\Http\Controllers\API\Messaging\MessagingOverviewController;
 use App\Http\Controllers\API\Messaging\MessagingBadgeCountsController;
+use App\Http\Controllers\API\Messaging\MessagingOverviewController;
 use App\Http\Controllers\API\Messaging\MessagingSettingsController;
 use App\Http\Controllers\API\Messaging\SmsContactController;
 use App\Http\Controllers\API\Messaging\SmsMessagingController;
@@ -60,13 +58,15 @@ use App\Http\Controllers\API\ReelController;
 use App\Http\Controllers\API\ShootController;
 use App\Http\Controllers\API\ShootIssuesController;
 use App\Http\Controllers\API\ShootMediaController;
-use App\Http\Controllers\API\ShootRealtorOptionsController;
 use App\Http\Controllers\API\ShootMessageController;
 use App\Http\Controllers\API\ShootNotesController;
 use App\Http\Controllers\API\ShootPaymentsController;
 use App\Http\Controllers\API\ShootPublicAssetsController;
+use App\Http\Controllers\API\ShootRealtorOptionsController;
 use App\Http\Controllers\API\ShootRescheduleRequestController;
 use App\Http\Controllers\API\ShootWorkflowController;
+use App\Http\Controllers\API\ShortLinkController;
+use App\Http\Controllers\API\ShortLinkSettingsController;
 use App\Http\Controllers\API\StudioBrandController;
 use App\Http\Controllers\API\StudioDeepLinkController;
 use App\Http\Controllers\API\StudioMetricsController;
@@ -81,10 +81,10 @@ use App\Http\Controllers\API\TelnyxAi\TelnyxToolBridgeController;
 use App\Http\Controllers\API\TourAnalyticsController;
 use App\Http\Controllers\API\UploadSourceController;
 use App\Http\Controllers\API\Voice\ScheduledVoiceCallController;
+use App\Http\Controllers\API\Voice\VoiceAssistantSyncController;
 use App\Http\Controllers\API\Voice\VoiceCallController;
 use App\Http\Controllers\API\Voice\VoiceCallStreamController;
 use App\Http\Controllers\API\Voice\VoiceHandoffController;
-use App\Http\Controllers\API\Voice\VoiceAssistantSyncController;
 use App\Http\Controllers\API\Voice\VoiceHealthController;
 use App\Http\Controllers\API\Voice\VoiceLlmUsageController;
 use App\Http\Controllers\API\Voice\VoiceMemoryController;
@@ -117,6 +117,8 @@ Route::middleware('auth:sanctum')->get('/me/permissions', [PermissionController:
 Route::middleware(['auth:sanctum', 'permission:support,view'])->prefix('support/tickets')->group(function () {
     Route::get('/', [App\Http\Controllers\API\SupportTicketController::class, 'index']);
     Route::get('/assignees', [App\Http\Controllers\API\SupportTicketController::class, 'assignees']);
+    Route::get('/legacy-message/{message}', [App\Http\Controllers\API\SupportTicketController::class, 'legacyMessage'])->whereNumber('message');
+    Route::get('/{ticket}/messages/{message}/attachments/{index}', [App\Http\Controllers\API\SupportTicketController::class, 'attachment'])->whereNumber(['ticket', 'message', 'index']);
     Route::post('/', [App\Http\Controllers\API\SupportTicketController::class, 'store'])->middleware('throttle:20,1');
     Route::get('/{ticket}', [App\Http\Controllers\API\SupportTicketController::class, 'show'])->whereNumber('ticket');
     Route::post('/{ticket}/replies', [App\Http\Controllers\API\SupportTicketController::class, 'reply'])->whereNumber('ticket')->middleware('throttle:30,1');
@@ -278,6 +280,9 @@ Route::get('upload-sources/{provider}/callback', [UploadSourceController::class,
 Route::post('webhooks/stripe', [StripePaymentController::class, 'handleWebhook'])
     ->name('webhooks.stripe');
 
+Route::post('webhooks/stripe/listing-studio', \App\Http\Controllers\ListingStudioStripeWebhookController::class)
+    ->name('webhooks.stripe.listing-studio');
+
 Route::get('public/payments/{token}', [ShootPaymentsController::class, 'getPublicPaymentDetails'])
     ->name('api.public.payments.show');
 Route::post('public/payments/{token}/checkout', [StripePaymentController::class, 'createPublicEmbeddedCheckoutSession'])
@@ -422,6 +427,7 @@ Route::middleware('auth:sanctum')->prefix('profile')->group(function () {
 });
 
 Route::middleware(['auth:sanctum', 'role:client,salesRep,rep,admin,superadmin'])->prefix('listing-studio')->group(function () {
+    Route::get('/subscriptions', [\App\Http\Controllers\API\ListingStudioSubscriptionController::class, 'index']);
     Route::get('/catalog', [ListingStudioRequestController::class, 'catalog']);
     Route::get('/clients', [ListingStudioRequestController::class, 'clients']);
     Route::get('/requests', [ListingStudioRequestController::class, 'index']);
@@ -554,6 +560,11 @@ Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager'])->gr
 Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager'])->get(
     '/dashboard/overview',
     [DashboardController::class, 'overview']
+);
+
+Route::middleware(['auth:sanctum', 'role:superadmin,salesRep,rep,representative'])->get(
+    '/dashboard/overdue-clients',
+    App\Http\Controllers\API\OverdueClientsController::class
 );
 
 // Lightweight schedule snapshot used by the editor dashboard to indicate
@@ -813,8 +824,8 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::patch('/shoots/{shoot}/issues/{issue}', [ShootIssuesController::class, 'updateIssue']);
     Route::post('/shoots/{shoot}/issues/{issue}/assign', [ShootIssuesController::class, 'assignIssue']);
 
-    // Client requests for admin dashboard
-    Route::get('/client-requests', [ShootIssuesController::class, 'getClientRequests'])->middleware('role:admin,superadmin,editing_manager,editor,photographer,client');
+    // Client requests for office/sales review and assigned fulfilment.
+    Route::get('/client-requests', [ShootIssuesController::class, 'getClientRequests'])->middleware('role:admin,superadmin,editing_manager,salesRep,rep,representative,editor,photographer,client');
 
     // Media uploads
     Route::post('/uploads/image', [MediaUploadController::class, 'uploadImage']);
@@ -1071,7 +1082,7 @@ Route::middleware('auth:sanctum')->group(function () {
     });
 });
 
-Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager,salesRep'])->patch(
+Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager,salesRep,rep,representative'])->patch(
     '/shoots/reschedule-requests/{rescheduleRequest}',
     [ShootRescheduleRequestController::class, 'updateStatus']
 );
@@ -1190,13 +1201,13 @@ Route::middleware(['auth:sanctum'])->prefix('messaging')->group(function () {
     Route::get('/email/messages/{message}', [EmailMessagingController::class, 'show']);
     Route::get('/email/threads', [EmailMessagingController::class, 'threads']);
     Route::post('/email/threads/{thread}/mark-read', [EmailMessagingController::class, 'markThreadRead']);
-    Route::post('/email/compose', [EmailMessagingController::class, 'compose']);
+    Route::post('/email/compose', [EmailMessagingController::class, 'compose'])->middleware('throttle:20,1');
     Route::post('/email/assist', EmailComposeAssistantController::class);
     Route::post('/email/schedule', [EmailMessagingController::class, 'schedule']);
     Route::post('/email/messages/{message}/retry', [EmailMessagingController::class, 'retry']);
     Route::post('/email/messages/{message}/cancel', [EmailMessagingController::class, 'cancel']);
 
-    Route::middleware('role:superadmin,admin')->group(function () {
+    Route::middleware(['role:superadmin,admin', \App\Http\Middleware\RequireDashboardEmailStaff::class])->group(function () {
         Route::get('/overview', MessagingOverviewController::class);
         Route::get('/email/ops-summary', EmailOpsSummaryController::class);
         Route::get('/email/recovery/client-confirmations', [ClientConfirmationRecoveryController::class, 'index']);

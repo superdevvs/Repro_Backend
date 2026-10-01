@@ -143,11 +143,108 @@ class VoiceConversationHistoryTest extends TestCase
             $this->assertSame(0, $call->transcriptRows()->count());
             $this->actingAs(User::factory()->create(['role' => 'admin']), 'sanctum')
                 ->getJson('/api/voice/calls/'.$call->id.'/transcript')->assertOk()
-                ->assertJsonPath('transcript', 'Complete latest words')->assertJsonPath('can_rebuild', true);
+                ->assertJsonPath('transcript', 'Complete latest words')->assertJsonPath('can_rebuild', true)
+                ->assertJsonPath('state', $final ? 'ready' : 'finalizing')
+                ->assertJsonPath('completeness', 'provider_unverified');
             $this->assertSame(1, $call->transcriptRows()->count());
             $this->assertSame(0, $call->scheduledCalls()->count());
         }
         Queue::assertNothingPushed();
+        Http::assertNothingSent();
+    }
+
+    public function test_final_history_is_saved_immediately_without_changing_raw_speech_or_capture_problem_state(): void
+    {
+        $call = $this->makeCall();
+        $call->update(['status' => 'completed', 'ended_at' => now()]);
+        $speech = 'Hello <break time="0.3s" /> there.';
+        $customer = 'Please explain <break time="0.3s" />.';
+        app(VoiceConversationHistoryService::class)->ingest($call, $this->event([
+            ['role' => 'assistant', 'content' => $speech], ['role' => 'user', 'content' => $customer],
+        ], 0, true), true);
+        $call = $call->fresh();
+        $metadata = $call->metadata;
+        $state = app(VoiceTranscriptService::class)->state($call);
+        $this->assertSame('ready', $state['state']);
+        $this->assertSame($speech."\n".$customer, $state['transcript']);
+        $this->assertSame("Hello there.\n".$customer, $state['display_transcript']);
+        $this->assertSame($metadata, $call->fresh()->metadata);
+        $this->assertSame($speech, $call->transcriptRows()->oldest('id')->first()->text);
+
+        $call->update(['metadata' => array_merge($metadata, ['browser_transcription_pending' => true])]);
+        $this->assertSame('partial', app(VoiceTranscriptService::class)->state($call->fresh())['state']);
+        Http::assertNothingSent();
+    }
+
+    public function test_final_history_marker_does_not_skip_grace_for_missing_or_unrelated_saved_rows(): void
+    {
+        $call = $this->makeCall();
+        $call->update(['status' => 'completed', 'ended_at' => now()->subHour()]);
+        app(VoiceConversationHistoryService::class)->ingest($call, $this->event([
+            ['role' => 'assistant', 'content' => 'Saved answer'], ['role' => 'user', 'content' => 'Question'],
+        ], 0, true), true);
+        $row = $call->transcriptRows()->latest('id')->first();
+        $row->update(['provider_message_id' => 'telnyx:unrelated-segment']);
+        $this->assertSame('finalizing', app(VoiceTranscriptService::class)->state($call->fresh())['state']);
+        $row->delete();
+        $this->assertSame('finalizing', app(VoiceTranscriptService::class)->state($call->fresh())['state']);
+        Http::assertNothingSent();
+    }
+
+    public function test_transcript_api_only_hides_recognized_assistant_pauses_and_keeps_raw_events(): void
+    {
+        $call = $this->makeCall();
+        $assistant = "Hello<break time='300ms'/>there. <break strength=\"strong\" /> <unknown /> <break time=\"bad\"/>";
+        $customer = '<break time="300ms"/> is written here.';
+        $data = $this->event([['role' => 'assistant', 'content' => $assistant], ['role' => 'user', 'content' => $customer]], 0, true);
+        $this->postJson('/api/webhooks/telnyx/voice', ['data' => $data])->assertOk();
+        $this->actingAs(User::factory()->create(['role' => 'admin']), 'sanctum')
+            ->getJson('/api/voice/calls/'.$call->id.'/transcript')->assertOk()
+            ->assertJsonPath('transcript', $assistant."\n".$customer)
+            ->assertJsonPath('display_transcript', 'Hello there. <break strength="strong" /> <unknown /> <break time="bad"/>'."\n".$customer);
+        $this->assertSame($assistant, data_get($call->events()->first()->raw_payload, 'data.payload.messages.0.content'));
+        $this->assertSame($assistant, $call->transcriptRows()->oldest('id')->first()->text);
+        Http::assertNothingSent();
+    }
+
+    public function test_display_transcript_preserves_speaker_prefixes_and_unattributed_or_unmatched_text(): void
+    {
+        $call = $this->makeCall();
+        $assistant = 'First <break time="0.3s"/> second.';
+        $customer = 'Literal <break time="0.3s"/>.';
+        foreach (['assistant' => $assistant, 'customer' => $customer] as $speaker => $text) {
+            $call->transcriptRows()->create(['provider_message_id' => 'telnyx:'.$speaker, 'speaker' => $speaker,
+                'transcript_type' => 'final', 'text' => $text, 'occurred_at' => now()]);
+        }
+        $raw = 'assistant: '.$assistant."\ncustomer: ".$customer;
+        $call->update(['transcript' => $raw]);
+        $service = app(VoiceTranscriptService::class);
+        $this->assertSame('assistant: First second.'."\ncustomer: ".$customer, $service->state($call->fresh())['display_transcript']);
+        $call->update(['metadata' => ['transcript_projection' => ['source' => 'recording_recovery']]]);
+        $this->assertSame($raw, $service->state($call->fresh())['display_transcript']);
+        $call->update(['metadata' => [], 'transcript' => 'Legacy assistant: '.$assistant]);
+        $this->assertSame('Legacy assistant: '.$assistant, $service->state($call->fresh())['display_transcript']);
+        Http::assertNothingSent();
+    }
+
+    public function test_transcript_display_hides_observed_assistant_emotions_without_modifying_provider_or_customer_speech(): void
+    {
+        $call = $this->makeCall();
+        $assistant = '<emotion value="happy" />Hello<emotion value=\'calm\'/><emotion value="happy"/> there. <emotion value="unknown"/> <emotion value="calm" strength="high"/> <emotion value="happy">literal</emotion>';
+        $customer = 'Keep my literal <emotion value="happy" /> and <emotion value=\'calm\'/> text.';
+        $data = $this->event([['role' => 'assistant', 'content' => $assistant], ['role' => 'user', 'content' => $customer]], 0, true);
+        $this->postJson('/api/webhooks/telnyx/voice', ['data' => $data])->assertOk();
+        $expected = 'Hello there. <emotion value="unknown"/> <emotion value="calm" strength="high"/> <emotion value="happy">literal</emotion>';
+        $this->actingAs(User::factory()->create(['role' => 'admin']), 'sanctum')
+            ->getJson('/api/voice/calls/'.$call->id.'/transcript')->assertOk()
+            ->assertJsonPath('transcript', $assistant."\n".$customer)
+            ->assertJsonPath('display_transcript', $expected."\n".$customer);
+        $this->assertSame($assistant, data_get($call->events()->first()->raw_payload, 'data.payload.messages.0.content'));
+        $this->assertSame($assistant, $call->transcriptRows()->oldest('id')->first()->text);
+        $this->assertSame($customer, $call->transcriptRows()->latest('id')->first()->text);
+        $this->assertSame($assistant."\n".$customer, $call->fresh()->transcript);
+        $call->update(['metadata' => ['transcript_projection' => ['source' => 'recording_recovery']]]);
+        $this->assertSame($assistant."\n".$customer, app(VoiceTranscriptService::class)->state($call->fresh())['display_transcript']);
         Http::assertNothingSent();
     }
 }

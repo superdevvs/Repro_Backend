@@ -12,7 +12,7 @@ return [
 
     // Buffer time in minutes between consecutive shoots
     // This accounts for travel time and prevents back-to-back bookings
-    // Minimum 1 hour (60 minutes) gap required between bookings
+    // Defaults to a 30-minute gap between bookings
     'buffer_time_minutes' => (int) env('PHOTOGRAPHER_BUFFER_TIME', 30),
 
     /*
@@ -36,10 +36,10 @@ return [
     'fallback_end_time' => env('AVAILABILITY_FALLBACK_END', '18:00'),
 
     // Default shoot duration in minutes if services don't specify
-    'default_shoot_duration_minutes' => (int) env('DEFAULT_SHOOT_DURATION', 120),
+    'default_shoot_duration_minutes' => (int) env('DEFAULT_SHOOT_DURATION', 60),
 
     // Minimum shoot duration in minutes
-    'min_shoot_duration_minutes' => 60,
+    'min_shoot_duration_minutes' => 30,
 
     // Maximum shoot duration in minutes (for safety cap)
     'max_shoot_duration_minutes' => 240,
@@ -67,4 +67,3 @@ return [
     // Product decision; defaults to NOT eligible per QA spec.
     'radius_unlimited_when_null' => env('PHOTOGRAPHER_RADIUS_UNLIMITED_WHEN_NULL', false),
 ];
-

@@ -20,6 +20,7 @@ use App\Services\Shoots\Actions\RequestHoldAction;
 use App\Services\Shoots\Actions\StartEditingAction;
 use App\Services\Shoots\Actions\SubmitForReviewAction;
 use App\Services\Shoots\Actions\WithdrawRequestedShootAction;
+use App\Services\Shoots\HoldNotificationService;
 use Illuminate\Http\Request;
 
 class ShootWorkflowController extends Controller
@@ -38,7 +39,8 @@ class ShootWorkflowController extends Controller
         protected ApproveHoldAction $approveHoldAction,
         protected RejectHoldAction $rejectHoldAction,
         protected AssignEditorAction $assignEditorAction,
-        protected WithdrawRequestedShootAction $withdrawRequestedShootAction
+        protected WithdrawRequestedShootAction $withdrawRequestedShootAction,
+        protected HoldNotificationService $holdNotifications
     ) {
     }
 
@@ -51,10 +53,13 @@ class ShootWorkflowController extends Controller
         }
 
         try {
+            $notificationOptions = $request->validate(HoldNotificationService::rules());
             $this->putShootOnHoldAction->execute($request, $shoot, $user);
+            $notifications = $this->holdNotifications->send($shoot, $user, $notificationOptions);
 
             return response()->json([
                 'message' => 'Shoot has been placed on hold.',
+                'notifications' => $notifications,
                 'data' => new ShootResource($shoot->load(['client', 'rep', 'photographer', 'services'])),
             ]);
         } catch (\InvalidArgumentException $e) {
@@ -126,11 +131,8 @@ class ShootWorkflowController extends Controller
 
     public function approveCancellation(Request $request, Shoot $shoot)
     {
-        app(\App\Services\Shoots\ShootAuthorizationSupport::class)->ensureShootAccess($shoot, $request->user());
         $user = $request->user();
-        if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager', 'salesRep', 'rep', 'representative'], true)) {
-            return response()->json(['message' => 'Forbidden'], 403);
-        }
+        abort_unless(app(\App\Services\Shoots\ShootAuthorizationSupport::class)->canTriageShootRequests($shoot, $user), 403, 'Forbidden');
 
         try {
             $this->approveCancellationAction->execute($request, $shoot, $user);
@@ -146,11 +148,8 @@ class ShootWorkflowController extends Controller
 
     public function rejectCancellation(Request $request, Shoot $shoot)
     {
-        app(\App\Services\Shoots\ShootAuthorizationSupport::class)->ensureShootAccess($shoot, $request->user());
         $user = $request->user();
-        if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager', 'salesRep', 'rep', 'representative'], true)) {
-            return response()->json(['message' => 'Forbidden'], 403);
-        }
+        abort_unless(app(\App\Services\Shoots\ShootAuthorizationSupport::class)->canTriageShootRequests($shoot, $user), 403, 'Forbidden');
 
         try {
             $this->rejectCancellationAction->execute($request, $shoot, $user);
@@ -167,12 +166,10 @@ class ShootWorkflowController extends Controller
     public function pendingCancellations(Request $request)
     {
         $user = $request->user();
-        if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager', 'salesRep', 'rep', 'representative'], true)) {
-            return response()->json(['message' => 'Forbidden'], 403);
-        }
+        $access = app(\App\Services\Shoots\ShootAuthorizationSupport::class);
+        abort_unless($access->canReviewShootRequests($user), 403, 'Forbidden');
 
-        $shoots = app(\App\Services\Shoots\ShootAuthorizationSupport::class)
-            ->scopeAccessibleShootMedia(Shoot::query(), $user)->whereNotNull('cancellation_requested_at')
+        $shoots = $access->scopeAccessibleShootRequests(Shoot::query(), $user)->whereNotNull('cancellation_requested_at')
             ->with(['client', 'photographer', 'services'])
             ->orderBy('cancellation_requested_at', 'desc')
             ->get();
@@ -186,9 +183,9 @@ class ShootWorkflowController extends Controller
     {
         $access = app(\App\Services\Shoots\ShootAuthorizationSupport::class);
         $user = $request->user();
-        $access->ensureRole(['admin', 'superadmin', 'editing_manager', 'salesRep', 'rep', 'representative'], $user);
+        abort_unless($access->canReviewShootRequests($user), 403, 'Forbidden');
 
-        $shoots = $access->scopeAccessibleShootMedia(Shoot::query(), $user)
+        $shoots = $access->scopeAccessibleShootRequests(Shoot::query(), $user)
             ->whereNotNull('hold_requested_at')
             ->whereNotIn('status', [Shoot::STATUS_CANCELLED, Shoot::STATUS_DECLINED, Shoot::STATUS_ON_HOLD])
             ->with(['client', 'photographer', 'services'])
@@ -302,17 +299,17 @@ class ShootWorkflowController extends Controller
 
     public function approveHold(Request $request, Shoot $shoot)
     {
-        app(\App\Services\Shoots\ShootAuthorizationSupport::class)->ensureShootAccess($shoot, $request->user());
         $user = $request->user();
-        if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager', 'salesRep', 'rep', 'representative'], true)) {
-            return response()->json(['message' => 'Forbidden'], 403);
-        }
+        abort_unless(app(\App\Services\Shoots\ShootAuthorizationSupport::class)->canTriageShootRequests($shoot, $user), 403, 'Forbidden');
 
         try {
+            $notificationOptions = $request->validate(HoldNotificationService::rules());
             $this->approveHoldAction->execute($request, $shoot, $user);
+            $notifications = $this->holdNotifications->send($shoot, $user, $notificationOptions);
 
             return response()->json([
                 'message' => 'Hold request approved. Shoot has been placed on hold.',
+                'notifications' => $notifications,
                 'data' => new ShootResource($shoot->load(['client', 'rep', 'photographer', 'services'])),
             ]);
         } catch (\InvalidArgumentException $e) {
@@ -322,11 +319,8 @@ class ShootWorkflowController extends Controller
 
     public function rejectHold(Request $request, Shoot $shoot)
     {
-        app(\App\Services\Shoots\ShootAuthorizationSupport::class)->ensureShootAccess($shoot, $request->user());
         $user = $request->user();
-        if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager', 'salesRep', 'rep', 'representative'], true)) {
-            return response()->json(['message' => 'Forbidden'], 403);
-        }
+        abort_unless(app(\App\Services\Shoots\ShootAuthorizationSupport::class)->canTriageShootRequests($shoot, $user), 403, 'Forbidden');
 
         try {
             $this->rejectHoldAction->execute($request, $shoot, $user);

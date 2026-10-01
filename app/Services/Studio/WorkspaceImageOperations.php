@@ -50,16 +50,7 @@ class WorkspaceImageOperations
                 throw new StudioProviderException('Start a new photo edit to use the configured photo enhancement service.');
             }
             $enhanced = app(WorkspacePhotoEnhancement::class)->run($workspace, $operationId, $item, $source, $route);
-            $defaults = ['brightness' => 0, 'warmth' => 0, 'windows' => 50, 'look' => 'Natural', 'lensCorrection' => true, 'verticalCorrection' => true, 'skyReplacement' => false, 'preserveStructure' => true, 'strength' => 50, 'roomType' => 'living-room', 'furnitureStyle' => 'modern'];
-            $adjustments = \Illuminate\Support\Arr::except($workspace->config['adjustments'] ?? [], ['sceneType']);
-            $adjustments = array_filter($adjustments, fn ($value, $key) => $value !== null && $value !== '' && (! array_key_exists($key, $defaults) || $value !== $defaults[$key]), ARRAY_FILTER_USE_BOTH);
-            if (trim((string) ($workspace->config['prompt'] ?? '')) !== '' || $adjustments || $references) {
-                $item['id'] .= '-refine';
-
-                return $this->edit($workspace, $operationId, $item, $enhanced, $prompt, $references, $state->route('revision'));
-            }
-
-            return $enhanced;
+            return $this->refineEnhanced($workspace, $operationId, $item, $enhanced, $prompt, $references);
         }
         if ($route['provider'] === 'openai') {
             return $this->openAiOnce($workspace, $state, $item['id'], $source, $prompt, $route, $references);
@@ -126,6 +117,21 @@ class WorkspaceImageOperations
         ]);
 
         return $this->download($url);
+    }
+
+    public function refineEnhanced(StudioWorkspace $workspace, string $operationId, array $item, string $enhanced, string $prompt, array $references = []): string
+    {
+        $state = new WorkspaceProviderState($workspace, $operationId);
+        $defaults = ['brightness' => 0, 'warmth' => 0, 'windows' => 50, 'look' => 'Natural', 'lensCorrection' => true, 'verticalCorrection' => true, 'skyReplacement' => false, 'preserveStructure' => true, 'strength' => 50, 'roomType' => 'living-room', 'furnitureStyle' => 'modern'];
+        $adjustments = \Illuminate\Support\Arr::except($workspace->config['adjustments'] ?? [], ['sceneType']);
+        $adjustments = array_filter($adjustments, fn ($value, $key) => $value !== null && $value !== '' && (! array_key_exists($key, $defaults) || $value !== $defaults[$key]), ARRAY_FILTER_USE_BOTH);
+        if (trim((string) ($workspace->config['prompt'] ?? '')) !== '' || $adjustments || $references) {
+            $item['id'] .= '-refine';
+
+            return $this->edit($workspace, $operationId, $item, $enhanced, $prompt, $references, $state->route('revision'));
+        }
+
+        return $enhanced;
     }
 
     private function falOnce(WorkspaceProviderState $state, string $mediaId, string $model, array $payload, ?array $legacy = null): string

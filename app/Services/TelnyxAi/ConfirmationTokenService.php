@@ -2,7 +2,7 @@
 
 namespace App\Services\TelnyxAi;
 
-use Illuminate\Support\Facades\Cache;
+use App\Support\VoiceCache;
 use Illuminate\Support\Str;
 
 class ConfirmationTokenService
@@ -12,7 +12,7 @@ class ConfirmationTokenService
         $token = Str::random(48);
         $ttl = (int) config('services.telnyx.ai_pending_action_ttl_minutes', 10);
 
-        Cache::put($this->key($token), [
+        VoiceCache::store()->put($this->key($token), [
             'tool' => $tool,
             'params' => $params,
             'summary' => $summary,
@@ -30,7 +30,7 @@ class ConfirmationTokenService
     public function resolve(string $token, string $tool, ?int $voiceCallId = null): ?array
     {
         $key = $this->key($token);
-        $payload = Cache::get($key);
+        $payload = VoiceCache::store()->get($key);
 
         if (
             ! is_array($payload)
@@ -45,7 +45,7 @@ class ConfirmationTokenService
 
     public function storedResult(string $token): ?array
     {
-        $payload = Cache::get($this->key($token));
+        $payload = VoiceCache::store()->get($this->key($token));
         $result = is_array($payload) ? ($payload['result'] ?? null) : null;
 
         return is_array($result) ? $result : null;
@@ -54,7 +54,7 @@ class ConfirmationTokenService
     public function storeResult(string $token, array $result): void
     {
         $key = $this->key($token);
-        $payload = Cache::get($key);
+        $payload = VoiceCache::store()->get($key);
         if (! is_array($payload)) {
             return;
         }
@@ -62,7 +62,7 @@ class ConfirmationTokenService
         $payload['result'] = $result;
         $payload['consumed_at'] = now()->toIso8601String();
         $ttl = (int) config('services.telnyx.ai_pending_action_ttl_minutes', 10);
-        Cache::put($key, $payload, now()->addMinutes($ttl));
+        VoiceCache::store()->put($key, $payload, now()->addMinutes($ttl));
     }
 
     public function executionKey(string $token): string

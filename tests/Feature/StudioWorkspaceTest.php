@@ -390,6 +390,10 @@ class StudioWorkspaceTest extends TestCase
         $endpoint = '/api/studio/workspaces/'.$record->id.'/outputs/v2-m1/download';
         $download = $this->get($endpoint)->assertOk()->assertDownload('version-2.jpg');
         $this->assertSame($bytes, $download->streamedContent());
+        $outputs = $record->outputs;
+        $outputs[0]['name'] = '2912-park-avenue_001.jpg';
+        $record->update(['outputs' => $outputs]);
+        $this->get($endpoint)->assertOk()->assertDownload('2912-park-avenue_001.jpg');
         $this->get('/api/studio/workspaces/'.$record->id.'/outputs/not-an-output/download')->assertNotFound();
         $this->actor('client');
         $this->get($endpoint)->assertForbidden();

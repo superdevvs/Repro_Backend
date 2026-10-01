@@ -8,6 +8,7 @@ use App\Models\TelnyxWebhookEvent;
 use App\Models\User;
 use App\Models\VoiceCall;
 use App\Models\VoiceCallTranscript;
+use App\Support\VoiceLocks;
 use Illuminate\Support\Arr;
 use RuntimeException;
 use Throwable;
@@ -601,7 +602,7 @@ class VoiceWebhookProcessor
 
         // Persist the row and its read projections atomically. A webhook replay
         // repairs projections even if an older handler saved only the row.
-        $voiceCall = \Illuminate\Support\Facades\Cache::lock('voice-transcript:'.$voiceCall->id, 30)->block(3,
+        $voiceCall = VoiceLocks::lock('voice-transcript:'.$voiceCall->id, 30)->block(3,
             fn () => \App\Support\LockedWrite::run(fn () => \Illuminate\Support\Facades\DB::transaction(function () use ($voiceCall, $providerId, $message, $text) {
                 VoiceCallTranscript::firstOrCreate(['voice_call_id' => $voiceCall->id, 'provider_message_id' => $providerId], [
                     'speaker' => $message['speaker'] ?? 'customer', 'transcript_type' => 'final', 'text' => $text,

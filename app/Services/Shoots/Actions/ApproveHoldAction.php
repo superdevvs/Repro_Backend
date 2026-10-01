@@ -21,10 +21,6 @@ class ApproveHoldAction
 
         $this->workflowService->putOnHold($shoot, $user, $shoot->hold_reason, 'hold_approved');
 
-        $shoot->hold_requested_at = null;
-        $shoot->hold_requested_by = null;
-        $shoot->save();
-
         return $shoot;
     }
 }

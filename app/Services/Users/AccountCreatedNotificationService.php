@@ -2,6 +2,7 @@
 
 namespace App\Services\Users;
 
+use App\Models\ClientEmailVerificationToken;
 use App\Models\MessageTemplate;
 use App\Models\User;
 use App\Services\MailService;
@@ -52,55 +53,67 @@ class AccountCreatedNotificationService
             'links' => ['password_setup' => null, 'verification' => null, 'equipment' => null],
         ];
 
-        $resetLink = null;
-        $verificationToken = null;
+        // Durable callers checkpoint encrypted state so retries reuse setup links and
+        // skip accepted channels. Ordinary account creation retains its existing path.
+        $resume = is_array($options['resume_state'] ?? null) ? $options['resume_state'] : [];
+        $result = array_replace_recursive($result, $resume);
+        $checkpoint = is_callable($options['checkpoint'] ?? null) ? $options['checkpoint'] : static fn (array $state) => null;
+
+        $resetLink = $result['links']['password_setup'];
+        $verificationToken = ! empty($result['verification_token_id'])
+            ? ClientEmailVerificationToken::where('user_id', $user->id)->find($result['verification_token_id']) : null;
         $automation = [];
-        try {
-            $resetLink = $this->mailService->generateStoredPasswordResetLink($user);
-            $result['links']['password_setup'] = $resetLink;
-            if ($requiresVerification) {
-                $verificationToken = $this->verificationLinks->issueVerificationToken($user, array_filter([
-                    'issued_context' => $context,
-                    'issued_by' => $actor?->id ?? $user->id,
-                ]));
-                $result['links']['verification'] = $this->verificationLinks->buildUrlForIssuedToken($user, $verificationToken);
-            }
-            if ($hasPendingEquipment) {
-                $result['links']['equipment'] = $this->mailService->equipmentVerificationLink($user);
-            }
+        if (! $result['email']['account_created']['sent']) {
+            try {
+                $resetLink ??= $this->mailService->generateStoredPasswordResetLink($user);
+                $result['links']['password_setup'] = $resetLink;
+                if ($requiresVerification) {
+                    $verificationToken ??= $this->verificationLinks->issueVerificationToken($user, array_filter([
+                        'issued_context' => $context,
+                        'issued_by' => $actor?->id ?? $user->id,
+                    ]));
+                    $result['verification_token_id'] = $verificationToken->id;
+                    $result['links']['verification'] ??= $this->verificationLinks->buildUrlForIssuedToken($user, $verificationToken);
+                }
+                if ($hasPendingEquipment) {
+                    $result['links']['equipment'] = $this->mailService->equipmentVerificationLink($user);
+                }
+                $checkpoint($result);
 
-            $automationContext = $this->automationService->buildUserContext($user);
-            $automationContext['client'] = $user;
-            $automationContext['password_reset_link'] = $resetLink;
-            $automationContext['include_password_creation_link'] = (bool) ($options['include_password_creation_link'] ?? false);
-            $automationContext['verification_link'] = $result['links']['verification'];
-            $automationContext['equipment_verification_link'] = $result['links']['equipment'];
-            $automationContext['pending_equipment_count'] = $pendingEquipmentCount;
+                $automationContext = $this->automationService->buildUserContext($user);
+                $automationContext['client'] = $user;
+                $automationContext['password_reset_link'] = $resetLink;
+                $automationContext['include_password_creation_link'] = (bool) ($options['include_password_creation_link'] ?? false);
+                $automationContext['verification_link'] = $result['links']['verification'];
+                $automationContext['equipment_verification_link'] = $result['links']['equipment'];
+                $automationContext['pending_equipment_count'] = $pendingEquipmentCount;
 
-            $automation = $this->automationService->handleEvent('ACCOUNT_CREATED', $automationContext);
-            $acceptedByAutomation = $this->emailWasSentTo($automation, $user->email);
-            if ($this->automationService->shouldUseFallback('ACCOUNT_CREATED', $automation)) {
-                $sent = $acceptedByAutomation || $this->mailService->sendAccountCreatedEmail(
-                    $user,
-                    $resetLink,
-                    $result['links']['verification'],
-                    $result['links']['equipment'],
-                    $pendingEquipmentCount,
-                    (bool) ($options['include_password_creation_link'] ?? false)
-                );
-                $result['email']['account_created'] = $this->channel(true, $sent, $sent ? null : 'Provider did not accept the account-created email.');
-            } else {
-                $failed = collect($automation['email_failed_to'] ?? [])
-                    ->contains(fn ($recipient) => strtolower(trim((string) $recipient)) === strtolower(trim($user->email)));
-                $result['email']['account_created'] = $this->channel($acceptedByAutomation || $failed, $acceptedByAutomation,
-                    $failed && ! $acceptedByAutomation ? 'Email automation failed. Review its failed step.' : null);
+                $automation = $this->automationService->handleEvent('ACCOUNT_CREATED', $automationContext);
+                $acceptedByAutomation = $this->emailWasSentTo($automation, $user->email);
+                if ($this->automationService->shouldUseFallback('ACCOUNT_CREATED', $automation)) {
+                    $sent = $acceptedByAutomation || $this->mailService->sendAccountCreatedEmail(
+                        $user,
+                        $resetLink,
+                        $result['links']['verification'],
+                        $result['links']['equipment'],
+                        $pendingEquipmentCount,
+                        (bool) ($options['include_password_creation_link'] ?? false)
+                    );
+                    $result['email']['account_created'] = $this->channel(true, $sent, $sent ? null : 'Provider did not accept the account-created email.');
+                } else {
+                    $failed = collect($automation['email_failed_to'] ?? [])
+                        ->contains(fn ($recipient) => strtolower(trim((string) $recipient)) === strtolower(trim($user->email)));
+                    $result['email']['account_created'] = $this->channel($acceptedByAutomation || $failed, $acceptedByAutomation,
+                        $failed && ! $acceptedByAutomation ? 'Email automation failed. Review its failed step.' : null);
+                }
+            } catch (\Throwable $exception) {
+                $result['email']['account_created'] = $this->failed($exception);
+                $this->logFailure('email.account_created', $user, $exception);
             }
-        } catch (\Throwable $exception) {
-            $result['email']['account_created'] = $this->failed($exception);
-            $this->logFailure('email.account_created', $user, $exception);
+            $checkpoint($result);
         }
 
-        if ($requiresVerification) {
+        if ($requiresVerification && ! $result['email']['verification']['sent']) {
             try {
                 $sent = $this->mailService->sendClientEmailVerificationEmail($user, [
                     'issued_context' => $context,
@@ -116,9 +129,10 @@ class AccountCreatedNotificationService
                 $result['email']['verification'] = $this->failed($exception);
                 $this->logFailure('email.verification', $user, $exception);
             }
+            $checkpoint($result);
         }
 
-        if ($sendEquipmentEmail) {
+        if ($sendEquipmentEmail && ! $result['email']['equipment']['sent']) {
             try {
                 $sent = $this->mailService->sendPhotographerEquipmentVerificationEmail($user, $pendingEquipmentCount);
                 $result['email']['equipment'] = $this->channel(true, $sent, $sent ? null : 'Provider did not accept the equipment email.');
@@ -126,18 +140,22 @@ class AccountCreatedNotificationService
                 $result['email']['equipment'] = $this->failed($exception);
                 $this->logFailure('email.equipment', $user, $exception);
             }
+            $checkpoint($result);
         }
 
-        if ($this->automationService->shouldUseFallback('ACCOUNT_CREATED', $automation)) {
-            $result['sms'] = $this->sendSms($user, $actor);
-        } else {
-            $phone = $this->normalizePhone($this->rawPhone($user));
-            $sent = $phone !== '' && collect($automation['sms_sent_to'] ?? [])
-                ->contains(fn ($recipient) => $this->normalizePhone((string) $recipient) === $phone);
-            $failed = $phone !== '' && collect($automation['sms_failed_to'] ?? [])
-                ->contains(fn ($recipient) => $this->normalizePhone((string) $recipient) === $phone);
-            $result['sms'] = $this->channel($sent || $failed, $sent,
-                $failed && ! $sent ? 'SMS automation failed. Review its failed step.' : null);
+        if (! $result['sms']['sent']) {
+            if ($this->automationService->shouldUseFallback('ACCOUNT_CREATED', $automation)) {
+                $result['sms'] = $this->sendSms($user, $actor);
+            } else {
+                $phone = $this->normalizePhone($this->rawPhone($user));
+                $sent = $phone !== '' && collect($automation['sms_sent_to'] ?? [])
+                    ->contains(fn ($recipient) => $this->normalizePhone((string) $recipient) === $phone);
+                $failed = $phone !== '' && collect($automation['sms_failed_to'] ?? [])
+                    ->contains(fn ($recipient) => $this->normalizePhone((string) $recipient) === $phone);
+                $result['sms'] = $this->channel($sent || $failed, $sent,
+                    $failed && ! $sent ? 'SMS automation failed. Review its failed step.' : null);
+            }
+            $checkpoint($result);
         }
 
         return $result;
@@ -176,7 +194,7 @@ class AccountCreatedNotificationService
                 ['client' => $user, 'recipient' => $user, 'recipient_type' => $this->normalizeRole($user->role)]
             ));
             $rendered = app(TemplateRenderer::class)->render($template, $variables);
-            $this->messagingService->sendSms([
+            $message = $this->messagingService->sendSms([
                 'to' => $phone,
                 'body_text' => $rendered['body_text'],
                 'template_id' => $template->id,
@@ -191,7 +209,7 @@ class AccountCreatedNotificationService
                 'user_id' => $actor?->id ?? $user->id,
             ]);
 
-            return $this->channel(true, true);
+            return $this->channel(true, $message->status !== 'BLOCKED');
         } catch (\Throwable $exception) {
             $this->logFailure('sms', $user, $exception);
 

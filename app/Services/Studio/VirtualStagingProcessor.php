@@ -248,21 +248,24 @@ class VirtualStagingProcessor
                 ];
             }
         }
-        $this->publishEdited($workspace, $item, $stored);
-
-        return $stored;
+        return $this->publishEdited($workspace, $item, $stored);
     }
 
     /** Copy finished staging results into the shoot's Edited → Virtual Staging tab. Intermediate removals stay in the project. */
-    private function publishEdited(StudioWorkspace $workspace, array $item, array $stored): void
+    private function publishEdited(StudioWorkspace $workspace, array $item, array $stored): array
     {
         $hasStaging = collect($stored)->contains(fn ($output) => ($output['vsai']['type'] ?? '') === 'staging');
-        foreach ($stored as $output) {
+        foreach ($stored as $index => $output) {
             $type = $output['vsai']['type'] ?? '';
             if ($type === 'staging' || ($type === 'removal' && ! $hasStaging)) {
-                app(WorkspaceShootPublisher::class)->publish($workspace, $item, $output, $output['id']);
+                $published = app(WorkspaceShootPublisher::class)->publish($workspace, $item, $output, $output['id']);
+                if ($published) {
+                    $stored[$index]['name'] = $published->filename;
+                }
             }
         }
+
+        return $stored;
     }
 
     private function existingRender(StudioWorkspace $workspace, string $mediaId, string $sourceHash, ?string $maskHash, array $options): ?array

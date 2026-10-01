@@ -11,6 +11,8 @@ use Carbon\Carbon;
 
 class ShootManagementTools
 {
+    public function __construct(private readonly RobbieRecordAccess $access) {}
+
     /**
      * Get shoot details
      * 
@@ -30,7 +32,8 @@ class ShootManagementTools
                 ];
             }
 
-            $shoot = Shoot::with(['client', 'photographer', 'services', 'payments'])->find($shootId);
+            $actor = $this->access->actor($context);
+            $shoot = $this->access->find($shootId, $actor, ['client', 'photographer', 'services', 'payments']);
             
             if (!$shoot) {
                 return [
@@ -50,11 +53,11 @@ class ShootManagementTools
                         'state' => $shoot->state,
                         'zip' => $shoot->zip,
                     ],
-                    'client' => [
+                    'client' => $this->access->canReadBilling($shoot, $actor) ? [
                         'id' => $shoot->client_id,
                         'name' => $shoot->client->name ?? 'Unknown',
                         'email' => $shoot->client->email ?? null,
-                    ],
+                    ] : null,
                     'photographer' => $shoot->photographer ? [
                         'id' => $shoot->photographer_id,
                         'name' => $shoot->photographer->name,
@@ -63,21 +66,21 @@ class ShootManagementTools
                     'workflow_status' => $shoot->workflow_status,
                     'scheduled_date' => $shoot->scheduled_date?->toDateString(),
                     'time' => $shoot->time,
-                    'services' => $shoot->services->map(function ($service) {
+                    'services' => $shoot->services->map(function ($service) use ($shoot, $actor) {
                         return [
                             'id' => $service->id,
                             'name' => $service->name,
-                            'price' => $service->pivot->price ?? $service->price,
+                            'price' => $this->access->canReadBilling($shoot, $actor) ? ($service->pivot->price ?? $service->price) : null,
                         ];
                     })->toArray(),
-                    'pricing' => [
+                    'pricing' => $this->access->canReadBilling($shoot, $actor) ? [
                         'base_quote' => $shoot->base_quote,
                         'tax_amount' => $shoot->tax_amount,
                         'total_quote' => $shoot->total_quote,
                         'total_paid' => $shoot->total_paid ?? 0,
                         'amount_remaining' => max(0, $shoot->total_quote - ($shoot->total_paid ?? 0)),
-                    ],
-                    'notes' => $shoot->notes ?? $shoot->shoot_notes ?? null,
+                    ] : null,
+                    'notes' => $this->access->description($shoot, $actor),
                     'created_at' => $shoot->created_at->toIso8601String(),
                 ],
             ];
@@ -122,7 +125,11 @@ class ShootManagementTools
                 ];
             }
 
-            $shoot = Shoot::find($shootId);
+            $actor = $this->access->actor($context);
+            $shoot = $this->access->find($shootId, $actor);
+            if ($shoot && ! $this->access->canChangeBooking($shoot, $actor)) {
+                return ['success' => false, 'error' => 'You do not have permission to change this shoot.'];
+            }
             
             if (!$shoot) {
                 return [
@@ -204,7 +211,11 @@ class ShootManagementTools
                 ];
             }
 
-            $shoot = Shoot::find($shootId);
+            $actor = $this->access->actor($context);
+            $shoot = $this->access->find($shootId, $actor);
+            if ($shoot && ! $this->access->canChangeBooking($shoot, $actor)) {
+                return ['success' => false, 'error' => 'You do not have permission to change this shoot.'];
+            }
             
             if (!$shoot) {
                 return [
@@ -246,31 +257,19 @@ class ShootManagementTools
     public function listShoots(array $params, array $context = []): array
     {
         try {
-            $userId = $params['user_id'] ?? $context['user_id'] ?? auth()->id();
+            $actor = $this->access->actor($context);
+            if (! $actor) return ['success' => false, 'error' => 'An authorized account is required.'];
+            $userId = $params['user_id'] ?? $actor->id;
+            if ((string) $userId !== (string) $actor->id && ! $this->access->isStaff($actor)) {
+                return ['success' => false, 'error' => 'You do not have access to these shoots.'];
+            }
             $status = $params['status'] ?? null;
-            $limit = min($params['limit'] ?? 10, 50);
-            
-            if (!$userId) {
-                return [
-                    'success' => false,
-                    'error' => 'User ID is required',
-                ];
-            }
-
-            $user = User::find($userId);
-            if (!$user) {
-                return [
-                    'success' => false,
-                    'error' => 'User not found',
-                ];
-            }
-
-            $query = Shoot::query();
-            
-            if ($user->role === 'client') {
-                $query->where('client_id', $user->id);
-            } elseif ($user->role === 'photographer') {
-                $query->where('photographer_id', $user->id);
+            $limit = max(1, min((int) ($params['limit'] ?? 10), 50));
+            $query = $this->access->query($actor);
+            if ((string) $userId !== (string) $actor->id) {
+                $target = User::find($userId);
+                if (! $target) return ['success' => false, 'error' => 'Account not found.'];
+                app(\App\Services\Shoots\ShootAuthorizationSupport::class)->scopeAccessibleShootMedia($query, $target);
             }
 
             if ($status) {
@@ -280,7 +279,8 @@ class ShootManagementTools
             $shoots = $query->orderBy('created_at', 'desc')
                 ->limit($limit)
                 ->get()
-                ->map(function ($shoot) {
+                ->filter(fn (Shoot $shoot) => $this->access->canRead($shoot, $actor))
+                ->map(function ($shoot) use ($actor) {
                     return [
                         'id' => $shoot->id,
                         'address' => "{$shoot->address}, {$shoot->city}, {$shoot->state}",
@@ -288,11 +288,11 @@ class ShootManagementTools
                         'workflow_status' => $shoot->workflow_status,
                         'scheduled_date' => $shoot->scheduled_date?->toDateString(),
                         'time' => $shoot->time,
-                        'total_quote' => $shoot->total_quote,
-                        'total_paid' => $shoot->total_paid ?? 0,
+                        'total_quote' => $this->access->canReadBilling($shoot, $actor) ? $shoot->total_quote : null,
+                        'total_paid' => $this->access->canReadBilling($shoot, $actor) ? ($shoot->total_paid ?? 0) : null,
                     ];
                 })
-                ->toArray();
+                ->values()->toArray();
 
             return [
                 'success' => true,

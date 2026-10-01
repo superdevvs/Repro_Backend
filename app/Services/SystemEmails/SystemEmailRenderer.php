@@ -191,6 +191,15 @@ class SystemEmailRenderer
 
         $variables = $this->overrideVariables($payload);
         $variables['system_subject'] = $subject;
+        if ($definition->alias === 'SHOOT_SCHEDULED'
+            && Arr::get($payload, 'meta.recipient_type') === 'client'
+            && Arr::get($payload, 'invoice.id')) {
+            $invoiceLabel = InvoiceReference::label(Arr::get($payload, 'invoice.invoice_number'));
+            $variables['payment_cta_html'] = '<p><strong>'.e($invoiceLabel).'</strong> &middot; Your booking invoice is ready to review.</p>'
+                .str_replace('Pay Now', 'View Invoice', (string) ($variables['payment_cta_html'] ?? ''));
+            $variables['payment_cta_text'] = $invoiceLabel."\n"
+                .str_replace('Pay Now', 'View Invoice', (string) ($variables['payment_cta_text'] ?? ''));
+        }
         if (ProtectedEmailTemplates::hasScopedRuntimeBlock($template) || str_contains((string) $template->body_text, 'system_body_text')) {
             // Preserve the canonical role/payment-scoped content before applying edited copy.
             $scoped = $this->scopedContent($definition, $payload, $template);
@@ -554,6 +563,7 @@ class SystemEmailRenderer
             ],
             'SHOOT_CANCELLATION_REQUESTED' => $shared + [
                 'isPhotographer' => (bool) ($meta->is_photographer ?? false),
+                'isReviewer' => (bool) ($meta->is_reviewer ?? in_array($meta->recipient_type ?? '', ['rep', 'admin'], true)),
                 'cancellationReason' => $meta->cancellation_reason ?? null,
             ],
             'SHOOT_DELIVERED' => $shared + [

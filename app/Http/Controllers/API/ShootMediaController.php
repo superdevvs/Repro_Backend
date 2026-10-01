@@ -482,18 +482,8 @@ class ShootMediaController extends Controller
     public function deleteMedia(Shoot $shoot, ShootFile $file)
     {
         $this->shootAuthorizationSupport->ensureFileBelongsToShoot($shoot, $file);
-        if (
-            ! $this->shootAuthorizationSupport->hasRole(auth()->user(), ['admin', 'superadmin', 'editing_manager', 'photographer', 'editor'])
-            || ! $this->shootAuthorizationSupport->canInteractWithShootMediaFile($shoot, $file, auth()->user())
-        ) {
+        if (! app(\App\Services\Shoots\ShootMediaDeletionPolicy::class)->allows($shoot, $file, auth()->user())) {
             return response()->json(['message' => 'Forbidden'], 403);
-        }
-
-        if (
-            $this->shootAuthorizationSupport->hasRole(auth()->user(), ['editor'])
-            && ! $this->canEditorDeleteEditedMediaBeforeSubmit($shoot, [$file])
-        ) {
-            return response()->json(['message' => 'Editors can only delete edited uploads before submitting for review.'], 403);
         }
 
         try {
@@ -608,19 +598,13 @@ class ShootMediaController extends Controller
         ]);
 
         $files = $shoot->files()->whereIn('id', $request->input('ids'))->get();
+        abort_unless($files->count() === count(array_unique($request->input('ids'))), 404, 'File not found');
         $user = auth()->user();
         if (
             ! $this->shootAuthorizationSupport->hasRole($user, ['admin', 'superadmin', 'editing_manager', 'photographer', 'editor'])
-            || $files->contains(fn (ShootFile $file) => ! $this->shootAuthorizationSupport->canInteractWithShootMediaFile($shoot, $file, $user))
+            || $files->contains(fn (ShootFile $file) => ! app(\App\Services\Shoots\ShootMediaDeletionPolicy::class)->allows($shoot, $file, $user))
         ) {
             return response()->json(['message' => 'Forbidden'], 403);
-        }
-
-        if (
-            $this->shootAuthorizationSupport->hasRole($user, ['editor'])
-            && ! $this->canEditorDeleteEditedMediaBeforeSubmit($shoot, $files)
-        ) {
-            return response()->json(['message' => 'Editors can only delete edited uploads before submitting for review.'], 403);
         }
 
         $result = $this->shootMediaInteractionService->bulkDelete(
@@ -1089,21 +1073,6 @@ class ShootMediaController extends Controller
         }
     }
 
-    private function canEditorDeleteEditedMediaBeforeSubmit(Shoot $shoot, iterable $files): bool
-    {
-        if ($this->isShootSubmittedForReview($shoot)) {
-            return false;
-        }
-
-        foreach ($files as $file) {
-            if (! $this->isEditableUploadedMedia($file) || $this->isFileSubmittedForReview($shoot, $file)) {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
     private function mediaCounts(Shoot $shoot): array
     {
         return [
@@ -1121,33 +1090,4 @@ class ShootMediaController extends Controller
         ];
     }
 
-    private function isShootSubmittedForReview(Shoot $shoot): bool
-    {
-        if ($shoot->submitted_for_review_at) {
-            return true;
-        }
-
-        $status = strtolower((string) ($shoot->workflow_status ?: $shoot->status ?: ''));
-
-        return in_array($status, ['pending_review', 'ready_for_review', 'qc', 'review', Shoot::STATUS_READY], true);
-    }
-
-    private function isEditableUploadedMedia(ShootFile $file): bool
-    {
-        return in_array($file->workflow_stage, [ShootFile::STAGE_COMPLETED, ShootFile::STAGE_VERIFIED], true)
-            && ! $this->shootAuthorizationSupport->isRawCameraFile($file);
-    }
-
-    private function isFileSubmittedForReview(Shoot $shoot, ShootFile $file): bool
-    {
-        if (! $file->shoot_service_id) {
-            return false;
-        }
-
-        $serviceItem = $shoot->serviceItems()
-            ->whereKey($file->shoot_service_id)
-            ->first();
-
-        return (bool) ($serviceItem?->editing_completed_at);
-    }
 }

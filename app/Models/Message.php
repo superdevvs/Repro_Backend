@@ -82,6 +82,8 @@ class Message extends Model
         if (in_array($value, [
             'SMS could not be sent: the Telnyx sending number is not verified.',
             'SMS could not be sent due to a provider error.',
+            'Recipient has disabled all text messages in notification settings.',
+            'Recipient has disabled this type of text message in notification settings.',
         ], true)) {
             return $value;
         }
@@ -121,4 +123,3 @@ class Message extends Model
         return $this->belongsTo(Invoice::class, 'related_invoice_id');
     }
 }
-

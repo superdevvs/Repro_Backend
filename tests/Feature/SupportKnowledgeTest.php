@@ -77,11 +77,116 @@ class SupportKnowledgeTest extends TestCase
         $this->assertDatabaseCount('shoots', 0);
     }
 
+    public function test_common_help_is_immediate_across_roles_without_extra_verification_or_private_guides(): void
+    {
+        $this->mock(LlmClient::class)->shouldNotReceive('chatCompletion');
+        $this->mock(ShootOperatorService::class)->shouldNotReceive('handle');
+        foreach (['client', 'photographer', 'salesRep'] as $role) {
+            $user = User::factory()->create(['role' => $role]);
+            foreach ([
+                'How do I download my shoot?' => 'media-download',
+                'How do I upload photos?' => 'photographer-upload',
+                'How do I book a shoot?' => 'book-shoot',
+                'Where is the navigation menu?' => 'dashboard-navigation',
+            ] as $query => $id) {
+                $response = $this->actingAs($user, 'sanctum')->postJson('/api/ai/chat', ['message' => $query])
+                    ->assertOk()->assertJsonPath('messages.1.metadata.topic', $id);
+                $this->assertStringNotContainsString('verify your identity', $response->json('messages.1.content'));
+            }
+        }
+        $public = app(SupportKnowledgeBase::class);
+        foreach (['admin-triage', 'admin-upload-recovery', 'admin-call-transcript', 'rep-sales', 'photographer-earnings'] as $id) {
+            $this->assertNull($public->find($id, null), $id.' must not become a public guide');
+        }
+        $this->assertDatabaseCount('shoots', 0);
+        $this->assertDatabaseCount('tool_bridge_invocations', 0);
+    }
+
+    public function test_profile_picture_help_answers_common_phrasings_for_every_account_role_without_actions(): void
+    {
+        $this->mock(LlmClient::class)->shouldNotReceive('chatCompletion');
+        $this->mock(ShootOperatorService::class)->shouldNotReceive('handle');
+        $kb = app(SupportKnowledgeBase::class);
+        foreach (['client', 'salesRep', 'photographer', 'editor', 'admin', 'superadmin', 'editing_manager'] as $role) {
+            $user = User::factory()->create(['role' => $role]);
+            foreach (['How do I upload my profile picture?', 'How to upload a profile photo', 'How do I change my avatar?', 'Where can I change my profile image?'] as $query) {
+                $article = $kb->search($query, $user)[0] ?? [];
+                $this->assertSame('account-profile-picture', $article['id'] ?? null, $role.': '.$query);
+                $this->assertTrue($kb->canAnswer($query, $article), $query);
+            }
+            $response = $this->actingAs($user, 'sanctum')->postJson('/api/ai/chat', ['message' => 'How do I upload my profile picture?'])
+                ->assertOk()->assertJsonPath('messages.1.metadata.topic', 'account-profile-picture');
+            $content = $response->json('messages.1.content');
+            $this->assertStringContainsString('Change Photo', $content);
+            $this->assertStringContainsString('Update My Info', $content);
+            $this->assertStringContainsString('smaller than 5 MB', $content);
+            $this->assertStringNotContainsString('verify your identity', $content);
+            $this->assertNull($user->fresh()->avatar);
+        }
+        $this->assertNotNull($kb->find('account-profile-picture', null));
+        $this->assertDatabaseCount('tool_bridge_invocations', 0);
+        $this->assertDatabaseCount('voice_call_verifications', 0);
+    }
+
     public function test_primary_help_only_role_cannot_use_operator_via_secondary_role(): void
     {
         $user = User::factory()->create(['role' => 'photographer', 'secondary_roles' => ['admin']]);
         $this->actingAs($user, 'sanctum')->postJson('/api/ai/shoot-operator/action', ['type' => 'book_shoot'])->assertForbidden();
         $this->getJson('/api/ai/knowledge/admin-call-transcript')->assertNotFound();
+    }
+
+    public function test_nonstaff_support_guides_use_requester_conversations_and_keep_help_in_robbie(): void
+    {
+        $this->mock(LlmClient::class)->shouldNotReceive('chatCompletion');
+        $this->mock(ShootOperatorService::class)->shouldNotReceive('handle');
+        $knowledge = app(SupportKnowledgeBase::class);
+        foreach (['client', 'salesRep', 'photographer', 'editor'] as $role) {
+            $user = User::factory()->create(['role' => $role]);
+            $answer = $this->actingAs($user, 'sanctum')->postJson('/api/ai/chat', ['message' => 'I need to talk to a human'])
+                ->assertOk()->assertJsonPath('messages.1.metadata.topic', 'support-contact')->json('messages.1.content');
+            $this->assertStringContainsString('Open Messaging and choose Support', $answer);
+            $this->assertStringContainsString('New request', $answer);
+            $this->assertStringContainsString('a shoot is not required', $answer);
+            $this->assertStringContainsString('Open your request', $answer);
+            $this->assertStringContainsString('/messaging/email/inbox?tab=support', $answer);
+            $this->assertStringContainsString('/chat-with-reproai?tab=help', $answer);
+            $this->assertStringContainsString('configured inbound email connector', $answer);
+            $this->assertStringNotContainsString('Assigned to', $answer);
+            $this->assertNull($knowledge->find('admin-support-inbox', $user));
+            $help = $knowledge->find('robbie-help', $user);
+            $this->assertStringContainsString('Messaging > Support', implode(' ', $help['steps']));
+        }
+        foreach ([null, new User(['role' => 'other']), new User(['role' => 'client', 'secondary_roles' => ['admin']])] as $user) {
+            $guide = $knowledge->find('support-contact', $user);
+            $this->assertStringContainsString('New request', $guide['steps'][0]);
+            $this->assertNull($knowledge->find('admin-support-inbox', $user));
+        }
+        $this->assertDatabaseCount('support_tickets', 0);
+    }
+
+    public function test_support_staff_guides_include_editing_manager_with_conditional_triage_and_separate_email_tools(): void
+    {
+        $knowledge = app(SupportKnowledgeBase::class);
+        foreach (['admin', 'superadmin', 'editing_manager'] as $role) {
+            $user = User::factory()->create(['role' => $role]);
+            $guide = $this->actingAs($user, 'sanctum')->getJson('/api/ai/knowledge/admin-support-inbox')
+                ->assertOk()->json('data');
+            $answer = $knowledge->formatAnswer($guide);
+            $this->assertStringContainsString('View Support and Triage Support', $answer);
+            $this->assertStringContainsString('editing-manager account', $answer);
+            $this->assertStringContainsString('Existing email tools remain available according to your permissions', $answer);
+            $this->assertStringContainsString('Internal note', $answer);
+            $this->assertStringNotContainsString('admins only', $answer);
+            $this->assertStringContainsString('configured inbound email connector', $answer);
+            $contact = $knowledge->find('support-contact', $user);
+            $this->assertStringContainsString('Support inbox', $contact['steps'][0]);
+            $this->assertStringContainsString('Support triage does not grant extra email permissions', implode(' ', $contact['steps']));
+        }
+        $manager = new User(['role' => 'editing_manager']);
+        $this->assertNull($knowledge->find('admin-call-transcript', $manager));
+        $this->assertStringContainsString('Messaging > Support', $knowledge->grounding('support', $manager));
+        $this->assertStringContainsString('Do not direct clients, reps, photographers or editors to email Compose', $knowledge->grounding('support', new User(['role' => 'client'])));
+        $this->assertDatabaseCount('support_tickets', 0);
     }
 
     public function test_new_staff_roles_have_help_only_chat_and_cannot_call_transactional_action_route(): void

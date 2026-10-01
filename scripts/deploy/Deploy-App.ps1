@@ -314,12 +314,22 @@ $events = [
     'refund.updated',
     'refund.failed',
 ];
+if (config('listing-studio.stripe_enabled')) {
+    $events = array_values(array_unique(array_merge($events, App\Services\ListingStudio\StripeSubscriptionSync::EVENTS)));
+}
 $client = new Stripe\StripeClient($stripeKey);
 $listed = $client->webhookEndpoints->all(['limit' => 100]);
 $matching = array_values(array_filter(
     $listed->data,
     static fn ($candidate) => (string) ($candidate->url ?? '') === $url
 ));
+// A checkout release must preserve subscription and other explicitly enabled events.
+foreach ($matching as $existingEndpoint) {
+    $events = array_values(array_unique(array_merge($events, $existingEndpoint->enabled_events ?? [])));
+}
+if (in_array('*', $events, true)) {
+    $events = ['*'];
+}
 $envPath = '/var/www/backend/.env';
 $env = file_get_contents($envPath);
 if ($env === false) {

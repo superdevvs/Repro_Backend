@@ -79,6 +79,7 @@ class ShootServiceItemSupport
         $intake = app(UploadIntakeResolver::class);
 
         $serviceSummaries = $items->map(function (ShootService $item) use ($shoot, $paidByItem, $hasAllocations, $brackets, $intake) {
+            $item->setRelation('shoot', $shoot);
             $subtotal = $this->subtotal($item);
             $paidAmount = (float) ($paidByItem[$item->id] ?? 0);
 
@@ -109,7 +110,8 @@ class ShootServiceItemSupport
                 'unitLabel' => $item->unit?->label,
                 'unit_kind' => $item->unit?->kind,
                 'unit_sqft' => $item->unit?->sqft,
-                'duration_minutes' => $item->duration_minutes,
+                'duration_minutes' => app(ShootDurationResolver::class)->forServiceItem($item),
+                'shoot_duration_minutes' => $item->service?->shoot_duration_minutes,
                 'photographer_required' => $item->service?->requiresPhotographer() ?? false,
                 'requires_editing' => $item->service?->requiresEditing() ?? false,
                 'shoot_service_id' => $item->id,

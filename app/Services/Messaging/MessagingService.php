@@ -263,6 +263,12 @@ class MessagingService
             throw new RuntimeException('Recipient is opted out of SMS.');
         }
 
+        $preferences = app(SmsNotificationPreferences::class);
+        $category = $preferences->category($payload);
+        $payload['metadata'] = array_replace_recursive((array) ($payload['metadata'] ?? []), [
+            'sms_notification' => ['category' => $category, 'weekly_summary' => $preferences->isWeeklySummary($payload)],
+        ]);
+
         $message = $this->storeMessageRecord(
             array_merge($payload, ['from' => $number->phone_number]),
             null,
@@ -271,6 +277,10 @@ class MessagingService
             status: 'QUEUED',
             providerOverride: 'TELNYX'
         );
+
+        if ($reason = $preferences->blockedReason($payload, $category)) {
+            return $this->markSmsPreferenceBlocked($message, $reason);
+        }
 
         // Environment gate. A fixture number or a non-opted-in local run stops
         // here, before any Telnyx call is constructed.
@@ -326,6 +336,21 @@ class MessagingService
             // Typed exception lets the controller map to a clean 4xx (Req 2.1, 2.2).
             throw new SmsSendException($this->clientSafeSmsError($e), previous: $e);
         }
+
+        return $message->fresh();
+    }
+
+    private function markSmsPreferenceBlocked(Message $message, string $reason): Message
+    {
+        $message->update([
+            'status' => 'BLOCKED',
+            'error_message' => $reason,
+            'metadata' => $this->mergeDeliveryMetadata($message->metadata, [
+                'status' => 'BLOCKED',
+                'blocked_reason' => 'notification_preferences',
+                'blocked_at' => now()->toIso8601String(),
+            ]),
+        ]);
 
         return $message->fresh();
     }
@@ -1025,6 +1050,11 @@ class MessagingService
 
     public function dispatchStoredEmailMessage(Message $message): Message
     {
+        if (app(ShootPaymentReminderEligibility::class)->storedReminderIsStale($message)) {
+            $message->forceFill(['status' => 'CANCELLED', 'error_message' => 'Payment reminder is no longer current.'])->save();
+
+            return $message->refresh();
+        }
         $this->releaseLegacyImportMuteForOutboundPayload([
             'related_invoice_id' => $message->related_invoice_id,
             'related_shoot_id' => $message->related_shoot_id,
@@ -1094,6 +1124,11 @@ class MessagingService
 
     public function dispatchStoredSmsMessage(Message $message): Message
     {
+        if (app(ShootPaymentReminderEligibility::class)->storedReminderIsStale($message)) {
+            $message->forceFill(['status' => 'CANCELLED', 'error_message' => 'Payment reminder is no longer current.'])->save();
+
+            return $message->refresh();
+        }
         $this->releaseLegacyImportMuteForOutboundPayload([
             'related_invoice_id' => $message->related_invoice_id,
             'related_shoot_id' => $message->related_shoot_id,
@@ -1109,6 +1144,23 @@ class MessagingService
 
         if ($message->channel !== 'SMS') {
             return $message;
+        }
+
+        $preferences = app(SmsNotificationPreferences::class);
+        $payload = [
+            'to' => $message->to_address,
+            'contact_user_id' => $message->thread?->contact?->user_id,
+            'template_id' => $message->template_id,
+            'send_source' => $message->send_source,
+            'metadata' => $message->metadata,
+        ];
+        $category = $preferences->category($payload);
+        if ($reason = $preferences->blockedReason($payload, $category)) {
+            $message->metadata = array_replace_recursive((array) $message->metadata, [
+                'sms_notification' => ['category' => $category],
+            ]);
+
+            return $this->markSmsPreferenceBlocked($message, $reason);
         }
         if (! $this->deliveryGuard->allows('SMS', (string) $message->to_address)) {
             return $this->markMessageBlocked($message, 'SMS');
@@ -1131,11 +1183,14 @@ class MessagingService
                 'provider' => 'TELNYX',
                 'from_address' => $number->phone_number,
                 'provider_message_id' => $providerMessageId,
+                'error_message' => null,
                 'metadata' => $this->mergeDeliveryMetadata($message->metadata, [
                     'provider' => 'TELNYX',
                     'provider_message_id' => $providerMessageId,
                     'status' => 'SENT',
                     'sent_at' => now()->toIso8601String(),
+                    'blocked_reason' => null,
+                    'blocked_at' => null,
                 ]),
             ]);
 

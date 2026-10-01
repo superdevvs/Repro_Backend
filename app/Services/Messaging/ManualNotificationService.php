@@ -43,7 +43,7 @@ class ManualNotificationService
         'payment_receipt' => 'payment-receipt',
     ];
 
-    private const RECIPIENT_TYPES = ['client', 'photographer'];
+    private const RECIPIENT_TYPES = ['client', 'photographer', 'rep'];
 
     private const CHANNELS = ['email', 'sms'];
 
@@ -117,7 +117,7 @@ class ManualNotificationService
         $channel = $this->normalizeChannel($channel);
         $template = $this->resolveTemplate($type, $channel);
 
-        $recipients = $this->resolveRecipients($shoot, $recipientType, $recipientUserId);
+        $recipients = $this->resolveRecipients($shoot, $recipientType, $recipientUserId, $type);
         if ($recipients->isEmpty()) {
             throw new RuntimeException("Shoot {$shoot->id} has no {$recipientType} to notify.");
         }
@@ -132,11 +132,23 @@ class ManualNotificationService
                 $sender,
                 $template,
                 $recipient,
-                stampReady: $type === 'shoot_ready' && $messages === [],
+                stampReady: $type === 'shoot_ready' && ! collect($messages)->contains(fn (Message $message) => $message->status !== 'BLOCKED'),
             );
         }
 
-        return $messages[array_key_last($messages)];
+        $result = $messages[array_key_last($messages)];
+        if (count($messages) > 1) {
+            $blocked = collect($messages)->where('status', 'BLOCKED')->count();
+            $result->metadata = array_replace_recursive((array) $result->metadata, ['manual_delivery' => [
+                'sent_count' => count($messages) - $blocked,
+                'blocked_count' => $blocked,
+            ]]);
+            if ($result->exists) {
+                $result->save();
+            }
+        }
+
+        return $result;
     }
 
     /**
@@ -148,7 +160,7 @@ class ManualNotificationService
      *
      * @return list<array{id:int,name:?string,email:?string,phone:?string,role:string,recipient_type:string}>
      */
-    public function listRecipients(Shoot $shoot, ?string $recipientType = null): array
+    public function listRecipients(Shoot $shoot, ?string $recipientType = null, ?string $notificationType = null): array
     {
         $types = $recipientType
             ? [$this->normalizeRecipientType($recipientType)]
@@ -156,7 +168,7 @@ class ManualNotificationService
 
         $out = [];
         foreach ($types as $type) {
-            foreach ($this->resolveRecipients($shoot, $type) as $user) {
+            foreach ($this->resolveRecipients($shoot, $type, notificationType: $notificationType) as $user) {
                 $out[] = [
                     'id' => (int) $user->id,
                     'name' => $user->name,
@@ -200,6 +212,7 @@ class ManualNotificationService
 
         $message = $this->dispatchForChannel($channel, [
             'to'               => $address,
+            'notification_type' => $type,
             'subject'          => $rendered['subject'] ?? $template->subject,
             'body_html'        => $rendered['body_html'] ?? $rendered['html'] ?? null,
             'body_text'        => $rendered['body_text'] ?? $rendered['text'] ?? null,
@@ -217,7 +230,7 @@ class ManualNotificationService
         ]);
 
         // AC 12.10 — stamp once per manual shoot_ready dispatch, not per photographer copy.
-        if ($stampReady && $type === 'shoot_ready') {
+        if ($stampReady && $type === 'shoot_ready' && $message->status !== 'BLOCKED') {
             $shoot->forceFill(['shoot_ready_notified_at' => now()])->save();
             $this->automationService->schedulePaymentReminders($shoot->refresh());
         }
@@ -268,7 +281,7 @@ class ManualNotificationService
         $template = $this->resolveTemplate($type, $channel);
         $recipientType = $this->normalizeRecipientType($recipientType);
 
-        $recipients = $this->resolveRecipients($shoot, $recipientType, $recipientUserId);
+        $recipients = $this->resolveRecipients($shoot, $recipientType, $recipientUserId, $type);
         if ($recipients->isEmpty()) {
             throw new RuntimeException("Shoot {$shoot->id} has no {$recipientType} to notify.");
         }
@@ -295,7 +308,10 @@ class ManualNotificationService
             'body_html'         => $rendered['body_html'] ?? $rendered['html'] ?? null,
             'body_text'         => $rendered['body_text'] ?? $rendered['text'] ?? null,
             'missing_variables' => $this->collectMissingVariables($template, $context, $rendered),
-            'recipients'        => $this->listRecipients($shoot, $recipientType),
+            'recipients'        => array_values(array_filter(
+                $this->listRecipients($shoot, $recipientType, $type),
+                fn (array $row) => $recipientUserId === null || $row['id'] === $recipientUserId,
+            )),
         ];
     }
 
@@ -425,8 +441,15 @@ class ManualNotificationService
      *
      * @return Collection<int, User>
      */
-    private function resolveRecipients(Shoot $shoot, string $recipientType, ?int $recipientUserId = null): Collection
+    private function resolveRecipients(Shoot $shoot, string $recipientType, ?int $recipientUserId = null, ?string $notificationType = null): Collection
     {
+        if ($recipientType === 'rep') {
+            $rep = app(\App\Services\Shoots\ShootSalesRepResolver::class)->resolve($shoot);
+
+            return collect([$rep])->filter(fn ($user) => $user instanceof User
+                && ($recipientUserId === null || (int) $user->id === $recipientUserId))->values();
+        }
+
         if ($recipientType === 'client') {
             $client = $shoot->client;
             if (! $client instanceof User) {
@@ -438,6 +461,12 @@ class ManualNotificationService
             }
 
             return collect([$client]);
+        }
+
+        if ($notificationType === 'shoot_on_hold') {
+            return ShootRequestRecipientRouting::cancellationPhotographers($shoot)
+                ->filter(fn (User $user) => $recipientUserId === null || (int) $user->id === $recipientUserId)
+                ->values();
         }
 
         $shoot->loadMissing(['photographer', 'services']);
