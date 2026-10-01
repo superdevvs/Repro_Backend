@@ -56,7 +56,7 @@ class DashboardController extends Controller
                         'scheduled_date', 'time', 'status', 'workflow_status', 'is_flagged', 'admin_issue_notes',
                         'editing_completed_at', 'submitted_for_review_at', 'shoot_notes', 'company_notes',
                         'photographer_notes', 'editor_notes', 'property_details', 'created_by', 'hero_image',
-                        'scheduled_at', 'timezone'],
+                        'scheduled_at', 'timezone', 'payment_status', 'total_paid', 'total_quote'],
                     [
                         'client:id,name,company_name,phonenumber',
                         'photographer:id,name,avatar,timezone',
@@ -140,7 +140,7 @@ class DashboardController extends Controller
                     'scheduled_date', 'time', 'status', 'workflow_status', 'is_flagged', 'admin_issue_notes',
                     'cancellation_requested_at', 'cancellation_requested_by', 'cancellation_reason',
                     'shoot_notes', 'company_notes', 'photographer_notes', 'editor_notes', 'property_details', 'created_by', 'hero_image',
-                    'scheduled_at', 'timezone')
+                    'scheduled_at', 'timezone', 'payment_status', 'total_paid', 'total_quote')
                     ->with([
                         'client:id,name,company_name,phonenumber',
                         'photographer:id,name,avatar,timezone',
@@ -696,7 +696,9 @@ class DashboardController extends Controller
                 'scheduled_date', 'time', 'status', 'workflow_status', 'is_flagged', 'admin_issue_notes',
                 'editing_completed_at', 'submitted_for_review_at', 'shoot_notes', 'company_notes',
                 'photographer_notes', 'editor_notes', 'property_details', 'created_by', 'hero_image',
-                'scheduled_at', 'timezone'];
+                'scheduled_at', 'timezone',
+                // Required for Delivered Paid/Unpaid pills — same fields as shoot detail header.
+                'payment_status', 'total_paid', 'total_quote'];
 
             $query = Shoot::select($columns)
                 ->with([
