@@ -786,8 +786,9 @@ class ShootEditablePayloadService
             $serviceModel = $serviceModels->get($serviceId);
             $submittedPrice = $service['price'] ?? null;
             $service['duration_minutes'] = $service['duration_minutes']
-                ?? $currentItem?->duration_minutes
-                ?? app(ShootDurationResolver::class)->forService($serviceModel, $sqft);
+                ?? ($currentItem
+                    ? app(ShootDurationResolver::class)->forServiceItem($currentItem)
+                    : app(ShootDurationResolver::class)->forService($serviceModel, $sqft));
 
             if (! $canOverrideLinePrice || $submittedPrice === null) {
                 $service['price'] = $currentItem?->price

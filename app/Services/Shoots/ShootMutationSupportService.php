@@ -494,8 +494,9 @@ class ShootMutationSupportService
                             ?? 0)
                         : ($currentItem?->nominal_value_snapshot),
                     'quantity' => $service['quantity'] ?? $currentItem?->quantity ?? 1,
-                    'duration_minutes' => $service['duration_minutes'] ?? $currentItem?->duration_minutes
-                        ?? app(ShootDurationResolver::class)->forService($serviceModel, $shoot->propertySqft()),
+                    'duration_minutes' => $service['duration_minutes'] ?? ($currentItem
+                        ? app(ShootDurationResolver::class)->forServiceItem($currentItem)
+                        : app(ShootDurationResolver::class)->forService($serviceModel, $shoot->propertySqft())),
                     'photographer_pay' => $service['photographer_pay'] ?? $currentItem?->photographer_pay,
                     'photographer_id' => ($serviceModel && ! $serviceModel->requiresPhotographer())
                         ? null

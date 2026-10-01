@@ -35,7 +35,9 @@ class ShootDurationResolver
             $sqft = $item->shoot?->propertySqft();
         }
 
-        return $this->forService($item->service, $sqft === null ? null : (int) $sqft);
+        // Null execution rows predate catalogue defaults. Keep their previous
+        // tier/default window without rewriting history when the catalogue changes.
+        return $item->service?->getShootDurationMinutes($sqft === null ? null : (int) $sqft, false) ?? $this->defaultMinutes();
     }
 
     /** Snapshot new booking lengths before both availability validation and persistence. */
@@ -120,7 +122,7 @@ class ShootDurationResolver
                 $minutes = (int) ($pivot['duration_minutes'] ?? 0);
                 $windows[] = [
                     'start' => null,
-                    'minutes' => $minutes > 0 ? $minutes : $this->forService($service, $shoot->propertySqft()),
+                    'minutes' => $minutes > 0 ? $minutes : $service->getShootDurationMinutes($shoot->propertySqft(), false),
                 ];
             }
         }

@@ -184,7 +184,9 @@ class MultiUnitBookingService
                 'shoot_unit_id' => $unit['id'], 'quantity' => $quantity,
                 'price' => $canOverride && isset($line['price']) ? (float) $line['price'] : ($current?->price ?? $pricing[$priceKey]['price']),
                 'photographer_pay' => $current?->photographer_pay ?? $pricing[$priceKey]['photographer_pay'],
-                'duration_minutes' => $line['duration_minutes'] ?? $current?->duration_minutes ?? $pricing[$priceKey]['duration_minutes'],
+                'duration_minutes' => $line['duration_minutes'] ?? ($current
+                    ? app(ShootDurationResolver::class)->forServiceItem($current)
+                    : $pricing[$priceKey]['duration_minutes']),
                 'contracted_photo_count' => $current ? $current->contracted_photo_count : $pricing[$priceKey]['contracted_photo_count'],
                 'photographer_required' => $service->requiresPhotographer(),
                 'scheduled_at' => array_key_exists('scheduled_at', $line) ? $line['scheduled_at'] : ($current ? $current->scheduled_at?->format('Y-m-d H:i:s') : ($data['scheduled_at'] ?? $shoot?->scheduled_at?->format('Y-m-d H:i:s'))),

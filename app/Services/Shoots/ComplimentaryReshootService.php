@@ -109,6 +109,7 @@ class ComplimentaryReshootService
                     'id' => $service->id,
                     'name' => $service->name,
                     'allow_multiple' => (bool) $service->allow_multiple,
+                    'shoot_duration_minutes' => $service->getShootDurationMinutes($this->extractSqft($sourceShoot)),
                     'price' => round((float) $service->getPriceForSqft($this->extractSqft($sourceShoot)), 2),
                     'standard_photographer_pay' => round((float) ($service->getPhotographerPayForSqft($this->extractSqft($sourceShoot)) ?? 0), 2),
                     'exclude_from_sales_commission' => (bool) $service->exclude_from_sales_commission,
@@ -349,6 +350,7 @@ class ComplimentaryReshootService
                         'price' => 0,
                         'nominal_value_snapshot' => $nominalTotal,
                         'quantity' => $quantity,
+                        'duration_minutes' => $service->getShootDurationMinutes($this->extractSqft($sourceShoot)),
                         // Explicit compensation rows are authoritative. Zero prevents
                         // a legacy fallback from accidentally paying a comp twice.
                         'photographer_pay' => 0,

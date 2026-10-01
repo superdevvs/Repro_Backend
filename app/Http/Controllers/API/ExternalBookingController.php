@@ -359,6 +359,7 @@ class ExternalBookingController extends Controller
                 'description' => $s->description,
                 'price' => (float) $s->price,
                 'pricing_type' => $s->pricing_type,
+                'shoot_duration_minutes' => $s->shoot_duration_minutes,
                 'category' => $s->category?->name,
                 'category_id' => $s->category_id,
             ]);

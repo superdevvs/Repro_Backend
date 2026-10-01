@@ -26,12 +26,9 @@ class FixedAvailabilityShootDurationTest extends TestCase
 
         $longService = Service::factory()->create([
             'name' => 'Long Service',
+            'shoot_duration_minutes' => 30,
         ]);
-        // Not persisted columns on services — force attributes so getShootDurationMinutes
-        // would report 240 if the booked helpers still consulted it.
-        $longService->setAttribute('shoot_duration_minutes', 240);
-        $longService->setAttribute('duration_minutes', 240);
-        $this->assertSame(240, $longService->getShootDurationMinutes());
+        $this->assertSame(30, $longService->getShootDurationMinutes());
 
         $shoot = Shoot::factory()->create([
             'client_id' => $client->id,
@@ -39,12 +36,7 @@ class FixedAvailabilityShootDurationTest extends TestCase
             'status' => Shoot::STATUS_SCHEDULED,
             'scheduled_at' => now()->addDay(),
         ]);
-        $shoot->services()->attach($longService->id);
-
-        // Swap the relation collection so the shoot sees the long-duration service
-        // instance (DB reload would drop the non-column attributes).
-        $shoot->setRelation('services', collect([$longService]));
-        $shoot->setRelation('serviceItems', new \Illuminate\Database\Eloquent\Collection);
+        $shoot->services()->attach($longService->id, ['duration_minutes' => 240]);
 
         $support = app(ShootMutationSupportService::class);
 
@@ -53,10 +45,9 @@ class FixedAvailabilityShootDurationTest extends TestCase
             ['id' => $longService->id, 'duration_minutes' => 240],
         ]));
 
-        // The same explicit duration applies when supplied by a loaded catalogue model.
+        // The saved appointment also wins in the legacy loaded-service fallback.
         $fresh = $shoot->fresh(['services']);
         if ($fresh->services->isNotEmpty()) {
-            $fresh->services->first()->setAttribute('shoot_duration_minutes', 240);
             $fresh->setRelation('serviceItems', new \Illuminate\Database\Eloquent\Collection);
             $this->assertSame(240, $support->calculateShootDurationFromShoot($fresh));
         }

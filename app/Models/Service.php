@@ -23,6 +23,11 @@ class Service extends Model
         ];
     }
 
+    public function getShootDurationMinutesAttribute($value): int
+    {
+        return (int) ($value ?? config('availability.default_shoot_duration_minutes', 60));
+    }
+
     protected $fillable = [
         'name',
         'description',
@@ -30,6 +35,7 @@ class Service extends Model
         'pricing_type',
         'allow_multiple',
         'delivery_time',
+        'shoot_duration_minutes',
         'category_id',
         'icon',
         'photographer_required',
@@ -47,6 +53,7 @@ class Service extends Model
     protected $casts = [
         'price' => 'decimal:2',
         'delivery_time' => 'integer',
+        'shoot_duration_minutes' => 'integer',
         'category_id' => 'integer',
         'photographer_required' => 'boolean',
         'requires_editing' => 'boolean',
@@ -354,18 +361,13 @@ class Service extends Model
      * Resolve the expected on-site shoot duration in minutes.
      * Falls back to the booking default unless a dedicated duration is configured.
      */
-    public function getShootDurationMinutes(?int $sqft = null): int
+    public function getShootDurationMinutes(?int $sqft = null, bool $useCatalogDefault = true): int
     {
         $defaultDurationMinutes = config('availability.default_shoot_duration_minutes', 60);
         $minDurationMinutes = config('availability.min_shoot_duration_minutes', 30);
         $maxDurationMinutes = config('availability.max_shoot_duration_minutes', 240);
 
-        $explicitDuration = $this->getAttribute('shoot_duration_minutes')
-            ?? $this->getAttribute('duration_minutes');
-        if (is_numeric($explicitDuration) && (int) $explicitDuration > 0) {
-            return min(max((int) $explicitDuration, $minDurationMinutes), $maxDurationMinutes);
-        }
-
+        // A matching property tier is more specific than the catalogue's fallback.
         if ($this->pricing_type === 'variable' && $sqft !== null) {
             $range = $this->sqftRanges()
                 ->where('sqft_from', '<=', $sqft)
@@ -375,6 +377,12 @@ class Service extends Model
             if ($range && $range->duration) {
                 return min(max((int) $range->duration, $minDurationMinutes), $maxDurationMinutes);
             }
+        }
+
+        $explicitDuration = ($useCatalogDefault ? ($this->attributes['shoot_duration_minutes'] ?? null) : null)
+            ?? $this->getAttribute('duration_minutes');
+        if (is_numeric($explicitDuration) && (int) $explicitDuration > 0) {
+            return min(max((int) $explicitDuration, $minDurationMinutes), $maxDurationMinutes);
         }
 
         return $defaultDurationMinutes;
