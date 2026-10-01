@@ -1,5 +1,5 @@
 {
-  "version": "2026-10-01.2",
+  "version": "2026-10-01.3",
   "reviewed_at": "2026-10-01",
   "articles": [
     {
@@ -110,7 +110,7 @@
         "speak to"
       ],
       "steps": [
-        "Open Support from the dashboard menu or Support requests in Help & guides, then select New request.",
+        "Open Messaging and choose Support, then select New request. You can also use Support requests in Help & guides.",
         "Enter a short subject, choose a topic, and describe what you tried, what happened, the page and any relevant shoot or invoice reference. Include the visible error and date/time with timezone.",
         "Select Submit request. Only a saved request receives a SUP reference. Open that request to read replies, send updates or mark it resolved. A reply to a resolved request reopens it.",
         "Use search, the status filter and Previous or Next to find older requests. Use Older messages within a long conversation.",
@@ -124,11 +124,11 @@
       "links": [
         {
           "label": "Open Support requests",
-          "url": "/support"
+          "url": "/messaging/email/inbox?tab=support"
         },
         {
           "label": "Create a support request",
-          "url": "/support?new=1"
+          "url": "/messaging/email/inbox?tab=support&new=1"
         },
         {
           "label": "Call support",
@@ -143,7 +143,9 @@
         "backend/app/Support/SupportContact.php",
         "backend/app/Services/ReproAi/Flows/SupportFaqFlow.php",
         "backend/app/Services/SupportTicketService.php",
-        "frontend/src/pages/Support.tsx"
+        "frontend/src/pages/Support.tsx",
+        "frontend/src/pages/messaging/EmailInbox.tsx",
+        "frontend/src/pages/messaging/messagingSupport.ts"
       ]
     },
     {
@@ -1314,7 +1316,7 @@
         "support request"
       ],
       "steps": [
-        "Open Support inbox and find a request using its subject or SUP reference. Narrow by status and use Previous or Next for older requests.",
+        "Open Messaging and choose Support. Find a request using its subject or SUP reference. Narrow by status and use Previous or Next for older requests.",
         "Choose an available administrator under Assigned to, set Status and choose Normal or Urgent priority.",
         "Write a Reply to send an update visible to the requester. Select Internal note · admins only for staff investigation that must not appear to the requester.",
         "Use Waiting when more information is needed and Resolved after checking the affected workflow. A new requester reply to a waiting or resolved case reopens it.",
@@ -1329,11 +1331,13 @@
       "links": [
         {
           "label": "Open Support inbox",
-          "url": "/support"
+          "url": "/messaging/email/inbox?tab=support"
         }
       ],
       "sources": [
         "frontend/src/pages/Support.tsx",
+        "frontend/src/pages/messaging/EmailInbox.tsx",
+        "frontend/src/pages/messaging/messagingSupport.ts",
         "backend/app/Services/SupportTicketService.php",
         "backend/app/Http/Controllers/API/SupportTicketController.php"
       ]
