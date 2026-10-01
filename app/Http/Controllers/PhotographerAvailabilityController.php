@@ -1146,6 +1146,20 @@ class PhotographerAvailabilityController extends Controller
                 $availabilitySlots = $specificDateSlots;
                 $unavailableSlots = $specificUnavailableSlots;
             }
+
+            // Align with assertWithinAvailabilityBounds / isWithinEffectiveWindow:
+            // when no configured available hours exist, apply Backend_Fallback_Hours
+            // so Book Shoot does not mark the photographer as unavailable solely
+            // because they have not set a weekly schedule yet.
+            if ($availabilitySlots->isEmpty()) {
+                $availabilitySlots = collect([(object) [
+                    'start_time' => config('availability.fallback_start_time', '09:00'),
+                    'end_time' => config('availability.fallback_end_time', '18:00'),
+                    'date' => null,
+                    'day_of_week' => $dayOfWeek,
+                    'status' => 'available',
+                ]]);
+            }
             
             \Log::debug('Availability slots for booking', [
                 'photographer_id' => $photographerId,
