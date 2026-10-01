@@ -349,7 +349,10 @@ class AuditedActionLoggingPropertyTest extends TestCase
         $shoot = $this->shootWithContactableParties();
 
         $type = array_rand(ManualNotificationService::TYPES);
-        $recipient = ['client', 'photographer'][mt_rand(0, 1)];
+        $allowedRecipients = in_array($type, ['shoot_on_hold', 'shoot_cancelled'], true)
+            ? ['client', 'rep']
+            : ['client', 'photographer'];
+        $recipient = $allowedRecipients[mt_rand(0, 1)];
         $channel = ['email', 'sms'][mt_rand(0, 1)];
 
         app(ManualNotificationService::class)->send($shoot, $type, $recipient, $channel, $sender);
@@ -488,7 +491,7 @@ class AuditedActionLoggingPropertyTest extends TestCase
         });
     }
 
-    /** A Shoot whose client and photographer both have email + phone for any recipient/channel. */
+    /** A shoot whose client, photographer and assigned sales rep can receive email and SMS. */
     private function shootWithContactableParties(): Shoot
     {
         $client = User::factory()->create([
@@ -502,10 +505,17 @@ class AuditedActionLoggingPropertyTest extends TestCase
             'name'        => 'Pat Photographer',
             'role'        => 'photographer',
         ]);
+        $rep = User::factory()->create([
+            'email' => 'rep+'.uniqid('', true).'@example.com',
+            'phonenumber' => '+1555'.str_pad((string) mt_rand(1000000, 9999999), 7, '0', STR_PAD_LEFT),
+            'name' => 'Sam Sales',
+            'role' => 'salesRep',
+        ]);
 
         return Shoot::factory()->create([
             'client_id'       => $client->id,
             'photographer_id' => $photographer->id,
+            'rep_id' => $rep->id,
         ]);
     }
 
