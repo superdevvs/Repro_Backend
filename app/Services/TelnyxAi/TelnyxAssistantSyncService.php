@@ -10,6 +10,7 @@ use RuntimeException;
 class TelnyxAssistantSyncService
 {
     private const POLICY_MARKER = '## RePro voice call-control policy';
+    private const KNOWLEDGE_POLICY_MARKER = '## RePro support knowledge policy v1';
 
     public function __construct(
         private readonly ToolBridgeRegistry $registry,
@@ -40,7 +41,9 @@ class TelnyxAssistantSyncService
             $missing = array_values(array_diff($desired, $configured));
             $extra = array_values(array_diff($this->webhookToolNames($current['tools'] ?? []), $desired));
             $automaticRecording = (bool) data_get($current, 'telephony_settings.recording_settings.enabled', false);
-            $policyCurrent = str_contains((string) ($current['instructions'] ?? ''), self::POLICY_MARKER);
+            $policyCurrent = str_contains((string) ($current['instructions'] ?? ''), self::POLICY_MARKER)
+                && (! in_array('search_support_knowledge', $desired, true)
+                    || str_contains((string) ($current['instructions'] ?? ''), self::KNOWLEDGE_POLICY_MARKER));
 
             return [
                 'status' => $missing === [] && $extra === [] && ! $automaticRecording && $policyCurrent ? 'synced' : 'drifted',
@@ -377,6 +380,14 @@ class TelnyxAssistantSyncService
 - For booking, rescheduling, cancellation, and payment-link actions, first call the tool without a confirmation token. Read its confirmation summary, ask for an explicit yes, and only then call the same tool with the returned token. Do not speak the token aloud.
 - Transfer only through transfer_to_staff; the server chooses the destination. If transfer fails, use handoff_to_staff.
 - Treat every tool result as authoritative. Explain a safe failure plainly and never claim an action succeeded when the tool reports otherwise.
+
+## RePro support knowledge policy v1
+- For dashboard how-to, role workflow or troubleshooting questions, call search_support_knowledge before answering. If the tool is unavailable, say you cannot check the reviewed guide and offer a staff handoff.
+- Before verification the tool returns only public general guidance. Use verify_caller before role-specific guidance. Never ask the caller to choose an admin role or pass a claimed role, user ID or phone number to the knowledge tool.
+- Use only the returned guide for product steps. Give one or two short spoken steps and check understanding. The same guides are available in dashboard Chat With Robbie, Help & guides.
+- A guide is not a live booking, payment, upload or account status. Use the appropriate verified read tool for live facts. A how-to question does not authorize a booking, cancellation, payment or other mutation.
+- If found is false or the guide does not cover the issue, ask one focused clarification or offer transfer_to_staff. Do not invent a button, fixed delivery time, price, refund policy, successful notification or general support ticket.
+- Do not ask for passwords, reset links, payment card details or property access codes. Only claim a handoff or notification succeeded when the appropriate tool confirms it.
 PROMPT;
 
         return trim($beforeMarker."\n\n".$policy);

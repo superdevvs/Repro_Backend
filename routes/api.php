@@ -114,6 +114,15 @@ Route::middleware('auth:sanctum')->group(function () {
 
 Route::middleware('auth:sanctum')->get('/me/permissions', [PermissionController::class, 'me']);
 
+Route::middleware(['auth:sanctum', 'permission:support,view'])->prefix('support/tickets')->group(function () {
+    Route::get('/', [App\Http\Controllers\API\SupportTicketController::class, 'index']);
+    Route::get('/assignees', [App\Http\Controllers\API\SupportTicketController::class, 'assignees']);
+    Route::post('/', [App\Http\Controllers\API\SupportTicketController::class, 'store'])->middleware('throttle:20,1');
+    Route::get('/{ticket}', [App\Http\Controllers\API\SupportTicketController::class, 'show'])->whereNumber('ticket');
+    Route::post('/{ticket}/replies', [App\Http\Controllers\API\SupportTicketController::class, 'reply'])->whereNumber('ticket')->middleware('throttle:30,1');
+    Route::patch('/{ticket}', [App\Http\Controllers\API\SupportTicketController::class, 'update'])->whereNumber('ticket');
+});
+
 Route::get('/ping', function () {
     return response()->json(['message' => 'pong']);
 });
@@ -153,6 +162,11 @@ Route::middleware('telnyx.toolbridge')
 
 Route::post('/webhooks/telnyx/voice', TelnyxVoiceWebhookController::class);
 Route::post('/webhooks/vapi', VapiWebhookController::class);
+
+Route::post('/voice/push/revoke', [App\Http\Controllers\API\Voice\VoicePushController::class, 'revoke'])->middleware('throttle:30,1');
+Route::middleware('auth:sanctum')->prefix('voice')->group(function () {
+    require __DIR__.'/voice-push.php';
+});
 
 Route::middleware(['auth:sanctum', 'permission:voice-calls'])->prefix('voice')->group(function () {
     require __DIR__.'/voice-browser.php';
@@ -838,15 +852,17 @@ Route::middleware('auth:sanctum')->group(function () {
     // Robbie Chat endpoints
     // Note: OPTIONS requests are handled by HandleCors middleware automatically
     Route::prefix('ai')->group(function () {
-        // Actual AI chat endpoints with role middleware
-        Route::middleware('role:client,admin,superadmin,editing_manager')->group(function () {
+        Route::middleware(['role:client,admin,superadmin,editing_manager,salesRep,photographer,editor', 'permission:robbie,view'])->group(function () {
+            Route::get('/knowledge', [App\Http\Controllers\API\SupportKnowledgeController::class, 'index']);
+            Route::get('/knowledge/{articleId}', [App\Http\Controllers\API\SupportKnowledgeController::class, 'show']);
             Route::post('/chat', [AiChatController::class, 'chat']);
-            Route::post('/shoot-operator/action', [AiChatController::class, 'shootOperatorAction']);
             Route::get('/sessions', [AiChatController::class, 'sessions']);
             Route::get('/sessions/{session}', [AiChatController::class, 'sessionMessages']);
             Route::delete('/sessions/{session}', [AiChatController::class, 'deleteSession']);
             Route::post('/sessions/{session}/archive', [AiChatController::class, 'archiveSession']);
         });
+        Route::post('/shoot-operator/action', [AiChatController::class, 'shootOperatorAction'])
+            ->middleware(['role:client,admin,superadmin,editing_manager', 'permission:robbie,view']);
     });
 
     // Autoenhance AI Photo Editing endpoints (Admin/Super Admin only)

@@ -80,6 +80,17 @@ class VoiceBrowserController extends Controller
         return $this->respond(fn () => $this->calls->startOutbound($request->user(), VoiceBrowserSession::findOrFail($data['session_id']), $data));
     }
 
+    public function cancelOutbound(Request $request): JsonResponse
+    {
+        $data = $request->validate(['idempotency_key' => ['required', 'string', 'max:128']]);
+
+        return $this->respond(function () use ($request, $data): array {
+            $this->calls->cancelOutbound($request->user(), $data['idempotency_key']);
+
+            return ['status' => 'cancelled'];
+        });
+    }
+
     public function state(Request $request, VoiceCall $call): JsonResponse
     {
         return $this->respond(fn () => $this->calls->state($call, $request->user()));

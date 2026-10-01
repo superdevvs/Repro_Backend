@@ -31,12 +31,12 @@ class TelnyxAssistantSyncTest extends TestCase
         ]);
     }
 
-    public function test_all_twelve_voice_tools_have_schema_and_dispatcher_coverage(): void
+    public function test_all_voice_tools_have_schema_and_dispatcher_coverage(): void
     {
         $registry = app(ToolBridgeRegistry::class);
         $mapping = (new \ReflectionClass(ToolDispatcher::class))->getConstant('TOOL_MAPPING');
 
-        $this->assertCount(12, ToolBridgeRegistry::ALLOWED_TOOLS);
+        $this->assertCount(13, ToolBridgeRegistry::ALLOWED_TOOLS);
         foreach (ToolBridgeRegistry::ALLOWED_TOOLS as $tool) {
             $this->assertNotNull($registry->definition($tool), "Missing schema for {$tool}");
             $this->assertArrayHasKey($tool, $mapping, "Missing dispatcher mapping for {$tool}");
@@ -54,7 +54,7 @@ class TelnyxAssistantSyncTest extends TestCase
         $this->assertFalse($result['applied']);
         $this->assertFalse($result['promote_to_main']);
         $this->assertContains('set_recording_consent', $result['missing_tools']);
-        $this->assertCount(12, $result['desired_tools']);
+        $this->assertCount(13, $result['desired_tools']);
         Http::assertSentCount(1);
         Http::assertNotSent(fn (Request $request) => $request->method() === 'POST');
     }
@@ -83,11 +83,13 @@ class TelnyxAssistantSyncTest extends TestCase
 
             return $request['promote_to_main'] === false
                 && data_get($request->data(), 'telephony_settings.recording_settings.enabled') === false
-                && $tools->count() === 9
+                && $tools->count() === 10
                 && $tools->contains(fn ($tool) => data_get($tool, 'webhook.name') === 'set_recording_consent')
                 && $tools->contains(fn ($tool) => data_get($tool, 'webhook.name') === 'get_shoot_details')
                 && ! $tools->contains(fn ($tool) => data_get($tool, 'webhook.name') === 'verify_caller')
-                && str_contains((string) $request['instructions'], 'RePro voice call-control policy');
+                && str_contains((string) $request['instructions'], 'RePro voice call-control policy')
+                && str_contains((string) $request['instructions'], 'RePro support knowledge policy v1')
+                && $tools->contains(fn ($tool) => data_get($tool, 'webhook.name') === 'search_support_knowledge');
         });
     }
 

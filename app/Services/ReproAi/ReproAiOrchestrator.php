@@ -35,7 +35,11 @@ class ReproAiOrchestrator
         // Add system prompt
         array_unshift($messages, [
             'role' => 'system',
-            'content' => $this->buildSystemPrompt($session, $context),
+            'content' => $this->buildSystemPrompt($session, $context)."\n".
+                app(SupportKnowledgeBase::class)->grounding(
+                    mb_substr($userMessage, 0, 300),
+                    \App\Models\User::find($session->user_id),
+                ),
         ]);
 
         $lastMessage = end($messages);

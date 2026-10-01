@@ -589,34 +589,21 @@ class VoiceWebhookProcessor
             ]));
         }
 
-        $exists = VoiceCallTranscript::query()
-            ->where('voice_call_id', $voiceCall->id)
-            ->where('provider_message_id', $providerId)
-            ->exists();
-        if ($exists) {
-            $this->persistSessionMessage($voiceCall, $providerId, $message, $text);
+        // Persist the row and its read projections atomically. A webhook replay
+        // repairs projections even if an older handler saved only the row.
+        $voiceCall = \Illuminate\Support\Facades\Cache::lock('voice-transcript:'.$voiceCall->id, 30)->block(3,
+            fn () => \App\Support\LockedWrite::run(fn () => \Illuminate\Support\Facades\DB::transaction(function () use ($voiceCall, $providerId, $message, $text) {
+                VoiceCallTranscript::firstOrCreate(['voice_call_id' => $voiceCall->id, 'provider_message_id' => $providerId], [
+                    'speaker' => $message['speaker'] ?? 'customer', 'transcript_type' => 'final', 'text' => $text,
+                    'confidence' => $message['confidence'] ?? null, 'occurred_at' => $message['occurred_at'] ?? now(),
+                ]);
 
-            return $voiceCall;
-        }
-
-        VoiceCallTranscript::query()->create([
-            'voice_call_id' => $voiceCall->id,
-            'provider_message_id' => $providerId,
-            'speaker' => $message['speaker'] ?? 'customer',
-            'transcript_type' => 'final',
-            'text' => $text,
-            'confidence' => $message['confidence'] ?? null,
-            'occurred_at' => $message['occurred_at'] ?? now(),
-        ]);
-
+                return $this->liveStream->projectSavedTranscript($voiceCall->fresh());
+            }), 'voice.transcript.store'));
         $this->persistSessionMessage($voiceCall, $providerId, $message, $text);
+        $this->intelligence->onRealtimeUpdate($voiceCall, ['text' => $text, 'confidence' => $message['confidence'] ?? null]);
 
-        return $this->liveStream->recordTranscriptChunk($voiceCall, [
-            'text' => $text,
-            'speaker' => $message['speaker'] ?? 'customer',
-            'confidence' => $message['confidence'] ?? null,
-            'sentiment' => $message['sentiment'] ?? null,
-        ]);
+        return $voiceCall->fresh();
     }
 
     private function persistSessionMessage(VoiceCall $voiceCall, string $providerId, array $message, string $text): void

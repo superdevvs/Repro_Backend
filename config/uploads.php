@@ -16,8 +16,9 @@ return [
     */
 
     // Maximum allowed size for a single uploaded file, in bytes.
-    // Historical rule: `max:1048576` (KB) === 1 GiB === 1073741824 bytes.
-    'max_bytes' => (int) env('UPLOAD_MAX_BYTES', 1048576 * 1024),
+    // Photographer shoot-media ceiling: 10 GiB === 10737418240 bytes
+    // (Laravel validation uses KB: max:10485760).
+    'max_bytes' => (int) env('UPLOAD_MAX_BYTES', 10737418240),
 
     // Allowed file extensions (lower-case, no leading dot). Mirrors the
     // FileUploadController `mimes:` allow-list.

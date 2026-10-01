@@ -101,7 +101,22 @@ class VoiceCallController extends Controller
 
     public function transcript(VoiceCall $call): JsonResponse
     {
-        return response()->json(['transcript' => $call->transcript ?? '']);
+        $transcripts = app(\App\Services\Voice\VoiceTranscriptService::class);
+
+        return response()->json($transcripts->state($transcripts->rebuild($call)))->header('Cache-Control', 'private, no-store');
+    }
+
+    public function reconcileTranscript(VoiceCall $call): JsonResponse
+    {
+        return $this->transcript($call);
+    }
+
+    public function retryTranscript(Request $request, VoiceCall $call): JsonResponse
+    {
+        $data = $request->validate(['idempotency_key' => ['required', 'string', 'max:128']]);
+        app(\App\Services\Voice\VoiceTranscriptRecoveryService::class)->request($call, $request->user(), $data['idempotency_key']);
+
+        return $this->transcript($call->fresh())->setStatusCode(202);
     }
 
     /**

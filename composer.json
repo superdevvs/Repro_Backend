@@ -9,14 +9,15 @@
     ],
     "license": "MIT",
     "require": {
-        "ext-sodium": "*",
         "php": "^8.2",
+        "ext-sodium": "*",
         "guzzlehttp/guzzle": "^7.15.2",
         "intervention/image": "^3.11",
         "laravel/framework": "^12.64.0",
         "laravel/sanctum": "^4.1",
         "laravel/tinker": "^2.10.1",
         "league/flysystem-aws-s3-v3": "^3.35.2",
+        "minishlink/web-push": "^11.0",
         "pel/pel": "^1.0",
         "stripe/stripe-php": "^19.4"
     },

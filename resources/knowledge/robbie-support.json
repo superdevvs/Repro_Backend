@@ -1,0 +1,1389 @@
+{
+  "version": "2026-10-01.1",
+  "reviewed_at": "2026-10-01",
+  "articles": [
+    {
+      "id": "account-login",
+      "title": "Sign in or reset your password",
+      "category": "Account",
+      "roles": [
+        "*"
+      ],
+      "summary": "Use the email on your account and request a fresh password reset link when needed.",
+      "keywords": [
+        "login",
+        "log in",
+        "sign in",
+        "password",
+        "forgot password",
+        "reset password",
+        "locked out",
+        "portal access"
+      ],
+      "steps": [
+        "Open the sign-in page and choose Forgot Password if you have not set a password or cannot remember it.",
+        "Enter the email address used for your REPro account.",
+        "Check your inbox and spam folder, then open the newest reset email and set a password.",
+        "Return to sign in with that email and the new password."
+      ],
+      "troubleshooting": [
+        "The reset confirmation does not prove that an account exists for that email. Check spelling and ask support to verify the account if no email arrives.",
+        "For an expired or already-used link, request a new link. Never send your password or reset link in chat."
+      ],
+      "escalation": "Contact support with your account email, the time of the attempt and the error text. Do not include passwords or reset tokens.",
+      "links": [
+        {
+          "label": "Open sign in",
+          "url": "/login"
+        }
+      ],
+      "sources": [
+        "frontend/src/components/auth/LoginForm.tsx",
+        "frontend/src/pages/ResetPassword.tsx"
+      ]
+    },
+    {
+      "id": "account-profile",
+      "title": "Update your profile and verify your email",
+      "category": "Account",
+      "roles": [
+        "client",
+        "salesRep",
+        "photographer",
+        "editor",
+        "admin",
+        "superadmin",
+        "editing_manager"
+      ],
+      "summary": "Keep account contact details accurate so the team can reach you.",
+      "keywords": [
+        "profile",
+        "change email",
+        "phone number",
+        "verify email",
+        "verification email",
+        "email address",
+        "contact details"
+      ],
+      "steps": [
+        "Open Profile and review your name, email and phone details. Photographer and editor accounts may open their account settings instead.",
+        "Use the editable fields available for your role and save the changes.",
+        "If the email needs verification, follow the email verification notice and use the latest verification message.",
+        "Reopen your profile or account settings to confirm the saved details."
+      ],
+      "troubleshooting": [
+        "Changing an email may require your current password or an email warning confirmation.",
+        "If a field is unavailable for your role or verification still fails, ask support to review the account rather than creating a duplicate account."
+      ],
+      "escalation": "Share the account email and which field or verification step failed. Do not share verification tokens.",
+      "links": [
+        {
+          "label": "Open Profile",
+          "url": "/profile"
+        }
+      ],
+      "sources": [
+        "frontend/src/pages/Profile.tsx",
+        "frontend/src/pages/profileNavigation.ts",
+        "frontend/src/components/profile/ClientProfile.tsx",
+        "frontend/src/components/email/ClientEmailHealthNotice.tsx"
+      ]
+    },
+    {
+      "id": "support-contact",
+      "title": "Contact a support team member",
+      "category": "Support",
+      "roles": [
+        "*"
+      ],
+      "summary": "Create a support request, follow its replies and status, or contact the team directly.",
+      "keywords": [
+        "support",
+        "human",
+        "contact",
+        "help desk",
+        "representative",
+        "escalate",
+        "ticket",
+        "report problem",
+        "complaint",
+        "speak to"
+      ],
+      "steps": [
+        "Open Support from the dashboard menu or Support requests in Help & guides, then select New request.",
+        "Enter a short subject, choose a topic, and describe what you tried, what happened, the page and any relevant shoot or invoice reference. Include the visible error and date/time with timezone.",
+        "Select Submit request. Only a saved request receives a SUP reference. Open that request to read replies, send updates or mark it resolved. A reply to a resolved request reopens it.",
+        "Use search, the status filter and Previous or Next to find older requests. Use Older messages within a long conversation.",
+        "Dashboard notifications link to replies. For urgent shoot-day help, call or text (202) 868-1663 or email contact@reprophotos.com."
+      ],
+      "troubleshooting": [
+        "Robbie can explain guides and prepare a report, but this chat does not create a general support ticket or notify a team member.",
+        "Do not include passwords, payment card details, private access codes or authentication links in a support report."
+      ],
+      "escalation": "For an urgent shoot-day access or scheduling problem, call the support number. A response time is not guaranteed by this guide.",
+      "links": [
+        {
+          "label": "Open Support requests",
+          "url": "/support"
+        },
+        {
+          "label": "Create a support request",
+          "url": "/support?new=1"
+        },
+        {
+          "label": "Call support",
+          "url": "tel:+12028681663"
+        },
+        {
+          "label": "Email support",
+          "url": "mailto:contact@reprophotos.com"
+        }
+      ],
+      "sources": [
+        "backend/app/Support/SupportContact.php",
+        "backend/app/Services/ReproAi/Flows/SupportFaqFlow.php",
+        "backend/app/Services/SupportTicketService.php",
+        "frontend/src/pages/Support.tsx"
+      ]
+    },
+    {
+      "id": "access-missing-page",
+      "title": "A page, button or shoot is missing",
+      "category": "Account",
+      "roles": [
+        "*"
+      ],
+      "summary": "Check the account and role before assuming data has been lost.",
+      "keywords": [
+        "permission",
+        "forbidden",
+        "403",
+        "missing button",
+        "cannot see",
+        "can't see",
+        "access denied",
+        "missing shoot",
+        "wrong role"
+      ],
+      "steps": [
+        "Confirm you are signed in to the intended account and role.",
+        "Clear any page search, status or date filters and reopen the record from Shoot History.",
+        "Client access depends on ownership or sharing; photographer and editor work depends on assignments. Some controls are limited by permissions.",
+        "If the record or action should be available, send its reference and the missing page or button name to support."
+      ],
+      "troubleshooting": [
+        "A copied URL does not grant permission to a record.",
+        "Avoid creating a replacement account or duplicate shoot to work around an access error."
+      ],
+      "escalation": "Ask an administrator to check the account role, assignment, sharing settings and permission overrides.",
+      "links": [
+        {
+          "label": "Open Shoot History",
+          "url": "/shoot-history"
+        }
+      ],
+      "sources": [
+        "backend/app/Services/Shoots/ShootAuthorizationSupport.php",
+        "backend/app/Services/RolePermissionService.php",
+        "frontend/src/components/layout/sidebar/SidebarLinks.tsx"
+      ]
+    },
+    {
+      "id": "book-shoot",
+      "title": "Book a shoot",
+      "category": "Booking",
+      "roles": [
+        "client",
+        "salesRep",
+        "admin",
+        "superadmin",
+        "editing_manager"
+      ],
+      "summary": "Enter the property, choose services and schedule, then review before submitting.",
+      "keywords": [
+        "how to book",
+        "how do i book",
+        "booking",
+        "new shoot",
+        "appointment",
+        "schedule a shoot",
+        "reserve",
+        "book a shoot"
+      ],
+      "steps": [
+        "Choose Book Shoot. Staff should select the correct client; clients book under their own account.",
+        "Enter the property address and required property information, then choose the services you need.",
+        "Select the available date, time and photographer where the selected services require them. Review any per-service schedule.",
+        "Review the property, services, schedule and total, submit once, and wait for the confirmation before making another booking."
+      ],
+      "troubleshooting": [
+        "If there is a duplicate-address warning, review the existing shoot before continuing.",
+        "If no slot appears, check the address, selected services and date; ask support to review availability instead of assuming the time is reserved."
+      ],
+      "escalation": "Send the property address, desired date/time with timezone, services and any validation message. Do not include lockbox codes in general chat.",
+      "links": [
+        {
+          "label": "Open Book Shoot",
+          "url": "/book-shoot"
+        }
+      ],
+      "sources": [
+        "frontend/src/pages/useBookShootController.ts",
+        "frontend/src/pages/BookShootView.tsx"
+      ]
+    },
+    {
+      "id": "booking-multiple-units",
+      "title": "Book or review a property with multiple units",
+      "category": "Booking",
+      "roles": [
+        "client",
+        "salesRep",
+        "admin",
+        "superadmin",
+        "editing_manager"
+      ],
+      "summary": "Review each unit's details and services before confirming the combined booking.",
+      "keywords": [
+        "multi unit",
+        "multiple units",
+        "units",
+        "apartments",
+        "unit booking",
+        "multiple properties"
+      ],
+      "steps": [
+        "In Book Shoot, use the multiple-unit controls when available for the property.",
+        "Select a unit to edit its details and services. Check the unit summary for missing information.",
+        "Review unit schedules, photographer requirements and the combined total before submitting.",
+        "For an existing multi-unit shoot, select the intended unit before reviewing or downloading its media."
+      ],
+      "troubleshooting": [
+        "A service or schedule error in one unit can prevent submission; use the unit summary to locate it.",
+        "Downloads follow the selected unit. Check the unit selection if expected files are missing."
+      ],
+      "escalation": "Provide the shoot reference, unit label and which details or files appear incorrect.",
+      "links": [
+        {
+          "label": "Open Book Shoot",
+          "url": "/book-shoot"
+        },
+        {
+          "label": "Open Shoot History",
+          "url": "/shoot-history"
+        }
+      ],
+      "sources": [
+        "frontend/src/features/shoot-units/useMultiUnitBooking.tsx",
+        "frontend/src/components/shoots/details/ShootDownloadCenterDialog.tsx"
+      ]
+    },
+    {
+      "id": "booking-change",
+      "title": "Request a reschedule or cancellation",
+      "category": "Booking",
+      "roles": [
+        "client",
+        "salesRep",
+        "admin",
+        "superadmin",
+        "editing_manager"
+      ],
+      "summary": "Open the correct shoot and use the actions available to your role.",
+      "keywords": [
+        "reschedule",
+        "cancel",
+        "change date",
+        "change time",
+        "move appointment",
+        "wrong date"
+      ],
+      "steps": [
+        "Open Shoot History and select the intended property or shoot.",
+        "Review the current schedule and service details before making a change.",
+        "Use Reschedule or the available management action if it is shown for your role; review the new date/time and confirm.",
+        "If the action is unavailable, contact support with the requested change. Reopen the shoot to verify any confirmed update."
+      ],
+      "troubleshooting": [
+        "A request to change a booking is not confirmation that it has changed.",
+        "Availability and booking rules may limit changes. Ask support about any fees or exceptions; this guide does not guarantee a refund."
+      ],
+      "escalation": "Share the shoot reference, current schedule, requested schedule and reason. Call support for a time-sensitive same-day change.",
+      "links": [
+        {
+          "label": "Open Shoot History",
+          "url": "/shoot-history"
+        }
+      ],
+      "sources": [
+        "frontend/src/pages/ShootDetails.tsx",
+        "frontend/src/components/dashboard/RescheduleDialog.tsx",
+        "backend/app/Services/ReproAi/Flows/ManageBookingFlow.php"
+      ]
+    },
+    {
+      "id": "booking-preparation",
+      "title": "Prepare the property and access details",
+      "category": "Booking",
+      "roles": [
+        "client",
+        "salesRep",
+        "admin",
+        "superadmin",
+        "editing_manager"
+      ],
+      "summary": "Check the shoot details and coordinate access before the appointment.",
+      "keywords": [
+        "prepare",
+        "preparation",
+        "photo ready",
+        "access",
+        "lockbox",
+        "staging",
+        "pets",
+        "before shoot"
+      ],
+      "steps": [
+        "Open the shoot and verify the address, services, schedule and contact information.",
+        "Review property notes and coordinate who will provide access at the appointment.",
+        "Prepare rooms and exterior areas for the services ordered, secure pets and raise access restrictions with the team beforehand.",
+        "Use the appropriate protected booking or shoot fields for access instructions; do not paste codes into general help chat."
+      ],
+      "troubleshooting": [
+        "Do not assume the photographer will move furniture or provide a service that is not on the booking.",
+        "For a locked property, occupant delay or last-minute access change, contact support directly."
+      ],
+      "escalation": "Give support the shoot reference and contact person. Share access credentials only through the approved shoot workflow.",
+      "links": [
+        {
+          "label": "Open Shoot History",
+          "url": "/shoot-history"
+        }
+      ],
+      "sources": [
+        "frontend/src/components/booking/ClientPropertyForm.tsx",
+        "frontend/src/components/shoots/tabs/ShootDetailsNotesTab.tsx"
+      ]
+    },
+    {
+      "id": "media-download",
+      "title": "Download photos, videos and floorplans",
+      "category": "Delivery",
+      "roles": [
+        "client",
+        "salesRep",
+        "admin",
+        "superadmin",
+        "editing_manager"
+      ],
+      "summary": "Use the Download Center for delivered files and links.",
+      "keywords": [
+        "download",
+        "save photos",
+        "get images",
+        "high res",
+        "mls small",
+        "zip",
+        "floorplan",
+        "video files"
+      ],
+      "steps": [
+        "Open the shoot from Shoot History and choose Download when it is available.",
+        "In Download Center, select the unit if this is a multi-unit property.",
+        "For photos, choose High res for full resolution or MLS / small for smaller files. Use the appropriate service group when shown.",
+        "Use the available video and floorplan download buttons, or copy and open hosted links. Wait for the current download to finish preparing."
+      ],
+      "troubleshooting": [
+        "No downloads available yet means there are no eligible delivered files for the current selection. Check the shoot and unit, delivery state and any payment requirement.",
+        "If a download fails, keep the error text, try the single file or service group when available and contact support if it continues."
+      ],
+      "escalation": "Include the shoot reference, unit/service, requested file or size and the download error.",
+      "links": [
+        {
+          "label": "Open Shoot History",
+          "url": "/shoot-history"
+        }
+      ],
+      "sources": [
+        "frontend/src/components/shoots/details/ShootDownloadCenterDialog.tsx",
+        "frontend/src/components/shoots/details/shootClientReleaseAccess.ts"
+      ]
+    },
+    {
+      "id": "media-delivery-status",
+      "title": "Photos are not ready or the Download button is missing",
+      "category": "Delivery",
+      "roles": [
+        "client",
+        "salesRep",
+        "admin",
+        "superadmin",
+        "editing_manager"
+      ],
+      "summary": "Delivery, service release and payment status determine what can be downloaded.",
+      "keywords": [
+        "turnaround",
+        "when ready",
+        "how long",
+        "delivery time",
+        "not ready",
+        "missing photos",
+        "not delivered",
+        "locked photos"
+      ],
+      "steps": [
+        "Open the correct shoot and check its current status and ordered services.",
+        "If it has multiple units or separately delivered services, select the relevant unit or service.",
+        "Review any payment or release notice shown before attempting a download.",
+        "If the expected delivery is overdue or the page still looks incorrect after reopening it, contact support."
+      ],
+      "troubleshooting": [
+        "An upload completing does not mean review and client release are complete.",
+        "This guide does not promise a fixed delivery time. Ask support to confirm the commitment for the specific service and shoot."
+      ],
+      "escalation": "Share the shoot reference, service, promised date if one was provided and the exact visible status.",
+      "links": [
+        {
+          "label": "Open Shoot History",
+          "url": "/shoot-history"
+        }
+      ],
+      "sources": [
+        "frontend/src/components/shoots/details/shootClientReleaseAccess.ts",
+        "frontend/src/pages/ShootDetails.tsx",
+        "backend/app/Services/Shoots/ShootAuthorizationSupport.php"
+      ]
+    },
+    {
+      "id": "media-tours-mls",
+      "title": "Share tour links or use media in your MLS",
+      "category": "Delivery",
+      "roles": [
+        "client",
+        "salesRep",
+        "admin",
+        "superadmin",
+        "editing_manager"
+      ],
+      "summary": "Copy the delivered link that matches your use and follow your MLS requirements.",
+      "keywords": [
+        "mls",
+        "tour link",
+        "share link",
+        "branded",
+        "unbranded",
+        "3d",
+        "matterport",
+        "iguide"
+      ],
+      "steps": [
+        "Open the shoot's Download Center and review Tour links, 3D links and Video only hosted links when present.",
+        "Use the copy button or open the link to preview it.",
+        "Choose the appropriate branded or MLS version when offered and verify the destination before sharing.",
+        "For MLS photos, download MLS / small files and follow your MLS provider's upload instructions."
+      ],
+      "troubleshooting": [
+        "Different MLS providers have different media rules; ask that provider if a file or link is rejected.",
+        "If a hosted link opens the wrong property or fails, stop sharing it and send the shoot reference and affected link label to support."
+      ],
+      "escalation": "Include the shoot reference, link label or file type, and the MLS/provider error. Avoid sharing private authentication links.",
+      "links": [
+        {
+          "label": "Open Shoot History",
+          "url": "/shoot-history"
+        }
+      ],
+      "sources": [
+        "frontend/src/components/shoots/details/ShootDownloadCenterDialog.tsx",
+        "frontend/src/components/shoots/details/shootDownloadCenterModel.ts"
+      ]
+    },
+    {
+      "id": "media-correction",
+      "title": "Report missing shots or request a correction",
+      "category": "Delivery",
+      "roles": [
+        "client",
+        "salesRep",
+        "photographer",
+        "editor",
+        "admin",
+        "superadmin",
+        "editing_manager"
+      ],
+      "summary": "Identify the exact shoot and files so the team can review the request.",
+      "keywords": [
+        "correction",
+        "missing shots",
+        "photo quality",
+        "wrong image",
+        "revision",
+        "request edit",
+        "requests",
+        "retouch"
+      ],
+      "steps": [
+        "Open the shoot and identify the affected service, unit and file names.",
+        "If the Requests area and request action are available to your role, add a clear request there and select the relevant media when offered.",
+        "Describe the intended result and what is wrong; include a reference if it helps.",
+        "Check the saved request status. If the request action is unavailable, contact support with the same details."
+      ],
+      "troubleshooting": [
+        "Submitting a request is not confirmation of approval, price or completion time.",
+        "Do not delete or replace delivered files to try to report an issue."
+      ],
+      "escalation": "Share the shoot, unit and file references plus a concise description. General Robbie chat alone does not submit the correction.",
+      "links": [
+        {
+          "label": "Open Shoot History",
+          "url": "/shoot-history"
+        }
+      ],
+      "sources": [
+        "frontend/src/components/shoots/tabs/ShootDetailsIssuesTab.tsx",
+        "frontend/src/components/shoots/tabs/ShootRequestManager.tsx"
+      ]
+    },
+    {
+      "id": "billing-client",
+      "title": "Review an invoice or payment problem",
+      "category": "Billing",
+      "roles": [
+        "client",
+        "admin",
+        "superadmin"
+      ],
+      "summary": "Check the current invoice and payment state before attempting another payment.",
+      "keywords": [
+        "invoice",
+        "billing",
+        "payment",
+        "pay",
+        "receipt",
+        "charged twice",
+        "balance",
+        "refund"
+      ],
+      "steps": [
+        "Clients open Billing and locate the relevant item in My Invoices, or open the shoot and review its payment details. Staff use their authorized Accounting view when helping a client.",
+        "Check the amount and status before using the payment action or checkout link shown.",
+        "After checkout, return to the dashboard and reopen the invoice or shoot to check the updated status.",
+        "If the charge appears incorrect or the status is still pending, contact support before paying again."
+      ],
+      "troubleshooting": [
+        "A browser checkout error does not prove a charge failed. Check the recorded status and your payment confirmation first.",
+        "Refund eligibility and timing require review; Robbie should not promise a refund or mark an invoice paid without a confirmed action."
+      ],
+      "escalation": "Provide the invoice/shoot reference, amount, time and error. Never include full card numbers or security codes.",
+      "links": [
+        {
+          "label": "Open Billing",
+          "url": "/accounting"
+        }
+      ],
+      "sources": [
+        "frontend/src/config/accountingConfig.ts",
+        "frontend/src/pages/ShootDetails.tsx",
+        "backend/app/Http/Controllers/API/ShootPaymentsController.php"
+      ]
+    },
+    {
+      "id": "account-shared",
+      "title": "Find shared shoots and account access",
+      "category": "Account",
+      "roles": [
+        "client",
+        "salesRep",
+        "admin",
+        "superadmin"
+      ],
+      "summary": "Shared visibility depends on the account link and the details that were shared.",
+      "keywords": [
+        "shared",
+        "linked account",
+        "account linking",
+        "team account",
+        "another account",
+        "owner account"
+      ],
+      "steps": [
+        "Sign in to the account that should receive shared access.",
+        "Open Shared when it appears in navigation, or locate the eligible shoot in Shoot History.",
+        "If an expected item is missing, ask the account owner or support to check the active account link and its shared details.",
+        "Staff with account-linking access can review those settings in Accounts before changing them."
+      ],
+      "troubleshooting": [
+        "Sharing some account details does not automatically share every invoice, shoot or download.",
+        "A forwarded URL alone does not grant dashboard account access."
+      ],
+      "escalation": "Provide the owner and linked account emails, the record reference and the specific access expected.",
+      "links": [
+        {
+          "label": "Open Shared",
+          "url": "/shared"
+        }
+      ],
+      "sources": [
+        "frontend/src/components/accounts/AccountLinkingManager.tsx",
+        "frontend/src/components/layout/sidebar/SidebarLinks.tsx",
+        "backend/app/Services/Shoots/ShootAuthorizationSupport.php"
+      ]
+    },
+    {
+      "id": "listing-studio",
+      "title": "Find Listing Studio and check a request",
+      "category": "Delivery",
+      "roles": [
+        "client",
+        "salesRep",
+        "admin",
+        "superadmin",
+        "editing_manager"
+      ],
+      "summary": "Listing Studio availability depends on your account and the services enabled for it.",
+      "keywords": [
+        "listing studio",
+        "subscription",
+        "credits",
+        "virtual staging",
+        "ai editing",
+        "studio request"
+      ],
+      "steps": [
+        "Use the Listing Studio entry when it is available for your account.",
+        "Review the current service catalog, account eligibility and credits shown before submitting a request.",
+        "Select the intended shoot/media and provide the requested instructions in the available form.",
+        "Check the request state after submission and review the returned files when available."
+      ],
+      "troubleshooting": [
+        "Use the current balance and price shown in the dashboard; this guide does not quote fixed prices or promise eligibility.",
+        "If setup, credits, subscription state or a request looks wrong, contact support before submitting a duplicate purchase or request."
+      ],
+      "escalation": "Include the account, request/shoot reference, displayed state and any payment confirmation without sensitive payment details.",
+      "links": [
+        {
+          "label": "Open Dashboard",
+          "url": "/dashboard"
+        }
+      ],
+      "sources": [
+        "frontend/src/components/listing-studio/ListingStudioDialog.tsx",
+        "frontend/src/components/listing-studio/ListingStudioRequestForm.tsx",
+        "frontend/src/utils/listingStudio.ts"
+      ]
+    },
+    {
+      "id": "image-rights",
+      "title": "Check image rights and permitted use",
+      "category": "Support",
+      "roles": [
+        "*"
+      ],
+      "summary": "Refer to the applicable terms and ask support to confirm any unusual use.",
+      "keywords": [
+        "copyright",
+        "who owns",
+        "license",
+        "image rights",
+        "resell",
+        "ownership",
+        "usage rights"
+      ],
+      "steps": [
+        "Open Terms and Conditions and review the terms applicable to your order.",
+        "Identify the shoot and the proposed use, especially resale, transfer to another business or a request for a full copyright release.",
+        "Ask support for written confirmation when the proposed use is unclear."
+      ],
+      "troubleshooting": [
+        "Do not assume downloading a file transfers copyright or permits every use.",
+        "Robbie cannot grant or change an image license in chat."
+      ],
+      "escalation": "Send support the shoot reference and intended use so the team can confirm the applicable terms.",
+      "links": [
+        {
+          "label": "Open Terms and Conditions",
+          "url": "/terms-and-conditions"
+        }
+      ],
+      "sources": [
+        "frontend/src/App.tsx",
+        "backend/app/Support/SupportContact.php"
+      ]
+    },
+    {
+      "id": "rep-accounts",
+      "title": "Find and support your assigned clients",
+      "category": "Sales",
+      "roles": [
+        "salesRep",
+        "admin",
+        "superadmin"
+      ],
+      "summary": "Use Accounts to locate clients and review their details before acting.",
+      "keywords": [
+        "my clients",
+        "assigned clients",
+        "sales rep",
+        "accounts",
+        "client account",
+        "account assignment"
+      ],
+      "steps": [
+        "Open Accounts and search for the client by name or email.",
+        "Review the account details and assignment before changing contact information or booking on their behalf.",
+        "Use the account actions exposed by your permissions; verify the saved result.",
+        "If an expected client is not visible or is assigned incorrectly, ask an administrator to reconcile the assignment."
+      ],
+      "troubleshooting": [
+        "Do not create another client simply because the search returns no result; check spelling, filters and assignment first.",
+        "Do not assume access to one client grants access to all clients or all account settings."
+      ],
+      "escalation": "Send the administrator the client email, intended rep and reason for the requested correction.",
+      "links": [
+        {
+          "label": "Open Accounts",
+          "url": "/accounts"
+        }
+      ],
+      "sources": [
+        "frontend/src/pages/Accounts.tsx",
+        "backend/app/Services/RolePermissionService.php",
+        "backend/app/Http/Controllers/Admin/UserController.php"
+      ]
+    },
+    {
+      "id": "rep-sales",
+      "title": "Review client invoices and commission",
+      "category": "Sales",
+      "roles": [
+        "salesRep",
+        "admin",
+        "superadmin"
+      ],
+      "summary": "Sales-rep accounts use the Sales view and date range to understand client activity. Staff helping a rep should compare the same client and period in their authorized accounting view.",
+      "keywords": [
+        "sales",
+        "commission",
+        "revenue",
+        "my client invoices",
+        "sales totals",
+        "rep earnings"
+      ],
+      "steps": [
+        "Open Sales from the sidebar.",
+        "Check the selected reporting period and the revenue, outstanding invoice and commission figures.",
+        "Review My Client Invoices and open the relevant item for detail.",
+        "For a discrepancy, note the invoice/client and date range before contacting the accounting team."
+      ],
+      "troubleshooting": [
+        "Different date filters or client assignments can change the totals.",
+        "A commission figure is not a promise of payout timing. Ask accounting to review the underlying records."
+      ],
+      "escalation": "Provide the affected invoice, client, date range and expected versus displayed amount.",
+      "links": [
+        {
+          "label": "Open Sales",
+          "url": "/accounting"
+        }
+      ],
+      "sources": [
+        "frontend/src/config/accountingConfig.ts",
+        "frontend/src/pages/Accounting.tsx"
+      ]
+    },
+    {
+      "id": "photographer-schedule",
+      "title": "Find your assigned shoots and schedule",
+      "category": "Photography",
+      "roles": [
+        "photographer",
+        "admin",
+        "superadmin",
+        "editing_manager"
+      ],
+      "summary": "Review assignment, property details and schedule before traveling.",
+      "keywords": [
+        "my shoots",
+        "assigned shoots",
+        "photographer schedule",
+        "today shoots",
+        "appointment details",
+        "shoot address"
+      ],
+      "steps": [
+        "Open Dashboard or Shoot History and locate your assigned shoot.",
+        "Review the property address, scheduled date/time, services and relevant notes.",
+        "Check the service or unit assignment if other photographers are working on the same shoot.",
+        "If the assignment, access or schedule is incorrect, contact operations before changing your plans."
+      ],
+      "troubleshooting": [
+        "A missing shoot may be an assignment or filter issue; do not create a replacement booking.",
+        "Include the timezone when reporting a schedule discrepancy."
+      ],
+      "escalation": "Provide the shoot reference, service/unit, displayed schedule and expected assignment.",
+      "links": [
+        {
+          "label": "Open Shoot History",
+          "url": "/shoot-history"
+        }
+      ],
+      "sources": [
+        "frontend/src/pages/ShootDetails.tsx",
+        "backend/app/Services/Shoots/ShootAuthorizationSupport.php"
+      ]
+    },
+    {
+      "id": "photographer-availability",
+      "title": "Set availability or block time",
+      "category": "Photography",
+      "roles": [
+        "photographer",
+        "salesRep",
+        "admin",
+        "superadmin"
+      ],
+      "summary": "Use Availability for date-specific or repeating schedules.",
+      "keywords": [
+        "availability",
+        "block time",
+        "unavailable",
+        "recurring",
+        "weekly schedule",
+        "working hours",
+        "add schedule"
+      ],
+      "steps": [
+        "Open Availability and select the intended photographer where a selector is available.",
+        "Use Add Schedule for a date range or enable the weekly repeating option and select the relevant days.",
+        "Set the start/end time and Available or Unavailable state, then choose Add Schedule.",
+        "Use the calendar to verify the saved range; use Block Time for an unavailable period when that control is available."
+      ],
+      "troubleshooting": [
+        "Select a specific photographer before adding a schedule where required; the All view is not an individual schedule.",
+        "Check for overlaps, the chosen dates and timezone if the saved schedule does not match your expectation."
+      ],
+      "escalation": "Include photographer, date/range, timezone, expected hours and the exact validation error.",
+      "links": [
+        {
+          "label": "Open Availability",
+          "url": "/availability"
+        }
+      ],
+      "sources": [
+        "frontend/src/pages/Availability.tsx",
+        "frontend/src/components/availability/dialogs/WeeklyScheduleDialog.tsx",
+        "frontend/src/components/availability/dialogs/BlockTimeDialog.tsx"
+      ]
+    },
+    {
+      "id": "photographer-calendar-sync",
+      "title": "Connect or troubleshoot your calendar",
+      "category": "Photography",
+      "roles": [
+        "photographer",
+        "admin",
+        "superadmin",
+        "editing_manager"
+      ],
+      "summary": "Check the calendar connection and compare the dashboard schedule when events differ.",
+      "keywords": [
+        "google calendar",
+        "calendar sync",
+        "outlook",
+        "apple calendar",
+        "ical",
+        "wrong time",
+        "timezone"
+      ],
+      "steps": [
+        "Open Availability and its calendar sync controls.",
+        "Choose the calendar option offered. For Google connection, complete the authorization using the intended account.",
+        "Review the displayed connection status or export result.",
+        "Compare a specific event against the shoot schedule and timezone in the dashboard."
+      ],
+      "troubleshooting": [
+        "A calendar export and a connected calendar are different workflows; do not assume an exported event will keep updating.",
+        "If an event is missing, duplicated or offset, record its time, calendar account and timezone before reconnecting or manually duplicating it."
+      ],
+      "escalation": "Share the shoot reference, calendar provider, dashboard/event times and timezones. Never share OAuth tokens or private calendar URLs.",
+      "links": [
+        {
+          "label": "Open Availability",
+          "url": "/availability"
+        }
+      ],
+      "sources": [
+        "frontend/src/components/availability/CalendarSyncModal.tsx",
+        "frontend/src/hooks/useGoogleCalendarSync.ts",
+        "frontend/src/pages/Availability.tsx"
+      ]
+    },
+    {
+      "id": "photographer-upload",
+      "title": "Upload shoot files and recover failed files",
+      "category": "Photography",
+      "roles": [
+        "photographer",
+        "admin",
+        "superadmin",
+        "editing_manager"
+      ],
+      "summary": "Upload to the correct shoot and service, and use per-file results to recover failures.",
+      "keywords": [
+        "upload",
+        "raw files",
+        "raw photos",
+        "failed upload",
+        "retry files",
+        "large files",
+        "stuck upload"
+      ],
+      "steps": [
+        "Open the assigned shoot and its Media area, then confirm the intended unit/service and raw upload section.",
+        "Choose files and review the displayed size/type limits and classifications.",
+        "Choose Upload Files and keep the page open while transfer and server processing finish.",
+        "Review the accepted and failed file results. Retry the remaining eligible files rather than re-uploading the entire successful batch."
+      ],
+      "troubleshooting": [
+        "A transfer reaching 100% can still be waiting for server checks. Keep the error and result details if it fails.",
+        "Follow the displayed file limit and rejection reason. If the service selection or upload control is missing, ask operations to check the assignment."
+      ],
+      "escalation": "Provide the shoot/unit/service, failing file names and sizes, time, visible error and correlation/request ID if shown. Do not delete accepted media.",
+      "links": [
+        {
+          "label": "Open Shoot History",
+          "url": "/shoot-history"
+        }
+      ],
+      "sources": [
+        "frontend/src/components/shoots/tabs/media/RawUploadSection.tsx",
+        "frontend/src/components/shoots/tabs/media/MediaUploadPanels.tsx",
+        "backend/app/Support/UploadLimit.php"
+      ]
+    },
+    {
+      "id": "photographer-earnings",
+      "title": "Check earnings and a missing payout",
+      "category": "Photography",
+      "roles": [
+        "photographer",
+        "admin",
+        "superadmin"
+      ],
+      "summary": "Photographer accounts use Earnings to review shoot fees and payout status. Staff helping a photographer should confirm the shoot and reporting period being viewed.",
+      "keywords": [
+        "earnings",
+        "payout",
+        "photographer pay",
+        "shoot fee",
+        "missing payout",
+        "pending payouts"
+      ],
+      "steps": [
+        "Open Earnings and verify the reporting period.",
+        "Review My Shoots & Earnings for the relevant shoot, fee and payout dates/status.",
+        "Compare the selected shoot and service with your assignment.",
+        "Contact accounting if the fee, completed work or payout record needs review."
+      ],
+      "troubleshooting": [
+        "A pending payout does not establish a promised payment date.",
+        "Record the displayed figures before requesting a correction; do not change shoot status merely to adjust a payout."
+      ],
+      "escalation": "Include the shoot reference, work/service, expected fee and displayed payout status.",
+      "links": [
+        {
+          "label": "Open Earnings",
+          "url": "/accounting"
+        }
+      ],
+      "sources": [
+        "frontend/src/config/accountingConfig.ts",
+        "frontend/src/pages/Accounting.tsx"
+      ]
+    },
+    {
+      "id": "editor-delivery",
+      "title": "Upload edited files and submit for review",
+      "category": "Editing",
+      "roles": [
+        "editor",
+        "editing_manager",
+        "admin",
+        "superadmin"
+      ],
+      "summary": "Keep edited files tied to the assigned shoot/service and confirm submission separately from transfer.",
+      "keywords": [
+        "edited files",
+        "editing",
+        "upload edited",
+        "submit review",
+        "editor",
+        "my pay"
+      ],
+      "steps": [
+        "Open the assigned shoot and confirm the correct unit and service.",
+        "Use the edited upload area, select files and check classification and displayed limits.",
+        "Use Upload Edited Files or the available upload-and-submit action, then review the per-file result.",
+        "If submission is separate, complete the available submit action and check the resulting workflow state."
+      ],
+      "troubleshooting": [
+        "A completed transfer alone does not prove the work was submitted for review or released to the client.",
+        "Retry only failed files and retain accepted files. Ask the editing manager if assignment or submit controls are missing."
+      ],
+      "escalation": "Provide the shoot/unit/service, file names, upload result and current workflow state.",
+      "links": [
+        {
+          "label": "Open Shoot History",
+          "url": "/shoot-history"
+        }
+      ],
+      "sources": [
+        "frontend/src/components/shoots/tabs/media/EditedUploadSection.tsx",
+        "backend/app/Services/Shoots/ShootAuthorizationSupport.php"
+      ]
+    },
+    {
+      "id": "admin-triage",
+      "title": "Triage a client, rep or photographer support report",
+      "category": "Operations",
+      "roles": [
+        "admin",
+        "superadmin",
+        "editing_manager"
+      ],
+      "summary": "Confirm the role, record and observed failure before choosing the next action.",
+      "keywords": [
+        "triage",
+        "support report",
+        "client issue",
+        "rep issue",
+        "photographer issue",
+        "bug report",
+        "diagnose"
+      ],
+      "steps": [
+        "Record the affected role/account, record reference, page, attempted action, expected result and actual result.",
+        "Check the account's permissions, assignment or sharing before diagnosing a missing record as a data loss.",
+        "Review the relevant shoot Requests, payment state, upload results or call record using the controls available to your role.",
+        "Route billing questions to accounting, schedule/access issues to operations and reproducible technical failures to the technical team with evidence."
+      ],
+      "troubleshooting": [
+        "Reproduce with authorized access and avoid requesting passwords, payment card data or private access codes.",
+        "Do not mark an issue resolved until the affected workflow has been checked. A chat acknowledgement is not a durable general support ticket."
+      ],
+      "escalation": "Provide redacted screenshots, timestamps/timezone, record/request IDs, reproducible steps and impact. Confirm ownership and next update with the team.",
+      "links": [
+        {
+          "label": "Open Shoot History",
+          "url": "/shoot-history"
+        }
+      ],
+      "sources": [
+        "frontend/src/components/shoots/tabs/ShootDetailsIssuesTab.tsx",
+        "backend/app/Services/RolePermissionService.php",
+        "backend/app/Services/ReproAi/Flows/SupportFaqFlow.php"
+      ]
+    },
+    {
+      "id": "admin-upload-recovery",
+      "title": "Investigate a failed media upload",
+      "category": "Operations",
+      "roles": [
+        "admin",
+        "superadmin",
+        "editing_manager"
+      ],
+      "summary": "Separate transfer, validation, scanning and workflow failures before asking for a retry.",
+      "keywords": [
+        "upload diagnostics",
+        "correlation id",
+        "upload attempt",
+        "scan failed",
+        "upload recovery",
+        "processing stuck"
+      ],
+      "steps": [
+        "Collect the shoot/service/unit, uploader, file names and sizes, time and displayed rejection details.",
+        "Compare accepted files and failed files in the upload results before requesting a retry.",
+        "Check assignment, service classification and allowed file limits; keep accepted media intact.",
+        "For repeated server or processing failures, send the correlation/request ID and details to technical support for log and queue review."
+      ],
+      "troubleshooting": [
+        "Do not bypass scanning or repeatedly upload all files to hide a processing failure.",
+        "A missing client download can be a review/release/payment issue even when upload succeeded."
+      ],
+      "escalation": "Technical support should correlate the upload attempt and processing state before proposing a targeted recovery.",
+      "links": [
+        {
+          "label": "Open Shoot History",
+          "url": "/shoot-history"
+        }
+      ],
+      "sources": [
+        "frontend/src/components/shoots/tabs/media/MediaUploadPanels.tsx",
+        "backend/app/Support/UploadLimit.php",
+        "backend/app/Models/ShootUploadAttempt.php"
+      ]
+    },
+    {
+      "id": "admin-calls",
+      "title": "Place or answer an admin call",
+      "category": "Calls",
+      "roles": [
+        "admin",
+        "superadmin"
+      ],
+      "summary": "Choose a person or enter a number and select Call. Browser setup is handled as part of that action.",
+      "keywords": [
+        "call",
+        "dial",
+        "answer",
+        "incoming",
+        "outbound",
+        "microphone",
+        "phone connect",
+        "softphone"
+      ],
+      "steps": [
+        "Open Calls, then People to find a client, rep, photographer or team contact. Search by name, company or phone, narrow by role and use the page controls for more results.",
+        "Choose Call beside the intended person, or New call to enter another number. Review the destination and business line before starting. The normal Call action starts a human call; AI calling is a separate choice.",
+        "Allow the microphone prompt when requested. The app connects the browser and starts the call through one flow. Keep the call open while it is connecting; Cancel stops a start that is still pending.",
+        "For a shared incoming call, choose Answer in browser, or answer your verified phone and press 1 when prompted. The first successful claim receives the caller. Another admin may have answered by the time you open an alert.",
+        "Use the active call controls to mute, hold, use the keypad or end the call. Review the conversation and recap afterward."
+      ],
+      "troubleshooting": [
+        "If the microphone is blocked, allow it in browser site settings. Check Audio & alerts, selected audio devices and network. A failed or cancelled setup must finish before starting another call.",
+        "An incoming alert does not reserve a call or prove it was bridged. If the call was answered elsewhere or ended, return to the inbox.",
+        "A person without a valid callable number cannot be called from their directory row. Confirm their details through the normal account workflow rather than guessing a number."
+      ],
+      "escalation": "Provide the call ID, direction, timestamp, observed state and browser/device. Mask unrelated phone numbers and do not share telephony credentials.",
+      "links": [
+        {
+          "label": "Open Calls",
+          "url": "/calls"
+        }
+      ],
+      "sources": [
+        "frontend/src/pages/voice/CallsPeople.tsx",
+        "frontend/src/pages/voice/workspace/NewCallDialog.tsx",
+        "frontend/src/components/voice/useBrowserPhoneStart.ts",
+        "backend/app/Services/Voice/VoiceIncomingOfferService.php"
+      ]
+    },
+    {
+      "id": "admin-call-notifications",
+      "title": "Troubleshoot browser and phone call alerts",
+      "category": "Calls",
+      "roles": [
+        "admin",
+        "superadmin"
+      ],
+      "summary": "Enable alerts per device and verify your own phone for carrier ringing. These are separate delivery channels.",
+      "keywords": [
+        "notification",
+        "browser alerts",
+        "phone ringing",
+        "mobile alerts",
+        "missed call",
+        "ring",
+        "forwarding"
+      ],
+      "steps": [
+        "Open Calls → Settings → Audio & alerts. Turn on Available for incoming calls when you can answer.",
+        "Under Call alerts on this device, choose a recognizable device name, select Enable this device and allow notifications. Keep Incoming call alerts on my devices enabled.",
+        "Select Send test alert and check for the actual system notification. A push-service acceptance message alone does not confirm that the notification appeared.",
+        "On iPhone or iPad, install the dashboard from Safari’s Share menu → Add to Home Screen, open that app and enable its alerts. Notification support and permissions depend on your browser and device.",
+        "Under Receive calls on your phone, enter your own number with country code, choose Send verification code, enter the received code and select Verify phone. Keep Ring my verified phone enabled. Answer a team call and press 1 to claim it.",
+        "Open an incoming notification to return to Calls, then choose Answer. A notification never answers automatically. Remove devices you no longer use or turn off alerts here when needed."
+      ],
+      "troubleshooting": [
+        "If notifications are blocked, enable them in site/device settings. Check connectivity, system volume, Focus / Do Not Disturb and battery restrictions. Test each browser and phone separately.",
+        "If setup reports a blocker or a queued test never finishes, an administrator must check push configuration and the notification queue worker. Repeatedly enabling the same device is not a delivery guarantee.",
+        "A verified carrier number is distinct from browser push. An expired verification code must be requested again. A busy or unavailable admin is not offered a second call.",
+        "Logging out or losing Calls permission revokes this device’s alerts. Sign in again and enable the device if necessary."
+      ],
+      "escalation": "Record the tested route, device/browser, time, whether the browser was open and which alert or answer step failed.",
+      "links": [
+        {
+          "label": "Open Audio & alerts",
+          "url": "/calls/settings"
+        }
+      ],
+      "sources": [
+        "frontend/src/components/voice/VoiceNotificationSettings.tsx",
+        "frontend/src/services/voicePush.ts",
+        "frontend/public/voice-push-worker.js",
+        "backend/app/Services/Voice/VoiceStaffPhoneService.php",
+        "backend/app/Services/Voice/VoicePushService.php"
+      ]
+    },
+    {
+      "id": "admin-call-transcript",
+      "title": "A call transcript is missing or incomplete",
+      "category": "Calls",
+      "roles": [
+        "admin",
+        "superadmin"
+      ],
+      "summary": "Check the call record and processing state before treating a transcript as final.",
+      "keywords": [
+        "transcript",
+        "transcription",
+        "recording",
+        "summary",
+        "missing transcript",
+        "empty transcript"
+      ],
+      "steps": [
+        "Open the call in Inbox or its recap. Check the transcript status, last saved segment and any processing message. Live, delayed, finalizing, partial and saved states describe different outcomes.",
+        "For an active human call, record caller consent only after the caller agrees, then start recording when offered. Recording and transcription have separate states.",
+        "Use Check status to reload the saved state. Refresh saved transcript rebuilds the display from already received segments; it does not invent missing speech.",
+        "For an ended call with a verified, consented recording, recording recovery may transcribe the saved audio. Check the recovery status and use the offered retry after a recoverable failure. Recording-derived text is labeled separately and cannot establish speaker identity.",
+        "If speech remains missing, report the call ID, timestamp, recording availability and error through Support. Verify the recap against the transcript or source recording before relying on names, commitments or follow-up details."
+      ],
+      "troubleshooting": [
+        "No system can guarantee a transcript for silence, a failed call, missing source audio or a provider failure. A saved transcript can still be incomplete or contain recognition errors.",
+        "Recovery is bounded and requires the saved recording from this call. It cannot recover audio that was never captured, and it does not overwrite original live segments.",
+        "A recap marked out of date may not include later transcript segments. Review the text and confirmed call details before using it."
+      ],
+      "escalation": "Provide call ID, timestamp, completion state, recording availability and processing error; do not promise recovery before checking the source audio.",
+      "links": [
+        {
+          "label": "Open Calls",
+          "url": "/calls"
+        }
+      ],
+      "sources": [
+        "frontend/src/pages/voice/workspace/TranscriptPanel.tsx",
+        "frontend/src/components/voice/BrowserPhoneExtras.tsx",
+        "backend/app/Services/Voice/VoiceTranscriptService.php",
+        "backend/app/Services/Voice/VoiceTranscriptRecoveryService.php"
+      ]
+    },
+    {
+      "id": "robbie-help",
+      "title": "Get useful answers from Robbie",
+      "category": "Support",
+      "roles": [
+        "*"
+      ],
+      "summary": "Ask a specific how-to question and use the linked guide for the next step.",
+      "keywords": [
+        "robbie",
+        "help guides",
+        "knowledge base",
+        "faq",
+        "what can you do",
+        "how to use chat"
+      ],
+      "steps": [
+        "Open Chat With Robbie and use Help & guides to search the knowledge base available to your role.",
+        "Ask a specific question such as how to download photos, recover an upload or check an invoice.",
+        "Follow the answer's guide and page links; describe the exact step and visible error if you are still stuck.",
+        "For account-specific decisions or unsupported issues, use the support contact guidance."
+      ],
+      "troubleshooting": [
+        "For reps, photographers and editors, Robbie support chat provides instructions; it does not perform bookings, payments or file changes.",
+        "A guide explains the workflow and is not live confirmation of a booking, payment, assignment or support ticket."
+      ],
+      "escalation": "If Robbie cannot match your question, include your role, page and error when contacting support. Never share passwords or access credentials.",
+      "links": [
+        {
+          "label": "Open Help & guides",
+          "url": "/chat-with-reproai?tab=help"
+        }
+      ],
+      "sources": [
+        "backend/app/Http/Controllers/API/AiChatController.php",
+        "backend/app/Services/ReproAi/Flows/SupportFaqFlow.php"
+      ]
+    },
+    {
+      "id": "admin-support-inbox",
+      "title": "Assign and resolve a support request",
+      "category": "Support",
+      "roles": [
+        "admin",
+        "superadmin"
+      ],
+      "summary": "Keep ownership, customer replies and private investigation in one support conversation.",
+      "keywords": [
+        "support inbox",
+        "assign request",
+        "triage support",
+        "internal note",
+        "resolve ticket",
+        "support status",
+        "priority",
+        "support request"
+      ],
+      "steps": [
+        "Open Support inbox and find a request using its subject or SUP reference. Narrow by status and use Previous or Next for older requests.",
+        "Choose an available administrator under Assigned to, set Status and choose Normal or Urgent priority.",
+        "Write a Reply to send an update visible to the requester. Select Internal note · admins only for staff investigation that must not appear to the requester.",
+        "Use Waiting when more information is needed and Resolved after checking the affected workflow. A new requester reply to a waiting or resolved case reopens it.",
+        "Use the conversation history and older-message pages to review changes. Dashboard notifications link back to new requests and replies."
+      ],
+      "troubleshooting": [
+        "Triage Support and View Support permissions plus an active admin/superadmin account are required to view other accounts’ requests. A custom denial still applies.",
+        "If another administrator changed the request, refresh it before saving again. Failed replies keep their draft; do not create a duplicate request to retry.",
+        "Internal notes are never a customer response. Use an ordinary Reply to tell the requester what happens next."
+      ],
+      "escalation": "Assign an owner and include reproducible steps, impact and redacted evidence. Avoid promising a response deadline that the business has not approved.",
+      "links": [
+        {
+          "label": "Open Support inbox",
+          "url": "/support"
+        }
+      ],
+      "sources": [
+        "frontend/src/pages/Support.tsx",
+        "backend/app/Services/SupportTicketService.php",
+        "backend/app/Http/Controllers/API/SupportTicketController.php"
+      ]
+    },
+    {
+      "id": "admin-call-followups",
+      "title": "Schedule or change a call follow-up",
+      "category": "Calls",
+      "roles": [
+        "admin",
+        "superadmin"
+      ],
+      "summary": "Use Follow-ups to review the callback queue and its actual status.",
+      "keywords": [
+        "callback",
+        "follow-up",
+        "follow up",
+        "reschedule callback",
+        "cancel callback",
+        "retry callback",
+        "scheduled call",
+        "due now"
+      ],
+      "steps": [
+        "Open Calls → Follow-ups. Choose Due now, Scheduled, Failed, Completed or All.",
+        "Select Schedule callback, review the destination, date/time and reason, then save. A queued callback is not a completed phone conversation.",
+        "Choose Reschedule on an eligible callback to change its next time, or Cancel callback when it should no longer run.",
+        "For a failed callback, inspect the error before using Retry callback if the attempt limit allows it.",
+        "Open View conversation to review the original call when linked. Use the page controls to browse older follow-ups."
+      ],
+      "troubleshooting": [
+        "A callback already in progress cannot safely be scheduled again just to make it run faster. Review its state first to avoid duplicate calls.",
+        "Provider setup, calling hours and attempt limits can defer or stop a callback. A saved schedule does not prove the recipient was reached."
+      ],
+      "escalation": "Send the callback and original call references, chosen time with timezone, status and error to support.",
+      "links": [
+        {
+          "label": "Open Follow-ups",
+          "url": "/calls/follow-ups"
+        }
+      ],
+      "sources": [
+        "frontend/src/pages/voice/CallsFollowUps.tsx",
+        "frontend/src/pages/voice/ScheduleVoiceCallDialog.tsx",
+        "backend/app/Http/Controllers/API/Voice/ScheduledVoiceCallController.php"
+      ]
+    }
+  ]
+}

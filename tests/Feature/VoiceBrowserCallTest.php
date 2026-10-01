@@ -176,6 +176,9 @@ class VoiceBrowserCallTest extends TestCase
         $call = VoiceCall::create(['provider' => 'telnyx', 'direction' => 'INBOUND', 'status' => 'ringing', 'call_control_id' => 'incoming', 'from_phone' => '+12025550200', 'to_phone' => '+12025550100']);
         $this->assertTrue(app(VoiceBrowserCallService::class)->offerInbound($call));
         $this->assertTrue(app(VoiceBrowserCallService::class)->offerInbound($call));
+        $this->assertSame(0, $this->dialCount);
+        $offer = \App\Models\VoiceIncomingOffer::where('voice_call_id', $call->id)->firstOrFail();
+        $this->postJson('/api/voice/incoming-offers/'.$offer->id.'/claim', ['device' => 'browser', 'session_id' => $this->session->id, 'idempotency_key' => 'inbound-answer'])->assertOk();
         $this->assertSame(1, $this->dialCount);
         $this->event('call.hangup', 'origin-1');
         $this->event('call.hangup', 'origin-1');
@@ -206,6 +209,60 @@ class VoiceBrowserCallTest extends TestCase
         $this->event('conference.participant.joined', 'origin-1', ['conference_id' => 'conference-one']);
         $this->assertSame('completed', $call->fresh()->status);
         $this->assertSame(2, $this->dialCount);
+    }
+
+    public function test_final_transcript_after_hangup_is_saved_without_reopening_call(): void
+    {
+        $call = $this->activeHuman();
+        $call->update(['recording_consent_given' => true, 'metadata' => ['browser_transcription_enabled' => true]]);
+        $this->event('call.hangup', 'origin-2');
+        $endedAt = $call->fresh()->ended_at->toIso8601String();
+        $commands = Http::recorded()->count();
+
+        $this->event('call.transcription', 'origin-2', ['transcription_data' => ['transcript' => 'Thank you, goodbye.', 'is_final' => true]]);
+
+        $this->assertDatabaseHas('voice_call_transcripts', ['voice_call_id' => $call->id, 'text' => 'Thank you, goodbye.']);
+        $this->assertStringContainsString('Thank you, goodbye.', $call->fresh()->transcript);
+        $this->assertSame('completed', $call->fresh()->status);
+        $this->assertSame('ended', VoiceBrowserCall::first()->state);
+        $this->assertSame($endedAt, $call->fresh()->ended_at->toIso8601String());
+        $this->assertCount($commands, Http::recorded());
+    }
+
+    public function test_late_transcript_still_requires_consent_and_enabled_capture_and_excludes_private_staff_audio(): void
+    {
+        $call = $this->activeHuman();
+        $call->update(['metadata' => ['browser_transcription_enabled' => true]]);
+        $this->event('call.hangup', 'origin-2');
+        $payload = ['transcription_data' => ['transcript' => 'Do not retain this.', 'is_final' => true]];
+        $this->event('call.transcription', 'origin-2', $payload);
+        $this->assertDatabaseCount('voice_call_transcripts', 0);
+        $call->refresh()->update(['recording_consent_given' => true, 'metadata' => ['browser_transcription_enabled' => false]]);
+        $this->event('call.transcription', 'origin-2', $payload);
+        $this->assertDatabaseCount('voice_call_transcripts', 0);
+        $call->refresh()->update(['metadata' => ['browser_transcription_enabled' => true]]);
+        $this->event('call.transcription', 'origin-1', $payload);
+        $this->event('call.transcription', 'origin-2', ['transcription_data' => ['transcript' => 'Interim only.', 'is_final' => false]]);
+        $this->assertDatabaseCount('voice_call_transcripts', 0);
+        $this->assertNull($call->fresh()->transcript);
+    }
+
+    public function test_transcript_retry_after_persistence_does_not_duplicate_flat_text_or_live_chunks(): void
+    {
+        $call = $this->activeHuman();
+        $call->update(['recording_consent_given' => true, 'metadata' => ['browser_transcription_enabled' => true]]);
+        $handler = app(\App\Services\Voice\TelnyxWebhookHandler::class);
+        $event = ['data' => ['id' => 'retry-final', 'event_type' => 'call.transcription', 'payload' => ['call_control_id' => 'origin-2',
+            'transcription_data' => ['is_final' => true, 'transcript' => 'Keep exactly once.']]]];
+        $handler->process($event, json_encode($event));
+        // A failure after transcript persistence leaves the outer event retryable.
+        \App\Models\VoiceCallEvent::where('idempotency_key', 'telnyx:retry-final')->update(['processed_at' => null]);
+        $handler->process($event, json_encode($event));
+
+        $this->assertDatabaseCount('voice_call_transcripts', 1);
+        $this->assertSame('customer: Keep exactly once.', $call->fresh()->transcript);
+        $this->assertSame(1, data_get($call->fresh()->metadata, 'live.transcript_seq'));
+        $this->assertCount(1, data_get($call->fresh()->metadata, 'live.transcript_chunks'));
     }
 
     public function test_ambiguous_staff_dial_retry_reuses_provider_command_and_never_dials_customer_early(): void

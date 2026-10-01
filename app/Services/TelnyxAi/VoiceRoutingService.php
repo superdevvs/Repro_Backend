@@ -21,6 +21,9 @@ class VoiceRoutingService
 
     public function beginInboundCall(VoiceCall $voiceCall, array $resolved): VoiceCall
     {
+        if (app(\App\Services\Voice\VoiceBrowserCallService::class)->offerInbound($voiceCall)) {
+            return $voiceCall->fresh();
+        }
         if (! $this->numbers->aiEnabledForCall($voiceCall) || ! filled($voiceCall->assistant_id)) {
             return $this->routeWithoutAi($voiceCall, 'voice_ai_unavailable');
         }
@@ -54,6 +57,23 @@ class VoiceRoutingService
         }
 
         return $voiceCall->fresh();
+    }
+
+    /** Continue configured routing after the shared human answer window expires. */
+    public function resumeAfterTeamOffer(VoiceCall $voiceCall): VoiceCall
+    {
+        if ($voiceCall->ended_at) {
+            return $voiceCall;
+        }
+        if ($this->numbers->aiEnabledForCall($voiceCall) && filled($voiceCall->assistant_id)) {
+            if (! $voiceCall->answered_at && ! $this->calls->answer($voiceCall)) {
+                throw new RuntimeException('The inbound call could not be answered.');
+            }
+
+            return $this->startAssistant($voiceCall, 'general_support', ['team_offer_expired' => true], $this->calls->resolveCaller($voiceCall->from_phone));
+        }
+
+        return $this->routeWithoutAi($voiceCall, 'team_offer_expired', true);
     }
 
     public function routeMenuInput(VoiceCall $voiceCall, ?string $digit, array $resolved = []): VoiceCall

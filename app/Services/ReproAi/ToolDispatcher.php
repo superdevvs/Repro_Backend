@@ -26,6 +26,7 @@ class ToolDispatcher
         'handoff_to_staff' => ['HandoffTools', 'handoffToStaff'],
         'transfer_to_staff' => ['HandoffTools', 'transferToStaff'],
         'set_recording_consent' => ['RecordingConsentTools', 'setConsent'],
+        'search_support_knowledge' => ['KnowledgeTools', 'search'],
     ];
 
     public function dispatch(string $toolName, array $params, array $context = []): array

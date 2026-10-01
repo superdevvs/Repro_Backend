@@ -976,6 +976,9 @@ class DashboardController extends Controller
             $activityLogs = Cache::remember($cacheKey, now()->addSeconds(15), function () use ($role, $userId) {
                 return $this->getActivityLogsForRole($role, $userId);
             });
+            // Recheck support visibility on every request, including permission revocation.
+            $activityLogs = $activityLogs->concat(app(\App\Services\SupportTicketService::class)->notifications($user))
+                ->sortByDesc(fn (array $item) => strtotime((string) ($item['timestamp'] ?? '')) ?: 0)->values();
 
             $includeCalls = in_array($role, ['admin', 'superadmin', 'editing_manager', 'salesrep'], true);
             $unreadCounts = app(UnreadCountService::class)->forUser($userId, includeCalls: $includeCalls);

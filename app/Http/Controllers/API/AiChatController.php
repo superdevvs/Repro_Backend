@@ -11,6 +11,8 @@ use App\Services\ReproAi\LlmClient;
 use App\Services\ReproAi\IntentScorer;
 use App\Services\ReproAi\IntentPolicy;
 use App\Services\ReproAi\ShootOperatorService;
+use App\Services\ReproAi\SupportKnowledgeBase;
+use App\Services\ReproAi\Flows\SupportFaqFlow;
 use App\Services\RobbieConfigService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -66,8 +68,9 @@ class AiChatController extends Controller
 
             $validated = $request->validate([
                 'sessionId' => ['nullable', 'string'],
-                'message'   => ['required', 'string'],
+                'message'   => ['required', 'string', 'max:20000'],
                 'context'   => ['nullable', 'array'],
+                'context.knowledge_article_id' => ['nullable', 'string', 'max:100'],
             ]);
 
             $clientContext = $validated['context'] ?? [];
@@ -125,6 +128,18 @@ class AiChatController extends Controller
                 });
             } catch (\Exception $e) {
                 \App\Services\ApiErrorResponder::log($e, 'error');
+            }
+
+            // Knowledge questions are answered before any transactional operator.
+            // Newly supported staff roles get guidance only, regardless of forged
+            // context/intent or session state. Their access must not widen LLM tools.
+            $knowledge = app(SupportKnowledgeBase::class);
+            if ($knowledge->isHelpOnly($user)
+                || $knowledge->isSupportRequest($validated['message'], $clientContext)
+                || $session->intent === 'support_faq'
+                || in_array($session->step, ['escalate', 'create_ticket'], true)) {
+                $supportResult = app(SupportFaqFlow::class)->handle($session, $validated['message'], $clientContext);
+                return response()->json($this->persistAssistantResult($session, $supportResult));
             }
 
             // Check if we're already in a rule-based flow (session has a step set)
@@ -675,6 +690,9 @@ class AiChatController extends Controller
         $user = $request->user();
         if (!$user) {
             return response()->json(['message' => 'Unauthorized'], 401);
+        }
+        if (app(SupportKnowledgeBase::class)->isHelpOnly($user)) {
+            return response()->json(['message' => 'Robbie support chat provides guidance for your role. Use the dashboard action or contact support.'], 403);
         }
 
         $validated = $request->validate([

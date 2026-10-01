@@ -25,7 +25,7 @@ class UploadAlbumMediaAction
     {
         $validated = $request->validate([
             'files' => 'required|array|min:1',
-            'files.*' => 'required|file|max:1048576|mimes:jpeg,jpg,png,gif,mp4,mov,avi,raw,cr2,cr3,nef,arw,dng,raf,rw2,orf,pef,srw,tiff,bmp,heic,heif,zip',
+            'files.*' => 'required|file|max:10485760|mimes:jpeg,jpg,png,gif,mp4,mov,avi,raw,cr2,cr3,nef,arw,dng,raf,rw2,orf,pef,srw,tiff,bmp,heic,heif,zip',
             'album_id' => 'nullable|exists:shoot_media_albums,id',
             'shoot_service_id' => 'nullable|integer|exists:shoot_service,id',
             'type' => 'required|in:raw,edited,video,iguide,other',

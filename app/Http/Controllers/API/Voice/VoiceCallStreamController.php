@@ -22,14 +22,15 @@ class VoiceCallStreamController extends Controller
     // Bounded so the connection self-terminates; the EventSource client
     // reconnects automatically, re-emitting a fresh snapshot.
     private const MAX_SECONDS = 290;
+
     private const HEARTBEAT_SECONDS = 10;
+
     private const POLL_MICROSECONDS = 750000; // 0.75s
 
     public function __construct(
         private readonly VoiceLiveStreamService $liveStream,
         private readonly BusinessScheduleService $schedule,
-    ) {
-    }
+    ) {}
 
     public function __invoke(Request $request, VoiceCall $call): StreamedResponse
     {
@@ -41,6 +42,7 @@ class VoiceCallStreamController extends Controller
 
             if ($once || $this->isClosed($call->fresh())) {
                 $this->emitClosing($call->fresh());
+
                 return;
             }
 
@@ -53,7 +55,7 @@ class VoiceCallStreamController extends Controller
                 }
 
                 $fresh = $call->fresh();
-                if (!$fresh || $this->isClosed($fresh)) {
+                if (! $fresh || $this->isClosed($fresh)) {
                     $this->emitClosing($fresh ?? $call);
                     break;
                 }
@@ -100,6 +102,13 @@ class VoiceCallStreamController extends Controller
     private function emitClosing(VoiceCall $call): void
     {
         $snapshot = $this->liveStream->snapshot($call);
+        // The last carrier chunks can arrive between heartbeat snapshots and
+        // hangup. Flush current transcript state before the client closes SSE.
+        $this->event('transcript', $snapshot['transcript']);
+        $this->event('realtime', $snapshot['realtime']);
+        if ($snapshot['insights'] !== null) {
+            $this->event('insights', $snapshot['insights']);
+        }
         if ($snapshot['final_summary'] !== null) {
             $this->event('final_summary', $snapshot['final_summary']);
         }
@@ -114,8 +123,8 @@ class VoiceCallStreamController extends Controller
 
     private function event(string $event, mixed $data): void
     {
-        echo 'event: ' . $event . "\n";
-        echo 'data: ' . json_encode($data, JSON_UNESCAPED_SLASHES) . "\n\n";
+        echo 'event: '.$event."\n";
+        echo 'data: '.json_encode($data, JSON_UNESCAPED_SLASHES)."\n\n";
     }
 
     private function flush(): void

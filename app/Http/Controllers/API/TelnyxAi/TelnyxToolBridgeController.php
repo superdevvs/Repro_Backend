@@ -111,7 +111,9 @@ class TelnyxToolBridgeController extends Controller
     {
         $started = microtime(true);
         $existing = ToolBridgeInvocation::query()->where('idempotency_key', $idempotencyKey)->first();
-        if ($existing && $existing->response_json) {
+        // Knowledge is read-only and permission-scoped. Recompute it on provider
+        // retries so a revoked verification/role/permission cannot replay a guide.
+        if ($existing && $existing->response_json && $tool !== 'search_support_knowledge') {
             return response()->json($existing->response_json, 200);
         }
 
@@ -125,7 +127,10 @@ class TelnyxToolBridgeController extends Controller
             'call_control_id' => $context['call_control_id'] ?? null,
             'idempotency_key' => $idempotencyKey,
             'status' => 'received',
-            'request_json' => $this->redactor->redact(['params' => $params, 'context' => $context]),
+            'request_json' => $this->redactor->redact([
+                'params' => $tool === 'search_support_knowledge' ? ['query' => '<redacted:support-query>'] : $params,
+                'context' => $context,
+            ]),
             'metadata' => ['redacted' => true, 'redaction_version' => '2', 'trusted_context' => true],
         ]);
 

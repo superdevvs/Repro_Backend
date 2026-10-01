@@ -17,6 +17,7 @@ class ToolBridgeRegistry
         'handoff_to_staff',
         'transfer_to_staff',
         'set_recording_consent',
+        'search_support_knowledge',
     ];
 
     public const CONFIRMATION_GATED = [
@@ -50,7 +51,7 @@ class ToolBridgeRegistry
 
     public function requiresVerified(string $tool): bool
     {
-        if (in_array($tool, ['verify_caller', 'handoff_to_staff', 'set_recording_consent'], true)) {
+        if (in_array($tool, ['verify_caller', 'handoff_to_staff', 'set_recording_consent', 'search_support_knowledge'], true)) {
             return false;
         }
 
@@ -95,6 +96,12 @@ class ToolBridgeRegistry
         $confirmation = $string('Opaque token returned by the previous requires_confirmation response.');
 
         return [
+            'search_support_knowledge' => [
+                'description' => 'Find reviewed dashboard how-to and troubleshooting guides. Public help is available before verification; role-specific guides require a verified caller and server-resolved account role. This read-only tool does not create a ticket, send a message or change account records.',
+                'schema' => $schema([
+                    'query' => ['type' => 'string', 'maxLength' => 300, 'description' => 'The support question, without passwords, payment details or property access codes.'],
+                ], ['query']),
+            ],
             'verify_caller' => [
                 'description' => 'Send an SMS verification code or verify a code spoken by the caller.',
                 'schema' => $schema([
@@ -192,6 +199,7 @@ class ToolBridgeRegistry
     public function validationRules(string $tool): array
     {
         return match ($tool) {
+            'search_support_knowledge' => ['query' => ['required', 'string', 'max:300']],
             'verify_caller' => [
                 'request_otp' => ['nullable', 'boolean'],
                 'otp_code' => ['nullable', 'string', 'max:32'],

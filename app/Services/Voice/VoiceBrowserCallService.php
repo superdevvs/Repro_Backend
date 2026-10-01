@@ -8,6 +8,8 @@ use App\Models\VoiceBrowserLeg;
 use App\Models\VoiceBrowserSession;
 use App\Models\VoiceCall;
 use App\Models\VoiceCallTranscript;
+use App\Models\VoiceIncomingOffer;
+use App\Models\VoicePhoneOffer;
 use App\Services\TelnyxAi\TelnyxVoiceCallService;
 use App\Services\TelnyxAi\VoiceNumberSettingsResolver;
 use App\Services\TelnyxAi\VoiceRoutingService;
@@ -55,7 +57,8 @@ class VoiceBrowserCallService
                 'transcription_active' => (bool) ($call->metadata['browser_transcription_enabled'] ?? false),
                 'transcription_pending' => (bool) ($call->metadata['browser_transcription_pending'] ?? false)],
             'capabilities' => [
-                'can_takeover' => $operate && $this->callIsLive($call) && $call->status !== 'human_handoff' && filled($call->call_control_id) && ! $this->active($call),
+                'can_takeover' => $operate && $this->callIsLive($call) && $call->status !== 'human_handoff' && filled($call->call_control_id) && ! $this->active($call)
+                    && ! VoiceIncomingOffer::where('voice_call_id', $call->id)->where('status', 'waiting')->exists(),
                 'can_monitor' => (bool) ($supervise && $active),
                 'can_whisper' => (bool) ($supervise && $active),
                 'can_barge' => (bool) ($supervise && $active),
@@ -77,7 +80,8 @@ class VoiceBrowserCallService
         $this->assertOutboundAllowed($to);
         $hash = $this->hash($data);
 
-        return Cache::lock('voice-browser-device:'.$session->id, 60)->block(5, function () use ($user, $session, $data, $to, $from, $hash): VoiceCall {
+        return Cache::lock('voice-browser-user:'.$user->id, 60)->block(5, fn () => Cache::lock('voice-browser-device:'.$session->id, 60)->block(5, function () use ($user, $session, $data, $to, $from, $hash): VoiceCall {
+            abort_if($this->cancelledAttempt($user->id, $data['idempotency_key']), 409, 'This call attempt was cancelled. Start a new call to try again.');
             $existing = $this->replay($user, $data['idempotency_key'], $hash);
             if ($existing) {
                 $this->kickoff($existing);
@@ -103,7 +107,7 @@ class VoiceBrowserCallService
             $this->kickoff($browser);
 
             return $browser->voiceCall->fresh();
-        });
+        }));
     }
 
     public function takeover(VoiceCall $call, User $user, VoiceBrowserSession $session, array $data): VoiceBrowserCall
@@ -112,7 +116,8 @@ class VoiceBrowserCallService
         abort_if(! $this->callIsLive($call) || $call->status === 'human_handoff' || ! $call->call_control_id, 409, 'This call is no longer available for takeover.');
         $hash = $this->hash(array_merge($data, ['voice_call_id' => $call->id]));
 
-        return Cache::lock('voice-browser-device:'.$session->id, 60)->block(5, fn () => Cache::lock('voice-browser-import:'.$call->id, 60)->block(5, function () use ($call, $user, $session, $data, $hash): VoiceBrowserCall {
+        return Cache::lock('voice-browser-user:'.$user->id, 60)->block(5, fn () => Cache::lock('voice-browser-device:'.$session->id, 60)->block(5, fn () => Cache::lock('voice-browser-import:'.$call->id, 60)->block(5, function () use ($call, $user, $session, $data, $hash): VoiceBrowserCall {
+            abort_if(VoiceIncomingOffer::where('voice_call_id', $call->id)->where('status', 'waiting')->exists(), 409, 'Answer this call from its shared incoming offer.');
             $existing = $this->replay($user, $data['idempotency_key'], $hash);
             if ($existing) {
                 $this->kickoff($existing);
@@ -132,55 +137,61 @@ class VoiceBrowserCallService
             $this->kickoff($browser);
 
             return $browser->fresh();
-        }));
+        })));
     }
 
-    /** First eligible available device; provider answer/timeout decides the offer. */
+    /** Every eligible admin sees one durable offer; only one claim creates media. */
     public function offerInbound(VoiceCall $call): bool
     {
-        return Cache::lock('voice-browser-import:'.$call->id, 60)->block(5, fn () => $this->offerInboundLocked($call));
+        return Cache::lock('voice-browser-import:'.$call->id, 60)->block(5, fn () => app(VoiceIncomingOfferService::class)->create($call));
     }
 
-    private function offerInboundLocked(VoiceCall $call): bool
+    public function createClaimedIncoming(VoiceCall $call, User $user, ?VoiceBrowserSession $session, string $offerId, ?VoicePhoneOffer $phone = null): VoiceBrowserCall
     {
-        if (! config('services.telnyx.voice.browser_enabled') || ! $this->callIsLive($call) || ! $call->call_control_id) {
-            return false;
+        abort_if($this->active($call), 409, 'A staff connection is already in progress.');
+        $browser = VoiceBrowserCall::create(['voice_call_id' => $call->id, 'owner_id' => $user->id, 'session_id' => $session?->id,
+            'mode' => 'human_inbound', 'idempotency_key' => 'incoming:'.$offerId, 'request_hash' => $this->hash(['offer' => $offerId]),
+            'metadata' => ['incoming_offer_id' => $offerId]]);
+        $agent = $this->newLeg($browser, 'agent', $phone?->destination ?? $this->sip($session), $session, $phone ? 'phone' : null);
+        if ($phone) {
+            $agent->update(['user_id' => $user->id, 'call_control_id' => $phone->call_control_id, 'answered_at' => now(), 'state' => 'answered']);
         }
-        if ($this->active($call)) {
-            return true;
-        }
-        $candidates = VoiceBrowserSession::query()->where('status', 'ready')->where('registered', true)->whereNull('revoked_at')
-            ->where('expires_at', '>', now())->where('heartbeat_at', '>=', now()->subSeconds(60))->with('user')->orderBy('heartbeat_at', 'desc')->get();
-        foreach ($candidates as $session) {
-            if (! $this->sessions->canOperate($session->user)
-                || ! app(\App\Services\RolePermissionService::class)->userCan($session->user, 'voice-calls', 'view')) {
-                continue;
+        $customer = $this->newLeg($browser, 'customer', $this->remote($call));
+        $customer->update(['call_control_id' => $call->call_control_id, 'answered_at' => $call->answered_at]);
+
+        return $browser;
+    }
+
+    public function resumeConnection(VoiceBrowserCall $browser): void
+    {
+        $this->kickoff($browser);
+    }
+
+    public function cancelOutbound(User $user, string $key): void
+    {
+        abort_unless($this->sessions->canOperate($user), 403);
+        LockedWrite::run(fn () => DB::table('voice_cancelled_attempts')->insertOrIgnore(['user_id' => $user->id, 'idempotency_key' => $key, 'created_at' => now(), 'updated_at' => now()]));
+        Cache::lock('voice-browser-user:'.$user->id, 60)->block(5, function () use ($user, $key): void {
+            $browser = VoiceBrowserCall::where('owner_id', $user->id)->where('idempotency_key', $key)->where('mode', 'human_outbound')->first();
+            if ($browser && ! in_array($browser->state, self::TERMINAL, true)) {
+                Cache::lock('voice-browser-call:'.$browser->id, 90)->block(5, fn () => $this->end($browser));
             }
-            $offered = Cache::lock('voice-browser-device:'.$session->id, 60)->block(5, function () use ($call, $session): bool {
-                if ($this->active($call)) {
-                    return true;
-                }
-                if ($this->busy($session)) {
-                    return false;
-                }
-                $browser = LockedWrite::run(fn () => DB::transaction(function () use ($call, $session): VoiceBrowserCall {
-                    $browser = $this->createBrowser($call, $session, 'human_inbound', 'inbound:'.$call->id, $this->hash(['call' => $call->id]));
-                    $this->newLeg($browser, 'agent', $this->sip($session), $session);
-                    $customer = $this->newLeg($browser, 'customer', $this->remote($call));
-                    $customer->update(['call_control_id' => $call->call_control_id]);
+        });
+    }
 
-                    return $browser;
-                }));
-                $this->kickoff($browser);
+    public function withdrawIncoming(VoiceBrowserCall $browser, User $user): void
+    {
+        Cache::lock('voice-browser-call:'.$browser->id, 90)->block(5, function () use ($browser, $user): void {
+            $browser->refresh();
+            abort_unless($browser->owner_id === $user->id && $browser->mode === 'human_inbound', 403);
+            abort_if($browser->legs()->where('role', 'customer')->whereNotNull('joined_at')->exists(), 409, 'The caller is connected. Use End call instead.');
+            $this->agentUnavailable($browser, 'The staff member cancelled before joining the caller.');
+        });
+    }
 
-                return true;
-            });
-            if ($offered) {
-                return true;
-            }
-        }
-
-        return false;
+    private function cancelledAttempt(int $userId, string $key): bool
+    {
+        return DB::table('voice_cancelled_attempts')->where('user_id', $userId)->where('idempotency_key', $key)->exists();
     }
 
     public function supervise(VoiceCall $call, User $user, VoiceBrowserSession $session, string $mode, string $key): void
@@ -188,7 +199,7 @@ class VoiceBrowserCallService
         $this->assertSession($session, $user, true);
         $browser = $this->active($call);
         abort_unless($browser && $browser->state === 'active' && $browser->conference_id, 409, 'A human conference must be connected before monitoring.');
-        Cache::lock('voice-browser-device:'.$session->id, 60)->block(5, function () use ($browser, $session, $user, $mode, $key): void {
+        Cache::lock('voice-browser-user:'.$user->id, 60)->block(5, fn () => Cache::lock('voice-browser-device:'.$session->id, 60)->block(5, function () use ($browser, $session, $user, $mode, $key): void {
             $replay = $browser->legs()->where('user_id', $user->id)->where('operation_key', $key)->first();
             if ($replay) {
                 abort_if($replay->mode !== $mode || $replay->session_id !== $session->id, 409, 'This request key was used for different supervision details.');
@@ -206,7 +217,7 @@ class VoiceBrowserCallService
             $leg = LockedWrite::run(fn () => $this->newLeg($browser, 'supervisor', $this->sip($session), $session, $mode));
             $leg->update(['operation_key' => $key]);
             $this->dialLeg($leg);
-        });
+        }));
     }
 
     public function changeSupervision(VoiceCall $call, User $user, string $mode): void
@@ -316,6 +327,8 @@ class VoiceBrowserCallService
     /** Safety net for a missing terminal webhook or a closed browser tab. */
     public function reconcile(): int
     {
+        app(VoiceTranscriptRecoveryService::class)->reconcile();
+        app(VoiceIncomingOfferService::class)->reconcile();
         $count = 0;
         $browsers = VoiceBrowserCall::query()->whereNotIn('state', self::TERMINAL)->oldest()->limit(100)->get();
         foreach ($browsers as $browser) {
@@ -326,7 +339,8 @@ class VoiceBrowserCallService
                     return;
                 }
                 $session = $agent->session;
-                $stale = ! $session || $session->revoked_at || $session->expires_at->isPast()
+                $stale = $agent->mode === 'phone' ? ! ($phoneUser = User::find($agent->user_id)) || ! $this->sessions->canOperate($phoneUser)
+                    : ! $session || $session->revoked_at || $session->expires_at->isPast()
                     || ! $this->sessions->canOperate($session->user)
                     || ($session->heartbeat_at ?? $session->created_at)->lt(now()->subMinutes(2));
                 foreach ($browser->legs()->where('role', 'supervisor')->whereNull('ended_at')->with('session.user')->get() as $supervisor) {
@@ -377,13 +391,27 @@ class VoiceBrowserCallService
     /** Called only after the outer webhook handler verifies Telnyx's signature. */
     public function handleWebhook(array $envelope): ?array
     {
+        if ($phone = app(VoiceIncomingOfferService::class)->handlePhoneWebhook($envelope)) {
+            return $phone;
+        }
         $data = $envelope['data'] ?? $envelope;
         $type = (string) ($data['event_type'] ?? '');
+        $eventId = (string) ($data['id'] ?? $envelope['id'] ?? hash('sha256', json_encode($data)));
         $payload = $data['payload'] ?? $data;
         $control = (string) ($payload['call_control_id'] ?? $payload['participant_call_control_id'] ?? '');
+        if (in_array($type, ['call.hangup', 'call.ended', 'call.failed', 'call.no_answer'], true) && $control !== '') {
+            $endedCaller = VoiceCall::where('call_control_id', $control)->first();
+            if ($endedCaller) {
+                app(VoiceIncomingOfferService::class)->cancelForCall($endedCaller);
+            }
+        }
         $leg = $control !== '' ? VoiceBrowserLeg::query()->where(fn ($q) => $q->where('call_control_id', $control)->orWhere('browser_call_control_id', $control))
-            ->where(function ($q): void {
-                $q->where('role', '!=', 'customer')->orWhereHas('browserCall', fn ($b) => $b->whereNotIn('state', self::TERMINAL));
+            ->where(function ($q) use ($type): void {
+                // Final audio events may be delivered after the customer hung up.
+                // Only transcription may resolve a completed customer leg here.
+                if ($type !== 'call.transcription') {
+                    $q->where('role', '!=', 'customer')->orWhereHas('browserCall', fn ($b) => $b->whereNotIn('state', self::TERMINAL));
+                }
             })->latest()->first() : null;
         $credentialConnection = (string) config('services.telnyx.voice.credential_connection_id', '');
         $isBrowserPeer = $credentialConnection !== '' && (string) ($payload['connection_id'] ?? '') === $credentialConnection;
@@ -441,7 +469,7 @@ class VoiceBrowserCallService
             return null;
         }
 
-        return Cache::lock('voice-browser-call:'.$browser->id, 90)->block(5, function () use ($leg, $type, $payload, $browser): array {
+        return Cache::lock('voice-browser-call:'.$browser->id, 90)->block(5, function () use ($leg, $type, $eventId, $payload, $browser): array {
             $leg->refresh();
             $browser->refresh();
             $call = $browser->voiceCall->fresh();
@@ -449,7 +477,10 @@ class VoiceBrowserCallService
                 $call->update(['call_control_id' => $leg->call_control_id]);
             }
             try {
-                if ($type === 'conference.participant.left' && ! $leg->ended_at) {
+                if ($type === 'call.transcription' && $leg->role === 'customer') {
+                    // Persist a delayed final chunk without reviving call/media state.
+                    $this->transcription($call, $payload, $eventId);
+                } elseif ($type === 'conference.participant.left' && ! $leg->ended_at) {
                     $leg->update(['state' => 'left']);
                     // Leaving a conference does not end the carrier call leg.
                     // A transferring customer must remain alive until the
@@ -489,6 +520,9 @@ class VoiceBrowserCallService
                     $this->agentUnavailable($browser, 'The call conference ended.');
                 } elseif ($leg->ended_at || $call->ended_at || in_array($browser->state, self::TERMINAL, true)) {
                     // Late answers and joins must never revive ended legs.
+                    if ($leg->role !== 'customer' && $leg->call_control_id && in_array($type, ['call.initiated', 'call.answered'], true)) {
+                        $this->gateway->command('late-hangup:'.$leg->id, '/calls/'.rawurlencode($leg->call_control_id).'/actions/hangup');
+                    }
                 } elseif ($type === 'call.answered') {
                     $leg->update(['answered_at' => $leg->answered_at ?? now(), 'state' => $leg->joined_at ? 'joined' : 'answered']);
                     if ($leg->role === 'agent') {
@@ -543,8 +577,6 @@ class VoiceBrowserCallService
                     } else {
                         $browser->update(['state' => 'active', 'metadata' => array_merge($browser->metadata ?? [], ['error' => 'The transfer was not completed.'])]);
                     }
-                } elseif ($type === 'call.transcription' && $leg->role === 'customer') {
-                    $this->transcription($call, $payload);
                 }
             } catch (\Throwable $e) {
                 $browser->refresh()->update(['metadata' => array_merge($browser->metadata ?? [], [
@@ -619,7 +651,9 @@ class VoiceBrowserCallService
         if ($browser->conference_id) {
             return;
         }
-        if (! $agent->session || $agent->session->revoked_at || ! $this->sessions->canOperate($agent->session->user)) {
+        $phoneUser = $agent->mode === 'phone' ? User::find($agent->user_id) : null;
+        if ($agent->mode === 'phone' ? (! $phoneUser || ! $this->sessions->canOperate($phoneUser))
+            : (! $agent->session || $agent->session->revoked_at || ! $this->sessions->canOperate($agent->session->user))) {
             $this->agentUnavailable($browser, 'The staff phone is no longer authorized.');
 
             return;
@@ -644,6 +678,11 @@ class VoiceBrowserCallService
         }
         $customer = $browser->legs()->where('role', 'customer')->firstOrFail();
         $call = $browser->voiceCall->fresh();
+        if ($browser->mode === 'human_outbound' && $this->cancelledAttempt($browser->owner_id, $browser->idempotency_key)) {
+            $this->end($browser);
+
+            return;
+        }
         if ($call->ended_at || $customer->ended_at || $customer->joined_at) {
             return;
         }
@@ -721,7 +760,7 @@ class VoiceBrowserCallService
             }
             $call->update(['status' => 'cancelled', 'ended_at' => now(), 'disposition' => 'staff_unavailable', 'duration_seconds' => 0]);
         } elseif ($browser->mode === 'human_inbound' && ! $call->ended_at) {
-            app(VoiceRoutingService::class)->routeWithoutAi($call, 'browser_staff_unavailable', true);
+            app(VoiceRoutingService::class)->resumeAfterTeamOffer($call);
         } elseif ($browser->mode === 'takeover' && ! $call->ended_at && ! empty($browser->metadata['ai_stopped'])) {
             $destination = $this->numbers->normalize((string) ($this->settings->all()['support_handoff_number'] ?? ''));
             if ($destination && $destination !== $this->local($call)) {
@@ -774,7 +813,7 @@ class VoiceBrowserCallService
         }
     }
 
-    private function transcription(VoiceCall $call, array $payload): void
+    private function transcription(VoiceCall $call, array $payload, string $eventId): void
     {
         if (! $call->recording_consent_given || ! ($call->metadata['browser_transcription_enabled'] ?? false)) {
             return;
@@ -788,17 +827,27 @@ class VoiceBrowserCallService
             return;
         }
         $speaker = ($payload['transcription_track'] ?? $transcription['track'] ?? 'inbound') === 'outbound' ? 'agent' : 'customer';
-        $metadata = $call->metadata ?? [];
-        $live = $metadata['live'] ?? [];
-        $seq = (int) ($live['transcript_seq'] ?? 0) + 1;
-        $chunks = $live['transcript_chunks'] ?? [];
-        $chunks[] = ['seq' => $seq, 'text' => $text, 'speaker' => $speaker, 'ts' => now()->toIso8601String(), 'telnyx_confidence' => $transcription['confidence'] ?? null];
-        $metadata['live'] = array_merge($live, ['transcript_seq' => $seq, 'transcript_chunks' => array_slice($chunks, -400)]);
-        $call->update(['transcript' => trim(($call->transcript ?? '')."\n".$speaker.': '.$text), 'live_transcript_preview' => $text, 'metadata' => $metadata]);
-        VoiceCallTranscript::query()->create([
-            'voice_call_id' => $call->id, 'speaker' => $speaker, 'text' => $text,
-            'transcript_type' => 'final', 'occurred_at' => now(), 'confidence' => $transcription['confidence'] ?? null,
-        ]);
+        // The outer webhook may fail after this method returns. Persist the
+        // deduplication marker and both display projections together so replay
+        // cannot append twice, or leave the row and flat transcript inconsistent.
+        $stored = Cache::lock('voice-transcript:'.$call->id, 30)->block(3, fn () => LockedWrite::run(fn () => DB::transaction(function () use ($call, $eventId, $speaker, $text, $transcription): bool {
+            $call->refresh();
+            if (! $call->recording_consent_given || ! ($call->metadata['browser_transcription_enabled'] ?? false)) {
+                return false;
+            }
+            $providerId = 'telnyx:'.$eventId;
+            $row = VoiceCallTranscript::query()->firstOrCreate([
+                'voice_call_id' => $call->id, 'provider_message_id' => $providerId,
+            ], ['speaker' => $speaker, 'text' => $text,
+                'transcript_type' => 'final', 'occurred_at' => now(), 'confidence' => $transcription['confidence'] ?? null,
+            ]);
+            app(\App\Services\TelnyxAi\VoiceLiveStreamService::class)->projectSavedTranscript($call);
+
+            return $row->wasRecentlyCreated;
+        }), 'voice.browser.transcription'));
+        if (! $stored) {
+            return;
+        }
         try {
             app(\App\Services\TelnyxAi\VoiceIntelligenceService::class)->onRealtimeUpdate($call->fresh(), ['text' => $text, 'confidence' => $transcription['confidence'] ?? null]);
         } catch (\Throwable $e) {
@@ -904,7 +953,8 @@ class VoiceBrowserCallService
 
     private function assertFree(VoiceBrowserSession $session): void
     {
-        abort_if($this->busy($session), 409, 'This browser phone is already handling a call.');
+        abort_if($this->busy($session) || VoiceBrowserCall::where('owner_id', $session->user_id)->whereNotIn('state', self::TERMINAL)->exists()
+            || VoiceBrowserLeg::where('user_id', $session->user_id)->whereNull('ended_at')->whereHas('browserCall', fn ($q) => $q->whereNotIn('state', self::TERMINAL))->exists(), 409, 'You are already handling a call on another device.');
     }
 
     private function sip(VoiceBrowserSession $session): string

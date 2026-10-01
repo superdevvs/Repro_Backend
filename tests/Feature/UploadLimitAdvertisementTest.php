@@ -12,7 +12,7 @@ class UploadLimitAdvertisementTest extends TestCase
 {
     use RefreshDatabase;
 
-    public function test_upload_payload_advertises_the_configured_one_gib_per_file_limit(): void
+    public function test_upload_payload_advertises_the_configured_ten_gib_per_file_limit(): void
     {
         $admin = User::factory()->admin()->create();
         $shoot = Shoot::factory()->create([
@@ -23,11 +23,11 @@ class UploadLimitAdvertisementTest extends TestCase
         Sanctum::actingAs($admin);
 
         $maxBytes = (int) config('uploads.max_bytes');
-        $this->assertSame(1048576 * 1024, $maxBytes);
+        $this->assertSame(10737418240, $maxBytes);
 
         $this->postJson("/api/shoots/{$shoot->id}/upload", ['upload_type' => 'raw'])
             ->assertStatus(422)
             ->assertJsonPath('upload_limits.per_file_bytes', $maxBytes)
-            ->assertJsonPath('upload_limits.per_file', '1GB');
+            ->assertJsonPath('upload_limits.per_file', '10GB');
     }
 }

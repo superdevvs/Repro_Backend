@@ -52,6 +52,20 @@ return [
             'description' => 'Primary pages, route access, and top-level tools.',
             'items' => [
                 [
+                    'resource' => 'support',
+                    'action' => 'view',
+                    'label' => 'Support Requests',
+                    'description' => 'Create and follow your own support requests.',
+                    'default_roles' => ['superadmin', 'admin', 'editing_manager', 'salesRep', 'photographer', 'editor', 'client'],
+                ],
+                [
+                    'resource' => 'support',
+                    'action' => 'manage',
+                    'label' => 'Triage Support',
+                    'description' => 'Administrators can assign, reply to and resolve support requests across accounts.',
+                    'default_roles' => ['superadmin', 'admin'],
+                ],
+                [
                     'resource' => 'dashboard',
                     'action' => 'view',
                     'label' => 'Dashboard',
@@ -238,7 +252,7 @@ return [
                     'action' => 'view',
                     'label' => 'Chat With Robbie',
                     'description' => 'Open the Robbie chat assistant.',
-                    'default_roles' => ['superadmin', 'admin', 'editing_manager', 'salesRep', 'client'],
+                    'default_roles' => ['superadmin', 'admin', 'editing_manager', 'salesRep', 'client', 'photographer', 'editor'],
                 ],
             ],
         ],

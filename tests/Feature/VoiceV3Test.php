@@ -73,7 +73,7 @@ class VoiceV3Test extends TestCase
             'status' => 'active',
             'from_phone' => '+12025550123',
             'to_phone' => '+12025550100',
-            'call_control_id' => 'call-' . uniqid(),
+            'call_control_id' => 'call-'.uniqid(),
             'started_at' => now(),
         ]);
     }
@@ -306,6 +306,36 @@ class VoiceV3Test extends TestCase
         $this->assertSame(1, $live['transcript_seq']);
         $this->assertCount(1, $live['transcript_chunks']);
         $this->assertEqualsWithDelta(0.92, $live['realtime']['confidence'], 0.001);
+    }
+
+    public function test_sse_closing_flushes_transcript_that_arrived_after_previous_snapshot(): void
+    {
+        $this->settings();
+        $admin = User::factory()->create(['role' => 'admin']);
+        $call = $this->makeCall();
+        $stream = app(VoiceLiveStreamService::class);
+        $snapshots = 0;
+        $this->mock(VoiceLiveStreamService::class, function ($mock) use ($call, $stream, &$snapshots): void {
+            $mock->shouldReceive('snapshot')->andReturnUsing(function (VoiceCall $current) use ($call, $stream, &$snapshots): array {
+                $snapshot = $stream->snapshot($current);
+                if (++$snapshots === 1) {
+                    // The carrier finishes the call between two stream reads.
+                    $call->update(['status' => 'completed', 'ended_at' => now(), 'metadata' => ['live' => [
+                        'transcript_seq' => 1,
+                        'transcript_chunks' => [['seq' => 1, 'text' => 'Last words before hangup.', 'speaker' => 'customer', 'ts' => now()->toIso8601String()]],
+                    ]]]);
+                }
+
+                return $snapshot;
+            });
+        });
+
+        $response = $this->actingAs($admin, 'sanctum')->get("/api/voice/calls/{$call->id}/stream");
+        $response->assertOk();
+        $content = $response->streamedContent();
+        $this->assertSame(2, substr_count($content, 'event: transcript'));
+        $this->assertStringContainsString('Last words before hangup.', $content);
+        $this->assertLessThan(strpos($content, 'event: closed'), strpos($content, 'Last words before hangup.'));
     }
 
     // ---- memory ------------------------------------------------------------

@@ -4,7 +4,6 @@ namespace App\Services\TelnyxAi;
 
 use App\Models\VoiceCall;
 use Illuminate\Support\Carbon;
-use Illuminate\Support\Facades\Log;
 
 /**
  * Layer 1 of the v3 voice cockpit. Consumes Telnyx realtime webhook chunks and
@@ -14,14 +13,54 @@ use Illuminate\Support\Facades\Log;
  */
 class VoiceLiveStreamService
 {
-    public function __construct(private readonly VoiceIntelligenceService $intelligence)
+    public function __construct(private readonly VoiceIntelligenceService $intelligence) {}
+
+    /** Rebuild both read projections from durable final rows; no network work. */
+    public function projectSavedTranscript(VoiceCall $call): VoiceCall
     {
+        $rows = $call->transcriptRows()->where('transcript_type', 'final')->orderBy('occurred_at')->orderBy('id')->get();
+        $recovered = $call->transcriptRows()->where('transcript_type', 'recovered')
+            ->where('provider_message_id', 'recording-recovery:'.data_get($call->metadata, 'recording_id'))->latest('id')->first();
+        // A full recording is an alternate source, not another live segment to append.
+        // Original segments remain durable for audit; never duplicate them in the text.
+        if ($recovered) {
+            $rows = new \Illuminate\Database\Eloquent\Collection([$recovered]);
+        }
+        if ($rows->isEmpty()) {
+            return $call;
+        } // Keep legacy transcripts without normalized rows.
+        $chunks = $rows->slice(-400)->map(fn ($row) => ['seq' => $row->id, 'text' => $row->text, 'speaker' => $row->speaker,
+            'ts' => ($row->occurred_at ?? $row->created_at)->toIso8601String(), 'telnyx_confidence' => $this->normalizeConfidence($row->confidence)])->values()->all();
+        $human = $rows->contains(fn ($row) => str_starts_with((string) $row->provider_message_id, 'telnyx:'));
+        $text = $rows->map(fn ($row) => ($human ? $row->speaker.': ' : '').$row->text)->implode("\n");
+        $fingerprint = hash('sha256', $rows->map(fn ($row) => [$row->id, $row->text])->toJson());
+        $metadata = $call->metadata ?? [];
+        $projection = $metadata['transcript_projection'] ?? [];
+        $changed = ($projection['fingerprint'] ?? null) !== $fingerprint;
+        $latest = $rows->sortByDesc('id')->first();
+        $live = $metadata['live'] ?? [];
+        if (! $changed && $call->transcript === $text && $call->live_transcript_preview === $latest->text
+            && ($live['transcript_chunks'] ?? []) === $chunks) {
+            return $call;
+        }
+        $live['transcript_seq'] = $rows->max('id');
+        $live['transcript_chunks'] = $chunks;
+        $live['realtime'] = $this->deriveRealtime($chunks, $this->normalizeConfidence($latest->confidence), null, $live['realtime'] ?? []);
+        $metadata['live'] = $live;
+        $metadata['transcript_projection'] = array_merge($projection, ['fingerprint' => $fingerprint, 'row_count' => $rows->count(),
+            'source' => $recovered ? 'recording_recovery' : 'live_segments',
+            'rebuilt_at' => now()->toIso8601String(), 'summary_stale' => (bool) (($projection['summary_stale'] ?? false)
+                || ($changed && $call->transcript !== $text && $call->ended_at && filled($call->summary))
+                || ($call->summary_generated_at && $latest->created_at->gt($call->summary_generated_at)))]);
+        $call->forceFill(['transcript' => $text, 'live_transcript_preview' => $latest->text, 'metadata' => $metadata])->save();
+
+        return $call->fresh();
     }
 
     /**
      * Record a transcript chunk and recompute derived realtime signals.
      *
-     * @param array{text?:string,speaker?:string,confidence?:float|int|null,sentiment?:string|float|null} $chunk
+     * @param  array{text?:string,speaker?:string,confidence?:float|int|null,sentiment?:string|float|null}  $chunk
      */
     public function recordTranscriptChunk(VoiceCall $call, array $chunk): VoiceCall
     {
@@ -60,7 +99,7 @@ class VoiceLiveStreamService
         $call->forceFill([
             'metadata' => array_merge($call->metadata ?? [], ['live' => $live]),
             // Keep the flat transcript column in sync for backwards compatibility.
-            'transcript' => trim(($call->transcript ? $call->transcript . "\n" : '') . $text),
+            'transcript' => trim(($call->transcript ? $call->transcript."\n" : '').$text),
         ])->save();
 
         $this->intelligence->onRealtimeUpdate($call->fresh(), $this->triggerSignals($live, $text));
@@ -123,6 +162,7 @@ class VoiceLiveStreamService
     private function live(VoiceCall $call): array
     {
         $metadata = $call->metadata ?? [];
+
         return is_array($metadata['live'] ?? null) ? $metadata['live'] : [];
     }
 
@@ -130,7 +170,7 @@ class VoiceLiveStreamService
      * Derive confidence, silence, speaking pace, and interruption rate from the
      * accumulated chunk timeline.
      *
-     * @param array<int,array<string,mixed>> $chunks
+     * @param  array<int,array<string,mixed>>  $chunks
      */
     private function deriveRealtime(array $chunks, ?float $confidence, ?string $sentiment, array $previous): array
     {
@@ -207,6 +247,7 @@ class VoiceLiveStreamService
         if ($float > 1) {
             $float = $float / 100;
         }
+
         return max(0, min(1, round($float, 3)));
     }
 
@@ -217,12 +258,14 @@ class VoiceLiveStreamService
         }
         if (is_numeric($value)) {
             $score = (float) $value;
+
             return match (true) {
                 $score >= 0.5 => 'positive',
                 $score <= -0.5 => 'negative',
                 default => 'neutral',
             };
         }
+
         return null;
     }
 }
