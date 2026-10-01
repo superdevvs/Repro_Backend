@@ -170,7 +170,49 @@ class WorkspacePhotoEnhancementTest extends TestCase
 
     public static function creationStages(): array
     {
-        return [['listing'], ['upload'], ['enhance']];
+        return [['listing'], ['enhance']];
+    }
+
+    public function test_incomplete_upload_reservation_can_be_replaced_before_any_paid_enhancement(): void
+    {
+        $workspace = $this->workspace();
+        $this->client->shouldReceive('createListing')->once()->andReturn(['id' => 'listing-1']);
+        $this->client->shouldReceive('createUpload')->once()->andThrow(new FotelloException('unavailable', ambiguousOutcome: true));
+        try {
+            $this->runPhoto($workspace);
+            $this->fail('Interrupted reservation should stop this attempt.');
+        } catch (FotelloException $exception) {
+            $this->assertTrue($exception->ambiguousOutcome);
+        }
+        $this->assertSame(['submitting' => true], $workspace->fresh()->operation['providerState'][$this->key().'-upload']);
+        $this->client->shouldReceive('createUpload')->once()->andReturn($this->upload());
+        $this->client->shouldReceive('uploadBytes')->once()->with($this->upload(), $this->source);
+        $this->client->shouldReceive('createEnhance')->once()->andReturn(['id' => 'enhance-1']);
+        $this->client->shouldReceive('getEnhance')->once()->andReturn($this->completed());
+        $this->client->shouldReceive('downloadBytes')->once()->andReturn($this->source);
+        $this->assertSame($this->source, $this->runPhoto($workspace->fresh()));
+    }
+
+    public function test_database_contention_after_paid_submission_retries_only_the_checkpoint_write(): void
+    {
+        $workspace = $this->workspace();
+        $this->creates();
+        $this->client->shouldReceive('getEnhance')->once()->andReturn($this->completed());
+        $this->client->shouldReceive('downloadBytes')->once()->andReturn($this->source);
+        $attempts = 0;
+        $event = 'eloquent.updating: '.StudioWorkspace::class;
+        \Illuminate\Support\Facades\Event::listen($event, function ($record) use (&$attempts) {
+            if (data_get($record->operation, 'providerState.'.$this->key().'-enhance.id') === 'enhance-1' && ++$attempts === 1) {
+                throw new \PDOException('SQLSTATE[HY000]: General error: 5 database is locked');
+            }
+        });
+        try {
+            $this->assertSame($this->source, $this->runPhoto($workspace));
+        } finally {
+            \Illuminate\Support\Facades\Event::forget($event);
+        }
+        $this->assertSame(2, $attempts);
+        $this->assertSame('enhance-1', $workspace->fresh()->operation['providerState'][$this->key().'-enhance']['id']);
     }
 
     public function test_confirmed_failed_enhancement_retries_only_that_paid_job_and_preserves_its_upload(): void

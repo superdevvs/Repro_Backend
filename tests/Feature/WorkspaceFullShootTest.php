@@ -124,6 +124,22 @@ class WorkspaceFullShootTest extends TestCase
         $this->assertSame(1, $called);
     }
 
+    public function test_hdr_retry_recovers_an_unconfirmed_upload_slot_without_duplicate_enhancements(): void
+    {
+        $workspace = $this->workspace();
+        $operation = $workspace->operation;
+        $uploadKey = 'hdr-upload-'.hash('sha256', $workspace->media[0]['id']);
+        $operation['providerState'][$uploadKey] = ['submitting' => true];
+        $workspace->update(['operation' => $operation]);
+        $this->provider();
+        $this->ready = true;
+        app(WorkspaceProcessor::class)->process($workspace, 'operation-1');
+        $this->assertSame('completed', $workspace->fresh()->status);
+        $this->assertCount(2, $this->enhancements);
+        $this->assertCount(6, $this->uploaded);
+        $this->assertSame('exposure-1.CR3', $workspace->fresh()->operation['providerState'][$uploadKey]['id']);
+    }
+
     public function test_same_stack_numbers_in_different_services_are_kept_separate(): void
     {
         $workspace = $this->workspace();

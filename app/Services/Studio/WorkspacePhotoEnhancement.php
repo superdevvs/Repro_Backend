@@ -48,7 +48,7 @@ class WorkspacePhotoEnhancement
                 $state->put($key.'-upload', null);
             }
         }
-        $upload = $this->once($state, $key.'-upload', fn () => $client->createUpload(['filename' => $key.'.jpg', 'listingId' => $listing['id']]));
+        $upload = $this->uploadSlot($state, $key.'-upload', fn () => $client->createUpload(['filename' => $key.'.jpg', 'listingId' => $listing['id']]));
         if (! $state->get($key.'-uploaded')) {
             $client->uploadBytes($upload, $source);
             $state->put($key.'-uploaded', true);
@@ -77,6 +77,17 @@ class WorkspacePhotoEnhancement
             }
             sleep(max(1, (int) config('services.fal.video_poll_interval', 5)));
         } while (true);
+    }
+
+    /** An unused upload reservation can be replaced; it neither uploads pixels nor starts an edit. */
+    public function uploadSlot(WorkspaceProviderState $state, string $key, callable $reserve): array
+    {
+        $saved = $state->get($key);
+        if ($saved && ! isset($saved['id'])) {
+            $state->put($key, null);
+        }
+
+        return $this->once($state, $key, $reserve);
     }
 
     public function once(WorkspaceProviderState $state, string $key, callable $submit): array

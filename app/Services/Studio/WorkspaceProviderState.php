@@ -4,6 +4,7 @@ namespace App\Services\Studio;
 
 use App\Exceptions\StudioProviderException;
 use App\Models\StudioWorkspace;
+use App\Support\LockedWrite;
 use Illuminate\Support\Facades\DB;
 
 /** Server-owned checkpoints survive retries and are never included in workspace responses. */
@@ -20,7 +21,7 @@ class WorkspaceProviderState
 
     public function put(string $key, mixed $value): void
     {
-        DB::transaction(function () use ($key, $value): void {
+        LockedWrite::run(fn () => DB::transaction(function () use ($key, $value): void {
             $record = StudioWorkspace::lockForUpdate()->findOrFail($this->workspace->id);
             if (! $record->isBusy() || ($record->operation['id'] ?? null) !== $this->operationId) {
                 throw new StudioProviderException('This operation is no longer active.');
@@ -32,7 +33,7 @@ class WorkspaceProviderState
                 $operation['providerState'][$key] = $value;
             }
             $record->update(['operation' => $operation, 'version' => $record->version + 1]);
-        });
+        }), 'studio.provider-checkpoint');
         $this->workspace->refresh();
     }
 
@@ -65,7 +66,7 @@ class WorkspaceProviderState
 
     public function saveRequest(string $mediaId, ?string $id): void
     {
-        DB::transaction(function () use ($mediaId, $id): void {
+        LockedWrite::run(fn () => DB::transaction(function () use ($mediaId, $id): void {
             $record = StudioWorkspace::lockForUpdate()->findOrFail($this->workspace->id);
             if (! $record->isBusy() || ($record->operation['id'] ?? null) !== $this->operationId) {
                 throw new StudioProviderException('This operation is no longer active.');
@@ -77,7 +78,7 @@ class WorkspaceProviderState
                 $operation['requests'][$mediaId] = $id;
             }
             $record->update(['operation' => $operation, 'version' => $record->version + 1]);
-        });
+        }), 'studio.provider-request');
         $this->workspace->refresh();
     }
 }

@@ -74,7 +74,7 @@ class WorkspaceFullShoot
                     if ($upload && ! $state->get($uploadKey.'-sent') && isset($upload['expires']) && strtotime($upload['expires']) <= time()) {
                         $state->put($uploadKey, null);
                     }
-                    $upload = $this->photos->once($state, $uploadKey, fn () => $client->createUpload([
+                    $upload = $this->photos->uploadSlot($state, $uploadKey, fn () => $client->createUpload([
                         'filename' => basename($items[$id]['name']), 'uploadType' => 'photo', 'listingId' => $listing['id'],
                     ]));
                     if (! $state->get($uploadKey.'-sent')) {
