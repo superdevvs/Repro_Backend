@@ -312,6 +312,10 @@ class CakemailController extends Controller
      */
     public function registerWebhook(Request $request): JsonResponse
     {
+        if (is_string($request->input('event'))) {
+            $request->merge(['event' => strtolower(trim($request->input('event')))]);
+        }
+
         $request->validate([
             'event' => 'required|string|in:email.delivered,email.opened,email.clicked,email.bounced,email.unsubscribed',
             'url' => 'required|url',
