@@ -1025,6 +1025,11 @@ class MessagingService
 
     public function dispatchStoredEmailMessage(Message $message): Message
     {
+        if (app(ShootPaymentReminderEligibility::class)->storedReminderIsStale($message)) {
+            $message->forceFill(['status' => 'CANCELLED', 'error_message' => 'Payment reminder is no longer current.'])->save();
+
+            return $message->refresh();
+        }
         $this->releaseLegacyImportMuteForOutboundPayload([
             'related_invoice_id' => $message->related_invoice_id,
             'related_shoot_id' => $message->related_shoot_id,
@@ -1094,6 +1099,11 @@ class MessagingService
 
     public function dispatchStoredSmsMessage(Message $message): Message
     {
+        if (app(ShootPaymentReminderEligibility::class)->storedReminderIsStale($message)) {
+            $message->forceFill(['status' => 'CANCELLED', 'error_message' => 'Payment reminder is no longer current.'])->save();
+
+            return $message->refresh();
+        }
         $this->releaseLegacyImportMuteForOutboundPayload([
             'related_invoice_id' => $message->related_invoice_id,
             'related_shoot_id' => $message->related_shoot_id,

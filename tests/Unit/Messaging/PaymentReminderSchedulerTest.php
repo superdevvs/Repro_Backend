@@ -14,7 +14,7 @@ class PaymentReminderSchedulerTest extends TestCase
         return array_map(fn (CarbonImmutable $t) => $t->toDateTimeString(), $timestamps);
     }
 
-    public function test_phase_1_fixed_reminders_at_day_1_3_7(): void
+    public function test_phase_1_fixed_reminders_at_day_1_2_4_7(): void
     {
         $start = CarbonImmutable::parse('2026-01-01 10:00:00');
         // Short horizon: only Phase 1 reminders.
@@ -22,7 +22,8 @@ class PaymentReminderSchedulerTest extends TestCase
 
         $this->assertSame([
             '2026-01-02 10:00:00', // day +1
-            '2026-01-04 10:00:00', // day +3
+            '2026-01-03 10:00:00', // day +2
+            '2026-01-05 10:00:00', // day +4
             '2026-01-08 10:00:00', // day +7
         ], $this->format($result));
     }
@@ -34,7 +35,8 @@ class PaymentReminderSchedulerTest extends TestCase
 
         $this->assertSame([
             '2026-01-02 10:00:00', // +1
-            '2026-01-04 10:00:00', // +3
+            '2026-01-03 10:00:00', // +2
+            '2026-01-05 10:00:00', // +4
             '2026-01-08 10:00:00', // +7
             '2026-01-15 10:00:00', // +14
             '2026-01-22 10:00:00', // +21
@@ -52,8 +54,8 @@ class PaymentReminderSchedulerTest extends TestCase
         $result = (new PaymentReminderScheduler)->schedule($start, $start->addDays(120));
         $offsets = array_map(fn (CarbonImmutable $at) => (int) $start->diffInDays($at), $result);
 
-        $this->assertSame([1, 3, 7], array_slice($offsets, 0, 3));
-        foreach (array_slice($offsets, 3) as $index => $offset) {
+        $this->assertSame([1, 2, 4, 7], array_slice($offsets, 0, 4));
+        foreach (array_slice($offsets, 4) as $index => $offset) {
             $this->assertSame(14 + $index * 7, $offset);
         }
         $this->assertNotContains('2026-02-22 09:00:00', $this->format($result));
@@ -114,7 +116,7 @@ class PaymentReminderSchedulerTest extends TestCase
         $horizon = $start->addMonths(4);
 
         $this->assertSame($this->format($scheduler->schedule($start, $horizon)), $this->format($scheduler->schedule($start, $horizon, [
-            'reminder_days' => [1, 3, 7],
+            'reminder_days' => [1, 2, 4, 7],
             'repeat_after_day' => 7,
             'repeat_every_days' => 7,
         ])));

@@ -102,6 +102,7 @@ class ScheduleShootAction
         }
 
         $shoot->refresh();
+        app(\App\Services\InvoiceService::class)->generateForShoot($shoot);
         $shoot->load(['client', 'rep', 'photographer', 'services', 'createdByUser']);
 
         $context = $this->automationService->buildShootContext($shoot);

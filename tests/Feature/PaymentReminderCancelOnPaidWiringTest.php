@@ -46,7 +46,7 @@ class PaymentReminderCancelOnPaidWiringTest extends TestCase
             'name'  => 'Casey Client',
         ]);
 
-        $shoot = Shoot::factory()->create([
+        $shoot = Shoot::factory()->state(['status' => Shoot::STATUS_DELIVERED, 'workflow_status' => Shoot::STATUS_DELIVERED, 'delivery_status' => 'delivered'])->create([
             'client_id'               => $client->id,
             'payment_status'          => 'unpaid',
             'total_quote'             => $quote,

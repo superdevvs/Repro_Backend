@@ -39,7 +39,7 @@ class PaymentRemindersSweepTest extends TestCase
     private function unpaidAnchoredShoot(string $anchor): Shoot
     {
         // ShootFactory defaults payment_status to 'paid', so create unpaid shoots explicitly.
-        return Shoot::factory()->create([
+        return Shoot::factory()->state(['status' => Shoot::STATUS_DELIVERED, 'workflow_status' => Shoot::STATUS_DELIVERED, 'delivery_status' => 'delivered'])->create([
             'payment_status' => 'unpaid',
             'shoot_ready_notified_at' => Carbon::parse($anchor),
         ]);
@@ -159,12 +159,12 @@ class PaymentRemindersSweepTest extends TestCase
 
         $unpaidAnchored = $this->unpaidAnchoredShoot('2026-01-01 10:00:00');
 
-        $paidAnchored = Shoot::factory()->create([
+        $paidAnchored = Shoot::factory()->state(['status' => Shoot::STATUS_DELIVERED, 'workflow_status' => Shoot::STATUS_DELIVERED, 'delivery_status' => 'delivered'])->create([
             'payment_status' => 'paid',
             'shoot_ready_notified_at' => Carbon::parse('2026-01-01 10:00:00'),
         ]);
 
-        $unpaidNoAnchor = Shoot::factory()->create([
+        $unpaidNoAnchor = Shoot::factory()->state(['status' => Shoot::STATUS_DELIVERED, 'workflow_status' => Shoot::STATUS_DELIVERED, 'delivery_status' => 'delivered'])->create([
             'payment_status' => 'unpaid',
             'shoot_ready_notified_at' => null,
         ]);

@@ -16,6 +16,13 @@
 @section('content')
 <p class="dark-body" style="margin:0 0 16px; font-size:16px; line-height:1.75; color:#2d4769;"><strong class="dark-strong" style="color:#071223;">{{ !empty($isPhotographer) ? 'Your upcoming assignment is ready.' : 'Thanks for scheduling with us.' }}</strong></p>
 
+    @if(empty($isPhotographer) && !empty($invoice->id))
+        <p class="dark-body" style="margin:0 0 16px; font-size:15px; line-height:1.7; color:#2d4769;">
+            <strong>{{ \App\Support\InvoiceReference::label($invoice->invoice_number ?? '') }}</strong>
+            &middot; {{ strtolower((string) ($invoice->status ?? '')) === 'paid' ? 'Paid' : 'Your booking invoice is included below.' }}
+        </p>
+    @endif
+
     <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:18px 0 8px;">
         <tr>
             <td style="border-radius:999px; background-color:#1463ff; padding-right:10px;" bgcolor="#1463ff">
@@ -23,7 +30,7 @@
             </td>
             @if(empty($isPhotographer) && !empty($paymentLink))
             <td style="border-radius:999px; background-color:#1463ff;" bgcolor="#1463ff">
-                <a href="{{ $paymentLink }}" style="display:inline-block; padding:14px 22px; border-radius:999px; background-color:#1463ff; color:#ffffff; font-weight:800; font-size:14px; line-height:1.2; text-decoration:none;">Pay Now</a>
+                <a href="{{ $paymentLink }}" style="display:inline-block; padding:14px 22px; border-radius:999px; background-color:#1463ff; color:#ffffff; font-weight:800; font-size:14px; line-height:1.2; text-decoration:none;">View Invoice</a>
             </td>
             @endif
         </tr>

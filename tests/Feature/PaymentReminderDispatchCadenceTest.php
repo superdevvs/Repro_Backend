@@ -24,7 +24,7 @@ use Tests\TestCase;
  * The scheduler/wiring tests prove the cadence *math* and that rows get *created*. This test
  * closes the remaining gap: it runs the real {@see DispatchScheduledMessages} job at each due
  * instant (time-travel via Carbon::setTestNow) and proves the reminders actually *dispatch* on
- * BOTH channels (email + SMS), in the correct Day 1/3/7 → weekly thereafter order,
+ * BOTH channels (email + SMS), in the correct Day 1/2/4/7 → weekly thereafter order,
  * that each row flips pending → sent exactly once (no re-send on a
  * later run), and that once the shoot is marked paid the cadence STOPS — the next due reminder
  * is cancelled rather than sent (Req 5.3/5.4).
@@ -137,7 +137,7 @@ class PaymentReminderDispatchCadenceTest extends TestCase
 
         // ShootFactory defaults payment_status to 'paid'; create unpaid explicitly and stamp the
         // cadence anchor (the shoot_ready_notified_at timestamp).
-        return Shoot::factory()->create([
+        return Shoot::factory()->state(['status' => Shoot::STATUS_DELIVERED, 'workflow_status' => Shoot::STATUS_DELIVERED, 'delivery_status' => 'delivered'])->create([
             'client_id' => $client->id,
             'payment_status' => 'unpaid',
             'shoot_ready_notified_at' => Carbon::parse($anchor),
@@ -172,17 +172,17 @@ class PaymentReminderDispatchCadenceTest extends TestCase
             ->orderBy('scheduled_at')
             ->get();
 
-        // The rolling 3-month horizon yields Day 1/3/7 and weekly reminders
+        // The rolling 3-month horizon yields Day 1/2/4/7 and weekly reminders
         // across the calendar-month boundary.
         $this->assertGreaterThanOrEqual(
             8,
             $scheduled->count(),
-            'expected Day 1/3/7 + weekly reminders beyond the first month'
+            'expected Day 1/2/4/7 + weekly reminders beyond the first month'
         );
 
         $anchorTs = Carbon::parse($anchor);
 
-        foreach ([1, 3, 7, 14, 21, 28, 35, 42] as $i => $offset) {
+        foreach ([1, 2, 4, 7, 14, 21, 28, 35, 42] as $i => $offset) {
             $this->assertSame(
                 $anchorTs->copy()->addDays($offset)->toDateString(),
                 $scheduled[$i]->scheduled_at->toDateString(),

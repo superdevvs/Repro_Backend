@@ -535,10 +535,13 @@ class MailService
                 return false;
             }
 
+            $bookingInvoice = $isPhotographer ? []
+                : app(\App\Services\SystemEmails\BookingInvoiceContext::class)->forClient($shoot, $recipient);
             $payload = $this->buildProtectedEmailPayload([
                 'recipient' => $this->formatUserData($recipient),
                 'account' => $this->formatUserData($shoot->client),
                 'shoot' => $recipientShootData,
+                'invoice' => $bookingInvoice,
                 'links' => [
                     'payment' => $paymentLink,
                     'dashboard' => $recipientShootData->dashboard_url ?? null,
@@ -555,6 +558,7 @@ class MailService
             $sent = $this->dispatchProtectedEmail('SHOOT_SCHEDULED', $payload, $normalizedEmail, $cc, [], [
                 'related_shoot_id' => $shoot->id,
                 'related_account_id' => $isPhotographer ? null : $recipient->id,
+                'related_invoice_id' => $bookingInvoice['id'] ?? null,
             ], [
                 'idempotency_key' => sprintf(
                     'SHOOT_SCHEDULED:%d:%d:%s:%s',
@@ -1302,6 +1306,9 @@ class MailService
 
         try {
             $shoot = $shoot->fresh(['client', 'photographer', 'rep', 'services.category', 'payments']) ?? $shoot;
+            if ((int) $shoot->client_id !== (int) $user->id) {
+                return false;
+            }
             $shootData = $this->formatShootData($shoot, $user, 'client', $serviceItemIds);
             $clientCcEmails = $this->resolveShootCcEmailsForRecipient($shoot, $user);
             $paymentLink = $this->shouldShowShootReadyPaymentLink($shoot)
@@ -1371,7 +1378,8 @@ class MailService
 
         try {
             $shoot = $shoot->fresh(['client', 'photographer', 'rep', 'services.category', 'payments.refunds']) ?? $shoot;
-            if (! app(\App\Services\Messaging\ShootSummaryEligibility::class)->canSend($shoot)) {
+            if ((int) $shoot->client_id !== (int) $user->id
+                || ! app(\App\Services\Messaging\ShootSummaryEligibility::class)->canSend($shoot)) {
                 return false;
             }
 
@@ -2097,7 +2105,7 @@ class MailService
             'access_details' => $this->buildAccessRows($propertyDetails),
             'company_notes' => $shoot->company_notes,
             'photographer_notes' => $shoot->photographer_notes,
-            'dashboard_url' => 'https://reprodashboard.com',
+            'dashboard_url' => rtrim((string) config('app.frontend_url', config('app.url')), '/').'/shoots/'.$shoot->id,
             'website_url' => 'https://reprophotos.com',
             'property_prep_url' => 'https://reprophotos.com/tips-to-get-your-property-camera-ready/',
             'review_url' => 'https://www.google.com/maps/place/R%2FE+Pro+Photos/reviews',

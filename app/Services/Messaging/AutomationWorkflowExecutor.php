@@ -343,12 +343,16 @@ class AutomationWorkflowExecutor
                         break;
 
                     case 'action.sms':
-                        $output = $this->executeSmsAction($automation, $node, $context);
+                        $output = ($context['appointment_reminder_audience'] ?? null) === 'client_email'
+                            ? ['skipped' => true, 'reason' => 'This appointment stage sends client email only.']
+                            : $this->executeSmsAction($automation, $node, $context);
                         $nextNodeIds = $this->nextNodeIds($workflow, $nodeId);
                         break;
 
                     case 'action.internal_notification':
-                        $output = $this->executeInternalNotificationAction($automation, $node, $context);
+                        $output = ($context['appointment_reminder_audience'] ?? null) === 'client_email'
+                            ? ['skipped' => true, 'reason' => 'This appointment stage sends client email only.']
+                            : $this->executeInternalNotificationAction($automation, $node, $context);
                         $nextNodeIds = $this->nextNodeIds($workflow, $nodeId);
                         break;
 
@@ -517,6 +521,11 @@ class AutomationWorkflowExecutor
             try {
                 $message = $this->deliverOnce($automation, $node, $context, $recipient['email'], 'email', function (string $tag) use ($automation, $config, $context, $recipient, $template) {
                     $recipientContext = $this->recipientContext($automation, $recipient, $context);
+                    $recipientContext = app(\App\Services\SystemEmails\BookingInvoiceContext::class)
+                        ->forAutomationEmail($automation->trigger_type, $recipient, $recipientContext);
+                    if ($recipientContext === null) {
+                        return null;
+                    }
                     $rendered = $template ? $this->templateRenderer->render($template, $recipientContext) : $this->renderInlineMessage($config, $recipientContext);
 
                     return $this->messagingService->sendEmail([
@@ -528,7 +537,7 @@ class AutomationWorkflowExecutor
                         'template_id' => $template?->id,
                         'related_shoot_id' => $context['shoot_id'] ?? null,
                         'related_account_id' => $context['account_id'] ?? null,
-                        'related_invoice_id' => $context['invoice_id'] ?? null,
+                        'related_invoice_id' => $recipientContext['invoice_id'] ?? null,
                         'send_source' => 'AUTOMATION',
                         'contact_email' => $recipient['email'],
                         'contact_name' => $recipient['name'] ?? 'Recipient',
@@ -1065,6 +1074,18 @@ class AutomationWorkflowExecutor
 
     private function resolveActionRecipients(AutomationRule $automation, array $config, array $context, string $mode): array
     {
+        if ($automation->trigger_type === 'SHOOT_REMINDER' && isset($context['appointment_reminder_audience'])) {
+            $audience = $context['appointment_reminder_audience'];
+            unset($context['appointment_reminder_audience']);
+            if ($audience === 'client_email' && $mode !== 'email') {
+                return [];
+            }
+            $recipients = $this->resolveActionRecipients($automation, $config, $context, $mode);
+
+            return array_values(array_filter($recipients, fn ($recipient) => $audience === 'client_email'
+                ? ($recipient['type'] ?? null) === 'client'
+                : ($mode !== 'email' || ($recipient['type'] ?? null) !== 'client')));
+        }
         $context = ShootRequestRecipientRouting::context($automation->trigger_type, $context);
         if ($automation->trigger_type === 'PROPERTY_CONTACT_REMINDER' && $mode === 'email') {
             return $this->resolveRecipientsByRoles($automation, ['client', 'rep'], $context, $mode);
@@ -1330,28 +1351,39 @@ class AutomationWorkflowExecutor
         if (in_array($automation->trigger_type, ['INVOICE_DUE', 'INVOICE_OVERDUE'], true) && ! empty($context['invoice_id'])) {
             $invoice = \App\Models\Invoice::find($context['invoice_id']);
 
-            return ! $invoice || in_array(strtolower((string) $invoice->status), ['paid', 'cancelled', 'canceled', 'void'], true) || (float) $invoice->balanceDue() <= 0;
+            return ! $invoice || app(ShootPaymentReminderEligibility::class)->invoiceHasShoot($invoice)
+                || $invoice->suppressesExternalNotifications()
+                || ! $invoice->client_id || (int) ($context['account_id'] ?? $invoice->client_id) !== (int) $invoice->client_id
+                || in_array(strtolower((string) $invoice->status), ['paid', 'cancelled', 'canceled', 'void'], true) || (float) $invoice->balanceDue() <= 0;
         }
         if ($automation->trigger_type === 'SHOOT_PAYMENT_REMINDER') {
             $shoot = Shoot::find($context['shoot_id'] ?? null);
 
-            return ! $shoot || in_array(strtolower((string) $shoot->payment_status), ['paid', 'no_payment_required'], true);
+            return ! $shoot || ! app(ShootPaymentReminderEligibility::class)->isEligible($shoot)
+                || (int) ($context['account_id'] ?? $shoot->client_id) !== (int) $shoot->client_id
+                || app(ShootPaymentReminderEligibility::class)->reminderAnchor($shoot)->addDay()->isFuture();
         }
         if (! in_array($automation->trigger_type, ['SHOOT_REMINDER', 'PHOTOGRAPHER_SHOOT_REMINDER', 'PROPERTY_CONTACT_REMINDER'], true)) {
             return false;
         }
         $shoot = Shoot::find($context['shoot_id'] ?? null);
-        if (! $shoot || in_array(strtolower((string) $shoot->status), ['cancelled', 'canceled', 'declined', 'completed', 'delivered'], true)
-            || in_array(strtolower((string) $shoot->workflow_status), ['cancelled', 'canceled', 'declined', 'completed', 'delivered'], true)) {
+        if (! $shoot || in_array(strtolower((string) $shoot->status), ['cancelled', 'canceled', 'declined', 'completed', 'delivered', 'hold_on', 'on_hold', 'requested'], true)
+            || in_array(strtolower((string) $shoot->workflow_status), ['cancelled', 'canceled', 'declined', 'completed', 'delivered', 'hold_on', 'on_hold', 'requested'], true)) {
             return true;
         }
         $current = app(\App\Services\Schedule\ScheduleInstantResolver::class)->forShoot($shoot);
         if (! empty($context['shoot_service_id'])) {
             $item = $shoot->serviceItems()->find($context['shoot_service_id']);
-            if (! $item || in_array($item->workflow_status, ['cancelled', 'completed', 'delivered'], true)) {
+            if (! $item || in_array($item->workflow_status, ['cancelled', 'completed', 'delivered', 'hold_on', 'on_hold'], true)) {
                 return true;
             }
             $current = app(\App\Services\Schedule\ScheduleInstantResolver::class)->forServiceItem($shoot, $item);
+        }
+
+        if (in_array($automation->trigger_type, ['SHOOT_REMINDER', 'PHOTOGRAPHER_SHOOT_REMINDER'], true)
+            && (! $current || $current->lte(now())
+                || (int) ($context['account_id'] ?? $shoot->client_id) !== (int) $shoot->client_id)) {
+            return true;
         }
 
         return $current && ! empty($context['shoot_datetime']) && ! $current->equalTo(Carbon::parse($context['shoot_datetime']));

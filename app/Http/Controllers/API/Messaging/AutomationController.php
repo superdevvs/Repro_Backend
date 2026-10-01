@@ -339,6 +339,11 @@ class AutomationController extends Controller
         if (in_array($data['trigger_type'], ['SHOOT_REMINDER', 'PHOTOGRAPHER_SHOOT_REMINDER'], true)) {
             $scheduleRules['schedule.offset'] = ['sometimes', 'regex:/^-[1-9]\d*[mhd]$/'];
         }
+        $scheduleRules['schedule.client_email_schedule'] = ['sometimes', 'array'];
+        foreach (['previous_day_time', 'day_of_time', 'morning_start', 'morning_end', 'morning_previous_evening_time'] as $field) {
+            $scheduleRules['schedule.client_email_schedule.'.$field] = ['sometimes', 'regex:/^(?:[01]\d|2[0-3]):[0-5]\d$/'];
+        }
+        $scheduleRules['schedule.client_email_schedule.morning_lead_minutes'] = ['sometimes', 'integer', 'min:1', 'max:1440'];
         \Illuminate\Support\Facades\Validator::make(['schedule' => $data['schedule_json'] ?? []], $scheduleRules)->validate();
 
         $data['is_system_locked'] = false;

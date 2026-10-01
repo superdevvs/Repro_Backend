@@ -560,6 +560,11 @@ Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager'])->ge
     [DashboardController::class, 'overview']
 );
 
+Route::middleware(['auth:sanctum', 'role:superadmin,salesRep,rep,representative'])->get(
+    '/dashboard/overdue-clients',
+    App\Http\Controllers\API\OverdueClientsController::class
+);
+
 // Lightweight schedule snapshot used by the editor dashboard to indicate
 // platform-wide incoming work pressure. Counts only — no PII.
 Route::middleware(['auth:sanctum', 'role:editor,admin,superadmin,editing_manager'])->get(

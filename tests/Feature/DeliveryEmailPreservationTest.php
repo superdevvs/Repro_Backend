@@ -391,7 +391,7 @@ class DeliveryEmailPreservationTest extends TestCase
 
         $cases = [
             'SHOOT_SCHEDULED' => 'New Shoot Scheduled',
-            'SHOOT_REMINDER' => 'Shoot Reminder: 24 Hours to Go',
+            'SHOOT_REMINDER' => 'Shoot Reminder',
             'SHOOT_CANCELLED' => 'Your Shoot Has Been Cancelled',
         ];
 

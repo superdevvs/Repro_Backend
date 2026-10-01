@@ -51,7 +51,7 @@ class ShootPaymentReminderCadenceMigrationTest extends TestCase
             'workflow_definition_json' => $workflow,
             'recipients_json' => ['client', 'rep'],
         ]);
-        $shoot = Shoot::factory()->create([
+        $shoot = Shoot::factory()->state(['status' => Shoot::STATUS_DELIVERED, 'workflow_status' => Shoot::STATUS_DELIVERED, 'delivery_status' => 'delivered'])->create([
             'payment_status' => 'unpaid',
             'bypass_paywall' => false,
             'shoot_ready_notified_at' => now(),

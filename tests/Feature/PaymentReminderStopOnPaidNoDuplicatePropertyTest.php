@@ -185,7 +185,7 @@ class PaymentReminderStopOnPaidNoDuplicatePropertyTest extends TestCase
             // ----------------------------------------------------------------
             // Setup: a fresh unpaid shoot anchored to the random instant.
             // ----------------------------------------------------------------
-            $shoot = Shoot::factory()->create([
+            $shoot = Shoot::factory()->state(['status' => Shoot::STATUS_DELIVERED, 'workflow_status' => Shoot::STATUS_DELIVERED, 'delivery_status' => 'delivered'])->create([
                 'payment_status' => 'unpaid',
                 'shoot_ready_notified_at' => $anchor,
             ]);

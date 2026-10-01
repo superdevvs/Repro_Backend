@@ -183,7 +183,7 @@ class MessagingAutomationTest extends TestCase
         $this->assertSame(1, Message::where('related_invoice_id', $overdueInvoice->id)->count());
     }
 
-    public function test_invoice_reminders_resolve_direct_and_unique_related_property_context(): void
+    public function test_invoice_due_cadence_skips_direct_and_unique_related_shoot_invoices(): void
     {
         Mail::fake();
         $this->createDefaultEmailChannel();
@@ -240,24 +240,11 @@ class MessagingAutomationTest extends TestCase
 
         Artisan::call('messaging:invoice-reminders');
 
-        $directMessage = Message::where('related_invoice_id', $directInvoice->id)->firstOrFail();
-        $this->assertSame('Payment Reminder - 421 Direct Avenue, Tampa, FL, 33602 - Invoice 00421', $directMessage->subject);
-        $this->assertSame(1, substr_count($directMessage->subject, 'Invoice'));
-        $this->assertSame($directShoot->id, $directMessage->related_shoot_id);
-        $this->assertSame($directShoot->id, $directMessage->metadata['shoot_id'] ?? null);
-        $this->assertStringContainsString('421 Direct Avenue, Tampa, FL, 33602', $directMessage->body_html);
-        $this->assertStringContainsString('421 Direct Avenue, Tampa, FL, 33602', $directMessage->body_text);
-
-        $uniqueMessage = Message::where('related_invoice_id', $uniqueInvoice->id)->firstOrFail();
-        $this->assertSame('Payment Reminder - 422 Unique Lane, Orlando, FL, 32801 - Invoice 00422', $uniqueMessage->subject);
-        $this->assertSame(1, substr_count($uniqueMessage->subject, 'Invoice'));
-        $this->assertSame($uniqueShoot->id, $uniqueMessage->related_shoot_id);
-        $this->assertSame($uniqueShoot->id, $uniqueMessage->metadata['shoot_id'] ?? null);
-        $this->assertStringContainsString('422 Unique Lane, Orlando, FL, 32801', $uniqueMessage->body_html);
-        $this->assertStringContainsString('422 Unique Lane, Orlando, FL, 32801', $uniqueMessage->body_text);
+        $this->assertSame(0, Message::whereIn('related_invoice_id', [$directInvoice->id, $uniqueInvoice->id])->count(),
+            'Shoot balances belong to the delivered-shoot reminder cadence, never the invoice due-date cadence.');
     }
 
-    public function test_invoice_reminder_uses_multiple_properties_fallback_when_context_is_ambiguous(): void
+    public function test_invoice_due_cadence_skips_grouped_shoot_invoices(): void
     {
         Mail::fake();
         $this->createDefaultEmailChannel();
@@ -285,22 +272,7 @@ class MessagingAutomationTest extends TestCase
 
         Artisan::call('messaging:invoice-reminders');
 
-        $message = Message::where('related_invoice_id', $invoice->id)->firstOrFail();
-        $visibleHtml = html_entity_decode(strip_tags($message->body_html));
-
-        $this->assertSame('Payment Reminder - Multiple properties - Invoice 00423', $message->subject);
-        $this->assertSame(1, substr_count($message->subject, 'Invoice'));
-        $this->assertNull($message->related_shoot_id);
-        $this->assertSame(2, $message->metadata['related_shoot_count'] ?? null);
-        $this->assertSame('Multiple properties', $message->metadata['shoot_location'] ?? null);
-        $this->assertGreaterThanOrEqual(2, substr_count($visibleHtml, 'Multiple properties'));
-        $this->assertStringContainsString('Multiple properties', $message->body_text);
-        foreach ($shoots as $shoot) {
-            $this->assertStringNotContainsString(
-                $shoot->address,
-                $message->subject.$message->body_html.$message->body_text
-            );
-        }
+        $this->assertSame(0, Message::where('related_invoice_id', $invoice->id)->count());
     }
 
     public function test_invoice_overdue_only_fires_on_scheduled_offsets(): void

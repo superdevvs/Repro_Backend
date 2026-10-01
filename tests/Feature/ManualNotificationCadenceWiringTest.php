@@ -21,7 +21,7 @@ use Tests\TestCase;
  * Sending a manual `shoot_ready` notification must do two things together:
  *   (1) stamp `shoot_ready_notified_at` on the shoot (the cadence anchor), and
  *   (2) start the payment-reminder cadence by creating pending PaymentReminder rows
- *       anchored on that timestamp (Day 1/3/7 at minimum) — Req 4.1, 4.4.
+ *       anchored on that timestamp (Day 1/2/4/7 at minimum) — Req 4.1, 4.4.
  *
  * Re-sending `shoot_ready` must not duplicate reminder rows (the (shoot_id, scheduled_date)
  * upsert is idempotent) — Req 4.5. A shoot that is already paid when the ready send happens
@@ -74,7 +74,7 @@ class ManualNotificationCadenceWiringTest extends TestCase
             'name'  => 'Casey Client',
         ]);
 
-        return Shoot::factory()->create([
+        return Shoot::factory()->state(['status' => Shoot::STATUS_DELIVERED, 'workflow_status' => Shoot::STATUS_DELIVERED, 'delivery_status' => 'delivered'])->create([
             'client_id'               => $client->id,
             'payment_status'          => 'unpaid',
             'shoot_ready_notified_at' => null,
@@ -105,10 +105,10 @@ class ManualNotificationCadenceWiringTest extends TestCase
             'all freshly scheduled reminders should be pending'
         );
 
-        // Req 4.4 — the Day 1/3/7 timestamps relative to the anchor are present.
+        // Req 4.4 — the Day 1/2/4/7 timestamps relative to the anchor are present.
         $anchor = $fresh->shoot_ready_notified_at->copy();
         $dates = $reminders->pluck('scheduled_date')->map(fn ($d) => $d->format('Y-m-d'))->all();
-        foreach ([1, 3, 7] as $offset) {
+        foreach ([1, 2, 4, 7] as $offset) {
             $expected = $anchor->copy()->addDays($offset)->format('Y-m-d');
             $this->assertContains(
                 $expected,
@@ -155,7 +155,7 @@ class ManualNotificationCadenceWiringTest extends TestCase
 
         $sender = User::factory()->create(['role' => 'admin']);
         $client = User::factory()->create(['email' => 'paid@example.com', 'name' => 'Paid Client']);
-        $shoot = Shoot::factory()->create([
+        $shoot = Shoot::factory()->state(['status' => Shoot::STATUS_DELIVERED, 'workflow_status' => Shoot::STATUS_DELIVERED, 'delivery_status' => 'delivered'])->create([
             'client_id'               => $client->id,
             'payment_status'          => 'paid',
             'shoot_ready_notified_at' => null,

@@ -278,7 +278,7 @@ class SystemAutomationDefaults
             [
                 'name' => 'Shoot Payment Reminder', 'description' => 'Follow up on unpaid delivered shoots using the saved email and SMS actions.',
                 'trigger_type' => 'SHOOT_PAYMENT_REMINDER', 'template_id' => MessageTemplate::where('slug', ShootPaymentReminderTemplate::SLUG)->value('id'),
-                'schedule_json' => ['reminder_days' => [1, 3, 7], 'repeat_after_day' => 7, 'repeat_every_days' => 7],
+                'schedule_json' => ['reminder_days' => [1, 2, 4, 7], 'repeat_after_day' => 7, 'repeat_every_days' => 7],
                 'recipients_json' => ['client'],
             ],
             [

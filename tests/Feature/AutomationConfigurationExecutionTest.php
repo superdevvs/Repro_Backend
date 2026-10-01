@@ -275,7 +275,7 @@ class AutomationConfigurationExecutionTest extends TestCase
     {
         Carbon::setTestNow(Carbon::parse('2026-09-01 10:00:00', 'UTC'));
         $rule = $this->rule('SHOOT_PAYMENT_REMINDER', ['client'], ['reminder_days' => [1, 3, 7], 'repeat_after_day' => 7, 'repeat_every_days' => 7]);
-        $shoot = Shoot::factory()->create(['payment_status' => 'unpaid', 'shoot_ready_notified_at' => now()]);
+        $shoot = Shoot::factory()->create(['payment_status' => 'unpaid', 'status' => Shoot::STATUS_DELIVERED, 'workflow_status' => Shoot::STATUS_DELIVERED, 'delivery_status' => 'delivered', 'shoot_ready_notified_at' => now()]);
         $service = app(AutomationService::class);
         $service->schedulePaymentReminders($shoot);
         $sent = \App\Models\PaymentReminder::where('shoot_id', $shoot->id)->whereDate('scheduled_date', '2026-09-02')->firstOrFail();
@@ -340,7 +340,7 @@ class AutomationConfigurationExecutionTest extends TestCase
             'reminder_days' => [1, 3, 7], 'repeat_after_day' => 7, 'repeat_every_days' => 7,
         ]);
         $shoot = Shoot::factory()->create([
-            'payment_status' => 'unpaid', 'total_quote' => 300, 'shoot_ready_notified_at' => now(),
+            'payment_status' => 'unpaid', 'total_quote' => 300, 'status' => Shoot::STATUS_DELIVERED, 'workflow_status' => Shoot::STATUS_DELIVERED, 'delivery_status' => 'delivered', 'shoot_ready_notified_at' => now(),
         ]);
         $service = app(AutomationService::class);
         $service->schedulePaymentReminders($shoot);

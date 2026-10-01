@@ -7,11 +7,11 @@ use Carbon\CarbonImmutable;
 use PHPUnit\Framework\Attributes\Test;
 use Tests\TestCase;
 
-/** Randomized boundaries for day 1, 3, 7 and the perpetual weekly cadence. */
+/** Randomized boundaries for day 1, 2, 4, 7 and the perpetual weekly cadence. */
 class PaymentReminderCadencePropertyTest extends TestCase
 {
     #[Test]
-    public function cadence_is_day_one_three_seven_then_every_seven_days_for_random_anchors_and_horizons(): void
+    public function cadence_is_day_one_two_four_seven_then_every_seven_days_for_random_anchors_and_horizons(): void
     {
         mt_srand(20260930);
         $scheduler = new PaymentReminderScheduler;
@@ -35,7 +35,7 @@ class PaymentReminderCadencePropertyTest extends TestCase
             $actual = $scheduler->schedule($anchor, $horizon);
             $expected = [];
             for ($day = 1; $anchor->addDays($day)->lessThanOrEqualTo($horizon); $day++) {
-                if ($day === 1 || $day === 3 || ($day >= 7 && ($day - 7) % 7 === 0)) {
+                if ($day === 1 || $day === 2 || $day === 4 || ($day >= 7 && ($day - 7) % 7 === 0)) {
                     $expected[] = $anchor->addDays($day)->toIso8601String();
                 }
             }

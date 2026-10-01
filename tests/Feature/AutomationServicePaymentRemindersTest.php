@@ -47,7 +47,7 @@ class AutomationServicePaymentRemindersTest extends TestCase
 
     public function test_schedule_persists_one_row_per_reminder_date(): void
     {
-        $shoot = Shoot::factory()->create([
+        $shoot = Shoot::factory()->state(['status' => Shoot::STATUS_DELIVERED, 'workflow_status' => Shoot::STATUS_DELIVERED, 'delivery_status' => 'delivered'])->create([
             'payment_status' => 'unpaid',
             'shoot_ready_notified_at' => CarbonImmutable::parse('2026-01-01 10:00:00'),
         ]);
@@ -72,7 +72,7 @@ class AutomationServicePaymentRemindersTest extends TestCase
     public function test_rerunning_scheduler_does_not_create_duplicate_rows(): void
     {
         // Req 12.15 — at most one Payment_Reminder per Shoot per scheduled reminder date.
-        $shoot = Shoot::factory()->create([
+        $shoot = Shoot::factory()->state(['status' => Shoot::STATUS_DELIVERED, 'workflow_status' => Shoot::STATUS_DELIVERED, 'delivery_status' => 'delivered'])->create([
             'payment_status' => 'unpaid',
             'shoot_ready_notified_at' => CarbonImmutable::parse('2026-01-01 10:00:00'),
         ]);
@@ -90,7 +90,7 @@ class AutomationServicePaymentRemindersTest extends TestCase
 
     public function test_rerun_preserves_already_sent_or_cancelled_status(): void
     {
-        $shoot = Shoot::factory()->create([
+        $shoot = Shoot::factory()->state(['status' => Shoot::STATUS_DELIVERED, 'workflow_status' => Shoot::STATUS_DELIVERED, 'delivery_status' => 'delivered'])->create([
             'payment_status' => 'unpaid',
             'shoot_ready_notified_at' => CarbonImmutable::parse('2026-01-01 10:00:00'),
         ]);
@@ -116,7 +116,7 @@ class AutomationServicePaymentRemindersTest extends TestCase
     public function test_paid_shoot_cancels_pending_and_schedules_nothing(): void
     {
         // Req 12.14 — completed payment stops further reminders and cancels pending ones.
-        $shoot = Shoot::factory()->create([
+        $shoot = Shoot::factory()->state(['status' => Shoot::STATUS_DELIVERED, 'workflow_status' => Shoot::STATUS_DELIVERED, 'delivery_status' => 'delivered'])->create([
             'payment_status' => 'unpaid',
             'shoot_ready_notified_at' => CarbonImmutable::parse('2026-01-01 10:00:00'),
         ]);
@@ -139,7 +139,7 @@ class AutomationServicePaymentRemindersTest extends TestCase
 
     public function test_cancel_payment_reminders_only_cancels_pending(): void
     {
-        $shoot = Shoot::factory()->create([
+        $shoot = Shoot::factory()->state(['status' => Shoot::STATUS_DELIVERED, 'workflow_status' => Shoot::STATUS_DELIVERED, 'delivery_status' => 'delivered'])->create([
             'payment_status' => 'unpaid',
             'shoot_ready_notified_at' => CarbonImmutable::parse('2026-01-01 10:00:00'),
         ]);
@@ -167,7 +167,7 @@ class AutomationServicePaymentRemindersTest extends TestCase
 
     public function test_no_anchor_means_no_reminders_scheduled(): void
     {
-        $shoot = Shoot::factory()->create([
+        $shoot = Shoot::factory()->state(['status' => Shoot::STATUS_DELIVERED, 'workflow_status' => Shoot::STATUS_DELIVERED, 'delivery_status' => 'delivered'])->create([
             'payment_status' => 'unpaid',
             'shoot_ready_notified_at' => null,
         ]);

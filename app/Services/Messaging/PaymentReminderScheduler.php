@@ -13,7 +13,7 @@ use Carbon\CarbonInterface;
  * dispatch are handled by AutomationService and the DispatchScheduledMessages job.
  *
  * Cadence (measured from `shoot_ready_notified_at`):
- * - Phase 1 (fixed): day +1, +3, +7 from the start (day 1 = start + 1 day).
+ * - Phase 1 (fixed): day +1, +2, +4, +7 from the completed/ready start.
  * - Phase 2 (weekly): every 7 days after day 7 for as long as the balance remains.
  * Old authored rules with an explicit monthly_day_of_week keep their saved
  * monthly cadence until an operator changes it. The stock rule is migrated.
@@ -33,7 +33,7 @@ class PaymentReminderScheduler
 
         // Saved first reminders replace the default without moving the anchor.
         $days = array_values(array_unique(array_map('intval', array_filter(
-            (array) ($config['reminder_days'] ?? [1, 3, 7]),
+            (array) ($config['reminder_days'] ?? [1, 2, 4, 7]),
             fn ($day) => is_numeric($day) && (int) $day >= 1 && (int) $day <= 30,
         ))));
         foreach ($days as $day) {

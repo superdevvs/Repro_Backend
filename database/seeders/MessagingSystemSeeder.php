@@ -675,7 +675,7 @@ class MessagingSystemSeeder extends Seeder
                 'trigger_type' => 'SHOOT_REMINDER',
                 'is_active' => true,
                 'scope' => 'SYSTEM',
-                'schedule_json' => ['offset' => '-24h'],
+                'schedule_json' => ['offset' => '-24h', 'client_email_schedule' => \App\Services\Messaging\ShootAppointmentReminderSchedule::CLIENT_DEFAULTS],
                 'recipients_json' => ['client', 'photographer'],
             ],
             [

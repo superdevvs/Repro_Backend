@@ -79,10 +79,10 @@ class AutomationServicePaymentReminderChannelsTest extends TestCase
 
     private function unpaidShootFor(User $client): Shoot
     {
-        return Shoot::factory()->create([
+        return Shoot::factory()->state(['status' => Shoot::STATUS_DELIVERED, 'workflow_status' => Shoot::STATUS_DELIVERED, 'delivery_status' => 'delivered'])->create([
             'client_id' => $client->id,
             'payment_status' => 'unpaid',
-            'shoot_ready_notified_at' => CarbonImmutable::parse('2026-01-01 10:00:00'),
+            'shoot_ready_notified_at' => CarbonImmutable::now()->subDay(),
         ]);
     }
 
@@ -301,7 +301,7 @@ class AutomationServicePaymentReminderChannelsTest extends TestCase
         // A pending reminder that is now due, so the dispatcher will call sendPaymentReminder().
         $reminder = PaymentReminder::create([
             'shoot_id' => $shoot->id,
-            'scheduled_date' => '2026-01-02',
+            'scheduled_date' => now()->toDateString(),
             'scheduled_at' => now()->subMinute(),
             'status' => PaymentReminder::STATUS_PENDING,
         ]);
