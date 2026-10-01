@@ -102,6 +102,32 @@ class SupportKnowledgeTest extends TestCase
         $this->assertDatabaseCount('tool_bridge_invocations', 0);
     }
 
+    public function test_profile_picture_help_answers_common_phrasings_for_every_account_role_without_actions(): void
+    {
+        $this->mock(LlmClient::class)->shouldNotReceive('chatCompletion');
+        $this->mock(ShootOperatorService::class)->shouldNotReceive('handle');
+        $kb = app(SupportKnowledgeBase::class);
+        foreach (['client', 'salesRep', 'photographer', 'editor', 'admin', 'superadmin', 'editing_manager'] as $role) {
+            $user = User::factory()->create(['role' => $role]);
+            foreach (['How do I upload my profile picture?', 'How to upload a profile photo', 'How do I change my avatar?', 'Where can I change my profile image?'] as $query) {
+                $article = $kb->search($query, $user)[0] ?? [];
+                $this->assertSame('account-profile-picture', $article['id'] ?? null, $role.': '.$query);
+                $this->assertTrue($kb->canAnswer($query, $article), $query);
+            }
+            $response = $this->actingAs($user, 'sanctum')->postJson('/api/ai/chat', ['message' => 'How do I upload my profile picture?'])
+                ->assertOk()->assertJsonPath('messages.1.metadata.topic', 'account-profile-picture');
+            $content = $response->json('messages.1.content');
+            $this->assertStringContainsString('Change Photo', $content);
+            $this->assertStringContainsString('Update My Info', $content);
+            $this->assertStringContainsString('smaller than 5 MB', $content);
+            $this->assertStringNotContainsString('verify your identity', $content);
+            $this->assertNull($user->fresh()->avatar);
+        }
+        $this->assertNotNull($kb->find('account-profile-picture', null));
+        $this->assertDatabaseCount('tool_bridge_invocations', 0);
+        $this->assertDatabaseCount('voice_call_verifications', 0);
+    }
+
     public function test_primary_help_only_role_cannot_use_operator_via_secondary_role(): void
     {
         $user = User::factory()->create(['role' => 'photographer', 'secondary_roles' => ['admin']]);

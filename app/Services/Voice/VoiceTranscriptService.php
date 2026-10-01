@@ -81,7 +81,7 @@ class VoiceTranscriptService
 
     private function displayTranscript(VoiceCall $call, string $text, string $source): string
     {
-        if ($source === 'recording_recovery' || ! str_contains($text, '<break')) {
+        if ($source === 'recording_recovery' || (! str_contains($text, '<break') && ! str_contains($text, '<emotion'))) {
             return $text;
         }
         $rows = $call->transcriptRows()->where('transcript_type', 'final')->orderBy('occurred_at')->orderBy('id')
@@ -96,11 +96,14 @@ class VoiceTranscriptService
         return $rows->map(function ($row) use ($prefixSpeakers) {
             $display = $row->text;
             if ($row->speaker === 'assistant') {
-                // Strip only recognized provider pause markup, not arbitrary HTML or
+                // Strip only recognized provider directives, not arbitrary HTML or
                 // customer literals. Durable rows and provider event payloads stay raw.
-                $withoutPauses = preg_replace('~[ \t]*<break\s+time\s*=\s*([\'"])(?:\d+(?:\.\d+)?|\.\d+)(?:ms|s)\1\s*/>[ \t]*~', ' ', $display, -1, $replaced);
-                if ($replaced > 0 && $withoutPauses !== null) {
-                    $display = trim($withoutPauses);
+                $withoutDirectives = preg_replace([
+                    '~[ \t]*<break\s+time\s*=\s*([\'"])(?:\d+(?:\.\d+)?|\.\d+)(?:ms|s)\1\s*/>[ \t]*~',
+                    '~[ \t]*(?:<emotion\s+value\s*=\s*([\'"])(?:happy|calm)\1\s*/>[ \t]*)+~',
+                ], ' ', $display, -1, $replaced);
+                if ($replaced > 0 && $withoutDirectives !== null) {
+                    $display = trim($withoutDirectives);
                 }
             }
 

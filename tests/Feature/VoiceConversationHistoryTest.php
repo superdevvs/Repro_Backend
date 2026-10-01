@@ -226,4 +226,25 @@ class VoiceConversationHistoryTest extends TestCase
         $this->assertSame('Legacy assistant: '.$assistant, $service->state($call->fresh())['display_transcript']);
         Http::assertNothingSent();
     }
+
+    public function test_transcript_display_hides_observed_assistant_emotions_without_modifying_provider_or_customer_speech(): void
+    {
+        $call = $this->makeCall();
+        $assistant = '<emotion value="happy" />Hello<emotion value=\'calm\'/><emotion value="happy"/> there. <emotion value="unknown"/> <emotion value="calm" strength="high"/> <emotion value="happy">literal</emotion>';
+        $customer = 'Keep my literal <emotion value="happy" /> and <emotion value=\'calm\'/> text.';
+        $data = $this->event([['role' => 'assistant', 'content' => $assistant], ['role' => 'user', 'content' => $customer]], 0, true);
+        $this->postJson('/api/webhooks/telnyx/voice', ['data' => $data])->assertOk();
+        $expected = 'Hello there. <emotion value="unknown"/> <emotion value="calm" strength="high"/> <emotion value="happy">literal</emotion>';
+        $this->actingAs(User::factory()->create(['role' => 'admin']), 'sanctum')
+            ->getJson('/api/voice/calls/'.$call->id.'/transcript')->assertOk()
+            ->assertJsonPath('transcript', $assistant."\n".$customer)
+            ->assertJsonPath('display_transcript', $expected."\n".$customer);
+        $this->assertSame($assistant, data_get($call->events()->first()->raw_payload, 'data.payload.messages.0.content'));
+        $this->assertSame($assistant, $call->transcriptRows()->oldest('id')->first()->text);
+        $this->assertSame($customer, $call->transcriptRows()->latest('id')->first()->text);
+        $this->assertSame($assistant."\n".$customer, $call->fresh()->transcript);
+        $call->update(['metadata' => ['transcript_projection' => ['source' => 'recording_recovery']]]);
+        $this->assertSame($assistant."\n".$customer, app(VoiceTranscriptService::class)->state($call->fresh())['display_transcript']);
+        Http::assertNothingSent();
+    }
 }

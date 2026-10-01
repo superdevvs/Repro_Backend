@@ -74,6 +74,24 @@ class VoiceSupportKnowledgeTest extends TestCase
         Http::assertNothingSent();
     }
 
+    public function test_profile_picture_instructions_are_public_before_caller_identification_or_verification(): void
+    {
+        $call = $this->voiceCall(User::factory()->create(['role' => 'client']), false);
+        $call->update(['caller_user_id' => null]);
+        foreach (['How do I upload a profile picture?', 'How do I change my avatar?', 'How to upload a profile photo'] as $query) {
+            $this->withHeader('X-Telnyx-Call-Control-Id', $call->call_control_id)
+                ->postJson('/api/telnyx-ai/tools/search_support_knowledge', ['query' => $query])
+                ->assertOk()->assertJsonPath('result.scope', 'public')->assertJsonPath('result.found', true)
+                ->assertJsonPath('result.articles.0.id', 'account-profile-picture')
+                ->assertJsonPath('result.articles.0.links.0.url', '/profile?tab=profile');
+        }
+        $this->assertNull($call->fresh()->verified_at);
+        $this->assertNull($call->fresh()->caller_user_id);
+        $this->assertSame(0, ToolBridgeInvocation::where('tool', 'verify_caller')->count());
+        $this->assertDatabaseCount('voice_call_verifications', 0);
+        Http::assertNothingSent();
+    }
+
     public function test_admin_guidance_requires_verified_persisted_account_and_respects_revoked_permission(): void
     {
         $admin = User::factory()->create(['role' => 'admin']);

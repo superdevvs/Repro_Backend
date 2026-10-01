@@ -1,5 +1,5 @@
 {
-  "version": "2026-10-01.4",
+  "version": "2026-10-01.5",
   "reviewed_at": "2026-10-01",
   "articles": [
     {
@@ -81,6 +81,60 @@
         "frontend/src/pages/profileNavigation.ts",
         "frontend/src/components/profile/ClientProfile.tsx",
         "frontend/src/components/email/ClientEmailHealthNotice.tsx"
+      ]
+    },
+    {
+      "id": "account-profile-picture",
+      "title": "Upload or change your profile picture",
+      "category": "Account",
+      "roles": [
+        "*"
+      ],
+      "summary": "Choose a profile photo from your device and confirm it is saved to your own account.",
+      "keywords": [
+        "profile picture",
+        "profile photo",
+        "profile image",
+        "avatar",
+        "change photo",
+        "upload profile picture",
+        "upload profile photo",
+        "update avatar",
+        "change avatar",
+        "headshot",
+        "display picture",
+        "account photo"
+      ],
+      "steps": [
+        "Sign in, open your account menu using the small profile picture, and choose Profile when available. Photographers choose Settings, then Account; editors choose Settings, then Profile. If your Settings page has a Profile tab, use that tab for your photo.",
+        "Select Change Photo beside your current picture. On Settings > Profile, first select the picture to open the Profile Picture panel, then choose Change Photo. These controls also work by tapping on a phone.",
+        "Choose a JPG, PNG or WebP image from your device that is smaller than 5 MB, and wait for Uploading to finish.",
+        "Clients using the Profile page must select Update My Info to save the uploaded photo. On the other account pages, the photo saves automatically; wait for the save confirmation.",
+        "Reopen the account page to confirm the new picture remains. These are instructions for changing your own photo; Robbie has not changed it for you."
+      ],
+      "troubleshooting": [
+        "For File too large, resize or compress the image below 5 MB. For Invalid file type or an unsupported image, use a JPG, PNG or WebP file instead.",
+        "An uploaded preview alone does not confirm the profile was saved. Clients should check Update My Info; on other pages, check for a save error before leaving.",
+        "If the upload requires authentication, sign in again and retry. If the picture disappears after reopening the page or you see Upload failed or Avatar save failed, note the error and contact support."
+      ],
+      "escalation": "Share your role, the page used, image type and size, and the visible error. Do not send passwords or verification codes.",
+      "links": [
+        {
+          "label": "Open your profile photo settings",
+          "url": "/profile?tab=profile"
+        }
+      ],
+      "sources": [
+        "frontend/src/components/layout/Navbar.tsx",
+        "frontend/src/pages/Profile.tsx",
+        "frontend/src/pages/profileNavigation.ts",
+        "frontend/src/pages/Settings.tsx",
+        "frontend/src/pages/PhotographerAccount.tsx",
+        "frontend/src/pages/photographerAccountNavigation.ts",
+        "frontend/src/components/profile/ClientProfile.tsx",
+        "frontend/src/components/profile/AdminProfile.tsx",
+        "frontend/src/components/profile/ImageUpload.tsx",
+        "backend/app/Http/Controllers/API/MediaUploadController.php"
       ]
     },
     {
