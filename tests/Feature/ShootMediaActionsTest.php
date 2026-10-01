@@ -296,9 +296,10 @@ class ShootMediaActionsTest extends TestCase
     {
         Sanctum::actingAs($this->admin);
         $shoot = $this->createShoot();
+        $overLimitKilobytes = (int) floor(config('uploads.max_bytes') / 1024) + 1;
 
         $response = $this->post('/api/shoots/'.$shoot->id.'/upload', [
-            'files' => [UploadedFile::fake()->create('oversized.nef', 2100000)],
+            'files' => [UploadedFile::fake()->create('oversized.nef', $overLimitKilobytes)],
             'upload_type' => 'raw',
         ], ['Accept' => 'application/json']);
 
@@ -309,6 +310,8 @@ class ShootMediaActionsTest extends TestCase
                 'message',
                 'errors',
             ]);
+
+        $this->assertDatabaseMissing('shoot_files', ['shoot_id' => $shoot->id, 'filename' => 'oversized.nef']);
     }
 
     #[\PHPUnit\Framework\Attributes\Test]
