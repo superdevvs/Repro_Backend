@@ -16,7 +16,7 @@ use App\Models\VoicePushSubscription;
 use App\Models\VoiceStaffPhone;
 use App\Services\TelnyxAi\VoiceRoutingService;
 use App\Support\LockedWrite;
-use Illuminate\Support\Facades\Cache;
+use App\Support\VoiceLocks;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
@@ -116,7 +116,7 @@ class VoiceIncomingOfferService
         abort_unless($this->sessions->canOperate($user) && in_array($user->id, $offer->eligible_user_ids, true), 403);
         $this->assertNotCancelled($offer, $user, $data['idempotency_key']);
         if (($data['device'] ?? 'browser') === 'phone') {
-            $phone = Cache::lock('voice-incoming:'.$offer->id, 60)->block(5, function () use ($offer, $user, $data) {
+            $phone = VoiceLocks::lock('voice-incoming:'.$offer->id, 60)->block(5, function () use ($offer, $user, $data) {
                 $this->assertNotCancelled($offer, $user, $data['idempotency_key']);
                 $offer->refresh();
                 $this->assertClaimable($offer, $user);
@@ -132,8 +132,8 @@ class VoiceIncomingOfferService
             return ['voice_call_id' => $offer->voice_call_id, 'incoming_offer' => $this->present($offer, $user), 'phone_pending' => $offer->status === 'waiting'];
         }
         $session = VoiceBrowserSession::findOrFail($data['session_id']);
-        $browser = Cache::lock('voice-incoming:'.$offer->id, 60)->block(5, fn () => Cache::lock('voice-browser-user:'.$user->id, 60)->block(5,
-            fn () => Cache::lock('voice-browser-device:'.$session->id, 60)->block(5, function () use ($offer, $user, $data, $session) {
+        $browser = VoiceLocks::lock('voice-incoming:'.$offer->id, 60)->block(5, fn () => VoiceLocks::lock('voice-browser-user:'.$user->id, 60)->block(5,
+            fn () => VoiceLocks::lock('voice-browser-device:'.$session->id, 60)->block(5, function () use ($offer, $user, $data, $session) {
                 $offer->refresh();
                 $this->assertNotCancelled($offer, $user, $data['idempotency_key']);
                 $session->refresh();
@@ -159,7 +159,7 @@ class VoiceIncomingOfferService
         LockedWrite::run(fn () => DB::table('voice_cancelled_attempts')->insertOrIgnore(['user_id' => $user->id,
             'idempotency_key' => $this->cancelKey($offer, $key), 'created_at' => now(), 'updated_at' => now()]));
         $phoneToCancel = null;
-        Cache::lock('voice-incoming:'.$offer->id, 60)->block(5, function () use ($offer, $user, $key, &$phoneToCancel): void {
+        VoiceLocks::lock('voice-incoming:'.$offer->id, 60)->block(5, function () use ($offer, $user, $key, &$phoneToCancel): void {
             $offer->refresh();
             if ($offer->status === 'claimed' && $offer->claimed_by_id === $user->id && $offer->claim_key === $key) {
                 app(VoiceBrowserCallService::class)->withdrawIncoming(VoiceBrowserCall::findOrFail($offer->browser_call_id), $user);
@@ -226,7 +226,7 @@ class VoiceIncomingOfferService
 
     public function dialPhone(string $id): void
     {
-        Cache::lock('voice-phone-dial:'.$id, 40)->block(3, function () use ($id): void {
+        VoiceLocks::lock('voice-phone-dial:'.$id, 40)->block(3, function () use ($id): void {
             $phone = VoicePhoneOffer::find($id);
             if (! $phone || $phone->call_control_id || ! in_array($phone->state, ['pending', 'dialing'], true)) {
                 return;
@@ -272,7 +272,7 @@ class VoiceIncomingOfferService
         }
         $next = null;
         $browser = null;
-        $result = Cache::lock('voice-incoming:'.$phone->incoming_offer_id, 60)->block(5, function () use ($phone, $payload, $control, $type, &$next, &$browser) {
+        $result = VoiceLocks::lock('voice-incoming:'.$phone->incoming_offer_id, 60)->block(5, function () use ($phone, $payload, $control, $type, &$next, &$browser) {
             $phone->refresh();
             if ($phone->accepted_at) {
                 return null;
@@ -298,7 +298,7 @@ class VoiceIncomingOfferService
                     $phone->update(['state' => 'cancel_requested']);
                     $next = 'hangup';
                 } else {
-                    $browser = Cache::lock('voice-browser-user:'.$phone->user_id, 60)->block(5, function () use ($offer, $phone) {
+                    $browser = VoiceLocks::lock('voice-browser-user:'.$phone->user_id, 60)->block(5, function () use ($offer, $phone) {
                         $this->assertClaimable($offer, $phone->user);
 
                         return $this->commitClaim($offer, $phone->user, null, 'phone:'.$phone->id, $phone);
@@ -341,7 +341,7 @@ class VoiceIncomingOfferService
             })->where('created_at', '>=', now()->subDay())->oldest()->limit(100)->get();
         foreach ($offers as $offer) {
             $phonesToDial = [];
-            Cache::lock('voice-incoming:'.$offer->id, 60)->block(3, function () use ($offer, &$phonesToDial): void {
+            VoiceLocks::lock('voice-incoming:'.$offer->id, 60)->block(3, function () use ($offer, &$phonesToDial): void {
                 $offer->refresh();
                 $call = $offer->voiceCall->fresh();
                 if ($offer->status === 'claimed') {
@@ -390,7 +390,7 @@ class VoiceIncomingOfferService
         if (! $offer || $offer->status !== 'waiting') {
             return;
         }
-        Cache::lock('voice-incoming:'.$offer->id, 60)->block(3, function () use ($offer): void {
+        VoiceLocks::lock('voice-incoming:'.$offer->id, 60)->block(3, function () use ($offer): void {
             if ($offer->fresh()->status !== 'waiting') {
                 return;
             }

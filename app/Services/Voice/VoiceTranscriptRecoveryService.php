@@ -9,7 +9,7 @@ use App\Models\VoiceCallTranscript;
 use App\Models\VoiceTranscriptRecovery;
 use App\Services\TelnyxAi\VoiceLiveStreamService;
 use App\Support\LockedWrite;
-use Illuminate\Support\Facades\Cache;
+use App\Support\VoiceLocks;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 
@@ -39,7 +39,7 @@ class VoiceTranscriptRecoveryService
     {
         abort_unless(app(VoiceBrowserSessionService::class)->canOperate($user), 403);
 
-        return Cache::lock('voice-recovery-request:'.$call->id, 15)->block(3, function () use ($call, $user, $key) {
+        return VoiceLocks::lock('voice-recovery-request:'.$call->id, 15)->block(3, function () use ($call, $user, $key) {
             $call->refresh();
             $source = $this->source($call);
             abort_unless($source, 422, 'Recovery requires consent and a saved recording verified as this customer call.');
@@ -124,7 +124,7 @@ class VoiceTranscriptRecoveryService
 
                 return;
             }
-            Cache::lock('voice-transcript:'.$call->id, 30)->block(3, fn () => LockedWrite::run(fn () => DB::transaction(function () use ($call, $recovery, $text): void {
+            VoiceLocks::lock('voice-transcript:'.$call->id, 30)->block(3, fn () => LockedWrite::run(fn () => DB::transaction(function () use ($call, $recovery, $text): void {
                 $call->refresh();
                 if (! $call->recording_consent_given || data_get($call->metadata, 'recording_id') !== $recovery->recording_id) {
                     $this->fail($recovery, 'failed', 'Consent or recording changed during recovery; no transcript was saved.');

@@ -6,10 +6,10 @@ use App\Http\Controllers\Controller;
 use App\Models\VoiceCall;
 use App\Services\TelnyxAi\VoiceRoutingService;
 use App\Services\TelnyxAi\VoiceSettingsService;
+use App\Support\VoiceLocks;
 use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Cache;
 
 class VoiceTransferController extends Controller
 {
@@ -24,7 +24,7 @@ class VoiceTransferController extends Controller
         }
 
         try {
-            return Cache::lock('voice:operator-transfer:'.$call->id, 40)->block(2, function () use ($call, $routing, $data): JsonResponse {
+            return VoiceLocks::lock('voice:operator-transfer:'.$call->id, 40)->block(2, function () use ($call, $routing, $data): JsonResponse {
                 $call->refresh();
                 if ($call->ended_at || in_array($call->status, ['completed', 'failed', 'missed', 'cancelled', 'exhausted'], true)) {
                     return response()->json(['message' => 'This call has ended. Schedule a callback instead.'], 409);

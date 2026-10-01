@@ -2,8 +2,8 @@
 
 namespace App\Services\TelnyxAi;
 
+use App\Support\VoiceCache;
 use Illuminate\Http\Client\Response;
-use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use RuntimeException;
 
@@ -24,10 +24,10 @@ class TelnyxAssistantSyncService
         $assistantId = $this->assistantId();
         $cacheKey = 'telnyx:assistant-inspection:'.hash('sha256', $assistantId);
         if ($force) {
-            Cache::forget($cacheKey);
+            VoiceCache::store()->forget($cacheKey);
         }
 
-        return Cache::remember($cacheKey, now()->addMinute(), function () use ($assistantId): array {
+        return VoiceCache::store()->remember($cacheKey, now()->addMinute(), function () use ($assistantId): array {
             $settings = $this->settings->all();
             $canaryActive = $this->settings->outboundMode($settings) === 'canary';
             $canaryNumbers = (array) ($settings['canary_numbers'] ?? config('services.voice.canary_numbers', []));
@@ -114,7 +114,7 @@ class TelnyxAssistantSyncService
             ->post($this->apiBase()."/ai/assistants/{$assistantId}", $payload);
         $this->throwOnFailure($response, 'assistant sync');
         $body = $response->json('data') ?? $response->json() ?? [];
-        Cache::forget('telnyx:assistant-inspection:'.hash('sha256', $assistantId));
+        VoiceCache::store()->forget('telnyx:assistant-inspection:'.hash('sha256', $assistantId));
 
         return array_merge($result, [
             'applied' => true,
@@ -151,7 +151,7 @@ class TelnyxAssistantSyncService
             ->timeout(20)
             ->{$method}($this->apiBase()."/ai/assistants/{$assistantId}/canary-deploys", ['rules' => $rules]);
         $this->throwOnFailure($response, 'canary routing');
-        Cache::forget('telnyx:assistant-inspection:'.hash('sha256', $assistantId));
+        VoiceCache::store()->forget('telnyx:assistant-inspection:'.hash('sha256', $assistantId));
 
         return [
             'assistant_id' => $assistantId,
@@ -182,7 +182,7 @@ class TelnyxAssistantSyncService
             ->timeout(20)
             ->put($this->apiBase()."/ai/assistants/{$assistantId}/canary-deploys", ['rules' => $rules]);
         $this->throwOnFailure($response, 'canary rollback');
-        Cache::forget('telnyx:assistant-inspection:'.hash('sha256', $assistantId));
+        VoiceCache::store()->forget('telnyx:assistant-inspection:'.hash('sha256', $assistantId));
 
         return [
             'assistant_id' => $assistantId,

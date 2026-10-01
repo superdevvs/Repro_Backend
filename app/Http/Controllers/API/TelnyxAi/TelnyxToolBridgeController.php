@@ -9,11 +9,10 @@ use App\Services\TelnyxAi\ConfirmationTokenService;
 use App\Services\TelnyxAi\ToolBridgeRedactor;
 use App\Services\TelnyxAi\ToolBridgeRegistry;
 use App\Services\TelnyxAi\VoiceToolContextResolver;
+use App\Support\VoiceLocks;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Arr;
-use Illuminate\Support\Facades\Cache;
-use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
@@ -91,7 +90,7 @@ class TelnyxToolBridgeController extends Controller
             $idempotencyKey = Str::uuid()->toString();
         }
 
-        $lock = Cache::lock('telnyx:tool-execution:'.hash('sha256', $idempotencyKey), 30);
+        $lock = VoiceLocks::lock('telnyx:tool-execution:'.hash('sha256', $idempotencyKey), 30);
         try {
             return $lock->block(5, fn (): JsonResponse => $this->execute(
                 $tool,

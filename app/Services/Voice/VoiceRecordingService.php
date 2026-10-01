@@ -3,7 +3,7 @@
 namespace App\Services\Voice;
 
 use App\Models\VoiceCall;
-use Illuminate\Support\Facades\Cache;
+use App\Support\VoiceCache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
 use Symfony\Component\HttpKernel\Exception\HttpException;
@@ -25,7 +25,7 @@ class VoiceRecordingService
         if (strtolower((string) $call->provider) === 'telnyx' && is_string($recordingId) && preg_match('/^[a-zA-Z0-9_-]{1,100}$/', $recordingId)) {
             // Carrier webhook URLs expire after ten minutes. Obtain a fresh
             // signed URL when playback is opened; never expose the API key.
-            return Cache::remember('voice:recording-url:'.$call->id.':'.$recordingId, 240, function () use ($recordingId): string {
+            return VoiceCache::store()->remember('voice:recording-url:'.$call->id.':'.$recordingId, 240, function () use ($recordingId): string {
                 $base = rtrim((string) config('services.telnyx.api_base', 'https://api.telnyx.com/v2'), '/');
                 $response = Http::withToken(config('services.telnyx.api_key'))->connectTimeout(5)->timeout(15)
                     ->get($base.'/recordings/'.rawurlencode($recordingId));

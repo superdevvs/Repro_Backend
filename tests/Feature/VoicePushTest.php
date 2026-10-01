@@ -11,7 +11,6 @@ use App\Models\VoicePushSubscription;
 use App\Services\Voice\VoicePushService;
 use App\Services\Voice\VoicePushTransport;
 use Illuminate\Foundation\Testing\RefreshDatabase;
-use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use Minishlink\WebPush\VAPID;
@@ -103,7 +102,7 @@ class VoicePushTest extends TestCase
             return true;
         })->andReturn(['accepted' => true, 'expired' => false, 'status' => 201]);
         $this->app->instance(VoicePushTransport::class, $transport);
-        $lock = Cache::lock('voice-push-delivery:'.$delivery->id, 30);
+        $lock = \App\Support\VoiceLocks::lock('voice-push-delivery:'.$delivery->id, 30);
         $this->assertTrue($lock->get());
         app(VoicePushService::class)->deliver($delivery->id);
         $this->assertSame('queued', $delivery->fresh()->status);

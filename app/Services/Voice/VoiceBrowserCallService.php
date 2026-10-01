@@ -15,7 +15,7 @@ use App\Services\TelnyxAi\VoiceNumberSettingsResolver;
 use App\Services\TelnyxAi\VoiceRoutingService;
 use App\Services\TelnyxAi\VoiceSettingsService;
 use App\Support\LockedWrite;
-use Illuminate\Support\Facades\Cache;
+use App\Support\VoiceLocks;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use RuntimeException;
@@ -80,7 +80,7 @@ class VoiceBrowserCallService
         $this->assertOutboundAllowed($to);
         $hash = $this->hash($data);
 
-        return Cache::lock('voice-browser-user:'.$user->id, 60)->block(5, fn () => Cache::lock('voice-browser-device:'.$session->id, 60)->block(5, function () use ($user, $session, $data, $to, $from, $hash): VoiceCall {
+        return VoiceLocks::lock('voice-browser-user:'.$user->id, 60)->block(5, fn () => VoiceLocks::lock('voice-browser-device:'.$session->id, 60)->block(5, function () use ($user, $session, $data, $to, $from, $hash): VoiceCall {
             abort_if($this->cancelledAttempt($user->id, $data['idempotency_key']), 409, 'This call attempt was cancelled. Start a new call to try again.');
             $existing = $this->replay($user, $data['idempotency_key'], $hash);
             if ($existing) {
@@ -116,7 +116,7 @@ class VoiceBrowserCallService
         abort_if(! $this->callIsLive($call) || $call->status === 'human_handoff' || ! $call->call_control_id, 409, 'This call is no longer available for takeover.');
         $hash = $this->hash(array_merge($data, ['voice_call_id' => $call->id]));
 
-        return Cache::lock('voice-browser-user:'.$user->id, 60)->block(5, fn () => Cache::lock('voice-browser-device:'.$session->id, 60)->block(5, fn () => Cache::lock('voice-browser-import:'.$call->id, 60)->block(5, function () use ($call, $user, $session, $data, $hash): VoiceBrowserCall {
+        return VoiceLocks::lock('voice-browser-user:'.$user->id, 60)->block(5, fn () => VoiceLocks::lock('voice-browser-device:'.$session->id, 60)->block(5, fn () => VoiceLocks::lock('voice-browser-import:'.$call->id, 60)->block(5, function () use ($call, $user, $session, $data, $hash): VoiceBrowserCall {
             abort_if(VoiceIncomingOffer::where('voice_call_id', $call->id)->where('status', 'waiting')->exists(), 409, 'Answer this call from its shared incoming offer.');
             $existing = $this->replay($user, $data['idempotency_key'], $hash);
             if ($existing) {
@@ -143,7 +143,7 @@ class VoiceBrowserCallService
     /** Every eligible admin sees one durable offer; only one claim creates media. */
     public function offerInbound(VoiceCall $call): bool
     {
-        return Cache::lock('voice-browser-import:'.$call->id, 60)->block(5, fn () => app(VoiceIncomingOfferService::class)->create($call));
+        return VoiceLocks::lock('voice-browser-import:'.$call->id, 60)->block(5, fn () => app(VoiceIncomingOfferService::class)->create($call));
     }
 
     public function createClaimedIncoming(VoiceCall $call, User $user, ?VoiceBrowserSession $session, string $offerId, ?VoicePhoneOffer $phone = null): VoiceBrowserCall
@@ -171,17 +171,17 @@ class VoiceBrowserCallService
     {
         abort_unless($this->sessions->canOperate($user), 403);
         LockedWrite::run(fn () => DB::table('voice_cancelled_attempts')->insertOrIgnore(['user_id' => $user->id, 'idempotency_key' => $key, 'created_at' => now(), 'updated_at' => now()]));
-        Cache::lock('voice-browser-user:'.$user->id, 60)->block(5, function () use ($user, $key): void {
+        VoiceLocks::lock('voice-browser-user:'.$user->id, 60)->block(5, function () use ($user, $key): void {
             $browser = VoiceBrowserCall::where('owner_id', $user->id)->where('idempotency_key', $key)->where('mode', 'human_outbound')->first();
             if ($browser && ! in_array($browser->state, self::TERMINAL, true)) {
-                Cache::lock('voice-browser-call:'.$browser->id, 90)->block(5, fn () => $this->end($browser));
+                VoiceLocks::lock('voice-browser-call:'.$browser->id, 90)->block(5, fn () => $this->end($browser));
             }
         });
     }
 
     public function withdrawIncoming(VoiceBrowserCall $browser, User $user): void
     {
-        Cache::lock('voice-browser-call:'.$browser->id, 90)->block(5, function () use ($browser, $user): void {
+        VoiceLocks::lock('voice-browser-call:'.$browser->id, 90)->block(5, function () use ($browser, $user): void {
             $browser->refresh();
             abort_unless($browser->owner_id === $user->id && $browser->mode === 'human_inbound', 403);
             abort_if($browser->legs()->where('role', 'customer')->whereNotNull('joined_at')->exists(), 409, 'The caller is connected. Use End call instead.');
@@ -199,7 +199,7 @@ class VoiceBrowserCallService
         $this->assertSession($session, $user, true);
         $browser = $this->active($call);
         abort_unless($browser && $browser->state === 'active' && $browser->conference_id, 409, 'A human conference must be connected before monitoring.');
-        Cache::lock('voice-browser-user:'.$user->id, 60)->block(5, fn () => Cache::lock('voice-browser-device:'.$session->id, 60)->block(5, function () use ($browser, $session, $user, $mode, $key): void {
+        VoiceLocks::lock('voice-browser-user:'.$user->id, 60)->block(5, fn () => VoiceLocks::lock('voice-browser-device:'.$session->id, 60)->block(5, function () use ($browser, $session, $user, $mode, $key): void {
             $replay = $browser->legs()->where('user_id', $user->id)->where('operation_key', $key)->first();
             if ($replay) {
                 abort_if($replay->mode !== $mode || $replay->session_id !== $session->id, 409, 'This request key was used for different supervision details.');
@@ -250,7 +250,7 @@ class VoiceBrowserCallService
     {
         $browser = $this->active($call);
         abort_unless($browser, 409, 'The browser call is no longer connected.');
-        Cache::lock('voice-browser-call:'.$browser->id, 90)->block(5, fn () => $this->actionLocked($call->fresh(), $user, $data));
+        VoiceLocks::lock('voice-browser-call:'.$browser->id, 90)->block(5, fn () => $this->actionLocked($call->fresh(), $user, $data));
     }
 
     private function actionLocked(VoiceCall $call, User $user, array $data): void
@@ -337,7 +337,7 @@ class VoiceBrowserCallService
         $count = 0;
         $browsers = VoiceBrowserCall::query()->whereNotIn('state', self::TERMINAL)->oldest()->limit(100)->get();
         foreach ($browsers as $browser) {
-            Cache::lock('voice-browser-call:'.$browser->id, 90)->block(2, function () use ($browser, &$count): void {
+            VoiceLocks::lock('voice-browser-call:'.$browser->id, 90)->block(2, function () use ($browser, &$count): void {
                 $browser->refresh();
                 $agent = $browser->legs()->where('role', 'agent')->first();
                 if (! $agent) {
@@ -377,7 +377,7 @@ class VoiceBrowserCallService
     {
         $browser = $this->active($call);
         abort_unless($browser, 409, 'The browser call is no longer connected.');
-        Cache::lock('voice-browser-call:'.$browser->id, 90)->block(5, fn () => $this->consentLocked($call->fresh(), $user, $consented, $key));
+        VoiceLocks::lock('voice-browser-call:'.$browser->id, 90)->block(5, fn () => $this->consentLocked($call->fresh(), $user, $consented, $key));
     }
 
     private function consentLocked(VoiceCall $call, User $user, bool $consented, ?string $key = null): void
@@ -475,7 +475,7 @@ class VoiceBrowserCallService
             return null;
         }
 
-        return Cache::lock('voice-browser-call:'.$browser->id, 90)->block(5, function () use ($leg, $type, $eventId, $payload, $browser): array {
+        return VoiceLocks::lock('voice-browser-call:'.$browser->id, 90)->block(5, function () use ($leg, $type, $eventId, $payload, $browser): array {
             $leg->refresh();
             $browser->refresh();
             $call = $browser->voiceCall->fresh();
@@ -641,7 +641,7 @@ class VoiceBrowserCallService
             return null;
         }
 
-        return Cache::lock('voice-browser-peer:'.$leg->id, 10)->block(2, function () use ($leg, $control, $sessionId): ?VoiceBrowserLeg {
+        return VoiceLocks::lock('voice-browser-peer:'.$leg->id, 10)->block(2, function () use ($leg, $control, $sessionId): ?VoiceBrowserLeg {
             $leg->refresh();
             if ($leg->browser_call_control_id && $leg->browser_call_control_id !== $control) {
                 return null;
@@ -836,7 +836,7 @@ class VoiceBrowserCallService
         // The outer webhook may fail after this method returns. Persist the
         // deduplication marker and both display projections together so replay
         // cannot append twice, or leave the row and flat transcript inconsistent.
-        $stored = Cache::lock('voice-transcript:'.$call->id, 30)->block(3, fn () => LockedWrite::run(fn () => DB::transaction(function () use ($call, $eventId, $speaker, $text, $transcription): bool {
+        $stored = VoiceLocks::lock('voice-transcript:'.$call->id, 30)->block(3, fn () => LockedWrite::run(fn () => DB::transaction(function () use ($call, $eventId, $speaker, $text, $transcription): bool {
             $call->refresh();
             if (! $call->recording_consent_given || ! ($call->metadata['browser_transcription_enabled'] ?? false)) {
                 return false;

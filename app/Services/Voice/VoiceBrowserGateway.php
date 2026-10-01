@@ -4,7 +4,7 @@ namespace App\Services\Voice;
 
 use App\Models\VoiceBrowserCommand;
 use App\Support\LockedWrite;
-use Illuminate\Support\Facades\Cache;
+use App\Support\VoiceLocks;
 use Illuminate\Support\Facades\Http;
 use RuntimeException;
 use Throwable;
@@ -33,7 +33,7 @@ class VoiceBrowserGateway
     /** Durable provider command IDs make retries safe across ambiguous responses. */
     public function command(string $key, string $path, array $payload = []): array
     {
-        return Cache::lock('voice-browser-command:'.hash('sha256', $key), 40)->block(5, function () use ($key, $path, $payload): array {
+        return VoiceLocks::lock('voice-browser-command:'.hash('sha256', $key), 40)->block(5, function () use ($key, $path, $payload): array {
             $command = LockedWrite::run(fn () => VoiceBrowserCommand::query()->firstOrCreate(
                 ['command_key' => $key], ['path' => $path, 'payload' => $payload],
             ));

@@ -5,7 +5,7 @@ namespace App\Services\Voice;
 use App\Models\VoiceCall;
 use App\Services\TelnyxAi\VoiceLiveStreamService;
 use App\Support\LockedWrite;
-use Illuminate\Support\Facades\Cache;
+use App\Support\VoiceLocks;
 use Illuminate\Support\Facades\DB;
 
 class VoiceTranscriptService
@@ -14,7 +14,7 @@ class VoiceTranscriptService
     {
         $call = app(VoiceConversationHistoryService::class)->restoreSaved($call);
 
-        return Cache::lock('voice-transcript:'.$call->id, 30)->block(3, fn () => LockedWrite::run(fn () => DB::transaction(
+        return VoiceLocks::lock('voice-transcript:'.$call->id, 30)->block(3, fn () => LockedWrite::run(fn () => DB::transaction(
             fn () => app(VoiceLiveStreamService::class)->projectSavedTranscript($call->fresh())
         ), 'voice.transcript.rebuild'));
     }

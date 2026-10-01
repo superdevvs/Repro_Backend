@@ -6,8 +6,8 @@ use App\Models\VoiceCall;
 use App\Models\VoiceCallTranscript;
 use App\Services\TelnyxAi\VoiceLiveStreamService;
 use App\Support\LockedWrite;
+use App\Support\VoiceLocks;
 use Illuminate\Support\Carbon;
-use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 
 class VoiceConversationHistoryService
@@ -34,7 +34,7 @@ class VoiceConversationHistoryService
             return $call;
         }
 
-        return Cache::lock('voice-transcript:'.$call->id, 30)->block(3, fn () => LockedWrite::run(
+        return VoiceLocks::lock('voice-transcript:'.$call->id, 30)->block(3, fn () => LockedWrite::run(
             fn () => DB::transaction(function () use ($call, $speech, $at, $final, $data) {
                 $call = $call->fresh();
                 $previous = data_get($call->metadata, 'provider_history', []);
