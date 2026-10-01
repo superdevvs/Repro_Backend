@@ -121,7 +121,7 @@ class GoogleCalendarShootSyncTest extends TestCase
                     'timeZone' => 'America/New_York',
                 ]
                 && ($request['end'] ?? null) === [
-                    'dateTime' => $expectedStart->copy()->addMinutes(120)->toRfc3339String(),
+                    'dateTime' => $expectedStart->copy()->addMinutes(60)->toRfc3339String(),
                     'timeZone' => 'America/New_York',
                 ]
                 && ($request['location'] ?? null) === '100 Sync Street, Baltimore, MD 21201'
