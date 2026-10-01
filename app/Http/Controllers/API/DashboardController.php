@@ -39,7 +39,7 @@ class DashboardController extends Controller
         }
 
         // Cache key includes user role to ensure proper access control
-        $cacheKey = 'dashboard_overview_'.$user->role.'_'.$user->id;
+        $cacheKey = 'dashboard_overview_deliveries_v2_'.$user->role.'_'.$user->id;
         $todayDate = now()->startOfDay()->toDateString();
 
         $data = app(ScheduleDateScopeService::class)->rememberForDate($todayDate, $cacheKey, 60, function () {
@@ -159,6 +159,7 @@ class DashboardController extends Controller
             return [
                 'stats' => $stats,
                 'upcoming_shoots' => $upcomingShoots->values()->all(), // Convert Collection to array
+                'latest_deliveries' => $this->formatShoots($this->latestDeliveredShoots(), $today, true)->values()->all(),
                 'photographers' => $photographers,
                 'activity_log' => $activity->values()->all(), // Convert Collection to array
                 'issues' => $issues->values()->all(), // Convert Collection to array
@@ -303,6 +304,7 @@ class DashboardController extends Controller
                 'city_state_zip' => $this->formatLocationLine($shoot),
                 'status' => $shoot->status,
                 'workflow_status' => $shoot->workflow_status,
+                'completed_at' => optional($shoot->completed_at)->toIso8601String(),
                 // Same payment truth as shoot detail header (ShootPresenter / payment_status).
                 // Required for Delivered cards — overview was omitting this so pills defaulted to Unpaid,
                 // including historical imports that are paid in the old dashboard ($ paid on record).
@@ -652,6 +654,18 @@ class DashboardController extends Controller
                 ];
             })
             ->values();
+    }
+
+    protected function latestDeliveredShoots(): Collection
+    {
+        return Shoot::query()
+            ->where('status', Shoot::STATUS_DELIVERED)
+            ->with(['client', 'photographer', 'service.category', 'services.category', 'payments'])
+            // Import and payment updates must never make old deliveries look recent.
+            ->orderByRaw("COALESCE(NULLIF(completed_at, ''), NULLIF(editing_completed_at, ''), NULLIF(scheduled_at, ''), scheduled_date) DESC")
+            ->orderByDesc('id')
+            ->limit(6)
+            ->get();
     }
 
     protected function buildWorkflowColumns(Carbon $today): array
