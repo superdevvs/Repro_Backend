@@ -24,7 +24,7 @@ use ZipArchive;
  */
 class IguideOfflinePackageService
 {
-    public const MAX_COMPRESSED_BYTES = 256 * 1024 * 1024;
+    public const MAX_COMPRESSED_BYTES = 1024 * 1024 * 1024;
 
     public const MAX_EXPANDED_BYTES = 1024 * 1024 * 1024;
 
@@ -73,7 +73,7 @@ class IguideOfflinePackageService
             $size = (int) filesize($path);
         }
         if ($size < 1 || $size > self::MAX_COMPRESSED_BYTES) {
-            $this->invalid('The ZIP must be no larger than 256 MiB.');
+            $this->invalid('The ZIP must be no larger than 1 GiB.');
         }
 
         $magic = file_get_contents($path, false, null, 0, 4);

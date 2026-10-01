@@ -14,6 +14,30 @@ class IguideOfflinePackageServiceTest extends TestCase
     /** @var list<string> */
     private array $temporaryFiles = [];
 
+    #[Test]
+    public function inspection_accepts_the_large_official_export_and_enforces_the_one_gibibyte_limit(): void
+    {
+        $contents = file_get_contents($this->zip(['index.html' => '<html>Tour</html>'])->getRealPath());
+
+        foreach ([868999851, 1073741824] as $size) {
+            $upload = UploadedFile::fake()->createWithContent('official-offline_en.zip', $contents);
+            $upload->sizeToReport = $size;
+
+            $inspection = app(IguideOfflinePackageService::class)->inspect($upload);
+            $this->assertSame($size, $inspection['size_bytes']);
+            $this->assertSame('index.html', $inspection['index_entry_path']);
+        }
+
+        $oversized = UploadedFile::fake()->createWithContent('too-large.zip', $contents);
+        $oversized->sizeToReport = 1073741825;
+        try {
+            app(IguideOfflinePackageService::class)->inspect($oversized);
+            $this->fail('An archive larger than 1 GiB was accepted.');
+        } catch (ValidationException $exception) {
+            $this->assertSame(['The ZIP must be no larger than 1 GiB.'], $exception->errors()['package']);
+        }
+    }
+
     protected function tearDown(): void
     {
         foreach ($this->temporaryFiles as $path) {

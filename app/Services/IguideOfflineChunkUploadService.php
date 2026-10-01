@@ -37,7 +37,7 @@ class IguideOfflineChunkUploadService
         $maxBytes = (int) config('iguide.offline_upload.max_size_bytes', IguideOfflinePackageService::MAX_COMPRESSED_BYTES);
         if ($sizeBytes < 1 || $sizeBytes > $maxBytes) {
             throw ValidationException::withMessages([
-                'size_bytes' => 'The ZIP must be no larger than 256 MiB.',
+                'size_bytes' => 'The ZIP must be no larger than 1 GiB.',
             ]);
         }
 

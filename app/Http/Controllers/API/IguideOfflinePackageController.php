@@ -25,9 +25,9 @@ class IguideOfflinePackageController extends Controller
         ShootMediaStorageService $mediaStorageService
     ): JsonResponse {
         $request->validate([
-            'package' => ['required', 'file', 'max:262144'],
+            'package' => ['required', 'file', 'max:'.(IguideOfflinePackageService::MAX_COMPRESSED_BYTES / 1024)],
         ], [
-            'package.max' => 'The ZIP must be no larger than 256 MiB.',
+            'package.max' => 'The ZIP must be no larger than 1 GiB.',
         ]);
 
         $package = $request->file('package');
