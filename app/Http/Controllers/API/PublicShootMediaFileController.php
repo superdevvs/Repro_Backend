@@ -5,6 +5,7 @@ namespace App\Http\Controllers\API;
 use App\Http\Controllers\Controller;
 use App\Services\Media\MediaStorage;
 use Illuminate\Http\Request;
+use Symfony\Component\HttpFoundation\HeaderUtils;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class PublicShootMediaFileController extends Controller
@@ -27,6 +28,21 @@ class PublicShootMediaFileController extends Controller
             abort(404);
         }
 
-        return $media->streamResponse($key);
+        $headers = [
+            // Disable nginx response buffering so multi-hundred-MB archives
+            // flush to the client instead of waiting for PHP to finish.
+            'X-Accel-Buffering' => 'no',
+        ];
+
+        if (str_ends_with(strtolower($key), '.zip')) {
+            $filename = basename($key);
+            $headers['Content-Type'] = 'application/zip';
+            $headers['Content-Disposition'] = HeaderUtils::makeDisposition(
+                HeaderUtils::DISPOSITION_ATTACHMENT,
+                $filename
+            );
+        }
+
+        return $media->streamResponse($key, $headers['Content-Type'] ?? null, $headers);
     }
 }

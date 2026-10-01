@@ -646,6 +646,8 @@ class MediaStorage
             'Content-Type' => $mime,
             'Cache-Control' => 'private, no-store',
             'X-Content-Type-Options' => 'nosniff',
+            // Tell nginx not to buffer the upstream body (large ZIP/media streams).
+            'X-Accel-Buffering' => 'no',
         ], $headers));
     }
 
