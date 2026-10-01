@@ -998,11 +998,14 @@ class DashboardController extends Controller
             $activityLogs = Cache::remember($cacheKey, now()->addSeconds(15), function () use ($role, $userId) {
                 return $this->getActivityLogsForRole($role, $userId);
             });
+            // Only email-{numeric id} identifies an inbox Message. Preserve the
+            // separately scoped email-issue-* account verification and bounce alerts.
+            $isEmailMessage = static fn ($item): bool => preg_match('/\Aemail-[0-9]+\z/', (string) ($item['id'] ?? '')) === 1;
             if (! app(\App\Services\Messaging\DashboardMessagingPolicy::class)->canEmail($user)) {
-                $activityLogs = $activityLogs->reject(fn ($item) => str_starts_with((string) ($item['id'] ?? ''), 'email-'));
+                $activityLogs = $activityLogs->reject($isEmailMessage);
             }
             // Imported history must disappear from any still-cached email feed immediately.
-            $emailIds = $activityLogs->map(fn ($item) => str_starts_with((string) ($item['id'] ?? ''), 'email-') ? (int) substr($item['id'], 6) : null)->filter()->all();
+            $emailIds = $activityLogs->map(fn ($item) => $isEmailMessage($item) ? (int) substr($item['id'], 6) : null)->filter()->all();
             if ($emailIds !== []) {
                 $convertedIds = \App\Models\SupportTicketMessage::whereIn('source_message_id', $emailIds)->pluck('source_message_id')->map(fn ($id) => 'email-'.$id)->all();
                 $activityLogs = $activityLogs->reject(fn ($item) => in_array($item['id'] ?? null, $convertedIds, true));
