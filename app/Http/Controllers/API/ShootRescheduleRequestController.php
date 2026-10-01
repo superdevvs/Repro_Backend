@@ -31,26 +31,9 @@ class ShootRescheduleRequestController extends Controller
 {
     public function __construct(protected ShootAuthorizationSupport $authorization) {}
 
-    /**
-     * Roles allowed to reschedule a shoot outright, and to review other
-     * people's requests. Mirrors the `role:` middleware on the updateStatus
-     * route (plus salesRep aliases) so the two cannot drift apart.
-     */
-    // Keep in step with pending-holds office roles and FE RESCHEDULE_REVIEWER_ROLES
-    // (compared via strtolower). salesRep must see/approve Dashboard Reschedule.
-    private const STAFF_ROLES = [
-        'admin',
-        'superadmin',
-        'editing_manager',
-        'salesrep',
-        'sales_rep',
-        'rep',
-        'representative',
-    ];
-
     public function index(Shoot $shoot)
     {
-        $this->authorization->ensureShootAccess($shoot, auth()->user());
+        abort_unless($this->authorization->canViewShootRequests($shoot, auth()->user()), 403, 'Forbidden');
         $requests = $shoot->rescheduleRequests()
             ->with(['requester:id,name,avatar', 'approver:id,name,avatar'])->latest()->get();
 
@@ -83,7 +66,7 @@ class ShootRescheduleRequestController extends Controller
 
         $user = $request->user();
         $accessibleShootIds = $this->authorization
-            ->scopeAccessibleShootMedia(Shoot::query(), $user)
+            ->scopeAccessibleShootRequests(Shoot::query(), $user)
             ->select('shoots.id');
 
         // Default → pending + recent decided (Overview-like context for Dashboard).
@@ -287,7 +270,7 @@ class ShootRescheduleRequestController extends Controller
     public function updateStatus(Request $request, ShootRescheduleRequest $rescheduleRequest)
     {
         $this->authorizeReviewer($request);
-        $this->authorization->ensureShootAccess($rescheduleRequest->shoot, $request->user());
+        abort_unless($this->authorization->canTriageShootRequests($rescheduleRequest->shoot, $request->user()), 403, 'Forbidden');
 
         $validated = $request->validate([
             'status' => 'required|in:approved,rejected',
@@ -499,27 +482,7 @@ class ShootRescheduleRequestController extends Controller
      */
     private function userCanReviewRequests(?User $user): bool
     {
-        if (! $user) {
-            return false;
-        }
-
-        $role = strtolower((string) ($user->role ?? ''));
-
-        if (in_array($role, self::STAFF_ROLES, true)) {
-            return true;
-        }
-
-        // Some staff carry their privileges as secondary roles.
-        $secondary = $user->secondary_roles;
-        if (is_array($secondary)) {
-            foreach ($secondary as $secondaryRole) {
-                if (in_array(strtolower((string) $secondaryRole), self::STAFF_ROLES, true)) {
-                    return true;
-                }
-            }
-        }
-
-        return false;
+        return $this->authorization->canReviewShootRequests($user);
     }
 
     private function authorizeReviewer(Request $request): void

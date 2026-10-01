@@ -13,7 +13,7 @@ use Tests\TestCase;
 
 class AutomationServiceRecipientTest extends TestCase
 {
-    public function test_shoot_requested_automations_only_resolve_client_recipients(): void
+    public function test_shoot_requested_automations_route_staff_recipients_to_sales_rep(): void
     {
         $service = $this->makeService();
         $rule = new AutomationRule([
@@ -24,9 +24,21 @@ class AutomationServiceRecipientTest extends TestCase
         $recipients = $this->resolveRecipients($service, $rule, [
             'client' => ['email' => 'client@example.com', 'name' => 'Client User'],
             'photographer' => ['email' => 'photographer@example.com', 'name' => 'Photographer User'],
+            'rep' => ['email' => 'rep@example.com', 'name' => 'Sales Rep', 'phonenumber' => '+12025550123'],
         ]);
 
-        $this->assertSame(['client@example.com'], array_values(array_column($recipients, 'email')));
+        $this->assertSame(['client@example.com', 'rep@example.com'], array_values(array_column($recipients, 'email')));
+        $this->assertSame('+12025550123', $recipients[1]['phone']);
+    }
+
+    public function test_cancellation_and_hold_rules_never_fall_back_to_photographers_without_a_rep(): void
+    {
+        foreach (['SHOOT_CANCELLATION_REQUESTED', 'SHOOT_CANCELLED', 'SHOOT_CANCELED', 'SHOOT_ON_HOLD', 'HOLD_REQUESTED', 'SHOOT_RESCHEDULE_REQUESTED'] as $trigger) {
+            $rule = new AutomationRule(['trigger_type' => $trigger, 'recipients_json' => ['photographer']]);
+            $this->assertSame([], $this->resolveRecipients($this->makeService(), $rule, [
+                'photographer' => ['email' => 'photographer@example.com'],
+            ]), $trigger);
+        }
     }
 
     public function test_shoot_updated_automations_still_resolve_client_and_photographer(): void

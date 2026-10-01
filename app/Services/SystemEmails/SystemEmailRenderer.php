@@ -554,6 +554,7 @@ class SystemEmailRenderer
             ],
             'SHOOT_CANCELLATION_REQUESTED' => $shared + [
                 'isPhotographer' => (bool) ($meta->is_photographer ?? false),
+                'isReviewer' => (bool) ($meta->is_reviewer ?? in_array($meta->recipient_type ?? '', ['rep', 'admin'], true)),
                 'cancellationReason' => $meta->cancellation_reason ?? null,
             ],
             'SHOOT_DELIVERED' => $shared + [

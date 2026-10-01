@@ -43,7 +43,7 @@ class ManualNotificationService
         'payment_receipt' => 'payment-receipt',
     ];
 
-    private const RECIPIENT_TYPES = ['client', 'photographer'];
+    private const RECIPIENT_TYPES = ['client', 'photographer', 'rep'];
 
     private const CHANNELS = ['email', 'sms'];
 
@@ -114,6 +114,7 @@ class ManualNotificationService
         ?int $recipientUserId = null,
     ): Message {
         $recipientType = $this->normalizeRecipientType($recipientType);
+        $this->validateRouting($type, $recipientType);
         $channel = $this->normalizeChannel($channel);
         $template = $this->resolveTemplate($type, $channel);
 
@@ -267,6 +268,8 @@ class ManualNotificationService
         $channel = $this->normalizeChannel($channel);
         $template = $this->resolveTemplate($type, $channel);
         $recipientType = $this->normalizeRecipientType($recipientType);
+
+        $this->validateRouting($type, $recipientType);
 
         $recipients = $this->resolveRecipients($shoot, $recipientType, $recipientUserId);
         if ($recipients->isEmpty()) {
@@ -427,6 +430,13 @@ class ManualNotificationService
      */
     private function resolveRecipients(Shoot $shoot, string $recipientType, ?int $recipientUserId = null): Collection
     {
+        if ($recipientType === 'rep') {
+            $rep = app(\App\Services\Shoots\ShootSalesRepResolver::class)->resolve($shoot);
+
+            return collect([$rep])->filter(fn ($user) => $user instanceof User
+                && ($recipientUserId === null || (int) $user->id === $recipientUserId))->values();
+        }
+
         if ($recipientType === 'client') {
             $client = $shoot->client;
             if (! $client instanceof User) {
@@ -544,6 +554,13 @@ class ManualNotificationService
         $lines[] = 'Remaining balance: $' . number_format($remaining, 2);
 
         return implode("\n", $lines);
+    }
+
+    private function validateRouting(string $type, string $recipientType): void
+    {
+        if (in_array($type, ['shoot_on_hold', 'shoot_cancelled'], true) && $recipientType === 'photographer') {
+            throw new InvalidArgumentException('Hold and cancellation notifications go to the sales rep. Select Sales Rep as the recipient.');
+        }
     }
 
     private function normalizeRecipientType(string $recipientType): string

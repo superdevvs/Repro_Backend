@@ -762,11 +762,11 @@ class MessagingSystemSeeder extends Seeder
             // Additional automations
             [
                 'name' => 'Shoot Request Received',
-                'description' => 'Notify client when shoot request is received',
+                'description' => 'Notify client and sales representative when shoot request is received',
                 'trigger_type' => 'SHOOT_REQUESTED',
                 'is_active' => true,
                 'scope' => 'SYSTEM',
-                'recipients_json' => ['client'],
+                'recipients_json' => ['client', 'rep'],
             ],
             [
                 'name' => 'Shoot Request Approved',
@@ -810,11 +810,11 @@ class MessagingSystemSeeder extends Seeder
             ],
             [
                 'name' => 'Shoot Cancelled Notification',
-                'description' => 'Notify client when shoot is cancelled',
+                'description' => 'Notify client and sales representative when shoot is cancelled',
                 'trigger_type' => 'SHOOT_CANCELED',
                 'is_active' => true,
                 'scope' => 'SYSTEM',
-                'recipients_json' => ['client', 'photographer'],
+                'recipients_json' => ['client', 'rep'],
             ],
             [
                 'name' => 'Shoot Removed Notification',

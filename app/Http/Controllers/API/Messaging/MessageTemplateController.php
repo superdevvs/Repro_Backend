@@ -303,7 +303,7 @@ class MessageTemplateController extends Controller
     {
         $data = $request->validate([
             'shoot_id' => ['required', 'integer', 'exists:shoots,id'],
-            'recipient_type' => ['nullable', Rule::in(['client', 'photographer'])],
+            'recipient_type' => ['nullable', Rule::in(['client', 'photographer', 'rep'])],
         ]);
 
         $shoot = Shoot::with(['client', 'photographer', 'services'])->findOrFail($data['shoot_id']);
@@ -355,7 +355,7 @@ class MessageTemplateController extends Controller
         $rules = [
             'shoot_id' => ['required', 'integer', 'exists:shoots,id'],
             'type' => ['required', 'string', Rule::in(array_keys(ManualNotificationService::TYPES))],
-            'recipient_type' => ['required', Rule::in(['client', 'photographer'])],
+            'recipient_type' => ['required', Rule::in(['client', 'photographer', 'rep'])],
             'channel' => [$requireChannel ? 'required' : 'nullable', Rule::in(['email', 'sms'])],
             'recipient_user_id' => ['nullable', 'integer', 'exists:users,id'],
         ];

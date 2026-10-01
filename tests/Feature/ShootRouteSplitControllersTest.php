@@ -278,7 +278,7 @@ class ShootRouteSplitControllersTest extends TestCase
             'service_id' => $this->service->id,
             'address' => '301 Assigned Issue St',
             'editor_id' => null,
-            'admin_issue_notes' => '[Request from Route Split Client]: Please brighten the kitchen',
+            'admin_issue_notes' => "[Request from Route Split Client]: Please brighten the kitchen\n[Assigned: editor]",
             'is_flagged' => true,
         ]);
         $assignedShoot->services()->attach($this->service->id, [
@@ -292,7 +292,7 @@ class ShootRouteSplitControllersTest extends TestCase
             'service_id' => $this->secondService->id,
             'address' => '302 Other Issue St',
             'editor_id' => null,
-            'admin_issue_notes' => '[Request from Route Split Client]: Please replace the sky',
+            'admin_issue_notes' => "[Request from Route Split Client]: Please replace the sky\n[Assigned: editor]",
             'is_flagged' => true,
         ]);
         $otherShoot->services()->attach($this->secondService->id, [

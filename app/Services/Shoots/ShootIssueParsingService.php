@@ -60,7 +60,8 @@ class ShootIssueParsingService
             $assignedToUserId = $parsedRequest['assignedToUserId'];
             $requestStatus = $parsedRequest['status'];
             $authorization = app(ShootAuthorizationSupport::class);
-            $isContractor = $authorization->hasRole($viewer, ['editor', 'photographer']);
+            $isContractor = ! $authorization->canTriageShootRequests($shoot, $viewer)
+                && $authorization->hasRole($viewer, ['editor', 'photographer']);
             if ($isContractor && $assignedToUserId && (string) $assignedToUserId !== (string) $viewer->id) {
                 continue;
             }
@@ -124,7 +125,9 @@ class ShootIssueParsingService
     public function parseClientRequests(iterable $shoots, ?User $viewer = null): array
     {
         $requests = [];
-        $viewerRole = strtolower((string) ($viewer?->role ?? ''));
+        $viewerRole = app(ShootAuthorizationSupport::class)->canReviewShootRequests($viewer)
+            ? 'request_reviewer'
+            : strtolower((string) ($viewer?->role ?? ''));
 
         foreach ($shoots as $shoot) {
             foreach ($this->parseShootRequests($shoot, $viewer) as $request) {
@@ -159,7 +162,7 @@ class ShootIssueParsingService
         }
 
         if ($viewerRole === 'editor') {
-            return $assignedToRole === null || $assignedToRole === 'editor';
+            return $assignedToRole === 'editor';
         }
 
         return true;
@@ -246,7 +249,7 @@ class ShootIssueParsingService
             ->firstWhere('id', $issueId);
     }
 
-    public function assignIssueRole(Shoot $shoot, string $issueId, string $assignedTo, ?int $assignedToUserId = null): ?array
+    public function assignIssueRole(Shoot $shoot, string $issueId, string $assignedTo, ?int $assignedToUserId = null, ?User $viewer = null): ?array
     {
         if (!$shoot->admin_issue_notes || !in_array($assignedTo, ['editor', 'photographer'], true)) {
             return null;
@@ -276,7 +279,7 @@ class ShootIssueParsingService
         $shoot->is_flagged = $this->hasOpenRequestsFromEntries($shoot, $entries);
         $shoot->save();
 
-        return collect($this->parseShootRequests($shoot->fresh()))
+        return collect($this->parseShootRequests($shoot->fresh(), $viewer))
             ->firstWhere('id', $issueId);
     }
 

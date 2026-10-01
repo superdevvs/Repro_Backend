@@ -53,17 +53,14 @@ class ShootWorkflowTransitionSupportService
             }
         }
 
-        if (
-            $shoot->photographer
-            && $shoot->photographer->email
-            && (! $shoot->client || (int) $shoot->photographer->id !== (int) $shoot->client->id)
-        ) {
+        $rep = app(ShootSalesRepResolver::class)->resolve($shoot);
+        if ($rep && $rep->email && (int) $rep->id !== (int) $shoot->client_id) {
             try {
-                $this->mailService->sendShootCancellationRequestedEmail($shoot->photographer, $shoot);
+                $this->mailService->sendShootCancellationRequestedEmail($rep, $shoot);
             } catch (\Throwable $e) {
-                Log::warning('Failed to send cancellation request email to photographer', [
+                Log::warning('Failed to send cancellation request email to sales rep', [
                     'shoot_id' => $shoot->id,
-                    'photographer_id' => $shoot->photographer->id,
+                    'rep_id' => $rep->id,
                     'error' => $e->getMessage(),
                 ]);
             }
@@ -185,7 +182,7 @@ class ShootWorkflowTransitionSupportService
         $recipients = User::query()
             ->whereIn('role', ['admin', 'superadmin'])
             ->get()
-            ->push($shoot->rep)
+            ->push(app(ShootSalesRepResolver::class)->resolve($shoot))
             ->filter()
             ->unique('id');
 

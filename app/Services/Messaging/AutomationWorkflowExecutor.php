@@ -611,6 +611,7 @@ class AutomationWorkflowExecutor
      */
     private function dispatchProtectedTrigger(string $triggerType, array $recipientTypes, array $context): array
     {
+        $context = ShootRequestRecipientRouting::context($triggerType, $context);
         $shoot = $this->contextShoot($context);
         $client = $this->contextUser($context, 'client');
         $rep = $this->contextUser($context, 'rep');
@@ -703,8 +704,15 @@ class AutomationWorkflowExecutor
                 if ($shoot && $client && in_array('client', $recipientTypes, true) && $this->mailService->sendShootRequestedEmail($client, $shoot)) {
                     $sentTo[] = $client->email;
                 }
-                if ($shoot && in_array('admin', $recipientTypes, true) && $this->mailService->sendShootRequestedAdminNotificationEmails($shoot)) {
-                    $sentTo = array_merge($sentTo, $this->recipientEmails($this->adminRecipients()));
+                if ($shoot && in_array('admin', $recipientTypes, true)) {
+                    foreach ($this->adminRecipients() as $admin) {
+                        if ($this->mailService->sendShootRequestedStaffEmail($admin, $shoot)) {
+                            $sentTo[] = $admin->email;
+                        }
+                    }
+                }
+                if ($shoot && $rep && in_array('rep', $recipientTypes, true) && $this->mailService->sendShootRequestedStaffEmail($rep, $shoot)) {
+                    $sentTo[] = $rep->email;
                 }
                 break;
 
@@ -729,10 +737,17 @@ class AutomationWorkflowExecutor
 
             case 'SHOOT_CANCELED':
             case 'SHOOT_CANCELLED':
-                if ($shoot && $client && in_array('client', $recipientTypes, true) && $this->mailService->sendShootCancelledEmail($client, $shoot)) {
+                if ($shoot && $client && in_array('client', $recipientTypes, true) && $this->mailService->sendShootCancelledEmail($client, $shoot, false)) {
                     $sentTo[] = $client->email;
-                    if (in_array('photographer', $recipientTypes, true)) {
-                        $sentTo = array_merge($sentTo, $this->recipientEmails($this->assignedPhotographers($shoot)));
+                }
+                if ($shoot && $rep && in_array('rep', $recipientTypes, true) && $this->mailService->sendShootCancelledEmail($rep, $shoot, false)) {
+                    $sentTo[] = $rep->email;
+                }
+                if ($shoot && in_array('admin', $recipientTypes, true)) {
+                    foreach ($this->adminRecipients() as $admin) {
+                        if ($this->mailService->sendShootCancelledEmail($admin, $shoot, false)) {
+                            $sentTo[] = $admin->email;
+                        }
                     }
                 }
                 break;
@@ -1042,6 +1057,7 @@ class AutomationWorkflowExecutor
 
     private function resolveActionRecipients(AutomationRule $automation, array $config, array $context, string $mode): array
     {
+        $context = ShootRequestRecipientRouting::context($automation->trigger_type, $context);
         if ($automation->trigger_type === 'PROPERTY_CONTACT_REMINDER' && $mode === 'email') {
             return $this->resolveRecipientsByRoles($automation, ['client', 'rep'], $context, $mode);
         }
@@ -1049,7 +1065,7 @@ class AutomationWorkflowExecutor
         $recipientMode = $config['recipientMode'] ?? 'automation_default';
 
         if ($recipientMode === 'context' && ! empty($config['contextKey'])) {
-            $contextKey = $this->normalizeRoleName((string) $config['contextKey']);
+            $contextKey = ShootRequestRecipientRouting::role($automation->trigger_type, $this->normalizeRoleName((string) $config['contextKey']));
 
             if (! $this->shouldIncludeRoleRecipient($contextKey, $automation, $context)) {
                 return [];
@@ -1063,7 +1079,7 @@ class AutomationWorkflowExecutor
             default => $this->normalizeRoles($automation->recipients_json),
         };
 
-        return $this->resolveRecipientsByRoles($automation, $roles, $context, $mode);
+        return $this->resolveRecipientsByRoles($automation, ShootRequestRecipientRouting::roles($automation->trigger_type, $roles), $context, $mode);
     }
 
     private function resolveRecipientsByRoles(AutomationRule $automation, array $roles, array $context, string $mode): array

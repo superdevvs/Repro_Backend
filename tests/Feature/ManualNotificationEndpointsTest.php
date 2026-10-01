@@ -7,6 +7,7 @@ use App\Models\MessageTemplate;
 use App\Models\Service;
 use App\Models\Shoot;
 use App\Models\User;
+use App\Services\Messaging\ManualNotificationService;
 use App\Services\Messaging\MessagingService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Mockery\MockInterface;
@@ -25,6 +26,32 @@ use Tests\TestCase;
 class ManualNotificationEndpointsTest extends TestCase
 {
     use RefreshDatabase;
+
+    public function test_admin_can_preview_and_send_hold_and_cancellation_to_the_account_sales_rep(): void
+    {
+        $admin = User::factory()->create(['role' => 'admin']);
+        $rep = User::factory()->create(['role' => 'salesRep', 'name' => 'Sam Sales']);
+        $client = User::factory()->create(['metadata' => ['account_rep_id' => $rep->id]]);
+        $shoot = Shoot::factory()->create(['client_id' => $client->id, 'rep_id' => null]);
+        $deliveries = [];
+        $this->mock(MessagingService::class, function (MockInterface $mock) use (&$deliveries): void {
+            $mock->shouldReceive('sendEmail')->twice()->andReturnUsing(function (array $payload) use (&$deliveries): Message {
+                $deliveries[] = $payload;
+                return Message::make(['id' => count($deliveries), 'channel' => 'EMAIL', 'status' => 'SENT']);
+            });
+            $mock->shouldNotReceive('sendSms');
+        });
+        foreach (['shoot_on_hold', 'shoot_cancelled'] as $type) {
+            $slug = ManualNotificationService::TYPES[$type];
+            $this->template($slug);
+            $payload = ['shoot_id' => $shoot->id, 'type' => $type, 'recipient_type' => 'rep', 'recipient_user_id' => $rep->id, 'channel' => 'email'];
+            $preview = $this->actingAs($admin, 'sanctum')->postJson('/api/messaging/notifications/manual-preview', $payload);
+            $preview->assertOk()->assertJsonPath('recipients.0.id', $rep->id)->assertJsonPath('recipients.0.recipient_type', 'rep');
+            $this->actingAs($admin, 'sanctum')->postJson('/api/messaging/notifications/manual-send', $payload)
+                ->assertOk()->assertJsonPath('recipient_type', 'rep');
+        }
+        $this->assertSame([$rep->email, $rep->email], array_column($deliveries, 'to'));
+    }
 
     private function template(string $slug, array $overrides = []): MessageTemplate
     {

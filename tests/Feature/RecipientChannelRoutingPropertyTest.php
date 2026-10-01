@@ -20,7 +20,7 @@ use Tests\TestCase;
  * Validates: Requirements 12.6, 12.7
  *
  * Universal invariant under test, for any defined notification type and any
- * (recipient ∈ {client, photographer}, channel ∈ {email, sms}) selection:
+ * allowed recipient/channel selection (hold and cancellation use client or rep):
  *
  *   (12.6) The notification is delivered to the SELECTED recipient. When
  *          recipientType = client the dispatch targets the shoot's client;
@@ -60,7 +60,7 @@ class RecipientChannelRoutingPropertyTest extends TestCase
     /** Fixed seed so any counterexample reproduces; bump if a case is fixed. */
     private const SEED = 12_06_12_07;
 
-    private const RECIPIENT_TYPES = ['client', 'photographer'];
+    private const RECIPIENT_TYPES = ['client', 'photographer', 'rep'];
 
     private const CHANNELS = ['email', 'sms'];
 
@@ -137,9 +137,17 @@ class RecipientChannelRoutingPropertyTest extends TestCase
         }
 
         $types = array_keys(ManualNotificationService::TYPES);
+        foreach (['shoot_on_hold', 'shoot_cancelled'] as $type) {
+            foreach (['client', 'rep'] as $recipient) {
+                foreach (self::CHANNELS as $channel) {
+                    $cases["edge_{$type}_{$recipient}_{$channel}"] = compact('type', 'recipient', 'channel') + ['label' => 'request routing'];
+                }
+            }
+        }
         for ($i = 0; $i < self::RANDOM_ITERATIONS; $i++) {
             $type = $types[mt_rand(0, count($types) - 1)];
-            $recipient = self::RECIPIENT_TYPES[mt_rand(0, count(self::RECIPIENT_TYPES) - 1)];
+            $allowedRecipients = in_array($type, ['shoot_on_hold', 'shoot_cancelled'], true) ? ['client', 'rep'] : self::RECIPIENT_TYPES;
+            $recipient = $allowedRecipients[mt_rand(0, count($allowedRecipients) - 1)];
             $channel = self::CHANNELS[mt_rand(0, count(self::CHANNELS) - 1)];
 
             $cases["random_{$i}_{$type}_{$recipient}_{$channel}"] = [
@@ -158,7 +166,7 @@ class RecipientChannelRoutingPropertyTest extends TestCase
      * details, so the test can prove the dispatch targets the *selected*
      * recipient and not the other party.
      *
-     * @return array{shoot:Shoot,client:User,photographer:User}
+     * @return array{shoot:Shoot,client:User,photographer:User,rep:User}
      */
     private function shootWithDistinctRecipients(): array
     {
@@ -173,13 +181,19 @@ class RecipientChannelRoutingPropertyTest extends TestCase
             'name'        => 'Pat Photographer',
             'role'        => 'photographer',
         ]);
+        $rep = User::factory()->create([
+            'email' => 'rep+'.uniqid('', true).'@example.com',
+            'phonenumber' => '+1333'.str_pad((string) mt_rand(1_000_000, 9_999_999), 7, '0', STR_PAD_LEFT),
+            'name' => 'Sam Sales', 'role' => 'salesRep',
+        ]);
 
         $shoot = Shoot::factory()->create([
             'client_id'       => $client->id,
             'photographer_id' => $photographer->id,
+            'rep_id' => $rep->id,
         ]);
 
-        return ['shoot' => $shoot, 'client' => $client, 'photographer' => $photographer];
+        return compact('shoot', 'client', 'photographer', 'rep');
     }
 
     /**
@@ -224,11 +238,11 @@ class RecipientChannelRoutingPropertyTest extends TestCase
     public function send_routes_to_selected_recipient_and_channel_for_all_inputs(): void
     {
         foreach ($this->casesGenerator() as $key => $case) {
-            ['shoot' => $shoot, 'client' => $client, 'photographer' => $photographer]
+            ['shoot' => $shoot, 'client' => $client, 'photographer' => $photographer, 'rep' => $rep]
                 = $this->shootWithDistinctRecipients();
 
-            $selected = $case['recipient'] === 'photographer' ? $photographer : $client;
-            $other = $case['recipient'] === 'photographer' ? $client : $photographer;
+            $selected = ['client' => $client, 'photographer' => $photographer, 'rep' => $rep][$case['recipient']];
+            $other = $case['recipient'] === 'client' ? $photographer : $client;
 
             $expectedAddress = $case['channel'] === 'sms'
                 ? $selected->phonenumber

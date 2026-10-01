@@ -71,7 +71,8 @@ class ShootAccessSecurityTest extends TestCase
             Sanctum::actingAs(User::factory()->create(['role' => $role]));
             $this->postJson("/api/shoots/{$shoot->id}/messages", ['recipient_id' => $shoot->client_id, 'message' => 'forbidden'])->assertForbidden();
             $this->postJson("/api/shoots/{$shoot->id}/issues", ['note' => 'forbidden'])->assertForbidden();
-            $this->patchJson("/api/shoots/{$shoot->id}/issues/999999", ['status' => 'resolved'])->assertForbidden();
+            $this->patchJson("/api/shoots/{$shoot->id}/issues/999999", ['status' => 'resolved'])
+                ->assertStatus($role === 'salesRep' ? 404 : 403);
             $this->postJson("/api/shoots/{$shoot->id}/mark-issues-resolved")->assertForbidden();
             $this->postJson("/api/shoots/{$shoot->id}/reschedule", ['requested_date' => '2026-10-15'])->assertForbidden();
             $this->postJson("/api/shoots/{$shoot->id}/files/{$file->id}/move-to-completed")->assertForbidden();

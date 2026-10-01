@@ -558,8 +558,9 @@ class ShootWorkflowActionsTest extends TestCase
     }
 
     #[\PHPUnit\Framework\Attributes\Test]
-    public function cancellation_request_side_effects_notify_client_and_photographer(): void
+    public function cancellation_request_side_effects_notify_client_and_sales_rep(): void
     {
+        $rep = User::factory()->create(['role' => 'salesRep']);
         $requestedRecipientIds = [];
         $this->rebindWorkflowSupportMailService(function ($mailService) use (&$requestedRecipientIds): void {
             $mailService->shouldReceive('sendShootCancellationRequestedEmail')
@@ -577,6 +578,7 @@ class ShootWorkflowActionsTest extends TestCase
             'status' => Shoot::STATUS_SCHEDULED,
             'workflow_status' => Shoot::STATUS_SCHEDULED,
             'cancellation_reason' => 'Seller postponed listing',
+            'rep_id' => $rep->id,
         ]);
 
         $this->app->make(ShootWorkflowTransitionSupportService::class)
@@ -584,7 +586,7 @@ class ShootWorkflowActionsTest extends TestCase
 
         sort($requestedRecipientIds);
         $this->assertSame(
-            [(int) $this->client->id, (int) $this->photographer->id],
+            [(int) $this->client->id, (int) $rep->id],
             $requestedRecipientIds
         );
     }

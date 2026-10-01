@@ -308,6 +308,51 @@ class ShootAuthorizationSupport
         return $this->hasRole($user, ['admin', 'superadmin', 'editing_manager']);
     }
 
+    /** Request review is an office/sales duty, independent of media workflow writes. */
+    public function canReviewShootRequests(?User $user): bool
+    {
+        if (! $user) {
+            return false;
+        }
+
+        $roles = [$user->role, ...(is_array($user->secondary_roles) ? $user->secondary_roles : [])];
+
+        foreach ($roles as $role) {
+            if (in_array($this->normalizeRole((string) $role), ['admin', 'superadmin', 'editing_manager', 'sales_rep'], true)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    public function canTriageShootRequests(Shoot $shoot, ?User $user): bool
+    {
+        if ($shoot->isImportDraft()) {
+            return $this->canManageShootOperations($user) && $this->canViewShootDetails($shoot, $user);
+        }
+
+        return $this->canReviewShootRequests($user);
+    }
+
+    public function canViewShootRequests(Shoot $shoot, ?User $user): bool
+    {
+        return $this->canTriageShootRequests($shoot, $user) || $this->canViewShootDetails($shoot, $user);
+    }
+
+    public function scopeAccessibleShootRequests(Builder $query, ?User $user): Builder
+    {
+        if (! $this->canReviewShootRequests($user)) {
+            return $this->scopeAccessibleShootMedia($query, $user);
+        }
+
+        // Keep this scope consistent with canTriageShootRequests even when a
+        // caller has removed the model's private-import-draft global scope.
+        return $this->hasRole($user, ['admin', 'superadmin'])
+            ? $query
+            : $query->where($query->getModel()->qualifyColumn('status'), '!=', Shoot::STATUS_IMPORT_DRAFT);
+    }
+
     /** Viewing a linked/shared delivery never grants the recipient workflow writes. */
     public function canSubmitShootRequest(Shoot $shoot, ?User $user): bool
     {

@@ -12,6 +12,7 @@ use App\Models\ShootService;
 use App\Models\User;
 use App\Services\MailService;
 use App\Services\Schedule\ScheduleInstantResolver;
+use App\Services\Shoots\ShootSalesRepResolver;
 use Carbon\Carbon;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\Log;
@@ -674,9 +675,11 @@ class AutomationService
     private function resolveRecipients(AutomationRule $rule, array $context): array
     {
         $recipients = [];
-        $recipientTypes = $rule->recipients_json ?? [];
+        $context = ShootRequestRecipientRouting::context($rule->trigger_type, $context);
+        $configuredRoles = $rule->recipients_json ?? [];
+        $recipientTypes = ShootRequestRecipientRouting::roles($rule->trigger_type, $configuredRoles['roles'] ?? $configuredRoles);
 
-        if (in_array($rule->trigger_type, ['SHOOT_REQUESTED', 'SHOOT_REQUEST_APPROVED', 'SHOOT_REQUEST_MODIFIED', 'SHOOT_REQUEST_DECLINED'], true)) {
+        if (in_array($rule->trigger_type, ['SHOOT_REQUEST_APPROVED', 'SHOOT_REQUEST_MODIFIED', 'SHOOT_REQUEST_DECLINED'], true)) {
             $recipientTypes = array_values(array_filter($recipientTypes, fn ($type) => $type === 'client'));
         }
 
@@ -738,6 +741,7 @@ class AutomationService
                         $rep = $context['rep'];
                         $recipients[] = [
                             'email' => $rep['email'] ?? $rep->email ?? null,
+                            'phone' => $rep['phonenumber'] ?? $rep->phonenumber ?? $rep['phone'] ?? $rep->phone ?? null,
                             'name' => $rep['name'] ?? $rep->name ?? 'Rep',
                             'type' => 'rep',
                         ];
@@ -946,7 +950,7 @@ class AutomationService
             'service_items' => $this->formatServiceItemsContext($shoot),
             'shoot_notes' => $this->formatShootNotes($shoot),
             'client' => $shoot->client,
-            'rep' => $shoot->rep,
+            'rep' => app(ShootSalesRepResolver::class)->resolve($shoot),
             'photographer' => $assignedPhotographers[0] ?? $shoot->photographer,
             'photographers' => $assignedPhotographers,
             'photographer_service_items' => $this->groupServiceItemsByRole($shoot, 'photographer'),
