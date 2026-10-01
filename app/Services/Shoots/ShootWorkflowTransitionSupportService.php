@@ -114,11 +114,13 @@ class ShootWorkflowTransitionSupportService
     public function sendCancellationRejectionSideEffects(Shoot $shoot, User $user, ?string $reason = null): void
     {
         $shoot->loadMissing(['client', 'photographer', 'rep', 'services']);
+        $status = (string) ($shoot->workflow_status ?: $shoot->status);
+        $statusLabel = in_array($status, ['on_hold', 'hold_on'], true) ? 'on hold' : str_replace('_', ' ', $status);
         $this->notifyUser(
             $shoot->client,
             'cancellation_rejected',
             'Cancellation request rejected',
-            'Your cancellation request was rejected. The shoot remains scheduled.',
+            'Your cancellation request was rejected. The shoot remains '.$statusLabel.'.',
             [
                 'shoot_id' => $shoot->id,
                 'rejected_by' => $user->id,

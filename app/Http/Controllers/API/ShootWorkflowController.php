@@ -20,6 +20,7 @@ use App\Services\Shoots\Actions\RequestHoldAction;
 use App\Services\Shoots\Actions\StartEditingAction;
 use App\Services\Shoots\Actions\SubmitForReviewAction;
 use App\Services\Shoots\Actions\WithdrawRequestedShootAction;
+use App\Services\Shoots\HoldNotificationService;
 use Illuminate\Http\Request;
 
 class ShootWorkflowController extends Controller
@@ -38,7 +39,8 @@ class ShootWorkflowController extends Controller
         protected ApproveHoldAction $approveHoldAction,
         protected RejectHoldAction $rejectHoldAction,
         protected AssignEditorAction $assignEditorAction,
-        protected WithdrawRequestedShootAction $withdrawRequestedShootAction
+        protected WithdrawRequestedShootAction $withdrawRequestedShootAction,
+        protected HoldNotificationService $holdNotifications
     ) {
     }
 
@@ -51,10 +53,13 @@ class ShootWorkflowController extends Controller
         }
 
         try {
+            $notificationOptions = $request->validate(HoldNotificationService::rules());
             $this->putShootOnHoldAction->execute($request, $shoot, $user);
+            $notifications = $this->holdNotifications->send($shoot, $user, $notificationOptions);
 
             return response()->json([
                 'message' => 'Shoot has been placed on hold.',
+                'notifications' => $notifications,
                 'data' => new ShootResource($shoot->load(['client', 'rep', 'photographer', 'services'])),
             ]);
         } catch (\InvalidArgumentException $e) {
@@ -298,10 +303,13 @@ class ShootWorkflowController extends Controller
         abort_unless(app(\App\Services\Shoots\ShootAuthorizationSupport::class)->canTriageShootRequests($shoot, $user), 403, 'Forbidden');
 
         try {
+            $notificationOptions = $request->validate(HoldNotificationService::rules());
             $this->approveHoldAction->execute($request, $shoot, $user);
+            $notifications = $this->holdNotifications->send($shoot, $user, $notificationOptions);
 
             return response()->json([
                 'message' => 'Hold request approved. Shoot has been placed on hold.',
+                'notifications' => $notifications,
                 'data' => new ShootResource($shoot->load(['client', 'rep', 'photographer', 'services'])),
             ]);
         } catch (\InvalidArgumentException $e) {

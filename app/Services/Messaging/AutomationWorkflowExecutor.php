@@ -1099,6 +1099,9 @@ class AutomationWorkflowExecutor
             if (ShootRequestRecipientRouting::isCompletedCancellation($automation->trigger_type) && $contextKey === 'photographer') {
                 return $this->resolveRecipientsByRoles($automation, ['photographer', 'rep'], $context, $mode);
             }
+            if ($automation->trigger_type === 'SHOOT_ON_HOLD' && $contextKey === 'photographer') {
+                return $this->resolveRecipientsByRoles($automation, ['photographer'], $context, $mode);
+            }
 
             if (! $this->shouldIncludeRoleRecipient($contextKey, $automation, $context)) {
                 return [];

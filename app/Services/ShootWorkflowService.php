@@ -350,6 +350,9 @@ class ShootWorkflowService
         $this->writeTransaction(function () use ($shoot, $user, $reason, $activityType) {
             $shoot->status = self::STATUS_ON_HOLD;
             $shoot->workflow_status = self::STATUS_ON_HOLD;
+            $shoot->hold_reason = $reason;
+            $shoot->hold_requested_at = null;
+            $shoot->hold_requested_by = null;
             $shoot->updated_by = $user?->id ?? auth()->id();
             $shoot->save();
 

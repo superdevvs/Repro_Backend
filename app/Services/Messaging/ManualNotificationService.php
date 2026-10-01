@@ -114,11 +114,10 @@ class ManualNotificationService
         ?int $recipientUserId = null,
     ): Message {
         $recipientType = $this->normalizeRecipientType($recipientType);
-        $this->validateRouting($type, $recipientType);
         $channel = $this->normalizeChannel($channel);
         $template = $this->resolveTemplate($type, $channel);
 
-        $recipients = $this->resolveRecipients($shoot, $recipientType, $recipientUserId);
+        $recipients = $this->resolveRecipients($shoot, $recipientType, $recipientUserId, $type);
         if ($recipients->isEmpty()) {
             throw new RuntimeException("Shoot {$shoot->id} has no {$recipientType} to notify.");
         }
@@ -149,7 +148,7 @@ class ManualNotificationService
      *
      * @return list<array{id:int,name:?string,email:?string,phone:?string,role:string,recipient_type:string}>
      */
-    public function listRecipients(Shoot $shoot, ?string $recipientType = null): array
+    public function listRecipients(Shoot $shoot, ?string $recipientType = null, ?string $notificationType = null): array
     {
         $types = $recipientType
             ? [$this->normalizeRecipientType($recipientType)]
@@ -157,7 +156,7 @@ class ManualNotificationService
 
         $out = [];
         foreach ($types as $type) {
-            foreach ($this->resolveRecipients($shoot, $type) as $user) {
+            foreach ($this->resolveRecipients($shoot, $type, notificationType: $notificationType) as $user) {
                 $out[] = [
                     'id' => (int) $user->id,
                     'name' => $user->name,
@@ -269,9 +268,7 @@ class ManualNotificationService
         $template = $this->resolveTemplate($type, $channel);
         $recipientType = $this->normalizeRecipientType($recipientType);
 
-        $this->validateRouting($type, $recipientType);
-
-        $recipients = $this->resolveRecipients($shoot, $recipientType, $recipientUserId);
+        $recipients = $this->resolveRecipients($shoot, $recipientType, $recipientUserId, $type);
         if ($recipients->isEmpty()) {
             throw new RuntimeException("Shoot {$shoot->id} has no {$recipientType} to notify.");
         }
@@ -298,7 +295,10 @@ class ManualNotificationService
             'body_html'         => $rendered['body_html'] ?? $rendered['html'] ?? null,
             'body_text'         => $rendered['body_text'] ?? $rendered['text'] ?? null,
             'missing_variables' => $this->collectMissingVariables($template, $context, $rendered),
-            'recipients'        => $this->listRecipients($shoot, $recipientType),
+            'recipients'        => array_values(array_filter(
+                $this->listRecipients($shoot, $recipientType, $type),
+                fn (array $row) => $recipientUserId === null || $row['id'] === $recipientUserId,
+            )),
         ];
     }
 
@@ -428,7 +428,7 @@ class ManualNotificationService
      *
      * @return Collection<int, User>
      */
-    private function resolveRecipients(Shoot $shoot, string $recipientType, ?int $recipientUserId = null): Collection
+    private function resolveRecipients(Shoot $shoot, string $recipientType, ?int $recipientUserId = null, ?string $notificationType = null): Collection
     {
         if ($recipientType === 'rep') {
             $rep = app(\App\Services\Shoots\ShootSalesRepResolver::class)->resolve($shoot);
@@ -448,6 +448,12 @@ class ManualNotificationService
             }
 
             return collect([$client]);
+        }
+
+        if ($notificationType === 'shoot_on_hold') {
+            return ShootRequestRecipientRouting::cancellationPhotographers($shoot)
+                ->filter(fn (User $user) => $recipientUserId === null || (int) $user->id === $recipientUserId)
+                ->values();
         }
 
         $shoot->loadMissing(['photographer', 'services']);
@@ -554,13 +560,6 @@ class ManualNotificationService
         $lines[] = 'Remaining balance: $' . number_format($remaining, 2);
 
         return implode("\n", $lines);
-    }
-
-    private function validateRouting(string $type, string $recipientType): void
-    {
-        if ($type === 'shoot_on_hold' && $recipientType === 'photographer') {
-            throw new InvalidArgumentException('Hold notifications go to the sales rep. Select Sales Rep as the recipient.');
-        }
     }
 
     private function normalizeRecipientType(string $recipientType): string

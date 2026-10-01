@@ -252,7 +252,7 @@ class MessageTemplateController extends Controller
             $data['recipient_user_id'] ?? null,
         );
 
-        $recipients = $manual->listRecipients($shoot, $data['recipient_type']);
+        $recipients = $manual->listRecipients($shoot, $data['recipient_type'], $data['type']);
         if (! empty($data['recipient_user_id'])) {
             $recipients = array_values(array_filter(
                 $recipients,

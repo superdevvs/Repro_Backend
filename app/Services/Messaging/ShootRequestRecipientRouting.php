@@ -26,7 +26,7 @@ final class ShootRequestRecipientRouting
     {
         if (in_array($trigger, self::TRIGGERS, true)
             && in_array(strtolower(str_replace(['_', '-', ' '], '', $role)), ['photographer', 'previousphotographer', 'newphotographer'], true)) {
-            return self::isCompletedCancellation($trigger) ? 'photographer' : 'rep';
+            return self::isCompletedCancellation($trigger) || $trigger === 'SHOOT_ON_HOLD' ? 'photographer' : 'rep';
         }
 
         return $role;
@@ -58,7 +58,7 @@ final class ShootRequestRecipientRouting
         if (is_numeric($shootId)) {
             $shoot = Shoot::with(['client', 'rep'])->find((int) $shootId);
             $context['rep'] = $shoot ? app(ShootSalesRepResolver::class)->resolve($shoot) : null;
-            if (self::isCompletedCancellation($trigger)) {
+            if (self::isCompletedCancellation($trigger) || $trigger === 'SHOOT_ON_HOLD') {
                 if ($shoot) {
                     $context['shoot'] = $shoot;
                 }

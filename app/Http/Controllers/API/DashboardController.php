@@ -56,7 +56,8 @@ class DashboardController extends Controller
                         'scheduled_date', 'time', 'status', 'workflow_status', 'is_flagged', 'admin_issue_notes',
                         'editing_completed_at', 'submitted_for_review_at', 'shoot_notes', 'company_notes',
                         'photographer_notes', 'editor_notes', 'property_details', 'created_by', 'hero_image',
-                        'scheduled_at', 'timezone', 'payment_status', 'total_paid', 'total_quote'],
+                        'scheduled_at', 'timezone', 'payment_status', 'total_paid', 'total_quote',
+                        'cancellation_requested_at', 'cancellation_reason', 'hold_requested_at', 'hold_requested_by', 'hold_reason'],
                     [
                         'client:id,name,company_name,phonenumber',
                         'photographer:id,name,avatar,timezone',
@@ -336,6 +337,9 @@ class DashboardController extends Controller
                 // Cancellation fields (present when cancellation_requested_at is selected)
                 'cancellation_reason' => $shoot->cancellation_reason ?? null,
                 'cancellation_requested_at' => optional($shoot->cancellation_requested_at)?->toIso8601String(),
+                'hold_requested_at' => optional($shoot->hold_requested_at)?->toIso8601String(),
+                'hold_requested_by' => $shoot->hold_requested_by ?? null,
+                'hold_reason' => $shoot->hold_reason ?? null,
             ];
 
             if ($includeMedia) {
@@ -711,6 +715,7 @@ class DashboardController extends Controller
                 'editing_completed_at', 'submitted_for_review_at', 'shoot_notes', 'company_notes',
                 'photographer_notes', 'editor_notes', 'property_details', 'created_by', 'hero_image',
                 'scheduled_at', 'timezone',
+                'cancellation_requested_at', 'cancellation_reason', 'hold_requested_at', 'hold_requested_by', 'hold_reason',
                 // Required for Delivered Paid/Unpaid pills — same fields as shoot detail header.
                 'payment_status', 'total_paid', 'total_quote'];
 

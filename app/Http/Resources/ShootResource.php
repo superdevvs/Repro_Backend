@@ -75,6 +75,7 @@ class ShootResource extends JsonResource
 
         $this->services->loadMissing('sqftRanges');
         $requestingUser = $request->user();
+        $canReviewRequests = app(\App\Services\Shoots\ShootAuthorizationSupport::class)->canReviewShootRequests($requestingUser);
         $requestingRole = strtolower((string) ($requestingUser?->role ?? ''));
         $canManageReshoots = in_array($requestingRole, ['admin', 'superadmin'], true);
         $iguideVisibility = app(IguideDataVisibilityService::class);
@@ -220,10 +221,14 @@ class ShootResource extends JsonResource
                     'name' => $this->rep?->name ?? 'Unknown',
                 ];
             }),
-            'photographer' => $this->when($this->photographer_id && ! $isEditor, function () {
+            'photographer' => $this->when($this->photographer_id && ! $isEditor, function () use ($canReviewRequests) {
                 return [
                     'id' => (string) $this->photographer_id,
                     'name' => $this->photographer?->name ?? 'Unassigned',
+                    ...($canReviewRequests ? [
+                        'email' => $this->photographer?->email,
+                        'phone' => $this->photographer?->phonenumber ?: $this->photographer?->phone,
+                    ] : []),
                 ];
             }),
             'editor' => $resolvedTopLevelEditor,
@@ -239,7 +244,7 @@ class ShootResource extends JsonResource
             'latitude' => $listingLatitude,
             'longitude' => $listingLongitude,
             // Batch-load unique per-service photographer IDs to avoid N+1 queries
-            'services' => (function () use ($serviceCollection, $isEditor, $assignmentService, $serviceItemByServiceId) {
+            'services' => (function () use ($serviceCollection, $isEditor, $assignmentService, $serviceItemByServiceId, $canReviewRequests) {
                 $servicePhotographerIds = $serviceCollection
                     ->pluck('pivot.photographer_id')
                     ->filter()
@@ -257,7 +262,7 @@ class ShootResource extends JsonResource
                     ? \App\Models\User::whereIn('id', $serviceEditorIds)->get()->keyBy('id')
                     : collect();
 
-                return $serviceCollection->map(function ($service) use ($servicePhotographers, $serviceEditors, $isEditor, $assignmentService, $serviceItemByServiceId) {
+                return $serviceCollection->map(function ($service) use ($servicePhotographers, $serviceEditors, $isEditor, $assignmentService, $serviceItemByServiceId, $canReviewRequests) {
                     // FALLBACK RULE: service.photographer_id ?? shoot.photographer_id
                     $resolvedPhotographerId = $service->pivot->photographer_id ?? $this->photographer_id;
                     $sqftRanges = $service->relationLoaded('sqftRanges')
@@ -280,6 +285,10 @@ class ShootResource extends JsonResource
                                 'id' => (string) $photographer->id,
                                 'name' => $photographer->name,
                                 'avatar' => $photographer->avatar ?? null,
+                                ...($canReviewRequests ? [
+                                    'email' => $photographer->email,
+                                    'phone' => $photographer->phonenumber ?: $photographer->phone,
+                                ] : []),
                             ];
                         }
                     }

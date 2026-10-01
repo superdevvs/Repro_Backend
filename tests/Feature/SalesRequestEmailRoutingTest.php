@@ -135,17 +135,14 @@ class SalesRequestEmailRoutingTest extends TestCase
         $this->assertNull($resolver->resolve($shoot->fresh()));
     }
 
-    public function test_manual_hold_sends_reject_photographer(): void
+    public function test_manual_hold_can_notify_the_assigned_photographer(): void
     {
-        [$shoot] = $this->fixture();
-        foreach (['shoot_on_hold'] as $type) {
-            try {
-                app(ManualNotificationService::class)->send($shoot, $type, 'photographer', 'email', $shoot->client);
-                $this->fail('Photographer routing must be rejected.');
-            } catch (\InvalidArgumentException $exception) {
-                $this->assertStringContainsString('sales rep', $exception->getMessage());
-            }
-        }
-        $this->assertSame([], $this->deliveries);
+        [$shoot, , , $photographer] = $this->fixture();
+        \App\Models\MessageTemplate::create([
+            'slug' => 'shoot-on-hold', 'channel' => 'EMAIL', 'name' => 'Hold', 'is_active' => true,
+            'scope' => 'SYSTEM', 'body_html' => '<p>Shoot on hold</p>', 'body_text' => 'Shoot on hold',
+        ]);
+        app(ManualNotificationService::class)->send($shoot, 'shoot_on_hold', 'photographer', 'email', $shoot->client);
+        $this->assertSame([$photographer->email], array_column($this->deliveries, 'to'));
     }
 }

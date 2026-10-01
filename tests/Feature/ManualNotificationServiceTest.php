@@ -77,29 +77,22 @@ class ManualNotificationServiceTest extends TestCase
         }
     }
 
-    public function test_hold_photographer_previews_and_sends_are_rejected(): void
+    public function test_hold_photographer_previews_match_selected_email_and_sms_sends(): void
     {
-        $shoot = Shoot::factory()->create();
+        $photographer = User::factory()->photographer()->create(['phonenumber' => '+12025550193']);
+        $shoot = Shoot::factory()->create(['photographer_id' => $photographer->id]);
         $admin = User::factory()->create(['role' => 'admin']);
-        $this->mock(MessagingService::class, function (MockInterface $mock): void {
-            $mock->shouldNotReceive('sendEmail');
-            $mock->shouldNotReceive('sendSms');
-        });
-        $service = app(ManualNotificationService::class);
-        foreach (['shoot_on_hold'] as $type) {
-            $this->template(ManualNotificationService::TYPES[$type]);
-            foreach (['preview', 'send'] as $operation) {
-                try {
-                    if ($operation === 'preview') {
-                        $service->preview($shoot, $type, 'photographer');
-                    } else {
-                        $service->send($shoot, $type, 'photographer', 'email', $admin);
-                    }
-                    $this->fail('Photographer request routing must be rejected.');
-                } catch (InvalidArgumentException $exception) {
-                    $this->assertStringContainsString('sales rep', $exception->getMessage());
-                }
-            }
+        $this->template('shoot-on-hold');
+        foreach (['email', 'sms'] as $channel) {
+            $this->mockMessaging($captured, $channel === 'sms' ? 'sendSms' : 'sendEmail');
+            $service = app(ManualNotificationService::class);
+            $preview = $service->preview($shoot, 'shoot_on_hold', 'photographer', $channel, $photographer->id);
+            $service->send($shoot, 'shoot_on_hold', 'photographer', $channel, $admin, $photographer->id);
+            $this->assertSame([$photographer->id], array_column($preview['recipients'], 'id'));
+            $this->assertSame($channel === 'sms' ? $photographer->phonenumber : $photographer->email, $captured['to']);
+            $this->assertSame('photographer', $captured['contact_type']);
+            $this->assertSame($preview['body_text'], $captured['body_text']);
+            $this->assertSame($preview['body_html'], $captured['body_html']);
         }
     }
 
