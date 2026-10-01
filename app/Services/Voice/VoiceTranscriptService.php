@@ -31,7 +31,13 @@ class VoiceTranscriptService
         $ended = $call->ended_at !== null;
         $quiet = $last?->created_at ?? $call->ended_at;
         if ($ended) {
-            $finalizing = $call->ended_at->gt(now()->subSeconds(90)) || $quiet?->gt(now()->subSeconds(90));
+            // Restoring an old final snapshot creates new rows. Their insertion time
+            // must not restart the delivery grace period once all final history is saved.
+            $finalHistorySaved = data_get($metadata, 'provider_history.final') === true && $text !== ''
+                && ($expected = (int) data_get($metadata, 'provider_history.message_count', 0)) > 0 && $count === $expected
+                && $call->transcriptRows()->where('transcript_type', 'final')
+                    ->where('provider_message_id', 'like', 'telnyx-history:'.$call->id.':%')->count() === $expected;
+            $finalizing = ! $finalHistorySaved && ($call->ended_at->gt(now()->subSeconds(90)) || $quiet?->gt(now()->subSeconds(90)));
             $state = $finalizing && ($enabled || $text !== '' || ! $human) ? 'finalizing' : ($text !== '' ? ($pending ? 'partial' : 'ready') : 'unavailable');
         } elseif ($text !== '') {
             $state = $pending || ($enabled && $last?->created_at->lt(now()->subSeconds(60))) ? 'delayed' : 'live';
@@ -63,12 +69,42 @@ class VoiceTranscriptService
             && (! $recovery || $recovery->recording_id !== data_get($metadata, 'recording_id')
                 || (in_array($recovery->status, ['failed', 'uncertain'], true) && $recovery->attempt < 3));
 
-        return ['transcript' => $text, 'state' => $state, 'last_chunk_at' => $last?->created_at?->toIso8601String(),
+        return ['transcript' => $text, 'display_transcript' => $this->displayTranscript($call, $text, $source),
+            'state' => $state, 'last_chunk_at' => $last?->created_at?->toIso8601String(),
             'segment_count' => $count, 'summary_stale' => (bool) $stale, 'can_rebuild' => $count > 0 || $source === 'recording_recovery',
             'completeness' => 'provider_unverified', 'message' => $message,
             'source' => $source, 'can_retry_recording' => $canRetry,
             'recovery' => $recovery ? ['id' => $recovery->id, 'status' => $recovery->status, 'attempt' => $recovery->attempt,
                 'error' => $recovery->error, 'source' => 'customer_recording'] : null,
             'recording_available' => (bool) ($call->recording_consent_given && ($call->recording_url || ! empty($metadata['recording_id'])))];
+    }
+
+    private function displayTranscript(VoiceCall $call, string $text, string $source): string
+    {
+        if ($source === 'recording_recovery' || ! str_contains($text, '<break')) {
+            return $text;
+        }
+        $rows = $call->transcriptRows()->where('transcript_type', 'final')->orderBy('occurred_at')->orderBy('id')
+            ->get(['speaker', 'text', 'provider_message_id']);
+        $prefixSpeakers = $rows->contains(fn ($row) => str_starts_with((string) $row->provider_message_id, 'telnyx:'));
+        $raw = $rows->map(fn ($row) => ($prefixSpeakers ? $row->speaker.': ' : '').$row->text)->implode("\n");
+        // Never infer speakers from a legacy string or replace a different projection.
+        if ($rows->isEmpty() || $raw !== $text) {
+            return $text;
+        }
+
+        return $rows->map(function ($row) use ($prefixSpeakers) {
+            $display = $row->text;
+            if ($row->speaker === 'assistant') {
+                // Strip only recognized provider pause markup, not arbitrary HTML or
+                // customer literals. Durable rows and provider event payloads stay raw.
+                $withoutPauses = preg_replace('~[ \t]*<break\s+time\s*=\s*([\'"])(?:\d+(?:\.\d+)?|\.\d+)(?:ms|s)\1\s*/>[ \t]*~', ' ', $display, -1, $replaced);
+                if ($replaced > 0 && $withoutPauses !== null) {
+                    $display = trim($withoutPauses);
+                }
+            }
+
+            return ($prefixSpeakers ? $row->speaker.': ' : '').$display;
+        })->implode("\n");
     }
 }

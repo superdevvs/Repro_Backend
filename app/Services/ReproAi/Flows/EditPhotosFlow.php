@@ -5,17 +5,21 @@ namespace App\Services\ReproAi\Flows;
 use App\Models\AiChatSession;
 use App\Models\Shoot;
 use App\Models\User;
+use App\Services\AutoenhanceService;
 use App\Services\ReproAi\FlowEngine\FlowEngine;
 use App\Services\ReproAi\FlowEngine\FlowHandlerInterface;
 use App\Services\ReproAi\FlowEngine\FlowState;
 use App\Services\ReproAi\FlowEngine\FlowTransition;
 use App\Services\ReproAi\Tools\AiEditingTools;
-use App\Services\AutoenhanceService;
+use App\Services\ReproAi\Tools\RobbieRecordAccess;
+use App\Services\Shoots\ShootAuthorizationSupport;
 
 class EditPhotosFlow implements FlowHandlerInterface
 {
     protected AiEditingTools $editingTools;
+
     protected AutoenhanceService $autoenhanceService;
+
     protected FlowEngine $flowEngine;
 
     public function __construct(
@@ -43,17 +47,25 @@ class EditPhotosFlow implements FlowHandlerInterface
 
     public function handleStep(string $step, FlowState $state): FlowTransition
     {
-        $userId = (int) ($state->context['user_id'] ?? $state->session->user_id);
-        $userRole = (string) ($state->context['user_role'] ?? '');
+        $actor = app(RobbieRecordAccess::class)->actor($state->context);
+        if (! app(ShootAuthorizationSupport::class)->hasRole($actor, ['admin', 'superadmin', 'editing_manager', 'editor'])
+            || (int) $state->session->user_id !== (int) $actor->id) {
+            return FlowTransition::clear([
+                'assistant_messages' => [['content' => 'AI editing actions require an authorized editing account. I can still help explain how photo editing works.', 'metadata' => ['type' => 'error']]],
+                'suggestions' => ['How does photo editing work?'],
+            ], []);
+        }
+        $userId = (int) $actor->id;
+        $userRole = (string) $actor->role;
         $messageLower = strtolower(trim($state->message));
 
         // ----------------------------------------------------------------
         // Anytime intents — status / retry / cancel based on last batch.
         // ----------------------------------------------------------------
-        if ($this->matchesStatusIntent($messageLower) && !empty($state->data['last_job_ids'] ?? [])) {
+        if ($this->matchesStatusIntent($messageLower) && ! empty($state->data['last_job_ids'] ?? [])) {
             return $this->statusReply($state);
         }
-        if ($this->matchesRetryIntent($messageLower) && !empty($state->data['last_job_ids'] ?? [])) {
+        if ($this->matchesRetryIntent($messageLower) && ! empty($state->data['last_job_ids'] ?? [])) {
             return $this->retryFailed($state);
         }
         $cancelTargets = $this->parseCancelIds($messageLower, $state->data['last_job_ids'] ?? []);
@@ -67,7 +79,7 @@ class EditPhotosFlow implements FlowHandlerInterface
             $suggestions = $this->recentShootSuggestions($userId, $userRole);
             $msg = empty($suggestions)
                 ? "I don't see any shoots on your account yet. Book or upload a shoot first, then come back."
-                : "Here are your most recent shoots. Pick one or type an address:";
+                : 'Here are your most recent shoots. Pick one or type an address:';
 
             return FlowTransition::next('ask_property', [
                 'assistant_messages' => [[
@@ -79,14 +91,14 @@ class EditPhotosFlow implements FlowHandlerInterface
         }
 
         return match ($step) {
-            'start'          => $this->start($state),
-            'ask_property'   => $this->askProperty($state),
+            'start' => $this->start($state),
+            'ask_property' => $this->askProperty($state),
             'confirm_photos' => $this->confirmPhotos($state),
-            'ask_mode'       => $this->askMode($state),
-            'ask_params'     => $this->askParams($state),
-            'confirm'        => $this->confirm($state),
-            'done'           => $this->done($state),
-            default          => $this->start($state),
+            'ask_mode' => $this->askMode($state),
+            'ask_params' => $this->askParams($state),
+            'confirm' => $this->confirm($state),
+            'done' => $this->done($state),
+            default => $this->start($state),
         };
     }
 
@@ -100,7 +112,7 @@ class EditPhotosFlow implements FlowHandlerInterface
         $context = $state->context;
         $stagedIds = array_values(array_filter((array) ($context['staged_ids'] ?? [])));
 
-        if (!empty($stagedIds)) {
+        if (! empty($stagedIds)) {
             $data = $state->data;
             $data['staged_ids'] = $stagedIds;
             $data['source_type'] = 'staged';
@@ -108,11 +120,11 @@ class EditPhotosFlow implements FlowHandlerInterface
 
             return FlowTransition::next('ask_mode', [
                 'assistant_messages' => [[
-                    'content' => "Got **{$count} image" . ($count === 1 ? '' : 's') . "** ready to edit. Which Autoenhance pipeline would you like?\n\n" .
-                        "• **Enhance** — full property photo enhancement\n" .
-                        "• **Sky replace** — swap grey skies\n" .
-                        "• **Vertical correction** — straighten verticals only\n" .
-                        "• **Window pull** — recover window highlights",
+                    'content' => "Got **{$count} image".($count === 1 ? '' : 's')."** ready to edit. Which Autoenhance pipeline would you like?\n\n".
+                        "• **Enhance** — full property photo enhancement\n".
+                        "• **Sky replace** — swap grey skies\n".
+                        "• **Vertical correction** — straighten verticals only\n".
+                        '• **Window pull** — recover window highlights',
                     'metadata' => ['step' => 'ask_mode'],
                 ]],
                 'suggestions' => ['Enhance', 'Sky replace', 'Vertical correction', 'Window pull'],
@@ -144,6 +156,7 @@ class EditPhotosFlow implements FlowHandlerInterface
                 return true;
             }
         }
+
         return false;
     }
 
@@ -173,9 +186,10 @@ class EditPhotosFlow implements FlowHandlerInterface
             if (empty($suggestions)) {
                 $suggestions = ['No recent shoots found'];
             }
+
             return FlowTransition::stay([
                 'assistant_messages' => [[
-                    'content' => "Sure — which property do you want me to send to AI editing? Tell me the address or pick one of your recent shoots.",
+                    'content' => 'Sure — which property do you want me to send to AI editing? Tell me the address or pick one of your recent shoots.',
                     'metadata' => ['step' => 'ask_property'],
                 ]],
                 'suggestions' => $suggestions,
@@ -194,7 +208,7 @@ class EditPhotosFlow implements FlowHandlerInterface
         }
 
         $shoot = $this->editingTools->findShootByAddress($cleanAddress, $userId, $userRole);
-        if (!$shoot) {
+        if (! $shoot) {
             return FlowTransition::stay([
                 'assistant_messages' => [[
                     'content' => "I couldn't find a shoot matching **{$message}**. Try a different address or pick one of these:",
@@ -208,7 +222,7 @@ class EditPhotosFlow implements FlowHandlerInterface
         if ($count === 0) {
             return FlowTransition::stay([
                 'assistant_messages' => [[
-                    'content' => "I found **" . $this->formatShootLabel($shoot) . "**, but there are no raw photos uploaded yet. Upload photos to that shoot and try again.",
+                    'content' => 'I found **'.$this->formatShootLabel($shoot).'**, but there are no raw photos uploaded yet. Upload photos to that shoot and try again.',
                     'metadata' => ['step' => 'ask_property', 'error' => 'no_photos'],
                 ]],
                 'suggestions' => $this->recentShootSuggestions($userId, $userRole),
@@ -221,7 +235,7 @@ class EditPhotosFlow implements FlowHandlerInterface
 
         return FlowTransition::next('confirm_photos', [
             'assistant_messages' => [[
-                'content' => "Found **{$data['shoot_label']}** with **{$count} raw photo" . ($count === 1 ? '' : 's') . "**. Send all of them to Autoenhance?",
+                'content' => "Found **{$data['shoot_label']}** with **{$count} raw photo".($count === 1 ? '' : 's').'**. Send all of them to Autoenhance?',
                 'metadata' => ['step' => 'confirm_photos'],
             ]],
             'suggestions' => ['Yes, send them all', 'No, pick a different shoot'],
@@ -236,7 +250,7 @@ class EditPhotosFlow implements FlowHandlerInterface
         if ($this->isNegative($messageLower) || str_contains($messageLower, 'different') || str_contains($messageLower, 'another')) {
             return FlowTransition::next('ask_property', [
                 'assistant_messages' => [[
-                    'content' => "No worries — which property should I edit instead?",
+                    'content' => 'No worries — which property should I edit instead?',
                     'metadata' => ['step' => 'ask_property'],
                 ]],
                 'suggestions' => $this->recentShootSuggestions(
@@ -246,7 +260,7 @@ class EditPhotosFlow implements FlowHandlerInterface
             ], array_diff_key($data, array_flip(['shoot_id', 'shoot_label', 'photo_count'])));
         }
 
-        if (!$this->isAffirmative($messageLower) && !empty(trim($state->message))) {
+        if (! $this->isAffirmative($messageLower) && ! empty(trim($state->message))) {
             return FlowTransition::stay([
                 'assistant_messages' => [[
                     'content' => "Just to confirm — should I send all **{$data['photo_count']} photos** at **{$data['shoot_label']}** to Autoenhance?",
@@ -259,11 +273,11 @@ class EditPhotosFlow implements FlowHandlerInterface
         // Affirmative → move to mode picker
         return FlowTransition::next('ask_mode', [
             'assistant_messages' => [[
-                'content' => "Great. Which editing mode would you like?\n\n" .
-                    "• **Enhance** — core property photo enhancement\n" .
-                    "• **Sky replace** — replace grey skies\n" .
-                    "• **Vertical correction** — straighten wonky verticals\n" .
-                    "• **Window pull** — Autoenhance window-pull processing",
+                'content' => "Great. Which editing mode would you like?\n\n".
+                    "• **Enhance** — core property photo enhancement\n".
+                    "• **Sky replace** — replace grey skies\n".
+                    "• **Vertical correction** — straighten wonky verticals\n".
+                    '• **Window pull** — Autoenhance window-pull processing',
                 'metadata' => ['step' => 'ask_mode'],
             ]],
             'suggestions' => ['Enhance', 'Sky replace', 'Vertical correction', 'Window pull'],
@@ -276,7 +290,7 @@ class EditPhotosFlow implements FlowHandlerInterface
         $data = $state->data;
 
         $modeId = $this->matchMode($message);
-        if (!$modeId) {
+        if (! $modeId) {
             return FlowTransition::stay([
                 'assistant_messages' => [[
                     'content' => "I didn't catch that — pick one: Enhance, Sky replace, Vertical correction, or Window pull.",
@@ -302,7 +316,7 @@ class EditPhotosFlow implements FlowHandlerInterface
         $data['param_step'] = $this->firstParamStepFor($modeId);
 
         // If the chosen mode has no follow-up params, jump straight to confirm.
-        if (!$data['param_step']) {
+        if (! $data['param_step']) {
             $assistant = $message !== ''
                 ? [['content' => $message, 'metadata' => ['step' => 'ask_mode', 'type' => 'system']]]
                 : [];
@@ -310,6 +324,7 @@ class EditPhotosFlow implements FlowHandlerInterface
                 'content' => $this->confirmRecap($data),
                 'metadata' => ['step' => 'confirm'],
             ];
+
             return FlowTransition::next('confirm', [
                 'assistant_messages' => $assistant,
                 'suggestions' => ['Yes, submit', 'No, change mode', 'Cancel'],
@@ -357,9 +372,10 @@ class EditPhotosFlow implements FlowHandlerInterface
         if ($parsed === null) {
             // Could not interpret — re-ask the same question.
             $prompt = $this->paramPrompt($modeId, $paramStep);
+
             return FlowTransition::stay([
                 'assistant_messages' => [[
-                    'content' => "Sorry, I didn't catch that. " . $prompt['content'],
+                    'content' => "Sorry, I didn't catch that. ".$prompt['content'],
                     'metadata' => ['step' => 'ask_params'],
                 ]],
                 'suggestions' => $prompt['suggestions'],
@@ -370,7 +386,7 @@ class EditPhotosFlow implements FlowHandlerInterface
         $data['editing_params'] = $current;
         $data['param_step'] = $this->nextParamStepFor($modeId, $paramStep);
 
-        if (!$data['param_step']) {
+        if (! $data['param_step']) {
             return FlowTransition::next('confirm', [
                 'assistant_messages' => [[
                     'content' => $this->confirmRecap($data),
@@ -381,6 +397,7 @@ class EditPhotosFlow implements FlowHandlerInterface
         }
 
         $next = $this->paramPrompt($modeId, $data['param_step']);
+
         return FlowTransition::stay([
             'assistant_messages' => [[
                 'content' => $next['content'],
@@ -398,7 +415,7 @@ class EditPhotosFlow implements FlowHandlerInterface
         if (str_contains($messageLower, 'change mode') || str_contains($messageLower, 'different mode')) {
             return FlowTransition::next('ask_mode', [
                 'assistant_messages' => [[
-                    'content' => "Sure — which mode would you like?",
+                    'content' => 'Sure — which mode would you like?',
                     'metadata' => ['step' => 'ask_mode'],
                 ]],
                 'suggestions' => ['Enhance', 'Sky replace', 'Vertical correction', 'Window pull'],
@@ -415,7 +432,7 @@ class EditPhotosFlow implements FlowHandlerInterface
             ], []);
         }
 
-        if (!$this->isAffirmative($messageLower)) {
+        if (! $this->isAffirmative($messageLower)) {
             return FlowTransition::stay([
                 'assistant_messages' => [[
                     'content' => "Should I go ahead and submit **{$data['photo_count']} photos** for **{$data['editing_label']}** at **{$data['shoot_label']}**?",
@@ -446,6 +463,7 @@ class EditPhotosFlow implements FlowHandlerInterface
 
             if ($jobsCount === 0) {
                 $reason = $skipped[0]['reason'] ?? 'unknown error';
+
                 return FlowTransition::clear([
                     'assistant_messages' => [[
                         'content' => "I couldn't submit those uploads: **{$reason}**. Try the wizard for a richer error path.",
@@ -456,10 +474,11 @@ class EditPhotosFlow implements FlowHandlerInterface
             }
 
             $modeLabel = (string) ($data['editing_label'] ?? $editingType);
-            $skipNote = !empty($skipped) ? "\n\nSkipped " . count($skipped) . " file" . (count($skipped) === 1 ? '' : 's') . "." : '';
+            $skipNote = ! empty($skipped) ? "\n\nSkipped ".count($skipped).' file'.(count($skipped) === 1 ? '' : 's').'.' : '';
+
             return FlowTransition::next('done', [
                 'assistant_messages' => [[
-                    'content' => "Submitted **{$jobsCount} image" . ($jobsCount === 1 ? '' : 's') . "** for **{$modeLabel}**. Track them in your Recent activity.{$skipNote}\n\nYou can ask me: *what's the status?*, *retry the failed ones*, or *cancel job #N*.",
+                    'content' => "Submitted **{$jobsCount} image".($jobsCount === 1 ? '' : 's')."** for **{$modeLabel}**. Track them in your Recent activity.{$skipNote}\n\nYou can ask me: *what's the status?*, *retry the failed ones*, or *cancel job #N*.",
                     'metadata' => [
                         'step' => 'done',
                         'tool_status' => 'success',
@@ -487,6 +506,7 @@ class EditPhotosFlow implements FlowHandlerInterface
 
         if (empty($result['success'])) {
             $err = $result['error'] ?? 'Unknown error';
+
             return FlowTransition::clear([
                 'assistant_messages' => [[
                     'content' => "I hit a problem submitting those photos: **{$err}**. Try again from the AI Editing wizard, or pick a different shoot.",
@@ -502,7 +522,7 @@ class EditPhotosFlow implements FlowHandlerInterface
 
         return FlowTransition::next('done', [
             'assistant_messages' => [[
-                'content' => "Submitted **{$jobsCount} photo" . ($jobsCount === 1 ? '' : 's') . "** for **{$data['editing_label']}** at **{$data['shoot_label']}**. I'll keep them in your Recent activity — refresh it to see progress.\n\nYou can ask me: *what's the status?*, *retry the failed ones*, or *cancel job #N*.",
+                'content' => "Submitted **{$jobsCount} photo".($jobsCount === 1 ? '' : 's')."** for **{$data['editing_label']}** at **{$data['shoot_label']}**. I'll keep them in your Recent activity — refresh it to see progress.\n\nYou can ask me: *what's the status?*, *retry the failed ones*, or *cancel job #N*.",
                 'metadata' => [
                     'step' => 'done',
                     'tool_status' => 'success',
@@ -530,7 +550,7 @@ class EditPhotosFlow implements FlowHandlerInterface
     {
         return FlowTransition::clear([
             'assistant_messages' => [[
-                'content' => "What would you like to do next?",
+                'content' => 'What would you like to do next?',
                 'metadata' => ['step' => 'done', 'type' => 'system'],
             ]],
             'suggestions' => ['Edit another property', 'Check editing status', 'Show editing modes'],
@@ -545,10 +565,11 @@ class EditPhotosFlow implements FlowHandlerInterface
     {
         $affirmatives = ['yes', 'y', 'yeah', 'yep', 'sure', 'ok', 'okay', 'confirm', 'submit', 'send', 'go', 'do it', 'proceed', 'go ahead'];
         foreach ($affirmatives as $a) {
-            if ($m === $a || str_starts_with($m, $a . ' ') || str_contains($m, ' ' . $a . ' ') || str_ends_with($m, ' ' . $a)) {
+            if ($m === $a || str_starts_with($m, $a.' ') || str_contains($m, ' '.$a.' ') || str_ends_with($m, ' '.$a)) {
                 return true;
             }
         }
+
         return false;
     }
 
@@ -556,10 +577,11 @@ class EditPhotosFlow implements FlowHandlerInterface
     {
         $negatives = ['no', 'n', 'nope', 'nah', 'don\'t', 'do not', 'stop', 'cancel'];
         foreach ($negatives as $n) {
-            if ($m === $n || str_starts_with($m, $n . ' ') || str_ends_with($m, ' ' . $n)) {
+            if ($m === $n || str_starts_with($m, $n.' ') || str_ends_with($m, ' '.$n)) {
                 return true;
             }
         }
+
         return false;
     }
 
@@ -583,6 +605,7 @@ class EditPhotosFlow implements FlowHandlerInterface
         if (str_contains($m, 'enhance') || str_contains($m, 'standard') || str_contains($m, 'normal') || str_contains($m, 'default')) {
             return 'enhance';
         }
+
         return null;
     }
 
@@ -605,7 +628,8 @@ class EditPhotosFlow implements FlowHandlerInterface
             trim((string) $shoot->city),
             trim((string) $shoot->state),
         ]);
-        return implode(', ', $parts) ?: ('Shoot #' . $shoot->id);
+
+        return implode(', ', $parts) ?: ('Shoot #'.$shoot->id);
     }
 
     /**
@@ -615,22 +639,18 @@ class EditPhotosFlow implements FlowHandlerInterface
      */
     protected function recentShootSuggestions(int $userId, string $userRole = ''): array
     {
-        $isPrivileged = in_array($userRole, ['admin', 'superadmin', 'editor', 'editing_manager'], true);
-
-        $query = Shoot::query();
-        if (!$isPrivileged) {
-            $query->where(function ($q) use ($userId) {
-                $q->where('client_id', $userId)
-                  ->orWhere('rep_id', $userId)
-                  ->orWhere('editor_id', $userId)
-                  ->orWhere('photographer_id', $userId);
-            });
+        $access = app(RobbieRecordAccess::class);
+        $actor = $access->actor([]);
+        if (! $actor || (int) $actor->id !== $userId) {
+            return [];
         }
+        $query = $access->query($actor);
 
-        $shoots = $query->orderByDesc('created_at')->limit(20)->get();
+        $shoots = $query->orderByDesc('created_at')->limit(20)->get()
+            ->filter(fn (Shoot $shoot) => $access->canRead($shoot, $actor));
 
         $unique = $shoots->unique(function (Shoot $s) {
-            return strtolower(trim((string) $s->address)) . '|' . strtolower(trim((string) $s->city)) . '|' . strtolower(trim((string) $s->state));
+            return strtolower(trim((string) $s->address)).'|'.strtolower(trim((string) $s->city)).'|'.strtolower(trim((string) $s->state));
         });
 
         $labels = [];
@@ -640,6 +660,7 @@ class EditPhotosFlow implements FlowHandlerInterface
                 $labels[] = $label;
             }
         }
+
         return $labels;
     }
 
@@ -720,11 +741,11 @@ class EditPhotosFlow implements FlowHandlerInterface
     {
         return match ($paramStep) {
             'lens_correction' => [
-                'content' => "Should I apply **lens correction** (fix barrel/pincushion distortion)?",
+                'content' => 'Should I apply **lens correction** (fix barrel/pincushion distortion)?',
                 'suggestions' => ['Yes', 'No'],
             ],
             'vertical_correction' => [
-                'content' => "And **vertical correction** (straighten leaning verticals)?",
+                'content' => 'And **vertical correction** (straighten leaning verticals)?',
                 'suggestions' => ['Yes', 'No'],
             ],
             'cloud_type' => [
@@ -761,15 +782,23 @@ class EditPhotosFlow implements FlowHandlerInterface
                 if ($this->isNegative($messageLower) || str_contains($messageLower, 'skip')) {
                     return [$paramStep => false];
                 }
+
                 return null;
 
             case 'cloud_type':
-                if (str_contains($messageLower, 'high')) return ['cloud_type' => 'HIGH_CLOUD'];
+                if (str_contains($messageLower, 'high')) {
+                    return ['cloud_type' => 'HIGH_CLOUD'];
+                }
                 if (str_contains($messageLower, 'low cloud low sat') || str_contains($messageLower, 'muted') || str_contains($messageLower, 'soft')) {
                     return ['cloud_type' => 'LOW_CLOUD_LOW_SAT'];
                 }
-                if (str_contains($messageLower, 'low cloud') || str_contains($messageLower, 'low')) return ['cloud_type' => 'LOW_CLOUD'];
-                if (str_contains($messageLower, 'clear') || str_contains($messageLower, 'blue') || str_contains($messageLower, 'sunny')) return ['cloud_type' => 'CLEAR'];
+                if (str_contains($messageLower, 'low cloud') || str_contains($messageLower, 'low')) {
+                    return ['cloud_type' => 'LOW_CLOUD'];
+                }
+                if (str_contains($messageLower, 'clear') || str_contains($messageLower, 'blue') || str_contains($messageLower, 'sunny')) {
+                    return ['cloud_type' => 'CLEAR'];
+                }
+
                 return null;
 
             case 'window_pull_type':
@@ -779,6 +808,7 @@ class EditPhotosFlow implements FlowHandlerInterface
                 if (str_contains($messageLower, 'window') || str_contains($messageLower, 'only')) {
                     return ['window_pull_type' => 'ONLY_WINDOWS'];
                 }
+
                 return null;
         }
 
@@ -796,23 +826,24 @@ class EditPhotosFlow implements FlowHandlerInterface
 
         $paramLines = [];
         foreach (['enhance_type', 'cloud_type', 'window_pull_type'] as $key) {
-            if (!empty($params[$key])) {
-                $paramLines[] = '• ' . str_replace('_', ' ', $key) . ': **' . str_replace('_', ' ', strtolower((string) $params[$key])) . '**';
+            if (! empty($params[$key])) {
+                $paramLines[] = '• '.str_replace('_', ' ', $key).': **'.str_replace('_', ' ', strtolower((string) $params[$key])).'**';
             }
         }
         foreach (['lens_correction', 'vertical_correction'] as $key) {
             if (array_key_exists($key, $params)) {
-                $paramLines[] = '• ' . str_replace('_', ' ', $key) . ': **' . ($params[$key] ? 'on' : 'off') . '**';
+                $paramLines[] = '• '.str_replace('_', ' ', $key).': **'.($params[$key] ? 'on' : 'off').'**';
             }
         }
-        $paramBlock = !empty($paramLines) ? "\n" . implode("\n", $paramLines) : '';
+        $paramBlock = ! empty($paramLines) ? "\n".implode("\n", $paramLines) : '';
 
         if ($sourceType === 'staged') {
             $count = count((array) ($data['staged_ids'] ?? []));
-            return "Ready to submit:\n\n📤 **{$count} uploaded image" . ($count === 1 ? '' : 's') . "**\n✨ **{$modeLabel}**" . $paramBlock . "\n\nConfirm to send to Autoenhance?";
+
+            return "Ready to submit:\n\n📤 **{$count} uploaded image".($count === 1 ? '' : 's')."**\n✨ **{$modeLabel}**".$paramBlock."\n\nConfirm to send to Autoenhance?";
         }
 
-        return "Ready to submit:\n\n📍 **" . ($data['shoot_label'] ?? '') . "**\n🖼️ " . ($data['photo_count'] ?? 0) . " photo" . (($data['photo_count'] ?? 0) === 1 ? '' : 's') . "\n✨ **{$modeLabel}**" . $paramBlock . "\n\nConfirm to send to Autoenhance?";
+        return "Ready to submit:\n\n📍 **".($data['shoot_label'] ?? '')."**\n🖼️ ".($data['photo_count'] ?? 0).' photo'.(($data['photo_count'] ?? 0) === 1 ? '' : 's')."\n✨ **{$modeLabel}**".$paramBlock."\n\nConfirm to send to Autoenhance?";
     }
 
     // ---------------------------------------------------------------------
@@ -821,21 +852,29 @@ class EditPhotosFlow implements FlowHandlerInterface
 
     protected function matchesStatusIntent(string $m): bool
     {
-        if ($m === '') return false;
+        if ($m === '') {
+            return false;
+        }
         $patterns = [
             "what's the status", 'whats the status', 'check status', 'check the status',
             'how are those', 'how are they', 'how are my', 'how is it going',
             'how are the edits', 'how are those coming', 'progress', 'still processing',
         ];
         foreach ($patterns as $p) {
-            if (str_contains($m, $p)) return true;
+            if (str_contains($m, $p)) {
+                return true;
+            }
         }
+
         return false;
     }
 
     protected function matchesRetryIntent(string $m): bool
     {
-        if ($m === '') return false;
+        if ($m === '') {
+            return false;
+        }
+
         return (bool) preg_match('/\b(retry|re[- ]?run|try again)\b/i', $m)
             && (str_contains($m, 'failed') || str_contains($m, 'errored') || str_contains($m, 'them all') || str_contains($m, 'all of them') || str_contains($m, 'those'));
     }
@@ -849,13 +888,16 @@ class EditPhotosFlow implements FlowHandlerInterface
      */
     protected function parseCancelIds(string $m, array $lastJobIds): ?array
     {
-        if ($m === '' || !str_contains($m, 'cancel')) return null;
+        if ($m === '' || ! str_contains($m, 'cancel')) {
+            return null;
+        }
         if (str_contains($m, 'cancel all') || str_contains($m, 'cancel them all') || str_contains($m, 'cancel everything')) {
             return $lastJobIds;
         }
-        if (preg_match_all('/#?(\d+)/', $m, $matches) && !empty($matches[1])) {
+        if (preg_match_all('/#?(\d+)/', $m, $matches) && ! empty($matches[1])) {
             return array_values(array_map('intval', $matches[1]));
         }
+
         return null;
     }
 
@@ -880,12 +922,22 @@ class EditPhotosFlow implements FlowHandlerInterface
             $counts[$j['status']] = ($counts[$j['status']] ?? 0) + 1;
         }
         $lines = [];
-        $lines[] = "Status of the last batch (" . count($jobs) . " job" . (count($jobs) === 1 ? '' : 's') . "):";
-        if ($counts['processing']) $lines[] = "• ⏳ {$counts['processing']} processing";
-        if ($counts['completed']) $lines[] = "• ✅ {$counts['completed']} completed";
-        if ($counts['failed']) $lines[] = "• ❌ {$counts['failed']} failed";
-        if ($counts['pending']) $lines[] = "• ⏸ {$counts['pending']} pending";
-        if ($counts['cancelled']) $lines[] = "• ⛔ {$counts['cancelled']} cancelled";
+        $lines[] = 'Status of the last batch ('.count($jobs).' job'.(count($jobs) === 1 ? '' : 's').'):';
+        if ($counts['processing']) {
+            $lines[] = "• ⏳ {$counts['processing']} processing";
+        }
+        if ($counts['completed']) {
+            $lines[] = "• ✅ {$counts['completed']} completed";
+        }
+        if ($counts['failed']) {
+            $lines[] = "• ❌ {$counts['failed']} failed";
+        }
+        if ($counts['pending']) {
+            $lines[] = "• ⏸ {$counts['pending']} pending";
+        }
+        if ($counts['cancelled']) {
+            $lines[] = "• ⛔ {$counts['cancelled']} cancelled";
+        }
 
         return FlowTransition::stay([
             'assistant_messages' => [[
@@ -906,7 +958,7 @@ class EditPhotosFlow implements FlowHandlerInterface
         if (empty($failedIds)) {
             return FlowTransition::stay([
                 'assistant_messages' => [[
-                    'content' => "Good news — none of those jobs are failed.",
+                    'content' => 'Good news — none of those jobs are failed.',
                     'metadata' => ['step' => 'retry'],
                 ]],
                 'suggestions' => ['What\'s the status?', 'Edit another property'],
@@ -915,9 +967,10 @@ class EditPhotosFlow implements FlowHandlerInterface
 
         $result = $this->editingTools->retryJobs($failedIds, $userId);
         $count = $result['retried'] ?? 0;
+
         return FlowTransition::stay([
             'assistant_messages' => [[
-                'content' => "Re-queued **{$count} failed job" . ($count === 1 ? '' : 's') . "** for processing.",
+                'content' => "Re-queued **{$count} failed job".($count === 1 ? '' : 's').'** for processing.',
                 'metadata' => ['step' => 'retry', 'tool_status' => 'success'],
             ]],
             'suggestions' => ['What\'s the status?', 'Edit another property'],
@@ -939,9 +992,10 @@ class EditPhotosFlow implements FlowHandlerInterface
 
         $result = $this->editingTools->cancelJobs($jobIds, $userId);
         $count = $result['cancelled'] ?? 0;
+
         return FlowTransition::stay([
             'assistant_messages' => [[
-                'content' => "Cancelled **{$count} job" . ($count === 1 ? '' : 's') . "**.",
+                'content' => "Cancelled **{$count} job".($count === 1 ? '' : 's').'**.',
                 'metadata' => ['step' => 'cancel', 'tool_status' => 'success'],
             ]],
             'suggestions' => ['What\'s the status?', 'Edit another property'],

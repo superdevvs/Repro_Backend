@@ -135,6 +135,7 @@ class SmsAiAgentService
             'channel' => 'SMS',
             'phone_e164' => $resolved['phone_e164'],
             'sms_thread_id' => $thread->id,
+            'sms_message_id' => $inbound->id,
             'identified' => true,
             'verified' => true,
             'user_id' => $user->id,

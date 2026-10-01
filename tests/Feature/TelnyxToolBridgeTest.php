@@ -4,12 +4,14 @@ namespace Tests\Feature;
 
 use App\Models\Setting;
 use App\Models\Shoot;
+use App\Models\SmsNumber;
 use App\Models\ToolBridgeInvocation;
 use App\Models\User;
 use App\Models\VoiceCall;
 use App\Models\VoiceCallVerification;
+use App\Services\Messaging\OutboundDeliveryGuard;
+use App\Support\VoiceCache;
 use Illuminate\Foundation\Testing\RefreshDatabase;
-use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
@@ -39,6 +41,7 @@ class TelnyxToolBridgeTest extends TestCase
 
     public function test_flat_verify_payload_is_audited_idempotent_and_uses_trusted_call_header(): void
     {
+        $this->enableSmsPipeline();
         $call = $this->voiceCall(verified: false);
         $headers = [
             'Idempotency-Key' => 'verify-otp-1',
@@ -57,7 +60,7 @@ class TelnyxToolBridgeTest extends TestCase
 
         $this->assertSame($first, $second);
         $this->assertSame(1, ToolBridgeInvocation::query()->count());
-        $this->assertTrue(Cache::has('sms-ai:verify:+12025550100'));
+        $this->assertTrue(VoiceCache::store()->has('voice:caller-otp:'.$call->id));
         $this->assertDatabaseHas('tool_bridge_invocations', [
             'call_control_id' => $call->call_control_id,
             'phone_e164' => '+12025550100',
@@ -251,6 +254,7 @@ class TelnyxToolBridgeTest extends TestCase
 
     public function test_verify_caller_failure_is_a_speakable_business_outcome_and_is_audited(): void
     {
+        $this->enableSmsPipeline();
         $call = $this->voiceCall(verified: false);
         $headers = ['X-Telnyx-Call-Control-Id' => $call->call_control_id];
 
@@ -269,6 +273,28 @@ class TelnyxToolBridgeTest extends TestCase
             'phone_e164' => '+12025550100',
             'success' => false,
         ]);
+    }
+
+    public function test_private_read_retry_rechecks_access_instead_of_replaying_an_old_result(): void
+    {
+        $user = User::factory()->create(['role' => 'admin']);
+        $call = $this->voiceCall(user: $user);
+        $this->mock(\App\Services\ReproAi\ToolDispatcher::class)->shouldReceive('dispatch')->twice()
+            ->andReturn(['payment' => 'private-value'], ['error' => 'forbidden_resource']);
+        $headers = ['X-Telnyx-Call-Control-Id' => $call->call_control_id, 'Idempotency-Key' => 'private-retry'];
+        $this->withHeaders($headers)->postJson('/api/telnyx-ai/tools/get_payment_status', ['shoot_id' => 999999])
+            ->assertOk()->assertJsonPath('result.payment', 'private-value');
+        $user->update(['role' => 'photographer']);
+        $this->withHeaders($headers)->postJson('/api/telnyx-ai/tools/get_payment_status', ['shoot_id' => 999999])
+            ->assertOk()->assertJsonPath('ok', false)->assertJsonPath('result.error', 'forbidden_resource')
+            ->assertJsonMissing(['payment' => 'private-value']);
+        $this->assertDatabaseCount('tool_bridge_invocations', 1);
+    }
+
+    private function enableSmsPipeline(): void
+    {
+        OutboundDeliveryGuard::allowFakeProviderPipelineForTesting();
+        SmsNumber::create(['phone_number' => '+12025550200', 'provider' => 'TELNYX', 'is_default' => true]);
     }
 
     private function voiceCall(bool $verified = true, ?User $user = null): VoiceCall

@@ -93,6 +93,28 @@ class VoiceSupportKnowledgeTest extends TestCase
         $this->assertDatabaseCount('tool_bridge_invocations', 1);
     }
 
+    public function test_public_upload_booking_and_navigation_help_needs_no_code_but_private_details_remain_gated(): void
+    {
+        $call = $this->voiceCall(User::factory()->create(['role' => 'client']), false);
+        foreach ([
+            'How do I upload photos?' => 'photographer-upload',
+            'How do I upload edited files?' => 'editor-delivery',
+            'How do I book a shoot?' => 'book-shoot',
+            'Where is the navigation menu?' => 'dashboard-navigation',
+        ] as $query => $id) {
+            $this->withHeader('X-Telnyx-Call-Control-Id', $call->call_control_id)
+                ->postJson('/api/telnyx-ai/tools/search_support_knowledge', ['query' => $query])
+                ->assertOk()->assertJsonPath('result.scope', 'public')->assertJsonPath('result.found', true)
+                ->assertJsonPath('result.articles.0.id', $id);
+        }
+        $this->assertNull($call->fresh()->verified_at);
+        $this->assertSame(0, ToolBridgeInvocation::where('tool', 'verify_caller')->count());
+        $this->postJson('/api/telnyx-ai/tools/get_shoot_details', ['shoot_id' => 123])
+            ->assertForbidden()->assertJsonPath('error', 'unverified_caller');
+        $this->assertDatabaseCount('shoots', 0);
+        Http::assertNothingSent();
+    }
+
     public function test_tool_fails_closed_without_bridge_authentication_or_live_call_and_cannot_be_called_as_a_chat_tool(): void
     {
         config(['services.telnyx.tool_bridge.secret' => 'required-secret']);

@@ -77,6 +77,31 @@ class SupportKnowledgeTest extends TestCase
         $this->assertDatabaseCount('shoots', 0);
     }
 
+    public function test_common_help_is_immediate_across_roles_without_extra_verification_or_private_guides(): void
+    {
+        $this->mock(LlmClient::class)->shouldNotReceive('chatCompletion');
+        $this->mock(ShootOperatorService::class)->shouldNotReceive('handle');
+        foreach (['client', 'photographer', 'salesRep'] as $role) {
+            $user = User::factory()->create(['role' => $role]);
+            foreach ([
+                'How do I download my shoot?' => 'media-download',
+                'How do I upload photos?' => 'photographer-upload',
+                'How do I book a shoot?' => 'book-shoot',
+                'Where is the navigation menu?' => 'dashboard-navigation',
+            ] as $query => $id) {
+                $response = $this->actingAs($user, 'sanctum')->postJson('/api/ai/chat', ['message' => $query])
+                    ->assertOk()->assertJsonPath('messages.1.metadata.topic', $id);
+                $this->assertStringNotContainsString('verify your identity', $response->json('messages.1.content'));
+            }
+        }
+        $public = app(SupportKnowledgeBase::class);
+        foreach (['admin-triage', 'admin-upload-recovery', 'admin-call-transcript', 'rep-sales', 'photographer-earnings'] as $id) {
+            $this->assertNull($public->find($id, null), $id.' must not become a public guide');
+        }
+        $this->assertDatabaseCount('shoots', 0);
+        $this->assertDatabaseCount('tool_bridge_invocations', 0);
+    }
+
     public function test_primary_help_only_role_cannot_use_operator_via_secondary_role(): void
     {
         $user = User::factory()->create(['role' => 'photographer', 'secondary_roles' => ['admin']]);

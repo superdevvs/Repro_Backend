@@ -17,8 +17,7 @@ class VapiWebhookHandler
         private readonly VoiceCallStateMapper $states,
         private readonly VoiceLiveStreamService $liveStream,
         private readonly VoiceToolBridge $tools,
-    ) {
-    }
+    ) {}
 
     public function process(array $payload, string $rawBody): array
     {
@@ -35,7 +34,7 @@ class VapiWebhookHandler
             ]
         );
 
-        if ($event->processed_at && !$this->isToolEvent($type)) {
+        if ($event->processed_at && ! $this->isToolEvent($type)) {
             return ['status' => 'duplicate', 'event_id' => $event->id];
         }
 
@@ -66,16 +65,19 @@ class VapiWebhookHandler
 
         if ($call && $normalized === 'status-update') {
             $this->handleStatusUpdate($call, $message);
+
             return [];
         }
 
         if ($call && $normalized === 'transcript') {
             $this->handleTranscript($call, $message);
+
             return [];
         }
 
         if ($call && in_array($normalized, ['assistant-started', 'assistant.started', 'assistant-speech-started', 'speech-update', 'model-output'], true)) {
             $this->handleAssistantState($call, $message);
+
             return [];
         }
 
@@ -85,11 +87,13 @@ class VapiWebhookHandler
 
         if ($call && $normalized === 'end-of-call-report') {
             $this->handleEndOfCallReport($call, $message);
+
             return [];
         }
 
         if ($call && $normalized === 'hang') {
             $this->handleHang($call, $message);
+
             return [];
         }
 
@@ -178,11 +182,15 @@ class VapiWebhookHandler
 
     private function handleToolCalls(VoiceCall $call, array $message): array
     {
-        $call->forceFill([
-            'status' => 'tool_running',
-            'ai_current_state' => 'tool_running',
-            'provider_event_last_seen_at' => now(),
-        ])->save();
+        $current = $call->fresh();
+        if ($current && $current->ended_at === null && ! in_array(strtolower((string) $current->status), ['completed', 'failed', 'missed', 'cancelled', 'canceled', 'busy', 'no-answer', 'no_answer', 'ended'], true)) {
+            $call = $current;
+            $call->forceFill([
+                'status' => 'tool_running',
+                'ai_current_state' => 'tool_running',
+                'provider_event_last_seen_at' => now(),
+            ])->save();
+        }
 
         $responses = [];
         foreach ($this->toolCalls($message) as $toolCall) {
@@ -282,7 +290,7 @@ class VapiWebhookHandler
     {
         $function = (array) ($toolCall['function'] ?? $toolCall);
         $name = $function['name'] ?? $toolCall['name'] ?? null;
-        if (!is_string($name) || $name === '') {
+        if (! is_string($name) || $name === '') {
             return null;
         }
 
@@ -302,6 +310,7 @@ class VapiWebhookHandler
     private function message(array $payload): array
     {
         $message = $payload['message'] ?? $payload;
+
         return is_array($message) ? $message : [];
     }
 
@@ -309,7 +318,8 @@ class VapiWebhookHandler
     {
         $explicit = $message['id'] ?? $message['eventId'] ?? $message['messageId'] ?? null;
         $callId = Arr::get($message, 'call.id', 'no-call');
-        return 'vapi:' . ($explicit ?: "{$callId}:{$type}:" . hash('sha256', $rawBody));
+
+        return 'vapi:'.($explicit ?: "{$callId}:{$type}:".hash('sha256', $rawBody));
     }
 
     private function normalizedType(string $type): string
@@ -346,6 +356,7 @@ class VapiWebhookHandler
         }
 
         $float = (float) $value;
+
         return $float > 1 ? min(1, $float / 100) : max(0, min(1, $float));
     }
 

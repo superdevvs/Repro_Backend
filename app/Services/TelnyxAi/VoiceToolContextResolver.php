@@ -20,11 +20,15 @@ class VoiceToolContextResolver
             ->with(['callerUser', 'callerContact.user'])
             ->where('call_control_id', $callControlId)
             ->first();
-        if (! $call || in_array(strtolower((string) $call->status), ['completed', 'failed', 'missed', 'cancelled'], true)) {
+        if (! $call || $call->ended_at !== null || in_array(strtolower((string) $call->status), ['completed', 'failed', 'missed', 'cancelled', 'canceled', 'busy', 'no-answer', 'no_answer', 'ended'], true)) {
             return null;
         }
 
         $user = $call->callerUser ?: $call->callerContact?->user;
+        $eligible = ! ($call->caller_user_id && ! $call->callerUser) && (! $user || $user->isAccountEligibleForAuthentication());
+        if (! $eligible) {
+            $user = null; // General public help remains available; private identity does not.
+        }
         $phone = strtoupper((string) $call->direction) === 'OUTBOUND' ? $call->to_phone : $call->from_phone;
 
         return [
@@ -38,8 +42,8 @@ class VoiceToolContextResolver
                 'user_id' => $user?->id,
                 'contact_id' => $call->caller_contact_id,
                 'role' => $user?->role ?? 'contact',
-                'verified' => $call->verified_at !== null,
-                'verified_at' => $call->verified_at?->toIso8601String(),
+                'verified' => $eligible && $call->verified_at !== null,
+                'verified_at' => $eligible ? $call->verified_at?->toIso8601String() : null,
                 'related_shoot_id' => $call->related_shoot_id,
             ],
         ];

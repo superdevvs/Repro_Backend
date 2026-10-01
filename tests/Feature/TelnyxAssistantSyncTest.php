@@ -88,7 +88,7 @@ class TelnyxAssistantSyncTest extends TestCase
                 && $tools->contains(fn ($tool) => data_get($tool, 'webhook.name') === 'get_shoot_details')
                 && ! $tools->contains(fn ($tool) => data_get($tool, 'webhook.name') === 'verify_caller')
                 && str_contains((string) $request['instructions'], 'RePro voice call-control policy')
-                && str_contains((string) $request['instructions'], 'RePro support knowledge policy v1')
+                && str_contains((string) $request['instructions'], 'RePro support knowledge policy v2')
                 && $tools->contains(fn ($tool) => data_get($tool, 'webhook.name') === 'search_support_knowledge');
         });
     }
@@ -193,8 +193,8 @@ class TelnyxAssistantSyncTest extends TestCase
             $instructions = $request['instructions'];
             $this->assertStringStartsWith($original, $instructions);
             $this->assertSame(1, substr_count($instructions, '## RePro voice call-control policy'));
-            $this->assertSame(1, substr_count($instructions, '## RePro support knowledge policy v1'));
-            if (str_contains($assistant['instructions'], '## RePro support knowledge policy v1')) {
+            $this->assertSame(1, substr_count($instructions, '## RePro support knowledge policy v2'));
+            if (str_contains($assistant['instructions'], '## RePro support knowledge policy v2')) {
                 $this->assertSame($assistant['instructions'], $instructions);
             }
             $assistant['instructions'] = $instructions;
@@ -204,6 +204,34 @@ class TelnyxAssistantSyncTest extends TestCase
         app(TelnyxAssistantSyncService::class)->sync(true, 'first-sync');
         app(TelnyxAssistantSyncService::class)->sync(true, 'repeat-sync');
         Http::assertSentCount(4);
+    }
+
+    public function test_public_help_policy_overrides_blanket_verification_without_rewriting_existing_instructions(): void
+    {
+        $assistant = $this->currentAssistant();
+        $original = "Operator policy: verify first.\n## RePro voice call-control policy\nKeep private records protected.\n## RePro support knowledge policy v1\nExisting support guidance.\nOperator note.";
+        $assistant['instructions'] = $original;
+        Http::fake(function (Request $request) use (&$assistant, $original) {
+            if ($request->method() === 'GET') {
+                return Http::response($assistant);
+            }
+            $updated = $request['instructions'];
+            $this->assertStringStartsWith($original, $updated);
+            $this->assertSame(1, substr_count($updated, '## RePro support knowledge policy v2'));
+            $this->assertStringContainsString('call search_support_knowledge immediately', $updated);
+            $this->assertStringContainsString('takes precedence over any earlier blanket instruction to verify first', $updated);
+            $this->assertStringContainsString('Verification is still required before accessing specific private property', $updated);
+            $this->assertStringContainsString('before actually invoking the appropriate tool and receiving a result confirming that action', $updated);
+            $assistant['instructions'] = $updated;
+
+            return Http::response(['version_id' => 'public-help-policy']);
+        });
+        $sync = app(TelnyxAssistantSyncService::class);
+        $this->assertFalse($sync->inspect(true)['policy_instructions_current']);
+        $sync->sync(true, 'public-help-policy');
+        $this->assertTrue($sync->inspect(true)['policy_instructions_current']);
+        $sync->sync(true, 'public-help-policy-repeat');
+        Http::assertSentCount(8);
     }
 
     public function test_admin_can_sync_and_promote_assistant_via_http(): void
