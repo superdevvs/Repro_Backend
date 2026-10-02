@@ -34,7 +34,7 @@ class EmailActivityService
                         'link' => $this->safeLink(data_get($log, 'metadata.link') ?? data_get($log, 'metadata.url')),
                     ];
                 }
-            } catch (\RuntimeException) {
+            } catch (\Exception) {
                 $available = false;
             }
         }
@@ -46,7 +46,7 @@ class EmailActivityService
                     'detail' => $type === 'failed' ? $this->detail($message->error_message) : null, 'link' => null];
             }
         }
-        usort($events, fn ($a, $b) => strcmp($a['at'] ?? '', $b['at'] ?? ''));
+        usort($events, fn ($a, $b) => (strtotime($a['at'] ?? '') ?: 0) <=> (strtotime($b['at'] ?? '') ?: 0));
         $status = $message->status;
         foreach ($events as $event) {
             $status = match ($event['type']) {

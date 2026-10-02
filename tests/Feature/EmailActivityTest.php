@@ -69,4 +69,16 @@ class EmailActivityTest extends TestCase
             ->getJson('/api/messaging/email/messages/'.$message->id.'/activity')->assertOk()
             ->assertJsonPath('provider_logs_available', false)->assertJsonPath('open_count', 3)->assertDontSee('provider secret');
     }
+
+    public function test_timeline_orders_by_instant_across_timezone_offsets(): void
+    {
+        $message = $this->message();
+        $message->update(['sent_at' => null, 'metadata' => ['email_activity' => [
+            ['id' => 'later', 'type' => 'opened', 'at' => '2026-10-02T04:30:00+00:00'],
+            ['id' => 'earlier', 'type' => 'delivered', 'at' => '2026-10-02T09:49:28+05:30'],
+        ]]]);
+        $this->actingAs(User::factory()->create(['role' => 'admin']))
+            ->getJson('/api/messaging/email/messages/'.$message->id.'/activity')->assertOk()
+            ->assertJsonPath('events.0.id', 'earlier')->assertJsonPath('events.1.id', 'later');
+    }
 }
