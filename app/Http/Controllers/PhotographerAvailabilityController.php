@@ -1029,6 +1029,7 @@ class PhotographerAvailabilityController extends Controller
             }
 
             $distanceMiles = null;
+            $distanceData = null;
             $hasOrigin = $originAddress || ($originCity && $originState);
             $hasShoot = $shootAddress && $shootCity && $shootState;
             if ($hasOrigin && $hasShoot) {
@@ -1281,12 +1282,57 @@ class PhotographerAvailabilityController extends Controller
                 ->first(fn ($label) => $label !== '');
             $serviceAreaLabel = $isAuthenticatedClient ? null : ($serviceAreaLabel ?: null);
 
+            // Job window for last/next uses real shoot duration (default 60).
+            // Availability booked blocks remain 120 elsewhere — unchanged here.
+            $jobStartLocal = null;
+            if ($requestedTime) {
+                $time24 = $this->convertTo24Hour($requestedTime);
+                $timeParts = [];
+                if (preg_match('/^(\d{2}):(\d{2})$/', $time24, $timeParts)) {
+                    $jobStartLocal = $date->copy()->setTime((int) $timeParts[1], (int) $timeParts[2], 0);
+                }
+            }
+
+            $jobPayload = [
+                'address' => $shootAddress,
+                'city' => $shootCity,
+                'state' => $shootState,
+                'zip' => $shootZip,
+                'latitude' => $validated['shoot_latitude'] ?? null,
+                'longitude' => $validated['shoot_longitude'] ?? null,
+            ];
+
+            $map = null;
+            if ($includeSensitiveSlotFields) {
+                try {
+                    $map = app(\App\Services\Photographers\PhotographerPickerMapBuilder::class)->build(
+                        $photographer,
+                        $jobPayload,
+                        $jobStartLocal,
+                        $requestedDuration,
+                        $shootsOnDate,
+                        is_numeric($distanceMiles) ? (float) $distanceMiles : null,
+                        is_array($distanceData) ? $distanceData : null,
+                        $distanceLookupPolicy,
+                        $hasOrigin && $hasShoot
+                    );
+                } catch (\Throwable $e) {
+                    // Fail open: picker still lists photographers without map bits.
+                    \Log::debug('Photographer picker map enrichment skipped', [
+                        'photographer_id' => $photographerId,
+                        'error' => $e->getMessage(),
+                    ]);
+                    $map = null;
+                }
+            }
+
             $photographerResult = [
                 'id' => $photographerId,
                 'hybrid_travel_enabled' => (bool) app(\App\Services\Scheduling\SchedulingBufferSettings::class)->enabled(),
                 'travel_check_required' => (bool) app(\App\Services\Scheduling\SchedulingBufferSettings::class)->enabled(),
                 'name' => $photographer->name,
                 'distance' => $distanceMiles,
+                'miles_to_job' => is_numeric($distanceMiles) ? (float) $distanceMiles : null,
                 'distance_from' => $distanceFrom,
                 'service_area_label' => $serviceAreaLabel,
                 'availability_slots' => $availabilitySlots->map(fn($s) => [
@@ -1308,7 +1354,9 @@ class PhotographerAvailabilityController extends Controller
                 'is_available_at_time' => $isAvailableAtTime,
                 'has_availability' => count($netAvailableSlots) > 0,
                 'shoots_count_today' => $shootsOnDate->count(),
+                'map' => $map,
             ];
+
 
             if ($includeSensitiveSlotFields) {
                 $photographerResult['previous_shoot_id'] = $previousShootId;
@@ -1317,7 +1365,21 @@ class PhotographerAvailabilityController extends Controller
             $result[] = $photographerResult;
         }
 
-        return response()->json(['data' => $result, 'hybrid_travel_enabled' => (bool) app(\App\Services\Scheduling\SchedulingBufferSettings::class)->enabled(), 'travel_feasibility' => $travelFeasibility]);
+        $jobPin = app(\App\Services\Photographers\PhotographerPickerMapBuilder::class)->jobPin([
+            'address' => $shootAddress,
+            'city' => $shootCity,
+            'state' => $shootState,
+            'zip' => $shootZip,
+            'latitude' => $validated['shoot_latitude'] ?? null,
+            'longitude' => $validated['shoot_longitude'] ?? null,
+        ]);
+
+        return response()->json([
+            'data' => $result,
+            'job' => $jobPin,
+            'hybrid_travel_enabled' => (bool) app(\App\Services\Scheduling\SchedulingBufferSettings::class)->enabled(),
+            'travel_feasibility' => $travelFeasibility,
+        ]);
     }
 
     /** Legacy calendar endpoints can evaluate one selected itinerary on demand. */

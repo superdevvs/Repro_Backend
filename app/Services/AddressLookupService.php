@@ -753,7 +753,7 @@ class AddressLookupService
 
         // Cache successful calculations; retry failed lookups on the next request.
         // Version the key because coordinate/locality fallback behavior has changed.
-        $cacheKey = 'distance_v2_' . md5(json_encode($origin) . json_encode($destination));
+        $cacheKey = 'distance_v3_' . md5(json_encode($origin) . json_encode($destination));
         $cached = Cache::get($cacheKey);
         if (is_array($cached)) {
             return $cached;
@@ -823,7 +823,9 @@ class AddressLookupService
                 'distance' => $element['distance']['text'] ?? round($element['distance']['value'] / 1609.34, 2).' mi',
                 'distance_value' => $element['distance']['value'], // in meters
                 'duration' => $element['duration']['text'] ?? '',
-                'duration_value' => $element['duration']['value'] // in seconds
+                'duration_value' => $element['duration']['value'], // in seconds
+                'source' => 'google_distance_matrix',
+                'is_estimate' => false,
             ];
 
         } catch (\Exception $e) {
@@ -1481,6 +1483,8 @@ class AddressLookupService
             'distance_value' => (int)$meters,
             'duration' => gmdate('H\h i\m', (int)$seconds),
             'duration_value' => (int)$seconds,
+            'source' => 'estimate',
+            'is_estimate' => true,
         ];
     }
 
