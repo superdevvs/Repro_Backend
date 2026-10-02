@@ -150,4 +150,22 @@ class CubiCasaAssetIngestionTest extends TestCase
         Queue::assertNotPushed(SyncShootFileToDropboxJob::class);
         Http::assertNothingSent();
     }
+
+    public function test_failed_downloads_raise_so_the_job_retries(): void
+    {
+        Http::fake([
+            '*521-merged-dim.pdf*' => Http::response('nope', 500),
+            '*floor-1-dim.jpg*' => Http::response('JPGDATA', 200, ['Content-Type' => 'image/jpeg']),
+        ]);
+
+        User::factory()->create(['role' => 'admin']);
+        $shoot = Shoot::factory()->create();
+        $this->attachCubicasaService($shoot);
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('CubiCasa asset download failed');
+
+        (new IngestCubiCasaAssetsJob($shoot->id, $this->floorplans()))
+            ->handle(app(\App\Services\ShootActivityLogger::class));
+    }
 }

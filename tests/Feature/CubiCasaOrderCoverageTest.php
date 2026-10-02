@@ -209,4 +209,49 @@ class CubiCasaOrderCoverageTest extends TestCase
             'An unlinked shoot must not report a succeeded sync.'
         );
     }
+
+    public function test_job_skips_delivered_shoots(): void
+    {
+        Http::fake();
+
+        $shoot = $this->shoot([
+            'status' => Shoot::STATUS_DELIVERED,
+            'workflow_status' => Shoot::STATUS_DELIVERED,
+            'scheduled_at' => now()->subDay(),
+        ]);
+
+        (new CreateCubiCasaOrderJob($shoot->id, 'backfill'))->handle(app(CubiCasaService::class));
+
+        Http::assertNothingSent();
+    }
+
+    public function test_job_skips_requested_unapproved_shoots(): void
+    {
+        Http::fake();
+
+        $shoot = $this->shoot([
+            'status' => Shoot::STATUS_REQUESTED,
+            'workflow_status' => Shoot::STATUS_REQUESTED,
+            'scheduled_at' => now()->addDay(),
+        ]);
+
+        (new CreateCubiCasaOrderJob($shoot->id, 'lifecycle'))->handle(app(CubiCasaService::class));
+
+        Http::assertNothingSent();
+    }
+
+    public function test_resync_does_not_backfill_a_delivered_shoot(): void
+    {
+        $this->shoot([
+            'status' => Shoot::STATUS_DELIVERED,
+            'workflow_status' => Shoot::STATUS_DELIVERED,
+            'scheduled_at' => now()->subDay(),
+        ]);
+
+        Queue::fake();
+
+        $this->artisan('cubicasa:resync-pending')->assertExitCode(0);
+
+        Queue::assertNotPushed(CreateCubiCasaOrderJob::class);
+    }
 }

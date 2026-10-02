@@ -76,6 +76,7 @@ class IngestCubiCasaAssetsJob implements ShouldQueue
         $uploadedByUserId = $this->resolveSystemUploaderId($shoot);
 
         $ingestedFileIds = [];
+        $failedKeys = [];
         $mediaStorage = app(\App\Services\Media\MediaStorage::class);
 
         foreach ($this->floorplans as $item) {
@@ -119,11 +120,13 @@ class IngestCubiCasaAssetsJob implements ShouldQueue
                         'status' => $response->status(),
                         'url' => $url,
                     ]);
+                    $failedKeys[] = $assetKey;
                     continue;
                 }
 
                 $binary = $response->body();
                 if ($binary === '' || $binary === null) {
+                    $failedKeys[] = $assetKey;
                     continue;
                 }
 
@@ -191,8 +194,19 @@ class IngestCubiCasaAssetsJob implements ShouldQueue
                     'url' => $url,
                     'error' => $e->getMessage(),
                 ]);
+                $failedKeys[] = $assetKey;
                 continue;
             }
+        }
+
+        // Previously failed downloads were logged and discarded, so a transient
+        // CDN blip left the shoot with Draft/0 forever and the job still reported
+        // success. Throw so the queue retries; already-ingested keys are skipped.
+        if (!empty($failedKeys)) {
+            throw new \RuntimeException(
+                'CubiCasa asset download failed for shoot '.$shoot->id
+                .' ('.implode(', ', array_values(array_unique($failedKeys))).')'
+            );
         }
 
         if (!empty($ingestedFileIds)) {

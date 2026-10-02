@@ -155,8 +155,26 @@ class CubiCasaService
     }
 
     /**
+     * Default webhook triggers we subscribe to. Ready/Fixing deliver assets;
+     * Pending/Draft keep our cubicasa_status column honest when the app moves
+     * an order without our webhook ever having been registered before.
+     *
+     * @var list<string>
+     */
+    public const WEBHOOK_TRIGGERS = [
+        'moved_to_ready',
+        'moved_to_fixing',
+        'moved_to_pending',
+        'moved_to_draft',
+    ];
+
+    /**
      * Register/update our webhook URL on CubiCasa side. Idempotent.
      * Endpoint: PATCH /companies/webhook
+     *
+     * CubiCasa v3 expects `webhook_urls` (array) + `webhook_triggers` (array).
+     * Older code sent `url`/`secret`, which CubiCasa silently ignored — so
+     * Ready transitions never reached us and drafts stayed empty forever.
      */
     public function registerWebhook(): array
     {
@@ -164,13 +182,21 @@ class CubiCasaService
             return ['ok' => false, 'status' => 0, 'message' => 'CUBICASA_API_KEY is not configured'];
         }
         try {
-            $payload = ['url' => $this->getWebhookUrl()];
-            if (is_string($this->webhookSecret) && trim($this->webhookSecret) !== '') {
-                $payload['secret'] = $this->webhookSecret;
-            }
+            $url = $this->getWebhookUrl();
+            $payload = [
+                'webhook_urls' => [$url],
+                'webhook_triggers' => self::WEBHOOK_TRIGGERS,
+            ];
             $resp = $this->client()->patch($this->baseUrl . '/companies/webhook', $payload);
             if ($resp->successful()) {
-                return ['ok' => true, 'status' => $resp->status(), 'message' => 'Webhook registered', 'url' => $payload['url']];
+                return [
+                    'ok' => true,
+                    'status' => $resp->status(),
+                    'message' => 'Webhook registered',
+                    'url' => $url,
+                    'triggers' => self::WEBHOOK_TRIGGERS,
+                    'response' => $resp->json(),
+                ];
             }
             return ['ok' => false, 'status' => $resp->status(), 'message' => $resp->body()];
         } catch (\Throwable $e) {
@@ -231,12 +257,34 @@ class CubiCasaService
         $this->markSyncRunning($shoot);
 
         $raw = null;
-        if (!empty($shoot->cubicasa_order_id)) {
-            $raw = $this->getOrder((string) $shoot->cubicasa_order_id);
+        $resolvedViaFullGet = false;
+        $linkedOrderId = !empty($shoot->cubicasa_order_id) ? (string) $shoot->cubicasa_order_id : null;
+        if ($linkedOrderId) {
+            $raw = $this->getOrder($linkedOrderId);
+            $resolvedViaFullGet = $raw !== null;
         }
 
         if (!$raw && !empty($shoot->cubicasa_external_id)) {
             $raw = $this->findOrderByExternalId((string) $shoot->cubicasa_external_id);
+            $resolvedViaFullGet = false;
+        }
+
+        // Older empty Drafts (auto-created after a scan already finished in the
+        // CubiCasa app under a different order id) block the scheduled resync
+        // forever: we keep re-fetching the draft and never see the Ready order.
+        // Rematch to a Ready order at the same address when the linked order has
+        // nothing useful to show.
+        if ($this->shouldRematchEmptyOrder($raw)) {
+            $rematched = $this->findReadyOrderByAddress($shoot, $linkedOrderId);
+            if ($rematched) {
+                Log::info('CubiCasa rematched empty linked order to Ready order by address', [
+                    'shoot_id' => $shoot->id,
+                    'previous_order_id' => $linkedOrderId,
+                    'rematched_order_id' => Arr::get($rematched, 'id'),
+                ]);
+                $raw = $rematched;
+                $resolvedViaFullGet = true;
+            }
         }
 
         if (!$raw) {
@@ -251,6 +299,19 @@ class CubiCasaService
                 $this->failureMessage($this->lastFailureReason)
             );
             return null;
+        }
+
+        // List payloads (external_id search) omit delivery_assets. Do NOT re-GET
+        // an order we already loaded via getOrder — test fixtures and some API
+        // responses omit the key entirely even on the detail endpoint.
+        if (!$resolvedViaFullGet && !Arr::has($raw, 'delivery_assets')) {
+            $orderId = Arr::get($raw, 'id');
+            if (is_string($orderId) && $orderId !== '') {
+                $full = $this->getOrder($orderId);
+                if ($full) {
+                    $raw = $full;
+                }
+            }
         }
 
         $parsed = $this->parseOrderData($raw);
@@ -474,6 +535,136 @@ class CubiCasaService
 
         $this->lastFailureReason = self::FAILURE_NOT_FOUND;
         return null;
+    }
+
+    /**
+     * True when the linked CubiCasa order cannot supply floor plans — typically
+     * an empty Draft created by our auto-order path after the photographer
+     * already finished a scan under a separate Ready order in the CubiCasa app.
+     */
+    private function shouldRematchEmptyOrder(?array $raw): bool
+    {
+        // Only empty Drafts are rematched. Fresh auto-creates land as New/Draft
+        // with no assets yet; rematching those would spam GET /orders on every
+        // sync. The orphan case we fix is specifically: our Draft vs a separate
+        // Ready order the photographer finished in the CubiCasa app.
+        if ($raw === null) {
+            return true;
+        }
+
+        $status = strtolower((string) (Arr::get($raw, 'info.status') ?? Arr::get($raw, 'status') ?? ''));
+        if ($status !== 'draft') {
+            return false;
+        }
+
+        $parsed = $this->parseOrderData($raw);
+        $floorplans = $parsed['floorplans'] ?? [];
+
+        return !is_array($floorplans) || $floorplans === [];
+    }
+
+    /**
+     * Locate a Ready CubiCasa order whose address matches the shoot.
+     *
+     * Photographers often finish the scan in the CubiCasa mobile app, which
+     * creates a Ready order with no external_id. Our auto-create then opens a
+     * separate empty Draft with external_id=shoot-{id}. Matching by address is
+     * how we reconnect those completed scans.
+     *
+     * @return array<string, mixed>|null full order payload (GET /orders/{id})
+     */
+    public function findReadyOrderByAddress(Shoot $shoot, ?string $excludeOrderId = null): ?array
+    {
+        $needle = $this->normalizeAddress((string) ($shoot->address ?? ''));
+        if ($needle === '') {
+            return null;
+        }
+
+        $offset = 0;
+        $limit = 50;
+        for ($page = 0; $page < 20; $page++) {
+            try {
+                $resp = $this->client()->get($this->baseUrl . '/orders', [
+                    'limit' => $limit,
+                    'offset' => $offset,
+                    'status' => 'Ready',
+                ]);
+                if (!$resp->successful()) {
+                    $this->lastFailureReason = $this->classifyFailure($resp);
+                    return null;
+                }
+
+                $items = $resp->json('items') ?? [];
+                foreach ($items as $item) {
+                    $id = (string) Arr::get($item, 'id', '');
+                    if ($excludeOrderId && $id === $excludeOrderId) {
+                        continue;
+                    }
+                    if (!$this->orderMatchesShootAddress($item, $needle, $shoot)) {
+                        continue;
+                    }
+
+                    // List rows omit delivery_assets — fetch the full order.
+                    $full = $id !== '' ? $this->getOrder($id) : null;
+                    return $full ?: $item;
+                }
+
+                $hasMore = (bool) $resp->json('pagination.has_more');
+                $next = $resp->json('pagination.next_offset');
+                if (!$hasMore || !is_numeric($next)) {
+                    break;
+                }
+                $offset = (int) $next;
+            } catch (\Throwable $e) {
+                $this->lastFailureReason = self::FAILURE_OTHER;
+                Log::error('CubiCasa findReadyOrderByAddress exception', [
+                    'shoot_id' => $shoot->id,
+                    'error' => $e->getMessage(),
+                ]);
+                return null;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $order
+     */
+    private function orderMatchesShootAddress(array $order, string $normalizedShootAddress, Shoot $shoot): bool
+    {
+        $full = $this->normalizeAddress((string) (
+            Arr::get($order, 'address.full_address')
+            ?? Arr::get($order, 'address.full')
+            ?? ''
+        ));
+        $street = $this->normalizeAddress((string) (Arr::get($order, 'address.street') ?? ''));
+
+        if ($full !== '' && (str_contains($full, $normalizedShootAddress) || str_contains($normalizedShootAddress, $full))) {
+            return true;
+        }
+
+        // CubiCasa sometimes stores street without the house number ("Welsh Road"
+        // vs shoot "2361-73 Welsh Road"). Require the street fragment to appear
+        // in the shoot address, and when both sides have a city, require a match.
+        if ($street !== '' && str_contains($normalizedShootAddress, $street)) {
+            $orderCity = $this->normalizeAddress((string) (Arr::get($order, 'address.city') ?? ''));
+            $shootCity = $this->normalizeAddress((string) ($shoot->city ?? ''));
+            if ($orderCity === '' || $shootCity === '' || str_contains($orderCity, $shootCity) || str_contains($shootCity, $orderCity)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function normalizeAddress(string $value): string
+    {
+        $value = strtolower(trim($value));
+        $value = preg_replace('/[^a-z0-9]+/', ' ', $value) ?? '';
+        $value = preg_replace('/\s+/', ' ', $value) ?? '';
+
+        return trim($value);
     }
 
     /**

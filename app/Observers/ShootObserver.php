@@ -204,10 +204,17 @@ class ShootObserver
             return;
         }
 
-        // Never order for a shoot that is not yet confirmed. A client request
-        // can carry a preferred date while still awaiting approval, and paying
-        // for a scan before anyone approves the booking is not recoverable.
-        $blocked = [Shoot::STATUS_CANCELLED, Shoot::STATUS_DECLINED, Shoot::STATUS_REQUESTED];
+        // Never order for a shoot that is not yet confirmed, or already finished.
+        // A client request can carry a preferred date while still awaiting approval,
+        // and paying for a scan before anyone approves the booking is not recoverable.
+        // Delivered shoots must not open a fresh Draft either — that orphans completed
+        // CubiCasa scans that already exist under a different order id.
+        $blocked = [
+            Shoot::STATUS_CANCELLED,
+            Shoot::STATUS_DECLINED,
+            Shoot::STATUS_REQUESTED,
+            Shoot::STATUS_DELIVERED,
+        ];
         if (in_array($shoot->status, $blocked, true)
             || in_array($shoot->workflow_status, $blocked, true)
         ) {

@@ -449,15 +449,15 @@ class CubiCasaAutoOrderTest extends TestCase
     {
         mt_srand(self::SEED);
 
-        // Statuses that are NOT cancelled/declined, so the active guard passes.
+        // Statuses that are NOT cancelled/declined/requested/delivered, so the
+        // active auto-create guard passes. Requested (unapproved) and delivered
+        // (already-completed) must not open CubiCasa drafts.
         $activeStatuses = [
-            Shoot::STATUS_REQUESTED,
             Shoot::STATUS_SCHEDULED,
             Shoot::STATUS_UPLOADED,
             Shoot::STATUS_EDITING,
             Shoot::STATUS_REVIEW,
             Shoot::STATUS_READY,
-            Shoot::STATUS_DELIVERED,
             Shoot::STATUS_ON_HOLD,
         ];
 

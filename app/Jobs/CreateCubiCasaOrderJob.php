@@ -38,9 +38,17 @@ class CreateCubiCasaOrderJob implements ShouldQueue
         }
 
         // Req 3.2 — cancelled/declined (either status or workflow_status): complete silently.
-        $cancelledOrDeclined = [Shoot::STATUS_CANCELLED, Shoot::STATUS_DECLINED];
-        if (in_array($shoot->status, $cancelledOrDeclined, true)
-            || in_array($shoot->workflow_status, $cancelledOrDeclined, true)
+        // Also skip unapproved client requests and already-delivered shoots: creating a
+        // CubiCasa draft after the booking is done (or before anyone approved it) is how
+        // empty drafts orphan completed scans (see shoot 162 / Welsh Road).
+        $skipStatuses = [
+            Shoot::STATUS_CANCELLED,
+            Shoot::STATUS_DECLINED,
+            Shoot::STATUS_REQUESTED,
+            Shoot::STATUS_DELIVERED,
+        ];
+        if (in_array($shoot->status, $skipStatuses, true)
+            || in_array($shoot->workflow_status, $skipStatuses, true)
         ) {
             return;
         }

@@ -12,7 +12,7 @@ use Illuminate\Console\Command;
 class RegisterCubiCasaWebhookCommand extends Command
 {
     protected $signature = 'cubicasa:register-webhook';
-    protected $description = 'Register the configured CUBICASA_WEBHOOK_URL with CubiCasa via PATCH /companies/webhook.';
+    protected $description = 'Register CUBICASA_WEBHOOK_URL via PATCH /companies/webhook (webhook_urls + webhook_triggers).';
 
     public function handle(CubiCasaService $cubicasa): int
     {

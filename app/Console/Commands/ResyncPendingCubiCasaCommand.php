@@ -132,7 +132,14 @@ class ResyncPendingCubiCasaCommand extends Command
      */
     private function backfillMissingOrders(int $limit): int
     {
-        $terminal = [Shoot::STATUS_CANCELLED, Shoot::STATUS_DECLINED];
+        // Skip terminal + unapproved + already-completed. Backfilling a Draft onto
+        // a delivered shoot is exactly how empty drafts blocked Ready rematches.
+        $skip = [
+            Shoot::STATUS_CANCELLED,
+            Shoot::STATUS_DECLINED,
+            Shoot::STATUS_REQUESTED,
+            Shoot::STATUS_DELIVERED,
+        ];
 
         // Same reason as handle(): dispatching a job is itself a write to the
         // `jobs` table, so the read must be finished first.
@@ -140,8 +147,8 @@ class ResyncPendingCubiCasaCommand extends Command
             ->whereNull('cubicasa_order_id')
             ->whereNull('cubicasa_external_id')
             ->whereNotNull('scheduled_at')
-            ->whereNotIn('status', $terminal)
-            ->whereNotIn('workflow_status', $terminal)
+            ->whereNotIn('status', $skip)
+            ->whereNotIn('workflow_status', $skip)
             ->orderByDesc('id')
             ->limit($limit)
             ->pluck('id');
