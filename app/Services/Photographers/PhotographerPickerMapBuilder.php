@@ -123,16 +123,14 @@ class PhotographerPickerMapBuilder
             $lastSlack = null;
             $nextSlack = null;
             if ($last !== null && $lastDrive !== null && ! empty($last['ends_at'])) {
-                $gap = (int) round(
-                    ($jobStart->getTimestamp() - Carbon::parse($last['ends_at'])->getTimestamp()) / 60
-                );
+                // Civil-clock gap (matches for-booking last/next selection) — avoid
+                // mixing app-TZ job start timestamps with offset-aware shoot instants.
+                $gap = $this->civilGapMinutes(Carbon::parse($last['ends_at']), $jobStart);
                 $lastSlack = $gap - $lastDrive;
             }
             if ($next !== null && $nextDrive !== null && ! empty($next['starts_at'])) {
                 $jobEnd = $jobStart->copy()->addMinutes(max(1, $jobDurationMinutes));
-                $gap = (int) round(
-                    (Carbon::parse($next['starts_at'])->getTimestamp() - $jobEnd->getTimestamp()) / 60
-                );
+                $gap = $this->civilGapMinutes($jobEnd, Carbon::parse($next['starts_at']));
                 $nextSlack = $gap - $nextDrive;
             }
             $travelRisk = [
@@ -339,6 +337,19 @@ class PhotographerPickerMapBuilder
         }
 
         return (int) max(0, (int) round(((float) $leg['duration_value']) / 60));
+    }
+
+
+    /** Same-day civil minutes between two clock values (timezone-agnostic). */
+    private function civilGapMinutes(CarbonInterface $from, CarbonInterface $to): int
+    {
+        $fromDay = $from->format('Y-m-d');
+        $toDay = $to->format('Y-m-d');
+        $dayDelta = (int) (new \DateTimeImmutable($fromDay))->diff(new \DateTimeImmutable($toDay))->format('%r%a');
+        $fromMin = ((int) $from->format('G')) * 60 + (int) $from->format('i');
+        $toMin = ((int) $to->format('G')) * 60 + (int) $to->format('i');
+
+        return ($dayDelta * 1440) + ($toMin - $fromMin);
     }
 
     private function riskLabel(?int $slack, int $buffer): ?string
