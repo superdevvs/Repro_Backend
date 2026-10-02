@@ -10,6 +10,7 @@ use App\Services\Scheduling\ScheduleFeasibilityService;
 use App\Services\Scheduling\TravelLocationResolver;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Mockery;
 use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
 use Tests\TestCase;
@@ -121,6 +122,15 @@ class ScheduleCommitGuardTest extends TestCase
         $resolver = Mockery::mock(TravelLocationResolver::class);
         $resolver->shouldReceive('persistedMetadata')->once()->with(['verified' => true])->andReturn(['signature' => 'trusted']);
         $this->app->instance(TravelLocationResolver::class, $resolver);
+        $logger = Mockery::mock(\Psr\Log\LoggerInterface::class);
+        $logger->shouldReceive('notice')->once()->with('schedule_travel_override', Mockery::on(function ($context) use ($actor, $shoot) {
+            $this->assertSame(0, DB::transactionLevel());
+            $this->assertSame(1, UserActivityLog::where('event_type', 'schedule.travel_override')->count());
+            $this->assertSame(['actor_id' => $actor->id, 'shoot_ids' => [$shoot->id], 'transition_ids' => ['edge'],
+                'reason_codes' => ['insufficient_travel_time'], 'policy_version' => 'test'], $context);
+            return true;
+        }));
+        Log::partialMock()->shouldReceive('channel')->once()->with('scheduling')->andReturn($logger);
         $guard = app(ScheduleCommitGuard::class);
         $prepared = $guard->prepare(['travel_override' => true, 'travel_override_reason' => 'Approved travel exception',
             'property_details' => ['schedule_location' => ['signature' => 'forged']]], $shoot, $actor);
