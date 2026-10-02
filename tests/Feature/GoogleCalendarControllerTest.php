@@ -200,11 +200,21 @@ class GoogleCalendarControllerTest extends TestCase
 
         $this->deleteJson('/api/google-calendar/disconnect')
             ->assertOk()
-            ->assertJsonPath('success', true);
+            ->assertJsonPath('success', true)
+            ->assertJsonPath('data.connected', false)
+            ->assertJsonPath('data.sync_enabled', false)
+            ->assertJsonPath('data.user_id', $this->photographer->id)
+            ->assertJsonPath('data.provider_email', null);
 
         $this->assertDatabaseMissing('google_calendar_connections', [
             'user_id' => $this->photographer->id,
         ]);
+
+        // Status mirrors disconnect payload once connection is gone.
+        $this->getJson('/api/google-calendar/status')
+            ->assertOk()
+            ->assertJsonPath('data.connected', false)
+            ->assertJsonPath('data.sync_enabled', false);
     }
 
     public function test_disconnect_only_removes_the_authenticated_photographers_google_event_mappings(): void
@@ -265,5 +275,69 @@ class GoogleCalendarControllerTest extends TestCase
             'user_id' => $otherPhotographer->id,
             'google_event_id' => 'other-event-id',
         ]);
+    }
+
+    public function test_disconnect_is_idempotent_when_already_disconnected(): void
+    {
+        Sanctum::actingAs($this->photographer);
+
+        Http::fake();
+
+        $this->deleteJson('/api/google-calendar/disconnect')
+            ->assertOk()
+            ->assertJsonPath('success', true)
+            ->assertJsonPath('data.connected', false)
+            ->assertJsonPath('data.sync_enabled', false)
+            ->assertJsonPath('data.user_id', $this->photographer->id);
+
+        $this->deleteJson('/api/google-calendar/disconnect')
+            ->assertOk()
+            ->assertJsonPath('success', true)
+            ->assertJsonPath('data.connected', false);
+
+        Http::assertNothingSent();
+    }
+
+    public function test_disconnect_revokes_token_and_stops_future_sync_flag_before_cleanup(): void
+    {
+        Sanctum::actingAs($this->photographer);
+
+        $connection = GoogleCalendarConnection::create([
+            'user_id' => $this->photographer->id,
+            'provider_email' => 'calendar-owner@example.com',
+            'calendar_id' => 'primary',
+            'access_token' => 'google-access-token',
+            'refresh_token' => 'google-refresh-token',
+            'token_expires_at' => now()->addHour(),
+            'sync_enabled' => true,
+        ]);
+
+        GoogleCalendarEventMapping::create([
+            'shoot_id' => 4242,
+            'user_id' => $this->photographer->id,
+            'calendar_id' => 'primary',
+            'google_event_id' => 'event-to-remove',
+        ]);
+
+        Http::fake([
+            'https://www.googleapis.com/calendar/v3/calendars/*/events/event-to-remove' => Http::response('', 204),
+            'https://oauth2.googleapis.com/revoke' => Http::response('', 200),
+        ]);
+
+        $this->deleteJson('/api/google-calendar/disconnect')
+            ->assertOk()
+            ->assertJsonPath('data.connected', false);
+
+        $this->assertDatabaseMissing('google_calendar_connections', [
+            'user_id' => $this->photographer->id,
+        ]);
+        $this->assertDatabaseMissing('google_calendar_event_mappings', [
+            'user_id' => $this->photographer->id,
+        ]);
+
+        Http::assertSent(function ($request) {
+            return $request->url() === 'https://oauth2.googleapis.com/revoke'
+                && $request['token'] === 'google-refresh-token';
+        });
     }
 }

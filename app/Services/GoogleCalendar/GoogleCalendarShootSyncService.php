@@ -171,6 +171,20 @@ class GoogleCalendarShootSyncService
 
     public function resyncUser(int $userId): void
     {
+        $connection = GoogleCalendarConnection::query()
+            ->where('user_id', $userId)
+            ->where('sync_enabled', true)
+            ->first();
+
+        if (!$connection) {
+            // Disconnected / disabled: drop leftover mappings and skip shoot walks.
+            GoogleCalendarEventMapping::query()
+                ->where('user_id', $userId)
+                ->delete();
+
+            return;
+        }
+
         $shootIds = Shoot::query()
             ->where('photographer_id', $userId)
             ->orWhereIn('id', function ($query) use ($userId) {
@@ -199,6 +213,12 @@ class GoogleCalendarShootSyncService
                 ->where('user_id', $userId)
                 ->get()
         );
+
+        // Force-clear any mappings left when a remote delete failed; intentional
+        // disconnect must not leave local rows that future jobs could reopen.
+        GoogleCalendarEventMapping::query()
+            ->where('user_id', $userId)
+            ->delete();
     }
 
     protected function removeMappings(Collection $mappings): void

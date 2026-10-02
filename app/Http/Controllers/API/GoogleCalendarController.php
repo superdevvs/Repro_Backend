@@ -179,24 +179,46 @@ class GoogleCalendarController extends Controller
 
     public function disconnect(Request $request): JsonResponse
     {
+        $user = $request->user();
         $connection = GoogleCalendarConnection::query()
-            ->where('user_id', $request->user()->id)
+            ->where('user_id', $user->id)
             ->first();
 
         if ($connection) {
-            $this->shootSyncService->disconnectUser($request->user()->id);
+            // Stop future sync immediately so queued jobs no-op while we clean up.
+            $connection->forceFill([
+                'sync_enabled' => false,
+            ])->save();
+
+            $tokenToRevoke = $connection->refresh_token ?: $connection->access_token;
+
+            // Best-effort remove remote Google events + local mappings while tokens still work.
+            $this->shootSyncService->disconnectUser($user->id);
 
             try {
-                $this->calendarService->revokeToken($connection->refresh_token ?: $connection->access_token);
+                $this->calendarService->revokeToken($tokenToRevoke);
             } catch (Throwable $exception) {
+                // Provider revoke is best-effort; local disconnect must still complete.
             }
 
-            $connection->delete();
+            GoogleCalendarConnection::query()->where('user_id', $user->id)->delete();
         }
 
+        // Idempotent: already disconnected also returns 200 with the same shape.
         return response()->json([
             'success' => true,
             'message' => 'Google Calendar disconnected.',
+            'data' => [
+                'user_id' => $user->id,
+                'user_name' => $user->name,
+                'available' => (bool) (config('services.google.calendar.client_id') && config('services.google.calendar.client_secret')),
+                'connected' => false,
+                'provider_email' => null,
+                'calendar_id' => null,
+                'sync_enabled' => false,
+                'last_synced_at' => null,
+                'last_error' => null,
+            ],
         ]);
     }
 
