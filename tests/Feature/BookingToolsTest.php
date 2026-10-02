@@ -29,8 +29,9 @@ class BookingToolsTest extends TestCase
         $rule = \App\Models\AutomationRule::where('trigger_type', 'SHOOT_SCHEDULED')->firstOrFail();
         $rule->update(['is_active' => $active]);
         $rule->template->update(['subject' => 'Saved AI booking confirmation', 'body_html' => '<p>Saved booking at {{shoot_location}}</p>']);
-        $client = User::factory()->create(['role' => 'client']);
-        $photographer = User::factory()->photographer()->create();
+        $client = User::factory()->create(['role' => 'client', 'timezone' => 'America/Los_Angeles']);
+        $photographer = User::factory()->photographer()->create(['timezone' => 'America/New_York']);
+        $bookingDate = now()->addDays(2)->toDateString();
         $service = Service::factory()->create(['price' => 180]);
         $this->actingAs($client);
         $storage = Mockery::mock(ShootMediaStorageService::class);
@@ -40,12 +41,20 @@ class BookingToolsTest extends TestCase
         $result = app(BookingTools::class)->bookShoot([
             'address' => '100 AI Date Time Ave', 'city' => 'Baltimore', 'state' => 'MD', 'zip' => '21201',
             'services' => [$service->id], 'photographer_id' => $photographer->id,
-            'date' => now()->addDays(2)->toDateString(), 'time' => '13:00',
+            'date' => $bookingDate, 'time' => '13:00',
         ], ['user_id' => $client->id]);
 
         $this->assertTrue($result['success']);
         $shoot = Shoot::findOrFail($result['shoot_id']);
-        $this->assertNull($shoot->scheduled_at, 'The AI tool uses the supported date/time fields.');
+        // The same absolute appointment must drive travel checks, persistence,
+        // and notifications while retaining the requested local date and time.
+        $expectedAt = \Carbon\Carbon::parse($bookingDate.' 13:00', 'America/New_York')->utc();
+        $this->assertSame($expectedAt->format('Y-m-d H:i:s'), $shoot->getRawOriginal('scheduled_at'));
+        $this->assertSame('America/New_York', $shoot->timezone);
+        $this->assertSame($bookingDate, $shoot->scheduled_date->toDateString());
+        $this->assertSame('13:00', $shoot->time);
+        $this->assertSame($bookingDate, $result['scheduled_date']);
+        $this->assertSame('13:00', $result['time']);
         $messages = \App\Models\Message::where('related_shoot_id', $shoot->id)->where('status', 'SENT')->get();
         $this->assertCount($active ? 2 : 1, $messages);
         $clientMessages = $messages->where('to_address', $client->email);
