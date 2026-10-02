@@ -408,6 +408,16 @@ class EmailMessagingController extends Controller
         ]));
     }
 
+    public function activity(Message $message): JsonResponse
+    {
+        app(\App\Services\Messaging\DashboardMessagingPolicy::class)->authorizeEmail(request()->user());
+        abort_unless($message->channel === 'EMAIL' && $message->direction === 'OUTBOUND' && in_array($message->provider, ['RESEND', 'CAKEMAIL'], true), 404);
+        abort_if(\App\Models\SupportTicketMessage::where('source_message_id', $message->id)->exists(), 404);
+        abort_unless($this->canAccessMessage(request()->user(), $message), 403);
+
+        return response()->json(app(\App\Services\Messaging\EmailActivityService::class)->forMessage($message));
+    }
+
     public function cancel(Message $message): JsonResponse
     {
         app(\App\Services\Messaging\DashboardMessagingPolicy::class)->authorizeEmail(request()->user(), true);

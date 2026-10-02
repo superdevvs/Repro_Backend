@@ -79,6 +79,20 @@ class ResendWebhookTest extends TestCase
         $this->webhook($payload)->assertOk();
         $this->webhook($payload)->assertOk();
         $this->assertSame(1, $message->refresh()->metadata['open_count']);
+        $this->assertCount(1, $message->metadata['email_activity']);
+    }
+
+    public function test_click_timeline_uses_event_time_and_redacts_sensitive_link_parameters(): void
+    {
+        $message = $this->message();
+        $at = now()->subMinute()->toIso8601String();
+        $this->webhook(['type' => 'email.clicked', 'created_at' => $at, 'data' => [
+            'email_id' => 'resend-123', 'click' => ['link' => 'https://example.com/booking?token=secret'],
+        ]])->assertOk();
+        $event = $message->refresh()->metadata['email_activity'][0];
+        $this->assertSame('clicked', $event['type']);
+        $this->assertSame($at, $event['at']);
+        $this->assertSame('https://example.com/booking', $event['link']);
     }
 
     public function test_bounce_wins_over_late_delivery_and_does_not_resend(): void

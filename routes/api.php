@@ -1203,6 +1203,7 @@ Route::middleware(['auth:sanctum'])->prefix('messaging')->group(function () {
     Route::get('/email/recipients', [EmailMessagingController::class, 'recipients']);
     Route::get('/email/messages', [EmailMessagingController::class, 'messages']);
     Route::get('/email/messages/{message}', [EmailMessagingController::class, 'show']);
+    Route::get('/email/messages/{message}/activity', [EmailMessagingController::class, 'activity'])->middleware('throttle:60,1');
     Route::get('/email/threads', [EmailMessagingController::class, 'threads']);
     Route::post('/email/threads/{thread}/mark-read', [EmailMessagingController::class, 'markThreadRead']);
     Route::post('/email/compose', [EmailMessagingController::class, 'compose'])->middleware('throttle:20,1');

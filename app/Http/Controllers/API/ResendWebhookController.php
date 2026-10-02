@@ -46,7 +46,7 @@ class ResendWebhookController extends CakemailWebhookController
             $normalized = ['data' => [
                 'email_id' => $emailId,
                 'email' => $message->to_address,
-                'reason' => (string) (data_get($payload, 'data.bounce.message') ?? data_get($payload, 'data.failed.reason') ?? 'Email delivery failed.'),
+                'reason' => (string) (data_get($payload, 'data.bounce.message') ?? data_get($payload, 'data.failed.reason') ?? data_get($payload, 'data.suppressed.reason') ?? 'Email delivery failed.'),
                 'bounce_type' => data_get($payload, 'data.bounce.type', 'unknown'),
                 'link' => data_get($payload, 'data.click.link'),
             ]];
@@ -63,6 +63,13 @@ class ResendWebhookController extends CakemailWebhookController
             $metadata = (array) $message->refresh()->metadata;
             $metadata['resend_webhook_event_ids'] = [...$ids, $eventId];
             $metadata['resend_last_event'] = $event;
+            $activity = app(\App\Services\Messaging\EmailActivityService::class);
+            $eventAt = $activity->timestamp($payload['created_at'] ?? null) ?? now()->toIso8601String();
+            $metadata['email_activity'] = array_slice([...(array) ($metadata['email_activity'] ?? []), [
+                'id' => $eventId, 'type' => substr($event, 6), 'at' => $eventAt,
+                'detail' => in_array($event, ['email.bounced', 'email.failed', 'email.suppressed'], true) ? $activity->detail($normalized['data']['reason']) : null,
+                'link' => $activity->safeLink($normalized['data']['link']),
+            ]], -100);
             $message->update(['metadata' => $metadata]);
 
             return true;
