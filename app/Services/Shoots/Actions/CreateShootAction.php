@@ -41,14 +41,14 @@ class CreateShootAction
     public function execute(StoreShootRequest $request, User $user): CreateShootResult
     {
         $validated = $request->validated();
-        // The legacy merger stores clocks without offsets. Project explicit service
-        // instants into the booking zone before merging, then persist UTC below.
+        // The legacy merger stores SQL clocks without offsets. Merge zoned input
+        // in UTC so the two occurrences of a repeated DST hour remain distinct.
         if (! empty($validated['timezone'])) {
             foreach (['services', 'service_items'] as $field) {
                 foreach ($validated[$field] ?? [] as $index => $row) {
                     if (! empty($row['scheduled_at'])) {
                         $validated[$field][$index]['scheduled_at'] = \Carbon\Carbon::parse($row['scheduled_at'], $validated['timezone'])
-                            ->setTimezone($validated['timezone'])->format('Y-m-d H:i:s');
+                            ->utc()->format('Y-m-d H:i:s');
                     }
                 }
             }
@@ -70,9 +70,21 @@ class CreateShootAction
             $validated['services'],
             $validated['service_items'] ?? null,
             $request->input('service_photographers'),
-            $scheduledAt
+            $scheduledAt && ! empty($validated['timezone'])
+                ? \Carbon\Carbon::instance($scheduledAt)->utc()
+                : $scheduledAt
         );
         if (! $unitBooking) {
+            if (! empty($validated['timezone'])) {
+                foreach ($servicesPayload as &$service) {
+                    if (! empty($service['scheduled_at'])) {
+                        // Availability and persistence consume an absolute instant,
+                        // rather than reinterpreting the merged SQL clock as local.
+                        $service['scheduled_at'] = \Carbon\Carbon::parse($service['scheduled_at'], 'UTC')->toIso8601String();
+                    }
+                }
+                unset($service);
+            }
             $propertyDetails = $validated['property_details'] ?? [];
             $sqft = $propertyDetails['sqft'] ?? $propertyDetails['squareFeet'] ?? $propertyDetails['square_feet'] ?? null;
             $servicesPayload = app(\App\Services\Shoots\ShootDurationResolver::class)->withDurations(
@@ -207,9 +219,8 @@ class CreateShootAction
             }
 
             // Zoned bookings store absolute UTC on service lines (parity with update/PATCH).
-            // Do this after availability checks so naive wall clocks in the payload are still
-            // reinterpreted via the explicit timezone above. Shoot scheduled_at is converted
-            // to UTC just before persist (after local date/time are derived).
+            // Unit lines may still carry local input; flat service rows now carry explicit
+            // instants. Shoot scheduled_at is converted after deriving local date/time.
             if ($scheduleTimezone !== '') {
                 $servicesPayload = array_map(function (array $service) use ($scheduleTimezone) {
                     if (! empty($service['scheduled_at'])) {

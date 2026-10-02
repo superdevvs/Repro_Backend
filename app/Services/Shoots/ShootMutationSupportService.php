@@ -339,8 +339,8 @@ class ShootMutationSupportService
 
     protected function validTimezoneName(?string $timezone): ?string
     {
-        $timezone = trim((string) ($timezone ?: ''));
-        if ($timezone !== '' && in_array($timezone, timezone_identifiers_list(), true)) {
+        $timezone = \App\Support\Timezone::canonical(trim((string) ($timezone ?: '')));
+        if ($timezone !== '' && in_array($timezone, timezone_identifiers_list(\DateTimeZone::ALL_WITH_BC), true)) {
             return $timezone;
         }
 

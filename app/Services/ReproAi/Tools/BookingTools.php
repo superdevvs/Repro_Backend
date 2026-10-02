@@ -83,7 +83,8 @@ class BookingTools
 
             $timezone = $params['timezone'] ?? User::find($params['photographer_id'] ?? 0)?->timezone
                 ?? $client->timezone ?? config('app.timezone', 'UTC');
-            $timezone = in_array($timezone, timezone_identifiers_list(), true) ? $timezone : 'UTC';
+            $timezone = \App\Support\Timezone::canonical($timezone);
+            $timezone = in_array($timezone, timezone_identifiers_list(\DateTimeZone::ALL_WITH_BC), true) ? $timezone : 'UTC';
             $travelAt = ! empty($params['date']) && ! empty($params['time'])
                 ? \Carbon\Carbon::parse($params['date'].' '.$params['time'], $timezone) : null;
             // Prepare shoot data

@@ -16,7 +16,7 @@ class VisitPlanBuilder
 {
     public function build(array $payload, ?Shoot $shoot = null, ?User $actor = null): array
     {
-        $timezone = $payload['timezone'] ?? $shoot?->timezone ?: (string) config('app.timezone', 'UTC');
+        $timezone = \App\Support\Timezone::canonical($payload['timezone'] ?? $shoot?->timezone ?: (string) config('app.timezone', 'UTC'));
         if (! empty($payload['requested_date'])) {
             $payload['scheduled_at'] = $payload['requested_date'].' '.($payload['requested_time'] ?? '09:00');
         }

@@ -51,6 +51,7 @@ class UpdateShootAction
 
     public function execute(Request $request, Shoot $shoot, User $user): Shoot
     {
+        $request->merge(\App\Support\Timezone::scheduleInput($request->only(['timezone', 'complimentary_service_options'])));
         $shoot->loadMissing(['services', 'ghostUsers']);
         $scheduleScope = app(ScheduleDateScopeService::class);
         // Capture the shoot's current local calendar day before any mutation so a reschedule

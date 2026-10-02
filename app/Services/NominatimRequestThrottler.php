@@ -32,7 +32,7 @@ class NominatimRequestThrottler
      * requests consume a slot too. Laravel releases the lock in a finally block,
      * while its lease provides recovery if a worker terminates unexpectedly.
      */
-    public function run(Closure $request): mixed
+    public function run(Closure $request, ?float $deadline = null): mixed
     {
         $storeName = config('services.nominatim.throttle_cache_store');
         $cache = Cache::store(is_string($storeName) && $storeName !== '' ? $storeName : null);
@@ -59,27 +59,44 @@ class NominatimRequestThrottler
             (int) config('services.nominatim.lock_wait_seconds', self::DEFAULT_LOCK_WAIT_SECONDS)
         );
 
-        return $cache
-            ->lock(self::LOCK_KEY, $lockSeconds)
-            ->block($lockWaitSeconds, function () use ($cache, $minimumInterval, $request) {
-                $lastStartedAt = (int) $cache->get(self::LAST_REQUEST_STARTED_AT_KEY, 0);
-                $now = $this->currentTimeMilliseconds();
-                $elapsed = max(0, $now - $lastStartedAt);
-                $remaining = $lastStartedAt > 0
-                    ? max(0, $minimumInterval - $elapsed)
-                    : 0;
+        $execute = function () use ($cache, $minimumInterval, $request, $deadline) {
+            $lastStartedAt = (int) $cache->get(self::LAST_REQUEST_STARTED_AT_KEY, 0);
+            $now = $this->currentTimeMilliseconds();
+            $elapsed = max(0, $now - $lastStartedAt);
+            $remaining = $lastStartedAt > 0
+                ? max(0, $minimumInterval - $elapsed)
+                : 0;
 
-                if ($remaining > 0) {
-                    Sleep::usleep($remaining * 1000);
-                }
+            if ($deadline !== null && microtime(true) + $remaining / 1000 >= $deadline) {
+                throw new RuntimeException('The booking distance lookup budget was exhausted.');
+            }
 
-                $cache->forever(
-                    self::LAST_REQUEST_STARTED_AT_KEY,
-                    $this->currentTimeMilliseconds()
-                );
+            if ($remaining > 0) {
+                Sleep::usleep($remaining * 1000);
+            }
 
-                return $request();
-            });
+            $cache->forever(
+                self::LAST_REQUEST_STARTED_AT_KEY,
+                $this->currentTimeMilliseconds()
+            );
+
+            return $request();
+        };
+        $lock = $cache->lock(self::LOCK_KEY, $lockSeconds);
+        if ($deadline === null) {
+            return $lock->block($lockWaitSeconds, $execute);
+        }
+
+        // Booking reads share a short total deadline. Never spend it waiting
+        // behind another worker; an unavailable distance remains unknown.
+        if (! $lock->get()) {
+            throw new RuntimeException('The distance provider is currently busy.');
+        }
+        try {
+            return $execute();
+        } finally {
+            $lock->release();
+        }
     }
 
     private function currentTimeMilliseconds(): int

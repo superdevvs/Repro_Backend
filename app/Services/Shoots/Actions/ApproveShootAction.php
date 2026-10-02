@@ -49,6 +49,7 @@ class ApproveShootAction
 
     public function execute(Request $request, Shoot $shoot, User $user): Shoot
     {
+        $request->merge(\App\Support\Timezone::scheduleInput($request->only(['timezone', 'complimentary_service_options'])));
         $shoot->loadMissing('services');
         $beforeSnapshot = $this->mailService->captureShootSnapshot($shoot);
         $wasRequested = $shoot->status === Shoot::STATUS_REQUESTED || $shoot->workflow_status === Shoot::STATUS_REQUESTED;

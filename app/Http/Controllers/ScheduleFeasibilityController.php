@@ -12,6 +12,7 @@ class ScheduleFeasibilityController extends Controller
 {
     public function __invoke(Request $request, ScheduleFeasibilityService $evaluator)
     {
+        $request->merge(\App\Support\Timezone::scheduleInput($request->only(['timezone'])));
         $rules = array_merge(MultiUnitBookingService::rules(), [
             'shoot_id' => 'nullable|integer|exists:shoots,id',
             'client_id' => 'nullable|integer|exists:users,id',
@@ -19,7 +20,7 @@ class ScheduleFeasibilityController extends Controller
             'scheduled_at' => 'nullable|date',
             'requested_date' => 'nullable|date_format:Y-m-d',
             'requested_time' => 'nullable|date_format:H:i',
-            'timezone' => 'nullable|timezone',
+            'timezone' => 'nullable|timezone:all_with_bc',
             'action_mode' => 'nullable|in:create,update,approve,schedule,assign,reschedule,alternate,additional_work',
             'include_alternatives' => 'sometimes|boolean',
             'travel_location_confirmed' => 'sometimes|boolean',

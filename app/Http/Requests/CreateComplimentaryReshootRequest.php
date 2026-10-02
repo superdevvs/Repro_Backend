@@ -19,6 +19,7 @@ class CreateComplimentaryReshootRequest extends FormRequest
 
     protected function prepareForValidation(): void
     {
+        $this->merge(\App\Support\Timezone::scheduleInput($this->only(['timezone'])));
         $policy = app(ComplimentaryReshootReasonPolicy::class);
         $reasonCode = (string) $this->input('reason_code', '');
         $rawItems = $this->input('items');
@@ -130,7 +131,7 @@ class CreateComplimentaryReshootRequest extends FormRequest
             'scheduled_at' => ['nullable', 'date'],
             'scheduled_date' => ['nullable', 'date'],
             'time' => ['nullable', 'string', 'max:40'],
-            'timezone' => ['nullable', 'timezone:all'],
+            'timezone' => ['nullable', 'timezone:all_with_bc'],
             'photographer_id' => ['nullable', 'integer', 'exists:users,id'],
             'rep_id' => ['nullable', 'integer', 'exists:users,id'],
             'reason_code' => ['required', Rule::in(ComplimentaryReshootReasonPolicy::REASONS)],

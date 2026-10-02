@@ -23,26 +23,37 @@ class PhotographerAvailabilityService
     public function getAvailableSlots(int $photographerId, Carbon $from, Carbon $to): array
     {
         $policy = config('availability.hybrid_travel_enabled', false) ? 'hybrid' : 'fixed';
-        $cacheKey = "availability:slots:{$policy}:{$photographerId}:{$from->toDateString()}:{$to->toDateString()}";
+        // Read the current occupied windows before using cached net slots. A TTL
+        // alone leaves cancelled/rescheduled work blocking otherwise free times.
+        // Reuse this snapshot on cache misses instead of querying each day again.
+        $appointments = $this->bookedAppointments($photographerId, $from, null, $to);
+        $hours = PhotographerAvailability::where('photographer_id', $photographerId)
+            ->where(fn ($query) => $query->whereNull('date')->orWhereBetween('date', [$from->toDateString(), $to->toDateString()]))
+            ->orderBy('id')->get(['id', 'date', 'day_of_week', 'start_time', 'end_time', 'status'])->toArray();
+        $version = hash('sha256', json_encode([
+            array_map(fn (array $window) => [$window['shoot']->id, $window['start']->toIso8601String(), $window['minutes']], $appointments),
+            $hours, (int) config('availability.buffer_time_minutes', 15),
+        ], JSON_THROW_ON_ERROR));
+        $cacheKey = "availability:slots:{$policy}:{$photographerId}:{$from->toDateString()}:{$to->toDateString()}:{$version}";
 
         // FileStore put can fail with permission denied (e.g. cache dirs owned by
         // another user). Never let a cache write failure 500 the availability API —
         // recompute and return slots without relying on a successful put.
-        return $this->safeCacheRemember($cacheKey, now()->addMinutes(5), function () use ($photographerId, $from, $to) {
-            return $this->computeAvailableSlots($photographerId, $from, $to);
+        return $this->safeCacheRemember($cacheKey, now()->addMinutes(5), function () use ($photographerId, $from, $to, $appointments) {
+            return $this->computeAvailableSlots($photographerId, $from, $to, $appointments);
         });
     }
 
     /**
      * Compute available slots for a date range without touching the cache.
      */
-    protected function computeAvailableSlots(int $photographerId, Carbon $from, Carbon $to): array
+    protected function computeAvailableSlots(int $photographerId, Carbon $from, Carbon $to, ?array $appointments = null): array
     {
         $slots = [];
         $current = $from->copy();
 
         while ($current->lte($to)) {
-            $daySlots = $this->getDaySlots($photographerId, $current);
+            $daySlots = $this->getDaySlots($photographerId, $current, $appointments);
             if (!empty($daySlots)) {
                 $slots[$current->toDateString()] = $daySlots;
             }
@@ -73,7 +84,7 @@ class PhotographerAvailabilityService
     /**
      * Get available slots for a specific day
      */
-    protected function getDaySlots(int $photographerId, Carbon $date): array
+    protected function getDaySlots(int $photographerId, Carbon $date, ?array $appointments = null): array
     {
         $dayOfWeek = strtolower($date->format('l'));
         
@@ -98,7 +109,7 @@ class PhotographerAvailabilityService
             $end = Carbon::parse($availability->end_time);
             
             // Remove blocked times (existing shoots)
-            $blockedTimes = $this->getBlockedTimes($photographerId, $date);
+            $blockedTimes = $this->getBlockedTimes($photographerId, $date, $appointments);
             
             $availableSlots = $this->subtractBlockedTimes($start, $end, $blockedTimes);
             $slots = array_merge($slots, $availableSlots);
@@ -110,12 +121,12 @@ class PhotographerAvailabilityService
     /**
      * Get blocked times from existing shoots
      */
-    protected function getBlockedTimes(int $photographerId, Carbon $date): array
+    protected function getBlockedTimes(int $photographerId, Carbon $date, ?array $appointments = null): array
     {
         $buffer = (config('availability.hybrid_travel_enabled', false) ? 0 : (int) config('availability.buffer_time_minutes', 15));
 
         $blocked = [];
-        foreach ($this->bookedAppointments($photographerId, $date) as $window) {
+        foreach ($appointments ?? $this->bookedAppointments($photographerId, $date) as $window) {
             if ($window['start']->toDateString() !== $date->toDateString()) {
                 continue;
             }
@@ -376,15 +387,7 @@ class PhotographerAvailabilityService
         }
 
         // If availability slots exist, check if requested time range falls within any available slot
-        $availableSlots = PhotographerAvailability::where('photographer_id', $photographerId)
-            ->where(function ($query) use ($date, $dayOfWeek) {
-                $query->whereDate('date', $date->toDateString())
-                    ->orWhere(function ($q) use ($dayOfWeek) {
-                        $q->whereNull('date')->where('day_of_week', $dayOfWeek);
-                    });
-            })
-            ->where('status', 'available')
-            ->get();
+        $availableSlots = $this->getConfiguredAvailableSlots($photographerId, $date, $dayOfWeek);
 
         $available = false;
         if ($availableSlots->isNotEmpty()) {
@@ -669,8 +672,8 @@ class PhotographerAvailabilityService
 
     protected function validTimezoneOrUtc(?string $timezone): string
     {
-        $timezone = trim((string) ($timezone ?: ''));
-        if ($timezone !== '' && in_array($timezone, timezone_identifiers_list(), true)) {
+        $timezone = \App\Support\Timezone::canonical(trim((string) ($timezone ?: '')));
+        if ($timezone !== '' && in_array($timezone, timezone_identifiers_list(\DateTimeZone::ALL_WITH_BC), true)) {
             return $timezone;
         }
 
@@ -683,15 +686,18 @@ class PhotographerAvailabilityService
      */
     protected function getConfiguredAvailableSlots(int $photographerId, Carbon $date, string $dayOfWeek): Collection
     {
-        return PhotographerAvailability::where('photographer_id', $photographerId)
-            ->where(function ($query) use ($date, $dayOfWeek) {
-                $query->whereDate('date', $date->toDateString())
-                    ->orWhere(function ($q) use ($dayOfWeek) {
-                        $q->whereNull('date')->where('day_of_week', $dayOfWeek);
-                    });
-            })
+        $specific = PhotographerAvailability::where('photographer_id', $photographerId)
+            ->whereDate('date', $date->toDateString())
             ->where('status', 'available')
             ->get();
+
+        if ($specific->isNotEmpty()) {
+            return $specific;
+        }
+
+        return PhotographerAvailability::where('photographer_id', $photographerId)
+            ->whereNull('date')->where('day_of_week', $dayOfWeek)
+            ->where('status', 'available')->get();
     }
 
     /**

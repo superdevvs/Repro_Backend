@@ -18,6 +18,35 @@ namespace App\Support;
  */
 class Timezone
 {
+    /** Resolve exact published IANA links without accepting malformed input. */
+    public static function canonical(mixed $name): mixed
+    {
+        if (! is_string($name) || $name === 'UTC') {
+            return $name;
+        }
+
+        // Shared published tzdb data already used by the voice boundaries. Do
+        // not construct an alias: minimal production tzdata can omit its file.
+        static $aliases = null;
+        $aliases ??= require __DIR__.'/../../resources/data/voice-timezone-aliases.php';
+
+        return $aliases[$name] ?? $name;
+    }
+
+    /** Normalize names only; never transform the supplied appointment instants. */
+    public static function scheduleInput(array $input): array
+    {
+        if (array_key_exists('timezone', $input)) {
+            $input['timezone'] = self::canonical($input['timezone']);
+        }
+        if (is_array($input['complimentary_service_options'] ?? null)
+            && array_key_exists('timezone', $input['complimentary_service_options'])) {
+            $input['complimentary_service_options']['timezone'] = self::canonical($input['complimentary_service_options']['timezone']);
+        }
+
+        return $input;
+    }
+
     /** Canonical IANA identifier preferred for new writes. */
     public const CANONICAL = 'Asia/Kolkata';
 

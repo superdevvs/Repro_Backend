@@ -74,8 +74,8 @@ class WriteSchedulePlan
         $zones = trim((string) $timezone) === ''
             ? \App\Models\User::whereIn('id', array_column($windows, 'photographer_id'))->pluck('timezone', 'id')->all() : [];
         return array_map(function ($window) use ($timezone, $zones) {
-            $zone = $timezone ?: ($zones[$window['photographer_id']] ?? config('app.timezone', 'UTC'));
-            $zone = in_array($zone, timezone_identifiers_list(), true) ? $zone : 'UTC';
+            $zone = \App\Support\Timezone::canonical($timezone ?: ($zones[$window['photographer_id']] ?? config('app.timezone', 'UTC')));
+            $zone = in_array($zone, timezone_identifiers_list(\DateTimeZone::ALL_WITH_BC), true) ? $zone : 'UTC';
             if ($window['start']) {
                 $window['start'] = $timezone ? $window['start']->copy() : $window['start']->copy()->shiftTimezone($zone);
             }

@@ -939,6 +939,10 @@ class PhotographerAvailabilityController extends Controller
 
         $result = [];
 
+        // Sorting/display distance must not delay schedule choices. Required
+        // radius checks retain their existing criteria within one shared budget.
+        $distanceLookupPolicy = ['network_allowed' => RadiusEligibility::enforced(), 'deadline' => microtime(true) + 3];
+
         foreach ($photographers as $photographer) {
             $photographerId = $photographer->id;
             $metadata = is_string($photographer->metadata) 
@@ -1049,7 +1053,8 @@ class PhotographerAvailabilityController extends Controller
                             'longitude' => isset($validated['shoot_longitude']) && is_numeric($validated['shoot_longitude'])
                                 ? (float) $validated['shoot_longitude']
                                 : null,
-                        ]
+                        ],
+                        $distanceLookupPolicy
                     );
 
                     if (is_array($distanceData)) {

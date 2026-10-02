@@ -81,8 +81,8 @@ class ScheduleInstantResolver
     private function timezone(Shoot $shoot, ?User $photographer): string
     {
         foreach ([$photographer?->timezone, $shoot->timezone, config('app.timezone', 'UTC')] as $timezone) {
-            $timezone = trim((string) $timezone);
-            if ($timezone !== '' && in_array($timezone, timezone_identifiers_list(), true)) {
+            $timezone = \App\Support\Timezone::canonical(trim((string) $timezone));
+            if ($timezone !== '' && in_array($timezone, timezone_identifiers_list(\DateTimeZone::ALL_WITH_BC), true)) {
                 return $timezone;
             }
         }

@@ -102,4 +102,42 @@ class NominatimRequestThrottlerTest extends TestCase
             $this->assertFalse($requestRan);
         }
     }
+
+    public function test_booking_deadline_never_waits_for_a_busy_global_provider_lock(): void
+    {
+        $held = Cache::store('array')->lock(NominatimRequestThrottler::LOCK_KEY, 20);
+        $this->assertTrue($held->get());
+        $ran = false;
+        try {
+            app(NominatimRequestThrottler::class)->run(function () use (&$ran) {
+                $ran = true;
+            }, microtime(true) + 3);
+            $this->fail('A busy provider must remain unknown within the booking deadline.');
+        } catch (RuntimeException $exception) {
+            $this->assertStringContainsString('busy', $exception->getMessage());
+        } finally {
+            $held->release();
+        }
+        $this->assertFalse($ran);
+        Sleep::assertNeverSlept();
+    }
+
+    public function test_booking_deadline_preserves_rate_limit_when_next_provider_slot_does_not_fit(): void
+    {
+        Cache::store('array')->forever(NominatimRequestThrottler::LAST_REQUEST_STARTED_AT_KEY, now()->getTimestampMs());
+        $ran = false;
+        try {
+            app(NominatimRequestThrottler::class)->run(function () use (&$ran) {
+                $ran = true;
+            }, microtime(true) + 0.1);
+            $this->fail('Do not exceed the request budget or bypass the provider interval.');
+        } catch (RuntimeException $exception) {
+            $this->assertStringContainsString('budget', $exception->getMessage());
+        }
+        $this->assertFalse($ran);
+        Sleep::assertNeverSlept();
+        $lock = Cache::store('array')->lock(NominatimRequestThrottler::LOCK_KEY, 20);
+        $this->assertTrue($lock->get());
+        $lock->release();
+    }
 }

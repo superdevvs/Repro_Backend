@@ -19,7 +19,7 @@ class ShootScheduleUpdateInput
     /** Resolve input clocks without changing service inheritance or the booking anchor. */
     public function normalizeTimestamps(Shoot $shoot, array $payload): array
     {
-        $timezone = trim((string) (array_key_exists('timezone', $payload) ? $payload['timezone'] : $shoot->timezone));
+        $timezone = \App\Support\Timezone::canonical(trim((string) (array_key_exists('timezone', $payload) ? $payload['timezone'] : $shoot->timezone)));
         // Existing unzoned bookings use wall-clock storage. Do not reinterpret them.
         if ($timezone === '') {
             return $payload;

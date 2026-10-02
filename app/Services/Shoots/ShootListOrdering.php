@@ -179,8 +179,8 @@ class ShootListOrdering
     private function validTimezone(mixed $value): ?string
     {
         static $zones = null;
-        $zones ??= array_fill_keys(timezone_identifiers_list(), true);
-        $value = is_string($value) ? trim($value) : '';
+        $zones ??= array_fill_keys(timezone_identifiers_list(\DateTimeZone::ALL_WITH_BC), true);
+        $value = is_string($value) ? \App\Support\Timezone::canonical(trim($value)) : '';
 
         return isset($zones[$value]) ? $value : null;
     }

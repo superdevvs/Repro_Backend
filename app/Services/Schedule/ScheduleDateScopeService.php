@@ -319,9 +319,9 @@ class ScheduleDateScopeService
 
     protected function validTimezone(?string $timezone): string
     {
-        $timezone = trim((string) ($timezone ?: config('app.timezone')));
+        $timezone = \App\Support\Timezone::canonical(trim((string) ($timezone ?: config('app.timezone'))));
 
-        return in_array($timezone, timezone_identifiers_list(), true)
+        return in_array($timezone, timezone_identifiers_list(\DateTimeZone::ALL_WITH_BC), true)
             ? $timezone
             : (string) config('app.timezone');
     }

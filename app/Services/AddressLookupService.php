@@ -744,7 +744,7 @@ class AddressLookupService
     /**
      * Get distance between two addresses
      */
-    public function getDistance(array $origin, array $destination): ?array
+    public function getDistance(array $origin, array $destination, ?array $lookupPolicy = null): ?array
     {
         // Skip external API calls in local dev for performance
         if (env('GEOCODING_ENABLED', true) === false) {
@@ -759,8 +759,10 @@ class AddressLookupService
             return $cached;
         }
 
-        $result = $this->calculateDistance($origin, $destination);
-        if (is_array($result)) {
+        $result = $this->calculateDistance($origin, $destination, $lookupPolicy);
+        // Display-only approximation must not replace a required provider result
+        // in the shared cache used by radius/assignment decisions.
+        if (is_array($result) && ($lookupPolicy['network_allowed'] ?? true)) {
             Cache::put($cacheKey, $result, 3600);
         }
 
@@ -770,12 +772,13 @@ class AddressLookupService
     /**
      * Actually calculate distance (called by getDistance with caching)
      */
-    private function calculateDistance(array $origin, array $destination): ?array
+    private function calculateDistance(array $origin, array $destination, ?array $lookupPolicy = null): ?array
     {
-        $approximate = fn () => $this->approxDistanceFromAddresses($origin, $destination)
+        $approximate = fn () => $this->approxDistanceFromAddresses($origin, $destination, $lookupPolicy)
             ?? $this->approxDistanceByCoordinates($origin, $destination);
 
-        if (empty($this->googleApiKey)) {
+        if (empty($this->googleApiKey) || ! ($lookupPolicy['network_allowed'] ?? true)
+            || (isset($lookupPolicy['deadline']) && microtime(true) >= $lookupPolicy['deadline'])) {
             return $approximate();
         }
 
@@ -790,7 +793,13 @@ class AddressLookupService
                 'units' => 'imperial'
             ];
 
-            $response = Http::get($this->googleBaseUrl . '/distancematrix/json', $params);
+            if ($lookupPolicy !== null) {
+                $remaining = max(0.001, ($lookupPolicy['deadline'] ?? microtime(true) + 3) - microtime(true));
+                $response = Http::connectTimeout(min(1, $remaining))->timeout(min(3, $remaining))
+                    ->get($this->googleBaseUrl . '/distancematrix/json', $params);
+            } else {
+                $response = Http::get($this->googleBaseUrl . '/distancematrix/json', $params);
+            }
 
             if (!$response->successful()) {
                 return $approximate();
@@ -830,16 +839,33 @@ class AddressLookupService
     /**
      * Geocode with caching to avoid repeated external calls
      */
-    private function geocodeWithCache(array $address): ?array
+    private function geocodeWithCache(array $address, ?array $lookupPolicy = null): ?array
     {
         $cacheKey = 'geocode_' . md5(json_encode($address));
+
+        if ($lookupPolicy !== null) {
+            $cached = Cache::get($cacheKey);
+            if (is_array($cached)) {
+                return $cached;
+            }
+            if (! ($lookupPolicy['network_allowed'] ?? true)
+                || (isset($lookupPolicy['deadline']) && microtime(true) >= $lookupPolicy['deadline'])) {
+                return null;
+            }
+            $coordinates = $this->geocodeNominatim($address, $lookupPolicy);
+            if (is_array($coordinates)) {
+                Cache::put($cacheKey, $coordinates, 86400);
+            }
+
+            return $coordinates;
+        }
         
         return Cache::remember($cacheKey, 86400, function () use ($address) {
             return $this->geocodeNominatim($address);
         });
     }
 
-    private function coordinatesForDistance(array $address): ?array
+    private function coordinatesForDistance(array $address, ?array $lookupPolicy = null): ?array
     {
         $latitude = $address['latitude'] ?? $address['lat'] ?? null;
         $longitude = $address['longitude'] ?? $address['lng'] ?? null;
@@ -850,7 +876,7 @@ class AddressLookupService
             ];
         }
 
-        $coordinates = $this->geocodeWithCache($address);
+        $coordinates = $this->geocodeWithCache($address, $lookupPolicy);
         if ($coordinates) {
             return $coordinates;
         }
@@ -859,7 +885,7 @@ class AddressLookupService
         unset($locality['address']);
 
         return $this->formatAddressForApi($locality)
-            ? $this->geocodeWithCache($locality)
+            ? $this->geocodeWithCache($locality, $lookupPolicy)
             : null;
     }
 
@@ -871,10 +897,10 @@ class AddressLookupService
             && (float) $longitude >= -180 && (float) $longitude <= 180;
     }
 
-    private function approxDistanceFromAddresses(array $origin, array $destination): ?array
+    private function approxDistanceFromAddresses(array $origin, array $destination, ?array $lookupPolicy = null): ?array
     {
-        $originCoords = $this->coordinatesForDistance($origin);
-        $destinationCoords = $this->coordinatesForDistance($destination);
+        $originCoords = $this->coordinatesForDistance($origin, $lookupPolicy);
+        $destinationCoords = $this->coordinatesForDistance($destination, $lookupPolicy);
         if (!$originCoords || !$destinationCoords) {
             return null;
         }
@@ -885,7 +911,7 @@ class AddressLookupService
         );
     }
 
-    private function geocodeNominatim(array $address): ?array
+    private function geocodeNominatim(array $address, ?array $lookupPolicy = null): ?array
     {
         $query = $this->formatAddressForApi($address);
         if (!$query) {
@@ -894,13 +920,19 @@ class AddressLookupService
 
         try {
             $response = $this->nominatimRequestThrottler->run(
-                fn () => Http::withHeaders([
-                    'User-Agent' => config('services.nominatim.user_agent'),
-                ])->timeout($this->nominatimRequestTimeout())->get('https://nominatim.openstreetmap.org/search', [
-                    'format' => 'json',
-                    'q' => $query,
-                    'limit' => 1,
-                ])
+                function () use ($query, $lookupPolicy) {
+                    $remaining = isset($lookupPolicy['deadline']) ? $lookupPolicy['deadline'] - microtime(true) : $this->nominatimRequestTimeout();
+                    if ($remaining <= 0) {
+                        throw new \RuntimeException('The booking distance lookup budget was exhausted.');
+                    }
+                    $request = Http::withHeaders(['User-Agent' => config('services.nominatim.user_agent')])
+                        ->timeout(min($this->nominatimRequestTimeout(), $remaining));
+                    if ($lookupPolicy !== null) {
+                        $request->connectTimeout(min(1, $remaining));
+                    }
+                    return $request->get('https://nominatim.openstreetmap.org/search', ['format' => 'json', 'q' => $query, 'limit' => 1]);
+                },
+                $lookupPolicy['deadline'] ?? null
             );
 
             if (!$response->successful()) {

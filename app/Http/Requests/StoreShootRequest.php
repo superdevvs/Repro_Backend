@@ -144,7 +144,7 @@ class StoreShootRequest extends FormRequest
 
             // Scheduling: optional (becomes Hold-On if missing)
             'scheduled_at' => 'nullable|date',
-            'timezone' => 'nullable|timezone',
+            'timezone' => 'nullable|timezone:all_with_bc',
             'travel_location_confirmed' => 'nullable|boolean',
             'travel_override' => 'nullable|boolean',
             'travel_override_confirmed' => 'nullable|boolean',
@@ -224,6 +224,7 @@ class StoreShootRequest extends FormRequest
      */
     protected function prepareForValidation(): void
     {
+        $this->merge(\App\Support\Timezone::scheduleInput($this->only(['timezone'])));
         $user = $this->user();
 
         // For clients, automatically set client_id if not provided
