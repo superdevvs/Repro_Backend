@@ -410,7 +410,7 @@ class PhotographerAvailabilityController extends Controller
                 'total_count' => count($allSlots),
             ]);
 
-            return response()->json(['data' => $allSlots, 'hybrid_travel_enabled' => (bool) config('availability.hybrid_travel_enabled', false), 'travel_feasibility' => $travelFeasibility]);
+            return response()->json(['data' => $allSlots, 'hybrid_travel_enabled' => (bool) app(\App\Services\Scheduling\SchedulingBufferSettings::class)->enabled(), 'travel_feasibility' => $travelFeasibility]);
         } catch (\Illuminate\Validation\ValidationException $e) {
             // validate() throws ValidationException (extends Exception); must stay 422.
             throw $e;
@@ -700,7 +700,7 @@ class PhotographerAvailabilityController extends Controller
         ]);
 
         // Create cache key from request parameters
-        $cacheKey = 'available_photographers_v2_' . md5(json_encode($validated).(int) config('availability.hybrid_travel_enabled', false));
+        $cacheKey = 'available_photographers_v2_' . md5(json_encode($validated).app(\App\Services\Scheduling\SchedulingBufferSettings::class)->version());
         
         $merged = \Illuminate\Support\Facades\Cache::remember($cacheKey, now()->addSeconds(30), function () use ($validated) {
             $dayOfWeek = strtolower(date('l', strtotime($validated['date'])));
@@ -727,7 +727,7 @@ class PhotographerAvailabilityController extends Controller
             return $specific->concat($recurring)->values();
         });
 
-        return response()->json(['data' => $merged, 'hybrid_travel_enabled' => (bool) config('availability.hybrid_travel_enabled', false)]);
+        return response()->json(['data' => $merged, 'hybrid_travel_enabled' => (bool) app(\App\Services\Scheduling\SchedulingBufferSettings::class)->enabled()]);
     }
 
     public function clearAll(Request $request, $photographerId)
@@ -1183,7 +1183,7 @@ class PhotographerAvailabilityController extends Controller
 
             // Calculate net available slots (availability minus bookings)
             $netAvailableSlots = [];
-            $buffer = (config('availability.hybrid_travel_enabled', false) ? 0 : (int) config('availability.buffer_time_minutes', 15));
+            $buffer = (app(\App\Services\Scheduling\SchedulingBufferSettings::class)->enabled() ? 0 : (int) config('availability.buffer_time_minutes', 15));
             $bufferedBookings = array_map(function (array $slot) use ($buffer) {
                 $start = max(0, $this->timeToMinutes($slot['start_time']) - $buffer);
                 $end = min(1440, $this->timeToMinutes($slot['end_time']) + $buffer);
@@ -1237,7 +1237,7 @@ class PhotographerAvailabilityController extends Controller
                         'in_range' => $inRange,
                     ]);
                     if ($inRange) {
-                        $buffer = (config('availability.hybrid_travel_enabled', false) ? 0 : (int) config('availability.buffer_time_minutes', 15));
+                        $buffer = (app(\App\Services\Scheduling\SchedulingBufferSettings::class)->enabled() ? 0 : (int) config('availability.buffer_time_minutes', 15));
                         foreach ($bookedSlots as $booked) {
                             if ($requestStartMinutes < $this->timeToMinutes($booked['end_time']) + $buffer
                                 && $requestStartMinutes + $requestedDuration > $this->timeToMinutes($booked['start_time']) - $buffer) {
@@ -1283,8 +1283,8 @@ class PhotographerAvailabilityController extends Controller
 
             $photographerResult = [
                 'id' => $photographerId,
-                'hybrid_travel_enabled' => (bool) config('availability.hybrid_travel_enabled', false),
-                'travel_check_required' => (bool) config('availability.hybrid_travel_enabled', false),
+                'hybrid_travel_enabled' => (bool) app(\App\Services\Scheduling\SchedulingBufferSettings::class)->enabled(),
+                'travel_check_required' => (bool) app(\App\Services\Scheduling\SchedulingBufferSettings::class)->enabled(),
                 'name' => $photographer->name,
                 'distance' => $distanceMiles,
                 'distance_from' => $distanceFrom,
@@ -1317,7 +1317,7 @@ class PhotographerAvailabilityController extends Controller
             $result[] = $photographerResult;
         }
 
-        return response()->json(['data' => $result, 'hybrid_travel_enabled' => (bool) config('availability.hybrid_travel_enabled', false), 'travel_feasibility' => $travelFeasibility]);
+        return response()->json(['data' => $result, 'hybrid_travel_enabled' => (bool) app(\App\Services\Scheduling\SchedulingBufferSettings::class)->enabled(), 'travel_feasibility' => $travelFeasibility]);
     }
 
     /** Legacy calendar endpoints can evaluate one selected itinerary on demand. */

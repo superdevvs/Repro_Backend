@@ -19,6 +19,10 @@ class TravelTimeEstimator
             && ! empty($origin['building_key']) && $origin['building_key'] === ($destination['building_key'] ?? null)) {
             return $this->result('same_building', 0, 0, 0, 'verified_same_building');
         }
+        $policy = app(SchedulingBufferSettings::class)->current();
+        if ($policy['mode'] === 'fixed') {
+            return $this->result('fixed', $policy['fixed_minutes'], null, null, 'fixed_gap_policy');
+        }
         if (empty($origin['full_address']) || empty($destination['full_address'])
             || empty($origin['complete']) || empty($destination['complete'])) {
             return $this->result('unknown', null, null, null, 'location_incomplete');
@@ -28,15 +32,20 @@ class TravelTimeEstimator
             // complete address alone cannot prove it selected the intended site.
             return $this->result('unknown', null, null, null, 'location_unverified');
         }
-        $route = $this->routes->route($origin, $destination, $departure);
+        $route = $policy['mode'] === 'mileage'
+            ? ['status' => 'unavailable', 'reason_code' => 'mileage_policy']
+            : $this->routes->route($origin, $destination, $departure);
         if ($route['status'] === 'no_route') {
             return $this->result('unknown', null, null, null, 'route_not_found');
         }
         if ($route['status'] === 'ok') {
             $minutes = $route['duration_seconds'] / 60;
 
-            return $this->result('google_routes', max(15, (int) ceil(($minutes + 5) / 5) * 5),
+            return $this->result('google_routes', max($policy['minimum_minutes'], (int) ceil(($minutes + $policy['allowance_minutes']) / 5) * 5),
                 $minutes, $route['distance_meters'] / 1609.344, 'traffic_aware_route', 'Google Maps');
+        }
+        if ($policy['mode'] === 'google' && $policy['fallback'] === 'review') {
+            return $this->result('unknown', null, null, null, $route['reason_code']);
         }
         if (! $this->exactCoordinates($origin) || ! $this->exactCoordinates($destination)) {
             return $this->result('unknown', null, null, null, $route['reason_code'].'_location_unknown');
@@ -47,7 +56,7 @@ class TravelTimeEstimator
         $dLng = deg2rad((float) $destination['longitude'] - (float) $origin['longitude']);
         $a = sin($dLat / 2) ** 2 + cos($lat1) * cos($lat2) * sin($dLng / 2) ** 2;
         $miles = 3958.7613 * 2 * atan2(sqrt(min(1, $a)), sqrt(max(0, 1 - $a))) * 1.3;
-        $required = $miles <= 5 ? 15 : ($miles <= 15 ? 30 : ($miles <= 30 ? 45 : null));
+        $required = $miles <= 5 ? $policy['near_minutes'] : ($miles <= 15 ? $policy['medium_minutes'] : ($miles <= 30 ? $policy['far_minutes'] : null));
 
         return $this->result($required === null ? 'unknown' : 'mileage_band', $required, null, $miles,
             $required === null ? 'fallback_distance_exceeds_limit' : $route['reason_code']);

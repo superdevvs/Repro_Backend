@@ -21,7 +21,7 @@ class TravelTimeEstimatorTest extends TestCase
     {
         parent::setUp();
         $this->travelTo(Carbon::parse('2026-10-02 08:00:00', 'America/New_York'));
-        config(['services.google_routes.key' => 'test-only-routes-key']);
+        config(['availability.hybrid_travel_enabled' => true, 'services.google_routes.key' => 'test-only-routes-key']);
         Http::preventStrayRequests();
     }
 

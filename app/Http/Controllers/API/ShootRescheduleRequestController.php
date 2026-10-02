@@ -497,7 +497,7 @@ class ShootRescheduleRequestController extends Controller
 
             $this->logRescheduleActivity($shoot, $request);
         };
-        if (config('availability.hybrid_travel_enabled')) {
+        if (app(\App\Services\Scheduling\SchedulingBufferSettings::class)->enabled()) {
             DB::afterCommit($notify);
         } else {
             $notify();

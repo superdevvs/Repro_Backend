@@ -36,7 +36,7 @@ class ScheduleFeasibilityService
 
     private function evaluatePreparedPlans(array $plans, ?User $actor, bool $alternatives): array
     {
-        if (! config('availability.hybrid_travel_enabled', false)) {
+        if (! app(\App\Services\Scheduling\SchedulingBufferSettings::class)->enabled()) {
             return $this->disabled();
         }
         $proposed = [];
@@ -98,7 +98,7 @@ class ScheduleFeasibilityService
         unset($planResult);
         $result = array_merge($assessment, ['enabled' => true, 'available' => $assessment['status'] === 'available',
             'can_override' => $permission && ! $assessment['hard_conflict'], 'can_confirm_location' => $permission,
-            'policy_version' => self::POLICY_VERSION, 'schedule_version' => $version,
+            'policy_version' => self::POLICY_VERSION.':'.app(SchedulingBufferSettings::class)->version(), 'schedule_version' => $version,
             'photographer_ids' => $photographers, 'visits' => $proposed, 'alternatives' => [],
             'location' => $locations[0] ?? [], 'plan_results' => $planResults,
             '_plans' => $plans]);
@@ -115,7 +115,7 @@ class ScheduleFeasibilityService
             'status' => $result['status'], 'reason_codes' => $result['reason_codes'],
             'visits' => count($proposed), 'transitions' => count($result['transitions']),
             'sources' => array_values(array_unique(array_column($result['transitions'], 'source'))),
-            'policy_version' => self::POLICY_VERSION,
+            'policy_version' => self::POLICY_VERSION.':'.app(SchedulingBufferSettings::class)->version(),
         ]);
 
         return $result;
@@ -123,7 +123,8 @@ class ScheduleFeasibilityService
 
     public function scheduleFingerprint(array $photographerIds): string
     {
-        return app(ScheduleVisitRepository::class)->fingerprint($photographerIds);
+        return hash('sha256', app(SchedulingBufferSettings::class)->version(true)
+            .app(ScheduleVisitRepository::class)->fingerprint($photographerIds));
     }
 
     /** Sign the warning's meaning, not preview-only row IDs or provider seconds. */
@@ -252,7 +253,7 @@ class ScheduleFeasibilityService
     {
         return ['enabled' => false, 'available' => true, 'status' => 'available', 'reason_codes' => [],
             'transitions' => [], 'visits' => [], 'alternatives' => [], 'can_override' => false,
-            'can_confirm_location' => false, 'policy_version' => self::POLICY_VERSION, 'schedule_version' => null,
+            'can_confirm_location' => false, 'policy_version' => self::POLICY_VERSION.':'.app(SchedulingBufferSettings::class)->version(), 'schedule_version' => null,
             'photographer_ids' => [], 'location' => [], 'plan_results' => []];
     }
 }

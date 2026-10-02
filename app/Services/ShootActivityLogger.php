@@ -98,7 +98,7 @@ class ShootActivityLogger
                         \Log::warning('Failed to broadcast shoot activity: ' . $e->getMessage());
                     }
                 };
-                if (config('availability.hybrid_travel_enabled')) {
+                if (app(\App\Services\Scheduling\SchedulingBufferSettings::class)->enabled()) {
                     DB::afterCommit($broadcast);
                 } else {
                     $broadcast();

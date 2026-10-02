@@ -23,6 +23,7 @@ class AppServiceProvider extends ServiceProvider
     public function register(): void
     {
         foreach ([
+            \App\Services\Scheduling\SchedulingBufferSettings::class,
             \App\Services\Scheduling\TravelLocationResolver::class,
             \App\Services\Scheduling\GoogleRoutesProvider::class,
             \App\Services\Scheduling\TravelTimeEstimator::class,

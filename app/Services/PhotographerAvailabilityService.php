@@ -22,7 +22,7 @@ class PhotographerAvailabilityService
      */
     public function getAvailableSlots(int $photographerId, Carbon $from, Carbon $to): array
     {
-        $policy = config('availability.hybrid_travel_enabled', false) ? 'hybrid' : 'fixed';
+        $policy = app(\App\Services\Scheduling\SchedulingBufferSettings::class)->enabled() ? 'hybrid' : 'fixed';
         // Read the current occupied windows before using cached net slots. A TTL
         // alone leaves cancelled/rescheduled work blocking otherwise free times.
         // Reuse this snapshot on cache misses instead of querying each day again.
@@ -123,7 +123,7 @@ class PhotographerAvailabilityService
      */
     protected function getBlockedTimes(int $photographerId, Carbon $date, ?array $appointments = null): array
     {
-        $buffer = (config('availability.hybrid_travel_enabled', false) ? 0 : (int) config('availability.buffer_time_minutes', 15));
+        $buffer = (app(\App\Services\Scheduling\SchedulingBufferSettings::class)->enabled() ? 0 : (int) config('availability.buffer_time_minutes', 15));
 
         $blocked = [];
         foreach ($appointments ?? $this->bookedAppointments($photographerId, $date) as $window) {
@@ -341,7 +341,7 @@ class PhotographerAvailabilityService
             ? $this->resolveRequestInstant($datetimeLocal, $timezone)
             : $datetimeLocal->copy()->utc();
         $requestEnd = $requestStart->copy()->addMinutes($durationMinutes);
-        $bufferMinutes = (config('availability.hybrid_travel_enabled', false) ? 0 : (int) config('availability.buffer_time_minutes', 15));
+        $bufferMinutes = (app(\App\Services\Scheduling\SchedulingBufferSettings::class)->enabled() ? 0 : (int) config('availability.buffer_time_minutes', 15));
         if ($timezone) {
             $localRequest = $requestStart->copy()->setTimezone($this->validTimezoneOrUtc($timezone));
             $date = $localRequest->copy()->startOfDay();
@@ -603,7 +603,7 @@ class PhotographerAvailabilityService
         ?int $excludeShootId,
         ?string $timezone = null
     ): bool {
-        $bufferMinutes = (config('availability.hybrid_travel_enabled', false) ? 0 : (int) config('availability.buffer_time_minutes', 15));
+        $bufferMinutes = (app(\App\Services\Scheduling\SchedulingBufferSettings::class)->enabled() ? 0 : (int) config('availability.buffer_time_minutes', 15));
         foreach ($this->bookedAppointments($photographerId, $date, $excludeShootId) as $window) {
             $start = $window['start']->copy();
             // Unzoned legacy requests and bookings share their stored wall clock.

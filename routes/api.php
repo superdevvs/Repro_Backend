@@ -1051,6 +1051,11 @@ Route::middleware('auth:sanctum')->group(function () {
 
     });
 
+    Route::middleware(['auth:sanctum', 'role:admin,superadmin'])->prefix('admin/scheduling/buffer-settings')->group(function () {
+        Route::get('/', [\App\Http\Controllers\API\SchedulingBufferSettingsController::class, 'show']);
+        Route::put('/', [\App\Http\Controllers\API\SchedulingBufferSettingsController::class, 'update']);
+    });
+
     // Settings endpoints (admin only)
     Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager'])->prefix('admin/settings')->group(function () {
         Route::get('/{key}', [App\Http\Controllers\API\SettingsController::class, 'get']);

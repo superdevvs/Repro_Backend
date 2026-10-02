@@ -74,6 +74,9 @@ class SettingsController extends Controller
             'description' => 'nullable|string',
         ]);
 
+        abort_if($request->input('key') === \App\Services\Scheduling\SchedulingBufferSettings::KEY, 403,
+            'Use scheduling buffer settings to update this policy.');
+
         if ($this->isDropboxSetting($request->input('key'))) {
             return response()->json([
                 'success' => false,

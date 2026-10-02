@@ -17,7 +17,7 @@ class ScheduleCommitGuard
 {
     public function enabled(): bool
     {
-        return (bool) config('availability.hybrid_travel_enabled', false);
+        return (bool) app(\App\Services\Scheduling\SchedulingBufferSettings::class)->enabled();
     }
 
     public function prepare(array $payload, ?Shoot $shoot = null, ?User $actor = null): array
