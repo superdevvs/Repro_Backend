@@ -2554,11 +2554,88 @@ class ShootMutationActionsTest extends TestCase
     }
 
     #[\PHPUnit\Framework\Attributes\Test]
-    public function admin_cannot_remove_services_from_a_terminal_shoot(): void
+    public function admin_can_remove_a_service_from_a_delivered_shoot_after_confirming(): void
     {
         Sanctum::actingAs($this->admin);
 
-        foreach ([Shoot::STATUS_DELIVERED, Shoot::STATUS_CANCELLED, 'canceled', 'declined'] as $status) {
+        $shoot = Shoot::factory()->create([
+            'client_id' => $this->client->id,
+            'service_id' => $this->service->id,
+            'status' => Shoot::STATUS_DELIVERED,
+            'workflow_status' => Shoot::STATUS_DELIVERED,
+            'base_quote' => 240,
+            'tax_amount' => 0,
+            'total_quote' => 240,
+        ]);
+        $this->attachPrimaryService($shoot);
+        $shoot->services()->attach($this->secondService->id, [
+            'price' => 90,
+            'quantity' => 1,
+        ]);
+
+        $confirmation = $this->patchJson("/api/shoots/{$shoot->id}", [
+            'services' => [
+                ['id' => $this->service->id, 'quantity' => 1, 'price' => 150],
+            ],
+        ])->assertStatus(409)
+            ->assertJsonPath('code', 'service_detach_confirmation_required')
+            ->assertJsonPath('impact.removed_services.0.name', $this->secondService->name);
+
+        $this->assertTrue($shoot->fresh()->services()->whereKey($this->secondService->id)->exists());
+
+        $response = $this->patchJson("/api/shoots/{$shoot->id}", [
+            'services' => [
+                ['id' => $this->service->id, 'quantity' => 1, 'price' => 150],
+            ],
+            'confirm_service_detach' => true,
+            'service_detach_confirmation_token' => $confirmation->json('confirmation_token'),
+        ]);
+
+        $response->assertOk();
+        $shoot->refresh()->load('services');
+        $this->assertCount(1, $shoot->services);
+        $this->assertSame($this->service->id, $shoot->services->first()->id);
+        $this->assertFalse($shoot->services()->whereKey($this->secondService->id)->exists());
+        $this->assertDatabaseHas('shoot_activity_logs', [
+            'shoot_id' => $shoot->id,
+            'action' => 'shoot_services_detached',
+            'user_id' => $this->admin->id,
+        ]);
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
+    public function non_admin_cannot_remove_services_from_a_delivered_shoot(): void
+    {
+        $shoot = Shoot::factory()->create([
+            'client_id' => $this->client->id,
+            'rep_id' => $this->salesRep->id,
+            'service_id' => $this->service->id,
+            'status' => Shoot::STATUS_DELIVERED,
+            'workflow_status' => Shoot::STATUS_DELIVERED,
+        ]);
+        $this->attachPrimaryService($shoot);
+        $shoot->services()->attach($this->secondService->id, [
+            'price' => 90,
+            'quantity' => 1,
+        ]);
+
+        Sanctum::actingAs($this->salesRep);
+        $denied = $this->patchJson("/api/shoots/{$shoot->id}", [
+            'services' => [
+                ['id' => $this->service->id, 'quantity' => 1, 'price' => 150],
+            ],
+        ]);
+        $this->assertContains($denied->status(), [403, 422]);
+
+        $this->assertTrue($shoot->fresh()->services()->whereKey($this->secondService->id)->exists());
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
+    public function admin_cannot_remove_services_from_a_cancelled_or_declined_shoot(): void
+    {
+        Sanctum::actingAs($this->admin);
+
+        foreach ([Shoot::STATUS_CANCELLED, 'canceled', 'declined'] as $status) {
             $shoot = Shoot::factory()->create([
                 'client_id' => $this->client->id,
                 'service_id' => $this->service->id,
