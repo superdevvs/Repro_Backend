@@ -127,12 +127,16 @@ try:
     status, headers, body = request(urls['valid'])
     assert status == 200 and hashlib.sha256(body).hexdigest() == expected, (status, body[:200], headers.get('X-Integration-Url'), urls['valid'].split('?')[0])
     assert 'no-store' in headers['Cache-Control'] and 'X-Accel-Redirect' not in headers
+    assert headers.get('X-Content-Type-Options') == 'nosniff'
     status, headers, body = request(urls['valid'], method='HEAD')
     assert status == 200 and len(body) == 0 and int(headers['Content-Length']) == len(payload)
+    assert headers.get('X-Content-Type-Options') == 'nosniff'
     status, headers, body = request(urls['valid'], {'Range': 'bytes=123-456'})
     assert status == 206 and body == payload[123:457] and headers['Content-Range'] == f'bytes 123-456/{len(payload)}'
+    assert headers.get('X-Content-Type-Options') == 'nosniff'
     status, headers, body = request(urls['valid'], {'Range': 'bytes=99999999-'})
     assert status == 416
+    assert headers.get('X-Content-Type-Options') == 'nosniff'
     with ThreadPoolExecutor(max_workers=25) as pool:
         pending = [pool.submit(slow_download, index) for index in range(25)]
         with opened:
