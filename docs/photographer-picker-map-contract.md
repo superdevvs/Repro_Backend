@@ -193,6 +193,10 @@ If the Dashboard prefers the v6 design names, map locally:
 ## Out of scope / unchanged
 
 - No new Maps vendor.  
-- No geocode of photographer home unless coords already on `users.metadata` (`lat`/`latitude`, `lng`/`longitude`).  
+- Pin coords: prefer stored / request lat/lng; when missing, BE fills `map.home` / `map.job` / last|next / top-level `job` via existing `AddressLookupService::geocodeAddress` (shared cache, fail-open nulls). Home geocode is **display-only** (not written to `users.metadata`).  
 - `/available-photographers` not enriched (picker uses `/for-booking`).  
 - Hybrid travel `/feasibility` evaluator unchanged.
+
+## FE request note (Book / Approve / Edit)
+
+Dashboard Book Shoot, Shoot Approval, and Shoot Edit currently omit `shoot_latitude` / `shoot_longitude` on `/for-booking` (Overview sends them). BE geocode fill covers that gap for pins; FE should still send coords when the booking form already has them so pins match the selected place exactly.

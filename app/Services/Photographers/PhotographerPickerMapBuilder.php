@@ -52,7 +52,7 @@ class PhotographerPickerMapBuilder
         bool $lastLegAlreadyResolved = false,
     ): array {
         $home = $this->homeCoords($photographer);
-        $jobCoords = $this->coords($job['latitude'] ?? null, $job['longitude'] ?? null);
+        $jobCoords = $this->resolveCoords($job);
 
         $lastShoot = null;
         $nextShoot = null;
@@ -158,7 +158,7 @@ class PhotographerPickerMapBuilder
     /** Response-level job pin echoed once for FE route drawing. */
     public function jobPin(array $job): array
     {
-        $coords = $this->coords($job['latitude'] ?? null, $job['longitude'] ?? null);
+        $coords = $this->resolveCoords($job);
 
         return [
             'lat' => $coords['lat'] ?? null,
@@ -179,10 +179,17 @@ class PhotographerPickerMapBuilder
             $metadata = [];
         }
 
-        return $this->coords(
+        $stored = $this->coords(
             $metadata['latitude'] ?? $metadata['lat'] ?? null,
             $metadata['longitude'] ?? $metadata['lng'] ?? null
         );
+        if ($stored !== null) {
+            return $stored;
+        }
+
+        // Display-only: miles already geocodes home internally; expose pin coords
+        // without persisting to users.metadata (fail open).
+        return $this->geocodePin($this->homeAddressPayload($photographer, null));
     }
 
     private function coords(mixed $lat, mixed $lng): ?array
@@ -197,6 +204,44 @@ class PhotographerPickerMapBuilder
         }
 
         return ['lat' => $lat, 'lng' => $lng];
+    }
+
+    /**
+     * Resolve pin coords from explicit lat/lng, else shared AddressLookup geocode cache.
+     * Used so map.job/home/last/next can pin when miles already resolved via address.
+     */
+    private function resolveCoords(array $payload): ?array
+    {
+        $stored = $this->coords($payload['latitude'] ?? null, $payload['longitude'] ?? null);
+        if ($stored !== null) {
+            return $stored;
+        }
+
+        return $this->geocodePin($payload);
+    }
+
+    private function geocodePin(array $payload): ?array
+    {
+        $hasAddress = (($payload['address'] ?? '') !== '')
+            || (($payload['city'] ?? '') !== '' && ($payload['state'] ?? '') !== '');
+        if (! $hasAddress) {
+            return null;
+        }
+        try {
+            $geo = $this->distances->geocodeAddress([
+                'address' => (string) ($payload['address'] ?? ''),
+                'city' => (string) ($payload['city'] ?? ''),
+                'state' => (string) ($payload['state'] ?? ''),
+                'zip' => (string) ($payload['zip'] ?? ''),
+            ]);
+        } catch (\Throwable) {
+            return null;
+        }
+        if (! is_array($geo)) {
+            return null;
+        }
+
+        return $this->coords($geo['latitude'] ?? null, $geo['longitude'] ?? null);
     }
 
     private function findLastShoot($shootsOnDate, CarbonInterface $jobStart): array
@@ -245,7 +290,7 @@ class PhotographerPickerMapBuilder
 
     private function shootPin(Shoot $shoot, string $timeKey, CarbonInterface $when): array
     {
-        $coords = $this->coords($shoot->latitude, $shoot->longitude);
+        $coords = $this->resolveCoords($this->shootAddressPayload($shoot));
         $address = trim(implode(', ', array_filter([
             $shoot->property_address ?? $shoot->address ?? null,
             $shoot->city ?? null,

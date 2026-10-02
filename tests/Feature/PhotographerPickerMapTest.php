@@ -76,6 +76,7 @@ class PhotographerPickerMapTest extends TestCase
         ]);
 
         $distance = Mockery::mock(AddressLookupService::class);
+        $distance->shouldReceive('geocodeAddress')->andReturnNull()->byDefault();
         $distance->shouldReceive('getDistance')->andReturnUsing(function (array $origin, array $destination) {
             // last→job uses previous street; job→next uses later lane as destination address
             $destAddress = (string) ($destination['address'] ?? '');
@@ -130,6 +131,7 @@ class PhotographerPickerMapTest extends TestCase
     public function anonymous_for_booking_keeps_map_null_and_still_lists_photographers(): void
     {
         $distance = Mockery::mock(AddressLookupService::class);
+        $distance->shouldReceive('geocodeAddress')->andReturnNull()->byDefault();
         $distance->shouldReceive('getDistance')->andReturn([
             'distance_value' => 1609.34,
             'duration_value' => 600,
@@ -150,11 +152,49 @@ class PhotographerPickerMapTest extends TestCase
     }
 
     #[\PHPUnit\Framework\Attributes\Test]
-    public function missing_coords_fail_open_with_null_map_pins(): void
+    public function geocode_fills_map_job_and_home_when_request_omits_coords(): void
+    {
+        $this->photographer->update(['metadata' => []]); // home address still on columns
+        $distance = Mockery::mock(AddressLookupService::class);
+        $distance->shouldReceive('getDistance')->andReturn([
+            'distance_value' => 1609.34 * 27.9,
+            'duration_value' => 40 * 60,
+            'source' => 'estimate',
+            'is_estimate' => true,
+        ]);
+        $distance->shouldReceive('geocodeAddress')->andReturnUsing(function (array $address) {
+            $line = strtolower(trim(($address['address'] ?? '').' '.($address['city'] ?? '')));
+            if (str_contains($line, 'home base') || str_contains($line, 'arlington')) {
+                return ['latitude' => 38.89, 'longitude' => -77.08];
+            }
+            if (str_contains($line, 'booking') || str_contains($line, 'fairfax')) {
+                return ['latitude' => 38.8462, 'longitude' => -77.3064];
+            }
+
+            return null;
+        });
+        $this->app->instance(AddressLookupService::class, $distance);
+
+        Sanctum::actingAs($this->admin);
+        $payload = $this->postJson('/api/photographer/availability/for-booking', $this->payload())
+            ->assertOk()
+            ->json();
+
+        $row = $payload['data'][0];
+        $this->assertEqualsWithDelta(27.9, $row['miles_to_job'], 0.05);
+        $this->assertSame(['lat' => 38.89, 'lng' => -77.08], $row['map']['home']);
+        $this->assertSame(['lat' => 38.8462, 'lng' => -77.3064], $row['map']['job']);
+        $this->assertSame(38.8462, $payload['job']['lat']);
+        $this->assertSame(-77.3064, $payload['job']['lng']);
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
+    public function geocode_null_still_fail_opens_null_pins(): void
     {
         $this->photographer->update(['metadata' => []]);
         $distance = Mockery::mock(AddressLookupService::class);
         $distance->shouldReceive('getDistance')->andReturnNull();
+        $distance->shouldReceive('geocodeAddress')->andReturnNull();
         $this->app->instance(AddressLookupService::class, $distance);
 
         Sanctum::actingAs($this->admin);
