@@ -14,12 +14,11 @@ class ShootMediaInteractionService
         protected DeleteShootMediaAction $deleteShootMediaAction,
         protected ShootMediaMutationSupportService $shootMediaMutationSupportService,
         protected DeliveryMediaOrderService $deliveryMediaOrderService
-    ) {
-    }
+    ) {}
 
     public function toggleFavorite(ShootFile $file): array
     {
-        $file->is_favorite = !$file->is_favorite;
+        $file->is_favorite = ! $file->is_favorite;
         $file->save();
         $shoot = $file->relationLoaded('shoot') ? $file->shoot : Shoot::find($file->shoot_id);
         if ($shoot) {
@@ -95,40 +94,20 @@ class ShootMediaInteractionService
      * only shoot_files.filename is meant to change.
      *
      * Keeps the original extension (appends it when omitted; rejects mismatches).
-     * Rejects path traversal, separators, control chars, and unsafe characters.
+     * Removes unsupported characters and path syntax from display names.
      *
      * @throws \Illuminate\Validation\ValidationException
      */
     public function normalizeDisplayFilename(string $incoming, string $originalFilename): string
     {
-        $incoming = trim($incoming);
-
-        // Reject path traversal / separators / control chars before any rewrite.
-        if (
-            $incoming === ''
-            || str_contains($incoming, "\0")
-            || str_contains($incoming, '/')
-            || str_contains($incoming, '\\')
-            || str_contains($incoming, '..')
-            || preg_match('/[\r\n\t"]/', $incoming)
-        ) {
-            throw \Illuminate\Validation\ValidationException::withMessages([
-                'filename' => ['Filename is invalid.'],
-            ]);
-        }
-
+        // Keep this cleanup in sync with the frontend rename preview and input.
+        $incoming = preg_replace('/[^\p{L}\p{N}_. ()\[\]-]/u', '', trim($incoming)) ?? '';
+        $incoming = preg_replace('/\.{2,}/', '', $incoming) ?? '';
         $incoming = trim($incoming, ' .');
 
         if ($incoming === '') {
             throw \Illuminate\Validation\ValidationException::withMessages([
-                'filename' => ['Filename is invalid.'],
-            ]);
-        }
-
-        // Portable display names: letters, digits, spaces, dot, dash, underscore, parens, brackets.
-        if (! preg_match('/^[\w\-. ()\[\]]+$/u', $incoming)) {
-            throw \Illuminate\Validation\ValidationException::withMessages([
-                'filename' => ['Filename contains unsafe characters.'],
+                'filename' => ['Enter a filename with supported characters.'],
             ]);
         }
 

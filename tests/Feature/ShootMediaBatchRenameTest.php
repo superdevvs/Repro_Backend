@@ -138,6 +138,48 @@ class ShootMediaBatchRenameTest extends TestCase
     }
 
     #[\PHPUnit\Framework\Attributes\Test]
+    public function replace_mode_removes_commas_from_an_address_for_raw_uploads(): void
+    {
+        Sanctum::actingAs($this->admin);
+
+        $shoot = $this->createShoot();
+        $files = [];
+        for ($index = 0; $index < 125; $index++) {
+            $number = 5129 + $index;
+            $files[] = $this->createShootFile($shoot, [
+                'filename' => 'SNAP'.$number.'.CR3',
+                'stored_filename' => 'stored-'.$number.'.CR3',
+                'path' => 'shoots/'.$shoot->id.'/raw/stored-'.$number.'.CR3',
+                'file_type' => 'image/x-canon-cr3',
+                'media_type' => 'raw',
+                'workflow_stage' => ShootFile::STAGE_TODO,
+            ]);
+        }
+
+        $response = $this->postJson('/api/shoots/'.$shoot->id.'/media/batch-rename', [
+            'file_ids' => array_map(fn (ShootFile $file) => $file->id, $files),
+            'mode' => 'replace',
+            'find' => 'SNAP',
+            'replace' => '18502 Boysenberry Dr 156, Gaithersburg, MD_',
+        ]);
+
+        $response->assertOk()
+            ->assertJsonCount(125, 'data.updated')
+            ->assertJsonPath('data.failed', []);
+
+        foreach ($files as $index => $file) {
+            $number = 5129 + $index;
+            $filename = '18502 Boysenberry Dr 156 Gaithersburg MD_'.$number.'.CR3';
+            $response->assertJsonPath('data.updated.'.$index.'.id', $file->id)
+                ->assertJsonPath('data.updated.'.$index.'.filename', $filename);
+            $fresh = $file->fresh();
+            $this->assertSame($filename, $fresh->filename);
+            $this->assertSame('stored-'.$number.'.CR3', $fresh->stored_filename);
+            $this->assertSame('shoots/'.$shoot->id.'/raw/stored-'.$number.'.CR3', $fresh->path);
+        }
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
     public function replace_mode_rejects_empty_find(): void
     {
         Sanctum::actingAs($this->admin);
@@ -292,7 +334,7 @@ class ShootMediaBatchRenameTest extends TestCase
     }
 
     #[\PHPUnit\Framework\Attributes\Test]
-    public function batch_rename_rejects_unsafe_characters_per_file(): void
+    public function batch_rename_removes_unsupported_characters_without_moving_storage(): void
     {
         Sanctum::actingAs($this->admin);
 
@@ -308,12 +350,32 @@ class ShootMediaBatchRenameTest extends TestCase
             'value' => '../evil/',
         ]);
 
-        $response->assertStatus(422)
-            ->assertJsonPath('data.updated', [])
-            ->assertJsonPath('data.failed.0.id', $file->id);
+        $response->assertOk()
+            ->assertJsonPath('data.updated.0.filename', 'evilsafe.jpg')
+            ->assertJsonPath('data.failed', []);
 
-        $this->assertSame('safe.jpg', $file->fresh()->filename);
+        $this->assertSame('evilsafe.jpg', $file->fresh()->filename);
         $this->assertSame('stored-safe.jpg', $file->fresh()->stored_filename);
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
+    public function batch_rename_rejects_a_name_that_is_empty_after_cleanup(): void
+    {
+        Sanctum::actingAs($this->admin);
+
+        $shoot = $this->createShoot();
+        $file = $this->createShootFile($shoot, ['filename' => 'SNAP']);
+
+        $this->postJson('/api/shoots/'.$shoot->id.'/media/batch-rename', [
+            'file_ids' => [$file->id],
+            'mode' => 'replace',
+            'find' => 'SNAP',
+            'replace' => ',/?*',
+        ])->assertStatus(422)
+            ->assertJsonPath('data.updated', [])
+            ->assertJsonPath('data.failed.0.error', 'Enter a filename with supported characters.');
+
+        $this->assertSame('SNAP', $file->fresh()->filename);
     }
 
     #[\PHPUnit\Framework\Attributes\Test]

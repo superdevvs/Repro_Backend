@@ -110,6 +110,32 @@ class ShootMediaRenameTest extends TestCase
     }
 
     #[\PHPUnit\Framework\Attributes\Test]
+    public function rename_removes_commas_from_an_address(): void
+    {
+        Sanctum::actingAs($this->admin);
+
+        $shoot = $this->createShoot();
+        $file = $this->createShootFile($shoot, [
+            'filename' => 'SNAP5129.CR3',
+            'stored_filename' => 'stored-5129.CR3',
+            'path' => 'shoots/'.$shoot->id.'/raw/stored-5129.CR3',
+            'media_type' => 'raw',
+            'workflow_stage' => ShootFile::STAGE_TODO,
+        ]);
+        $filename = '18502 Boysenberry Dr 156 Gaithersburg MD_5129.CR3';
+
+        $this->patchJson('/api/shoots/'.$shoot->id.'/media/'.$file->id.'/rename', [
+            'filename' => '18502 Boysenberry Dr 156, Gaithersburg, MD_5129.CR3',
+        ])->assertOk()
+            ->assertJsonPath('data.filename', $filename)
+            ->assertJsonPath('data.stored_filename', 'stored-5129.CR3');
+
+        $fresh = $file->fresh();
+        $this->assertSame($filename, $fresh->filename);
+        $this->assertSame('shoots/'.$shoot->id.'/raw/stored-5129.CR3', $fresh->path);
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
     public function rename_rejects_extension_change(): void
     {
         Sanctum::actingAs($this->admin);
@@ -131,7 +157,7 @@ class ShootMediaRenameTest extends TestCase
     }
 
     #[\PHPUnit\Framework\Attributes\Test]
-    public function rename_rejects_path_traversal_and_unsafe_characters(): void
+    public function rename_removes_path_syntax_and_unsupported_characters(): void
     {
         Sanctum::actingAs($this->admin);
 
@@ -140,14 +166,37 @@ class ShootMediaRenameTest extends TestCase
 
         $this->patchJson('/api/shoots/'.$shoot->id.'/media/'.$file->id.'/rename', [
             'filename' => '../etc/passwd.jpg',
-        ])->assertStatus(422)->assertJsonValidationErrors(['filename']);
+        ])->assertOk()->assertJsonPath('data.filename', 'etcpasswd.jpg');
 
         $this->patchJson('/api/shoots/'.$shoot->id.'/media/'.$file->id.'/rename', [
             'filename' => 'bad/name.jpg',
-        ])->assertStatus(422)->assertJsonValidationErrors(['filename']);
+        ])->assertOk()->assertJsonPath('data.filename', 'badname.jpg');
 
         $this->patchJson('/api/shoots/'.$shoot->id.'/media/'.$file->id.'/rename', [
             'filename' => 'has<script>.jpg',
+        ])->assertOk()->assertJsonPath('data.filename', 'hasscript.jpg');
+
+        foreach (['bad,\\name.jpg', 'bad,:name.jpg', 'bad,*name.jpg', 'bad,?name.jpg', 'bad,|name.jpg', "bad,\r\nname.jpg", 'bad,"name.jpg'] as $filename) {
+            $this->patchJson('/api/shoots/'.$shoot->id.'/media/'.$file->id.'/rename', [
+                'filename' => $filename,
+            ])->assertOk()->assertJsonPath('data.filename', 'badname.jpg');
+        }
+
+        $this->assertSame('badname.jpg', $file->fresh()->filename);
+        $this->assertSame('media-file.jpg', $file->fresh()->stored_filename);
+        $this->assertSame('shoots/'.$shoot->id.'/completed/media-file.jpg', $file->fresh()->path);
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
+    public function rename_rejects_a_name_that_is_empty_after_cleanup(): void
+    {
+        Sanctum::actingAs($this->admin);
+
+        $shoot = $this->createShoot();
+        $file = $this->createShootFile($shoot);
+
+        $this->patchJson('/api/shoots/'.$shoot->id.'/media/'.$file->id.'/rename', [
+            'filename' => ',/?*',
         ])->assertStatus(422)->assertJsonValidationErrors(['filename']);
 
         $this->assertSame('media-file.jpg', $file->fresh()->filename);
