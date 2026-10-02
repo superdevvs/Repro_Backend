@@ -108,7 +108,8 @@ class GoogleCalendarShootSyncTest extends TestCase
             'google_event_id' => 'created-google-event',
         ]);
 
-        // One event per shoot (not per service), titled with the client name.
+        // One event per shoot, titled with the client name. Independent capture
+        // services at one shared start add their saved durations: 60 + 60 = 120.
         $expectedStart = Carbon::parse($scheduledAt, 'America/New_York');
         Http::assertSent(function (Request $request) use ($expectedStart) {
             $description = (string) ($request['description'] ?? '');
@@ -121,7 +122,7 @@ class GoogleCalendarShootSyncTest extends TestCase
                     'timeZone' => 'America/New_York',
                 ]
                 && ($request['end'] ?? null) === [
-                    'dateTime' => $expectedStart->copy()->addMinutes(60)->toRfc3339String(),
+                    'dateTime' => $expectedStart->copy()->addMinutes(120)->toRfc3339String(),
                     'timeZone' => 'America/New_York',
                 ]
                 && ($request['location'] ?? null) === '100 Sync Street, Baltimore, MD 21201'
