@@ -27,6 +27,36 @@ class ShootMediaBatchRenameTest extends TestCase
 
     protected Service $service;
 
+    public static function numberingCases(): array
+    {
+        return [
+            'remove prefix' => ['014_18502 Boysenberry Dr MD5147.jpg', 'remove', 'end', '18502 Boysenberry Dr MD5147.jpg'],
+            'move prefix to end' => ['014_18502 Boysenberry Dr MD5147.jpg', 'move', 'end', '18502 Boysenberry Dr MD5147_014.jpg'],
+            'move suffix to start' => ['18502 Boysenberry Dr MD5147_014.jpg', 'move', 'start', '014_18502 Boysenberry Dr MD5147.jpg'],
+            'remove suffix' => ['Kitchen-014.jpg', 'remove', 'end', 'Kitchen.jpg'],
+            'preserve address' => ['18502 Boysenberry Dr.jpg', 'remove', 'end', '18502 Boysenberry Dr.jpg'],
+            'preserve camera ID' => ['SNAP5147.CR3', 'remove', 'end', 'SNAP5147.CR3'],
+            'move unnumbered' => ['Kitchen.jpg', 'move', 'start', 'Kitchen.jpg'],
+            'renumber from zero' => ['014_Kitchen.jpg', 'renumber', 'start', '000_Kitchen.jpg'],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
+    #[\PHPUnit\Framework\Attributes\DataProvider('numberingCases')]
+    public function numbering_can_be_removed_moved_or_replaced_without_changing_storage(string $original, string $action, string $position, string $expected): void
+    {
+        Sanctum::actingAs($this->admin);
+        $shoot = $this->createShoot();
+        $file = $this->createShootFile($shoot, ['filename' => $original, 'stored_filename' => 'unchanged.jpg', 'path' => 'shoots/'.$shoot->id.'/completed/unchanged.jpg']);
+        $this->postJson('/api/shoots/'.$shoot->id.'/media/batch-rename', [
+            'file_ids' => [$file->id], 'mode' => 'numbering', 'number_action' => $action,
+            'number_position' => $position, 'separator' => '_', 'start' => 0, 'digits' => 3,
+        ])->assertOk()->assertJsonPath('data.updated.0.filename', $expected)->assertJsonPath('data.failed', []);
+        $this->assertSame($expected, $file->fresh()->filename);
+        $this->assertSame('unchanged.jpg', $file->fresh()->stored_filename);
+        $this->assertSame('shoots/'.$shoot->id.'/completed/unchanged.jpg', $file->fresh()->path);
+    }
+
     protected function setUp(): void
     {
         parent::setUp();

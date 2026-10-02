@@ -30,7 +30,6 @@ use App\Services\Shoots\ShootMediaInteractionService;
 use App\Services\Shoots\ShootMediaReadService;
 use App\Services\Shoots\ShootShareLinkReadService;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpFoundation\Response;
 
@@ -348,13 +347,15 @@ class ShootMediaController extends Controller
         $validated = $request->validate([
             'file_ids' => ['required', 'array', 'min:1'],
             'file_ids.*' => ['integer'],
-            'mode' => ['required', 'string', 'in:prefix,suffix,replace,sequence'],
+            'mode' => ['required', 'string', 'in:prefix,suffix,replace,sequence,numbering'],
             'value' => ['nullable', 'string', 'max:255'],
             'find' => ['nullable', 'string', 'max:255'],
             'replace' => ['nullable', 'string', 'max:255'],
             'start' => ['nullable', 'integer', 'min:0'],
             'digits' => ['nullable', 'integer', 'min:1', 'max:10'],
             'separator' => ['nullable', 'string', 'max:20'],
+            'number_action' => ['nullable', 'string', 'in:remove,move,renumber'],
+            'number_position' => ['nullable', 'string', 'in:start,end'],
         ]);
 
         $fileIds = array_values(array_map('intval', $validated['file_ids']));
@@ -390,11 +391,13 @@ class ShootMediaController extends Controller
             $file = $filesById->get($fileId);
             if (! $file) {
                 $failed[] = ['id' => $fileId, 'error' => 'File not found.'];
+
                 continue;
             }
 
             if (! $this->shootAuthorizationSupport->canInteractWithShootMediaFile($shoot, $file, $user)) {
                 $failed[] = ['id' => $fileId, 'error' => 'Forbidden'];
+
                 continue;
             }
 
@@ -410,6 +413,16 @@ class ShootMediaController extends Controller
                     $newName = $stem.$value.$suffixExt;
                 } elseif ($mode === 'replace') {
                     $newName = str_replace($find, $replaceWith, $stem).$suffixExt;
+                } elseif ($mode === 'numbering') {
+                    $newName = app(\App\Services\Shoots\MediaFilenameNumbering::class)->apply(
+                        $stem,
+                        $validated['number_action'] ?? 'remove',
+                        $validated['number_position'] ?? 'end',
+                        $separator,
+                        $start + $index,
+                        $digits,
+                        $value,
+                    ).$suffixExt;
                 } else { // sequence
                     $base = $value !== '' ? $value : $stem;
                     $number = str_pad((string) ($start + $index), $digits, '0', STR_PAD_LEFT);
@@ -1089,5 +1102,4 @@ class ShootMediaController extends Controller
             'bracket_mode' => $shoot->bracket_mode,
         ];
     }
-
 }
