@@ -103,6 +103,9 @@ class ShootMediaInteractionService
         // Keep this cleanup in sync with the frontend rename preview and input.
         $incoming = preg_replace('/[^\p{L}\p{N}_. ()\[\]-]/u', '', trim($incoming)) ?? '';
         $incoming = preg_replace('/\.{2,}/', '', $incoming) ?? '';
+        if (preg_match('/^\.[^.]+$/', trim($incoming))) {
+            $incoming = '';
+        }
         $incoming = trim($incoming, ' .');
 
         if ($incoming === '') {

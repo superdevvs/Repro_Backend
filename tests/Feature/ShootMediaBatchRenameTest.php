@@ -364,7 +364,7 @@ class ShootMediaBatchRenameTest extends TestCase
         Sanctum::actingAs($this->admin);
 
         $shoot = $this->createShoot();
-        $file = $this->createShootFile($shoot, ['filename' => 'SNAP']);
+        $file = $this->createShootFile($shoot, ['filename' => 'SNAP.CR3']);
 
         $this->postJson('/api/shoots/'.$shoot->id.'/media/batch-rename', [
             'file_ids' => [$file->id],
@@ -375,7 +375,7 @@ class ShootMediaBatchRenameTest extends TestCase
             ->assertJsonPath('data.updated', [])
             ->assertJsonPath('data.failed.0.error', 'Enter a filename with supported characters.');
 
-        $this->assertSame('SNAP', $file->fresh()->filename);
+        $this->assertSame('SNAP.CR3', $file->fresh()->filename);
     }
 
     #[\PHPUnit\Framework\Attributes\Test]
