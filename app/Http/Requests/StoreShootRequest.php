@@ -145,6 +145,9 @@ class StoreShootRequest extends FormRequest
             // Scheduling: optional (becomes Hold-On if missing)
             'scheduled_at' => 'nullable|date',
             'timezone' => 'nullable|timezone',
+            'travel_location_confirmed' => 'nullable|boolean',
+            'travel_override' => 'nullable|boolean',
+            'travel_override_reason' => 'nullable|string|max:500',
             'skip_availability_check' => 'nullable|boolean',
             'time' => 'nullable|string|max:10', // Legacy support
 

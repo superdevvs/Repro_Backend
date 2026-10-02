@@ -107,6 +107,9 @@ class UpdateShootAction
             'featured_homepage_images',
             'ghost_user_ids',
             'tour_links',
+            'travel_location_confirmed',
+            'travel_override',
+            'travel_override_reason',
             // Product: assigned sales reps may reassign shoot + service-line photographers.
             'photographer_id',
             'service_photographers',
@@ -424,15 +427,28 @@ class UpdateShootAction
             'service_items',
             'service_photographers',
         ];
+        $travelGuard = app(\App\Services\Scheduling\ScheduleCommitGuard::class);
+        $planBuilder = app(\App\Services\Scheduling\WriteSchedulePlan::class);
+        $travelPayload = null;
+        $parentChanges = false;
+        // Editing a pending request does not reserve a visit. Status transitions
+        // still use the same guard as every other confirmed scheduling write.
+        $remainsRequest = $shoot->status === Shoot::STATUS_REQUESTED
+            && $shoot->workflow_status === Shoot::STATUS_REQUESTED
+            && ($validated['status'] ?? $shoot->status) === Shoot::STATUS_REQUESTED
+            && ($validated['workflow_status'] ?? $shoot->workflow_status) === Shoot::STATUS_REQUESTED;
+        if ($travelGuard->enabled()) {
+            $availabilityRelevantKeys = array_merge($availabilityRelevantKeys, ['address', 'city', 'state', 'zip', 'timezone', 'property_details', 'status', 'workflow_status', 'travel_location_confirmed']);
+        }
         $needsAvailabilityCheck = count(array_intersect(array_keys($validated), $availabilityRelevantKeys)) > 0;
         // skip_availability_check (or admin) may suppress booking-CONFLICT checks only.
         // The configured-hours availability bound is always enforced, identically to the
         // create path, so a shoot can never be rescheduled outside the photographer's hours.
         $skipConflictCheck = $validated['skip_availability_check'] ?? ($isAdmin || $canManageRequested);
         if ($needsAvailabilityCheck) {
-            $targetPhotographerId = $validated['photographer_id'] ?? $shoot->photographer_id;
-            $targetScheduledAt = isset($availabilityPayload['scheduled_at'])
-                ? new \DateTime((string) $availabilityPayload['scheduled_at'])
+            $targetPhotographerId = array_key_exists('photographer_id', $validated) ? $validated['photographer_id'] : $shoot->photographer_id;
+            $targetScheduledAt = array_key_exists('scheduled_at', $availabilityPayload)
+                ? ($availabilityPayload['scheduled_at'] ? new \DateTime((string) $availabilityPayload['scheduled_at']) : null)
                 : ($shoot->scheduled_at ? new \DateTime($shoot->scheduled_at->format('Y-m-d H:i:s')) : null);
             $targetServices = $this->editablePayloadService->targetServicesFor($shoot, $availabilityPayload, $user);
 
@@ -451,34 +467,67 @@ class UpdateShootAction
             }
 
             $assertTimezone = $scheduleTimezone !== '' ? $scheduleTimezone : null;
-            if ($targetPhotographerId && $targetScheduledAt && ! $isMultiUnit) {
-                $windows = app(\App\Services\Shoots\ShootDurationResolver::class)->windowsForServices(
-                    $targetServices, $shoot->propertySqft(), $targetScheduledAt, $assertTimezone, (int) $targetPhotographerId
-                );
-                if ($targetServices === []) {
-                    $windows[] = ['start' => \Carbon\Carbon::parse($targetScheduledAt),
-                        'minutes' => app(\App\Services\Shoots\ShootDurationResolver::class)->defaultMinutes()];
-                }
-                foreach ($windows as $window) {
-                    $this->support->assertWithinAvailabilityBounds(
-                        (int) $targetPhotographerId, $window['start'] ?? $targetScheduledAt, $window['minutes'],
-                        $shoot->id, $skipConflictCheck, $assertTimezone
-                    );
-                }
-
+            if ($travelGuard->enabled()) {
+                $travelPayload = $planBuilder->services($availabilityPayload, $targetServices,
+                    $targetScheduledAt, $targetPhotographerId ? (int) $targetPhotographerId : null, $assertTimezone, 'update');
+                $parentChanges = ! $remainsRequest && $planBuilder->changesItinerary($travelPayload, $shoot, $user);
             }
+            if (! $travelGuard->enabled() || $parentChanges) {
+                if ($targetPhotographerId && $targetScheduledAt && ! $isMultiUnit) {
+                    $windows = app(\App\Services\Shoots\ShootDurationResolver::class)->windowsForServices(
+                        $targetServices, $shoot->propertySqft(), $targetScheduledAt, $assertTimezone, (int) $targetPhotographerId
+                    );
+                    if ($targetServices === []) {
+                        $windows[] = ['start' => \Carbon\Carbon::parse($targetScheduledAt),
+                            'minutes' => app(\App\Services\Shoots\ShootDurationResolver::class)->defaultMinutes()];
+                    }
+                    foreach ($windows as $window) {
+                        $this->support->assertWithinAvailabilityBounds(
+                            (int) $targetPhotographerId, $window['start'] ?? $targetScheduledAt, $window['minutes'],
+                            $shoot->id, $skipConflictCheck, $assertTimezone
+                        );
+                    }
 
-            if ($isMultiUnit) {
-                foreach ($targetServices as $line) {
-                    if (! empty($line['photographer_id']) && ! empty($line['scheduled_at'])) {
-                        $this->support->assertWithinAvailabilityBounds((int) $line['photographer_id'], new \DateTime($line['scheduled_at']), (int) $line['duration_minutes'], $shoot->id, $skipConflictCheck, $assertTimezone);
+                }
+
+                if ($isMultiUnit) {
+                    foreach ($targetServices as $line) {
+                        if (! empty($line['photographer_id']) && ! empty($line['scheduled_at'])) {
+                            $this->support->assertWithinAvailabilityBounds((int) $line['photographer_id'], new \DateTime($line['scheduled_at']), (int) $line['duration_minutes'], $shoot->id, $skipConflictCheck, $assertTimezone);
+                        }
                     }
                 }
+                $this->support->checkServiceItemPhotographerAvailability(
+                    $targetServices, $targetPhotographerId ? (int) $targetPhotographerId : null,
+                    $shoot->id, $assertTimezone, (bool) $skipConflictCheck, $targetScheduledAt
+                );
             }
-            $this->support->checkServiceItemPhotographerAvailability(
-                $targetServices, $targetPhotographerId ? (int) $targetPhotographerId : null,
-                $shoot->id, $assertTimezone, (bool) $skipConflictCheck, $targetScheduledAt
-            );
+        }
+
+        $travelPlans = [];
+        $travelChildOnly = false;
+        $travelPrepared = ['enabled' => false];
+        if ($travelGuard->enabled() && ($needsAvailabilityCheck || is_array($complimentaryServiceOptions))) {
+            $travelPayload ??= $planBuilder->services($availabilityPayload,
+                $targetServices ?? $planBuilder->storedServices($shoot),
+                $needsAvailabilityCheck ? $targetScheduledAt : $shoot->scheduled_at,
+                $needsAvailabilityCheck ? ($targetPhotographerId ? (int) $targetPhotographerId : null) : $shoot->photographer_id,
+                $assertTimezone ?? $shoot->timezone, 'update');
+            $parentChanges = ! $remainsRequest && $planBuilder->changesItinerary($travelPayload, $shoot, $user);
+            if ($parentChanges) {
+                $travelPlans[] = ['payload' => $travelPayload, 'shoot' => $shoot->fresh()];
+            }
+            if (is_array($complimentaryServiceOptions) && ! Shoot::query()->where('complimentary_reshoot_idempotency_key', $complimentaryServiceOptions['idempotency_key'])->exists()) {
+                $sourceForVisit = clone $shoot;
+                $sourceForVisit->fill(\Illuminate\Support\Arr::only($validated, ['address', 'city', 'state', 'zip', 'timezone', 'property_details']));
+                $childPayload = $planBuilder->returnVisit($sourceForVisit, $complimentaryServiceOptions);
+                $childPayload = array_merge($childPayload, \Illuminate\Support\Arr::only($validated, ['travel_override', 'travel_override_reason', 'travel_location_confirmed']));
+                $travelPlans[] = ['payload' => $childPayload, 'shoot' => null];
+                $travelChildOnly = ! $parentChanges;
+            }
+            if ($travelPlans !== []) {
+                $travelPrepared = $travelGuard->prepareBatch($travelPlans, $user);
+            }
         }
 
         $ghostUserIds = collect($validated['ghost_user_ids'] ?? [])
@@ -685,7 +734,8 @@ class UpdateShootAction
                     );
                 }
             };
-            \App\Support\LockedWrite::run(fn () => DB::transaction($applyEdit), 'shoot-update');
+            $travelGuard->commit($travelPrepared, fn () => \App\Support\LockedWrite::run(fn () => DB::transaction($applyEdit), 'shoot-update'),
+                function () use ($shoot, &$createdReturnVisit, $travelChildOnly) { return $travelChildOnly ? [$createdReturnVisit] : [$shoot, $createdReturnVisit]; });
         } catch (\DomainException $exception) {
                     $this->abortJson(\App\Services\ApiErrorResponder::publicMessage($exception), 409);
         }

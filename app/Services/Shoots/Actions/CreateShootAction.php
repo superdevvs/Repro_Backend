@@ -41,34 +41,53 @@ class CreateShootAction
     public function execute(StoreShootRequest $request, User $user): CreateShootResult
     {
         $validated = $request->validated();
+        // The legacy merger stores clocks without offsets. Project explicit service
+        // instants into the booking zone before merging, then persist UTC below.
+        if (! empty($validated['timezone'])) {
+            foreach (['services', 'service_items'] as $field) {
+                foreach ($validated[$field] ?? [] as $index => $row) {
+                    if (! empty($row['scheduled_at'])) {
+                        $validated[$field][$index]['scheduled_at'] = \Carbon\Carbon::parse($row['scheduled_at'], $validated['timezone'])
+                            ->setTimezone($validated['timezone'])->format('Y-m-d H:i:s');
+                    }
+                }
+            }
+        }
         $multiUnit = app(\App\Services\Shoots\MultiUnitBookingService::class);
         $unitBooking = $multiUnit->handles(null, $validated) ? $multiUnit->prepare(null, $validated, $user) : null;
         if (! $unitBooking) $validated['services'] = $validated['services'] ?? [];
         $this->support->ensureClientCanBookServices((int) $validated['client_id'], $unitBooking['services'] ?? $validated['services']);
         $client = $this->support->ensureClientHasDeliverableEmail((int) $validated['client_id']);
 
-        $result = DB::transaction(function () use ($validated, $user, $request, $client, $unitBooking, $multiUnit) {
-            $userRole = strtolower($user->role ?? '');
-            $scheduledAt = !empty($validated['scheduled_at'])
-                ? ($this->support->parseScheduleInstant(
-                    $validated['scheduled_at'],
-                    $validated['timezone'] ?? null
-                  ) ?? new \DateTime($validated['scheduled_at']))
-                : null;
-            $servicesPayload = $unitBooking['services'] ?? $this->support->mergeServiceItemPayload(
-                $validated['services'],
-                $validated['service_items'] ?? null,
-                $request->input('service_photographers'),
-                $scheduledAt
+        $userRole = strtolower($user->role ?? '');
+        $scheduledAt = !empty($validated['scheduled_at'])
+            ? ($this->support->parseScheduleInstant(
+                $validated['scheduled_at'],
+                $validated['timezone'] ?? null
+              ) ?? new \DateTime($validated['scheduled_at']))
+            : null;
+        $servicesPayload = $unitBooking['services'] ?? $this->support->mergeServiceItemPayload(
+            $validated['services'],
+            $validated['service_items'] ?? null,
+            $request->input('service_photographers'),
+            $scheduledAt
+        );
+        if (! $unitBooking) {
+            $propertyDetails = $validated['property_details'] ?? [];
+            $sqft = $propertyDetails['sqft'] ?? $propertyDetails['squareFeet'] ?? $propertyDetails['square_feet'] ?? null;
+            $servicesPayload = app(\App\Services\Shoots\ShootDurationResolver::class)->withDurations(
+                $servicesPayload, is_numeric($sqft) ? (int) $sqft : null
             );
-            if (! $unitBooking) {
-                $propertyDetails = $validated['property_details'] ?? [];
-                $sqft = $propertyDetails['sqft'] ?? $propertyDetails['squareFeet'] ?? $propertyDetails['square_feet'] ?? null;
-                $servicesPayload = app(\App\Services\Shoots\ShootDurationResolver::class)->withDurations(
-                    $servicesPayload, is_numeric($sqft) ? (int) $sqft : null
-                );
-                $this->support->assertNewServiceQuantitiesAllowed($servicesPayload);
-            }
+            $this->support->assertNewServiceQuantitiesAllowed($servicesPayload);
+        }
+        $travelGuard = app(\App\Services\Scheduling\ScheduleCommitGuard::class);
+        $requestOnly = $userRole === 'client' || $validated['client_id'] == $user->id || $request->boolean('is_client_request');
+        $travelPayload = app(\App\Services\Scheduling\WriteSchedulePlan::class)->services(
+            $validated, $servicesPayload, $scheduledAt, $validated['photographer_id'] ?? null,
+            $validated['timezone'] ?? null, 'create'
+        );
+        $travelPrepared = $requestOnly ? ['enabled' => false] : $travelGuard->prepare($travelPayload, null, $user);
+        $result = $travelGuard->commit($travelPrepared, fn () => DB::transaction(function () use ($validated, $user, $request, $client, $unitBooking, $multiUnit, $userRole, $scheduledAt, $servicesPayload) {
             $pricingCalculation = $this->support->buildPricingCalculation(
                 $servicesPayload,
                 $client,
@@ -323,6 +342,7 @@ class CreateShootAction
             ]);
 
             if ($unitBooking) {
+                $unitBooking['services'] = $servicesPayload;
                 $multiUnit->persist($shoot, $unitBooking);
             } else {
                 $this->support->attachServices($shoot, $servicesPayload);
@@ -364,7 +384,7 @@ class CreateShootAction
             );
 
             return new CreateShootResult($shoot, $treatAsClientRequest, $scheduledAt);
-        });
+        }));
 
         $this->registerDeferredSideEffects($result);
 

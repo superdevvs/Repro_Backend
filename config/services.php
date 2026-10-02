@@ -1,6 +1,15 @@
 <?php
 
 return [
+    'google_routes' => [
+        'key' => env('GOOGLE_ROUTES_API_KEY'),
+        'base_url' => 'https://routes.googleapis.com/distanceMatrix/v2:computeRouteMatrix',
+        'timeout_seconds' => 3,
+        'limit_elements' => 10000,
+        'rolling_days' => 31,
+        'budget_usd' => 100,
+        'cost_per_element_usd' => 0.01,
+    ],
 
     /*
     |--------------------------------------------------------------------------

@@ -98,6 +98,8 @@ class ShootController extends Controller
                 'message' => 'Validation failed',
                 'errors' => $e->errors(),
             ], 422);
+        } catch (\Illuminate\Http\Exceptions\HttpResponseException|\Symfony\Component\HttpKernel\Exception\HttpExceptionInterface $e) {
+            throw $e;
         } catch (\Exception $e) {
             \App\Services\ApiErrorResponder::log($e, 'error');
 
@@ -246,6 +248,9 @@ class ShootController extends Controller
             'service_id' => 'required_without:shoot_service_id|nullable|integer',
             'shoot_service_id' => 'nullable|integer',
             'expected_units_revision' => 'nullable|integer|min:0',
+            'travel_location_confirmed' => 'nullable|boolean',
+            'travel_override' => 'nullable|boolean',
+            'travel_override_reason' => 'nullable|string|max:500',
             'photographer_id' => [
                 'nullable',
                 Rule::exists('users', 'id')->where(fn ($query) => $query->where('role', 'photographer')),
@@ -272,11 +277,14 @@ class ShootController extends Controller
         $validated = $request->validate([
             'scope' => 'nullable|in:main,all_services',
             'expected_units_revision' => 'nullable|integer|min:0',
+            'travel_location_confirmed' => 'nullable|boolean',
+            'travel_override' => 'nullable|boolean',
+            'travel_override_reason' => 'nullable|string|max:500',
         ]);
         $scope = $validated['scope'] ?? 'main';
 
         try {
-            $shoot = $this->applyAlternateDateAction->execute($shoot, $scope, $user, $validated['expected_units_revision'] ?? null);
+            $shoot = $this->applyAlternateDateAction->execute($shoot, $scope, $user, $validated['expected_units_revision'] ?? null, $validated);
         } catch (ValidationException $e) {
             return response()->json([
                 'message' => \App\Services\ApiErrorResponder::publicMessage($e),
@@ -334,6 +342,9 @@ class ShootController extends Controller
                 Rule::exists('users', 'id')->where(fn ($query) => $query->where('role', 'photographer')),
             ],
             'expected_units_revision' => 'nullable|integer|min:0',
+            'travel_location_confirmed' => 'nullable|boolean',
+            'travel_override' => 'nullable|boolean',
+            'travel_override_reason' => 'nullable|string|max:500',
             'override' => 'nullable|boolean',
             'override_reason' => 'nullable|string|max:500',
         ]);
@@ -343,6 +354,9 @@ class ShootController extends Controller
             'expected_units_revision' => $request->input('expected_units_revision'),
             'override' => $request->input('override'),
             'override_reason' => $request->input('override_reason'),
+            'travel_location_confirmed' => $request->boolean('travel_location_confirmed'),
+            'travel_override' => $request->boolean('travel_override'),
+            'travel_override_reason' => $request->input('travel_override_reason'),
         ], $user);
 
         return response()->json([

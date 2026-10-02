@@ -19,6 +19,16 @@ class Shoot extends Model
 
     public const STATUS_IMPORT_DRAFT = 'import_draft';
 
+    public function toArray(): array
+    {
+        $attributes = parent::toArray();
+        if (is_array($attributes['property_details'] ?? null)) {
+            unset($attributes['property_details']['schedule_location']);
+        }
+
+        return $attributes;
+    }
+
     public function isImportDraft(): bool
     {
         return $this->status === self::STATUS_IMPORT_DRAFT;

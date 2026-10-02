@@ -41,11 +41,13 @@ class ComplimentaryReshootController extends Controller
     public function store(CreateComplimentaryReshootRequest $request, Shoot $sourceShoot): JsonResponse
     {
         try {
-            $result = $this->complimentaryReshoots->create(
-                $sourceShoot,
-                $request->validated(),
-                $request->user()
+            $data = $request->validated();
+            $guard = app(\App\Services\Scheduling\ScheduleCommitGuard::class);
+            $replay = Shoot::query()->where('complimentary_reshoot_idempotency_key', $data['_idempotency_key'])->exists();
+            $prepared = $replay ? ['enabled' => false] : $guard->prepare(
+                app(\App\Services\Scheduling\WriteSchedulePlan::class)->returnVisit($sourceShoot, $data, false), null, $request->user()
             );
+            $result = $guard->commit($prepared, fn () => $this->complimentaryReshoots->create($sourceShoot, $data, $request->user()));
         } catch (\DomainException $exception) {
             return $this->conflict($exception);
         }

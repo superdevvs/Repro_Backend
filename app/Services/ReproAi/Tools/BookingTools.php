@@ -81,6 +81,11 @@ class BookingTools
             $taxAmount = $baseQuote * 0.08; // 8% tax (adjust as needed)
             $totalQuote = $baseQuote + $taxAmount;
 
+            $timezone = $params['timezone'] ?? User::find($params['photographer_id'] ?? 0)?->timezone
+                ?? $client->timezone ?? config('app.timezone', 'UTC');
+            $timezone = in_array($timezone, timezone_identifiers_list(), true) ? $timezone : 'UTC';
+            $travelAt = ! empty($params['date']) && ! empty($params['time'])
+                ? \Carbon\Carbon::parse($params['date'].' '.$params['time'], $timezone) : null;
             // Prepare shoot data
             $shootData = [
                 'client_id' => $userId,
@@ -91,6 +96,8 @@ class BookingTools
                 'state' => $params['state'],
                 'zip' => $params['zip'],
                 'scheduled_date' => $params['date'] ?? null,
+                'scheduled_at' => $travelAt?->copy()->utc(),
+                'timezone' => $timezone,
                 'time' => $params['time'] ?? null,
                 'base_quote' => $baseQuote,
                 'tax_amount' => $taxAmount,
@@ -103,21 +110,30 @@ class BookingTools
                 'created_by' => auth()->user()->name ?? 'Robbie',
             ];
 
-            DB::beginTransaction();
+            $travelRows = $services->map(fn ($service) => ['id' => $service->id,
+                'duration_minutes' => $service->getShootDurationMinutes()])->all();
+            $guard = app(\App\Services\Scheduling\ScheduleCommitGuard::class);
+            $prepared = $guard->prepare(app(\App\Services\Scheduling\WriteSchedulePlan::class)->services(
+                $shootData, $travelRows, $travelAt, $shootData['photographer_id'], $timezone, 'create'
+            ), null, User::findOrFail($userId));
 
             try {
-                $shoot = Shoot::create($shootData);
+                $shoot = $guard->commit($prepared, fn () => DB::transaction(function () use ($shootData, $services) {
+                    $shoot = Shoot::create($shootData);
 
-                // Attach services
-                $pivotData = $services->mapWithKeys(function ($service) {
-                    return [
-                        $service->id => [
-                            'price' => $service->price ?? 0,
-                            'quantity' => 1,
-                        ],
-                    ];
-                })->toArray();
-                $shoot->services()->sync($pivotData);
+                    // Attach services
+                    $pivotData = $services->mapWithKeys(function ($service) {
+                        return [
+                            $service->id => [
+                                'price' => $service->price ?? 0,
+                                'quantity' => 1,
+                                'duration_minutes' => $service->getShootDurationMinutes(),
+                            ],
+                        ];
+                    })->toArray();
+                    $shoot->services()->sync($pivotData);
+                    return $shoot;
+                }));
 
                 // Create Dropbox folders if scheduled
                 if ($shoot->status === 'scheduled') {
@@ -159,8 +175,6 @@ class BookingTools
                     }
                 }
 
-                DB::commit();
-
                 return [
                     'success' => true,
                     'shoot_id' => $shoot->id,
@@ -173,8 +187,10 @@ class BookingTools
                         ? "Shoot booked successfully for {$shoot->scheduled_date?->format('M d, Y')} at {$shoot->time}"
                         : 'Shoot created. Please schedule a date and time to complete booking.',
                 ];
+            } catch (\Illuminate\Http\Exceptions\HttpResponseException $e) {
+                return ['success' => false, 'status_code' => $e->getResponse()->getStatusCode(),
+                    ...$e->getResponse()->getData(true)];
             } catch (ValidationException $e) {
-                DB::rollBack();
                 Log::warning('AI booking rejected during shoot creation.', [
                     'user_id' => $userId,
                     'errors' => $e->errors(),
@@ -183,12 +199,11 @@ class BookingTools
 
                 return [
                     'success' => false,
-                    'error' => $e->errors()['client_id'][0] ?? 'Selected client must have a primary email before booking a shoot.',
+                    'error' => $e->errors()['client_id'][0] ?? $e->getMessage(),
                     'errors' => $e->errors(),
                     'status_code' => 422,
                 ];
             } catch (\Exception $e) {
-                DB::rollBack();
                 Log::error('Failed to create shoot via AI', [
                     'error' => $e->getMessage(),
                     'params' => $params,
@@ -199,6 +214,9 @@ class BookingTools
                     'error' => 'Failed to create shoot: '.$e->getMessage(),
                 ];
             }
+        } catch (\Illuminate\Http\Exceptions\HttpResponseException $e) {
+            return ['success' => false, 'status_code' => $e->getResponse()->getStatusCode(),
+                ...$e->getResponse()->getData(true)];
         } catch (ValidationException $e) {
             Log::warning('BookingTools rejected request.', [
                 'user_id' => $context['user_id'] ?? auth()->id(),
@@ -208,7 +226,7 @@ class BookingTools
 
             return [
                 'success' => false,
-                'error' => $e->errors()['client_id'][0] ?? 'Selected client must have a primary email before booking a shoot.',
+                'error' => $e->errors()['client_id'][0] ?? $e->getMessage(),
                 'errors' => $e->errors(),
                 'status_code' => 422,
             ];

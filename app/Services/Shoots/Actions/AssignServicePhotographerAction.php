@@ -61,7 +61,12 @@ class AssignServicePhotographerAction
             $shoot->photographer_id,
             $shoot->id, $shoot->timezone, false, $shoot->scheduled_at
         );
-        DB::transaction(function () use (
+        $travelGuard = app(\App\Services\Scheduling\ScheduleCommitGuard::class);
+        $travelPrepared = $travelGuard->prepare(app(\App\Services\Scheduling\WriteSchedulePlan::class)->services(
+            $payload, $this->buildTargetServices($shoot, $assignments), $shoot->scheduled_at,
+            $shoot->photographer_id, $shoot->timezone, 'assign'
+        ), $shoot, $actor);
+        $travelGuard->commit($travelPrepared, fn () => DB::transaction(function () use (
             $shoot,
             $assignments,
             $actor,
@@ -78,7 +83,7 @@ class AssignServicePhotographerAction
                     $actor
                 );
             }
-        }, 3);
+        }, 3));
 
         return $shoot->fresh(['client', 'rep', 'photographer', 'services.category'])
             ?? $shoot->load(['client', 'rep', 'photographer', 'services.category']);
@@ -149,7 +154,11 @@ class AssignServicePhotographerAction
         $this->shootMutationSupportService->checkServiceItemPhotographerAvailability(
             $availabilityServices, $shoot->photographer_id, $shoot->id, $shoot->timezone, false, $shoot->scheduled_at
         );
-        app(\App\Services\Shoots\ShootEditablePayloadService::class)->apply($shoot, $changes, $actor);
+        $travelGuard = app(\App\Services\Scheduling\ScheduleCommitGuard::class);
+        $travelPrepared = $travelGuard->prepare(app(\App\Services\Scheduling\WriteSchedulePlan::class)->services(
+            $payload, $availabilityServices, $shoot->scheduled_at, $shoot->photographer_id, $shoot->timezone, 'assign'
+        ), $shoot, $actor);
+        $travelGuard->commit($travelPrepared, fn () => app(\App\Services\Shoots\ShootEditablePayloadService::class)->apply($shoot, $changes, $actor));
     }
 
     protected function buildTargetServices(Shoot $shoot, array $assignments): array

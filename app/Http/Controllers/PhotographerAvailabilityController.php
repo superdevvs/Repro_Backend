@@ -333,6 +333,7 @@ class PhotographerAvailabilityController extends Controller
 
     public function checkAvailability(Request $request)
     {
+        $travelFeasibility = $this->selectedTravelFeasibility($request);
         try {
             $validated = $request->validate([
                 'photographer_id' => 'required|exists:users,id',
@@ -409,7 +410,7 @@ class PhotographerAvailabilityController extends Controller
                 'total_count' => count($allSlots),
             ]);
 
-            return response()->json(['data' => $allSlots]);
+            return response()->json(['data' => $allSlots, 'hybrid_travel_enabled' => (bool) config('availability.hybrid_travel_enabled', false), 'travel_feasibility' => $travelFeasibility]);
         } catch (\Illuminate\Validation\ValidationException $e) {
             // validate() throws ValidationException (extends Exception); must stay 422.
             throw $e;
@@ -699,7 +700,7 @@ class PhotographerAvailabilityController extends Controller
         ]);
 
         // Create cache key from request parameters
-        $cacheKey = 'available_photographers_v2_' . md5(json_encode($validated));
+        $cacheKey = 'available_photographers_v2_' . md5(json_encode($validated).(int) config('availability.hybrid_travel_enabled', false));
         
         $merged = \Illuminate\Support\Facades\Cache::remember($cacheKey, now()->addSeconds(30), function () use ($validated) {
             $dayOfWeek = strtolower(date('l', strtotime($validated['date'])));
@@ -726,7 +727,7 @@ class PhotographerAvailabilityController extends Controller
             return $specific->concat($recurring)->values();
         });
 
-        return response()->json(['data' => $merged]);
+        return response()->json(['data' => $merged, 'hybrid_travel_enabled' => (bool) config('availability.hybrid_travel_enabled', false)]);
     }
 
     public function clearAll(Request $request, $photographerId)
@@ -890,6 +891,7 @@ class PhotographerAvailabilityController extends Controller
             'service_ids' => 'sometimes|array', // Filter by service capabilities
             'require_all_services' => 'sometimes|boolean', // If true, photographer must have ALL services
         ]);
+        $travelFeasibility = $this->selectedTravelFeasibility($request);
 
         // Public/anonymous callers and clients receive no other clients' booking details.
         $privilegedRoles = ['admin', 'superadmin', 'editing_manager', 'salesRep', 'rep', 'representative', 'photographer', 'editor'];
@@ -1176,7 +1178,7 @@ class PhotographerAvailabilityController extends Controller
 
             // Calculate net available slots (availability minus bookings)
             $netAvailableSlots = [];
-            $buffer = (int) config('availability.buffer_time_minutes', 15);
+            $buffer = (config('availability.hybrid_travel_enabled', false) ? 0 : (int) config('availability.buffer_time_minutes', 15));
             $bufferedBookings = array_map(function (array $slot) use ($buffer) {
                 $start = max(0, $this->timeToMinutes($slot['start_time']) - $buffer);
                 $end = min(1440, $this->timeToMinutes($slot['end_time']) + $buffer);
@@ -1230,7 +1232,7 @@ class PhotographerAvailabilityController extends Controller
                         'in_range' => $inRange,
                     ]);
                     if ($inRange) {
-                        $buffer = (int) config('availability.buffer_time_minutes', 15);
+                        $buffer = (config('availability.hybrid_travel_enabled', false) ? 0 : (int) config('availability.buffer_time_minutes', 15));
                         foreach ($bookedSlots as $booked) {
                             if ($requestStartMinutes < $this->timeToMinutes($booked['end_time']) + $buffer
                                 && $requestStartMinutes + $requestedDuration > $this->timeToMinutes($booked['start_time']) - $buffer) {
@@ -1276,6 +1278,8 @@ class PhotographerAvailabilityController extends Controller
 
             $photographerResult = [
                 'id' => $photographerId,
+                'hybrid_travel_enabled' => (bool) config('availability.hybrid_travel_enabled', false),
+                'travel_check_required' => (bool) config('availability.hybrid_travel_enabled', false),
                 'name' => $photographer->name,
                 'distance' => $distanceMiles,
                 'distance_from' => $distanceFrom,
@@ -1308,7 +1312,25 @@ class PhotographerAvailabilityController extends Controller
             $result[] = $photographerResult;
         }
 
-        return response()->json(['data' => $result]);
+        return response()->json(['data' => $result, 'hybrid_travel_enabled' => (bool) config('availability.hybrid_travel_enabled', false), 'travel_feasibility' => $travelFeasibility]);
+    }
+
+    /** Legacy calendar endpoints can evaluate one selected itinerary on demand. */
+    private function selectedTravelFeasibility(Request $request): ?array
+    {
+        if (! $request->has('selected_visit')) {
+            return null;
+        }
+        $data = $request->validate(['selected_visit' => 'required|array']);
+        abort_unless($request->user(), 401);
+        $rateKey = 'selected-travel-preview:'.$request->user()->id;
+        abort_if(\Illuminate\Support\Facades\RateLimiter::tooManyAttempts($rateKey, 60), 429, 'Too many travel checks. Please try again shortly.');
+        \Illuminate\Support\Facades\RateLimiter::hit($rateKey, 60);
+        $preview = Request::create('/api/photographer/availability/feasibility', 'POST', $data['selected_visit']);
+        $preview->setUserResolver(fn () => $request->user());
+        $response = app(ScheduleFeasibilityController::class)($preview, app(\App\Services\Scheduling\ScheduleFeasibilityService::class));
+
+        return $response->getData(true)['data'];
     }
 
     /**

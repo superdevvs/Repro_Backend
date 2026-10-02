@@ -601,7 +601,9 @@ class ShootPresenter
         $shoot->cancellation_fee_window = $cancellationFeeWindow;
         $shoot->cancellationFeeWindow = $shoot->cancellation_fee_window;
         $shoot->listing_source = $shoot->listing_source;
-        $shoot->property_details = $shoot->property_details;
+        $shoot->property_details = is_array($shoot->property_details)
+            ? \Illuminate\Support\Arr::except($shoot->property_details, ['schedule_location'])
+            : $shoot->property_details;
         $shoot->integration_flags = $shoot->integration_flags;
         $shoot->bright_mls_publish_status = $shoot->bright_mls_publish_status;
         $shoot->bright_mls_last_published_at = $shoot->bright_mls_last_published_at;

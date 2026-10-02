@@ -37,7 +37,10 @@ class ShootService
      */
     public function createFromReproAi(int $userId, array $data): Shoot
     {
-        return DB::transaction(function () use ($userId, $data) {
+        $guard = app(\App\Services\Scheduling\ScheduleCommitGuard::class);
+        $prepared = $guard->prepare(['action_mode' => 'create', '_schedule_visits' => [],
+            'client_id' => $data['client_id'] ?? $userId], null, User::findOrFail($userId));
+        $shoot = $guard->commit($prepared, fn () => DB::transaction(function () use ($userId, $data) {
             $user = User::findOrFail($userId);
             $clientId = (int) ($data['client_id'] ?? $userId);
             $client = User::whereKey($clientId)->where('role', 'client')->first();
@@ -115,6 +118,7 @@ class ShootService
                     $service->id => [
                         'price' => $service->price ?? 0,
                         'quantity' => 1,
+                        'duration_minutes' => $service->getShootDurationMinutes(),
                         'photographer_pay' => $service->photographer_pay ?? null,
                     ],
                 ];
@@ -140,20 +144,21 @@ class ShootService
                 $user
             );
 
-            // Create Dropbox folders if scheduled
-            if ($scheduledAt) {
-                try {
-                    $this->mediaStorageService->createShootFolders($shoot);
-                } catch (\Throwable $mediaStorageServiceError) {
-                    Log::warning('Robbie booking Dropbox folder creation failed', [
-                        'shoot_id' => $shoot->id,
-                        'error' => $mediaStorageServiceError->getMessage(),
-                    ]);
-                }
-            }
-
             return $shoot->load(['client', 'services']);
-        });
+        }));
+        // Create Dropbox folders if scheduled
+        if ($shoot->scheduled_at) {
+            try {
+                $this->mediaStorageService->createShootFolders($shoot);
+            } catch (\Throwable $mediaStorageServiceError) {
+                Log::warning('Robbie booking Dropbox folder creation failed', [
+                    'shoot_id' => $shoot->id,
+                    'error' => $mediaStorageServiceError->getMessage(),
+                ]);
+            }
+        }
+
+        return $shoot;
     }
 
     private function calculateBaseQuote($services): float
@@ -168,6 +173,11 @@ class ShootService
 
     private function parseTimeWindow(string $timeWindow): ?string
     {
+        $timeWindow = trim($timeWindow);
+        if (preg_match('/^(?:[01]?\d|2[0-3]):[0-5]\d(?::[0-5]\d)?$/', $timeWindow)
+            || preg_match('/^(?:[1-9]|1[0-2])(?::[0-5]\d)?\s*[ap]m$/i', $timeWindow)) {
+            return \Carbon\Carbon::parse($timeWindow)->format('H:i');
+        }
         if (str_contains($timeWindow, 'Morning')) {
             return '10:00'; // Default morning time
         } elseif (str_contains($timeWindow, 'Afternoon')) {
@@ -201,8 +211,58 @@ class ShootService
      */
     public function updateFromAiConversation(Shoot $shoot, array $data, User $user): Shoot
     {
-        return DB::transaction(function () use ($shoot, $data, $user) {
+        $guard = app(\App\Services\Scheduling\ScheduleCommitGuard::class);
+        $prepared = ['enabled' => false];
+        $scheduleChanges = [];
+        $unitPlan = null;
+        $unitRequest = null;
+        $isMultiUnit = app(\App\Services\Shoots\MultiUnitBookingService::class)->handles($shoot, []);
+        if ($isMultiUnit && ! empty($data['service_ids'])) {
+            throw ValidationException::withMessages(['services' => [
+                'Use the unit service editor to change services on a multi-unit booking.',
+            ]]);
+        }
+        if (! empty($data['date'])) {
+            $time = $this->parseTimeWindow($data['time_window'] ?? $shoot->time ?? '12:00') ?: '12:00';
+            $rescheduler = app(\App\Services\Shoots\MultiUnitRescheduleService::class);
+            if ($isMultiUnit) {
+                $unitRequest = new \App\Models\ShootRescheduleRequest(['requested_date' => $data['date'],
+                    'requested_time' => $time, 'units_revision' => $shoot->units_revision]);
+                $unitPlan = $rescheduler->plan($shoot, $unitRequest, $user);
+                $scheduleChanges = $unitPlan['changes'];
+            } else {
+                // The wall-clock resolver also supplies scheduled_at for legacy
+                // unzoned bookings, whose normalizer intentionally does not infer it.
+                $wallClock = $rescheduler->resolveRequestedWallClock($shoot, $data['date'], $time);
+                $scheduleChanges = app(\App\Services\Schedule\ShootScheduleUpdateInput::class)->normalize($shoot,
+                    \Illuminate\Support\Arr::only($wallClock, ['scheduled_at', 'scheduled_date', 'time']));
+            }
+        }
+        $at = ! empty($scheduleChanges['scheduled_at']) ? \Carbon\Carbon::parse($scheduleChanges['scheduled_at']) : $shoot->scheduled_at;
+        $planner = app(\App\Services\Scheduling\WriteSchedulePlan::class);
+        $rows = $unitPlan['services'] ?? $planner->storedServices($shoot);
+        $movedServices = collect($scheduleChanges['services'] ?? [])->keyBy('id');
+        foreach ($rows as &$row) {
+            $moved = $movedServices->get($row['id']);
+            if ($moved && array_key_exists('scheduled_at', $moved)) {
+                $row['scheduled_at'] = $moved['scheduled_at'];
+            }
+        }
+        unset($row);
+        if (! empty($data['service_ids'])) {
+            $booked = collect($rows)->keyBy('id');
+            $rows = Service::whereIn('id', $data['service_ids'])->get()->map(fn ($service) => $booked->get($service->id)
+                ?? ['id' => $service->id, 'duration_minutes' => $service->getShootDurationMinutes($shoot->propertySqft())])->all();
+        }
+        if ($guard->enabled() && (! empty($data['date']) || ! empty($data['service_ids']))) {
+            $prepared = $guard->prepare($planner->services([], $rows, $at, $shoot->photographer_id, $shoot->timezone, 'update'), $shoot, $user);
+        }
+        return $guard->commit($prepared, fn () => DB::transaction(function () use ($shoot, $data, $user, $scheduleChanges, $movedServices, $unitRequest) {
             $shoot = Shoot::query()->lockForUpdate()->findOrFail($shoot->id);
+
+            if ($unitRequest) {
+                app(\App\Services\Shoots\MultiUnitRescheduleService::class)->apply($shoot, $unitRequest, $user);
+            }
 
             if ($shoot->isComplimentaryReshoot() && array_key_exists('service_ids', $data)) {
                 throw ValidationException::withMessages([
@@ -214,19 +274,7 @@ class ShootService
 
             // Update scheduled date/time if provided
             if (! empty($data['date'])) {
-                $date = \Carbon\Carbon::parse($data['date']);
-                $timeWindow = $data['time_window'] ?? $shoot->time ?? '12:00';
-                $time = $this->parseTimeWindow($timeWindow);
-
-                if ($time) {
-                    $scheduledAt = $date->copy()->setTimeFromTimeString($time);
-                } else {
-                    $scheduledAt = $date->copy()->setTime(12, 0);
-                }
-
-                $shoot->scheduled_at = $scheduledAt;
-                $shoot->scheduled_date = $scheduledAt->format('Y-m-d');
-                $shoot->time = $scheduledAt->format('H:i');
+                $shoot->fill(\Illuminate\Support\Arr::only($scheduleChanges, ['scheduled_at', 'scheduled_date', 'time']));
             }
 
             // Update services if provided
@@ -250,18 +298,34 @@ class ShootService
                         2
                     );
 
-                    $pivotData = $services->mapWithKeys(function ($service) {
+                    $existingDurations = $shoot->serviceItems()->pluck('duration_minutes', 'service_id');
+                    $pivotData = $services->mapWithKeys(function ($service) use ($shoot, $existingDurations) {
                         return [
                             $service->id => [
                                 'price' => $service->price ?? 0,
                                 'quantity' => 1,
                                 'photographer_pay' => $service->photographer_pay ?? null,
+                                'duration_minutes' => $existingDurations->has($service->id) ? $existingDurations->get($service->id) : $service->getShootDurationMinutes($shoot->propertySqft()),
                             ],
                         ];
                     })->toArray();
 
                     $shoot->services()->sync($pivotData);
                 }
+            }
+
+            // Persist the same inherited moves evaluated above. Explicit split
+            // appointments keep their relative offsets through the normalizer.
+            foreach ($movedServices as $serviceId => $row) {
+                if (array_key_exists('scheduled_at', $row)) {
+                    $shoot->serviceItems()->where('service_id', $serviceId)->get()->each(function ($item) use ($row) {
+                        $item->scheduled_at = $row['scheduled_at'] ? \Carbon\Carbon::parse($row['scheduled_at'])->utc() : null;
+                        $item->save();
+                    });
+                }
+            }
+            if ($scheduleChanges !== []) {
+                app(\App\Services\Schedule\ShootScheduleFromServices::class)->applyEarliestToShoot($shoot, $shoot->serviceItems()->get());
             }
 
             $shoot->updated_by = $user->name;
@@ -280,7 +344,7 @@ class ShootService
             );
 
             return $shoot->fresh(['client', 'services']);
-        });
+        }));
     }
 
     /**

@@ -545,7 +545,9 @@ class ShootResource extends JsonResource
             'holdRequestedAt' => $this->hold_requested_at?->toIso8601String(),
             'holdRequestedBy' => $this->hold_requested_by,
             'holdReason' => $this->hold_reason,
-            'property_details' => $this->property_details,
+            'property_details' => is_array($this->property_details)
+                ? \Illuminate\Support\Arr::except($this->property_details, ['schedule_location'])
+                : $this->property_details,
             'timezone' => $this->timezone,
             'mls_image_width' => $this->mls_image_width,
             'mlsImageWidth' => $this->mls_image_width,

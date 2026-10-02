@@ -25,6 +25,9 @@ class ApproveShootAction
         'photographer_id',
         'notes',
         'skip_availability_check',
+        'travel_location_confirmed',
+        'travel_override',
+        'travel_override_reason',
         'notify_client',
         'notify_photographer',
         'service_photographers',
@@ -134,8 +137,13 @@ class ApproveShootAction
             $shoot->id, $timezone, $skipAvailabilityCheck, $scheduledAt
         );
 
+        $travelGuard = app(\App\Services\Scheduling\ScheduleCommitGuard::class);
+        $travelPrepared = $travelGuard->prepare(app(\App\Services\Scheduling\WriteSchedulePlan::class)->services(
+            $validated, $availabilityServices, $scheduledAt, $targetPhotographerId ? (int) $targetPhotographerId : null,
+            $timezone, 'approve'
+        ), $shoot, $user);
         $writeAttempts = DB::transactionLevel() > 0 ? 1 : LockedWrite::DEFAULT_ATTEMPTS;
-        LockedWrite::run(fn () => DB::transaction(function () use ($shoot, $scheduledAt, $user, $validated, $inheritedScheduleItemIds, $previousSchedule) {
+        $travelGuard->commit($travelPrepared, fn () => LockedWrite::run(fn () => DB::transaction(function () use ($shoot, $scheduledAt, $user, $validated, $inheritedScheduleItemIds, $previousSchedule) {
             // A failed SQLite attempt may leave the in-memory workflow state
             // changed even though its transaction rolled back.
             $shoot->refresh();
@@ -156,7 +164,7 @@ class ApproveShootAction
             }
 
             $this->workflowService->approve($shoot, $scheduledAt, $user, $validated['notes'] ?? null);
-        }), "shoot.{$shoot->id}.approval-schedule", $writeAttempts);
+        }), "shoot.{$shoot->id}.approval-schedule", $writeAttempts));
         $this->mediaStorageService->createShootFolders($shoot);
 
         if ($scheduledAt) {

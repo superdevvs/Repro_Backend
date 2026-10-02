@@ -36,65 +36,81 @@ class ScheduleShootAction
         $isMultiUnit = $shoot->units()->exists();
         $wasOnHold = in_array(strtolower((string) $shoot->status), ['hold_on', 'on_hold'], true)
             || in_array(strtolower((string) $shoot->workflow_status), ['hold_on', 'on_hold'], true);
+        $targetPhotographer = $validated['photographer_id'] ?? $shoot->photographer_id;
+        $plannedServices = $this->plannedAvailabilityServices($shoot, $scheduledAt);
         if ($isMultiUnit) {
-            $this->resumeUnitPlan($shoot, $scheduledAt, $validated, $user);
+            $local = \Carbon\Carbon::instance($scheduledAt)->setTimezone($shoot->timezone ?: config('app.timezone', 'UTC'));
+            $move = new \App\Models\ShootRescheduleRequest(['requested_date' => $local->toDateString(),
+                'requested_time' => $local->format('H:i'), 'units_revision' => $validated['expected_units_revision'] ?? null]);
+            $plannedServices = app(\App\Services\Shoots\MultiUnitRescheduleService::class)->plan($shoot, $move, $user)['services'];
         }
-        $photographerId = $validated['photographer_id'] ?? $shoot->photographer_id;
-        if (! $isMultiUnit) {
-            if ($photographerId) {
-                $carbonDate = \Carbon\Carbon::parse($scheduledAt);
-                \Illuminate\Support\Facades\DB::table('shoots')
-                    ->where('photographer_id', $photographerId)
-                    ->whereDate('scheduled_at', $carbonDate->toDateString())
-                    ->where('id', '!=', $shoot->id)
-                    ->lockForUpdate()
-                    ->get();
+        $travelGuard = app(\App\Services\Scheduling\ScheduleCommitGuard::class);
+        $travelPrepared = $travelGuard->prepare(app(\App\Services\Scheduling\WriteSchedulePlan::class)->services(
+            $validated, $plannedServices, $scheduledAt, $targetPhotographer ? (int) $targetPhotographer : null,
+            $shoot->timezone, 'schedule'
+        ), $shoot, $user);
+        $travelGuard->commit($travelPrepared, function () use ($shoot, $scheduledAt, $validated, $user, $isMultiUnit, $wasOnHold) {
+            if ($isMultiUnit) {
+                $this->resumeUnitPlan($shoot, $scheduledAt, $validated, $user);
             }
+            $photographerId = $validated['photographer_id'] ?? $shoot->photographer_id;
+            if (! $isMultiUnit) {
+                if ($photographerId) {
+                    $carbonDate = \Carbon\Carbon::parse($scheduledAt);
+                    \Illuminate\Support\Facades\DB::table('shoots')
+                        ->where('photographer_id', $photographerId)
+                        ->whereDate('scheduled_at', $carbonDate->toDateString())
+                        ->where('id', '!=', $shoot->id)
+                        ->lockForUpdate()
+                        ->get();
+                }
 
-            // Validate the exact times that alignment will save, preserving gaps
-            // between independently timed visits and each booked duration.
-            $targetServices = $this->plannedAvailabilityServices($shoot, $scheduledAt);
-            if ($targetServices === [] && $photographerId) {
-                $this->support->assertWithinAvailabilityBounds(
-                    (int) $photographerId, $scheduledAt,
-                    app(\App\Services\Shoots\ShootDurationResolver::class)->defaultMinutes(),
-                    $shoot->id, false, $shoot->timezone
+                // Validate the exact times that alignment will save, preserving gaps
+                // between independently timed visits and each booked duration.
+                $targetServices = $this->plannedAvailabilityServices($shoot, $scheduledAt);
+                if ($targetServices === [] && $photographerId) {
+                    $this->support->assertWithinAvailabilityBounds(
+                        (int) $photographerId, $scheduledAt,
+                        app(\App\Services\Shoots\ShootDurationResolver::class)->defaultMinutes(),
+                        $shoot->id, false, $shoot->timezone
+                    );
+                }
+                $this->support->checkServiceItemPhotographerAvailability(
+                    $targetServices, $photographerId ? (int) $photographerId : null,
+                    $shoot->id, $shoot->timezone, false, $scheduledAt
                 );
+
+                if ($photographerId && $photographerId !== $shoot->photographer_id) {
+                    $shoot->photographer_id = $photographerId;
+                    $shoot->save();
+                }
             }
-            $this->support->checkServiceItemPhotographerAvailability(
-                $targetServices, $photographerId ? (int) $photographerId : null,
-                $shoot->id, $shoot->timezone, false, $scheduledAt
-            );
 
-            if ($photographerId && $photographerId !== $shoot->photographer_id) {
-                $shoot->photographer_id = $photographerId;
-                $shoot->save();
+            if ($wasOnHold) {
+                $cancellationFee = 60;
+                $currentBase = $shoot->base_quote ?? 0;
+                $currentTotal = $shoot->total_quote ?? 0;
+
+                if ($currentBase >= $cancellationFee && $currentTotal >= $cancellationFee) {
+                    $shoot->base_quote = max(0, $currentBase - $cancellationFee);
+                    $shoot->total_quote = max(0, $currentTotal - $cancellationFee);
+                    $shoot->save();
+                }
             }
-        }
 
-        if ($wasOnHold) {
-            $cancellationFee = 60;
-            $currentBase = $shoot->base_quote ?? 0;
-            $currentTotal = $shoot->total_quote ?? 0;
-
-            if ($currentBase >= $cancellationFee && $currentTotal >= $cancellationFee) {
-                $shoot->base_quote = max(0, $currentBase - $cancellationFee);
-                $shoot->total_quote = max(0, $currentTotal - $cancellationFee);
-                $shoot->save();
+            if (! $isMultiUnit) {
+                // Services own the schedule. Align booking-defining lines to the
+                // requested instant, then derive shoot scheduled_* from earliest.
+                $scheduleInstant = \Carbon\Carbon::parse($scheduledAt)->utc();
+                $fromServices = app(\App\Services\Schedule\ShootScheduleFromServices::class);
+                $fromServices->alignBookingDefiningServices($shoot, $scheduleInstant);
+                $shoot->unsetRelation('serviceItems');
+                $shoot->load('serviceItems');
+                $derived = $fromServices->earliestInstant($shoot->serviceItems) ?? $scheduleInstant;
+                $this->workflowService->schedule($shoot, $derived, $user);
             }
-        }
 
-        if (! $isMultiUnit) {
-            // Services own the schedule. Align booking-defining lines to the
-            // requested instant, then derive shoot scheduled_* from earliest.
-            $scheduleInstant = \Carbon\Carbon::parse($scheduledAt)->utc();
-            $fromServices = app(\App\Services\Schedule\ShootScheduleFromServices::class);
-            $fromServices->alignBookingDefiningServices($shoot, $scheduleInstant);
-            $shoot->unsetRelation('serviceItems');
-            $shoot->load('serviceItems');
-            $derived = $fromServices->earliestInstant($shoot->serviceItems) ?? $scheduleInstant;
-            $this->workflowService->schedule($shoot, $derived, $user);
-        }
+        });
 
         if (! $shoot->dropbox_raw_folder) {
             $this->mediaStorageService->createShootFolders($shoot);

@@ -51,6 +51,14 @@ return [
     */
 
     'channels' => [
+        'scheduling' => [
+            'driver' => 'daily',
+            'path' => storage_path('logs/scheduling.log'),
+            'level' => 'info',
+            'days' => 30,
+            'replace_placeholders' => true,
+            'permission' => 0660,
+        ],
 
         'stack' => [
             'driver' => 'stack',

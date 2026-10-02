@@ -29,10 +29,10 @@ final class ApplyAlternateDateAction
     /**
      * @param  'main'|'all_services'  $scope
      */
-    public function execute(Shoot $shoot, string $scope, User $actor, ?int $expectedUnitsRevision = null): Shoot
+    public function execute(Shoot $shoot, string $scope, User $actor, ?int $expectedUnitsRevision = null, array $travelOptions = []): Shoot
     {
         if ($shoot->units()->exists()) {
-            return $this->applyUnitAlternate($shoot, $actor, $expectedUnitsRevision);
+            return $this->applyUnitAlternate($shoot, $actor, $expectedUnitsRevision, $travelOptions);
         }
         // Req 5.3 / 9.4 — reject when no stored alternate; make NO schedule changes.
         // Guard runs BEFORE the transaction so nothing is mutated when rejected.
@@ -42,7 +42,19 @@ final class ApplyAlternateDateAction
             ]);
         }
 
-        return DB::transaction(function () use ($shoot, $scope, $actor) {
+        $planner = app(\App\Services\Scheduling\WriteSchedulePlan::class);
+        $services = $planner->storedServices($shoot);
+        if ($scope === 'all_services') {
+            foreach ($services as &$line) {
+                $line['scheduled_at'] = $shoot->alternate_time ? $shoot->alternate_scheduled_at?->toIso8601String() : null;
+            }
+            unset($line);
+        }
+        $guard = app(\App\Services\Scheduling\ScheduleCommitGuard::class);
+        $prepared = $guard->prepare($planner->services($travelOptions, $services,
+            $shoot->alternate_time ? $shoot->alternate_scheduled_at : null,
+            $shoot->photographer_id, $shoot->timezone, 'alternate'), $shoot, $actor);
+        return $guard->commit($prepared, fn () => DB::transaction(function () use ($shoot, $scope, $actor) {
             $shoot->loadMissing('services');
 
             // Snapshot the stored alternate (retained unchanged — Req 5.9 / 9.6).
@@ -90,12 +102,24 @@ final class ApplyAlternateDateAction
             // Return a fresh shoot with the relations the resource needs loaded.
             return $shoot->fresh(['client', 'rep', 'photographer', 'services'])
                 ?? $shoot->load(['client', 'rep', 'photographer', 'services']);
-        });
+        }));
     }
 
-    private function applyUnitAlternate(Shoot $shoot, User $actor, ?int $expectedUnitsRevision): Shoot
+    private function applyUnitAlternate(Shoot $shoot, User $actor, ?int $expectedUnitsRevision, array $travelOptions): Shoot
     {
-        return \App\Support\LockedWrite::run(fn () => DB::transaction(function () use ($shoot, $actor, $expectedUnitsRevision) {
+        $guard = app(\App\Services\Scheduling\ScheduleCommitGuard::class);
+        $prepared = ['enabled' => false];
+        if ($guard->enabled()) {
+            if (! $shoot->alternate_scheduled_date) {
+                throw ValidationException::withMessages(['alternate' => ['This shoot has no alternate date to apply.']]);
+            }
+            $anchor = $shoot->scheduled_at ?? $shoot->serviceItems()->whereNotNull('scheduled_at')->orderBy('scheduled_at')->first()?->scheduled_at;
+            $move = new \App\Models\ShootRescheduleRequest(['requested_date' => $shoot->alternate_scheduled_date,
+                'requested_time' => $shoot->alternate_time ?: $anchor?->copy()->setTimezone($shoot->timezone ?: config('app.timezone', 'UTC'))->format('H:i'),
+                'units_revision' => $expectedUnitsRevision]);
+            $prepared = $guard->prepare(app(\App\Services\Scheduling\RescheduleWritePlan::class)->build($shoot, $move, $actor, $travelOptions), $shoot, $actor);
+        }
+        return $guard->commit($prepared, fn () => \App\Support\LockedWrite::run(fn () => DB::transaction(function () use ($shoot, $actor, $expectedUnitsRevision) {
             if (DB::connection()->getDriverName() === 'sqlite') {
                 DB::table('shoots')->where('id', $shoot->id)->update(['units_revision' => DB::raw('units_revision')]);
             }
@@ -119,6 +143,6 @@ final class ApplyAlternateDateAction
             ], $actor);
 
             return $current->fresh(['client', 'rep', 'photographer', 'services']);
-        }), 'apply-unit-alternate-date');
+        }), 'apply-unit-alternate-date'));
     }
 }

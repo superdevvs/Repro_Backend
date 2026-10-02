@@ -1,6 +1,12 @@
 <?php
 
 return [
+    'hybrid_travel_enabled' => (bool) env('HYBRID_TRAVEL_ENABLED', false),
+    'scheduling_lock_store' => env('SCHEDULING_LOCK_STORE', 'scheduling'),
+    'scheduling_lock_seconds' => (int) env('SCHEDULING_LOCK_SECONDS', 30),
+    'scheduling_lock_wait_seconds' => (int) env('SCHEDULING_LOCK_WAIT_SECONDS', 5),
+    'travel_geocode_timeout_seconds' => 3,
+    'travel_road_distance_factor' => 1.3,
     /*
     |--------------------------------------------------------------------------
     | Photographer Availability Configuration

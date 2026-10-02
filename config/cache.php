@@ -38,6 +38,16 @@ return [
             'serialize' => false,
         ],
 
+        // Scheduling locks must be shared by FPM and CLI users. Their common
+        // database avoids the per-owner permissions of ordinary file-cache locks.
+        'scheduling' => [
+            'driver' => 'database',
+            'connection' => null,
+            'table' => 'cache',
+            'lock_connection' => null,
+            'lock_table' => 'cache_locks',
+        ],
+
         'database' => [
             'driver' => 'database',
             'connection' => env('DB_CACHE_CONNECTION'),

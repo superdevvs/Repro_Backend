@@ -215,6 +215,9 @@ class ShootRescheduleRequestController extends Controller
     {
         abort_unless($this->authorization->canSubmitShootRequest($shoot, $request->user()), 403, 'Forbidden');
         $validated = $request->validate([
+            'travel_location_confirmed' => 'nullable|boolean',
+            'travel_override' => 'nullable|boolean',
+            'travel_override_reason' => 'nullable|string|max:500',
             'requested_date' => 'required|date',
             'requested_time' => 'nullable|string|max:25',
             'reason' => 'nullable|string|max:2000',
@@ -233,7 +236,14 @@ class ShootRescheduleRequestController extends Controller
             throw \Illuminate\Validation\ValidationException::withMessages(['services' => ['Only scheduling staff can change service durations when rescheduling.']]);
         }
 
-        $record = \App\Support\LockedWrite::run(fn () => DB::transaction(function () use ($shoot, $validated, $user, $canApplyDirectly) {
+        $travelGuard = app(\App\Services\Scheduling\ScheduleCommitGuard::class);
+        $candidate = new ShootRescheduleRequest(['requested_date' => $validated['requested_date'],
+            'requested_time' => $validated['requested_time'] ?? $shoot->time,
+            'units_revision' => $validated['expected_units_revision'] ?? $shoot->units_revision]);
+        $travelPrepared = $canApplyDirectly && $travelGuard->enabled() ? $travelGuard->prepare(
+            app(\App\Services\Scheduling\RescheduleWritePlan::class)->build($shoot, $candidate, $user, $validated), $shoot, $user
+        ) : ['enabled' => false];
+        $record = $travelGuard->commit($travelPrepared, fn () => \App\Support\LockedWrite::run(fn () => DB::transaction(function () use ($shoot, $validated, $user, $canApplyDirectly) {
             $shoot = Shoot::query()->lockForUpdate()->findOrFail($shoot->id);
             $hasUnits = $shoot->units()->exists();
             if ($hasUnits && isset($validated['expected_units_revision']) && (int) $validated['expected_units_revision'] !== (int) $shoot->units_revision) {
@@ -265,7 +275,7 @@ class ShootRescheduleRequestController extends Controller
             }
 
             return $record;
-        }), 'shoot-reschedule-create');
+        }), 'shoot-reschedule-create'));
 
         return response()->json([
             'message' => $canApplyDirectly
@@ -282,6 +292,9 @@ class ShootRescheduleRequestController extends Controller
         abort_unless($this->authorization->canTriageShootRequests($rescheduleRequest->shoot, $request->user()), 403, 'Forbidden');
 
         $validated = $request->validate([
+            'travel_location_confirmed' => 'nullable|boolean',
+            'travel_override' => 'nullable|boolean',
+            'travel_override_reason' => 'nullable|string|max:500',
             'status' => 'required|in:approved,rejected',
             'review_notes' => 'nullable|string|max:2000',
         ]);
@@ -310,10 +323,15 @@ class ShootRescheduleRequestController extends Controller
             ], 409);
         }
 
+        $travelGuard = app(\App\Services\Scheduling\ScheduleCommitGuard::class);
+        $travelPrepared = $validated['status'] === ShootRescheduleRequest::STATUS_APPROVED && $travelGuard->enabled()
+            ? $travelGuard->prepare(app(\App\Services\Scheduling\RescheduleWritePlan::class)->build(
+                $rescheduleRequest->shoot, $rescheduleRequest, $request->user(), $validated
+            ), $rescheduleRequest->shoot, $request->user()) : ['enabled' => false];
         $applied = false;
 
         try {
-            $applied = \App\Support\LockedWrite::run(fn () => DB::transaction(function () use ($rescheduleRequest, $validated, $request, &$applied) {
+            $applied = $travelGuard->commit($travelPrepared, fn () => \App\Support\LockedWrite::run(fn () => DB::transaction(function () use ($rescheduleRequest, $validated, $request, &$applied) {
                 $rescheduleRequest->refresh();
                 $rescheduleRequest->status = $validated['status'];
                 $rescheduleRequest->reviewed_at = now();
@@ -334,9 +352,11 @@ class ShootRescheduleRequestController extends Controller
 
                 return $applied;
 
-            }), 'shoot-reschedule-review');
+            }), 'shoot-reschedule-review'));
         } catch (\Illuminate\Validation\ValidationException $e) {
             return response()->json(['message' => $e->getMessage(), 'errors' => $e->errors()], 422);
+        } catch (\Illuminate\Http\Exceptions\HttpResponseException|\Symfony\Component\HttpKernel\Exception\HttpExceptionInterface $e) {
+            throw $e;
         } catch (\Throwable $e) {
 
             return response()->json([
@@ -408,20 +428,17 @@ class ShootRescheduleRequestController extends Controller
             $durations = app(\App\Services\Shoots\ShootDurationResolver::class);
             $support = app(\App\Services\Shoots\ShootMutationSupportService::class);
             $zone = $resolved['has_timezone'] ? $resolved['timezone'] : null;
-            if ($shoot->photographer_id) {
-                $support->assertWithinAvailabilityBounds((int) $shoot->photographer_id, $resolved['local'], $durations->forShoot($proposed), $shoot->id, false, $zone);
+            $rows = app(\App\Services\Scheduling\WriteSchedulePlan::class)->storedServices($proposed);
+            if ($rows === [] && $shoot->photographer_id) {
+                $support->assertWithinAvailabilityBounds((int) $shoot->photographer_id, $resolved['local'], $durations->defaultMinutes(), $shoot->id, false, $zone);
             }
-            foreach ($lines as $line) {
-                $line->loadMissing('service');
-                if (! $line->scheduled_at || ! $line->photographer_id || ! ($line->is_deliverable ?? true) || $line->workflow_status === 'cancelled' || $line->delivery_status === 'cancelled' || ! $line->service?->requiresPhotographer()) {
-                    continue;
+            foreach ($durations->windowsForShoot($proposed) as $window) {
+                if ($window['start'] && $window['photographer_id']) {
+                    $localStart = $zone ? $window['start']->copy()->setTimezone($zone) : $window['start'];
+                    $support->assertWithinAvailabilityBounds($window['photographer_id'], $localStart, $window['minutes'], $shoot->id, false, $zone);
                 }
-                $local = $line->scheduled_at->copy();
-                if ($zone) {
-                    $local->setTimezone($zone);
-                }
-                $support->assertWithinAvailabilityBounds((int) $line->photographer_id, $local, $durations->forServiceItem($line), $shoot->id, false, $zone);
             }
+            $support->checkServiceItemPhotographerAvailability($rows, $shoot->photographer_id, $shoot->id, $zone, false, $resolved['local']);
             foreach ($lines as $line) {
                 if ($line->isDirty()) {
                     $line->save();
@@ -450,30 +467,38 @@ class ShootRescheduleRequestController extends Controller
         }
         $request->save();
 
-        $shoot->loadMissing(['client', 'photographer', 'rep', 'service', 'services']);
-        $automationService = app(AutomationService::class);
-        $context = $automationService->buildShootContext($shoot);
-        if ($shoot->rep) {
-            $context['rep'] = $shoot->rep;
+        $notify = function () use ($shoot, $request, $mailService, $beforeSnapshot) {
+            $shoot->loadMissing(['client', 'photographer', 'rep', 'service', 'services']);
+            $automationService = app(AutomationService::class);
+            $context = $automationService->buildShootContext($shoot);
+            if ($shoot->rep) {
+                $context['rep'] = $shoot->rep;
+            }
+            $context['scheduled_at'] = $shoot->scheduled_at?->toISOString();
+
+            $shootChangeSummary = $mailService->buildShootChangeSummary($beforeSnapshot, $shoot);
+            $changesSummary = $shootChangeSummary['summary'];
+            $context['shoot_changes'] = $changesSummary;
+            $context['shoot_changes_html'] = $shootChangeSummary['html'];
+            $scheduledContext = array_merge($context, [
+                'notify_client' => false,
+                'notify_photographer' => $automationService->shouldUseFallback('SHOOT_UPDATED'),
+            ]);
+            $automationService->handleEvent('SHOOT_SCHEDULED', $scheduledContext);
+            $shootUpdatedDispatch = $automationService->handleEvent('SHOOT_UPDATED', $context);
+
+            if ($shoot->client && $automationService->shouldUseFallback('SHOOT_UPDATED', $shootUpdatedDispatch) !== false) {
+                $mailService->sendShootUpdatedEmail($shoot->client, $shoot, $changesSummary);
+            }
+
+            $this->logRescheduleActivity($shoot, $request);
+        };
+        if (config('availability.hybrid_travel_enabled')) {
+            DB::afterCommit($notify);
+        } else {
+            $notify();
         }
-        $context['scheduled_at'] = $shoot->scheduled_at?->toISOString();
 
-        $shootChangeSummary = $mailService->buildShootChangeSummary($beforeSnapshot, $shoot);
-        $changesSummary = $shootChangeSummary['summary'];
-        $context['shoot_changes'] = $changesSummary;
-        $context['shoot_changes_html'] = $shootChangeSummary['html'];
-        $scheduledContext = array_merge($context, [
-            'notify_client' => false,
-            'notify_photographer' => $automationService->shouldUseFallback('SHOOT_UPDATED'),
-        ]);
-        $automationService->handleEvent('SHOOT_SCHEDULED', $scheduledContext);
-        $shootUpdatedDispatch = $automationService->handleEvent('SHOOT_UPDATED', $context);
-
-        if ($shoot->client && $automationService->shouldUseFallback('SHOOT_UPDATED', $shootUpdatedDispatch) !== false) {
-            $mailService->sendShootUpdatedEmail($shoot->client, $shoot, $changesSummary);
-        }
-
-        $this->logRescheduleActivity($shoot, $request);
     }
 
     /**

@@ -12,6 +12,16 @@ class MultiUnitRescheduleService
 {
     public function apply(Shoot $shoot, ShootRescheduleRequest $request, User $actor, array $durationChanges = []): void
     {
+        $plan = $this->plan($shoot, $request, $actor, $durationChanges);
+        app(ShootMutationSupportService::class)->checkServiceItemPhotographerAvailability(
+            $plan['services'], $shoot->photographer_id, $shoot->id, $shoot->timezone, false, $plan['at']
+        );
+        app(ShootEditablePayloadService::class)->apply($shoot, $plan['changes'], $actor);
+    }
+
+    /** Pure preparation shared by the travel check and the subsequent write. */
+    public function plan(Shoot $shoot, ShootRescheduleRequest $request, User $actor, array $durationChanges = []): array
+    {
         $lines = $shoot->serviceItems()->get();
         $durations = collect($durationChanges)->keyBy('shoot_service_id');
         if ($durations->keys()->diff($lines->pluck('id'))->isNotEmpty()) {
@@ -54,12 +64,16 @@ class MultiUnitRescheduleService
             })->all(),
         ];
         $prepared = app(MultiUnitBookingService::class)->prepare($shoot, $changes, $actor);
-        app(ShootMutationSupportService::class)->checkServiceItemPhotographerAvailability(
-            $prepared['services'], $shoot->photographer_id, $shoot->id,
-            $hasTimezone ? $timezone : null, false, $target
-        );
+        $services = $prepared['services'];
+        foreach ($services as &$line) {
+            if ($hasTimezone && ! empty($line['scheduled_at'])) {
+                $line['scheduled_at'] = Carbon::parse($line['scheduled_at'], 'UTC')->toIso8601String();
+            }
+        }
+        unset($line);
         $changes = app(\App\Services\Schedule\ShootScheduleUpdateInput::class)->normalize($shoot, $changes);
-        app(ShootEditablePayloadService::class)->apply($shoot, $changes, $actor);
+
+        return ['changes' => $changes, 'services' => $services, 'at' => $target];
     }
 
     /**

@@ -84,17 +84,24 @@ class ShootActivityLogger
             // Fire broadcast event for real-time notifications
             $shouldSuppressNotifications = (bool) ($metadata['suppress_notifications'] ?? false);
             if (!$shouldSuppressNotifications && in_array($action, $this->broadcastableActions)) {
-                try {
-                    event(new ShootActivityBroadcast(
-                        $shoot,
-                        $action,
-                        $description,
-                        $metadata,
-                        $user?->id ?? auth()->id()
-                    ));
-                } catch (\Exception $e) {
-                    // Log but don't fail if broadcast fails
-                    \Log::warning('Failed to broadcast shoot activity: ' . $e->getMessage());
+                $broadcast = function () use ($shoot, $action, $description, $metadata, $user): void {
+                    try {
+                        event(new ShootActivityBroadcast(
+                            $shoot,
+                            $action,
+                            $description,
+                            $metadata,
+                            $user?->id ?? auth()->id()
+                        ));
+                    } catch (\Exception $e) {
+                        // Log but don't fail if broadcast fails
+                        \Log::warning('Failed to broadcast shoot activity: ' . $e->getMessage());
+                    }
+                };
+                if (config('availability.hybrid_travel_enabled')) {
+                    DB::afterCommit($broadcast);
+                } else {
+                    $broadcast();
                 }
             }
 

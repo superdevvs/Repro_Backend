@@ -22,7 +22,8 @@ class PhotographerAvailabilityService
      */
     public function getAvailableSlots(int $photographerId, Carbon $from, Carbon $to): array
     {
-        $cacheKey = "availability:slots:{$photographerId}:{$from->toDateString()}:{$to->toDateString()}";
+        $policy = config('availability.hybrid_travel_enabled', false) ? 'hybrid' : 'fixed';
+        $cacheKey = "availability:slots:{$policy}:{$photographerId}:{$from->toDateString()}:{$to->toDateString()}";
 
         // FileStore put can fail with permission denied (e.g. cache dirs owned by
         // another user). Never let a cache write failure 500 the availability API —
@@ -111,7 +112,7 @@ class PhotographerAvailabilityService
      */
     protected function getBlockedTimes(int $photographerId, Carbon $date): array
     {
-        $buffer = (int) config('availability.buffer_time_minutes', 15);
+        $buffer = (config('availability.hybrid_travel_enabled', false) ? 0 : (int) config('availability.buffer_time_minutes', 15));
 
         $blocked = [];
         foreach ($this->bookedAppointments($photographerId, $date) as $window) {
@@ -329,7 +330,7 @@ class PhotographerAvailabilityService
             ? $this->resolveRequestInstant($datetimeLocal, $timezone)
             : $datetimeLocal->copy()->utc();
         $requestEnd = $requestStart->copy()->addMinutes($durationMinutes);
-        $bufferMinutes = (int) config('availability.buffer_time_minutes', 15);
+        $bufferMinutes = (config('availability.hybrid_travel_enabled', false) ? 0 : (int) config('availability.buffer_time_minutes', 15));
         if ($timezone) {
             $localRequest = $requestStart->copy()->setTimezone($this->validTimezoneOrUtc($timezone));
             $date = $localRequest->copy()->startOfDay();
@@ -599,7 +600,7 @@ class PhotographerAvailabilityService
         ?int $excludeShootId,
         ?string $timezone = null
     ): bool {
-        $bufferMinutes = (int) config('availability.buffer_time_minutes', 15);
+        $bufferMinutes = (config('availability.hybrid_travel_enabled', false) ? 0 : (int) config('availability.buffer_time_minutes', 15));
         foreach ($this->bookedAppointments($photographerId, $date, $excludeShootId) as $window) {
             $start = $window['start']->copy();
             // Unzoned legacy requests and bookings share their stored wall clock.

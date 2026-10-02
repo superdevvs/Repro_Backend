@@ -22,6 +22,15 @@ class AppServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
+        foreach ([
+            \App\Services\Scheduling\TravelLocationResolver::class,
+            \App\Services\Scheduling\GoogleRoutesProvider::class,
+            \App\Services\Scheduling\TravelTimeEstimator::class,
+            \App\Services\Scheduling\ScheduleFeasibilityService::class,
+        ] as $service) {
+            $this->app->scoped($service);
+        }
+
         $this->app->bind(
             \Illuminate\Routing\Middleware\ThrottleRequests::class,
             \App\Http\Middleware\RetryDatabaseThrottleRequests::class,

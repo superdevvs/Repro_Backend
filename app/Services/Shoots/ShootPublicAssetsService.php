@@ -377,7 +377,7 @@ class ShootPublicAssetsService
             $propertyDetails['status'] ?? null
         );
 
-        return array_merge($propertyDetails, [
+        return array_merge(\Illuminate\Support\Arr::except($propertyDetails, ['schedule_location']), [
             'beds' => $bedrooms,
             'bedrooms' => $bedrooms,
             'baths' => $bathrooms,
