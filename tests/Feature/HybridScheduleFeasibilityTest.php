@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Exceptions\PublicApiResponseException;
 use App\Models\Service;
 use App\Models\Shoot;
 use App\Models\User;
@@ -9,6 +10,7 @@ use App\Services\Scheduling\ScheduleFeasibilityService;
 use App\Services\Scheduling\TravelLocationResolver;
 use App\Services\Scheduling\TravelTimeEstimator;
 use App\Services\Scheduling\VisitPlanBuilder;
+use App\Services\Scheduling\WriteSchedulePlan;
 use Carbon\Carbon;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Laravel\Sanctum\Sanctum;
@@ -139,9 +141,36 @@ class HybridScheduleFeasibilityTest extends TestCase
         $this->assertSame('review_required', $result['status']);
         $this->assertTrue($result['can_override']);
         app(ScheduleFeasibilityService::class)->assertResult($result, $payload + [
-            'travel_override' => true, 'travel_override_reason' => 'Photographer confirmed direct access'], null, $this->admin);
+            'travel_override' => true, 'travel_override_confirmed' => true,
+            'travel_override_confirmation_version' => $result['confirmation_version'],
+            'travel_override_reason' => 'Photographer confirmed direct access'], null, $this->admin);
         $this->expectException(\Illuminate\Validation\ValidationException::class);
-        app(ScheduleFeasibilityService::class)->assertResult($result, $payload + ['travel_override' => true], null, $this->admin);
+        app(ScheduleFeasibilityService::class)->assertResult($result, $payload + ['travel_override' => true, 'travel_override_confirmed' => true], null, $this->admin);
+    }
+
+    public function test_travel_override_requires_deliberate_acknowledgment_and_reason(): void
+    {
+        $this->booked('08:30');
+        $this->gap = 25;
+        $payload = $this->payload() + ['travel_override' => true, 'travel_override_reason' => 'Driver has reviewed this gap'];
+        $result = $this->evaluate($payload);
+        foreach ([[], ['travel_override_confirmed' => false]] as $confirmation) {
+            try {
+                app(ScheduleFeasibilityService::class)->assertResult($result, $payload + $confirmation, null, $this->admin);
+                $this->fail('An old override checkbox is not deliberate confirmation.');
+            } catch (\Illuminate\Validation\ValidationException $exception) {
+                $this->assertArrayHasKey('travel_override_confirmed', $exception->errors());
+            }
+        }
+        app(ScheduleFeasibilityService::class)->assertResult($result, $payload + ['travel_override_confirmed' => true,
+            'travel_override_confirmation_version' => $result['confirmation_version']], null, $this->admin);
+        $client = User::factory()->create(['role' => 'client']);
+        try {
+            app(ScheduleFeasibilityService::class)->assertResult($result, $payload + ['travel_override_confirmed' => true], null, $client);
+            $this->fail('Confirmation must not grant a client override authority.');
+        } catch (\Symfony\Component\HttpKernel\Exception\HttpExceptionInterface $exception) {
+            $this->assertSame(403, $exception->getStatusCode());
+        }
     }
 
     public function test_secondary_assignment_is_checked_and_independent_visit_gap_remains_available(): void
@@ -156,6 +185,35 @@ class HybridScheduleFeasibilityTest extends TestCase
         $this->assertContains('capture_overlap', $result['reason_codes']);
         $payload['services'][1]['scheduled_at'] = '2026-10-02T10:00:00-04:00';
         $this->assertSame('available', $this->evaluate($payload)['status']);
+    }
+
+    public function test_confirmation_matches_the_write_plan_and_changed_travel_requires_fresh_confirmation(): void
+    {
+        $this->booked('08:30');
+        $this->gap = 25;
+        $payload = $this->payload();
+        $preview = $this->evaluate($payload);
+        $write = app(WriteSchedulePlan::class)->services($payload, $payload['services'],
+            Carbon::parse($payload['scheduled_at'])->utc(), $this->photographer->id, $payload['timezone'], 'create');
+        $writeResult = $this->evaluate($write);
+        $this->assertSame($preview['confirmation_version'], $writeResult['confirmation_version']);
+        $service = app(ScheduleFeasibilityService::class);
+        $confirmed = $write + ['travel_override' => true, 'travel_override_confirmed' => true,
+            'travel_override_reason' => 'Photographer has reviewed this gap',
+            'travel_override_confirmation_version' => $preview['confirmation_version']];
+        $service->assertResult($writeResult, $confirmed, null, $this->admin);
+        $this->gap = 30;
+        $changed = $this->evaluate($write);
+        try {
+            $service->assertResult($changed, $confirmed, null, $this->admin);
+            $this->fail('A changed route estimate needs another deliberate confirmation.');
+        } catch (PublicApiResponseException $exception) {
+            $fresh = $exception->getResponse()->getData(true);
+            $this->assertSame(422, $exception->getResponse()->getStatusCode());
+            $this->assertSame(30, $fresh['feasibility']['transitions'][0]['required_minutes']);
+            $this->assertSame($changed['confirmation_version'], $fresh['feasibility']['confirmation_version']);
+            $this->assertNotSame($preview['confirmation_version'], $fresh['feasibility']['confirmation_version']);
+        }
     }
 
     public function test_multiple_proposed_visits_check_each_other_and_keep_internal_gap_zero(): void

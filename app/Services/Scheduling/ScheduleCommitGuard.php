@@ -163,14 +163,28 @@ class ScheduleCommitGuard
             return;
         }
         // Persist the decision and application identifiers, never Google route/ETA content.
-        $transitions = array_map(fn (array $transition) => array_intersect_key($transition, array_flip([
-            'from_visit_id', 'to_visit_id', 'from_visit_key', 'to_visit_key', 'photographer_id',
-            'reason_code', 'reason_codes', 'source', 'status',
-            'id', 'direction',
-        ])), $prepared['result']['transitions'] ?? []);
+        $transitions = array_map(function (array $transition) {
+            $context = array_intersect_key($transition, array_flip([
+                'from_visit_id', 'to_visit_id', 'from_visit_key', 'to_visit_key', 'photographer_id',
+                'reason_code', 'reason_codes', 'source', 'status', 'id', 'direction',
+                'candidate_start', 'candidate_end',
+            ]));
+            if (is_array($transition['neighbor'] ?? null)) {
+                $context['neighbor'] = \Illuminate\Support\Arr::only($transition['neighbor'], [
+                    'shoot_id', 'scheduled_at', 'end_at', 'timezone',
+                ]);
+                $context['neighbor']['services'] = array_map(fn (array $service) => \Illuminate\Support\Arr::only($service, ['id', 'name']),
+                    $transition['neighbor']['services'] ?? []);
+            }
+            return $context;
+        }, $prepared['result']['transitions'] ?? []);
         $shootIds = collect($targets)->filter(fn ($target) => $target instanceof Shoot)->pluck('id')->all();
         app(AuditLogService::class)->record('schedule.travel_override', $prepared['actor'], $targets[0] ?? null, [
             'reason' => trim((string) ($payload['travel_override_reason'] ?? '')),
+            'confirmed' => filter_var($payload['travel_override_confirmed'] ?? false, FILTER_VALIDATE_BOOLEAN),
+            'confirmed_at' => now()->toIso8601String(),
+            'confirmation_version' => $prepared['result']['confirmation_version'] ?? null,
+            'schedule_version' => $prepared['result']['schedule_version'] ?? null,
             'reason_codes' => $prepared['result']['reason_codes'] ?? [],
             'policy_version' => $prepared['result']['policy_version'] ?? null,
             'shoot_ids' => $shootIds,

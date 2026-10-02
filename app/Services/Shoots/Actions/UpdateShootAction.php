@@ -109,6 +109,8 @@ class UpdateShootAction
             'tour_links',
             'travel_location_confirmed',
             'travel_override',
+            'travel_override_confirmed',
+            'travel_override_confirmation_version',
             'travel_override_reason',
             // Product: assigned sales reps may reassign shoot + service-line photographers.
             'photographer_id',
@@ -521,7 +523,7 @@ class UpdateShootAction
                 $sourceForVisit = clone $shoot;
                 $sourceForVisit->fill(\Illuminate\Support\Arr::only($validated, ['address', 'city', 'state', 'zip', 'timezone', 'property_details']));
                 $childPayload = $planBuilder->returnVisit($sourceForVisit, $complimentaryServiceOptions);
-                $childPayload = array_merge($childPayload, \Illuminate\Support\Arr::only($validated, ['travel_override', 'travel_override_reason', 'travel_location_confirmed']));
+                $childPayload = array_merge($childPayload, \Illuminate\Support\Arr::only($validated, ['travel_override', 'travel_override_confirmed', 'travel_override_confirmation_version', 'travel_override_reason', 'travel_location_confirmed']));
                 $travelPlans[] = ['payload' => $childPayload, 'shoot' => null];
                 $travelChildOnly = ! $parentChanges;
             }

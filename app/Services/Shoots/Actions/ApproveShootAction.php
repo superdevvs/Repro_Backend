@@ -27,6 +27,8 @@ class ApproveShootAction
         'skip_availability_check',
         'travel_location_confirmed',
         'travel_override',
+        'travel_override_confirmed',
+        'travel_override_confirmation_version',
         'travel_override_reason',
         'notify_client',
         'notify_photographer',
@@ -58,6 +60,14 @@ class ApproveShootAction
                 'skip_availability_check' => 'nullable|boolean',
             ]
         ));
+
+        // Resolve zoned input before the service merger reduces it to SQL clocks.
+        // Approval owns its inheritance rules; keep only supplied fields so this
+        // does not move independent visits or classify approval as a modification.
+        $validated = array_intersect_key(
+            app(\App\Services\Schedule\ShootScheduleUpdateInput::class)->normalizeTimestamps($shoot, $validated),
+            $validated
+        );
 
         $scheduledAt = isset($validated['scheduled_at'])
             ? new \DateTime($validated['scheduled_at'])

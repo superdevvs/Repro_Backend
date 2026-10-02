@@ -255,7 +255,8 @@ class ShootService
                 ?? ['id' => $service->id, 'duration_minutes' => $service->getShootDurationMinutes($shoot->propertySqft())])->all();
         }
         if ($guard->enabled() && (! empty($data['date']) || ! empty($data['service_ids']))) {
-            $prepared = $guard->prepare($planner->services([], $rows, $at, $shoot->photographer_id, $shoot->timezone, 'update'), $shoot, $user);
+            $prepared = $guard->prepare($planner->services(\Illuminate\Support\Arr::only($data, ['travel_override', 'travel_override_confirmed', 'travel_override_confirmation_version', 'travel_override_reason']),
+                $rows, $at, $shoot->photographer_id, $shoot->timezone, 'update'), $shoot, $user);
         }
         return $guard->commit($prepared, fn () => DB::transaction(function () use ($shoot, $data, $user, $scheduleChanges, $movedServices, $unitRequest) {
             $shoot = Shoot::query()->lockForUpdate()->findOrFail($shoot->id);

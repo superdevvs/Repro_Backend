@@ -16,7 +16,8 @@ class ShootScheduleUpdateInput
         return $this->synchronizeAroundServices($shoot, $this->normalizeTimestamps($shoot, $payload));
     }
 
-    private function normalizeTimestamps(Shoot $shoot, array $payload): array
+    /** Resolve input clocks without changing service inheritance or the booking anchor. */
+    public function normalizeTimestamps(Shoot $shoot, array $payload): array
     {
         $timezone = trim((string) (array_key_exists('timezone', $payload) ? $payload['timezone'] : $shoot->timezone));
         // Existing unzoned bookings use wall-clock storage. Do not reinterpret them.

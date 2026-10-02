@@ -123,6 +123,8 @@ class CreateComplimentaryReshootRequest extends FormRequest
             '_rep_compensation_conflict' => ['prohibited'],
             'travel_location_confirmed' => 'nullable|boolean',
             'travel_override' => 'nullable|boolean',
+            'travel_override_confirmed' => 'nullable|boolean',
+            'travel_override_confirmation_version' => 'nullable|string|size:64',
             'travel_override_reason' => 'nullable|string|max:500',
             'shoot_type' => ['nullable', Rule::in([Shoot::SHOOT_TYPE_COMPLIMENTARY_RESHOOT])],
             'scheduled_at' => ['nullable', 'date'],

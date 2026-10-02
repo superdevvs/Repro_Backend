@@ -89,6 +89,8 @@ class ShootEditablePayloadService
             'zip' => 'nullable|string|max:10',
             'travel_location_confirmed' => 'nullable|boolean',
             'travel_override' => 'nullable|boolean',
+            'travel_override_confirmed' => 'nullable|boolean',
+            'travel_override_confirmation_version' => 'nullable|string|size:64',
             'travel_override_reason' => 'nullable|string|max:500',
             'client_id' => 'nullable|exists:users,id',
             'photographer_id' => 'nullable|exists:users,id',

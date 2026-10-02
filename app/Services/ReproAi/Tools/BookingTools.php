@@ -114,7 +114,8 @@ class BookingTools
                 'duration_minutes' => $service->getShootDurationMinutes()])->all();
             $guard = app(\App\Services\Scheduling\ScheduleCommitGuard::class);
             $prepared = $guard->prepare(app(\App\Services\Scheduling\WriteSchedulePlan::class)->services(
-                $shootData, $travelRows, $travelAt, $shootData['photographer_id'], $timezone, 'create'
+                array_merge($shootData, \Illuminate\Support\Arr::only($params, ['travel_override', 'travel_override_confirmed', 'travel_override_confirmation_version', 'travel_override_reason'])),
+                $travelRows, $travelAt, $shootData['photographer_id'], $timezone, 'create'
             ), null, User::findOrFail($userId));
 
             try {

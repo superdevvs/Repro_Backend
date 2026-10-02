@@ -32,13 +32,34 @@ class TravelScheduleAccess
         if ($access->hasRole($actor, ['admin', 'superadmin'])) {
             return true;
         }
-        if (! $access->hasRole($actor, ['salesRep'])) {
+        if (! $actor || $shoot?->isImportDraft()) {
+            return false;
+        }
+        $primaryRep = $access->hasRole($actor, ['salesRep']);
+        $requestReview = $shoot && in_array($payload['action_mode'] ?? '', ['reschedule', 'alternate'], true)
+            && $access->canTriageShootRequests($shoot, $actor);
+        if ($requestReview && ! $primaryRep) {
+            // Secondary sales roles already have shared request-review rights;
+            // they do not gain generic booking mutation rights from this check.
+            $secondaryActor = clone $actor;
+            foreach ($actor->secondary_roles ?? [] as $role) {
+                $secondaryActor->role = $role;
+                if ($access->hasRole($secondaryActor, ['salesRep'])) {
+                    return true;
+                }
+            }
+        }
+        if (! $primaryRep) {
             return false;
         }
 
-        // Creating for a client and reviewing client requests are existing sales capabilities.
-        return ! $shoot || $access->canViewShootDetails($shoot, $actor)
-            || $access->canTriageShootRequests($shoot, $actor);
+        // Broad read access does not grant a rep permission to change another
+        // rep's active booking. Shared request-review paths retain their authority;
+        // mutation adapters set action_mode themselves from the authorized action.
+        return ! $shoot || (int) $shoot->rep_id === (int) $actor->id
+            || $access->canManageRequestedShoot($shoot, $actor)
+            || $access->canManageHoldShoot($shoot, $actor)
+            || $requestReview;
     }
 
     public function isAdmin(?User $actor): bool

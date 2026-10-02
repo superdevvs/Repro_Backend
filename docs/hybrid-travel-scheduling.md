@@ -30,11 +30,12 @@ Authenticated `POST /api/photographer/availability/feasibility` accepts the norm
 booking or edited-shoot fields plus `shoot_id`, `action_mode`, and optional
 `include_alternatives`. It returns `{data: {enabled, status, visits, transitions,
 alternatives, can_override, can_confirm_location, policy_version,
-schedule_version}}`. Status is `available`, `conflict`, or `review_required`.
+schedule_version, confirmation_version}}`. Status is `available`, `conflict`, or `review_required`.
 At most three alternatives are returned after bounded on-demand checks.
 
-Only the authorized edited shoot is excluded from occupancy. Neighbor identities
-and addresses never appear in this response. Calendar-wide availability lists
+Only the authorized edited shoot is excluded from occupancy. Neighbor addresses
+never appear in this response; booking identity, times, and services are limited
+to staff with existing access to that booking. Calendar-wide availability lists
 provide onsite slots with `travel_check_required`; the selected time must pass the
 shared evaluator before confirmation. Request intake remains available.
 The existing authenticated `/check` and optionally authenticated `/for-booking`
@@ -45,6 +46,16 @@ Explicit travel exceptions require `travel_override=true` and a reason of at
 least five characters. Existing administrator or sales management access is
 required. Exceptions never permit overlapping capture work or unavailable hours,
 and existing blanket availability bypasses do not grant a travel exception.
+Staff must review the affected booking times and services, the proposed visit,
+and the required travel allowance, then complete the horizontal swipe to save.
+Neighbor details are returned only when that staff member already has permission
+to view the neighboring booking. Clients receive no neighboring booking details.
+Google estimates and mileage fallbacks remain distinctly labeled.
+The save includes `travel_override_confirmed=true` and the server's
+`travel_override_confirmation_version`. This binds acknowledgment to the actor,
+itinerary, schedule, policy, and assessed travel requirement. A changed schedule
+or travel requirement requires a fresh warning and confirmation. Completing a
+swipe submits the pending save once; cancelling submits nothing.
 Each save is freshly evaluated. Changing address, time, assignment or duration
 invalidates the frontend approval. Unchanged itinerary edits retain their old
 schedule without revalidating historical gaps.

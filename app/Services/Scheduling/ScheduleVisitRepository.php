@@ -5,6 +5,8 @@ namespace App\Services\Scheduling;
 use App\Models\PhotographerAvailability;
 use App\Models\Shoot;
 use App\Models\ShootService;
+use App\Models\User;
+use App\Services\Shoots\ShootAuthorizationSupport;
 use App\Services\Shoots\ShootDurationResolver;
 use Illuminate\Database\Eloquent\Builder;
 
@@ -27,6 +29,7 @@ class ScheduleVisitRepository
             ->whereNotIn('id', $excludedShootIds)
             ->whereNotIn('status', [Shoot::STATUS_CANCELLED, Shoot::STATUS_DECLINED, Shoot::STATUS_ON_HOLD, 'hold_on', Shoot::STATUS_REQUESTED, Shoot::STATUS_IMPORT_DRAFT])
             ->get();
+        $photographerNames = User::whereIn('id', $photographerIds)->pluck('name', 'id');
         $visits = [];
         foreach ($shoots as $shoot) {
             foreach ($photographerIds as $photographerId) {
@@ -44,13 +47,33 @@ class ScheduleVisitRepository
                     $visits[] = ['id' => 'booked:'.$shoot->id.':'.$photographerId.':'.$start->getTimestamp(),
                         'photographer_id' => (int) $photographerId, 'start' => $start->toIso8601String(),
                         'end' => $start->copy()->addMinutes($window['minutes'])->toIso8601String(),
-                        'duration_minutes' => $window['minutes'], 'timezone' => $shoot->timezone ?: 'UTC',
-                        'proposed' => false, '_shoot' => $shoot];
+                        'duration_minutes' => $window['minutes'],
+                        'timezone' => $shoot->timezone ?: $window['start']->timezoneName,
+                        'proposed' => false, '_shoot' => $shoot,
+                        '_photographer' => ['id' => (int) $photographerId, 'name' => (string) ($photographerNames[$photographerId] ?? '')],
+                        '_services' => $rows->map(fn ($item) => $item->service)
+                            ->filter()->unique('id')->map(fn ($service) => ['id' => (int) $service->id,
+                                'name' => (string) $service->name])->values()->all()];
                 }
             }
         }
 
         return $visits;
+    }
+
+    /** Only office/sales staff with access to this exact booking receive context. */
+    public function neighborContext(array $visit, ?User $actor): ?array
+    {
+        $shoot = $visit['_shoot'] ?? null;
+        $access = app(ShootAuthorizationSupport::class);
+        if (! $shoot instanceof Shoot || ! $access->hasRole($actor, ['admin', 'superadmin', 'salesRep'])
+            || ! $access->canViewShootDetails($shoot, $actor)) {
+            return null;
+        }
+
+        return ['shoot_id' => (int) $shoot->id, 'scheduled_at' => $visit['start'], 'end_at' => $visit['end'],
+            'timezone' => $visit['timezone'], 'services' => $visit['_services'] ?? [],
+            'photographer' => $visit['_photographer'] ?? null, 'can_view_details' => true];
     }
 
     /** Read-only fingerprint includes empty-day insertions, line assignments and hours. */

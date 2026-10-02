@@ -154,6 +154,65 @@ class ShootApprovalScheduleSyncTest extends TestCase
         ]);
     }
 
+    #[\PHPUnit\Framework\Attributes\TestWith(['2026-10-06T09:00:00-04:00', '2026-10-06 13:00:00', '09:00', false])]
+    #[\PHPUnit\Framework\Attributes\TestWith(['2026-12-06T09:00:00-05:00', '2026-12-06 14:00:00', '09:00', false])]
+    #[\PHPUnit\Framework\Attributes\TestWith(['2026-11-01T01:30:00-04:00', '2026-11-01 05:30:00', '01:30', false])]
+    #[\PHPUnit\Framework\Attributes\TestWith(['2026-11-01T01:30:00-05:00', '2026-11-01 06:30:00', '01:30', false])]
+    #[\PHPUnit\Framework\Attributes\TestWith(['2026-10-06T09:00:00', '2026-10-06 13:00:00', '09:00', false])]
+    #[\PHPUnit\Framework\Attributes\TestWith(['2026-10-06T09:00:00', '2026-10-06 13:00:00', '09:00', true])]
+    public function test_approval_persists_the_resolved_instant_and_preserves_booked_durations(
+        string $input, string $expectedUtc, string $expectedTime, bool $zoneInPayload
+    ): void
+    {
+        $shoot = $this->requestedShoot([
+            'scheduled_at' => '2026-10-06 16:00:00', 'time' => '12:00',
+            'timezone' => $zoneInPayload ? null : 'America/New_York',
+        ]);
+        $inherited = $this->attachService($shoot, '2026-10-06 16:00:00');
+        $explicit = $this->attachService($shoot, '2026-10-07 16:00:00');
+        $independent = $this->attachService($shoot, '2026-10-08 17:00:00');
+        foreach ([$inherited, $explicit, $independent] as $service) {
+            $shoot->services()->updateExistingPivot($service->id, ['duration_minutes' => 17]);
+        }
+
+        $payload = ['scheduled_at' => $input, 'service_items' => [[
+            'service_id' => $explicit->id, 'scheduled_at' => '2026-10-07T11:00:00-04:00',
+        ]]];
+        if ($zoneInPayload) {
+            $payload['timezone'] = 'America/New_York';
+        }
+        $this->approve($shoot, $payload);
+
+        $this->assertDatabaseHas('shoots', ['id' => $shoot->id, 'scheduled_at' => $expectedUtc]);
+        $this->assertSame(substr($input, 0, 10), $shoot->fresh()->scheduled_date->toDateString());
+        $this->assertSame($expectedTime, $shoot->fresh()->time);
+        foreach ([$inherited->id => $expectedUtc, $explicit->id => '2026-10-07 15:00:00',
+            $independent->id => '2026-10-08 17:00:00'] as $serviceId => $expectedSchedule) {
+            $this->assertDatabaseHas('shoot_service', [
+                'shoot_id' => $shoot->id, 'service_id' => $serviceId,
+                'scheduled_at' => $expectedSchedule, 'duration_minutes' => 17,
+            ]);
+        }
+    }
+
+    #[\PHPUnit\Framework\Attributes\TestWith(['2026-03-08T02:30:00'])]
+    #[\PHPUnit\Framework\Attributes\TestWith(['2026-11-01T01:30:00'])]
+    public function test_approval_rejects_nonexistent_or_ambiguous_zoned_local_times(string $input): void
+    {
+        $shoot = $this->requestedShoot([
+            'scheduled_at' => '2026-10-06 16:00:00', 'timezone' => 'America/New_York',
+        ]);
+        $service = $this->attachService($shoot, '2026-10-06 16:00:00');
+
+        $this->postJson('/api/shoots/'.$shoot->id.'/approve', ['scheduled_at' => $input])
+            ->assertUnprocessable()->assertJsonValidationErrors('scheduled_at');
+
+        $this->assertDatabaseHas('shoots', ['id' => $shoot->id, 'status' => 'requested',
+            'scheduled_at' => '2026-10-06 16:00:00']);
+        $this->assertDatabaseHas('shoot_service', ['shoot_id' => $shoot->id, 'service_id' => $service->id,
+            'scheduled_at' => '2026-10-06 16:00:00']);
+    }
+
     #[\PHPUnit\Framework\Attributes\TestWith(['approve', null])]
     #[\PHPUnit\Framework\Attributes\TestWith(['approve', 'America/New_York'])]
     #[\PHPUnit\Framework\Attributes\TestWith(['schedule', null])]

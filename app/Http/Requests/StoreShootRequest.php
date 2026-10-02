@@ -147,6 +147,8 @@ class StoreShootRequest extends FormRequest
             'timezone' => 'nullable|timezone',
             'travel_location_confirmed' => 'nullable|boolean',
             'travel_override' => 'nullable|boolean',
+            'travel_override_confirmed' => 'nullable|boolean',
+            'travel_override_confirmation_version' => 'nullable|string|size:64',
             'travel_override_reason' => 'nullable|string|max:500',
             'skip_availability_check' => 'nullable|boolean',
             'time' => 'nullable|string|max:10', // Legacy support

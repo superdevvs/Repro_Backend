@@ -30,6 +30,8 @@ class UpdateShootStatusRequest extends FormRequest
             'reason' => 'nullable|string|max:500',
             'travel_location_confirmed' => 'nullable|boolean',
             'travel_override' => 'nullable|boolean',
+            'travel_override_confirmed' => 'nullable|boolean',
+            'travel_override_confirmation_version' => 'nullable|string|size:64',
             'travel_override_reason' => 'nullable|string|max:500',
             'expected_units_revision' => 'nullable|integer|min:0',
         ];

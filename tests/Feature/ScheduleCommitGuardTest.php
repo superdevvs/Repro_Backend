@@ -93,6 +93,38 @@ class ScheduleCommitGuardTest extends TestCase
         $guard->commit($guard->prepare([]), fn () => $this->fail('Stale plans must not write.'));
     }
 
+    public function test_changed_schedule_never_reuses_an_acknowledged_exception(): void
+    {
+        $actor = User::factory()->create(['role' => 'admin']);
+        $result = array_merge($this->available(), ['available' => false, 'status' => 'conflict',
+            'can_override' => true, 'policy_version' => 'test', 'reason_codes' => ['insufficient_travel_time']]);
+        $originalVersion = app(ScheduleFeasibilityService::class)->confirmationVersion($result, $actor);
+        $changed = array_merge($result, ['schedule_version' => 'changed-after-confirmation']);
+        $engine = Mockery::mock(ScheduleFeasibilityService::class)->makePartial();
+        $calls = 0;
+        $engine->shouldReceive('evaluate')->twice()->andReturnUsing(function () use (&$calls, $result, $changed) {
+            $this->assertSame(0, DB::transactionLevel());
+            $lock = Cache::store('array')->lock('schedule:photographer:3');
+            $this->assertTrue($lock->get(), 'Re-evaluation must release scheduling locks.');
+            $lock->release();
+            return ++$calls === 1 ? $result : $changed;
+        });
+        $engine->shouldReceive('scheduleFingerprint')->once()->andReturn('changed-after-confirmation');
+        $this->app->instance(ScheduleFeasibilityService::class, $engine);
+        $guard = app(ScheduleCommitGuard::class);
+        $prepared = $guard->prepare(['travel_override' => true, 'travel_override_confirmed' => true,
+            'travel_override_confirmation_version' => $originalVersion, 'travel_override_reason' => 'Reviewed the earlier warning'], null, $actor);
+        try {
+            $guard->commit($prepared, fn () => $this->fail('An exception cannot be reused for a changed schedule.'));
+            $this->fail('A changed warning must require a new acknowledgment.');
+        } catch (\App\Exceptions\PublicApiResponseException $exception) {
+            $this->assertSame(422, $exception->getResponse()->getStatusCode());
+            $body = $exception->getResponse()->getData(true);
+            $this->assertArrayHasKey('travel_override_confirmation_version', $body['errors']);
+            $this->assertNotSame($originalVersion, $body['feasibility']['confirmation_version']);
+        }
+    }
+
     public function test_changed_target_is_rejected_instead_of_replaying_stale_action_payload(): void
     {
         $shoot = Shoot::factory()->create(['photographer_id' => null]);
@@ -113,9 +145,13 @@ class ScheduleCommitGuardTest extends TestCase
         $shoot = Shoot::factory()->create(['photographer_id' => null, 'property_details' => ['beds' => 4]]);
         $result = array_merge($this->available(), ['status' => 'conflict', 'available' => false,
             'policy_version' => 'test', 'reason_codes' => ['insufficient_travel_time'],
-            'location' => ['verified' => true],
+            'confirmation_version' => str_repeat('a', 64), 'location' => ['verified' => true],
             'transitions' => [['id' => 'edge', 'direction' => 'incoming', 'photographer_id' => 3,
-                'source' => 'google_routes', 'drive_minutes' => 27, 'required_minutes' => 35]]]);
+                'source' => 'google_routes', 'drive_minutes' => 27, 'required_minutes' => 35,
+                'candidate_start' => '2026-10-15T14:00:00Z', 'candidate_end' => '2026-10-15T14:30:00Z',
+                'neighbor' => ['shoot_id' => 52, 'scheduled_at' => '2026-10-15T13:00:00Z',
+                    'end_at' => '2026-10-15T13:45:00Z', 'timezone' => 'America/New_York',
+                    'address' => 'Private street', 'services' => [['id' => 6, 'name' => 'Exterior photos']]]]]]);
         $engine = $this->engine($result);
         $engine->shouldReceive('evaluate')->once()->andReturn($result);
         $engine->shouldReceive('scheduleFingerprint')->twice()->andReturn('first');
@@ -132,14 +168,23 @@ class ScheduleCommitGuardTest extends TestCase
         }));
         Log::partialMock()->shouldReceive('channel')->once()->with('scheduling')->andReturn($logger);
         $guard = app(ScheduleCommitGuard::class);
-        $prepared = $guard->prepare(['travel_override' => true, 'travel_override_reason' => 'Approved travel exception',
+        $prepared = $guard->prepare(['travel_override' => true, 'travel_override_confirmed' => true,
+            'travel_override_confirmation_version' => str_repeat('a', 64), 'travel_override_reason' => 'Approved travel exception',
             'property_details' => ['schedule_location' => ['signature' => 'forged']]], $shoot, $actor);
         $guard->commit($prepared, fn () => $shoot);
         $this->assertSame(['beds' => 4, 'schedule_location' => ['signature' => 'trusted']], $shoot->fresh()->property_details);
         $audit = UserActivityLog::where('event_type', 'schedule.travel_override')->sole();
         $this->assertSame($actor->id, $audit->actor_user_id);
         $this->assertSame([$shoot->id], $audit->metadata['shoot_ids']);
-        $this->assertSame([['id' => 'edge', 'direction' => 'incoming', 'photographer_id' => 3, 'source' => 'google_routes']], $audit->metadata['transitions']);
+        $this->assertTrue($audit->metadata['confirmed']);
+        $this->assertNotEmpty($audit->metadata['confirmed_at']);
+        $this->assertSame('first', $audit->metadata['schedule_version']);
+        $this->assertSame(str_repeat('a', 64), $audit->metadata['confirmation_version']);
+        $this->assertSame([['id' => 'edge', 'direction' => 'incoming', 'photographer_id' => 3, 'source' => 'google_routes',
+            'candidate_start' => '2026-10-15T14:00:00Z', 'candidate_end' => '2026-10-15T14:30:00Z',
+            'neighbor' => ['shoot_id' => 52, 'scheduled_at' => '2026-10-15T13:00:00Z',
+                'end_at' => '2026-10-15T13:45:00Z', 'timezone' => 'America/New_York',
+                'services' => [['id' => 6, 'name' => 'Exterior photos']]]]], $audit->metadata['transitions']);
     }
 
     public function test_network_preparation_rejects_an_ambient_transaction(): void

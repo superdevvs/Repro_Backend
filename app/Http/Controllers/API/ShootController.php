@@ -250,6 +250,8 @@ class ShootController extends Controller
             'expected_units_revision' => 'nullable|integer|min:0',
             'travel_location_confirmed' => 'nullable|boolean',
             'travel_override' => 'nullable|boolean',
+            'travel_override_confirmed' => 'nullable|boolean',
+            'travel_override_confirmation_version' => 'nullable|string|size:64',
             'travel_override_reason' => 'nullable|string|max:500',
             'photographer_id' => [
                 'nullable',
@@ -279,6 +281,8 @@ class ShootController extends Controller
             'expected_units_revision' => 'nullable|integer|min:0',
             'travel_location_confirmed' => 'nullable|boolean',
             'travel_override' => 'nullable|boolean',
+            'travel_override_confirmed' => 'nullable|boolean',
+            'travel_override_confirmation_version' => 'nullable|string|size:64',
             'travel_override_reason' => 'nullable|string|max:500',
         ]);
         $scope = $validated['scope'] ?? 'main';
@@ -344,6 +348,8 @@ class ShootController extends Controller
             'expected_units_revision' => 'nullable|integer|min:0',
             'travel_location_confirmed' => 'nullable|boolean',
             'travel_override' => 'nullable|boolean',
+            'travel_override_confirmed' => 'nullable|boolean',
+            'travel_override_confirmation_version' => 'nullable|string|size:64',
             'travel_override_reason' => 'nullable|string|max:500',
             'override' => 'nullable|boolean',
             'override_reason' => 'nullable|string|max:500',
@@ -356,6 +362,8 @@ class ShootController extends Controller
             'override_reason' => $request->input('override_reason'),
             'travel_location_confirmed' => $request->boolean('travel_location_confirmed'),
             'travel_override' => $request->boolean('travel_override'),
+            'travel_override_confirmed' => $request->boolean('travel_override_confirmed'),
+            'travel_override_confirmation_version' => $request->input('travel_override_confirmation_version'),
             'travel_override_reason' => $request->input('travel_override_reason'),
         ], $user);
 

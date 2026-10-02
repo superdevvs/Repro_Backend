@@ -55,10 +55,15 @@ class HybridSchedulingWritePathsTest extends TestCase
     {
         [$admin, $shoot, $service] = $this->fixture();
         $seen = [];
+        $confirmation = ['travel_override' => true, 'travel_override_confirmed' => true,
+            'travel_override_confirmation_version' => str_repeat('a', 64),
+            'travel_override_reason' => 'Staff reviewed the scheduling warning'];
         $engine = Mockery::mock(ScheduleFeasibilityService::class);
         $engine->shouldReceive('evaluate')->andReturnUsing(function ($payload) use (&$seen) {
             $this->assertSame(0, DB::transactionLevel());
             $this->assertNotEmpty($payload['_schedule_visits']);
+            $this->assertTrue($payload['travel_override_confirmed']);
+            $this->assertSame(str_repeat('a', 64), $payload['travel_override_confirmation_version']);
             $seen[] = $payload['action_mode'];
             return ['enabled' => true];
         });
@@ -70,25 +75,25 @@ class HybridSchedulingWritePathsTest extends TestCase
         $this->postJson('/api/shoots', ['client_id' => $shoot->client_id, 'address' => '500 Test Avenue',
             'city' => 'Baltimore', 'state' => 'MD', 'zip' => '21201', 'photographer_id' => $shoot->photographer_id,
             'scheduled_at' => '2026-10-16T15:00:00Z', 'services' => [['id' => $service->id, 'quantity' => 1]],
-            'skip_availability_check' => true])->assertUnprocessable()->assertJsonValidationErrors('travel_schedule');
+            'skip_availability_check' => true] + $confirmation)->assertUnprocessable()->assertJsonValidationErrors('travel_schedule');
         $this->patchJson("/api/shoots/{$shoot->id}", ['services' => [['id' => $service->id,
-            'scheduled_at' => '2026-10-16T15:00:00Z', 'duration_minutes' => 17]]])
+            'scheduled_at' => '2026-10-16T15:00:00Z', 'duration_minutes' => 17]]] + $confirmation)
             ->assertUnprocessable()->assertJsonValidationErrors('travel_schedule');
         $shoot->forceFill(['status' => 'requested', 'workflow_status' => 'requested'])->saveQuietly();
-        $this->postJson("/api/shoots/{$shoot->id}/approve", ['scheduled_at' => '2026-10-16T15:00:00Z'])
+        $this->postJson("/api/shoots/{$shoot->id}/approve", ['scheduled_at' => '2026-10-16T15:00:00Z'] + $confirmation)
             ->assertUnprocessable()->assertJsonValidationErrors('travel_schedule');
         $shoot->forceFill(['status' => 'scheduled', 'workflow_status' => 'scheduled'])->saveQuietly();
-        $this->postJson("/api/shoots/{$shoot->id}/schedule", ['scheduled_at' => '2026-10-16T15:00:00Z'])
+        $this->postJson("/api/shoots/{$shoot->id}/schedule", ['scheduled_at' => '2026-10-16T15:00:00Z'] + $confirmation)
             ->assertUnprocessable()->assertJsonValidationErrors('travel_schedule');
         $this->postJson("/api/shoots/{$shoot->id}/assign-service-photographer", ['service_id' => $service->id,
-            'photographer_id' => $shoot->photographer_id])->assertUnprocessable()->assertJsonValidationErrors('travel_schedule');
-        $this->postJson("/api/shoots/{$shoot->id}/reschedule", ['requested_date' => '2026-10-16', 'requested_time' => '11:00'])
+            'photographer_id' => $shoot->photographer_id] + $confirmation)->assertUnprocessable()->assertJsonValidationErrors('travel_schedule');
+        $this->postJson("/api/shoots/{$shoot->id}/reschedule", ['requested_date' => '2026-10-16', 'requested_time' => '11:00'] + $confirmation)
             ->assertUnprocessable()->assertJsonValidationErrors('travel_schedule');
-        $this->postJson("/api/shoots/{$shoot->id}/apply-alternate-date", ['scope' => 'all_services'])
+        $this->postJson("/api/shoots/{$shoot->id}/apply-alternate-date", ['scope' => 'all_services'] + $confirmation)
             ->assertUnprocessable()->assertJsonValidationErrors('travel_schedule');
         $pending = ShootRescheduleRequest::create(['shoot_id' => $shoot->id, 'requested_by' => $shoot->client_id,
             'requested_date' => '2026-10-16', 'requested_time' => '11:00', 'status' => 'pending']);
-        $this->patchJson("/api/shoots/reschedule-requests/{$pending->id}", ['status' => 'approved'])
+        $this->patchJson("/api/shoots/reschedule-requests/{$pending->id}", ['status' => 'approved'] + $confirmation)
             ->assertUnprocessable()->assertJsonValidationErrors('travel_schedule');
         $this->assertSame(['create', 'update', 'approve', 'schedule', 'assign', 'reschedule', 'alternate', 'reschedule'], $seen);
         $this->assertSame('2026-10-15 14:00:00', $shoot->fresh()->scheduled_at->format('Y-m-d H:i:s'));
@@ -188,6 +193,7 @@ class HybridSchedulingWritePathsTest extends TestCase
             $visit = $payload['_schedule_visits'][0];
             $this->assertSame('2026-10-16T10:00:00-04:00', $visit['scheduled_at']);
             $this->assertSame('America/New_York', $visit['timezone']);
+            $this->assertTrue($payload['travel_override_confirmed']);
             return ['enabled' => true];
         });
         $engine->shouldReceive('assertResult')->andReturnUsing(fn () => throw new PublicApiResponseException(response()->json(['message' => 'Travel blocked'], 422)));
@@ -196,6 +202,7 @@ class HybridSchedulingWritePathsTest extends TestCase
             'address' => '500 Test Avenue', 'city' => 'Baltimore', 'state' => 'MD', 'zip' => '21201',
             'date' => '2026-10-16', 'time' => '10:00', 'timezone' => 'America/New_York',
             'photographer_id' => $shoot->photographer_id, 'services' => [$service->id],
+            'travel_override' => true, 'travel_override_confirmed' => true, 'travel_override_reason' => 'Staff reviewed the travel warning',
         ], ['user_id' => $shoot->client_id]);
         $this->assertFalse($result['success']);
         $this->assertSame(422, $result['status_code']);
@@ -222,6 +229,10 @@ class HybridSchedulingWritePathsTest extends TestCase
         $this->postJson('/api/shoots', $payload)->assertUnprocessable()
             ->assertJsonPath('feasibility.reason_codes.0', 'insufficient_travel_time');
         $this->assertSame(1, Shoot::count());
+        $unconfirmed = $payload + ['travel_override' => true, 'travel_override_reason' => 'The photographer reviewed this gap'];
+        $this->postJson('/api/shoots', $unconfirmed)->assertUnprocessable()->assertJsonValidationErrors('travel_override_confirmed');
+        $this->postJson('/api/shoots', array_merge($unconfirmed, ['travel_override_confirmed' => true, 'travel_override_reason' => '']))
+            ->assertUnprocessable()->assertJsonValidationErrors('travel_override_reason');
         $payload['scheduled_at'] = '2026-10-15T14:50:00Z';
         $payload['services'][0]['scheduled_at'] = '2026-10-15T14:50:00Z';
         $id = $this->postJson('/api/shoots', $payload)->assertCreated()->json('data.id');
@@ -230,6 +241,16 @@ class HybridSchedulingWritePathsTest extends TestCase
         $this->assertSame(15, $saved->serviceItems()->sole()->duration_minutes);
         $this->assertSame('2026-10-15 14:50:00', $saved->serviceItems()->sole()->getRawOriginal('scheduled_at'));
         $this->assertSame(['signature' => 'trusted-result'], $saved->property_details['schedule_location']);
+        $freshWarning = $this->postJson('/api/shoots', $unconfirmed + ['travel_override_confirmed' => true])->assertUnprocessable()
+            ->assertJsonValidationErrors('travel_override_confirmation_version')->json('feasibility');
+        $preview = $this->postJson('/api/photographer/availability/feasibility', $unconfirmed)->assertOk()->json('data');
+        $this->assertSame($freshWarning['confirmation_version'], $preview['confirmation_version'],
+            'Normal preview input and canonical write windows must bind the same warning.');
+        $exceptionId = $this->postJson('/api/shoots', $unconfirmed + ['travel_override_confirmed' => true,
+            'travel_override_confirmation_version' => $preview['confirmation_version']])->assertCreated()->json('data.id');
+        $audit = \App\Models\UserActivityLog::where('event_type', 'schedule.travel_override')->sole();
+        $this->assertSame([(int) $exceptionId], $audit->metadata['shoot_ids']);
+        $this->assertTrue($audit->metadata['confirmed']);
     }
 
     public function test_unchanged_service_echo_does_not_recheck_historical_working_hours(): void
@@ -290,6 +311,7 @@ class HybridSchedulingWritePathsTest extends TestCase
         $engine = Mockery::mock(ScheduleFeasibilityService::class);
         $engine->shouldReceive('evaluate')->once()->andReturnUsing(function ($payload) use ($shoot) {
             $visits = $payload['_schedule_visits'];
+            $this->assertTrue($payload['travel_override_confirmed']);
             $this->assertSame(['2026-10-16 14:00:00', '2026-10-16 16:00:00'],
                 array_map(fn ($visit) => \Carbon\Carbon::parse($visit['scheduled_at'])->utc()->format('Y-m-d H:i:s'), $visits));
             $this->assertSame([17, 23], array_column($visits, 'duration_minutes'));
@@ -301,6 +323,7 @@ class HybridSchedulingWritePathsTest extends TestCase
         $this->app->instance(ScheduleFeasibilityService::class, $engine);
         $saved = app(\App\Services\ReproAi\ShootService::class)->updateFromAiConversation($shoot->fresh(), [
             'date' => '2026-10-16', 'time_window' => '10:00',
+            'travel_override' => true, 'travel_override_confirmed' => true, 'travel_override_reason' => 'Staff reviewed the travel warning',
         ], $admin);
         $this->assertSame($legacy ? '2026-10-16 10:00:00' : '2026-10-16 14:00:00', $saved->getRawOriginal('scheduled_at'));
         $this->assertSame('10:00:00', $saved->time);

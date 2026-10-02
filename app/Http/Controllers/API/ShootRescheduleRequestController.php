@@ -217,6 +217,8 @@ class ShootRescheduleRequestController extends Controller
         $validated = $request->validate([
             'travel_location_confirmed' => 'nullable|boolean',
             'travel_override' => 'nullable|boolean',
+            'travel_override_confirmed' => 'nullable|boolean',
+            'travel_override_confirmation_version' => 'nullable|string|size:64',
             'travel_override_reason' => 'nullable|string|max:500',
             'requested_date' => 'required|date',
             'requested_time' => 'nullable|string|max:25',
@@ -294,6 +296,8 @@ class ShootRescheduleRequestController extends Controller
         $validated = $request->validate([
             'travel_location_confirmed' => 'nullable|boolean',
             'travel_override' => 'nullable|boolean',
+            'travel_override_confirmed' => 'nullable|boolean',
+            'travel_override_confirmation_version' => 'nullable|string|size:64',
             'travel_override_reason' => 'nullable|string|max:500',
             'status' => 'required|in:approved,rejected',
             'review_notes' => 'nullable|string|max:2000',
