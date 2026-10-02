@@ -104,6 +104,8 @@ return [
 
     'resend' => [
         'key' => env('RESEND_KEY'),
+        'domain_verified' => env('RESEND_DOMAIN_VERIFIED', false),
+        'webhook_secret' => env('RESEND_WEBHOOK_SECRET'),
     ],
 
     'ayrshare' => [

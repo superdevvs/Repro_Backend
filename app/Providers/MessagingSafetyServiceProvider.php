@@ -3,6 +3,8 @@
 namespace App\Providers;
 
 use App\Services\Messaging\Providers\CakemailProvider;
+use App\Services\Messaging\Providers\ResendProvider;
+use App\Services\Messaging\Providers\FakeResendProvider;
 use App\Services\Messaging\Providers\FakeCakemailProvider;
 use App\Services\Messaging\Providers\FakeEmailProvider;
 use App\Services\Messaging\Providers\FakeLocalSmtpProvider;
@@ -46,6 +48,7 @@ class MessagingSafetyServiceProvider extends ServiceProvider
         // fakes extend/implement them and are bound in their place.
         $this->app->bind(TelnyxSmsProvider::class, FakeSmsProvider::class);
         $this->app->bind(CakemailProvider::class, FakeCakemailProvider::class);
+        $this->app->bind(ResendProvider::class, FakeResendProvider::class);
         $this->app->bind(LocalSmtpProvider::class, FakeLocalSmtpProvider::class);
 
         FakeSmsProvider::reset();

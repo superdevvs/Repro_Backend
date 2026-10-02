@@ -302,6 +302,9 @@ Route::post('webhooks/telnyx/status', [TelnyxWebhookController::class, 'status']
 Route::match(['get', 'post'], 'webhooks/cakemail', [App\Http\Controllers\API\CakemailWebhookController::class, 'handle'])
     ->name('webhooks.cakemail');
 
+Route::post('webhooks/resend', [App\Http\Controllers\API\ResendWebhookController::class, 'handle'])
+    ->name('webhooks.resend');
+
 Route::get('email/verify/{user}/{hash}', ClientEmailVerificationController::class)
     ->name('api.email-verification.verify');
 

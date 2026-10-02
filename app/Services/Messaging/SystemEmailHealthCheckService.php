@@ -54,7 +54,10 @@ class SystemEmailHealthCheckService
             'from_email' => $channel?->from_email,
         ];
 
-        $connection = $this->provider->testConnection();
+        $providerName = $channel ? app(MessagingService::class)->emailProviderName($channel) : strtoupper((string) config('messaging.email_primary', 'CAKEMAIL'));
+        $connection = $providerName === 'RESEND'
+            ? app(Providers\ResendProvider::class)->testConnection()
+            : $this->provider->testConnection();
         $failureType = $this->resolveFailureType($connection['error'] ?? null, $channel);
         $sendCapability = [
             'success' => $channel !== null
@@ -71,7 +74,8 @@ class SystemEmailHealthCheckService
 
         return [
             'healthy' => $healthy,
-            'provider' => strtoupper((string) ($channel?->provider ?? 'CAKEMAIL')),
+            'provider' => $providerName,
+            'fallback_provider' => $providerName === 'RESEND' ? 'CAKEMAIL' : null,
             'failure_type' => $healthy ? null : $failureType,
             'checks' => [
                 'default_channel' => $channelCheck,

@@ -139,8 +139,10 @@ class MessagingService
 
         try {
             $provider = $this->getEmailProvider($channel);
-            $providerName = strtoupper((string) $channel->provider);
+            $providerName = $this->emailProviderName($channel);
             $providerMessageId = $provider->send($channel, [
+                'from' => $message->from_address,
+                'idempotency_key' => 'repro-message-'.$message->id,
                 'to' => $payload['to'],
                 'cc' => $cc,
                 'bcc' => $bcc,
@@ -152,12 +154,16 @@ class MessagingService
                 'send_source' => $message->send_source,
             ]);
 
+            $providerName = $provider instanceof Providers\ResendWithCakemailFallbackProvider ? $provider->lastProvider : $providerName;
+
             $message->update([
+                'provider' => $providerName,
                 'status' => 'SENT',
                 'sent_at' => now(),
                 'provider_message_id' => $providerMessageId,
                 'metadata' => $this->mergeDeliveryMetadata($message->metadata, [
                     'provider' => $providerName,
+                    'fallback_reason' => $provider instanceof Providers\ResendWithCakemailFallbackProvider ? $provider->fallbackReason : null,
                     'provider_message_id' => $providerMessageId,
                     'status' => 'SENT',
                     'sent_at' => now()->toIso8601String(),
@@ -168,7 +174,7 @@ class MessagingService
                 $message,
                 $exception,
                 'Email send failed',
-                strtoupper((string) $channel->provider)
+                isset($provider) && $provider instanceof Providers\ResendWithCakemailFallbackProvider ? $provider->lastProvider : $this->emailProviderName($channel)
             );
 
             throw $exception;
@@ -997,11 +1003,22 @@ class MessagingService
 
     protected function getEmailProvider(MessageChannel $channel): EmailProviderInterface
     {
-        return match (strtoupper((string) $channel->provider)) {
+        return match ($this->emailProviderName($channel)) {
             'LOCAL_SMTP' => $this->localSmtpProvider,
+            'RESEND' => app(Providers\ResendWithCakemailFallbackProvider::class),
             'CAKEMAIL' => $this->cakemail(),
             default => $this->logAndReturnCakeMailProvider($channel),
         };
+    }
+
+    public function emailProviderName(MessageChannel $channel): string
+    {
+        $provider = strtoupper((string) $channel->provider);
+        if ($provider === 'CAKEMAIL' && strtoupper((string) config('messaging.email_primary')) === 'RESEND') {
+            return 'RESEND';
+        }
+
+        return $provider;
     }
 
     protected function logAndReturnCakeMailProvider(MessageChannel $channel): EmailProviderInterface
@@ -1082,9 +1099,11 @@ class MessagingService
 
         try {
             $provider = $this->getEmailProvider($channel);
-            $providerName = strtoupper((string) $channel->provider);
+            $providerName = $this->emailProviderName($channel);
 
             $providerMessageId = $provider->send($channel, [
+                'from' => $message->from_address,
+                'idempotency_key' => 'repro-message-'.$message->id,
                 'to' => $message->to_address,
                 'cc' => $this->normalizeEmailAddresses($message->cc_addresses_json ?? []),
                 'bcc' => $this->normalizeEmailAddresses($message->bcc_addresses_json ?? []),
@@ -1096,13 +1115,17 @@ class MessagingService
                 'send_source' => $message->send_source,
             ]);
 
+            $providerName = $provider instanceof Providers\ResendWithCakemailFallbackProvider ? $provider->lastProvider : $providerName;
+
             $message->update([
                 'status' => 'SENT',
+                'provider' => $providerName,
                 'sent_at' => now(),
                 'provider_message_id' => $providerMessageId,
                 'message_channel_id' => $channel->id,
                 'metadata' => $this->mergeDeliveryMetadata($message->metadata, [
                     'provider' => $providerName,
+                    'fallback_reason' => $provider instanceof Providers\ResendWithCakemailFallbackProvider ? $provider->fallbackReason : null,
                     'provider_message_id' => $providerMessageId,
                     'status' => 'SENT',
                     'sent_at' => now()->toIso8601String(),
@@ -1113,7 +1136,7 @@ class MessagingService
                 $message,
                 $exception,
                 'Scheduled email dispatch failed',
-                strtoupper((string) $channel->provider)
+                isset($provider) && $provider instanceof Providers\ResendWithCakemailFallbackProvider ? $provider->lastProvider : $this->emailProviderName($channel)
             );
 
             throw $exception;
@@ -1257,6 +1280,7 @@ class MessagingService
     ): void
     {
         $message->update([
+            'provider' => $provider ?? $message->provider,
             'status' => 'FAILED',
             'failed_at' => now(),
             'error_message' => $exception->getMessage(),

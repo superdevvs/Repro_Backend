@@ -7,8 +7,8 @@ return [
     | Default Mailer
     |--------------------------------------------------------------------------
     |
-    | All transactional emails are sent via CakeMail REST API
-    | (MessagingService → CakemailProvider). The log mailer is kept
+    | Transactional emails use MessagingService and the configured primary
+    | REST provider (Resend with CakeMail fallback). The log mailer is kept
     | as a fallback for local development / debugging only.
     |
     */

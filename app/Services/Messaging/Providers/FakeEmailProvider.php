@@ -13,18 +13,19 @@ class FakeEmailProvider
     /** @return list<array{to: mixed, subject: ?string, provider: string}> */
     public static function sent(): array
     {
-        return array_merge(FakeCakemailProvider::sent(), FakeLocalSmtpProvider::sent());
+        return array_merge(FakeCakemailProvider::sent(), FakeResendProvider::sent(), FakeLocalSmtpProvider::sent());
     }
 
     /** @return list<array{to: mixed, subject: ?string, provider: string}> */
     public static function scheduled(): array
     {
-        return array_merge(FakeCakemailProvider::scheduled(), FakeLocalSmtpProvider::scheduled());
+        return array_merge(FakeCakemailProvider::scheduled(), FakeResendProvider::scheduled(), FakeLocalSmtpProvider::scheduled());
     }
 
     public static function reset(): void
     {
         FakeCakemailProvider::reset();
+        FakeResendProvider::reset();
         FakeLocalSmtpProvider::reset();
     }
 }

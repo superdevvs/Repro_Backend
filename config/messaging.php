@@ -2,6 +2,10 @@
 
 return [
 
+    // Existing channels retain their sender identities and CakeMail settings.
+    // Switch only after the Resend domain, key and webhook are ready.
+    'email_primary' => env('MESSAGING_EMAIL_PRIMARY', 'CAKEMAIL'),
+
     /*
     |---------------------------------------------------------------------------
     | Outbound external delivery
