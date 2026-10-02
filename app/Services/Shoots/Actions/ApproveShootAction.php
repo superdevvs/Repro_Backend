@@ -108,23 +108,31 @@ class ApproveShootAction
                 if (($line['photographer_required'] ?? false) && (empty($line['photographer_id']) || empty($line['scheduled_at']))) {
                     throw \Illuminate\Validation\ValidationException::withMessages(["service_lines.$index" => ['Schedule and assign a photographer to every unit capture line before approval.']]);
                 }
-                if (! empty($line['photographer_id']) && ! empty($line['scheduled_at'])) {
-                    $this->support->assertWithinAvailabilityBounds((int) $line['photographer_id'], new \DateTime($line['scheduled_at']), (int) $line['duration_minutes'], $shoot->id, $skipAvailabilityCheck);
+            }
+        }
+        $timezone = $validated['timezone'] ?? $shoot->timezone;
+        $availabilityServices = $targetServices;
+        if ($timezone) {
+            foreach ($availabilityServices as &$service) {
+                if (! empty($service['scheduled_at'])) {
+                    $service['scheduled_at'] = \Carbon\Carbon::parse($service['scheduled_at'], 'UTC')
+                        ->setTimezone($timezone)->toIso8601String();
                 }
             }
+            unset($service);
         }
-        if (! $skipAvailabilityCheck) {
-            if (! empty($targetPhotographerId) && ! $isMultiUnit) {
-                $durationMinutes = $this->support->calculateShootDurationFromServices($targetServices, $shoot->propertySqft(), $scheduledAt, null, (int) $targetPhotographerId);
-                $this->support->checkPhotographerAvailability((int) $targetPhotographerId, $scheduledAt, $durationMinutes, $shoot->id);
-            }
-
-            $this->support->checkServiceItemPhotographerAvailability(
-                $targetServices,
-                $targetPhotographerId ? (int) $targetPhotographerId : null,
-                $shoot->id
+        if ($targetServices === [] && $targetPhotographerId) {
+            $this->support->assertWithinAvailabilityBounds(
+                (int) $targetPhotographerId, $scheduledAt,
+                app(\App\Services\Shoots\ShootDurationResolver::class)->defaultMinutes(),
+                $shoot->id, $skipAvailabilityCheck, $timezone
             );
         }
+        $this->support->checkServiceItemPhotographerAvailability(
+            $availabilityServices,
+            $targetPhotographerId ? (int) $targetPhotographerId : null,
+            $shoot->id, $timezone, $skipAvailabilityCheck, $scheduledAt
+        );
 
         $writeAttempts = DB::transactionLevel() > 0 ? 1 : LockedWrite::DEFAULT_ATTEMPTS;
         LockedWrite::run(fn () => DB::transaction(function () use ($shoot, $scheduledAt, $user, $validated, $inheritedScheduleItemIds, $previousSchedule) {

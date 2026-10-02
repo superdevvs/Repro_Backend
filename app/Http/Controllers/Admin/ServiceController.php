@@ -15,6 +15,9 @@ class ServiceController extends Controller
 {
     public function store(Request $request)
     {
+        $requiresPhotographer = $request->boolean('photographer_required');
+        $minDuration = $requiresPhotographer ? (int) config('availability.min_shoot_duration_minutes', 5) : 0;
+        $maxDuration = (int) config('availability.max_shoot_duration_minutes', 300);
         $rules = [
             'name' => 'required|string|max:255',
             'description' => 'nullable|string',
@@ -22,7 +25,7 @@ class ServiceController extends Controller
             'pricing_type' => 'nullable|in:fixed,variable',
             'allow_multiple' => 'nullable|boolean',
             'delivery_time' => 'required|integer|min:1',
-            'shoot_duration_minutes' => 'sometimes|integer|min:30|max:240',
+            'shoot_duration_minutes' => "sometimes|integer|min:{$minDuration}|max:{$maxDuration}",
             'category_id' => 'required|exists:categories,id',
             'icon' => 'nullable|string',
             'photographer_required' => 'nullable|boolean',
@@ -35,7 +38,7 @@ class ServiceController extends Controller
             'sqft_ranges' => 'nullable|array',
             'sqft_ranges.*.sqft_from' => 'required_with:sqft_ranges|integer|min:0',
             'sqft_ranges.*.sqft_to' => 'required_with:sqft_ranges|integer|min:0',
-            'sqft_ranges.*.duration' => 'nullable|integer|min:0',
+            'sqft_ranges.*.duration' => "nullable|integer|min:{$minDuration}|max:{$maxDuration}",
             'sqft_ranges.*.price' => 'required_with:sqft_ranges|numeric|min:0',
             'sqft_ranges.*.photographer_pay' => 'nullable|numeric|min:0',
             'sqft_ranges.*.photographer_pay_type' => 'nullable|in:fixed,percent',
@@ -49,7 +52,9 @@ class ServiceController extends Controller
         }
 
         $validated = $request->validate($rules);
-        $validated['shoot_duration_minutes'] ??= (int) config('availability.default_shoot_duration_minutes', 60);
+        $validated['shoot_duration_minutes'] = $requiresPhotographer
+            ? ($validated['shoot_duration_minutes'] ?? (int) config('availability.default_shoot_duration_minutes', 60))
+            : 0;
 
         // Ensure category_id is not null
         if (empty($validated['category_id'])) {
@@ -139,6 +144,11 @@ class ServiceController extends Controller
             ], 404);
         }
 
+        $requiresPhotographer = $request->has('photographer_required')
+            ? $request->boolean('photographer_required')
+            : $service->requiresPhotographer();
+        $minDuration = $requiresPhotographer ? (int) config('availability.min_shoot_duration_minutes', 5) : 0;
+        $maxDuration = (int) config('availability.max_shoot_duration_minutes', 300);
         $rules = [
             'name' => 'sometimes|string|max:255',
             'description' => 'nullable|string',
@@ -146,7 +156,7 @@ class ServiceController extends Controller
             'pricing_type' => 'nullable|in:fixed,variable',
             'allow_multiple' => 'nullable|boolean',
             'delivery_time' => 'sometimes|integer',
-            'shoot_duration_minutes' => 'sometimes|integer|min:30|max:240',
+            'shoot_duration_minutes' => "sometimes|integer|min:{$minDuration}|max:{$maxDuration}",
             'category_id' => 'sometimes|exists:categories,id',
             'icon' => 'nullable|string',
             'photographer_required' => 'nullable|boolean',
@@ -160,7 +170,7 @@ class ServiceController extends Controller
             'sqft_ranges.*.id' => 'nullable|integer',
             'sqft_ranges.*.sqft_from' => 'required_with:sqft_ranges|integer|min:0',
             'sqft_ranges.*.sqft_to' => 'required_with:sqft_ranges|integer|min:0',
-            'sqft_ranges.*.duration' => 'nullable|integer|min:0',
+            'sqft_ranges.*.duration' => "nullable|integer|min:{$minDuration}|max:{$maxDuration}",
             'sqft_ranges.*.price' => 'required_with:sqft_ranges|numeric|min:0',
             'sqft_ranges.*.photographer_pay' => 'nullable|numeric|min:0',
             'sqft_ranges.*.photographer_pay_type' => 'nullable|in:fixed,percent',
@@ -174,6 +184,13 @@ class ServiceController extends Controller
         }
 
         $validated = $request->validate($rules);
+
+        if (! $requiresPhotographer && (array_key_exists('shoot_duration_minutes', $validated) || array_key_exists('photographer_required', $validated))) {
+            $validated['shoot_duration_minutes'] = 0;
+        } elseif ($requiresPhotographer && array_key_exists('photographer_required', $validated)
+            && ! array_key_exists('shoot_duration_minutes', $validated) && ! $service->requiresPhotographer()) {
+            $validated['shoot_duration_minutes'] = (int) config('availability.default_shoot_duration_minutes', 60);
+        }
 
         DB::beginTransaction();
         try {

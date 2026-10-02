@@ -22,7 +22,7 @@ class PhotographerAvailabilityBookedTimeTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
-        config(['app.timezone' => 'UTC', 'availability.default_shoot_duration_minutes' => 60, 'availability.booked_block_duration_minutes' => 120]);
+        config(['app.timezone' => 'UTC', 'availability.default_shoot_duration_minutes' => 60]);
         Http::preventStrayRequests();
         Mail::fake();
         Notification::fake();
@@ -32,17 +32,17 @@ class PhotographerAvailabilityBookedTimeTest extends TestCase
     public static function appointmentTimes(): array
     {
         return [
-            'reported imported appointment' => ['2026-09-28 16:30:00', 'America/New_York', 'America/New_York', '2026-09-28', '12:30', '14:30'],
-            'jaz shoot 134 style' => ['2026-10-02 14:00:00', 'America/New_York', 'America/New_York', '2026-10-02', '10:00', '12:00'],
-            'legacy local appointment' => ['2026-09-28 10:00:00', null, 'America/New_York', '2026-09-28', '10:00', '12:00'],
-            'blank timezone uses legacy clock' => ['2026-09-28 10:00:00', '', 'America/New_York', '2026-09-28', '10:00', '12:00'],
-            'winter offset' => ['2026-01-15 17:30:00', 'America/New_York', 'America/New_York', '2026-01-15', '12:30', '14:30'],
-            'spring DST' => ['2026-03-08 16:30:00', 'America/New_York', 'America/New_York', '2026-03-08', '12:30', '14:30'],
-            'autumn DST' => ['2026-11-01 17:30:00', 'America/New_York', 'America/New_York', '2026-11-01', '12:30', '14:30'],
-            'UTC next day' => ['2026-09-29 00:30:00', 'America/New_York', 'America/New_York', '2026-09-28', '20:30', '22:30'],
-            'UTC previous day' => ['2026-09-27 23:30:00', 'Asia/Tokyo', 'Asia/Tokyo', '2026-09-28', '08:30', '10:30'],
-            'photographer zone takes priority' => ['2026-09-28 16:30:00', 'America/New_York', 'America/Los_Angeles', '2026-09-28', '09:30', '11:30'],
-            'shoot zone fallback' => ['2026-09-28 16:30:00', 'America/New_York', '', '2026-09-28', '12:30', '14:30'],
+            'reported imported appointment' => ['2026-09-28 16:30:00', 'America/New_York', 'America/New_York', '2026-09-28', '12:30', '13:30'],
+            'jaz shoot 134 style' => ['2026-10-02 14:00:00', 'America/New_York', 'America/New_York', '2026-10-02', '10:00', '11:00'],
+            'legacy local appointment' => ['2026-09-28 10:00:00', null, 'America/New_York', '2026-09-28', '10:00', '11:00'],
+            'blank timezone uses legacy clock' => ['2026-09-28 10:00:00', '', 'America/New_York', '2026-09-28', '10:00', '11:00'],
+            'winter offset' => ['2026-01-15 17:30:00', 'America/New_York', 'America/New_York', '2026-01-15', '12:30', '13:30'],
+            'spring DST' => ['2026-03-08 16:30:00', 'America/New_York', 'America/New_York', '2026-03-08', '12:30', '13:30'],
+            'autumn DST' => ['2026-11-01 17:30:00', 'America/New_York', 'America/New_York', '2026-11-01', '12:30', '13:30'],
+            'UTC next day' => ['2026-09-29 00:30:00', 'America/New_York', 'America/New_York', '2026-09-28', '20:30', '21:30'],
+            'UTC previous day' => ['2026-09-27 23:30:00', 'Asia/Tokyo', 'Asia/Tokyo', '2026-09-28', '08:30', '09:30'],
+            'photographer zone takes priority' => ['2026-09-28 16:30:00', 'America/New_York', 'America/Los_Angeles', '2026-09-28', '09:30', '10:30'],
+            'shoot zone fallback' => ['2026-09-28 16:30:00', 'America/New_York', '', '2026-09-28', '12:30', '13:30'],
         ];
     }
 
@@ -64,7 +64,7 @@ class PhotographerAvailabilityBookedTimeTest extends TestCase
             ->assertJsonPath('data.0.day_of_week', strtolower(Carbon::parse($localDate)->format('l')))
             ->assertJsonPath('data.0.start_time', $start)
             ->assertJsonPath('data.0.end_time', $end)
-            ->assertJsonPath('data.0.shoot_details.duration_minutes', 120);
+            ->assertJsonPath('data.0.shoot_details.duration_minutes', 60);
 
         // The adjacent days must not inherit a booking from its raw UTC date.
         foreach ([-1, 1] as $offset) {
@@ -116,7 +116,7 @@ class PhotographerAvailabilityBookedTimeTest extends TestCase
         $this->assertNotNull($row, 'photographer missing from for-booking payload');
         $this->assertSame([[
             'start_time' => '10:00',
-            'end_time' => '12:00',
+            'end_time' => '11:00',
             'status' => 'scheduled',
             'shoot_id' => $shoot->id,
             'address' => $shoot->property_address ?? $shoot->address,
@@ -146,7 +146,7 @@ class PhotographerAvailabilityBookedTimeTest extends TestCase
         $booked = collect($check)->first(fn ($slot) => ($slot['status'] ?? null) === 'booked');
         $this->assertNotNull($booked);
         $this->assertSame('10:00', $booked['start_time']);
-        $this->assertSame('12:00', $booked['end_time']);
+        $this->assertSame('11:00', $booked['end_time']);
         $this->assertSame($shoot->id, $booked['shoot_id']);
     }
 

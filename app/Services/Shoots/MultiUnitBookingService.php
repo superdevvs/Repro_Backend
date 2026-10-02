@@ -38,7 +38,7 @@ class MultiUnitBookingService
             'service_lines.*.price' => 'nullable|numeric|min:0',
             'service_lines.*.quantity' => 'nullable|integer|min:1',
             'service_lines.*.scheduled_at' => 'nullable|date',
-            'service_lines.*.duration_minutes' => 'nullable|integer|min:30|max:240',
+            'service_lines.*.duration_minutes' => ['nullable', 'integer', 'min:0', 'max:300', new \App\Rules\ServiceDuration],
             'service_lines.*.photographer_id' => 'nullable|integer|exists:users,id',
             'service_lines.*.editor_id' => 'nullable|integer|exists:users,id',
             'service_lines.*.is_deliverable' => 'nullable|boolean',
@@ -188,9 +188,10 @@ class MultiUnitBookingService
                     ? app(ShootDurationResolver::class)->forServiceItem($current)
                     : $pricing[$priceKey]['duration_minutes']),
                 'contracted_photo_count' => $current ? $current->contracted_photo_count : $pricing[$priceKey]['contracted_photo_count'],
-                'photographer_required' => $service->requiresPhotographer(),
+                'photographer_required' => $current ? $service->requiresPhotographerForBooking($current->created_at) : $service->requiresPhotographer(),
+                'created_at' => $current?->created_at,
                 'scheduled_at' => array_key_exists('scheduled_at', $line) ? $line['scheduled_at'] : ($current ? $current->scheduled_at?->format('Y-m-d H:i:s') : ($data['scheduled_at'] ?? $shoot?->scheduled_at?->format('Y-m-d H:i:s'))),
-                'photographer_id' => $service->requiresPhotographer() ? (array_key_exists('photographer_id', $line) ? $line['photographer_id'] : ($current ? $current->photographer_id : ($data['photographer_id'] ?? $shoot?->photographer_id))) : null,
+                'photographer_id' => ($current ? $service->requiresPhotographerForBooking($current->created_at) : $service->requiresPhotographer()) ? (array_key_exists('photographer_id', $line) ? $line['photographer_id'] : ($current ? $current->photographer_id : ($data['photographer_id'] ?? $shoot?->photographer_id))) : null,
                 'editor_id' => array_key_exists('editor_id', $line) ? $line['editor_id'] : $current?->editor_id,
                 'is_deliverable' => $line['is_deliverable'] ?? $current?->is_deliverable ?? true,
             ];
@@ -203,19 +204,19 @@ class MultiUnitBookingService
             $services[] = $row;
         }
         $removed = $existingLines->reject(fn ($line) => isset($keptIds[$line->id]));
-        $windows = [];
-        foreach ($services as $index => $row) {
-            if (! $row['scheduled_at'] || ! $row['photographer_id']) {
+        $windows = app(ShootDurationResolver::class)->windowsForServices($services);
+        foreach ($windows as $index => $window) {
+            if (! $window['start'] || ! $window['photographer_id']) {
                 continue;
             }
-            $start = \Carbon\Carbon::parse($row['scheduled_at'])->getTimestamp();
-            $end = $start + ((int) $row['duration_minutes']) * 60;
-            foreach ($windows[$row['photographer_id']] ?? [] as $window) {
-                if ($window['unit'] !== $row['unit_client_key'] && $start < $window['end'] && $end > $window['start']) {
-                    $this->fail("service_lines.$index.scheduled_at", 'This photographer has overlapping unit visits. Choose separate times or another photographer.');
+            foreach (array_slice($windows, 0, $index) as $other) {
+                if ($other['photographer_id'] === $window['photographer_id'] && $other['start']
+                    && $window['start'] < $other['start']->copy()->addMinutes($other['minutes'])
+                    && $window['start']->copy()->addMinutes($window['minutes']) > $other['start']) {
+                    $rowIndex = $window['row_indexes'][0];
+                    $this->fail("service_lines.$rowIndex.scheduled_at", 'This photographer has overlapping unit visits. Choose separate times or another photographer.');
                 }
             }
-            $windows[$row['photographer_id']][] = ['unit' => $row['unit_client_key'], 'start' => $start, 'end' => $end];
         }
         foreach ($removed as $line) {
             $this->assertRemovable($line);

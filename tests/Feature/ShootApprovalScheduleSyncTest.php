@@ -154,6 +154,80 @@ class ShootApprovalScheduleSyncTest extends TestCase
         ]);
     }
 
+    #[\PHPUnit\Framework\Attributes\TestWith(['approve', null])]
+    #[\PHPUnit\Framework\Attributes\TestWith(['approve', 'America/New_York'])]
+    #[\PHPUnit\Framework\Attributes\TestWith(['schedule', null])]
+    #[\PHPUnit\Framework\Attributes\TestWith(['schedule', 'America/New_York'])]
+    public function test_approval_and_resume_validate_actual_visits_and_leave_the_gap_free(string $action, ?string $timezone): void
+    {
+        config(['availability.buffer_time_minutes' => 15]);
+        $photographer = User::factory()->photographer()->create();
+        $hour = $timezone ? 13 : 9;
+        $sourceDay = $action === 'schedule' ? '2026-10-05' : '2026-10-06';
+        $shoot = $this->requestedShoot(['photographer_id' => $photographer->id,
+            'status' => $action === 'schedule' ? 'hold_on' : 'requested',
+            'workflow_status' => $action === 'schedule' ? 'on_hold' : 'requested',
+            'timezone' => $timezone, 'scheduled_at' => "$sourceDay $hour:00:00"]);
+        foreach ([$hour => 15, $hour + 5 => 17] as $start => $minutes) {
+            $service = $this->attachService($shoot, "$sourceDay $start:00:00", $photographer->id);
+            $shoot->services()->updateExistingPivot($service->id, ['duration_minutes' => $minutes]);
+        }
+        $noon = $hour + 3;
+        $existing = Shoot::factory()->create(['photographer_id' => $photographer->id,
+            'status' => 'scheduled', 'workflow_status' => 'scheduled', 'timezone' => $timezone,
+            'scheduled_at' => "2026-10-06 $noon:00:00"]);
+        $service = $this->attachService($existing, "2026-10-06 $noon:00:00", $photographer->id);
+        $existing->services()->updateExistingPivot($service->id, ['duration_minutes' => 30]);
+
+        $this->postJson('/api/shoots/'.$shoot->id.'/'.$action, [
+            'scheduled_at' => sprintf('2026-10-06T%02d:00:00', $hour).($timezone ? 'Z' : ''),
+            'skip_availability_check' => false, 'notify_client' => false, 'notify_photographer' => false,
+        ])->assertOk();
+        $this->assertSame('scheduled', $shoot->fresh()->workflow_status);
+        $this->assertSame([15, 17], $shoot->serviceItems()->orderBy('id')->pluck('duration_minutes')->all());
+        $this->assertSame([
+            sprintf('2026-10-06 %02d:00:00', $hour), sprintf('2026-10-06 %02d:00:00', $hour + 5),
+        ], $shoot->serviceItems()->orderBy('id')->get()->map(fn ($item) => $item->scheduled_at->format('Y-m-d H:i:s'))->all());
+    }
+
+    #[\PHPUnit\Framework\Attributes\TestWith(['approve'])]
+    #[\PHPUnit\Framework\Attributes\TestWith(['schedule'])]
+    public function test_approval_and_resume_reject_combined_visit_overrunning_closing(string $action): void
+    {
+        $photographer = User::factory()->photographer()->create();
+        $shoot = $this->requestedShoot(['photographer_id' => $photographer->id,
+            'status' => $action === 'schedule' ? 'hold_on' : 'requested',
+            'workflow_status' => $action === 'schedule' ? 'on_hold' : 'requested',
+            'scheduled_at' => '2026-10-06 17:45:00']);
+        foreach ([1, 2] as $unused) {
+            $service = $this->attachService($shoot, '2026-10-06 17:45:00', $photographer->id);
+            $shoot->services()->updateExistingPivot($service->id, ['duration_minutes' => 15]);
+        }
+        $this->postJson('/api/shoots/'.$shoot->id.'/'.$action, [
+            'scheduled_at' => '2026-10-06T17:45:00',
+            'notify_client' => false, 'notify_photographer' => false,
+        ])->assertUnprocessable()->assertJsonValidationErrors('service_items');
+        $this->assertNotSame('scheduled', $shoot->fresh()->workflow_status);
+    }
+
+    public function test_resume_checks_shifted_secondary_visit_before_writing(): void
+    {
+        $photographer = User::factory()->photographer()->create();
+        $shoot = $this->requestedShoot(['photographer_id' => $photographer->id, 'status' => 'hold_on',
+            'workflow_status' => 'on_hold', 'scheduled_at' => '2026-10-05 09:00:00']);
+        foreach (['09', '14'] as $hour) {
+            $service = $this->attachService($shoot, "2026-10-05 $hour:00:00", $photographer->id);
+            $shoot->services()->updateExistingPivot($service->id, ['duration_minutes' => 15]);
+        }
+        $existing = Shoot::factory()->create(['photographer_id' => $photographer->id, 'timezone' => null,
+            'status' => 'scheduled', 'workflow_status' => 'scheduled', 'scheduled_at' => '2026-10-06 14:00:00']);
+        $this->attachService($existing, '2026-10-06 14:00:00', $photographer->id);
+        $this->postJson('/api/shoots/'.$shoot->id.'/schedule', ['scheduled_at' => '2026-10-06T09:00:00'])
+            ->assertUnprocessable()->assertJsonValidationErrors('service_items');
+        $this->assertSame('2026-10-05 09:00:00', $shoot->fresh()->scheduled_at->format('Y-m-d H:i:s'));
+        $this->assertSame('2026-10-05 14:00:00', $shoot->serviceItems()->orderByDesc('id')->first()->scheduled_at->format('Y-m-d H:i:s'));
+    }
+
     private function requestedShoot(array $attributes = []): Shoot
     {
         return Shoot::factory()->create(array_merge([

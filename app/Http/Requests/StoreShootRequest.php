@@ -114,7 +114,7 @@ class StoreShootRequest extends FormRequest
             'services.*.photographer_id' => 'nullable|exists:users,id',
             'services.*.editor_id' => 'nullable|exists:users,id',
             'services.*.scheduled_at' => 'nullable|date',
-            'services.*.duration_minutes' => 'nullable|integer|min:30|max:240',
+            'services.*.duration_minutes' => ['nullable', 'integer', 'min:0', 'max:300', new \App\Rules\ServiceDuration],
             'services.*.is_deliverable' => 'nullable|boolean',
 
             // Service item details: optional override rows for per-service scheduling/roles.
@@ -123,7 +123,7 @@ class StoreShootRequest extends FormRequest
             'service_items.*.photographer_id' => 'nullable|exists:users,id',
             'service_items.*.editor_id' => 'nullable|exists:users,id',
             'service_items.*.scheduled_at' => 'nullable|date',
-            'service_items.*.duration_minutes' => 'nullable|integer|min:30|max:240',
+            'service_items.*.duration_minutes' => ['nullable', 'integer', 'min:0', 'max:300', new \App\Rules\ServiceDuration],
             'service_items.*.price' => 'nullable|numeric|min:0',
             'service_items.*.quantity' => 'nullable|integer|min:1',
             'service_items.*.is_deliverable' => 'nullable|boolean',

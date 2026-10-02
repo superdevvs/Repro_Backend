@@ -54,11 +54,10 @@ class MultiUnitRescheduleService
             })->all(),
         ];
         $prepared = app(MultiUnitBookingService::class)->prepare($shoot, $changes, $actor);
-        foreach ($prepared['services'] as $line) {
-            if ($line['scheduled_at'] && $line['photographer_id']) {
-                app(ShootMutationSupportService::class)->assertWithinAvailabilityBounds((int) $line['photographer_id'], new \DateTime($line['scheduled_at']), (int) $line['duration_minutes'], $shoot->id);
-            }
-        }
+        app(ShootMutationSupportService::class)->checkServiceItemPhotographerAvailability(
+            $prepared['services'], $shoot->photographer_id, $shoot->id,
+            $hasTimezone ? $timezone : null, false, $target
+        );
         $changes = app(\App\Services\Schedule\ShootScheduleUpdateInput::class)->normalize($shoot, $changes);
         app(ShootEditablePayloadService::class)->apply($shoot, $changes, $actor);
     }

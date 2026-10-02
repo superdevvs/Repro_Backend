@@ -221,10 +221,10 @@ class ShootRescheduleRequestController extends Controller
             'expected_units_revision' => 'nullable|integer|min:0',
             'services' => 'sometimes|array',
             'services.*.id' => 'required|integer|distinct',
-            'services.*.duration_minutes' => 'required|integer|min:30|max:240',
+            'services.*.duration_minutes' => ['required', 'integer', 'min:0', 'max:300', new \App\Rules\ServiceDuration],
             'service_lines' => 'sometimes|array',
             'service_lines.*.shoot_service_id' => 'required|integer|distinct',
-            'service_lines.*.duration_minutes' => 'required|integer|min:30|max:240',
+            'service_lines.*.duration_minutes' => ['required', 'integer', 'min:0', 'max:300', new \App\Rules\ServiceDuration],
         ]);
 
         $user = $request->user();

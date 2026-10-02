@@ -56,9 +56,7 @@ class GoogleCalendarEventPayloadBuilder
 
         $timezone = $this->calendarTimezone($shoot, $user);
         $start = $this->calendarStart($shoot, $scheduledAt, $timezone);
-        // Req 4.1: end = start + booked-window duration. calculateShootDurationFromShoot()
-        // always returns availability.booked_block_duration_minutes (120 / 2h) so calendar
-        // events match availability booked blocks and do not stretch toward max (240).
+        // Calendar events show onsite work only; travel buffer belongs to availability.
         $end = $start->copy()->addMinutes($this->support->calculateShootDurationFromShoot($shoot, $photographerId));
 
         return array_filter([
@@ -87,7 +85,7 @@ class GoogleCalendarEventPayloadBuilder
     public function buildForServiceItem(Shoot $shoot, ShootService $serviceItem, ?User $user = null): array
     {
         $serviceItem->loadMissing(['service', 'unit']);
-        $scheduledAt = $serviceItem->scheduled_at ?: $shoot->scheduled_at;
+        $scheduledAt = app(ShootDurationResolver::class)->scheduledAtForServiceItem($shoot, $serviceItem);
 
         if (!$scheduledAt) {
             throw new RuntimeException('Scheduled service items are required for Google Calendar sync.');
@@ -500,8 +498,7 @@ class GoogleCalendarEventPayloadBuilder
 
     protected function calculateServiceItemDuration(ShootService $serviceItem): int
     {
-        // Product rule: GCal service-item events match availability booked blocks (2h / 120).
-        return (int) config('availability.booked_block_duration_minutes', 120);
+        return app(ShootDurationResolver::class)->forServiceItem($serviceItem);
     }
 
 

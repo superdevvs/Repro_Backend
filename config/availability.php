@@ -12,8 +12,8 @@ return [
 
     // Buffer time in minutes between consecutive shoots
     // This accounts for travel time and prevents back-to-back bookings
-    // Defaults to a 30-minute gap between bookings
-    'buffer_time_minutes' => (int) env('PHOTOGRAPHER_BUFFER_TIME', 30),
+    // Travel between distinct bookings keeps at least a 15-minute gap.
+    'buffer_time_minutes' => max(15, (int) env('PHOTOGRAPHER_BUFFER_TIME', 15)),
 
     /*
     |--------------------------------------------------------------------------
@@ -39,16 +39,11 @@ return [
     // Used by ShootDurationResolver, Service::getShootDurationMinutes, booking_duration_defaults.
     'default_shoot_duration_minutes' => (int) env('DEFAULT_SHOOT_DURATION', 60),
 
-    // Fixed availability booked-block / conflict / Google Calendar window (minutes).
-    // MUST stay independent of default_shoot_duration_minutes so scheduling can be 60
-    // without shrinking photographer availability occupancy to 1h.
-    'booked_block_duration_minutes' => (int) env('AVAILABILITY_BOOKED_BLOCK_DURATION', 120),
-
-    // Minimum shoot duration in minutes
-    'min_shoot_duration_minutes' => 30,
+    // Manual duration slider/custom values; catalogue defaults remain service-specific.
+    'min_shoot_duration_minutes' => 5,
 
     // Maximum shoot duration in minutes (for safety cap)
-    'max_shoot_duration_minutes' => 240,
+    'max_shoot_duration_minutes' => 300,
 
     /*
     |--------------------------------------------------------------------------

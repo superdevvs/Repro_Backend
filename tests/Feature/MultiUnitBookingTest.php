@@ -54,9 +54,9 @@ class MultiUnitBookingTest extends TestCase
     {
         config(['availability.default_shoot_duration_minutes' => 60]);
         $payload = $this->payload(1);
-        $payload['service_lines'][0]['duration_minutes'] = 30;
+        $payload['service_lines'][0]['duration_minutes'] = 17;
         $this->persist($payload);
-        $this->assertSame(30, $this->shoot->serviceItems()->sole()->duration_minutes);
+        $this->assertSame(17, $this->shoot->serviceItems()->sole()->duration_minutes);
 
         $edit = $this->existingPayload();
         $edit['service_lines'][0]['duration_minutes'] = 90;
@@ -68,7 +68,7 @@ class MultiUnitBookingTest extends TestCase
         $this->shoot->refresh();
         $this->assertSame(90, $this->shoot->serviceItems()->sole()->duration_minutes);
         $edit = $this->existingPayload();
-        $edit['service_lines'][0]['duration_minutes'] = 241;
+        $edit['service_lines'][0]['duration_minutes'] = 301;
         $this->patchJson($endpoint, $edit)->assertUnprocessable()->assertJsonValidationErrors('service_lines.0.duration_minutes');
         $this->assertSame(90, $this->shoot->serviceItems()->sole()->duration_minutes);
     }
@@ -326,8 +326,55 @@ class MultiUnitBookingTest extends TestCase
             $line['scheduled_at'] = '2026-10-05T09:00:00-04:00';
         }
         unset($line);
+        $payload['service_lines'][1]['scheduled_at'] = '2026-10-05T09:15:00-04:00';
         $this->expectException(ValidationException::class);
         $this->persist($payload);
+    }
+
+    public function test_same_start_units_form_one_visit_with_sequential_calendar_events_and_one_buffer(): void
+    {
+        config(['availability.buffer_time_minutes' => 15, 'app.timezone' => 'UTC']);
+        $photographer = User::factory()->photographer()->create(['timezone' => 'America/New_York']);
+        $this->shoot->update(['timezone' => 'America/New_York', 'status' => 'scheduled', 'workflow_status' => 'scheduled']);
+        $payload = $this->payload();
+        foreach ($payload['service_lines'] as &$line) {
+            $line['photographer_id'] = $photographer->id;
+            $line['scheduled_at'] = '2026-10-05 13:00:00';
+            $line['duration_minutes'] = 15;
+        }
+        unset($line);
+        $this->persist($payload);
+        $items = $this->shoot->serviceItems()->orderBy('id')->get();
+        $before = $items->map(fn ($item) => $item->getRawOriginal())->all();
+        $builder = app(\App\Services\GoogleCalendar\GoogleCalendarEventPayloadBuilder::class);
+        $first = $builder->buildForServiceItem($this->shoot, $items[0], $photographer);
+        $second = $builder->buildForServiceItem($this->shoot, $items[1], $photographer);
+        $this->assertSame('2026-10-05T09:00:00-04:00', $first['start']['dateTime']);
+        $this->assertSame('2026-10-05T09:15:00-04:00', $first['end']['dateTime']);
+        $this->assertSame($first['end'], $second['start']);
+        $this->assertSame('2026-10-05T09:30:00-04:00', $second['end']['dateTime']);
+        $availability = app(\App\Services\PhotographerAvailabilityService::class);
+        $booked = $availability->getBookedSlots($photographer->id, \Carbon\Carbon::parse('2026-10-05'));
+        $this->assertCount(1, $booked);
+        $this->assertSame('09:30', $booked[0]['end_time']);
+        $this->assertFalse($availability->isAvailable($photographer->id, \Carbon\Carbon::parse('2026-10-05T09:44:00-04:00'), 15, null, 'America/New_York'));
+        $this->assertTrue($availability->isAvailable($photographer->id, \Carbon\Carbon::parse('2026-10-05T09:45:00-04:00'), 15, null, 'America/New_York'));
+        $this->assertSame($before, $this->shoot->serviceItems()->orderBy('id')->get()->map(fn ($item) => $item->getRawOriginal())->all());
+    }
+
+    public function test_grouped_unit_duration_must_fit_working_hours_even_when_individual_lines_fit(): void
+    {
+        $photographer = User::factory()->photographer()->create();
+        $payload = array_merge($this->payload(), ['client_id' => $this->client->id,
+            'address' => '400 Main Street', 'city' => 'Arlington', 'state' => 'VA', 'zip' => '22201',
+            'skip_availability_check' => true]);
+        foreach ($payload['service_lines'] as &$line) {
+            $line['photographer_id'] = $photographer->id;
+            $line['scheduled_at'] = '2026-10-05 17:45:00';
+            $line['duration_minutes'] = 15;
+        }
+        unset($line);
+        $this->postJson('/api/shoots', $payload)->assertUnprocessable()->assertJsonValidationErrors('service_items');
     }
 
     public function test_non_photographer_assignment_is_rejected_and_admin_creation_enforces_each_unit_hours(): void

@@ -7,6 +7,8 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
 class Service extends Model
 {
@@ -17,15 +19,15 @@ class Service extends Model
     public function getBookingDurationDefaultsAttribute(): array
     {
         return [
-            'default_minutes' => (int) config('availability.default_shoot_duration_minutes', 60),
-            'min_minutes' => (int) config('availability.min_shoot_duration_minutes', 30),
-            'max_minutes' => (int) config('availability.max_shoot_duration_minutes', 240),
+            'default_minutes' => $this->getShootDurationMinutes(),
+            'min_minutes' => (int) config('availability.min_shoot_duration_minutes', 5),
+            'max_minutes' => (int) config('availability.max_shoot_duration_minutes', 300),
         ];
     }
 
     public function getShootDurationMinutesAttribute($value): int
     {
-        return (int) ($value ?? config('availability.default_shoot_duration_minutes', 60));
+        return $this->getShootDurationMinutes();
     }
 
     protected $fillable = [
@@ -179,6 +181,37 @@ class Service extends Model
     public function requiresPhotographer(): bool
     {
         return (bool) $this->getAttribute('photographer_required');
+    }
+
+    /** Preserve the pre-policy occupation of already-booked fee rows only. */
+    public function requiresPhotographerForBooking(mixed $createdAt = null): bool
+    {
+        if ($this->requiresPhotographer() || ! $createdAt) {
+            return $this->requiresPhotographer();
+        }
+        $snapshot = $this->durationPolicySnapshot('services', (int) $this->id);
+        if (! $snapshot || empty($snapshot['before']['photographer_required'])) {
+            return false;
+        }
+        try {
+            return \Carbon\Carbon::parse($createdAt)->lte(\Carbon\Carbon::parse($snapshot['applied_at']));
+        } catch (\Throwable) {
+            return false;
+        }
+    }
+
+    private function durationPolicySnapshot(string $table, int $id): ?array
+    {
+        if (! $id || ! Schema::hasTable('service_duration_policy_snapshots')) {
+            return null;
+        }
+        $snapshot = DB::table('service_duration_policy_snapshots')
+            ->where('source_table', $table)->where('source_id', $id)->first();
+
+        return $snapshot ? [
+            'before' => json_decode($snapshot->before_json, true, 512, JSON_THROW_ON_ERROR),
+            'applied_at' => $snapshot->applied_at,
+        ] : null;
     }
 
     public function category()
@@ -363,9 +396,19 @@ class Service extends Model
      */
     public function getShootDurationMinutes(?int $sqft = null, bool $useCatalogDefault = true): int
     {
-        $defaultDurationMinutes = config('availability.default_shoot_duration_minutes', 60);
-        $minDurationMinutes = config('availability.min_shoot_duration_minutes', 30);
-        $maxDurationMinutes = config('availability.max_shoot_duration_minutes', 240);
+        // Editing, enhancements and fees consume no photographer time, even when
+        // an older catalogue row still carries a nonzero duration.
+        $legacyService = ! $useCatalogDefault
+            ? $this->durationPolicySnapshot('services', (int) $this->id)
+            : null;
+        $requiresPhotographer = $legacyService['before']['photographer_required'] ?? $this->requiresPhotographer();
+        if (! $requiresPhotographer) {
+            return 0;
+        }
+
+        $defaultDurationMinutes = (int) config('availability.default_shoot_duration_minutes', 60);
+        $minDurationMinutes = (int) config('availability.min_shoot_duration_minutes', 5);
+        $maxDurationMinutes = (int) config('availability.max_shoot_duration_minutes', 300);
 
         // A matching property tier is more specific than the catalogue's fallback.
         if ($this->pricing_type === 'variable' && $sqft !== null) {
@@ -374,8 +417,18 @@ class Service extends Model
                 ->where('sqft_to', '>=', $sqft)
                 ->first();
 
-            if ($range && $range->duration) {
-                return min(max((int) $range->duration, $minDurationMinutes), $maxDurationMinutes);
+            if ($range) {
+                $legacyRange = ! $useCatalogDefault
+                    ? $this->durationPolicySnapshot('service_sqft_ranges', (int) $range->id)
+                    : null;
+                $duration = $legacyRange ? $legacyRange['before']['duration'] : $range->duration;
+                if (is_numeric($duration) && (int) $duration > 0) {
+                    // NULL legacy booking rows used the old tier bounds. Preserve
+                    // that result when this policy changes the catalogue tier.
+                    $minimum = $legacyRange ? 30 : $minDurationMinutes;
+                    $maximum = $legacyRange ? 240 : $maxDurationMinutes;
+                    return min(max((int) $duration, $minimum), $maximum);
+                }
             }
         }
 

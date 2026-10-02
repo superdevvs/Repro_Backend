@@ -21,7 +21,6 @@ class GoogleCalendarEventTimezoneTest extends TestCase
         config([
             'app.timezone' => 'UTC',
             'availability.default_shoot_duration_minutes' => 60,
-            'availability.booked_block_duration_minutes' => 120,
         ]);
     }
 
@@ -179,7 +178,7 @@ class GoogleCalendarEventTimezoneTest extends TestCase
 
     private function serviceItem(?string $scheduledAt, string $name = 'Photography'): ShootService
     {
-        $item = new ShootService(['scheduled_at' => $scheduledAt]);
+        $item = new ShootService(['scheduled_at' => $scheduledAt, 'duration_minutes' => 120]);
         $service = new Service(['name' => $name]);
         $service->setAttribute('shoot_duration_minutes', 120);
         $item->setRelation('service', $service);

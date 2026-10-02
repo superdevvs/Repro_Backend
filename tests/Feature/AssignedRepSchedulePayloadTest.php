@@ -362,4 +362,21 @@ class AssignedRepSchedulePayloadTest extends TestCase
         }
     }
 
+
+    public function test_discount_fields_are_kept_for_assigned_rep_overview_save(): void
+    {
+        [$shoot, $payload] = $this->fixture();
+        $payload['discount_type'] = 'percent';
+        $payload['discount_value'] = 15;
+        $payload['discount_amount'] = 29.85;
+        $payload['notes'] = 'echo';
+
+        $normalized = app(AssignedRepSchedulePayload::class)->normalize($shoot, $payload);
+
+        $this->assertSame('percent', $normalized['discount_type']);
+        $this->assertSame(15, $normalized['discount_value']);
+        $this->assertSame(29.85, $normalized['discount_amount']);
+        $this->assertArrayNotHasKey('notes', $normalized);
+    }
+
 }

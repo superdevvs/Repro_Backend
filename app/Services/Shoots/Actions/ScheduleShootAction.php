@@ -40,34 +40,33 @@ class ScheduleShootAction
             $this->resumeUnitPlan($shoot, $scheduledAt, $validated, $user);
         }
         $photographerId = $validated['photographer_id'] ?? $shoot->photographer_id;
-        if (! $isMultiUnit && $photographerId) {
-            $carbonDate = \Carbon\Carbon::parse($scheduledAt);
-            \Illuminate\Support\Facades\DB::table('shoots')
-                ->where('photographer_id', $photographerId)
-                ->whereDate('scheduled_at', $carbonDate->toDateString())
-                ->where('id', '!=', $shoot->id)
-                ->lockForUpdate()
-                ->get();
+        if (! $isMultiUnit) {
+            if ($photographerId) {
+                $carbonDate = \Carbon\Carbon::parse($scheduledAt);
+                \Illuminate\Support\Facades\DB::table('shoots')
+                    ->where('photographer_id', $photographerId)
+                    ->whereDate('scheduled_at', $carbonDate->toDateString())
+                    ->where('id', '!=', $shoot->id)
+                    ->lockForUpdate()
+                    ->get();
+            }
 
-            $durationMinutes = $this->support->calculateShootDurationFromShoot($shoot);
-            $this->support->checkPhotographerAvailability($photographerId, $scheduledAt, $durationMinutes, $shoot->id);
+            // Validate the exact times that alignment will save, preserving gaps
+            // between independently timed visits and each booked duration.
+            $targetServices = $this->plannedAvailabilityServices($shoot, $scheduledAt);
+            if ($targetServices === [] && $photographerId) {
+                $this->support->assertWithinAvailabilityBounds(
+                    (int) $photographerId, $scheduledAt,
+                    app(\App\Services\Shoots\ShootDurationResolver::class)->defaultMinutes(),
+                    $shoot->id, false, $shoot->timezone
+                );
+            }
+            $this->support->checkServiceItemPhotographerAvailability(
+                $targetServices, $photographerId ? (int) $photographerId : null,
+                $shoot->id, $shoot->timezone, false, $scheduledAt
+            );
 
-            // Non-deliverable lines (fees, holds, etc.) must not block resume/schedule
-            // availability — they do not consume photographer calendar time.
-            $targetServices = $shoot->services->map(function ($service) use ($scheduledAt, $shoot) {
-                return [
-                    'id' => (int) $service->id,
-                    'photographer_id' => $service->pivot?->photographer_id,
-                    'scheduled_at' => $service->pivot?->scheduled_at ?: $scheduledAt->format('Y-m-d H:i:s'),
-                    'price' => $service->pivot?->price,
-                    'quantity' => $service->pivot?->quantity ?? 1,
-                    'is_deliverable' => (bool) ($service->pivot?->is_deliverable ?? true),
-                    'duration_minutes' => $service->pivot?->duration_minutes ?? $service->getShootDurationMinutes($shoot->propertySqft(), false),
-                ];
-            })->values()->all();
-            $this->support->checkServiceItemPhotographerAvailability($targetServices, (int) $photographerId, $shoot->id);
-
-            if ($photographerId !== $shoot->photographer_id) {
+            if ($photographerId && $photographerId !== $shoot->photographer_id) {
                 $shoot->photographer_id = $photographerId;
                 $shoot->save();
             }
@@ -242,10 +241,39 @@ class ScheduleShootAction
                 }
                 $move = new \App\Models\ShootRescheduleRequest(['requested_date' => $local->toDateString(), 'requested_time' => $local->format('H:i'), 'units_revision' => $current->units_revision]);
                 app(\App\Services\Shoots\MultiUnitRescheduleService::class)->apply($current, $move, $user);
+            } else {
+                $this->support->checkServiceItemPhotographerAvailability(
+                    $this->plannedAvailabilityServices($current, $scheduledAt, false),
+                    $current->photographer_id, $current->id, $current->timezone, false, $scheduledAt
+                );
             }
             $this->workflowService->schedule($current, $current->scheduled_at ?? $scheduledAt, $user);
         }), 'resume-unit-visit-plan');
         $shoot->refresh();
+    }
+
+    private function plannedAvailabilityServices(Shoot $shoot, \DateTimeInterface $scheduledAt, bool $align = true): array
+    {
+        $shoot->loadMissing(['serviceItems.service', 'serviceItems.unit']);
+        $planned = $align ? app(\App\Services\Schedule\ShootScheduleFromServices::class)
+            ->plannedBookingSchedules($shoot, \Carbon\Carbon::instance($scheduledAt)) : [];
+        $durations = app(\App\Services\Shoots\ShootDurationResolver::class);
+
+        return $shoot->serviceItems->map(function ($item) use ($shoot, $planned, $durations) {
+            $time = $planned[$item->id] ?? $item->scheduled_at;
+
+            return [
+                'id' => (int) $item->service_id,
+                'photographer_id' => $item->photographer_id,
+                'scheduled_at' => $time ? ($shoot->timezone
+                    ? $time->copy()->setTimezone($shoot->timezone)->toIso8601String()
+                    : $time->format('Y-m-d H:i:s')) : null,
+                'duration_minutes' => $durations->forServiceItem($item),
+                'is_deliverable' => $item->is_deliverable,
+                'created_at' => $item->created_at,
+                'workflow_status' => isset($planned[$item->id]) ? 'scheduled' : $item->workflow_status,
+            ];
+        })->all();
     }
 
     /**

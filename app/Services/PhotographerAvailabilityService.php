@@ -6,7 +6,7 @@ use App\Models\PhotographerAvailability;
 use App\Models\Shoot;
 use App\Models\ShootService;
 use App\Models\User;
-use App\Services\Schedule\ScheduleInstantResolver;
+use App\Services\Shoots\ShootDurationResolver;
 use App\Services\ShootWorkflowService;
 use Carbon\Carbon;
 use Illuminate\Support\Collection;
@@ -111,170 +111,93 @@ class PhotographerAvailabilityService
      */
     protected function getBlockedTimes(int $photographerId, Carbon $date): array
     {
-        $resolver = app(ScheduleInstantResolver::class);
-        $dayStartUtc = $date->copy()->startOfDay()->subDay();
-        $dayEndUtc = $date->copy()->endOfDay()->addDay();
-        $targetDate = $date->toDateString();
-
-        $shoots = Shoot::with(['photographer', 'services'])
-            ->where('photographer_id', $photographerId)
-            ->whereBetween('scheduled_at', [$dayStartUtc->toDateTimeString(), $dayEndUtc->toDateTimeString()])
-            ->whereIn('status', [
-                ShootWorkflowService::STATUS_SCHEDULED,
-                ShootWorkflowService::STATUS_IN_PROGRESS,
-                ShootWorkflowService::STATUS_EDITING,
-            ])
-            ->whereNotNull('scheduled_at')
-            ->get();
+        $buffer = (int) config('availability.buffer_time_minutes', 15);
 
         $blocked = [];
-        foreach ($shoots as $shoot) {
-            $scheduledAt = $resolver->forShoot($shoot);
-            if (! $scheduledAt || $scheduledAt->toDateString() !== $targetDate) {
+        foreach ($this->bookedAppointments($photographerId, $date) as $window) {
+            if ($window['start']->toDateString() !== $date->toDateString()) {
                 continue;
             }
-            // Use actual shoot duration
-            $durationMinutes = $this->calculateShootDuration($shoot);
-            $endTime = $scheduledAt->copy()->addMinutes($durationMinutes);
-
-            $blocked[] = [
-                'start' => $scheduledAt->format('H:i'),
-                'end' => $endTime->format('H:i'),
-                'shoot_id' => $shoot->id,
-            ];
+            $startMinutes = $window['start']->hour * 60 + $window['start']->minute;
+            $start = max(0, $startMinutes - $buffer);
+            $end = min(1440, $startMinutes + $window['minutes'] + $buffer);
+            $blocked[] = ['start' => sprintf('%02d:%02d', intdiv($start, 60), $start % 60),
+                'end' => sprintf('%02d:%02d', intdiv($end, 60), $end % 60), 'shoot_id' => $window['shoot']->id];
         }
-
-        $serviceItems = ShootService::with(['shoot.photographer', 'service', 'photographer'])
-            ->where('photographer_id', $photographerId)
-            ->whereBetween('scheduled_at', [$dayStartUtc->toDateTimeString(), $dayEndUtc->toDateTimeString()])
-            ->whereIn('workflow_status', [
-                ShootService::WORKFLOW_SCHEDULED,
-                ShootService::WORKFLOW_IN_PROGRESS,
-                ShootService::WORKFLOW_READY,
-            ])
-            ->whereNotNull('scheduled_at')
-            ->whereHas('shoot', function ($query) {
-                $query->whereNotIn('status', [
-                    Shoot::STATUS_CANCELLED,
-                    Shoot::STATUS_DECLINED,
-                    Shoot::STATUS_ON_HOLD,
-                ]);
-            })
-            ->get();
-
-        foreach ($serviceItems as $item) {
-            $shoot = $item->shoot;
-            if (! $shoot) {
-                continue;
-            }
-            $scheduledAt = $resolver->forServiceItem($shoot, $item);
-            if (! $scheduledAt || $scheduledAt->toDateString() !== $targetDate) {
-                continue;
-            }
-            $endTime = $scheduledAt->copy()->addMinutes($this->calculateServiceItemDuration($item));
-
-            $blocked[] = [
-                'start' => $scheduledAt->format('H:i'),
-                'end' => $endTime->format('H:i'),
-                'shoot_id' => $item->shoot_id,
-                'shoot_service_id' => $item->id,
-            ];
-        }
-
-        usort($blocked, fn ($a, $b) => strcmp($a['start'], $b['start']));
 
         return $blocked;
     }
 
-    /**
-     * Get booked slots (existing shoots) for a specific day
-     */
+    /** Actual onsite appointments; the inter-visit buffer is not displayed as work. */
     public function getBookedSlots(int $photographerId, Carbon $date): array
     {
-        $resolver = app(ScheduleInstantResolver::class);
-        $dayStartUtc = $date->copy()->startOfDay()->subDay();
-        $dayEndUtc = $date->copy()->endOfDay()->addDay();
-        $targetDate = $date->toDateString();
+        return $this->getBookedSlotsForRange($photographerId, $date, $date);
+    }
 
-        $shoots = Shoot::with(['photographer', 'services'])
-            ->where('photographer_id', $photographerId)
-            ->whereBetween('scheduled_at', [$dayStartUtc->toDateTimeString(), $dayEndUtc->toDateTimeString()])
-            ->whereIn('status', [
-                ShootWorkflowService::STATUS_SCHEDULED,
-                ShootWorkflowService::STATUS_IN_PROGRESS,
-                ShootWorkflowService::STATUS_EDITING,
-            ])
-            ->whereNotNull('scheduled_at')
-            ->orderBy('scheduled_at')
-            ->get();
+    public function getBookedSlotsForRange(int $photographerId, Carbon $from, Carbon $to): array
+    {
+        $slots = [];
+        foreach ($this->bookedAppointments($photographerId, $from, null, $to) as $window) {
+            $start = $window['start'];
+            if ($start->toDateString() < $from->toDateString() || $start->toDateString() > $to->toDateString()) {
+                continue;
+            }
+            $itemId = $window['row_indexes'][0] ?? null;
+            $slots[] = [
+                'id' => $itemId ? 'service_item_'.$itemId : $window['shoot']->id,
+                'photographer_id' => $photographerId,
+                'date' => $start->toDateString(),
+                'day_of_week' => strtolower($start->format('l')),
+                'start_time' => $start->format('H:i'),
+                'end_time' => $start->copy()->addMinutes($window['minutes'])->format('H:i'),
+                'status' => 'booked',
+                'shoot_id' => $window['shoot']->id,
+                'shoot_service_id' => $itemId,
+                'duration_minutes' => $window['minutes'],
+            ];
+        }
+        usort($slots, fn ($a, $b) => [$a['date'], $a['start_time']] <=> [$b['date'], $b['start_time']]);
 
-        $bookedSlots = [];
+        return $slots;
+    }
+
+    /** Fetch once, then group only work assigned to this photographer at the same instant. */
+    protected function bookedAppointments(int $photographerId, Carbon $date, ?int $excludeShootId = null, ?Carbon $to = null): array
+    {
+        $range = [$date->copy()->startOfDay()->subDay()->utc()->toDateTimeString(),
+            ($to ?? $date)->copy()->endOfDay()->addDay()->utc()->toDateTimeString()];
+        $shoots = Shoot::with(['photographer', 'services', 'serviceItems.service', 'serviceItems.unit'])
+            ->whereNotIn('status', [Shoot::STATUS_CANCELLED, Shoot::STATUS_DECLINED, Shoot::STATUS_ON_HOLD])
+            ->when($excludeShootId, fn ($query) => $query->where('id', '!=', $excludeShootId))
+            ->where(function ($query) use ($photographerId, $range) {
+                $query->where(function ($parent) use ($photographerId, $range) {
+                    $parent->where('photographer_id', $photographerId)->whereBetween('scheduled_at', $range)
+                        ->whereIn('status', [ShootWorkflowService::STATUS_SCHEDULED,
+                            ShootWorkflowService::STATUS_IN_PROGRESS, ShootWorkflowService::STATUS_EDITING]);
+                })->orWhereHas('serviceItems', function ($items) use ($photographerId, $range) {
+                    $items->whereBetween('scheduled_at', $range)
+                        ->whereIn('workflow_status', [ShootService::WORKFLOW_SCHEDULED,
+                            ShootService::WORKFLOW_IN_PROGRESS, ShootService::WORKFLOW_READY])
+                        ->where(function ($assigned) use ($photographerId) {
+                            $assigned->where('photographer_id', $photographerId)
+                                ->orWhere(function ($inherited) use ($photographerId) {
+                                    $inherited->whereNull('photographer_id')
+                                        ->whereHas('shoot', fn ($shoot) => $shoot->where('photographer_id', $photographerId));
+                                });
+                        });
+                });
+            })->get();
+        $windows = [];
         foreach ($shoots as $shoot) {
-            $scheduledAt = $resolver->forShoot($shoot);
-            if (! $scheduledAt || $scheduledAt->toDateString() !== $targetDate) {
-                continue;
+            foreach (app(ShootDurationResolver::class)->windowsForShoot($shoot, $photographerId) as $window) {
+                if ($window['start'] && $window['minutes'] > 0) {
+                    $windows[] = $window + ['shoot' => $shoot];
+                }
             }
-            $durationMinutes = $this->calculateShootDuration($shoot);
-            $endTime = $scheduledAt->copy()->addMinutes($durationMinutes);
-
-            $bookedSlots[] = [
-                'id' => $shoot->id,
-                'photographer_id' => $photographerId,
-                'date' => $targetDate,
-                'day_of_week' => strtolower($scheduledAt->format('l')),
-                'start_time' => $scheduledAt->format('H:i'),
-                'end_time' => $endTime->format('H:i'),
-                'status' => 'booked',
-                'shoot_id' => $shoot->id,
-            ];
         }
+        usort($windows, fn ($a, $b) => $a['start']->getTimestamp() <=> $b['start']->getTimestamp());
 
-        $serviceItems = ShootService::with(['shoot.photographer', 'service', 'photographer'])
-            ->where('photographer_id', $photographerId)
-            ->whereBetween('scheduled_at', [$dayStartUtc->toDateTimeString(), $dayEndUtc->toDateTimeString()])
-            ->whereIn('workflow_status', [
-                ShootService::WORKFLOW_SCHEDULED,
-                ShootService::WORKFLOW_IN_PROGRESS,
-                ShootService::WORKFLOW_READY,
-            ])
-            ->whereNotNull('scheduled_at')
-            ->whereHas('shoot', function ($query) {
-                $query->whereNotIn('status', [
-                    Shoot::STATUS_CANCELLED,
-                    Shoot::STATUS_DECLINED,
-                    Shoot::STATUS_ON_HOLD,
-                ]);
-            })
-            ->orderBy('scheduled_at')
-            ->get();
-
-        foreach ($serviceItems as $item) {
-            $shoot = $item->shoot;
-            if (! $shoot) {
-                continue;
-            }
-            $scheduledAt = $resolver->forServiceItem($shoot, $item);
-            if (! $scheduledAt || $scheduledAt->toDateString() !== $targetDate) {
-                continue;
-            }
-            $endTime = $scheduledAt->copy()->addMinutes($this->calculateServiceItemDuration($item));
-
-            $bookedSlots[] = [
-                'id' => 'service_item_' . $item->id,
-                'photographer_id' => $photographerId,
-                'date' => $targetDate,
-                'day_of_week' => strtolower($scheduledAt->format('l')),
-                'start_time' => $scheduledAt->format('H:i'),
-                'end_time' => $endTime->format('H:i'),
-                'status' => 'booked',
-                'shoot_id' => $item->shoot_id,
-                'shoot_service_id' => $item->id,
-            ];
-        }
-
-        usort($bookedSlots, fn ($a, $b) => strcmp($a['start_time'], $b['start_time']));
-
-        return $bookedSlots;
+        return $windows;
     }
 
     /**
@@ -342,6 +265,7 @@ class PhotographerAvailabilityService
         
         // Calculate end time of requested slot
         $requestEndTime = $datetimeLocal->copy()->addMinutes($durationMinutes);
+
         
         // Log availability check
         $logContext = [
@@ -405,7 +329,7 @@ class PhotographerAvailabilityService
             ? $this->resolveRequestInstant($datetimeLocal, $timezone)
             : $datetimeLocal->copy()->utc();
         $requestEnd = $requestStart->copy()->addMinutes($durationMinutes);
-        $bufferMinutes = (int) config('availability.buffer_time_minutes', 30);
+        $bufferMinutes = (int) config('availability.buffer_time_minutes', 15);
         if ($timezone) {
             $localRequest = $requestStart->copy()->setTimezone($this->validTimezoneOrUtc($timezone));
             $date = $localRequest->copy()->startOfDay();
@@ -413,6 +337,10 @@ class PhotographerAvailabilityService
             $dayOfWeek = strtolower($localRequest->format('l'));
             $requestEndTime = $localRequest->copy()->addMinutes($durationMinutes);
             $datetimeLocal = $localRequest;
+        }
+
+        if ($requestEndTime->toDateString() !== $datetimeLocal->toDateString()) {
+            return false;
         }
 
         if ($this->hasBookingConflict($photographerId, $date, $requestStart, $requestEnd, $excludeShootId, $timezone)) {
@@ -472,42 +400,7 @@ class PhotographerAvailabilityService
                     break;
                 }
             }
-            
-            // If no full match, check if the start time is within a slot
-            // This matches the frontend behavior - it only checks if start time is available
-            if (!$available) {
-                foreach ($availableSlots as $slot) {
-                    $slotStart = Carbon::parse($slot->start_time)->format('H:i');
-                    $slotEnd = Carbon::parse($slot->end_time)->format('H:i');
-                    
-                    // Check if requested start time falls within the slot (inclusive)
-                    // This matches frontend logic which only checks start time
-                    if ($slotStart <= $time && $time <= $slotEnd) {
-                        $available = true;
-                        Log::info('Availability check: allowing booking - start time within slot', array_merge($logContext, [
-                            'slot_start' => $slotStart,
-                            'slot_end' => $slotEnd,
-                            'requested_start' => $time,
-                            'note' => 'Start time is within available slot (matches frontend check)',
-                        ]));
-                        break;
-                    }
-                }
-            }
-            
-            // Log which slots were checked for debugging
-            Log::info('Availability check: checked slots', array_merge($logContext, [
-                'available_slots_count' => $availableSlots->count(),
-                'slots' => $availableSlots->map(fn($s) => [
-                    'start' => $s->start_time,
-                    'end' => $s->end_time,
-                    'date' => $s->date,
-                    'day_of_week' => $s->day_of_week,
-                ])->toArray(),
-                'requested_time' => $time,
-                'requested_end_time' => $requestEndTime->format('H:i'),
-                'result' => $available,
-            ]));
+
         }
 
         // Log final result
@@ -572,27 +465,6 @@ class PhotographerAvailabilityService
     }
 
     /**
-     * Availability booked-block / conflict duration in minutes.
-     * Always the booked-block duration (2h / 120); never stretched from services.
-     *
-     * @param Shoot $shoot
-     * @return int Duration in minutes
-     */
-    protected function calculateShootDuration(Shoot $shoot): int
-    {
-        // Product rule: availability booked blocks / conflict windows are always
-        // the booked-block duration (2h / 120). Do not stretch from service durations
-        // up to max_shoot_duration_minutes (or inflated multi-service envelopes).
-        return (int) config('availability.booked_block_duration_minutes', 120);
-    }
-
-    protected function calculateServiceItemDuration(ShootService $item): int
-    {
-        // Same product rule for service-item booked blocks on the availability calendar.
-        return (int) config('availability.booked_block_duration_minutes', 120);
-    }
-
-    /**
      * Assert that the requested schedule falls within the photographer's
      * effective availability bounds, throwing a structured ValidationException
      * (HTTP 422 contract) keyed on `start_time` when it does not.
@@ -651,6 +523,10 @@ class PhotographerAvailabilityService
         $requestEndTime = $datetimeLocal->copy()->addMinutes($durationMinutes);
         $requestStartUtc = $datetimeLocal->copy()->utc();
         $requestEndUtc = $requestEndTime->copy()->utc();
+
+        if ($requestEndTime->toDateString() !== $datetimeLocal->toDateString()) {
+            throw $this->outsideHoursException($photographerId, $date, $dayOfWeek, $datetimeLocal);
+        }
 
         // 1) Specific-date or recurring unavailability blocks => outside available hours.
         //    This is part of the configured-hours bound and is always enforced.
@@ -723,99 +599,19 @@ class PhotographerAvailabilityService
         ?int $excludeShootId,
         ?string $timezone = null
     ): bool {
-        $bufferMinutes = (int) config('availability.buffer_time_minutes', 30);
-        $resolver = app(ScheduleInstantResolver::class);
-        // Day-window anchor: explicit booking tz, else the request's current date tz, else app.
-        $windowTz = $this->validTimezoneOrUtc($timezone ?: $date->timezoneName);
-
-        // Broad UTC window so local-day bookings that cross the UTC date line are included.
-        $dayStartUtc = Carbon::parse($date->toDateString(), $windowTz)
-            ->startOfDay()
-            ->subDay()
-            ->utc();
-        $dayEndUtc = Carbon::parse($date->toDateString(), $windowTz)
-            ->endOfDay()
-            ->addDay()
-            ->utc();
-
-        $conflictingShoots = Shoot::with(['photographer', 'services'])
-            ->where('photographer_id', $photographerId)
-            ->whereNotNull('scheduled_at')
-            ->whereBetween('scheduled_at', [$dayStartUtc->toDateTimeString(), $dayEndUtc->toDateTimeString()])
-            ->whereIn('status', [
-                ShootWorkflowService::STATUS_SCHEDULED,
-                ShootWorkflowService::STATUS_IN_PROGRESS,
-                ShootWorkflowService::STATUS_EDITING,
-            ])
-            ->when($excludeShootId, function ($query) use ($excludeShootId) {
-                $query->where('id', '!=', $excludeShootId);
-            })
-            ->get();
-
-        foreach ($conflictingShoots as $shoot) {
-            // Requests without a timezone are submitted as local wall clocks.
-            // Compare them with unzoned stored bookings on that same clock; the
-            // photographer profile zone must not shift only the stored side.
-            $shootStart = ! $timezone && trim((string) $shoot->timezone) === ''
-                ? Carbon::instance($shoot->scheduled_at)->copy()->utc()
-                : ($resolver->forShoot($shoot)?->utc()
-                    ?? Carbon::parse($shoot->scheduled_at)->utc());
-            $localDate = $shootStart->copy()->setTimezone($this->validTimezoneOrUtc($shoot->timezone ?: $timezone ?: $windowTz))->toDateString();
-            if ($localDate !== $date->toDateString()) {
-                continue;
+        $bufferMinutes = (int) config('availability.buffer_time_minutes', 15);
+        foreach ($this->bookedAppointments($photographerId, $date, $excludeShootId) as $window) {
+            $start = $window['start']->copy();
+            // Unzoned legacy requests and bookings share their stored wall clock.
+            if (! $timezone && trim((string) $window['shoot']->timezone) === '') {
+                $start->shiftTimezone('UTC');
             }
-
-            $shootEnd = $shootStart->copy()->addMinutes($this->calculateShootDuration($shoot));
-            $shootEndWithBuffer = $shootEnd->copy()->addMinutes($bufferMinutes);
-            $shootStartWithBuffer = $shootStart->copy()->subMinutes($bufferMinutes);
-
-            if ($requestStartUtc < $shootEndWithBuffer && $requestEndUtc > $shootStartWithBuffer) {
-                return true;
-            }
-        }
-
-        $conflictingServiceItems = ShootService::with(['shoot.photographer', 'service', 'photographer'])
-            ->where('photographer_id', $photographerId)
-            ->whereNotNull('scheduled_at')
-            ->whereBetween('scheduled_at', [$dayStartUtc->toDateTimeString(), $dayEndUtc->toDateTimeString()])
-            ->whereIn('workflow_status', [
-                ShootService::WORKFLOW_SCHEDULED,
-                ShootService::WORKFLOW_IN_PROGRESS,
-                ShootService::WORKFLOW_READY,
-            ])
-            ->whereHas('shoot', function ($query) use ($excludeShootId) {
-                $query->whereNotIn('status', [
-                    Shoot::STATUS_CANCELLED,
-                    Shoot::STATUS_DECLINED,
-                    Shoot::STATUS_ON_HOLD,
-                ]);
-
-                if ($excludeShootId) {
-                    $query->where('id', '!=', $excludeShootId);
-                }
-            })
-            ->get();
-
-        foreach ($conflictingServiceItems as $item) {
-            $shoot = $item->shoot;
-            if (!$shoot) {
-                continue;
-            }
-
-            $itemStart = ! $timezone && trim((string) $shoot->timezone) === ''
-                ? Carbon::instance($item->scheduled_at)->copy()->utc()
-                : ($resolver->forServiceItem($shoot, $item)?->utc()
-                    ?? Carbon::parse($item->scheduled_at)->utc());
-            $localDate = $itemStart->copy()->setTimezone($this->validTimezoneOrUtc($shoot->timezone ?: $timezone ?: $windowTz))->toDateString();
-            if ($localDate !== $date->toDateString()) {
-                continue;
-            }
-
-            $itemEnd = $itemStart->copy()->addMinutes($this->calculateServiceItemDuration($item));
-            $itemEndWithBuffer = $itemEnd->copy()->addMinutes($bufferMinutes);
-            $itemStartWithBuffer = $itemStart->copy()->subMinutes($bufferMinutes);
-
-            if ($requestStartUtc < $itemEndWithBuffer && $requestEndUtc > $itemStartWithBuffer) {
+            $start->utc();
+            $end = $start->copy()->addMinutes($window['minutes']);
+            // Pad the existing interval only: adjacent appointments require one gap,
+            // not a buffer on both the request and existing appointment.
+            if ($requestStartUtc < $end->addMinutes($bufferMinutes)
+                && $requestEndUtc > $start->subMinutes($bufferMinutes)) {
                 return true;
             }
         }
@@ -930,21 +726,14 @@ class PhotographerAvailabilityService
 
     /**
      * Whether a requested start/end fits a single [start, end] window. Accepts
-     * full containment, or (matching the frontend / isAvailable() behavior) a
-     * start time that falls within the window.
+     * full containment of onsite work; the travel buffer need not fit after closing.
      */
     protected function requestWithinWindow(string $windowStart, string $windowEnd, string $time, Carbon $requestEndTime): bool
     {
         $start = Carbon::parse($windowStart)->format('H:i');
         $end = Carbon::parse($windowEnd)->format('H:i');
 
-        // Fully contained: window starts at/before request and ends at/after request end.
-        if ($start <= $time && $time <= $end && $end >= $requestEndTime->format('H:i')) {
-            return true;
-        }
-
-        // Start time within window (matches frontend behavior, which checks the start time).
-        return $start <= $time && $time <= $end;
+        return $start <= $time && $time < $end && $end >= $requestEndTime->format('H:i');
     }
 
     /**

@@ -42,7 +42,7 @@ class ShootEditablePayloadService
             'services.*.photographer_id' => 'nullable|integer|exists:users,id',
             'services.*.editor_id' => 'nullable|integer|exists:users,id',
             'services.*.scheduled_at' => 'nullable|date',
-            'services.*.duration_minutes' => 'nullable|integer|min:30|max:240',
+            'services.*.duration_minutes' => ['nullable', 'integer', 'min:0', 'max:300', new \App\Rules\ServiceDuration],
             'services.*.is_deliverable' => 'nullable|boolean',
             'service_items' => 'nullable|array',
             'service_items.*.service_id' => 'required_with:service_items|integer|distinct|exists:services,id',
@@ -51,7 +51,7 @@ class ShootEditablePayloadService
             'service_items.*.photographer_id' => 'nullable|integer|exists:users,id',
             'service_items.*.editor_id' => 'nullable|integer|exists:users,id',
             'service_items.*.scheduled_at' => 'nullable|date',
-            'service_items.*.duration_minutes' => 'nullable|integer|min:30|max:240',
+            'service_items.*.duration_minutes' => ['nullable', 'integer', 'min:0', 'max:300', new \App\Rules\ServiceDuration],
             'service_items.*.is_deliverable' => 'nullable|boolean',
             'service_items.*.workflow_status' => ['nullable', Rule::in(['pending', 'scheduled', 'in_progress', 'ready', 'delivered', 'cancelled'])],
             'service_items.*.delivery_status' => ['nullable', Rule::in(['not_started', 'ready', 'delivered', 'cancelled'])],
@@ -789,6 +789,9 @@ class ShootEditablePayloadService
                 ?? ($currentItem
                     ? app(ShootDurationResolver::class)->forServiceItem($currentItem)
                     : app(ShootDurationResolver::class)->forService($serviceModel, $sqft));
+            if ($currentItem) {
+                $service['created_at'] = $currentItem->created_at;
+            }
 
             if (! $canOverrideLinePrice || $submittedPrice === null) {
                 $service['price'] = $currentItem?->price

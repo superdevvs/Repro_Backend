@@ -107,16 +107,16 @@ class ShootScheduleFromServices
     }
 
     /**
-     * Persist a booking move onto service lines.
+     * Plan a booking move without writing, so availability checks and persistence
+     * use identical target times.
      * Shared-time (or shoot-matching / null) lines adopt the instant; split
      * appointments shift by the same delta from the previous shoot instant.
+     *
+     * @return array<int, Carbon>
      */
-    public function alignBookingDefiningServices(Shoot $shoot, Carbon $instant): int
+    public function plannedBookingSchedules(Shoot $shoot, Carbon $instant): array
     {
         $target = $instant->copy()->utc();
-        $targetStamp = $target->format('Y-m-d H:i:s');
-        $updated = 0;
-
         $defining = $this->bookingDefiningItems($shoot);
         $nullDeliverable = ($shoot->relationLoaded('serviceItems')
             ? $shoot->serviceItems
@@ -135,19 +135,8 @@ class ShootScheduleFromServices
             ));
 
         if ($sharedOrMatched || $defining->isEmpty()) {
-            $ids = $defining->pluck('id')->merge($nullDeliverable->pluck('id'))->unique()->all();
-            if ($ids === []) {
-                return 0;
-            }
-
-            return ShootService::query()
-                ->where('shoot_id', $shoot->id)
-                ->whereIn('id', $ids)
-                ->update([
-                    'scheduled_at' => $targetStamp,
-                    'workflow_status' => ShootService::WORKFLOW_SCHEDULED,
-                    'updated_at' => now(),
-                ]);
+            return $defining->merge($nullDeliverable)
+                ->mapWithKeys(fn (ShootService $item) => [$item->id => $target->copy()])->all();
         }
 
         // Split appointments: preserve relative offsets from the prior shoot anchor.
@@ -155,23 +144,35 @@ class ShootScheduleFromServices
             ?? $this->earliestInstant($defining);
         $deltaSeconds = $anchor ? ($target->getTimestamp() - $anchor->getTimestamp()) : 0;
 
-        foreach ($defining as $item) {
-            $next = $item->scheduled_at->copy()->utc()->addSeconds($deltaSeconds);
+        return $defining->mapWithKeys(fn (ShootService $item) => [
+            $item->id => $item->scheduled_at->copy()->utc()->addSeconds($deltaSeconds),
+        ])->union($nullDeliverable->mapWithKeys(fn (ShootService $item) => [$item->id => $target->copy()]))->all();
+    }
+
+    public function alignBookingDefiningServices(Shoot $shoot, Carbon $instant): int
+    {
+        $planned = $this->plannedBookingSchedules($shoot, $instant);
+        if ($planned === []) {
+            return 0;
+        }
+        if (collect($planned)->map(fn (Carbon $time) => $time->format('Y-m-d H:i:s'))->unique()->count() === 1) {
+            return ShootService::query()->where('shoot_id', $shoot->id)->whereIn('id', array_keys($planned))
+                ->update([
+                    'scheduled_at' => reset($planned)->format('Y-m-d H:i:s'),
+                    'workflow_status' => ShootService::WORKFLOW_SCHEDULED,
+                    'updated_at' => now(),
+                ]);
+        }
+        foreach ($shoot->serviceItems as $item) {
+            if (! isset($planned[$item->id])) {
+                continue;
+            }
             $item->forceFill([
-                'scheduled_at' => $next->format('Y-m-d H:i:s'),
+                'scheduled_at' => $planned[$item->id]->format('Y-m-d H:i:s'),
                 'workflow_status' => ShootService::WORKFLOW_SCHEDULED,
             ])->save();
-            $updated++;
         }
 
-        foreach ($nullDeliverable as $item) {
-            $item->forceFill([
-                'scheduled_at' => $targetStamp,
-                'workflow_status' => ShootService::WORKFLOW_SCHEDULED,
-            ])->save();
-            $updated++;
-        }
-
-        return $updated;
+        return count($planned);
     }
 }

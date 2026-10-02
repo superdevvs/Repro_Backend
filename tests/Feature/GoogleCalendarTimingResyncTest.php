@@ -27,7 +27,6 @@ class GoogleCalendarTimingResyncTest extends TestCase
         config([
             'app.timezone' => 'UTC',
             'availability.default_shoot_duration_minutes' => 60,
-            'availability.booked_block_duration_minutes' => 120,
             'services.google.calendar.base_url' => 'https://calendar.test/calendar/v3',
         ]);
 
@@ -92,7 +91,7 @@ class GoogleCalendarTimingResyncTest extends TestCase
         $sync->syncShoot($shoot->id);
         Http::assertSentCount(1);
 
-        config(['availability.booked_block_duration_minutes' => 180]);
+        $shoot->serviceItems()->update(['duration_minutes' => 180]);
         $sync->syncShoot($shoot->id);
 
         Http::assertSentCount(2);
@@ -297,6 +296,7 @@ class GoogleCalendarTimingResyncTest extends TestCase
         $shoot->services()->attach($service->id, [
             'price' => 100,
             'quantity' => 1,
+            'duration_minutes' => 120,
             'photographer_id' => $photographer->id,
             'scheduled_at' => $perService ? '2026-09-10 14:00:00' : null,
         ]);

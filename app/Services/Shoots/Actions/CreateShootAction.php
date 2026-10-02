@@ -145,16 +145,20 @@ class CreateShootAction
                     ->lockForUpdate()
                     ->get();
 
-                $durationMinutes = $this->support->calculateShootDurationFromServices($servicesPayload, null, $scheduledAt, $scheduleTimezone ?: null, (int) $photographerId);
-                // Enforce the same backend-authoritative availability bounds as the update path.
-                $this->support->assertWithinAvailabilityBounds(
-                    $photographerId,
-                    $scheduledAt,
-                    $durationMinutes,
-                    null,
-                    $skipConflictCheck,
-                    $scheduleTimezone !== '' ? $scheduleTimezone : null
+                $windows = app(\App\Services\Shoots\ShootDurationResolver::class)->windowsForServices(
+                    $servicesPayload, null, $scheduledAt, $scheduleTimezone ?: null, (int) $photographerId
                 );
+                if ($servicesPayload === []) {
+                    $windows[] = ['start' => \Carbon\Carbon::parse($scheduledAt),
+                        'minutes' => app(\App\Services\Shoots\ShootDurationResolver::class)->defaultMinutes()];
+                }
+                foreach ($windows as $window) {
+                    $this->support->assertWithinAvailabilityBounds(
+                        $photographerId, $window['start'] ?? $scheduledAt, $window['minutes'],
+                        null, $skipConflictCheck, $scheduleTimezone ?: null
+                    );
+                }
+
             }
 
             if (!$treatAsClientRequest) {
@@ -176,14 +180,11 @@ class CreateShootAction
                         }
                     }
                 }
-                if (!$skipConflictCheck) {
-                    $this->support->checkServiceItemPhotographerAvailability(
-                        $servicesPayload,
-                        $photographerId,
-                        null,
-                        $scheduleTimezone !== '' ? $scheduleTimezone : null
-                    );
-                }
+                $this->support->checkServiceItemPhotographerAvailability(
+                    $servicesPayload, $photographerId, null,
+                    $scheduleTimezone !== '' ? $scheduleTimezone : null,
+                    $skipConflictCheck, $scheduledAt
+                );
             }
 
             // Zoned bookings store absolute UTC on service lines (parity with update/PATCH).

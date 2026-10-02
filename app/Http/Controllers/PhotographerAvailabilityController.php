@@ -812,69 +812,24 @@ class PhotographerAvailabilityController extends Controller
         $photographerId = $validated['photographer_id'];
         $fromDate = \Carbon\Carbon::parse($validated['from_date']);
         $toDate = \Carbon\Carbon::parse($validated['to_date']);
-        $scheduleInstants = app(ScheduleInstantResolver::class);
-
-        // UTC instants can fall on the neighboring date. Fetch candidates first,
-        // then apply the requested range to the photographer's local date.
-        $shoots = \App\Models\Shoot::where('photographer_id', $photographerId)
-            ->whereNotNull('scheduled_at')
-            ->whereBetween('scheduled_at', [
-                $fromDate->copy()->subDay()->startOfDay(),
-                $toDate->copy()->addDay()->endOfDay(),
-            ])
-            ->whereIn('status', [
-                \App\Services\ShootWorkflowService::STATUS_SCHEDULED,
-                \App\Services\ShootWorkflowService::STATUS_IN_PROGRESS,
-                \App\Services\ShootWorkflowService::STATUS_EDITING,
-            ])
-            ->with(['client:id,name,email,phone', 'services:id,name,price', 'photographer:id,timezone'])
-            ->orderBy('scheduled_at')
-            ->get();
-
-        $bookedSlots = $shoots->map(function ($shoot) use ($scheduleInstants, $fromDate, $toDate) {
-            // Use the same storage policy as shoot details: explicit zones store
-            // instants; legacy records without a zone store the local clock.
-            $scheduledAt = $scheduleInstants->forShoot($shoot);
-            if (! $scheduledAt
-                || $scheduledAt->toDateString() < $fromDate->toDateString()
-                || $scheduledAt->toDateString() > $toDate->toDateString()) {
-                return null;
-            }
-            $durationMinutes = $this->calculateShootDurationFromShoot($shoot);
-            $endTime = $scheduledAt->copy()->addMinutes($durationMinutes);
-
-            return [
-                'id' => 'shoot_' . $shoot->id,
-                'shoot_id' => $shoot->id,
-                'photographer_id' => $shoot->photographer_id,
-                'date' => $scheduledAt->toDateString(),
-                'day_of_week' => strtolower($scheduledAt->format('l')),
-                'start_time' => $scheduledAt->format('H:i'),
-                'end_time' => $endTime->format('H:i'),
-                'status' => 'booked',
-                'shoot_details' => [
-                    'id' => $shoot->id,
-                    'title' => $shoot->title ?? 'Shoot #' . $shoot->id,
-                    'address' => $shoot->property_address ?? $shoot->address,
-                    'shoot_status' => $shoot->status,
-                    'client' => $shoot->client ? [
-                        'id' => $shoot->client->id,
-                        'name' => $shoot->client->name,
-                        'email' => $shoot->client->email,
-                        'phone' => $shoot->client->phone,
-                    ] : null,
-                    'services' => $shoot->services->map(fn($s) => [
-                        'id' => $s->id,
-                        'name' => $s->name,
-                        'price' => $s->price,
-                    ])->toArray(),
-                    'notes' => $shoot->notes,
-                    'duration_minutes' => $durationMinutes,
-                ],
+        $slots = $this->availabilityService->getBookedSlotsForRange((int) $photographerId, $fromDate, $toDate);
+        $shoots = \App\Models\Shoot::with(['client:id,name,email,phone', 'services:id,name,price'])
+            ->whereIn('id', array_column($slots, 'shoot_id'))->get()->keyBy('id');
+        $bookedSlots = collect($slots)->map(function (array $slot) use ($shoots) {
+            $shoot = $shoots->get($slot['shoot_id']);
+            $slot['id'] = 'shoot_'.$shoot->id.'_'.($slot['shoot_service_id'] ?? 'main');
+            $slot['shoot_details'] = [
+                'id' => $shoot->id,
+                'title' => $shoot->title ?? 'Shoot #'.$shoot->id,
+                'address' => $shoot->property_address ?? $shoot->address,
+                'shoot_status' => $shoot->status,
+                'client' => $shoot->client ? $shoot->client->only(['id', 'name', 'email', 'phone']) : null,
+                'services' => $shoot->services->map(fn ($service) => $service->only(['id', 'name', 'price']))->all(),
+                'notes' => $shoot->notes,
+                'duration_minutes' => $slot['duration_minutes'],
             ];
-        })->filter()->sortBy([
-            ['date', 'asc'], ['start_time', 'asc'], ['shoot_id', 'asc'],
-        ])->values();
+            return $slot;
+        })->values();
 
         return response()->json(['data' => $bookedSlots]);
     }
@@ -884,8 +839,7 @@ class PhotographerAvailabilityController extends Controller
      */
     protected function calculateShootDurationFromShoot($shoot): int
     {
-        // Availability calendar booked blocks are always the booked-block duration (2h / 120).
-        return (int) config('availability.booked_block_duration_minutes', 120);
+        return app(\App\Services\Shoots\ShootDurationResolver::class)->forShoot($shoot);
     }
     
     /**
@@ -925,7 +879,7 @@ class PhotographerAvailabilityController extends Controller
         $validated = $request->validate([
             'date' => 'required|date',
             'time' => 'sometimes|string',
-            'duration_minutes' => 'sometimes|integer|min:30|max:240',
+            'duration_minutes' => 'sometimes|integer|min:5',
             'shoot_address' => 'required|string',
             'shoot_city' => 'required|string',
             'shoot_state' => 'required|string',
@@ -1206,58 +1160,31 @@ class PhotographerAvailabilityController extends Controller
                 ])->toArray(),
             ]);
 
-            // Get booked slots for this day (local civil clocks via ScheduleInstantResolver)
-            $bookedSlots = $shootsOnDate->map(function ($shoot) use ($includeSensitiveSlotFields, $scheduleInstants) {
-                $scheduledAt = $scheduleInstants->forShoot($shoot)
-                    ?? \Carbon\Carbon::parse($shoot->scheduled_at);
-                $duration = $this->calculateShootDurationFromShoot($shoot);
-                $endTime = $scheduledAt->copy()->addMinutes($duration);
-
-                // Non-identifying scheduling fields are always safe to expose — they are what
-                // the public availability calculation needs to block out occupied times.
-                $slot = [
-                    'start_time' => $scheduledAt->format('H:i'),
-                    'end_time' => $endTime->format('H:i'),
-                    'status' => $shoot->status,
-                ];
-
-                // Sensitive per-slot fields (other clients' shoot id + property location) are only
-                // returned to authenticated privileged staff who legitimately need them in the
-                // internal booking UI.
-                if ($includeSensitiveSlotFields) {
-                    $slot = array_merge($slot, $this->bookedShootDetails($shoot));
-                }
-
-                return $slot;
-            })->values()->toArray();
-
-            // Include separately assigned service appointments, which may belong
-            // to another lead photographer or a different visit day.
-            $serviceVisits = collect($this->availabilityService->getBookedSlots($photographerId, $date))
-                ->filter(fn (array $slot) => ! empty($slot['shoot_service_id']));
+            // Use the same per-photographer service intervals as conflict validation.
+            $visits = $this->availabilityService->getBookedSlots($photographerId, $date);
             $visitShoots = \App\Models\Shoot::with(['client:id,name', 'services', 'serviceItems.service'])
-                ->whereIn('id', $serviceVisits->pluck('shoot_id'))->get()->keyBy('id');
-            foreach ($serviceVisits as $visit) {
-                $covered = $shootsOnDate->contains(function ($shoot) use ($visit, $scheduleInstants) {
-                    if ((int) $shoot->id !== (int) $visit['shoot_id']) return false;
-                    $start = $scheduleInstants->forShoot($shoot);
-                    $end = $start?->copy()->addMinutes($this->calculateShootDurationFromShoot($shoot));
-                    return $start && $start->format('H:i') <= $visit['start_time'] && $end->format('H:i') >= $visit['end_time'];
-                });
-                if ($covered) continue;
-                $slot = ['start_time' => $visit['start_time'], 'end_time' => $visit['end_time'], 'status' => 'booked'];
+                ->whereIn('id', array_column($visits, 'shoot_id'))->get()->keyBy('id');
+            $bookedSlots = array_map(function (array $visit) use ($includeSensitiveSlotFields, $visitShoots) {
                 $shoot = $visitShoots->get($visit['shoot_id']);
+                $slot = ['start_time' => $visit['start_time'], 'end_time' => $visit['end_time'],
+                    'status' => $shoot?->status ?? 'booked'];
                 if ($includeSensitiveSlotFields && $shoot) {
                     $slot = array_merge($slot, $this->bookedShootDetails($shoot, $visit['shoot_service_id']));
                 }
-                $bookedSlots[] = $slot;
-            }
-            usort($bookedSlots, fn (array $a, array $b) => strcmp($a['start_time'], $b['start_time']));
+                return $slot;
+            }, $visits);
 
             // Calculate net available slots (availability minus bookings)
             $netAvailableSlots = [];
+            $buffer = (int) config('availability.buffer_time_minutes', 15);
+            $bufferedBookings = array_map(function (array $slot) use ($buffer) {
+                $start = max(0, $this->timeToMinutes($slot['start_time']) - $buffer);
+                $end = min(1440, $this->timeToMinutes($slot['end_time']) + $buffer);
+                return ['start_time' => sprintf('%02d:%02d', intdiv($start, 60), $start % 60),
+                    'end_time' => sprintf('%02d:%02d', intdiv($end, 60), $end % 60)];
+            }, $bookedSlots);
             $blockedSlots = array_merge(
-                $bookedSlots,
+                $bufferedBookings,
                 $unavailableSlots->map(fn ($slot) => [
                     'start_time' => $slot->start_time,
                     'end_time' => $slot->end_time,
@@ -1303,7 +1230,7 @@ class PhotographerAvailabilityController extends Controller
                         'in_range' => $inRange,
                     ]);
                     if ($inRange) {
-                        $buffer = (int) config('availability.buffer_time_minutes', 30);
+                        $buffer = (int) config('availability.buffer_time_minutes', 15);
                         foreach ($bookedSlots as $booked) {
                             if ($requestStartMinutes < $this->timeToMinutes($booked['end_time']) + $buffer
                                 && $requestStartMinutes + $requestedDuration > $this->timeToMinutes($booked['start_time']) - $buffer) {

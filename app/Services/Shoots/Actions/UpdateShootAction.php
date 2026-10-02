@@ -110,6 +110,9 @@ class UpdateShootAction
             // Product: assigned sales reps may reassign shoot + service-line photographers.
             'photographer_id',
             'service_photographers',
+            'discount_type',
+            'discount_value',
+            'discount_amount',
             'notify_client',
             'notify_photographer',
         ];
@@ -449,14 +452,20 @@ class UpdateShootAction
 
             $assertTimezone = $scheduleTimezone !== '' ? $scheduleTimezone : null;
             if ($targetPhotographerId && $targetScheduledAt && ! $isMultiUnit) {
-                $this->support->assertWithinAvailabilityBounds(
-                    (int) $targetPhotographerId,
-                    $targetScheduledAt,
-                    $this->support->calculateShootDurationFromServices($targetServices, $shoot->propertySqft(), $targetScheduledAt, $assertTimezone, (int) $targetPhotographerId),
-                    $shoot->id,
-                    $skipConflictCheck,
-                    $assertTimezone
+                $windows = app(\App\Services\Shoots\ShootDurationResolver::class)->windowsForServices(
+                    $targetServices, $shoot->propertySqft(), $targetScheduledAt, $assertTimezone, (int) $targetPhotographerId
                 );
+                if ($targetServices === []) {
+                    $windows[] = ['start' => \Carbon\Carbon::parse($targetScheduledAt),
+                        'minutes' => app(\App\Services\Shoots\ShootDurationResolver::class)->defaultMinutes()];
+                }
+                foreach ($windows as $window) {
+                    $this->support->assertWithinAvailabilityBounds(
+                        (int) $targetPhotographerId, $window['start'] ?? $targetScheduledAt, $window['minutes'],
+                        $shoot->id, $skipConflictCheck, $assertTimezone
+                    );
+                }
+
             }
 
             if ($isMultiUnit) {
@@ -466,15 +475,12 @@ class UpdateShootAction
                     }
                 }
             }
-            if (! $skipConflictCheck) {
-                $this->support->checkServiceItemPhotographerAvailability(
-                    $targetServices,
-                    $targetPhotographerId ? (int) $targetPhotographerId : null,
-                    $shoot->id,
-                    $assertTimezone
-                );
-            }
+            $this->support->checkServiceItemPhotographerAvailability(
+                $targetServices, $targetPhotographerId ? (int) $targetPhotographerId : null,
+                $shoot->id, $assertTimezone, (bool) $skipConflictCheck, $targetScheduledAt
+            );
         }
+
         $ghostUserIds = collect($validated['ghost_user_ids'] ?? [])
             ->map(fn ($id) => (int) $id)
             ->unique()

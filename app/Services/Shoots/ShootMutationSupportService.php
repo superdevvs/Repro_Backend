@@ -351,53 +351,38 @@ class ShootMutationSupportService
         array $services,
         ?int $fallbackPhotographerId = null,
         ?int $excludeShootId = null,
-        ?string $timezone = null
+        ?string $timezone = null,
+        bool $skipConflictCheck = false,
+        ?\DateTimeInterface $appointmentStart = null,
     ): void {
-        $serviceIds = collect($services)
-            ->pluck('id')
-            ->filter()
-            ->unique()
-            ->values();
-        $serviceModels = Service::whereIn('id', $serviceIds)->get()->keyBy('id');
         $explicitTimezone = $this->validTimezoneName($timezone);
+        $rows = array_map(function (array $row) use ($fallbackPhotographerId) {
+            $row['photographer_id'] = $row['photographer_id'] ?? $fallbackPhotographerId;
 
-        foreach ($services as $service) {
-            // Fee / hold / non-deliverable lines never reserve photographer time.
-            if (array_key_exists('is_deliverable', $service) && ! $service['is_deliverable']) {
+            return $row;
+        }, $services);
+        $windows = app(ShootDurationResolver::class)->windowsForServices($rows, null, $appointmentStart, $explicitTimezone);
+        foreach ($windows as $index => $window) {
+            if (! $window['start'] || ! $window['photographer_id']) {
                 continue;
             }
-
-            $scheduledAt = $service['scheduled_at'] ?? null;
-            $serviceModel = $serviceModels->get((int) ($service['id'] ?? 0));
-            $photographerId = ($serviceModel?->requiresPhotographer() ?? false)
-                ? ($service['photographer_id'] ?? $fallbackPhotographerId)
-                : null;
-
-            if (!$scheduledAt || !$photographerId) {
-                continue;
+            foreach (array_slice($windows, 0, $index) as $other) {
+                if ($other['start'] && $other['photographer_id'] === $window['photographer_id']
+                    && $window['start'] < $other['start']->copy()->addMinutes($other['minutes'])
+                    && $window['start']->copy()->addMinutes($window['minutes']) > $other['start']) {
+                    throw ValidationException::withMessages([
+                        'service_items' => ['This photographer has overlapping service visits. Use one shared start or non-overlapping times.'],
+                    ]);
+                }
             }
-
-            $durationMinutes = $service['duration_minutes'] ?? $this->calculateServiceItemDuration($serviceModel);
-
-            // Naive wall clocks are reinterpreted only when an explicit request/shoot
-            // timezone is provided (parity with assertWithinAvailabilityBounds / create).
-            $scheduledDateTime = $explicitTimezone
-                ? ($this->parseScheduleInstant($scheduledAt, $explicitTimezone) ?? new \DateTime((string) $scheduledAt))
-                : new \DateTime((string) $scheduledAt);
-
             try {
-                $this->checkPhotographerAvailability(
-                    (int) $photographerId,
-                    $scheduledDateTime,
-                    $durationMinutes,
-                    $excludeShootId,
-                    $explicitTimezone
+                $this->assertWithinAvailabilityBounds(
+                    $window['photographer_id'], $window['start'], $window['minutes'],
+                    $excludeShootId, $skipConflictCheck, $explicitTimezone
                 );
             } catch (ValidationException $exception) {
-                $serviceName = $serviceModel?->name ?: 'service item';
-
                 throw ValidationException::withMessages([
-                    'service_items' => ["Photographer is not available for {$serviceName} at the selected service schedule."],
+                    'service_items' => ['Photographer is not available for the combined service visit at the selected schedule.'],
                 ]);
             }
         }
@@ -405,24 +390,18 @@ class ShootMutationSupportService
 
     public function calculateShootDurationFromServices(array $services, ?int $sqft = null, ?\DateTimeInterface $appointmentStart = null, ?string $timezone = null, ?int $photographerId = null): int
     {
-        // Product rule: scheduling conflict windows match availability calendar
-        // booked blocks — always the booked-block duration (2h / 120). Do not stretch
-        // from per-service durations / envelopes up to max_shoot_duration_minutes.
-        return (int) config('availability.booked_block_duration_minutes', 120);
+        return app(ShootDurationResolver::class)->forServices($services, $sqft, $appointmentStart, $timezone, $photographerId);
     }
 
     public function calculateServiceItemDuration(?Service $service): int
     {
         // Catalogue/default appointment length for a single service (Book Shoot UI).
-        // Availability booked blocks use calculateShootDurationFrom* (fixed 2h) instead.
         return app(ShootDurationResolver::class)->forService($service);
     }
 
     public function calculateShootDurationFromShoot(Shoot $shoot, ?int $photographerId = null): int
     {
-        // Product rule: booked window / Google Calendar event length matches
-        // availability calendar — always the booked-block duration (2h / 120).
-        return (int) config('availability.booked_block_duration_minutes', 120);
+        return app(ShootDurationResolver::class)->forShoot($shoot, $photographerId);
     }
 
     public function attachServices(Shoot $shoot, array $services): void

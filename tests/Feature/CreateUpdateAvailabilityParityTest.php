@@ -96,7 +96,7 @@ class CreateUpdateAvailabilityParityTest extends TestCase
             ['09:00', true],  // at fallback start (fully contained)
             ['11:00', true],  // mid-window
             ['14:30', true],  // mid-window
-            ['17:00', true],  // start within window (end spills past, start rule applies)
+            ['17:00', true],  // a one-hour default ends exactly at closing
             ['18:30', false], // after fallback end
             ['20:00', false], // after fallback end
         ];
@@ -243,6 +243,37 @@ class CreateUpdateAvailabilityParityTest extends TestCase
         $response->assertStatus(422)->assertJsonValidationErrors('start_time');
 
         return false;
+    }
+
+    public function test_create_and_update_check_distinct_service_visits_without_reserving_the_gap(): void
+    {
+        config(['availability.buffer_time_minutes' => 15]);
+        Sanctum::actingAs($this->admin);
+        $day = now()->addMonths(2)->next(\Carbon\Carbon::MONDAY)->format('Y-m-d');
+        $otherService = Service::factory()->create(['price' => 100]);
+        $existing = Shoot::factory()->create(['client_id' => $this->client->id,
+            'photographer_id' => $this->photographer->id, 'scheduled_at' => "$day 12:00:00",
+            'status' => 'scheduled', 'workflow_status' => 'scheduled', 'timezone' => null]);
+        $existing->services()->attach($this->service->id, ['duration_minutes' => 30,
+            'scheduled_at' => "$day 12:00:00", 'photographer_id' => $this->photographer->id,
+            'workflow_status' => 'scheduled']);
+        $payload = $this->createPayload("$day 09:00:00");
+        $payload['skip_availability_check'] = false;
+        $payload['services'] = [
+            ['id' => $this->service->id, 'duration_minutes' => 15, 'scheduled_at' => "$day 09:00:00"],
+            ['id' => $otherService->id, 'duration_minutes' => 15, 'scheduled_at' => "$day 14:00:00"],
+        ];
+        $id = $this->postJson('/api/shoots', $payload)->assertCreated()->json('data.id');
+        $this->assertNotNull($id);
+        $this->patchJson('/api/shoots/'.$id, ['skip_availability_check' => false,
+            'service_items' => [['service_id' => $this->service->id, 'duration_minutes' => 17]],
+        ])->assertOk();
+        $this->assertSame([17, 15], Shoot::findOrFail($id)->serviceItems()->orderBy('id')->pluck('duration_minutes')->all());
+        foreach ([0, 4, 301] as $invalid) {
+            $invalidPayload = $payload;
+            $invalidPayload['services'][0]['duration_minutes'] = $invalid;
+            $this->postJson('/api/shoots', $invalidPayload)->assertUnprocessable()->assertJsonValidationErrors('services.0.duration_minutes');
+        }
     }
 
     /**

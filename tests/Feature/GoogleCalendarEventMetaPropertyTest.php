@@ -25,7 +25,7 @@ use Tests\TestCase;
  *   - Feature: google-calendar-sync-upgrade, Property 6: Reminders are explicit
  *     24h and 30min popups (Validates: Requirements 5.1)
  *   - Feature: google-calendar-sync-upgrade, Property 5: End time equals start
- *     plus clamped duration (Validates: Requirements 4.1, 4.2)
+ *     plus saved capture duration (Validates: Requirements 4.1, 4.2)
  *
  * Approach: no PHP property-based testing library is configured for the backend,
  * so these tests follow the deterministic-generator convention used by the rest
@@ -198,15 +198,15 @@ class GoogleCalendarEventMetaPropertyTest extends TestCase
 
     /**
      * Feature: google-calendar-sync-upgrade, Property 5: End time equals start
-     * plus fixed availability booked-window duration.
+     * plus saved capture duration.
      *
      * Validates: Requirements 4.1, 4.2
      *
      * For any schedulable shoot, the event end time equals the start time plus
-     * `ShootMutationSupportService::calculateShootDurationFromShoot()`. These fixtures
-     * have no explicit appointment durations, so booked_block_duration_minutes applies.
+     * the sum of saved same-start service durations. Unclassified legacy shoots
+     * retain the configured fallback, and aggregate durations are not clamped.
      */
-    public function test_end_time_equals_start_plus_clamped_duration(): void
+    public function test_end_time_equals_start_plus_saved_capture_duration(): void
     {
         mt_srand(5_00_01);
 
@@ -215,27 +215,26 @@ class GoogleCalendarEventMetaPropertyTest extends TestCase
         $statuses = array_keys(self::STATUS_COLOR_MAP);
 
         for ($i = 0; $i < self::ITERATIONS; $i++) {
-            // Multiple simultaneous default-duration services share one appointment.
-            $configuredDefault = mt_rand(60, 180);
+            // Independent same-start capture services add work to one appointment.
             config([
                 'availability.default_shoot_duration_minutes' => 60,
-                'availability.booked_block_duration_minutes' => $configuredDefault,
-                'availability.min_shoot_duration_minutes' => 60,
-                'availability.max_shoot_duration_minutes' => 240,
+                'availability.min_shoot_duration_minutes' => 5,
+                'availability.max_shoot_duration_minutes' => 300,
             ]);
 
             $serviceCount = mt_rand(0, 3);
+            $durations = array_map(static fn () => mt_rand(5, 300), array_fill(0, $serviceCount, null));
             $shoot = $this->makeShoot([
                 'status' => $statuses[mt_rand(0, count($statuses) - 1)],
                 'service_count' => $serviceCount,
+                'durations' => $durations,
             ]);
 
             $fresh = $shoot->fresh(['services', 'client']);
             $photographer = $shoot->photographer;
             $timezone = $photographer?->timezone ?: config('app.timezone', 'UTC');
 
-            // The single source of truth for the expected duration.
-            $expectedMinutes = $support->calculateShootDurationFromShoot($fresh);
+            $expectedMinutes = $durations === [] ? 60 : array_sum($durations);
 
             $payload = $builder->build($fresh, $photographer);
             $start = Carbon::parse($payload['start']['dateTime']);
@@ -250,9 +249,9 @@ class GoogleCalendarEventMetaPropertyTest extends TestCase
             );
 
             $this->assertSame(
-                $configuredDefault,
                 $expectedMinutes,
-                "Booked-block window uses availability.booked_block_duration_minutes. {$context}"
+                $support->calculateShootDurationFromShoot($fresh),
+                "Saved capture durations determine the appointment window. {$context}"
             );
 
             // end == start + calculateShootDurationFromShoot() minutes (Req 4.1).
@@ -265,12 +264,11 @@ class GoogleCalendarEventMetaPropertyTest extends TestCase
             $this->assertTrue($end->greaterThan($start), "end must be after start. {$context}");
         }
 
-        // A shoot without services still occupies the fixed 2h booked-block window.
+        // An unclassified legacy shoot retains the one-hour fallback.
         config([
             'availability.default_shoot_duration_minutes' => 60,
-            'availability.booked_block_duration_minutes' => 120,
-            'availability.min_shoot_duration_minutes' => 30,
-            'availability.max_shoot_duration_minutes' => 240,
+            'availability.min_shoot_duration_minutes' => 5,
+            'availability.max_shoot_duration_minutes' => 300,
         ]);
 
         $defaultShoot = $this->makeShoot([
@@ -280,9 +278,9 @@ class GoogleCalendarEventMetaPropertyTest extends TestCase
         $fresh = $defaultShoot->fresh(['services', 'client']);
 
         $this->assertSame(
-            120,
+            60,
             $support->calculateShootDurationFromShoot($fresh),
-            'booked-block duration with no services must be 120 minutes.'
+            'A legacy shoot with no services retains the configured 60-minute fallback.'
         );
 
         $payload = $builder->build($fresh, $defaultShoot->photographer);
@@ -290,9 +288,9 @@ class GoogleCalendarEventMetaPropertyTest extends TestCase
         $end = Carbon::parse($payload['end']['dateTime']);
 
         $this->assertSame(
-            120,
+            60,
             (int) $start->diffInMinutes($end),
-            'default (no-service) event must span exactly 120 minutes (booked block).'
+            'The default no-service event spans exactly 60 minutes.'
         );
     }
 
@@ -300,7 +298,7 @@ class GoogleCalendarEventMetaPropertyTest extends TestCase
      * Build a persisted shoot with a client, photographer, optional services, and a
      * future schedule. Accepts overrides for status / workflow_status / service_count.
      *
-     * @param  array{status?:string, workflow_status?:string, service_count?:int}  $opts
+     * @param  array{status?:string, workflow_status?:string, service_count?:int, durations?:array<int,int>}  $opts
      */
     private function makeShoot(array $opts = []): Shoot
     {
@@ -341,6 +339,7 @@ class GoogleCalendarEventMetaPropertyTest extends TestCase
             $shoot->services()->attach($service->id, [
                 'price' => 100,
                 'quantity' => 1,
+                'duration_minutes' => $opts['durations'][$s] ?? 60,
                 'photographer_pay' => 40,
                 'photographer_id' => $photographer->id,
             ]);

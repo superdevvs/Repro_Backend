@@ -59,7 +59,7 @@ class AssignServicePhotographerAction
         $this->shootMutationSupportService->checkServiceItemPhotographerAvailability(
             $this->buildTargetServices($shoot, $assignments),
             $shoot->photographer_id,
-            $shoot->id
+            $shoot->id, $shoot->timezone, false, $shoot->scheduled_at
         );
         DB::transaction(function () use (
             $shoot,
@@ -136,30 +136,43 @@ class AssignServicePhotographerAction
             ])->all(),
         ];
         $prepared = app(\App\Services\Shoots\MultiUnitBookingService::class)->prepare($shoot, $changes, $actor);
-        foreach ($prepared['services'] as $line) {
-            if (! empty($line['photographer_id']) && ! empty($line['scheduled_at'])) {
-                $this->shootMutationSupportService->assertWithinAvailabilityBounds((int) $line['photographer_id'], new \DateTime($line['scheduled_at']), (int) $line['duration_minutes'], $shoot->id);
+        $availabilityServices = $prepared['services'];
+        if ($shoot->timezone) {
+            foreach ($availabilityServices as &$line) {
+                if (! empty($line['scheduled_at'])) {
+                    $line['scheduled_at'] = \Carbon\Carbon::parse($line['scheduled_at'], 'UTC')
+                        ->setTimezone($shoot->timezone)->toIso8601String();
+                }
             }
+            unset($line);
         }
+        $this->shootMutationSupportService->checkServiceItemPhotographerAvailability(
+            $availabilityServices, $shoot->photographer_id, $shoot->id, $shoot->timezone, false, $shoot->scheduled_at
+        );
         app(\App\Services\Shoots\ShootEditablePayloadService::class)->apply($shoot, $changes, $actor);
     }
 
     protected function buildTargetServices(Shoot $shoot, array $assignments): array
     {
-        $shoot->loadMissing('services');
+        $shoot->loadMissing(['serviceItems.service', 'serviceItems.unit']);
         $assignmentsByService = collect($assignments)->keyBy('service_id');
 
-        return $shoot->services->map(function ($service) use ($assignmentsByService) {
-            $assignment = $assignmentsByService->get((int) $service->id, []);
+        return $shoot->serviceItems->map(function ($item) use ($shoot, $assignmentsByService) {
+            $assignment = $assignmentsByService->get((int) $item->service_id, []);
+            $time = $item->scheduled_at;
 
             return [
-                'id' => (int) $service->id,
-                'price' => $service->pivot?->price,
-                'quantity' => $service->pivot?->quantity ?? 1,
+                'id' => (int) $item->service_id,
                 'photographer_id' => array_key_exists('photographer_id', $assignment)
                     ? $assignment['photographer_id']
-                    : $service->pivot?->photographer_id,
-                'scheduled_at' => $service->pivot?->scheduled_at,
+                    : $item->photographer_id,
+                'scheduled_at' => $time ? ($shoot->timezone
+                    ? $time->copy()->setTimezone($shoot->timezone)->toIso8601String()
+                    : $time->format('Y-m-d H:i:s')) : null,
+                'duration_minutes' => app(\App\Services\Shoots\ShootDurationResolver::class)->forServiceItem($item),
+                'is_deliverable' => $item->is_deliverable,
+                'workflow_status' => $item->workflow_status,
+                'created_at' => $item->created_at,
             ];
         })->values()->all();
     }

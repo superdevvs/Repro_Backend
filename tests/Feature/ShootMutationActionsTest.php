@@ -156,7 +156,7 @@ class ShootMutationActionsTest extends TestCase
         $this->assertSame(30, $shoot->serviceItems()->sole()->duration_minutes);
         $this->patchJson($endpoint, ['services' => [['id' => $this->service->id, 'duration_minutes' => 90]]])->assertOk();
         $this->assertSame(90, $shoot->serviceItems()->sole()->duration_minutes);
-        foreach ([29, 241, 'invalid'] as $minutes) {
+        foreach ([4, 301, 'invalid'] as $minutes) {
             $this->patchJson($endpoint, ['service_items' => [['service_id' => $this->service->id, 'duration_minutes' => $minutes]]])
                 ->assertUnprocessable()->assertJsonValidationErrors('service_items.0.duration_minutes');
         }
