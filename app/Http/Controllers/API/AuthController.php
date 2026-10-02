@@ -3,7 +3,9 @@
 namespace App\Http\Controllers\API;
 
 use App\Http\Controllers\Controller;
+use App\Exceptions\PublicApiException;
 use Illuminate\Http\Request;
+use Illuminate\Database\UniqueConstraintViolationException;
 use App\Models\ServiceGroup;
 use App\Models\User;
 use App\Models\UserActivityLog;
@@ -17,6 +19,7 @@ use App\Services\Messaging\AutomationService;
 use App\Services\Users\ClientEmailVerificationLinkService;
 use App\Services\Users\DashboardOnboardingService;
 use App\Services\Users\EmailHealthService;
+use App\Services\Users\EmailVerificationPilot;
 use App\Services\Users\AccountCreatedNotificationService;
 use App\Services\Users\PhotographerAddressPolicy;
 use App\Services\Users\TwoFactorAuthenticationService;
@@ -47,10 +50,16 @@ class AuthController extends Controller
         app(\App\Services\Users\AuthSecurityLimiter::class)->register($request);
 
         \App\Support\TaxDocumentMetadata::assertWritable($request->all());
+        if (is_string($request->input('email'))) {
+            $request->merge(['email' => mb_strtolower(trim($request->input('email')))]);
+        }
+        $request->validate(['email' => 'required|email']);
+        $this->rejectExistingRegistrationAccount($request->input('email'));
+
         $validated = $request->validate([
             'name' => 'required|string|max:255',
             'username' => 'nullable|string|max:255|unique:users',
-            'email' => 'required|email|unique:users',
+            'email' => 'required|email',
             'password' => ['required', 'string', 'confirmed', new \App\Rules\NewAccountPassword],
             'phonenumber' => 'nullable|string|max:20',
             'company_name' => 'nullable|string|max:255',
@@ -72,20 +81,27 @@ class AuthController extends Controller
         $normalizedEmail = $emailHealthMutation['attributes']['email'] ?? strtolower(trim((string) $validated['email']));
         $username = $validated['username'] ?? explode('@', $normalizedEmail)[0] . '_' . uniqid();
 
-        $user = User::create([
-            'name' => $validated['name'],
-            'username' => $username,
-            'email' => $normalizedEmail,
-            'password' => Hash::make($validated['password']),
-            'phonenumber' => $validated['phonenumber'] ?? null,
-            'company_name' => $validated['company_name'] ?? null,
-            'role' => 'client',
-            'avatar' => $validated['avatar'] ?? null,
-            'bio' => $validated['bio'] ?? null,
-            'account_status' => 'active',
-            'metadata' => app(DashboardOnboardingService::class)->applyEligibility([], 'client', 'registration'),
-            ...$emailHealthMutation['attributes'],
-        ]);
+        try {
+            $user = User::create([
+                'name' => $validated['name'],
+                'username' => $username,
+                'email' => $normalizedEmail,
+                'password' => Hash::make($validated['password']),
+                'phonenumber' => $validated['phonenumber'] ?? null,
+                'company_name' => $validated['company_name'] ?? null,
+                'role' => 'client',
+                'avatar' => $validated['avatar'] ?? null,
+                'bio' => $validated['bio'] ?? null,
+                'account_status' => 'active',
+                'metadata' => app(DashboardOnboardingService::class)->applyEligibility([], 'client', 'registration'),
+                ...$emailHealthMutation['attributes'],
+            ]);
+        } catch (UniqueConstraintViolationException $exception) {
+            // Another signup can win after the initial lookup. Keep that outcome
+            // actionable without exposing a database error or changing its account.
+            $this->rejectExistingRegistrationAccount($normalizedEmail);
+            throw $exception;
+        }
 
         if ($user->role === 'client') {
             $defaultServiceGroup = ServiceGroup::getDefaultGroup();
@@ -147,6 +163,29 @@ class AuthController extends Controller
             'token' => $token,
             'notification_delivery' => $notificationDelivery,
         ], 201);
+    }
+
+    private function rejectExistingRegistrationAccount(string $email): void
+    {
+        // Imported accounts may retain mixed case or surrounding whitespace;
+        // SQLite's unique constraint alone does not consider these duplicates.
+        $existing = User::withTrashed()->whereRaw('LOWER(TRIM(email)) = ?', [mb_strtolower(trim($email))])->first();
+        if (!$existing) {
+            return;
+        }
+
+        $verificationRequired = $existing->isAccountEligibleForAuthentication()
+            && !app(EmailVerificationPilot::class)->verified($existing);
+        $message = !$existing->isAccountEligibleForAuthentication()
+            ? 'An account with this email already exists. Please contact support for help accessing it.'
+            : ($verificationRequired
+                ? 'An account with this email already exists. Please verify your email, then log in.'
+                : 'An account with this email already exists. Please log in.');
+
+        throw new PublicApiException($message, 'account_exists', 422, [
+            'errors' => ['email' => [$message]],
+            'email_verification_required' => $verificationRequired,
+        ]);
     }
 
     public function login(Request $request)
