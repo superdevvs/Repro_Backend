@@ -573,19 +573,23 @@ class PhotographerAvailabilityService
 
     /**
      * Availability booked-block / conflict duration in minutes.
-     * Uses the same appointment duration as booking and calendar events.
+     * Always the booked-block duration (2h / 120); never stretched from services.
      *
      * @param Shoot $shoot
      * @return int Duration in minutes
      */
     protected function calculateShootDuration(Shoot $shoot): int
     {
-        return app(\App\Services\Shoots\ShootDurationResolver::class)->forShoot($shoot);
+        // Product rule: availability booked blocks / conflict windows are always
+        // the booked-block duration (2h / 120). Do not stretch from service durations
+        // up to max_shoot_duration_minutes (or inflated multi-service envelopes).
+        return (int) config('availability.booked_block_duration_minutes', 120);
     }
 
     protected function calculateServiceItemDuration(ShootService $item): int
     {
-        return app(\App\Services\Shoots\ShootDurationResolver::class)->forServiceItem($item);
+        // Same product rule for service-item booked blocks on the availability calendar.
+        return (int) config('availability.booked_block_duration_minutes', 120);
     }
 
     /**

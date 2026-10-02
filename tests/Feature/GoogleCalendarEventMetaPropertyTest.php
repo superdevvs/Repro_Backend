@@ -204,7 +204,7 @@ class GoogleCalendarEventMetaPropertyTest extends TestCase
      *
      * For any schedulable shoot, the event end time equals the start time plus
      * `ShootMutationSupportService::calculateShootDurationFromShoot()`. These fixtures
-     * have no explicit appointment durations, so the configured default applies.
+     * have no explicit appointment durations, so booked_block_duration_minutes applies.
      */
     public function test_end_time_equals_start_plus_clamped_duration(): void
     {
@@ -218,7 +218,8 @@ class GoogleCalendarEventMetaPropertyTest extends TestCase
             // Multiple simultaneous default-duration services share one appointment.
             $configuredDefault = mt_rand(60, 180);
             config([
-                'availability.default_shoot_duration_minutes' => $configuredDefault,
+                'availability.default_shoot_duration_minutes' => 60,
+                'availability.booked_block_duration_minutes' => $configuredDefault,
                 'availability.min_shoot_duration_minutes' => 60,
                 'availability.max_shoot_duration_minutes' => 240,
             ]);
@@ -251,7 +252,7 @@ class GoogleCalendarEventMetaPropertyTest extends TestCase
             $this->assertSame(
                 $configuredDefault,
                 $expectedMinutes,
-                "Services without explicit appointment lengths use the configured default. {$context}"
+                "Booked-block window uses availability.booked_block_duration_minutes. {$context}"
             );
 
             // end == start + calculateShootDurationFromShoot() minutes (Req 4.1).
@@ -264,9 +265,10 @@ class GoogleCalendarEventMetaPropertyTest extends TestCase
             $this->assertTrue($end->greaterThan($start), "end must be after start. {$context}");
         }
 
-        // A shoot without services receives the ordinary one-hour appointment.
+        // A shoot without services still occupies the fixed 2h booked-block window.
         config([
             'availability.default_shoot_duration_minutes' => 60,
+            'availability.booked_block_duration_minutes' => 120,
             'availability.min_shoot_duration_minutes' => 30,
             'availability.max_shoot_duration_minutes' => 240,
         ]);
@@ -278,9 +280,9 @@ class GoogleCalendarEventMetaPropertyTest extends TestCase
         $fresh = $defaultShoot->fresh(['services', 'client']);
 
         $this->assertSame(
-            60,
+            120,
             $support->calculateShootDurationFromShoot($fresh),
-            'default duration with no services must be 60 minutes.'
+            'booked-block duration with no services must be 120 minutes.'
         );
 
         $payload = $builder->build($fresh, $defaultShoot->photographer);
@@ -288,9 +290,9 @@ class GoogleCalendarEventMetaPropertyTest extends TestCase
         $end = Carbon::parse($payload['end']['dateTime']);
 
         $this->assertSame(
-            60,
+            120,
             (int) $start->diffInMinutes($end),
-            'default (no-service) event must span exactly 60 minutes.'
+            'default (no-service) event must span exactly 120 minutes (booked block).'
         );
     }
 

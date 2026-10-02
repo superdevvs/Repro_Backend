@@ -22,7 +22,8 @@ class PhotographerAvailabilityConflictTimezoneTest extends TestCase
         config([
             'app.timezone' => 'UTC',
             'availability.buffer_time_minutes' => 30,
-            'availability.default_shoot_duration_minutes' => 120,
+            'availability.default_shoot_duration_minutes' => 60,
+            'availability.booked_block_duration_minutes' => 120,
         ]);
 
         $photographer = User::factory()->create([
@@ -86,7 +87,8 @@ class PhotographerAvailabilityConflictTimezoneTest extends TestCase
         config([
             'app.timezone' => 'UTC',
             'availability.buffer_time_minutes' => 30,
-            'availability.default_shoot_duration_minutes' => 120,
+            'availability.default_shoot_duration_minutes' => 60,
+            'availability.booked_block_duration_minutes' => 120,
         ]);
 
         $photographer = User::factory()->create([
@@ -142,7 +144,8 @@ class PhotographerAvailabilityConflictTimezoneTest extends TestCase
         config([
             'app.timezone' => 'UTC',
             'availability.buffer_time_minutes' => 30,
-            'availability.default_shoot_duration_minutes' => 120,
+            'availability.default_shoot_duration_minutes' => 60,
+            'availability.booked_block_duration_minutes' => 120,
         ]);
 
         $photographer = User::factory()->create([

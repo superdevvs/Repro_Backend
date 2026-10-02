@@ -884,7 +884,8 @@ class PhotographerAvailabilityController extends Controller
      */
     protected function calculateShootDurationFromShoot($shoot): int
     {
-        return app(\App\Services\Shoots\ShootDurationResolver::class)->forShoot($shoot);
+        // Availability calendar booked blocks are always the booked-block duration (2h / 120).
+        return (int) config('availability.booked_block_duration_minutes', 120);
     }
     
     /**

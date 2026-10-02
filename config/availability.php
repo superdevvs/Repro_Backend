@@ -35,8 +35,14 @@ return [
     // Canonical fallback end time (24h H:i) when no configured hours exist
     'fallback_end_time' => env('AVAILABILITY_FALLBACK_END', '18:00'),
 
-    // Default shoot duration in minutes if services don't specify
+    // Scheduling/catalog default when a service has no explicit shoot_duration_minutes.
+    // Used by ShootDurationResolver, Service::getShootDurationMinutes, booking_duration_defaults.
     'default_shoot_duration_minutes' => (int) env('DEFAULT_SHOOT_DURATION', 60),
+
+    // Fixed availability booked-block / conflict / Google Calendar window (minutes).
+    // MUST stay independent of default_shoot_duration_minutes so scheduling can be 60
+    // without shrinking photographer availability occupancy to 1h.
+    'booked_block_duration_minutes' => (int) env('AVAILABILITY_BOOKED_BLOCK_DURATION', 120),
 
     // Minimum shoot duration in minutes
     'min_shoot_duration_minutes' => 30,

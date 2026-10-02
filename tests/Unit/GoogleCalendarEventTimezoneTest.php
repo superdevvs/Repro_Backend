@@ -20,7 +20,8 @@ class GoogleCalendarEventTimezoneTest extends TestCase
 
         config([
             'app.timezone' => 'UTC',
-            'availability.default_shoot_duration_minutes' => 120,
+            'availability.default_shoot_duration_minutes' => 60,
+            'availability.booked_block_duration_minutes' => 120,
         ]);
     }
 

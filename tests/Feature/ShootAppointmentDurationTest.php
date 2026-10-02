@@ -24,18 +24,19 @@ class ShootAppointmentDurationTest extends TestCase
         config([
             'app.timezone' => 'UTC',
             'availability.default_shoot_duration_minutes' => 60,
+            'availability.booked_block_duration_minutes' => 120,
             'availability.min_shoot_duration_minutes' => 30,
         ]);
     }
 
-    public function test_default_calendar_event_is_one_hour_and_ignores_delivery_turnaround(): void
+    public function test_default_calendar_event_is_two_hours_and_ignores_delivery_turnaround(): void
     {
         [$shoot, $service] = $this->shoot();
         $service->update(['delivery_time' => 48]);
         $payload = app(GoogleCalendarEventPayloadBuilder::class)->build($shoot->fresh(), $shoot->photographer);
 
         $this->assertSame('2026-10-01T12:30:00-04:00', $payload['start']['dateTime']);
-        $this->assertSame('2026-10-01T13:30:00-04:00', $payload['end']['dateTime']);
+        $this->assertSame('2026-10-01T14:30:00-04:00', $payload['end']['dateTime']);
         $this->assertSame(['default_minutes' => 60, 'min_minutes' => 30, 'max_minutes' => 240], $service->booking_duration_defaults);
     }
 
@@ -57,7 +58,8 @@ class ShootAppointmentDurationTest extends TestCase
         $this->assertSame($minutes, $resolver->forShoot($shoot->fresh()));
         $this->assertSame($minutes, $resolver->forServiceItem($item));
         $this->assertSame($whole['end'], $line['end']);
-        $this->assertSame($minutes, (int) Carbon::parse($whole['start']['dateTime'])->diffInMinutes(Carbon::parse($whole['end']['dateTime'])));
+        // Availability/GCal booked window is always the configured 2h default.
+        $this->assertSame(120, (int) Carbon::parse($whole['start']['dateTime'])->diffInMinutes(Carbon::parse($whole['end']['dateTime'])));
     }
 
     public function test_unit_tier_applies_without_snapshot_and_a_booked_snapshot_survives_tier_edits(): void
@@ -73,13 +75,14 @@ class ShootAppointmentDurationTest extends TestCase
 
         $this->assertSame(60, $resolver->forServiceItem($item->fresh()));
         $this->assertSame(60, $resolver->forShoot($shoot->fresh()));
-        $this->assertSame('2026-10-01T13:30:00-04:00', $builder->buildForServiceItem($shoot, $item->fresh(), $shoot->photographer)['end']['dateTime']);
+        $this->assertSame('2026-10-01T14:30:00-04:00', $builder->buildForServiceItem($shoot, $item->fresh(), $shoot->photographer)['end']['dateTime']);
 
         $item->update(['duration_minutes' => 90]);
         $range->update(['duration' => 30]);
         $this->assertSame(90, $resolver->forServiceItem($item->fresh()));
         $this->assertSame(90, $resolver->forShoot($shoot->fresh()));
-        $this->assertSame('2026-10-01T14:00:00-04:00', $builder->build($shoot->fresh(), $shoot->photographer)['end']['dateTime']);
+        // GCal aggregate uses fixed 2h availability window, not the 90-minute snapshot.
+        $this->assertSame('2026-10-01T14:30:00-04:00', $builder->build($shoot->fresh(), $shoot->photographer)['end']['dateTime']);
     }
 
     public function test_simultaneous_services_share_a_window_and_staggered_same_day_visits_extend_it(): void
@@ -143,19 +146,23 @@ class ShootAppointmentDurationTest extends TestCase
         $this->assertSame(60, app(ShootDurationResolver::class)->forShoot($shoot));
         $payload = app(GoogleCalendarEventPayloadBuilder::class)->build($shoot, $shoot->photographer);
         $this->assertSame('2026-10-01T12:30:00-04:00', $payload['start']['dateTime']);
-        $this->assertSame('2026-10-01T13:30:00-04:00', $payload['end']['dateTime']);
+        $this->assertSame('2026-10-01T14:30:00-04:00', $payload['end']['dateTime']);
     }
 
-    public function test_conflicts_use_saved_duration_and_retain_the_thirty_minute_travel_buffer(): void
+    public function test_conflicts_use_fixed_two_hour_block_and_retain_the_thirty_minute_travel_buffer(): void
     {
         config(['availability.buffer_time_minutes' => 30]);
         [$shoot] = $this->shoot(30);
         $availability = app(PhotographerAvailabilityService::class);
+        // Shoot at 12:30 with fixed 120m block + 30m buffer occupies through 14:30+buffer.
         $this->assertFalse($availability->isAvailable($shoot->photographer_id, Carbon::parse('2026-10-01T13:00:00-04:00'), 30, null, 'America/New_York'));
-        $this->assertTrue($availability->isAvailable($shoot->photographer_id, Carbon::parse('2026-10-01T13:30:00-04:00'), 30, null, 'America/New_York'));
+        $this->assertFalse($availability->isAvailable($shoot->photographer_id, Carbon::parse('2026-10-01T14:00:00-04:00'), 30, null, 'America/New_York'));
+        // First free slot after 12:30+120+30 buffer = 15:00
+        $this->assertTrue($availability->isAvailable($shoot->photographer_id, Carbon::parse('2026-10-01T15:00:00-04:00'), 30, null, 'America/New_York'));
+        // Changing saved service duration must NOT stretch the availability block.
         $shoot->serviceItems()->update(['duration_minutes' => 90]);
         $this->assertFalse($availability->isAvailable($shoot->photographer_id, Carbon::parse('2026-10-01T14:00:00-04:00'), 30, null, 'America/New_York'));
-        $this->assertTrue($availability->isAvailable($shoot->photographer_id, Carbon::parse('2026-10-01T14:30:00-04:00'), 30, null, 'America/New_York'));
+        $this->assertTrue($availability->isAvailable($shoot->photographer_id, Carbon::parse('2026-10-01T15:00:00-04:00'), 30, null, 'America/New_York'));
     }
 
     public function test_each_photographer_calendar_and_booked_block_uses_only_their_appointments(): void
@@ -180,9 +187,9 @@ class ShootAppointmentDurationTest extends TestCase
         $this->assertSame(30, $resolver->forShoot($shoot));
         $this->assertSame(90, $resolver->forShoot($shoot, $secondary->id));
         $this->assertSame('2026-10-01T12:30:00-04:00', $primary['start']['dateTime']);
-        $this->assertSame('2026-10-01T13:00:00-04:00', $primary['end']['dateTime']);
+        $this->assertSame('2026-10-01T14:30:00-04:00', $primary['end']['dateTime']);
         $this->assertSame('2026-10-01T15:00:00-04:00', $other['start']['dateTime']);
-        $this->assertSame('2026-10-01T16:30:00-04:00', $other['end']['dateTime']);
+        $this->assertSame('2026-10-01T17:00:00-04:00', $other['end']['dateTime']);
         $this->assertSame(30, $resolver->forServices([
             ['id' => $primaryService->id, 'duration_minutes' => 30, 'photographer_id' => $shoot->photographer_id],
             ['id' => $secondaryService->id, 'duration_minutes' => 90, 'photographer_id' => $secondary->id],
@@ -192,7 +199,7 @@ class ShootAppointmentDurationTest extends TestCase
         $this->assertNotEmpty($booked);
         foreach ($booked as $slot) {
             $this->assertSame('12:30', $slot['start_time']);
-            $this->assertSame('13:00', $slot['end_time']);
+            $this->assertSame('14:30', $slot['end_time']);
         }
         $unassignedViewer = User::factory()->create(['role' => 'client', 'timezone' => 'America/New_York']);
         $this->assertSame($primary['end'], $builder->build($shoot, $unassignedViewer)['end']);

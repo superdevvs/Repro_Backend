@@ -56,8 +56,9 @@ class GoogleCalendarEventPayloadBuilder
 
         $timezone = $this->calendarTimezone($shoot, $user);
         $start = $this->calendarStart($shoot, $scheduledAt, $timezone);
-        // Share the appointment window with booking checks: default 60 minutes,
-        // retaining longer booked service durations and same-day scheduled visits.
+        // Req 4.1: end = start + booked-window duration. calculateShootDurationFromShoot()
+        // always returns availability.booked_block_duration_minutes (120 / 2h) so calendar
+        // events match availability booked blocks and do not stretch toward max (240).
         $end = $start->copy()->addMinutes($this->support->calculateShootDurationFromShoot($shoot, $photographerId));
 
         return array_filter([
@@ -499,7 +500,8 @@ class GoogleCalendarEventPayloadBuilder
 
     protected function calculateServiceItemDuration(ShootService $serviceItem): int
     {
-        return app(ShootDurationResolver::class)->forServiceItem($serviceItem);
+        // Product rule: GCal service-item events match availability booked blocks (2h / 120).
+        return (int) config('availability.booked_block_duration_minutes', 120);
     }
 
 

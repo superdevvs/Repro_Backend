@@ -405,17 +405,24 @@ class ShootMutationSupportService
 
     public function calculateShootDurationFromServices(array $services, ?int $sqft = null, ?\DateTimeInterface $appointmentStart = null, ?string $timezone = null, ?int $photographerId = null): int
     {
-        return app(ShootDurationResolver::class)->forServices($services, $sqft, $appointmentStart, $timezone, $photographerId);
+        // Product rule: scheduling conflict windows match availability calendar
+        // booked blocks — always the booked-block duration (2h / 120). Do not stretch
+        // from per-service durations / envelopes up to max_shoot_duration_minutes.
+        return (int) config('availability.booked_block_duration_minutes', 120);
     }
 
     public function calculateServiceItemDuration(?Service $service): int
     {
+        // Catalogue/default appointment length for a single service (Book Shoot UI).
+        // Availability booked blocks use calculateShootDurationFrom* (fixed 2h) instead.
         return app(ShootDurationResolver::class)->forService($service);
     }
 
     public function calculateShootDurationFromShoot(Shoot $shoot, ?int $photographerId = null): int
     {
-        return app(ShootDurationResolver::class)->forShoot($shoot, $photographerId);
+        // Product rule: booked window / Google Calendar event length matches
+        // availability calendar — always the booked-block duration (2h / 120).
+        return (int) config('availability.booked_block_duration_minutes', 120);
     }
 
     public function attachServices(Shoot $shoot, array $services): void
