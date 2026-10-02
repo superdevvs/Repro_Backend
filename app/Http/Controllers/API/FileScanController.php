@@ -126,7 +126,7 @@ class FileScanController extends Controller
 
         $localPath = $this->fileAccess->findLocalFilePath($file);
         if ($localPath && file_exists($localPath)) {
-            $response = response()->download($localPath, $filename, $headers);
+            $response = $this->mediaStorage->localResponse($localPath, $filename, $headers, (int) $shoot->id);
         } else {
             foreach ([$file->path, $file->storage_path] as $candidate) {
                 $key = $this->mediaStorage->normalizeKey($candidate);
@@ -142,9 +142,7 @@ class FileScanController extends Controller
             if (! $response) {
                 $temporaryPath = $this->fileAccess->downloadFromDropbox($file);
                 if ($temporaryPath && file_exists($temporaryPath)) {
-                    $response = response()
-                        ->download($temporaryPath, $filename, $headers)
-                        ->deleteFileAfterSend(true);
+                    $response = $this->mediaStorage->temporaryDownload($temporaryPath, $filename, $headers, (int) $shoot->id);
                 }
             }
         }

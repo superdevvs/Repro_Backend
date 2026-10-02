@@ -48,6 +48,7 @@ class SystemOverviewTelemetryService
         'action',
         'blocker',
         'error',
+        'transfer',
     ];
 
     private const REDACTED_KEYS = [
@@ -125,7 +126,7 @@ class SystemOverviewTelemetryService
                 'controller_action' => $this->resolveControllerAction($request->route()),
                 'status_code' => $response->getStatusCode(),
                 'duration_ms' => $durationMs,
-                'request_bytes' => strlen((string) $request->getContent()),
+                'request_bytes' => $this->requestBytes($request),
                 'response_bytes' => strlen((string) $response->getContent()),
                 'blocker_type' => $blocker['type'],
                 'blocker_message' => $blocker['message'],
@@ -186,7 +187,7 @@ class SystemOverviewTelemetryService
                 'controller_action' => $this->resolveControllerAction($request->route()),
                 'status_code' => $status,
                 'duration_ms' => $durationMs,
-                'request_bytes' => strlen((string) $request->getContent()),
+                'request_bytes' => $this->requestBytes($request),
                 'response_bytes' => 0,
                 'blocker_type' => 'error',
                 'blocker_message' => ApiErrorResponder::defaultMessage($status),
@@ -250,6 +251,13 @@ class SystemOverviewTelemetryService
             return null;
         }
 
+        $transfer = $type === 'transfer'
+            ? \App\Services\Media\TransferTelemetry::validate($event['transfer'] ?? null)
+            : null;
+        if ($type === 'transfer' && $transfer === null) {
+            return null;
+        }
+
         $occurredAt = isset($event['occurredAt']) ? Carbon::parse($event['occurredAt']) : now();
         // A browser may correlate only to a server-issued trace owned by this user.
         $requestedTrace = $event['traceId'] ?? null;
@@ -272,6 +280,11 @@ class SystemOverviewTelemetryService
             ],
         ]);
         $payloadSummary = $this->summarizePayload($event['payload'] ?? Arr::except($event, ['type']));
+        if ($transfer !== null) {
+            // Numeric transfer metrics have their own allowlist; arbitrary event
+            // fields still pass through the existing privacy redaction.
+            $payloadSummary = ['transfer' => $transfer];
+        }
 
         SystemOverviewRouteEvent::query()->create([
             'system_overview_session_id' => $session?->id,
@@ -700,13 +713,18 @@ class SystemOverviewTelemetryService
             return $this->summarizePayload($request->query());
         }
 
-        $payload = $request->all();
-        if ($payload === []) {
-            $decoded = json_decode((string) $request->getContent(), true);
-            $payload = is_array($decoded) ? $decoded : [];
-        }
+        return $this->summarizePayload($request->all());
+    }
 
-        return $this->summarizePayload($payload);
+    private function requestBytes(Request $request): int
+    {
+        // Never materialize raw chunk bodies just to measure them. Unknown
+        // lengths are recorded as zero; Nginx transfer logs measure actual bytes.
+        $length = $request->headers->get('Content-Length');
+
+        return is_string($length) && ctype_digit($length)
+            ? (int) min((float) $length, PHP_INT_MAX)
+            : 0;
     }
 
     private function responseSummary(Response $response): ?array

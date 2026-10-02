@@ -78,7 +78,10 @@ class DownloadSelectedShootFilesAction
         $size = $request->input('size', 'original');
         $needsWatermark = false;
 
-        $zipPath = storage_path('app/temp/shoot-'.$shoot->id.'-download-'.time().'.zip');
+        $zipPath = tempnam(sys_get_temp_dir(), 'shoot-selection-');
+        if ($zipPath === false) {
+            throw new \RuntimeException('Failed to create temporary ZIP file');
+        }
         if (! file_exists(dirname($zipPath))) {
             mkdir(dirname($zipPath), 0755, true);
         }
@@ -113,16 +116,19 @@ class DownloadSelectedShootFilesAction
                 if ($size === 'small' && in_array($extension, ['jpg', 'jpeg', 'png', 'webp'], true)) {
                     $downloadName = pathinfo($downloadName, PATHINFO_FILENAME).'.'.$extension;
                 }
-                $zip->addFile($localPath, $this->deliveryFilenameFormatter->deduplicate(
+                app(\App\Services\Media\ArchiveCompressionPolicy::class)->addFile($zip, $localPath, $this->deliveryFilenameFormatter->deduplicate(
                     $this->deliveryFilenameFormatter->format($position, $total, $downloadName),
                     $usedNames
-                ));
+                ), (int) $shoot->id);
                 $addedFiles++;
                 $position++;
             }
         }
 
-        $zip->close();
+        if (! $zip->close()) {
+            @unlink($zipPath);
+            throw new \RuntimeException('Failed to finish ZIP file');
+        }
 
         if ($addedFiles === 0) {
             @unlink($zipPath);
@@ -136,7 +142,7 @@ class DownloadSelectedShootFilesAction
             return response()->json(['error' => 'No downloadable files available'], 404);
         }
 
-        return response()->download($zipPath, $this->archiveFilenameFormatter->selection($shoot, $size))->deleteFileAfterSend(true);
+        return app(\App\Services\Media\MediaStorage::class)->temporaryDownload($zipPath, $this->archiveFilenameFormatter->selection($shoot, $size), [], (int) $shoot->id);
     }
 
     protected function resolveDownloadPath($file, string $size, bool $needsWatermark, array &$pendingWatermarks): ?string

@@ -14,15 +14,15 @@ use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Validator;
-use Symfony\Component\HttpFoundation\BinaryFileResponse;
-use Symfony\Component\HttpFoundation\StreamedResponse;
+use Symfony\Component\HttpFoundation\HeaderUtils;
+use Symfony\Component\HttpFoundation\Response;
 
 class ImageDownloadController extends Controller
 {
     /**
      * Download original image file
      */
-    public function downloadOriginal(Request $request, $fileId): StreamedResponse|JsonResponse|\Illuminate\Http\RedirectResponse
+    public function downloadOriginal(Request $request, $fileId): Response
     {
         $validator = Validator::make(['file_id' => $fileId], [
             'file_id' => 'required|integer|exists:shoot_files,id',
@@ -99,8 +99,7 @@ class ImageDownloadController extends Controller
             ]);
 
             return $media->downloadResponse($shootFile->path, $fileName, [
-                'Content-Type' => $mimeType,
-                'Content-Disposition' => 'attachment; filename="' . $fileName . '"'
+                'Content-Type' => $mimeType
             ]);
 
         } catch (\Exception $e) {
@@ -173,12 +172,10 @@ class ImageDownloadController extends Controller
 
             $fileName = pathinfo($shootFile->filename, PATHINFO_FILENAME) . '_web.jpg';
             $mimeType = 'image/jpeg';
-            $disk = app(\App\Services\Media\MediaStorage::class)->diskFor($webPath);
-
-            return $disk->download($webPath, $fileName, [
+            return $media->streamResponse($webPath, $mimeType, [
                 'Content-Type' => $mimeType,
                 'Cache-Control' => 'private, no-store',
-                'Content-Disposition' => 'inline; filename="' . $fileName . '"'
+                'Content-Disposition' => HeaderUtils::makeDisposition('inline', $fileName, 'preview.jpg')
             ]);
 
         } catch (\Exception $e) {
@@ -194,7 +191,7 @@ class ImageDownloadController extends Controller
     /**
      * Download multiple files as ZIP
      */
-    public function downloadMultiple(Request $request): BinaryFileResponse|JsonResponse|StreamedResponse
+    public function downloadMultiple(Request $request): Response
     {
         $validator = Validator::make($request->all(), [
             'file_ids' => 'required|array',
@@ -240,7 +237,10 @@ class ImageDownloadController extends Controller
 
             // Create ZIP file
             $zipFileName = 'images_' . date('Y-m-d_H-i-s') . '.zip';
-            $zipPath = tempnam(sys_get_temp_dir(), 'download_') . '.zip';
+            $zipPath = tempnam(sys_get_temp_dir(), 'download_');
+            if ($zipPath === false) {
+                throw new \RuntimeException('Failed to create temporary ZIP file');
+            }
 
             $zip = new \ZipArchive();
             if ($zip->open($zipPath, \ZipArchive::CREATE | \ZipArchive::OVERWRITE) !== TRUE) {
@@ -267,7 +267,7 @@ class ImageDownloadController extends Controller
 
                 $filePath = $media->absolutePath($file->path);
                 if ($filePath && file_exists($filePath)) {
-                    $zip->addFile($filePath, $entryName);
+                    app(\App\Services\Media\ArchiveCompressionPolicy::class)->addFile($zip, $filePath, $entryName, (int) $file->shoot_id);
                     $position++;
                     continue;
                 }
@@ -279,13 +279,15 @@ class ImageDownloadController extends Controller
                         $tmp = tempnam(sys_get_temp_dir(), 'r2zip_');
                         file_put_contents($tmp, $contents);
                         $tempSources[] = $tmp;
-                        $zip->addFile($tmp, $entryName);
+                        app(\App\Services\Media\ArchiveCompressionPolicy::class)->addFile($zip, $tmp, $entryName, (int) $file->shoot_id);
                         $position++;
                     }
                 }
             }
 
-            $zip->close();
+            if (! $zip->close()) {
+                throw new \RuntimeException('Failed to finish ZIP file');
+            }
 
             foreach ($tempSources as $tmp) {
                 @unlink($tmp);
@@ -299,10 +301,11 @@ class ImageDownloadController extends Controller
             ]);
 
             // Return ZIP file
-            return response()->download($zipPath, $zipFileName, [
+            $shootIds = collect($downloadableFiles)->pluck('shoot_id')->unique();
+            return $media->temporaryDownload($zipPath, $zipFileName, [
                 'Content-Type' => 'application/zip',
                 'Cache-Control' => 'private, no-store',
-            ])->deleteFileAfterSend(true);
+            ], $shootIds->count() === 1 ? (int) $shootIds->first() : null);
 
         } catch (\Exception $e) {
             \App\Services\ApiErrorResponder::log($e, 'error');

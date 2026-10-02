@@ -5,12 +5,13 @@ namespace App\Http\Controllers\API;
 use App\Http\Controllers\Controller;
 use App\Services\Media\MediaStorage;
 use Illuminate\Http\Request;
+use Illuminate\Support\Str;
 use Symfony\Component\HttpFoundation\HeaderUtils;
-use Symfony\Component\HttpFoundation\StreamedResponse;
+use Symfony\Component\HttpFoundation\Response;
 
 class PublicShootMediaFileController extends Controller
 {
-    public function show(Request $request, string $path, MediaStorage $media): StreamedResponse
+    public function show(Request $request, string $path, MediaStorage $media): Response
     {
         $key = $media->normalizeKey($path);
         if ($key === null
@@ -39,7 +40,8 @@ class PublicShootMediaFileController extends Controller
             $headers['Content-Type'] = 'application/zip';
             $headers['Content-Disposition'] = HeaderUtils::makeDisposition(
                 HeaderUtils::DISPOSITION_ATTACHMENT,
-                $filename
+                $filename,
+                preg_replace('/[^\x20-\x7E]|%/', '_', Str::ascii($filename)) ?: 'download.zip'
             );
         }
 

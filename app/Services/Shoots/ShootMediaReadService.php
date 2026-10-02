@@ -69,7 +69,7 @@ class ShootMediaReadService
         if ($localPath && file_exists($localPath)) {
             $mimeType = mime_content_type($localPath) ?: 'image/jpeg';
 
-            return response()->file($localPath, [
+            return $this->mediaStorage->localResponse($localPath, null, [
                 'Content-Type' => $mimeType,
                 'Cache-Control' => 'private, no-store',
             ]);
@@ -862,7 +862,7 @@ class ShootMediaReadService
         if ($localPath && file_exists($localPath)) {
             $mimeType = mime_content_type($localPath) ?: 'image/jpeg';
 
-            return response()->file($localPath, ['Content-Type' => $mimeType]);
+            return $this->mediaStorage->localResponse($localPath, null, ['Content-Type' => $mimeType]);
         }
 
         if (preg_match('/^https?:\/\//i', $path)) {

@@ -3,14 +3,13 @@
 namespace App\Services\Shoots\Actions;
 
 use App\Models\ShootFile;
+use App\Services\Media\MediaStorage;
 use App\Services\Shoots\DeliveryFilenameFormatter;
 use App\Services\Shoots\ShootFileAccessService;
 use App\Services\Shoots\ShootDownloadAssetClassifier;
 use App\Services\Shoots\ShootAuthorizationSupport;
-use Illuminate\Http\JsonResponse;
-use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
-use Symfony\Component\HttpFoundation\BinaryFileResponse;
+use Symfony\Component\HttpFoundation\Response;
 
 class DownloadShootMediaAction
 {
@@ -36,7 +35,7 @@ class DownloadShootMediaAction
         return $this->fileAccess->resolveFileUrl($file);
     }
 
-    public function downloadResponse(ShootFile $file, ?Request $request = null): BinaryFileResponse|JsonResponse|RedirectResponse
+    public function downloadResponse(ShootFile $file, ?Request $request = null): Response
     {
         $filename = $this->deliveryDownloadName($file);
 
@@ -50,13 +49,13 @@ class DownloadShootMediaAction
         foreach ($candidates as $candidate) {
             $localPath = $this->fileAccess->resolveLocalPath($candidate);
             if ($localPath && file_exists($localPath)) {
-                return response()->download($localPath, $filename);
+                return app(MediaStorage::class)->localResponse($localPath, $filename, [], (int) $file->shoot_id);
             }
         }
 
         $downloaded = $this->fileAccess->downloadFromDropbox($file);
         if ($downloaded && file_exists($downloaded)) {
-            return response()->download($downloaded, $filename)->deleteFileAfterSend(true);
+            return app(MediaStorage::class)->temporaryDownload($downloaded, $filename, [], (int) $file->shoot_id);
         }
 
         $url = $this->execute($file);
@@ -74,7 +73,7 @@ class DownloadShootMediaAction
         return response()->json(['message' => 'File not available'], 404);
     }
 
-    public function downloadFloorplanJpegResponse(ShootFile $file, int $page): BinaryFileResponse|JsonResponse
+    public function downloadFloorplanJpegResponse(ShootFile $file, int $page): Response
     {
         $classifier = app(ShootDownloadAssetClassifier::class);
         if (! $classifier->isPdf($file) || ! $classifier->isFloorplan($file)) {
@@ -99,8 +98,9 @@ class DownloadShootMediaAction
             return response()->json(['message' => 'This floorplan JPG page is not available.'], 404);
         }
         $name = pathinfo($this->deliveryDownloadName($file), PATHINFO_FILENAME).'-page-'.$page.'.jpg';
-        return response()->download($localPath, $name, ['Content-Type' => 'image/jpeg'])
-            ->deleteFileAfterSend($temporary);
+        return $temporary
+            ? app(MediaStorage::class)->temporaryDownload($localPath, $name, ['Content-Type' => 'image/jpeg'], (int) $file->shoot_id)
+            : app(MediaStorage::class)->localResponse($localPath, $name, ['Content-Type' => 'image/jpeg'], (int) $file->shoot_id);
     }
 
     private function allowsPreviewFallback(ShootFile $file): bool

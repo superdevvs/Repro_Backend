@@ -1,0 +1,121 @@
+RePro transfer performance rollout - 2026-10-02
+
+Activation is staged. All performance switches default to false. Keep PHP-FPM
+pm.max_children at 20. Never activate a later phase before the preceding phase
+has passed production checks and 24 hours of observation.
+
+RELEASE 1: authorized local downloads and transfer measurement
+
+Deploy the clean prepared backend/frontend releases through
+scripts/deploy/Deploy-App.ps1 -PreparedRelease. The frontend release adds
+authenticated numeric upload telemetry without changing concurrency.
+
+Administrator command, after reviewing the installed script and snippets:
+  sudo bash /var/www/backend/scripts/deploy/install-media-transfers.sh --phase downloads
+
+The installer checks the actual cached media roots and threaded Nginx support,
+backs up both hosts' configuration, installs internal-only aliases and sanitized
+transfer logging, validates nginx -t, and reloads. A failed validation restores
+the prior configuration. It does not alter application feature flags.
+
+Only after configuration verification, set in the existing production .env:
+  MEDIA_DOWNLOAD_OFFLOAD=true
+  MEDIA_PERFORMANCE_SHOOT_IDS=<controlled test shoot IDs, comma separated>
+Rebuild Laravel configuration as the deployment owner in the www-data group.
+Do not print or copy unrelated .env values. Verify both public host paths,
+private file authorization, expired signatures, scan/payment restrictions,
+HEAD, ranges, Unicode names, temporary ZIP retention and complete file hashes.
+The test shoot IDs restrict the feature; an empty list with the master switch
+true enables it globally. A false master switch disables all canaries as well.
+
+Check /var/log/nginx/repro-transfers.jsonl for total versus upstream timing and
+completed bytes. Its fields exclude filenames, query strings, signatures and
+bodies. Numeric browser transferMs and confirmationMs are stored in the existing
+authenticated telemetry route's transfer event. Unknown body lengths are not
+measured by reading raw request bodies. Native download completion cannot be
+inferred from browser navigation, so no fictitious timing is emitted.
+
+Production acceptance: 25 throttled downloads alongside uploads and light API
+requests, origin API p95 under 1s, no new PHP pool-limit events. Record the exact
+release, time, fixture and network location. Repeat the same real-file benchmark.
+Only broaden after authenticated photographer/editor flows and all checks pass.
+
+RELEASE 2: archive preparation
+
+After release 1 observation and release 2 deployment, administrator command:
+  sudo bash /var/www/backend/scripts/deploy/install-media-transfers.sh --phase archives
+
+This installs one media-archives worker on the existing database connection,
+with timeout=600; the existing retry_after must exceed 600. Then canary-enable:
+  MEDIA_ARCHIVE_STORE_COMPRESSED=true
+  MEDIA_ARCHIVE_DEDICATED_QUEUE=true
+  MEDIA_ARCHIVE_PREWARM=true
+  MEDIA_PERFORMANCE_SHOOT_IDS=<controlled test IDs>
+
+Refresh cached configuration and restart queue workers via the guarded workflow.
+Check cold full/scoped ZIPs, authorization after assignment changes, file order,
+source-byte hashes, prewarming/coalescing, and queue drain. Existing valid full
+archives are reused. Legacy scoped archives are reused only after conservative
+entry/order/size/timestamp/CRC validation. No global cache deletion is required.
+Benchmark targets: at least 50% less cold preparation on repeated real RAW
+fixtures totaling approximately 3 GB and 11 GB; keep these local results separate
+from actual production preparation and internet transfer measurements.
+
+RELEASE 3: reserved RAW batch concurrency
+
+After release 2 observation, deploy the additive migration/API and scheduler.
+Keep migrations and APIs installed during rollback so outstanding retries retain
+their identities and positions. Configure the independent RAW canary scope:
+  MEDIA_RAW_PARALLEL_UPLOADS_ENABLED=true
+  MEDIA_RAW_PARALLEL_UPLOAD_SHOOT_IDS=<controlled test IDs>
+
+A false master switch returns parallel_uploads=1. With the switch enabled an
+empty scope enables two RAW files globally; a nonempty scope limits it to those
+shoots. Three edited files may run together. Chunked files remain exclusive and
+service groups sequential. Preparation only falls back on an unsupported
+endpoint (404/405); validation/authorization/conflicts stop the batch.
+
+Reservations and slot identities survive cache expiry and shoot retries, with
+short LockedWrite transactions. Completed uploads replay their confirmed result;
+explicit retryable failures with no committed result can reclaim the same key.
+Pending attempts remain protected because an old request may still be writing.
+Do not clear pending keys by time alone. Old batches created before this release
+have no durable historic offset if their previous cache entry already expired.
+
+Verify out-of-order completion, simultaneous batches and SQLite contention,
+multiple services/lanes, unbatched older clients, >2-hour retries, interruption
+and cancellation. No missing files, duplicate results or bracket collisions.
+Target 20% faster RAW batches where server work/round trips contribute materially;
+record a network-bound batch separately and do not label it a backend speed gain.
+
+ROLLBACK
+
+Disable the affected master switch(es), rebuild cached config and verify the
+fallback path. Keep active upload tabs and additive reservation tables/API.
+Disable archive routing first and drain media-archives before removing its worker.
+To restore administrator configuration, use the backup printed by the installer:
+  sudo bash /var/www/backend/scripts/deploy/install-media-transfers.sh --restore /var/backups/repro-media-transfers/<timestamp>
+
+The installer refuses restoration while the relevant effective feature remains
+enabled or archive jobs remain queued. Restoration itself is backed up. Do not
+restore the root-owned aliases while application offload is active.
+
+EVIDENCE AND COMPLETION
+
+2026-10-02 production baseline used internal test shoots 649/650 and authenticated
+temporary photographer/editor users. All 54 user-provided RAW photos scanned
+clean, uploaded/finalized and round-tripped through ZIPs with matching SHA-256s.
+  Mill Island: 10 CR3, 466614620 bytes; upload251.255s, ZIPready28.332s, download25.837s.
+  Kahler Way: 44 NEF, 379835392 bytes; upload282.892s, ZIPready21.573s, download86.628s.
+  Editor: 10 JPEG previews derived from Mill Island, 1123955 bytes; upload7.124s,
+          finalize0.867s, shoot moved to review (no reproduced submission500).
+The XMP sidecar was excluded because it is not an accepted upload format.
+Both test shoots, uploaded assets, temporary users and tokens were deleted;
+verified remaining test shoots=0. User source folders were not modified.
+Detailed sanitized per-file timings and hashes are retained under the workspace's
+output/transfer-benchmark-20261002. Baseline uses public HTTPS from this Windows
+machine, not an affected user's ISP. Confirmation timings include return-network
+time as well as backend work. The backend remained 6d9ad0f throughout this baseline.
+
+Do not mark rollout complete until the post-deployment benchmark, both role flows,
+production offload/capacity evidence and each 24-hour observation gate are recorded.

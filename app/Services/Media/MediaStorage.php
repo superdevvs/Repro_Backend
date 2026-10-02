@@ -7,7 +7,7 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\URL;
 use League\Flysystem\UnableToRetrieveMetadata;
-use Symfony\Component\HttpFoundation\StreamedResponse;
+use Symfony\Component\HttpFoundation\Response;
 
 /**
  * Single funnel for all shoot-media storage access.
@@ -166,6 +166,38 @@ class MediaStorage
     public function r2Only(): bool
     {
         return (bool) config('media.r2_only', false);
+    }
+
+    /** Empty canary lists enable the flag globally; unknown shoots stay excluded. */
+    public function performanceEnabled(string $flag, ?int $shootId = null, ?string $key = null): bool
+    {
+        if (! (bool) config('media.'.$flag, false)) {
+            return false;
+        }
+        $canaries = config('media.performance_shoot_ids', []);
+        if ($canaries === []) {
+            return true;
+        }
+        if ($shootId === null && $key !== null
+            && preg_match('#^(?:shoots|editor-downloads)/(\d+)/#', $key, $matches)) {
+            $shootId = (int) $matches[1];
+        }
+        if ($shootId === null && app()->bound('request')) {
+            $shoot = request()->route('shoot');
+            $shootId = is_object($shoot) ? (int) $shoot->getKey() : (is_numeric($shoot) ? (int) $shoot : null);
+        }
+
+        return $shootId !== null && in_array($shootId, array_map('intval', $canaries), true);
+    }
+
+    public function localResponse(string $absolutePath, ?string $filename = null, array $headers = [], ?int $shootId = null): Response
+    {
+        return app(LocalMediaDelivery::class)->forPath($absolutePath, $filename, $headers, $shootId);
+    }
+
+    public function temporaryDownload(string $sourcePath, string $filename, array $headers = [], ?int $shootId = null): Response
+    {
+        return app(LocalMediaDelivery::class)->temporaryDownload($sourcePath, $filename, $headers, $shootId);
     }
 
     /**
@@ -609,15 +641,21 @@ class MediaStorage
      * Replaces the historical response()->file($localAbsolutePath) pattern that
      * assumed local-filesystem semantics.
      */
-    public function streamResponse(string $key, ?string $mimeType = null, array $headers = []): StreamedResponse
+    public function streamResponse(string $key, ?string $mimeType = null, array $headers = []): Response
     {
         $key = $this->normalizeKey($key) ?? '';
+        $delivery = app(LocalMediaDelivery::class);
+        $delivery->assertSafeKey($key);
         $disk = $this->diskFor($key);
         if ($disk === null) {
             abort(404);
         }
 
         $mime = $mimeType ?: ($headers['Content-Type'] ?? $this->responseMimeType($disk, $key));
+        $headers['Content-Type'] = $mime;
+        if (($response = $delivery->forDisk($disk, $key, $headers)) !== null) {
+            return $response;
+        }
 
         // Advertise Content-Length when the backing store can report size so
         // browsers/Cloudflare can stream multi-GB archives without hanging on
@@ -651,15 +689,21 @@ class MediaStorage
         ], $headers));
     }
 
-    public function downloadResponse(string $key, string $filename, array $headers = [])
+    public function downloadResponse(string $key, string $filename, array $headers = []): Response
     {
         $key = $this->normalizeKey($key) ?? '';
+        $delivery = app(LocalMediaDelivery::class);
+        $delivery->assertSafeKey($key);
         $disk = $this->diskFor($key);
         if ($disk === null) {
             abort(404);
         }
 
         $headers['Content-Type'] ??= $this->responseMimeType($disk, $key);
+        $headers = $delivery->headers($headers, $filename);
+        if (($response = $delivery->forDisk($disk, $key, $headers)) !== null) {
+            return $response;
+        }
 
         return $disk->download($key, $filename, array_merge([
             'Cache-Control' => 'private, no-store',

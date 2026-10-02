@@ -1,0 +1,20 @@
+[Unit]
+Description=RePro media archive queue (one worker)
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/backend
+ExecStart=/usr/bin/php /var/www/backend/artisan queue:work database --queue=media-archives --sleep=2 --tries=3 --timeout=600 --max-time=3600
+Restart=always
+RestartSec=3
+KillSignal=SIGTERM
+TimeoutStopSec=660
+UMask=0007
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

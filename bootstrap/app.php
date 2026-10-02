@@ -77,6 +77,7 @@ return Application::configure(basePath: dirname(__DIR__))
             ->onOneServer();
         // Completed/failed upload replays expire after 30 days; pending attempts are never pruned.
         $schedule->command('model:prune')->dailyAt('03:45')->withoutOverlapping()->onOneServer();
+        $schedule->command('media:prune-downloads')->hourly()->withoutOverlapping()->onOneServer();
     })
     ->withMiddleware(function (Middleware $middleware) {
         $middleware->prepend(\App\Http\Middleware\ApiRequestContextMiddleware::class);

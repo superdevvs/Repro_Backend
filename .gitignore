@@ -36,3 +36,6 @@ verify_reel.php
 *.crt
 *.cer
 *.jks
+
+# Python deployment/integration helper bytecode is local test output.
+__pycache__/
