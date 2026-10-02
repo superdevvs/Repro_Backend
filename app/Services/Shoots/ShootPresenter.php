@@ -658,6 +658,9 @@ class ShootPresenter
         $shoot->tour_links = $tourLinks;
         $shoot->setAttribute('editor_assignments', $editorAssignments);
         $shoot->setAttribute('editorAssignments', $editorAssignments);
+        $canSubmitEdits = app(ShootSubmissionCapabilityService::class)->canSubmitEdits($shoot, $requestingUser);
+        $shoot->setAttribute('can_submit_edits', $canSubmitEdits);
+        $shoot->setAttribute('canSubmitEdits', $canSubmitEdits);
         $shoot->setAttribute('deliveryStatus', $shoot->delivery_status ?? 'not_started');
 
         try {

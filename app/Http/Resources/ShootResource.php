@@ -690,50 +690,8 @@ class ShootResource extends JsonResource
 
     protected function computeCanSubmitEdits(?User $user): bool
     {
-        if (! $user) {
-            return false;
-        }
-
-        $role = strtolower((string) ($user->role ?? ''));
-        $allowedRoles = ['admin', 'superadmin', 'editing_manager', 'editor'];
-        if (! in_array($role, $allowedRoles, true)) {
-            return false;
-        }
-
-        $status = strtolower((string) ($this->workflow_status ?? $this->status ?? ''));
-        $hasEditedFiles = (int) ($this->edited_photo_count ?? 0) > 0
-            || $this->files()
-                ->whereIn('workflow_stage', [ShootFile::STAGE_COMPLETED, ShootFile::STAGE_VERIFIED])
-                ->exists();
-
-        if (! $hasEditedFiles) {
-            return false;
-        }
-
-        if (in_array($status, self::SUBMIT_EDITED_ALLOWED_STATUSES, true)) {
-            return true;
-        }
-
-        // While in review, only editing-manager-style roles can resubmit (skip review).
-        $canSkipReview = in_array($role, self::SUBMIT_EDITED_SKIP_REVIEW_ROLES, true);
-        if ($status === 'review') {
-            return $canSkipReview;
-        }
-
-        if ($status !== 'ready') {
-            return false;
-        }
-
-        if (! $this->editing_completed_at) {
-            return true;
-        }
-
-        return $this->files()
-            ->whereIn('workflow_stage', [ShootFile::STAGE_COMPLETED, ShootFile::STAGE_VERIFIED])
-            ->where('created_at', '>', $this->editing_completed_at)
-            ->exists();
+        return app(\App\Services\Shoots\ShootSubmissionCapabilityService::class)->canSubmitEdits($this->resource, $user);
     }
-
     protected function computeCanApproveEditingReview(?User $user): bool
     {
         if (! $user) {

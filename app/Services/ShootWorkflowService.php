@@ -205,6 +205,9 @@ class ShootWorkflowService
         $laneAssignments = [];
 
         $this->writeTransaction(function () use ($shoot, $user, $humanLanes, &$laneAssignments) {
+            if ($humanLanes === null) {
+                $this->shootEditingAssignmentService->prepareHumanEditingIntake($shoot);
+            }
             $shoot->status = self::STATUS_EDITING;
             $shoot->workflow_status = Shoot::WORKFLOW_EDITING;
             $shoot->photos_uploaded_at = now();

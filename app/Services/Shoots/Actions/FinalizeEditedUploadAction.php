@@ -71,6 +71,11 @@ class FinalizeEditedUploadAction
 
     public function execute(Shoot $shoot, ?User $user): array
     {
+        $assignments = app(\App\Services\Shoots\ShootEditingAssignmentService::class);
+        $capabilities = app(\App\Services\Shoots\ShootSubmissionCapabilityService::class);
+        if ($user?->role === 'editor' && !$assignments->editorHasAssignment($shoot, $user)) {
+            return ['status' => 403, 'payload' => ['error_type' => 'forbidden', 'message' => 'This shoot is not assigned to you.', 'workflow_status_changed' => false]];
+        }
         $lock = Cache::lock('shoot:finalize-edited:' . $shoot->id, 15);
 
         if (!$lock->get()) {
@@ -88,6 +93,7 @@ class FinalizeEditedUploadAction
             $workflowStatusChanged = false;
             $previousStatus = null;
             $shouldFireAutomations = false;
+            $editingSubmissionChanged = false;
 
             DB::beginTransaction();
 
@@ -122,9 +128,16 @@ class FinalizeEditedUploadAction
                 $idempotent = array_map('strtolower', self::IDEMPOTENT_STATUSES);
 
                 $canResubmitReady = in_array($currentStatus, [Shoot::STATUS_READY, 'ready'], true)
-                    && $this->hasNewEditedFilesSinceSubmit($shoot);
+                    && $this->hasNewEditedFilesSinceSubmit($shoot, $user);
+                $pendingEditorLane = $user?->role === 'editor' && $capabilities->pendingEditorAssignments($shoot, $user);
+                $canSubmitPendingLane = $pendingEditorLane && in_array($currentStatus, array_merge(['review', 'ready'], $capabilities::DELIVERED_STATUSES), true);
+                if ($user?->role === 'editor' && !$pendingEditorLane && !$canResubmitReady && $assignments->getTrackedServiceAssignments($shoot)->isNotEmpty()) {
+                    DB::commit();
+                    return ['status' => 200, 'payload' => ['message' => 'Your assigned edits are already submitted.', 'workflow_status_changed' => false,
+                        'editing_submission_changed' => false, 'shoot_status' => $shoot->workflow_status]];
+                }
 
-                if (!in_array($currentStatus, $allowedFromStatuses, true) && !$canResubmitReady) {
+                if (!in_array($currentStatus, $allowedFromStatuses, true) && !$canResubmitReady && !$canSubmitPendingLane) {
                     DB::commit();
 
                     if (in_array($currentStatus, $idempotent, true)) {
@@ -167,7 +180,7 @@ class FinalizeEditedUploadAction
                     ];
                 }
 
-                if ((int) $shoot->edited_photo_count <= 0) {
+                if ($capabilities->editedFiles($shoot, $user)->isEmpty() && !$capabilities->hasVideoLinkOutput($shoot, $user)) {
                     DB::rollBack();
                     return [
                         'status' => 422,
@@ -181,10 +194,18 @@ class FinalizeEditedUploadAction
                     ];
                 }
 
-                $targetStatus = $canSkipReview ? Shoot::STATUS_READY : Shoot::STATUS_REVIEW;
-                $shoot->updateWorkflowStatus($targetStatus, $user?->id ?? auth()->id());
-                $workflowStatusChanged = true;
-                $shouldFireAutomations = true;
+                if ($user) {
+                    $assignments->markAssignedServicesReadyForUser($shoot, $user);
+                }
+                $allLanesReady = $assignments->allTrackedLanesReady($shoot->fresh(['services.category']));
+                $targetStatus = in_array($currentStatus, $capabilities::DELIVERED_STATUSES, true) ? $currentStatus
+                    : ($allLanesReady ? ($canSkipReview ? Shoot::STATUS_READY : Shoot::STATUS_REVIEW) : Shoot::STATUS_EDITING);
+                $editingSubmissionChanged = true;
+                if ($targetStatus !== $currentStatus) {
+                    $shoot->updateWorkflowStatus($targetStatus, $user?->id ?? auth()->id());
+                    $workflowStatusChanged = true;
+                }
+                $shouldFireAutomations = $workflowStatusChanged && in_array($targetStatus, [Shoot::STATUS_READY, Shoot::STATUS_REVIEW], true);
 
                 DB::commit();
             } catch (\Throwable $exception) {
@@ -220,6 +241,9 @@ class FinalizeEditedUploadAction
                     ]);
                 }
 
+            }
+
+            if ($editingSubmissionChanged) {
                 try {
                     $this->activityLogger->log(
                         $shoot,
@@ -241,15 +265,23 @@ class FinalizeEditedUploadAction
                 }
             }
 
+            $message = 'Edited upload queue finalized with no workflow change';
+            if ($editingSubmissionChanged && $finalStatus === Shoot::STATUS_EDITING) {
+                $message = 'Your edits were submitted. Waiting for the remaining editing assignments.';
+            } elseif ($editingSubmissionChanged && !$workflowStatusChanged) {
+                $message = 'Your editing assignment was submitted. The shoot delivery status is unchanged.';
+            } elseif ($workflowStatusChanged) {
+                $message = $movedToReview
+                    ? 'Edits submitted to the editing manager for review.'
+                    : 'Edited files submitted successfully. Shoot is now Ready for finalization.';
+            }
+
             return [
                 'status' => 200,
                 'payload' => [
-                    'message' => $workflowStatusChanged
-                        ? ($movedToReview
-                            ? 'Edits submitted to the editing manager for review.'
-                            : 'Edited files submitted successfully. Shoot is now Ready for finalization.')
-                        : 'Edited upload queue finalized with no workflow change',
+                    'message' => $message,
                     'workflow_status_changed' => $workflowStatusChanged,
+                    'editing_submission_changed' => $editingSubmissionChanged,
                     'shoot_status' => $shoot->workflow_status,
                     'raw_photo_count' => $shoot->raw_photo_count,
                     'edited_photo_count' => $shoot->edited_photo_count,
@@ -264,15 +296,13 @@ class FinalizeEditedUploadAction
         }
     }
 
-    private function hasNewEditedFilesSinceSubmit(Shoot $shoot): bool
+    private function hasNewEditedFilesSinceSubmit(Shoot $shoot, ?User $user): bool
     {
         if (!$shoot->editing_completed_at) {
             return true;
         }
 
-        return $shoot->files()
-            ->whereIn('workflow_stage', [ShootFile::STAGE_COMPLETED, ShootFile::STAGE_VERIFIED])
-            ->where('created_at', '>', $shoot->editing_completed_at)
-            ->exists();
+        return app(\App\Services\Shoots\ShootSubmissionCapabilityService::class)->editedFiles($shoot, $user)
+            ->contains(fn ($file) => $file->created_at > $shoot->editing_completed_at);
     }
 }

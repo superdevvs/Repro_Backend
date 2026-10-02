@@ -138,12 +138,43 @@ class ShootEditingAssignmentService
         }
 
         if (method_exists($service, 'requiresEditing')) {
-            return $service->requiresEditing();
+            return $service->requiresEditing() || ($service->pivot?->id && ShootFile::query()
+                ->where('shoot_service_id', $service->pivot->id)->where('required_for_editing', true)->exists());
         }
 
         $value = $service->requires_editing ?? null;
 
         return $value === null ? true : (bool) $value;
+    }
+
+    /** An explicit human-editing dispatch includes ordinary intake files, even for optional editing services. */
+    public function prepareHumanEditingIntake(Shoot $shoot): void
+    {
+        $items = $shoot->serviceItems()->with('service')->get()
+            ->filter(fn ($item) => $item->service?->supportsPhotoIntake() || $item->service?->supportsVideoIntake());
+        $shoot->files()->whereIn('shoot_service_id', $items->modelKeys())
+            ->where('workflow_stage', ShootFile::STAGE_TODO)
+            ->where(fn ($query) => $query->where('is_extra', false)->orWhereNull('is_extra'))
+            ->update(['required_for_editing' => true]);
+        $shoot->unsetRelation('services');
+    }
+
+    /** Finalization completes only lanes with verified output; undelivered video remains open. */
+    public function markVerifiedLanesComplete(Shoot $shoot, ?int $serviceItemId = null): void
+    {
+        $files = $shoot->files()->where('workflow_stage', ShootFile::STAGE_VERIFIED)->get();
+        $assignments = $this->getTrackedServiceAssignments($shoot);
+        foreach ($assignments as $assignment) {
+            if ($serviceItemId && $assignment['shoot_service_id'] !== $serviceItemId) continue;
+            if (!empty($assignment['editing_completed_at'])) continue;
+            $outputs = $files->filter(fn ($file) => $this->getFileLane($file) === $assignment['lane']
+                && ((int) $file->shoot_service_id === $assignment['shoot_service_id']
+                    || (!$file->shoot_service_id && $assignments->where('lane', $assignment['lane'])->count() === 1)));
+            if ($outputs->isEmpty()) continue;
+            DB::table('shoot_service')->where('shoot_id', $shoot->id)->where('id', $assignment['shoot_service_id'])
+                ->whereNull($assignment['completed_column'])->update([$assignment['completed_column'] => $outputs->max('verified_at') ?? now(), 'updated_at' => now()]);
+        }
+        $shoot->unsetRelation('services');
     }
 
     public function canEditorAccessFile(Shoot $shoot, ShootFile $file, User $editor): bool

@@ -349,6 +349,7 @@ class FinalizeShootJob implements ShouldQueue
             }
 
             // ---- Service-item rollups.
+            app(\App\Services\Shoots\ShootEditingAssignmentService::class)->markVerifiedLanesComplete($shoot, $this->shootServiceId);
             $isFullOrderDelivery = true;
             if ($this->shootServiceId) {
                 $serviceItem = $shoot->serviceItems()->whereKey($this->shootServiceId)->first();

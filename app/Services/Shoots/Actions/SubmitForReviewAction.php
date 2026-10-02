@@ -21,9 +21,10 @@ class SubmitForReviewAction
     {
         $assignments = $this->shootEditingAssignmentService->markAssignedServicesReadyForUser($shoot, $user);
         $allTrackedLanesReady = $this->shootEditingAssignmentService->allTrackedLanesReady($shoot->fresh(['services.category']));
+        $isDelivered = in_array(strtolower((string) ($shoot->workflow_status ?: $shoot->status)), \App\Services\Shoots\ShootSubmissionCapabilityService::DELIVERED_STATUSES, true);
 
-        if ($allTrackedLanesReady) {
-            $pendingAiReview = app(\App\Services\Studio\WorkspaceShootReview::class)->isPending($shoot);
+        if ($allTrackedLanesReady && !$isDelivered) {
+            $pendingAiReview = $user->role === 'editor' || app(\App\Services\Studio\WorkspaceShootReview::class)->isPending($shoot);
             $shoot->status = $pendingAiReview ? Shoot::STATUS_REVIEW : Shoot::STATUS_READY;
             $shoot->workflow_status = $shoot->status;
             if ($pendingAiReview) {
@@ -31,7 +32,7 @@ class SubmitForReviewAction
             } else {
                 $shoot->editing_completed_at = now();
             }
-        } else {
+        } elseif (!$isDelivered) {
             $shoot->status = Shoot::STATUS_EDITING;
             $shoot->workflow_status = Shoot::STATUS_EDITING;
         }
