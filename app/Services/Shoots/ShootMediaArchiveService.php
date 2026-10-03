@@ -17,7 +17,6 @@ use Illuminate\Support\Str;
 
 class ShootMediaArchiveService
 {
-    private const LOCK_TTL_SECONDS = 600;
     public const POLL_AFTER_MS = 3000;
     private const DEFAULT_FRONTEND_URL = 'https://reprodashboard.com';
     private const DEFAULT_API_URL = 'https://api.reprodashboard.com';
@@ -91,7 +90,12 @@ class ShootMediaArchiveService
             return false;
         }
 
-        GenerateShootMediaArchiveJob::dispatch($shoot->id, $type, $size, $shootServiceId, $shootUnitId);
+        try {
+            GenerateShootMediaArchiveJob::dispatch($shoot->id, $type, $size, $shootServiceId, $shootUnitId);
+        } catch (\Throwable $exception) {
+            $this->releaseGenerationLock($shoot, $type, $size, $shootServiceId, $shootUnitId);
+            throw $exception;
+        }
 
         return true;
     }
@@ -171,8 +175,7 @@ class ShootMediaArchiveService
                         continue;
                     }
 
-                    app(\App\Services\Media\ArchiveCompressionPolicy::class)
-                        ->addFile($zip, $localPath, $entry['archive_name'], (int) $shoot->id);
+                    app(\App\Services\Media\ArchiveCompressionPolicy::class)->addFile($zip, $localPath, $entry['archive_name'], (int) $shoot->id);
                     $addedFiles++;
 
                     if (!empty($entry['temp_path'])) {
@@ -180,30 +183,26 @@ class ShootMediaArchiveService
                     }
                 }
             } finally {
-                $zip->close();
+                $closed = $zip->close();
 
                 foreach ($tempFiles as $tempFile) {
                     @unlink($tempFile);
                 }
             }
 
+            if (! $closed) {
+                throw new \RuntimeException('Failed to finish ZIP file');
+            }
+
+            if ($addedFiles !== count($plan['entries'])) {
+                throw new \RuntimeException('An archive source changed during generation');
+            }
+
             if ($addedFiles === 0) {
                 throw new \RuntimeException('No downloadable files available');
             }
 
-            $archiveStream = fopen($zipAbsolutePath, 'rb');
-            if ($archiveStream === false) {
-                throw new \RuntimeException('Failed to open generated ZIP file');
-            }
-            try {
-                if (!$this->mediaStorage()->put($archivePath, $archiveStream)) {
-                    throw new \RuntimeException('Failed to publish generated ZIP file');
-                }
-            } finally {
-                if (is_resource($archiveStream)) {
-                    fclose($archiveStream);
-                }
-            }
+            app(\App\Services\Media\MediaArchivePublisher::class)->publish($archivePath, $zipAbsolutePath);
 
             $manifest = [
                 'type' => $type,
@@ -682,11 +681,11 @@ class ShootMediaArchiveService
         return Cache::add(
             $this->getGenerationLockKey($shoot, $type, $size, $shootServiceId, $shootUnitId),
             now()->toIso8601String(),
-            now()->addSeconds(self::LOCK_TTL_SECONDS)
+            now()->addSeconds(\App\Services\Media\ArchiveQueue::lockSeconds())
         );
     }
 
-    protected function releaseGenerationLock(Shoot $shoot, string $type, string $size, ?int $shootServiceId = null, ?int $shootUnitId = null): void
+    public function releaseGenerationLock(Shoot $shoot, string $type, string $size, ?int $shootServiceId = null, ?int $shootUnitId = null): void
     {
         Cache::forget($this->getGenerationLockKey($shoot, $type, $size, $shootServiceId, $shootUnitId));
     }

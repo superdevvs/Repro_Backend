@@ -35,58 +35,60 @@ class ShootShareLinkService
 
     public function generateFilesZip(Shoot $shoot, $files): ?string
     {
-        $zipPath = storage_path("app/temp/shoot-{$shoot->id}-raw-" . time() . '.zip');
+        $zipPath = tempnam(sys_get_temp_dir(), 'shoot-share-');
+        if ($zipPath === false) {
+            throw new \RuntimeException('Failed to create temporary ZIP file');
+        }
         $tempFiles = [];
-
-        if (!file_exists(dirname($zipPath))) {
-            mkdir(dirname($zipPath), 0755, true);
-        }
-
-        $zip = new \ZipArchive();
-        if ($zip->open($zipPath, \ZipArchive::CREATE | \ZipArchive::OVERWRITE) !== true) {
-            throw new \Exception('Failed to create ZIP file');
-        }
-
-        $addedFiles = 0;
-        $total = is_countable($files) ? count($files) : collect($files)->count();
-        $position = 1;
-        $usedNames = [];
-
-        foreach ($files as $file) {
-            $localPath = $this->fileAccessService->findLocalFilePath($file);
-            if (!$localPath) {
-                $localPath = $this->fileAccessService->downloadStoredFileToTemp($file->path ?: $file->storage_path);
-                if ($localPath) {
-                    $tempFiles[] = $localPath;
-                }
+        $zip = new \ZipArchive;
+        $opened = false;
+        try {
+            if ($zip->open($zipPath, \ZipArchive::CREATE | \ZipArchive::OVERWRITE) !== true) {
+                throw new \RuntimeException('Failed to create ZIP file');
             }
-
-            if ($localPath && file_exists($localPath)) {
-                // Position-prefixed so the shared set keeps its order once the
-                // recipient extracts it. Only the ZIP entry is renamed — the
-                // stored master filename is untouched.
-                $zip->addFile($localPath, $this->deliveryFilenameFormatter->deduplicate(
-                    $this->deliveryFilenameFormatter->archivePathForFile($file, $position, $total, basename($localPath)),
-                    $usedNames
-                ));
+            $opened = true;
+            $addedFiles = 0;
+            $total = is_countable($files) ? count($files) : collect($files)->count();
+            $position = 1;
+            $usedNames = [];
+            foreach ($files as $file) {
+                $localPath = $this->fileAccessService->findLocalFilePath($file);
+                if (! $localPath) {
+                    $localPath = $this->fileAccessService->downloadStoredFileToTemp($file->path ?: $file->storage_path);
+                    if ($localPath) {
+                        $tempFiles[] = $localPath;
+                    }
+                }
+                if (! $localPath || ! is_file($localPath)) {
+                    throw new \RuntimeException('An archive source is unavailable');
+                }
+                app(\App\Services\Media\ArchiveCompressionPolicy::class)->addFile($zip, $localPath, $this->deliveryFilenameFormatter->deduplicate(
+                    $this->deliveryFilenameFormatter->archivePathForFile($file, $position, $total, basename($localPath)), $usedNames
+                ), (int) $shoot->id);
                 $addedFiles++;
                 $position++;
             }
-        }
-
-        $zip->close();
-
-        foreach ($tempFiles as $tempFile) {
-            @unlink($tempFile);
-        }
-
-        if ($addedFiles === 0) {
+            $closed = $zip->close();
+            $opened = false;
+            if ($addedFiles === 0) {
+                @unlink($zipPath);
+                return null;
+            }
+            if (! $closed) {
+                throw new \RuntimeException('Failed to finish ZIP file');
+            }
+            return $zipPath;
+        } catch (\Throwable $exception) {
+            if ($opened) {
+                $zip->close();
+            }
             @unlink($zipPath);
-
-            return null;
+            throw $exception;
+        } finally {
+            foreach ($tempFiles as $tempFile) {
+                @unlink($tempFile);
+            }
         }
-
-        return $zipPath;
     }
 
     /** @deprecated Use generateFilesZip. */
@@ -133,6 +135,7 @@ class ShootShareLinkService
 
         $files = $filesQuery->inDeliveryOrder()->get()
             ->filter(fn (ShootFile $file) => $file->isRequiredForEditing())
+            ->reject(fn (ShootFile $file) => $file->isBlockedFromDelivery() || $file->is_hidden || $file->isIguideOfflinePackage())
             ->values();
 
         // Lane-scoped editors (video_editor_id vs editor_id) only share their lane.
@@ -261,14 +264,20 @@ class ShootShareLinkService
             throw new \RuntimeException('Could not create share link record.');
         }
 
-        if (Cache::add($lockKey, 1, 600)) {
-            GenerateShootShareLinkZipJob::dispatch(
-                (int) $shareLinkId,
-                (int) $shoot->id,
-                $fileIdList,
-                $normalizedMediaStage,
-                $lockKey
-            );
+        $lockKey .= ':link:'.$shareLinkId;
+        if (Cache::add($lockKey, 1, \App\Services\Media\ArchiveQueue::lockSeconds())) {
+            try {
+                GenerateShootShareLinkZipJob::dispatch(
+                    (int) $shareLinkId,
+                    (int) $shoot->id,
+                    $fileIdList,
+                    $normalizedMediaStage,
+                    $lockKey
+                );
+            } catch (\Throwable $exception) {
+                Cache::forget($lockKey);
+                throw $exception;
+            }
         }
 
         $this->activityLogger->log(

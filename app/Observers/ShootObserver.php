@@ -55,6 +55,10 @@ class ShootObserver
             app(CompensationEligibilityService::class)->syncForShoot($shoot);
         }
 
+        if ($shoot->wasChanged(['workflow_status', 'status', 'editor_id'])) {
+            app(\App\Services\Shoots\ShootArchivePrewarmService::class)->whenAssignmentsActionable($shoot);
+        }
+
         if (!$shoot->wasChanged('workflow_status') && !$shoot->wasChanged('status')) {
             return;
         }
@@ -84,7 +88,11 @@ class ShootObserver
 
         if ($status === Shoot::STATUS_READY || $status === Shoot::STATUS_DELIVERED) {
             if ($editedCount > 0) {
-                GenerateShootMediaArchiveJob::dispatch($shoot->id, 'edited', 'small');
+                if (app(\App\Services\Media\MediaStorage::class)->performanceEnabled('archive_dedicated_queue', (int) $shoot->id)) {
+                    app(\App\Services\Shoots\ShootMediaArchiveService::class)->queueArchiveGeneration($shoot, 'edited', 'small');
+                } else {
+                    GenerateShootMediaArchiveJob::dispatch($shoot->id, 'edited', 'small');
+                }
             }
         }
     }

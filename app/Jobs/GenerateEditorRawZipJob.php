@@ -40,7 +40,10 @@ class GenerateEditorRawZipJob implements ShouldQueue
         public string $storagePath,
         public string $lockKey
     ) {
-        $this->onQueue('default');
+        $this->onQueue(\App\Services\Media\ArchiveQueue::name($shootId));
+        if ($this->queue === 'media-archives') {
+            $this->onConnection('database');
+        }
         $this->afterCommit();
     }
 
@@ -49,69 +52,40 @@ class GenerateEditorRawZipJob implements ShouldQueue
         ShootEditingAssignmentService $editingAssignmentService,
         MediaStorage $media
     ): void {
-        $shoot = Shoot::find($this->shootId);
-        $user = User::find($this->userId);
-        if (! $shoot || ! $user) {
-            Log::warning('Editor raw zip job skipped; shoot or user missing', [
-                'shoot_id' => $this->shootId,
-                'user_id' => $this->userId,
-            ]);
-            Cache::forget($this->lockKey);
-
-            return;
-        }
-
-        if ($media->exists($this->storagePath)) {
-            Cache::forget($this->lockKey);
-
-            return;
-        }
-
-        $files = $shoot->files()
-            ->whereIn('id', $this->fileIds)
-            ->where('workflow_stage', ShootFile::STAGE_TODO)
-            ->get()
-            ->filter(fn (ShootFile $file) => $file->isRequiredForEditing())
-            ->reject(fn (ShootFile $file) => $file->isBlockedFromDelivery())
-            ->values();
-
-        if (app(\App\Services\Shoots\ShootAuthorizationSupport::class)->hasRole($user, ['editor'])) {
-            $files = $editingAssignmentService->filterFilesForEditor($files, $shoot, $user);
-        }
-
-        if ($files->isEmpty()) {
-            Log::info('Editor raw zip job skipped; no downloadable files', [
-                'shoot_id' => $this->shootId,
-                'user_id' => $this->userId,
-            ]);
-            Cache::forget($this->lockKey);
-
-            return;
-        }
-
-        $zipPath = $shareLinkService->generateFilesZip($shoot, $files);
-        if (! $zipPath || ! file_exists($zipPath)) {
-            throw new \RuntimeException('Failed to generate editor raw ZIP');
-        }
-
-        $stream = fopen($zipPath, 'r');
-        if ($stream === false) {
-            @unlink($zipPath);
-            throw new \RuntimeException('Failed to read editor raw ZIP');
-        }
-
+        $zipPath = null;
         try {
-            if (! $media->put($this->storagePath, $stream)) {
-                throw new \RuntimeException('Failed to store editor raw ZIP');
+            $shoot = Shoot::find($this->shootId);
+            $user = User::find($this->userId);
+            if (! $shoot || ! $user) {
+                return;
             }
+            $scoped = app(\App\Services\Shoots\EditorRawArchiveService::class);
+            $files = $scoped->authorizedFiles($shoot, $user, $this->fileIds);
+            if ($files->isEmpty() || $scoped->descriptor($shoot, $user, $files)['storage_path'] !== $this->storagePath) {
+                // Selection, assignment or source changed after dispatch. The next poll queues its new version.
+                return;
+            }
+            if ($media->exists($this->storagePath)) {
+                return;
+            }
+            if ($scoped->reuseLegacyArchive($shoot, $user, $files, $this->storagePath)) {
+                return;
+            }
+            $zipPath = $shareLinkService->generateFilesZip($shoot, $files);
+            if (! $zipPath || ! is_file($zipPath)) {
+                throw new \RuntimeException('Failed to generate editor raw ZIP');
+            }
+            $current = $scoped->authorizedFiles($shoot->fresh(), $user->fresh(), $this->fileIds);
+            if ($scoped->descriptor($shoot->fresh(), $user, $current)['storage_path'] !== $this->storagePath) {
+                return;
+            }
+            app(\App\Services\Media\MediaArchivePublisher::class)->publish($this->storagePath, $zipPath);
         } finally {
-            if (is_resource($stream)) {
-                fclose($stream);
+            if (is_string($zipPath)) {
+                @unlink($zipPath);
             }
-            @unlink($zipPath);
+            Cache::forget($this->lockKey);
         }
-
-        Cache::forget($this->lockKey);
     }
 
     public function failed(\Throwable $exception): void

@@ -26,51 +26,30 @@ class GenerateShootMediaArchiveJob implements ShouldQueue
         public ?int $shootServiceId = null,
         public ?int $shootUnitId = null
     ) {
-        // Canary/global dedicated archive worker is optional; default queue remains
-        // the safe fallback when MEDIA_ARCHIVE_DEDICATED_QUEUE is false.
-        $queue = app(\App\Services\Media\MediaStorage::class)
-            ->performanceEnabled('archive_dedicated_queue', $shootId)
-            ? 'media-archives'
-            : 'default';
-        $this->onQueue($queue);
+        $this->onQueue(\App\Services\Media\ArchiveQueue::name($shootId));
+        if ($this->queue === 'media-archives') {
+            $this->onConnection('database');
+        }
         $this->afterCommit();
     }
 
     public function handle(ShootMediaArchiveService $shootMediaArchiveService): void
     {
         $shoot = Shoot::find($this->shootId);
-        if (!$shoot) {
-            Log::warning('Shoot media archive job skipped because shoot was not found', [
-                'shoot_id' => $this->shootId,
-                'shoot_service_id' => $this->shootServiceId,
-                'type' => $this->type,
-                'size' => $this->size,
-            ]);
-
-            return;
+        try {
+            if (! $shoot || ! $shootMediaArchiveService->hasDownloadableFiles($shoot, $this->type, $this->size, $this->shootServiceId, $this->shootUnitId ?? null)) {
+                return;
+            }
+            $shootMediaArchiveService->generateArchive($shoot, $this->type, $this->size, true, $this->shootServiceId, $this->shootUnitId ?? null);
+        } finally {
+            $lockShoot = $shoot ?? (new Shoot)->forceFill(['id' => $this->shootId]);
+            $shootMediaArchiveService->releaseGenerationLock($lockShoot, $this->type, $this->size, $this->shootServiceId, $this->shootUnitId ?? null);
         }
-
-        // A qualifying file save or status change can queue this job before any
-        // deliverable media actually exists (e.g. a no-media/fast-forward
-        // delivery). Treat "nothing to archive" as a benign no-op instead of a
-        // hard failure so the job is not retried and logged as permanently
-        // failed for an expected, harmless state.
-        if (!$shootMediaArchiveService->hasDownloadableFiles($shoot, $this->type, $this->size, $this->shootServiceId, $this->shootUnitId ?? null)) {
-            Log::info('Shoot media archive job skipped because no downloadable files are available', [
-                'shoot_id' => $this->shootId,
-                'shoot_service_id' => $this->shootServiceId,
-                'type' => $this->type,
-                'size' => $this->size,
-            ]);
-
-            return;
-        }
-
-        $shootMediaArchiveService->generateArchive($shoot, $this->type, $this->size, true, $this->shootServiceId, $this->shootUnitId ?? null);
     }
 
     public function failed(\Throwable $exception): void
     {
+        app(ShootMediaArchiveService::class)->releaseGenerationLock((new Shoot)->forceFill(['id' => $this->shootId]), $this->type, $this->size, $this->shootServiceId, $this->shootUnitId ?? null);
         Log::error('Shoot media archive job failed permanently', [
             'shoot_id' => $this->shootId,
             'shoot_service_id' => $this->shootServiceId,

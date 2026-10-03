@@ -65,7 +65,7 @@ class ChangeServiceBracketModeAction
             // Restack even when the number did not move: the caller may be
             // repairing stacks after files were added or removed.
             return $restack
-                ? $this->autoStack->execute($item->shoot, false, (int) $item->id)
+                ? $this->autoStack->execute($item->shoot, false, (int) $item->id, false)
                 : null;
         });
 

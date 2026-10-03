@@ -343,6 +343,8 @@ class ShootEditingAssignmentService
             $shoot->save();
         }
 
+        app(ShootArchivePrewarmService::class)->whenAssignmentsActionable($shoot->fresh() ?? $shoot);
+
         return $resolvedEditorId;
     }
 

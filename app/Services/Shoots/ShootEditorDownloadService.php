@@ -2,7 +2,6 @@
 
 namespace App\Services\Shoots;
 
-use App\Jobs\GenerateEditorRawZipJob;
 use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Models\User;
@@ -10,7 +9,6 @@ use App\Services\Media\MediaStorage;
 use App\Services\ShootActivityLogger;
 use App\Services\ShootMediaStorageService;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use Symfony\Component\HttpFoundation\Response;
@@ -45,7 +43,7 @@ class ShootEditorDownloadService
             $allFiles = $shoot->files()
                 ->where('workflow_stage', ShootFile::STAGE_TODO)
                 ->whereIn('id', $fileIdsParam)
-                ->get()
+                ->inDeliveryOrder()->get()
                 ->filter(fn (ShootFile $file) => $file->isRequiredForEditing())
                 // Infected files are withheld from download/delivery (Req 15.7).
                 ->reject(fn (ShootFile $file) => $file->isBlockedFromDelivery())
@@ -141,10 +139,20 @@ class ShootEditorDownloadService
         $files,
         int $fileCount
     ) {
-        $fileIds = $files->pluck('id')->map(fn ($id) => (int) $id)->sort()->values()->all();
-        $cacheKey = sha1(implode(',', $fileIds));
-        $storagePath = "editor-downloads/{$shoot->id}/{$cacheKey}.zip";
-        $lockKey = "editor-raw-zip:{$shoot->id}:{$cacheKey}";
+        // Re-read permissions and source metadata immediately before issuing a ready URL.
+        $shoot = $shoot->fresh();
+        $user = $user->fresh();
+        if (! $shoot || ! $user) {
+            return $this->withCors(response()->json(['error' => 'No authorized raw files available'], 403), $request);
+        }
+        $scoped = app(EditorRawArchiveService::class);
+        $files = $scoped->authorizedFiles($shoot, $user, $files->pluck('id')->all());
+        if ($files->isEmpty()) {
+            return $this->withCors(response()->json(['error' => 'No authorized raw files available'], 403), $request);
+        }
+        $fileCount = $files->count();
+        $descriptor = $scoped->descriptor($shoot, $user, $files);
+        $storagePath = $descriptor['storage_path'];
         $media = app(MediaStorage::class);
 
         if ($media->exists($storagePath)) {
@@ -161,15 +169,7 @@ class ShootEditorDownloadService
             }
         }
 
-        if (Cache::add($lockKey, 1, 600)) {
-            GenerateEditorRawZipJob::dispatch(
-                (int) $shoot->id,
-                (int) $user->id,
-                $fileIds,
-                $storagePath,
-                $lockKey
-            );
-        }
+        $scoped->queue($shoot, $user, $files);
 
         return $this->withCors(response()->json([
             'type' => 'preparing',

@@ -632,14 +632,23 @@ class UploadShootFilesAction
                 ? (int) $request->input('upload_batch_index')
                 : null;
             $rawBatchOffset = null;
-            if ($rawBracketMode > 1 && $rawBatchId !== '' && $rawBatchIndex !== null) {
-                // Prefer durable R3 reservations when the client prepared the batch.
-                // Fall back to the short-lived cache offset for older clients.
-                $durableOffset = app(\App\Services\Shoots\ShootUploadBatchReservationService::class)
-                    ->findOffset($shoot, $user instanceof \App\Models\User ? $user : null, $rawBatchId);
-                if ($durableOffset !== null) {
-                    $rawBatchOffset = $durableOffset;
-                } else {
+            $rawReservation = null;
+            if ($uploadType === 'raw' && $user) {
+                try {
+                    $rawReservation = app(\App\Services\Shoots\ShootRawUploadBatchService::class)
+                        ->claimUpload($request, $shoot, $user, $shootServiceId, $requiredLanes, $rawBracketMode, count($files), (string) $correlationId);
+                } catch (\Symfony\Component\HttpKernel\Exception\HttpException $exception) {
+                    return ['status' => $exception->getStatusCode(), 'payload' => $this->typedUploadError(
+                        'upload_batch_conflict', $exception->getMessage(), $uploadLimits
+                    )];
+                }
+            }
+            if ($rawReservation) {
+                $rawBatchOffset = $rawReservation->start_position;
+                if ($rawReservation->batch_id !== $rawBatchId) {
+                    $rawBatchIndex = 0;
+                }
+            } elseif ($rawBracketMode > 1 && $rawBatchId !== '' && $rawBatchIndex !== null) {
                     // The batch id is unique per upload group, so the cached offset is already
                     // per service; the service scoping below is what makes its value correct.
                     $batchOffsetCacheKey = "shoot:{$shoot->id}:raw_upload_batch:{$rawBatchId}:offset";
@@ -648,7 +657,6 @@ class UploadShootFilesAction
                     // subsequent requests read the value the winner stored.
                     Cache::add($batchOffsetCacheKey, $preBatchCount, now()->addHours(2));
                     $rawBatchOffset = (int) Cache::get($batchOffsetCacheKey, $preBatchCount);
-                }
             }
 
             $rawSequenceIndex = $rawBracketMode > 1
@@ -666,8 +674,9 @@ class UploadShootFilesAction
                 'upload_batch_total' => $request->input('upload_batch_total'),
             ];
 
-            foreach ($files as $file) {
+            foreach ($files as $fileIndex => $file) {
                 $shootFile = null;
+                $reservedFileIndex = $rawReservation ? $rawBatchIndex + $fileIndex : $rawBatchIndex;
                 $startedAt = microtime(true);
                 $fileContext = $batchContext + [
                     'file_name' => $file->getClientOriginalName(),
@@ -712,7 +721,8 @@ class UploadShootFilesAction
                         $requiredForEditing,
                         $rawBracketMode,
                         $rawBatchOffset,
-                        $rawBatchIndex,
+                        $reservedFileIndex,
+                        $rawReservation,
                         $rawSequenceIndex,
                         &$followUpAttempts
                     ): void {
@@ -724,6 +734,10 @@ class UploadShootFilesAction
                         }
 
                         $flagUpdates = [];
+                        if ($rawReservation) {
+                            $flagUpdates['raw_upload_batch_id'] = $rawReservation->id;
+                            $flagUpdates['raw_upload_position'] = $rawReservation->start_position + $reservedFileIndex;
+                        }
                         // Recorded alongside the capture identity, not instead of it. Only
                         // written when asked for, so an untreated frame keeps a null column
                         // rather than an empty string.
@@ -771,8 +785,8 @@ class UploadShootFilesAction
                             // the frontend provides it (single source of truth across parallel XHRs).
                             // Fall back to the per-request count when the legacy single-request
                             // multi-file path is used (no batch metadata).
-                            $orderingIndex = ($rawBatchOffset !== null && $rawBatchIndex !== null)
-                                ? $rawBatchOffset + $rawBatchIndex
+                            $orderingIndex = ($rawBatchOffset !== null && $reservedFileIndex !== null)
+                                ? $rawBatchOffset + $reservedFileIndex
                                 : $rawSequenceIndex;
 
                             $shootFile->update([

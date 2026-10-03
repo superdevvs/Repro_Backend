@@ -528,6 +528,7 @@ class ShootMutationSupportService
         $shoot->load(['services', 'serviceItems']);
         $this->snapshotBracketModes($shoot);
         $shoot->syncServiceItemRollups();
+        app(ShootArchivePrewarmService::class)->whenAssignmentsActionable($shoot);
     }
 
     private function nullableNumericValuesMatch(mixed $left, mixed $right): bool

@@ -35,7 +35,7 @@ class ShootUploadIdempotencyService
         ];
 
         try {
-            $attempt = ShootUploadAttempt::query()->create($attributes + [
+            $attempt = LockedWrite::run(fn () => ShootUploadAttempt::query()->create($attributes + [
                 'request_fingerprint' => $fingerprint,
                 'upload_type' => strtolower((string) $request->input('upload_type', 'raw')),
                 'upload_batch_id' => $this->nullableString($request->input('upload_batch_id')),
@@ -44,7 +44,7 @@ class ShootUploadIdempotencyService
                 'shoot_service_id' => $this->nullableInteger($request->input('shoot_service_id')),
                 'status' => ShootUploadAttempt::STATUS_PENDING,
                 'correlation_id' => (string) Str::uuid(),
-            ]);
+            ]), "shoot.{$shoot->id}.upload-attempt.claim", 6);
 
             return ['attempt' => $attempt, 'replay' => null];
         } catch (QueryException $exception) {
@@ -67,6 +67,23 @@ class ShootUploadIdempotencyService
                     ),
                 ],
             ];
+        }
+
+        if ($attempt->status === ShootUploadAttempt::STATUS_FAILED
+            && empty($attempt->result_file_ids)
+            && collect((array) $attempt->result_errors)->contains(fn ($error) => is_array($error) && ($error['retryable'] ?? false) === true)) {
+            // Reuse the identity only when the previous attempt explicitly failed
+            // without committed results. A pending worker might still be writing;
+            // it is never reclaimed based on elapsed time alone.
+            $claimed = LockedWrite::run(fn () => ShootUploadAttempt::query()->whereKey($attempt->id)
+                ->where('status', ShootUploadAttempt::STATUS_FAILED)->update([
+                    'status' => ShootUploadAttempt::STATUS_PENDING, 'http_status' => null,
+                    'result_payload' => null, 'result_errors' => null, 'failed_at' => null, 'updated_at' => now(),
+                ]), "shoot.{$shoot->id}.upload-attempt.retry", 6);
+            if ($claimed === 1) {
+                return ['attempt' => $attempt->fresh(), 'replay' => null];
+            }
+            $attempt->refresh();
         }
 
         if (in_array($attempt->status, [ShootUploadAttempt::STATUS_COMPLETED, ShootUploadAttempt::STATUS_FAILED], true)) {

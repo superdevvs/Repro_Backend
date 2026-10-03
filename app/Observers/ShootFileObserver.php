@@ -105,7 +105,11 @@ class ShootFileObserver
                 continue;
             }
 
-            GenerateShootMediaArchiveJob::dispatch($shoot->id, $type, 'small');
+            if (app(\App\Services\Media\MediaStorage::class)->performanceEnabled('archive_dedicated_queue', (int) $shoot->id)) {
+                app(\App\Services\Shoots\ShootMediaArchiveService::class)->queueArchiveGeneration($shoot, $type, 'small');
+            } else {
+                GenerateShootMediaArchiveJob::dispatch($shoot->id, $type, 'small');
+            }
         }
     }
 

@@ -263,6 +263,7 @@ class MultiUnitBookingService
         $shoot->load(['units', 'services', 'serviceItems']);
         app(ShootMutationSupportService::class)->snapshotBracketModes($shoot);
         $shoot->syncServiceItemRollups();
+        app(ShootArchivePrewarmService::class)->whenAssignmentsActionable($shoot);
     }
 
     private function assertRemovable(ShootService $line): void

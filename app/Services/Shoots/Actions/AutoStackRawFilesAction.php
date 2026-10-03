@@ -51,9 +51,9 @@ class AutoStackRawFilesAction
      * @param  int|null  $shootServiceId  restrict to this service item only
      * @return array{groups: int, files: int, detected_bracket_mode: ?int, updated_files: int}
      */
-    public function execute(Shoot $shoot, bool $updateShootBracketMode = true, ?int $shootServiceId = null): array
+    public function execute(Shoot $shoot, bool $updateShootBracketMode = true, ?int $shootServiceId = null, bool $respectUploadReservations = true): array
     {
-        return DB::transaction(function () use ($shoot, $updateShootBracketMode, $shootServiceId) {
+        return DB::transaction(function () use ($shoot, $updateShootBracketMode, $shootServiceId, $respectUploadReservations) {
             /** @var Collection<int, ShootFile> $files */
             $files = $shoot->files()
                 ->where('workflow_stage', ShootFile::STAGE_TODO)
@@ -94,6 +94,13 @@ class AutoStackRawFilesAction
             $detectedModesByService = [];
 
             foreach ($partitions as $partitionKey => $partitionFiles) {
+                // A partial parallel batch must not be compacted while its missing
+                // positions are still in flight (or awaiting a later retry).
+                if ($respectUploadReservations && \App\Models\ShootRawUploadBatch::where('shoot_id', $shoot->id)
+                    ->where('service_scope', (int) $partitionKey)->where('upload_lane', 'photo')
+                    ->where('prepared', true)->exists()) {
+                    continue;
+                }
                 $ordered = $partitionFiles->sortBy([
                     fn (ShootFile $a, ShootFile $b) => $this->compareCapturedAt($a, $b),
                     fn (ShootFile $a, ShootFile $b) => strnatcmp((string) $a->filename, (string) $b->filename),

@@ -6,6 +6,9 @@ use App\Jobs\SyncShootIguideJob;
 use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Models\User;
+use App\Support\LockedWrite;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 use App\Services\Messaging\AutomationService;
 use App\Services\ShootActivityLogger;
 use App\Services\Shoots\ShootMediaMutationSupportService;
@@ -70,102 +73,126 @@ class FinalizeRawUploadAction
             $shouldQueueIguideSync = false;
             $shouldFireAutomations = false;
 
-            DB::beginTransaction();
-
+            $correlationId = (string) Str::uuid();
             try {
-                /** @var Shoot $locked */
-                $locked = Shoot::query()->whereKey($shoot->id)->lockForUpdate()->first();
-                if (!$locked) {
-                    DB::rollBack();
-                    return [
-                        'status' => 404,
-                        'payload' => [
-                            'error_type' => 'not_found',
-                            'message' => 'Shoot not found.',
-                            'workflow_status_changed' => false,
-                        ],
-                    ];
-                }
-
-                // Recalculate counters from DB — never trust client-supplied counts.
-                $shoot = $this->support->refreshMediaCounters($locked);
-                $this->support->clearShootFilesCache($shoot);
-
-                $currentStatus = strtolower((string) ($shoot->workflow_status ?? $shoot->status ?? ''));
-                $previousStatus = $currentStatus;
-
-                // Strict state validation.
-                $allowed = array_map('strtolower', self::ALLOWED_FROM_STATUSES);
-                $idempotent = array_map('strtolower', self::IDEMPOTENT_STATUSES);
-
-                $canResubmitUploaded = in_array($currentStatus, [Shoot::STATUS_UPLOADED, 'uploaded'], true)
-                    && $this->hasNewRawFilesSinceSubmit($shoot);
-
-                if (!in_array($currentStatus, $allowed, true) && !$canResubmitUploaded) {
-                    DB::commit();
-
-                    if (in_array($currentStatus, $idempotent, true)) {
-                        // Already submitted / past this stage — idempotent success.
+                $earlyResult = LockedWrite::run(function () use (
+                    &$shoot, $user, &$workflowStatusChanged, &$previousStatus,
+                    &$shouldQueueIguideSync, &$shouldFireAutomations
+                ) {
+                    $workflowStatusChanged = $shouldQueueIguideSync = $shouldFireAutomations = false;
+                    return DB::transaction(function () use (
+                        &$shoot, $user, &$workflowStatusChanged, &$previousStatus,
+                        &$shouldQueueIguideSync, &$shouldFireAutomations
+                    ) {
+                    // Acquire SQLite's writer lock before reading the counters or
+                    // workflow. A retry starts from a fresh model and snapshot.
+                    DB::table('shoots')->where('id', $shoot->id)
+                        ->update(['updated_at' => DB::raw('updated_at')]);
+                    /** @var Shoot $locked */
+                    $locked = Shoot::query()->whereKey($shoot->id)->lockForUpdate()->first();
+                    if (!$locked) {
                         return [
-                            'status' => 200,
+                            'status' => 404,
                             'payload' => [
-                                'message' => 'Shoot has already been submitted.',
+                                'error_type' => 'not_found',
+                                'message' => 'Shoot not found.',
                                 'workflow_status_changed' => false,
-                                'shoot_status' => $shoot->workflow_status,
-                                'raw_photo_count' => $shoot->raw_photo_count,
-                                'edited_photo_count' => $shoot->edited_photo_count,
                             ],
                         ];
                     }
 
-                    // Terminal / invalid state (cancelled, declined, on_hold, etc.).
-                    return [
-                        'status' => 409,
-                        'payload' => [
-                            'error_type' => 'invalid_workflow_state',
-                            'message' => sprintf(
-                                'Cannot submit raw files while shoot is in state "%s".',
-                                $currentStatus
-                            ),
-                            'workflow_status_changed' => false,
-                            'shoot_status' => $shoot->workflow_status,
-                        ],
-                    ];
-                }
+                    // Recalculate counters from DB — never trust client-supplied counts.
+                    $shoot = $this->support->refreshMediaCounters($locked);
 
-                if ((int) $shoot->raw_photo_count <= 0) {
-                    DB::rollBack();
-                    return [
-                        'status' => 422,
-                        'payload' => [
-                            'error_type' => 'no_files',
-                            'message' => 'No raw files found for this shoot. Upload at least one file before submitting.',
-                            'workflow_status_changed' => false,
-                            'shoot_status' => $shoot->workflow_status,
-                            'raw_photo_count' => $shoot->raw_photo_count,
-                        ],
-                    ];
-                }
+                    $currentStatus = strtolower((string) ($shoot->workflow_status ?? $shoot->status ?? ''));
+                    $previousStatus = $currentStatus;
 
-                $shoot->updateWorkflowStatus(Shoot::STATUS_UPLOADED, $user?->id ?? auth()->id());
-                $workflowStatusChanged = true;
-                $shouldQueueIguideSync = true;
-                $shouldFireAutomations = true;
+                    // Strict state validation.
+                    $allowed = array_map('strtolower', self::ALLOWED_FROM_STATUSES);
+                    $idempotent = array_map('strtolower', self::IDEMPOTENT_STATUSES);
 
-                DB::commit();
+                    $canResubmitUploaded = in_array($currentStatus, [Shoot::STATUS_UPLOADED, 'uploaded'], true)
+                        && $this->hasNewRawFilesSinceSubmit($shoot);
+
+                    if (!in_array($currentStatus, $allowed, true) && !$canResubmitUploaded) {
+
+                        if (in_array($currentStatus, $idempotent, true)) {
+                            // Already submitted / past this stage — idempotent success.
+                            return [
+                                'status' => 200,
+                                'payload' => [
+                                    'message' => 'Shoot has already been submitted.',
+                                    'workflow_status_changed' => false,
+                                    'shoot_status' => $shoot->workflow_status,
+                                    'raw_photo_count' => $shoot->raw_photo_count,
+                                    'edited_photo_count' => $shoot->edited_photo_count,
+                                ],
+                            ];
+                        }
+
+                        // Terminal / invalid state (cancelled, declined, on_hold, etc.).
+                        return [
+                            'status' => 409,
+                            'payload' => [
+                                'error_type' => 'invalid_workflow_state',
+                                'message' => sprintf(
+                                    'Cannot submit raw files while shoot is in state "%s".',
+                                    $currentStatus
+                                ),
+                                'workflow_status_changed' => false,
+                                'shoot_status' => $shoot->workflow_status,
+                            ],
+                        ];
+                    }
+
+                    if ((int) $shoot->raw_photo_count <= 0) {
+                        return [
+                            'status' => 422,
+                            'payload' => [
+                                'error_type' => 'no_files',
+                                'message' => 'No raw files found for this shoot. Upload at least one file before submitting.',
+                                'workflow_status_changed' => false,
+                                'shoot_status' => $shoot->workflow_status,
+                                'raw_photo_count' => $shoot->raw_photo_count,
+                            ],
+                        ];
+                    }
+
+                    $shoot->updateWorkflowStatus(Shoot::STATUS_UPLOADED, $user?->id ?? auth()->id());
+                    $workflowStatusChanged = true;
+                    $shouldQueueIguideSync = true;
+                    $shouldFireAutomations = true;
+                    return null;
+                    });
+                }, "shoot.{$shoot->id}.finalize-raw", 6);
             } catch (\Throwable $exception) {
-                DB::rollBack();
-
+                Log::channel('uploads')->error('RAW submission failed.', [
+                    'shoot_id' => $shoot->id, 'correlation_id' => $correlationId,
+                    'exception' => $exception::class,
+                    'lock_contention' => LockedWrite::isLockContention($exception),
+                ]);
                 return [
-                    'status' => 500,
+                    'status' => LockedWrite::isLockContention($exception) ? 503 : 500,
                     'payload' => [
-                        'error_type' => 'server_error',
-                        'message' => 'Failed to finalize raw upload queue',
-                        'error' => $exception->getMessage(),
-                        'workflow_status_changed' => false,
+                        'error_type' => LockedWrite::isLockContention($exception) ? 'submission_busy' : 'server_error',
+                        'message' => 'The server could not confirm submission. Your uploaded files are saved; please retry.',
+                        'correlation_id' => $correlationId, 'workflow_status_changed' => false,
                     ],
                 ];
             }
+            try {
+                LockedWrite::run(fn () => $this->support->clearShootFilesCache($shoot), "shoot.{$shoot->id}.finalize-cache", 6);
+            } catch (\Throwable $exception) {
+                Log::channel('uploads')->error('RAW submission cache refresh failed after commit.', [
+                    'shoot_id' => $shoot->id, 'correlation_id' => $correlationId,
+                    'exception' => $exception::class,
+                ]);
+            }
+            if ($earlyResult !== null) {
+                return $earlyResult;
+            }
+
+            app(\App\Services\Shoots\ShootArchivePrewarmService::class)->afterRawSubmission($shoot);
 
             // Post-commit side effects — only on a real status change.
             if ($shouldFireAutomations) {
@@ -206,7 +233,16 @@ class FinalizeRawUploadAction
             }
 
             if ($shouldQueueIguideSync) {
-                SyncShootIguideJob::dispatch($shoot->id);
+                try {
+                    LockedWrite::run(fn () => SyncShootIguideJob::dispatch($shoot->id), "shoot.{$shoot->id}.finalize-iguide", 6);
+                } catch (\Throwable $exception) {
+                    // The submit is already committed. A secondary integration
+                    // failure must not make a successful RAW handoff appear lost.
+                    Log::channel('uploads')->error('RAW submission integration enqueue failed after commit.', [
+                        'shoot_id' => $shoot->id, 'correlation_id' => $correlationId,
+                        'exception' => $exception::class,
+                    ]);
+                }
             }
 
             return [

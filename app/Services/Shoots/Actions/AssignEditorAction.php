@@ -65,6 +65,8 @@ class AssignEditorAction
             $user
         );
 
+        app(\App\Services\Shoots\ShootArchivePrewarmService::class)->whenAssignmentsActionable($shoot->fresh());
+
         return $shoot;
     }
 }

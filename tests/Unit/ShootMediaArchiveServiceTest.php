@@ -339,6 +339,144 @@ class ShootMediaArchiveServiceTest extends TestCase
         $this->getJson($endpoint.$foreign->id)->assertUnprocessable();
     }
 
+    public function test_compression_policy_preserves_bytes_order_and_valid_cached_archives(): void
+    {
+        Storage::fake('public');
+        Storage::fake('local');
+        config()->set('media.archive_store_compressed', true);
+        config()->set('media.performance_shoot_ids', []);
+        $this->mockDropboxDisabled();
+        $shoot = $this->createShoot();
+        $contents = [];
+        foreach (['capture.NEF' => random_bytes(4096), 'notes.xmp' => str_repeat('<xml>metadata</xml>', 100)] as $name => $bytes) {
+            $path = "shoots/{$shoot->id}/todo/{$name}";
+            Storage::disk('public')->put($path, $bytes);
+            $this->createShootFile($shoot, ['filename' => $name, 'path' => $path, 'storage_path' => $path, 'sort_order' => count($contents) + 1, 'workflow_stage' => ShootFile::STAGE_TODO]);
+            $contents[] = $bytes;
+        }
+        $service = app(ShootMediaArchiveService::class);
+        $first = $service->generateArchive($shoot, 'raw', 'original');
+        $path = Storage::disk('local')->path($service->getArchivePath($shoot, 'raw', 'original'));
+        $zip = new ZipArchive;
+        $this->assertTrue($zip->open($path));
+        $this->assertSame(ZipArchive::CM_STORE, $zip->statIndex(0)['comp_method']);
+        $this->assertSame(ZipArchive::CM_DEFLATE, $zip->statIndex(1)['comp_method']);
+        foreach ($contents as $index => $bytes) {
+            $this->assertSame($bytes, $zip->getFromIndex($index));
+        }
+        $zip->close();
+        $hash = hash_file('sha256', $path);
+        config()->set('media.archive_store_compressed', false);
+        $this->assertSame($first, $service->generateArchive($shoot, 'raw', 'original'));
+        $this->assertSame($hash, hash_file('sha256', $path));
+        $this->assertCount(2, Storage::disk('local')->allFiles(dirname($service->getArchivePath($shoot, 'raw', 'original'))));
+    }
+
+    public function test_scoped_archive_identity_tracks_source_versions_order_selection_and_actor(): void
+    {
+        $shoot = $this->createShoot();
+        $one = $this->createShootFile($shoot);
+        $two = $this->createShootFile($shoot, ['filename' => 'second.jpg']);
+        $scoped = app(\App\Services\Shoots\EditorRawArchiveService::class);
+        $files = collect([$one, $two]);
+        $original = $scoped->descriptor($shoot, $this->editor, $files)['storage_path'];
+        $this->assertNotSame($original, $scoped->descriptor($shoot, $this->admin, $files)['storage_path']);
+        $this->assertNotSame($original, $scoped->descriptor($shoot, $this->editor, $files->reverse()->values())['storage_path']);
+        $this->assertNotSame($original, $scoped->descriptor($shoot, $this->editor, collect([$one]))['storage_path']);
+        $one->file_size = 2048;
+        $this->assertNotSame($original, $scoped->descriptor($shoot, $this->editor, $files)['storage_path']);
+    }
+
+    public function test_archive_jobs_release_locks_when_sources_are_missing_and_use_canary_queue(): void
+    {
+        $shoot = $this->createShoot();
+        $key = 'shoot-media-archive:'.$shoot->id.':raw:original';
+        \Illuminate\Support\Facades\Cache::put($key, 1, 600);
+        config()->set('media.archive_dedicated_queue', true);
+        config()->set('media.performance_shoot_ids', [(int) $shoot->id]);
+        $job = new GenerateShootMediaArchiveJob((int) $shoot->id, 'raw', 'original');
+        $this->assertSame('media-archives', $job->queue);
+        $this->assertSame('default', (new GenerateShootMediaArchiveJob((int) $shoot->id + 999, 'raw', 'original'))->queue);
+        $this->assertSame(600, $job->timeout);
+        $job->handle(app(ShootMediaArchiveService::class));
+        $this->assertFalse(\Illuminate\Support\Facades\Cache::has($key));
+        $editorKey = 'test-editor-zip-lock';
+        \Illuminate\Support\Facades\Cache::put($editorKey, 1, 600);
+        $editorJob = new \App\Jobs\GenerateEditorRawZipJob((int) $shoot->id, 999999999, [], 'missing.zip', $editorKey);
+        app()->call([$editorJob, 'handle']);
+        $this->assertFalse(\Illuminate\Support\Facades\Cache::has($editorKey));
+        $shareKey = 'test-share-zip-lock';
+        \Illuminate\Support\Facades\Cache::put($shareKey, 1, 600);
+        $shareJob = new \App\Jobs\GenerateShootShareLinkZipJob(999999999, (int) $shoot->id, [], 'raw', $shareKey);
+        app()->call([$shareJob, 'handle']);
+        $this->assertFalse(\Illuminate\Support\Facades\Cache::has($shareKey));
+    }
+
+    public function test_scoped_job_does_not_publish_after_assignment_is_revoked(): void
+    {
+        Storage::fake('local');
+        Storage::fake('public');
+        config()->set('media.local_disk', 'local');
+        $shoot = $this->createShoot();
+        $path = "shoots/{$shoot->id}/todo/capture.nef";
+        Storage::disk('public')->put($path, 'raw-bytes');
+        $file = $this->createShootFile($shoot, ['path' => $path, 'storage_path' => $path, 'workflow_stage' => ShootFile::STAGE_TODO]);
+        $scoped = app(\App\Services\Shoots\EditorRawArchiveService::class);
+        $descriptor = $scoped->descriptor($shoot, $this->editor, collect([$file]));
+        $shoot->updateQuietly(['editor_id' => null]);
+        $job = new \App\Jobs\GenerateEditorRawZipJob((int) $shoot->id, (int) $this->editor->id, [$file->id], $descriptor['storage_path'], $descriptor['lock_key']);
+        app()->call([$job, 'handle']);
+        $this->assertFalse(Storage::disk('local')->exists($descriptor['storage_path']));
+    }
+
+    public function test_legacy_scoped_archive_is_reused_only_when_order_names_sizes_and_source_crc_match(): void
+    {
+        Storage::fake('local');
+        Storage::fake('public');
+        config()->set('media.local_disk', 'local');
+        $shoot = $this->createShoot();
+        $path = "shoots/{$shoot->id}/todo/capture.nef";
+        Storage::disk('public')->put($path, 'original-raw');
+        $file = $this->createShootFile($shoot, ['filename' => 'capture.nef', 'path' => $path, 'storage_path' => $path, 'file_size' => strlen('original-raw'), 'workflow_stage' => ShootFile::STAGE_TODO]);
+        $files = collect([$file]);
+        $archive = app(\App\Services\Shoots\ShootShareLinkService::class)->generateFilesZip($shoot, $files);
+        $legacy = "editor-downloads/{$shoot->id}/".sha1((string) $file->id).'.zip';
+        app(\App\Services\Media\MediaArchivePublisher::class)->publish($legacy, $archive);
+        unlink($archive);
+        $legacyHash = hash_file('sha256', Storage::disk('local')->path($legacy));
+        $scoped = app(\App\Services\Shoots\EditorRawArchiveService::class);
+        $destination = $scoped->descriptor($shoot, $this->editor, $files)['storage_path'];
+        $this->assertTrue($scoped->reuseLegacyArchive($shoot, $this->editor, $files, $destination));
+        $this->assertSame($legacyHash, hash_file('sha256', Storage::disk('local')->path($destination)));
+        $this->assertTrue(Storage::disk('local')->exists($legacy));
+        Storage::disk('public')->put($path, 'modified-raw');
+        $this->assertFalse($scoped->reuseLegacyArchive($shoot, $this->editor, $files, $destination));
+    }
+
+    public function test_submission_prewarm_is_gated_and_duplicate_dispatches_are_coalesced(): void
+    {
+        Storage::fake('local');
+        Storage::fake('public');
+        $shoot = $this->createShoot(['status' => Shoot::STATUS_UPLOADED, 'workflow_status' => Shoot::STATUS_UPLOADED]);
+        $path = "shoots/{$shoot->id}/todo/raw.nef";
+        Storage::disk('public')->put($path, 'raw');
+        $this->createShootFile($shoot, ['path' => $path, 'storage_path' => $path, 'workflow_stage' => ShootFile::STAGE_TODO]);
+        $prewarm = app(\App\Services\Shoots\ShootArchivePrewarmService::class);
+        $prewarm->afterRawSubmission($shoot);
+        Queue::assertNotPushed(GenerateShootMediaArchiveJob::class);
+        config()->set('media.archive_prewarm', true);
+        config()->set('media.performance_shoot_ids', [(int) $shoot->id]);
+        // Execute the after-commit callback inside this test's outer transaction.
+        $database = DB::getFacadeRoot();
+        DB::partialMock()->shouldReceive('transactionLevel')->andReturn(1);
+        DB::shouldReceive('connection')->andReturnUsing(fn ($name = null) => $database->connection($name));
+        DB::shouldReceive('afterCommit')->andReturnUsing(fn ($callback) => $callback());
+        $prewarm->afterRawSubmission($shoot);
+        $prewarm->afterRawSubmission($shoot);
+        Queue::assertPushed(GenerateShootMediaArchiveJob::class, 1);
+        Queue::assertPushed(GenerateShootMediaArchiveJob::class, fn ($job) => $job->type === 'raw' && $job->size === 'original');
+    }
+
     protected function createShoot(array $overrides = []): Shoot
     {
         return Shoot::factory()->create(array_merge([

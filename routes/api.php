@@ -1,7 +1,5 @@
 <?php
 
-require __DIR__.'/aryeo.php';
-
 use App\Http\Controllers\Admin\AccountingExpenseController;
 use App\Http\Controllers\Admin\AccountLinkController;
 use App\Http\Controllers\Admin\AccountStatusController;
@@ -750,7 +748,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // File workflow endpoints
     Route::post('/shoots/{shoot}/upload', [ShootMediaController::class, 'uploadFiles']);
-    Route::post('/shoots/{shoot}/upload-batches', [ShootMediaController::class, 'prepareUploadBatch']);
+    Route::post('/shoots/{shoot}/upload-batches', [\App\Http\Controllers\API\ShootRawUploadBatchController::class, 'store']);
     Route::post('/shoots/{shoot}/upload-sessions', [\App\Http\Controllers\API\ShootMediaChunkUploadController::class, 'initiate']);
     Route::put('/shoots/{shoot}/upload-sessions/{session}/chunks/{index}', [\App\Http\Controllers\API\ShootMediaChunkUploadController::class, 'storeChunk'])
         ->whereUuid('session')
