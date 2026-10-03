@@ -64,7 +64,10 @@ class WorkspaceFullShootTest extends TestCase
         $client = Mockery::mock(FotelloClient::class);
         $this->app->bind(FotelloClient::class, fn () => $client);
         $client->shouldReceive('createListing')->once()->with(['name' => 'HDR test'])->andReturn(['id' => 'listing']);
-        $client->shouldReceive('createUpload')->times(6)->andReturnUsing(fn ($body) => ['id' => $body['filename'], 'url' => 'https://storage.test/upload', 'uri' => 'gs://test/source', 'expires' => '2099-01-01T00:00:00Z']);
+        $client->shouldReceive('createUpload')->times(6)->andReturnUsing(function ($body) {
+            $this->assertSame(['filename'], array_keys($body), 'Source exposures must be generic inputs, not listing gallery photos.');
+            return ['id' => $body['filename'], 'url' => 'https://storage.test/upload', 'uri' => 'gs://test/source', 'expires' => '2099-01-01T00:00:00Z'];
+        });
         $client->shouldReceive('uploadBytes')->times(6)->andReturnUsing(function ($upload, $bytes) { $this->uploaded[$upload['id']] = $bytes; });
         $client->shouldReceive('createEnhance')->twice()->andReturnUsing(function ($body) {
             $this->enhancements[] = $body;
@@ -86,6 +89,9 @@ class WorkspaceFullShootTest extends TestCase
         $this->assertSame('original-raw-1', $this->uploaded['exposure-1.CR3']);
         $this->assertCount(5, $this->enhancements[0]['upload_ids']);
         $this->assertCount(1, $this->enhancements[1]['upload_ids']);
+        $this->assertSame(['listing', 'listing'], array_column($this->enhancements, 'listing_id'));
+        $this->assertSame(['exposure-1.CR3', 'exposure-2.CR3', 'exposure-3.CR3', 'exposure-4.CR3', 'exposure-5.CR3'], $this->enhancements[0]['upload_ids']);
+        $this->assertContains($this->enhancements[0]['input_preview_image_id'], $this->enhancements[0]['upload_ids']);
         $this->assertSame('generating', $workspace->fresh()->status);
         Queue::assertPushed(ProcessStudioWorkspace::class, 1);
         $this->ready = true;
