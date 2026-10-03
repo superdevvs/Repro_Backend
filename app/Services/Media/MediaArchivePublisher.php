@@ -49,11 +49,15 @@ final class MediaArchivePublisher
         // A hard link keeps the finished source available for remote mirroring,
         // avoids copying multi-GB bytes on the same volume, and is renamed below.
         // Cross-volume sources retain the stream-copy fallback.
-        if (! @link($sourcePath, $disk->path($key))) {
+        $destination = $disk->path($key);
+        if (filegroup($sourcePath) !== filegroup(dirname($destination))
+            || (function_exists('posix_geteuid') && fileowner($sourcePath) !== posix_geteuid())
+            || ! @link($sourcePath, $destination)) {
             return false;
         }
-        // The generated source is already private. Do not chmod shared legacy
-        // cache inodes; those sources take the copy path above.
+        // Honor the disk's private file mode (including the shared 0660 media
+        // adapter). Legacy sources take the copy path and retain their mode.
+        $disk->setVisibility($key, 'private');
         return true;
     }
 

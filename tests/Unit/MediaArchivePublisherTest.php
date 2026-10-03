@@ -99,4 +99,23 @@ class MediaArchivePublisherTest extends TestCase
         $this->assertSame('cached archive bytes', $disk->get('legacy.zip'));
     }
 
+    public function test_generated_archive_honors_shared_private_disk_permissions(): void
+    {
+        Storage::fake('local');
+        $root = Storage::disk('local')->path('shared');
+        config(['filesystems.disks.archive_shared_test' => [
+            'driver' => 'local', 'root' => $root, 'visibility' => 'private', 'directory_visibility' => 'private',
+            'permissions' => ['file' => ['private' => 0660, 'public' => 0660], 'dir' => ['private' => 02770, 'public' => 02770]],
+        ], 'media.local_disk' => 'archive_shared_test', 'media.r2_only' => false, 'media.dual_write' => false]);
+        $disk = Storage::disk('archive_shared_test');
+        $disk->put('source.zip', 'completed shared archive');
+        $source = $disk->path('source.zip');
+        chmod($source, 0600);
+        app(MediaArchivePublisher::class)->publish('archives/final.zip', $source);
+        clearstatcache();
+        $this->assertSame(0660, fileperms($disk->path('archives/final.zip')) & 0777);
+        $this->assertSame(filegroup(dirname($disk->path('archives/final.zip'))), filegroup($disk->path('archives/final.zip')));
+        $this->assertSame('completed shared archive', $disk->get('archives/final.zip'));
+    }
+
 }
