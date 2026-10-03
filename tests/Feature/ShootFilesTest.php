@@ -239,7 +239,7 @@ class ShootFilesTest extends TestCase
             }
         };
         app()->instance(ImageProcessingService::class, new class extends ImageProcessingService {
-            public function processImageFromPath(int $shootId, string $fileName, string $sourcePath): array
+            public function processImageFromPath(int $shootId, string $fileName, string $sourcePath, ?string $mediaType = null): array
             {
                 $baseName = pathinfo($fileName, PATHINFO_FILENAME);
                 $paths = [
