@@ -137,7 +137,9 @@ class LocalMediaDelivery
         [$canonicalRoot, $canonical] = $this->assertWithinRoot($path, $root['path']);
         $headers = $this->headers($headers);
 
-        if (app(MediaStorage::class)->performanceEnabled('download_offload', $shootId, $key)) {
+        // Nginx internal redirects discard custom upstream integrity headers.
+        // Worker downloads must retain the checksum alongside the original bytes.
+        if (! isset($headers['X-Content-SHA256']) && app(MediaStorage::class)->performanceEnabled('download_offload', $shootId, $key)) {
             $relative = str_replace(DIRECTORY_SEPARATOR, '/', substr($canonical, strlen($canonicalRoot) + 1));
             $headers['X-Accel-Redirect'] = $root['uri'].implode('/', array_map('rawurlencode', explode('/', $relative)));
             // Nginx owns length/range/HEAD once it opens the authorized file.

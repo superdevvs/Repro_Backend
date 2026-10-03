@@ -255,6 +255,22 @@ class AryeoIntegrationTest extends TestCase
         $this->worker()->getJson($this->prefix.'/jobs/'.$id)->assertNotFound();
     }
 
+    public function test_original_retains_verified_checksum_when_download_offload_is_enabled(): void
+    {
+        config(['media.download_offload' => true, 'media.performance_shoot_ids' => []]);
+        $disk = \Illuminate\Support\Facades\Storage::fake('local');
+        $bytes = 'approved original bytes';
+        $disk->put('shoots/test/photo.jpg', $bytes);
+        $this->mock(\App\Services\Shoots\ShootFileAccessService::class, function ($mock) use ($disk) {
+            $mock->shouldReceive('resolveLocalPath')->with('shoots/test/photo.jpg')->andReturn($disk->path('shoots/test/photo.jpg'));
+        });
+
+        $response = $this->worker()->get($this->prefix.'/requests/'.$this->order->id.'/assets/'.$this->file->id.'/original');
+        $response->assertOk()->assertHeader('X-Content-SHA256', hash('sha256', $bytes))->assertHeaderMissing('X-Accel-Redirect');
+        $this->assertInstanceOf(\Symfony\Component\HttpFoundation\BinaryFileResponse::class, $response->baseResponse);
+        $this->assertSame($bytes, file_get_contents($response->baseResponse->getFile()->getPathname()));
+    }
+
     public function test_missing_original_does_not_fall_back_to_thumbnail(): void
     {
         $this->mock(\App\Services\Shoots\ShootFileAccessService::class, function ($mock) {
