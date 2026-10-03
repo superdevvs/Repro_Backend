@@ -750,6 +750,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // File workflow endpoints
     Route::post('/shoots/{shoot}/upload', [ShootMediaController::class, 'uploadFiles']);
+    Route::post('/shoots/{shoot}/upload-batches', [ShootMediaController::class, 'prepareUploadBatch']);
     Route::post('/shoots/{shoot}/upload-sessions', [\App\Http\Controllers\API\ShootMediaChunkUploadController::class, 'initiate']);
     Route::put('/shoots/{shoot}/upload-sessions/{session}/chunks/{index}', [\App\Http\Controllers\API\ShootMediaChunkUploadController::class, 'storeChunk'])
         ->whereUuid('session')
@@ -1236,9 +1237,9 @@ Route::middleware(['auth:sanctum'])->prefix('messaging')->group(function () {
         Route::post('/templates/{template}/test-send', [MessageTemplateController::class, 'testSend']);
         Route::post('/templates/{template}/preview', [MessageTemplateController::class, 'preview']);
 
-        // Manual shoot notifications (Req 12.1, 12.5, 12.6, 12.7) — wraps ManualNotificationService;
-        // manual-send/preview stay admin/superadmin only. Recipients GET is mounted below so
-        // assigned sales_reps can load Overview notify pickers without gaining send rights.
+        // Manual shoot notifications for admin/superadmin also remain here for
+        // dashboard-email-staff sessions; editing_manager routes are mounted below
+        // without template/automation admin rights.
         Route::post('/notifications/manual-send', [MessageTemplateController::class, 'manualSend']);
         Route::post('/notifications/manual-preview', [MessageTemplateController::class, 'manualPreview']);
 
@@ -1271,9 +1272,18 @@ Route::middleware(['auth:sanctum'])->prefix('messaging')->group(function () {
         Route::delete('/settings/sms/numbers/{smsNumber}', [MessagingSettingsController::class, 'deleteSmsNumber']);
     });
 
-    // Overview notify-recipient picker: admin/superadmin or assigned sales_rep (controller enforces rep_id).
-    Route::middleware('role:superadmin,admin,sales_rep')->group(function () {
+    // Manual notify: editing managers get catalogue/preview/send for shoots they
+    // manage; recipients also allow assigned sales_rep. No template/automation admin.
+    Route::middleware('role:superadmin,admin,editing_manager')->group(function () {
+        Route::get('/notifications/catalogue', [MessageTemplateController::class, 'notificationCatalogue']);
+        Route::post('/notifications/manual-send', [MessageTemplateController::class, 'manualSend']);
+        Route::post('/notifications/manual-preview', [MessageTemplateController::class, 'manualPreview']);
+    });
+
+    // Overview notify-recipient picker: admin/superadmin/editing_manager or assigned sales_rep.
+    Route::middleware('role:superadmin,admin,editing_manager,sales_rep')->group(function () {
         Route::get('/notifications/recipients', [MessageTemplateController::class, 'notificationRecipients']);
+        Route::get('/notifications/catalogue', [MessageTemplateController::class, 'notificationCatalogue']);
     });
 
     Route::middleware('role:superadmin,admin,editing_manager,sales_rep,photographer')->group(function () {

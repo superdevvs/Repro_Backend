@@ -17,19 +17,55 @@ class ShootMediaMutationSupportService
     ) {
     }
 
+    /**
+     * Shared per-shoot media revision used by readers and mutations.
+     * Bumped on every mutation so rapid successive changes (same-second
+     * updated_at) and all authorized viewers see fresh payloads instead of
+     * stale 30s cache entries under mismatched key prefixes.
+     */
+    public function mediaRevisionKey(Shoot $shoot): string
+    {
+        return 'shoot_media_rev_'.$shoot->id;
+    }
+
+    public function currentMediaRevision(Shoot $shoot): int
+    {
+        return (int) Cache::get($this->mediaRevisionKey($shoot), 0);
+    }
+
+    public function bumpMediaRevision(Shoot $shoot): int
+    {
+        $key = $this->mediaRevisionKey($shoot);
+        $revision = $this->currentMediaRevision($shoot) + 1;
+        Cache::forever($key, $revision);
+
+        return $revision;
+    }
+
     public function clearShootFilesCache(Shoot $shoot, ?User $user = null): void
     {
+        // Monotonic revision invalidates every reader key that includes it
+        // (authorized_v2_ / client_v1_ prefixed payloads and guest scopes).
+        $this->bumpMediaRevision($shoot);
+
         $user = $user ?? auth()->user();
         $userId = $user ? $user->id : 'guest';
         $userRole = $user ? $user->role : 'guest';
 
         foreach (['', 'raw', 'edited', 'all'] as $type) {
-            Cache::forget('shoot_files_' . $shoot->id . '_' . $type . '_' . $userId . '_' . $userRole);
+            $base = 'shoot_files_'.$shoot->id.'_'.$type.'_'.$userId.'_'.$userRole;
+            Cache::forget($base);
+            // Legacy unprefixed keys plus any historically cached variants.
+            Cache::forget('authorized_v2_'.$base);
+            Cache::forget('client_v1_'.$base);
         }
 
-        if ($shoot->client_id && (!$user || (string) $user->id !== (string) $shoot->client_id)) {
+        if ($shoot->client_id && (! $user || (string) $user->id !== (string) $shoot->client_id)) {
             foreach (['', 'raw', 'edited', 'all'] as $type) {
-                Cache::forget('shoot_files_' . $shoot->id . '_' . $type . '_' . $shoot->client_id . '_client');
+                $base = 'shoot_files_'.$shoot->id.'_'.$type.'_'.$shoot->client_id.'_client';
+                Cache::forget($base);
+                Cache::forget('authorized_v2_'.$base);
+                Cache::forget('client_v1_'.$base);
             }
         }
     }

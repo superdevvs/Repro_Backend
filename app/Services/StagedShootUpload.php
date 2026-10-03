@@ -43,6 +43,8 @@ final class StagedShootUpload
         public readonly string $syncScanVerdict,
         public readonly bool $isOpaqueIguidePackage,
         public readonly bool $requiresImageProcessing,
+        public readonly ?string $previousStoredPath = null,
+        public readonly ?string $previousStorageDisk = null,
     ) {}
 
     public function isReplacement(): bool
@@ -51,18 +53,13 @@ final class StagedShootUpload
     }
 
     /**
-     * Remove the staged bytes when the record could not be saved.
+     * Remove the newly staged bytes when the record could not be saved.
      *
-     * A replacement is deliberately left alone: its previous bytes were already
-     * removed to make room, so deleting the new ones as well would leave the
-     * existing row with nothing at all. Legacy behaviour, kept on purpose.
+     * Replacements keep the previous object until persist succeeds, so a failed
+     * switch must discard only the new bytes and leave the live row intact.
      */
     public function discard(): void
     {
-        if ($this->isReplacement()) {
-            return;
-        }
-
         try {
             $disk = Storage::disk($this->storageDisk);
             if ($disk->exists($this->storedPath)) {

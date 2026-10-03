@@ -20,6 +20,7 @@ use App\Services\Shoots\Actions\RevokeShootShareLinkAction;
 use App\Services\Shoots\Actions\ToggleShootFileExtraAction;
 use App\Services\Shoots\Actions\UploadAlbumMediaAction;
 use App\Services\Shoots\Actions\UploadShootFilesAction;
+use App\Services\Shoots\ShootUploadBatchReservationService;
 use App\Services\Shoots\Actions\VerifyShootFileAction;
 use App\Services\Shoots\BracketModeResolver;
 use App\Services\Shoots\ShootAlbumService;
@@ -44,6 +45,7 @@ class ShootMediaController extends Controller
         protected ShootEditorDownloadService $shootEditorDownloadService,
         protected ShootShareLinkReadService $shootShareLinkReadService,
         protected UploadShootFilesAction $uploadShootFilesAction,
+        protected ShootUploadBatchReservationService $shootUploadBatchReservationService,
         protected FinalizeRawUploadAction $finalizeRawUploadAction,
         protected MoveShootFileToCompletedAction $moveShootFileToCompletedAction,
         protected VerifyShootFileAction $verifyShootFileAction,
@@ -80,6 +82,69 @@ class ShootMediaController extends Controller
 
         return response()->json($result['payload'], $result['status']);
     }
+
+    public function prepareUploadBatch(Request $request, Shoot $shoot)
+    {
+        $user = $request->user();
+        if (! $user) {
+            return response()->json([
+                'error_type' => 'unauthenticated',
+                'message' => 'Authentication required.',
+            ], 401);
+        }
+
+        $validated = $request->validate([
+            'upload_type' => ['required', 'string', 'in:raw,edited'],
+            'upload_batch_id' => ['required', 'string', 'max:191'],
+            'upload_batch_total' => ['required', 'integer', 'min:1', 'max:5000'],
+            'shoot_service_id' => ['nullable', 'integer'],
+            'bracket_mode' => ['nullable', 'integer', 'min:0', 'max:20'],
+        ]);
+
+        $shootServiceId = isset($validated['shoot_service_id']) ? (int) $validated['shoot_service_id'] : null;
+
+        if (! $this->shootAuthorizationSupport->canUploadShootMedia(
+            $shoot,
+            $user,
+            (string) $validated['upload_type'],
+            $shootServiceId
+        )) {
+            return $this->uploadForbiddenResponse();
+        }
+
+        try {
+            $result = $this->shootUploadBatchReservationService->prepare($shoot, $user, [
+                'upload_type' => (string) $validated['upload_type'],
+                'upload_batch_id' => (string) $validated['upload_batch_id'],
+                'upload_batch_total' => (int) $validated['upload_batch_total'],
+                'shoot_service_id' => $shootServiceId,
+                'bracket_mode' => array_key_exists('bracket_mode', $validated) ? $validated['bracket_mode'] : null,
+            ]);
+        } catch (\Symfony\Component\HttpKernel\Exception\HttpException $exception) {
+            $status = $exception->getStatusCode();
+            $type = $status === 409 ? 'upload_batch_conflict' : 'invalid_upload_batch';
+
+            return response()->json([
+                'error_type' => $type,
+                'message' => $exception->getMessage(),
+                'success_count' => 0,
+                'error_count' => 1,
+            ], $status);
+        }
+
+        $batch = $result['batch'];
+
+        return response()->json([
+            'upload_batch_id' => $batch->upload_batch_id,
+            'upload_batch_total' => (int) $batch->upload_batch_total,
+            'upload_type' => $batch->upload_type,
+            'shoot_service_id' => $batch->shoot_service_id,
+            'bracket_mode' => $batch->bracket_mode,
+            'reserved_offset' => (int) $batch->reserved_offset,
+            'parallel_uploads' => (int) $batch->parallel_uploads,
+        ], $result['created'] ? 201 : 200);
+    }
+
 
     public function finalizeRawUpload(Request $request, $shootId)
     {
@@ -495,12 +560,24 @@ class ShootMediaController extends Controller
     public function deleteMedia(Shoot $shoot, ShootFile $file)
     {
         $this->shootAuthorizationSupport->ensureFileBelongsToShoot($shoot, $file);
-        if (! app(\App\Services\Shoots\ShootMediaDeletionPolicy::class)->allows($shoot, $file, auth()->user())) {
+        $user = auth()->user();
+        if (! app(\App\Services\Shoots\ShootMediaDeletionPolicy::class)->allows($shoot, $file, $user)) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
         try {
-            return response()->json($this->deleteShootMediaAction->execute($shoot, $file));
+            $filename = $file->filename;
+            $fileId = (int) $file->id;
+            $payload = $this->deleteShootMediaAction->execute($shoot, $file);
+            if ($user) {
+                app(\App\Services\AuditLogService::class)->record('media.delete', $user, $shoot, [
+                    'shoot_file_id' => $fileId,
+                    'filename' => $filename,
+                    'bulk' => false,
+                ]);
+            }
+
+            return response()->json($payload);
         } catch (\Exception $e) {
             \App\Services\ApiErrorResponder::log($e, 'error');
 
@@ -971,7 +1048,7 @@ class ShootMediaController extends Controller
         $request->validate([
             'file_ids' => 'required|array|min:1',
             'file_ids.*' => 'integer|exists:shoot_files,id',
-            'media_type' => 'required|string|in:floorplan,raw,edited,extra,virtual_staging,green_grass,twilight,drone',
+            'media_type' => 'required|string|in:floorplan,raw,edited,photos,main,main_photos,extra,virtual_staging,green_grass,twilight,drone',
         ]);
 
         if (

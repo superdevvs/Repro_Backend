@@ -19,8 +19,20 @@ class DeleteShootMediaAction
         return [
             'message' => 'File deleted',
             'shoot_status' => $shoot->workflow_status,
+            'deleted_id' => (int) $file->id,
             'raw_photo_count' => $shoot->raw_photo_count,
             'edited_photo_count' => $shoot->edited_photo_count,
+            'extra_photo_count' => $shoot->extra_photo_count,
+            'raw_missing_count' => $shoot->raw_missing_count,
+            'edited_missing_count' => $shoot->edited_missing_count,
+            'counts' => [
+                'raw_photo_count' => $shoot->raw_photo_count,
+                'edited_photo_count' => $shoot->edited_photo_count,
+                'extra_photo_count' => $shoot->extra_photo_count,
+                'raw_missing_count' => $shoot->raw_missing_count,
+                'edited_missing_count' => $shoot->edited_missing_count,
+            ],
+            'media_revision' => $this->support->currentMediaRevision($shoot),
         ];
     }
 }

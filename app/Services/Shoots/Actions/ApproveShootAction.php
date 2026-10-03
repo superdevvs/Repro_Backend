@@ -88,8 +88,21 @@ class ApproveShootAction
         $previousSchedule = $this->support->normalizeDateTimeForDatabase($shoot->scheduled_at);
         $approvedSchedule = $this->support->normalizeDateTimeForDatabase($scheduledAt);
         if (! $isMultiUnit && $approvedSchedule !== $previousSchedule) {
+            $currentItems = $shoot->serviceItems->keyBy('service_id');
+            // Modify/Approve payloads often re-echo each line's prior clock. Only a
+            // clock that differs from storage counts as an intentional independent visit.
             $explicitScheduleServiceIds = collect(array_merge($validated['services'] ?? [], $validated['service_items'] ?? []))
-                ->filter(fn (array $service) => array_key_exists('scheduled_at', $service))
+                ->filter(function (array $service) use ($currentItems) {
+                    if (! array_key_exists('scheduled_at', $service) || $service['scheduled_at'] === null || $service['scheduled_at'] === '') {
+                        return false;
+                    }
+                    $incoming = $this->support->normalizeDateTimeForDatabase($service['scheduled_at']);
+                    $stored = $this->support->normalizeDateTimeForDatabase(
+                        $currentItems->get((int) ($service['service_id'] ?? $service['id']))?->scheduled_at
+                    );
+
+                    return $incoming !== null && $incoming !== $stored;
+                })
                 ->map(fn (array $service) => (int) ($service['service_id'] ?? $service['id']))
                 ->all();
             $inheritedScheduleItemIds = $shoot->serviceItems
@@ -100,7 +113,6 @@ class ApproveShootAction
                         && $item->workflow_status !== 'cancelled'
                         && ($itemSchedule === null || $itemSchedule === $previousSchedule);
                 })->pluck('id')->all();
-            $currentItems = $shoot->serviceItems->keyBy('service_id');
             foreach ($targetServices as &$service) {
                 $serviceSchedule = $this->support->normalizeDateTimeForDatabase(
                     array_key_exists('scheduled_at', $service)

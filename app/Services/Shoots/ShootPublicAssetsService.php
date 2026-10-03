@@ -274,7 +274,7 @@ class ShootPublicAssetsService
         $assets['show_garage'] = !empty($tourLinks['show_garage']);
 
         if (! $isBranded) {
-            foreach (['client_name', 'client_company', 'client_email', 'client_phone', 'client_avatar'] as $identityKey) {
+            foreach (['client_name', 'client_company', 'client_email', 'client_phone', 'client_avatar', 'office_phone'] as $identityKey) {
                 unset($assets['shoot'][$identityKey]);
             }
             unset($assets['branding']);
@@ -288,6 +288,13 @@ class ShootPublicAssetsService
                 $assets['shoot']['client_email'] = $effectiveClient->email;
                 $assets['shoot']['client_phone'] = $effectiveClient->phone ?? $effectiveClient->phonenumber;
                 $assets['shoot']['client_avatar'] = $effectiveClient->avatar;
+                $officePhone = \App\Support\OfficePhoneFields::forTour(
+                    $effectiveClient->office_phone,
+                    $effectiveClient->show_office_phone_on_tour
+                );
+                if ($officePhone !== null) {
+                    $assets['shoot']['office_phone'] = $officePhone;
+                }
 
                 $branding = DB::table('user_branding')->where('user_id', $effectiveClient->id)->first();
                 if ($branding) {
@@ -457,7 +464,9 @@ class ShootPublicAssetsService
                 }
             }
 
-            $gallery = $files->filter(fn (ShootFile $file) => str_starts_with(strtolower((string) $file->file_type), 'image/'))
+            $gallery = $files->filter(fn (ShootFile $file) => ! $file->is_hidden
+                    && ! $file->isBlockedFromDelivery()
+                    && str_starts_with(strtolower((string) $file->file_type), 'image/'))
                 ->map(fn (ShootFile $file) => $this->resolveClientProfileFileUrl($file, $shoots, 'web'))
                 ->filter()
                 ->values()
@@ -515,7 +524,7 @@ class ShootPublicAssetsService
             $clientMeta = [];
         }
 
-        return [
+        $payload = [
             'client' => [
                 'id' => $client->id,
                 'name' => $client->name,
@@ -541,6 +550,13 @@ class ShootPublicAssetsService
             ],
             'shoots' => $shootItems,
         ];
+
+        $officePhone = \App\Support\OfficePhoneFields::forPortal($client->office_phone);
+        if ($officePhone !== null) {
+            $payload['client']['office_phone'] = $officePhone;
+        }
+
+        return $payload;
     }
 
     public function resolvePropertyDescriptionImageUrls(Shoot $shoot): array
@@ -548,6 +564,9 @@ class ShootPublicAssetsService
         $editedFiles = $shoot->files()
             ->when($shoot->relationLoaded('tourUnit'), fn ($query) => $query->whereIn('shoot_service_id', app(ShootUnitTourScope::class)->fileLineIds($shoot, $shoot->getRelation('tourUnit'))))
             ->whereIn('workflow_stage', [ShootFile::STAGE_COMPLETED, ShootFile::STAGE_VERIFIED])
+            ->where(function ($query) {
+                $query->where('is_hidden', false)->orWhereNull('is_hidden');
+            })
             ->where(function ($q) {
                 $q->where('media_type', '!=', 'floorplan')->orWhereNull('media_type');
             })
@@ -638,10 +657,14 @@ class ShootPublicAssetsService
             ? $this->paymentStatusSupport->reconcileStripePaymentState($shoot, ['files', 'client', 'payments'])
             : $shoot->loadMissing(['files', 'client', 'payments']);
         $files = $shoot->files;
-        $chosen = $files->where('workflow_stage', ShootFile::STAGE_VERIFIED);
-        if ($chosen->isEmpty()) {
-            $chosen = $files->where('workflow_stage', ShootFile::STAGE_COMPLETED);
-        }
+        // Match the archive/share-link delivery set: completed + verified together.
+        // Preferring verified alone dropped completed-but-unverified files (often
+        // unassigned extras / late edits) from the public tour while ZIP/share
+        // links still included them.
+        $chosen = $files->whereIn('workflow_stage', [
+            ShootFile::STAGE_COMPLETED,
+            ShootFile::STAGE_VERIFIED,
+        ]);
         if ($chosen->isEmpty()) {
             $chosen = $files->where('workflow_stage', ShootFile::STAGE_TODO);
         }
@@ -658,6 +681,13 @@ class ShootPublicAssetsService
         $heroPhotos = [];
         $videos = [];
         foreach ($chosen as $file) {
+            // Hidden / delivery-blocked media must never appear on the public tour.
+            // Archive and share-link builders already reject these; the tour used to
+            // ignore is_hidden, so a client hide still left the image in the embed.
+            if ($file->is_hidden || $file->isBlockedFromDelivery() || $file->isIguideOfflinePackage()) {
+                continue;
+            }
+
             // Floorplans have their own "Floor Plans" section and must never appear in
             // the property photo gallery or hero. (They now carry a generated preview
             // web_path, so they must be excluded explicitly here.)
@@ -1186,7 +1216,7 @@ class ShootPublicAssetsService
 
         $out = [];
         foreach ($files as $file) {
-            if ($shoot->relationLoaded('tourUnit') && ($file->is_hidden || $file->isBlockedFromDelivery())) continue;
+            if ($file->is_hidden || $file->isBlockedFromDelivery()) continue;
             $meta = is_array($file->metadata) ? $file->metadata : [];
             $hasPreviewImages = !empty($meta['preview_images']) && is_array($meta['preview_images']);
             if (!$file->web_path && !$file->thumbnail_path && !$hasPreviewImages) {

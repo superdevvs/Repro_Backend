@@ -167,6 +167,8 @@ class UserController extends Controller
             'timezone' => 'nullable|string|max:64',
             'username' => 'nullable|string|unique:users',
             'phone_number' => 'nullable|string|max:20',
+            'office_phone' => 'nullable|string|max:50',
+            'show_office_phone_on_tour' => 'nullable|boolean',
             'company_name' => 'nullable|string|max:255',
             'address' => 'nullable|string|max:255',
             'city' => 'nullable|string|max:100',
@@ -397,6 +399,8 @@ class UserController extends Controller
             $validated['role'] ?? '',
             'admin_account_created'
         );
+
+        $validated = \App\Support\OfficePhoneFields::apply($validated);
 
         $user = User::create($validated);
         $pendingEquipmentCount = $user->role === 'photographer'
@@ -649,6 +653,8 @@ class UserController extends Controller
             'timezone' => 'nullable|string|max:64',
             'username' => 'nullable|string|unique:users,username,' . $id,
             'phone_number' => 'nullable|string|max:20',
+            'office_phone' => 'nullable|string|max:50',
+            'show_office_phone_on_tour' => 'nullable|boolean',
             'company_name' => 'nullable|string|max:255',
             'address' => 'nullable|string|max:255',
             'city' => 'nullable|string|max:100',
@@ -863,6 +869,8 @@ class UserController extends Controller
         $oldRoleForNotification = (string) $user->role;
         $oldSecondaryRolesForNotification = $user->secondary_roles ?? [];
         $previousPhoneForNotification = trim((string) ($user->phonenumber ?: $user->phone));
+
+        $validated = \App\Support\OfficePhoneFields::apply($validated);
 
         $user->fill($validated);
         $changedFields = collect(array_keys($user->getDirty()))
@@ -1605,6 +1613,7 @@ class UserController extends Controller
         $payload['phone'] = $resolvedPhone;
         $payload['phonenumber'] = $resolvedPhone;
         $payload['phone_number'] = $resolvedPhone;
+        $payload = array_merge($payload, \App\Support\OfficePhoneFields::forAccount($user->office_phone, $user->show_office_phone_on_tour));
         if (isset($payload['company_name'])) {
             $payload['company'] = $payload['company_name'];
         }
@@ -1908,6 +1917,7 @@ class UserController extends Controller
         $payload['phone'] = $resolvedPhone;
         $payload['phonenumber'] = $resolvedPhone;
         $payload['phone_number'] = $resolvedPhone;
+        $payload = array_merge($payload, \App\Support\OfficePhoneFields::forAccount($user->office_phone, $user->show_office_phone_on_tour));
         if (isset($payload['company_name'])) {
             $payload['company'] = $payload['company_name'];
         }

@@ -76,7 +76,19 @@ class ShootServiceChangeGuard
             return null;
         }
 
-        if (! in_array($this->normalizeStatus($shoot), self::PRE_DELIVERY_STATUSES, true)) {
+        $status = $this->normalizeStatus($shoot);
+        $isPreDelivery = in_array($status, self::PRE_DELIVERY_STATUSES, true);
+        $isDelivered = $status === Shoot::STATUS_DELIVERED;
+        $actorIsPrivilegedAdmin = in_array(
+            $this->normalizeRole($actor->role),
+            self::ZERO_SERVICE_ROLES,
+            true
+        );
+
+        // Delivered shoots still need billing corrections (flight restrictions,
+        // client-requested cancellations of a line, etc.). Admin/SuperAdmin may
+        // detach with the normal confirmation token. Cancelled/declined remain sealed.
+        if (! $isPreDelivery && ! ($isDelivered && $actorIsPrivilegedAdmin)) {
             throw new PublicApiResponseException(response()->json([
                 'message' => 'Services cannot be removed after delivery or from a cancelled or declined shoot.',
                 'errors' => ['services' => ['Service removal is only available before delivery.']],

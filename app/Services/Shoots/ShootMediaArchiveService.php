@@ -171,7 +171,8 @@ class ShootMediaArchiveService
                         continue;
                     }
 
-                    $zip->addFile($localPath, $entry['archive_name']);
+                    app(\App\Services\Media\ArchiveCompressionPolicy::class)
+                        ->addFile($zip, $localPath, $entry['archive_name'], (int) $shoot->id);
                     $addedFiles++;
 
                     if (!empty($entry['temp_path'])) {

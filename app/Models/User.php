@@ -41,6 +41,8 @@ class User extends Authenticatable
         'email_suggested_correction',
         'phone',
         'phonenumber',
+        'office_phone',
+        'show_office_phone_on_tour',
         'company_name',
         'address',
         'city',
@@ -155,6 +157,7 @@ class User extends Authenticatable
             'sms_opt_out' => 'boolean',
             'sms_opt_out_at' => 'datetime',
             'sms_ai_enabled' => 'boolean',
+            'show_office_phone_on_tour' => 'boolean',
             'default_bracket_mode' => 'integer',
         ];
     }
@@ -397,11 +400,18 @@ class User extends Authenticatable
     }
 
     /**
-     * Check if this photographer can perform a specific service
+     * Check if this photographer can perform a specific service.
+     *
+     * Empty/missing specialties fail open: an unconfigured allowlist (common after
+     * account import) must not hide an otherwise active photographer from booking
+     * or assignment. Once any specialty is set, the list is a strict allowlist.
      */
     public function canPerformService(int|string $serviceId): bool
     {
         $capabilities = $this->getServiceCapabilities();
+        if ($capabilities === []) {
+            return true;
+        }
         if (in_array((string) $serviceId, $capabilities, true)) {
             return true;
         }
