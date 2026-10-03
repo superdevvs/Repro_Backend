@@ -43,6 +43,15 @@ class PrivacyLogProcessor
         if (app()->bound('request') && request() instanceof Request && request()->is('api/*')) {
             $safe['request_id'] = RequestCorrelation::id(request());
         }
+        if ($record->message === 'api_request') {
+            // Aggregate timings contain no SQL, parameters, URLs, or customer text.
+            foreach (['db_ms', 'queries', 'serialization_ms', 'response_bytes'] as $key) {
+                $value = $record->context[$key] ?? null;
+                if (is_int($value) || (is_float($value) && is_finite($value))) $safe[$key] = $value;
+            }
+            $route = $record->context['route'] ?? null;
+            if (in_array($route, ['api/shoots', 'api/shoots/history', 'api/shoots/filters', 'api/invoices', 'api/invoices/summary', 'api/dashboard/overview'], true)) $safe['route'] = $route;
+        }
         if (in_array($record->message, ['API request failed.', 'API operation failed.', 'Rate limiter database operation failed.'], true)) {
             $state = $record->context['sqlstate'] ?? null;
             $driverCode = $record->context['database_driver_code'] ?? null;

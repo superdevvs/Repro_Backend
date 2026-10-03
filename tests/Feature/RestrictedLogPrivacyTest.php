@@ -12,6 +12,25 @@ use Tests\Support\IsolatedSecurityTestCase;
 
 class RestrictedLogPrivacyTest extends IsolatedSecurityTestCase
 {
+    public function test_performance_records_keep_only_numeric_metrics_and_known_route_templates(): void
+    {
+        $processor = new PrivacyLogProcessor();
+        $record = $processor(new LogRecord(new \DateTimeImmutable(), 'performance', Level::Info, 'api_request', [
+            'db_ms' => 12.5, 'queries' => 7, 'serialization_ms' => 1.2, 'response_bytes' => 2048,
+            'route' => 'api/shoots', 'sql' => 'secret-canary', 'params' => ['secret-canary'],
+        ]));
+        $this->assertSame(12.5, $record->context['db_ms']);
+        $this->assertSame(7, $record->context['queries']);
+        $this->assertSame(2048, $record->context['response_bytes']);
+        $this->assertSame('api/shoots', $record->context['route']);
+        $this->assertStringNotContainsString('secret-canary', json_encode($record));
+        $unsafe = $processor(new LogRecord(new \DateTimeImmutable(), 'performance', Level::Info, 'api_request', [
+            'db_ms' => 'secret-canary', 'route' => 'api/shoots?address=secret-canary',
+        ]));
+        $this->assertArrayNotHasKey('db_ms', $unsafe->context);
+        $this->assertArrayNotHasKey('route', $unsafe->context);
+    }
+
     public function test_reviewed_diagnostic_location_and_throttle_scope_remain_operationally_useful(): void
     {
         $processor = new PrivacyLogProcessor();
