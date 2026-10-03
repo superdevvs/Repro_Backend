@@ -83,8 +83,10 @@ class WorkspaceFullShoot
                     if ($upload && ! $state->get($uploadKey.'-sent') && isset($upload['expires']) && strtotime($upload['expires']) <= time()) {
                         $state->put($uploadKey, null);
                     }
+                    // Generic uploads are HDR inputs. Registering them as listing photos
+                    // also creates gallery entries for the unrenderable RAW exposures.
                     $upload = $this->photos->uploadSlot($state, $uploadKey, fn () => $client->createUpload([
-                        'filename' => basename($items[$id]['name']), 'uploadType' => 'photo', 'listingId' => $listing['id'],
+                        'filename' => basename($items[$id]['name']),
                     ]));
                     if (! $state->get($uploadKey.'-sent')) {
                         $client->uploadBytes($upload, $this->media->originalBytes($items[$id]));
