@@ -1,11 +1,6 @@
 <?php
 
 return [
-    'scene_classifier' => [
-        'provider' => env('STUDIO_SCENE_PROVIDER', 'openai'),
-        'gemini_api_key' => env('GEMINI_API_KEY'),
-        'gemini_model' => env('STUDIO_SCENE_GEMINI_MODEL', 'gemini-3.5-flash-lite'),
-    ],
     // Virtual staging is pinned to this API. Result URLs expire, so the worker downloads them.
     // https://docs.virtualstagingai.app/v2-api/endpoints
     'virtualstagingai' => [

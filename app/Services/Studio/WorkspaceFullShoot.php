@@ -58,15 +58,6 @@ class WorkspaceFullShoot
                     continue;
                 }
                 $item = $items[$group['mediaId']];
-                // Detect before creating a listing or uploading originals. A classifier
-                // account failure must not create an otherwise empty provider order.
-                $scene = $state->get($key.'-scene');
-                if (! $scene) {
-                    $selectedScene = $workspace->config['adjustments']['sceneType'] ?? 'auto';
-                    $scene = in_array($selectedScene, ['interior', 'exterior'], true) ? $selectedScene : $this->photos->sceneType($workspace,
-                        isset($item['fileId']) ? $this->media->filePreview($item['fileId'], User::findOrFail($workspace->created_by), $workspace->team_id) : $this->media->bytes($item));
-                    $state->put($key.'-scene', $scene);
-                }
                 $listingKey = 'hdr-listing-'.($item['shootId'] ?? 'uploads');
                 // Mixed services can have different bracket sizes. upload_ids defines each exact stack.
                 $sizes = collect($groups)->filter(fn ($candidate) => ($items[$candidate['mediaId']]['shootId'] ?? null) === ($item['shootId'] ?? null))
@@ -91,6 +82,13 @@ class WorkspaceFullShoot
                         $state->put($uploadKey.'-sent', true);
                     }
                     $uploads[$id] = $upload['id'];
+                }
+                $scene = $state->get($key.'-scene');
+                if (! $scene) {
+                    $selectedScene = $workspace->config['adjustments']['sceneType'] ?? 'auto';
+                    $scene = in_array($selectedScene, ['interior', 'exterior'], true) ? $selectedScene : $this->photos->sceneType($workspace,
+                        isset($item['fileId']) ? $this->media->filePreview($item['fileId'], User::findOrFail($workspace->created_by), $workspace->team_id) : $this->media->bytes($item));
+                    $state->put($key.'-scene', $scene);
                 }
                 $enhance = $this->photos->once($state, $key.'-enhance', fn () => $client->createEnhance([
                     'listing_id' => $listing['id'], 'upload_ids' => array_values($uploads),

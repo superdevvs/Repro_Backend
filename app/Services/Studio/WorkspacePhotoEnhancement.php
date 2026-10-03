@@ -4,8 +4,10 @@ namespace App\Services\Studio;
 
 use App\Exceptions\StudioProviderException;
 use App\Models\StudioWorkspace;
+use App\Services\ReproAi\LlmClient;
 use App\Services\Studio\Providers\FotelloClient;
 use App\Services\Studio\Providers\FotelloException;
+use Intervention\Image\ImageManager;
 use RuntimeException;
 
 /** Listing/upload/enhance is the public API's complete, resumable photo contract. */
@@ -116,6 +118,19 @@ class WorkspacePhotoEnhancement
         if (in_array($selected, ['interior', 'exterior'], true)) {
             return $selected;
         }
-        return app(WorkspaceSceneClassifier::class)->classify($source);
+        if (! filled(config('services.openai.api_key'))) {
+            throw new StudioProviderException('Choose Interior or Exterior for this photo before generating.');
+        }
+        $image = ImageManager::gd()->read($source)->scaleDown(width: 768, height: 768);
+        $response = app(LlmClient::class)->chatCompletion([
+            ['role' => 'system', 'content' => 'Classify this property photograph. Return exactly interior or exterior. A room looking out a window is interior. A photograph taken outside or from the air is exterior.'],
+            ['role' => 'user', 'content' => [['type' => 'image_url', 'image_url' => ['url' => 'data:image/jpeg;base64,'.base64_encode((string) $image->toJpeg(80))]]]],
+        ], [], false, ['temperature' => 0, 'max_tokens' => 10]);
+        $type = strtolower(trim((string) data_get($response, 'choices.0.message.content', '')));
+        if (! in_array($type, ['interior', 'exterior'], true)) {
+            throw new StudioProviderException('Choose Interior or Exterior for this photo before generating.');
+        }
+
+        return $type;
     }
 }
