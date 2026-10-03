@@ -76,6 +76,7 @@ class ShootShareLinkExcludesExtrasTest extends TestCase
             'workflow_stage' => ShootFile::STAGE_TODO,
             'is_extra' => $isExtra,
             'required_for_editing' => $requiredForEditing,
+            'scan_status' => ShootFile::SCAN_STATUS_CLEAN,
         ]);
     }
 }
