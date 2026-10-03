@@ -85,7 +85,7 @@ Inventory example:
 {"request_id":"actual-aryeo-request-id","listing_id":"actual-existing-listing-id","checked_at":"2026-10-03T12:00:00Z","complete":true,"assets":[{"id":"remote-file-1","type":"photos","filename":"photo.jpg","delivered":true,"dashboard_asset_id":42}]}
 ```
 
-Only set `complete:true` after reading all relevant remote media, not from saved workflow state. A missing inventory, `complete:false`, or inventory older than two minutes displays **Unknown**, not zero. `delivered` must come from actual destination evidence. Report uploaded-but-unreleased items as false. Older inventories cannot replace newer ones.
+Only set `complete:true` after reading all relevant remote media, not from saved workflow state. Missing or incomplete inventory displays **Unknown**, not zero. Complete inventory older than two minutes retains its labelled last-verified counts and requires refreshing before delivery. `delivered` must come from actual destination evidence. Report uploaded-but-unreleased items as false. Older inventories cannot replace newer ones.
 
 Changes are a SQLite trigger-backed feed covering shoot, file, service, unit, payment and payment-allocation inserts/updates/deletes, including bulk writes. Events carry `id`, `shoot_id`, `client_id`, `kind`, `created_at`. Refetch identity/readiness on any event; a 404 means remove/revoke that shoot locally. Client ownership changes generate a revocation event for the old scope. Polling may return multiple events for one shoot. Cursor zero also includes a migration-time initial snapshot. Production storage is SQLite; this trigger implementation is not a portable MySQL change feed.
 
@@ -106,6 +106,16 @@ Staff create jobs only through `POST /api/shoots/{shoot}/aryeo/requests/{record}
 3. Refresh actual remote inventory and upload it. Before upload and immediately before delivery, `POST /jobs/{id}/authorize` with `lease_token`. This rechecks current release, selected-shoot permission, request identity, manifest version and fresh complete inventory. A 409 blocks delivery.
 4. Download approved originals using `POST /jobs/{id}/assets/{asset}/download` with `lease_token` in JSON, never the URL. Reuse existing remote files when verified identical. Upload extras. Preserve the original listing ID and record each remote file ID locally before progressing.
 5. `POST /jobs/{id}/result` with the lease token, `steps`, optional `error`, and delivery `receipt`. Use `GET /jobs/{id}` to recover uncertain results before retrying.
+
+Example result (illustrative):
+
+The renewal endpoint also accepts optional structured `progress` for live Mac activity:
+
+```json
+{"lease_token":"secret-from-claim","phase":"uploading","progress":{"action":"adding_files","message":"Adding photo to Aryeo","completed":1,"total":49,"current_file":"Reservoir-02.jpg","observed_at":"2026-10-03T12:00:00Z"}}
+```
+
+Report transitions and at most ten-second intervals during long work. `action` is at most 60 characters, `message` 300, and optional `current_file` 255; send safe user-facing descriptions, never commands, credentials or raw logs. Counts must satisfy `0 <= completed <= total <= 10000`. The server ignores older observations and records `updated_at` separately from `activity_at`, which changes only when the activity fields change. Lease ownership remains mandatory. Progress never overwrites actual errors. The panel polls every five seconds during active work, shows activity beside the action button, and warns about unchanged activity, expired leases and offline workers. Phase-only older workers remain compatible but cannot supply file counts.
 
 Example result (illustrative):
 

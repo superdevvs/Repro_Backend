@@ -14,5 +14,5 @@ class AryeoJob extends Model
 
     protected $hidden = ['lease_hash', 'claim_id'];
 
-    protected $casts = ['snapshot' => 'array', 'steps' => 'array', 'receipt' => 'array', 'lease_expires_at' => 'datetime'];
+    protected $casts = ['snapshot' => 'array', 'steps' => 'array', 'receipt' => 'array', 'progress' => 'array', 'lease_expires_at' => 'datetime'];
 }

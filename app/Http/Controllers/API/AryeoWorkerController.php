@@ -120,7 +120,15 @@ class AryeoWorkerController extends Controller
     public function renew(Request $r, string $job)
     {
         $data = $r->validate(['lease_token' => 'required|string', 'phase' => 'nullable|in:preparing,uploading,verifying,delivering,followup',
-            'reconciliation' => 'nullable|in:not_delivered,delivered,unknown']);
+            'reconciliation' => 'nullable|in:not_delivered,delivered,unknown',
+            'progress' => 'sometimes|array:action,message,completed,total,current_file,observed_at',
+            'progress.action' => 'required_with:progress|string|max:60',
+            'progress.message' => 'required_with:progress|string|max:300',
+            'progress.completed' => 'required_with:progress|integer|min:0',
+            'progress.total' => 'required_with:progress|integer|min:0|gte:progress.completed|max:10000',
+            'progress.current_file' => 'nullable|string|max:255',
+            'progress.observed_at' => 'required_with:progress|date|before_or_equal:now|after:-10 minutes',
+        ]);
 
         return response()->json(LockedWrite::run(fn () => DB::transaction(function () use ($r, $job, $data) {
             $row = $this->jobs->leased($this->connection($r), $job, $data['lease_token']);
@@ -133,8 +141,19 @@ class AryeoWorkerController extends Controller
                 }
             }
             $row->lease_expires_at = now()->addSeconds(90);
-            if (isset($data['phase'])) {
-                $row->error = 'Progress: '.$data['phase'];
+            $progress = $data['progress'] ?? (isset($data['phase']) && ! isset($row->progress['total']) ? [
+                'action' => $data['phase'], 'message' => ucfirst($data['phase']), 'observed_at' => now()->toIso8601String(),
+            ] : null);
+            if ($progress && (! isset($row->progress['observed_at']) || \Carbon\Carbon::parse($progress['observed_at'])->gte($row->progress['observed_at']))) {
+                $previous = $row->progress ?? [];
+                $changed = collect($previous)->except(['observed_at', 'updated_at', 'activity_at'])->all()
+                    != collect($progress)->except(['observed_at'])->all();
+                $row->progress = [...$progress, 'updated_at' => now()->toIso8601String(),
+                    'activity_at' => $changed ? now()->toIso8601String() : ($previous['activity_at'] ?? now()->toIso8601String())];
+            }
+            // Old workers used the error field for phase announcements.
+            if (str_starts_with($row->error ?? '', 'Progress: ')) {
+                $row->error = null;
             }
             $row->save();
 

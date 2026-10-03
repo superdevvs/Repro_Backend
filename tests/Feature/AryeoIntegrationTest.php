@@ -187,6 +187,54 @@ class AryeoIntegrationTest extends TestCase
         $this->worker()->postJson($this->prefix.'/jobs/'.$id.'/authorize', ['lease_token' => 'second_claim_12345678901234567890'])->assertConflict();
     }
 
+    public function test_live_progress_distinguishes_activity_from_lease_heartbeats_and_rejects_stale_updates(): void
+    {
+        $id = $this->enqueue();
+        $this->claim()->assertOk();
+        $url = $this->prefix.'/jobs/'.$id.'/renew';
+        $body = ['lease_token' => 'claim_secret_12345678901234567890', 'phase' => 'uploading',
+            'progress' => ['action' => 'adding_files', 'message' => 'Adding photo to Aryeo', 'completed' => 0, 'total' => 2,
+                'current_file' => 'photo.jpg', 'observed_at' => now()->toIso8601String()]];
+        $first = $this->worker()->postJson($url, $body)->assertOk()->assertJsonPath('error', null)->assertJsonPath('progress.completed', 0)->json('progress');
+        $this->travel(10)->seconds();
+        $body['progress']['observed_at'] = now()->toIso8601String();
+        $second = $this->worker()->postJson($url, $body)->assertOk()->json('progress');
+        $this->assertSame($first['activity_at'], $second['activity_at']);
+        $this->assertNotSame($first['updated_at'], $second['updated_at']);
+        $body['progress']['completed'] = 1;
+        $third = $this->worker()->postJson($url, $body)->assertOk()->json('progress');
+        $this->assertNotSame($first['activity_at'], $third['activity_at']);
+        $body['progress']['completed'] = 0;
+        $body['progress']['observed_at'] = $first['observed_at'];
+        $this->worker()->postJson($url, $body)->assertOk()->assertJsonPath('progress.completed', 1);
+        $this->actingAs($this->admin)->getJson('/api/shoots/'.$this->shoot->id.'/aryeo')->assertOk()->assertJsonPath('orders.0.jobs.0.progress.completed', 1);
+    }
+
+    public function test_progress_requires_lease_ownership_and_valid_counts_and_does_not_erase_errors(): void
+    {
+        $id = $this->enqueue();
+        $this->claim()->assertOk();
+        $url = $this->prefix.'/jobs/'.$id.'/renew';
+        $body = ['lease_token' => 'wrong', 'progress' => ['action' => 'uploading', 'message' => 'Uploading photo', 'completed' => 0, 'total' => 2, 'observed_at' => now()->toIso8601String()]];
+        $this->worker()->postJson($url, $body)->assertConflict();
+        $this->assertNull(AryeoJob::find($id)->progress);
+        $body['lease_token'] = 'claim_secret_12345678901234567890';
+        $body['progress']['completed'] = 3;
+        $this->worker()->postJson($url, $body)->assertUnprocessable();
+        AryeoJob::find($id)->update(['error' => 'Upload needs attention']);
+        $body['progress']['completed'] = 0;
+        $this->worker()->postJson($url, $body)->assertOk()->assertJsonPath('error', 'Upload needs attention');
+    }
+
+    public function test_legacy_worker_phase_is_progress_not_an_error(): void
+    {
+        $id = $this->enqueue();
+        $this->claim()->assertOk();
+        AryeoJob::find($id)->update(['error' => 'Progress: uploading']);
+        $this->worker()->postJson($this->prefix.'/jobs/'.$id.'/renew', ['lease_token' => 'claim_secret_12345678901234567890', 'phase' => 'uploading'])
+            ->assertOk()->assertJsonPath('error', null)->assertJsonPath('progress.action', 'uploading');
+    }
+
     public function test_cancellation_after_claim_revokes_delivery_permission(): void
     {
         $id = $this->enqueue();
