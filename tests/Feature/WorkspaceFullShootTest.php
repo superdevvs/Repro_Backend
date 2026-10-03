@@ -185,4 +185,31 @@ class WorkspaceFullShootTest extends TestCase
         $this->expectExceptionMessage('stacks changed');
         app(WorkspaceFullShoot::class)->run($workspace, 'operation-1');
     }
+
+    public function test_scene_detection_failure_does_not_create_a_fotello_listing_or_upload(): void
+    {
+        $workspace = $this->workspace();
+        $config = $workspace->config;
+        $config['adjustments']['sceneType'] = 'auto';
+        $workspace->update(['config' => $config]);
+        $media = Mockery::mock(WorkspaceMediaService::class);
+        $media->shouldReceive('filePreview')->once()->andReturn($this->jpeg);
+        $this->app->instance(WorkspaceMediaService::class, $media);
+        $classifier = Mockery::mock(\App\Services\Studio\WorkspaceSceneClassifier::class);
+        $classifier->shouldReceive('classify')->once()->andThrow(new StudioProviderException('Photo type detection unavailable.'));
+        $this->app->instance(\App\Services\Studio\WorkspaceSceneClassifier::class, $classifier);
+        $client = Mockery::mock(FotelloClient::class);
+        $client->shouldNotReceive('createListing');
+        $client->shouldNotReceive('createUpload');
+        $client->shouldNotReceive('createEnhance');
+        $this->app->bind(FotelloClient::class, fn () => $client);
+        try {
+            app(WorkspaceFullShoot::class)->run($workspace, 'operation-1');
+            $this->fail('Unavailable classifier must stop the submission.');
+        } catch (StudioProviderException $e) {
+            $this->assertSame('Photo type detection unavailable.', $e->getMessage());
+        }
+        $this->assertSame('operation-1', $workspace->fresh()->operation['id']);
+        $this->assertArrayNotHasKey('hdr-listing-'.$workspace->shoot_id, $workspace->fresh()->operation['providerState']);
+    }
 }
