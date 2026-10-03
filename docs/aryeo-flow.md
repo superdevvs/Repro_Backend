@@ -1,6 +1,8 @@
 # Aryeo Flow connector contract (v1)
 
-Status: implementation branch; not yet deployed or connected to the Mac. No delivery is authorized by this document. Start with read-only validation, then enable only an explicitly selected shoot.
+Status: API and Tours panel deployed on 2026-10-03; the Mac credential passed live authentication and scope checks. Discovery/heartbeat and the dashboard-job executor are being connected separately. No delivery is authorized by this document.
+
+Dashboard-backed processing requires a Showcase request matched to a paid, dashboard-delivered shoot with approved requested media. A Summary email is not required. Dashboard delivery and Aryeo delivery remain separate states; only a verified Aryeo receipt confirms the latter. Non-media fee lines do not block otherwise approved tour links.
 
 ## Transport and authentication
 
@@ -67,7 +69,7 @@ Discovery example (replace placeholders with verified values; zero means not req
 {"source_id":"1a0fedd16d78cc61","request_id":"actual-aryeo-request-id","listing_id":"actual-existing-listing-id","address":"9407 Reservoir Road","requester_email":"verified-client@example.test","summary_present":false,"required":{"photos":30,"floorplans":1,"videos":0,"tours":0}}
 ```
 
-If requirements are unknown, do not submit fabricated counts. If a request or listing does not yet have a verified provider ID, omit that ID; processing remains blocked without a request ID. Matching requires an exact normalized address and client email; an optional date narrows repeat shoots. Multiple matches or ambiguous units remain unlinked. Staff can explicitly match a discovered request in Tours.
+If the requested categories are unknown, submit `required:null`; discovery is recorded but processing remains blocked. When categories are verified but quantities are unspecified, send all four keys with null for each requested category and 0 for each explicitly unrequested category. A null quantity requires at least one approved item of that type and includes all approved media; it is not a fabricated exact count. Preserve any verified numeric quantities. If a request or listing does not yet have a verified provider ID, omit that ID; processing remains blocked without a request ID. Matching requires an exact normalized address and client email; an optional date narrows repeat shoots. Multiple matches or ambiguous units remain unlinked. Staff can explicitly match a discovered request in Tours.
 
 Readiness response shape:
 
@@ -123,4 +125,4 @@ Do not call the dashboard `/complete` action. Do not call local `/api/run` as a 
 
 Run backend tests in `tests/Feature/AryeoIntegrationTest.php` and frontend panel/unit-scope tests. Read-only live checks should confirm scope, shoot 115 identity, actual order requirements, approved originals and destination inventory. No delivered-state assertion can be made until a selected end-to-end delivery is verified on the Mac and its receipt is accepted.
 
-Local validation on 2026-10-03: 22 backend tests / 87 assertions passed; 16 panel/Tours tests and 10 coordinate-helper tests passed; TypeScript and Vite production build passed. The new Tours files pass targeted ESLint. Two missing imports in the existing overview module were repaired in a separate prerequisite commit; that module still has pre-existing lint warnings/errors, so this is not a claim that the full repository lint suite is clean. Desktop (1280 px) and mobile (390 px) fixture previews passed without horizontal page overflow. Production remains unchanged, apart from read-only queries; no live worker credential, job or delivery was created.
+Initial deployment validation on 2026-10-03: full backend CI passed 5,180 tests, frontend CI passed 3,744 tests plus monitor/desktop checks. Live release markers, the Tours panel, Mac authenticated shoot lookup/readiness, unauthenticated 401 and out-of-scope 404 were verified. The credential is stored privately on the Mac; only its hash is stored server-side. Connection 1 initially permits client 1225, with processing disabled and no jobs created. No Aryeo delivery has been tested or confirmed by this setup.

@@ -52,6 +52,10 @@ class AryeoCatalog
         if (! in_array($status, ['ready', 'ready_for_client', 'delivered', 'completed'])) {
             $blockers[] = 'editing_not_approved';
         }
+        $dashboardDelivered = $status === 'delivered' || strtolower((string) $shoot->status) === 'delivered';
+        if (! $dashboardDelivered) {
+            $blockers[] = 'dashboard_delivery_pending';
+        }
         if (! $shoot->admin_verified_at) {
             $blockers[] = 'admin_verification_required';
         }
@@ -73,7 +77,8 @@ class AryeoCatalog
         }
         $release = app(ShootClientReleaseAccessService::class);
         $paymentKnown = $shoot->payment_status === 'paid' || $shoot->total_quote !== null;
-        $wholeReleased = $shoot->bypass_paywall || ($paymentKnown && $release->resolvePaymentStatus($shoot) === 'paid');
+        $paid = $paymentKnown && $release->resolvePaymentStatus($shoot) === 'paid';
+        $wholeReleased = $shoot->bypass_paywall || $paid;
         $approvedLine = fn ($line) => $line && $line->is_deliverable && in_array($line->delivery_status, ['ready', 'delivered']);
         $unlocked = fn ($line) => $approvedLine($line)
             && ($wholeReleased || $line->force_unlock_delivery || ($line->is_unlocked_for_delivery && in_array($line->delivery_status, ['ready', 'delivered'])));
@@ -111,7 +116,11 @@ class AryeoCatalog
         }
         $tours = [];
         // Per-service release of links is not inferred from a staff's access.
-        $allLinksReleased = $lines->isNotEmpty() ? $lines->every($unlocked) : ($wholeReleased && ! $unit);
+        // Fees have no media to release. They must not hide an approved tour.
+        $deliverableLines = $lines->filter(fn ($line) => $line->is_deliverable);
+        $allLinksReleased = $lines->isNotEmpty()
+            ? ($deliverableLines->isNotEmpty() && $deliverableLines->every($unlocked))
+            : ($wholeReleased && ! $unit);
         if ($allLinksReleased) {
             foreach (['zillow_3d', 'matterport_branded', 'matterport_mls', 'iguide_branded', 'iguide_mls', 'video_link', 'video_branded', 'video_mls'] as $key) {
                 $url = $links[$key] ?? null;
@@ -124,14 +133,17 @@ class AryeoCatalog
         foreach ($assets as $asset) {
             $available[$asset['type']]++;
         }
-        if (! $wholeReleased && ! $lines->contains($unlocked)) {
+        if (! $paid) {
             $blockers[] = 'payment_required';
         }
         if ($requirements === null) {
             $blockers[] = 'request_requirements_unknown';
         }
         foreach ($requirements ?? [] as $kind => $count) {
-            if (($available[$kind] ?? 0) < $count) {
+            // A requested category need not specify a quantity in the Showcase
+            // email. Include all approved media; require at least one of that kind.
+            $minimum = $count === null ? 1 : $count;
+            if (($available[$kind] ?? 0) < $minimum) {
                 $blockers[] = 'missing_'.$kind;
             }
         }
@@ -142,6 +154,7 @@ class AryeoCatalog
 
         return [
             'shoot_id' => $shoot->id, 'unit_id' => $unitId, 'eligible' => ! $blockers,
+            'dashboard' => ['paid' => $paid, 'delivered' => $dashboardDelivered, 'summary_required' => false],
             'blockers' => array_values(array_unique($blockers)), 'required' => $requirements,
             'available' => $available, 'withheld_for_payment' => $withheld,
             'media_version' => $version, 'assets' => $assets, 'tours' => $tours,

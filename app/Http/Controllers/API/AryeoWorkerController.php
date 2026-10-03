@@ -73,8 +73,9 @@ class AryeoWorkerController extends Controller
             'source_id' => 'required|string|max:200', 'request_id' => 'nullable|string|max:200', 'listing_id' => 'nullable|string|max:200',
             'address' => 'required|string|max:255', 'requester_email' => 'required|email|max:255', 'unit_label' => 'nullable|string|max:100',
             'scheduled_date' => 'nullable|date_format:Y-m-d', 'summary_present' => 'required|boolean',
-            'required' => 'required|array:photos,floorplans,videos,tours', 'required.photos' => 'required|integer|min:0|max:2000',
-            'required.floorplans' => 'required|integer|min:0|max:200', 'required.videos' => 'required|integer|min:0|max:100', 'required.tours' => 'required|integer|min:0|max:100',
+            'required' => 'present|nullable|array:photos,floorplans,videos,tours|required_array_keys:photos,floorplans,videos,tours',
+            'required.photos' => 'nullable|integer|min:0|max:2000',
+            'required.floorplans' => 'nullable|integer|min:0|max:200', 'required.videos' => 'nullable|integer|min:0|max:100', 'required.tours' => 'nullable|integer|min:0|max:100',
         ]);
 
         return response()->json(LockedWrite::run(fn () => DB::transaction(fn () => $discovery->record($this->connection($r), $data)), 'aryeo.discovery'));

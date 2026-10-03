@@ -92,7 +92,62 @@ class AryeoIntegrationTest extends TestCase
 
     public function test_missing_summary_is_not_a_readiness_blocker(): void
     {
-        $this->worker()->getJson($this->prefix.'/shoots/'.$this->shoot->id.'/readiness?request_record_id='.$this->order->id)->assertOk()->assertJsonPath('eligible', true);
+        $this->worker()->getJson($this->prefix.'/shoots/'.$this->shoot->id.'/readiness?request_record_id='.$this->order->id)
+            ->assertOk()->assertJsonPath('eligible', true)->assertJsonPath('dashboard', ['paid' => true, 'delivered' => true, 'summary_required' => false]);
+    }
+
+    public function test_paid_but_not_dashboard_delivered_cannot_be_processed(): void
+    {
+        $this->shoot->update(['status' => 'completed', 'workflow_status' => 'ready_for_client']);
+        $ready = app(AryeoCatalog::class)->readiness($this->shoot->fresh(), null, $this->order->discovery['required']);
+        $this->assertContains('dashboard_delivery_pending', $ready['blockers']);
+        $this->assertFalse($ready['dashboard']['delivered']);
+        $this->actingAs($this->admin)->postJson('/api/shoots/'.$this->shoot->id.'/aryeo/requests/'.$this->order->id.'/process')->assertConflict();
+    }
+
+    public function test_requested_category_without_quantity_uses_all_approved_media(): void
+    {
+        $payload = [...$this->order->discovery, 'source_id' => $this->order->source_id, 'request_id' => $this->order->request_id,
+            'required' => ['photos' => null, 'floorplans' => 0, 'videos' => 0, 'tours' => 0]];
+        $this->worker()->postJson($this->prefix.'/requests', $payload)->assertOk()->assertJsonPath('discovery.required.photos', null);
+        $this->worker()->getJson($this->prefix.'/shoots/'.$this->shoot->id.'/readiness?request_record_id='.$this->order->id)
+            ->assertOk()->assertJsonPath('eligible', true)->assertJsonCount(1, 'assets');
+        $payload['required']['floorplans'] = null;
+        $this->worker()->postJson($this->prefix.'/requests', $payload)->assertOk();
+        $this->worker()->getJson($this->prefix.'/shoots/'.$this->shoot->id.'/readiness?request_record_id='.$this->order->id)
+            ->assertOk()->assertJsonPath('eligible', false)->assertJsonFragment(['blockers' => ['missing_floorplans']]);
+    }
+
+    public function test_unknown_categories_can_be_discovered_but_not_processed(): void
+    {
+        $payload = [...$this->order->discovery, 'source_id' => $this->order->source_id, 'request_id' => $this->order->request_id, 'required' => null];
+        $this->worker()->postJson($this->prefix.'/requests', $payload)->assertOk();
+        $this->worker()->getJson($this->prefix.'/shoots/'.$this->shoot->id.'/readiness?request_record_id='.$this->order->id)
+            ->assertOk()->assertJsonPath('eligible', false)->assertJsonFragment(['blockers' => ['request_requirements_unknown']]);
+        $payload['required'] = ['photos' => null];
+        $this->worker()->postJson($this->prefix.'/requests', $payload)->assertUnprocessable();
+    }
+
+    public function test_paywall_override_does_not_replace_paid_requirement_for_aryeo(): void
+    {
+        $this->shoot->update(['payment_status' => 'unpaid', 'bypass_paywall' => true]);
+        $ready = app(AryeoCatalog::class)->readiness($this->shoot->fresh(), null, $this->order->discovery['required']);
+        $this->assertContains('payment_required', $ready['blockers']);
+        $this->assertFalse($ready['eligible']);
+    }
+
+    public function test_non_media_fee_does_not_hide_an_approved_tour(): void
+    {
+        $this->shoot->update(['tour_links' => ['zillow_3d' => 'https://www.zillow.com/view-3d-home/test']]);
+        $line = \App\Models\ShootService::create(['shoot_id' => $this->shoot->id, 'service_id' => $this->shoot->service_id, 'price' => 100, 'quantity' => 1, 'is_deliverable' => true, 'delivery_status' => 'delivered']);
+        \App\Models\ShootService::create(['shoot_id' => $this->shoot->id, 'service_id' => \App\Models\Service::factory()->create()->id, 'price' => 25, 'quantity' => 1, 'is_deliverable' => false, 'delivery_status' => 'not_started']);
+        $ready = app(AryeoCatalog::class)->readiness($this->shoot->fresh(), null, ['photos' => 1, 'floorplans' => 0, 'videos' => 0, 'tours' => 1]);
+        $this->assertTrue($ready['eligible']);
+        $this->assertSame(1, $ready['available']['tours']);
+        $line->update(['delivery_status' => 'not_started']);
+        $ready = app(AryeoCatalog::class)->readiness($this->shoot->fresh(), null, ['tours' => 1]);
+        $this->assertSame(0, $ready['available']['tours']);
+        $this->assertContains('missing_tours', $ready['blockers']);
     }
 
     public function test_hidden_quarantined_and_raw_files_are_not_in_manifest(): void
