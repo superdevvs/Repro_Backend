@@ -1774,12 +1774,30 @@ class Shoot extends Model
 
         // Invalidate caches when shoot is updated
         static::saved(function ($shoot) {
-            static::invalidateCaches($shoot);
+            static::invalidateCachesAfterCommit($shoot);
         });
 
         static::deleted(function ($shoot) {
-            static::invalidateCaches($shoot);
+            static::invalidateCachesAfterCommit($shoot);
         });
+    }
+
+    protected static function invalidateCachesAfterCommit(Shoot $shoot): void
+    {
+        // A cache write must not extend a database transaction or invalidate a
+        // rolled-back snapshot. Cache outages also must not mask a committed save.
+        $invalidate = static function () use ($shoot) {
+            try {
+                static::invalidateCaches($shoot);
+            } catch (\Throwable $exception) {
+                Log::error('Shoot cache invalidation failed after save', ['shoot_id' => $shoot->id, 'exception' => $exception]);
+            }
+        };
+        if ($shoot->getConnection()->transactionLevel() > 0) {
+            $shoot->getConnection()->afterCommit($invalidate);
+        } else {
+            $invalidate();
+        }
     }
 
     /**

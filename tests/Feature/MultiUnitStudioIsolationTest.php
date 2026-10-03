@@ -40,6 +40,9 @@ class MultiUnitStudioIsolationTest extends TestCase
         $peer = User::factory()->create(['role' => 'editor']);
         $lines[0]->update(['editor_id' => $editor->id]);
         $lines[1]->update(['editor_id' => $peer->id]);
+        ShootFile::create(['shoot_id' => $shoot->id, 'shoot_service_id' => $lines[0]->id, 'filename' => 'unit-1-edited.jpg',
+            'stored_filename' => 'unit-1-edited.jpg', 'path' => 'edited/unit-1.jpg', 'file_type' => 'image/jpeg', 'file_size' => 100,
+            'workflow_stage' => 'completed', 'media_type' => 'edited', 'uploaded_by' => $editor->id]);
         $assignments = app(ShootEditingAssignmentService::class);
         $assignments->markAssignedServicesReadyForUser($shoot, $editor);
         $this->assertNotNull($lines[0]->fresh()->editing_completed_at);

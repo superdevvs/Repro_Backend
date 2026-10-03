@@ -54,6 +54,35 @@ class EditorSubmissionWorkflowTest extends TestCase
         $this->assertNotNull($item->fresh()->video_editing_completed_at);
     }
 
+    public function test_manager_photo_submission_does_not_complete_video_and_repeated_submission_is_unchanged(): void
+    {
+        [$shoot, $item, $photo] = $this->assignment();
+        $this->editedFile($shoot, $item, $photo);
+        $manager = User::factory()->create(['role' => 'editing_manager']);
+        $this->actingAs($manager)->postJson("/api/shoots/{$shoot->id}/upload/finalize-edited")
+            ->assertOk()->assertJsonPath('shoot_status', 'editing')->assertJsonPath('editing_submission_changed', true)
+            ->assertJsonStructure(['correlation_id', 'retryable']);
+        $submittedAt = $item->fresh()->editing_completed_at;
+        $this->assertNotNull($submittedAt);
+        $this->assertNull($item->fresh()->video_editing_completed_at);
+        $this->travel(1)->minutes();
+        $this->postJson("/api/shoots/{$shoot->id}/upload/finalize-edited")
+            ->assertOk()->assertJsonPath('editing_submission_changed', false);
+        $this->assertEquals($submittedAt, $item->fresh()->editing_completed_at);
+        $this->assertNull($item->fresh()->video_editing_completed_at);
+    }
+
+    public function test_an_output_for_one_service_does_not_complete_another_photo_service(): void
+    {
+        [$shoot, $item, $photo] = $this->assignment();
+        $other = ShootService::create(['shoot_id' => $shoot->id, 'service_id' => Service::factory()->photoVideoIntake()->create(['requires_editing' => true])->id,
+            'editor_id' => $photo->id, 'quantity' => 1, 'price' => 100]);
+        $this->editedFile($shoot, $item, $photo);
+        $this->actingAs($photo)->postJson("/api/shoots/{$shoot->id}/upload/finalize-edited")->assertOk()->assertJsonPath('shoot_status', 'editing');
+        $this->assertNotNull($item->fresh()->editing_completed_at);
+        $this->assertNull($other->fresh()->editing_completed_at);
+    }
+
     public function test_pending_video_can_submit_saved_links_after_photo_delivery_without_reopening_delivery(): void
     {
         [$shoot, $item, $photo, $video] = $this->assignment('delivered');

@@ -8,9 +8,11 @@ use App\Models\User;
 use App\Services\Messaging\AutomationService;
 use App\Services\ShootActivityLogger;
 use App\Services\Shoots\ShootMediaMutationSupportService;
+use App\Support\LockedWrite;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 
 class FinalizeEditedUploadAction
 {
@@ -71,6 +73,30 @@ class FinalizeEditedUploadAction
 
     public function execute(Shoot $shoot, ?User $user): array
     {
+        $correlationId = (string) Str::uuid();
+        try {
+            $result = $this->submit($shoot, $user, $correlationId);
+        } catch (\Throwable $exception) {
+            $retryable = LockedWrite::isLockContention($exception);
+            Log::error('Edited submission failed', [
+                'shoot_id' => $shoot->id, 'user_id' => $user?->id,
+                'correlation_id' => $correlationId, 'exception' => $exception,
+            ]);
+            $result = ['status' => $retryable ? 503 : 500, 'payload' => [
+                'error_type' => $retryable ? 'submission_busy' : 'submission_failed',
+                'message' => $retryable
+                    ? 'Your uploads are saved. Submission is temporarily busy. Try submitting again.'
+                    : 'Your uploads are saved, but edits could not be submitted. Try again or contact support with the reference below.',
+                'retryable' => $retryable, 'workflow_status_changed' => false,
+            ]];
+        }
+        $result['payload']['correlation_id'] = $correlationId;
+        $result['payload']['retryable'] ??= $result['status'] === 409 && ($result['payload']['error_type'] ?? '') === 'concurrent_finalize';
+        return $result;
+    }
+
+    private function submit(Shoot $shoot, ?User $user, string $correlationId): array
+    {
         $assignments = app(\App\Services\Shoots\ShootEditingAssignmentService::class);
         $capabilities = app(\App\Services\Shoots\ShootSubmissionCapabilityService::class);
         if ($user?->role === 'editor' && !$assignments->editorHasAssignment($shoot, $user)) {
@@ -95,13 +121,13 @@ class FinalizeEditedUploadAction
             $shouldFireAutomations = false;
             $editingSubmissionChanged = false;
 
-            DB::beginTransaction();
-
-            try {
+            $earlyResult = LockedWrite::run(function () use (&$shoot, $user, $assignments, $capabilities, &$workflowStatusChanged, &$previousStatus, &$shouldFireAutomations, &$editingSubmissionChanged) {
+                return DB::transaction(function () use (&$shoot, $user, $assignments, $capabilities, &$workflowStatusChanged, &$previousStatus, &$shouldFireAutomations, &$editingSubmissionChanged) {
+                // Every retry must discard the previous read snapshot and decisions.
+                $workflowStatusChanged = $shouldFireAutomations = $editingSubmissionChanged = false;
                 /** @var Shoot $locked */
                 $locked = Shoot::query()->whereKey($shoot->id)->lockForUpdate()->first();
                 if (!$locked) {
-                    DB::rollBack();
                     return [
                         'status' => 404,
                         'payload' => [
@@ -112,8 +138,11 @@ class FinalizeEditedUploadAction
                     ];
                 }
 
+                if ($user?->role === 'editor' && !$assignments->editorHasAssignment($locked, $user)) {
+                    return ['status' => 403, 'payload' => ['error_type' => 'forbidden', 'message' => 'This shoot is not assigned to you.', 'workflow_status_changed' => false]];
+                }
+
                 $shoot = $this->support->refreshMediaCounters($locked);
-                $this->support->clearShootFilesCache($shoot);
 
                 $currentStatus = strtolower((string) ($shoot->workflow_status ?? $shoot->status ?? ''));
                 $previousStatus = $currentStatus;
@@ -132,14 +161,11 @@ class FinalizeEditedUploadAction
                 $pendingEditorLane = $user?->role === 'editor' && $capabilities->pendingEditorAssignments($shoot, $user);
                 $canSubmitPendingLane = $pendingEditorLane && in_array($currentStatus, array_merge(['review', 'ready'], $capabilities::DELIVERED_STATUSES), true);
                 if ($user?->role === 'editor' && !$pendingEditorLane && !$canResubmitReady && $assignments->getTrackedServiceAssignments($shoot)->isNotEmpty()) {
-                    DB::commit();
                     return ['status' => 200, 'payload' => ['message' => 'Your assigned edits are already submitted.', 'workflow_status_changed' => false,
                         'editing_submission_changed' => false, 'shoot_status' => $shoot->workflow_status]];
                 }
 
                 if (!in_array($currentStatus, $allowedFromStatuses, true) && !$canResubmitReady && !$canSubmitPendingLane) {
-                    DB::commit();
-
                     if (in_array($currentStatus, $idempotent, true)) {
                         return [
                             'status' => 200,
@@ -181,7 +207,6 @@ class FinalizeEditedUploadAction
                 }
 
                 if ($capabilities->editedFiles($shoot, $user)->isEmpty() && !$capabilities->hasVideoLinkOutput($shoot, $user)) {
-                    DB::rollBack();
                     return [
                         'status' => 422,
                         'payload' => [
@@ -194,33 +219,30 @@ class FinalizeEditedUploadAction
                     ];
                 }
 
-                if ($user) {
-                    $assignments->markAssignedServicesReadyForUser($shoot, $user);
-                }
+                $pendingBefore = $assignments->getTrackedServiceAssignments($shoot)->filter(fn ($assignment) => empty($assignment['editing_completed_at']))->count();
+                if ($user) $assignments->markAssignedServicesReadyForUser($shoot, $user);
+                $pendingAfter = $assignments->getTrackedServiceAssignments($shoot->fresh(['services.category']))->filter(fn ($assignment) => empty($assignment['editing_completed_at']))->count();
                 $allLanesReady = $assignments->allTrackedLanesReady($shoot->fresh(['services.category']));
                 $targetStatus = in_array($currentStatus, $capabilities::DELIVERED_STATUSES, true) ? $currentStatus
                     : ($allLanesReady ? ($canSkipReview ? Shoot::STATUS_READY : Shoot::STATUS_REVIEW) : Shoot::STATUS_EDITING);
-                $editingSubmissionChanged = true;
+                $editingSubmissionChanged = $pendingAfter < $pendingBefore || $targetStatus !== $currentStatus;
                 if ($targetStatus !== $currentStatus) {
                     $shoot->updateWorkflowStatus($targetStatus, $user?->id ?? auth()->id());
                     $workflowStatusChanged = true;
                 }
                 $shouldFireAutomations = $workflowStatusChanged && in_array($targetStatus, [Shoot::STATUS_READY, Shoot::STATUS_REVIEW], true);
 
-                DB::commit();
-            } catch (\Throwable $exception) {
-                DB::rollBack();
+                return null;
+                });
+            }, 'finalize-edited:'.$shoot->id.':'.$correlationId);
 
-                return [
-                    'status' => 500,
-                    'payload' => [
-                        'error_type' => 'server_error',
-                        'message' => 'Failed to finalize edited upload queue',
-                        'error' => $exception->getMessage(),
-                        'workflow_status_changed' => false,
-                    ],
-                ];
+            // Never let a background cache failure turn a committed submission into a failure.
+            try {
+                $this->support->clearShootFilesCache($shoot);
+            } catch (\Throwable $exception) {
+                Log::error('Edited submission cache invalidation failed after commit', ['shoot_id' => $shoot->id, 'correlation_id' => $correlationId, 'exception' => $exception]);
             }
+            if ($earlyResult !== null) return $earlyResult;
 
             $finalStatus = strtolower((string) ($shoot->workflow_status ?? ''));
             $movedToReview = $finalStatus === Shoot::STATUS_REVIEW;
@@ -235,7 +257,8 @@ class FinalizeEditedUploadAction
                     $automationEvent = $movedToReview ? 'EDITING_PENDING_REVIEW' : 'EDITING_COMPLETE';
                     $this->automationService->handleEvent($automationEvent, $context);
                 } catch (\Throwable $e) {
-                    Log::warning('Automation dispatch failed during finalize-edited', [
+                    Log::error('Automation dispatch failed during finalize-edited', [
+                        'correlation_id' => $correlationId,
                         'shoot_id' => $shoot->id,
                         'error' => $e->getMessage(),
                     ]);
@@ -258,7 +281,8 @@ class FinalizeEditedUploadAction
                         $user
                     );
                 } catch (\Throwable $e) {
-                    Log::warning('Failed to log shoot_submitted_edited activity', [
+                    Log::error('Failed to log shoot_submitted_edited activity', [
+                        'correlation_id' => $correlationId,
                         'shoot_id' => $shoot->id,
                         'error' => $e->getMessage(),
                     ]);

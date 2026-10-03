@@ -256,6 +256,7 @@ class ShootEditingDispatchTest extends TestCase
         app(WorkspaceShootPublisher::class)->completeServices($project);
         $this->assertSame('editing', $shoot->fresh()->status);
         $this->assertFalse($assignments->allTrackedLanesReady($shoot->fresh()));
+        $video->update(['workflow_stage' => ShootFile::STAGE_COMPLETED]);
         $assignments->markAssignedServicesReadyForUser($shoot->fresh(), $videoEditor);
         $this->assertTrue($assignments->allTrackedLanesReady($shoot->fresh()));
         app(\App\Services\Shoots\Actions\SubmitForReviewAction::class)->execute(new \Illuminate\Http\Request(), $shoot->fresh(), $videoEditor);
@@ -263,16 +264,19 @@ class ShootEditingDispatchTest extends TestCase
         app(WorkspaceShootPublisher::class)->completeServices($project);
         $this->assertSame('review', $shoot->fresh()->status);
 
-        [$manual] = $this->shoot(['HDR Photos & Video']);
+        [$manual, $manualFiles] = $this->shoot(['HDR Photos & Video']);
         $manual->services()->first()->update(['upload_intake_type' => 'photo_video']);
         $this->send($manual, ['mode' => 'editor'])->assertAccepted();
         $service = $manual->fresh('services')->services->first();
         $this->assertSame($photoEditor->id, (int) $service->pivot->editor_id);
         $this->assertSame($videoEditor->id, (int) $service->pivot->video_editor_id);
+        $manualVideo = $manualFiles[0]->replicate();
+        $manualVideo->fill(['filename' => 'edited.mp4', 'stored_filename' => 'edited.mp4', 'file_type' => 'video/mp4', 'media_type' => 'video', 'workflow_stage' => ShootFile::STAGE_COMPLETED])->save();
         $assignments->markAssignedServicesReadyForUser($manual->fresh(), $videoEditor);
         $this->assertFalse($assignments->allTrackedLanesReady($manual->fresh()));
         $this->assertNull($manual->fresh('services')->services->first()->pivot->editing_completed_at);
         $manual->services()->first()->update(['photo_count' => 25]);
+        $manualFiles[0]->update(['workflow_stage' => ShootFile::STAGE_COMPLETED, 'media_type' => 'edited']);
         $assignments->markAssignedServicesReadyForUser($manual->fresh(), $photoEditor);
         app(\App\Services\EditorPayoutService::class)->syncPayouts();
         $this->assertDatabaseHas('editor_payouts', ['shoot_id' => $manual->id, 'editor_id' => $photoEditor->id, 'payout_amount' => 50]);

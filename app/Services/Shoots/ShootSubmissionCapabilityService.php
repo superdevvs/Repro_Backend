@@ -30,17 +30,21 @@ class ShootSubmissionCapabilityService
 
     public function hasVideoLinkOutput(Shoot $shoot, ?User $user): bool
     {
-        if (!$user || $user->role !== 'editor') return false;
-        $assignments = app(ShootEditingAssignmentService::class)->getTrackedServiceAssignments($shoot)
-            ->where('editor_id', (int) $user->id)->where('lane', ShootEditingAssignmentService::LANE_VIDEO);
-        return $assignments->contains(function ($assignment) use ($shoot) {
+        if (!$user) return false;
+        $assignments = app(ShootEditingAssignmentService::class)->getTrackedServiceAssignments($shoot)->where('lane', ShootEditingAssignmentService::LANE_VIDEO);
+        if ($user->role === 'editor') $assignments = $assignments->where('editor_id', (int) $user->id);
+        return $assignments->contains(fn ($assignment) => $this->assignmentHasVideoLink($shoot, $assignment));
+    }
+
+    public function assignmentHasVideoLink(Shoot $shoot, array $assignment): bool
+    {
+            if ($assignment['lane'] !== ShootEditingAssignmentService::LANE_VIDEO) return false;
             $links = $assignment['shoot_unit_id'] ? $shoot->units()->find($assignment['shoot_unit_id'])?->tour_links : $shoot->tour_links;
             foreach (['video_link', 'video_branded', 'video_mls', 'video_generic'] as $key) {
                 $url = $links[$key] ?? null;
                 if (is_string($url) && filter_var($url, FILTER_VALIDATE_URL) && in_array(strtolower((string) parse_url($url, PHP_URL_SCHEME)), ['https', 'http'], true)) return true;
             }
             return false;
-        });
     }
 
     public function canSubmitEdits(Shoot $shoot, ?User $user): bool

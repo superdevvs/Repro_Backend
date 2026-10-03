@@ -351,6 +351,7 @@ class ShootEditingAssignmentService
     public function markAssignedServicesReadyForUser(Shoot $shoot, User $user): array
     {
         $trackedAssignments = $this->getTrackedServiceAssignments($shoot);
+        $allAssignments = $trackedAssignments;
         if ($trackedAssignments->isEmpty()) {
             return [];
         }
@@ -363,9 +364,18 @@ class ShootEditingAssignmentService
             throw new \App\Exceptions\PublicBusinessRuleException('No editing lanes are assigned to this user for the shoot.');
         }
 
+        $capabilities = app(ShootSubmissionCapabilityService::class);
+        $files = $capabilities->editedFiles($shoot, $user);
+        $trackedAssignments = $trackedAssignments->filter(function ($assignment) use ($shoot, $allAssignments, $capabilities, $files) {
+            if (!empty($assignment['editing_completed_at'])) return false;
+            return $capabilities->assignmentHasVideoLink($shoot, $assignment)
+                || $files->contains(fn ($file) => $this->getFileLane($file) === $assignment['lane']
+                    && ((int) $file->shoot_service_id === $assignment['shoot_service_id']
+                        || (!$file->shoot_service_id && $allAssignments->where('lane', $assignment['lane'])->count() === 1)));
+        });
         foreach ($trackedAssignments->groupBy('completed_column') as $column => $assignments) {
             DB::table('shoot_service')->where('shoot_id', $shoot->id)->whereIn('id', $assignments->pluck('shoot_service_id')->all())
-                ->update([$column => now(), 'updated_at' => now()]);
+                ->whereNull($column)->update([$column => now(), 'updated_at' => now()]);
         }
 
         return $this->buildEditorAssignmentsPayload($shoot->fresh(['services.category']));
