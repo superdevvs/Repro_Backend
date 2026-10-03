@@ -117,6 +117,54 @@ class AryeoWorkerController extends Controller
         return response()->json($row);
     }
 
+    public function nextPreparation(Request $r)
+    {
+        $connection = $this->connection($r);
+        $candidates = AryeoJob::where('connection_id', $connection->id)->where('status', 'queued')->oldest()->limit(20)->get();
+        foreach ($candidates as $job) {
+            try {
+                $this->jobs->authorizePreparation($job, $connection);
+            } catch (\Symfony\Component\HttpKernel\Exception\HttpExceptionInterface $error) {
+                if (! in_array($error->getStatusCode(), [403, 404, 409], true)) {
+                    throw $error;
+                }
+
+                continue;
+            } catch (\Illuminate\Database\Eloquent\ModelNotFoundException) {
+                continue;
+            }
+
+            return response()->json(['job' => $job])->header('Cache-Control', 'private, no-store');
+        }
+
+        return response()->json(['job' => null])->header('Cache-Control', 'private, no-store');
+    }
+
+    private function preparationJob(Request $r, string $job): array
+    {
+        $data = $r->validate(['media_version' => 'required|string|size:64|regex:/^[a-f0-9]+$/']);
+        $row = AryeoJob::where('connection_id', $this->connection($r)->id)->findOrFail($job);
+        $ready = $this->jobs->authorizePreparation($row, $this->connection($r));
+        abort_unless(hash_equals($row->media_version, $data['media_version']), 409, 'Prepared media version changed.');
+
+        return [$row, $ready];
+    }
+
+    public function preparation(Request $r, string $job)
+    {
+        [$row] = $this->preparationJob($r, $job);
+
+        return response()->json(['job' => $row])->header('Cache-Control', 'private, no-store');
+    }
+
+    public function preparationDownload(Request $r, string $job, int $asset)
+    {
+        [$row, $ready] = $this->preparationJob($r, $job);
+        abort_unless(collect($ready['assets'])->contains('id', $asset), 404);
+
+        return $this->original($this->catalog->shoot($this->connection($r), $row->snapshot['shoot_id']), $asset);
+    }
+
     public function renew(Request $r, string $job)
     {
         $data = $r->validate(['lease_token' => 'required|string', 'phase' => 'nullable|in:preparing,uploading,verifying,delivering,followup',

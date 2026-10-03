@@ -107,6 +107,32 @@ class AryeoJobs
         return $ready;
     }
 
+    /** Preparing local files grants no execution lease or permission to deliver. */
+    public function authorizePreparation(AryeoJob $job, AryeoConnection $connection): array
+    {
+        abort_unless($job->connection_id === $connection->id, 404);
+        $shoot = $this->catalog->shoot($connection, $job->snapshot['shoot_id']);
+        abort_unless($job->status === 'queued' && ! $job->receipt
+            && ($job->steps['delivery'] ?? '') !== 'success', 409, 'Only an undelivered queued job can be prepared.');
+        abort_unless($connection->enabled && $connection->processing_enabled
+            && data_get($connection->capabilities, 'processing_mode') === 'dashboard_jobs'
+            && data_get($connection->capabilities, 'shoot_executor') === true
+            && in_array((int) $shoot->id, $connection->delivery_shoot_ids ?? [], true), 409, 'Preparation is disabled for this shoot.');
+        $order = AryeoRequest::where('connection_id', $connection->id)->findOrFail($job->request_record_id);
+        abort_unless($order->match_status === 'matched'
+            && $order->shoot_id === $shoot->id
+            && $order->unit_id === $job->snapshot['unit_id']
+            && $order->request_id === $job->snapshot['request_id']
+            && $order->listing_id === $job->snapshot['listing_id']
+            && $order->source_id === $job->snapshot['source_id']
+            && $shoot->client_id === $job->snapshot['identity']['client_id']
+            && ($order->discovery['required'] ?? null) === $job->snapshot['required'], 409, 'Queued job identity or requirements changed.');
+        $ready = $this->catalog->readiness($shoot, $order->unit_id, $order->discovery['required'] ?? null);
+        abort_unless($ready['eligible'] && $ready['media_version'] === $job->media_version, 409, 'Readiness or approved media changed.');
+
+        return $ready;
+    }
+
     public function result(AryeoJob $job, array $data): AryeoJob
     {
         $steps = $job->steps;

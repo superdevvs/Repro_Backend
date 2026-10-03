@@ -69,6 +69,83 @@ class AryeoIntegrationTest extends TestCase
         $this->withHeader('Authorization', 'Bearer invalid')->getJson($this->prefix.'/shoots')->assertUnauthorized();
     }
 
+    public function test_preparation_does_not_claim_a_second_browser_lease_or_mutate_jobs(): void
+    {
+        $id = $this->enqueue();
+        $queued = AryeoJob::findOrFail($id)->replicate();
+        $queued->id = (string) \Illuminate\Support\Str::uuid();
+        $queued->operation_key = hash('sha256', 'next-preparation');
+        $queued->save();
+        $this->claim()->assertOk()->assertJsonPath('job.id', $id);
+        $before = AryeoJob::orderBy('id')->get()->toArray();
+        $this->worker()->getJson($this->prefix.'/jobs/preparation')->assertOk()->assertJsonPath('job.id', $queued->id)
+            ->assertJsonPath('job.status', 'queued')->assertJsonMissingPath('job.lease_hash');
+        $this->worker()->getJson($this->prefix.'/jobs/'.$queued->id.'/preparation?media_version='.$queued->media_version)
+            ->assertOk()->assertJsonPath('job.attempts', 0);
+        $this->assertSame($before, AryeoJob::orderBy('id')->get()->toArray());
+        $this->claim('c18c0b41-1867-4552-84d4-52df307d40d6')->assertOk()->assertJsonPath('job', null);
+    }
+
+    public function test_preparation_download_requires_current_queued_release_and_preserves_checksum(): void
+    {
+        $id = $this->enqueue();
+        $job = AryeoJob::findOrFail($id);
+        $url = $this->prefix.'/jobs/'.$id.'/assets/'.$this->file->id.'/preparation?media_version='.$job->media_version;
+        $disk = \Illuminate\Support\Facades\Storage::fake('local');
+        $bytes = 'queued approved original';
+        $disk->put('shoots/test/photo.jpg', $bytes);
+        $this->mock(\App\Services\Shoots\ShootFileAccessService::class, function ($mock) use ($disk) {
+            $mock->shouldReceive('resolveLocalPath')->with('shoots/test/photo.jpg')->andReturn($disk->path('shoots/test/photo.jpg'));
+        });
+        $this->worker()->get($url)->assertOk()->assertHeader('X-Content-SHA256', hash('sha256', $bytes))->assertHeaderMissing('X-Accel-Redirect');
+        $this->worker()->getJson(str_replace($job->media_version, str_repeat('a', 64), $url))->assertConflict();
+        $this->shoot->update(['payment_status' => 'unpaid']);
+        $this->worker()->getJson($url)->assertConflict();
+        $this->worker()->getJson($this->prefix.'/jobs/preparation')->assertOk()->assertJsonPath('job', null);
+        $this->shoot->update(['payment_status' => 'paid']);
+        $this->claim()->assertOk();
+        $this->worker()->getJson($url)->assertConflict();
+    }
+
+    public function test_preparation_rejects_disabled_scope_changed_identity_and_cancelled_job(): void
+    {
+        $id = $this->enqueue();
+        $job = AryeoJob::findOrFail($id);
+        $url = $this->prefix.'/jobs/'.$id.'/preparation?media_version='.$job->media_version;
+        $this->connection->update(['delivery_shoot_ids' => []]);
+        $this->worker()->getJson($url)->assertConflict();
+        $this->connection->update(['delivery_shoot_ids' => [$this->shoot->id], 'processing_enabled' => false]);
+        $this->worker()->getJson($url)->assertConflict();
+        $this->connection->update(['processing_enabled' => true]);
+        $this->order->update(['listing_id' => 'different-listing']);
+        $this->worker()->getJson($url)->assertConflict();
+        $this->order->update(['listing_id' => 'listing-1']);
+        $job->update(['status' => 'cancelled']);
+        $this->worker()->getJson($url)->assertConflict();
+        $job->update(['status' => 'queued']);
+        $this->file->update(['is_hidden' => true]);
+        $this->worker()->getJson($url)->assertConflict();
+        $this->file->update(['is_hidden' => false]);
+        $this->file->update(['filename' => 'replacement.jpg']);
+        $this->worker()->getJson($url)->assertConflict();
+        $this->connection->update(['client_ids' => []]);
+        $this->worker()->getJson($url)->assertNotFound();
+        $this->worker()->getJson($this->prefix.'/jobs/preparation')->assertOk()->assertJsonPath('job', null);
+    }
+
+    public function test_preparation_never_exposes_another_connections_job_or_unapproved_asset(): void
+    {
+        $id = $this->enqueue();
+        $job = AryeoJob::findOrFail($id);
+        $this->worker()->getJson($this->prefix.'/jobs/'.$id.'/assets/999999/preparation?media_version='.$job->media_version)->assertNotFound();
+        $other = $this->connection->replicate();
+        $other->name = 'Other Mac';
+        $other->token_hash = hash('sha256', 'another-worker-test-token-at-least-32-characters');
+        $other->save();
+        $this->withHeader('Authorization', 'Bearer another-worker-test-token-at-least-32-characters')->getJson($this->prefix.'/jobs/preparation')->assertOk()->assertJsonPath('job', null);
+        $this->getJson($this->prefix.'/jobs/'.$id.'/preparation?media_version='.$job->media_version)->assertNotFound();
+    }
+
     public function test_worker_token_cannot_access_admin_api(): void
     {
         $this->worker()->getJson('/api/shoots/'.$this->shoot->id.'/aryeo')->assertUnauthorized();

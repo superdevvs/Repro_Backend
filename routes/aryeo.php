@@ -15,6 +15,9 @@ Route::prefix('integrations/aryeo/v1')->middleware([AuthenticateAryeoWorker::cla
     Route::put('requests/{order}/inventory', [Worker::class, 'inventory'])->whereNumber('order');
     Route::get('requests/{order}/assets/{asset}/original', [Worker::class, 'approvedOriginal'])->whereNumber('order')->whereNumber('asset');
     Route::post('jobs/claim', [Worker::class, 'claim']);
+    Route::get('jobs/preparation', [Worker::class, 'nextPreparation']);
+    Route::get('jobs/{job}/preparation', [Worker::class, 'preparation'])->whereUuid('job');
+    Route::get('jobs/{job}/assets/{asset}/preparation', [Worker::class, 'preparationDownload'])->whereUuid('job')->whereNumber('asset');
     Route::get('jobs/{job}', [Worker::class, 'job'])->whereUuid('job');
     Route::post('jobs/{job}/renew', [Worker::class, 'renew'])->whereUuid('job');
     Route::post('jobs/{job}/authorize', [Worker::class, 'authorize'])->whereUuid('job');

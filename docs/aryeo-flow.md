@@ -99,6 +99,34 @@ Response contains `processing_enabled`, `processing_mode:"dashboard_jobs"`, `lea
 
 ## Durable job protocol
 
+### Preparation alongside the browser executor
+
+Preparation is read-only and never acquires a browser lease or authorizes upload,
+delivery or email. The Mac may prepare at most one next queued job while its
+single browser executor works on the current job:
+
+| Method/path | Purpose |
+|---|---|
+| `GET /jobs/preparation` | Returns `{job: ...}` for the next eligible queued job, or `{job:null}`. Examines at most 20 oldest queued jobs; blocked jobs are skipped without mutation. |
+| `GET /jobs/{job}/preparation?media_version={version}` | Rechecks the queued job, scope, matching request/listing/unit, customer release and immutable media version. |
+| `GET /jobs/{job}/assets/{asset}/preparation?media_version={version}` | Downloads one approved original with `X-Content-SHA256`, without an execution lease. |
+
+All routes require the existing worker credential. They preserve job attempts,
+status, steps and lease ownership. Each file request rechecks readiness; a claim,
+cancellation, permission revocation or changed media stops preparation (409 or
+404). Prepared cache entries must be keyed by job ID, media version and asset ID,
+verified against original checksums, and revalidated when execution starts. The
+coordinator must stop/join preparation before adopting its cache for a claimed
+job. A prepared cache is never evidence that files were uploaded or delivered.
+
+The Mac coordinator records durable stages for preparation/download, upload,
+media verification, delivery, completion email, forwarding, archive and reporting.
+Browser stages and background discovery share one exclusive browser owner.
+Only network downloads and local file work may overlap with browser activity.
+Completed side effects retain their receipts; interrupted or uncertain operations
+must reconcile before retrying. The existing lease-renewal progress contract
+reports the current stage to the Tours panel.
+
 Staff create jobs only through `POST /api/shoots/{shoot}/aryeo/requests/{record}/process`. The Tours panel is restricted to admin, superadmin and editing_manager on frontend and backend. Opening or refreshing the panel never starts delivery. Only one job may hold an active lease per connection, because the Mac's browser tabs are shared across orders.
 
 1. `POST /jobs/claim` with a new UUID `claim_id` and cryptographically random `lease_token` (32+ characters). Persist both locally before calling. On timeout retry **the same body**. A successful response is `{job:null}` or `{job:{...},reconciliation_required:boolean}`. Jobs include stable UUID `id` (the operation ID), snapshot with shoot/unit, Aryeo request/listing IDs, source Gmail ID, manifest and `media_version`. Every click/retry reuses the unfinished job; a new media version after completed delivery creates a new job against the existing listing.
