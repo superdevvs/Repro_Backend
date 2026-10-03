@@ -821,6 +821,12 @@ class ShootWorkflowActionsTest extends TestCase
         $this->assertSame(Shoot::STATUS_EDITING, $shoot->workflow_status);
         $this->assertSame($this->editor->id, $shoot->editor_id);
 
+        \App\Models\ShootFile::create([
+            'shoot_id' => $shoot->id, 'shoot_service_id' => $shoot->services()->first()->pivot->id,
+            'filename' => 'returned-edit.jpg', 'stored_filename' => 'returned-edit.jpg', 'path' => 'completed/returned-edit.jpg',
+            'file_type' => 'image/jpeg', 'file_size' => 100, 'uploaded_by' => $this->editor->id,
+            'workflow_stage' => 'completed', 'media_type' => 'edited', 'scan_status' => 'clean',
+        ]);
         $reviewResponse = $this->postJson("/api/shoots/{$shoot->id}/ready-for-review");
 
         $reviewResponse->assertOk()
