@@ -208,7 +208,7 @@ class AssignedRepSchedulePayloadTest extends TestCase
         }
     }
 
-    public function test_existing_line_price_qty_pay_echoes_are_stripped_even_when_they_drift(): void
+    public function test_existing_line_price_and_pay_echoes_are_stripped_but_quantity_changes_survive(): void
     {
         [$shoot, $payload, $existing] = $this->fixture();
         // Simulate a legacy booked price that no longer matches catalog / FE echo.
@@ -244,7 +244,7 @@ class AssignedRepSchedulePayloadTest extends TestCase
         $normalized = app(AssignedRepSchedulePayload::class)->normalize($shoot->fresh(), $payload);
 
         $this->assertSame([
-            ['id' => $existing->id, 'scheduled_at' => '2026-10-05 11:00:00'],
+            ['id' => $existing->id, 'quantity' => 2, 'scheduled_at' => '2026-10-05 11:00:00'],
             ['id' => $zillow->id, 'quantity' => 1, 'scheduled_at' => '2026-10-05 11:00:00'],
         ], $normalized['services']);
         $this->assertArrayNotHasKey('price', $normalized['services'][0]);

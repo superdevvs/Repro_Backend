@@ -235,8 +235,14 @@ class UpdateShootAction
                 // submits unchanged context; verify and discard it instead of
                 // granting rights to change clients, line pricing, or property data.
                 if (! $shoot->isImportDraft()
-                    && $shoot->status === Shoot::STATUS_SCHEDULED
-                    && $shoot->workflow_status === Shoot::STATUS_SCHEDULED
+                    && in_array($shoot->status, [
+                        Shoot::STATUS_SCHEDULED, Shoot::STATUS_UPLOADED, Shoot::STATUS_EDITING,
+                        Shoot::STATUS_REVIEW, Shoot::STATUS_READY,
+                    ], true)
+                    && in_array($shoot->workflow_status, [
+                        Shoot::STATUS_SCHEDULED, Shoot::STATUS_UPLOADED, Shoot::STATUS_EDITING,
+                        Shoot::STATUS_REVIEW, Shoot::STATUS_READY,
+                    ], true)
                     && ! $shoot->units()->exists()
                     && $request->hasAny([
                         'scheduled_date', 'scheduled_at', 'time', 'services', 'service_items',

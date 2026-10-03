@@ -23,6 +23,7 @@ class AssignedRepSchedulePayload
         'type',
         'icon',
         'category',
+        'duration_minutes',
     ];
 
     /**
@@ -190,12 +191,17 @@ class AssignedRepSchedulePayload
 
                 $item = $byService->get($serviceId);
                 if ($item) {
-                    // Existing lines: price/qty/pay are server-owned. Overview may
+                    // Existing lines: price/pay are server-owned. Overview may
                     // re-echo catalog prices that drifted from the booked line
                     // (e.g. HDR 275 booked vs 175 catalog). Strip those echoes
                     // instead of sameValue-aborting — otherwise adding a service
                     // like Zillow 3D falsely 403s even though pricing is unchanged.
-                    unset($row['price'], $row['quantity'], $row['photographer_pay']);
+                    // Quantities remain editable and go through the catalog's
+                    // multiple-booking validation in targetServicesFor.
+                    unset($row['price'], $row['photographer_pay']);
+                    if (array_key_exists('quantity', $row) && $this->sameValue($row['quantity'], $item->quantity)) {
+                        unset($row['quantity']);
+                    }
                     continue;
                 }
 
