@@ -72,6 +72,7 @@ class MediaArchivePublisherTest extends TestCase
         $disk = Storage::disk('local');
         $source = $disk->path('completed-source.zip');
         $disk->put('completed-source.zip', 'complete archive bytes');
+        chmod($source, 0600);
         $disk->put('media-archives/42/final.zip', 'old complete bytes');
         app(MediaArchivePublisher::class)->publish('media-archives/42/final.zip', $source);
         $this->assertSame('complete archive bytes', $disk->get('media-archives/42/final.zip'));
@@ -80,6 +81,22 @@ class MediaArchivePublisherTest extends TestCase
         unlink($source);
         $this->assertSame('complete archive bytes', $disk->get('media-archives/42/final.zip'));
         $this->assertSame(['media-archives/42/final.zip'], $disk->allFiles());
+    }
+
+    public function test_legacy_source_visibility_is_preserved_when_publishing_a_private_copy(): void
+    {
+        Storage::fake('local');
+        config(['media.local_disk' => 'local', 'media.r2_only' => false, 'media.dual_write' => false]);
+        $disk = Storage::disk('local');
+        $disk->put('legacy.zip', 'cached archive bytes');
+        $source = $disk->path('legacy.zip');
+        chmod($source, 0644);
+        app(MediaArchivePublisher::class)->publish('editor-downloads/42/reused.zip', $source);
+        clearstatcache();
+        $this->assertSame(0644, fileperms($source) & 0777);
+        $this->assertNotSame(fileinode($source), fileinode($disk->path('editor-downloads/42/reused.zip')));
+        $this->assertSame('cached archive bytes', $disk->get('editor-downloads/42/reused.zip'));
+        $this->assertSame('cached archive bytes', $disk->get('legacy.zip'));
     }
 
 }

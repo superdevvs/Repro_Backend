@@ -41,7 +41,8 @@ final class MediaArchivePublisher
     {
         if (! $disk instanceof \Illuminate\Filesystem\FilesystemAdapter
             || ! $disk->getAdapter() instanceof \League\Flysystem\Local\LocalFilesystemAdapter
-            || ! is_file($sourcePath) || is_link($sourcePath)) {
+            || ! is_file($sourcePath) || is_link($sourcePath)
+            || (fileperms($sourcePath) & 0777) !== 0600) {
             return false;
         }
         $disk->makeDirectory(dirname($key));
@@ -51,7 +52,8 @@ final class MediaArchivePublisher
         if (! @link($sourcePath, $disk->path($key))) {
             return false;
         }
-        $disk->setVisibility($key, 'private');
+        // The generated source is already private. Do not chmod shared legacy
+        // cache inodes; those sources take the copy path above.
         return true;
     }
 
