@@ -193,6 +193,9 @@ class RecipientChannelRoutingPropertyTest extends TestCase
             'rep_id' => $rep->id,
         ]);
 
+        // The catalogue requires a completed payment before sending a receipt.
+        \App\Models\Payment::factory()->create(['shoot_id' => $shoot->id, 'invoice_id' => null]);
+
         return compact('shoot', 'client', 'photographer', 'rep');
     }
 

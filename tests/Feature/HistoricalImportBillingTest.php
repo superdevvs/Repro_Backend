@@ -166,7 +166,9 @@ class HistoricalImportBillingTest extends TestCase
             ]);
         }
         $public = app(\App\Services\Shoots\ShootPublicAssetsService::class)->buildTypedPublicAssets($shoot->fresh(), 'mls', false);
-        $this->assertSame(['First.mp4', 'Second.mp4'], array_map(fn ($url) => basename(parse_url($url, PHP_URL_PATH)), $public['videos']));
+        // Released completed edits remain visible alongside verified files;
+        // raw, uploaded and quarantined files above must still be excluded.
+        $this->assertSame(['First.mp4', 'Second.mp4', 'OlderCompleted.mp4'], array_map(fn ($url) => basename(parse_url($url, PHP_URL_PATH)), $public['videos']));
         $this->assertSame($public['videos'][0], $public['video_link']);
         $this->assertArrayNotHasKey('external_booking_payload', $public['shoot']);
     }

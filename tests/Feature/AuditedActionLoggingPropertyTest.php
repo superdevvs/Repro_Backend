@@ -512,11 +512,15 @@ class AuditedActionLoggingPropertyTest extends TestCase
             'role' => 'salesRep',
         ]);
 
-        return Shoot::factory()->create([
+        $shoot = Shoot::factory()->create([
             'client_id'       => $client->id,
             'photographer_id' => $photographer->id,
             'rep_id' => $rep->id,
         ]);
+        // The catalogue requires a completed payment before sending a receipt.
+        \App\Models\Payment::factory()->create(['shoot_id' => $shoot->id, 'invoice_id' => null]);
+
+        return $shoot;
     }
 
     /** A shoot for CubiCasa create (unlinked) or sync (already linked). */

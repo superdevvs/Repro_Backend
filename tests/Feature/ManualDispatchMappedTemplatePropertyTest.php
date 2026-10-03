@@ -209,11 +209,15 @@ class ManualDispatchMappedTemplatePropertyTest extends TestCase
         ]);
         $rep = User::factory()->create(['role' => 'salesRep', 'phonenumber' => '+12025550191']);
 
-        return Shoot::factory()->create([
+        $shoot = Shoot::factory()->create([
             'client_id'       => $client->id,
             'photographer_id' => $photographer->id,
             'rep_id' => $rep->id,
         ]);
+        // The catalogue requires a completed payment before sending a receipt.
+        \App\Models\Payment::factory()->create(['shoot_id' => $shoot->id, 'invoice_id' => null]);
+
+        return $shoot;
     }
 
     /**

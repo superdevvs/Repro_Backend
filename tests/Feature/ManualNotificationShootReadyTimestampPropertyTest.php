@@ -19,7 +19,7 @@ use Tests\TestCase;
  * Validates: Requirements 12.10
  *
  * For any send of a manual notification, the shoot's `shoot_ready_notified_at` is set to the
- * send time (non-null, ~now) IF AND ONLY IF the notification type is `shoot_ready`; for every
+ * send time (non-null, ~now) IF AND ONLY IF the notification type is `shoot_ready` or `shoot_delivered`; for every
  * other type the field remains null/unchanged. The recorded timestamp is its own field,
  * distinct from the shoot date (`scheduled_date`) and the invoice date (the `invoices`
  * relation), so stamping it never coincides with, or is derived from, those dates.
@@ -110,13 +110,17 @@ class ManualNotificationShootReadyTimestampPropertyTest extends TestCase
             'phonenumber' => '+1555300'.str_pad((string) $n, 4, '0', STR_PAD_LEFT),
         ]);
 
-        return Shoot::factory()->create([
+        $shoot = Shoot::factory()->create([
             'client_id'               => $client->id,
             'photographer_id'         => $photographer->id,
             'rep_id'                  => $rep->id,
             'scheduled_date'          => self::FIXED_SHOOT_DATE,
             'shoot_ready_notified_at' => null,
         ]);
+        // The catalogue requires a completed payment before sending a receipt.
+        \App\Models\Payment::factory()->create(['shoot_id' => $shoot->id, 'invoice_id' => null]);
+
+        return $shoot;
     }
 
     /**
@@ -171,10 +175,10 @@ class ManualNotificationShootReadyTimestampPropertyTest extends TestCase
     /**
      * Property 23: across randomized notification types, recipients, and channels,
      * `shoot_ready_notified_at` is stamped (non-null, ~now, distinct from the shoot date)
-     * IF AND ONLY IF the type is `shoot_ready`, and is left null for every other type.
+     * IF AND ONLY IF the type is `shoot_ready` or `shoot_delivered`, and is left null for every other type.
      */
     #[Test]
-    public function shoot_ready_notified_at_is_stamped_iff_type_is_shoot_ready(): void
+    public function shoot_ready_notified_at_is_stamped_for_delivery_aliases(): void
     {
         $this->seedTemplates();
         $this->mockMessaging();
@@ -207,7 +211,7 @@ class ManualNotificationShootReadyTimestampPropertyTest extends TestCase
             $stamped = $shoot->fresh()->shoot_ready_notified_at;
             $label = "case {$index} (type={$case['type']}, recipient={$case['recipient']}, channel={$case['channel']})";
 
-            if ($case['type'] === 'shoot_ready') {
+            if (in_array($case['type'], ['shoot_ready', 'shoot_delivered'], true)) {
                 $sawReady = true;
 
                 // Non-null and stamped at the send time (within the call window).
@@ -228,7 +232,7 @@ class ManualNotificationShootReadyTimestampPropertyTest extends TestCase
             } else {
                 $sawOther = true;
 
-                // Only shoot_ready stamps — every other type leaves the field null.
+                // Only delivery aliases stamp — every other type leaves the field null.
                 $this->assertNull(
                     $stamped,
                     "{$label}: non-ready notification MUST NOT set shoot_ready_notified_at"

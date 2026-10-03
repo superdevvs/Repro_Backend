@@ -47,7 +47,10 @@ class BookingDistanceBudgetTest extends TestCase
             $this->assertNull($row['distance']);
             $this->assertTrue($row['is_available_at_time']);
         }
-        Http::assertNothingSent();
+        // Map pins may geocode addresses independently of optional road distances.
+        // With radius enforcement off, no distance provider may be called.
+        Http::assertNotSent(fn ($request) => str_contains($request->url(), 'distancematrix')
+            || str_contains($request->url(), 'directions'));
     }
 
     public function test_required_radius_distance_still_fails_closed_on_provider_failure(): void

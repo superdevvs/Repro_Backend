@@ -44,7 +44,7 @@ class ShootApprovalScheduleSyncTest extends TestCase
 
     #[\PHPUnit\Framework\Attributes\TestWith([false])]
     #[\PHPUnit\Framework\Attributes\TestWith([true])]
-    public function test_approval_moves_omitted_inherited_times_and_preserves_explicit_and_separate_visits(bool $resubmitInheritedTime): void
+    public function test_approval_moves_omitted_or_echoed_inherited_times_and_preserves_separate_visits(bool $resubmitInheritedTime): void
     {
         $photographer = User::factory()->photographer()->create();
         $specialist = User::factory()->photographer()->create();
@@ -67,9 +67,8 @@ class ShootApprovalScheduleSyncTest extends TestCase
         $this->assertSame('2026-10-06', $shoot->scheduled_date->toDateString());
         $this->assertSame('12:00', $shoot->time);
         foreach ([$inherited, $unscheduled] as $service) {
-            $expectedSchedule = $resubmitInheritedTime && $service->id === $inherited->id
-                ? '2026-10-06 10:30:00'
-                : '2026-10-06 12:00:00';
+            // Echoing the unchanged old time is not an independent visit override.
+            $expectedSchedule = '2026-10-06 12:00:00';
             $this->assertDatabaseHas('shoot_service', [
                 'shoot_id' => $shoot->id, 'service_id' => $service->id,
                 'scheduled_at' => $expectedSchedule, 'photographer_id' => $photographer->id,
