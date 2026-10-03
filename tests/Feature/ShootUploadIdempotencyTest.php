@@ -22,6 +22,15 @@ class ShootUploadIdempotencyTest extends TestCase
 {
     use RefreshDatabase;
 
+    public function test_replacement_target_is_part_of_the_upload_fingerprint(): void
+    {
+        $service = app(\App\Services\Shoots\ShootUploadIdempotencyService::class);
+        $file = \Illuminate\Http\UploadedFile::fake()->create('same.jpg', 1, 'image/jpeg');
+        $first = \Illuminate\Http\Request::create('/upload', 'POST', ['replace_file_id' => 10]);
+        $other = \Illuminate\Http\Request::create('/upload', 'POST', ['replace_file_id' => 20]);
+        $this->assertNotSame($service->fingerprint($first, [$file]), $service->fingerprint($other, [$file]));
+    }
+
     public function test_completed_attempt_is_replayed_without_storing_the_file_twice(): void
     {
         Storage::fake('public');

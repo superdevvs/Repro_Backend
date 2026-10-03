@@ -116,9 +116,16 @@ class ManualNotificationShootReadyTimestampPropertyTest extends TestCase
             'rep_id'                  => $rep->id,
             'scheduled_date'          => self::FIXED_SHOOT_DATE,
             'shoot_ready_notified_at' => null,
+            'approved_at' => now(), 'declined_at' => now(),
+            'declined_reason' => 'Fixture decline', 'cancellation_reason' => 'Fixture cancellation',
         ]);
+        \App\Models\Invoice::factory()->create(['shoot_id' => $shoot->id, 'client_id' => $client->id, 'user_id' => $client->id, 'total' => 1000, 'subtotal' => 1000, 'tax' => 0]);
         // The catalogue requires a completed payment before sending a receipt.
-        \App\Models\Payment::factory()->create(['shoot_id' => $shoot->id, 'invoice_id' => null]);
+        $payment = \App\Models\Payment::factory()->create(['shoot_id' => $shoot->id, 'invoice_id' => null, 'amount' => 50, 'payment_method' => 'card']);
+        \App\Models\PaymentRefund::create(['shoot_id' => $shoot->id, 'payment_id' => $payment->id, 'amount' => 1, 'status' => 'succeeded', 'provider' => 'manual']);
+        \App\Models\ShootActivityLog::create(['shoot_id' => $shoot->id, 'action' => 'shoot_updated', 'metadata' => ['changes' => [
+            'address' => ['from' => 'Before', 'to' => $shoot->address], 'photographer_id' => ['from' => $rep->id, 'to' => $photographer->id],
+        ]]]);
 
         return $shoot;
     }
@@ -133,10 +140,12 @@ class ManualNotificationShootReadyTimestampPropertyTest extends TestCase
     private function edgeCases(): array
     {
         $cases = [];
-        foreach (array_keys(ManualNotificationService::TYPES) as $type) {
-            $cases[] = ['type' => $type, 'recipient' => 'client', 'channel' => 'email'];
-            $recipient = 'photographer';
-            $cases[] = ['type' => $type, 'recipient' => $recipient, 'channel' => 'sms'];
+        foreach (ManualNotificationService::CATALOGUE as $type => $meta) {
+            foreach ($meta['channels'] as $channel) {
+                foreach ($meta['recipients'] as $recipient) {
+                    $cases[] = compact('type', 'recipient', 'channel');
+                }
+            }
         }
 
         return $cases;
@@ -161,7 +170,8 @@ class ManualNotificationShootReadyTimestampPropertyTest extends TestCase
         $cases = [];
         for ($i = 0; $i < $count; $i++) {
             $type = $types[mt_rand(0, count($types) - 1)];
-            $allowedRecipients = $recipients;
+            $allowedRecipients = ManualNotificationService::CATALOGUE[$type]['recipients'];
+            $channels = ManualNotificationService::CATALOGUE[$type]['channels'];
             $cases[] = [
                 'type'      => $type,
                 'recipient' => $allowedRecipients[mt_rand(0, count($allowedRecipients) - 1)],
@@ -192,10 +202,16 @@ class ManualNotificationShootReadyTimestampPropertyTest extends TestCase
         // accidentally produced only one type could never make this test vacuous.
         $sawReady = false;
         $sawOther = false;
+        $blockedCases = [];
 
         foreach ($cases as $index => $case) {
             $shoot = $this->makeShoot($index);
 
+            $preview = $service->preview($shoot, $case['type'], $case['recipient'], $case['channel']);
+            if (! $preview['can_send']) {
+                $blockedCases[] = implode('/', $case).': '.($preview['block_reason'] ?: implode(', ', $preview['missing_required']));
+                continue;
+            }
             $before = now();
             $message = $service->send(
                 $shoot,
@@ -240,6 +256,7 @@ class ManualNotificationShootReadyTimestampPropertyTest extends TestCase
             }
         }
 
+        $this->assertSame([], $blockedCases, "All valid catalogue combinations must be sendable.");
         $this->assertTrue($sawReady, 'generator must exercise the shoot_ready (stamping) branch');
         $this->assertTrue($sawOther, 'generator must exercise the non-ready (no-stamp) branch');
     }

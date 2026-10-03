@@ -260,7 +260,7 @@ class ShootMediaStorageService
      * @throws \Illuminate\Validation\ValidationException (HTTP 422) when the file
      *                                                    is found to be infected — the upload is rejected and never stored.
      */
-    private function scanUploadSynchronously(UploadedFile $file): string
+    protected function scanUploadSynchronously(UploadedFile $file): string
     {
         if (! config('clamav.scan_on_upload', true)) {
             return 'unavailable';
@@ -342,7 +342,20 @@ class ShootMediaStorageService
                 function () use ($staged, &$attempts) {
                     $attempts++;
 
-                    return DB::transaction(fn () => $this->persistStagedUpload($staged));
+                    return DB::transaction(function () use ($staged) {
+                        $saved = $this->persistStagedUpload($staged);
+                        DB::afterCommit(function () use ($staged, $saved) {
+                            try {
+                                $this->finishStagedUpload($staged, $saved);
+                            } catch (\Throwable $error) {
+                                Log::channel(self::LOG_CHANNEL)->error('Media saved; post-commit processing needs retry.', [
+                                    'shoot_file_id' => $saved->id, 'error' => $error->getMessage(),
+                                ]);
+                            }
+                        });
+
+                        return $saved;
+                    });
                 },
                 "shoot.{$shoot->id}.store-media.{$staged->originalFilename}",
                 self::recordWriteAttempts()
@@ -500,7 +513,6 @@ class ShootMediaStorageService
                             'Multiple edited files share this saved filename. Pass replace_file_id to choose which one to replace. Ambiguous ids: '.implode(',', $ids),
                         ],
                     ]);
-                    $exception->errorBag->add('ambiguous_file_ids', implode(',', $ids));
                     throw $exception;
                 }
                 $existingFile = $candidates->first();
@@ -546,6 +558,10 @@ class ShootMediaStorageService
         $syncScanVerdict = $isOpaqueIguidePackage
             ? 'unavailable'
             : $this->scanUploadSynchronously($file);
+
+        if ($isReplacement && config('clamav.scan_on_upload', true) && $syncScanVerdict !== 'clean') {
+            throw new \App\Exceptions\MediaReplacementUnavailable('The replacement could not be scanned yet. The previous file is unchanged. Retry this file shortly.');
+        }
 
         // Now store the file (this may move the temp file)
         $storedPath = Storage::disk($storageDisk)->putFileAs($dir, $file, $filename);
@@ -645,47 +661,48 @@ class ShootMediaStorageService
         $shoot = $staged->shoot;
         $serverPath = $staged->storedPath;
 
-        $shootFile = $staged->existingFile ?: new ShootFile($staged->identity);
+        // Read a fresh model on every retry; a rolled-back model retains dirty
+        // in-memory attributes. Refuse a concurrent replacement instead of silently
+        // overwriting a newer upload or restoring a row deleted during scanning.
+        $shootFile = $staged->isReplacement()
+            ? ShootFile::query()->find($staged->existingFile->id)
+            : new ShootFile($staged->identity);
+        if (! $shootFile || ($staged->isReplacement() && ($shootFile->path ?: $shootFile->storage_path) !== $staged->previousStoredPath)) {
+            throw new \App\Exceptions\MediaReplacementUnavailable('This file changed while the replacement was uploading. Refresh the media and retry.');
+        }
         $shootFile->fill($staged->attributes);
+        if ($staged->isReplacement()) {
+            foreach (['thumbnail_path', 'web_path', 'grid_path', 'placeholder_path', 'large_path', 'medium_path', 'watermarked_thumbnail_path', 'watermarked_web_path'] as $column) {
+                if (Schema::hasColumn('shoot_files', $column)) {
+                    $shootFile->{$column} = null;
+                }
+            }
+            $shootFile->processed_at = null;
+        }
         $shootFile->save();
 
-        // Switch confirmed: drop the previous object only when distinct from the
-        // newly stored path. Clear derived rendition columns so previews regenerate.
-        if (
-            $staged->isReplacement()
-            && $staged->previousStoredPath
-            && $staged->previousStoredPath !== $staged->storedPath
-        ) {
-            try {
-                $diskName = $staged->previousStorageDisk ?: $staged->storageDisk;
-                $disk = Storage::disk($diskName);
-                if ($disk->exists($staged->previousStoredPath)) {
-                    $disk->delete($staged->previousStoredPath);
-                }
-            } catch (\Throwable $e) {
-                Log::channel(self::LOG_CHANNEL)->warning('Failed to remove superseded media object after replacement.', [
-                    'shoot_id' => $shoot->id,
-                    'shoot_file_id' => $shootFile->id,
-                    'path' => $staged->previousStoredPath,
-                    'error' => $e->getMessage(),
-                ]);
-            }
+        return $shootFile;
+    }
 
-            $renditionClears = [];
-            foreach (['thumbnail_path', 'web_path', 'grid_path', 'placeholder_path', 'large_path', 'medium_path'] as $column) {
-                if (\Illuminate\Support\Facades\Schema::hasColumn('shoot_files', $column) && $shootFile->{$column}) {
-                    try {
-                        app(\App\Services\Media\MediaStorage::class)->delete($shootFile->{$column});
-                    } catch (\Throwable $e) {
-                        // best-effort rendition cleanup
-                    }
-                    $renditionClears[$column] = null;
+    /** Disk cleanup and queue work run only after the record switch commits. */
+    private function finishStagedUpload(StagedShootUpload $staged, ShootFile $shootFile): void
+    {
+        $shoot = $staged->shoot;
+        $serverPath = $staged->storedPath;
+        if ($staged->isReplacement()) {
+            try {
+                if ($staged->previousStoredPath && $staged->previousStoredPath !== $staged->storedPath) {
+                    Storage::disk($staged->previousStorageDisk ?: $staged->storageDisk)->delete($staged->previousStoredPath);
                 }
-            }
-            if ($renditionClears !== []) {
-                $renditionClears['processed_at'] = null;
-                $shootFile->fill($renditionClears);
-                $shootFile->save();
+                foreach (['thumbnail_path', 'web_path', 'grid_path', 'placeholder_path', 'large_path', 'medium_path', 'watermarked_thumbnail_path', 'watermarked_web_path'] as $column) {
+                    if ($path = $staged->existingFile->{$column}) {
+                        app(\App\Services\Media\MediaStorage::class)->delete($path);
+                    }
+                }
+            } catch (\Throwable $error) {
+                Log::channel(self::LOG_CHANNEL)->warning('Failed to remove superseded media after replacement.', [
+                    'shoot_file_id' => $shootFile->id, 'error' => $error->getMessage(),
+                ]);
             }
         }
 
@@ -783,7 +800,6 @@ class ShootMediaStorageService
             'stage' => $staged->stage,
         ]);
 
-        return $shootFile;
     }
 
     protected function deleteLocalStoredAssets(ShootFile $shootFile, bool $preserveDerivedAssets = false): void

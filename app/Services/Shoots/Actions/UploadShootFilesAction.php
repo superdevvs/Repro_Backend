@@ -1177,6 +1177,10 @@ class UploadShootFilesAction
         $extension = strtolower((string) pathinfo($fileName, PATHINFO_EXTENSION));
         $isRawFile = in_array($extension, ['nef', 'cr2', 'cr3', 'arw', 'dng', 'raf', 'rw2', 'orf', 'pef', 'srw'], true);
 
+        if ($exception instanceof \App\Exceptions\MediaReplacementUnavailable) {
+            return $this->buildUploadError($fileName, 'replacement_unavailable', $message, true, 'Refresh the media and retry this file. The previous file has been preserved.');
+        }
+
         // Lock contention that outlasted every retry. Named as what it is, so the
         // photographer knows a plain retry is the right move and support is not
         // sent hunting for a corrupt record that does not exist.

@@ -26,6 +26,9 @@ class ManualNotificationSmsContentTest extends TestCase
         $service = app(ManualNotificationService::class);
 
         foreach (ManualNotificationService::TYPES as $type => $slug) {
+            if (! in_array('sms', ManualNotificationService::CATALOGUE[$type]['channels'], true)) {
+                continue;
+            }
             $email = MessageTemplate::create([
                 'slug' => $slug, 'name' => $slug, 'channel' => 'EMAIL', 'scope' => 'SYSTEM',
                 'is_system' => true, 'is_active' => true, 'subject' => 'Email subject',
@@ -33,7 +36,7 @@ class ManualNotificationSmsContentTest extends TestCase
                 'body_text' => 'Detailed email copy with Services, Access and Notes.',
             ]);
             $emailBefore = $email->fresh()->getAttributes();
-            $preview = $service->preview($shoot, $type, 'client', 'sms');
+            $preview = $service->preview($shoot, $type, ManualNotificationService::CATALOGUE[$type]['recipients'][0], 'sms');
             $sms = $service->resolveTemplate($type, 'sms');
 
             $this->assertSame($slug.'-sms', $sms->slug);

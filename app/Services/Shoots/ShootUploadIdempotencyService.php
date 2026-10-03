@@ -165,6 +165,7 @@ class ShootUploadIdempotencyService
             'upload_type',
             'upload_lane',
             'shoot_service_id',
+            'replace_file_id',
             'bracket_mode',
             'upload_batch_id',
             'upload_batch_index',

@@ -36,8 +36,8 @@ class ShootMediaMutationSupportService
     public function bumpMediaRevision(Shoot $shoot): int
     {
         $key = $this->mediaRevisionKey($shoot);
-        $revision = $this->currentMediaRevision($shoot) + 1;
-        Cache::forever($key, $revision);
+        Cache::add($key, 0, now()->addYears(10));
+        $revision = (int) Cache::increment($key);
 
         return $revision;
     }

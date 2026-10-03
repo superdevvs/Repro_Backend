@@ -35,6 +35,15 @@ class ManualNotificationService
      * @var array<string, string>
      */
     public const TYPES = [
+        'shoot_request_approved' => 'shoot-request-approved',
+        'shoot_request_modified' => 'shoot-request-modified',
+        'shoot_request_declined' => 'shoot-request-declined',
+        'photographer_assigned' => 'photographer-assigned',
+        'property_contact_reminder' => 'property-contact-reminder',
+        'payment_due_reminder' => 'payment-due-reminder',
+        'payment_thank_you' => 'payment-thank-you',
+        'refund_submitted' => 'refund-submitted',
+
         // Booking / request
         'shoot_scheduled' => 'shoot-scheduled',
         'shoot_requested' => 'shoot-requested',
@@ -61,6 +70,39 @@ class ManualNotificationService
      * @var array<string, array{label:string,category:string,recipients:list<string>,channels:list<string>}>
      */
     public const CATALOGUE = [
+        'shoot_request_approved' => [
+            'label' => 'Request Approved', 'category' => 'booking',
+            'recipients' => ['client'], 'channels' => ['email'],
+        ],
+        'shoot_request_modified' => [
+            'label' => 'Request Approved with Changes', 'category' => 'booking',
+            'recipients' => ['client'], 'channels' => ['email'],
+        ],
+        'shoot_request_declined' => [
+            'label' => 'Request Declined', 'category' => 'booking',
+            'recipients' => ['client'], 'channels' => ['email'],
+        ],
+        'photographer_assigned' => [
+            'label' => 'Photographer Assigned', 'category' => 'assignment',
+            'recipients' => ['photographer'], 'channels' => ['email'],
+        ],
+        'property_contact_reminder' => [
+            'label' => 'Property Access Reminder', 'category' => 'reminder',
+            'recipients' => ['client'], 'channels' => ['email'],
+        ],
+        'payment_due_reminder' => [
+            'label' => 'Payment Reminder', 'category' => 'shoot_payment',
+            'recipients' => ['client'], 'channels' => ['email'],
+        ],
+        'payment_thank_you' => [
+            'label' => 'Payment Confirmation', 'category' => 'shoot_payment',
+            'recipients' => ['client'], 'channels' => ['email'],
+        ],
+        'refund_submitted' => [
+            'label' => 'Refund Confirmation', 'category' => 'shoot_payment',
+            'recipients' => ['client'], 'channels' => ['email'],
+        ],
+
         'shoot_scheduled' => [
             'label' => 'Shoot Scheduled',
             'category' => 'booking',
@@ -70,7 +112,7 @@ class ManualNotificationService
         'shoot_requested' => [
             'label' => 'Shoot Request',
             'category' => 'booking',
-            'recipients' => ['client', 'photographer', 'rep'],
+            'recipients' => ['client', 'rep'],
             'channels' => ['email', 'sms'],
         ],
         'shoot_updated' => [
@@ -88,7 +130,7 @@ class ManualNotificationService
         'assignment_change' => [
             'label' => 'Assignment Change',
             'category' => 'assignment',
-            'recipients' => ['photographer', 'client', 'rep'],
+            'recipients' => ['photographer'],
             'channels' => ['email', 'sms'],
         ],
         'shoot_on_hold' => [
@@ -113,13 +155,13 @@ class ManualNotificationService
         'shoot_delivered' => [
             'label' => 'Shoot Delivered',
             'category' => 'delivery',
-            'recipients' => ['client', 'photographer'],
+            'recipients' => ['client'],
             'channels' => ['email', 'sms'],
         ],
         'shoot_summary' => [
             'label' => 'Shoot Summary',
             'category' => 'delivery',
-            'recipients' => ['client', 'rep'],
+            'recipients' => ['client'],
             'channels' => ['email'],
         ],
         'payment_due' => [
@@ -157,6 +199,16 @@ class ManualNotificationService
         'photographer_email',
         'photographer_phone',
         'shoot_notes',
+        'cancellation_reason',
+        'access_instructions',
+        'access_warning',
+        'small_zip_link',
+        'full_zip_link',
+        'video_download_link',
+        'zillow_3d_link',
+        'payment_method',
+        'refund_method',
+        'special_instructions',
         'shoot_change_summary',
         'shoot_changes_html',
         'photographer_change_summary',
@@ -208,11 +260,21 @@ class ManualNotificationService
     ): Message {
         $recipientType = $this->normalizeRecipientType($recipientType);
         $channel = $this->normalizeChannel($channel);
+        $this->assertSelection($type, $recipientType, $channel);
         $template = $this->resolveTemplate($type, $channel);
 
         $recipients = $this->resolveRecipients($shoot, $recipientType, $recipientUserId, $type);
         if ($recipients->isEmpty()) {
             throw new RuntimeException("Shoot {$shoot->id} has no {$recipientType} to notify.");
+        }
+
+        // Validate every recipient before the first dispatch, including missing
+        // required variables and addresses. Preview and send share this contract.
+        foreach ($recipients as $recipient) {
+            $preview = $this->preview($shoot, $type, $recipientType, $channel, $recipient->id);
+            if (! $preview['can_send']) {
+                throw \Illuminate\Validation\ValidationException::withMessages(['notification' => $preview['block_reason'] ?: 'Required notification details are missing: '.implode(', ', $preview['missing_required'])]);
+            }
         }
 
         $messages = [];
@@ -297,21 +359,11 @@ class ManualNotificationService
             $context['pay_link'] = $context['payment_link'];
         }
 
-        if ($type === 'payment_receipt') {
+        if (in_array($type, ['payment_receipt', 'payment_thank_you'], true)) {
             $context['payment_details'] = $this->receiptDetails($shoot);    // AC 12.4
         }
 
         $rendered = $this->templateRenderer->render($template, $context);
-
-        // Hard-block only when catalogue-required records are missing (payment /
-        // assignment). Template variable gaps stay preview warnings via can_send;
-        // resolve links must not hide those warnings.
-        if (isset(self::CATALOGUE[$type])) {
-            $availability = $this->catalogueAvailability($shoot, $type, self::CATALOGUE[$type]);
-            if (! $availability['available'] && $availability['requires'] !== []) {
-                throw new RuntimeException($availability['block_reason'] ?? 'Required notification context is missing.');
-            }
-        }
 
         $message = $this->dispatchForChannel($channel, [
             'to'               => $address,
@@ -381,8 +433,9 @@ class ManualNotificationService
     public function preview(Shoot $shoot, string $type, string $recipientType, string $channel = 'email', ?int $recipientUserId = null): array
     {
         $channel = $this->normalizeChannel($channel);
-        $template = $this->resolveTemplate($type, $channel);
         $recipientType = $this->normalizeRecipientType($recipientType);
+        $this->assertSelection($type, $recipientType, $channel);
+        $template = $this->resolveTemplate($type, $channel);
 
         $recipients = $this->resolveRecipients($shoot, $recipientType, $recipientUserId, $type);
         if ($recipients->isEmpty()) {
@@ -400,7 +453,7 @@ class ManualNotificationService
             $context['pay_link'] = $context['payment_link'];
         }
 
-        if ($type === 'payment_receipt') {
+        if (in_array($type, ['payment_receipt', 'payment_thank_you'], true)) {
             $context['payment_details'] = $this->receiptDetails($shoot);
         }
 
@@ -413,6 +466,15 @@ class ManualNotificationService
             'recipients' => self::RECIPIENT_TYPES,
             'channels' => self::CHANNELS,
         ]);
+
+        foreach ($recipients as $candidate) {
+            try {
+                $this->recipientAddress($candidate, $channel);
+            } catch (RuntimeException $error) {
+                $availability['available'] = false;
+                $availability['block_reason'] = $error->getMessage();
+            }
+        }
 
         return [
             'subject'           => $rendered['subject'] ?? $template->subject,
@@ -447,7 +509,9 @@ class ManualNotificationService
         $missing = [];
 
         foreach ((array) ($template->variables_json ?? []) as $key) {
-            if (in_array($key, self::OPTIONAL_VARIABLES, true)) {
+            if (in_array($key, self::OPTIONAL_VARIABLES, true)
+                || (in_array($key, ['pay_link', 'payment_link'], true) && ! in_array($context['notification_type'] ?? '', ['payment_due', 'payment_due_reminder'], true))
+                || (($context['recipient_type'] ?? '') === 'photographer' && in_array($key, ['shoot_total', 'shoot_quote', 'pay_link', 'payment_link'], true))) {
                 continue;
             }
             $value = $context[$key] ?? null;
@@ -512,6 +576,7 @@ class ManualNotificationService
 
         return MessageTemplate::query()
             ->where('slug', $slug)
+            ->where('channel', 'EMAIL')
             ->where('is_active', true)
             ->firstOrFail();
     }
@@ -523,7 +588,7 @@ class ManualNotificationService
      */
     private function buildContext(Shoot $shoot, string $type, string $recipientType, User $recipient, string $channel = 'email'): array
     {
-        return array_merge($channel === 'sms' ? $this->automationService->buildShootContext($shoot) : [], [
+        return array_merge($this->automationService->buildShootContext($shoot), app(ManualShootNotificationContext::class)->resolve($shoot, $type), [
             'shoot'          => $shoot,
             'shoot_id'       => $shoot->id,
             'account_id'     => $shoot->client_id,
@@ -594,7 +659,7 @@ class ManualNotificationService
         // Require real payment / assignment / request records — never fabricate.
         // payment_due can mint a public payment link without an existing Payment row.
         // payment_receipt requires a real completed payment (never fabricate).
-        if ($type === 'payment_receipt') {
+        if (in_array($type, ['payment_receipt', 'payment_thank_you'], true)) {
             $requires[] = 'payment_record';
             $hasPayment = Payment::query()
                 ->where('shoot_id', $shoot->id)
@@ -605,7 +670,7 @@ class ManualNotificationService
             }
         }
 
-        if ($type === 'assignment_change') {
+        if (in_array($type, ['assignment_change', 'photographer_assigned'], true)) {
             $requires[] = 'photographer_assignment';
             $shoot->loadMissing(['photographer', 'services']);
             $hasAssignment = (bool) ($shoot->photographer_id || $shoot->photographer)
@@ -615,14 +680,34 @@ class ManualNotificationService
             }
         }
 
-        if ($type === 'shoot_requested') {
-            $requires[] = 'request_record';
-            // Soft requirement: catalogue still lists the type; send/preview reuse
-            // real shoot context and will surface missing variables rather than fabricate.
+        $context = app(ManualShootNotificationContext::class)->resolve($shoot, $type);
+        if ($type === 'assignment_change' && empty($context['previous_photographer_id'])) {
+            $requires[] = 'assignment_change_record';
+            $block = 'No recorded photographer change is available for this shoot.';
+        }
+        if (in_array($type, ['shoot_request_approved', 'shoot_request_modified'], true) && ! $shoot->approved_at) {
+            $requires[] = 'approval_record';
+            $block = 'This shoot has no recorded request approval.';
+        }
+        if ($type === 'shoot_request_modified' && empty($context['shoot_changes'])) {
+            $requires[] = 'request_changes';
+            $block = 'No recorded request changes are available.';
+        }
+        if ($type === 'shoot_request_declined' && ! $shoot->declined_at) {
+            $requires[] = 'decline_record';
+            $block = 'This shoot has no recorded request decline.';
+        }
+        if ($type === 'payment_due_reminder' && empty($context['invoice'])) {
+            $requires[] = 'invoice_record';
+            $block = 'No client invoice is available for this shoot.';
+        }
+        if ($type === 'refund_submitted' && empty($context['payment'])) {
+            $requires[] = 'refund_record';
+            $block = 'No completed refund record on this shoot.';
         }
 
         if (in_array(strtolower((string) ($shoot->status ?? '')), ['cancelled', 'declined'], true)
-            && ! in_array($type, ['shoot_cancelled', 'shoot_summary'], true)) {
+            && ! in_array($type, ['shoot_cancelled', 'shoot_summary', 'shoot_request_declined', 'refund_submitted', 'payment_receipt', 'payment_thank_you'], true)) {
             $block = $block ?? 'Shoot is cancelled; only cancellation/summary notices are available.';
         }
 
@@ -766,9 +851,8 @@ class ManualNotificationService
      */
     private function receiptDetails(Shoot $shoot): string
     {
-        $summary = $shoot->syncPaymentStatusFromRecords($shoot->payment_type ?: null);
-        $totalPaid = (float) ($summary['total_paid'] ?? 0);
-        $remaining = (float) ($summary['remaining_balance'] ?? 0);
+        $totalPaid = $shoot->calculateCanonicalTotalPaid();
+        $remaining = max((float) $shoot->total_quote - $totalPaid, 0);
 
         $latestPayment = $shoot->payments()
             ->where('status', Payment::STATUS_COMPLETED)
@@ -798,6 +882,14 @@ class ManualNotificationService
         $lines[] = 'Remaining balance: $' . number_format($remaining, 2);
 
         return implode("\n", $lines);
+    }
+
+    private function assertSelection(string $type, string $recipientType, string $channel): void
+    {
+        $meta = self::CATALOGUE[$type] ?? throw new InvalidArgumentException("Unknown notification type {$type}");
+        if (! in_array($recipientType, $meta['recipients'], true) || ! in_array($channel, $meta['channels'], true)) {
+            throw \Illuminate\Validation\ValidationException::withMessages(['notification' => 'This recipient or channel is not available for the selected notification.']);
+        }
     }
 
     private function normalizeRecipientType(string $recipientType): string
