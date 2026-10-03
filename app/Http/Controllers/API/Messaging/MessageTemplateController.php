@@ -242,6 +242,12 @@ class MessageTemplateController extends Controller
         $data = $this->validateManualPayload($request);
 
         $shoot = Shoot::findOrFail($data['shoot_id']);
+        $this->authorizeManualNotification($request, $shoot);
+
+        // Manual send must NOT change workflow status — service only stamps
+        // shoot_ready_notified_at for delivery aliases and writes audit rows.
+        $statusBefore = $shoot->status;
+        $workflowBefore = $shoot->workflow_status;
 
         $message = $manual->send(
             $shoot,
@@ -264,6 +270,16 @@ class MessageTemplateController extends Controller
                 'sent_count' => $sentCount,
                 'blocked_count' => $blockedCount,
             ], 422);
+        }
+
+        $shoot->refresh();
+        if ((string) $shoot->status !== (string) $statusBefore
+            || (string) $shoot->workflow_status !== (string) $workflowBefore) {
+            // Manual notify must never drive workflow transitions.
+            $shoot->forceFill([
+                'status' => $statusBefore,
+                'workflow_status' => $workflowBefore,
+            ])->save();
         }
 
         $recipients = $manual->listRecipients($shoot, $data['recipient_type'], $data['type']);
@@ -296,6 +312,7 @@ class MessageTemplateController extends Controller
         $data = $this->validateManualPayload($request, requireChannel: false);
 
         $shoot = Shoot::findOrFail($data['shoot_id']);
+        $this->authorizeManualNotification($request, $shoot);
 
         $preview = $manual->preview(
             $shoot,
@@ -330,10 +347,43 @@ class MessageTemplateController extends Controller
     }
 
     /**
-     * Admins/superadmins may list recipients for any shoot. Sales reps may only
-     * list recipients for shoots where they are the assigned rep (rep_id).
+     * BE catalogue for manual notify options (labels, recipients, channels,
+     * availability, block reasons). Replaces the fixed FE 6-item list.
+     * Mounted at GET /messaging/notifications/catalogue?shoot_id=.
+     */
+    public function notificationCatalogue(Request $request, ManualNotificationService $manual): JsonResponse
+    {
+        $data = $request->validate([
+            'shoot_id' => ['required', 'integer', 'exists:shoots,id'],
+        ]);
+
+        $shoot = Shoot::findOrFail($data['shoot_id']);
+        // Catalogue is available to the same audience as recipient listing
+        // (admin/EM/assigned sales_rep) so Overview pickers can render options.
+        $this->authorizeNotificationRecipients($request, $shoot);
+
+        return response()->json([
+            'shoot_id' => $shoot->id,
+            'dashboard_link' => $manual->dashboardLink($shoot),
+            'notifications' => $manual->catalogue($shoot),
+        ]);
+    }
+
+    /**
+     * Admins/superadmins and editing managers (shoots they manage) may list
+     * recipients. Sales reps may only list for shoots where they are the
+     * assigned rep (rep_id). Does NOT grant template/automation admin.
      */
     protected function authorizeNotificationRecipients(Request $request, Shoot $shoot): void
+    {
+        $this->authorizeManualNotification($request, $shoot, allowAssignedSalesRep: true);
+    }
+
+    /**
+     * Manual notify options/preview/send for admins and editing managers.
+     * Assigned sales reps may list recipients only (allowAssignedSalesRep).
+     */
+    protected function authorizeManualNotification(Request $request, Shoot $shoot, bool $allowAssignedSalesRep = false): void
     {
         $user = $request->user();
         abort_unless($user !== null, 401, 'Unauthorized');
@@ -351,12 +401,30 @@ class MessageTemplateController extends Controller
             return;
         }
 
-        $isSalesRep = $role === 'salesrep' || in_array('salesrep', $secondary, true);
-        abort_unless(
-            $isSalesRep && (string) $shoot->rep_id === (string) $user->id,
-            403,
-            'Forbidden'
-        );
+        $isEditingManager = $role === 'editingmanager' || in_array('editingmanager', $secondary, true);
+        if ($isEditingManager) {
+            $access = app(\App\Services\Shoots\ShootAuthorizationSupport::class);
+            abort_unless(
+                $access->canManageShootOperations($user) && $access->canViewShootDetails($shoot, $user),
+                403,
+                'Forbidden'
+            );
+
+            return;
+        }
+
+        if ($allowAssignedSalesRep) {
+            $isSalesRep = $role === 'salesrep' || in_array('salesrep', $secondary, true);
+            abort_unless(
+                $isSalesRep && (string) $shoot->rep_id === (string) $user->id,
+                403,
+                'Forbidden'
+            );
+
+            return;
+        }
+
+        abort(403, 'Forbidden');
     }
 
     /**

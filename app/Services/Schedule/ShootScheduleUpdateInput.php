@@ -20,9 +20,10 @@ class ShootScheduleUpdateInput
     public function normalizeTimestamps(Shoot $shoot, array $payload): array
     {
         $timezone = \App\Support\Timezone::canonical(trim((string) (array_key_exists('timezone', $payload) ? $payload['timezone'] : $shoot->timezone)));
-        // Existing unzoned bookings use wall-clock storage. Do not reinterpret them.
+        // Existing unzoned bookings use wall-clock storage. Compose date/time without
+        // zone reinterpretation so booking moves can still align service lines.
         if ($timezone === '') {
-            return $payload;
+            return $this->normalizeUnzonedTimestamps($shoot, $payload);
         }
 
         // Normalize explicit service offsets before the service merger stores SQL timestamps.
@@ -189,6 +190,11 @@ class ShootScheduleUpdateInput
             return $payload;
         }
 
+        // Overview / Modify often re-echoes each line's pre-edit clock alongside a
+        // new booking-level time. That echo is not an intentional independent visit —
+        // only treat a line as explicit when its incoming clock differs from storage.
+        $support = app(ShootMutationSupportService::class);
+        $currentByService = $shoot->serviceItems->keyBy(fn ($item) => (int) $item->service_id);
         $explicitByService = [];
         foreach (['services' => 'id', 'service_items' => 'service_id'] as $collection => $idKey) {
             foreach ($payload[$collection] ?? [] as $row) {
@@ -196,7 +202,12 @@ class ShootScheduleUpdateInput
                     continue;
                 }
                 $id = (int) ($row[$idKey] ?? $row['service_id'] ?? $row['id'] ?? 0);
-                if ($id > 0 && array_key_exists('scheduled_at', $row) && $row['scheduled_at'] !== null && $row['scheduled_at'] !== '') {
+                if ($id <= 0 || ! array_key_exists('scheduled_at', $row) || $row['scheduled_at'] === null || $row['scheduled_at'] === '') {
+                    continue;
+                }
+                $incoming = $support->normalizeDateTimeForDatabase($row['scheduled_at']);
+                $stored = $support->normalizeDateTimeForDatabase($currentByService->get($id)?->scheduled_at);
+                if ($incoming !== null && $incoming !== $stored) {
                     $explicitByService[$id] = true;
                 }
             }
@@ -278,6 +289,62 @@ class ShootScheduleUpdateInput
         }
 
         return app(ShootScheduleFromServices::class)->earliestInstant($merged);
+    }
+
+    /**
+     * Unzoned (imported / legacy) shoots store civil wall clocks as UTC-labeled
+     * timestamps. Accept booking edits without applying a zone conversion.
+     */
+    private function normalizeUnzonedTimestamps(Shoot $shoot, array $payload): array
+    {
+        if (! array_intersect(['scheduled_at', 'scheduled_date', 'time'], array_keys($payload))) {
+            return $payload;
+        }
+
+        if (array_key_exists('scheduled_at', $payload)) {
+            if (! $payload['scheduled_at']) {
+                return array_replace($payload, ['scheduled_at' => null, 'scheduled_date' => null, 'time' => null]);
+            }
+            $stamp = $this->wallClockFromString((string) $payload['scheduled_at']);
+            if (! $stamp) {
+                return $payload;
+            }
+
+            return array_replace($payload, [
+                'scheduled_at' => $stamp->toIso8601String(),
+                'scheduled_date' => $stamp->toDateString(),
+                'time' => $stamp->format('H:i:s'),
+            ]);
+        }
+
+        $date = array_key_exists('scheduled_date', $payload)
+            ? ($payload['scheduled_date'] ? Carbon::parse($payload['scheduled_date'])->toDateString() : null)
+            : ($shoot->scheduled_date?->toDateString()
+                ?? $shoot->scheduled_at?->format('Y-m-d'));
+        $time = array_key_exists('time', $payload)
+            ? ($payload['time'] ? Carbon::parse($payload['time'])->format('H:i:s') : null)
+            : ($shoot->time
+                ? Carbon::parse($shoot->time)->format('H:i:s')
+                : $shoot->scheduled_at?->format('H:i:s'));
+        if (! $date) {
+            return array_replace($payload, ['scheduled_at' => null, 'scheduled_date' => null, 'time' => null]);
+        }
+
+        $stamp = Carbon::parse($date.' '.($time ?: '00:00:00'), 'UTC');
+
+        return array_replace($payload, [
+            'scheduled_at' => $stamp->toIso8601String(),
+            'scheduled_date' => $stamp->toDateString(),
+            'time' => $stamp->format('H:i:s'),
+        ]);
+    }
+
+    /** Extract civil Y-m-d H:i:s digits without applying an offset shift. */
+    private function wallClockFromString(string $value): ?Carbon
+    {
+        $normalized = app(ShootMutationSupportService::class)->normalizeDateTimeForDatabase($value);
+
+        return $normalized ? Carbon::parse($normalized, 'UTC') : null;
     }
 
     private function parse(string $value, string $timezone, ?Carbon $original, string $field): Carbon

@@ -35,12 +35,105 @@ class ManualNotificationService
      * @var array<string, string>
      */
     public const TYPES = [
+        // Booking / request
         'shoot_scheduled' => 'shoot-scheduled',
-        'shoot_on_hold'   => 'shoot-on-hold',
+        'shoot_requested' => 'shoot-requested',
+        // Update / reminder / assignment
+        'shoot_updated' => 'shoot-updated',
+        'shoot_reminder' => 'shoot-reminder',
+        'assignment_change' => 'photographer-changed',
+        // Hold / cancel
+        'shoot_on_hold' => 'shoot-on-hold',
         'shoot_cancelled' => 'shoot-cancelled',
-        'shoot_ready'     => 'shoot-ready',
-        'payment_due'     => 'payment-due',
+        // Delivery / summary — shoot_ready remains the delivery alias (timestamps)
+        'shoot_ready' => 'shoot-ready',
+        'shoot_delivered' => 'shoot-delivered',
+        'shoot_summary' => 'shoot-summary',
+        // Shoot payment (not account/security/payout)
+        'payment_due' => 'payment-due',
         'payment_receipt' => 'payment-receipt',
+    ];
+
+    /**
+     * Human labels + default recipient/channel availability for the BE catalogue.
+     * Excludes account/security/payout template families.
+     *
+     * @var array<string, array{label:string,category:string,recipients:list<string>,channels:list<string>}>
+     */
+    public const CATALOGUE = [
+        'shoot_scheduled' => [
+            'label' => 'Shoot Scheduled',
+            'category' => 'booking',
+            'recipients' => ['client', 'photographer'],
+            'channels' => ['email', 'sms'],
+        ],
+        'shoot_requested' => [
+            'label' => 'Shoot Request',
+            'category' => 'booking',
+            'recipients' => ['client', 'photographer', 'rep'],
+            'channels' => ['email', 'sms'],
+        ],
+        'shoot_updated' => [
+            'label' => 'Shoot Updated',
+            'category' => 'update',
+            'recipients' => ['client', 'photographer', 'rep'],
+            'channels' => ['email', 'sms'],
+        ],
+        'shoot_reminder' => [
+            'label' => 'Shoot Reminder',
+            'category' => 'reminder',
+            'recipients' => ['client', 'photographer'],
+            'channels' => ['email', 'sms'],
+        ],
+        'assignment_change' => [
+            'label' => 'Assignment Change',
+            'category' => 'assignment',
+            'recipients' => ['photographer', 'client', 'rep'],
+            'channels' => ['email', 'sms'],
+        ],
+        'shoot_on_hold' => [
+            'label' => 'Shoot On Hold',
+            'category' => 'hold_cancel',
+            'recipients' => ['client', 'photographer', 'rep'],
+            'channels' => ['email', 'sms'],
+        ],
+        'shoot_cancelled' => [
+            'label' => 'Shoot Cancelled',
+            'category' => 'hold_cancel',
+            'recipients' => ['client', 'photographer', 'rep'],
+            'channels' => ['email', 'sms'],
+        ],
+        'shoot_ready' => [
+            'label' => 'Shoot Ready',
+            'category' => 'delivery',
+            'recipients' => ['client', 'photographer'],
+            'channels' => ['email', 'sms'],
+            'aliases' => ['delivery'],
+        ],
+        'shoot_delivered' => [
+            'label' => 'Shoot Delivered',
+            'category' => 'delivery',
+            'recipients' => ['client', 'photographer'],
+            'channels' => ['email', 'sms'],
+        ],
+        'shoot_summary' => [
+            'label' => 'Shoot Summary',
+            'category' => 'delivery',
+            'recipients' => ['client', 'rep'],
+            'channels' => ['email'],
+        ],
+        'payment_due' => [
+            'label' => 'Payment Due',
+            'category' => 'shoot_payment',
+            'recipients' => ['client'],
+            'channels' => ['email', 'sms'],
+        ],
+        'payment_receipt' => [
+            'label' => 'Payment Receipt',
+            'category' => 'shoot_payment',
+            'recipients' => ['client'],
+            'channels' => ['email', 'sms'],
+        ],
     ];
 
     private const RECIPIENT_TYPES = ['client', 'photographer', 'rep'];
@@ -132,7 +225,7 @@ class ManualNotificationService
                 $sender,
                 $template,
                 $recipient,
-                stampReady: $type === 'shoot_ready' && ! collect($messages)->contains(fn (Message $message) => $message->status !== 'BLOCKED'),
+                stampReady: in_array($type, ['shoot_ready', 'shoot_delivered'], true) && ! collect($messages)->contains(fn (Message $message) => $message->status !== 'BLOCKED'),
             );
         }
 
@@ -210,6 +303,16 @@ class ManualNotificationService
 
         $rendered = $this->templateRenderer->render($template, $context);
 
+        // Hard-block only when catalogue-required records are missing (payment /
+        // assignment). Template variable gaps stay preview warnings via can_send;
+        // resolve links must not hide those warnings.
+        if (isset(self::CATALOGUE[$type])) {
+            $availability = $this->catalogueAvailability($shoot, $type, self::CATALOGUE[$type]);
+            if (! $availability['available'] && $availability['requires'] !== []) {
+                throw new RuntimeException($availability['block_reason'] ?? 'Required notification context is missing.');
+            }
+        }
+
         $message = $this->dispatchForChannel($channel, [
             'to'               => $address,
             'notification_type' => $type,
@@ -230,7 +333,7 @@ class ManualNotificationService
         ]);
 
         // AC 12.10 — stamp once per manual shoot_ready dispatch, not per photographer copy.
-        if ($stampReady && $type === 'shoot_ready' && $message->status !== 'BLOCKED') {
+        if ($stampReady && in_array($type, ['shoot_ready', 'shoot_delivered'], true) && $message->status !== 'BLOCKED') {
             $shoot->forceFill(['shoot_ready_notified_at' => now()])->save();
             $this->automationService->schedulePaymentReminders($shoot->refresh());
         }
@@ -303,11 +406,23 @@ class ManualNotificationService
 
         $rendered = $this->templateRenderer->render($template, $context);
 
+        $missingRequired = $this->collectMissingVariables($template, $context, $rendered);
+        $availability = $this->catalogueAvailability($shoot, $type, self::CATALOGUE[$type] ?? [
+            'label' => $type,
+            'category' => 'other',
+            'recipients' => self::RECIPIENT_TYPES,
+            'channels' => self::CHANNELS,
+        ]);
+
         return [
             'subject'           => $rendered['subject'] ?? $template->subject,
             'body_html'         => $rendered['body_html'] ?? $rendered['html'] ?? null,
             'body_text'         => $rendered['body_text'] ?? $rendered['text'] ?? null,
-            'missing_variables' => $this->collectMissingVariables($template, $context, $rendered),
+            'missing_variables' => $missingRequired,
+            'missing_required'  => $missingRequired,
+            'can_send'          => $missingRequired === [] && $availability['available'],
+            'block_reason'      => $availability['block_reason'],
+            'dashboard_link'    => $context['dashboard_link'] ?? $this->dashboardLink($shoot),
             'recipients'        => array_values(array_filter(
                 $this->listRecipients($shoot, $recipientType, $type),
                 fn (array $row) => $recipientUserId === null || $row['id'] === $recipientUserId,
@@ -417,7 +532,117 @@ class ManualNotificationService
             'recipient_type' => $recipientType,
             'recipient_name' => $recipient->name,
             'recipient_email' => $recipient->email,
+            // Central dashboard link for email + SMS — configured dashboard URL + shoot route.
+            // Preview and send share this same context builder.
+            'dashboard_link' => $this->dashboardLink($shoot),
         ]);
+    }
+
+    /**
+     * Configured frontend/dashboard base + shoot route. Shared by preview and send.
+     */
+    public function dashboardLink(Shoot $shoot): string
+    {
+        $base = rtrim((string) config('app.frontend_url', config('app.url')), '/');
+
+        return $base.'/shoots/'.$shoot->id;
+    }
+
+    /**
+     * BE catalogue replacing the fixed FE 6-item list.
+     *
+     * @return list<array{
+     *   type:string,label:string,category:string,slug:string,
+     *   recipients:list<string>,channels:list<string>,
+     *   available:bool,block_reason:?string,
+     *   requires:list<string>,optional_missing_ok:list<string>
+     * }>
+     */
+    public function catalogue(Shoot $shoot): array
+    {
+        $items = [];
+        foreach (self::CATALOGUE as $type => $meta) {
+            $slug = self::TYPES[$type];
+            $availability = $this->catalogueAvailability($shoot, $type, $meta);
+            $items[] = [
+                'type' => $type,
+                'label' => $meta['label'],
+                'category' => $meta['category'],
+                'slug' => $slug,
+                'recipients' => $meta['recipients'],
+                'channels' => $meta['channels'],
+                'available' => $availability['available'],
+                'block_reason' => $availability['block_reason'],
+                'requires' => $availability['requires'],
+                'optional_missing_ok' => self::OPTIONAL_VARIABLES,
+                'aliases' => $meta['aliases'] ?? [],
+            ];
+        }
+
+        return $items;
+    }
+
+    /**
+     * @param  array{label:string,category:string,recipients:list<string>,channels:list<string>}  $meta
+     * @return array{available:bool,block_reason:?string,requires:list<string>}
+     */
+    private function catalogueAvailability(Shoot $shoot, string $type, array $meta): array
+    {
+        $requires = [];
+        $block = null;
+
+        // Require real payment / assignment / request records — never fabricate.
+        // payment_due can mint a public payment link without an existing Payment row.
+        // payment_receipt requires a real completed payment (never fabricate).
+        if ($type === 'payment_receipt') {
+            $requires[] = 'payment_record';
+            $hasPayment = Payment::query()
+                ->where('shoot_id', $shoot->id)
+                ->where('status', Payment::STATUS_COMPLETED)
+                ->exists();
+            if (! $hasPayment) {
+                $block = 'No completed payment record on this shoot.';
+            }
+        }
+
+        if ($type === 'assignment_change') {
+            $requires[] = 'photographer_assignment';
+            $shoot->loadMissing(['photographer', 'services']);
+            $hasAssignment = (bool) ($shoot->photographer_id || $shoot->photographer)
+                || collect($shoot->services ?? [])->contains(fn ($service) => (bool) data_get($service, 'pivot.photographer_id'));
+            if (! $hasAssignment) {
+                $block = 'No photographer assignment on this shoot.';
+            }
+        }
+
+        if ($type === 'shoot_requested') {
+            $requires[] = 'request_record';
+            // Soft requirement: catalogue still lists the type; send/preview reuse
+            // real shoot context and will surface missing variables rather than fabricate.
+        }
+
+        if (in_array(strtolower((string) ($shoot->status ?? '')), ['cancelled', 'declined'], true)
+            && ! in_array($type, ['shoot_cancelled', 'shoot_summary'], true)) {
+            $block = $block ?? 'Shoot is cancelled; only cancellation/summary notices are available.';
+        }
+
+        // Template must exist and be active for at least one channel.
+        $slug = self::TYPES[$type];
+        $hasTemplate = MessageTemplate::query()
+            ->where(function ($query) use ($slug) {
+                $query->where('slug', $slug)->orWhere('slug', $slug.'-sms');
+            })
+            ->where('is_active', true)
+            ->exists();
+        if (! $hasTemplate) {
+            $block = 'Active message template is not configured for this notification.';
+        }
+
+        return [
+            'available' => $block === null,
+            'block_reason' => $block,
+            'requires' => $requires,
+        ];
     }
 
     /**

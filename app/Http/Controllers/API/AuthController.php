@@ -437,6 +437,8 @@ class AuthController extends Controller
             'email' => ['sometimes', 'email', 'max:255', Rule::unique('users', 'email')->ignore($user->id)],
             'phonenumber' => 'nullable|string|max:20',
             'phone_number' => 'nullable|string|max:20',
+            'office_phone' => 'nullable|string|max:50',
+            'show_office_phone_on_tour' => 'nullable|boolean',
             'company_name' => 'nullable|string|max:255',
             'address' => 'nullable|string|max:255',
             'city' => 'nullable|string|max:100',
@@ -608,6 +610,8 @@ class AuthController extends Controller
             $addressChangeQueued = $queued['changed'];
             unset($validated['address'], $validated['city'], $validated['state'], $validated['zip']);
         }
+
+        $validated = \App\Support\OfficePhoneFields::apply($validated);
 
         $user->fill($validated);
         $user->metadata = $metadata;
@@ -866,6 +870,7 @@ class AuthController extends Controller
         $payload['zipcode'] = $payload['zip'] ?? $user->zip;
         $payload['phone'] = $user->resolvedPhone();
         $payload['phonenumber'] = $payload['phone'];
+        $payload = array_merge($payload, \App\Support\OfficePhoneFields::forAccount($user->office_phone, $user->show_office_phone_on_tour));
         $payload['email_health'] = $user->email_health;
         $payload['legal_status'] = app(LegalDocumentService::class)->statusFor($user);
         $payload['email_verification'] = app(\App\Services\Users\EmailVerificationPilot::class)->status($user);

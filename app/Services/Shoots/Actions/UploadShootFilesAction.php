@@ -253,6 +253,8 @@ class UploadShootFilesAction
         $uploadType = $request->input('upload_type', 'raw');
         $shootServiceId = $request->input('shoot_service_id');
         $shootServiceId = $shootServiceId !== null && $shootServiceId !== '' ? (int) $shootServiceId : null;
+        $replaceFileId = $request->input('replace_file_id');
+        $replaceFileId = $replaceFileId !== null && $replaceFileId !== '' ? (int) $replaceFileId : null;
 
         $allServiceItems = $shoot->serviceItems()->with('service')->get();
 
@@ -631,14 +633,22 @@ class UploadShootFilesAction
                 : null;
             $rawBatchOffset = null;
             if ($rawBracketMode > 1 && $rawBatchId !== '' && $rawBatchIndex !== null) {
-                // The batch id is unique per upload group, so the cached offset is already
-                // per service; the service scoping below is what makes its value correct.
-                $batchOffsetCacheKey = "shoot:{$shoot->id}:raw_upload_batch:{$rawBatchId}:offset";
-                $preBatchCount = $rawBracketScope($shoot->files())->count();
-                // Cache::add is atomic: only the first concurrent request wins,
-                // subsequent requests read the value the winner stored.
-                Cache::add($batchOffsetCacheKey, $preBatchCount, now()->addHours(2));
-                $rawBatchOffset = (int) Cache::get($batchOffsetCacheKey, $preBatchCount);
+                // Prefer durable R3 reservations when the client prepared the batch.
+                // Fall back to the short-lived cache offset for older clients.
+                $durableOffset = app(\App\Services\Shoots\ShootUploadBatchReservationService::class)
+                    ->findOffset($shoot, $user instanceof \App\Models\User ? $user : null, $rawBatchId);
+                if ($durableOffset !== null) {
+                    $rawBatchOffset = $durableOffset;
+                } else {
+                    // The batch id is unique per upload group, so the cached offset is already
+                    // per service; the service scoping below is what makes its value correct.
+                    $batchOffsetCacheKey = "shoot:{$shoot->id}:raw_upload_batch:{$rawBatchId}:offset";
+                    $preBatchCount = $rawBracketScope($shoot->files())->count();
+                    // Cache::add is atomic: only the first concurrent request wins,
+                    // subsequent requests read the value the winner stored.
+                    Cache::add($batchOffsetCacheKey, $preBatchCount, now()->addHours(2));
+                    $rawBatchOffset = (int) Cache::get($batchOffsetCacheKey, $preBatchCount);
+                }
             }
 
             $rawSequenceIndex = $rawBracketMode > 1
@@ -684,8 +694,8 @@ class UploadShootFilesAction
                     // duplicate check is scoped to that row. Without it, two services on
                     // one shoot receiving the same filename collapsed into one file.
                     $shootFile = $uploadType === 'raw'
-                        ? $this->mediaStorageService->uploadToTodo($shoot, $file, auth()->id(), $serviceCategory, $resolvedMediaType, $shootServiceId)
-                        : $this->mediaStorageService->uploadToCompleted($shoot, $file, auth()->id(), $serviceCategory, $resolvedMediaType, $shootServiceId);
+                        ? $this->mediaStorageService->uploadToTodo($shoot, $file, auth()->id(), $serviceCategory, $resolvedMediaType, $shootServiceId, null, $replaceFileId)
+                        : $this->mediaStorageService->uploadToCompleted($shoot, $file, auth()->id(), $serviceCategory, $resolvedMediaType, $shootServiceId, null, $replaceFileId);
 
                     // The writes that belong with the record: committed together and
                     // retried as a unit if another writer wins the race. Every statement

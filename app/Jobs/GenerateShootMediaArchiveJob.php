@@ -26,7 +26,13 @@ class GenerateShootMediaArchiveJob implements ShouldQueue
         public ?int $shootServiceId = null,
         public ?int $shootUnitId = null
     ) {
-        $this->onQueue('default');
+        // Canary/global dedicated archive worker is optional; default queue remains
+        // the safe fallback when MEDIA_ARCHIVE_DEDICATED_QUEUE is false.
+        $queue = app(\App\Services\Media\MediaStorage::class)
+            ->performanceEnabled('archive_dedicated_queue', $shootId)
+            ? 'media-archives'
+            : 'default';
+        $this->onQueue($queue);
         $this->afterCommit();
     }
 

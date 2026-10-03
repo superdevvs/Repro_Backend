@@ -161,6 +161,9 @@ class ShootMediaInteractionService
                 'filename' => (string) $fresh->filename,
                 'stored_filename' => $fresh->stored_filename,
             ],
+            'media_revision' => $shoot
+                ? $this->shootMediaMutationSupportService->currentMediaRevision($shoot)
+                : 0,
         ];
     }
 
@@ -205,19 +208,47 @@ class ShootMediaInteractionService
     public function bulkDelete(Shoot $shoot, iterable $files): array
     {
         $errors = [];
+        $deletedIds = [];
+        $actor = auth()->user();
 
         foreach ($files as $file) {
             try {
-                $this->deleteShootMediaAction->execute($shoot, $file);
+                $result = $this->deleteShootMediaAction->execute($shoot, $file);
+                $deletedIds[] = (int) $file->id;
+                $shoot = $shoot->fresh() ?? $shoot;
+                if ($actor) {
+                    app(\App\Services\AuditLogService::class)->record('media.delete', $actor, $shoot, [
+                        'shoot_file_id' => (int) $file->id,
+                        'filename' => $file->filename ?? null,
+                        'bulk' => true,
+                    ]);
+                }
+                // Prefer counters from the action when present.
+                if (isset($result['raw_photo_count'])) {
+                    $shoot->raw_photo_count = $result['raw_photo_count'];
+                    $shoot->edited_photo_count = $result['edited_photo_count'];
+                }
             } catch (\Exception $e) {
                 $errors[] = $file->id;
             }
         }
 
+        $shoot = $this->shootMediaMutationSupportService->refreshMediaCounters($shoot->fresh());
+        $this->shootMediaMutationSupportService->clearShootFilesCache($shoot, $actor);
+
         return [
             'payload' => [
                 'message' => empty($errors) ? 'Files deleted' : 'Some files failed to delete',
                 'failed_ids' => $errors,
+                'deleted_ids' => $deletedIds,
+                'counts' => [
+                    'raw_photo_count' => $shoot->raw_photo_count,
+                    'edited_photo_count' => $shoot->edited_photo_count,
+                    'extra_photo_count' => $shoot->extra_photo_count,
+                    'raw_missing_count' => $shoot->raw_missing_count,
+                    'edited_missing_count' => $shoot->edited_missing_count,
+                ],
+                'media_revision' => $this->shootMediaMutationSupportService->currentMediaRevision($shoot),
             ],
             'status' => empty($errors) ? 200 : 207,
         ];
@@ -276,18 +307,63 @@ class ShootMediaInteractionService
         ];
     }
 
+    /**
+     * Mark selected files as a media type.
+     *
+     * "photos" / "edited" = Main photos: clears conflicting is_extra while
+     * preserving shoot_service_id, unit attribution, and workflow_stage.
+     * Floorplans marked as photos become edited Main photos (leave raw alone).
+     *
+     * @param  list<int|string>  $fileIds
+     * @return array{message:string,updated_count:int,media_type:string,counts:array,media_revision:int,files:list<array>}
+     */
     public function reclassify(Shoot $shoot, array $fileIds, string $mediaType): array
     {
-        $updated = ShootFile::where('shoot_id', $shoot->id)
+        $requested = strtolower(trim($mediaType));
+        $isMainPhotos = in_array($requested, ['photos', 'edited', 'main', 'main_photos'], true);
+        $targetType = $isMainPhotos ? 'edited' : $requested;
+
+        $files = ShootFile::query()
+            ->where('shoot_id', $shoot->id)
             ->whereIn('id', $fileIds)
-            ->update(['media_type' => $mediaType]);
+            ->get();
+
+        $updated = 0;
+        $payloadFiles = [];
+        foreach ($files as $file) {
+            $attrs = ['media_type' => $targetType];
+            if ($isMainPhotos) {
+                // Clear conflicting extras when promoting to Main photos.
+                if (\Illuminate\Support\Facades\Schema::hasColumn('shoot_files', 'is_extra')) {
+                    $attrs['is_extra'] = false;
+                }
+            }
+            // Preserve service / unit / stage — never rewrite those here.
+            $file->fill($attrs);
+            if ($file->isDirty()) {
+                $file->save();
+                $updated++;
+            }
+            $payloadFiles[] = $this->shootMediaMutationSupportService->transformFile($file->fresh());
+        }
 
         $shoot = $this->shootMediaMutationSupportService->refreshMediaCounters($shoot->fresh());
         $this->shootMediaMutationSupportService->clearShootFilesCache($shoot, auth()->user());
+        $label = $isMainPhotos ? 'Main photos' : $targetType;
 
         return [
-            'message' => "Reclassified {$updated} file(s) as {$mediaType}",
+            'message' => "Reclassified {$updated} file(s) as {$label}",
             'updated_count' => $updated,
+            'media_type' => $targetType,
+            'counts' => [
+                'raw_photo_count' => $shoot->raw_photo_count,
+                'edited_photo_count' => $shoot->edited_photo_count,
+                'extra_photo_count' => $shoot->extra_photo_count,
+                'raw_missing_count' => $shoot->raw_missing_count,
+                'edited_missing_count' => $shoot->edited_missing_count,
+            ],
+            'media_revision' => $this->shootMediaMutationSupportService->currentMediaRevision($shoot),
+            'files' => $payloadFiles,
         ];
     }
 }

@@ -239,12 +239,13 @@ class ShootMediaStorageService
         $serviceCategory = null,
         ?string $mediaTypeOverride = null,
         ?int $shootServiceId = null,
-        ?array $metadataOverride = null
+        ?array $metadataOverride = null,
+        ?int $replaceFileId = null
     ) {
         $mediaType = $mediaTypeOverride
             ?? $this->resolveMediaType($file->getClientOriginalName(), $file->getMimeType(), 'raw', $serviceCategory);
 
-        return $this->storeLocally($shoot, $file, $userId, ShootFile::STAGE_TODO, $mediaType, $shootServiceId, $metadataOverride);
+        return $this->storeLocally($shoot, $file, $userId, ShootFile::STAGE_TODO, $mediaType, $shootServiceId, $metadataOverride, $replaceFileId);
     }
 
     /**
@@ -328,10 +329,11 @@ class ShootMediaStorageService
         string $stage,
         ?string $mediaTypeOverride = null,
         ?int $shootServiceId = null,
-        ?array $metadataOverride = null
+        ?array $metadataOverride = null,
+        ?int $replaceFileId = null
     ): ShootFile {
         $stagingStartedAt = microtime(true);
-        $staged = $this->stageLocally($shoot, $file, $userId, $stage, $mediaTypeOverride, $shootServiceId, $metadataOverride);
+        $staged = $this->stageLocally($shoot, $file, $userId, $stage, $mediaTypeOverride, $shootServiceId, $metadataOverride, $replaceFileId);
         $stagingMs = (int) round((microtime(true) - $stagingStartedAt) * 1000);
 
         $attempts = 0;
@@ -407,7 +409,8 @@ class ShootMediaStorageService
         string $stage,
         ?string $mediaTypeOverride = null,
         ?int $shootServiceId = null,
-        ?array $metadataOverride = null
+        ?array $metadataOverride = null,
+        ?int $replaceFileId = null
     ): StagedShootUpload {
         $isOpaqueIguidePackage = $mediaTypeOverride === ShootFile::MEDIA_TYPE_IGUIDE
             && data_get($metadataOverride, 'kind') === ShootFile::IGUIDE_OFFLINE_PACKAGE_KIND;
@@ -445,40 +448,78 @@ class ShootMediaStorageService
             ?? ($stage === ShootFile::STAGE_COMPLETED ? 'edited' : 'raw');
         $mediaType = $mediaTypeOverride ?? $this->resolveMediaType($file->getClientOriginalName(), $file->getMimeType(), $defaultMediaType);
 
-        // Re-uploading a filename replaces that file in place, which is how a corrected
-        // frame is handed in. The match has to be scoped to the execution row, though,
-        // because a filename is only unique per camera, not per shoot: two photographers
-        // working one shoot both hand in DSC_0001.jpg. Matching on (shoot, filename,
-        // stage) alone meant the second service's frame overwrote the first service's
-        // file, leaving one row with the wrong attribution and one service silently a
-        // frame short. Unassigned uploads form their own bucket, mirroring how bracket
-        // stacking already partitions them.
+        // Re-uploading a saved display filename replaces that file in place.
+        // Match is scoped to shoot + service (+ null-service bucket) and the
+        // saved name+extension — never raw when uploading edited, and never
+        // other services. Edited uploads also match verified/delivered rows so
+        // corrections land on the same identity. Ambiguous duplicates require
+        // an explicit replace_file_id. Old bytes stay until the new object is
+        // confirmed so a failed switch keeps the live row intact.
         // A replacement iGUIDE must not overwrite the currently-ready ZIP before
         // the new package clears quarantine. Every attempt therefore receives a
         // new row; the lifecycle pointer changes only after a clean verdict.
-        $existingFile = $isOpaqueIguidePackage
-            ? null
-            : ShootFile::where('shoot_id', $shoot->id)
-                ->where('filename', $file->getClientOriginalName())
-                ->where('workflow_stage', $stage)
+        $existingFile = null;
+        $previousStoredPath = null;
+        $previousStorageDisk = null;
+        if (! $isOpaqueIguidePackage) {
+            $savedName = $file->getClientOriginalName();
+            $stages = $stage === ShootFile::STAGE_COMPLETED
+                ? [ShootFile::STAGE_COMPLETED, ShootFile::STAGE_VERIFIED]
+                : [$stage];
+
+            $candidatesQuery = ShootFile::where('shoot_id', $shoot->id)
+                ->where('filename', $savedName)
+                ->whereIn('workflow_stage', $stages)
                 ->when(
                     $shootServiceId !== null,
                     fn ($query) => $query->where('shoot_service_id', $shootServiceId),
                     fn ($query) => $query->whereNull('shoot_service_id')
-                )
-                ->first();
-        $isReplacement = $existingFile !== null;
+                );
 
-        if ($existingFile) {
-            $this->deleteLocalStoredAssets($existingFile, preserveDerivedAssets: true);
-            Log::info('Replacing duplicate file in place', [
-                'shoot_id' => $shoot->id,
-                'file_id' => $existingFile->id,
-                'filename' => $file->getClientOriginalName(),
-                'stage' => $stage,
-                'old_stored' => $existingFile->stored_filename,
-            ]);
+            // Edited replacements never target raw/todo camera files.
+            if ($stage === ShootFile::STAGE_COMPLETED) {
+                $candidatesQuery->where(function ($query) {
+                    $query->whereNull('media_type')
+                        ->orWhereNotIn('media_type', ['raw']);
+                });
+            }
+
+            if ($replaceFileId !== null) {
+                $existingFile = (clone $candidatesQuery)->where('id', $replaceFileId)->first();
+                if (! $existingFile) {
+                    throw \Illuminate\Validation\ValidationException::withMessages([
+                        'replace_file_id' => ['The selected file is not a valid replacement target for this upload.'],
+                    ]);
+                }
+            } else {
+                $candidates = $candidatesQuery->orderBy('id')->get();
+                if ($candidates->count() > 1) {
+                    $ids = $candidates->pluck('id')->map(fn ($id) => (int) $id)->all();
+                    $exception = \Illuminate\Validation\ValidationException::withMessages([
+                        'replace_file_id' => [
+                            'Multiple edited files share this saved filename. Pass replace_file_id to choose which one to replace. Ambiguous ids: '.implode(',', $ids),
+                        ],
+                    ]);
+                    $exception->errorBag->add('ambiguous_file_ids', implode(',', $ids));
+                    throw $exception;
+                }
+                $existingFile = $candidates->first();
+            }
+
+            if ($existingFile) {
+                $previousStoredPath = $existingFile->path ?: $existingFile->storage_path;
+                $previousStorageDisk = (string) config('media.local_disk', 'local');
+                Log::info('Replacing duplicate file in place', [
+                    'shoot_id' => $shoot->id,
+                    'file_id' => $existingFile->id,
+                    'filename' => $savedName,
+                    'stage' => $stage,
+                    'existing_stage' => $existingFile->workflow_stage,
+                    'old_stored' => $existingFile->stored_filename,
+                ]);
+            }
         }
+        $isReplacement = $existingFile !== null;
 
         // Extract image metadata (dimensions, EXIF)
         $metadata = array_replace(
@@ -585,6 +626,8 @@ class ShootMediaStorageService
             syncScanVerdict: $syncScanVerdict,
             isOpaqueIguidePackage: $isOpaqueIguidePackage,
             requiresImageProcessing: $requiresImageProcessing,
+            previousStoredPath: $previousStoredPath,
+            previousStorageDisk: $previousStorageDisk,
         );
     }
 
@@ -605,6 +648,46 @@ class ShootMediaStorageService
         $shootFile = $staged->existingFile ?: new ShootFile($staged->identity);
         $shootFile->fill($staged->attributes);
         $shootFile->save();
+
+        // Switch confirmed: drop the previous object only when distinct from the
+        // newly stored path. Clear derived rendition columns so previews regenerate.
+        if (
+            $staged->isReplacement()
+            && $staged->previousStoredPath
+            && $staged->previousStoredPath !== $staged->storedPath
+        ) {
+            try {
+                $diskName = $staged->previousStorageDisk ?: $staged->storageDisk;
+                $disk = Storage::disk($diskName);
+                if ($disk->exists($staged->previousStoredPath)) {
+                    $disk->delete($staged->previousStoredPath);
+                }
+            } catch (\Throwable $e) {
+                Log::channel(self::LOG_CHANNEL)->warning('Failed to remove superseded media object after replacement.', [
+                    'shoot_id' => $shoot->id,
+                    'shoot_file_id' => $shootFile->id,
+                    'path' => $staged->previousStoredPath,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+
+            $renditionClears = [];
+            foreach (['thumbnail_path', 'web_path', 'grid_path', 'placeholder_path', 'large_path', 'medium_path'] as $column) {
+                if (\Illuminate\Support\Facades\Schema::hasColumn('shoot_files', $column) && $shootFile->{$column}) {
+                    try {
+                        app(\App\Services\Media\MediaStorage::class)->delete($shootFile->{$column});
+                    } catch (\Throwable $e) {
+                        // best-effort rendition cleanup
+                    }
+                    $renditionClears[$column] = null;
+                }
+            }
+            if ($renditionClears !== []) {
+                $renditionClears['processed_at'] = null;
+                $shootFile->fill($renditionClears);
+                $shootFile->save();
+            }
+        }
 
         if ($staged->requiresImageProcessing && app()->runningUnitTests()) {
             // Inline image processing for tests so derived asset paths are
@@ -849,12 +932,13 @@ class ShootMediaStorageService
         $serviceCategory = null,
         ?string $mediaTypeOverride = null,
         ?int $shootServiceId = null,
-        ?array $metadataOverride = null
+        ?array $metadataOverride = null,
+        ?int $replaceFileId = null
     ) {
         $mediaType = $mediaTypeOverride
             ?? $this->resolveMediaType($file->getClientOriginalName(), $file->getMimeType(), 'edited', $serviceCategory);
 
-        return $this->storeLocally($shoot, $file, $userId, ShootFile::STAGE_COMPLETED, $mediaType, $shootServiceId, $metadataOverride);
+        return $this->storeLocally($shoot, $file, $userId, ShootFile::STAGE_COMPLETED, $mediaType, $shootServiceId, $metadataOverride, $replaceFileId);
     }
 
     /**

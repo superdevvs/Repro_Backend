@@ -920,7 +920,9 @@ class PhotographerAvailabilityController extends Controller
         
         $photographers = $query->get();
         
-        // Filter by service capabilities if specified
+        // Filter by service capabilities if specified.
+        // canPerformService fails open when specialties are empty/unconfigured so
+        // imported photographers without an allowlist are not dropped from Book Shoot.
         if ($serviceIds && !empty($serviceIds)) {
             $photographers = $photographers->filter(function ($photographer) use ($serviceIds, $requireAllServices) {
                 if ($requireAllServices) {

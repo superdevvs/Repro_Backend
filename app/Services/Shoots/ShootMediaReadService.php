@@ -25,7 +25,8 @@ class ShootMediaReadService
         protected ShootAuthorizationSupport $authorizationSupport,
         protected ShootPaymentStatusSupport $paymentStatusSupport,
         protected ShootClientReleaseAccessService $shootClientReleaseAccessService,
-        protected \App\Services\Media\MediaStorage $mediaStorage
+        protected \App\Services\Media\MediaStorage $mediaStorage,
+        protected ShootMediaMutationSupportService $mutationSupport
     ) {}
 
     public function previewFileResponse(ShootFile $file, bool $needsWatermark = false)
@@ -97,6 +98,11 @@ class ShootMediaReadService
         $userRole = $user ? $user->role : 'guest';
         $filesUpdatedAt = (string) $shoot->files()->max('updated_at');
         $serviceItemsUpdatedAt = (string) $shoot->serviceItems()->max('updated_at');
+        // Shared per-shoot revision (bumped by mutations including rename /
+        // mark-as / delete) so rapid successive changes and all authorized
+        // viewers miss stale 30s entries. Saved `filename` remains the
+        // authoritative display field in each file payload.
+        $mediaRevision = $this->mutationSupport->currentMediaRevision($shoot);
         $cacheKey = 'shoot_files_'.$shoot->id.'_'.$type.'_'.$userId.'_'.$userRole.'_'.md5(
             implode('|', [
                 (string) $shoot->updated_at,
@@ -104,6 +110,7 @@ class ShootMediaReadService
                 $serviceItemsUpdatedAt,
                 (string) $shoot->payment_status,
                 (string) $shoot->delivery_status,
+                (string) $mediaRevision,
             ])
         );
 
@@ -114,7 +121,7 @@ class ShootMediaReadService
         $cacheStoreKey = ($this->authorizationSupport->canManageShootOperations($user) ? 'authorized_v2_' : 'client_v1_').$cacheKey;
         $cached = Cache::get($cacheStoreKey);
         if ($cached !== null) {
-            return ['data' => $cached];
+            return ['data' => $cached, 'media_revision' => $mediaRevision];
         }
 
         Log::debug('getFiles called', [
@@ -183,6 +190,7 @@ class ShootMediaReadService
         return [
             'data' => $formattedFiles,
             'count' => count($formattedFiles),
+            'media_revision' => $mediaRevision,
         ];
     }
 
@@ -402,9 +410,12 @@ class ShootMediaReadService
             ];
         }
 
-        if (auth()->user()?->role === 'editor') {
-            $data['can_delete'] = $file->shoot
-                && app(ShootMediaDeletionPolicy::class)->allows($file->shoot, $file, auth()->user());
+        $actor = auth()->user();
+        if ($actor && $file->shoot) {
+            // Desktop + mobile viewer/lightbox trust this server flag. Editing
+            // managers may delete before and after delivery; editors stay gated
+            // by ShootMediaDeletionPolicy (own video lane / review boundary).
+            $data['can_delete'] = app(ShootMediaDeletionPolicy::class)->allows($file->shoot, $file, $actor);
         }
 
         return $data;
