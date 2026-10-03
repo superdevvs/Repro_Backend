@@ -114,10 +114,22 @@ class ImageSourceLoader
     }
 
     /**
-     * Map an R2/local public URL back to its canonical object key.
+     * Map an R2/local public URL (or app-signed shoot-media URL) back to its
+     * canonical object key so the renderer can read bytes without an HTTP hop.
+     *
+     * Tour payloads advertise media via temporarySignedRoute
+     * api.public.shoot-media.file. Those hosts are not on the remote allowlist
+     * (and must not be - that would open SSRF), so without this mapping every
+     * hero/cover paint fails and WhatsApp/social previews fall back to the
+     * dark brand/logo card.
      */
     private function keyFromOwnUrl(string $url): ?string
     {
+        $fromSigned = $this->keyFromSignedShootMediaUrl($url);
+        if ($fromSigned !== null) {
+            return $fromSigned;
+        }
+
         $bases = [];
 
         foreach ([
@@ -140,11 +152,54 @@ class ImageSourceLoader
                 $key = substr($url, strlen($base));
                 $key = urldecode(strtok($key, '?') ?: '');
 
-                return $key !== '' ? $key : null;
+                return $this->canonicalizeOwnMediaKey($key);
             }
         }
 
         return null;
+    }
+
+    /**
+     * Extract object keys from /api/public/shoot-media/file/{key} URLs.
+     * Host is ignored: only the path shape identifies own media, and bytes are
+     * always read from storage (never fetched over HTTP).
+     */
+    private function keyFromSignedShootMediaUrl(string $url): ?string
+    {
+        $path = parse_url($url, PHP_URL_PATH);
+        if (! is_string($path) || $path === '') {
+            return null;
+        }
+
+        $prefix = '/api/public/shoot-media/file/';
+        if (! str_starts_with($path, $prefix)) {
+            return null;
+        }
+
+        return $this->canonicalizeOwnMediaKey(urldecode(substr($path, strlen($prefix))));
+    }
+
+    /**
+     * Same allowlist PublicShootMediaFileController uses: only known media
+     * prefixes, no traversal. Returns null for anything else so we never treat
+     * arbitrary storage paths as preview heroes.
+     */
+    private function canonicalizeOwnMediaKey(string $key): ?string
+    {
+        $key = $this->mediaStorage->normalizeKey($key) ?? '';
+        if ($key === ''
+            || str_contains($key, '..')
+            || str_contains($key, '\\')
+            || ! (
+                str_starts_with($key, 'shoots/')
+                || str_starts_with($key, 'share-links/')
+                || str_starts_with($key, 'editor-downloads/')
+                || str_starts_with($key, 'og-cards/')
+            )) {
+            return null;
+        }
+
+        return $key;
     }
 
     private function fromHttp(string $url): ?string

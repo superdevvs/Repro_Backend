@@ -15,6 +15,8 @@ use App\Services\Shoots\ShootPublicAssetsService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\URL;
+use Illuminate\Support\Facades\Storage;
 use Mockery;
 use PHPUnit\Framework\Attributes\Test;
 use Tests\TestCase;
@@ -308,6 +310,42 @@ class LinkPreviewComplianceTest extends TestCase
 
         // Still 1: none of the blocked URLs generated a request.
         Http::assertSentCount(1);
+    }
+
+    #[Test]
+    public function app_signed_shoot_media_urls_resolve_from_storage_without_http(): void
+    {
+        Http::preventStrayRequests();
+
+        $key = 'shoots/115/webs/hero_web.jpg';
+        $bytes = 'fake-jpeg-bytes-for-hero';
+        $diskName = (string) config('media.local_disk', 'media_local');
+        Storage::fake($diskName);
+        Storage::disk($diskName)->put($key, $bytes);
+
+        $loader = new ImageSourceLoader(new MediaStorage());
+        $signed = URL::temporarySignedRoute(
+            'api.public.shoot-media.file',
+            now()->addHour(),
+            ['path' => $key]
+        );
+
+        $this->assertSame(
+            $bytes,
+            $loader->load($signed),
+            'Signed shoot-media hero URLs must map to storage keys without an HTTP fetch.'
+        );
+
+        $this->assertNull(
+            $loader->load('https://reprodashboard.com/api/public/shoot-media/file/etc/passwd'),
+            'Non-media prefixes must not resolve through the signed-path mapper.'
+        );
+        $this->assertNull(
+            $loader->load('https://reprodashboard.com/api/public/shoot-media/file/shoots/../secrets.txt'),
+            'Traversal segments must not resolve through the signed-path mapper.'
+        );
+
+        Http::assertSentCount(0);
     }
 
     #[Test]
