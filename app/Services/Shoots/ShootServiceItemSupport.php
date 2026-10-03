@@ -113,7 +113,7 @@ class ShootServiceItemSupport
                 'duration_minutes' => app(ShootDurationResolver::class)->forServiceItem($item),
                 'shoot_duration_minutes' => $item->service?->shoot_duration_minutes,
                 'photographer_required' => $item->service?->requiresPhotographer() ?? false,
-                'requires_editing' => $item->service?->requiresEditing() ?? false,
+                'requires_editing' => app(ShootEditingAssignmentService::class)->serviceRequiresEditing($item),
                 'shoot_service_id' => $item->id,
                 'shootServiceId' => $item->id,
                 'service_id' => $item->service_id,

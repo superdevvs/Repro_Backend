@@ -325,7 +325,7 @@ class UploadShootFilesAction
 
         if ($user?->role === 'editor' && $uploadType === 'edited' && $allServiceItems->isNotEmpty()) {
             $eligibleItems = $allServiceItems
-                ->filter(fn (ShootService $item) => $item->service?->requiresEditing() ?? true)
+                ->filter(fn (ShootService $item) => $this->editingAssignmentService->serviceRequiresEditing($item))
                 ->filter(function (ShootService $item) use ($shoot, $user) {
                     if ((string) $shoot->editor_id === (string) $user->id) {
                         // The legacy top-level editor owns every editing-required item.

@@ -267,7 +267,7 @@ class ShootAuthorizationSupport
             ->whereKey($shootServiceId)
             ->first();
 
-        if (! $serviceItem || ! ($serviceItem->service?->requiresEditing() ?? true)) {
+        if (! $serviceItem || ! $assignmentService->serviceRequiresEditing($serviceItem)) {
             return false;
         }
 

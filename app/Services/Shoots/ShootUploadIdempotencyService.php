@@ -71,7 +71,8 @@ class ShootUploadIdempotencyService
 
         if ($attempt->status === ShootUploadAttempt::STATUS_FAILED
             && empty($attempt->result_file_ids)
-            && collect((array) $attempt->result_errors)->contains(fn ($error) => is_array($error) && ($error['retryable'] ?? false) === true)) {
+            && (collect((array) $attempt->result_errors)->contains(fn ($error) => is_array($error) && ($error['retryable'] ?? false) === true)
+                || $this->permissionRejectionIsNowAuthorized($attempt, $request, $shoot, $actor))) {
             // Reuse the identity only when the previous attempt explicitly failed
             // without committed results. A pending worker might still be writing;
             // it is never reclaimed based on elapsed time alone.
@@ -110,6 +111,26 @@ class ShootUploadIdempotencyService
                 ) + ['retry_after_seconds' => 2],
             ],
         ];
+    }
+
+    private function permissionRejectionIsNowAuthorized(ShootUploadAttempt $attempt, Request $request, Shoot $shoot, User $actor): bool
+    {
+        if ((int) $attempt->http_status !== 403
+            || ($attempt->result_payload['error_type'] ?? null) !== 'forbidden'
+            || $actor->role !== 'editor'
+            || strtolower((string) $request->input('upload_type', 'raw')) !== 'edited') {
+            return false;
+        }
+        // A saved permission rejection must not survive a corrected assignment
+        // or editing scope. Current authorization still gates every retry.
+        $authorization = app(ShootAuthorizationSupport::class);
+        $scope = $this->nullableInteger($request->input('shoot_service_id'));
+        if ($scope) {
+            return $authorization->canUploadShootMedia($shoot, $actor, 'edited', $scope);
+        }
+        return $shoot->serviceItems()->with('service')->get()->contains(
+            fn ($item) => $authorization->canUploadShootMedia($shoot, $actor, 'edited', $item->id)
+        );
     }
 
     /**

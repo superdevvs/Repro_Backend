@@ -4,6 +4,7 @@ namespace App\Services\Shoots;
 
 use App\Models\Shoot;
 use App\Models\ShootFile;
+use App\Models\ShootService;
 use App\Models\User;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Collection;
@@ -108,8 +109,8 @@ class ShootEditingAssignmentService
             ? collect($shoot->services)
             : $shoot->services()->with('category')->get();
 
-        // Non-editing extras (drone, floor plans, 3D tours, virtual staging) must stay
-        // hidden from editors regardless of assignment path (QA #13).
+        // Optional services stay hidden unless their intake was explicitly
+        // marked for human editing. Assignment permissions are checked below.
         $services = $services->filter(fn ($service) => $this->serviceRequiresEditing($service));
 
         $trackedAssignments = $this->getTrackedServiceAssignments($shoot);
@@ -137,14 +138,49 @@ class ShootEditingAssignmentService
             return true;
         }
 
-        if (method_exists($service, 'requiresEditing')) {
-            return $service->requiresEditing() || ($service->pivot?->id && ShootFile::query()
-                ->where('shoot_service_id', $service->pivot->id)->where('required_for_editing', true)->exists());
+        $item = $service instanceof ShootService ? $service : null;
+        $catalog = $item ? $item->service : $service;
+        if (!$catalog) {
+            return false;
         }
 
-        $value = $service->requires_editing ?? null;
+        $value = $catalog->requires_editing ?? null;
+        $required = method_exists($catalog, 'requiresEditing')
+            ? $catalog->requiresEditing()
+            : ($value === null ? true : (bool) $value);
+        if ($required) {
+            return true;
+        }
 
-        return $value === null ? true : (bool) $value;
+        $itemId = $item?->id ?? $catalog->pivot?->id;
+        if (!$itemId) {
+            return false;
+        }
+        if (ShootFile::where('shoot_service_id', $itemId)->where('required_for_editing', true)->exists()) {
+            return true;
+        }
+
+        $item ??= ShootService::with('service')->find($itemId);
+        if (!$item) {
+            return false;
+        }
+        // Legacy RAWs have no service id. Infer their scope only when exactly
+        // one booked service supports that lane; never guess between services.
+        $legacyFiles = ShootFile::where('shoot_id', $item->shoot_id)->whereNull('shoot_service_id')
+            ->where('required_for_editing', true)->get(['media_type', 'file_type', 'filename']);
+        if ($legacyFiles->isEmpty()) {
+            return false;
+        }
+        $items = ShootService::where('shoot_id', $item->shoot_id)->with('service')->get();
+        foreach ($legacyFiles->map(fn (ShootFile $file) => $this->getFileLane($file))->unique() as $lane) {
+            $compatible = $items->filter(fn (ShootService $candidate) => $lane === self::LANE_VIDEO
+                ? ($candidate->service?->supportsVideoIntake() ?? false)
+                : ($candidate->service?->supportsPhotoIntake() ?? false));
+            if ($compatible->count() === 1 && (int) $compatible->first()->id === (int) $itemId) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** An explicit human-editing dispatch includes ordinary intake files, even for optional editing services. */
