@@ -820,6 +820,27 @@ class ShootPaymentsController extends Controller
         ]);
     }
 
+    public function getPaidReceiptForLink(string $token)
+    {
+        // A paid link is closed to public checkout, but its signed-in owner can
+        // still view the same receipt available through payment-details.
+        $accessToken = app(PublicPaymentAccessTokenService::class)->findToken($token);
+        $shoot = $accessToken?->shoot;
+        $user = auth()->user();
+        if (! $accessToken || $accessToken->isExpired() || ! $shoot || ! $user
+            || ! $this->authorizationSupport->canAccessShootMedia($shoot, $user)) {
+            return response()->json(['message' => 'This receipt is unavailable.'], 404);
+        }
+
+        $totalPaid = $shoot->calculateCanonicalTotalPaid();
+        if ($totalPaid <= 0 || $totalPaid < (float) $shoot->total_quote) {
+            return response()->json(['message' => 'This payment has not been settled.'], 409);
+        }
+
+        // Do not reconcile a charge or reopen the token to recover a receipt.
+        return response()->json(['data' => $this->buildPaymentDetailsPayload($shoot, false)]);
+    }
+
     public function getPublicPaymentDetails(string $token)
     {
         $accessToken = app(PublicPaymentAccessTokenService::class)->resolveAccessibleToken($token);

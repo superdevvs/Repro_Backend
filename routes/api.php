@@ -373,6 +373,8 @@ Route::middleware('auth:sanctum')->group(function () {
         ->name('api.shoots.stripe.confirm-session');
     Route::get('shoots/{shoot}/payment-details', [ShootPaymentsController::class, 'getPaymentDetails'])
         ->name('api.shoots.payment-details');
+    Route::get('payments/receipt/{token}', [ShootPaymentsController::class, 'getPaidReceiptForLink'])
+        ->name('api.payments.receipt-for-link');
 
     // Offline (cash/cheque) payment intents: clients/admins/reps create; admins/reps confirm or decline
     Route::post('shoots/{shoot}/payment-intents', [ShootPaymentsController::class, 'createIntent'])
