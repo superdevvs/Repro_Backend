@@ -465,6 +465,10 @@ class ShootMediaArchiveServiceTest extends TestCase
         $prewarm->afterRawSubmission($shoot);
         Queue::assertNotPushed(GenerateShootMediaArchiveJob::class);
         config()->set('media.archive_prewarm', true);
+        config()->set('media.archive_prewarm_shoot_ids', [(int) $shoot->id + 1000]);
+        $prewarm->afterRawSubmission($shoot);
+        Queue::assertNotPushed(GenerateShootMediaArchiveJob::class);
+        config()->set('media.archive_prewarm_shoot_ids', [(int) $shoot->id]);
         config()->set('media.performance_shoot_ids', [(int) $shoot->id]);
         // Execute the after-commit callback inside this test's outer transaction.
         $database = DB::getFacadeRoot();

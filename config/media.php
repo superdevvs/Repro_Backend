@@ -7,6 +7,7 @@ return [
     'archive_store_compressed' => (bool) env('MEDIA_ARCHIVE_STORE_COMPRESSED', false),
     'archive_dedicated_queue' => (bool) env('MEDIA_ARCHIVE_DEDICATED_QUEUE', false),
     'archive_prewarm' => (bool) env('MEDIA_ARCHIVE_PREWARM', false),
+    'archive_prewarm_shoot_ids' => array_values(array_filter(array_map('intval', explode(',', (string) env('MEDIA_ARCHIVE_PREWARM_SHOOT_IDS', ''))), fn ($id) => $id > 0)),
     'performance_shoot_ids' => array_values(array_filter(array_map('intval', explode(',', (string) env('MEDIA_PERFORMANCE_SHOOT_IDS', ''))), fn ($id) => $id > 0)),
     'raw_parallel_uploads_enabled' => (bool) env('MEDIA_RAW_PARALLEL_UPLOADS_ENABLED', false),
     'raw_parallel_upload_shoot_ids' => array_values(array_filter(array_map('intval', explode(',', (string) env('MEDIA_RAW_PARALLEL_UPLOAD_SHOOT_IDS', ''))), fn ($id) => $id > 0)),

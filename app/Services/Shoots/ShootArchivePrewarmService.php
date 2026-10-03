@@ -28,6 +28,10 @@ final class ShootArchivePrewarmService
         if (! app(MediaStorage::class)->performanceEnabled('archive_prewarm', (int) $shoot->id)) {
             return;
         }
+        $canaries = array_map('intval', config('media.archive_prewarm_shoot_ids', []));
+        if ($canaries !== [] && ! in_array((int) $shoot->id, $canaries, true)) {
+            return;
+        }
         $shootId = (int) $shoot->id;
         $dispatch = function () use ($shootId, $includeFull): void {
             try {
