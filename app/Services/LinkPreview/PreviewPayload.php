@@ -88,7 +88,7 @@ class PreviewPayload
      * Bump when the drawing code changes in a way that should invalidate every
      * previously generated card.
      */
-    public const RENDERER_VERSION = 'v5';
+    public const RENDERER_VERSION = 'v6';
 
     public function isVideo(): bool
     {
