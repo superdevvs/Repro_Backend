@@ -99,6 +99,35 @@ class EditingManagerCompletionTest extends TestCase
         $this->postJson('/api/messaging/notifications/manual-send', $payload)->assertUnprocessable();
     }
 
+    public function test_preview_and_send_reject_every_unsupported_catalogue_selection(): void
+    {
+        $sender = User::factory()->create(['role' => 'editing_manager']);
+        $shoot = Shoot::factory()->create();
+        $this->mock(MessagingService::class)->shouldNotReceive('sendEmail', 'sendSms');
+        $service = app(ManualNotificationService::class);
+        foreach (ManualNotificationService::CATALOGUE as $type => $meta) {
+            foreach (['client', 'photographer', 'rep'] as $recipient) {
+                foreach (['email', 'sms'] as $channel) {
+                    if (in_array($recipient, $meta['recipients'], true) && in_array($channel, $meta['channels'], true)) {
+                        continue;
+                    }
+                    foreach (['preview', 'send'] as $action) {
+                        try {
+                            if ($action === 'preview') {
+                                $service->preview($shoot, $type, $recipient, $channel);
+                            } else {
+                                $service->send($shoot, $type, $recipient, $channel, $sender);
+                            }
+                            $this->fail("Unsupported {$type}/{$recipient}/{$channel} reached {$action}.");
+                        } catch (\Illuminate\Validation\ValidationException $error) {
+                            $this->assertArrayHasKey('notification', $error->errors());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     public function test_editing_manager_can_rename_reclassify_and_delete_before_and_after_delivery(): void
     {
         $manager = User::factory()->create(['role' => 'editing_manager']);

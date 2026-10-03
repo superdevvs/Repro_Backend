@@ -194,7 +194,7 @@ class PreviewMissingVariablesPropertyTest extends TestCase
             // Mix with the full resolvable pool plus one unresolvable.
             ['shoot_ready', 'client', self::RESOLVABLE_POOL, ['unknown_token']],
             // Empty required set — nothing to report.
-            ['payment_receipt', 'photographer', [], []],
+            ['payment_receipt', 'client', [], []],
             // On-hold type, mixed.
             ['shoot_on_hold', 'rep', ['recipient_email', 'current_date'], ['zz_hold']],
         ];
@@ -225,9 +225,7 @@ class PreviewMissingVariablesPropertyTest extends TestCase
 
     private function allowedRecipients(string $type): array
     {
-        return in_array($type, ['shoot_on_hold', 'shoot_cancelled'], true)
-            ? ['client', 'rep']
-            : self::RECIPIENT_TYPES;
+        return ManualNotificationService::CATALOGUE[$type]['recipients'];
     }
 
     /**

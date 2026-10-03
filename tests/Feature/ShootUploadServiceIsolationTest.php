@@ -44,6 +44,9 @@ class ShootUploadServiceIsolationTest extends TestCase
     {
         parent::setUp();
 
+        // Scan failure/clean replacement boundaries have dedicated security tests.
+        config(['clamav.scan_on_upload' => false]);
+
         Storage::fake('public');
         Queue::fake();
 

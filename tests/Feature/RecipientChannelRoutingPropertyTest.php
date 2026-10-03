@@ -124,31 +124,20 @@ class RecipientChannelRoutingPropertyTest extends TestCase
 
         $cases = [];
 
-        foreach (self::RECIPIENT_TYPES as $recipient) {
-            foreach (self::CHANNELS as $channel) {
-                $label = "shoot_scheduled / {$recipient} / {$channel}";
-                $cases['edge_' . $recipient . '_' . $channel] = [
-                    'type'      => 'shoot_scheduled',
-                    'recipient' => $recipient,
-                    'channel'   => $channel,
-                    'label'     => $label,
-                ];
-            }
-        }
-
-        $types = array_keys(ManualNotificationService::TYPES);
-        foreach (['shoot_on_hold', 'shoot_cancelled'] as $type) {
-            foreach (self::RECIPIENT_TYPES as $recipient) {
-                foreach (self::CHANNELS as $channel) {
-                    $cases["edge_{$type}_{$recipient}_{$channel}"] = compact('type', 'recipient', 'channel') + ['label' => 'request routing'];
+        foreach (ManualNotificationService::CATALOGUE as $type => $meta) {
+            foreach ($meta['recipients'] as $recipient) {
+                foreach ($meta['channels'] as $channel) {
+                    $cases["edge_{$type}_{$recipient}_{$channel}"] = compact('type', 'recipient', 'channel') + ['label' => 'catalogue routing'];
                 }
             }
         }
+        $types = array_keys(ManualNotificationService::TYPES);
         for ($i = 0; $i < self::RANDOM_ITERATIONS; $i++) {
             $type = $types[mt_rand(0, count($types) - 1)];
-            $allowedRecipients = self::RECIPIENT_TYPES;
+            $allowedRecipients = ManualNotificationService::CATALOGUE[$type]['recipients'];
             $recipient = $allowedRecipients[mt_rand(0, count($allowedRecipients) - 1)];
-            $channel = self::CHANNELS[mt_rand(0, count(self::CHANNELS) - 1)];
+            $channels = ManualNotificationService::CATALOGUE[$type]['channels'];
+            $channel = $channels[array_rand($channels)];
 
             $cases["random_{$i}_{$type}_{$recipient}_{$channel}"] = [
                 'type'      => $type,
@@ -194,7 +183,7 @@ class RecipientChannelRoutingPropertyTest extends TestCase
         ]);
 
         // The catalogue requires a completed payment before sending a receipt.
-        \App\Models\Payment::factory()->create(['shoot_id' => $shoot->id, 'invoice_id' => null]);
+        \Tests\Support\ManualNotificationFixtures::recordEvents($shoot);
 
         return compact('shoot', 'client', 'photographer', 'rep');
     }

@@ -107,8 +107,10 @@ class ManualDispatchMappedTemplatePropertyTest extends TestCase
                 'is_active'   => true,
             ]);
             $this->idBySlug[$slug] = $template->id;
-            $sms = app(ManualNotificationService::class)->resolveTemplate($type, 'sms');
-            $this->idBySlug[$sms->slug] = $sms->id;
+            if (in_array('sms', ManualNotificationService::CATALOGUE[$type]['channels'], true)) {
+                $sms = app(ManualNotificationService::class)->resolveTemplate($type, 'sms');
+                $this->idBySlug[$sms->slug] = $sms->id;
+            }
         }
     }
 
@@ -130,9 +132,9 @@ class ManualDispatchMappedTemplatePropertyTest extends TestCase
 
         // Deterministic: every (type, recipient, channel) combination.
         foreach (array_keys(ManualNotificationService::TYPES) as $type) {
-            $allowedRecipients = self::RECIPIENT_TYPES;
+            $allowedRecipients = ManualNotificationService::CATALOGUE[$type]['recipients'];
             foreach ($allowedRecipients as $recipient) {
-                foreach (self::CHANNELS as $channel) {
+                foreach (ManualNotificationService::CATALOGUE[$type]['channels'] as $channel) {
                     $cases[] = [$type, $recipient, $channel];
                 }
             }
@@ -143,11 +145,11 @@ class ManualDispatchMappedTemplatePropertyTest extends TestCase
         $types = array_keys(ManualNotificationService::TYPES);
         for ($i = 0; $i < self::VALID_RANDOM_ITERATIONS; $i++) {
             $type = $types[$i % count($types)];
-            $allowedRecipients = self::RECIPIENT_TYPES;
+            $allowedRecipients = ManualNotificationService::CATALOGUE[$type]['recipients'];
             $cases[] = [
                 $type,
                 $allowedRecipients[mt_rand(0, count($allowedRecipients) - 1)],
-                self::CHANNELS[mt_rand(0, count(self::CHANNELS) - 1)],
+                ManualNotificationService::CATALOGUE[$type]['channels'][array_rand(ManualNotificationService::CATALOGUE[$type]['channels'])],
             ];
         }
 
@@ -215,7 +217,7 @@ class ManualDispatchMappedTemplatePropertyTest extends TestCase
             'rep_id' => $rep->id,
         ]);
         // The catalogue requires a completed payment before sending a receipt.
-        \App\Models\Payment::factory()->create(['shoot_id' => $shoot->id, 'invoice_id' => null]);
+        \Tests\Support\ManualNotificationFixtures::recordEvents($shoot);
 
         return $shoot;
     }

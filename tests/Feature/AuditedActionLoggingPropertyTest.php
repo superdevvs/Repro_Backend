@@ -349,11 +349,10 @@ class AuditedActionLoggingPropertyTest extends TestCase
         $shoot = $this->shootWithContactableParties();
 
         $type = array_rand(ManualNotificationService::TYPES);
-        $allowedRecipients = in_array($type, ['shoot_on_hold', 'shoot_cancelled'], true)
-            ? ['client', 'rep']
-            : ['client', 'photographer'];
-        $recipient = $allowedRecipients[mt_rand(0, 1)];
-        $channel = ['email', 'sms'][mt_rand(0, 1)];
+        $allowedRecipients = ManualNotificationService::CATALOGUE[$type]['recipients'];
+        $recipient = $allowedRecipients[array_rand($allowedRecipients)];
+        $channels = ManualNotificationService::CATALOGUE[$type]['channels'];
+        $channel = $channels[array_rand($channels)];
 
         app(ManualNotificationService::class)->send($shoot, $type, $recipient, $channel, $sender);
 
@@ -370,7 +369,7 @@ class AuditedActionLoggingPropertyTest extends TestCase
 
         for ($r = 0; $r < $repetitions; $r++) {
             $type = array_rand(ManualNotificationService::TYPES);
-            $service->send($shoot, $type, 'client', 'email', $sender);
+            $service->send($shoot, $type, ManualNotificationService::CATALOGUE[$type]['recipients'][0], 'email', $sender);
         }
     }
 
@@ -518,7 +517,7 @@ class AuditedActionLoggingPropertyTest extends TestCase
             'rep_id' => $rep->id,
         ]);
         // The catalogue requires a completed payment before sending a receipt.
-        \App\Models\Payment::factory()->create(['shoot_id' => $shoot->id, 'invoice_id' => null]);
+        \Tests\Support\ManualNotificationFixtures::recordEvents($shoot);
 
         return $shoot;
     }

@@ -157,14 +157,14 @@ class PaymentNotificationContentPropertyTest extends TestCase
         mt_srand(self::SEED);
 
         $types = [self::TYPE_DUE, self::TYPE_RECEIPT];
-        $recipients = ['client', 'photographer'];
+        $recipients = ['client'];
         $channels = ['email', 'sms'];
 
         $cases = [];
 
         for ($i = 0; $i < self::RANDOM_ITERATIONS; $i++) {
             $type = $types[mt_rand(0, 1)];
-            $recipient = $recipients[mt_rand(0, 1)];
+            $recipient = $recipients[array_rand($recipients)];
             $channel = $channels[mt_rand(0, 1)];
 
             // Random amount with cents for receipts: $0.50 .. $9999.99.
@@ -184,10 +184,10 @@ class PaymentNotificationContentPropertyTest extends TestCase
         // Deterministic edge cases pinning channels, recipients, and boundary amounts.
         $edges = [
             ['type' => self::TYPE_DUE, 'recipient' => 'client', 'channel' => 'email', 'amount' => null, 'label' => 'due / client / email'],
-            ['type' => self::TYPE_DUE, 'recipient' => 'photographer', 'channel' => 'sms', 'amount' => null, 'label' => 'due / photographer / sms'],
+            ['type' => self::TYPE_DUE, 'recipient' => 'client', 'channel' => 'sms', 'amount' => null, 'label' => 'due / client / sms'],
             ['type' => self::TYPE_RECEIPT, 'recipient' => 'client', 'channel' => 'email', 'amount' => 0.01, 'label' => 'receipt / client / email / $0.01'],
             ['type' => self::TYPE_RECEIPT, 'recipient' => 'client', 'channel' => 'sms', 'amount' => 1000.00, 'label' => 'receipt / client / sms / $1000.00'],
-            ['type' => self::TYPE_RECEIPT, 'recipient' => 'photographer', 'channel' => 'email', 'amount' => 250.50, 'label' => 'receipt / photographer / email / $250.50'],
+            ['type' => self::TYPE_RECEIPT, 'recipient' => 'client', 'channel' => 'email', 'amount' => 250.50, 'label' => 'receipt / client / email / $250.50'],
         ];
 
         foreach ($edges as $j => $edge) {

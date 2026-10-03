@@ -33,6 +33,9 @@ class ShootFilesTest extends TestCase
     {
         parent::setUp();
 
+        // Scan failure/clean replacement boundaries have dedicated security tests.
+        config(['clamav.scan_on_upload' => false]);
+
         // Isolate the asynchronous media-archive generation side effect that the
         // ShootFile/Shoot observers dispatch on save/status change. In production
         // GenerateShootMediaArchiveJob runs on the queue (failures are logged via the
