@@ -34,7 +34,7 @@ class CompactSmsTemplatesTest extends TestCase
         ]);
 
         $templates = MessageTemplate::where('channel', 'SMS')->where('scope', 'SYSTEM')->get();
-        $this->assertCount(20, $templates);
+        $this->assertCount(26, $templates);
         foreach ($templates as $template) {
             $rendered = app(TemplateRenderer::class)->render($template, $variables);
             $body = $rendered['body_text'];

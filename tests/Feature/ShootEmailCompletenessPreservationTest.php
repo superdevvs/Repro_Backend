@@ -374,12 +374,16 @@ class ShootEmailCompletenessPreservationTest extends TestCase
         $flowSlugs = array_column(EmailAtelierTemplates::definitions(), 'slug');
         $aliases = app(EmailTypeRegistry::class)->protectedAliases();
         $protectedSlugs = array_map(fn ($alias) => 'system-'.strtolower(str_replace('_', '-', $alias)), $aliases);
-        $intentionalAdditions = array_merge($directSlugs, $flowSlugs, $protectedSlugs, $this->automationTemplateAdditions());
+        $manualSmsSlugs = [
+            'shoot-requested-sms', 'shoot-updated-sms', 'shoot-reminder-sms',
+            'photographer-changed-sms', 'shoot-delivered-sms', 'shoot-summary-sms',
+        ];
+        $intentionalAdditions = array_merge($directSlugs, $flowSlugs, $protectedSlugs, $this->automationTemplateAdditions(), $manualSmsSlugs);
         $actualAdditions = array_values(array_diff($actualSlugs, $expectedSlugs));
 
         $this->assertNotEmpty($actualAdditions, 'The additive editor migrations must register the additional email families.');
         $this->assertSame([], array_values(array_diff($actualAdditions, $intentionalAdditions)), 'Unexpected SYSTEM template registrations must not silently enter the baseline.');
-        foreach (array_merge($directSlugs, $flowSlugs, $this->automationTemplateAdditions()) as $slug) {
+        foreach (array_merge($directSlugs, $flowSlugs, $this->automationTemplateAdditions(), $manualSmsSlugs) as $slug) {
             $this->assertContains($slug, $actualSlugs, 'Every direct/flow email must be registered in the editor.');
         }
         foreach ($aliases as $alias) {
