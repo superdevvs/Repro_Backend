@@ -549,6 +549,8 @@ class ShootMediaReadService
             'shootServiceId' => $file->shoot_service_id,
             'filename' => $file->filename ?? $file->stored_filename ?? 'unknown',
             'stored_filename' => $file->stored_filename,
+            'content_version' => $file->content_version,
+            'source_file_id' => $file->source_file_id,
             'url' => $url,
             'path' => $needsWatermark ? null : $file->path,
             'file_type' => $file->file_type ?? $file->mime_type,

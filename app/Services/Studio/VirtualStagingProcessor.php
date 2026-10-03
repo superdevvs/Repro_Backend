@@ -255,8 +255,10 @@ class VirtualStagingProcessor
     private function publishEdited(StudioWorkspace $workspace, array $item, array $stored): array
     {
         $hasStaging = collect($stored)->contains(fn ($output) => ($output['vsai']['type'] ?? '') === 'staging');
+        $removalOnly = !VirtualStagingOptions::normalize($workspace->config['adjustments'] ?? [])['addFurniture'];
         foreach ($stored as $index => $output) {
             $type = $output['vsai']['type'] ?? '';
+            if ($workspace->editing_dispatch_id && $type === 'removal' && !$removalOnly) continue;
             if ($type === 'staging' || ($type === 'removal' && ! $hasStaging)) {
                 $published = app(WorkspaceShootPublisher::class)->publish($workspace, $item, $output, $output['id']);
                 if ($published) {

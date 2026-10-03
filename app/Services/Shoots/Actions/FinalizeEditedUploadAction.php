@@ -141,6 +141,16 @@ class FinalizeEditedUploadAction
                 if ($user?->role === 'editor' && !$assignments->editorHasAssignment($locked, $user)) {
                     return ['status' => 403, 'payload' => ['error_type' => 'forbidden', 'message' => 'This shoot is not assigned to you.', 'workflow_status_changed' => false]];
                 }
+                $savedReturns = \App\Models\ShootFileVersion::where('shoot_id', $locked->id)
+                    ->whereIn('status', ['queued', 'processing', 'ready', 'conflict', 'failed'])->get()
+                    ->filter(fn ($version) => ($version->metadata['origin'] ?? '') === 'intake'
+                        && ($user?->role !== 'editor' || (int) $version->created_by === (int) $user->id));
+                if ($savedReturns->isNotEmpty()) {
+                    return ['status' => 409, 'payload' => ['error_type' => 'saved_edits_pending',
+                        'message' => 'Uploads are saved. Wait for processing or review the returned edit in Versions / upload saved edit before submitting.',
+                        'retryable' => $savedReturns->every(fn ($version) => in_array($version->status, ['queued', 'processing', 'ready'], true)),
+                        'workflow_status_changed' => false]];
+                }
 
                 $shoot = $this->support->refreshMediaCounters($locked);
 

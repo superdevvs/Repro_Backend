@@ -106,6 +106,14 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/user', [AuthController::class, 'currentUser'])->middleware('auth:sanctum');
+Route::middleware('throttle:120,1')->prefix('edit-helper')->group(function () {
+    Route::post('/pairings/{pairing}/claim', [\App\Http\Controllers\API\EditHelperController::class, 'claimPairing'])->middleware('throttle:60,1');
+    Route::post('/heartbeat', [\App\Http\Controllers\API\EditHelperController::class, 'heartbeat']);
+    Route::post('/sessions/{session}/claim', [\App\Http\Controllers\API\EditHelperController::class, 'claimSession']);
+    Route::get('/sessions/{session}/file', [\App\Http\Controllers\API\EditHelperController::class, 'download']);
+    Route::post('/sessions/{session}/upload', [\App\Http\Controllers\API\EditHelperController::class, 'upload']);
+    Route::get('/sessions/{session}/versions/{version}', [\App\Http\Controllers\API\EditHelperController::class, 'status']);
+});
 
 Route::middleware('auth:sanctum')->group(function () {
     Route::get('/legal-documents/current', [LegalDocumentController::class, 'current']);
@@ -699,7 +707,28 @@ Route::middleware('auth:sanctum')->group(function () {
         ->middleware('role:admin,superadmin,editing_manager');
     Route::post('/shoots/{shoot}/start-editing', [ShootWorkflowController::class, 'startEditing']);
     Route::get('/shoots/{shoot}/editing-plan', [\App\Http\Controllers\API\ShootEditingDispatchController::class, 'plan']);
+    Route::get('/desktop-editing', [\App\Http\Controllers\API\DesktopEditingController::class, 'settings']);
+    Route::post('/desktop-editing/pairings', [\App\Http\Controllers\API\DesktopEditingController::class, 'pair']);
+    Route::get('/desktop-editing/pairings/{pairing}', [\App\Http\Controllers\API\DesktopEditingController::class, 'pairing']);
+    Route::post('/desktop-editing/pairings/{pairing}/approve', [\App\Http\Controllers\API\DesktopEditingController::class, 'approve']);
+    Route::delete('/desktop-editing/devices/{device}', [\App\Http\Controllers\API\DesktopEditingController::class, 'revoke']);
+    Route::post('/shoots/{shoot}/files/{file}/desktop-session', [\App\Http\Controllers\API\DesktopEditingController::class, 'launch']);
+    Route::post('/shoots/{shoot}/editing-plan', [\App\Http\Controllers\API\ShootEditingDispatchController::class, 'preview']);
     Route::post('/shoots/{shoot}/editing-dispatch', [\App\Http\Controllers\API\ShootEditingDispatchController::class, 'store']);
+    Route::get('/editing-tasks', [\App\Http\Controllers\API\EditingTaskController::class, 'index']);
+    Route::get('/editing-tasks/{item}/sources/{file}', [\App\Http\Controllers\API\EditingTaskController::class, 'download']);
+    Route::post('/editing-tasks/{item}/upload', [\App\Http\Controllers\API\EditingTaskController::class, 'upload']);
+    Route::post('/editing-tasks/{item}/video', [\App\Http\Controllers\API\EditingTaskController::class, 'video']);
+    Route::post('/editing-tasks/{item}/submit', [\App\Http\Controllers\API\EditingTaskController::class, 'submit']);
+    Route::post('/editing-dispatches/{dispatch}/retry', [\App\Http\Controllers\API\EditingTaskController::class, 'retry']);
+    Route::get('/shoots/{shoot}/files/{file}/versions', [\App\Http\Controllers\API\MediaVersionController::class, 'index']);
+    Route::post('/shoots/{shoot}/files/{file}/versions', [\App\Http\Controllers\API\MediaVersionController::class, 'store']);
+    Route::get('/shoots/{shoot}/media-versions/{version}', [\App\Http\Controllers\API\MediaVersionController::class, 'show']);
+    Route::get('/shoots/{shoot}/media-versions/{version}/preview', [\App\Http\Controllers\API\MediaVersionController::class, 'preview']);
+    Route::post('/shoots/{shoot}/media-versions/{version}/resolve', [\App\Http\Controllers\API\MediaVersionController::class, 'resolve']);
+    Route::post('/shoots/{shoot}/media-versions/{version}/restore', [\App\Http\Controllers\API\MediaVersionController::class, 'restore']);
+    Route::post('/shoots/{shoot}/media-versions/{version}/retry', [\App\Http\Controllers\API\MediaVersionController::class, 'retry']);
+    Route::post('/shoots/{shoot}/media-versions/{version}/dismiss', [\App\Http\Controllers\API\MediaVersionController::class, 'dismiss']);
     Route::post('/shoots/{shoot}/ready-for-review', [ShootWorkflowController::class, 'readyForReview']);
     Route::post('/shoots/{shoot}/complete', [ShootWorkflowController::class, 'complete']);
     Route::post('/shoots/{shoot}/put-on-hold', [ShootWorkflowController::class, 'putOnHold']);

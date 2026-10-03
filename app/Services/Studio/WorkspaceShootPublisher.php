@@ -15,6 +15,7 @@ class WorkspaceShootPublisher
 {
     public function publish(StudioWorkspace $workspace, array $item, array $output, string $outputKey): ?ShootFile
     {
+        if ($workspace->editing_dispatch_id) return app(ScopedWorkspacePublisher::class)->publish($workspace, $item, $output, $outputKey);
         if (empty($item['shootId'])) {
             return null;
         }
@@ -67,6 +68,12 @@ class WorkspaceShootPublisher
 
     public function completeServices(StudioWorkspace $workspace): void
     {
+        if ($workspace->editing_dispatch_id) {
+            // Generated results still need scanning and publication. Readiness is
+            // reconciled from the dispatch's published items, never provider completion alone.
+            app(\App\Services\Shoots\ScopedEditingDispatch::class)->reconcile($workspace->editing_dispatch_id);
+            return;
+        }
         if (! $workspace->shoot_id || $workspace->status !== 'completed') {
             return;
         }

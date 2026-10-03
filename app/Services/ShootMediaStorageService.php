@@ -332,6 +332,10 @@ class ShootMediaStorageService
         ?array $metadataOverride = null,
         ?int $replaceFileId = null
     ): ShootFile {
+        if ($stage === ShootFile::STAGE_COMPLETED && str_starts_with((string) $file->getMimeType(), 'image/')) {
+            $replacement = $this->stageVersionedReplacement($shoot, $file, (int) $userId, $shootServiceId, $replaceFileId);
+            if ($replacement) return $replacement;
+        }
         $stagingStartedAt = microtime(true);
         $staged = $this->stageLocally($shoot, $file, $userId, $stage, $mediaTypeOverride, $shootServiceId, $metadataOverride, $replaceFileId);
         $stagingMs = (int) round((microtime(true) - $stagingStartedAt) * 1000);
@@ -392,6 +396,37 @@ class ShootMediaStorageService
         }
 
         return $shootFile;
+    }
+
+    private function stageVersionedReplacement(Shoot $shoot, UploadedFile $file, int $userId, ?int $serviceItemId, ?int $replaceFileId): ?ShootFile
+    {
+        $query = $shoot->files()->whereIn('workflow_stage', [ShootFile::STAGE_COMPLETED, ShootFile::STAGE_VERIFIED])
+            ->where('is_hidden', false)->where('shoot_service_id', $serviceItemId);
+        if ($replaceFileId) $query->whereKey($replaceFileId);
+        else $query->where('filename', $file->getClientOriginalName());
+        $matches = $query->get();
+        if ($replaceFileId && $matches->isEmpty()) throw ValidationException::withMessages(['replace_file_id' => 'Choose an edited image in this service.']);
+        if ($matches->count() > 1) throw ValidationException::withMessages(['replace_file_id' => 'Several images have this filename. Choose the intended image from Versions / upload saved edit.']);
+        $target = $matches->first();
+        if (!$target) return null;
+        abort_unless(in_array($file->getMimeType(), ['image/jpeg', 'image/png', 'image/tiff'], true), 422, 'Export JPEG, PNG or TIFF to replace an edited image safely.');
+        $hash = hash_file('sha256', $file->getRealPath());
+        $current = \App\Models\ShootFileVersion::where('published_file_id', $target->id)->where('version', $target->content_version)->where('sha256', $hash)->first();
+        if ($current) return $target;
+        // Legacy filename uploads resolve to one identity and capture its revision before scanning.
+        // Publication still compares that revision; filename alone never authorizes the switch.
+        $expected = (int) $target->content_version;
+        $key = 'intake:'.$target->id.':'.$userId.':'.$expected.':'.$hash;
+        // Explicit withdrawal starts a new upload attempt while retaining the withdrawn bytes.
+        $previous = \App\Models\ShootFileVersion::where('request_key', $key)->first();
+        while ($previous?->status === 'dismissed') {
+            $key = 'intake:'.$previous->id.':'.substr($hash, 0, 32);
+            $previous = \App\Models\ShootFileVersion::where('request_key', $key)->first();
+        }
+        $version = app(\App\Services\Shoots\MediaVersionPublisher::class)->stage($target, $file->getRealPath(), $file->getClientOriginalName(),
+            $expected, \App\Models\User::findOrFail($userId), $key, ['origin' => 'intake']);
+        $target->pendingMediaVersionId = $version->id;
+        return $target;
     }
 
     /**

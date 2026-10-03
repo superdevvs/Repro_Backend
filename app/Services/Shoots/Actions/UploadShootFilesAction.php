@@ -727,6 +727,9 @@ class UploadShootFilesAction
                         &$followUpAttempts
                     ): void {
                         $followUpAttempts++;
+                        // A replacement is saved separately until all renditions pass validation.
+                        // Do not change its current category, service, readiness or delivery state.
+                        if ($shootFile->pendingMediaVersionId) return;
 
                         if ($shootServiceId && ! $shootFile->shoot_service_id) {
                             $shootFile->shoot_service_id = $shootServiceId;
@@ -820,7 +823,7 @@ class UploadShootFilesAction
                     // or link the image) so they don't render as empty cards. Non-fatal, and
                     // run after the commit: rendering a PDF is more slow I/O that has no
                     // business inside the transaction.
-                    if ($shootFile->media_type === 'floorplan') {
+                    if ($shootFile->media_type === 'floorplan' && !$shootFile->pendingMediaVersionId) {
                         try {
                             app(\App\Services\Shoots\FloorplanPreviewService::class)->ensurePreview($shootFile);
                             $shootFile->refresh();
@@ -834,7 +837,11 @@ class UploadShootFilesAction
 
                     // A file becomes accepted only after its own database work commits.
                     // Other files in the same batch are not rolled back with it.
-                    $uploadedFiles[] = $this->mediaReadService->formatUploadedFile($shootFile);
+                    $uploadedFiles[] = $this->mediaReadService->formatUploadedFile($shootFile) + [
+                        'pending_version_id' => $shootFile->pendingMediaVersionId,
+                        'upload_saved' => true,
+                        'publication_pending' => $shootFile->pendingMediaVersionId !== null,
+                    ];
                 } catch (\Throwable $e) {
                     // No rollback here: each write phase above ran in its own DB::transaction
                     // and has already unwound itself. Rolling back "whatever is open" would

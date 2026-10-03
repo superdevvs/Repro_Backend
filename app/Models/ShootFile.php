@@ -8,6 +8,8 @@ use Illuminate\Database\Eloquent\Model;
 class ShootFile extends Model
 {
     use HasFactory;
+    /** Transport-only acknowledgement; never persisted on the current gallery row. */
+    public ?string $pendingMediaVersionId = null;
 
     protected static function booted(): void
     {
@@ -24,6 +26,8 @@ class ShootFile extends Model
     protected $fillable = [
         'shoot_id',
         'shoot_service_id',
+        'content_version',
+        'source_file_id',
         'album_id',
         'filename',
         'stored_filename',
@@ -73,6 +77,8 @@ class ShootFile extends Model
     ];
 
     protected $casts = [
+        'content_version' => 'integer',
+        'source_file_id' => 'integer',
         'uploaded_at' => 'datetime',
         'moved_to_completed_at' => 'datetime',
         'verified_at' => 'datetime',

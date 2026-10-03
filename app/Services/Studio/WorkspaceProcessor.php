@@ -33,6 +33,7 @@ class WorkspaceProcessor
 
     public function process(StudioWorkspace $workspace, string $operationId): void
     {
+        app(\App\Services\Shoots\ScopedEditingDispatch::class)->assertWorkspaceSources($workspace);
         // Queue time can outlive assignments/payment state. Recheck the persisted references before spending.
         $this->media->authorize($workspace->media, \App\Models\User::findOrFail($workspace->created_by), $workspace->team_id);
         app(\App\Services\Shoots\ShootPhotoSet::class)->assertFullWorkspace($workspace);

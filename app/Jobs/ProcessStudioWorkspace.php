@@ -73,6 +73,10 @@ class ProcessStudioWorkspace implements ShouldQueue
                 ? $exception->getMessage()
                 : 'The image provider or video renderer could not finish this operation. Retry to resume saved progress.';
             $workspace->update(['status' => 'failed', 'error' => $message, 'version' => $workspace->version + 1]);
+            if ($workspace->editing_dispatch_id) {
+                \App\Models\ShootEditingDispatchItem::where('workspace_id', $workspace->id)->whereNull('primary_version_id')->update(['status' => 'failed', 'error' => $message]);
+                app(\App\Services\Shoots\ScopedEditingDispatch::class)->reconcile($workspace->editing_dispatch_id);
+            }
         }
     }
 }

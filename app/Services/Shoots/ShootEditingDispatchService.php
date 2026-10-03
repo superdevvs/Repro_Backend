@@ -44,7 +44,7 @@ class ShootEditingDispatchService
             }
         }
 
-        return [
+        return ($user ? app(ScopedEditingPlan::class)->catalog($shoot, $user) : []) + [
             'shootId' => $shoot->id, 'status' => $shoot->status, 'photoCount' => $photoCount,
             'photos' => $files->map(fn ($file) => ['id' => $file->id, 'name' => $file->filename, 'available' => $file->isClearedForProcessing(),
                 'url' => url("/api/studio/workspaces/sources/files/{$file->id}/preview")])->all(),
@@ -55,6 +55,7 @@ class ShootEditingDispatchService
 
     public function dispatch(Shoot $shoot, User $user, array $data): array
     {
+        if (isset($data['scope'])) return app(ScopedEditingDispatch::class)->create($shoot, $user, $data);
         $initial = ! array_key_exists('file_ids', $data);
         $key = $initial ? 'intake' : $data['request_id'];
         $inputHash = hash('sha256', json_encode(\Illuminate\Support\Arr::except($data, ['request_id'])));
@@ -90,7 +91,7 @@ class ShootEditingDispatchService
         if ($selected->isEmpty() || $selected->count() !== count($selectedIds)) {
             throw ValidationException::withMessages(['file_ids' => 'Select original photos from this shoot. Refresh the media panel if it changed.']);
         }
-        $full = $selected->count() === $all->count() && $all->whereIn('id', $selectedIds)->count() === $all->count();
+        $full = $initial;
         $preset = $full ? 'full-shoot' : ($data['preset'] ?? 'listing-ready');
         $plan = $this->plan($shoot);
         $projects = [['preset' => $preset, 'label' => $full ? 'Full Shoot' : 'Selected photos', 'files' => $selected,

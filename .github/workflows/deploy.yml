@@ -48,7 +48,7 @@ jobs:
       - name: Install PDF rendering dependency
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y poppler-utils
+          sudo apt-get install --no-install-recommends -y poppler-utils imagemagick
 
       - name: Wait for ClamAV
         shell: bash

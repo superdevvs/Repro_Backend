@@ -37,15 +37,15 @@ class ShootEditingDispatchTest extends TestCase
         });
     }
 
-    public function test_partial_selection_uses_autoenhance_but_all_originals_use_one_full_shoot_project(): void
+    public function test_partial_and_all_visible_selections_remain_individual_enhancements(): void
     {
         [$shoot, $files] = $this->shoot();
         $partial = $this->send($shoot, ['file_ids' => [$files[0]->id], 'preset' => 'sky-replacement'])->assertAccepted();
         $partial->assertJsonPath('data.workspaces.0.presetId', 'sky-replacement');
         $full = $this->send($shoot, ['file_ids' => array_reverse(array_column($files, 'id'))])->assertAccepted();
-        $full->assertJsonPath('data.workspaces.0.presetId', 'full-shoot');
+        $full->assertJsonPath('data.workspaces.0.presetId', 'listing-ready');
         $this->assertCount(2, $full->json('data.workspaces.0.media'));
-        $this->assertSame('fotello', StudioWorkspace::find($full->json('data.workspaces.0.id'))->operation['routing']['full-shoot']['provider']);
+        $this->assertSame('autoenhance', StudioWorkspace::find($full->json('data.workspaces.0.id'))->operation['routing']['listing-ready']['provider']);
         Queue::assertPushed(ProcessStudioWorkspace::class, 2);
     }
 
@@ -199,26 +199,18 @@ class ShootEditingDispatchTest extends TestCase
         $this->postJson("/api/shoots/{$shoot->id}/finalize")->assertStatus(400);
     }
 
-    public function test_selecting_all_on_a_ready_shoot_returns_it_to_review_and_pending_children_block_approval(): void
+    public function test_selecting_all_on_a_ready_shoot_does_not_reopen_the_shoot_or_dispatch_addons(): void
     {
         [$shoot, $files] = $this->shoot(['Photos', 'Green Grass']);
         $shoot->update(['status' => 'ready', 'workflow_status' => 'ready']);
         $response = $this->send($shoot, ['file_ids' => array_column($files, 'id'), 'targets' => ['green-grass' => [$files[0]->id]]])->assertAccepted();
         $workspace = StudioWorkspace::findOrFail($response->json('data.workspaces.0.id'));
-        $child = StudioWorkspace::findOrFail($response->json('data.workspaces.1.id'));
+        $this->assertCount(1, $response->json('data.workspaces'));
+        $this->assertSame('listing-ready', $workspace->preset_id);
         $this->publishFullShoot($workspace);
         $workspace->update(['status' => 'completed']);
         app(WorkspaceShootPublisher::class)->completeServices($workspace);
         $this->assertSame('ready', $shoot->fresh()->status);
-        $this->postJson("/api/shoots/{$shoot->id}/finalize")->assertConflict();
-        $shoot->update(['status' => 'review', 'workflow_status' => 'review']);
-        $this->postJson("/api/shoots/{$shoot->id}/approve-editing-review")->assertConflict();
-        $shoot->update(['status' => 'ready', 'workflow_status' => 'ready']);
-        $child->update(['status' => 'completed']);
-        app(WorkspaceShootPublisher::class)->completeServices($child);
-        $this->assertSame('review', $shoot->fresh()->status);
-        $this->postJson("/api/shoots/{$shoot->id}/upload/finalize-edited")->assertOk();
-        $this->assertSame('review', $shoot->fresh()->status);
     }
 
     public function test_failed_project_resume_retains_paid_provider_checkpoints(): void

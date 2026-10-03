@@ -404,6 +404,9 @@ class ShootEditingAssignmentService
         $files = $capabilities->editedFiles($shoot, $user);
         $trackedAssignments = $trackedAssignments->filter(function ($assignment) use ($shoot, $allAssignments, $capabilities, $files) {
             if (!empty($assignment['editing_completed_at'])) return false;
+            if (\App\Models\ShootEditingDispatchItem::where('shoot_service_id', $assignment['shoot_service_id'])
+                ->where('lane', $assignment['lane'])->where('status', '!=', 'completed')
+                ->whereHas('dispatch', fn ($query) => $query->where('shoot_id', $shoot->id)->where('scope', '!=', 'selected'))->exists()) return false;
             return $capabilities->assignmentHasVideoLink($shoot, $assignment)
                 || $files->contains(fn ($file) => $this->getFileLane($file) === $assignment['lane']
                     && ((int) $file->shoot_service_id === $assignment['shoot_service_id']
@@ -419,6 +422,8 @@ class ShootEditingAssignmentService
 
     public function allTrackedLanesReady(Shoot $shoot): bool
     {
+        if (\App\Models\ShootEditingDispatchItem::where('status', '!=', 'completed')
+            ->whereHas('dispatch', fn ($query) => $query->where('shoot_id', $shoot->id)->where('scope', '!=', 'selected'))->exists()) return false;
         $trackedAssignments = $this->getTrackedServiceAssignments($shoot);
         if ($trackedAssignments->isEmpty()) {
             return true;
