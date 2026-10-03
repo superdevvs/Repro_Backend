@@ -61,7 +61,7 @@ class ProcessMediaVersion implements ShouldQueue
             $size = @getimagesize($previewSource);
             if (!$size || $size[0] < 1 || $size[1] < 1 || $size[0] * $size[1] > 100000000) throw new \RuntimeException('Export a valid image with at most 100 megapixels.');
             // Unique stored names prevent new previews from overwriting a previous version's bytes.
-            $paths = $images->processImageFromPath($version->shoot_id, $snapshot['stored_filename'], $previewSource);
+            $paths = $images->processImageFromPath($version->shoot_id, $snapshot['stored_filename'], $previewSource, $snapshot['media_type'] ?? null);
             foreach (['thumbnail', 'grid', 'web', 'placeholder'] as $rendition) {
                 if (empty($paths[$rendition]) || !$storage->exists($paths[$rendition])) throw new \RuntimeException('Image processing is incomplete. The previous image remains available.');
                 $snapshot[$rendition.'_path'] = $paths[$rendition];

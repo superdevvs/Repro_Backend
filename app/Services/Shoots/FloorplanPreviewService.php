@@ -106,7 +106,8 @@ class FloorplanPreviewService
                 $generated = app(\App\Services\ImageProcessingService::class)->processImageFromPath(
                     $file->shoot_id,
                     $file->stored_filename ?: $file->filename,
-                    $sourcePath
+                    $sourcePath,
+                    'floorplan'
                 );
             } finally {
                 if ($temporaryPath && is_file($temporaryPath)) {

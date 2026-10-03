@@ -86,7 +86,7 @@ class ShootListingService
                 'date_range', 'scheduled_start', 'scheduled_end',
                 'completed_start', 'completed_end', 'custom_start', 'custom_end',
                 'date_from', 'date_to', 'private_listing', 'listing_scope', 'include_hidden',
-                'bracket', 'missing', 'limit', 'scheduled_status', 'sort', 'dashboard_open',
+                'bracket', 'missing', 'limit', 'scheduled_status', 'sort', 'dashboard_open', 'view', 'include_filters',
             ]);
             $filterParams = array_filter($filterParams, function ($value) {
                 return $value !== null && $value !== '';
@@ -115,6 +115,7 @@ class ShootListingService
                 'service:id,name',
                 'services.category',
                 'ghostUsers:id,name,email,company_name',
+                'createdByUser', 'featuredHomepageImages.file', 'services.sqftRanges',
             ];
 
             if ($needsFiles) {
@@ -203,8 +204,9 @@ class ShootListingService
                 $this->eagerLoadListCardPreviewFiles($shoots->getCollection());
             }
 
-            $transformedShoots = $shoots->getCollection()->map(function (Shoot $shoot) use ($transformShoot, $isClientUser, $needsFiles) {
-                return $transformShoot($shoot, $isClientUser, $needsFiles);
+            $transformedShoots = $shoots->getCollection()->map(function (Shoot $shoot) use ($transformShoot, $isClientUser, $needsFiles, $request) {
+                $result = $transformShoot($shoot, $isClientUser, $needsFiles);
+                return $request->query('view') === 'card' ? ShootCardProjection::from($result) : $result;
             });
 
             $shoots->setCollection($transformedShoots);
@@ -217,7 +219,7 @@ class ShootListingService
                     'current_page' => $shoots->currentPage(),
                     'per_page' => $shoots->perPage(),
                     'last_page' => $shoots->lastPage(),
-                    'filters' => $this->buildOperationalFilterMeta($request, $user),
+                    ...($request->boolean('include_filters', true) ? ['filters' => $this->buildOperationalFilterMeta($request, $user)] : []),
                 ],
             ];
 
@@ -226,7 +228,10 @@ class ShootListingService
                 self::rememberCacheKey($cacheKey);
             }
 
-            return response()->json($response);
+            $serializeStart = hrtime(true);
+            $json = response()->json($response);
+            $request->attributes->set('serialization_ms', (hrtime(true) - $serializeStart) / 1e6);
+            return $json;
         } catch (\Exception $e) {
             Log::error('Shoot index error', [
                 'error' => $e->getMessage(),
@@ -395,6 +400,13 @@ class ShootListingService
                 'filters' => ['clients' => [], 'photographers' => [], 'services' => []],
             ],
         ])->header('Cache-Control', 'private, no-store');
+    }
+
+    public function filters(Request $request): JsonResponse
+    {
+        $user = $request->user();
+        abort_unless($user && app(ShootAuthorizationSupport::class)->hasRole($user, ['admin', 'superadmin', 'editing_manager', 'editor', 'photographer', 'client', 'salesRep']), 403);
+        return response()->json(['data' => $this->buildOperationalFilterMeta($request, $user)])->header('Cache-Control', 'private, no-store');
     }
 
     public static function flushCachedListings(): void

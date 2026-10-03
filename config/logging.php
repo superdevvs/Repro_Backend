@@ -51,6 +51,7 @@ return [
     */
 
     'channels' => [
+        'performance' => ['driver' => 'daily', 'path' => storage_path('logs/performance.log'), 'level' => 'info', 'days' => 7],
         'scheduling' => [
             'driver' => 'daily',
             'path' => storage_path('logs/scheduling.log'),

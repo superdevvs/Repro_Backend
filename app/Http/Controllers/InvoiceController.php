@@ -28,6 +28,12 @@ class InvoiceController extends Controller
         'salesrep',
     ];
 
+    public function summary(Request $request)
+    {
+        $request->attributes->set('invoice_summary', true);
+        return $this->index($request);
+    }
+
     public function index(Request $request)
     {
         $user = $request->user();
@@ -37,6 +43,8 @@ class InvoiceController extends Controller
         }
 
         $filters = $request->validate([
+            'status' => ['nullable', 'in:all,pending,paid,overdue'],
+            'sort' => ['nullable', 'in:date_desc,date_asc,amount_desc,amount_asc'],
             'start' => ['nullable', 'date'],
             'end' => [
                 'nullable',
@@ -136,16 +144,34 @@ class InvoiceController extends Controller
         $end = isset($filters['end']) ? Carbon::parse($filters['end'])->endOfDay() : null;
         $this->applyInvoiceDateRange($query, $start, $end);
 
-        $invoices = $query
-            ->orderByDesc(DB::raw('COALESCE(billing_period_start, issue_date, period_start, created_at)'))
-            ->orderByDesc('id')
-            ->paginate($filters['per_page'] ?? 15);
-
-        $invoices->getCollection()->transform(
-            fn (Invoice $invoice) => $invoice->applyResolvedPaymentMetadata()
-        );
-
-        return response()->json($invoices);
+        $normalizedStatus = "CASE WHEN status = 'paid' OR is_paid = 1 OR total_amount <= 0.01 OR (total_amount > 0.01 AND COALESCE(amount_paid, 0) + 0.005 >= total_amount) THEN 'paid' WHEN due_date IS NOT NULL AND DATE(due_date) < DATE('now') AND MAX(COALESCE(balance_due, 0), total_amount - COALESCE(amount_paid, 0)) > 0.01 THEN 'overdue' ELSE COALESCE(NULLIF(status, ''), 'pending') END";
+        if (($filters['status'] ?? 'all') !== 'all') {
+            $statuses = $filters['status'] === 'pending' ? ['pending', 'sent', 'partial', 'unpaid'] : [$filters['status']];
+            $query->whereIn(DB::raw($normalizedStatus), $statuses);
+        }
+        $sort = $filters['sort'] ?? 'date_desc';
+        $query->orderBy(str_starts_with($sort, 'amount') ? 'total_amount' : DB::raw('COALESCE(billing_period_start, issue_date, period_start, created_at)'), str_ends_with($sort, 'asc') ? 'asc' : 'desc')->orderByDesc('id');
+        if ($request->attributes->get('invoice_summary')) {
+            $rows = $query->withoutEagerLoads()->with(['client:id,name', 'photographer:id,name', 'salesRep:id,name'])->get();
+            Invoice::primePaymentRecords($rows);
+            $data = $rows->map(function (Invoice $invoice) {
+                $invoice->applyResolvedPaymentMetadata();
+                return \Illuminate\Support\Arr::only($invoice->attributesToArray(), [
+                    'id', 'invoice_number', 'role', 'status', 'is_paid', 'payment_required', 'document_type', 'issue_date', 'due_date', 'created_at', 'billing_period_start', 'billing_period_end',
+                    'period_start', 'period_end', 'total_amount', 'amount_paid', 'balance_due', 'paid_at', 'payment_method', 'payment_details',
+                ]) + ['client' => $invoice->client?->only(['id', 'name']), 'photographer' => $invoice->photographer?->only(['id', 'name']), 'salesRep' => $invoice->salesRep?->only(['id', 'name'])];
+            });
+            $serializeStart = hrtime(true);
+            $response = response()->json(['data' => $data, 'total' => $data->count()])->header('Cache-Control', 'private, no-store');
+        } else {
+            $invoices = $query->paginate($filters['per_page'] ?? 15);
+            Invoice::primePaymentRecords($invoices->getCollection());
+            $invoices->getCollection()->transform(fn (Invoice $invoice) => $invoice->applyResolvedPaymentMetadata());
+            $serializeStart = hrtime(true);
+            $response = response()->json($invoices);
+        }
+        $request->attributes->set('serialization_ms', (hrtime(true) - $serializeStart) / 1e6);
+        return $response;
     }
 
     public function download(Invoice $invoice): StreamedResponse

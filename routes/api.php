@@ -600,6 +600,7 @@ Route::middleware(['auth:sanctum'])->get(
 // General invoices route - accessible to all authenticated users (role-based filtering in controller)
 Route::middleware('auth:sanctum')->prefix('invoices')->group(function () {
     Route::get('/', [InvoiceController::class, 'index']);
+    Route::get('summary', [InvoiceController::class, 'summary']);
     Route::get('{invoice}/download', [InvoiceController::class, 'download']);
 });
 
@@ -689,6 +690,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/shoots', [ShootController::class, 'index']);
     Route::post('/shoots', [ShootController::class, 'store']);
     // History routes must come before /shoots/{shoot} to avoid route conflict
+    Route::get('/shoots/filters', [\App\Services\Shoots\ShootListingService::class, 'filters']);
     Route::get('/shoots/history', [ShootController::class, 'history']);
     Route::get('/shoots/history/export', [ShootController::class, 'exportHistory']);
     // Pending cancellations must come before /shoots/{shoot} to avoid route conflict

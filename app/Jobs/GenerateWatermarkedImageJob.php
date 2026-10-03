@@ -158,6 +158,23 @@ class GenerateWatermarkedImageJob implements ShouldQueue
         }
     }
 
+    /** Generate only the Web derivative from the source, preserving every other watermark asset. */
+    public function generateWebOnly(string $source): string
+    {
+        $manager = new ImageManager(new Driver());
+        $image = $manager->read($source);
+        $this->applyWatermark($image, $manager);
+        $image->scaleDown(1500, 1500);
+        $temp = $this->saveWatermarkedVariant($image, 'web', 75);
+        try {
+            $manager->read($temp); // Validate complete decoding before publication.
+            if (! @getimagesize($temp)) throw new \RuntimeException('Invalid watermark rendition.');
+            $path = 'shoots/'.$this->shootFile->shoot_id.'/watermarked-web-v2/'.Str::uuid().'.jpg';
+            if (! app(\App\Services\Media\MediaStorage::class)->put($path, file_get_contents($temp))) throw new \RuntimeException('Unable to store watermark rendition.');
+            return $path;
+        } finally { @unlink($temp); }
+    }
+
     protected function applyWatermark(ImageInterface $image, ImageManager $imageManager): void
     {
         $settings = WatermarkSettings::getDefault();
@@ -722,7 +739,8 @@ class GenerateWatermarkedImageJob implements ShouldQueue
                 $sizeImage = $imageManager->read($watermarkedAbsolutePath);
                 $sizeImage->scaleDown($config['width'], $config['height']);
 
-                $tempPath = $this->saveWatermarkedVariant($sizeImage, $sizeName, $config['quality']);
+                $quality = $sizeName === 'web' && ! in_array($this->shootFile->media_type, ['floorplan', 'video', 'raw'], true) ? 75 : $config['quality'];
+                $tempPath = $this->saveWatermarkedVariant($sizeImage, $sizeName, $quality);
                 $paths[$sizeName] = $this->storeWatermarkedOutput($tempPath, $mediaStorageService, $sizeName);
 
                 if (file_exists($tempPath)) {
@@ -826,7 +844,9 @@ class GenerateWatermarkedImageJob implements ShouldQueue
     ): string {
         if ($sizeName) {
 
-            $destinationPath = $this->buildLocalWatermarkSizePath($sizeName);
+            $destinationPath = $sizeName === 'web' && ! in_array($this->shootFile->media_type, ['floorplan', 'video', 'raw'], true)
+                ? 'shoots/'.$this->shootFile->shoot_id.'/watermarked-web-v2/'.Str::uuid().'.jpg'
+                : $this->buildLocalWatermarkSizePath($sizeName);
             app(\App\Services\Media\MediaStorage::class)->put($destinationPath, file_get_contents($localTempPath));
 
             return $destinationPath;

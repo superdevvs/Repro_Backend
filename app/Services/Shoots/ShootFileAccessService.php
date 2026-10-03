@@ -128,6 +128,12 @@ class ShootFileAccessService
 
     public function generateOptimizedVersions(ShootFile $file): array
     {
+        if (! app()->runningInConsole()) {
+            if ($file->isClearedForProcessing() && \Illuminate\Support\Facades\Cache::add('preview-repair:'.$file->id, true, 300)) {
+                \App\Jobs\ProcessImageJob::dispatch($file)->onConnection('database');
+            }
+            return [];
+        }
         $tempPath = null;
 
         try {
@@ -153,7 +159,8 @@ class ShootFileAccessService
             $generated = $this->imageProcessingService->processImageFromPath(
                 $file->shoot_id,
                 $fileName,
-                $sourcePath
+                $sourcePath,
+                $file->media_type
             );
 
             $updates = [];

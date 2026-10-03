@@ -68,7 +68,7 @@ class ImageProcessingService
      * Process an image directly from a file path and return generated paths
      * Used during upload when the temp file is still available
      */
-    public function processImageFromPath(int $shootId, string $fileName, string $sourcePath): array
+    public function processImageFromPath(int $shootId, string $fileName, string $sourcePath, ?string $mediaType = null): array
     {
         try {
             $extension = strtolower(pathinfo($fileName, PATHINFO_EXTENSION));
@@ -92,6 +92,7 @@ class ImageProcessingService
             // Generate different sizes
             $generatedPaths = [];
             foreach (self::SIZES as $sizeName => $config) {
+                if ($sizeName === 'web' && ! $isRaw && ! in_array($mediaType, ['floorplan', 'video', 'raw'], true)) $config['quality'] = 75;
                 $generatedPath = $this->generateSize($image, $shootId, $fileName, $sizeName, $config);
                 if ($generatedPath) {
                     $generatedPaths[$sizeName] = $generatedPath;
@@ -159,6 +160,7 @@ class ImageProcessingService
             // Generate different sizes
             $generatedPaths = [];
             foreach (self::SIZES as $sizeName => $config) {
+                if ($sizeName === 'web' && ! $isRaw && ! in_array($shootFile->media_type, ['floorplan', 'video', 'raw'], true)) $config['quality'] = 75;
                 $generatedPath = $this->generateSize($image, $shootId, $fileName, $sizeName, $config);
                 if ($generatedPath) {
                     $generatedPaths[$sizeName] = $generatedPath;
@@ -218,6 +220,14 @@ class ImageProcessingService
         }
     }
     
+    public function generatePhotographicWeb(ShootFile $file, string $source): ?string
+    {
+        $image = $this->extractImagePreview($source, false, strtolower(pathinfo($file->filename, PATHINFO_EXTENSION)));
+        if (! $image) return null;
+        try { return $this->generateSize($image, $file->shoot_id, $file->filename, 'web', ['width' => 1500, 'height' => 1500, 'quality' => 75]); }
+        finally { imagedestroy($image); }
+    }
+
     /**
      * Extract image preview from RAW file or read regular image
      * Uses pure PHP/GD - no external tools like ImageMagick required
@@ -602,9 +612,15 @@ class ImageProcessingService
             
             // Determine storage path
             $storagePath = "shoots/{$shootId}/{$sizeName}s/{$newFileName}";
+            if ($sizeName === 'web' && $config['quality'] === 75) $storagePath = "shoots/{$shootId}/web-v2/" . (string) \Illuminate\Support\Str::uuid() . ".jpg";
 
-            $tempFile = tempnam(sys_get_temp_dir(), 'img_process_') . '.jpg';
+            $tempFile = tempnam(sys_get_temp_dir(), 'img_process_');
             imagejpeg($newImage, $tempFile, $config['quality']);
+            $decoded = @imagecreatefromjpeg($tempFile);
+            if (! $decoded) throw new \RuntimeException('Unable to decode image rendition.');
+            imagedestroy($decoded);
+            $verified = @getimagesize($tempFile);
+            if (! $verified || $verified[0] !== $newWidth || $verified[1] !== $newHeight) throw new \RuntimeException('Invalid image rendition.');
 
             // Browser-facing renditions used to land on the public disk so
             // `/storage/shoots/...` could serve them. That alias bypasses

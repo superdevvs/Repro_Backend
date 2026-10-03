@@ -739,6 +739,29 @@ class Invoice extends Model
      *
      * @return Collection<int, Payment>
      */
+    private ?Collection $performancePaymentRecords = null;
+
+    /** Batch the same invoice/shoot/item associations used by relatedPaymentRecords, for read-only lists. */
+    public static function primePaymentRecords(Collection $invoices): void
+    {
+        if ($invoices->isEmpty()) return;
+        $ids = $invoices->modelKeys();
+        $associations = \Illuminate\Support\Facades\DB::table('invoice_shoot')->whereIn('invoice_id', $ids)->get(['invoice_id', 'shoot_id'])
+            ->concat(\Illuminate\Support\Facades\DB::table('invoice_items')->whereIn('invoice_id', $ids)->whereNotNull('shoot_id')->get(['invoice_id', 'shoot_id']))
+            ->groupBy('invoice_id');
+        $shootIds = $invoices->pluck('shoot_id')->merge($associations->flatten(1)->pluck('shoot_id'))->filter()->unique()->values();
+        $payments = Payment::with('refunds')->whereIn('status', [Payment::STATUS_COMPLETED, Payment::STATUS_REFUNDED])
+            ->where(fn ($q) => $q->whereIn('invoice_id', $ids)->orWhereIn('shoot_id', $shootIds))->get();
+        $byInvoice = $payments->groupBy('invoice_id');
+        $byShoot = $payments->groupBy('shoot_id');
+        foreach ($invoices as $invoice) {
+            $relatedIds = collect([$invoice->shoot_id])->merge(($associations->get($invoice->id) ?? collect())->pluck('shoot_id'))->filter()->unique();
+            $related = $byInvoice->get($invoice->id, collect());
+            foreach ($relatedIds as $shootId) $related = $related->concat($byShoot->get($shootId, collect()));
+            $invoice->performancePaymentRecords = $related->unique(fn (Payment $payment) => $invoice->paymentDeduplicationKey($payment))->values();
+        }
+    }
+
     public function relatedPaymentRecords(): Collection
     {
         // Payment rows represent client cash collection. Payout invoices are
@@ -747,6 +770,8 @@ class Invoice extends Model
         if ($this->isPayoutInvoice() || ! $this->requiresPayment()) {
             return collect();
         }
+
+        if ($this->performancePaymentRecords !== null) return $this->performancePaymentRecords;
 
         $shootIds = collect([$this->shoot_id])
             ->merge($this->exists ? $this->shoots()->pluck('shoots.id') : [])

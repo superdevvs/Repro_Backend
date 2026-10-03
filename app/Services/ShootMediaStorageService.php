@@ -749,7 +749,8 @@ class ShootMediaStorageService
             $generatedPaths = app(ImageProcessingService::class)->processImageFromPath(
                 $shoot->id,
                 $shootFile->filename,
-                Storage::disk($staged->storageDisk)->path($serverPath)
+                Storage::disk($staged->storageDisk)->path($serverPath),
+                $shootFile->media_type
             );
 
             if (! empty($generatedPaths)) {
