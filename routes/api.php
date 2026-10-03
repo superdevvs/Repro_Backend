@@ -1400,3 +1400,5 @@ Route::middleware(['auth:sanctum', 'role:superadmin', 'throttle:120,1'])->post('
 Route::middleware('throttle:600,1')->post('admin/system-overview/server/validate', [\App\Http\Controllers\API\Admin\ServerMonitorController::class, 'validateSession']);
 
 require __DIR__.'/shoot-unit-tours.php';
+
+require __DIR__.'/aryeo.php';
