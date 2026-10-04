@@ -105,6 +105,20 @@ class HybridBookingCreateScheduleTest extends TestCase
         return Shoot::findOrFail($id);
     }
 
+    #[\PHPUnit\Framework\Attributes\TestWith(['admin'])]
+    #[\PHPUnit\Framework\Attributes\TestWith(['client'])]
+    public function test_create_derives_shoot_time_from_explicit_service_time(string $role): void
+    {
+        Sanctum::actingAs($role === 'client' ? $this->client : $this->admin);
+        $payload = $this->payload('2026-10-02T11:15:00-04:00');
+        $payload['services'][0]['scheduled_at'] = '2026-10-02T11:30:00-04:00';
+        $shoot = $this->save($payload);
+        $this->assertSame('2026-10-02 15:30:00', $shoot->getRawOriginal('scheduled_at'));
+        $this->assertSame('2026-10-02', $shoot->scheduled_date->toDateString());
+        $this->assertSame('11:30', substr($shoot->time, 0, 5));
+        $this->assertSame('2026-10-02 15:30:00', $shoot->serviceItems()->sole()->getRawOriginal('scheduled_at'));
+    }
+
     public function test_michael_short_exteriors_keep_existing_duration_and_use_one_fifteen_minute_gap(): void
     {
         $original = $this->booked('08:00', 30, '613 North Ellwood Avenue');
@@ -346,7 +360,7 @@ class HybridBookingCreateScheduleTest extends TestCase
                 }
                 $saved = $this->save($payload);
                 $this->assertSame($canonical, $saved->timezone);
-                $this->assertSame('2026-10-03 04:30:00', $saved->getRawOriginal('scheduled_at'));
+                $this->assertSame('2026-10-03 12:45:00', $saved->getRawOriginal('scheduled_at'));
                 $this->assertSame('2026-10-03 12:45:00', $saved->serviceItems()->sole()->getRawOriginal('scheduled_at'));
                 $this->assertSame(60, $saved->serviceItems()->sole()->duration_minutes);
             }

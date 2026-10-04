@@ -139,9 +139,9 @@ class ShootScheduleFromServices
                 ->mapWithKeys(fn (ShootService $item) => [$item->id => $target->copy()])->all();
         }
 
-        // Split appointments: preserve relative offsets from the prior shoot anchor.
-        $anchor = $shoot->scheduled_at?->copy()->utc()
-            ?? $this->earliestInstant($defining);
+        // The earliest service owns the anchor, even when the shoot is stale.
+        $anchor = $this->earliestInstant($defining)
+            ?? $shoot->scheduled_at?->copy()->utc();
         $deltaSeconds = $anchor ? ($target->getTimestamp() - $anchor->getTimestamp()) : 0;
 
         return $defining->mapWithKeys(fn (ShootService $item) => [

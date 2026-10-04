@@ -259,6 +259,8 @@ class MultiUnitBookingService
         $shoot->serviceItems()->whereIn('id', $prepared['removed_ids'])->delete();
         $shoot->units()->whereNotIn('id', array_values($unitIds))->delete();
         $shoot->units_revision = ((int) $shoot->units_revision) + 1;
+        app(\App\Services\Schedule\ShootScheduleFromServices::class)
+            ->applyEarliestToShoot($shoot, $shoot->serviceItems()->get());
         $shoot->save();
         $shoot->load(['units', 'services', 'serviceItems']);
         app(ShootMutationSupportService::class)->snapshotBracketModes($shoot);

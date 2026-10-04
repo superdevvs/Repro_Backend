@@ -27,7 +27,7 @@ class MultiUnitRescheduleService
         if ($durations->keys()->diff($lines->pluck('id'))->isNotEmpty()) {
             throw ValidationException::withMessages(['service_lines' => ['A duration can only be changed for a service line on this shoot.']]);
         }
-        $anchor = $shoot->scheduled_at ?? $lines->whereNotNull('scheduled_at')->sortBy('scheduled_at')->first()?->scheduled_at;
+        $anchor = $lines->whereNotNull('scheduled_at')->sortBy('scheduled_at')->first()?->scheduled_at ?? $shoot->scheduled_at;
         if (! $anchor) {
             throw ValidationException::withMessages(['service_lines' => ['Assign the initial unit service schedules before moving the booking.']]);
         }

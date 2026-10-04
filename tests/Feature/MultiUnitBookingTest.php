@@ -73,6 +73,27 @@ class MultiUnitBookingTest extends TestCase
         $this->assertSame(90, $this->shoot->serviceItems()->sole()->duration_minutes);
     }
 
+    public function test_unit_service_edits_update_shoot_anchor_and_preserve_separate_visits(): void
+    {
+        $this->shoot->update(['timezone' => 'America/New_York']);
+        $payload = $this->payload();
+        // persist receives UTC-normalized rows from the API input normalizer.
+        $payload['service_lines'][0]['scheduled_at'] = '2026-10-06T15:30:00Z';
+        $payload['service_lines'][1]['scheduled_at'] = '2026-10-07T18:00:00Z';
+        $this->persist($payload);
+        $this->assertSame('2026-10-06 15:30:00', $this->shoot->getRawOriginal('scheduled_at'));
+        $this->assertSame('11:30:00', $this->shoot->time);
+
+        $edit = $this->existingPayload();
+        $edit['service_lines'][0]['scheduled_at'] = '2026-10-08T09:00:00-04:00';
+        $this->patchJson('/api/shoots/'.$this->shoot->id, $edit)->assertOk();
+        $this->shoot->refresh();
+        $this->assertSame('2026-10-07 18:00:00', $this->shoot->getRawOriginal('scheduled_at'));
+        $this->assertSame('14:00:00', $this->shoot->time);
+        $this->assertSame(['2026-10-08 13:00:00', '2026-10-07 18:00:00'],
+            $this->shoot->serviceItems()->orderBy('id')->get()->map(fn ($item) => $item->getRawOriginal('scheduled_at'))->all());
+    }
+
     private function persist(array $payload): void
     {
         $service = app(MultiUnitBookingService::class);
@@ -411,7 +432,8 @@ class MultiUnitBookingTest extends TestCase
     {
         $this->persist($this->payload());
         $photographer = User::factory()->create(['role' => 'photographer']);
-        $this->shoot->update(['scheduled_at' => '2026-10-05 10:00:00', 'scheduled_date' => '2026-10-05', 'time' => '10:00', 'status' => 'scheduled', 'workflow_status' => 'scheduled', 'timezone' => null]);
+        // A stale shoot clock must not shift either service by an extra hour.
+        $this->shoot->update(['scheduled_at' => '2026-10-05 09:00:00', 'scheduled_date' => '2026-10-05', 'time' => '09:00', 'status' => 'scheduled', 'workflow_status' => 'scheduled', 'timezone' => null]);
         $lines = $this->shoot->serviceItems;
         $lines[0]->update(['scheduled_at' => '2026-10-05 10:00:00', 'photographer_id' => $photographer->id, 'duration_minutes' => 60]);
         $lines[1]->update(['scheduled_at' => '2026-10-06 12:00:00', 'photographer_id' => $photographer->id, 'duration_minutes' => 60]);

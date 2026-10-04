@@ -102,10 +102,6 @@ class ShootScheduleUpdateInput
             );
         }
 
-        if (! array_intersect(['services', 'service_items', 'service_lines'], array_keys($payload))) {
-            return $payload;
-        }
-
         $earliest = $this->earliestFromPayload($shoot, $payload, $support);
         if (! $earliest) {
             return $payload;
@@ -174,8 +170,8 @@ class ShootScheduleUpdateInput
                 $alignedByService[(int) $item->service_id] = $targetIso;
             }
         } else {
-            $anchor = $shoot->scheduled_at?->copy()->utc()
-                ?? $fromServices->earliestInstant($defining);
+            $anchor = $fromServices->earliestInstant($defining)
+                ?? $shoot->scheduled_at?->copy()->utc();
             $deltaSeconds = $anchor ? ($instant->copy()->utc()->getTimestamp() - $anchor->getTimestamp()) : 0;
             foreach ($defining as $item) {
                 $alignedByService[(int) $item->service_id] = $item->scheduled_at

@@ -136,6 +136,10 @@ class ApproveShootAction
                 }
             }
         }
+        // Validate the same booking anchor that persistence will derive. An
+        // echoed or omitted shoot clock cannot override scheduled service rows.
+        $scheduledAt = app(\App\Services\Schedule\ShootScheduleFromServices::class)
+            ->earliestInstant($targetServices) ?? $scheduledAt;
         $timezone = $validated['timezone'] ?? $shoot->timezone;
         $availabilityServices = $targetServices;
         if ($timezone) {
@@ -166,7 +170,7 @@ class ApproveShootAction
             $timezone, 'approve'
         ), $shoot, $user);
         $writeAttempts = DB::transactionLevel() > 0 ? 1 : LockedWrite::DEFAULT_ATTEMPTS;
-        $travelGuard->commit($travelPrepared, fn () => LockedWrite::run(fn () => DB::transaction(function () use ($shoot, $scheduledAt, $user, $validated, $inheritedScheduleItemIds, $previousSchedule) {
+        $travelGuard->commit($travelPrepared, fn () => LockedWrite::run(fn () => DB::transaction(function () use ($shoot, $scheduledAt, $user, $validated, $inheritedScheduleItemIds, $previousSchedule, $approvedSchedule) {
             // A failed SQLite attempt may leave the in-memory workflow state
             // changed even though its transaction rolled back.
             $shoot->refresh();
@@ -180,13 +184,15 @@ class ApproveShootAction
                             $query->orWhere('scheduled_at', $previousSchedule);
                         }
                     })->update([
-                        'scheduled_at' => $this->support->normalizeDateTimeForDatabase($scheduledAt),
+                        'scheduled_at' => $approvedSchedule,
                         'updated_at' => now(),
                     ]);
                 $shoot->unsetRelation('services')->unsetRelation('serviceItems');
             }
 
-            $this->workflowService->approve($shoot, $scheduledAt, $user, $validated['notes'] ?? null);
+            $derivedSchedule = app(\App\Services\Schedule\ShootScheduleFromServices::class)
+                ->earliestInstant($shoot->serviceItems()->get()) ?? $scheduledAt;
+            $this->workflowService->approve($shoot, $derivedSchedule, $user, $validated['notes'] ?? null);
         }), "shoot.{$shoot->id}.approval-schedule", $writeAttempts));
         $this->mediaStorageService->createShootFolders($shoot);
 

@@ -95,7 +95,8 @@ class ShootApprovalScheduleSyncTest extends TestCase
             ]],
         ]);
 
-        $this->assertSame('12:00', $shoot->fresh()->time);
+        $this->assertSame('14:00', $shoot->fresh()->time);
+        $this->assertSame('2026-10-08', $shoot->fresh()->scheduled_date->toDateString());
         $this->assertDatabaseHas('shoot_service', [
             'shoot_id' => $shoot->id, 'service_id' => $service->id,
             'scheduled_at' => '2026-10-08 14:00:00', 'photographer_id' => $specialist->id,
@@ -182,9 +183,13 @@ class ShootApprovalScheduleSyncTest extends TestCase
         }
         $this->approve($shoot, $payload);
 
-        $this->assertDatabaseHas('shoots', ['id' => $shoot->id, 'scheduled_at' => $expectedUtc]);
-        $this->assertSame(substr($input, 0, 10), $shoot->fresh()->scheduled_date->toDateString());
-        $this->assertSame($expectedTime, $shoot->fresh()->time);
+        // Independent October visits remain authoritative even when the inherited
+        // appointment is moved to November/December.
+        $independentFirst = substr($input, 0, 7) !== '2026-10';
+        $this->assertDatabaseHas('shoots', ['id' => $shoot->id,
+            'scheduled_at' => $independentFirst ? '2026-10-07 15:00:00' : $expectedUtc]);
+        $this->assertSame($independentFirst ? '2026-10-07' : substr($input, 0, 10), $shoot->fresh()->scheduled_date->toDateString());
+        $this->assertSame($independentFirst ? '11:00' : $expectedTime, $shoot->fresh()->time);
         foreach ([$inherited->id => $expectedUtc, $explicit->id => '2026-10-07 15:00:00',
             $independent->id => '2026-10-08 17:00:00'] as $serviceId => $expectedSchedule) {
             $this->assertDatabaseHas('shoot_service', [
@@ -284,6 +289,25 @@ class ShootApprovalScheduleSyncTest extends TestCase
             ->assertUnprocessable()->assertJsonValidationErrors('service_items');
         $this->assertSame('2026-10-05 09:00:00', $shoot->fresh()->scheduled_at->format('Y-m-d H:i:s'));
         $this->assertSame('2026-10-05 14:00:00', $shoot->serviceItems()->orderByDesc('id')->first()->scheduled_at->format('Y-m-d H:i:s'));
+    }
+
+    #[\PHPUnit\Framework\Attributes\TestWith([false])]
+    #[\PHPUnit\Framework\Attributes\TestWith([true])]
+    public function test_approval_uses_services_when_shoot_time_is_stale(bool $echoShootTime): void
+    {
+        $shoot = $this->requestedShoot(['scheduled_at' => '2026-10-06 15:15:00',
+            'time' => '11:15', 'timezone' => 'America/New_York']);
+        $this->attachService($shoot, '2026-10-06 15:30:00');
+        $this->attachService($shoot, '2026-10-07 16:00:00');
+        $before = $shoot->serviceItems()->orderBy('id')->get()->map->getRawOriginal()->all();
+
+        $this->approve($shoot, $echoShootTime ? ['scheduled_at' => '2026-10-06T15:15:00Z'] : []);
+
+        $shoot->refresh();
+        $this->assertSame('2026-10-06 15:30:00', $shoot->getRawOriginal('scheduled_at'));
+        $this->assertSame('2026-10-06', $shoot->scheduled_date->toDateString());
+        $this->assertSame('11:30', $shoot->time);
+        $this->assertSame($before, $shoot->serviceItems()->orderBy('id')->get()->map->getRawOriginal()->all());
     }
 
     private function requestedShoot(array $attributes = []): Shoot

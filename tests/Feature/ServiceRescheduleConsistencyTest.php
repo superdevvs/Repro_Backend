@@ -183,6 +183,40 @@ class ServiceRescheduleConsistencyTest extends TestCase
         $this->assertArrayNotHasKey('scheduled_at', app(ShootScheduleUpdateInput::class)->normalize($shoot, ['service_items' => $items]));
     }
 
+    public function test_edit_repairs_stale_shoot_clock_without_changing_services(): void
+    {
+        $shoot = $this->shoot();
+        $shoot->serviceItems()->update(['scheduled_at' => '2026-09-29 15:30:00']);
+        $before = $shoot->serviceItems()->orderBy('id')->get()->map->getRawOriginal()->all();
+
+        $this->patchJson('/api/shoots/'.$shoot->id, ['notes' => 'Access confirmed', 'notify_client' => false])->assertOk();
+
+        $this->assertSame('2026-09-29 15:30:00', $shoot->fresh()->getRawOriginal('scheduled_at'));
+        $this->assertSame('11:30:00', $shoot->fresh()->time);
+        $this->assertSame($before, $shoot->serviceItems()->orderBy('id')->get()->map->getRawOriginal()->all());
+        Mail::assertNothingSent();
+        Notification::assertNothingSent();
+    }
+
+    public function test_split_move_uses_service_anchor_when_shoot_is_stale(): void
+    {
+        $shoot = $this->shoot();
+        $items = $shoot->serviceItems()->orderBy('id')->get();
+        $items[0]->update(['scheduled_at' => '2026-09-29 15:30:00']);
+        $items[1]->update(['scheduled_at' => '2026-09-29 17:30:00']);
+        $shoot->refresh()->load('serviceItems');
+        $planned = app(ShootScheduleFromServices::class)->plannedBookingSchedules($shoot, Carbon::parse('2026-09-30T14:00:00Z'));
+        $this->assertSame('2026-09-30 14:00:00', $planned[$items[0]->id]->format('Y-m-d H:i:s'));
+        $this->assertSame('2026-09-30 16:00:00', $planned[$items[1]->id]->format('Y-m-d H:i:s'));
+
+        $this->patchJson('/api/shoots/'.$shoot->id, [
+            'scheduled_at' => '2026-09-30T14:00:00Z', 'notify_client' => false,
+        ])->assertOk();
+        $this->assertSame('2026-09-30 14:00:00', $shoot->fresh()->getRawOriginal('scheduled_at'));
+        $this->assertSame(['2026-09-30 14:00:00', '2026-09-30 16:00:00'],
+            $shoot->serviceItems()->orderBy('id')->get()->map(fn ($item) => $item->getRawOriginal('scheduled_at'))->all());
+    }
+
     private function shoot(?string $zone = 'America/New_York'): Shoot
     {
         $photographer = User::factory()->photographer()->create(['timezone' => 'America/New_York']);

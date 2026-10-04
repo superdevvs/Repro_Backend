@@ -367,6 +367,14 @@ class CreateShootAction
                 $this->support->attachServices($shoot, $servicesPayload);
             }
 
+            // Services are authoritative once persisted, including requests.
+            $derivedSchedule = app(\App\Services\Schedule\ShootScheduleFromServices::class)
+                ->applyEarliestToShoot($shoot, $shoot->serviceItems()->get());
+            if ($derivedSchedule) {
+                $scheduledAt = $derivedSchedule;
+                $shoot->save();
+            }
+
             if (!empty($pricingCalculation['coupon_code']) && $pricingCalculation['coupon_discount_amount'] > 0) {
                 $coupon = $this->support->resolveCoupon($pricingCalculation['coupon_code']);
                 if ($coupon) {
