@@ -95,6 +95,33 @@ class ScopedEditingDispatchTest extends TestCase
         $this->assertDatabaseCount('shoot_editing_dispatch_items', 1);
     }
 
+    public function test_dashboard_queue_includes_request_assignments_without_granting_shoot_wide_access(): void
+    {
+        $override = User::factory()->create(['role' => 'editor', 'metadata' => ['editing_capabilities' => ['photo']]]);
+        $data = $this->payload(['mode' => 'editor', 'scope' => 'photos', 'photo_editor_id' => $override->id]);
+        unset($data['file_ids']);
+        $dispatchId = $this->send($data)->assertAccepted()->json('data.dispatchId');
+        $item = ShootEditingDispatchItem::where('dispatch_id', $dispatchId)->firstOrFail();
+        $this->actingAs($override)->getJson('/api/editing-tasks?open=true&summary=true')->assertOk()
+            ->assertJsonCount(1, 'data')->assertJsonPath('data.0.shoot_id', $this->shoot->id)
+            ->assertJsonPath('data.0.pending_items_count', 1)->assertJsonMissingPath('data.0.items')
+            ->assertJsonMissingPath('data.0.plan');
+        $this->assertSame($this->photoEditor->id, (int) DB::table('shoot_service')->first()->editor_id);
+        $this->getJson("/api/editing-tasks/{$item->id}/sources/{$this->video->id}")->assertNotFound();
+        $this->actingAs($this->videoEditor)->getJson('/api/editing-tasks?open=true&summary=true')->assertOk()->assertJsonCount(0, 'data');
+        $item->update(['status' => 'completed']);
+        $this->actingAs($override)->getJson('/api/editing-tasks?open=true&summary=true')->assertOk()->assertJsonCount(0, 'data');
+        $this->getJson('/api/editing-tasks?shoot_id='.$this->shoot->id)->assertOk()->assertJsonCount(1, 'data');
+    }
+
+    public function test_dashboard_queue_excludes_cancelled_shoots_and_non_editor_roles(): void
+    {
+        $this->send($this->payload(['mode' => 'editor']))->assertAccepted();
+        $this->shoot->update(['status' => 'cancelled', 'workflow_status' => 'cancelled']);
+        $this->actingAs($this->photoEditor)->getJson('/api/editing-tasks?open=true&summary=true')->assertOk()->assertJsonCount(0, 'data');
+        $this->actingAs(User::factory()->create(['role' => 'client']))->getJson('/api/editing-tasks?open=true&summary=true')->assertForbidden();
+    }
+
     public function test_video_ai_and_invalid_versions_and_ineligible_override_are_rejected_without_enqueues(): void
     {
         $this->send($this->payload(['scope' => 'videos']))->assertUnprocessable();

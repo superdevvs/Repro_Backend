@@ -35,15 +35,28 @@ class EditingTaskController extends Controller
     public function index(Request $request)
     {
         abort_unless($this->staff($request) || $request->user()->role === 'editor', 403);
-        $query = ShootEditingDispatch::query()->with(['items' => function ($query) use ($request) {
+        $items = function ($query) use ($request) {
             if (!$this->staff($request)) $query->where('editor_id', $request->user()->id);
-        }])->when(!$this->staff($request), fn ($query) => $query->whereHas('items', fn ($items) => $items->where('editor_id', $request->user()->id)));
+            if ($request->boolean('open')) $query->where('destination', 'human')->whereNotIn('status', ['completed', 'cancelled']);
+        };
+        $query = ShootEditingDispatch::query()->with(['items' => $items]);
+        if (!$this->staff($request) || $request->boolean('open')) $query->whereHas('items', $items);
+        if ($request->boolean('open')) {
+            $query->whereIn('shoot_id', Shoot::query()->select('id')->whereNotIn('status', ['cancelled', 'declined'])
+                ->where(fn ($q) => $q->whereNull('workflow_status')->orWhereNotIn('workflow_status', ['cancelled', 'declined'])));
+        }
         if ($request->filled('shoot_id')) $query->where('shoot_id', $request->integer('shoot_id'));
         $page = $query->latest()->paginate(30);
-        return response()->json(['data' => $page->getCollection()->map(function ($dispatch) {
+        $addresses = Shoot::whereIn('id', $page->getCollection()->pluck('shoot_id'))->get(['id', 'address'])->keyBy('id');
+        return response()->json(['data' => $page->getCollection()->map(function ($dispatch) use ($request, $addresses) {
+            if ($request->boolean('summary')) {
+                return $dispatch->only(['id', 'shoot_id', 'scope', 'status', 'created_at'])
+                    + ['address' => $addresses->get($dispatch->shoot_id)?->address,
+                        'pending_items_count' => $dispatch->items->whereNotIn('status', ['completed', 'cancelled'])->count()];
+            }
             // Do not expose another editor's files through the stored preview plan.
             return $dispatch->only(['id', 'shoot_id', 'scope', 'workflow', 'instructions', 'status', 'error', 'created_at'])
-                + ['address' => Shoot::find($dispatch->shoot_id)?->address,
+                + ['address' => $addresses->get($dispatch->shoot_id)?->address,
                     'items' => $dispatch->items->map(function ($item) {
                         $version = $item->primary_version_id ? ShootFileVersion::find($item->primary_version_id) : null;
                         return $item->present() + ['returnedVersion' => $version?->present()];
