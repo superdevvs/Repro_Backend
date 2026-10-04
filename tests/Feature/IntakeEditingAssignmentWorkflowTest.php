@@ -114,7 +114,7 @@ class IntakeEditingAssignmentWorkflowTest extends TestCase
         $this->assertSame(0, ShootEditingDispatchItem::count());
         $note = \App\Models\ShootNote::where('shoot_id', $this->shoot->id)->sole();
         $this->assertSame('editing', $note->type);
-        $this->assertStringContainsString('Edit these 2 files: raw0.jpg, raw1.jpg', $note->content);
+        $this->assertStringStartsWith("For the photo editor:\nEdit these 2 files: raw0.jpg, raw1.jpg", $note->content);
         $this->assertStringContainsString('Kitchen first', $note->content);
         $this->getJson("/api/shoots/{$this->shoot->id}/editing-plan")->assertOk()->assertJsonPath('data.lanes.photo.sent', false);
         $this->assertEditorCompletesShootNormally($this->editor);

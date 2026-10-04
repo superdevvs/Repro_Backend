@@ -30,6 +30,9 @@ return [
         'mp4',
         'mov',
         'avi',
+        // The upload picker offers these video containers too (FULL_UPLOAD_ACCEPT).
+        'm4v',
+        'webm',
         'raw',
         'cr2',
         'cr3',

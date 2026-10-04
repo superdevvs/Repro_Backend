@@ -87,8 +87,11 @@ class ScopedEditingDispatch
         }
         if (trim((string) $plan['instructions']) !== '') $lines[] = trim((string) $plan['instructions']);
         if (! $lines) return;
+        // Editing notes are shared by every editor on the shoot; name who this request is for.
+        $lanes = $human->pluck('lane')->unique()->values();
+        $audience = $lanes->count() === 1 ? 'For the '.$lanes->first().' editor' : 'For the editors';
         $shoot->notes()->create(['author_id' => $user->id, 'type' => \App\Models\ShootNote::TYPE_EDITING,
-            'visibility' => \App\Models\ShootNote::VISIBILITY_INTERNAL, 'content' => implode("\n\n", $lines)]);
+            'visibility' => \App\Models\ShootNote::VISIBILITY_INTERNAL, 'content' => $audience.":\n".implode("\n\n", $lines)]);
     }
 
     public function response(ShootEditingDispatch $dispatch): array
