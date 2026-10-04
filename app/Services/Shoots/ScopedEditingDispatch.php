@@ -29,17 +29,21 @@ class ScopedEditingDispatch
             $dispatch = ShootEditingDispatch::create(['shoot_id' => $shoot->id, 'created_by' => $user->id, 'request_id' => $data['request_id'],
                 'scope' => $plan['scope'], 'destination' => $plan['destination'], 'workflow' => $plan['workflow'],
                 'instructions' => $plan['instructions'], 'input_hash' => $hash, 'plan' => $plan, 'status' => 'queued']);
-            // Sending a shoot (or a whole lane) to a human editor assigns that lane, exactly as
-            // Send to editor always has: the editor then opens the shoot, uploads and submits it
-            // normally. Per-file human tasks are only for selected-media and post-delivery requests.
-            $intake = $plan['scope'] !== 'selected' && in_array($locked->workflow_status ?: $locked->status, [Shoot::STATUS_UPLOADED, Shoot::STATUS_EDITING], true);
+            // Before delivery, sending media to a human editor assigns that lane, exactly as Send to
+            // editor always has: the editor opens the shoot, edits from its media, uploads in Edited
+            // and submits normally. Per-file human tasks remain only for revisions after editing.
+            $intakeStage = in_array($locked->workflow_status ?: $locked->status, [Shoot::STATUS_UPLOADED, Shoot::STATUS_EDITING], true);
+            $human = collect($plan['items'])->where('destination', 'human');
             foreach ($plan['items'] as $item) {
-                if ($intake && $item['destination'] === 'human') continue;
+                if ($intakeStage && $item['destination'] === 'human') continue;
                 $dispatch->items()->create(['input_key' => $item['key'], 'workflow' => $item['workflow'], 'sources' => $item['sources'], 'shoot_service_id' => $item['shoot_service_id'],
                     'lane' => $item['lane'], 'destination' => $item['destination'], 'editor_id' => $item['editor_id'],
                     'status' => $item['destination'] === 'human' ? 'assigned' : 'queued']);
             }
-            if ($intake) $this->assignIntakeLanes($locked, $user, $data, $plan);
+            if ($intakeStage && ($plan['scope'] !== 'selected' || $human->isNotEmpty())) {
+                $this->assignIntakeLanes($locked, $user, $data, $plan);
+                $this->noteForEditors($locked, $user, $plan, $human);
+            }
             if ($dispatch->items()->where('destination', 'ai')->exists()) PrepareEditingDispatch::dispatch($dispatch->id)->beforeCommit();
             else $dispatch->update(['status' => 'assigned']);
             return $this->response($dispatch);
@@ -48,7 +52,9 @@ class ScopedEditingDispatch
 
     public function assignIntakeLanes(Shoot $shoot, User $user, array $data, array $plan): void
     {
-        $scopeLanes = ['photos' => [ShootEditingAssignmentService::LANE_PHOTO], 'videos' => [ShootEditingAssignmentService::LANE_VIDEO]][$plan['scope']] ?? null;
+        $scopeLanes = $plan['scope'] === 'selected'
+            ? collect($plan['items'])->where('destination', 'human')->pluck('lane')->unique()->values()->all()
+            : (['photos' => [ShootEditingAssignmentService::LANE_PHOTO], 'videos' => [ShootEditingAssignmentService::LANE_VIDEO]][$plan['scope']] ?? null);
         // AI photo work leaves any existing photo assignment in place; whole-shoot AI still sends video to people.
         $humanLanes = $plan['destination'] === 'ai'
             ? ($plan['scope'] === 'whole' ? [ShootEditingAssignmentService::LANE_VIDEO] : [])
@@ -69,6 +75,20 @@ class ScopedEditingDispatch
             }
         }
         app(\App\Services\ShootWorkflowService::class)->startEditing($shoot, $user, $humanLanes, $laneEditors, []);
+    }
+
+    /** Editors read request instructions and the requested files from the shoot's editing notes. */
+    private function noteForEditors(Shoot $shoot, User $user, array $plan, \Illuminate\Support\Collection $human): void
+    {
+        $lines = [];
+        if ($plan['scope'] === 'selected' && $human->isNotEmpty()) {
+            $names = $human->flatMap(fn ($item) => collect($item['sources'])->pluck('name'))->unique()->values();
+            $lines[] = 'Edit these '.$names->count().' file'.($names->count() === 1 ? '' : 's').': '.$names->take(60)->implode(', ').($names->count() > 60 ? ', …' : '');
+        }
+        if (trim((string) $plan['instructions']) !== '') $lines[] = trim((string) $plan['instructions']);
+        if (! $lines) return;
+        $shoot->notes()->create(['author_id' => $user->id, 'type' => \App\Models\ShootNote::TYPE_EDITING,
+            'visibility' => \App\Models\ShootNote::VISIBILITY_INTERNAL, 'content' => implode("\n\n", $lines)]);
     }
 
     public function response(ShootEditingDispatch $dispatch): array

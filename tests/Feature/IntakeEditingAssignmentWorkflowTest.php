@@ -106,6 +106,20 @@ class IntakeEditingAssignmentWorkflowTest extends TestCase
         $this->assertSame($this->editor->id, (int) $this->item->fresh()->editor_id);
     }
 
+    public function test_selected_raws_to_an_editor_assign_the_lane_and_leave_a_note_naming_them(): void
+    {
+        $this->sendToEditor(['scope' => 'selected', 'preset' => 'revision', 'file_ids' => [$this->raws[0]->id], 'instructions' => 'Kitchen first'])->assertAccepted();
+        $this->assertSame($this->editor->id, (int) $this->item->fresh()->editor_id);
+        $this->assertSame('editing', $this->shoot->fresh()->workflow_status);
+        $this->assertSame(0, ShootEditingDispatchItem::count());
+        $note = \App\Models\ShootNote::where('shoot_id', $this->shoot->id)->sole();
+        $this->assertSame('editing', $note->type);
+        $this->assertStringContainsString('Edit these 2 files: raw0.jpg, raw1.jpg', $note->content);
+        $this->assertStringContainsString('Kitchen first', $note->content);
+        $this->getJson("/api/shoots/{$this->shoot->id}/editing-plan")->assertOk()->assertJsonPath('data.lanes.photo.sent', false);
+        $this->assertEditorCompletesShootNormally($this->editor);
+    }
+
     public function test_selected_media_to_a_human_editor_remains_a_scoped_task_without_shoot_assignment(): void
     {
         $this->shoot->update(['status' => 'delivered', 'workflow_status' => 'delivered']);

@@ -144,8 +144,10 @@ class ShootMediaInteractionService
      */
     public function renameFile(ShootFile $file, string $filename, bool $clearCache = true): array
     {
-        $file->filename = $filename;
-        $file->save();
+        \App\Support\LockedWrite::run(function () use ($file, $filename) {
+            $file->filename = $filename;
+            $file->save();
+        }, 'media.rename');
 
         $shoot = $file->relationLoaded('shoot') ? $file->shoot : Shoot::find($file->shoot_id);
         if ($clearCache && $shoot) {
@@ -168,32 +170,27 @@ class ShootMediaInteractionService
     }
 
     /**
-     * Batch-rename display filenames. Applies what it can; caller handles auth gating
-     * and per-file permission / build failures via the returned failed list.
+     * Batch-rename display filenames in one short write: every valid rename applies, or
+     * none does. Separate saves could each lose the SQLite writer to a queue worker,
+     * which silently skipped some files. Caller handles auth gating and name validation.
      *
      * @param  list<array{file: ShootFile, filename: string}>  $renames
      * @return array{updated: list<array{id: int, filename: string, stored_filename: ?string}>, failed: list<array{id: int, error: string}>}
      */
     public function batchRenameFiles(Shoot $shoot, array $renames): array
     {
-        $updated = [];
-        $failed = [];
-
-        foreach ($renames as $item) {
-            /** @var ShootFile $file */
-            $file = $item['file'];
-            $filename = $item['filename'];
-
-            try {
-                $result = $this->renameFile($file, $filename, clearCache: false);
-                $updated[] = $result['data'];
-            } catch (\Throwable $e) {
-                $failed[] = [
-                    'id' => (int) $file->id,
-                    'error' => 'Rename failed.',
-                ];
+        $updated = \App\Support\LockedWrite::run(fn () => DB::transaction(function () use ($renames) {
+            $updated = [];
+            foreach ($renames as $item) {
+                /** @var ShootFile $file */
+                $file = $item['file'];
+                $file->filename = $item['filename'];
+                $file->save();
+                $updated[] = ['id' => (int) $file->id, 'filename' => (string) $file->filename, 'stored_filename' => $file->stored_filename];
             }
-        }
+
+            return $updated;
+        }), 'media.batch-rename');
 
         if ($updated !== []) {
             $this->shootMediaMutationSupportService->clearShootFilesCache($shoot, auth()->user());
@@ -201,7 +198,7 @@ class ShootMediaInteractionService
 
         return [
             'updated' => $updated,
-            'failed' => $failed,
+            'failed' => [],
         ];
     }
 

@@ -96,7 +96,8 @@ class EditingDispatchContentionTest extends TestCase
             DB::statement('PRAGMA busy_timeout=25');
             $manager = User::factory()->create(['role'=>'editing_manager']);
             $editor = User::factory()->create(['role'=>'editor', 'metadata'=>['editing_capabilities'=>['photo']]]);
-            $shoot = Shoot::factory()->create(['status'=>'editing', 'workflow_status'=>'editing', 'editor_id'=>$editor->id, 'raw_photo_count'=>0]);
+            // Delivered: a selected revision is a per-file task, the write path this test exercises.
+            $shoot = Shoot::factory()->create(['status'=>'delivered', 'workflow_status'=>'delivered', 'editor_id'=>$editor->id, 'raw_photo_count'=>0]);
             $service = Service::factory()->create(['upload_intake_type'=>'photo', 'category_id'=>Category::firstOrCreate(['name'=>'Photos'])->id]);
             $shoot->services()->attach($service, ['price'=>100, 'quantity'=>1, 'editor_id'=>$editor->id]);
             $file = ShootFile::create(['shoot_id'=>$shoot->id, 'shoot_service_id'=>$shoot->services()->first()->pivot->id,

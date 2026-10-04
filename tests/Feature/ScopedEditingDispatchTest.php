@@ -99,7 +99,7 @@ class ScopedEditingDispatchTest extends TestCase
 
     public function test_dashboard_queue_includes_request_assignments_without_granting_shoot_wide_access(): void
     {
-        $this->shoot->update(['scheduled_at' => '2026-10-03 22:00:00', 'timezone' => 'America/New_York',
+        $this->shoot->update(['status' => 'delivered', 'workflow_status' => 'delivered', 'scheduled_at' => '2026-10-03 22:00:00', 'timezone' => 'America/New_York',
             'address' => 'Test Street', 'property_details' => ['aptSuite' => '93', 'lockbox_code' => 'secret'],
             'company_notes' => 'private', 'total_quote' => 999]);
         $this->shoot->photographer?->update(['timezone' => 'America/New_York']);
@@ -163,6 +163,7 @@ class ScopedEditingDispatchTest extends TestCase
 
     public function test_request_override_has_exact_source_access_and_return_submission_does_not_complete_other_work(): void
     {
+        $this->shoot->update(['status' => 'delivered', 'workflow_status' => 'delivered']);
         $override = User::factory()->create(['role' => 'editor', 'metadata' => ['editing_capabilities' => ['photo']]]);
         $data = $this->payload(['mode' => 'editor', 'photo_editor_id' => $override->id, 'instructions' => 'Green grass only']);
         $this->send($data)->assertAccepted();
@@ -183,7 +184,7 @@ class ScopedEditingDispatchTest extends TestCase
         $this->assertSame('completed', $item->dispatch->fresh()->status);
         $this->assertNull(DB::table('shoot_service')->first()->editing_completed_at);
         $this->assertNull(DB::table('shoot_service')->first()->video_editing_completed_at);
-        $this->assertSame('uploaded', $this->shoot->fresh()->workflow_status);
+        $this->assertSame('delivered', $this->shoot->fresh()->workflow_status);
         $this->assertSame('todo', $this->photo->fresh()->workflow_stage);
     }
 
@@ -195,6 +196,7 @@ class ScopedEditingDispatchTest extends TestCase
         $this->assertSame(0, ShootEditingDispatchItem::count());
         $this->assertSame($this->videoEditor->id, (int) DB::table('shoot_service')->first()->video_editor_id);
         $this->assertSame('editing', $this->shoot->fresh()->workflow_status);
+        $this->shoot->update(['status' => 'delivered', 'workflow_status' => 'delivered']);
         $id = $this->send($this->payload(['mode' => 'editor', 'file_ids' => [$this->video->id]]))->assertAccepted()->json('data.dispatchId');
         $this->shoot->update(['tour_links' => ['video_branded' => 'https://example.test/branded']]);
         $this->actingAs($this->videoEditor);
@@ -204,7 +206,7 @@ class ScopedEditingDispatchTest extends TestCase
         $this->postJson("/api/editing-tasks/{$item->id}/submit")->assertOk();
         $this->assertNull(DB::table('shoot_service')->first()->video_editing_completed_at);
         $this->assertNull(DB::table('shoot_service')->first()->editing_completed_at);
-        $this->assertSame('editing', $this->shoot->fresh()->workflow_status);
+        $this->assertSame('delivered', $this->shoot->fresh()->workflow_status);
         $this->assertSame(['video_branded' => 'https://example.test/branded', 'video_link' => 'https://example.test/finished'], $this->shoot->fresh()->tour_links);
     }
 

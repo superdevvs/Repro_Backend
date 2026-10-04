@@ -399,7 +399,16 @@ class ShootMediaController extends Controller
             (string) $file->filename
         );
 
-        return response()->json($this->shootMediaInteractionService->renameFile($file, $incoming));
+        try {
+            return response()->json($this->shootMediaInteractionService->renameFile($file, $incoming));
+        } catch (\Throwable $exception) {
+            if (! \App\Support\LockedWrite::isLockContention($exception)) {
+                throw $exception;
+            }
+
+            return response()->json(['message' => 'The media library is busy. The file was not renamed; retry in a moment.', 'retryable' => true], 503)
+                ->header('Retry-After', '2');
+        }
     }
 
     public function batchRenameMedia(Request $request, Shoot $shoot)
@@ -510,7 +519,16 @@ class ShootMediaController extends Controller
         }
 
         if ($pending !== []) {
-            $result = $this->shootMediaInteractionService->batchRenameFiles($shoot, $pending);
+            try {
+                $result = $this->shootMediaInteractionService->batchRenameFiles($shoot, $pending);
+            } catch (\Throwable $exception) {
+                if (! \App\Support\LockedWrite::isLockContention($exception)) {
+                    throw $exception;
+                }
+
+                return response()->json(['message' => 'The media library is busy. No files were renamed; retry in a moment.', 'retryable' => true], 503)
+                    ->header('Retry-After', '2');
+            }
             $updated = $result['updated'];
             $failed = array_merge($failed, $result['failed']);
         }

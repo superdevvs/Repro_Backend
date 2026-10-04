@@ -438,6 +438,51 @@ class ShootMediaBatchRenameTest extends TestCase
     }
 
     #[\PHPUnit\Framework\Attributes\Test]
+    public function a_busy_database_renames_nothing_and_returns_a_retryable_response(): void
+    {
+        Sanctum::actingAs($this->admin);
+        $shoot = $this->createShoot();
+        $a = $this->createShootFile($shoot, ['filename' => 'one.jpg']);
+        $b = $this->createShootFile($shoot, ['filename' => 'two.jpg']);
+        $saves = 0;
+        ShootFile::saving(function () use (&$saves) {
+            // The second file always loses the writer, as a queue worker holding SQLite would cause.
+            if (++$saves % 2 === 0) throw new \RuntimeException('SQLSTATE[HY000]: General error: 5 database is locked');
+        });
+
+        $this->postJson('/api/shoots/'.$shoot->id.'/media/batch-rename', ['file_ids' => [$a->id, $b->id], 'mode' => 'prefix', 'value' => 'Kitchen-'])
+            ->assertStatus(503)->assertHeader('Retry-After', '2')->assertJsonPath('retryable', true)
+            ->assertJsonPath('message', 'The media library is busy. No files were renamed; retry in a moment.');
+        // Laravel leaves lock-contention rollback to the outer RefreshDatabase transaction here,
+        // so storage state is asserted by the non-lock rollback test below.
+        ShootFile::flushEventListeners();
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
+    public function a_failing_save_rolls_back_the_whole_batch(): void
+    {
+        Sanctum::actingAs($this->admin);
+        $shoot = $this->createShoot();
+        $a = $this->createShootFile($shoot, ['filename' => 'one.jpg']);
+        $b = $this->createShootFile($shoot, ['filename' => 'two.jpg']);
+        ShootFile::saving(function (ShootFile $file) use ($b) {
+            if ($file->id === $b->id) throw new \RuntimeException('disk full');
+        });
+
+        $this->withoutExceptionHandling();
+        try {
+            $this->postJson('/api/shoots/'.$shoot->id.'/media/batch-rename', ['file_ids' => [$a->id, $b->id], 'mode' => 'prefix', 'value' => 'Kitchen-']);
+            $this->fail('The failing save must surface.');
+        } catch (\RuntimeException $exception) {
+            $this->assertSame('disk full', $exception->getMessage());
+        }
+
+        ShootFile::flushEventListeners();
+        $this->assertSame('one.jpg', $a->fresh()->filename);
+        $this->assertSame('two.jpg', $b->fresh()->filename);
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
     public function sales_rep_can_batch_rename_media(): void
     {
         Sanctum::actingAs($this->salesRep);

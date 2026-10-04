@@ -71,9 +71,10 @@ class ScopedEditingPlan
 
     private function sentLanes(Shoot $shoot): array
     {
-        $requests = \App\Models\ShootEditingDispatch::where('shoot_id', $shoot->id)->where('scope', '!=', 'selected')->get(['scope']);
+        $requests = \App\Models\ShootEditingDispatch::where('shoot_id', $shoot->id)->get(['scope']);
         // Shoots sent before lane-level requests existed went to editing as a whole.
         if ($requests->isEmpty()) return ['photo', 'video'];
+        // Selected files assign their editor but leave the rest of that lane to send later.
         return $requests->flatMap(fn ($request) => ['whole' => ['photo', 'video'], 'photos' => ['photo'], 'videos' => ['video']][$request->scope] ?? [])
             ->unique()->values()->all();
     }
