@@ -71,9 +71,11 @@ class ScopedEditingDispatchTest extends TestCase
         $preview->assertJsonPath('data.photoCount', 1)->assertJsonPath('data.videoCount', 1);
         $id = $this->send($data)->assertAccepted()->json('data.dispatchId');
         $this->send($data)->assertAccepted()->assertJsonPath('data.dispatchId', $id);
-        $this->assertDatabaseCount('shoot_editing_dispatch_items', 2);
+        $this->assertDatabaseCount('shoot_editing_dispatch_items', 1);
         Queue::assertPushed(PrepareEditingDispatch::class, 1);
-        $this->assertDatabaseHas('shoot_editing_dispatch_items', ['dispatch_id' => $id, 'destination' => 'human', 'editor_id' => $this->videoEditor->id]);
+        $this->assertDatabaseMissing('shoot_editing_dispatch_items', ['dispatch_id' => $id, 'destination' => 'human']);
+        $this->assertSame($this->videoEditor->id, (int) DB::table('shoot_service')->first()->video_editor_id);
+        $this->assertSame('editing', $this->shoot->fresh()->workflow_status);
         app()->call([new PrepareEditingDispatch($id), 'handle']);
         app()->call([new PrepareEditingDispatch($id), 'handle']);
         $this->assertDatabaseCount('studio_workspaces', 1);
@@ -102,9 +104,7 @@ class ScopedEditingDispatchTest extends TestCase
             'company_notes' => 'private', 'total_quote' => 999]);
         $this->shoot->photographer?->update(['timezone' => 'America/New_York']);
         $override = User::factory()->create(['role' => 'editor', 'metadata' => ['editing_capabilities' => ['photo']]]);
-        $data = $this->payload(['mode' => 'editor', 'scope' => 'photos', 'photo_editor_id' => $override->id]);
-        unset($data['file_ids']);
-        $dispatchId = $this->send($data)->assertAccepted()->json('data.dispatchId');
+        $dispatchId = $this->send($this->payload(['mode' => 'editor', 'photo_editor_id' => $override->id]))->assertAccepted()->json('data.dispatchId');
         $item = ShootEditingDispatchItem::where('dispatch_id', $dispatchId)->firstOrFail();
         $this->actingAs($override)->getJson('/api/editing-tasks?open=true&summary=true')->assertOk()
             ->assertJsonCount(1, 'data')->assertJsonPath('data.0.shoot_id', $this->shoot->id)
@@ -187,20 +187,22 @@ class ScopedEditingDispatchTest extends TestCase
         $this->assertSame('todo', $this->photo->fresh()->workflow_stage);
     }
 
-    public function test_video_return_publishes_link_without_completing_photos_and_competing_requests_hold_readiness(): void
+    public function test_video_intake_assigns_the_lane_and_selected_video_return_publishes_link_without_completing_lanes(): void
     {
-        $first = $this->send($this->payload(['mode' => 'editor', 'scope' => 'videos']))->assertAccepted()->json('data.dispatchId');
-        $second = $this->send($this->payload(['mode' => 'editor', 'scope' => 'videos']))->assertAccepted()->json('data.dispatchId');
+        $intake = $this->payload(['mode' => 'editor', 'scope' => 'videos']);
+        unset($intake['file_ids']);
+        $this->send($intake)->assertAccepted();
+        $this->assertSame(0, ShootEditingDispatchItem::count());
+        $this->assertSame($this->videoEditor->id, (int) DB::table('shoot_service')->first()->video_editor_id);
+        $this->assertSame('editing', $this->shoot->fresh()->workflow_status);
+        $id = $this->send($this->payload(['mode' => 'editor', 'file_ids' => [$this->video->id]]))->assertAccepted()->json('data.dispatchId');
         $this->shoot->update(['tour_links' => ['video_branded' => 'https://example.test/branded']]);
         $this->actingAs($this->videoEditor);
-        foreach ([$first, $second] as $index => $id) {
-            $item = ShootEditingDispatchItem::where('dispatch_id', $id)->firstOrFail();
-            $this->postJson("/api/editing-tasks/{$item->id}/video", ['url' => 'https://example.test/finished'])->assertOk();
-            $this->postJson("/api/editing-tasks/{$item->id}/submit")->assertOk();
-            $this->postJson("/api/editing-tasks/{$item->id}/submit")->assertOk();
-            if ($index === 0) $this->assertNull(DB::table('shoot_service')->first()->video_editing_completed_at);
-        }
-        $this->assertNotNull(DB::table('shoot_service')->first()->video_editing_completed_at);
+        $item = ShootEditingDispatchItem::where('dispatch_id', $id)->firstOrFail();
+        $this->postJson("/api/editing-tasks/{$item->id}/video", ['url' => 'https://example.test/finished'])->assertOk();
+        $this->postJson("/api/editing-tasks/{$item->id}/submit")->assertOk();
+        $this->postJson("/api/editing-tasks/{$item->id}/submit")->assertOk();
+        $this->assertNull(DB::table('shoot_service')->first()->video_editing_completed_at);
         $this->assertNull(DB::table('shoot_service')->first()->editing_completed_at);
         $this->assertSame('editing', $this->shoot->fresh()->workflow_status);
         $this->assertSame(['video_branded' => 'https://example.test/branded', 'video_link' => 'https://example.test/finished'], $this->shoot->fresh()->tour_links);

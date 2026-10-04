@@ -191,38 +191,55 @@ class ShootWorkflowService
     /**
      * Move to editing (photographer has uploaded media)
      */
-    public function startEditing(Shoot $shoot, ?User $user = null, ?array $humanLanes = null): void
+    /**
+     * @param  array<string, int>  $laneEditors  Explicit editor per human lane; replaces that lane's assignment.
+     * @param  array<int, string>|null  $aiLanes  Lanes handled by AI. Null treats every lane outside $humanLanes as AI.
+     *                                            Passing an array also (re)assigns lanes on a shoot already in editing.
+     */
+    public function startEditing(Shoot $shoot, ?User $user = null, ?array $humanLanes = null, array $laneEditors = [], ?array $aiLanes = null): void
     {
         $isAlreadyEditing = $this->isAlreadyInStatus($shoot, self::STATUS_EDITING);
         if (! $isAlreadyEditing) {
             $this->validateTransition($shoot, self::STATUS_EDITING);
         }
 
-        if ($isAlreadyEditing) {
+        if ($isAlreadyEditing && $aiLanes === null && $laneEditors === []) {
             return;
         }
 
         $laneAssignments = [];
 
-        $this->writeTransaction(function () use ($shoot, $user, $humanLanes, &$laneAssignments) {
-            if ($humanLanes === null) {
+        $this->writeTransaction(function () use ($shoot, $user, $humanLanes, $laneEditors, $aiLanes, $isAlreadyEditing, &$laneAssignments) {
+            if ($humanLanes === null || ($aiLanes === [] && $humanLanes !== [])) {
                 $this->shootEditingAssignmentService->prepareHumanEditingIntake($shoot);
             }
-            $shoot->status = self::STATUS_EDITING;
-            $shoot->workflow_status = Shoot::WORKFLOW_EDITING;
-            $shoot->photos_uploaded_at = now();
+            if (! $isAlreadyEditing) {
+                $shoot->status = self::STATUS_EDITING;
+                $shoot->workflow_status = Shoot::WORKFLOW_EDITING;
+                $shoot->photos_uploaded_at = now();
+            }
             $shoot->updated_by = $user?->id ?? auth()->id();
 
-            if ($humanLanes !== null) {
-                $aiServiceIds = $this->shootEditingAssignmentService->getTrackedServiceAssignments($shoot)->whereNotIn('lane', $humanLanes)->pluck('service_id');
+            $tracked = $this->shootEditingAssignmentService->getTrackedServiceAssignments($shoot);
+            $clearLanes = $aiLanes ?? ($humanLanes === null ? [] : $tracked->pluck('lane')->diff($humanLanes)->all());
+            if ($clearLanes !== []) {
+                $aiServiceIds = $tracked->whereIn('lane', $clearLanes)->pluck('service_id');
                 \Illuminate\Support\Facades\DB::table('shoot_service')->where('shoot_id', $shoot->id)->whereIn('service_id', $aiServiceIds)->update(['editor_id' => null, 'editing_completed_at' => null]);
                 $shoot->unsetRelation('services');
                 $shoot->editor_id = null;
             }
+            foreach ($laneEditors as $lane => $editorId) {
+                foreach ($tracked->where('lane', $lane)->groupBy('editor_column') as $column => $group) {
+                    \Illuminate\Support\Facades\DB::table('shoot_service')->where('shoot_id', $shoot->id)->whereIn('id', $group->pluck('shoot_service_id')->all())
+                        ->update([$column => $editorId, 'updated_at' => now()]);
+                }
+                $shoot->unsetRelation('services');
+            }
             $laneAssignments = $this->shootEditingAssignmentService->autoAssignEditorsForShoot($shoot, $humanLanes);
 
-            if ($humanLanes === null && empty($laneAssignments) && empty($shoot->editor_id)) {
-                $shoot->editor_id = $this->resolvePrimaryEditorId();
+            if ($humanLanes === null && empty($laneAssignments) && ($laneEditors !== [] || empty($shoot->editor_id))) {
+                // Service-less legacy shoots keep the single top-level editor.
+                $shoot->editor_id = $laneEditors[ShootEditingAssignmentService::LANE_PHOTO] ?? $laneEditors[ShootEditingAssignmentService::LANE_VIDEO] ?? $this->resolvePrimaryEditorId();
             }
 
             $shoot->save();
@@ -231,7 +248,7 @@ class ShootWorkflowService
 
             $this->activityLogger->log(
                 $shoot,
-                'shoot_editing_started',
+                $isAlreadyEditing ? 'editor_assigned' : 'shoot_editing_started',
                 ['by' => $user?->name ?? auth()->user()?->name],
                 $user
             );
