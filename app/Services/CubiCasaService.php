@@ -343,6 +343,12 @@ class CubiCasaService
 
         $this->lastFailureReason = null;
 
+        // Automatic drafts require the booked standalone floor-plan product.
+        // Existing/manual provider orders remain independently usable.
+        if ($source === 'auto' && ! $shoot->hasCubiCasaAutoOrderService()) {
+            return null;
+        }
+
         $createEvent = $source === 'auto' ? 'cubicasa.auto_create' : 'cubicasa.manual_create';
 
         // AC 19.5 — already linked: sync the existing order instead of creating.

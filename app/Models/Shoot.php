@@ -950,6 +950,28 @@ class Shoot extends Model
         '3d floor',
     ];
 
+    // Automatic provider orders use the catalog's standalone floor-plan
+    // categories. A name containing "floor plan" may instead belong to iGuide
+    // or Matterport; broad discovery matching must never authorize an order.
+    public const CUBICASA_AUTO_ORDER_CATEGORIES = ['floor plans', 'photos & floor plans'];
+
+    public function hasCubiCasaAutoOrderService(): bool
+    {
+        return !$this->isInternalTestShoot()
+            && self::query()->whereKey($this->getKey())->cubicasaAutoOrderEligible()->exists();
+    }
+
+    public function scopeCubicasaAutoOrderEligible(Builder $query): Builder
+    {
+        $category = fn ($q) => $q->whereIn(\Illuminate\Support\Facades\DB::raw('LOWER(TRIM(name))'), self::CUBICASA_AUTO_ORDER_CATEGORIES);
+        return $query->where(function ($q) use ($category) {
+            $q->whereHas('services.category', $category)
+                ->orWhere(function ($legacy) use ($category) {
+                    $legacy->whereDoesntHave('services')->whereHas('service.category', $category);
+                });
+        });
+    }
+
     public static function textMatchesCubicasaService(?string $value): bool
     {
         if (!is_string($value) || $value === '') {

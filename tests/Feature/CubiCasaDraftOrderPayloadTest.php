@@ -221,6 +221,8 @@ class CubiCasaDraftOrderPayloadTest extends TestCase
         config()->set('services.cubicasa.owner_email', null);
 
         $shoot = $this->shootWithServices(['2D Floor Plan']);
+        $shoot->services->first()->update(['category_id' => \App\Models\Category::firstOrCreate(['name' => 'Floor Plans'])->id]);
+        $shoot->updateQuietly(['scheduled_at' => now()->addDay(), 'status' => 'scheduled', 'workflow_status' => 'scheduled']);
 
         (new \App\Jobs\CreateCubiCasaOrderJob($shoot->id))->handle(app(CubiCasaService::class));
 

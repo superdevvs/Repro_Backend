@@ -902,14 +902,9 @@ HTML;
 
     private function buildShootLocation(Shoot $shoot): string
     {
-        $parts = array_filter([
-            $shoot->address,
-            $shoot->city,
-            $shoot->state,
-            $shoot->zip,
-        ]);
+        $full = \App\Support\ShootAddress::formatFullAddress($shoot);
 
-        return $parts ? implode(', ', $parts) : 'N/A';
+        return $full !== '' ? $full : 'N/A';
     }
 
     private function getDateAttribute(object $model, string $attribute): ?\Carbon\CarbonInterface

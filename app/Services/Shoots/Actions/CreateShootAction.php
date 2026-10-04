@@ -219,14 +219,22 @@ class CreateShootAction
             }
 
             // Zoned bookings store absolute UTC on service lines (parity with update/PATCH).
-            // Unit lines may still carry local input; flat service rows now carry explicit
-            // instants. Shoot scheduled_at is converted after deriving local date/time.
+            // Flat rows were already converted to UTC/ISO above (early pass + ISO pass).
+            // Do not re-parse those absolute instants as booking-local wall clocks.
+            // Unit lines may still carry naive local input and still need local→UTC here.
+            // Shoot scheduled_at is converted after deriving local date/time.
             if ($scheduleTimezone !== '') {
                 $servicesPayload = array_map(function (array $service) use ($scheduleTimezone) {
                     if (! empty($service['scheduled_at'])) {
-                        $instant = $this->support->parseScheduleInstant($service['scheduled_at'], $scheduleTimezone);
-                        if ($instant) {
-                            $service['scheduled_at'] = \Carbon\Carbon::instance($instant)->utc()->format('Y-m-d H:i:s');
+                        $raw = trim((string) $service['scheduled_at']);
+                        if (preg_match('/(?:Z|[+-]\d{2}:?\d{2})$/i', $raw)) {
+                            // Already an absolute instant — persist UTC SQL only.
+                            $service['scheduled_at'] = \Carbon\Carbon::parse($raw)->utc()->format('Y-m-d H:i:s');
+                        } else {
+                            $instant = $this->support->parseScheduleInstant($service['scheduled_at'], $scheduleTimezone);
+                            if ($instant) {
+                                $service['scheduled_at'] = \Carbon\Carbon::instance($instant)->utc()->format('Y-m-d H:i:s');
+                            }
                         }
                     }
 
@@ -402,7 +410,7 @@ class CreateShootAction
         if (
             !$result->treatAsClientRequest
             && $result->scheduledAt !== null
-            && $result->shoot->hasCubiCasaEligibleService()
+            && $result->shoot->hasCubiCasaAutoOrderService()
         ) {
             // CubiCasa order creation is a post-booking side effect: it must run when the
             // booking is complete, but must NEVER block or fail the booking itself. On a

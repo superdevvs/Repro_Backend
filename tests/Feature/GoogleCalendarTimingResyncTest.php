@@ -215,7 +215,7 @@ class GoogleCalendarTimingResyncTest extends TestCase
         $this->assertDatabaseCount('google_calendar_event_mappings', 0);
     }
 
-    public function test_existing_event_provider_failure_stays_soft_for_other_photographers(): void
+    public function test_existing_event_provider_failure_is_rethrown_for_retry(): void
     {
         [$shoot] = $this->createScheduledShoot(false);
         $connection = GoogleCalendarConnection::query()->where('user_id', $shoot->photographer_id)->sole();
@@ -238,8 +238,12 @@ class GoogleCalendarTimingResyncTest extends TestCase
             app(\App\Services\GoogleCalendar\GoogleCalendarEventPayloadBuilder::class)
         );
 
-        // Soft failure: must not throw when an existing Google event is being updated.
-        $sync->syncShoot($shoot->id);
+        try {
+            $sync->syncShoot($shoot->id);
+            $this->fail('An existing event update must retry after provider failure.');
+        } catch (\RuntimeException $exception) {
+            $this->assertSame('Google Calendar event request failed.', $exception->getMessage());
+        }
 
         $this->assertSame(
             'Google Calendar event request failed.',

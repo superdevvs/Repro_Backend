@@ -69,7 +69,6 @@ class GoogleCalendarMappingIdempotencyPropertyTest extends TestCase
         Shoot::STATUS_REVIEW,
         Shoot::STATUS_READY,
         Shoot::STATUS_DELIVERED,
-        Shoot::STATUS_CANCELLED,
     ];
 
     protected function setUp(): void

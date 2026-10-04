@@ -98,6 +98,8 @@ class ShootResource extends JsonResource
         $propertyDetails = is_array($this->property_details) ? $this->property_details : [];
         $listingLatitude = $this->normalizeCoordinate($propertyDetails['latitude'] ?? $propertyDetails['lat'] ?? null);
         $listingLongitude = $this->normalizeCoordinate($propertyDetails['longitude'] ?? $propertyDetails['lng'] ?? null);
+        $displayStreetAddress = \App\Support\ShootAddress::streetWithAptSuite($this->address, $propertyDetails);
+        $displayFullAddress = \App\Support\ShootAddress::formatFullAddress($this->resource);
         if ($isEditor && $requestingUser) {
             $serviceCollection = $assignmentService->filterServicesForEditor($this->resource, $requestingUser);
         }
@@ -232,12 +234,14 @@ class ShootResource extends JsonResource
                 ];
             }),
             'editor' => $resolvedTopLevelEditor,
+            // Editing must use the saved street, not the display line with a unit appended.
+            'address' => $this->address,
             'location' => [
-                'address' => $this->address,
+                'address' => $displayStreetAddress,
                 'city' => $this->city,
                 'state' => $this->state,
                 'zip' => $this->zip,
-                'fullAddress' => "{$this->address}, {$this->city}, {$this->state} {$this->zip}",
+                'fullAddress' => $displayFullAddress,
                 'latitude' => $listingLatitude,
                 'longitude' => $listingLongitude,
             ],

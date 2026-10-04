@@ -991,7 +991,7 @@ class AutomationService
                 ?? $shoot->scheduled_at?->format('M j, Y'),
             'shoot_time' => $this->formatShootTime($shoot),
             'shoot_datetime' => $this->resolveShootDateTime($shoot),
-            'shoot_address' => trim(implode(', ', array_filter([$shoot->address, $shoot->city, $shoot->state, $shoot->zip]))) ?: 'N/A',
+            'shoot_address' => (\App\Support\ShootAddress::formatFullAddress($shoot) ?: 'N/A'),
             'shoot_services' => $shoot->services->count() > 0
                 ? $shoot->services->pluck('name')->implode(', ')
                 : ($shoot->service?->name ?? 'Photography'),
@@ -1006,7 +1006,7 @@ class AutomationService
             'account_id' => $shoot->client_id,
             'property_details' => $propertyDetails,
             'dashboard_link' => rtrim(config('app.frontend_url', config('app.url')), '/').'/shoots/'.$shoot->id,
-            'map_link' => 'https://www.google.com/maps/search/?api=1&query='.rawurlencode(trim(implode(', ', array_filter([$shoot->address, $shoot->city, $shoot->state, $shoot->zip])))),
+            'map_link' => 'https://www.google.com/maps/search/?api=1&query='.rawurlencode(\App\Support\ShootAddress::formatFullAddress($shoot)),
             'property_contact_name' => $propertyDetails['accessContactName'] ?? $shoot->client?->name ?? '',
             'property_contact_phone' => $propertyDetails['accessContactPhone'] ?? $shoot->client?->phonenumber ?? '',
             'access_instructions' => implode(' - ', array_filter([$propertyDetails['presenceOption'] ?? null, $propertyDetails['lockboxLocation'] ?? null, $propertyDetails['lockboxCode'] ?? null, $propertyDetails['accessNotes'] ?? null])),

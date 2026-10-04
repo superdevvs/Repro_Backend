@@ -89,6 +89,10 @@ class GoogleCalendarShootSyncService
             }
 
             try {
+                if ($mapping && $mapping->calendar_id !== $connection->calendar_id) {
+                    $this->removeMapping($mapping);
+                    $mapping = null;
+                }
                 $payload = $this->payloadBuilder->build($shoot, $connection->user);
                 $fingerprint = $this->fingerprintFor($shoot, $connection, $payload);
 
@@ -261,9 +265,9 @@ class GoogleCalendarShootSyncService
 
                 Log::error('Google Calendar event removal failed.', $context);
 
-                // Keep the mapping so a later resync/retry can still delete the
-                // Google event. Dropping it here would orphan the calendar entry.
-                return;
+                // Retain the mapping AND fail the queued job so deletion is retried.
+                // Returning normally marked failed remote removals as completed.
+                throw $exception;
             }
         } else {
             Log::warning('Google Calendar mapping removed without an active connection; Google event may remain.', [
@@ -291,11 +295,10 @@ class GoogleCalendarShootSyncService
             strtolower((string) $shoot->workflow_status),
         ]);
 
-        // Cancelled shoots remain syncable (keep-and-update): the existing calendar
-        // event is updated in place with a "CANCELLED - {client}" title rather than
-        // deleted (Requirements 8.1, 8.2). Requested / declined / on_hold / hold_on
-        // stay non-syncable and continue to be removed.
+        // Cancelled, requested, declined and held bookings must not reserve
+        // time on the photographer's calendar.
         return !$statuses->contains(fn (string $status) => in_array($status, [
+            Shoot::STATUS_CANCELLED,
             Shoot::STATUS_REQUESTED,
             Shoot::STATUS_DECLINED,
             Shoot::STATUS_ON_HOLD,
@@ -529,7 +532,7 @@ class GoogleCalendarShootSyncService
 
     /**
      * Persist last_error and log. Returns true when the queue job should retry
-     * (infrastructure failure, or first-push with no Google event yet).
+     * for both initial creation and updates to existing events.
      *
      * @param  array<string, mixed>  $context
      */
@@ -546,8 +549,6 @@ class GoogleCalendarShootSyncService
             'exception' => $exception::class,
         ]);
 
-        $isFirstPush = empty($context['had_google_event']);
-
         if ($this->isInfrastructureFailure($exception)) {
             Log::error('Google Calendar sync blocked by application encryption/config failure; job will retry.', $context);
 
@@ -557,12 +558,9 @@ class GoogleCalendarShootSyncService
         // LOG_LEVEL=error drops warnings; use error so ops see provider failures.
         Log::error('Google Calendar shoot sync failed.', $context);
 
-        // Brand-new bookings (no Google event id yet) must not soft-succeed: a single
-        // transient token/API failure would permanently omit the shoot from the
-        // photographer's calendar until a later unrelated update re-dispatches sync.
-        // Updates to an existing event stay soft so one bad connection cannot fail
-        // the whole multi-photographer job.
-        return $isFirstPush;
+        // Updates need retries just as first pushes do. syncShoot collects the
+        // failure and still attempts the other photographers before rethrowing.
+        return true;
     }
 
     protected function isInfrastructureFailure(Throwable $exception): bool

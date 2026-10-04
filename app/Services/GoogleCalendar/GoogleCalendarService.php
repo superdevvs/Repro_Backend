@@ -65,6 +65,10 @@ class GoogleCalendarService
         $response = $this->calendarRequest($connection)
             ->patch($this->eventsUrl($connection->calendar_id) . '/' . urlencode($eventId), $payload);
 
+        if (in_array($response->status(), [404, 410], true)) {
+            return $this->createEvent($connection, $payload);
+        }
+
         return $this->parseCalendarResponse($response);
     }
 
@@ -73,12 +77,12 @@ class GoogleCalendarService
         $response = $this->calendarRequest($connection)
             ->delete($this->eventsUrl($calendarId) . '/' . urlencode($eventId));
 
-        if ($response->status() === 404) {
+        if (in_array($response->status(), [404, 410], true)) {
             return;
         }
 
         if ($response->failed()) {
-            throw new RuntimeException('Unable to delete Google Calendar event.');
+            throw new RuntimeException('Unable to delete Google Calendar event (HTTP '.$response->status().').');
         }
     }
 

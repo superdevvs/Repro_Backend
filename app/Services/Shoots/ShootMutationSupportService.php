@@ -927,13 +927,7 @@ class ShootMutationSupportService
 
     public function formatFullAddress(Shoot $shoot): string
     {
-        return trim(sprintf(
-            '%s, %s, %s %s',
-            $shoot->address,
-            $shoot->city,
-            $shoot->state,
-            $shoot->zip
-        ), ', ');
+        return \App\Support\ShootAddress::formatFullAddress($shoot);
     }
 
     public function sanitizeEmailList(?array $emails): array

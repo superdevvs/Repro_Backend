@@ -1028,7 +1028,7 @@ class UpdateShootAction
             $shoot->scheduled_at !== null
         )->afterCommit();
 
-        if ($shoot->scheduled_at !== null && $shoot->hasCubiCasaEligibleService()) {
+        if ($shoot->scheduled_at !== null && $shoot->hasCubiCasaAutoOrderService()) {
             try {
                 $pending = CreateCubiCasaOrderJob::dispatch($shoot->id, 'booking')->afterCommit();
                 unset($pending);

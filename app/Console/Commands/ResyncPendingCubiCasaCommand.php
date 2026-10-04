@@ -139,11 +139,15 @@ class ResyncPendingCubiCasaCommand extends Command
             Shoot::STATUS_DECLINED,
             Shoot::STATUS_REQUESTED,
             Shoot::STATUS_DELIVERED,
+            Shoot::STATUS_ON_HOLD,
+            'hold_on',
         ];
 
         // Same reason as handle(): dispatching a job is itself a write to the
         // `jobs` table, so the read must be finished first.
         $candidateIds = Shoot::query()
+            ->cubicasaAutoOrderEligible()
+            ->whereDoesntHave('units')
             ->whereNull('cubicasa_order_id')
             ->whereNull('cubicasa_external_id')
             ->whereNotNull('scheduled_at')
@@ -156,7 +160,7 @@ class ResyncPendingCubiCasaCommand extends Command
         $created = 0;
         foreach ($candidateIds as $shootId) {
             $shoot = Shoot::with('services.category')->find($shootId);
-            if (!$shoot || !$shoot->hasCubiCasaEligibleService()) {
+            if (!$shoot || !$shoot->hasCubiCasaAutoOrderService()) {
                 continue;
             }
 

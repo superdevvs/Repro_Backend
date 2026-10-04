@@ -3690,16 +3690,7 @@ HTML;
 
     private function formatFullAddress(Shoot $shoot): string
     {
-        $parts = array_filter([
-            trim((string) ($shoot->address ?? '')),
-            trim((string) ($shoot->city ?? '')),
-            trim(implode(' ', array_filter([
-                trim((string) ($shoot->state ?? '')),
-                trim((string) ($shoot->zip ?? '')),
-            ]))),
-        ]);
-
-        return implode(', ', $parts);
+        return \App\Support\ShootAddress::formatFullAddress($shoot);
     }
 
     private function formatServicesForComparison(Shoot $shoot): array

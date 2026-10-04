@@ -16,6 +16,10 @@ class RemoveShootFromGoogleCalendarJob implements ShouldQueue
     use Queueable;
     use SerializesModels;
 
+    public int $tries = 5;
+
+    public array $backoff = [10, 30, 60, 120];
+
     public function __construct(
         public int $shootId
     ) {

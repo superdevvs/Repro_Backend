@@ -15,20 +15,13 @@ use Mockery;
 use Mockery\Adapter\Phpunit\MockeryPHPUnitIntegration;
 use Tests\TestCase;
 
-/**
- * Feature: google-calendar-sync-upgrade
- *
- * Example test for cancelled keep-and-update (Requirements 8.1, 8.2): a cancelled shoot with
- * an existing event mapping is treated as syncable and the existing calendar event is UPDATED
- * (title prefixed with "CANCELLED - ", "Shoot Status: Cancelled" present in the description)
- * rather than DELETED. External HTTP (GoogleCalendarService) is mocked.
- */
+/** Cancelled shoots no longer occupy Google Calendar. */
 class GoogleCalendarCancelledKeepAndUpdateTest extends TestCase
 {
     use MockeryPHPUnitIntegration;
     use RefreshDatabase;
 
-    public function test_cancelled_shoot_updates_existing_event_instead_of_deleting_it(): void
+    public function test_cancelled_shoot_removes_existing_event(): void
     {
         config([
             'services.google.calendar.base_url' => 'https://www.googleapis.com/calendar/v3',
@@ -97,23 +90,11 @@ class GoogleCalendarCancelledKeepAndUpdateTest extends TestCase
             'sync_fingerprint' => 'stale-fingerprint',
         ]);
 
-        $capturedPayload = null;
-
         $calendarService = Mockery::mock(GoogleCalendarService::class);
-        $calendarService->shouldReceive('updateEvent')
-            ->once()
-            ->with(
-                Mockery::type(GoogleCalendarConnection::class),
-                'existing-cancelled-event',
-                Mockery::on(function ($payload) use (&$capturedPayload) {
-                    $capturedPayload = $payload;
-                    return true;
-                })
-            )
-            ->andReturn(['id' => 'existing-cancelled-event']);
+        $calendarService->shouldReceive('deleteEvent')->once()
+            ->with(Mockery::type(GoogleCalendarConnection::class), 'primary', 'existing-cancelled-event');
         $calendarService->shouldReceive('createEvent')->never();
-        $calendarService->shouldReceive('deleteEvent')->never();
-
+        $calendarService->shouldReceive('updateEvent')->never();
         $syncService = new GoogleCalendarShootSyncService(
             $calendarService,
             app(GoogleCalendarEventPayloadBuilder::class)
@@ -121,17 +102,8 @@ class GoogleCalendarCancelledKeepAndUpdateTest extends TestCase
 
         $syncService->syncShoot($shoot->id);
 
-        // The cancelled shoot was kept-and-updated, not deleted: mapping still present.
-        $this->assertDatabaseHas('google_calendar_event_mappings', [
-            'shoot_id' => $shoot->id,
-            'user_id' => $photographer->id,
-            'google_event_id' => 'existing-cancelled-event',
+        $this->assertDatabaseMissing('google_calendar_event_mappings', [
+            'shoot_id' => $shoot->id, 'google_event_id' => 'existing-cancelled-event',
         ]);
-
-        // Payload reflects cancellation (Req 8.2).
-        $this->assertNotNull($capturedPayload, 'updateEvent should have received a payload.');
-        $this->assertStringStartsWith('CANCELLED - ', (string) ($capturedPayload['summary'] ?? ''));
-        $this->assertStringContainsString('Jane Client', (string) ($capturedPayload['summary'] ?? ''));
-        $this->assertStringContainsString('Shoot Status: Cancelled', (string) ($capturedPayload['description'] ?? ''));
     }
 }

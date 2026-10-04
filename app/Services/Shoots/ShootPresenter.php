@@ -1120,13 +1120,7 @@ class ShootPresenter
 
     public function formatFullAddress(Shoot $shoot): string
     {
-        return trim(sprintf(
-            '%s, %s, %s %s',
-            $shoot->address,
-            $shoot->city,
-            $shoot->state,
-            $shoot->zip
-        ), ', ');
+        return \App\Support\ShootAddress::formatFullAddress($shoot);
     }
 
     protected function resolveRealtorClient(array $tourLinks): ?array

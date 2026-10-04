@@ -446,7 +446,7 @@ class CubiCasaResyncLockResilienceTest extends TestCase
 
     private function floorPlanService(): Service
     {
-        return Service::factory()->create(['name' => '2D Floor plans']);
+        return Service::factory()->create(['name' => '2D Floor plans', 'category_id' => \App\Models\Category::firstOrCreate(['name' => 'Floor Plans'])->id]);
     }
 
     private function shootWithFloorPlan(array $attributes = []): Shoot

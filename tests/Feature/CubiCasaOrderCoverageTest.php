@@ -47,7 +47,7 @@ class CubiCasaOrderCoverageTest extends TestCase
 
     private function eligibleService(): Service
     {
-        return Service::factory()->create(['name' => '2D Floor Plan']);
+        return Service::factory()->create(['name' => '2D Floor Plan', 'category_id' => \App\Models\Category::firstOrCreate(['name' => 'Floor Plans'])->id]);
     }
 
     private function shoot(array $attributes = [], bool $eligible = true): Shoot

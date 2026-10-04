@@ -302,7 +302,7 @@ class ComplimentaryServicesEditShootTest extends TestCase
 
     public function test_client_paid_floor_plan_dispatches_normal_booking_provider_jobs(): void
     {
-        $this->service->update(['name' => '2D Floor Plan']);
+        $this->service->update(['name' => '2D Floor Plan', 'category_id' => \App\Models\Category::firstOrCreate(['name' => 'Floor Plans'])->id]);
         $payload = $this->payload(true, true);
         $payload['complimentary_service_options']['client_pays'] = true;
 

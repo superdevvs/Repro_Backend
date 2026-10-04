@@ -116,7 +116,7 @@ class ShootObserver
         // wasRecentlyCreated remains true on subsequent saves of the same model.
         // Only the actual created event may bypass the changed-field check.
         if (! $created
-            && ! $shoot->wasChanged(['photographer_id', 'scheduled_at', 'status', 'workflow_status'])
+            && ! $shoot->wasChanged(['photographer_id', 'scheduled_at', 'timezone', 'status', 'workflow_status', 'address', 'city', 'state', 'zip', 'property_details', 'shoot_notes', 'photographer_notes'])
         ) {
             return;
         }
@@ -196,7 +196,7 @@ class ShootObserver
         }
 
         // Only react to a transition, and order the cheap checks before the
-        // relationship query that hasCubiCasaEligibleService() performs.
+        // relationship query that hasCubiCasaAutoOrderService() performs.
         if (!$shoot->wasChanged('scheduled_at')
             && !$shoot->wasChanged('workflow_status')
             && !$shoot->wasChanged('status')
@@ -229,7 +229,7 @@ class ShootObserver
             return;
         }
 
-        if (!$shoot->hasCubiCasaEligibleService()) {
+        if (!$shoot->hasCubiCasaAutoOrderService()) {
             return;
         }
 

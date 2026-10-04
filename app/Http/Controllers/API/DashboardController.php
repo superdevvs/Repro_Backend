@@ -301,7 +301,10 @@ class DashboardController extends Controller
                 'time_label' => $dateTime ? $dateTime->format('h:i A') : null,
                 'start_time' => $dateTime ? $dateTime->toIso8601String() : null,
                 'scheduled_instant' => app(ScheduleInstantResolver::class)->forShoot($shoot)?->utc()->toIso8601String(),
-                'address_line' => $shoot->address,
+                'address_line' => \App\Support\ShootAddress::streetWithAptSuite(
+                    $shoot->address,
+                    is_array($shoot->property_details) ? $shoot->property_details : null
+                ),
                 'city_state_zip' => $this->formatLocationLine($shoot),
                 'status' => $shoot->status,
                 'workflow_status' => $shoot->workflow_status,

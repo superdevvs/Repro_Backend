@@ -121,6 +121,7 @@ class CubiCasaAutoOrderTest extends TestCase
                 'cubicasa_external_id' => null,
                 'cubicasa_idempotency_key' => null,
                 'address' => '521 Brightfield Road',
+                'scheduled_at' => now()->addDays(3),
                 'city' => 'Ottawa',
                 'state' => 'ON',
                 'zip' => 'K1A0B1',
@@ -196,6 +197,7 @@ class CubiCasaAutoOrderTest extends TestCase
                 'cubicasa_external_id' => null,
                 'cubicasa_idempotency_key' => null,
                 'address' => '521 Brightfield Road',
+                'scheduled_at' => now()->addDays(3),
                 'city' => 'Ottawa',
                 'state' => $state,
                 'zip' => $zip,
@@ -273,6 +275,7 @@ class CubiCasaAutoOrderTest extends TestCase
                 'cubicasa_external_id' => null,
                 'cubicasa_idempotency_key' => null,
                 'address' => '521 Brightfield Road',
+                'scheduled_at' => now()->addDays(3),
                 'city' => 'Ottawa',
                 'state' => $hasState ? $this->randomState() : '',
                 'zip' => $hasZip ? $this->randomZip() : '',
@@ -328,6 +331,7 @@ class CubiCasaAutoOrderTest extends TestCase
 
         $shoot = $this->unlinkedShoot();
 
+        $this->attachCubicasaService($shoot);
         app(CubiCasaService::class)->createOrder($shoot, null, 'auto');
 
         $this->assertSame(
@@ -458,7 +462,6 @@ class CubiCasaAutoOrderTest extends TestCase
             Shoot::STATUS_EDITING,
             Shoot::STATUS_REVIEW,
             Shoot::STATUS_READY,
-            Shoot::STATUS_ON_HOLD,
         ];
 
         $suiteKeys = ['apt_suite', 'aptSuite', 'suite'];
@@ -482,6 +485,7 @@ class CubiCasaAutoOrderTest extends TestCase
                 'cubicasa_external_id' => null,
                 'cubicasa_idempotency_key' => null,
                 'address' => '521 Brightfield Road',
+                'scheduled_at' => now()->addDays(3),
                 'city' => 'Ottawa',
                 'state' => mt_rand(0, 1) === 1 ? $this->randomState() : '',
                 'zip' => mt_rand(0, 1) === 1 ? $this->randomZip() : '',
@@ -1149,6 +1153,7 @@ class CubiCasaAutoOrderTest extends TestCase
     {
         return Service::factory()->create([
             'name' => '2D Floor plans',
+            'category_id' => \App\Models\Category::firstOrCreate(['name' => 'Floor Plans'])->id,
             'price' => 195.00,
         ]);
     }
@@ -1218,7 +1223,7 @@ class CubiCasaAutoOrderTest extends TestCase
      */
     private function attachCubicasaService(Shoot $shoot): void
     {
-        $service = Service::factory()->create(['name' => '2D Floor plans']);
+        $service = Service::factory()->create(['name' => '2D Floor plans', 'category_id' => \App\Models\Category::firstOrCreate(['name' => 'Floor Plans'])->id]);
         DB::table('shoot_service')->insert([
             'shoot_id' => $shoot->id,
             'service_id' => $service->id,
@@ -1241,6 +1246,7 @@ class CubiCasaAutoOrderTest extends TestCase
             'cubicasa_external_id' => null,
             'cubicasa_idempotency_key' => null,
             'address' => '521 Brightfield Road',
+                'scheduled_at' => now()->addDays(3),
             'city' => 'Ottawa',
             'state' => 'ON',
             'zip' => 'K1A0B1',

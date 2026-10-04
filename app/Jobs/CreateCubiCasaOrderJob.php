@@ -46,15 +46,17 @@ class CreateCubiCasaOrderJob implements ShouldQueue
             Shoot::STATUS_DECLINED,
             Shoot::STATUS_REQUESTED,
             Shoot::STATUS_DELIVERED,
+            Shoot::STATUS_ON_HOLD,
+            'hold_on',
         ];
-        if (in_array($shoot->status, $skipStatuses, true)
+        if ($shoot->scheduled_at === null || in_array($shoot->status, $skipStatuses, true)
             || in_array($shoot->workflow_status, $skipStatuses, true)
         ) {
             return;
         }
 
         // Req 3.3 — no eligible service: complete silently.
-        if (!$shoot->hasCubiCasaEligibleService()) {
+        if (!$shoot->hasCubiCasaAutoOrderService()) {
             return;
         }
 
