@@ -97,6 +97,10 @@ class ScopedEditingDispatchTest extends TestCase
 
     public function test_dashboard_queue_includes_request_assignments_without_granting_shoot_wide_access(): void
     {
+        $this->shoot->update(['scheduled_at' => '2026-10-03 22:00:00', 'timezone' => 'America/New_York',
+            'address' => 'Test Street', 'property_details' => ['aptSuite' => '93', 'lockbox_code' => 'secret'],
+            'company_notes' => 'private', 'total_quote' => 999]);
+        $this->shoot->photographer?->update(['timezone' => 'America/New_York']);
         $override = User::factory()->create(['role' => 'editor', 'metadata' => ['editing_capabilities' => ['photo']]]);
         $data = $this->payload(['mode' => 'editor', 'scope' => 'photos', 'photo_editor_id' => $override->id]);
         unset($data['file_ids']);
@@ -105,7 +109,16 @@ class ScopedEditingDispatchTest extends TestCase
         $this->actingAs($override)->getJson('/api/editing-tasks?open=true&summary=true')->assertOk()
             ->assertJsonCount(1, 'data')->assertJsonPath('data.0.shoot_id', $this->shoot->id)
             ->assertJsonPath('data.0.pending_items_count', 1)->assertJsonMissingPath('data.0.items')
-            ->assertJsonMissingPath('data.0.plan');
+            ->assertJsonMissingPath('data.0.plan')
+            ->assertJsonPath('data.0.shoot.scheduledLocalDate', '2026-10-03')
+            ->assertJsonPath('data.0.shoot.timeLabel', '6:00 PM')
+            ->assertJsonPath('data.0.shoot.scheduleTimezone', 'America/New_York')
+            ->assertJsonPath('data.0.shoot.services.0.label', 'Photos and Video')
+            ->assertJsonPath('data.0.shoot.hasScopedEditingTasks', true)
+            ->assertJsonMissingPath('data.0.shoot.company_notes')
+            ->assertJsonMissingPath('data.0.shoot.total_quote')
+            ->assertJsonMissingPath('data.0.shoot.property_details')
+            ->assertJsonMissingPath('data.0.shoot.files');
         $this->assertSame($this->photoEditor->id, (int) DB::table('shoot_service')->first()->editor_id);
         $this->getJson("/api/editing-tasks/{$item->id}/sources/{$this->video->id}")->assertNotFound();
         $this->actingAs($this->videoEditor)->getJson('/api/editing-tasks?open=true&summary=true')->assertOk()->assertJsonCount(0, 'data');
