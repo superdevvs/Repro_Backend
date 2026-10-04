@@ -38,9 +38,12 @@ class TemplateVariableResolverTest extends TestCase
 
         $variables = $resolver->resolve(['shoot' => $shoot]);
 
-        $this->assertSame('123 Main St, Austin, TX, 78701', $variables['shoot_location']);
+        $this->assertSame('123 Main St, Austin, TX 78701', $variables['shoot_location']);
         $this->assertSame('Jan 10, 2025', $variables['shoot_date']);
         $this->assertSame('10:00 AM', $variables['shoot_time']);
         $this->assertSame(250.0, $variables['shoot_total']);
+
+        $shoot->property_details = ['aptSuite' => '12'];
+        $this->assertSame('123 Main St, Unit 12, Austin, TX 78701', $resolver->resolve(['shoot' => $shoot])['shoot_location']);
     }
 }

@@ -2954,6 +2954,7 @@ class ShootMutationActionsTest extends TestCase
     #[\PHPUnit\Framework\Attributes\Test]
     public function cubicasa_provider_failure_does_not_fail_shoot_approval(): void
     {
+        $this->secondService->update(['category_id' => \App\Models\Category::firstOrCreate(['name' => 'Floor Plans'])->id]);
         $cubicasa = Mockery::mock(CubiCasaService::class);
         $cubicasa->shouldReceive('hasCredentials')->once()->andReturnTrue();
         $cubicasa->shouldReceive('createOrder')->once()->andThrow(new \RuntimeException('temporary provider outage'));
