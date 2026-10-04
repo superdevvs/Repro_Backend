@@ -41,7 +41,41 @@ class ScopedEditingPlan
             })->values()->all(),
             'editors' => $this->editors()->map(fn ($editor) => ['id' => $editor->id, 'name' => $editor->name, 'lanes' => $editor->getEditingCapabilities()])->all(),
             'assignments' => $assignments->buildEditorAssignmentsPayload($shoot, $user),
+            'lanes' => $this->lanes($shoot),
             'videoAi' => ['available' => false, 'reason' => 'Video AI workflows are not enabled yet. Choose a human video editor.']];
+    }
+
+    /** Uploaded intake that a whole-shoot or whole-lane request would send. */
+    public function intakeFiles(Shoot $shoot): Collection
+    {
+        $assignments = app(ShootEditingAssignmentService::class);
+        $access = app(ShootAuthorizationSupport::class);
+        return $shoot->files()->where('workflow_stage', 'todo')->where('is_hidden', false)->get()
+            ->filter(fn ($file) => !$file->is_ai_edited && !$file->isIguideOfflinePackage() && $file->media_type !== 'floorplan'
+                && ($assignments->getFileLane($file) === 'video' || $access->isImageMediaFile($file) || $access->isRawCameraFile($file)));
+    }
+
+    /** Whether each lane has intake to send and whether it was already sent to editing. */
+    public function lanes(Shoot $shoot): array
+    {
+        $assignments = app(ShootEditingAssignmentService::class);
+        $present = $this->intakeFiles($shoot)->map(fn ($file) => $assignments->getFileLane($file))->unique();
+        $stage = $shoot->workflow_status ?: $shoot->status;
+        $sent = match (true) {
+            $stage === Shoot::STATUS_UPLOADED => [],
+            $stage !== Shoot::STATUS_EDITING => ['photo', 'video'],
+            default => $this->sentLanes($shoot),
+        };
+        return collect(['photo', 'video'])->mapWithKeys(fn ($lane) => [$lane => ['available' => $present->contains($lane), 'sent' => in_array($lane, $sent, true)]])->all();
+    }
+
+    private function sentLanes(Shoot $shoot): array
+    {
+        $requests = \App\Models\ShootEditingDispatch::where('shoot_id', $shoot->id)->where('scope', '!=', 'selected')->get(['scope']);
+        // Shoots sent before lane-level requests existed went to editing as a whole.
+        if ($requests->isEmpty()) return ['photo', 'video'];
+        return $requests->flatMap(fn ($request) => ['whole' => ['photo', 'video'], 'photos' => ['photo'], 'videos' => ['video']][$request->scope] ?? [])
+            ->unique()->values()->all();
     }
 
     public function preview(Shoot $shoot, User $user, array $data, bool $enforceVersions = false): array
@@ -51,10 +85,7 @@ class ScopedEditingPlan
         abort_if($destination === 'ai' && $scope === 'videos', 422, 'Video AI workflows are not enabled yet. Choose a human video editor.');
         $assignments = app(ShootEditingAssignmentService::class);
         $access = app(ShootAuthorizationSupport::class);
-        $files = $scope === 'selected' ? $shoot->files()->whereIn('id', $data['file_ids'] ?? [])->get()
-            : $shoot->files()->where('workflow_stage', 'todo')->where('is_hidden', false)->get()
-                ->filter(fn ($file) => !$file->is_ai_edited && !$file->isIguideOfflinePackage() && $file->media_type !== 'floorplan'
-                    && ($assignments->getFileLane($file) === 'video' || $access->isImageMediaFile($file) || $access->isRawCameraFile($file)));
+        $files = $scope === 'selected' ? $shoot->files()->whereIn('id', $data['file_ids'] ?? [])->get() : $this->intakeFiles($shoot);
         if ($scope === 'selected') abort_unless($files->isNotEmpty() && $files->count() === count($data['file_ids'] ?? []), 422, 'Select existing files from this shoot.');
         if ($scope === 'photos') $files = $files->filter(fn ($file) => $assignments->getFileLane($file) === 'photo');
         if ($scope === 'videos') $files = $files->filter(fn ($file) => $assignments->getFileLane($file) === 'video');

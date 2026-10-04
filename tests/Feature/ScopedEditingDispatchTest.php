@@ -208,6 +208,35 @@ class ScopedEditingDispatchTest extends TestCase
         $this->assertSame(['video_branded' => 'https://example.test/branded', 'video_link' => 'https://example.test/finished'], $this->shoot->fresh()->tour_links);
     }
 
+    public function test_lanes_report_what_was_sent_so_the_remaining_lane_can_be_sent_later(): void
+    {
+        DB::table('shoot_service')->update(['editor_id' => null, 'video_editor_id' => null]);
+        $this->getJson("/api/shoots/{$this->shoot->id}/editing-plan")->assertOk()
+            ->assertJsonPath('data.lanes.photo', ['available' => true, 'sent' => false])
+            ->assertJsonPath('data.lanes.video', ['available' => true, 'sent' => false]);
+        $videos = $this->payload(['mode' => 'editor', 'scope' => 'videos']);
+        unset($videos['file_ids']);
+        $this->send($videos)->assertAccepted();
+        $this->assertSame('editing', $this->shoot->fresh()->workflow_status);
+        $this->assertSame($this->videoEditor->id, (int) DB::table('shoot_service')->first()->video_editor_id);
+        $this->assertNull(DB::table('shoot_service')->first()->editor_id);
+        $this->getJson("/api/shoots/{$this->shoot->id}/editing-plan")->assertOk()
+            ->assertJsonPath('data.lanes.photo.sent', false)->assertJsonPath('data.lanes.video.sent', true);
+        $photos = array_replace($videos, ['scope' => 'photos', 'request_id' => (string) Str::uuid()]);
+        $this->send($photos)->assertAccepted();
+        $this->assertSame($this->photoEditor->id, (int) DB::table('shoot_service')->first()->editor_id);
+        $this->getJson("/api/shoots/{$this->shoot->id}/editing-plan")->assertOk()
+            ->assertJsonPath('data.lanes.photo.sent', true)->assertJsonPath('data.lanes.video.sent', true);
+        $this->assertSame(0, ShootEditingDispatchItem::count());
+    }
+
+    public function test_shoots_sent_before_lane_requests_report_both_lanes_sent(): void
+    {
+        $this->shoot->update(['status' => 'editing', 'workflow_status' => 'editing']);
+        $this->getJson("/api/shoots/{$this->shoot->id}/editing-plan")->assertOk()
+            ->assertJsonPath('data.lanes.photo.sent', true)->assertJsonPath('data.lanes.video.sent', true);
+    }
+
     public function test_ai_partial_results_publish_once_keep_alternatives_and_preserve_other_items(): void
     {
         $other = $this->photo->replicate(); $other->filename = 'bedroom.jpg'; $other->save(); $other->refresh();
