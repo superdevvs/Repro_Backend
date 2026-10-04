@@ -12,6 +12,7 @@ use App\Services\Studio\StudioProviderSettings;
 use App\Services\Studio\VirtualStagingOptions;
 use App\Services\Studio\WorkspaceMediaService;
 use App\Support\LockedWrite;
+use App\Support\EditingDispatchWriteLock;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
@@ -65,7 +66,8 @@ class ShootEditingDispatchService
             foreach ($existing as $workspace) {
                 $this->media->authorize($workspace->media, $user, $workspace->team_id);
             }
-            return LockedWrite::run(fn () => DB::transaction(function () use ($existing, $data) {
+            return LockedWrite::run(fn () => DB::transaction(function () use ($existing, $data, $shoot) {
+                EditingDispatchWriteLock::acquire((int) $shoot->id);
                 $workspaces = StudioWorkspace::whereIn('id', $existing->modelKeys())->lockForUpdate()->get();
                 foreach ($workspaces as $workspace) {
                     if ($data['mode'] === 'ai' && $workspace->status === 'failed' && ($workspace->operation['type'] ?? null) === 'generate') {
@@ -120,6 +122,7 @@ class ShootEditingDispatchService
         VirtualStagingOptions::assert($staging);
 
         return LockedWrite::run(fn () => DB::transaction(function () use ($shoot, $user, $initial, $key, $inputHash, $projects, $teamId, $staging) {
+            EditingDispatchWriteLock::acquire((int) $shoot->id);
             $locked = Shoot::lockForUpdate()->findOrFail($shoot->id);
             $existing = StudioWorkspace::where('shoot_id', $shoot->id)->where('shoot_dispatch_key', $key)->get();
             if ($existing->isNotEmpty()) {

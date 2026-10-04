@@ -8,6 +8,7 @@ use App\Models\ShootEditingDispatch;
 use App\Models\StudioWorkspace;
 use App\Models\User;
 use App\Support\LockedWrite;
+use App\Support\EditingDispatchWriteLock;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\DB;
 
@@ -17,6 +18,7 @@ class ScopedEditingDispatch
     {
         $hash = hash('sha256', json_encode(StudioWorkspace::canonicalConfig(Arr::except($data, ['request_id']))));
         return LockedWrite::run(fn () => DB::transaction(function () use ($shoot, $user, $data, $hash) {
+            EditingDispatchWriteLock::acquire((int) $shoot->id);
             $existing = ShootEditingDispatch::where('request_id', $data['request_id'])->first();
             if ($existing) {
                 abort_unless((int) $existing->shoot_id === (int) $shoot->id && (int) $existing->created_by === (int) $user->id && $existing->input_hash === $hash, 409, 'This request ID was already used with different editing choices.');

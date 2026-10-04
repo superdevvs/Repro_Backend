@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Shoot;
 use App\Services\Shoots\ShootAuthorizationSupport;
 use App\Services\Shoots\ShootEditingDispatchService;
+use App\Support\LockedWrite;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
 
@@ -27,7 +28,20 @@ class ShootEditingDispatchController extends Controller
     {
         $this->authorizeShoot($request, $shoot, $request->has('file_ids') && $request->input('mode') === 'ai' && (!$request->has('scope') || $request->input('scope') === 'selected'));
         $data = $this->validateInput($request);
-        return response()->json(['data' => $dispatch->dispatch($shoot, $request->user(), $data)], 202);
+        try {
+            return response()->json(['data' => $dispatch->dispatch($shoot, $request->user(), $data)], 202);
+        } catch (\Throwable $exception) {
+            if (! LockedWrite::isLockContention($exception)) {
+                throw $exception;
+            }
+
+            return response()->json([
+                'message' => 'Editing is temporarily busy. Retry this request in a moment.',
+                'error_type' => 'editing_dispatch_busy',
+                'retryable' => true,
+                'dispatch_request_id' => $data['request_id'],
+            ], 503)->header('Retry-After', '1');
+        }
     }
 
     public function preview(Request $request, Shoot $shoot)
