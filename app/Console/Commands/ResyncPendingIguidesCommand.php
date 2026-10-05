@@ -33,7 +33,11 @@ class ResyncPendingIguidesCommand extends Command
         $shootIds = Shoot::query()
             ->where(function ($q) use ($cutoff) {
                 $q->where(fn ($missingTour) => $missingTour->whereNull('iguide_tour_url')->where(fn ($recent) => $recent->where('updated_at', '>=', $cutoff)->orWhere('scheduled_date', '>=', $cutoff->copy()->toDateString())))
-                    ->orWhere(fn ($missingPlans) => $missingPlans->whereNotNull('iguide_tour_url')->where(fn ($assets) => $assets->whereNull('iguide_floorplans')->orWhere('iguide_floorplans', '[]')));
+                    ->orWhere(fn ($missingPlans) => $missingPlans->whereNotNull('iguide_tour_url')->where(fn ($assets) => $assets->whereNull('iguide_floorplans')->orWhere('iguide_floorplans', '[]'))
+                        // Existing local replacements must not cause deleted provider
+                        // originals to be fetched again. Pending provider files are
+                        // recovered independently above without restoring deletions.
+                        ->whereDoesntHave('files', fn ($files) => $files->where('media_type', 'floorplan')));
             })
             ->orderByDesc('id')
             ->limit($limit)

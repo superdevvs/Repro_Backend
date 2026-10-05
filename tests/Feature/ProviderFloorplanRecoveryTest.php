@@ -123,6 +123,26 @@ class ProviderFloorplanRecoveryTest extends TestCase
         Queue::assertPushed(IngestCubiCasaAssetsJob::class, 2);
     }
 
+    public function test_existing_local_replacements_do_not_restore_deleted_provider_originals(): void
+    {
+        Queue::fake(); Cache::flush();
+        $service = \App\Models\Service::factory()->create(['name' => 'iGUIDE Floor Plan']);
+        foreach (['cubicasa', 'iguide'] as $provider) {
+            $shoot = $this->shoot($provider);
+            $shoot->services()->attach($service->id, ['price' => 100, 'quantity' => 1]);
+            $shoot->update([$provider.'_floorplans' => [], 'cubicasa_status' => 'Ready', 'cubicasa_order_id' => $provider === 'cubicasa' ? 'ready' : null, 'iguide_tour_url' => 'https://youriguide.com/replaced/']);
+            $file = $this->file($shoot, $provider, 'clean');
+            $file->update(['metadata' => ['source' => 'manual'], 'web_path' => 'replacement.jpg']);
+        }
+        $this->mock(\App\Services\CubiCasaService::class, function ($mock) {
+            $mock->shouldReceive('hasCredentials')->once()->andReturn(true);
+            $mock->shouldNotReceive('syncShoot');
+        });
+        $this->artisan('cubicasa:resync-pending')->assertSuccessful();
+        $this->artisan('iguide:resync-pending')->assertSuccessful();
+        Queue::assertNothingPushed();
+    }
+
     public function test_existing_provider_file_is_recovered_even_if_the_provider_asset_list_is_lost(): void
     {
         Queue::fake(); Cache::flush(); $shoot = $this->shoot('cubicasa');
