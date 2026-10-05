@@ -79,6 +79,10 @@ class IngestIguideAssetsJob implements ShouldQueue
 
             try {
                 if ($existingByKey->has($assetKey)) {
+                    $existing = $existingByKey->get($assetKey);
+                    if (in_array($existing->scan_status, [ShootFile::SCAN_STATUS_QUARANTINED, ShootFile::SCAN_STATUS_FAILED], true)) {
+                        ScanShootFileJob::dispatch($existing->id)->afterCommit();
+                    }
                     continue;
                 }
 
@@ -140,6 +144,7 @@ class IngestIguideAssetsJob implements ShouldQueue
                     'uploaded_by' => $uploadedByUserId,
                     'uploaded_at' => now(),
                     'workflow_stage' => ShootFile::STAGE_COMPLETED,
+                    'scan_status' => ShootFile::SCAN_STATUS_QUARANTINED,
                     'metadata' => [
                         'source' => 'iguide',
                         'iguide_asset_key' => $assetKey,
@@ -154,17 +159,8 @@ class IngestIguideAssetsJob implements ShouldQueue
                 ]);
 
                 $ingestedFileIds[] = $shootFile->id;
-
-                // Generate a renderable preview (PDF -> page JPGs, or link image) so the
-                // floorplan shows a thumbnail instead of an empty card. Non-fatal.
-                try {
-                    app(\App\Services\Shoots\FloorplanPreviewService::class)->ensurePreview($shootFile);
-                } catch (\Throwable $e) {
-                    Log::warning('IngestIguideAssetsJob: floorplan preview generation failed', [
-                        'shoot_file_id' => $shootFile->id,
-                        'error' => $e->getMessage(),
-                    ]);
-                }
+                // Floorplan originals remain withheld until the real scan is clean.
+                ScanShootFileJob::dispatch($shootFile->id)->afterCommit();
 
                 // Mirror into R2 during the dual-write/R2-only cutover.
                 if (config('media.dual_write') || config('media.r2_only')) {

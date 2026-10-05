@@ -88,6 +88,11 @@ class IngestCubiCasaAssetsJob implements ShouldQueue
 
             try {
                 if ($existingByKey->has($assetKey)) {
+                    $existing = $existingByKey->get($assetKey);
+                    if (in_array($existing->scan_status, [ShootFile::SCAN_STATUS_QUARANTINED, ShootFile::SCAN_STATUS_FAILED], true)) {
+                        // A retry must also recover a previously missed queue dispatch.
+                        ScanShootFileJob::dispatch($existing->id)->afterCommit();
+                    }
                     continue;
                 }
 
@@ -151,6 +156,7 @@ class IngestCubiCasaAssetsJob implements ShouldQueue
                     'uploaded_by' => $uploadedByUserId,
                     'uploaded_at' => now(),
                     'workflow_stage' => ShootFile::STAGE_COMPLETED,
+                    'scan_status' => ShootFile::SCAN_STATUS_QUARANTINED,
                     'metadata' => [
                         'source' => 'cubicasa',
                         'cubicasa_asset_key' => $assetKey,
@@ -165,17 +171,9 @@ class IngestCubiCasaAssetsJob implements ShouldQueue
                 ]);
 
                 $ingestedFileIds[] = $shootFile->id;
-
-                // Generate a renderable preview (PDF -> page JPGs, or link image) so the
-                // floorplan shows a thumbnail instead of an empty card. Non-fatal.
-                try {
-                    app(\App\Services\Shoots\FloorplanPreviewService::class)->ensurePreview($shootFile);
-                } catch (\Throwable $e) {
-                    Log::warning('IngestCubiCasaAssetsJob: floorplan preview generation failed', [
-                        'shoot_file_id' => $shootFile->id,
-                        'error' => $e->getMessage(),
-                    ]);
-                }
+                // Provider files must follow the same quarantine lifecycle as uploads.
+                // Clean scan release queues processing, which renders floorplan previews.
+                ScanShootFileJob::dispatch($shootFile->id)->afterCommit();
 
                 if (config('media.dual_write') || config('media.r2_only')) {
                     try {

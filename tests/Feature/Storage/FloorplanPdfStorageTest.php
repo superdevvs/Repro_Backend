@@ -3,6 +3,9 @@
 namespace Tests\Feature\Storage;
 
 use App\Models\Shoot;
+use App\Jobs\ProcessImageJob;
+use App\Services\ImageProcessingService;
+use App\Services\ShootMediaStorageService;
 use App\Models\ShootFile;
 use App\Models\User;
 use App\Services\Media\MediaStorage;
@@ -70,6 +73,19 @@ class FloorplanPdfStorageTest extends TestCase
         $this->assertSame([$file->path], Storage::disk('media_originals')->allFiles());
         Storage::disk('local')->assertMissing($file->path);
         $this->assertSame($this->pdfBytes(), Storage::disk('media_originals')->get($file->path));
+    }
+
+    public function test_clean_scan_processing_renders_pdf_without_sending_it_to_the_photo_processor(): void
+    {
+        $file = $this->pdfFile('local');
+        $processor = Mockery::mock(ImageProcessingService::class);
+        $processor->shouldNotReceive('processImage');
+        (new ProcessImageJob($file))->handle($processor, app(ShootMediaStorageService::class), app(MediaStorage::class));
+        $file->refresh();
+        $this->assertNotNull($file->web_path);
+        $this->assertNull($file->processing_failed_at);
+        Storage::disk('local')->assertExists($file->web_path);
+        $this->assertSame($this->pdfBytes(), Storage::disk('local')->get($file->path));
     }
 
     private function pdfFile(string $disk): ShootFile

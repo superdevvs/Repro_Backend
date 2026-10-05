@@ -614,7 +614,7 @@ class ShootMediaController extends Controller
             return response()->json(['message' => 'Forbidden'], 403);
         }
         if ($file->isBlockedFromDelivery()) {
-            return $this->infectedFileResponse();
+            return $this->blockedFileResponse($file);
         }
         if ($this->shootClientReleaseAccessService->isFileReleaseLocked($shoot, $file, $user)) {
             return $this->shootClientReleaseAccessService->downloadLockedResponse();
@@ -659,7 +659,7 @@ class ShootMediaController extends Controller
             return response()->json(['message' => 'Forbidden'], 403);
         }
         if ($file->isBlockedFromDelivery()) {
-            return $this->infectedFileResponse();
+            return $this->blockedFileResponse($file);
         }
 
         $needsWatermark = $this->shootClientReleaseAccessService->isFileReleaseLocked($shoot, $file, $user);
@@ -678,8 +678,8 @@ class ShootMediaController extends Controller
         if ($files->contains(fn (ShootFile $file) => ! $this->shootAuthorizationSupport->canDownloadShootMediaFile($shoot, $file, $request->user()))) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
-        if ($files->contains(fn (ShootFile $file) => $file->isBlockedFromDelivery())) {
-            return $this->infectedFileResponse();
+        if ($blocked = $files->first(fn (ShootFile $file) => $file->isBlockedFromDelivery())) {
+            return $this->blockedFileResponse($blocked);
         }
         if ($files->contains(fn (ShootFile $file) => $this->shootClientReleaseAccessService->isFileReleaseLocked($shoot, $file, $request->user()))) {
             return $this->shootClientReleaseAccessService->downloadLockedResponse();
@@ -934,16 +934,11 @@ class ShootMediaController extends Controller
     }
 
     /**
-     * Standard response when a file is withheld because its virus scan flagged
-     * it as infected (Req 15.7). Infected files are never previewed or
-     * downloaded; legacy/unscanned files remain servable.
+     * Keep files withheld until clean; distinguish pending scans from infection.
      */
-    protected function infectedFileResponse()
+    protected function blockedFileResponse(ShootFile $file)
     {
-        return response()->json([
-            'error_type' => 'file_infected',
-            'message' => 'This file was flagged as infected by a virus scan and cannot be previewed or downloaded.',
-        ], 403);
+        return response()->json($file->deliveryScanError(), 403);
     }
 
     protected function withCors(Response $response, Request $request): Response

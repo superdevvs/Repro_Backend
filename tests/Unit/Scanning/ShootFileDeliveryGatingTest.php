@@ -54,4 +54,16 @@ class ShootFileDeliveryGatingTest extends TestCase
     {
         $this->assertTrue($this->fileWithStatus(ShootFile::SCAN_STATUS_FAILED)->isBlockedFromDelivery());
     }
+
+    #[Test]
+    public function pending_and_failed_scans_do_not_claim_infection(): void
+    {
+        foreach ([ShootFile::SCAN_STATUS_QUARANTINED => 'file_scan_pending', ShootFile::SCAN_STATUS_FAILED => 'file_scan_failed'] as $status => $type) {
+            $file = $this->fileWithStatus($status);
+            $this->assertTrue($file->isBlockedFromDelivery());
+            $this->assertSame($type, $file->deliveryScanError()['error_type']);
+            $this->assertStringNotContainsString('infected', $file->deliveryScanError()['message']);
+        }
+        $this->assertSame('file_infected', $this->fileWithStatus(ShootFile::SCAN_STATUS_INFECTED)->deliveryScanError()['error_type']);
+    }
 }

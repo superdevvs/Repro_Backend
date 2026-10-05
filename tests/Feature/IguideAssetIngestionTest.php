@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Jobs\IngestIguideAssetsJob;
+use App\Jobs\ScanShootFileJob;
 use App\Jobs\SyncShootFileToDropboxJob;
 use App\Models\Shoot;
 use App\Models\ShootFile;
@@ -77,6 +78,12 @@ class IguideAssetIngestionTest extends TestCase
         $this->assertSame('imperial', $pdfFile->metadata['units']);
         $this->assertSame('Main Floor', $jpgFile->metadata['floor_name']);
         $this->assertSame('application/pdf', $pdfFile->mime_type);
+        foreach ([$pdfFile, $jpgFile] as $file) {
+            $this->assertSame(ShootFile::SCAN_STATUS_QUARANTINED, $file->scan_status);
+            $this->assertTrue($file->isBlockedFromDelivery());
+            $this->assertNull($file->web_path);
+            Queue::assertPushed(ScanShootFileJob::class, fn ($job) => $job->shootFileId === $file->id);
+        }
 
         // Imported masters use private media storage under shoots/{id}/floorplans/.
         $relPdf = ltrim(str_replace('storage/', '', (string) $pdfFile->storage_path), '/');
@@ -125,5 +132,6 @@ class IguideAssetIngestionTest extends TestCase
         Queue::assertNotPushed(SyncShootFileToDropboxJob::class);
         // No HTTP download attempt for the already-ingested asset.
         Http::assertNothingSent();
+        Queue::assertPushed(ScanShootFileJob::class, 1);
     }
 }

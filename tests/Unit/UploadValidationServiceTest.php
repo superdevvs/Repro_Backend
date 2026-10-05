@@ -46,6 +46,31 @@ class UploadValidationServiceTest extends TestCase
     }
 
     #[Test]
+    public function production_defaults_accept_floorplan_pdf_originals(): void
+    {
+        config(['uploads' => require base_path('config/uploads.php')]);
+        $file = UploadedFile::fake()->createWithContent('floorplan.PDF', "%PDF-1.4\n%%EOF\n");
+        $this->service->validate($file, 'files', 'admin');
+        $this->assertTrue($this->service->isAllowedType($file));
+    }
+
+    #[Test]
+    public function adding_pdf_does_not_accept_a_script_disguised_as_a_pdf(): void
+    {
+        config(['uploads' => require base_path('config/uploads.php')]);
+        $path = tempnam(sys_get_temp_dir(), 'floorplan-script-');
+        file_put_contents($path, "<?php echo 'unsafe'; ?>");
+        // Fake uploads infer MIME from the chosen extension; use real finfo bytes.
+        $file = new UploadedFile($path, 'floorplan.pdf', 'application/pdf', UPLOAD_ERR_OK, true);
+        try {
+            $this->expectException(ValidationException::class);
+            $this->service->validate($file, 'files', 'admin');
+        } finally {
+            unlink($path);
+        }
+    }
+
+    #[Test]
     public function it_rejects_a_file_that_exceeds_the_maximum_size(): void
     {
         config(['uploads.max_bytes' => 1024 * 1024]); // 1 MB cap for this case

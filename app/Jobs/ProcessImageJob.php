@@ -54,6 +54,17 @@ class ProcessImageJob implements ShouldQueue
         }
 
         try {
+            if (strtolower((string) $this->shootFile->media_type) === 'floorplan') {
+                $preview = app(\App\Services\Shoots\FloorplanPreviewService::class)->ensurePreview($this->shootFile);
+                if (!in_array($preview['status'], ['already_present', 'pdf_rendered', 'generated'], true)) {
+                    throw new \RuntimeException('Floorplan preview generation failed: '.$preview['status']);
+                }
+                if (config('media.dual_write') || config('media.r2_only')) {
+                    SyncShootFileToR2Job::dispatch($this->shootFile->id);
+                }
+                return;
+            }
+
             $needsPreviewRegeneration = $imageService->needsPreviewRegeneration($this->shootFile);
 
             if (

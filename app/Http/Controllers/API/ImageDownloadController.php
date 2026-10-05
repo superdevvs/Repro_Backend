@@ -50,7 +50,8 @@ class ImageDownloadController extends Controller
             // Infected files are blocked from download (Req 15.7).
             if ($shootFile->isBlockedFromDelivery()) {
                 return response()->json([
-                    'error' => 'This file was flagged as infected by a virus scan and cannot be downloaded.'
+                    'error' => $shootFile->deliveryScanError()['message'],
+                    'error_type' => $shootFile->deliveryScanError()['error_type'],
                 ], 403);
             }
 
@@ -143,7 +144,8 @@ class ImageDownloadController extends Controller
             // Infected files are blocked from preview (Req 15.7).
             if ($shootFile->isBlockedFromDelivery()) {
                 return response()->json([
-                    'error' => 'This file was flagged as infected by a virus scan and cannot be previewed.'
+                    'error' => $shootFile->deliveryScanError()['message'],
+                    'error_type' => $shootFile->deliveryScanError()['error_type'],
                 ], 403);
             }
 

@@ -26,6 +26,8 @@ return [
         'jpeg',
         'jpg',
         'png',
+        // Floorplan originals are PDF deliverables, not only their JPEG previews.
+        'pdf',
         'gif',
         'mp4',
         'mov',

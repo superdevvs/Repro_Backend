@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Jobs\IngestCubiCasaAssetsJob;
+use App\Jobs\ScanShootFileJob;
 use App\Jobs\SyncShootFileToDropboxJob;
 use App\Models\Service;
 use App\Models\Shoot;
@@ -88,6 +89,12 @@ class CubiCasaAssetIngestionTest extends TestCase
         $this->assertSame('cubicasa', $pdf->metadata['source']);
         $this->assertSame('application/pdf', $pdf->mime_type);
         $this->assertSame('image/jpeg', $jpg->mime_type);
+        foreach ([$pdf, $jpg] as $file) {
+            $this->assertSame(ShootFile::SCAN_STATUS_QUARANTINED, $file->scan_status);
+            $this->assertTrue($file->isBlockedFromDelivery());
+            $this->assertNull($file->web_path);
+            Queue::assertPushed(ScanShootFileJob::class, fn ($job) => $job->shootFileId === $file->id);
+        }
 
         $relPdf = ltrim(str_replace('storage/', '', (string) $pdf->storage_path), '/');
         Storage::disk('local')->assertExists($relPdf);
@@ -110,6 +117,7 @@ class CubiCasaAssetIngestionTest extends TestCase
 
         $this->assertSame(0, ShootFile::where('shoot_id', $shoot->id)->count());
         Http::assertNothingSent();
+        Queue::assertNotPushed(ScanShootFileJob::class);
         Queue::assertNotPushed(SyncShootFileToDropboxJob::class);
     }
 
@@ -149,10 +157,13 @@ class CubiCasaAssetIngestionTest extends TestCase
         $this->assertSame(1, ShootFile::where('shoot_id', $shoot->id)->where('media_type', 'floorplan')->count());
         Queue::assertNotPushed(SyncShootFileToDropboxJob::class);
         Http::assertNothingSent();
+        Queue::assertPushed(ScanShootFileJob::class, 1);
     }
 
     public function test_failed_downloads_raise_so_the_job_retries(): void
     {
+        // Ingestion now queues scans. Keep fake provider bytes out of real processing.
+        Queue::fake();
         Http::fake([
             '*521-merged-dim.pdf*' => Http::response('nope', 500),
             '*floor-1-dim.jpg*' => Http::response('JPGDATA', 200, ['Content-Type' => 'image/jpeg']),

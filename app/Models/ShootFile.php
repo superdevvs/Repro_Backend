@@ -183,6 +183,25 @@ class ShootFile extends Model
         return $this->scan_status !== self::SCAN_STATUS_CLEAN;
     }
 
+    /** Explain withholding without claiming malware when a scan is pending or failed. */
+    public function deliveryScanError(): array
+    {
+        return match ($this->scan_status) {
+            self::SCAN_STATUS_INFECTED => [
+                'error_type' => 'file_infected',
+                'message' => 'This file was flagged as infected by a virus scan and cannot be previewed or downloaded.',
+            ],
+            self::SCAN_STATUS_FAILED => [
+                'error_type' => 'file_scan_failed',
+                'message' => 'The safety scan could not complete. This file cannot be previewed or downloaded until it is successfully rescanned.',
+            ],
+            default => [
+                'error_type' => 'file_scan_pending',
+                'message' => 'This file is awaiting its safety scan. Preview and download will be available after the scan completes.',
+            ],
+        };
+    }
+
     /**
      * Whether this row is the opaque iGUIDE ZIP accepted by the dedicated
      * integration endpoint. Both markers are required so a legacy upload that
