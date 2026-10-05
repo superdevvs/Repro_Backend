@@ -298,9 +298,12 @@ class Invoice extends Model
         return $this->belongsTo(Shoot::class);
     }
 
-    /** Invoice-only messages and summaries must honor the imported booking's quiet mode. */
+    /** Invoice messages and summaries must honor holds, cancellations, and imported booking quiet mode. */
     public function suppressesExternalNotifications(): bool
     {
+        if ($this->hasNonBillableClientShoot()) {
+            return true;
+        }
         if (data_get($this->payment_details, 'legacy_migration.notifications_suppressed') === true) {
             return true;
         }
@@ -313,6 +316,21 @@ class Invoice extends Model
         return $this->shoots()->withoutGlobalScope('private_import_drafts')->get()->contains(fn (Shoot $shoot) => $shoot->suppressesExternalNotifications())
             || $this->items()->with(['shoot' => fn ($query) => $query->withoutGlobalScope('private_import_drafts')])->get()
                 ->contains(fn (InvoiceItem $item) => $item->shoot?->suppressesExternalNotifications());
+    }
+
+    private function hasNonBillableClientShoot(): bool
+    {
+        if ($this->isPayoutInvoice()) {
+            return false;
+        }
+
+        $blocked = fn ($query) => $query->withoutGlobalScope('private_import_drafts')
+            ->where(fn ($query) => $query->whereIn('status', ['on_hold', 'hold_on', 'cancelled', 'canceled'])
+                ->orWhereIn('workflow_status', ['on_hold', 'hold_on', 'cancelled', 'canceled']));
+
+        return ($this->shoot_id && $blocked($this->shoot())->exists())
+            || ($this->exists && ($blocked($this->shoots())->exists()
+                || $this->items()->whereHas('shoot', $blocked)->exists()));
     }
 
     /**

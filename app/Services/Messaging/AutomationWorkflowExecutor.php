@@ -1358,6 +1358,14 @@ class AutomationWorkflowExecutor
 
     private function isStaleReminder(AutomationRule $automation, array $context): bool
     {
+        if (in_array($automation->trigger_type, ['INVOICE_SUMMARY', 'WEEKLY_REP_INVOICE'], true)) {
+            foreach ($context['summary_invoices'] ?? [] as $row) {
+                $invoice = \App\Models\Invoice::find($row['id'] ?? null);
+                if (! $invoice || $invoice->suppressesExternalNotifications()) {
+                    return true;
+                }
+            }
+        }
         if (in_array($automation->trigger_type, ['INVOICE_DUE', 'INVOICE_OVERDUE'], true) && ! empty($context['invoice_id'])) {
             $invoice = \App\Models\Invoice::find($context['invoice_id']);
 
