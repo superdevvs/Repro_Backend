@@ -474,6 +474,31 @@ class UserEmailHealthTest extends TestCase
         ]);
     }
 
+    public function test_verification_identifies_the_exact_email_and_keeps_a_similarly_named_account_unverified(): void
+    {
+        $this->partialMock(MailService::class, fn (MockInterface $mock) =>
+            $mock->shouldReceive('sendClientEmailVerifiedEmail')->once()->andReturn(true));
+        $verifiedAccount = User::factory()->create([
+            'name' => 'Marina Yousefian', 'email' => 'marina@example.com',
+            'email_status' => 'unverified', 'email_verified_at' => null,
+        ]);
+        $otherAccount = User::factory()->create([
+            'name' => 'Marina Yousefian', 'email' => 'levik@example.com',
+            'email_status' => 'unverified', 'email_verified_at' => null,
+        ]);
+        $link = app(ClientEmailVerificationLinkService::class)->buildUrl($verifiedAccount);
+        $uri = parse_url($link, PHP_URL_PATH).'?'.parse_url($link, PHP_URL_QUERY);
+
+        $this->get($uri)->assertOk()->assertSee('Verified account')
+            ->assertSee('Marina Yousefian')->assertSee('marina@example.com')
+            ->assertSee('Other account email addresses require their own verification.')
+            ->assertDontSee('levik@example.com');
+        $this->assertSame('verified', $verifiedAccount->fresh()->email_health['status']);
+        $this->assertSame('marina@example.com', $verifiedAccount->fresh()->email_verified_email);
+        $this->assertSame('unverified', $otherAccount->fresh()->email_health['status']);
+        $this->assertNull($otherAccount->fresh()->email_verified_at);
+    }
+
     public function test_admin_created_client_verification_redirects_to_create_password_with_fresh_reset_token(): void
     {
         config(['app.frontend_url' => 'https://dashboard.example.test']);

@@ -138,9 +138,9 @@ class ClientEmailVerificationController extends Controller
 
         return response()->view('email_verification_result', $this->pageData(
             'Email verified',
-            'This account email address is now verified and ready for normal outbound communication.',
+            'This email address is now verified. Sign in with this address to use the verified account.',
             true,
-        ));
+        ) + ['verifiedEmail' => (string) $user->email, 'verifiedAccountName' => (string) $user->name]);
     }
 
     protected function passwordCreationUrl(User $user): string

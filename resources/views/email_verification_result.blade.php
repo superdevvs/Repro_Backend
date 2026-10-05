@@ -110,6 +110,28 @@
             transition: background 0.15s ease;
         }
 
+        .verified-account {
+            margin: 0 0 24px;
+            padding: 16px;
+            border: 1px solid rgba(148, 163, 184, 0.2);
+            border-radius: 12px;
+            text-align: left;
+            line-height: 1.6;
+            overflow-wrap: anywhere;
+        }
+
+        .verified-account-label {
+            display: block;
+            color: #94a3b8;
+            font-size: 13px;
+        }
+
+        .verified-account-email {
+            display: block;
+            color: #f6f9fd;
+            font-weight: 600;
+        }
+
         .button-primary:hover {
             background: #1d4ed8;
         }
@@ -162,6 +184,13 @@
             </div>
             <h1>{{ $title }}</h1>
             <p class="message">{{ $message }}</p>
+            @if($success && !empty($verifiedEmail))
+                <div class="verified-account" role="region" aria-label="Verified account">
+                    <span class="verified-account-label">Verified email for {{ $verifiedAccountName }}</span>
+                    <span class="verified-account-email">{{ $verifiedEmail }}</span>
+                    <span class="verified-account-label">Other account email addresses require their own verification.</span>
+                </div>
+            @endif
             <a class="button-primary" href="{{ $dashboardUrl }}">Open dashboard</a>
             <p class="support">
                 Need help? <a href="mailto:{{ $branding['support_email'] ?? 'contact@reprophotos.com' }}">{{ $branding['support_email'] ?? 'contact@reprophotos.com' }}</a> &middot; {{ \App\Support\SupportContact::PHONE_DISPLAY }}
