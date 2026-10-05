@@ -540,13 +540,14 @@ class IguideFloorPlanDiscoveryTest extends TestCase
             ->assertSuccessful();
     }
 
-    public function test_the_reconciliation_command_skips_a_shoot_that_already_has_its_tour(): void
+    public function test_the_reconciliation_command_skips_provider_refetch_when_tour_and_floorplan_metadata_exist(): void
     {
         Queue::fake();
 
         $this->shootWithFloorPlan([
             'scheduled_date' => now()->subDays(3)->toDateString(),
             'iguide_tour_url' => 'https://youriguide.com/done/',
+            'iguide_floorplans' => [['asset_key' => 'completed-floorplan', 'url' => 'https://assets.test/completed.pdf']],
         ]);
 
         $this->artisan('iguide:resync-pending')->assertSuccessful();
