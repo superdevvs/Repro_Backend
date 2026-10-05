@@ -86,7 +86,7 @@ class ShootListingService
                 'date_range', 'scheduled_start', 'scheduled_end',
                 'completed_start', 'completed_end', 'custom_start', 'custom_end',
                 'date_from', 'date_to', 'private_listing', 'listing_scope', 'include_hidden',
-                'bracket', 'missing', 'limit', 'scheduled_status', 'sort', 'dashboard_open', 'view', 'include_filters',
+                'bracket', 'missing', 'limit', 'scheduled_status', 'hold_status', 'sort', 'dashboard_open', 'view', 'include_filters',
             ]);
             $filterParams = array_filter($filterParams, function ($value) {
                 return $value !== null && $value !== '';
@@ -170,6 +170,9 @@ class ShootListingService
                 $query->whereRaw("LOWER(COALESCE(NULLIF(workflow_status, ''), status)) = ?", [
                     $request->query('scheduled_status'),
                 ]);
+            }
+            if ($tab === 'hold' && in_array($request->query('hold_status'), ['on_hold', 'cancelled'], true)) {
+                $query->where('status', $request->query('hold_status'));
             }
             $this->applyOperationalFilters($query, $request, $tab, $user);
 

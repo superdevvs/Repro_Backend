@@ -149,6 +149,24 @@ class ShootListingAuthorizationTest extends TestCase
         }
     }
 
+    public function test_hold_filter_includes_undated_shoots_before_pagination_and_separates_cache(): void
+    {
+        $hold = $this->shoot(['status' => Shoot::STATUS_ON_HOLD, 'workflow_status' => Shoot::STATUS_ON_HOLD, 'scheduled_date' => null]);
+        $cancelled = $this->shoot(['status' => Shoot::STATUS_CANCELLED, 'workflow_status' => Shoot::STATUS_CANCELLED]);
+        for ($index = 0; $index < 12; $index++) {
+            $cancelled->replicate()->save();
+        }
+        foreach (['salesRep', 'admin'] as $role) {
+            $user = User::factory()->create(['role' => $role]);
+            $params = ['tab' => 'hold', 'per_page' => 12, 'sort' => 'date_asc'];
+            $this->assertSame(14, $this->listing($user, $params)['meta']['count']);
+            $payload = $this->listing($user, $params + ['hold_status' => 'on_hold']);
+            $this->assertSame([$hold->id], array_column($payload['data'], 'id'));
+            $this->assertSame(1, $payload['meta']['count']);
+            $this->assertSame(13, $this->listing($user, $params + ['hold_status' => 'cancelled'])['meta']['count']);
+        }
+    }
+
     public function test_sales_visibility_survives_assignment_removal(): void
     {
         $sales = User::factory()->create(['role' => 'salesRep']);
