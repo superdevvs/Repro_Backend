@@ -37,6 +37,7 @@ return Application::configure(basePath: dirname(__DIR__))
         // Invoice summaries and payouts also run through automations:run-system;
         // their visible rules retain Monday 03:00 and Sunday 05:00 defaults.
         $schedule->command('cubicasa:resync-pending')->everyThirtyMinutes()->withoutOverlapping();
+        $schedule->command('floorplans:recover-provider-assets --limit=100')->everyTenMinutes()->withoutOverlapping()->onOneServer();
         // Reconciliation safety net for an iGuide the photographer produces
         // hours or days after the booking, when no webhook reached us. This was
         // only ever registered in app/Console/Kernel.php, which withSchedule()

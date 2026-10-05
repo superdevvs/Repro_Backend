@@ -27,7 +27,8 @@ class ResyncPendingCubiCasaCommand extends Command
             return self::FAILURE;
         }
 
-        $limit = (int) $this->option('limit');
+        $limit = max(1, (int) $this->option('limit'));
+        app(\App\Services\Shoots\ProviderFloorplanRecovery::class)->recover('cubicasa', $limit);
 
         // Collect the ids and let the read finish before any write happens.
         //
@@ -42,7 +43,8 @@ class ResyncPendingCubiCasaCommand extends Command
             ->whereNotNull('cubicasa_order_id')
             ->where(function ($q) {
                 $q->whereNull('cubicasa_status')
-                    ->orWhereIn('cubicasa_status', ['Pending', 'Fixing', 'New', 'Draft']);
+                    ->orWhereIn('cubicasa_status', ['Pending', 'Fixing', 'New', 'Draft'])
+                    ->orWhere(fn ($ready) => $ready->where('cubicasa_status', 'Ready')->where(fn ($assets) => $assets->whereNull('cubicasa_floorplans')->orWhere('cubicasa_floorplans', '[]')));
             })
             ->orderByDesc('id')
             ->limit($limit)

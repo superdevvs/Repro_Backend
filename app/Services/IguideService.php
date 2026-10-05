@@ -37,13 +37,12 @@ class IguideService
     {
         $settings = $this->loadSettings('integrations.iguide');
 
-        $this->apiUsername = $settings['apiUsername'] ?? config('services.iguide.api_username');
-        $this->apiPassword = $settings['apiPassword'] ?? config('services.iguide.api_password');
-        $this->apiKey = $settings['apiKey'] ?? config('services.iguide.api_key');
-        $this->appId = $settings['appId'] ?? config('services.iguide.app_id');
-        $this->appToken = $settings['appToken']
-            ?? config('services.iguide.app_token')
-            ?? ($this->appId ? $this->apiKey : null);
+        $this->apiUsername = filled($settings['apiUsername'] ?? null) ? $settings['apiUsername'] : config('services.iguide.api_username');
+        $this->apiPassword = filled($settings['apiPassword'] ?? null) ? $settings['apiPassword'] : config('services.iguide.api_password');
+        $this->apiKey = filled($settings['apiKey'] ?? null) ? $settings['apiKey'] : config('services.iguide.api_key');
+        $this->appId = filled($settings['appId'] ?? null) ? $settings['appId'] : config('services.iguide.app_id');
+        $this->appToken = filled($settings['appToken'] ?? null) ? $settings['appToken']
+            : (config('services.iguide.app_token') ?: ($this->appId ? $this->apiKey : null));
         $this->baseUrl = rtrim(config('services.iguide.base_url', 'https://manage.youriguide.com/api/v1'), '/');
         $this->legacyBaseUrl = rtrim(config('services.iguide.legacy_base_url', 'https://api.iguide.com'), '/');
         $this->webhookUrl = config('services.iguide.webhook_url');

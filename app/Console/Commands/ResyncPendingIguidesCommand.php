@@ -22,7 +22,8 @@ class ResyncPendingIguidesCommand extends Command
     public function handle(): int
     {
         $days = (int) $this->option('days');
-        $limit = (int) $this->option('limit');
+        $limit = max(1, (int) $this->option('limit'));
+        app(\App\Services\Shoots\ProviderFloorplanRecovery::class)->recover('iguide', $limit);
         $cutoff = Carbon::now()->subDays(max(1, $days));
 
         // Read the ids first and let the query finish before dispatching.
@@ -30,10 +31,9 @@ class ResyncPendingIguidesCommand extends Command
         // snapshot open across a write is what made cubicasa:resync-pending fail
         // with "database is locked" on roughly one run in five.
         $shootIds = Shoot::query()
-            ->whereNull('iguide_tour_url')
             ->where(function ($q) use ($cutoff) {
-                $q->where('updated_at', '>=', $cutoff)
-                    ->orWhere('scheduled_date', '>=', $cutoff->copy()->toDateString());
+                $q->where(fn ($missingTour) => $missingTour->whereNull('iguide_tour_url')->where(fn ($recent) => $recent->where('updated_at', '>=', $cutoff)->orWhere('scheduled_date', '>=', $cutoff->copy()->toDateString())))
+                    ->orWhere(fn ($missingPlans) => $missingPlans->whereNotNull('iguide_tour_url')->where(fn ($assets) => $assets->whereNull('iguide_floorplans')->orWhere('iguide_floorplans', '[]')));
             })
             ->orderByDesc('id')
             ->limit($limit)
