@@ -263,7 +263,12 @@ class ShootPublicAssetsService
         // shows real previews. Fall back to the iGUIDE JSON (external URLs) when no local
         // floorplan files exist; the frontend renders a clean fallback for those.
         $localFloorplans = $this->buildFloorplanAssets($shoot);
-        $assets['floorplans'] = !empty($localFloorplans) ? $localFloorplans : $shoot->iguide_floorplans;
+        // Existing local imports own their delivery gate. Do not fall back to
+        // unscanned provider URLs when those rows are still withheld/invalid.
+        $hasLocalFloorplans = $shoot->files()->where('media_type', 'floorplan')
+            ->when($shoot->relationLoaded('tourUnit'), fn ($query) => $query->whereIn('shoot_service_id', app(ShootUnitTourScope::class)->fileLineIds($shoot, $shoot->getRelation('tourUnit'))))
+            ->exists();
+        $assets['floorplans'] = !empty($localFloorplans) ? $localFloorplans : ($hasLocalFloorplans ? [] : $shoot->iguide_floorplans);
         $assets['matterport_url'] = $isBranded ? $matterportBrandedUrl : $matterportMlsUrl;
         $assets['video_link'] = $videoUrl;
         $assets['video_thumbnail_url'] = $videoThumbnailUrl;

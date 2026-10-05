@@ -159,6 +159,7 @@ class ShootFile extends Model
      */
     public function isClearedForProcessing(): bool
     {
+        if ($this->isInvalidProviderFloorplan()) return false;
         $status = $this->scan_status;
 
         return $status === null || $status === self::SCAN_STATUS_CLEAN;
@@ -176,6 +177,7 @@ class ShootFile extends Model
      */
     public function isBlockedFromDelivery(): bool
     {
+        if ($this->isInvalidProviderFloorplan()) return true;
         if ($this->scan_status === null) {
             return false;
         }
@@ -186,6 +188,9 @@ class ShootFile extends Model
     /** Explain withholding without claiming malware when a scan is pending or failed. */
     public function deliveryScanError(): array
     {
+        if ($this->isInvalidProviderFloorplan() && $this->scan_status !== self::SCAN_STATUS_INFECTED) {
+            return ['error_type' => 'file_provider_pending', 'message' => 'A valid floorplan has not been received from the provider yet. Preview and download will be available after recovery and scanning.'];
+        }
         return match ($this->scan_status) {
             self::SCAN_STATUS_INFECTED => [
                 'error_type' => 'file_infected',
@@ -200,6 +205,13 @@ class ShootFile extends Model
                 'message' => 'This file is awaiting its safety scan. Preview and download will be available after the scan completes.',
             ],
         };
+    }
+
+    public function isInvalidProviderFloorplan(): bool
+    {
+        return $this->media_type === 'floorplan'
+            && in_array(data_get($this->metadata, 'source'), ['cubicasa', 'iguide'], true)
+            && (str_starts_with(strtolower((string) $this->file_type), 'text/html') || str_starts_with(strtolower((string) $this->mime_type), 'text/html'));
     }
 
     /**

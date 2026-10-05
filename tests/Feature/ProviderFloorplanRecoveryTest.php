@@ -150,4 +150,24 @@ class ProviderFloorplanRecoveryTest extends TestCase
         $this->assertSame(1, app(ProviderFloorplanRecovery::class)->recover('cubicasa')['scans']);
         Queue::assertPushed(ScanShootFileJob::class, fn ($j) => $j->shootFileId === $file->id);
     }
+
+    public function test_provider_metadata_is_refetched_for_an_html_import_despite_ready_or_existing_tour(): void
+    {
+        Queue::fake(); Cache::flush();
+        $cubicasa = $this->shoot('cubicasa');
+        $cubicasa->update(['cubicasa_order_id' => 'ready-html', 'cubicasa_status' => 'Ready']);
+        $this->file($cubicasa, 'cubicasa', 'clean')->update(['file_type' => 'text/html']);
+        $iguide = $this->shoot('iguide');
+        $iguide->update(['iguide_tour_url' => 'https://youriguide.com/ready/']);
+        $service = \App\Models\Service::factory()->create(['name' => 'iGUIDE Floor Plan']);
+        $iguide->services()->attach($service->id, ['price' => 100, 'quantity' => 1]);
+        $this->file($iguide, 'iguide', 'clean')->update(['file_type' => 'text/html']);
+        $this->mock(\App\Services\CubiCasaService::class, function ($mock) use ($cubicasa) {
+            $mock->shouldReceive('hasCredentials')->once()->andReturn(true);
+            $mock->shouldReceive('syncShoot')->once()->withArgs(fn ($shoot) => $shoot->id === $cubicasa->id)->andReturn(null);
+        });
+        $this->artisan('cubicasa:resync-pending')->assertSuccessful();
+        $this->artisan('iguide:resync-pending')->assertSuccessful();
+        Queue::assertPushed(\App\Jobs\SyncShootIguideJob::class, fn ($job) => $job->shootId === $iguide->id);
+    }
 }

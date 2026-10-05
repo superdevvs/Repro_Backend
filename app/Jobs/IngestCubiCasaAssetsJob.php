@@ -76,6 +76,7 @@ class IngestCubiCasaAssetsJob implements ShouldQueue
         $uploadedByUserId = $this->resolveSystemUploaderId($shoot);
 
         $ingestedFileIds = [];
+        $retryPending = false;
         $failedKeys = [];
         $mediaStorage = app(\App\Services\Media\MediaStorage::class);
 
@@ -87,7 +88,8 @@ class IngestCubiCasaAssetsJob implements ShouldQueue
             }
 
             try {
-                if ($existingByKey->has($assetKey)) {
+                $existing = $existingByKey->get($assetKey);
+                if ($existing && (!$existing->isInvalidProviderFloorplan() || $existing->scan_status === ShootFile::SCAN_STATUS_INFECTED)) {
                     $existing = $existingByKey->get($assetKey);
                     if (in_array($existing->scan_status, [ShootFile::SCAN_STATUS_QUARANTINED, ShootFile::SCAN_STATUS_FAILED], true)) {
                         // A retry must also recover a previously missed queue dispatch.
@@ -109,6 +111,7 @@ class IngestCubiCasaAssetsJob implements ShouldQueue
                     substr(md5($assetKey), 0, 8),
                     $extension,
                 );
+                if ($existing) $storedFilename = pathinfo($storedFilename, PATHINFO_FILENAME).'-'.Str::uuid().'.'.$extension;
                 $relativePath = $this->shootServiceId
                     ? sprintf('shoots/%d/services/%d/floorplans/%s', $shoot->id, $this->shootServiceId, $storedFilename)
                     : sprintf('shoots/%d/floorplans/%s', $shoot->id, $storedFilename);
@@ -136,13 +139,19 @@ class IngestCubiCasaAssetsJob implements ShouldQueue
                 }
 
                 $mimeType = $response->header('Content-Type') ?: $this->guessMimeType($extension);
+                // Providers can return a 200 HTML document-generation waiting page.
+                // It is not a floorplan and must never be persisted or scanned as one.
+                if (str_starts_with(strtolower($mimeType), 'text/html') || preg_match('/^\s*(<!doctype\s+html|<html)/i', $binary)) {
+                    $retryPending = true;
+                    continue;
+                }
 
                 if (!$mediaStorage->put($relativePath, $binary)) {
                     throw new \RuntimeException('The imported floorplan could not be stored.');
                 }
                 $publicPath = $relativePath;
 
-                $shootFile = ShootFile::create([
+                $attributes = [
                     'shoot_id' => $shoot->id,
                     'shoot_service_id' => $this->shootServiceId,
                     'filename' => $filename,
@@ -168,7 +177,24 @@ class IngestCubiCasaAssetsJob implements ShouldQueue
                         'original_url' => $url,
                         'ingested_at' => now()->toIso8601String(),
                     ],
-                ]);
+                ];
+                // Publish a fresh complete backing file before changing an existing
+                // invalid import. Keep the old HTML payload for the recovery audit.
+                if ($existing) {
+                    $attributes['uploaded_by'] = $existing->uploaded_by;
+                    $attributes['is_hidden'] = data_get($existing->metadata, 'provider_recovery_original_hidden', $existing->is_hidden);
+                    $attributes['workflow_stage'] = $existing->workflow_stage;
+                    $attributes['metadata'] = array_merge($existing->metadata ?? [], $attributes['metadata'], ['recovered_invalid_payload_path' => $existing->path]);
+                    $attributes += ['scan_result' => null, 'scanned_at' => null, 'processing_failed_at' => null, 'processing_error' => null, 'web_path' => null, 'thumbnail_path' => null];
+                    $shootFile = \App\Support\LockedWrite::run(function () use ($existing, $attributes) {
+                        $file = ShootFile::findOrFail($existing->id);
+                        if (!$file->isInvalidProviderFloorplan() || $file->scan_status === ShootFile::SCAN_STATUS_INFECTED) return $file;
+                        $file->fill($attributes)->save();
+                        return $file;
+                    }, 'provider-floorplan.recover-payload');
+                } else {
+                    $shootFile = ShootFile::create($attributes);
+                }
 
                 $ingestedFileIds[] = $shootFile->id;
                 // Provider files must follow the same quarantine lifecycle as uploads.
@@ -205,6 +231,11 @@ class IngestCubiCasaAssetsJob implements ShouldQueue
                 'CubiCasa asset download failed for shoot '.$shoot->id
                 .' ('.implode(', ', array_values(array_unique($failedKeys))).')'
             );
+        }
+
+        if ($retryPending) {
+            if ($this->attempts() >= $this->tries) throw new \RuntimeException('Provider floorplan document is not ready; no HTML payload was published.');
+            $this->release($this->backoff[min(max(0, $this->attempts() - 1), count($this->backoff) - 1)]);
         }
 
         if (!empty($ingestedFileIds)) {

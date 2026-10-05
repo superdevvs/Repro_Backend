@@ -46,6 +46,9 @@ class ResyncPendingCubiCasaCommand extends Command
                     ->orWhereIn('cubicasa_status', ['Pending', 'Fixing', 'New', 'Draft'])
                     ->orWhere(fn ($ready) => $ready->where('cubicasa_status', 'Ready')->where(fn ($assets) => $assets->whereNull('cubicasa_floorplans')->orWhere('cubicasa_floorplans', '[]'))
                         ->whereDoesntHave('files', fn ($files) => $files->where('media_type', 'floorplan')));
+                $q->orWhereHas('files', fn ($files) => $files->where('media_type', 'floorplan')->where('metadata->source', 'cubicasa')
+                    ->where(fn ($mime) => $mime->where('file_type', 'like', 'text/html%')->orWhere('mime_type', 'like', 'text/html%'))
+                    ->where(fn ($scan) => $scan->whereNull('scan_status')->orWhere('scan_status', '!=', 'infected')));
             })
             ->orderByDesc('id')
             ->limit($limit)

@@ -38,6 +38,9 @@ class ResyncPendingIguidesCommand extends Command
                         // originals to be fetched again. Pending provider files are
                         // recovered independently above without restoring deletions.
                         ->whereDoesntHave('files', fn ($files) => $files->where('media_type', 'floorplan')));
+                $q->orWhereHas('files', fn ($files) => $files->where('media_type', 'floorplan')->where('metadata->source', 'iguide')
+                    ->where(fn ($mime) => $mime->where('file_type', 'like', 'text/html%')->orWhere('mime_type', 'like', 'text/html%'))
+                    ->where(fn ($scan) => $scan->whereNull('scan_status')->orWhere('scan_status', '!=', 'infected')));
             })
             ->orderByDesc('id')
             ->limit($limit)

@@ -46,6 +46,7 @@ class ProviderFloorplanRecovery
                 foreach ($files as $file) {
                     $meta = $file->metadata ?? [];
                     if (($meta['source'] ?? null) !== $provider) continue;
+                    if ($file->isInvalidProviderFloorplan() && $file->scan_status !== ShootFile::SCAN_STATUS_INFECTED) continue;
                     if (!empty($meta[$provider.'_asset_key'])) $keys[$meta[$provider.'_asset_key']] = true;
                     if (in_array($file->scan_status, [ShootFile::SCAN_STATUS_QUARANTINED, ShootFile::SCAN_STATUS_FAILED], true)) {
                         $worked = true;
