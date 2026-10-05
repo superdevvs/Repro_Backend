@@ -48,7 +48,7 @@ class ImpersonationMiddleware
         if ($authUser && in_array($authUser->role, ['admin', 'superadmin'])) {
             $request->setUserResolver(fn ($guard = null) => $authUser);
             // Apply the same gates to the original actor before the swap. The
-            // normal downstream middleware then checks the target account too.
+            // downstream active-account gate still checks the target account.
             return app(EnsureAuthenticatedUserIsActive::class)->handle($request, function (Request $request) use ($authUser, $impersonateUserId, $next): Response {
                 return app(EnforceEmailVerificationPilot::class)->handle($request, function (Request $request) use ($authUser, $impersonateUserId, $next): Response {
                     return $this->continueAsTarget($request, $authUser, $impersonateUserId, $next);

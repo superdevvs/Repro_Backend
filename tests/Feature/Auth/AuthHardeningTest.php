@@ -53,7 +53,6 @@ class AuthHardeningTest extends TestCase
     public function test_impersonation_cannot_bypass_the_original_admin_verification_gate(): void
     {
         $target = User::factory()->create(['role' => 'client', 'email_verified_at' => null]);
-        $grandfatheredAdmin = User::factory()->create(['role' => 'admin']);
         $this->artisan('auth:start-email-verification-pilot', ['--apply' => true])->assertSuccessful();
         $admin = User::factory()->create(['role' => 'admin', 'email_verified_at' => null]);
         $token = $admin->createToken('admin-browser')->plainTextToken;
@@ -68,11 +67,31 @@ class AuthHardeningTest extends TestCase
         // impersonation lets the admin inspect their own current-email state.
         $this->withToken($token)->withHeader('X-Impersonate-User-Id', '')->getJson('/api/user')
             ->assertOk()->assertJsonPath('email_verification.required', true);
+    }
 
-        $enrolledTarget = User::factory()->create(['role' => 'client', 'email_verified_at' => null]);
-        $this->withToken($grandfatheredAdmin->createToken('grandfathered-admin')->plainTextToken)
-            ->withHeader('X-Impersonate-User-Id', (string) $enrolledTarget->id)
-            ->getJson('/api/profile/activity')->assertForbidden()->assertJsonPath('code', 'email_verification_required');
+    public function test_admins_can_impersonate_unverified_accounts_without_verifying_them(): void
+    {
+        $admins = collect(['admin', 'superadmin'])->map(fn ($role) => User::factory()->create(['role' => $role]));
+        $this->artisan('auth:start-email-verification-pilot', ['--apply' => true])->assertSuccessful();
+        $target = User::factory()->create(['role' => 'client', 'email_verified_at' => null]);
+        $this->travel(14)->days();
+        $this->assertTrue(app(EmailVerificationPilot::class)->status($target)['required']);
+
+        foreach ($admins as $admin) {
+            $token = $admin->createToken('admin-browser')->plainTextToken;
+            $this->withToken($token)->withHeader('X-Impersonate-User-Id', (string) $target->id)
+                ->getJson('/api/shoots')->assertOk();
+            $this->withToken($token)->getJson('/api/user')->assertOk()->assertJsonPath('id', $target->id);
+            $this->assertNull($target->fresh()->email_verified_at);
+            $this->assertTrue(app(EmailVerificationPilot::class)->status($target->fresh())['required']);
+        }
+
+        // A target's own session stays gated, including a forged impersonation header.
+        $targetToken = $target->createToken('client-browser')->plainTextToken;
+        foreach (['', (string) $admins->first()->id] as $header) {
+            $this->withToken($targetToken)->withHeader('X-Impersonate-User-Id', $header)
+                ->getJson('/api/profile/activity')->assertForbidden()->assertJsonPath('code', 'email_verification_required');
+        }
     }
 
     public function test_impersonation_rejects_an_inactive_original_admin_and_keeps_target_gates(): void

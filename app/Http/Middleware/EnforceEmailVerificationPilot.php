@@ -19,6 +19,12 @@ class EnforceEmailVerificationPilot
         if (!$user) {
             return $next($request);
         }
+        // ImpersonationMiddleware checks the original admin before switching users.
+        // Inspecting an unverified account must not require verifying its email.
+        if ($request->attributes->get('is_impersonating')
+            && in_array($request->attributes->get('original_admin_user')?->role, ['admin', 'superadmin'], true)) {
+            return $next($request);
+        }
         $status = app(EmailVerificationPilot::class)->status($user);
         $allowed = $request->is('api/user', 'api/logout', 'api/profile/email-verification/*', 'api/profile/security', 'api/profile/security/*', 'api/password/*', 'api/email/verify/*');
         if ($status['required'] && !$allowed) {
