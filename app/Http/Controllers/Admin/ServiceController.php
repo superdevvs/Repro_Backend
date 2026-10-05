@@ -122,6 +122,7 @@ class ServiceController extends Controller
 
             $services = Service::query()->bookable()
                 ->with(['category', 'sqftRanges'])
+                ->visibleToClient($this->resolveVisibleClient($request))
                 ->orderBy('category_id')
                 ->orderBy('name')
                 ->get();
@@ -301,6 +302,10 @@ class ServiceController extends Controller
             return $this->serviceGroupsFeatureAvailable()
                 ? $authenticatedUser->loadMissing('serviceGroups')
                 : $authenticatedUser;
+        }
+
+        if (app(\App\Services\Shoots\ShootAuthorizationSupport::class)->canBookOutsideClientServiceGroups($authenticatedUser)) {
+            return null;
         }
 
         if (!$request->filled('client_id') || !$authenticatedUser) {

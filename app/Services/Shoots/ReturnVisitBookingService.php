@@ -114,6 +114,7 @@ class ReturnVisitBookingService
                 $this->support->ensureClientCanBookServices(
                     (int) $sourceShoot->client_id,
                     $serviceIds->map(fn (int $id) => ['id' => $id])->all(),
+                    actor: $actor,
                 );
                 $sourceShoot->setRelation(
                     'client',

@@ -66,6 +66,11 @@ class ShootAuthorizationSupport
         return in_array($normalizedRole, $normalizedAllowed, true);
     }
 
+    public function canBookOutsideClientServiceGroups(?User $actor): bool
+    {
+        return $this->hasRole($actor, ['admin', 'superadmin', 'salesRep']);
+    }
+
     public function ensureRole(array $roles, ?User $user = null, string $message = 'Forbidden'): void
     {
         $user = $user ?? auth()->user();

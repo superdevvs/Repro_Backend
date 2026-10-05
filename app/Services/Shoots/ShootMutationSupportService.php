@@ -794,7 +794,7 @@ class ShootMutationSupportService
         return (int) $value;
     }
 
-    public function ensureClientCanBookServices(int $clientId, array $services, ?Shoot $existingShoot = null): void
+    public function ensureClientCanBookServices(int $clientId, array $services, ?Shoot $existingShoot = null, ?User $actor = null): void
     {
         if (empty($services)) {
             return;
@@ -812,6 +812,12 @@ class ShootMutationSupportService
         // Existing historical lines must remain editable without becoming bookable elsewhere.
         $services = array_values(array_filter($services, fn ($row) => ! $legacyIds->contains((int) ($row['id'] ?? 0))));
         if (empty($services) || !$this->serviceGroupsFeatureAvailable()) {
+            return;
+        }
+
+        // Service groups limit client self-service, not staff-assisted booking.
+        // Keep migration-only validation above this exception for every actor.
+        if (app(ShootAuthorizationSupport::class)->canBookOutsideClientServiceGroups($actor)) {
             return;
         }
 

@@ -56,7 +56,7 @@ class CreateShootAction
         $multiUnit = app(\App\Services\Shoots\MultiUnitBookingService::class);
         $unitBooking = $multiUnit->handles(null, $validated) ? $multiUnit->prepare(null, $validated, $user) : null;
         if (! $unitBooking) $validated['services'] = $validated['services'] ?? [];
-        $this->support->ensureClientCanBookServices((int) $validated['client_id'], $unitBooking['services'] ?? $validated['services']);
+        $this->support->ensureClientCanBookServices((int) $validated['client_id'], $unitBooking['services'] ?? $validated['services'], actor: $user);
         $client = $this->support->ensureClientHasDeliverableEmail((int) $validated['client_id']);
 
         $userRole = strtolower($user->role ?? '');
