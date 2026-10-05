@@ -119,7 +119,7 @@ class EmailAuditService
             'provider' => $message->provider,
             'provider_message_id' => $message->provider_message_id,
             'status' => strtolower((string) $message->status),
-            'sent_at' => $message->sent_at ?? now(),
+            'sent_at' => in_array(strtoupper((string) $message->status), ['SENT', 'DELIVERED'], true) ? ($message->sent_at ?? now()) : null,
             'metadata' => array_merge($dispatch->metadata ?? [], [
                 'message_status' => $message->status,
             ]),

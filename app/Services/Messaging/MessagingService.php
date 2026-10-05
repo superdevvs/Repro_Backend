@@ -110,6 +110,26 @@ class MessagingService
         }
     }
 
+    private function applyEmailNotificationPermissions(Message $message): bool
+    {
+        $preferences = app(EmailNotificationPermissions::class);
+        $category = $preferences->category($message->toArray());
+        if (! $preferences->allows((string) $message->to_address, $category)) {
+            $message->forceFill([
+                'status' => 'BLOCKED',
+                'error_message' => 'Recipient email notification permission is disabled.',
+            ])->save();
+
+            return false;
+        }
+        $message->forceFill([
+            'cc_addresses_json' => array_values(array_filter($message->cc_addresses_json ?? [], fn ($address) => $preferences->allows($address, $category))),
+            'bcc_addresses_json' => array_values(array_filter($message->bcc_addresses_json ?? [], fn ($address) => $preferences->allows($address, $category))),
+        ])->save();
+
+        return true;
+    }
+
     public function sendEmail(array $payload): Message
     {
         $this->releaseLegacyImportMuteForOutboundPayload($payload);
@@ -131,6 +151,12 @@ class MessagingService
         $payload['bcc'] = $bcc;
 
         $message = $this->storeMessageRecord($payload, $channel, 'EMAIL');
+
+        if (! $this->applyEmailNotificationPermissions($message)) {
+            return $message->fresh();
+        }
+        $cc = $message->cc_addresses_json ?? [];
+        $bcc = $message->bcc_addresses_json ?? [];
 
         // Environment gate, checked before the provider is even resolved.
         if (! $this->deliveryGuard->allows('EMAIL', (string) ($payload['to'] ?? $message->to_address))) {
@@ -1090,6 +1116,10 @@ class MessagingService
         }
         if (! $this->deliveryGuard->allows('EMAIL', (string) $message->to_address)) {
             return $this->markMessageBlocked($message, 'EMAIL');
+        }
+
+        if (! $this->applyEmailNotificationPermissions($message)) {
+            return $message->refresh();
         }
 
         $channel = $message->channelConfig ?? $this->resolveEmailChannel([

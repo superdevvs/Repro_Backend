@@ -638,8 +638,8 @@ Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager'])->pr
         Route::put('invoices/{invoice}/accounts-note', [App\Http\Controllers\Admin\InvoiceAccountsNoteController::class, 'update']);
         Route::get('invoices/{invoice}', [App\Http\Controllers\Admin\InvoiceController::class, 'show']);
         Route::post('invoices/{invoice}/send', [InvoiceController::class, 'send']);
-        Route::post('invoices/{invoice}/mark-paid', [InvoiceController::class, 'markPaid']);
-        Route::patch('invoices/{invoice}/mark-paid', [InvoiceController::class, 'markPaid']);
+        Route::post('invoices/{invoice}/mark-paid', [InvoiceController::class, 'markPaid'])->middleware('permission:payments,mark-paid');
+        Route::patch('invoices/{invoice}/mark-paid', [InvoiceController::class, 'markPaid'])->middleware('permission:payments,mark-paid');
         Route::post('invoices/{invoice}/misc-items', [App\Http\Controllers\Admin\InvoiceController::class, 'addMiscItem']);
         Route::match(['put', 'patch'], 'invoices/{invoice}/misc-items/{item}', [App\Http\Controllers\Admin\InvoiceController::class, 'updateMiscItem']);
         Route::delete('invoices/{invoice}/misc-items/{item}', [App\Http\Controllers\Admin\InvoiceController::class, 'removeMiscItem']);
@@ -704,7 +704,7 @@ Route::middleware('auth:sanctum')->group(function () {
     // Minimal update endpoint for status/workflow updates
     Route::patch('/shoots/{shoot}', [ShootController::class, 'update']);
     // Mark shoot as paid (Admin and Super Admin)
-    Route::post('/shoots/{shoot}/mark-paid', [ShootPaymentsController::class, 'markAsPaid'])->middleware(['role:admin,superadmin', 'permission:accounting']);
+    Route::post('/shoots/{shoot}/mark-paid', [ShootPaymentsController::class, 'markAsPaid'])->middleware(['role:admin,superadmin', 'permission:payments,mark-paid']);
     // State transition endpoints
     Route::post('/shoots/{shoot}/schedule', [ShootController::class, 'schedule']);
     Route::post('/shoots/{shoot}/assign-editor', [ShootWorkflowController::class, 'assignEditor'])

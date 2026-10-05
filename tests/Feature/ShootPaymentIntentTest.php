@@ -181,6 +181,23 @@ class ShootPaymentIntentTest extends TestCase
     /**
      * @return array{0: Shoot, 1: User}
      */
+    public function test_mark_paid_is_independent_of_accounting_but_honours_its_own_denial(): void
+    {
+        [$shoot] = $this->createShootForClient();
+        $admin = User::factory()->create([
+            'role' => 'admin',
+            'permission_overrides' => ['allow' => [], 'deny' => ['accounting-view', 'payments-mark-paid']],
+        ]);
+        Sanctum::actingAs($admin);
+        $this->postJson("/api/shoots/{$shoot->id}/mark-paid", ['payment_type' => 'cash'])->assertForbidden();
+        $this->assertSame('unpaid', $shoot->fresh()->payment_status);
+
+        $admin->update(['permission_overrides' => ['allow' => [], 'deny' => ['accounting-view']]]);
+        $this->postJson("/api/shoots/{$shoot->id}/mark-paid", ['payment_type' => 'cash'])
+            ->assertOk()->assertJsonPath('data.payment_status', 'paid');
+        $this->getJson('/api/admin/invoices')->assertForbidden();
+    }
+
     private function createShootForClient(): array
     {
         $client = User::factory()->create(['role' => 'client']);

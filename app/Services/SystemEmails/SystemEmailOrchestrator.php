@@ -84,7 +84,7 @@ class SystemEmailOrchestrator
             $savedDispatch = $this->auditService->sent($dispatch, $message);
 
             return [
-                'sent' => true,
+                'sent' => in_array(strtoupper((string) $message->status), ['SENT', 'DELIVERED'], true),
                 'duplicate' => false,
                 'dispatch' => $savedDispatch,
                 'message_id' => $message->id,

@@ -47,6 +47,18 @@ return [
     ],
     'groups' => [
         [
+            'id' => 'email-notifications',
+            'label' => 'Email Notifications',
+            'description' => 'Choose which automated emails each role receives. Individual account overrides also apply.',
+            'items' => array_map(fn ($category, $label) => [
+                'resource' => 'email-notifications',
+                'action' => $category,
+                'label' => $label,
+                'description' => 'Receive '.strtolower($label).' by email.',
+                'default_roles' => ['superadmin', 'admin', 'editing_manager', 'salesRep', 'photographer', 'editor', 'client'],
+            ], array_keys(\App\Services\Messaging\EmailNotificationPermissions::CATEGORIES), array_values(\App\Services\Messaging\EmailNotificationPermissions::CATEGORIES)),
+        ],
+        [
             'id' => 'core-navigation',
             'label' => 'Core Navigation',
             'description' => 'Primary pages, route access, and top-level tools.',
@@ -468,8 +480,8 @@ return [
                     'resource' => 'payments',
                     'action' => 'mark-paid',
                     'label' => 'Mark Payments As Paid',
-                    'description' => 'Mark invoices as paid inside accounting.',
-                    'default_roles' => ['superadmin'],
+                    'description' => 'Record manual payments for shoots and invoices.',
+                    'default_roles' => ['superadmin', 'admin'],
                 ],
             ],
         ],
