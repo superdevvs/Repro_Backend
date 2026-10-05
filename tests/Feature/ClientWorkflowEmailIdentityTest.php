@@ -182,7 +182,7 @@ class ClientWorkflowEmailIdentityTest extends TestCase
         $messaging->shouldReceive('sendEmail')->once()->andReturnUsing(function (array $payload) use (&$sent) {
             $sent = $payload;
 
-            return new Message;
+            return new Message(['status' => 'SENT']);
         });
         $this->app->instance(MessagingService::class, $messaging);
 

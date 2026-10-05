@@ -155,7 +155,10 @@ class SupportTicketTest extends TestCase
     public function test_upgrade_adds_triage_to_recognized_admin_defaults_but_keeps_user_denials(): void
     {
         $legacy = collect(config('permissions.groups'))->flatMap(fn ($group) => $group['items'])
-            ->filter(fn ($item) => $item['resource'] !== 'support' && in_array('admin', $item['default_roles'] ?? [], true))
+            // Reconstruct the frozen pre-support default, excluding later permission additions.
+            ->filter(fn ($item) => ! in_array($item['resource'], ['support', 'email-notifications'], true)
+                && ! ($item['resource'] === 'payments' && $item['action'] === 'mark-paid')
+                && in_array('admin', $item['default_roles'] ?? [], true))
             ->map(fn ($item) => $item['resource'].'-'.$item['action'])->values()->all();
         $migration = require database_path('migrations/2026_10_01_100000_create_support_tickets.php');
         $migration->down();

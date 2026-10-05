@@ -37,7 +37,7 @@ class SalesRequestEmailRoutingTest extends TestCase
         $messaging->shouldReceive('sendEmail')->zeroOrMoreTimes()->andReturnUsing(function (array $payload) {
             $this->deliveries[] = $payload;
 
-            return new Message;
+            return new Message(['status' => 'SENT']);
         });
         $this->app->instance(MessagingService::class, $messaging);
 

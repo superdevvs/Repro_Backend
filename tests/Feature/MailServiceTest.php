@@ -46,7 +46,7 @@ class MailServiceTest extends TestCase
             ->andReturnUsing(function (array $payload) use (&$deliveries) {
                 $deliveries[] = $payload;
 
-                return new Message;
+                return new Message(['status' => 'SENT']);
             });
         $this->app->instance(MessagingService::class, $messagingService);
 
@@ -130,7 +130,7 @@ class MailServiceTest extends TestCase
                     throw new \RuntimeException('Client delivery failed');
                 }
 
-                return new Message;
+                return new Message(['status' => 'SENT']);
             });
         $this->app->instance(MessagingService::class, $messagingService);
 
@@ -191,7 +191,7 @@ class MailServiceTest extends TestCase
             ->andReturnUsing(function (array $payload) use (&$deliveries) {
                 $deliveries[] = $payload;
 
-                return new Message;
+                return new Message(['status' => 'SENT']);
             });
         $this->app->instance(MessagingService::class, $messagingService);
 
@@ -248,7 +248,7 @@ class MailServiceTest extends TestCase
             ->andReturnUsing(function (array $payload) use (&$deliveries) {
                 $deliveries[] = $payload;
 
-                return new Message;
+                return new Message(['status' => 'SENT']);
             });
         $this->app->instance(MessagingService::class, $messagingService);
 
@@ -304,7 +304,7 @@ class MailServiceTest extends TestCase
             ->andReturnUsing(function (array $payload) use (&$payloads) {
                 $payloads[] = $payload;
 
-                return new Message;
+                return new Message(['status' => 'SENT']);
             });
         $this->app->instance(MessagingService::class, $messagingService);
 
@@ -357,7 +357,7 @@ class MailServiceTest extends TestCase
             ->andReturnUsing(function (array $payload) use (&$payloads) {
                 $payloads[] = $payload;
 
-                return new Message;
+                return new Message(['status' => 'SENT']);
             });
         $this->app->instance(MessagingService::class, $messagingService);
 
@@ -387,7 +387,7 @@ class MailServiceTest extends TestCase
             ->andReturnUsing(function (array $payload) use (&$payloads) {
                 $payloads[] = $payload;
 
-                return new Message;
+                return new Message(['status' => 'SENT']);
             });
         $this->app->instance(MessagingService::class, $messagingService);
 
@@ -416,7 +416,7 @@ class MailServiceTest extends TestCase
             ->andReturnUsing(function (array $payload) use (&$payloads) {
                 $payloads[] = $payload;
 
-                return new Message;
+                return new Message(['status' => 'SENT']);
             });
         $this->app->instance(MessagingService::class, $messagingService);
 

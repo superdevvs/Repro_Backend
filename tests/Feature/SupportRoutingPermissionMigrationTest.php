@@ -30,7 +30,9 @@ class SupportRoutingPermissionMigrationTest extends TestCase
     public function test_only_untouched_editing_manager_default_is_upgraded_and_user_denial_survives(): void
     {
         $roles = app(RolePermissionService::class)->defaultPermissionsByRole();
-        $roles['editing_manager'] = array_values(array_diff($roles['editing_manager'], ['support-manage']));
+        // This migration recognizes the frozen October 1 default, before email subscription permissions.
+        $roles['editing_manager'] = array_values(array_filter($roles['editing_manager'],
+            fn ($id) => $id !== 'support-manage' && ! str_starts_with($id, 'email-notifications-')));
         $updated = $this->applyUpgrade($roles);
         $this->assertContains('support-manage', $updated['editing_manager']);
         $this->assertSame($roles['client'], $updated['client']);

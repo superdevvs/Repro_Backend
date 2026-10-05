@@ -30,6 +30,12 @@ class PaymentReminderCancelOnPaidWiringTest extends TestCase
 {
     use RefreshDatabase;
 
+    protected function setUp(): void
+    {
+        parent::setUp();
+        \App\Services\Messaging\OutboundDeliveryGuard::allowFakeProviderPipelineForTesting();
+    }
+
     private function service(): AutomationService
     {
         return app(AutomationService::class);

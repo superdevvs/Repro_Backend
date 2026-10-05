@@ -161,7 +161,7 @@ class SendShootReadyEmailJobReliabilityTest extends TestCase
             $this->runJob($shoot);
             $this->fail('A blocked client email must cause a delivery retry.');
         } catch (\RuntimeException $exception) {
-            $this->assertStringContainsString('no accepted message', $exception->getMessage());
+            $this->assertStringContainsString('not accepted', $exception->getMessage());
         }
 
         $this->assertSame('BLOCKED', Message::where('send_source', 'SHOOT_DELIVERED')->sole()->status);
@@ -186,7 +186,7 @@ class SendShootReadyEmailJobReliabilityTest extends TestCase
             $this->runJob($shoot);
             $this->fail('An accepted partial email cannot satisfy the full delivery send.');
         } catch (\RuntimeException $exception) {
-            $this->assertStringContainsString('no accepted message', $exception->getMessage());
+            $this->assertStringContainsString('not accepted', $exception->getMessage());
         }
 
         $this->assertNull($shoot->fresh()->shoot_ready_notified_at);
