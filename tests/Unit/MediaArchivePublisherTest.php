@@ -118,4 +118,31 @@ class MediaArchivePublisherTest extends TestCase
         $this->assertSame('completed shared archive', $disk->get('archives/final.zip'));
     }
 
+    public function test_existing_writable_archive_directory_does_not_require_chmod_permission(): void
+    {
+        Storage::fake('local');
+        $real = Storage::disk('local');
+        $real->put('archives/final.zip', 'old completed bytes');
+        $real->put('source.zip', 'new completed bytes');
+        $source = $real->path('source.zip');
+        chmod($source, 0600);
+        $disk = Mockery::mock($real)->makePartial();
+        // Simulate a shared directory writable by the worker but owned by a
+        // different account: attempting to reapply visibility must fail.
+        $disk->shouldReceive('makeDirectory')->andThrow(\League\Flysystem\UnableToSetVisibility::atLocation('archives', 'Operation not permitted'));
+        $media = Mockery::mock(MediaStorage::class)->makePartial();
+        $media->shouldReceive('r2Only')->andReturnFalse();
+        $media->shouldReceive('dualWriteEnabled')->andReturnFalse();
+        $media->shouldReceive('localDisk')->andReturn($disk);
+        $media->shouldReceive('writeDiskName')->once()->andReturn('local');
+
+        (new MediaArchivePublisher($media))->publish('archives/final.zip', $source);
+        $this->assertSame('new completed bytes', $real->get('archives/final.zip'));
+        $this->assertSame(fileinode($source), fileinode($real->path('archives/final.zip')));
+        $this->assertSame('private', $real->getVisibility('archives/final.zip'));
+        unlink($source);
+        $this->assertSame('new completed bytes', $real->get('archives/final.zip'));
+        $this->assertSame(['archives/final.zip'], $real->allFiles());
+    }
+
 }

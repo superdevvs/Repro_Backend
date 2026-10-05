@@ -45,7 +45,13 @@ final class MediaArchivePublisher
             || (fileperms($sourcePath) & 0777) !== 0600) {
             return false;
         }
-        $disk->makeDirectory(dirname($key));
+        // Creating an existing directory reapplies its mode in Flysystem. A
+        // shared writable directory may belong to the deployment account,
+        // which the web/queue worker cannot chmod. For a missing directory,
+        // let the stream-copy fallback create it with the disk's private mode.
+        if (! $disk->directoryExists(dirname($key))) {
+            return false;
+        }
         // A hard link keeps the finished source available for remote mirroring,
         // avoids copying multi-GB bytes on the same volume, and is renamed below.
         // Cross-volume sources retain the stream-copy fallback.
