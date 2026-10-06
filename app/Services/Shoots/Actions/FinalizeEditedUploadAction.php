@@ -9,6 +9,7 @@ use App\Services\Messaging\AutomationService;
 use App\Services\ShootActivityLogger;
 use App\Services\Shoots\ShootMediaMutationSupportService;
 use App\Support\LockedWrite;
+use App\Support\EditingDispatchWriteLock;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -125,6 +126,9 @@ class FinalizeEditedUploadAction
                 return DB::transaction(function () use (&$shoot, $user, $assignments, $capabilities, &$workflowStatusChanged, &$previousStatus, &$shouldFireAutomations, &$editingSubmissionChanged) {
                 // Every retry must discard the previous read snapshot and decisions.
                 $workflowStatusChanged = $shouldFireAutomations = $editingSubmissionChanged = false;
+                // Reserve the SQLite writer before reading submission decisions.
+                // lockForUpdate alone cannot prevent a stale WAL read snapshot.
+                EditingDispatchWriteLock::acquire((int) $shoot->id);
                 /** @var Shoot $locked */
                 $locked = Shoot::query()->whereKey($shoot->id)->lockForUpdate()->first();
                 if (!$locked) {

@@ -17,7 +17,7 @@ use Tests\TestCase;
 
 class EditedSubmissionContentionTest extends TestCase
 {
-    public function test_submission_reloads_after_real_sqlite_wal_snapshot_contention_and_commits_effects_once(): void
+    public function test_submission_reserves_real_sqlite_writer_before_reads_and_commits_effects_once(): void
     {
         $path = tempnam(sys_get_temp_dir(), 'edited-submit-');
         DB::purge('sqlite');
@@ -40,16 +40,20 @@ class EditedSubmissionContentionTest extends TestCase
             }
             $writer = new \PDO('sqlite:'.$path);
             $writer->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
+            $writer->exec('PRAGMA busy_timeout=0');
             $attempts = 0;
+            $blocked = 0;
             $support = \Mockery::mock(ShootMediaMutationSupportService::class, [app(\App\Services\Shoots\ShootAuthorizationSupport::class)])->makePartial();
-            $support->shouldReceive('refreshMediaCounters')->andReturnUsing(function ($fresh) use (&$attempts, $writer) {
+            $support->shouldReceive('refreshMediaCounters')->andReturnUsing(function ($fresh) use (&$attempts, &$blocked, $writer) {
                 $this->assertSame(1, DB::transactionLevel());
-                if (++$attempts === 1) {
-                    // The action has read its snapshot. Another real connection commits
-                    // before its first write, forcing SQLITE_BUSY_SNAPSHOT, not a mock.
+                ++$attempts;
+                try {
+                    // An independent writer tries to invalidate every read snapshot.
+                    // Without the reservation this exhausts all four retries.
                     $writer->exec('UPDATE shoots SET raw_photo_count = 777 WHERE id = '.(int) $fresh->id);
-                } elseif ($attempts === 2) {
-                    $this->assertSame(777, (int) $fresh->raw_photo_count, 'Retry must reload the latest committed state.');
+                } catch (\PDOException $exception) {
+                    $this->assertSame(5, (int) $exception->errorInfo[1]);
+                    ++$blocked;
                 }
                 return app(ShootMediaMutationSupportService::class)->refreshMediaCounters($fresh);
             });
@@ -71,11 +75,12 @@ class EditedSubmissionContentionTest extends TestCase
             $action = new FinalizeEditedUploadAction($support, $activity, $automation);
             $result = $action->execute($shoot, $manager);
             $this->assertSame(200, $result['status'], json_encode($result));
-            $this->assertSame(2, $attempts);
+            $this->assertSame(1, $attempts);
+            $this->assertSame($attempts, $blocked);
             $this->assertSame('ready', $shoot->fresh()->workflow_status);
             $this->assertSame(30, (int) $shoot->fresh()->edited_photo_count);
             $this->assertSame(150, (int) $shoot->fresh()->raw_photo_count);
-            Log::shouldHaveReceived('warning')->with('Write blocked by another database writer; retrying.', \Mockery::type('array'))->once();
+            Log::shouldNotHaveReceived('warning');
             // Lost response / double click: no second transition, notification or activity.
             $repeat = $action->execute($shoot->fresh(), $manager);
             $this->assertSame(200, $repeat['status']);
@@ -95,7 +100,10 @@ class EditedSubmissionContentionTest extends TestCase
             $this->assertArrayNotHasKey('error', $busy['payload']);
             $this->assertNotEmpty($busy['payload']['correlation_id']);
             $this->assertSame('ready', $shoot->fresh()->workflow_status);
-            $this->assertSame(7, $attempts, 'Initial attempt and retry, repeat, then four bounded attempts.');
+            $this->assertSame(2, $attempts, 'A held writer fails before reading any submission decisions.');
+            $this->assertSame($attempts, $blocked);
+            $writer->exec('UPDATE shoots SET raw_photo_count = 999 WHERE id = '.(int) $shoot->id);
+            $this->assertSame(999, (int) $shoot->fresh()->raw_photo_count, 'The failed response must release its transaction and write reservation.');
             Log::shouldHaveReceived('error')->with('Edited submission failed', \Mockery::on(fn ($context) => $context['correlation_id'] === $busy['payload']['correlation_id'] && $context['exception'] instanceof \Throwable))->once();
         } finally {
             DB::purge('sqlite');
