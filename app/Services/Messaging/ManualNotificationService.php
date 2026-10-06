@@ -781,9 +781,13 @@ class ManualNotificationService
 
         $shoot->loadMissing(['photographer', 'services']);
 
-        // Union primary + every service-assigned photographer (not primary-only).
-        $photographerIds = collect([$shoot->photographer_id ?? $shoot->photographer?->id])
-            ->merge(collect($shoot->services ?? [])->pluck('pivot.photographer_id'))
+        // Match automatic updates: primary is only a fallback for unassigned services.
+        $services = collect($shoot->services ?? []);
+        $primaryId = $services->isEmpty() || $services->contains(fn ($service) => empty($service->pivot->photographer_id))
+            ? ($shoot->photographer_id ?? $shoot->photographer?->id)
+            : null;
+        $photographerIds = collect([$primaryId])
+            ->merge($services->pluck('pivot.photographer_id'))
             ->filter()
             ->map(fn ($id) => (int) $id)
             ->unique()
