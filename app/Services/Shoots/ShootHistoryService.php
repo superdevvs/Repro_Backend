@@ -650,21 +650,7 @@ class ShootHistoryService
 
     protected function applySearchFilter(Builder $query, string $term): void
     {
-        $query->where(function (Builder $scope) use ($term) {
-            $scope->where('address', 'like', "%{$term}%")
-                ->orWhere('city', 'like', "%{$term}%")
-                ->orWhere('state', 'like', "%{$term}%")
-                ->orWhere('zip', 'like', "%{$term}%")
-                ->orWhereHas('client', function (Builder $clientQuery) use ($term) {
-                    $clientQuery->where('name', 'like', "%{$term}%")
-                        ->orWhere('email', 'like', "%{$term}%")
-                        ->orWhere('phonenumber', 'like', "%{$term}%")
-                        ->orWhere('company_name', 'like', "%{$term}%");
-                })
-                ->orWhereHas('photographer', function (Builder $photographerQuery) use ($term) {
-                    $photographerQuery->where('name', 'like', "%{$term}%");
-                });
-        });
+        app(ShootSearchFilter::class)->apply($query, $term);
     }
 
     protected function normalizeArrayQuery(Request $request, string $key): array

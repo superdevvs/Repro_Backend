@@ -58,11 +58,16 @@ class ShootListingService
         try {
             $tab = strtolower($request->query('tab', 'scheduled'));
             $isPrivateListingRequest = $request->query('private_listing') !== null;
+            $searchTerm = trim((string) $request->query('search', ''));
 
             if (!$request->has('tab') && $request->query('private_listing') !== null) {
                 $tab = 'delivered';
             } elseif (! $request->has('tab') && $authorization->hasRole($user, ['editor'])) {
                 $tab = 'completed';
+            } elseif (! $request->has('tab') && $searchTerm !== '') {
+                // GlobalCommandBar / cross-status search: omitting tab with a
+                // non-empty search must not default to scheduled-only.
+                $tab = 'all';
             }
 
             $page = (int) $request->query('page', 1);
@@ -440,6 +445,11 @@ class ShootListingService
 
     protected function applyTabScope(Builder $query, string $tab, ?User $user = null, bool $dashboardOpen = false): void
     {
+        if ($tab === 'all') {
+            // Cross-status search / command bar: auth scopes still apply; no status gate.
+            return;
+        }
+
         if ($tab === 'featured') {
             $query->where(function (Builder $scope) {
                 $scope->where('is_featured', true)
@@ -709,21 +719,7 @@ class ShootListingService
 
     protected function applySearchFilter(Builder $query, string $term): void
     {
-        $query->where(function (Builder $scope) use ($term) {
-            $scope->where('address', 'like', "%{$term}%")
-                ->orWhere('city', 'like', "%{$term}%")
-                ->orWhere('state', 'like', "%{$term}%")
-                ->orWhere('zip', 'like', "%{$term}%")
-                ->orWhereHas('client', function (Builder $clientQuery) use ($term) {
-                    $clientQuery->where('name', 'like', "%{$term}%")
-                        ->orWhere('email', 'like', "%{$term}%")
-                        ->orWhere('phonenumber', 'like', "%{$term}%")
-                        ->orWhere('company_name', 'like', "%{$term}%");
-                })
-                ->orWhereHas('photographer', function (Builder $photographerQuery) use ($term) {
-                    $photographerQuery->where('name', 'like', "%{$term}%");
-                });
-        });
+        app(ShootSearchFilter::class)->apply($query, $term);
     }
 
     protected function normalizeArrayQuery(Request $request, string $key): array
