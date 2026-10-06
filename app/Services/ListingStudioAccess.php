@@ -82,14 +82,14 @@ class ListingStudioAccess
         return $query->whereRaw('1 = 0');
     }
 
-    public function notifications(User $viewer): \Illuminate\Support\Collection
+    public function notifications(User $viewer, int $limit = 20): \Illuminate\Support\Collection
     {
         $query = $this->requests($viewer);
         $this->isAdmin($viewer)
             ? $query->where('status', 'pending')
             : $query->whereNotNull('reviewed_at');
 
-        return $query->latest('updated_at')->limit(20)->get()->map(function (ListingStudioRequest $item) {
+        return $query->latest('updated_at')->limit($limit)->get()->map(function (ListingStudioRequest $item) {
             $label = match ($item->type) {
                 'signup' => 'signup', 'change' => 'change request', default => 'call request',
             };

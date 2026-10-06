@@ -27,6 +27,8 @@ use Illuminate\Support\Str;
 
 class DashboardController extends Controller
 {
+    private const NOTIFICATION_FEED_LIMIT = 999;
+
     /**
      * Return an aggregated snapshot for the admin / superadmin dashboard.
      */
@@ -1001,7 +1003,7 @@ class DashboardController extends Controller
             $isImpersonating = $request->attributes->get('is_impersonating', false);
 
             // Cache key includes user ID and role for proper access control
-            $cacheKey = 'notifications_support_v2_'.$role.'_'.$userId.($isImpersonating ? '_impersonate' : '');
+            $cacheKey = 'notifications_support_v3_'.$role.'_'.$userId.($isImpersonating ? '_impersonate' : '');
 
             $activityLogs = Cache::remember($cacheKey, now()->addSeconds(15), function () use ($role, $userId) {
                 return $this->getActivityLogsForRole($role, $userId);
@@ -1019,8 +1021,8 @@ class DashboardController extends Controller
                 $activityLogs = $activityLogs->reject(fn ($item) => in_array($item['id'] ?? null, $convertedIds, true));
             }
             // Recheck support visibility on every request, including permission revocation.
-            $activityLogs = $activityLogs->concat(app(\App\Services\SupportTicketService::class)->notifications($user))
-                ->sortByDesc(fn (array $item) => strtotime((string) ($item['timestamp'] ?? '')) ?: 0)->values();
+            $activityLogs = $activityLogs->concat(app(\App\Services\SupportTicketService::class)->notifications($user, self::NOTIFICATION_FEED_LIMIT))
+                ->sortByDesc(fn (array $item) => strtotime((string) ($item['timestamp'] ?? '')) ?: 0)->take(self::NOTIFICATION_FEED_LIMIT)->values();
 
             $includeCalls = in_array($role, ['admin', 'superadmin', 'editing_manager', 'salesrep'], true);
             $unreadCounts = app(UnreadCountService::class)->forUser($userId, includeCalls: $includeCalls);
@@ -1099,7 +1101,7 @@ class DashboardController extends Controller
             // Admins and sales reps see all activity logs
             $shootActivityLogs = ShootActivityLog::with(['user:id,name', 'shoot:id,address'])
                 ->latest()
-                ->limit(120)
+                ->limit(self::NOTIFICATION_FEED_LIMIT)
                 ->get();
         } elseif ($role === 'client') {
             // Clients only see logs for their own shoots
@@ -1109,7 +1111,7 @@ class DashboardController extends Controller
                 })
                 ->whereIn('action', $clientVisibleActions)
                 ->latest()
-                ->limit(120)
+                ->limit(self::NOTIFICATION_FEED_LIMIT)
                 ->get();
         } elseif ($role === 'photographer') {
             // Photographers only see logs for shoots they're assigned to
@@ -1124,7 +1126,7 @@ class DashboardController extends Controller
                 })
                 ->whereIn('action', $photographerVisibleActions)
                 ->latest()
-                ->limit(120)
+                ->limit(self::NOTIFICATION_FEED_LIMIT)
                 ->get();
         } elseif ($role === 'editor') {
             // Editors only see logs for shoots they're assigned to
@@ -1134,7 +1136,7 @@ class DashboardController extends Controller
                 })
                 ->whereIn('action', $editorVisibleActions)
                 ->latest()
-                ->limit(120)
+                ->limit(self::NOTIFICATION_FEED_LIMIT)
                 ->get();
         } else {
             // Feature-specific notifications below also evaluate secondary roles.
@@ -1152,7 +1154,7 @@ class DashboardController extends Controller
         $emailNotifications = $this->getEmailNotificationsForRole($role, $userId);
         $userAccountNotifications = $this->getUserAccountNotificationsForRole($role, $userId);
         $listingStudioNotifications = ($viewer = User::find($userId))
-            ? app(\App\Services\ListingStudioAccess::class)->notifications($viewer)
+            ? app(\App\Services\ListingStudioAccess::class)->notifications($viewer, self::NOTIFICATION_FEED_LIMIT)
             : collect();
 
         // Merge and sort by timestamp
@@ -1164,7 +1166,7 @@ class DashboardController extends Controller
             // Badge unread counts must not silently cap at 50. Source queries already
             // bound each stream; keep a high ceiling so badges stay accurate without
             // shipping an unbounded payload.
-            ->take(500)
+            ->take(self::NOTIFICATION_FEED_LIMIT)
             ->values();
     }
 
@@ -1189,7 +1191,7 @@ class DashboardController extends Controller
             $emails = (clone $baseQuery)
                 ->where('direction', 'INBOUND')
                 ->latest()
-                ->limit(80)
+                ->limit(self::NOTIFICATION_FEED_LIMIT)
                 ->get();
         } elseif ($role === 'salesrep') {
             $emails = (clone $baseQuery)
@@ -1210,7 +1212,7 @@ class DashboardController extends Controller
                         });
                 })
                 ->latest()
-                ->limit(80)
+                ->limit(self::NOTIFICATION_FEED_LIMIT)
                 ->get();
         } elseif ($role === 'client') {
             $emails = (clone $baseQuery)
@@ -1221,7 +1223,7 @@ class DashboardController extends Controller
                         ->orWhereHas('shoot', fn ($shootQuery) => $shootQuery->where('client_id', $userId));
                 })
                 ->latest()
-                ->limit(80)
+                ->limit(self::NOTIFICATION_FEED_LIMIT)
                 ->get();
         } elseif (in_array($role, ['photographer', 'editor'])) {
             // Photographers/editors only see inbound emails addressed to them
@@ -1229,7 +1231,7 @@ class DashboardController extends Controller
                 ->where('direction', 'INBOUND')
                 ->where('to_address', $user->email)
                 ->latest()
-                ->limit(40)
+                ->limit(self::NOTIFICATION_FEED_LIMIT)
                 ->get();
         } else {
             $emails = collect([]);
@@ -1274,7 +1276,7 @@ class DashboardController extends Controller
         $baseQuery = UserActivityLog::query()
             ->with('user:id,name,email,email_status')
             ->latest('occurred_at')
-            ->limit(80);
+            ->limit(self::NOTIFICATION_FEED_LIMIT);
 
         if (in_array($role, ['admin', 'superadmin', 'editing_manager'], true)) {
             $logs = $baseQuery

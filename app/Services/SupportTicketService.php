@@ -126,7 +126,7 @@ class SupportTicketService
         ];
     }
 
-    public function notifications(User $user): Collection
+    public function notifications(User $user, int $limit = 50): Collection
     {
         if (! Schema::hasTable('support_tickets') || ! $this->permissions->userCan($user, 'support', 'view')) {
             return collect();
@@ -136,7 +136,7 @@ class SupportTicketService
             ->whereIn('support_ticket_id', $this->visible($user)->select('id'))
             ->where('author_id', '!=', $user->id)
             ->when(! $this->canManage($user), fn ($q) => $q->where('internal', false))
-            ->latest('id')->limit(50)->get()->map(fn ($message) => [
+            ->latest('id')->limit($limit)->get()->map(fn ($message) => [
                 'id' => 'support-'.$message->id, 'type' => 'system', 'action' => 'support_updated',
                 'message' => $message->ticket->reference().': '.($message->kind === 'opened' ? 'New support request' : 'Support request updated').'.',
                 'timestamp' => $message->created_at->toIso8601String(),
