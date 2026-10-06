@@ -12,6 +12,7 @@ use App\Services\Messaging\ShootAppointmentReminderSchedule;
 use Carbon\Carbon;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Mockery;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 class ShootAppointmentRemindersTest extends TestCase
@@ -90,6 +91,11 @@ class ShootAppointmentRemindersTest extends TestCase
         $this->assertStringContainsString('Photos, Floor plan', $messages[0]->body_text);
         $this->assertStringNotContainsString('Video', $messages[0]->body_text);
         $this->assertStringContainsString('Video', $messages[1]->body_text);
+        $this->tick('2026-10-02 10:00');
+        $this->assertSame(1, Message::where('to_address', $photographer->email)->count());
+        $this->assertStringContainsString('Photos, Floor plan', Message::where('to_address', $photographer->email)->first()->body_text);
+        $this->tick('2026-10-02 11:00');
+        $this->assertSame(2, Message::where('to_address', $photographer->email)->count());
     }
 
     public function test_rescheduled_appointment_cancels_waiting_reminder_before_delivery(): void
@@ -108,6 +114,60 @@ class ShootAppointmentRemindersTest extends TestCase
         app(\App\Services\Messaging\AutomationWorkflowExecutor::class)->resumeDueSteps();
         $this->assertSame(0, Message::count());
         $this->assertSame(1, \App\Models\AutomationRun::where('status', 'cancelled')->count());
+    }
+
+    #[DataProvider('reminderChannels')]
+    public function test_multiple_services_send_one_message_per_recipient_and_appointment(string $trigger, string $channel): void
+    {
+        [$shoot, $client, $photographer] = $this->appointment('2026-10-03 10:00');
+        $client->update(['phonenumber' => '+12025550123']);
+        $photographer->update(['phonenumber' => '+12025550124']);
+        $other = User::factory()->create(['role' => 'photographer', 'phonenumber' => '+12025550125']);
+        foreach ([['Photos', '10:00', $photographer, 'scheduled'], ['Floor plan', '10:00', $photographer, 'scheduled'],
+            ['Drone', '10:00', $other, 'scheduled'], ['Video', '11:00', $photographer, 'scheduled'],
+            ['Cancelled service', '10:00', $photographer, 'cancelled']] as [$name, $time, $assigned, $status]) {
+            $shoot->serviceItems()->create([
+                'service_id' => \App\Models\Service::factory()->create(['name' => $name])->id,
+                'scheduled_at' => Carbon::parse('2026-10-03 '.$time, 'America/New_York')->utc(),
+                'workflow_status' => $status, 'photographer_id' => $assigned->id, 'price' => 100,
+            ]);
+        }
+        $rule = AutomationRule::active()->where('trigger_type', 'SHOOT_REMINDER')->firstOrFail();
+        $workflow = $rule->workflow_definition_json;
+        $workflow['nodes'][0]['config'] = ['triggerType' => $trigger, 'schedule' => ['offset' => '-2h']];
+        $workflow['nodes'][1] = ['id' => 'email', 'type' => 'action.'.$channel, 'config' => [
+            'subject' => 'Appointment reminder',
+            'bodyText' => '{{shoot_time}}: {{shoot_services}} / {{services_provided}}',
+            'recipientMode' => 'roles', 'recipientRoles' => $trigger === 'SHOOT_REMINDER' ? ['client', 'photographer'] : ['photographer'],
+        ]];
+        $rule->update(['trigger_type' => $trigger, 'schedule_json' => ['offset' => '-2h'], 'workflow_definition_json' => $workflow]);
+        app(MessagingService::class)->shouldReceive('sendSms')->andReturnUsing(fn (array $payload) => Message::create([
+            'channel' => 'SMS', 'direction' => 'OUTBOUND', 'provider' => 'FAKE', 'status' => 'SENT',
+            'send_source' => 'AUTOMATION', 'to_address' => $payload['to'], 'body_text' => $payload['body_text'],
+            'tags_json' => $payload['tags_json'], 'related_shoot_id' => $payload['related_shoot_id'],
+        ]));
+        $this->tick('2026-10-03 08:00');
+        $expected = $trigger === 'SHOOT_REMINDER' ? 3 : 2;
+        $this->assertSame($expected, Message::count());
+        $address = $channel === 'sms' ? $photographer->phonenumber : $photographer->email;
+        $this->assertSame(1, Message::where('to_address', $address)->count());
+        foreach (Message::all() as $message) {
+            $this->assertStringContainsString('Photos, Floor plan, Drone', $message->body_text);
+            $this->assertStringNotContainsString('Video', $message->body_text);
+            $this->assertStringNotContainsString('Cancelled service', $message->body_text);
+        }
+        $this->tick('2026-10-03 09:00');
+        $this->assertSame($expected + ($trigger === 'SHOOT_REMINDER' ? 2 : 1), Message::count());
+        $this->assertStringContainsString('Video', Message::latest('id')->first()->body_text);
+        $this->assertSame(0, \App\Models\AutomationRun::where('status', 'failed')->count());
+    }
+
+    public static function reminderChannels(): array
+    {
+        return [
+            ['SHOOT_REMINDER', 'sms'], ['PHOTOGRAPHER_SHOOT_REMINDER', 'sms'],
+            ['SHOOT_REMINDER', 'email'], ['PHOTOGRAPHER_SHOOT_REMINDER', 'email'],
+        ];
     }
 
     public function test_held_and_unapproved_shoots_never_send_appointment_reminders(): void

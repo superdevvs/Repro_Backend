@@ -5,7 +5,7 @@ namespace Tests\Feature;
 use App\Models\{GoogleCalendarConnection, GoogleCalendarEventMapping, Shoot, User};
 use App\Services\GoogleCalendar\GoogleCalendarShootSyncService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
-use Illuminate\Support\Facades\{Http, Queue};
+use Illuminate\Support\Facades\{Cache, Http, Queue};
 use Tests\TestCase;
 
 class GoogleCalendarRetryAndRemovalTest extends TestCase
@@ -72,6 +72,27 @@ class GoogleCalendarRetryAndRemovalTest extends TestCase
         $this->assertNotNull($mapping->fresh());
         app(GoogleCalendarShootSyncService::class)->removeShoot($shoot->id);
         $this->assertNull($mapping->fresh());
+    }
+
+    public function test_first_sync_holds_shared_lock_until_mapping_is_saved_and_next_job_reuses_it(): void
+    {
+        [$shoot, $mapping] = $this->booking();
+        $mapping->delete();
+        $key = 'google-calendar:shoot:'.$shoot->id;
+        Http::fake(function ($request) use ($key, $shoot) {
+            $this->assertSame('POST', $request->method());
+            $this->assertSame(0, GoogleCalendarEventMapping::where('shoot_id', $shoot->id)->count());
+            $this->assertFalse(Cache::store('scheduling')->lock($key, 300)->get(), 'Another worker cannot create an event during the first Google request.');
+            return Http::response(['id' => 'single-created-event'], 200);
+        });
+        $sync = app(GoogleCalendarShootSyncService::class);
+        $sync->syncShoot($shoot->id);
+        $sync->syncShoot($shoot->id);
+        Http::assertSentCount(1);
+        $this->assertSame(1, GoogleCalendarEventMapping::where('shoot_id', $shoot->id)->count());
+        $lock = Cache::store('scheduling')->lock($key, 300);
+        $this->assertTrue($lock->get(), 'The completed sync releases its lock.');
+        $lock->release();
     }
 
     public function test_changed_calendar_removes_old_event_before_creating_new_mapping(): void

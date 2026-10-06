@@ -908,19 +908,28 @@ class AutomationService
                 continue;
             }
             $stageContext = $context;
+            // Email and SMS delivery belong to the appointment, not each service row.
+            // Keep service-specific runs for recipient routing and stale-run checks.
+            $stageContext['appointment_dispatch_key'] = $rule->trigger_type.':rule:'.$rule->id
+                .':shoot:'.$context['shoot_id'].':'.$stage.':'.$scheduledAt->copy()->utc()->toIso8601String();
+            $appointmentItems = $context['shoot']->serviceItems->filter(function ($item) use ($context, $scheduledAt) {
+                return $item->scheduled_at && ! in_array($item->workflow_status, ['cancelled', 'completed', 'delivered', 'hold_on', 'on_hold'], true)
+                    && app(ScheduleInstantResolver::class)->forServiceItem($context['shoot'], $item)?->equalTo($scheduledAt);
+            });
+            if ($appointmentItems->isNotEmpty()) {
+                $stageContext['appointment_service_items'] = $appointmentItems
+                    ->map(fn ($item) => $this->formatServiceItemContext($context['shoot'], $item))->values()->all();
+            }
             if ($occurrence['audience']) {
                 $stageContext['appointment_reminder_audience'] = $occurrence['audience'];
             }
-            // One client email covers every service at this appointment. Staff and SMS
-            // keep their existing per-service delivery keys and timing.
+            // One client email covers every service at this appointment.
+            // Each recipient/channel shares an appointment delivery key.
             $stageIdentity = $identity;
             if ($occurrence['audience'] === 'client_email') {
                 $stageIdentity = 'shoot:'.$context['shoot_id'].':'.$stage;
                 $shoot = $context['shoot'];
-                $items = $shoot->serviceItems->filter(function ($item) use ($shoot, $scheduledAt) {
-                    return $item->scheduled_at && ! in_array($item->workflow_status, ['cancelled', 'completed', 'delivered', 'hold_on', 'on_hold'], true)
-                        && app(ScheduleInstantResolver::class)->forServiceItem($shoot, $item)?->equalTo($scheduledAt);
-                });
+                $items = $appointmentItems;
                 if ($items->isNotEmpty()) {
                     $stageContext['service_items'] = $items->map(fn ($item) => $this->formatServiceItemContext($shoot, $item))->values()->all();
                     $stageContext['shoot_services'] = $items->map(fn ($item) => $item->service?->name)->filter()->unique()->implode(', ');

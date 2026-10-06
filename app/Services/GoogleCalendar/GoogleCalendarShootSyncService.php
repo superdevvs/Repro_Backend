@@ -9,6 +9,7 @@ use App\Models\ShootService;
 use Illuminate\Contracts\Encryption\DecryptException;
 use Illuminate\Encryption\MissingAppKeyException;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Throwable;
 
@@ -21,6 +22,15 @@ class GoogleCalendarShootSyncService
     }
 
     public function syncShoot(int $shootId): void
+    {
+        // The observer and booking action can enqueue the same shoot together.
+        // Hold a shared lock through the remote request AND mapping persistence.
+        // Do not hold a SQLite write transaction while contacting Google.
+        Cache::store('scheduling')->lock('google-calendar:shoot:'.$shootId, 300)
+            ->block(5, fn () => $this->syncShootUnderLock($shootId));
+    }
+
+    protected function syncShootUnderLock(int $shootId): void
     {
         $shoot = Shoot::with(['client', 'services', 'units', 'serviceItems.service', 'serviceItems.unit', 'serviceItems.photographer', 'rep'])->find($shootId);
         if ($shoot?->isInternalTestShoot()) {
@@ -161,6 +171,12 @@ class GoogleCalendarShootSyncService
     }
 
     public function removeShoot(int $shootId): void
+    {
+        Cache::store('scheduling')->lock('google-calendar:shoot:'.$shootId, 300)
+            ->block(5, fn () => $this->removeShootUnderLock($shootId));
+    }
+
+    protected function removeShootUnderLock(int $shootId): void
     {
         if (Shoot::find($shootId)?->isInternalTestShoot()) {
             return;

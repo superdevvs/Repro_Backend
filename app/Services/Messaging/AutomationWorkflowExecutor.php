@@ -487,6 +487,7 @@ class AutomationWorkflowExecutor
 
     private function executeEmailAction(AutomationRule $automation, array $node, array $context): array
     {
+        $context = $this->appointmentDeliveryContext($automation, $context);
         if ($this->shouldSkipCoreSystemEmailAutomation($automation, $context)) {
             return [
                 'channel' => 'email',
@@ -937,6 +938,7 @@ class AutomationWorkflowExecutor
 
     private function executeSmsAction(AutomationRule $automation, array $node, array $context): array
     {
+        $context = $this->appointmentDeliveryContext($automation, $context);
         $config = is_array($node['config'] ?? null) ? $node['config'] : [];
         $template = ! empty($config['templateId'])
             ? MessageTemplate::find($config['templateId'])
@@ -1010,6 +1012,20 @@ class AutomationWorkflowExecutor
             'blocked_message_ids' => $blockedMessageIds,
             'error_message' => $errorMessage,
         ];
+    }
+
+    private function appointmentDeliveryContext(AutomationRule $automation, array $context): array
+    {
+        if (! empty($context['appointment_dispatch_key'])
+            && in_array($automation->trigger_type, ['SHOOT_REMINDER', 'PHOTOGRAPHER_SHOOT_REMINDER'], true)) {
+            $context['automation_event_key'] = $context['appointment_dispatch_key'];
+            if (! empty($context['appointment_service_items'])) {
+                $context['service_items'] = $context['appointment_service_items'];
+                $context['shoot_services'] = collect($context['service_items'])->pluck('name')->filter()->unique()->implode(', ');
+            }
+        }
+
+        return $context;
     }
 
     private function resolveSmsSender(AutomationRule $automation, array $config): ?int

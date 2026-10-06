@@ -154,6 +154,12 @@ class AutomationConfigurationExecutionTest extends TestCase
         $photographer = User::factory()->create(['role' => 'photographer', 'phonenumber' => '+14105550121']);
         $shoot = Shoot::factory()->create(['client_id' => $client->id, 'photographer_id' => $photographer->id,
             'status' => 'scheduled', 'workflow_status' => 'scheduled']);
+        foreach (['Photos', 'Floor plan', 'Video'] as $name) {
+            $shoot->serviceItems()->create([
+                'service_id' => \App\Models\Service::factory()->create(['name' => $name])->id,
+                'photographer_id' => $photographer->id, 'workflow_status' => 'scheduled', 'price' => 100,
+            ]);
+        }
         foreach (['SHOOT_SCHEDULED' => ['client', 'photographer'], 'SHOOT_BOOKED' => ['photographer'], 'PHOTOGRAPHER_ASSIGNED' => ['photographer']] as $trigger => $roles) {
             $this->rule($trigger, $roles)->template->update(['channel' => 'SMS', 'body_text' => 'Saved booking for {{recipient_name}}']);
         }
