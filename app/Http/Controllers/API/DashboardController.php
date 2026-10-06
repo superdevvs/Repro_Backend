@@ -39,7 +39,7 @@ class DashboardController extends Controller
         }
 
         // Cache key includes user role to ensure proper access control
-        $cacheKey = 'dashboard_overview_deliveries_v2_'.$user->role.'_'.$user->id;
+        $cacheKey = 'dashboard_overview_deliveries_v3_'.$user->role.'_'.$user->id;
         $todayDate = now()->startOfDay()->toDateString();
 
         $data = app(ScheduleDateScopeService::class)->rememberForDate($todayDate, $cacheKey, 60, function () {
@@ -133,6 +133,7 @@ class DashboardController extends Controller
                     fn () => $scheduleScope->countForLocalDate($todayDate)
                 ),
                 'flagged_shoots' => Shoot::where('is_flagged', true)->count(),
+                ...$this->monthToDateStats(),
             ];
 
             // Pending cancellation requests
@@ -173,6 +174,67 @@ class DashboardController extends Controller
         return response()->json([
             'data' => $data,
         ]);
+    }
+
+    /**
+     * Month-to-date counters bounded to the current calendar month in America/New_York.
+     *
+     * scheduled_date is the persisted business-local appointment date (scheduled_at is
+     * stored as UTC for zoned rows but as wall clock for legacy null-timezone rows), so
+     * appointment counts use it, matching Shoot History's date filters. Rows without a
+     * scheduled_date fall back to scheduled_at bounded as UTC. completed_at is written
+     * with now() in app.timezone (UTC), so it is bounded by the ET month edges in UTC.
+     *
+     * @return array<string, int|string>
+     */
+    protected function monthToDateStats(?Carbon $now = null): array
+    {
+        $timezone = 'America/New_York';
+        $local = ($now ? $now->copy() : now())->setTimezone($timezone);
+        $monthStart = $local->copy()->startOfMonth();
+        $monthEnd = $local->copy()->endOfMonth();
+        $nextMonthStart = $monthStart->copy()->addMonthNoOverflow();
+        $appTimezone = (string) config('app.timezone', 'UTC');
+        $startDate = $monthStart->toDateString();
+        $nextStartDate = $nextMonthStart->toDateString();
+        $utcStart = $monthStart->copy()->setTimezone($appTimezone)->format('Y-m-d H:i:s');
+        $utcNextStart = $nextMonthStart->copy()->setTimezone($appTimezone)->format('Y-m-d H:i:s');
+
+        $scheduled = Shoot::query()
+            ->where(function ($scope) use ($startDate, $nextStartDate, $utcStart, $utcNextStart) {
+                $scope->where(function ($dated) use ($startDate, $nextStartDate) {
+                    $dated->where('scheduled_date', '>=', $startDate)
+                        ->where('scheduled_date', '<', $nextStartDate);
+                })->orWhere(function ($undated) use ($utcStart, $utcNextStart) {
+                    $undated->whereNull('scheduled_date')
+                        ->where('scheduled_at', '>=', $utcStart)
+                        ->where('scheduled_at', '<', $utcNextStart);
+                });
+            })
+            ->selectRaw('SUM(CASE WHEN status NOT IN (?, ?) THEN 1 ELSE 0 END) AS shoots_this_month', [
+                Shoot::STATUS_IMPORT_DRAFT,
+                Shoot::STATUS_DECLINED,
+            ])
+            ->selectRaw('SUM(CASE WHEN status = ? THEN 1 ELSE 0 END) AS cancelled_this_month', [
+                Shoot::STATUS_CANCELLED,
+            ])
+            ->toBase()
+            ->first();
+
+        $deliveries = Shoot::query()
+            ->where('status', Shoot::STATUS_DELIVERED)
+            ->where('completed_at', '>=', $utcStart)
+            ->where('completed_at', '<', $utcNextStart)
+            ->count();
+
+        return [
+            'shoots_this_month' => (int) ($scheduled->shoots_this_month ?? 0),
+            'deliveries_this_month' => (int) $deliveries,
+            'cancelled_this_month' => (int) ($scheduled->cancelled_this_month ?? 0),
+            'month_start' => $monthStart->toIso8601String(),
+            'month_end' => $monthEnd->toIso8601String(),
+            'timezone' => $timezone,
+        ];
     }
 
     /**
