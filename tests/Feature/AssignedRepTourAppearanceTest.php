@@ -48,4 +48,20 @@ class AssignedRepTourAppearanceTest extends TestCase
             $this->actingAs($rep)->patchJson('/api/shoots/'.$shoot->id, $payload)->assertForbidden();
         }
     }
+
+    public function test_legacy_client_rep_can_change_only_appearance_without_overriding_an_explicit_assignment(): void
+    {
+        Bus::fake();
+        $rep = User::factory()->create(['role' => 'salesRep']);
+        $other = User::factory()->create(['role' => 'salesRep']);
+        $client = User::factory()->create(['role' => 'client', 'metadata' => ['accountRepId' => $rep->id]]);
+        $shoot = Shoot::factory()->create(['rep_id' => null, 'client_id' => $client->id, 'status' => 'delivered', 'workflow_status' => 'delivered']);
+        $this->actingAs($rep)->patchJson('/api/shoots/'.$shoot->id, ['tour_links' => ['tour_style' => 'landor']])->assertOk();
+        $this->assertSame('landor', $shoot->fresh()->tour_links['tour_style']);
+        $this->actingAs($rep)->patchJson('/api/shoots/'.$shoot->id, ['tour_links' => ['video_link' => 'https://video.example/changed']])->assertForbidden();
+        $this->actingAs($rep)->patchJson('/api/shoots/'.$shoot->id, ['tour_links' => ['tour_style' => 'default'], 'total_quote' => 1])->assertForbidden();
+        $this->actingAs($other)->patchJson('/api/shoots/'.$shoot->id, ['tour_links' => ['tour_style' => 'default']])->assertForbidden();
+        Shoot::withoutEvents(fn () => $shoot->update(['rep_id' => $other->id]));
+        $this->actingAs($rep)->patchJson('/api/shoots/'.$shoot->id, ['tour_links' => ['tour_style' => 'default']])->assertForbidden();
+    }
 }

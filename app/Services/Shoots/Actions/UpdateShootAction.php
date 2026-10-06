@@ -175,7 +175,14 @@ class UpdateShootAction
 
         if (! $isAdmin && ! $canManageRequested && ! $canManageHold) {
             $ownsShoot = $isClient && (string) $shoot->client_id === (string) $user->id;
-            $assignedRep = $isRep && (string) $shoot->rep_id === (string) $user->id;
+            // Legacy shoots can inherit the client's rep without a shoot assignment.
+            // This fallback authorizes only appearance edits, never other shoot writes.
+            $clientRepAppearance = $isRep && ! $shoot->rep_id
+                && $requestKeys === ['tour_links']
+                && is_array($request->input('tour_links'))
+                && count(array_diff(array_keys($request->input('tour_links')), $repEditableTourLinkKeys)) === 0
+                && $this->support->getClientRep((int) $shoot->client_id) === (int) $user->id;
+            $assignedRep = $isRep && ((string) $shoot->rep_id === (string) $user->id || $clientRepAppearance);
             $assignedPhotographer = $isPhotographer
                 && $this->authorizationSupport->isPhotographerAssignedToShoot($shoot, $user);
             $clientCanTogglePrivateListing = $isClient
