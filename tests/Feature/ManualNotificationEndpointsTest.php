@@ -286,6 +286,8 @@ class ManualNotificationEndpointsTest extends TestCase
             'is_deliverable' => true,
         ]);
 
+        // Primary remains a real recipient only when a booked service inherits it.
+        $shoot->services()->attach(Service::factory()->create()->id, ['photographer_id' => null]);
         $response = $this->actingAs($admin, 'sanctum')
             ->getJson('/api/messaging/notifications/recipients?shoot_id='.$shoot->id.'&recipient_type=photographer');
 
@@ -318,6 +320,7 @@ class ManualNotificationEndpointsTest extends TestCase
             'is_deliverable' => true,
         ]);
 
+        $shoot->services()->attach(Service::factory()->create()->id, ['photographer_id' => $primary->id]);
         $tos = [];
         $this->mock(MessagingService::class, function (MockInterface $mock) use (&$tos): void {
             $mock->shouldReceive('sendEmail')

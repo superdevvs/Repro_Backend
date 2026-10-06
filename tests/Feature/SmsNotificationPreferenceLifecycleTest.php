@@ -134,6 +134,7 @@ class SmsNotificationPreferenceLifecycleTest extends TestCase
         $service = Service::factory()->create(['photographer_required' => true]);
         $shoot = Shoot::factory()->create(['photographer_id' => $primary->id, 'shoot_ready_notified_at' => null]);
         $shoot->services()->attach($service->id, ['price' => 100, 'quantity' => 1, 'photographer_id' => $second->id, 'is_deliverable' => true]);
+        $shoot->services()->attach(Service::factory()->create()->id, ['photographer_id' => $primary->id]);
         MessageTemplate::updateOrCreate(['slug' => 'shoot-ready-sms'], ['name' => 'Ready', 'channel' => 'SMS', 'body_text' => 'Ready', 'is_active' => true]);
 
         $this->actingAs($admin, 'sanctum')->postJson('/api/messaging/notifications/manual-send', [
