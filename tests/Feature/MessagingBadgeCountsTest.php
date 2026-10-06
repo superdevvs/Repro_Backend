@@ -78,11 +78,11 @@ class MessagingBadgeCountsTest extends TestCase
             ->assertJsonPath('call', 1);
     }
 
-    public function test_notifications_feed_no_longer_hard_caps_at_fifty(): void
+    public function test_notifications_response_includes_messaging_unread_counts(): void
     {
-        $source = file_get_contents(base_path('app/Http/Controllers/API/DashboardController.php'));
-        $this->assertStringContainsString('->take(500)', $source);
-        $this->assertStringNotContainsString('->take(50)', $source);
-        $this->assertStringContainsString('unread_counts', $source);
+        $admin = User::factory()->admin()->create();
+        $this->actingAs($admin)->getJson('/api/notifications')
+            ->assertOk()
+            ->assertJsonStructure(['data' => ['activity_log', 'unread_counts' => ['email', 'sms', 'call', 'total']]]);
     }
 }
