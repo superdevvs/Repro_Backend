@@ -153,6 +153,8 @@ class UpdateShootAction
         ];
         $repEditableTourLinkKeys = [
             'realtor_client_id',
+            'tour_style', 'tour_palette', 'header_position', 'tour_version',
+            'realtor_info', 'autoplay', 'show_garage',
         ];
 
         if ($isRep && $canManageRequested && $request->hasAny(['status', 'workflow_status'])) {
