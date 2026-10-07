@@ -65,8 +65,7 @@ class UpdateShootAction
         $originalBaseQuote = (float) $shoot->base_quote;
         $originalTotalQuote = (float) $shoot->total_quote;
         $normalizedRole = strtolower((string) $user->role);
-        // Requested shoots are a shared staff queue. Sales access outside that
-        // queue remains assignment-scoped and limited to the existing fields.
+        // Global booking rights remain separate from legacy marketing rights.
         $isAdmin = in_array($normalizedRole, ['admin', 'superadmin', 'super_admin', 'editing_manager'], true);
         $canApproveFeaturedShoot = in_array($normalizedRole, ['admin', 'superadmin', 'super_admin'], true);
         $isClient = $user->role === 'client';
@@ -74,7 +73,10 @@ class UpdateShootAction
         $management = app(\App\Services\Shoots\ShootManagementAccess::class);
         $isRep = $isRep || $management->isSalesRep($user);
         $canManageBooking = $management->can($user);
-        if ($isRep) {
+        $legacyMarketingOnly = $isRep && ! $management->canEdit($shoot, $user)
+            && count(array_diff(array_keys($request->all()), ['tour_links', 'is_private_listing', 'is_featured', 'featured_homepage_title', 'featured_homepage_location', 'featured_homepage_subtitle', 'featured_homepage_cta_label', 'featured_homepage_cta_href', 'featured_homepage_images', 'ghost_user_ids'])) === 0;
+        if ($legacyMarketingOnly) $canManageBooking = false;
+        if ($isRep && ! $legacyMarketingOnly) {
             $request->replace($management->normalizeSalesEdit($shoot, $user, $request->all()));
         }
         $canManageRequested = $this->authorizationSupport->canManageRequestedShoot($shoot, $user);
