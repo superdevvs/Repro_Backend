@@ -97,7 +97,7 @@ class MultiUnitBookingTest extends TestCase
         $this->persist($this->payload(1));
         $this->shoot->update(['status' => 'scheduled', 'workflow_status' => 'scheduled']);
         $artist = User::factory()->photographer()->create();
-        \App\Models\PhotographerAvailability::create(['photographer_id' => $artist->id, 'date' => '2031-10-09', 'start_time' => '00:00', 'end_time' => '23:59', 'status' => 'unavailable']);
+        \App\Models\PhotographerAvailability::create(['photographer_id' => $artist->id, 'date' => '2031-10-09', 'day_of_week' => 'thursday', 'start_time' => '00:00', 'end_time' => '23:59', 'status' => 'unavailable']);
         Sanctum::actingAs(User::factory()->create(['role' => 'rep']));
         $edit = $this->existingPayload();
         $edit['service_lines'][0]['photographer_id'] = $artist->id;
