@@ -60,7 +60,9 @@ class ShootManagementAccess
         }
         foreach (['editor_id', 'video_editor_id', 'payment_status', 'payment_type', 'hero_image', 'delivery_status', 'is_flagged', 'is_listing_hidden', 'complimentary_service_options'] as $field) {
             if (array_key_exists($field, $payload)) {
-                abort_unless($payload[$field] === null || (string) $payload[$field] === (string) $shoot->{$field}, 403, 'This field is managed outside booking: '.$field.'.');
+                $unchanged = $payload[$field] === $shoot->{$field}
+                    || (is_scalar($payload[$field]) && is_scalar($shoot->{$field}) && (string) $payload[$field] === (string) $shoot->{$field});
+                abort_unless($payload[$field] === null || $unchanged, 403, 'This field is managed outside booking: '.$field.'.');
                 unset($payload[$field]);
             }
         }

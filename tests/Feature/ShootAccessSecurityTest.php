@@ -68,12 +68,13 @@ class ShootAccessSecurityTest extends TestCase
         Mail::fake();
         Notification::fake();
         foreach (['salesRep', 'editor', 'photographer', 'client', 'unknown_role'] as $role) {
-            Sanctum::actingAs(User::factory()->create(['role' => $role]));
+            // An explicit denial is authoritative even though reps now manage the global request queue.
+            Sanctum::actingAs(User::factory()->create(['role' => $role,
+                'permission_overrides' => $role === 'salesRep' ? ['allow' => [], 'deny' => ['shoots-manage']] : []]));
             $this->postJson("/api/shoots/{$shoot->id}/messages", ['recipient_id' => $shoot->client_id, 'message' => 'forbidden'])->assertForbidden();
-            // Sales can submit global customer requests; production writes below remain denied.
-            if ($role !== 'salesRep') $this->postJson("/api/shoots/{$shoot->id}/issues", ['note' => 'forbidden'])->assertForbidden();
+            $this->postJson("/api/shoots/{$shoot->id}/issues", ['note' => 'forbidden'])->assertForbidden();
             $this->patchJson("/api/shoots/{$shoot->id}/issues/999999", ['status' => 'resolved'])
-                ->assertStatus($role === 'salesRep' ? 404 : 403);
+                ->assertForbidden();
             $this->postJson("/api/shoots/{$shoot->id}/mark-issues-resolved")->assertForbidden();
             $this->postJson("/api/shoots/{$shoot->id}/reschedule", ['requested_date' => '2026-10-15'])->assertForbidden();
             $this->postJson("/api/shoots/{$shoot->id}/files/{$file->id}/move-to-completed")->assertForbidden();
