@@ -116,17 +116,73 @@ class PayoutInvoiceReviewWorkflowTest extends TestCase
         $photographer = User::factory()->photographer()->create();
         $invoice = $this->invoice($photographer);
         [$shoot, $serviceId] = $this->shoot($photographer);
+        $shoot->update(['scheduled_date' => '2026-10-04']);
         Sanctum::actingAs($photographer);
         $this->getJson("/api/photographer/invoices/{$invoice->id}/shoot-candidates?search=Dudley")->assertOk()->assertJsonPath('data.0.outside_period', true)->assertJsonPath('data.0.amount', 78.75);
         $data = ['action' => 'add_shoot', 'shoot_id' => $shoot->id, 'shoot_service_id' => $serviceId, 'expected_revision' => 0];
         $this->postJson("/api/photographer/invoices/{$invoice->id}/edit/items", $data)->assertUnprocessable()->assertJsonValidationErrors('reason');
-        $this->postJson("/api/photographer/invoices/{$invoice->id}/edit/items", $data + ['reason' => 'Shot Saturday; include with this work week.'])->assertCreated()->assertJsonPath('invoice.payout_review.revision', 1);
+        $this->postJson("/api/photographer/invoices/{$invoice->id}/edit/items", $data + ['reason' => 'Accounts agreed to allocate this Sunday shoot to the previous week.'])->assertCreated()->assertJsonPath('invoice.payout_review.revision', 1);
         $this->assertTrue($invoice->shoots()->where('shoots.id', $shoot->id)->exists());
         $next = app(InvoiceService::class)->generateForPeriod(Carbon::parse('2026-10-04'), Carbon::parse('2026-10-10'));
         $this->assertCount(0, $next);
         $this->assertSame(1, $invoice->items()->count());
         $this->getJson("/api/photographer/invoices/{$invoice->id}/shoot-candidates?search=Dudley")->assertJsonPath('data.0.eligible', false);
         $this->postJson("/api/photographer/invoices/{$invoice->id}/edit/items", array_replace($data, ['expected_revision' => 1, 'reason' => 'Repeated']))->assertUnprocessable();
+    }
+
+    public function test_saturday_shoot_completed_sunday_uses_shoot_week_without_cross_week_reason(): void
+    {
+        $person = User::factory()->photographer()->create();
+        $invoice = $this->invoice($person);
+        [$shoot, $serviceId] = $this->shoot($person);
+        Sanctum::actingAs($person);
+        $this->getJson("/api/photographer/invoices/{$invoice->id}/shoot-candidates?search=Dudley")
+            ->assertOk()->assertJsonPath('data.0.outside_period', false)
+            ->assertJsonPath('data.0.earning_week', '2026-09-27 – 2026-10-03')
+            ->assertJsonPath('data.0.completed_date', '2026-10-04')
+            ->assertJsonPath('data.0.eligible', true);
+        $this->postJson("/api/photographer/invoices/{$invoice->id}/edit/items", [
+            'action' => 'add_shoot', 'expected_revision' => 0,
+            'shoot_id' => $shoot->id, 'shoot_service_id' => $serviceId,
+        ])->assertCreated()->assertJsonPath('invoice.items.0.recorded_at', '2026-10-03T00:00:00.000000Z');
+        $this->assertCount(0, app(InvoiceService::class)->generateForPeriod(Carbon::parse('2026-10-04'), Carbon::parse('2026-10-10')));
+    }
+
+    public function test_generation_and_photographer_report_follow_shoot_date_not_completion_date(): void
+    {
+        $person = User::factory()->photographer()->create();
+        [$shoot] = $this->shoot($person);
+        [$outside] = $this->shoot($person, '2026-10-03 12:00:00');
+        $outside->update(['scheduled_date' => '2026-10-04']);
+        [$unfinished] = $this->shoot($person);
+        $unfinished->update(['workflow_status' => Shoot::WORKFLOW_BOOKED, 'completed_at' => null, 'admin_verified_at' => null]);
+        [$verified] = $this->shoot($person);
+        $verified->update(['scheduled_date' => '2026-09-27', 'workflow_status' => Shoot::WORKFLOW_ADMIN_VERIFIED, 'completed_at' => null]);
+        $start = Carbon::parse('2026-09-27');
+        $end = Carbon::parse('2026-10-03');
+        $invoice = app(InvoiceService::class)->generateForPeriod($start, $end)->first();
+        $this->assertEqualsCanonicalizing([$shoot->id, $verified->id], $invoice->items()->pluck('shoot_id')->all());
+        $this->assertEquals(157.5, (float) $invoice->total_amount);
+        $report = app(\App\Services\PayoutReportService::class)->buildPhotographerSummaries($start, $end)->first();
+        $this->assertEquals(157.5, $report['gross_total']);
+        $this->assertEquals(2, $report['shoot_count']);
+        $next = app(InvoiceService::class)->generateForPeriod(Carbon::parse('2026-10-04'), Carbon::parse('2026-10-10'))->first();
+        $this->assertSame([$outside->id], $next->items()->pluck('shoot_id')->all());
+    }
+
+    public function test_missing_shoot_date_is_not_replaced_with_completion_date(): void
+    {
+        $person = User::factory()->photographer()->create();
+        $invoice = $this->invoice($person);
+        [$shoot, $serviceId] = $this->shoot($person);
+        $shoot->update(['scheduled_date' => null]);
+        Sanctum::actingAs($person);
+        $this->getJson("/api/photographer/invoices/{$invoice->id}/shoot-candidates")
+            ->assertJsonPath('data.0.eligible', false)->assertJsonPath('data.0.unavailable_reason', 'Missing shoot date');
+        $this->postJson("/api/photographer/invoices/{$invoice->id}/edit/items", [
+            'action' => 'add_shoot', 'expected_revision' => 0,
+            'shoot_id' => $shoot->id, 'shoot_service_id' => $serviceId,
+        ])->assertUnprocessable()->assertJsonValidationErrors('shoot_id');
     }
 
     public function test_admin_edits_require_reason_and_stale_revision_cannot_overwrite_or_approve(): void

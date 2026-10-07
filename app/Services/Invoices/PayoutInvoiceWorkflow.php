@@ -58,7 +58,7 @@ final class PayoutInvoiceWorkflow
                     throw ValidationException::withMessages(['item' => 'Choose an invoice line to remove.']);
                 }
                 // A removed service remains allocated to this invoice, so moving
-                // its completion date cannot silently resurrect it next week.
+                // its shoot date cannot silently resurrect it next week.
                 $workKey = data_get($item->meta, 'work_key')
                     ?? ($item->shoot_compensation_id ? 'compensation:'.$item->shoot_compensation_id : null)
                     ?? (data_get($item->meta, 'shoot_service_id') ? 'service:'.data_get($item->meta, 'shoot_service_id') : null);
@@ -180,13 +180,15 @@ final class PayoutInvoiceWorkflow
                 }
                 $amount = $this->servicePay($shoot, $service);
                 $earned = $shoot->completed_at ?? $shoot->admin_verified_at;
+                $workDate = $shoot->scheduled_date;
                 $existing = $this->allocatedInvoice($invoice, 'service:'.$service->pivot->id, $shoot->id, $service->pivot->id);
                 $reason = $existing ? 'Already allocated to invoice W-'.$existing
                     : ($shoot->photographer_paid_at ? 'Payout already recorded'
                     : (! in_array($shoot->workflow_status, [Shoot::WORKFLOW_COMPLETED, Shoot::WORKFLOW_ADMIN_VERIFIED], true) ? 'Not completed / verified'
                     : (! $earned ? 'Missing completion / verification date'
-                    : ($amount <= 0 ? 'No photographer payout configured' : null))));
-                [$weekStart, $weekEnd] = $earned ? ReportingWeek::containing($earned) : [null, null];
+                    : (! $workDate ? 'Missing shoot date'
+                    : ($amount <= 0 ? 'No photographer payout configured' : null)))));
+                [$weekStart, $weekEnd] = $workDate ? ReportingWeek::containing($workDate) : [null, null];
                 $rows[] = [
                     'shoot_id' => $shoot->id, 'shoot_service_id' => $service->pivot->id,
                     'address' => $shoot->address, 'service_name' => $this->serviceName($shoot, $service),
@@ -194,7 +196,7 @@ final class PayoutInvoiceWorkflow
                     'completed_date' => $earned?->toDateString(), 'amount' => $amount,
                     'eligible' => $reason === null, 'unavailable_reason' => $reason,
                     'earning_week' => $weekStart ? $weekStart->toDateString().' – '.$weekEnd->toDateString() : null,
-                    'outside_period' => (bool) ($earned && ($earned->lt($invoice->billing_period_start) || $earned->gt($invoice->billing_period_end->copy()->endOfDay()))),
+                    'outside_period' => (bool) ($workDate && ($workDate->lt($invoice->billing_period_start) || $workDate->gt($invoice->billing_period_end->copy()->endOfDay()))),
                 ];
             }
         }
@@ -215,9 +217,13 @@ final class PayoutInvoiceWorkflow
         if (! $earned) {
             throw ValidationException::withMessages(['shoot_id' => 'Accounts must verify the completion date before adding this service.']);
         }
-        if ($earned->lt($invoice->billing_period_start) || $earned->gt($invoice->billing_period_end->copy()->endOfDay())) {
+        $workDate = $shoot->scheduled_date;
+        if (! $workDate) {
+            throw ValidationException::withMessages(['shoot_id' => 'Accounts must verify the shoot date before adding this service.']);
+        }
+        if ($workDate->lt($invoice->billing_period_start) || $workDate->gt($invoice->billing_period_end->copy()->endOfDay())) {
             if (trim($data['reason'] ?? '') === '') {
-                throw ValidationException::withMessages(['reason' => 'Explain why this work belongs on a different earning week.']);
+                throw ValidationException::withMessages(['reason' => 'Explain why work shot outside this invoice week belongs here.']);
             }
         }
         $amount = $this->servicePay($shoot, $service);
@@ -231,7 +237,7 @@ final class PayoutInvoiceWorkflow
             'shoot_id' => $shoot->id, 'type' => 'charge',
             'description' => 'Shoot #'.$shoot->id.' - '.$shoot->address.' - '.$this->serviceName($shoot, $service),
             'quantity' => 1, 'unit_amount' => $amount, 'total_amount' => $amount,
-            'recorded_at' => $earned ?? now(),
+            'recorded_at' => $workDate,
             'meta' => ['source' => 'linked_work', 'service_id' => $service->id,
                 'shoot_unit_id' => $service->pivot->shoot_unit_id,
                 'unit_label' => $shoot->units->firstWhere('id', $service->pivot->shoot_unit_id)?->label,

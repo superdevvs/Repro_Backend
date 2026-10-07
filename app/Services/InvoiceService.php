@@ -57,12 +57,12 @@ class InvoiceService
                 $query->whereNull('shoot_type')
                     ->orWhere('shoot_type', '!=', Shoot::SHOOT_TYPE_COMPLIMENTARY_RESHOOT);
             })
-            ->where(function ($query) use ($start, $end) {
-                $query->whereBetween('completed_at', [$start, $end])
-                    ->orWhere(function ($innerQuery) use ($start, $end) {
-                        $innerQuery->whereNull('completed_at')
-                            ->whereBetween('admin_verified_at', [$start, $end]);
-                    });
+            // The shoot date assigns the billing week. Completion/verification
+            // remains an eligibility gate, even when it happens in a later week.
+            ->whereDate('scheduled_date', '>=', $start->toDateString())
+            ->whereDate('scheduled_date', '<=', $end->toDateString())
+            ->where(function ($query) {
+                $query->whereNotNull('completed_at')->orWhereNotNull('admin_verified_at');
             })
             ->whereIn('workflow_status', [
                 Shoot::WORKFLOW_COMPLETED,
@@ -238,6 +238,7 @@ class InvoiceService
 
                 if ($existingInvoice?->preservesPayoutReview()) {
                     $invoices->push($existingInvoice->fresh(['photographer', 'items', 'shoots']));
+
                     continue;
                 }
 
@@ -267,6 +268,7 @@ class InvoiceService
                             }
                         }
                     }
+
                     return ! $owner || ($existingInvoice && (int) $owner === (int) $existingInvoice->id);
                 })->values();
                 if ($photographerServices->isEmpty()) {
@@ -924,6 +926,7 @@ class InvoiceService
 
                 if ($existingInvoice?->preservesPayoutReview()) {
                     $invoices->push($existingInvoice->fresh(['salesRep', 'items', 'shoots']));
+
                     continue;
                 }
 
@@ -1906,7 +1909,9 @@ class InvoiceService
         $description = $service->name ?? $service->service_name ?? 'Service';
         if ($service->pivot?->shoot_unit_id) {
             $unit = $shoot->units->firstWhere('id', $service->pivot->shoot_unit_id);
-            if ($unit) return $unit->label.' · '.$description.($unit->sqft ? ' ('.$unit->sqft.' SQFT)' : '');
+            if ($unit) {
+                return $unit->label.' · '.$description.($unit->sqft ? ' ('.$unit->sqft.' SQFT)' : '');
+            }
         }
 
         if (stripos($description, 'floor plan') !== false || stripos($description, 'floorplan') !== false) {

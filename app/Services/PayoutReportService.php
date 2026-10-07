@@ -45,12 +45,10 @@ class PayoutReportService
                 $query->whereNull('shoot_type')
                     ->orWhereNotIn('shoot_type', [Shoot::SHOOT_TYPE_COMPLIMENTARY_RESHOOT, Shoot::SHOOT_TYPE_INTERNAL_TEST]);
             })
-            ->where(function ($q) use ($start, $end) {
-                $q->whereBetween('completed_at', [$start, $end])
-                  ->orWhere(function ($q2) use ($start, $end) {
-                      $q2->whereNull('completed_at')
-                         ->whereBetween('admin_verified_at', [$start, $end]);
-                  });
+            ->whereDate('scheduled_date', '>=', $start->toDateString())
+            ->whereDate('scheduled_date', '<=', $end->toDateString())
+            ->where(function ($q) {
+                $q->whereNotNull('completed_at')->orWhereNotNull('admin_verified_at');
             })
             ->whereIn('workflow_status', [
                 Shoot::WORKFLOW_COMPLETED,
