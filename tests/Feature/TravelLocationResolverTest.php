@@ -64,6 +64,22 @@ class TravelLocationResolverTest extends TestCase
         Http::assertSentCount(1);
     }
 
+    public function test_legacy_city_suffix_is_removed_without_trusting_a_different_house(): void
+    {
+        Http::fake(['nominatim.openstreetmap.org/*' => Http::response([[
+            'lat' => '39.25', 'lon' => '-76.8', 'address' => ['house_number' => '11413',
+                'road' => 'Butterfruit Way', 'postcode' => '21042', 'country_code' => 'us'],
+        ]])]);
+        $resolver = app(TravelLocationResolver::class);
+        $address = ['address' => '11413 Butterfruit Way Ellicott City', 'city' => 'Ellicott City', 'state' => 'MD', 'zip' => '21042'];
+        $location = $resolver->forPayload($address);
+        $this->assertTrue($location['verified']);
+        $this->assertSame('11413 BUTTERFRUIT WAY', $location['base_address']);
+        $this->assertSame('11413 BUTTERFRUIT WAY, ELLICOTT CITY, MD 21042, US', $location['full_address']);
+        $this->assertFalse($resolver->forPayload(array_replace($address, ['address' => '11414 Butterfruit Way Ellicott City']))['verified']);
+        $this->assertSame('11413 ELLICOTT CITY', $resolver->forPayload(array_replace($address, ['address' => '11413 Ellicott City']))['base_address']);
+    }
+
     public function test_signed_metadata_round_trips_and_address_changes_or_tampering_invalidate_it(): void
     {
         Http::fake(['nominatim.openstreetmap.org/*' => Http::response($this->exactResult())]);

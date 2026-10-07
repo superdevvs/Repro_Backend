@@ -132,6 +132,42 @@ class HybridScheduleFeasibilityTest extends TestCase
         $this->assertContains(['20 Candidate Road', '30 Next Road', '2026-10-02T13:55:00+00:00'], $this->legs);
     }
 
+    public function test_assigned_rep_duration_edit_is_not_blocked_by_unverified_bookings_on_other_days(): void
+    {
+        $rep = User::factory()->create(['role' => 'salesRep']);
+        $edited = $this->booked('09:00');
+        $edited->update(['rep_id' => $rep->id]);
+        foreach ([-1, 6] as $days) {
+            $neighbor = $this->booked('11:00', '30 Unverified Road');
+            $start = $neighbor->scheduled_at->copy()->addDays($days);
+            $neighbor->update(['scheduled_at' => $start, 'scheduled_date' => $start->copy()->setTimezone('America/New_York')->toDateString()]);
+            $neighbor->serviceItems()->update(['scheduled_at' => $start]);
+        }
+        $this->unknown = true;
+        $payload = array_replace($this->payload(), ['action_mode' => 'update',
+            'services' => [['id' => $this->service->id, 'duration_minutes' => 60]]]);
+        $result = app(ScheduleFeasibilityService::class)->evaluate($payload, $edited->fresh(), $rep);
+        $this->assertSame('available', $result['status']);
+        $this->assertTrue($result['can_override']);
+        $this->assertSame(60, $result['visits'][0]['duration_minutes']);
+        $this->assertSame([], $result['transitions']);
+        $this->assertSame([], $this->legs);
+        $this->booked('11:00', '40 Same Day Unverified Road');
+        $result = app(ScheduleFeasibilityService::class)->evaluate($payload, $edited->fresh(), $rep);
+        $this->assertSame('review_required', $result['status']);
+        $this->assertCount(1, $result['transitions']);
+    }
+
+    public function test_cross_midnight_capture_overlap_is_still_a_hard_conflict(): void
+    {
+        $this->booked('23:30', '30 Overnight Road', 120);
+        $payload = array_replace($this->payload(), ['scheduled_at' => '2026-10-03T00:30:00-04:00']);
+        $result = $this->evaluate($payload);
+        $this->assertContains('capture_overlap', $result['reason_codes']);
+        $this->assertFalse($result['can_override']);
+        $this->assertSame([], $this->legs);
+    }
+
     public function test_unknown_route_needs_review_and_exception_reason(): void
     {
         $this->booked('08:30');

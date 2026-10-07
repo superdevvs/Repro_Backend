@@ -37,8 +37,8 @@ class TravelLocationResolver
         foreach (['address', 'city', 'state', 'zip'] as $field) {
             $address[$field] = trim((string) ($payload[$field] ?? $shoot?->{$field} ?? ''));
         }
-        $base = $this->baseAddress($address['address']);
         $city = $this->normalize($address['city']);
+        $base = $this->baseAddress($address['address'], $city);
         $state = $this->state($address['state']);
         $zip = preg_match('/^\d{5}(?:-\d{4})?$/', $address['zip']) ? substr($address['zip'], 0, 5) : '';
         $complete = preg_match('/^\d+[A-Z]?(?:[-\/]\d+)?\s+\S+/', $base) === 1 && $city !== ''
@@ -191,8 +191,18 @@ class TravelLocationResolver
         return $this->memo[$location['address_hash']] = null;
     }
 
-    private function baseAddress(string $address): string
+    private function baseAddress(string $address, string $city = ''): string
     {
+        // Legacy imports sometimes append the city to the street field. Remove
+        // only that exact locality suffix following a recognizable street type;
+        // do not trim a legitimate street named after the city.
+        $normalized = $this->normalize($address);
+        if ($city !== '' && str_ends_with($normalized, ' '.$city)) {
+            $street = substr($normalized, 0, -strlen(' '.$city));
+            if (preg_match('/^\d+[A-Z]?(?:[-\/]\d+)?\s+.+\s+(?:STREET|ST|ROAD|RD|AVENUE|AVE|BOULEVARD|BLVD|DRIVE|DR|LANE|LN|COURT|CT|PLACE|PL|PARKWAY|PKWY|HIGHWAY|HWY|TERRACE|TER|WAY)$/', $street)) {
+                $address = $street;
+            }
+        }
         // Strip only a recognized terminal unit marker and identifier. Preserve
         // house fractions, directional words, building names and campus details.
         $base = preg_replace('/(?:,\s*|\s+)(?:APARTMENT|APT|UNIT|SUITE|STE)\.?\s+[A-Z0-9][A-Z0-9-]*\s*$/i', '', trim($address));

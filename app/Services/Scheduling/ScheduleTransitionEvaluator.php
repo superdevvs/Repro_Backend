@@ -9,6 +9,8 @@ use Illuminate\Validation\ValidationException;
 /** Evaluates onsite bounds separately from directional travel between affected visits. */
 class ScheduleTransitionEvaluator
 {
+    private const DAY_BREAK_MINUTES = 480;
+
     public function evaluate(array $proposed, array $existing, array $locations): array
     {
         $reasons = [];
@@ -65,6 +67,14 @@ class ScheduleTransitionEvaluator
                     continue;
                 }
                 [$from, $to, $direction] = $edge;
+                // Start a new itinerary after an overnight eight-hour break.
+                // Preserve close cross-midnight travel and all capture overlaps;
+                // an unverified next-week visit must not block this day's edits.
+                if (Carbon::parse($from['end'])->setTimezone($visit['timezone'])->toDateString()
+                    !== Carbon::parse($to['start'])->setTimezone($visit['timezone'])->toDateString()
+                    && (Carbon::parse($to['start'])->getTimestamp() - Carbon::parse($from['end'])->getTimestamp()) / 60 >= self::DAY_BREAK_MINUTES) {
+                    continue;
+                }
                 $key = hash('sha256', $from['id'].'>'.$to['id']);
                 if (isset($transitions[$key])) {
                     continue;
