@@ -99,6 +99,7 @@ class ShootPhotographerPayDisplayTest extends TestCase
         ]);
         $shoot = Shoot::factory()->create([
             'photographer_id' => $photographer->id,
+            'scheduled_date' => now()->toDateString(),
             'workflow_status' => Shoot::WORKFLOW_COMPLETED,
             'completed_at' => now(),
         ]);
