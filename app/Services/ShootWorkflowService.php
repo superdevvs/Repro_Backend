@@ -196,10 +196,14 @@ class ShootWorkflowService
      * @param  array<int, string>|null  $aiLanes  Lanes handled by AI. Null treats every lane outside $humanLanes as AI.
      *                                            Passing an array also (re)assigns lanes on a shoot already in editing.
      */
-    public function startEditing(Shoot $shoot, ?User $user = null, ?array $humanLanes = null, array $laneEditors = [], ?array $aiLanes = null): void
+    public function startEditing(Shoot $shoot, ?User $user = null, ?array $humanLanes = null, array $laneEditors = [], ?array $aiLanes = null, bool $externalMedia = false): void
     {
         $isAlreadyEditing = $this->isAlreadyInStatus($shoot, self::STATUS_EDITING);
-        if (! $isAlreadyEditing) {
+        if ($externalMedia) {
+            abort_unless($user && in_array($user->role, ['admin', 'superadmin', 'editing_manager'], true)
+                && $humanLanes !== null && $humanLanes !== [] && $aiLanes === [], 403);
+        }
+        if (! $isAlreadyEditing && !($externalMedia && ($shoot->workflow_status ?: $shoot->status) === self::STATUS_SCHEDULED)) {
             $this->validateTransition($shoot, self::STATUS_EDITING);
         }
 
@@ -209,14 +213,14 @@ class ShootWorkflowService
 
         $laneAssignments = [];
 
-        $this->writeTransaction(function () use ($shoot, $user, $humanLanes, $laneEditors, $aiLanes, $isAlreadyEditing, &$laneAssignments) {
+        $this->writeTransaction(function () use ($shoot, $user, $humanLanes, $laneEditors, $aiLanes, $isAlreadyEditing, $externalMedia, &$laneAssignments) {
             if ($humanLanes === null || ($aiLanes === [] && $humanLanes !== [])) {
                 $this->shootEditingAssignmentService->prepareHumanEditingIntake($shoot);
             }
             if (! $isAlreadyEditing) {
                 $shoot->status = self::STATUS_EDITING;
                 $shoot->workflow_status = Shoot::WORKFLOW_EDITING;
-                $shoot->photos_uploaded_at = now();
+                if (!$externalMedia) $shoot->photos_uploaded_at = now();
             }
             $shoot->updated_by = $user?->id ?? auth()->id();
 

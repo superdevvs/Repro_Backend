@@ -58,7 +58,7 @@ class ShootEditingDispatchController extends Controller
             'mode' => ['required', Rule::in(['ai', 'editor'])],
             'request_id' => ['required', 'uuid'],
             'scope' => ['sometimes', Rule::in(['whole', 'photos', 'videos', 'selected'])],
-            'source_versions' => ['required_with:scope', 'array'], 'source_versions.*' => ['integer', 'min:1'],
+            'source_versions' => ['present_with:scope', 'array'], 'source_versions.*' => ['integer', 'min:1'],
             'instructions' => ['nullable', 'string', 'max:5000'],
             'photo_editor_id' => ['nullable', 'integer', 'exists:users,id'], 'video_editor_id' => ['nullable', 'integer', 'exists:users,id'],
             'file_ids' => ['sometimes', 'array', 'min:1', 'max:300'], 'file_ids.*' => ['integer', 'distinct', 'min:1'],

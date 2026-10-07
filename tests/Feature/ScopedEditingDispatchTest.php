@@ -25,6 +25,95 @@ class ScopedEditingDispatchTest extends TestCase
     private ShootFile $photo;
     private ShootFile $video;
 
+    #[\PHPUnit\Framework\Attributes\DataProvider('externalStaffRoles')]
+    public function test_staff_can_send_external_video_without_dashboard_media(string $role): void
+    {
+        $this->manager->update(['role' => $role]);
+        $this->photo->delete();
+        $this->video->delete();
+        $this->shoot->update(['status' => 'scheduled', 'workflow_status' => 'scheduled', 'photos_uploaded_at' => null]);
+        DB::table('shoot_service')->where('shoot_id', $this->shoot->id)->update(['editor_id' => null, 'video_editor_id' => null]);
+        $this->getJson('/api/shoots/'.$this->shoot->id.'/editing-plan')->assertOk()
+            ->assertJsonPath('data.lanes.video.available', true)->assertJsonPath('data.lanes.video.external', true)
+            ->assertJsonPath('data.lanes.video.sent', false);
+        $data = ['mode' => 'editor', 'scope' => 'videos', 'source_versions' => [], 'request_id' => (string) Str::uuid()];
+        $id = $this->send($data)->assertAccepted()->json('data.dispatchId');
+        $this->send($data)->assertAccepted()->assertJsonPath('data.dispatchId', $id);
+        $this->assertSame('editing', $this->shoot->fresh()->workflow_status);
+        $this->assertNull($this->shoot->fresh()->photos_uploaded_at);
+        $service = DB::table('shoot_service')->where('shoot_id', $this->shoot->id)->first();
+        $this->assertSame($this->videoEditor->id, $service->video_editor_id);
+        $this->assertNull($service->editor_id);
+        $this->assertSame(0, $this->shoot->files()->count());
+        $this->assertSame(0, StudioWorkspace::count());
+        $this->assertSame('external', ShootEditingDispatch::findOrFail($id)->plan['items'][0]['source']);
+        $this->assertTrue(app(\App\Services\Shoots\ShootAuthorizationSupport::class)->canEditVideoTourLinks($this->shoot->fresh(), $this->videoEditor));
+        $this->assertTrue(app(\App\Services\Shoots\ShootAuthorizationSupport::class)->canUploadShootMedia($this->shoot->fresh(), $this->videoEditor, 'edited', $service->id));
+        $this->assertTrue(app(\App\Services\Shoots\ShootAuthorizationSupport::class)->scopeAccessibleShootMedia(Shoot::query(), $this->videoEditor)->where('shoots.id', $this->shoot->id)->exists());
+        $this->getJson('/api/shoots/'.$this->shoot->id.'/editing-plan')->assertOk()->assertJsonPath('data.lanes.video.sent', true);
+        $this->actingAs($this->videoEditor)->getJson('/api/shoots?tab=completed&dashboard_open=true&no_cache=true')
+            ->assertOk()->assertJsonPath('data.0.id', $this->shoot->id);
+    }
+
+    public static function externalStaffRoles(): array
+    {
+        return [['admin'], ['superadmin'], ['editing_manager']];
+    }
+
+    public function test_external_dispatch_still_requires_booked_service_and_rejects_ai_without_photos(): void
+    {
+        $this->photo->delete();
+        $this->video->delete();
+        $this->send(['mode' => 'ai', 'scope' => 'whole', 'source_versions' => [], 'request_id' => (string) Str::uuid()])->assertStatus(422);
+        $this->shoot->services()->detach();
+        $this->send(['mode' => 'editor', 'scope' => 'videos', 'source_versions' => [], 'request_id' => (string) Str::uuid()])->assertStatus(422);
+    }
+
+    public function test_whole_shoot_external_handoff_assigns_both_booked_lanes(): void
+    {
+        $this->photo->delete();
+        $this->video->delete();
+        $this->shoot->update(['status' => 'scheduled', 'workflow_status' => 'scheduled']);
+        DB::table('shoot_service')->where('shoot_id', $this->shoot->id)->update(['editor_id' => null, 'video_editor_id' => null]);
+        $this->send(['mode' => 'editor', 'scope' => 'whole', 'source_versions' => [], 'request_id' => (string) Str::uuid()])->assertAccepted();
+        $item = DB::table('shoot_service')->where('shoot_id', $this->shoot->id)->first();
+        $this->assertSame($this->photoEditor->id, $item->editor_id);
+        $this->assertSame($this->videoEditor->id, $item->video_editor_id);
+        $this->assertSame('editing', $this->shoot->fresh()->workflow_status);
+    }
+
+    public function test_ai_photos_can_be_sent_with_externally_shared_video_for_the_human_editor(): void
+    {
+        $this->video->delete();
+        DB::table('shoot_service')->where('shoot_id', $this->shoot->id)->update(['video_editor_id' => null]);
+        $data = $this->payload(['mode' => 'ai', 'scope' => 'whole', 'preset' => 'full-shoot']);
+        unset($data['file_ids']);
+        $id = $this->send($data)->assertAccepted()->json('data.dispatchId');
+        $this->assertSame($this->videoEditor->id, DB::table('shoot_service')->where('shoot_id', $this->shoot->id)->value('video_editor_id'));
+        $this->assertSame(1, ShootEditingDispatchItem::where('dispatch_id', $id)->where('destination', 'ai')->count());
+        $this->assertSame(0, ShootEditingDispatchItem::where('dispatch_id', $id)->where('destination', 'human')->count());
+        $this->assertSame('external', collect(ShootEditingDispatch::find($id)->plan['items'])->firstWhere('lane', 'video')['source']);
+    }
+
+    public function test_external_dispatch_does_not_reopen_cancelled_or_delivered_shoots(): void
+    {
+        $this->photo->delete();
+        $this->video->delete();
+        foreach (['cancelled', 'on_hold', 'delivered', 'requested'] as $status) {
+            $this->shoot->update(['status' => $status, 'workflow_status' => $status]);
+            $this->send(['mode' => 'editor', 'scope' => 'videos', 'source_versions' => [], 'request_id' => (string) Str::uuid()])->assertStatus(422);
+            $this->assertSame($status, $this->shoot->fresh()->workflow_status);
+        }
+    }
+
+    public function test_non_staff_cannot_send_external_media_to_editors(): void
+    {
+        foreach (['editor', 'photographer', 'client', 'salesrep'] as $role) {
+            $this->actingAs(User::factory()->create(['role' => $role]));
+            $this->send(['mode' => 'editor', 'scope' => 'videos', 'source_versions' => [], 'request_id' => (string) Str::uuid()])->assertForbidden();
+        }
+    }
+
     protected function setUp(): void
     {
         parent::setUp();

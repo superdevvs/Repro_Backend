@@ -32,7 +32,9 @@ class ScopedEditingDispatch
             // Before delivery, sending media to a human editor assigns that lane, exactly as Send to
             // editor always has: the editor opens the shoot, edits from its media, uploads in Edited
             // and submits normally. Per-file human tasks remain only for revisions after editing.
-            $intakeStage = in_array($locked->workflow_status ?: $locked->status, [Shoot::STATUS_UPLOADED, Shoot::STATUS_EDITING], true);
+            $external = collect($plan['items'])->contains('source', 'external');
+            $intakeStage = in_array($locked->workflow_status ?: $locked->status, [Shoot::STATUS_UPLOADED, Shoot::STATUS_EDITING], true)
+                || ($external && ($locked->workflow_status ?: $locked->status) === Shoot::STATUS_SCHEDULED);
             $human = collect($plan['items'])->where('destination', 'human');
             foreach ($plan['items'] as $item) {
                 if ($intakeStage && $item['destination'] === 'human') continue;
@@ -61,6 +63,8 @@ class ScopedEditingDispatch
             : $scopeLanes;
         $tracked = app(ShootEditingAssignmentService::class)->getTrackedServiceAssignments($shoot);
         $planned = collect($plan['items'])->where('destination', 'human');
+        $external = $planned->contains('source', 'external');
+        if ($external && $humanLanes === null) $humanLanes = $planned->pluck('lane')->unique()->values()->all();
         $laneEditors = [];
         foreach ([ShootEditingAssignmentService::LANE_PHOTO, ShootEditingAssignmentService::LANE_VIDEO] as $lane) {
             if ($humanLanes !== null && ! in_array($lane, $humanLanes, true)) continue;
@@ -74,13 +78,15 @@ class ScopedEditingDispatch
                 $laneEditors[$lane] = (int) $chosen;
             }
         }
-        app(\App\Services\ShootWorkflowService::class)->startEditing($shoot, $user, $humanLanes, $laneEditors, []);
+        app(\App\Services\ShootWorkflowService::class)->startEditing($shoot, $user, $humanLanes, $laneEditors, [], $external);
     }
 
     /** Editors read request instructions and the requested files from the shoot's editing notes. */
     private function noteForEditors(Shoot $shoot, User $user, array $plan, \Illuminate\Support\Collection $human): void
     {
         $lines = [];
+        $externalLanes = $human->where('source', 'external')->pluck('lane')->unique();
+        if ($externalLanes->isNotEmpty()) $lines[] = 'Raw '.$externalLanes->implode(' and ').' files are supplied outside the dashboard (for example, Dropbox).';
         if ($plan['scope'] === 'selected' && $human->isNotEmpty()) {
             $names = $human->flatMap(fn ($item) => collect($item['sources'])->pluck('name'))->unique()->values();
             $lines[] = 'Edit these '.$names->count().' file'.($names->count() === 1 ? '' : 's').': '.$names->take(60)->implode(', ').($names->count() > 60 ? ', …' : '');

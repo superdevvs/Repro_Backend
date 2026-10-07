@@ -41,7 +41,7 @@ class ScopedEditingPlan
             })->values()->all(),
             'editors' => $this->editors()->map(fn ($editor) => ['id' => $editor->id, 'name' => $editor->name, 'lanes' => $editor->getEditingCapabilities()])->all(),
             'assignments' => $assignments->buildEditorAssignmentsPayload($shoot, $user),
-            'lanes' => $this->lanes($shoot),
+            'lanes' => $this->lanes($shoot, $user),
             'videoAi' => ['available' => false, 'reason' => 'Video AI workflows are not enabled yet. Choose a human video editor.']];
     }
 
@@ -56,17 +56,31 @@ class ScopedEditingPlan
     }
 
     /** Whether each lane has intake to send and whether it was already sent to editing. */
-    public function lanes(Shoot $shoot): array
+    public function lanes(Shoot $shoot, ?User $user = null): array
     {
         $assignments = app(ShootEditingAssignmentService::class);
         $present = $this->intakeFiles($shoot)->map(fn ($file) => $assignments->getFileLane($file))->unique();
         $stage = $shoot->workflow_status ?: $shoot->status;
         $sent = match (true) {
-            $stage === Shoot::STATUS_UPLOADED => [],
+            in_array($stage, [Shoot::STATUS_SCHEDULED, Shoot::STATUS_UPLOADED], true) => [],
             $stage !== Shoot::STATUS_EDITING => ['photo', 'video'],
             default => $this->sentLanes($shoot),
         };
-        return collect(['photo', 'video'])->mapWithKeys(fn ($lane) => [$lane => ['available' => $present->contains($lane), 'sent' => in_array($lane, $sent, true)]])->all();
+        $external = $this->externalAssignments($shoot, $user)->pluck('lane');
+        return collect(['photo', 'video'])->mapWithKeys(fn ($lane) => [$lane => [
+            'available' => $present->contains($lane) || $external->contains($lane),
+            'sent' => in_array($lane, $sent, true),
+        ] + (!$present->contains($lane) && $external->contains($lane) ? ['external' => true] : [])])->all();
+    }
+
+    private function externalAssignments(Shoot $shoot, ?User $user): Collection
+    {
+        if (!$user || !in_array($user->role, ['admin', 'superadmin', 'editing_manager'], true)
+            || !in_array($shoot->workflow_status ?: $shoot->status, [Shoot::STATUS_SCHEDULED, Shoot::STATUS_UPLOADED, Shoot::STATUS_EDITING], true)) {
+            return collect();
+        }
+
+        return app(ShootEditingAssignmentService::class)->getTrackedServiceAssignments($shoot);
     }
 
     private function sentLanes(Shoot $shoot): array
@@ -124,6 +138,24 @@ class ScopedEditingPlan
                 'shoot_service_id' => $file->shoot_service_id, 'lane' => $lane, 'destination' => $route,
                 'editor_id' => $editor?->id, 'editor_name' => $editor?->name, 'source' => $file->workflow_stage === 'todo' ? 'raw' : 'edited',
                 'publication' => $lane === 'video' ? 'Return a finished video link' : ($file->workflow_stage === 'todo' ? 'Create linked edited image' : 'Replace current image and keep its previous version')];
+        }
+        if ($scope !== 'selected' && ($destination === 'human' || ($destination === 'ai' && $scope === 'whole'))) {
+            if ($destination === 'ai') abort_unless($files->contains(fn ($file) => $assignments->getFileLane($file) === 'photo'), 422, 'Upload photos before using AI editing.');
+            $scopeLanes = $destination === 'ai' ? ['video'] : (['photos' => ['photo'], 'videos' => ['video'], 'whole' => ['photo', 'video']][$scope] ?? []);
+            foreach ($this->externalAssignments($shoot, $user)->whereIn('lane', $scopeLanes) as $assignment) {
+                $lane = $assignment['lane'];
+                if ($files->contains(fn ($file) => (int) $file->shoot_service_id === $assignment['shoot_service_id']
+                    && $assignments->getFileLane($file) === $lane)) continue;
+                $override = $data[$lane.'_editor_id'] ?? null;
+                $editor = $editors->get((int) ($override ?: $assignment['editor_id']));
+                if (!$override && (!$editor || !$editor->canEditLane($lane))) $editor = $editors->first(fn ($candidate) => $candidate->canEditLane($lane));
+                abort_unless($editor && $editor->canEditLane($lane), 422, 'Choose an eligible '.$lane.' editor before sending.');
+                $key = 'external:'.$assignment['shoot_service_id'].':'.$lane;
+                $items[$key] = ['key' => $key, 'workflow' => $workflow, 'sources' => [],
+                    'shoot_service_id' => $assignment['shoot_service_id'], 'lane' => $lane, 'destination' => 'human',
+                    'editor_id' => $editor->id, 'editor_name' => $editor->name, 'source' => 'external',
+                    'publication' => $lane === 'video' ? 'Return a finished video link' : 'Upload edited photos'];
+            }
         }
         abort_unless($items, 422, 'No media is available for this scope. Select individual edited images to re-edit them.');
         $route = null;
