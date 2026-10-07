@@ -71,7 +71,7 @@ class UpdateShootAction
         $isClient = $user->role === 'client';
         $isRep = $this->authorizationSupport->hasRole($user, ['salesRep']);
         $management = app(\App\Services\Shoots\ShootManagementAccess::class);
-        $isRep = $isRep || $management->isSalesRep($user);
+        $isRep = ! $isAdmin && ($isRep || $management->isSalesRep($user));
         $canManageBooking = $management->can($user);
         $legacyMarketingOnly = $isRep && ! $management->canEdit($shoot, $user)
             && count(array_diff(array_keys($request->all()), ['tour_links', 'is_private_listing', 'is_featured', 'featured_homepage_title', 'featured_homepage_location', 'featured_homepage_subtitle', 'featured_homepage_cta_label', 'featured_homepage_cta_href', 'featured_homepage_images', 'ghost_user_ids'])) === 0;

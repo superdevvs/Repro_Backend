@@ -14,7 +14,10 @@ class ShootManagementAccess
 
     public function isSalesRep(?User $user): bool
     {
-        return $user && $this->permissions->normalizedUserRoles($user)->contains('salesRep');
+        // A secondary rep role must not demote an existing privileged staff role.
+        $primary = preg_replace('/[_\s-]/', '', strtolower((string) $user?->role));
+        return $user && ! in_array($primary, ['admin', 'superadmin', 'editingmanager'], true)
+            && $this->permissions->normalizedUserRoles($user)->contains('salesRep');
     }
 
     public function can(?User $user, string $action = 'update'): bool

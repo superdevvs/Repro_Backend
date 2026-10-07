@@ -63,6 +63,23 @@ class SalesShootManagementTest extends TestCase
         $this->patchJson('/api/shoots/'.$shoot->id, ['discount_value' => 5])->assertForbidden();
     }
 
+    public function test_secondary_rep_role_does_not_demote_privileged_staff(): void
+    {
+        $management = app(ShootManagementAccess::class);
+        foreach (['admin', 'superadmin', 'editing_manager'] as $role) {
+            $actor = User::factory()->create(['role' => $role, 'secondary_roles' => ['sales_rep']]);
+            Sanctum::actingAs($actor);
+            $shoot = $this->shoot();
+            $editor = User::factory()->create(['role' => 'editor']);
+            $this->assertFalse($management->isSalesRep($actor));
+            $this->patchJson('/api/shoots/'.$shoot->id, ['editor_id' => $editor->id, 'notify_client' => false, 'notify_photographer' => false])->assertOk();
+            $this->assertSame($editor->id, $shoot->fresh()->editor_id);
+            $shoot->status = $shoot->workflow_status = 'delivered';
+            $this->assertTrue($management->canEdit($shoot, $actor));
+        }
+        Mail::assertNothingSent(); Notification::assertNothingSent();
+    }
+
     public function test_stale_edit_cannot_overwrite_a_newer_change(): void
     {
         Sanctum::actingAs(User::factory()->create(['role' => 'salesRep']));
