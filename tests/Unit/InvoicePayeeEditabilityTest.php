@@ -134,6 +134,9 @@ class InvoicePayeeEditabilityTest extends TestCase
         $this->assertArrayHasKey('edit_locked_reason', $editable);
         $this->assertTrue($editable['can_edit']);
         $this->assertNull($editable['edit_locked_reason']);
+        $this->assertSame([], $editable['payout_review']['changes']);
+        $this->assertNull($editable['payout_review']['recovery_required']);
+        $this->assertSame('Awaiting photographer', $editable['payout_review']['label']);
 
         $this->assertFalse($locked['can_edit']);
         $this->assertStringContainsString('approved by accounts', $locked['edit_locked_reason']);

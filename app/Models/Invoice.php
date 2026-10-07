@@ -576,7 +576,7 @@ class Invoice extends Model
         if (! $this->isPayoutInvoice()) {
             return null;
         }
-        $events = $this->relationLoaded('auditEvents') ? $this->auditEvents : $this->auditEvents()->get();
+        $events = $this->relationLoaded('auditEvents') ? $this->auditEvents : ($this->exists ? $this->auditEvents()->get() : collect());
         $edits = $events->whereIn('event', ['payee_edit', 'admin_edit']);
         $recalculation = $events->where('event', 'recalculated')->first(fn ($event) => $edits->contains(fn ($edit) => $edit->id < $event->id)
             && (float) data_get($event->metadata, 'before.total_amount') !== (float) data_get($event->metadata, 'after.total_amount'));
