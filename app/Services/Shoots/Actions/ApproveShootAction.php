@@ -33,6 +33,7 @@ class ApproveShootAction
         'notify_client',
         'notify_photographer',
         'service_photographers',
+        'expected_edit_version',
     ];
 
     public function __construct(

@@ -161,4 +161,12 @@ class SalesShootManagementTest extends TestCase
             $this->assertFalse(app(ShootAuthorizationSupport::class)->canManageShootOperations($actor));
         }
     }
+
+    public function test_edit_token_is_not_a_client_facing_approval_modification(): void
+    {
+        $action = app(\App\Services\Shoots\Actions\ApproveShootAction::class);
+        $method = new \ReflectionMethod($action, 'hasClientFacingRequestModifications');
+        $this->assertFalse($method->invoke($action, ['expected_edit_version' => str_repeat('a', 64), 'notify_client' => false]));
+        $this->assertTrue($method->invoke($action, ['expected_edit_version' => str_repeat('a', 64), 'address' => 'Actual property change']));
+    }
 }
