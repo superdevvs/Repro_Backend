@@ -154,8 +154,12 @@ class SalesShootManagementTest extends TestCase
             $actor = User::factory()->create(['role' => $role, 'secondary_roles' => ['salesRep']]);
             Sanctum::actingAs($actor);
             $shoot = $this->shoot();
+            $unit = $shoot->units()->create(['client_key' => 'unit-fixture', 'label' => 'Unit 1', 'kind' => 'unit', 'sqft' => 1000, 'access_notes' => 'Muted access instruction', 'sort_order' => 0]);
+            $shoot->units()->create(['client_key' => 'empty-unit', 'label' => 'Empty unit', 'kind' => 'unit', 'sqft' => 500, 'sort_order' => 1]);
+            $shoot->serviceItems()->sole()->update(['shoot_unit_id' => $unit->id]);
             $response = $this->getJson('/api/shoots/'.$shoot->id)->assertOk();
             $response->assertJsonCount(1, 'data.services')->assertJsonPath('data.services.0.price', 99);
+            $response->assertJsonCount(2, 'data.units')->assertJsonPath('data.units.0.access_notes', 'Muted access instruction');
             $this->assertNotNull($response->json('data.client'));
             $this->assertFalse(app(ShootAuthorizationSupport::class)->canUploadShootMedia($shoot, $actor));
             $this->assertFalse(app(ShootAuthorizationSupport::class)->canManageShootOperations($actor));

@@ -11,12 +11,13 @@ class ShootUnitPresenter
     public function forUser(Shoot $shoot, array $summaries, ?User $viewer): array
     {
         $role = strtolower((string) $viewer?->role);
-        $scoped = in_array($role, ['editor', 'photographer'], true);
+        $bookingRep = app(ShootManagementAccess::class)->isSalesRep($viewer) && app(ShootManagementAccess::class)->can($viewer);
+        $scoped = in_array($role, ['editor', 'photographer'], true) && ! $bookingRep;
         $visibility = app(IguideDataVisibilityService::class);
 
         return $shoot->units()->get()
             ->filter(fn ($unit) => ! $scoped || collect($summaries)->contains(fn ($item) => (int) ($item['shoot_unit_id'] ?? 0) === (int) $unit->id))
-            ->map(function ($unit) use ($shoot, $summaries, $visibility, $viewer, $role) {
+            ->map(function ($unit) use ($shoot, $summaries, $visibility, $viewer, $role, $bookingRep) {
                 $items = collect($summaries)->where('shoot_unit_id', $unit->id)
                     ->filter(fn ($item) => ($item['is_deliverable'] ?? true) && ($item['workflow_status'] ?? '') !== 'cancelled');
                 $ready = $items->filter(fn ($item) => in_array($item['delivery_status'] ?? '', ['ready', 'delivered'], true)
@@ -47,7 +48,7 @@ class ShootUnitPresenter
                 return [
                     'id' => $unit->id, 'client_key' => $unit->client_key, 'label' => $unit->label,
                     'kind' => $unit->kind, 'sqft' => $unit->sqft, 'beds' => $unit->beds, 'baths' => $unit->baths,
-                    'access_notes' => $role === 'editor' ? null : $unit->access_notes, 'sort_order' => $unit->sort_order,
+                    'access_notes' => $role === 'editor' && ! $bookingRep ? null : $unit->access_notes, 'sort_order' => $unit->sort_order,
                     'tour_links' => $tourLinks, 'property_details' => $unit->property_details,
                     'provider_data' => $providerData, 'include_common_area_media' => $unit->include_common_area_media,
                     'property_status' => $unit->property_status, 'listing_type' => $unit->listing_type,
