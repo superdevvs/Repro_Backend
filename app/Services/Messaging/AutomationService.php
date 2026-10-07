@@ -1088,7 +1088,7 @@ class AutomationService
             && in_array($rule->trigger_type, [
                 ShootEmailMatrix::SHOOT_SCHEDULED,
                 ShootEmailMatrix::SHOOT_UPDATED,
-                ShootEmailMatrix::PHOTOGRAPHER_ASSIGNED,
+                'PHOTOGRAPHER_ASSIGNED',
             ], true)
         ) {
             return false;
@@ -1109,7 +1109,7 @@ class AutomationService
                 ShootEmailMatrix::SHOOT_SCHEDULED,
                 ShootEmailMatrix::SHOOT_UPDATED,
                 ShootEmailMatrix::PHOTOGRAPHER_CHANGED,
-                ShootEmailMatrix::PHOTOGRAPHER_ASSIGNED,
+                'PHOTOGRAPHER_ASSIGNED',
             ], true)
         ) {
             return false;

@@ -21,7 +21,7 @@ use Tests\TestCase;
  *  - manual-send routes through MessagingService::sendEmail / sendSms with the right payload
  *  - manual-preview returns rendered subject/body without dispatching
  *  - admin role middleware on the messaging template route group still applies to send/preview
- *  - notification recipients GET allows admin/superadmin and assigned sales_rep only
+ *  - notification recipients and Notify allow sales-rep aliases globally, not template administration
  */
 class ManualNotificationEndpointsTest extends TestCase
 {
@@ -388,10 +388,16 @@ class ManualNotificationEndpointsTest extends TestCase
         $response->assertOk();
     }
 
-    public function test_sales_rep_can_manual_send_and_preview_without_template_admin(): void
+    public static function globalRepRoles(): array
     {
-        $rep = User::factory()->create(['role' => 'salesRep']);
-        $shoot = Shoot::factory()->create(['rep_id' => $rep->id]);
+        return array_map(fn ($role) => [$role], ['salesRep', 'sales_rep', 'sales-rep', 'rep', 'representative']);
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('globalRepRoles')]
+    public function test_sales_rep_can_manual_send_and_preview_without_template_admin(string $role): void
+    {
+        $rep = User::factory()->create(['role' => $role]);
+        $shoot = Shoot::factory()->create(['rep_id' => null]);
         $this->template('shoot-scheduled');
         $this->mock(MessagingService::class, function (MockInterface $mock): void {
             $mock->shouldReceive('sendEmail')->once()->andReturn(Message::make(['id' => 1, 'channel' => 'EMAIL', 'status' => 'SENT']));
