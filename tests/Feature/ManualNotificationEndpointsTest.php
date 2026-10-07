@@ -27,6 +27,28 @@ class ManualNotificationEndpointsTest extends TestCase
 {
     use RefreshDatabase;
 
+    public function test_secondary_reps_can_preview_global_shoot_notifications_without_template_administration(): void
+    {
+        $this->template('shoot-scheduled');
+        $client = User::factory()->create(['role' => 'client']);
+        $shoot = Shoot::factory()->create(['client_id' => $client->id, 'rep_id' => null]);
+        $this->mock(MessagingService::class, function (MockInterface $mock): void {
+            $mock->shouldNotReceive('sendEmail');
+            $mock->shouldNotReceive('sendSms');
+        });
+        foreach (['editor', 'photographer'] as $role) {
+            foreach (['salesRep', 'sales_rep', 'sales-rep', 'sales rep', 'rep', 'representative'] as $alias) {
+                $actor = User::factory()->create(['role' => $role, 'secondary_roles' => [$alias]]);
+                $this->actingAs($actor, 'sanctum')->getJson('/api/messaging/notifications/catalogue?shoot_id='.$shoot->id)->assertOk();
+                $this->getJson('/api/messaging/notifications/recipients?shoot_id='.$shoot->id.'&type=shoot_scheduled&recipient_type=client')->assertOk();
+                $this->postJson('/api/messaging/notifications/manual-preview', [
+                    'shoot_id' => $shoot->id, 'type' => 'shoot_scheduled', 'recipient_type' => 'client', 'channel' => 'email',
+                ])->assertOk();
+                $this->getJson('/api/messaging/templates')->assertForbidden();
+            }
+        }
+    }
+
     public function test_admin_can_preview_and_send_hold_and_cancellation_to_the_account_sales_rep(): void
     {
         $admin = User::factory()->create(['role' => 'admin']);

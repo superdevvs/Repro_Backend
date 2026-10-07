@@ -14,10 +14,15 @@ class ShootManagementAccess
 
     public function isSalesRep(?User $user): bool
     {
+        return $user && $this->permissions->normalizedUserRoles($user)->contains('salesRep');
+    }
+
+    public function isRestrictedSalesRep(?User $user): bool
+    {
         // A secondary rep role must not demote an existing privileged staff role.
         $primary = preg_replace('/[_\s-]/', '', strtolower((string) $user?->role));
         return $user && ! in_array($primary, ['admin', 'superadmin', 'editingmanager'], true)
-            && $this->permissions->normalizedUserRoles($user)->contains('salesRep');
+            && $this->isSalesRep($user);
     }
 
     public function can(?User $user, string $action = 'update'): bool
@@ -37,7 +42,7 @@ class ShootManagementAccess
     public function canEdit(Shoot $shoot, ?User $user): bool
     {
         if (! $this->can($user) || $shoot->isImportDraft()) return false;
-        if (! $this->isSalesRep($user) || $this->permissions->normalizedUserRoles($user)->intersect(['admin', 'superadmin'])->isNotEmpty()) return true;
+        if (! $this->isRestrictedSalesRep($user)) return true;
         $editable = ['requested', 'on_hold', 'hold_on', 'scheduled', 'booked', 'uploaded', 'completed', 'editing', 'review', 'ready'];
         return in_array(strtolower((string) $shoot->status), $editable, true)
             && in_array(strtolower((string) ($shoot->workflow_status ?: $shoot->status)), $editable, true);
@@ -47,6 +52,7 @@ class ShootManagementAccess
     public function normalizeSalesEdit(Shoot $shoot, User $user, array $payload): array
     {
         abort_unless($this->canEdit($shoot, $user), 403, 'This shoot is locked or you do not have permission to edit it.');
+        if (! $this->isRestrictedSalesRep($user)) return $payload;
         $marketing = ['is_featured', 'featured_homepage_title', 'featured_homepage_location', 'featured_homepage_subtitle', 'featured_homepage_cta_label', 'featured_homepage_cta_href', 'featured_homepage_images', 'ghost_user_ids', 'tour_links'];
         if (array_intersect(array_keys($payload), $marketing)
             && $this->permissions->normalizedUserRoles($user)->intersect(['admin', 'superadmin', 'editing_manager'])->isEmpty()) {

@@ -51,7 +51,7 @@ class ApproveShootAction
     public function execute(Request $request, Shoot $shoot, User $user): Shoot
     {
         $management = app(\App\Services\Shoots\ShootManagementAccess::class);
-        if ($management->isSalesRep($user)) {
+        if ($management->isRestrictedSalesRep($user)) {
             $request->replace($management->normalizeSalesEdit($shoot, $user, $request->all()));
         }
         $request->merge(\App\Support\Timezone::scheduleInput($request->only(['timezone', 'complimentary_service_options'])));
@@ -83,7 +83,7 @@ class ApproveShootAction
                     : ($shoot->scheduled_at ? new \DateTime((string) $shoot->scheduled_at) : new \DateTime)
             );
 
-        $skipAvailabilityCheck = $management->isSalesRep($user) ? false : ($validated['skip_availability_check'] ?? in_array($user->role, ['admin', 'superadmin']));
+        $skipAvailabilityCheck = $management->isRestrictedSalesRep($user) ? false : ($validated['skip_availability_check'] ?? in_array($user->role, ['admin', 'superadmin']));
         $targetPhotographerId = $validated['photographer_id'] ?? $shoot->photographer_id;
         $targetServices = $this->editablePayloadService->targetServicesFor($shoot, $validated, $user);
         $isMultiUnit = $shoot->units()->exists();

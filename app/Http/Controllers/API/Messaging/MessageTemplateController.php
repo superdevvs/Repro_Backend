@@ -359,7 +359,7 @@ class MessageTemplateController extends Controller
 
         $shoot = Shoot::findOrFail($data['shoot_id']);
         // Catalogue is available to the same audience as recipient listing
-        // (admin/EM/assigned sales_rep) so Overview pickers can render options.
+        // (admin/EM/all sales reps) so Overview pickers can render options.
         $this->authorizeNotificationRecipients($request, $shoot);
 
         return response()->json([
@@ -371,8 +371,8 @@ class MessageTemplateController extends Controller
 
     /**
      * Admins/superadmins and editing managers (shoots they manage) may list
-     * recipients. Sales reps may only list for shoots where they are the
-     * assigned rep (rep_id). Does NOT grant template/automation admin.
+     * recipients. Sales reps, including secondary roles, may list globally.
+     * Does NOT grant template/automation admin.
      */
     protected function authorizeNotificationRecipients(Request $request, Shoot $shoot): void
     {
@@ -413,7 +413,7 @@ class MessageTemplateController extends Controller
             return;
         }
 
-        if (app(\App\Services\Shoots\ShootAuthorizationSupport::class)->hasRole($user, ['salesRep'])) {
+        if (app(\App\Services\Shoots\ShootManagementAccess::class)->isSalesRep($user)) {
             abort_unless(
                 app(\App\Services\Shoots\ShootAuthorizationSupport::class)->canViewShootDetails($shoot, $user),
                 403,

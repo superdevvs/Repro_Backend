@@ -70,13 +70,18 @@ class SalesShootManagementTest extends TestCase
             $actor = User::factory()->create(['role' => $role, 'secondary_roles' => ['sales_rep']]);
             Sanctum::actingAs($actor);
             $shoot = $this->shoot();
-            $this->assertFalse($management->isSalesRep($actor));
+            $this->assertTrue($management->isSalesRep($actor));
+            $this->assertFalse($management->isRestrictedSalesRep($actor));
             $payload = $role === 'editing_manager' ? ['address' => 'Existing manager rights'] : ['is_listing_hidden' => true];
             $this->patchJson('/api/shoots/'.$shoot->id, $payload + ['notify_client' => false, 'notify_photographer' => false])->assertOk();
             $this->assertSame($role === 'editing_manager' ? 'Existing manager rights' : true,
                 $role === 'editing_manager' ? $shoot->fresh()->address : (bool) $shoot->fresh()->is_listing_hidden);
             $shoot->status = $shoot->workflow_status = 'delivered';
             $this->assertTrue($management->canEdit($shoot, $actor));
+            $notes = app(\App\Services\Shoots\ShootNotesAccessService::class);
+            foreach (['shoot' => 'client_visible', 'company' => 'internal', 'photographer' => 'photographer_only', 'editing' => 'internal', 'approval' => 'internal'] as $type => $visibility) {
+                $this->assertTrue($notes->canCreate($shoot, $actor, $type, $visibility));
+            }
         }
         Mail::assertNothingSent(); Notification::assertNothingSent();
     }

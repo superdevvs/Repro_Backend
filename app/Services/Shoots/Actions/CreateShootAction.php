@@ -42,7 +42,7 @@ class CreateShootAction
     {
         $validated = $request->validated();
         $management = app(\App\Services\Shoots\ShootManagementAccess::class);
-        if ($management->isSalesRep($user)) {
+        if ($management->isRestrictedSalesRep($user)) {
             foreach (['services', 'service_items', 'service_lines'] as $field) {
                 foreach ($validated[$field] ?? [] as $index => $line) {
                     foreach (['editor_id', 'video_editor_id', 'force_unlock_delivery'] as $key) {
@@ -70,7 +70,7 @@ class CreateShootAction
         $this->support->ensureClientCanBookServices((int) $validated['client_id'], $unitBooking['services'] ?? $validated['services'], actor: $user);
         $client = $this->support->ensureClientHasDeliverableEmail((int) $validated['client_id']);
 
-        $userRole = app(\App\Services\Shoots\ShootManagementAccess::class)->isSalesRep($user) ? 'salesrep' : strtolower($user->role ?? '');
+        $userRole = $management->isRestrictedSalesRep($user) ? 'salesrep' : strtolower($user->role ?? '');
         $scheduledAt = !empty($validated['scheduled_at'])
             ? ($this->support->parseScheduleInstant(
                 $validated['scheduled_at'],
@@ -98,7 +98,7 @@ class CreateShootAction
             }
             $propertyDetails = $validated['property_details'] ?? [];
             $sqft = $propertyDetails['sqft'] ?? $propertyDetails['squareFeet'] ?? $propertyDetails['square_feet'] ?? null;
-            if ($management->isSalesRep($user)) {
+            if ($management->isRestrictedSalesRep($user)) {
                 $catalog = \App\Models\Service::whereIn('id', collect($servicesPayload)->pluck('id'))->get()->keyBy('id');
                 foreach ($servicesPayload as &$line) {
                     $line['price'] = $catalog->get($line['id'])?->getPriceForSqft(is_numeric($sqft) ? (int) $sqft : null) ?? 0;
