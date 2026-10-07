@@ -68,7 +68,7 @@ class ShootAuthorizationSupport
 
     public function canBookOutsideClientServiceGroups(?User $actor): bool
     {
-        return $this->hasRole($actor, ['admin', 'superadmin', 'salesRep']);
+        return $this->hasRole($actor, ['admin', 'superadmin']) || app(ShootManagementAccess::class)->can($actor);
     }
 
     public function ensureRole(array $roles, ?User $user = null, string $message = 'Forbidden'): void
@@ -89,7 +89,7 @@ class ShootAuthorizationSupport
     public function canManageRequestedShoot(Shoot $shoot, ?User $user): bool
     {
         return strtolower((string) ($shoot->workflow_status ?: $shoot->status)) === Shoot::STATUS_REQUESTED
-            && $this->hasRole($user, ['admin', 'superadmin', 'editing_manager', 'salesRep']);
+            && ($this->hasRole($user, ['admin', 'superadmin', 'editing_manager']) || app(ShootManagementAccess::class)->can($user, 'manage'));
     }
 
     public function isClientUser(?User $user): bool
@@ -298,7 +298,8 @@ class ShootAuthorizationSupport
 
     public function canViewShootDetails(Shoot $shoot, ?User $user = null): bool
     {
-        return $this->canAccessShootMedia($shoot, $user);
+        return $this->canAccessShootMedia($shoot, $user)
+            || (! $shoot->isImportDraft() && app(ShootManagementAccess::class)->can($user));
     }
 
     public function isOnHold(Shoot $shoot): bool
@@ -318,6 +319,10 @@ class ShootAuthorizationSupport
      */
     public function canScheduleShoot(Shoot $shoot, ?User $user): bool
     {
+        if (app(ShootManagementAccess::class)->isSalesRep($user)) {
+            return app(ShootManagementAccess::class)->canEdit($shoot, $user)
+                && app(ShootManagementAccess::class)->can($user, 'manage');
+        }
         if (! $user || ! $this->canViewShootDetails($shoot, $user)) {
             return false;
         }
@@ -326,23 +331,21 @@ class ShootAuthorizationSupport
             return true;
         }
 
-        return $this->hasRole($user, ['salesRep']) && $this->isOnHold($shoot);
+        return app(ShootManagementAccess::class)->canEdit($shoot, $user)
+            && app(ShootManagementAccess::class)->can($user, 'manage');
     }
 
     /** Hold shoots are still being arranged, so sales can set the appointment. */
     public function canManageHoldShoot(Shoot $shoot, ?User $user): bool
     {
-        return $this->hasRole($user, ['salesRep'])
+        return app(ShootManagementAccess::class)->can($user)
             && $this->isOnHold($shoot)
             && $this->canViewShootDetails($shoot, $user);
     }
 
     public function canEditShootAppointment(Shoot $shoot, ?User $user): bool
     {
-        $editable = ['scheduled', 'uploaded', 'editing', 'review', 'ready'];
-        return $this->hasRole($user, ['salesRep']) && ! $shoot->isImportDraft()
-            && in_array($shoot->status, $editable, true)
-            && in_array($shoot->workflow_status ?: $shoot->status, $editable, true);
+        return app(ShootManagementAccess::class)->canEdit($shoot, $user);
     }
 
     public function ensureShootAccess(Shoot $shoot, ?User $user = null): void
@@ -358,6 +361,9 @@ class ShootAuthorizationSupport
     /** Request review is an office/sales duty, independent of media workflow writes. */
     public function canReviewShootRequests(?User $user): bool
     {
+        if (app(ShootManagementAccess::class)->isSalesRep($user)) {
+            return app(ShootManagementAccess::class)->can($user, 'manage');
+        }
         if (! $user) {
             return false;
         }
@@ -411,8 +417,8 @@ class ShootAuthorizationSupport
             return (string) $shoot->client_id === (string) $user->id;
         }
 
-        if ($this->hasRole($user, ['salesRep'])) {
-            return (string) $shoot->rep_id === (string) $user->id;
+        if (app(ShootManagementAccess::class)->isSalesRep($user)) {
+            return app(ShootManagementAccess::class)->can($user, 'manage');
         }
 
         return $this->hasRole($user, [
@@ -422,7 +428,7 @@ class ShootAuthorizationSupport
 
     public function canResolveShootIssues(Shoot $shoot, ?User $user): bool
     {
-        return $this->canViewShootDetails($shoot, $user)
+        return $this->canAccessShootMedia($shoot, $user)
             && $this->hasRole($user, ['admin', 'superadmin', 'editing_manager', 'photographer', 'editor']);
     }
 

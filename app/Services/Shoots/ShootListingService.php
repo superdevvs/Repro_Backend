@@ -164,7 +164,9 @@ class ShootListingService
                 $eagerLoads['payments'] = 'id,shoot_id,amount,paid_at,status';
             }
 
-            $query = $authorization->scopeAccessibleShootMedia(Shoot::with($eagerLoads), $user);
+            $query = app(ShootManagementAccess::class)->can($user)
+                ? Shoot::with($eagerLoads)
+                : $authorization->scopeAccessibleShootMedia(Shoot::with($eagerLoads), $user);
 
             $dashboardOpen = $tab === 'completed' && $request->boolean('dashboard_open')
                 && $authorization->hasRole($user, ['admin', 'superadmin', 'editing_manager', 'editor', 'photographer', 'salesRep']);

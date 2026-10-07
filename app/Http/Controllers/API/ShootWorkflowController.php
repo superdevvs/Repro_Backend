@@ -48,7 +48,8 @@ class ShootWorkflowController extends Controller
     {
         app(\App\Services\Shoots\ShootAuthorizationSupport::class)->ensureShootAccess($shoot, $request->user());
         $user = $request->user();
-        if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager', 'salesRep', 'rep', 'representative'], true)) {
+        $management = app(\App\Services\Shoots\ShootManagementAccess::class);
+        if (!$management->can($user, 'manage') || ($management->isSalesRep($user) && !$management->canEdit($shoot, $user))) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
@@ -71,7 +72,8 @@ class ShootWorkflowController extends Controller
     {
         app(\App\Services\Shoots\ShootAuthorizationSupport::class)->ensureShootAccess($shoot, $request->user());
         $user = $request->user();
-        if (!in_array($user->role, ['admin', 'superadmin'], true)) {
+        $management = app(\App\Services\Shoots\ShootManagementAccess::class);
+        if (!$management->can($user, 'manage') || ($management->isSalesRep($user) && !$management->canEdit($shoot, $user))) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
@@ -261,7 +263,7 @@ class ShootWorkflowController extends Controller
     {
         app(\App\Services\Shoots\ShootAuthorizationSupport::class)->ensureShootAccess($shoot, $request->user());
         $user = $request->user();
-        if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager', 'salesRep', 'rep', 'representative'], true)) {
+        if (!app(\App\Services\Shoots\ShootManagementAccess::class)->can($user, 'manage')) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 

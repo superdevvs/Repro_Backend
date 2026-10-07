@@ -41,6 +41,17 @@ class CreateShootAction
     public function execute(StoreShootRequest $request, User $user): CreateShootResult
     {
         $validated = $request->validated();
+        $management = app(\App\Services\Shoots\ShootManagementAccess::class);
+        if ($management->isSalesRep($user)) {
+            foreach (['services', 'service_items', 'service_lines'] as $field) {
+                foreach ($validated[$field] ?? [] as $index => $line) {
+                    foreach (['editor_id', 'video_editor_id', 'force_unlock_delivery'] as $key) {
+                        abort_if(!empty($line[$key]), 403, 'Production assignment is managed outside booking.');
+                    }
+                    foreach (['price', 'photographer_pay', 'editor_id', 'video_editor_id', 'is_deliverable', 'workflow_status', 'delivery_status', 'force_unlock_delivery', 'unlock_reason'] as $key) unset($validated[$field][$index][$key]);
+                }
+            }
+        }
         // The legacy merger stores SQL clocks without offsets. Merge zoned input
         // in UTC so the two occurrences of a repeated DST hour remain distinct.
         if (! empty($validated['timezone'])) {
@@ -59,7 +70,7 @@ class CreateShootAction
         $this->support->ensureClientCanBookServices((int) $validated['client_id'], $unitBooking['services'] ?? $validated['services'], actor: $user);
         $client = $this->support->ensureClientHasDeliverableEmail((int) $validated['client_id']);
 
-        $userRole = strtolower($user->role ?? '');
+        $userRole = app(\App\Services\Shoots\ShootManagementAccess::class)->isSalesRep($user) ? 'salesrep' : strtolower($user->role ?? '');
         $scheduledAt = !empty($validated['scheduled_at'])
             ? ($this->support->parseScheduleInstant(
                 $validated['scheduled_at'],
@@ -87,6 +98,13 @@ class CreateShootAction
             }
             $propertyDetails = $validated['property_details'] ?? [];
             $sqft = $propertyDetails['sqft'] ?? $propertyDetails['squareFeet'] ?? $propertyDetails['square_feet'] ?? null;
+            if ($management->isSalesRep($user)) {
+                $catalog = \App\Models\Service::whereIn('id', collect($servicesPayload)->pluck('id'))->get()->keyBy('id');
+                foreach ($servicesPayload as &$line) {
+                    $line['price'] = $catalog->get($line['id'])?->getPriceForSqft(is_numeric($sqft) ? (int) $sqft : null) ?? 0;
+                }
+                unset($line);
+            }
             $servicesPayload = app(\App\Services\Shoots\ShootDurationResolver::class)->withDurations(
                 $servicesPayload, is_numeric($sqft) ? (int) $sqft : null
             );

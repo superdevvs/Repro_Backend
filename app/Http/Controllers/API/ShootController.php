@@ -273,7 +273,8 @@ class ShootController extends Controller
     public function applyAlternateDate(Request $request, Shoot $shoot)
     {
         $user = $request->user();
-        if (!$user || !in_array($user->role, ['admin', 'superadmin', 'editing_manager'], true)) {
+        $management = app(\App\Services\Shoots\ShootManagementAccess::class);
+        if (!$management->can($user, 'manage') || !$management->canEdit($shoot, $user)) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 

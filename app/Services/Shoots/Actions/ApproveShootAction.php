@@ -49,6 +49,10 @@ class ApproveShootAction
 
     public function execute(Request $request, Shoot $shoot, User $user): Shoot
     {
+        $management = app(\App\Services\Shoots\ShootManagementAccess::class);
+        if ($management->isSalesRep($user)) {
+            $request->replace($management->normalizeSalesEdit($shoot, $user, $request->all()));
+        }
         $request->merge(\App\Support\Timezone::scheduleInput($request->only(['timezone', 'complimentary_service_options'])));
         $shoot->loadMissing('services');
         $beforeSnapshot = $this->mailService->captureShootSnapshot($shoot);
@@ -78,9 +82,7 @@ class ApproveShootAction
                     : ($shoot->scheduled_at ? new \DateTime((string) $shoot->scheduled_at) : new \DateTime)
             );
 
-        $skipAvailabilityCheck = $validated['skip_availability_check'] ?? (in_array($user->role, ['admin', 'superadmin'])
-            || (app(\App\Services\Shoots\ShootAuthorizationSupport::class)->hasRole($user, ['salesRep'])
-                && app(\App\Services\Shoots\ShootAuthorizationSupport::class)->canManageRequestedShoot($shoot, $user)));
+        $skipAvailabilityCheck = $management->isSalesRep($user) ? false : ($validated['skip_availability_check'] ?? in_array($user->role, ['admin', 'superadmin']));
         $targetPhotographerId = $validated['photographer_id'] ?? $shoot->photographer_id;
         $targetServices = $this->editablePayloadService->targetServicesFor($shoot, $validated, $user);
         $isMultiUnit = $shoot->units()->exists();
@@ -171,6 +173,7 @@ class ApproveShootAction
         ), $shoot, $user);
         $writeAttempts = DB::transactionLevel() > 0 ? 1 : LockedWrite::DEFAULT_ATTEMPTS;
         $travelGuard->commit($travelPrepared, fn () => LockedWrite::run(fn () => DB::transaction(function () use ($shoot, $scheduledAt, $user, $validated, $inheritedScheduleItemIds, $previousSchedule, $approvedSchedule) {
+            app(\App\Services\Shoots\ShootManagementAccess::class)->assertVersion($shoot, $validated['expected_edit_version'] ?? null);
             // A failed SQLite attempt may leave the in-memory workflow state
             // changed even though its transaction rolled back.
             $shoot->refresh();

@@ -22,9 +22,10 @@ class StoreShootRequest extends FormRequest
         $userRole = strtolower($user->role ?? '');
 
         // Admin, super admin, editing manager, and sales reps can book for any client
-        if (in_array($userRole, ['admin', 'superadmin', 'editing_manager', 'salesrep', 'sales_rep'])) {
+        if (app(\App\Services\Shoots\ShootManagementAccess::class)->can($user)) {
             return true;
         }
+        if (app(\App\Services\Shoots\ShootManagementAccess::class)->isSalesRep($user)) return false;
 
         // Clients can only book for themselves
         if ($userRole === 'client') {
@@ -43,7 +44,7 @@ class StoreShootRequest extends FormRequest
     {
         $user = $this->user();
         $userRole = strtolower((string) ($user->role ?? ''));
-        $isInternalScheduler = in_array($userRole, ['admin', 'superadmin', 'editing_manager', 'salesrep', 'sales_rep'], true);
+        $isInternalScheduler = app(\App\Services\Shoots\ShootManagementAccess::class)->can($user);
         $canCreateAdditionalWork = in_array($userRole, ['admin', 'superadmin'], true);
         $shootType = (string) $this->input('shoot_type', 'standard');
         // Only a superadmin may intentionally create an internal/no-charge shoot
@@ -157,7 +158,7 @@ class StoreShootRequest extends FormRequest
             'bypass_paywall' => 'nullable|boolean',
             'tax_region' => 'nullable|string|in:md,dc,va,none',
             'admin_adjusted_total_quote' => [
-                $isInternalScheduler ? 'nullable' : 'prohibited',
+                app(\App\Services\Shoots\ShootManagementAccess::class)->canAdjustPricing($user) ? 'nullable' : 'prohibited',
                 'numeric',
                 'min:0',
             ],

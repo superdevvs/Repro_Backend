@@ -163,7 +163,7 @@ class ShootHistoryService
             return false;
         }
 
-        return app(ShootAuthorizationSupport::class)->hasRole($user, self::HISTORY_ALLOWED_ROLES);
+        return app(ShootManagementAccess::class)->can($user) || app(ShootAuthorizationSupport::class)->hasRole($user, self::HISTORY_ALLOWED_ROLES);
     }
 
     protected function applyHistoryFilters(Builder $query, Request $request, ?User $user): void
@@ -174,7 +174,9 @@ class ShootHistoryService
         ]);
 
         if ($user) {
-            if ($user->role === 'client') {
+            if (app(ShootManagementAccess::class)->can($user)) {
+                // Booking staff see every shoot, including secondary rep roles.
+            } elseif ($user->role === 'client') {
                 Log::debug('Filtering shoots for client', ['client_id' => $user->id]);
                 $query->where('client_id', $user->id);
             } elseif (app(ShootAuthorizationSupport::class)->hasRole($user, ['salesRep'])) {
@@ -289,7 +291,7 @@ class ShootHistoryService
             ->whereIn('client_id', $clientIds);
 
         $authorization = app(ShootAuthorizationSupport::class);
-        if ($authorization->hasRole($user, ['salesRep', 'editor', 'client'])) {
+        if (!app(ShootManagementAccess::class)->can($user) && $authorization->hasRole($user, ['salesRep', 'editor', 'client'])) {
             $authorization->scopeAccessibleShootMedia($query, $user);
         }
 
@@ -346,8 +348,9 @@ class ShootHistoryService
         $this->presenter->applyListCardMedia($shoot);
         $client = $shoot->client;
         $requestingRole = strtolower((string) (auth()->user()?->role ?? ''));
-        $isEditor = $requestingRole === 'editor';
-        $isClient = $requestingRole === 'client';
+        $isBookingStaff = app(ShootManagementAccess::class)->can(auth()->user());
+        $isEditor = $requestingRole === 'editor' && !$isBookingStaff;
+        $isClient = $requestingRole === 'client' && !$isBookingStaff;
         $visibleServices = $isEditor
             ? app(ShootEditingAssignmentService::class)->filterServicesForEditor($shoot, auth()->user())
             : collect($shoot->services);
@@ -427,6 +430,7 @@ class ShootHistoryService
             ],
             'tourPurchased' => $this->determineTourPurchased($shoot),
             'notes' => [
+                'approval' => ($isEditor || $isClient) ? null : $shoot->approval_annotation,
                 'shoot' => $isEditor ? null : ($shoot->shoot_notes ?? $shoot->notes),
                 'photographer' => ($isEditor || $isClient) ? null : $shoot->photographer_notes,
                 'company' => ($isEditor || $isClient) ? null : $shoot->company_notes,

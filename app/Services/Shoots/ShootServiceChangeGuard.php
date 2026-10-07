@@ -35,8 +35,8 @@ class ShootServiceChangeGuard
     {
         return $actor !== null
             && (in_array($this->normalizeRole($actor->role), self::ZERO_SERVICE_ROLES, true)
-                || (app(ShootAuthorizationSupport::class)->hasRole($actor, ['salesRep'])
-                    && app(ShootAuthorizationSupport::class)->canManageRequestedShoot($shoot, $actor)))
+                || (app(ShootManagementAccess::class)->isSalesRep($actor)
+                    && app(ShootManagementAccess::class)->canEdit($shoot, $actor)))
             && in_array($this->normalizeStatus($shoot), self::PRE_DELIVERY_STATUSES, true);
     }
 

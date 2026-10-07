@@ -530,10 +530,10 @@ class RolePermissionService
             return 'client';
         }
 
-        $normalized = strtolower(str_replace(['_', '-'], '', trim($role)));
+        $normalized = strtolower(str_replace(['_', '-', ' '], '', trim($role)));
 
         return match ($normalized) {
-            'salesrep' => 'salesRep',
+            'salesrep', 'rep', 'representative' => 'salesRep',
             'editingmanager' => 'editing_manager',
             'superadmin' => 'superadmin',
             default => $normalized,

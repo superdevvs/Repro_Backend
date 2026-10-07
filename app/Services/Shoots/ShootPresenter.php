@@ -573,7 +573,12 @@ class ShootPresenter
         $shoot->company_notes = ($isEditorRole || $isClientRole) ? null : $shoot->company_notes;
         $shoot->photographer_notes = ($isEditorRole || $isClientRole) ? null : $shoot->photographer_notes;
         $shoot->editor_notes = $isClientRole ? null : $shoot->editor_notes;
-        if (! app(ShootAuthorizationSupport::class)->hasRole(auth()->user(), ['admin', 'superadmin', 'editing_manager', 'salesRep'])) {
+        if (app(ShootManagementAccess::class)->isSalesRep($requestingUser)) {
+            foreach (['shoot_notes', 'company_notes', 'photographer_notes', 'editor_notes', 'approval_annotation'] as $field) {
+                $shoot->setAttribute($field, $shoot->getRawOriginal($field));
+            }
+        }
+        if (! app(ShootManagementAccess::class)->isSalesRep($requestingUser) && ! app(ShootAuthorizationSupport::class)->hasRole(auth()->user(), ['admin', 'superadmin', 'editing_manager', 'salesRep'])) {
             $shoot->makeHidden('approval_annotation');
         }
 
@@ -967,6 +972,13 @@ class ShootPresenter
             ->canRemoveAllServices($shoot, $requestingUser);
         $shoot->setAttribute('can_remove_all_services', $canRemoveAllServices);
         $shoot->setAttribute('canRemoveAllServices', $canRemoveAllServices);
+        $management = app(ShootManagementAccess::class);
+        $shoot->setAttribute('canManageBooking', $management->canEdit($shoot, $requestingUser));
+        $shoot->setAttribute('canManageShootActions', $management->can($requestingUser, 'manage'));
+        $shoot->setAttribute('canAdjustShootPricing', $management->canAdjustPricing($requestingUser));
+        if (request()->route('shoot') !== null) {
+            $shoot->setAttribute('editVersion', $management->editVersion($shoot->fresh()));
+        }
         $overpaymentAmount = round(max(
             (float) ($shoot->total_paid ?? 0) - (float) ($shoot->total_quote ?? 0),
             0

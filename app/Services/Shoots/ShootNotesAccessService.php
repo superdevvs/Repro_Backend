@@ -118,7 +118,7 @@ class ShootNotesAccessService
 
     private function role(User $user): string
     {
-        if ($this->shootAuthorization->hasRole($user, ['salesRep'])) {
+        if (app(ShootManagementAccess::class)->isSalesRep($user)) {
             return 'sales_rep';
         }
         return strtolower(str_replace(['-', ' '], '_', (string) $user->role));

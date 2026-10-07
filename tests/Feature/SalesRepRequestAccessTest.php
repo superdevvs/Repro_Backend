@@ -83,7 +83,7 @@ class SalesRepRequestAccessTest extends TestCase
             $this->assertFalse($authorization->canUploadShootMedia($shoot, $rep));
             $this->assertFalse($authorization->canResolveShootIssues($shoot, $rep));
             $this->postJson("/api/shoots/{$shoot->id}/mark-issues-resolved")->assertForbidden();
-            $this->postJson("/api/shoots/{$shoot->id}/issues", ['note' => 'Unassigned rep'])->assertForbidden();
+            $this->postJson("/api/shoots/{$shoot->id}/issues", ['note' => 'Global rep follow-up'])->assertCreated();
 
             $shoot->update(['rep_id' => $rep->id]);
             $this->postJson("/api/shoots/{$shoot->id}/issues", ['note' => 'Assigned rep follow-up'])->assertCreated();

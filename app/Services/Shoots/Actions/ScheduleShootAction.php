@@ -236,7 +236,7 @@ class ScheduleShootAction
 
     private function resumeUnitPlan(Shoot $shoot, \DateTime $scheduledAt, array $validated, User $user): void
     {
-        abort_unless(in_array(strtolower($user->role), ['admin', 'superadmin', 'editing_manager'], true), 403);
+        abort_unless(app(\App\Services\Shoots\ShootManagementAccess::class)->can($user, 'manage'), 403);
         \App\Support\LockedWrite::run(fn () => \Illuminate\Support\Facades\DB::transaction(function () use ($shoot, $scheduledAt, $validated, $user) {
             if (\Illuminate\Support\Facades\DB::connection()->getDriverName() === 'sqlite') {
                 \Illuminate\Support\Facades\DB::table('shoots')->where('id', $shoot->id)->update(['units_revision' => \Illuminate\Support\Facades\DB::raw('units_revision')]);

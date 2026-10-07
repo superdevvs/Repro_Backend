@@ -704,7 +704,7 @@ Route::middleware('auth:sanctum')->group(function () {
     // Minimal update endpoint for status/workflow updates
     Route::patch('/shoots/{shoot}', [ShootController::class, 'update']);
     // Mark shoot as paid (Admin and Super Admin)
-    Route::post('/shoots/{shoot}/mark-paid', [ShootPaymentsController::class, 'markAsPaid'])->middleware(['role:admin,superadmin', 'permission:payments,mark-paid']);
+    Route::post('/shoots/{shoot}/mark-paid', [ShootPaymentsController::class, 'markAsPaid'])->middleware(['role:admin,superadmin,salesRep', 'permission:payments,mark-paid']);
     // State transition endpoints
     Route::post('/shoots/{shoot}/schedule', [ShootController::class, 'schedule']);
     Route::post('/shoots/{shoot}/assign-editor', [ShootWorkflowController::class, 'assignEditor'])
@@ -745,7 +745,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // Apply stored alternate date to the live schedule (internal update, no notifications)
     Route::post('/shoots/{shoot}/apply-alternate-date', [ShootController::class, 'applyAlternateDate'])
-        ->middleware('role:admin,superadmin,editing_manager');
+        ->middleware(['role:admin,superadmin,editing_manager,salesRep', 'permission:shoots,manage']);
 
     // Cancellation request endpoints
     Route::post('/shoots/{shoot}/request-cancellation', [ShootWorkflowController::class, 'requestCancellation']);
@@ -757,7 +757,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/shoots/{shoot}/approve-hold', [ShootWorkflowController::class, 'approveHold']);
     Route::post('/shoots/{shoot}/reject-hold', [ShootWorkflowController::class, 'rejectHold']);
     // Direct cancel endpoint for admin use
-    Route::post('/shoots/{shoot}/cancel', [ShootWorkflowController::class, 'cancel'])->middleware('role:admin,superadmin');
+    Route::post('/shoots/{shoot}/cancel', [ShootWorkflowController::class, 'cancel'])->middleware(['role:admin,superadmin,salesRep', 'permission:shoots,manage']);
 
     // Photographer availability
     Route::get('/photographers/{id}/availability', [ShootController::class, 'getPhotographerAvailability']);

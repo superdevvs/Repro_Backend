@@ -16,8 +16,8 @@ class ShootNotesSecurityTest extends TestCase
     public function test_all_sales_aliases_can_read_and_edit_all_categories_globally(): void
     {
         $shoot = Shoot::factory()->create(['rep_id' => null, 'notes' => 'Historical approval decision', 'approval_notes' => 'Approved by office']);
-        foreach (['salesRep', 'sales_rep', 'sales-rep', 'rep', 'representative'] as $role) {
-            $rep = User::factory()->create(['role' => $role]);
+        foreach (['salesRep', 'sales_rep', 'sales-rep', 'rep', 'representative', 'secondary'] as $role) {
+            $rep = User::factory()->create(['role' => $role === 'secondary' ? 'photographer' : $role, 'secondary_roles' => $role === 'secondary' ? ['sales_rep'] : []]);
             Sanctum::actingAs($rep);
             foreach (['shoot' => 'client_visible', 'company' => 'internal', 'photographer' => 'photographer_only', 'editing' => 'internal', 'approval' => 'internal'] as $type => $visibility) {
                 $this->postJson("/api/shoots/{$shoot->id}/notes", compact('type', 'visibility') + ['content' => "$role $type annotation"])->assertCreated();

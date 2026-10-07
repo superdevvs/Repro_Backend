@@ -71,6 +71,12 @@ class UpdateShootAction
         $canApproveFeaturedShoot = in_array($normalizedRole, ['admin', 'superadmin', 'super_admin'], true);
         $isClient = $user->role === 'client';
         $isRep = $this->authorizationSupport->hasRole($user, ['salesRep']);
+        $management = app(\App\Services\Shoots\ShootManagementAccess::class);
+        $isRep = $isRep || $management->isSalesRep($user);
+        $canManageBooking = $management->can($user);
+        if ($isRep) {
+            $request->replace($management->normalizeSalesEdit($shoot, $user, $request->all()));
+        }
         $canManageRequested = $this->authorizationSupport->canManageRequestedShoot($shoot, $user);
         $canManageHold = $this->authorizationSupport->canManageHoldShoot($shoot, $user);
         $isPhotographer = $user->role === 'photographer';
@@ -173,7 +179,7 @@ class UpdateShootAction
             }
         }
 
-        if (! $isAdmin && ! $canManageRequested && ! $canManageHold) {
+        if (! $isAdmin && ! $canManageBooking && ! $canManageRequested && ! $canManageHold) {
             $ownsShoot = $isClient && (string) $shoot->client_id === (string) $user->id;
             // Legacy shoots can inherit the client's rep without a shoot assignment.
             // This fallback authorizes only appearance edits, never other shoot writes.
@@ -388,9 +394,8 @@ class UpdateShootAction
             ? $this->editablePayloadService->targetServicesFor($shoot, $validated, $user)
             : [];
 
-        if ($hasAdjustedTotal
-            && ! in_array($normalizedRole, ['admin', 'superadmin', 'super_admin'], true)) {
-            $this->abortJson('Only Admin and Super Admin can set an adjusted total.', 403);
+        if ($hasAdjustedTotal && ! $management->canAdjustPricing($user)) {
+            $this->abortJson('You do not have permission to adjust shoot pricing.', 403);
         }
 
         $serviceDetachImpact = null;
@@ -466,7 +471,7 @@ class UpdateShootAction
         // skip_availability_check (or admin) may suppress booking-CONFLICT checks only.
         // The configured-hours availability bound is always enforced, identically to the
         // create path, so a shoot can never be rescheduled outside the photographer's hours.
-        $skipConflictCheck = $validated['skip_availability_check'] ?? ($isAdmin || $canManageRequested);
+        $skipConflictCheck = $isRep ? false : ($validated['skip_availability_check'] ?? ($isAdmin || $canManageRequested));
         if ($needsAvailabilityCheck) {
             $targetPhotographerId = array_key_exists('photographer_id', $validated) ? $validated['photographer_id'] : $shoot->photographer_id;
             $targetScheduledAt = array_key_exists('scheduled_at', $availabilityPayload)
@@ -696,6 +701,7 @@ class UpdateShootAction
                 $returnVisitReplayed = false;
                 $createdReturnVisitClassification = null;
                 $createdReturnVisitInvoiceId = null;
+                app(\App\Services\Shoots\ShootManagementAccess::class)->assertVersion($shoot, $validated['expected_edit_version'] ?? null);
                 $shoot->forceFill($pendingUpdateAttributes);
                 $this->editablePayloadService->apply($shoot, $validated, $user);
                 if ($featuredFlagProvided) {

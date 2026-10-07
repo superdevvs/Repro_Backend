@@ -29,6 +29,7 @@ class ShootEditablePayloadService
     {
         return array_merge(MultiUnitBookingService::rules(), [
             'scheduled_date' => 'nullable|date',
+            'expected_edit_version' => 'nullable|string|size:64',
             'scheduled_at' => 'nullable|date',
             'time' => 'nullable|string',
             'alternate_scheduled_date' => 'nullable|date',
@@ -439,11 +440,9 @@ class ShootEditablePayloadService
 
             if ($hasAdjustedTotal) {
                 $normalizedRole = strtolower((string) ($actor?->role ?? ''));
-                if (! in_array($normalizedRole, ['admin', 'superadmin', 'super_admin'], true)
-                    && ! (app(ShootAuthorizationSupport::class)->hasRole($actor, ['salesRep'])
-                    && app(ShootAuthorizationSupport::class)->canManageRequestedShoot($shoot, $actor))) {
+                if (! app(ShootManagementAccess::class)->canAdjustPricing($actor)) {
                     throw ValidationException::withMessages([
-                        'admin_adjusted_total_quote' => ['Only Admin and Super Admin can set an adjusted total.'],
+                        'admin_adjusted_total_quote' => ['You do not have permission to adjust shoot pricing.'],
                     ]);
                 }
 
