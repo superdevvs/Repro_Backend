@@ -35,7 +35,7 @@ class ShootManagementAccess
     {
         if (! $this->can($user) || $shoot->isImportDraft()) return false;
         if (! $this->isSalesRep($user) || $this->permissions->normalizedUserRoles($user)->intersect(['admin', 'superadmin'])->isNotEmpty()) return true;
-        $editable = ['requested', 'on_hold', 'hold_on', 'scheduled', 'booked', 'uploaded', 'editing', 'review', 'ready'];
+        $editable = ['requested', 'on_hold', 'hold_on', 'scheduled', 'booked', 'uploaded', 'completed', 'editing', 'review', 'ready'];
         return in_array(strtolower((string) $shoot->status), $editable, true)
             && in_array(strtolower((string) ($shoot->workflow_status ?: $shoot->status)), $editable, true);
     }
@@ -44,6 +44,16 @@ class ShootManagementAccess
     public function normalizeSalesEdit(Shoot $shoot, User $user, array $payload): array
     {
         abort_unless($this->canEdit($shoot, $user), 403, 'This shoot is locked or you do not have permission to edit it.');
+        $marketing = ['is_featured', 'featured_homepage_title', 'featured_homepage_location', 'featured_homepage_subtitle', 'featured_homepage_cta_label', 'featured_homepage_cta_href', 'featured_homepage_images', 'ghost_user_ids', 'tour_links'];
+        if (array_intersect(array_keys($payload), $marketing)
+            && $this->permissions->normalizedUserRoles($user)->intersect(['admin', 'superadmin', 'editing_manager'])->isEmpty()) {
+            $clientRepAppearance = array_keys($payload) === ['tour_links'] && ! $shoot->rep_id
+                && app(ShootMutationSupportService::class)->getClientRep((int) $shoot->client_id) === (int) $user->id;
+            abort_unless((string) $shoot->rep_id === (string) $user->id || $clientRepAppearance, 403, 'Marketing access remains assignment-scoped.');
+            if (isset($payload['tour_links'])) {
+                abort_unless(is_array($payload['tour_links']) && ! array_diff(array_keys($payload['tour_links']), ['realtor_client_id', 'tour_style', 'tour_palette', 'header_position', 'tour_version', 'realtor_info', 'autoplay', 'show_garage']), 403, 'Tour media links are managed outside booking.');
+            }
+        }
         foreach (['status', 'workflow_status'] as $field) {
             if (isset($payload[$field])) abort_unless($payload[$field] === $shoot->{$field}, 403, 'Use the shoot approval, hold, resume or cancellation action to change its status.');
             unset($payload[$field]);

@@ -572,7 +572,7 @@ class ShootMutationActionsTest extends TestCase
     }
 
     #[\PHPUnit\Framework\Attributes\Test]
-    public function sales_reps_cannot_schedule_or_rewrite_a_shoot_that_is_not_on_hold(): void
+    public function sales_reps_can_reschedule_and_edit_active_shoots_with_catalog_and_state_guards(): void
     {
         Sanctum::actingAs($this->salesRep);
         $shoot = Shoot::factory()->create([
@@ -592,18 +592,17 @@ class ShootMutationActionsTest extends TestCase
         $this->postJson("/api/shoots/{$shoot->id}/schedule", [
             'scheduled_at' => now()->addDays(2)->setTime(9, 0)->format('Y-m-d H:i:s'),
             'photographer_id' => $this->photographer->id,
-        ])->assertForbidden();
+        ])->assertOk();
 
         $this->patchJson("/api/shoots/{$shoot->id}", [
-            'address' => 'Not allowed',
+            'address' => 'Reviewed active appointment',
             'scheduled_date' => now()->addDays(2)->toDateString(),
-        ])->assertForbidden();
+        ])->assertOk();
 
-        $this->assertSame('12 Active Lane', $shoot->fresh()->address);
+        $this->assertSame('Reviewed active appointment', $shoot->fresh()->address);
         $this->assertSame(Shoot::STATUS_SCHEDULED, $shoot->fresh()->status);
 
-        // Assigned reps may add bookable services on scheduled shoots, but still
-        // cannot rewrite admin-only fields such as address (covered above).
+        // Bookable service additions preserve existing prices; historical-only catalog entries stay blocked.
         $zillow = Service::factory()->create([
             'name' => 'Zillow 3D Home Tour',
             'price' => 180.00,
@@ -618,7 +617,7 @@ class ShootMutationActionsTest extends TestCase
         ])->assertOk();
 
         $this->assertTrue($shoot->fresh()->services()->whereKey($zillow->id)->exists());
-        $this->assertSame('12 Active Lane', $shoot->fresh()->address);
+        $this->assertSame('Reviewed active appointment', $shoot->fresh()->address);
 
         $legacy = Service::factory()->create(['name' => 'Legacy Migration Only', 'price' => 10]);
         $legacy->forceFill(['is_migration_only' => true])->save();
@@ -628,7 +627,7 @@ class ShootMutationActionsTest extends TestCase
                 ['id' => $zillow->id, 'quantity' => 1],
                 ['id' => $legacy->id, 'quantity' => 1],
             ],
-        ])->assertForbidden();
+        ])->assertUnprocessable()->assertJsonValidationErrors('services');
         $this->assertFalse($shoot->fresh()->services()->whereKey($legacy->id)->exists());
 
         $held = Shoot::factory()->create([
@@ -692,7 +691,7 @@ class ShootMutationActionsTest extends TestCase
                 ['id' => $zillow->id, 'quantity' => 1],
                 ['id' => $legacy->id, 'quantity' => 1],
             ],
-        ])->assertForbidden();
+        ])->assertUnprocessable()->assertJsonValidationErrors('services');
 
         $this->assertFalse($shoot->fresh()->services()->whereKey($legacy->id)->exists());
 
@@ -709,13 +708,13 @@ class ShootMutationActionsTest extends TestCase
             ],
         ])->assertForbidden();
         $this->patchJson("/api/shoots/{$shoot->id}", [
-            'address' => 'Nope',
+            'address' => 'Reviewed property correction',
             'services' => [
                 ['id' => $this->service->id, 'price' => 150, 'quantity' => 1],
                 ['id' => $zillow->id, 'quantity' => 1],
             ],
-        ])->assertForbidden();
-        $this->assertSame('1732 Fletchers Way', $shoot->fresh()->address);
+        ])->assertOk();
+        $this->assertSame('Reviewed property correction', $shoot->fresh()->address);
     }
 
     #[\PHPUnit\Framework\Attributes\Test]
@@ -783,15 +782,16 @@ class ShootMutationActionsTest extends TestCase
             (int) $shoot->serviceItems()->where('service_id', $this->service->id)->value('photographer_id')
         );
 
-        // Other ACL denials remain: client_id / address still forbidden.
+        // Invalid clients stay rejected; a valid property correction is part of booking management.
         $this->patchJson("/api/shoots/{$shoot->id}", [
             'client_id' => 999999,
             'photographer_id' => $replacement->id,
-        ])->assertForbidden();
+        ])->assertUnprocessable()->assertJsonValidationErrors('client_id');
         $this->patchJson("/api/shoots/{$shoot->id}", [
-            'address' => 'Not Allowed Street',
+            'address' => 'Reviewed property street',
             'photographer_id' => $replacement->id,
-        ])->assertForbidden();
+        ])->assertOk();
+        $this->assertSame('Reviewed property street', $shoot->fresh()->address);
     }
 
         #[\PHPUnit\Framework\Attributes\Test]
@@ -1051,7 +1051,7 @@ class ShootMutationActionsTest extends TestCase
     }
 
     #[\PHPUnit\Framework\Attributes\Test]
-    public function sales_can_modify_another_reps_request_but_not_scheduled_shoot_details(): void
+    public function sales_can_modify_another_reps_request_and_scheduled_booking_details(): void
     {
         Sanctum::actingAs($this->salesRep);
         $shoot = Shoot::factory()->create([
@@ -1069,8 +1069,8 @@ class ShootMutationActionsTest extends TestCase
         $this->assertSame($this->photographer->id, $shoot->fresh()->photographer_id);
         $this->patchJson("/api/shoots/{$shoot->id}", ['status' => 'delivered'])->assertForbidden();
         $shoot->update(['status' => Shoot::STATUS_SCHEDULED, 'workflow_status' => Shoot::STATUS_SCHEDULED]);
-        $this->patchJson("/api/shoots/{$shoot->id}", ['address' => 'Not allowed'])->assertForbidden();
-        $this->assertSame('700 Shared Request Lane', $shoot->fresh()->address);
+        $this->patchJson("/api/shoots/{$shoot->id}", ['address' => 'Reviewed scheduled address'])->assertOk();
+        $this->assertSame('Reviewed scheduled address', $shoot->fresh()->address);
     }
 
     #[\PHPUnit\Framework\Attributes\Test]
@@ -2534,7 +2534,7 @@ class ShootMutationActionsTest extends TestCase
     }
 
     #[\PHPUnit\Framework\Attributes\Test]
-    public function clients_and_sales_representatives_cannot_save_zero_services(): void
+    public function clients_cannot_remove_all_services_and_sales_reps_require_confirmation(): void
     {
         $shoot = Shoot::factory()->create([
             'client_id' => $this->client->id,
@@ -2548,8 +2548,14 @@ class ShootMutationActionsTest extends TestCase
         foreach ([$this->client, $this->salesRep] as $actor) {
             Sanctum::actingAs($actor);
             $response = $this->patchJson("/api/shoots/{$shoot->id}", ['services' => []]);
-            $this->assertContains($response->status(), [403, 422]);
+            if ($actor->role === 'salesRep') $response->assertStatus(409);
+            else $this->assertContains($response->status(), [403, 422]);
             $this->assertTrue($shoot->fresh()->serviceItems()->exists());
+            if ($actor->role === 'salesRep') {
+                $this->patchJson("/api/shoots/{$shoot->id}", ['services' => [], 'confirm_service_detach' => true,
+                    'service_detach_confirmation_token' => $response->json('confirmation_token'), 'notify_client' => false, 'notify_photographer' => false])->assertOk();
+                $this->assertFalse($shoot->fresh()->serviceItems()->exists());
+            }
         }
     }
 

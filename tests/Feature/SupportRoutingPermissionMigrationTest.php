@@ -32,7 +32,7 @@ class SupportRoutingPermissionMigrationTest extends TestCase
         $roles = app(RolePermissionService::class)->defaultPermissionsByRole();
         // This migration recognizes the frozen October 1 default, before email subscription permissions.
         $roles['editing_manager'] = array_values(array_filter($roles['editing_manager'],
-            fn ($id) => $id !== 'support-manage' && ! str_starts_with($id, 'email-notifications-')));
+            fn ($id) => ! in_array($id, ['support-manage', 'shoots-update', 'shoots-manage', 'shoot-pricing-update'], true) && ! str_starts_with($id, 'email-notifications-')));
         $updated = $this->applyUpgrade($roles);
         $this->assertContains('support-manage', $updated['editing_manager']);
         $this->assertSame($roles['client'], $updated['client']);

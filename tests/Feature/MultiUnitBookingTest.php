@@ -73,7 +73,7 @@ class MultiUnitBookingTest extends TestCase
         $this->assertSame(90, $this->shoot->serviceItems()->sole()->duration_minutes);
     }
 
-    public function test_unassigned_rep_can_edit_unit_line_duration_but_not_unit_identity(): void
+    public function test_unassigned_rep_can_edit_unit_duration_and_identity_without_repricing(): void
     {
         $payload = $this->payload(1);
         $this->persist($payload);
@@ -85,10 +85,12 @@ class MultiUnitBookingTest extends TestCase
         $this->patchJson('/api/shoots/'.$this->shoot->id, $edit)->assertOk();
         $this->assertSame(5, (int) $this->shoot->serviceItems()->sole()->duration_minutes);
         $this->assertSame(100.0, (float) $this->shoot->serviceItems()->sole()->price);
+        $this->shoot->refresh();
         $edit = $this->existingPayload();
-        $edit['units'][0]['label'] = 'Unauthorized rename';
-        $this->patchJson('/api/shoots/'.$this->shoot->id, $edit)->assertForbidden();
-        $this->assertSame('Unit 1', $this->shoot->units()->sole()->label);
+        $edit['units'][0]['label'] = 'Reviewed unit rename';
+        $this->patchJson('/api/shoots/'.$this->shoot->id, $edit)->assertOk();
+        $this->assertSame('Reviewed unit rename', $this->shoot->units()->sole()->label);
+        $this->assertSame(100.0, (float) $this->shoot->serviceItems()->sole()->price);
     }
 
     public function test_unit_virtual_staging_assignment_ignores_offsite_artist_hours(): void

@@ -70,7 +70,8 @@ class ShootAccessSecurityTest extends TestCase
         foreach (['salesRep', 'editor', 'photographer', 'client', 'unknown_role'] as $role) {
             Sanctum::actingAs(User::factory()->create(['role' => $role]));
             $this->postJson("/api/shoots/{$shoot->id}/messages", ['recipient_id' => $shoot->client_id, 'message' => 'forbidden'])->assertForbidden();
-            $this->postJson("/api/shoots/{$shoot->id}/issues", ['note' => 'forbidden'])->assertForbidden();
+            // Sales can submit global customer requests; production writes below remain denied.
+            if ($role !== 'salesRep') $this->postJson("/api/shoots/{$shoot->id}/issues", ['note' => 'forbidden'])->assertForbidden();
             $this->patchJson("/api/shoots/{$shoot->id}/issues/999999", ['status' => 'resolved'])
                 ->assertStatus($role === 'salesRep' ? 404 : 403);
             $this->postJson("/api/shoots/{$shoot->id}/mark-issues-resolved")->assertForbidden();
