@@ -386,9 +386,13 @@ class ShootPresenter
 
         $requestingUser = auth()->user();
         $requestingRole = $requestingUser ? strtolower($requestingUser->role ?? '') : '';
-        $isPhotographerRole = $requestingRole === 'photographer';
-        $isEditorRole = $requestingRole === 'editor';
-        $isClientRole = $requestingRole === 'client';
+        // Secondary reps need complete booking metadata. Media is still scoped
+        // independently by the file/assignment services and original role below.
+        $isBookingRep = app(ShootManagementAccess::class)->isSalesRep($requestingUser)
+            && app(ShootManagementAccess::class)->can($requestingUser);
+        $isPhotographerRole = $requestingRole === 'photographer' && ! $isBookingRep;
+        $isEditorRole = $requestingRole === 'editor' && ! $isBookingRep;
+        $isClientRole = $requestingRole === 'client' && ! $isBookingRep;
         $canManageReshoots = in_array($requestingRole, ['admin', 'superadmin'], true);
         if ($canManageReshoots) {
             $shoot->makeVisible('external_booking_payload');
@@ -398,7 +402,7 @@ class ShootPresenter
         $requestingUserId = $requestingUser?->id ? (string) $requestingUser->id : null;
         $editorAssignments = $this->editingAssignmentService->buildEditorAssignmentsPayload(
             $shoot,
-            $isEditorRole ? $requestingUser : null
+            $requestingRole === 'editor' ? $requestingUser : null
         );
         $serviceItemSummaries = app(ShootServiceItemSupport::class)->summaries($shoot);
 

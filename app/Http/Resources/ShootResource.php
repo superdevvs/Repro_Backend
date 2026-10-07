@@ -91,8 +91,10 @@ class ShootResource extends JsonResource
         $canViewSafeReshootContext = $canManageReshoots || $isOwningClient;
         $canViewInvoice = app(\App\Services\Invoices\InvoiceAuthorizationService::class)
             ->canViewShootInvoice($this->resource, $requestingUser);
-        $isEditor = strtolower((string) ($requestingUser?->role ?? '')) === 'editor';
-        $isPhotographer = strtolower((string) ($requestingUser?->role ?? '')) === 'photographer';
+        $isBookingRep = app(\App\Services\Shoots\ShootManagementAccess::class)->isSalesRep($requestingUser)
+            && app(\App\Services\Shoots\ShootManagementAccess::class)->can($requestingUser);
+        $isEditor = strtolower((string) ($requestingUser?->role ?? '')) === 'editor' && ! $isBookingRep;
+        $isPhotographer = strtolower((string) ($requestingUser?->role ?? '')) === 'photographer' && ! $isBookingRep;
         $assignmentService = app(\App\Services\Shoots\ShootEditingAssignmentService::class);
         $serviceCollection = $this->services;
         $propertyDetails = is_array($this->property_details) ? $this->property_details : [];

@@ -147,4 +147,18 @@ class SalesShootManagementTest extends TestCase
         $this->patchJson('/api/shoots/'.$shoot->id, ['city' => 'Allowed booking edit', 'discount_value' => 0, 'admin_adjusted_total_quote' => null, 'notify_client' => false, 'notify_photographer' => false])->assertOk();
         $this->patchJson('/api/shoots/'.$shoot->id, ['discount_type' => 'percent', 'discount_value' => 5])->assertForbidden();
     }
+
+    public function test_secondary_reps_receive_complete_booking_metadata_without_media_capabilities(): void
+    {
+        foreach (['photographer', 'editor'] as $role) {
+            $actor = User::factory()->create(['role' => $role, 'secondary_roles' => ['salesRep']]);
+            Sanctum::actingAs($actor);
+            $shoot = $this->shoot();
+            $response = $this->getJson('/api/shoots/'.$shoot->id)->assertOk();
+            $response->assertJsonCount(1, 'data.services')->assertJsonPath('data.services.0.price', 99);
+            $this->assertNotNull($response->json('data.client'));
+            $this->assertFalse(app(ShootAuthorizationSupport::class)->canUploadShootMedia($shoot, $actor));
+            $this->assertFalse(app(ShootAuthorizationSupport::class)->canManageShootOperations($actor));
+        }
+    }
 }
