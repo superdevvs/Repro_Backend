@@ -156,6 +156,8 @@ class TravelLocationResolver
                 if ($remaining <= 0) {
                     throw new \RuntimeException('Scheduling location lookup budget exhausted.');
                 }
+                // cURL uses integer milliseconds; zero would disable its timeout.
+                $remaining = max(0.001, $remaining);
                 return Http::withHeaders([
                     'User-Agent' => config('services.nominatim.user_agent'),
                 ])->connectTimeout(min(1, $remaining))->timeout(min(3, $remaining))->get('https://nominatim.openstreetmap.org/search', [
