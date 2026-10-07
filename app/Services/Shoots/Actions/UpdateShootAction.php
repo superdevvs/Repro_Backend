@@ -514,7 +514,7 @@ class UpdateShootAction
 
                 if ($isMultiUnit) {
                     foreach ($targetServices as $line) {
-                        if (! empty($line['photographer_id']) && ! empty($line['scheduled_at'])) {
+                        if (! empty($line['photographer_required']) && ! empty($line['photographer_id']) && ! empty($line['scheduled_at'])) {
                             $this->support->assertWithinAvailabilityBounds((int) $line['photographer_id'], new \DateTime($line['scheduled_at']), (int) $line['duration_minutes'], $shoot->id, $skipConflictCheck, $assertTimezone);
                         }
                     }

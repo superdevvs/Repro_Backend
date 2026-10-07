@@ -91,6 +91,23 @@ class MultiUnitBookingTest extends TestCase
         $this->assertSame('Unit 1', $this->shoot->units()->sole()->label);
     }
 
+    public function test_unit_virtual_staging_assignment_ignores_offsite_artist_hours(): void
+    {
+        $this->service->update(['name' => 'Virtual Staging', 'photographer_required' => false, 'shoot_duration_minutes' => 0]);
+        $this->persist($this->payload(1));
+        $this->shoot->update(['status' => 'scheduled', 'workflow_status' => 'scheduled']);
+        $artist = User::factory()->photographer()->create();
+        \App\Models\PhotographerAvailability::create(['photographer_id' => $artist->id, 'date' => '2031-10-09', 'start_time' => '00:00', 'end_time' => '23:59', 'status' => 'unavailable']);
+        Sanctum::actingAs(User::factory()->create(['role' => 'rep']));
+        $edit = $this->existingPayload();
+        $edit['service_lines'][0]['photographer_id'] = $artist->id;
+        $edit['service_lines'][0]['scheduled_at'] = '2031-10-09T15:00:00Z';
+        $edit['service_lines'][0]['duration_minutes'] = 0;
+        $this->patchJson('/api/shoots/'.$this->shoot->id, $edit)->assertOk();
+        $this->assertSame($artist->id, (int) $this->shoot->serviceItems()->sole()->photographer_id);
+        $this->assertSame(0, (int) $this->shoot->serviceItems()->sole()->duration_minutes);
+    }
+
     public function test_unit_service_edits_update_shoot_anchor_and_preserve_separate_visits(): void
     {
         $this->shoot->update(['timezone' => 'America/New_York']);

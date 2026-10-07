@@ -114,8 +114,9 @@ class ShootBookingTest extends TestCase
     }
 
     #[\PHPUnit\Framework\Attributes\Test]
-    public function digital_enhancement_does_not_keep_a_photographer_assignment(): void
+    public function virtual_staging_keeps_an_explicit_offsite_artist_without_an_onsite_visit(): void
     {
+        $offsiteArtist = User::factory()->photographer()->create();
         $this->service->update(['photographer_required' => true]);
         $enhancement = Service::factory()->noIntake()->create([
             'name' => 'Virtual Staging (per image)',
@@ -136,7 +137,7 @@ class ShootBookingTest extends TestCase
             'zip' => '21201',
             'services' => [
                 ['id' => $this->service->id, 'quantity' => 1, 'photographer_id' => $this->photographer->id],
-                ['id' => $enhancement->id, 'quantity' => 1, 'photographer_id' => $this->photographer->id],
+                ['id' => $enhancement->id, 'quantity' => 1, 'photographer_id' => $offsiteArtist->id],
             ],
             'scheduled_at' => $scheduledAt,
         ])->assertStatus(201);
@@ -148,9 +149,11 @@ class ShootBookingTest extends TestCase
             $this->photographer->id,
             $shoot->serviceItems()->where('service_id', $this->service->id)->value('photographer_id')
         );
-        $this->assertNull(
+        $this->assertEquals($offsiteArtist->id,
             $shoot->serviceItems()->where('service_id', $enhancement->id)->value('photographer_id')
         );
+        $this->assertSame(0, (int) $shoot->serviceItems()->where('service_id', $enhancement->id)->value('duration_minutes'));
+        $this->assertSame([], app(\App\Services\Shoots\ShootDurationResolver::class)->windowsForShoot($shoot, $offsiteArtist->id));
     }
 
     #[\PHPUnit\Framework\Attributes\Test]
@@ -520,4 +523,3 @@ class ShootBookingTest extends TestCase
         ]);
     }
 }
-
