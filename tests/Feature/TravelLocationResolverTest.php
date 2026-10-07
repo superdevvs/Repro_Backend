@@ -5,6 +5,8 @@ namespace Tests\Feature;
 use App\Models\Shoot;
 use App\Models\User;
 use App\Services\Scheduling\TravelLocationResolver;
+use App\Services\NominatimRequestThrottler;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Http\Client\Factory;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
@@ -120,4 +122,53 @@ class TravelLocationResolverTest extends TestCase
         $this->assertSame($location['building_key'], $verified['building_key']);
         Http::assertSentCount(1);
     }
+
+    public function test_busy_geocoder_does_not_hold_workers_or_supply_location_proof(): void
+    {
+        config(['services.nominatim.lock_wait_seconds' => 1]);
+        Http::fake();
+        $lock = Cache::store('array')->lock(NominatimRequestThrottler::LOCK_KEY, 20);
+        $this->assertTrue($lock->get());
+        $resolver = app(TravelLocationResolver::class);
+        $started = microtime(true);
+        try {
+            foreach ([12800, 12801, 12802] as $number) {
+                $location = $resolver->forPayload(array_replace($this->address(), ['address' => $number.' Middlebrook Road']));
+                $this->assertFalse($location['verified']);
+                $this->assertNull($location['latitude']);
+                $this->assertSame('location_unverified', $location['reason_code']);
+            }
+            $this->assertLessThan(0.75, microtime(true) - $started);
+            Http::assertNothingSent();
+        } finally {
+            $lock->release();
+        }
+    }
+
+    public function test_geocodes_share_a_budget_and_reset_allows_a_new_evaluation(): void
+    {
+        $optionsSeen = [];
+        Http::fake(function ($request, $options) use (&$optionsSeen) {
+            $optionsSeen[] = $options;
+            usleep(100000);
+            return Http::response([]);
+        });
+        $resolver = app(TravelLocationResolver::class);
+        $resolver->reset();
+        foreach ([12800, 12801] as $number) {
+            $resolver->forPayload(array_replace($this->address(), ['address' => $number.' Middlebrook Road']));
+        }
+        $this->assertCount(2, $optionsSeen);
+        $this->assertLessThanOrEqual(3, $optionsSeen[0]['timeout']);
+        $this->assertLessThanOrEqual(1, $optionsSeen[0]['connect_timeout']);
+        $this->assertLessThan($optionsSeen[0]['timeout'], $optionsSeen[1]['timeout']);
+        $deadline = new \ReflectionProperty($resolver, 'lookupDeadline');
+        $deadline->setValue($resolver, microtime(true) - 1);
+        $this->assertFalse($resolver->forPayload(array_replace($this->address(), ['address' => '12802 Middlebrook Road']))['verified']);
+        Http::assertSentCount(2);
+        $resolver->reset();
+        $resolver->forPayload(array_replace($this->address(), ['address' => '12802 Middlebrook Road']));
+        Http::assertSentCount(3);
+    }
+
 }

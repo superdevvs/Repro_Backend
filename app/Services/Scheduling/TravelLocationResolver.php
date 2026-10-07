@@ -16,11 +16,14 @@ class TravelLocationResolver
 {
     private array $memo = [];
 
+    private ?float $lookupDeadline = null;
+
     public function __construct(private NominatimRequestThrottler $throttler) {}
 
     public function reset(): void
     {
         $this->memo = [];
+        $this->lookupDeadline = microtime(true) + 3;
     }
 
     public function forShoot(Shoot $shoot): array
@@ -141,13 +144,26 @@ class TravelLocationResolver
             return null;
         }
         try {
-            $response = $this->throttler->run(fn () => Http::withHeaders([
-                'User-Agent' => config('services.nominatim.user_agent'),
-            ])->connectTimeout(1)->timeout(3)->get('https://nominatim.openstreetmap.org/search', [
-                'street' => $location['base_address'], 'city' => $location['city'],
-                'state' => $location['state'], 'postalcode' => $location['zip'], 'countrycodes' => 'us',
-                'format' => 'jsonv2', 'addressdetails' => 1, 'limit' => 3,
-            ]));
+            $deadline = $this->lookupDeadline ??= microtime(true) + 3;
+            if (microtime(true) >= $deadline) {
+                return $this->memo[$location['address_hash']] = null;
+            }
+            // Share one short budget across all locations and alternative checks.
+            // A busy provider supplies no proof; never hold an HTTP worker waiting
+            // behind another geocoder or turn an unknown location into verified.
+            $response = $this->throttler->run(function () use ($location, $deadline) {
+                $remaining = $deadline - microtime(true);
+                if ($remaining <= 0) {
+                    throw new \RuntimeException('Scheduling location lookup budget exhausted.');
+                }
+                return Http::withHeaders([
+                    'User-Agent' => config('services.nominatim.user_agent'),
+                ])->connectTimeout(min(1, $remaining))->timeout(min(3, $remaining))->get('https://nominatim.openstreetmap.org/search', [
+                    'street' => $location['base_address'], 'city' => $location['city'],
+                    'state' => $location['state'], 'postalcode' => $location['zip'], 'countrycodes' => 'us',
+                    'format' => 'jsonv2', 'addressdetails' => 1, 'limit' => 3,
+                ]);
+            }, $deadline);
             if ($response->successful() && is_array($response->json())) {
                 foreach ($response->json() as $result) {
                     $parts = is_array($result['address'] ?? null) ? $result['address'] : [];
