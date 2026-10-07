@@ -484,7 +484,7 @@ class ShootMutationSupportService
                         ? app(ShootDurationResolver::class)->forServiceItem($currentItem)
                         : app(ShootDurationResolver::class)->forService($serviceModel, $shoot->propertySqft())),
                     'photographer_pay' => $service['photographer_pay'] ?? $currentItem?->photographer_pay,
-                    'photographer_id' => ($serviceModel && ! $serviceModel->requiresPhotographer())
+                    'photographer_id' => ($serviceModel && ! $serviceModel->allowsArtistAssignment())
                         ? null
                         : (array_key_exists('photographer_id', $service)
                             ? $this->normalizeNullableInteger($service['photographer_id'])
@@ -605,8 +605,7 @@ class ShootMutationSupportService
                     }
                 }
 
-                if (! array_key_exists('photographer_id', $result)
-                    && array_key_exists('photographer_id', $photographerAssignment)) {
+                if (array_key_exists('photographer_id', $photographerAssignment)) {
                     $result['photographer_id'] = $photographerAssignment['photographer_id'];
                 }
 
@@ -626,9 +625,11 @@ class ShootMutationSupportService
                 'price' => $item['price'] ?? $service['price'] ?? null,
                 'quantity' => $item['quantity'] ?? $service['quantity'] ?? null,
                 'duration_minutes' => $item['duration_minutes'] ?? $service['duration_minutes'] ?? null,
-                'photographer_id' => array_key_exists('photographer_id', $item)
+                'photographer_id' => array_key_exists('photographer_id', $photographerAssignment)
+                    ? $photographerAssignment['photographer_id']
+                    : (array_key_exists('photographer_id', $item)
                     ? $item['photographer_id']
-                    : ($service['photographer_id'] ?? $photographerAssignment['photographer_id'] ?? null),
+                    : ($service['photographer_id'] ?? null)),
                 'editor_id' => array_key_exists('editor_id', $item)
                     ? $item['editor_id']
                     : ($service['editor_id'] ?? null),
@@ -673,7 +674,7 @@ class ShootMutationSupportService
                         : null;
 
                 $catalogService = Service::query()->find((int) $serviceId);
-                if ($catalogService && ! $catalogService->requiresPhotographer()) {
+                if ($catalogService && ! $catalogService->allowsArtistAssignment()) {
                     if ($assignedPhotographerId) {
                         throw ValidationException::withMessages([
                             'service_photographers' => [

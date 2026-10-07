@@ -73,6 +73,24 @@ class MultiUnitBookingTest extends TestCase
         $this->assertSame(90, $this->shoot->serviceItems()->sole()->duration_minutes);
     }
 
+    public function test_unassigned_rep_can_edit_unit_line_duration_but_not_unit_identity(): void
+    {
+        $payload = $this->payload(1);
+        $this->persist($payload);
+        $this->shoot->update(['status' => 'scheduled', 'workflow_status' => 'scheduled', 'rep_id' => null]);
+        Sanctum::actingAs(User::factory()->create(['role' => 'sales_rep']));
+        $edit = $this->existingPayload();
+        $edit['service_lines'][0]['duration_minutes'] = 5;
+        $edit['service_lines'][0]['price'] = 999;
+        $this->patchJson('/api/shoots/'.$this->shoot->id, $edit)->assertOk();
+        $this->assertSame(5, (int) $this->shoot->serviceItems()->sole()->duration_minutes);
+        $this->assertSame(100.0, (float) $this->shoot->serviceItems()->sole()->price);
+        $edit = $this->existingPayload();
+        $edit['units'][0]['label'] = 'Unauthorized rename';
+        $this->patchJson('/api/shoots/'.$this->shoot->id, $edit)->assertForbidden();
+        $this->assertSame('Unit 1', $this->shoot->units()->sole()->label);
+    }
+
     public function test_unit_service_edits_update_shoot_anchor_and_preserve_separate_visits(): void
     {
         $this->shoot->update(['timezone' => 'America/New_York']);

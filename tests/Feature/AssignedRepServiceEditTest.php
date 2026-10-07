@@ -116,13 +116,13 @@ class AssignedRepServiceEditTest extends TestCase
         [$shoot, $service] = $this->fixture();
         $service->update(['allow_multiple' => true, 'price' => 999]);
         $this->patchJson('/api/shoots/'.$shoot->id, [
-            'service_items' => [['service_id' => $service->id, 'quantity' => 2, 'price' => 1, 'duration_minutes' => 999]],
+            'service_items' => [['service_id' => $service->id, 'quantity' => 2, 'price' => 1, 'duration_minutes' => 5]],
             'notify_client' => false, 'notify_photographer' => false,
         ])->assertOk();
         $item = $shoot->serviceItems()->sole();
         $this->assertSame(2, (int) $item->quantity);
         $this->assertSame(175.0, (float) $item->price);
-        $this->assertNotSame(999, (int) $item->duration_minutes);
+        $this->assertSame(5, (int) $item->duration_minutes);
     }
 
     public function test_catalog_quantity_limit_is_still_enforced(): void
@@ -148,11 +148,74 @@ class AssignedRepServiceEditTest extends TestCase
             ->assertStatus($status === 'import_draft' ? 404 : 403);
     }
 
-    public function test_other_reps_cannot_edit_the_uploaded_shoot(): void
+    public function test_other_reps_can_edit_the_uploaded_shoot(): void
     {
         [$shoot, $service] = $this->fixture();
         Sanctum::actingAs(User::factory()->create(['role' => 'salesRep']));
-        $this->patchJson('/api/shoots/'.$shoot->id, ['services' => [['id' => $service->id]]])->assertForbidden();
+        $this->patchJson('/api/shoots/'.$shoot->id, ['services' => [['id' => $service->id]]])->assertOk();
+        $this->assertSame(175.0, (float) $shoot->serviceItems()->sole()->price);
+    }
+
+    public static function repAliases(): array
+    {
+        return array_map(fn ($role) => [$role], ['salesRep', 'sales_rep', 'sales-rep', 'rep', 'representative']);
+    }
+
+    #[DataProvider('repAliases')]
+    public function test_global_rep_aliases_keep_duration_and_reject_locked_assignment(string $role): void
+    {
+        [$shoot, $service] = $this->fixture('scheduled');
+        $shoot->update(['rep_id' => null]);
+        Sanctum::actingAs(User::factory()->create(['role' => $role]));
+        $this->patchJson('/api/shoots/'.$shoot->id, [
+            'service_items' => [['service_id' => $service->id, 'duration_minutes' => 5, 'price' => 999]],
+            'notify_client' => false, 'notify_photographer' => false,
+        ])->assertOk();
+        $this->assertSame(5, (int) $shoot->serviceItems()->sole()->duration_minutes);
+        $this->assertSame(175.0, (float) $shoot->serviceItems()->sole()->price);
+        $shoot->update(['status' => 'delivered', 'workflow_status' => 'delivered']);
+        $this->patchJson('/api/shoots/'.$shoot->id, ['photographer_id' => $shoot->photographer_id])->assertForbidden();
+        $this->postJson('/api/shoots/'.$shoot->id.'/assign-service-photographer', [
+            'service_id' => $service->id, 'photographer_id' => $shoot->photographer_id,
+        ])->assertForbidden();
+    }
+
+    public function test_offsite_staging_reassignment_only_survives_without_changing_onsite_artist(): void
+    {
+        [$shoot, $photo] = $this->fixture('scheduled');
+        $staging = Service::factory()->noIntake()->create(['name' => 'Virtual staging (per image)', 'photographer_required' => false, 'shoot_duration_minutes' => 0]);
+        $shoot->services()->attach($staging->id, ['duration_minutes' => 0, 'price' => 45, 'quantity' => 1]);
+        $artist = User::factory()->photographer()->create();
+        Sanctum::actingAs(User::factory()->create(['role' => 'sales_rep']));
+        $this->patchJson('/api/shoots/'.$shoot->id, [
+            'service_photographers' => [['service_id' => $staging->id, 'photographer_id' => $artist->id]],
+            'notify_client' => false, 'notify_photographer' => false,
+        ])->assertOk();
+        $this->assertSame($artist->id, (int) $shoot->serviceItems()->where('service_id', $staging->id)->value('photographer_id'));
+        $this->assertSame(0, (int) $shoot->serviceItems()->where('service_id', $staging->id)->value('duration_minutes'));
+        $this->assertSame($shoot->photographer_id, $shoot->fresh()->photographer_id);
+        $this->assertSame($shoot->photographer_id, (int) $shoot->serviceItems()->where('service_id', $photo->id)->value('photographer_id'));
+        Mail::assertNothingSent();
+        Notification::assertNothingSent();
+    }
+
+    public function test_global_rep_cannot_save_a_genuine_availability_conflict(): void
+    {
+        [$shoot, $service] = $this->fixture('scheduled');
+        Sanctum::actingAs(User::factory()->create(['role' => 'representative']));
+        $conflict = Shoot::factory()->create([
+            'photographer_id' => $shoot->photographer_id, 'scheduled_at' => $shoot->scheduled_at,
+            'scheduled_date' => $shoot->scheduled_date, 'time' => $shoot->time,
+            'timezone' => $shoot->timezone, 'status' => 'scheduled', 'workflow_status' => 'scheduled',
+        ]);
+        $conflict->services()->attach($service->id, [
+            'photographer_id' => $shoot->photographer_id, 'scheduled_at' => $shoot->scheduled_at,
+            'duration_minutes' => 60,
+        ]);
+        $this->patchJson('/api/shoots/'.$shoot->id, [
+            'service_items' => [['service_id' => $service->id, 'duration_minutes' => 5]],
+            'notify_client' => false, 'notify_photographer' => false,
+        ])->assertUnprocessable();
         $this->assertSame(175.0, (float) $shoot->serviceItems()->sole()->price);
     }
 }

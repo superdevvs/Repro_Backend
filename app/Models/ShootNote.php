@@ -29,6 +29,7 @@ class ShootNote extends Model
     const TYPE_COMPANY = 'company';
     const TYPE_PHOTOGRAPHER = 'photographer';
     const TYPE_EDITING = 'editing';
+    const TYPE_APPROVAL = 'approval';
 
     // Visibility constants
     const VISIBILITY_INTERNAL = 'internal';
@@ -50,6 +51,10 @@ class ShootNote extends Model
      */
     public function isVisibleToRole(string $role): bool
     {
+        $role = strtolower(str_replace(['-', ' '], '_', trim($role)));
+        if (in_array($role, ['salesrep', 'sales_rep', 'rep', 'representative', 'editing_manager'], true)) {
+            return true;
+        }
         // Super admin and admin see everything
         if (in_array($role, ['superadmin', 'admin'])) {
             return true;
@@ -76,4 +81,3 @@ class ShootNote extends Model
         return false;
     }
 }
-

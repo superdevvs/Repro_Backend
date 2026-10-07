@@ -23,7 +23,6 @@ class AssignedRepSchedulePayload
         'type',
         'icon',
         'category',
-        'duration_minutes',
     ];
 
     /**
@@ -156,6 +155,24 @@ class AssignedRepSchedulePayload
             unset($payload['property_details']);
         }
 
+        if ($shoot->units()->exists()) {
+            if (isset($payload['units'])) {
+                foreach ($payload['units'] as $unit) {
+                    $stored = $shoot->units()->where('client_key', $unit['client_key'] ?? '')->first();
+                    abort_unless($stored, 403, 'Unit context cannot be changed by this save.');
+                    foreach (['id', 'label', 'kind', 'sqft', 'beds', 'baths', 'access_notes', 'sort_order'] as $field) {
+                        if (array_key_exists($field, $unit)) abort_unless($this->sameValue($unit[$field], $stored->{$field}), 403, 'Unit context cannot be changed by this save.');
+                    }
+                }
+                unset($payload['units']);
+            }
+            if (isset($payload['service_lines'])) {
+                $keys = array_flip(['shoot_service_id', 'client_key', 'unit_client_key', 'shoot_unit_id', 'service_id', 'quantity', 'scheduled_at', 'duration_minutes', 'photographer_id']);
+                $payload['service_lines'] = array_map(fn (array $line) => array_intersect_key($line, $keys), $payload['service_lines']);
+            }
+            return $payload;
+        }
+
         $items = $shoot->serviceItems()->get();
         $byService = $items->keyBy('service_id');
         $incomingServiceIds = [];
@@ -187,7 +204,7 @@ class AssignedRepSchedulePayload
                     unset($row[$echoKey]);
                 }
 
-                abort_unless(array_diff(array_keys($row), [$idKey, 'scheduled_at', 'price', 'quantity', 'photographer_pay']) === [], 403, 'Service lines may only include schedule and pricing context fields.');
+                abort_unless(array_diff(array_keys($row), [$idKey, 'scheduled_at', 'duration_minutes', 'price', 'quantity', 'photographer_pay']) === [], 403, 'Service lines may only include schedule and pricing context fields.');
 
                 $item = $byService->get($serviceId);
                 if ($item) {
@@ -256,16 +273,16 @@ class AssignedRepSchedulePayload
         if (isset($payload['services']) && ! isset($payload['service_items'])) {
             $payload['services'] = array_map(fn (array $row) => array_intersect_key(
                 $row,
-                array_flip(['id', 'scheduled_at', 'quantity'])
+                array_flip(['id', 'scheduled_at', 'duration_minutes', 'quantity'])
             ), $payload['services']);
         } elseif (isset($payload['services'])) {
             $payload['services'] = array_map(fn (array $row) => array_intersect_key(
                 $row,
-                array_flip(['id', 'scheduled_at', 'quantity'])
+                array_flip(['id', 'scheduled_at', 'duration_minutes', 'quantity'])
             ), $payload['services']);
             $payload['service_items'] = array_map(fn (array $row) => array_intersect_key(
                 $row,
-                array_flip(['service_id', 'scheduled_at', 'quantity'])
+                array_flip(['service_id', 'scheduled_at', 'duration_minutes', 'quantity'])
             ), $payload['service_items']);
         } elseif (isset($payload['service_items'])) {
             // Promote to services so adds are not dropped by targetServicesFor's
@@ -273,6 +290,7 @@ class AssignedRepSchedulePayload
             $payload['services'] = array_map(fn (array $row) => array_filter([
                 'id' => $row['service_id'],
                 'scheduled_at' => $row['scheduled_at'] ?? null,
+                'duration_minutes' => $row['duration_minutes'] ?? null,
                 'quantity' => $row['quantity'] ?? null,
             ], fn ($value) => $value !== null), $payload['service_items']);
             unset($payload['service_items']);

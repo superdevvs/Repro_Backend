@@ -1305,14 +1305,14 @@ Route::middleware(['auth:sanctum'])->prefix('messaging')->group(function () {
 
     // Manual notify: editing managers get catalogue/preview/send for shoots they
     // manage; recipients also allow assigned sales_rep. No template/automation admin.
-    Route::middleware('role:superadmin,admin,editing_manager')->group(function () {
+    Route::middleware('role:superadmin,admin,editing_manager,sales_rep,rep,representative')->group(function () {
         Route::get('/notifications/catalogue', [MessageTemplateController::class, 'notificationCatalogue']);
         Route::post('/notifications/manual-send', [MessageTemplateController::class, 'manualSend']);
         Route::post('/notifications/manual-preview', [MessageTemplateController::class, 'manualPreview']);
     });
 
     // Overview notify-recipient picker: admin/superadmin/editing_manager or assigned sales_rep.
-    Route::middleware('role:superadmin,admin,editing_manager,sales_rep')->group(function () {
+    Route::middleware('role:superadmin,admin,editing_manager,sales_rep,rep,representative')->group(function () {
         Route::get('/notifications/recipients', [MessageTemplateController::class, 'notificationRecipients']);
         Route::get('/notifications/catalogue', [MessageTemplateController::class, 'notificationCatalogue']);
     });

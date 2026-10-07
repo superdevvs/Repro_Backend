@@ -376,7 +376,7 @@ class ManualNotificationEndpointsTest extends TestCase
         $this->assertNotEmpty($response->json('recipients'));
     }
 
-    public function test_unassigned_sales_rep_cannot_list_notification_recipients(): void
+    public function test_unassigned_sales_rep_can_list_notification_recipients(): void
     {
         $rep = User::factory()->create(['role' => 'salesRep']);
         $otherRep = User::factory()->create(['role' => 'salesRep']);
@@ -385,13 +385,17 @@ class ManualNotificationEndpointsTest extends TestCase
         $response = $this->actingAs($rep, 'sanctum')
             ->getJson('/api/messaging/notifications/recipients?shoot_id='.$shoot->id);
 
-        $response->assertForbidden();
+        $response->assertOk();
     }
 
-    public function test_sales_rep_still_cannot_manual_send_or_preview(): void
+    public function test_sales_rep_can_manual_send_and_preview_without_template_admin(): void
     {
         $rep = User::factory()->create(['role' => 'salesRep']);
         $shoot = Shoot::factory()->create(['rep_id' => $rep->id]);
+        $this->template('shoot-scheduled');
+        $this->mock(MessagingService::class, function (MockInterface $mock): void {
+            $mock->shouldReceive('sendEmail')->once()->andReturn(Message::make(['id' => 1, 'channel' => 'EMAIL', 'status' => 'SENT']));
+        });
 
         $this->actingAs($rep, 'sanctum')
             ->postJson('/api/messaging/notifications/manual-send', [
@@ -400,7 +404,7 @@ class ManualNotificationEndpointsTest extends TestCase
                 'recipient_type' => 'client',
                 'channel' => 'email',
             ])
-            ->assertForbidden();
+            ->assertOk();
 
         $this->actingAs($rep, 'sanctum')
             ->postJson('/api/messaging/notifications/manual-preview', [
@@ -408,7 +412,8 @@ class ManualNotificationEndpointsTest extends TestCase
                 'type' => 'shoot_scheduled',
                 'recipient_type' => 'client',
             ])
-            ->assertForbidden();
+            ->assertOk();
+        $this->actingAs($rep, 'sanctum')->getJson('/api/messaging/templates')->assertForbidden();
     }
 
 }

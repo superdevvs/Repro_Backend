@@ -191,7 +191,7 @@ class MultiUnitBookingService
                 'photographer_required' => $current ? $service->requiresPhotographerForBooking($current->created_at) : $service->requiresPhotographer(),
                 'created_at' => $current?->created_at,
                 'scheduled_at' => array_key_exists('scheduled_at', $line) ? $line['scheduled_at'] : ($current ? $current->scheduled_at?->format('Y-m-d H:i:s') : ($data['scheduled_at'] ?? $shoot?->scheduled_at?->format('Y-m-d H:i:s'))),
-                'photographer_id' => ($current ? $service->requiresPhotographerForBooking($current->created_at) : $service->requiresPhotographer()) ? (array_key_exists('photographer_id', $line) ? $line['photographer_id'] : ($current ? $current->photographer_id : ($data['photographer_id'] ?? $shoot?->photographer_id))) : null,
+                'photographer_id' => ($service->allowsArtistAssignment() || ($current && $service->requiresPhotographerForBooking($current->created_at))) ? (array_key_exists('photographer_id', $line) ? $line['photographer_id'] : ($current ? $current->photographer_id : ($data['photographer_id'] ?? $shoot?->photographer_id))) : null,
                 'editor_id' => array_key_exists('editor_id', $line) ? $line['editor_id'] : $current?->editor_id,
                 'is_deliverable' => $line['is_deliverable'] ?? $current?->is_deliverable ?? true,
             ];

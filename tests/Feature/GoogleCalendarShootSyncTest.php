@@ -553,6 +553,22 @@ class GoogleCalendarShootSyncTest extends TestCase
         ]);
     }
 
+    public function test_only_onsite_assignments_receive_calendar_events(): void
+    {
+        $artist = User::factory()->photographer()->create();
+        $stalePrimary = User::factory()->photographer()->create();
+        $staging = Service::factory()->noIntake()->create([
+            'name' => 'Virtual Staging', 'photographer_required' => false, 'shoot_duration_minutes' => 0,
+        ]);
+        $shoot = Shoot::factory()->create(['photographer_id' => $stalePrimary->id]);
+        $shoot->services()->attach($this->service->id, ['photographer_id' => $this->photographer->id, 'duration_minutes' => 60]);
+        $shoot->services()->attach($this->secondService->id, ['photographer_id' => $this->photographer->id, 'duration_minutes' => 5]);
+        $shoot->services()->attach($staging->id, ['photographer_id' => $artist->id, 'duration_minutes' => 0]);
+        $sync = app(\App\Services\GoogleCalendar\GoogleCalendarShootSyncService::class);
+        $method = new \ReflectionMethod($sync, 'resolveAssignedPhotographerIds');
+        $this->assertSame([(string) $this->photographer->id], $method->invoke($sync, $shoot)->all());
+    }
+
     protected function createGoogleCalendarConnection(User $user, string $email, string $accessToken): GoogleCalendarConnection
     {
         return GoogleCalendarConnection::create([

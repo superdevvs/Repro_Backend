@@ -13,6 +13,22 @@ class ShootNotesSecurityTest extends TestCase
 {
     use RefreshDatabase;
 
+    public function test_all_sales_aliases_can_read_and_edit_all_categories_globally(): void
+    {
+        $shoot = Shoot::factory()->create(['rep_id' => null, 'notes' => 'Historical approval decision', 'approval_notes' => 'Approved by office']);
+        foreach (['salesRep', 'sales_rep', 'sales-rep', 'rep', 'representative'] as $role) {
+            $rep = User::factory()->create(['role' => $role]);
+            Sanctum::actingAs($rep);
+            foreach (['shoot' => 'client_visible', 'company' => 'internal', 'photographer' => 'photographer_only', 'editing' => 'internal', 'approval' => 'internal'] as $type => $visibility) {
+                $this->postJson("/api/shoots/{$shoot->id}/notes", compact('type', 'visibility') + ['content' => "$role $type annotation"])->assertCreated();
+            }
+            $this->getJson("/api/shoots/{$shoot->id}/notes")->assertOk()->assertJsonFragment(['content' => "$role approval annotation"]);
+            $this->patchJson("/api/shoots/{$shoot->id}/notes", ['approvalAnnotation' => 'Updated annotation'])->assertOk();
+        }
+        $this->assertSame('Historical approval decision', $shoot->fresh()->getRawOriginal('notes'));
+        $this->assertSame('Approved by office', $shoot->fresh()->approval_notes);
+    }
+
     public function test_unrelated_and_ghost_clients_cannot_access_notes_routes(): void
     {
         $owner = User::factory()->create(['role' => 'client']);
@@ -86,6 +102,25 @@ class ShootNotesSecurityTest extends TestCase
         ])->assertForbidden();
     }
 
+    public function test_approval_upgrade_and_clear_preserve_existing_notes_and_decisions(): void
+    {
+        $rep = User::factory()->create(['role' => 'representative']);
+        $shoot = Shoot::factory()->create(['approval_notes' => 'Approved before upgrade', 'rep_id' => null]);
+        $note = $shoot->notes()->create(['author_id' => $rep->id, 'type' => 'company', 'visibility' => 'internal', 'content' => 'Preserve original']);
+        $migration = require database_path('migrations/2026_10_07_100000_add_shoot_approval_annotations.php');
+        $migration->down();
+        $migration->up();
+        $this->assertSame('Preserve original', $note->fresh()->content);
+        $this->assertSame('Approved before upgrade', $shoot->fresh()->approval_notes);
+        Sanctum::actingAs($rep);
+        $this->patchJson('/api/shoots/'.$shoot->id.'/notes', ['approval_annotation' => 'Current annotation'])->assertOk();
+        $annotationId = $shoot->notes()->where('type', 'approval')->latest('id')->value('id');
+        $this->patchJson('/api/shoots/'.$shoot->id.'/notes', ['approval_annotation' => ''])->assertOk();
+        $this->assertDatabaseHas('shoot_notes', ['id' => $annotationId, 'content' => 'Current annotation']);
+        $this->assertSame('', $shoot->notes()->where('type', 'approval')->latest('id')->value('content'));
+        $this->assertSame('Approved before upgrade', $shoot->fresh()->approval_notes);
+    }
+
     public function test_shoot_link_allows_read_but_not_write(): void
     {
         $linkedViewer = User::factory()->create(['role' => 'client']);
@@ -115,5 +150,22 @@ class ShootNotesSecurityTest extends TestCase
         $this->patchJson("/api/shoots/{$shoot->id}/notes", [
             'shoot_notes' => 'Linked account write',
         ])->assertForbidden();
+    }
+
+    public function test_assigned_contractors_keep_their_note_visibility_and_write_limits(): void
+    {
+        $photographer = User::factory()->photographer()->create();
+        $editor = User::factory()->create(['role' => 'editor']);
+        $shoot = Shoot::factory()->create(['photographer_id' => $photographer->id, 'editor_id' => $editor->id]);
+        foreach (['shoot' => 'client_visible', 'photographer' => 'photographer_only', 'editing' => 'internal', 'company' => 'internal', 'approval' => 'internal'] as $type => $visibility) {
+            $shoot->notes()->create(['type' => $type, 'visibility' => $visibility, 'content' => $type.' fixture', 'author_id' => $photographer->id]);
+        }
+        Sanctum::actingAs($photographer);
+        $this->getJson('/api/shoots/'.$shoot->id.'/notes')->assertOk()->assertJsonCount(2, 'data')
+            ->assertJsonMissing(['type' => 'company'])->assertJsonMissing(['type' => 'approval']);
+        $this->patchJson('/api/shoots/'.$shoot->id.'/notes', ['company_notes' => 'Denied'])->assertForbidden();
+        Sanctum::actingAs($editor);
+        $this->getJson('/api/shoots/'.$shoot->id.'/notes')->assertOk()->assertJsonCount(1, 'data')->assertJsonPath('data.0.type', 'editing');
+        $this->postJson('/api/shoots/'.$shoot->id.'/notes', ['type' => 'approval', 'visibility' => 'internal', 'content' => 'Denied'])->assertForbidden();
     }
 }

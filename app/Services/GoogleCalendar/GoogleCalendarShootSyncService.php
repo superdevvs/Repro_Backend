@@ -324,9 +324,9 @@ class GoogleCalendarShootSyncService
 
     protected function resolveAssignedPhotographerIds(Shoot $shoot): Collection
     {
-        return collect([$shoot->photographer_id])
-            ->merge($shoot->services->pluck('pivot.photographer_id')->all())
-            ->merge($shoot->serviceItems->pluck('photographer_id')->all())
+        // Digital artists are assignments, not onsite calendar/travel reservations.
+        return collect(app(\App\Services\Shoots\ShootDurationResolver::class)->windowsForShoot($shoot))
+            ->pluck('photographer_id')
             ->filter()
             ->map(fn ($id) => (string) $id)
             ->unique()

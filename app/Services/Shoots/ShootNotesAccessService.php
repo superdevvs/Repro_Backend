@@ -22,7 +22,7 @@ class ShootNotesAccessService
         }
 
         $role = $this->role($user);
-        if (in_array($role, ['admin', 'superadmin', 'editing_manager'], true)) {
+        if (in_array($role, ['admin', 'superadmin', 'editing_manager', 'sales_rep'], true)) {
             return true;
         }
 
@@ -45,7 +45,7 @@ class ShootNotesAccessService
     {
         $role = $this->role($user);
 
-        if (in_array($role, ['admin', 'superadmin'], true)) {
+        if (in_array($role, ['admin', 'superadmin', 'sales_rep'], true)) {
             return true;
         }
 
@@ -66,7 +66,7 @@ class ShootNotesAccessService
     public function canUpdateScalar(Shoot $shoot, User $user, string $field): bool
     {
         $role = $this->role($user);
-        if (in_array($role, ['admin', 'superadmin'], true)) {
+        if (in_array($role, ['admin', 'superadmin', 'sales_rep'], true)) {
             return true;
         }
 
@@ -83,7 +83,7 @@ class ShootNotesAccessService
     public function visibleNotes(Collection $notes, User $user): Collection
     {
         return match ($this->role($user)) {
-            'admin', 'superadmin', 'editing_manager' => $notes,
+            'admin', 'superadmin', 'editing_manager', 'sales_rep' => $notes,
             'client' => $notes->filter(fn (ShootNote $note) =>
                 $note->type === ShootNote::TYPE_SHOOT
                 && $note->visibility === ShootNote::VISIBILITY_CLIENT_VISIBLE),
@@ -118,6 +118,9 @@ class ShootNotesAccessService
 
     private function role(User $user): string
     {
+        if ($this->shootAuthorization->hasRole($user, ['salesRep'])) {
+            return 'sales_rep';
+        }
         return strtolower(str_replace(['-', ' '], '_', (string) $user->role));
     }
 }

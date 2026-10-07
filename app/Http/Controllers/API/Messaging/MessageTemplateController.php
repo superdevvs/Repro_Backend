@@ -413,10 +413,9 @@ class MessageTemplateController extends Controller
             return;
         }
 
-        if ($allowAssignedSalesRep) {
-            $isSalesRep = $role === 'salesrep' || in_array('salesrep', $secondary, true);
+        if (app(\App\Services\Shoots\ShootAuthorizationSupport::class)->hasRole($user, ['salesRep'])) {
             abort_unless(
-                $isSalesRep && (string) $shoot->rep_id === (string) $user->id,
+                app(\App\Services\Shoots\ShootAuthorizationSupport::class)->canViewShootDetails($shoot, $user),
                 403,
                 'Forbidden'
             );

@@ -71,7 +71,7 @@ class ShootNotesController extends Controller
     {
         $user = $request->user();
         $validated = $request->validate([
-            'type' => 'required|in:shoot,company,photographer,editing',
+            'type' => 'required|in:shoot,company,photographer,editing,approval',
             'visibility' => 'required|in:internal,photographer_only,client_visible',
             'content' => 'required|string|max:5000',
         ]);
@@ -139,6 +139,8 @@ class ShootNotesController extends Controller
             'company_notes' => 'nullable|string|max:5000',
             'photographer_notes' => 'nullable|string|max:5000',
             'editor_notes' => 'nullable|string|max:5000',
+            'approval_annotation' => 'nullable|string|max:5000',
+            'approvalAnnotation' => 'nullable|string|max:5000',
             'shootNotes' => 'nullable|string|max:5000',
             'companyNotes' => 'nullable|string|max:5000',
             'photographerNotes' => 'nullable|string|max:5000',
@@ -147,6 +149,7 @@ class ShootNotesController extends Controller
         ]);
 
         $camel = [
+            'approvalAnnotation' => 'approval_annotation',
             'shootNotes' => 'shoot_notes',
             'companyNotes' => 'company_notes',
             'photographerNotes' => 'photographer_notes',
@@ -154,7 +157,7 @@ class ShootNotesController extends Controller
             'editorNotes' => 'editor_notes',
         ];
         $data = [];
-        foreach (['shoot_notes', 'company_notes', 'photographer_notes', 'editor_notes'] as $field) {
+        foreach (['shoot_notes', 'company_notes', 'photographer_notes', 'editor_notes', 'approval_annotation'] as $field) {
             if ($request->exists($field)) {
                 $data[$field] = $request->input($field);
             }
@@ -357,9 +360,12 @@ class ShootNotesController extends Controller
 
     private function visibleScalarNotes(Shoot $shoot, $user): array
     {
+        if (app(ShootAuthorizationSupport::class)->hasRole($user, ['salesRep'])) {
+            return $shoot->only(['id', 'shoot_notes', 'company_notes', 'photographer_notes', 'editor_notes', 'approval_annotation']);
+        }
         $role = strtolower(str_replace(['-', ' '], '_', (string) ($user->role ?? '')));
         $fields = match ($role) {
-            'admin', 'superadmin' => ['id', 'shoot_notes', 'company_notes', 'photographer_notes', 'editor_notes'],
+            'admin', 'superadmin' => ['id', 'shoot_notes', 'company_notes', 'photographer_notes', 'editor_notes', 'approval_annotation'],
             'client' => ['id', 'shoot_notes'],
             'photographer' => ['id', 'shoot_notes', 'photographer_notes'],
             'editor' => ['id', 'editor_notes'],

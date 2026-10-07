@@ -213,4 +213,22 @@ class PhotographerAvailabilityBookedTimeTest extends TestCase
             'zip' => '22015',
         ]);
     }
+
+    public static function staffRepAliases(): array
+    {
+        return array_map(fn ($role) => [$role], ['salesRep', 'sales_rep', 'sales-rep', 'rep', 'representative']);
+    }
+
+    #[DataProvider('staffRepAliases')]
+    public function test_bulk_rep_calendar_retains_booked_shoot_details(string $role): void
+    {
+        $photographer = User::factory()->photographer()->create(['timezone' => 'America/New_York']);
+        $shoot = $this->shoot($photographer, '2026-09-28 16:30:00', 'America/New_York');
+        Sanctum::actingAs(User::factory()->create(['role' => $role]));
+        $this->postJson('/api/photographer/availability/bulk-index', [
+            'photographer_ids' => [$photographer->id], 'from_date' => '2026-09-28', 'to_date' => '2026-09-28',
+        ])->assertOk()->assertJsonPath('data.'.$photographer->id.'.0.shoot_id', $shoot->id)
+            ->assertJsonPath('data.'.$photographer->id.'.0.shoot_details.address', $shoot->address);
+    }
+
 }

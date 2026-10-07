@@ -184,8 +184,16 @@ class Service extends Model
     }
 
     /** Preserve the pre-policy occupation of already-booked fee rows only. */
+    /** Digital staging has an artist assignment, but never an onsite visit. */
+    public function allowsArtistAssignment(): bool
+    {
+        return $this->requiresPhotographer()
+            || str_contains(strtolower((string) $this->name), 'virtual staging');
+    }
+
     public function requiresPhotographerForBooking(mixed $createdAt = null): bool
     {
+        if (! $this->requiresPhotographer() && $this->allowsArtistAssignment()) return false;
         if ($this->requiresPhotographer() || ! $createdAt) {
             return $this->requiresPhotographer();
         }

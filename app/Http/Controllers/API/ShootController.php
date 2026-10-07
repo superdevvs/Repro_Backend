@@ -240,7 +240,8 @@ class ShootController extends Controller
     public function assignServicePhotographer(Request $request, Shoot $shoot)
     {
         $user = $request->user();
-        if (!$user || !in_array($user->role, ['admin', 'superadmin', 'editing_manager'], true)) {
+        $access = app(\App\Services\Shoots\ShootAuthorizationSupport::class);
+        if (! $access->canManageShootOperations($user) && ! $access->canEditShootAppointment($shoot, $user)) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
@@ -305,7 +306,8 @@ class ShootController extends Controller
     public function assignServicePhotographers(Request $request, Shoot $shoot)
     {
         $user = $request->user();
-        if (!$user || !in_array($user->role, ['admin', 'superadmin', 'editing_manager'], true)) {
+        $access = app(\App\Services\Shoots\ShootAuthorizationSupport::class);
+        if (! $access->canManageShootOperations($user) && ! $access->canEditShootAppointment($shoot, $user)) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 

@@ -238,23 +238,24 @@ class UpdateShootAction
                         $this->abortJson('Forbidden', 403);
                     }
                 }
-            } elseif ($assignedRep) {
+            } elseif ($isRep) {
+                if ($request->hasAny(['scheduled_date', 'scheduled_at', 'time', 'services', 'service_items', 'service_lines', 'photographer_id', 'service_photographers'])
+                    && ! $this->authorizationSupport->canEditShootAppointment($shoot, $user)) {
+                    $this->abortJson('This shoot is locked for appointment changes.', 403);
+                }
+                // Global sales access is limited to appointment/service-plan editing.
+                // Existing assignment-dependent marketing powers remain unchanged.
+                if (! $assignedRep) {
+                    $repEditableKeys = [];
+                }
                 // Assigned sales reps may move an active appointment, edit the
                 // bookable service plan, and reassign photographers. Overview also
                 // submits unchanged context; verify and discard it instead of
                 // granting rights to change clients, line pricing, or property data.
-                if (! $shoot->isImportDraft()
-                    && in_array($shoot->status, [
-                        Shoot::STATUS_SCHEDULED, Shoot::STATUS_UPLOADED, Shoot::STATUS_EDITING,
-                        Shoot::STATUS_REVIEW, Shoot::STATUS_READY,
-                    ], true)
-                    && in_array($shoot->workflow_status, [
-                        Shoot::STATUS_SCHEDULED, Shoot::STATUS_UPLOADED, Shoot::STATUS_EDITING,
-                        Shoot::STATUS_REVIEW, Shoot::STATUS_READY,
-                    ], true)
-                    && ! $shoot->units()->exists()
+                if ($this->authorizationSupport->canEditShootAppointment($shoot, $user)
                     && $request->hasAny([
                         'scheduled_date', 'scheduled_at', 'time', 'services', 'service_items',
+                        'photographer_id', 'service_photographers', 'service_lines',
                     ])) {
                     $request->replace(app(\App\Services\Shoots\AssignedRepSchedulePayload::class)
                         ->normalize($shoot, $request->all()));
@@ -262,15 +263,18 @@ class UpdateShootAction
                     $repEditableKeys = array_merge($repEditableKeys, [
                         'scheduled_date', 'scheduled_at', 'time', 'services', 'service_items',
                         'photographer_id', 'service_photographers',
+                        'service_lines', 'expected_units_revision',
                         'notify_client', 'notify_photographer',
                         'confirm_service_detach', 'service_detach_confirmation_token',
+                        'travel_location_confirmed', 'travel_override', 'travel_override_confirmed',
+                        'travel_override_confirmation_version', 'travel_override_reason',
                     ]);
                 }
-                $onlyRepEditableFields = $assignedRep
+                $onlyRepEditableFields = $isRep
                     && count($requestKeys) > 0
                     && count(array_diff($requestKeys, $repEditableKeys)) === 0;
 
-                if (! $onlyPrivateListing && ! $onlyRepEditableFields) {
+                if (! ($assignedRep && $onlyPrivateListing) && ! $onlyRepEditableFields) {
                     $this->abortJson('Forbidden', 403);
                 }
 
@@ -316,7 +320,7 @@ class UpdateShootAction
                 }
             }
 
-            if (! $ownsShoot && ! $assignedRep && ! $assignedPhotographer && ! $clientCanTogglePrivateListing && ! $assignedEditor) {
+            if (! $ownsShoot && ! $isRep && ! $assignedPhotographer && ! $clientCanTogglePrivateListing && ! $assignedEditor) {
                 $this->abortJson('Forbidden', 403);
             }
         }

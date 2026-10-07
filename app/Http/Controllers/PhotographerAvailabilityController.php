@@ -791,6 +791,13 @@ class PhotographerAvailabilityController extends Controller
             });
         });
 
+        // Team calendars retain the same authorized visit details as individual calendars.
+        $rangeStart = \Carbon\Carbon::parse($fromDate ?? now()->toDateString());
+        $rangeEnd = \Carbon\Carbon::parse($toDate ?? $rangeStart->copy()->addMonth()->toDateString());
+        $grouped = collect($photographerIds)->mapWithKeys(function ($photographerId) use ($grouped, $rangeStart, $rangeEnd) {
+            $slots = $this->availabilityService->getBookedSlotsForRange((int) $photographerId, $rangeStart, $rangeEnd);
+            return [$photographerId => collect($grouped[$photographerId] ?? [])->concat($this->enrichBookedSlots($slots))->values()];
+        });
         return response()->json(['data' => $grouped]);
     }
 
@@ -814,6 +821,11 @@ class PhotographerAvailabilityController extends Controller
         $fromDate = \Carbon\Carbon::parse($validated['from_date']);
         $toDate = \Carbon\Carbon::parse($validated['to_date']);
         $slots = $this->availabilityService->getBookedSlotsForRange((int) $photographerId, $fromDate, $toDate);
+        return response()->json(['data' => $this->enrichBookedSlots($slots)]);
+    }
+
+    protected function enrichBookedSlots(array $slots): \Illuminate\Support\Collection
+    {
         $shoots = \App\Models\Shoot::with(['client:id,name,email,phone', 'services:id,name,price'])
             ->whereIn('id', array_column($slots, 'shoot_id'))->get()->keyBy('id');
         $bookedSlots = collect($slots)->map(function (array $slot) use ($shoots) {
@@ -826,13 +838,12 @@ class PhotographerAvailabilityController extends Controller
                 'shoot_status' => $shoot->status,
                 'client' => $shoot->client ? $shoot->client->only(['id', 'name', 'email', 'phone']) : null,
                 'services' => $shoot->services->map(fn ($service) => $service->only(['id', 'name', 'price']))->all(),
-                'notes' => $shoot->notes,
                 'duration_minutes' => $slot['duration_minutes'],
             ];
             return $slot;
         })->values();
 
-        return response()->json(['data' => $bookedSlots]);
+        return $bookedSlots;
     }
 
     /**
@@ -895,7 +906,7 @@ class PhotographerAvailabilityController extends Controller
 
         // Public/anonymous callers and clients receive no other clients' booking details.
         $privilegedRoles = ['admin', 'superadmin', 'editing_manager', 'salesRep', 'rep', 'representative', 'photographer', 'editor'];
-        $includeSensitiveSlotFields = $authUser !== null && in_array($authUser->role, $privilegedRoles, true);
+        $includeSensitiveSlotFields = app(\App\Services\Shoots\ShootAuthorizationSupport::class)->hasRole($authUser, $privilegedRoles);
         $isAuthenticatedClient = $authUser !== null && strtolower((string) $authUser->role) === 'client';
 
         $date = \Carbon\Carbon::parse($validated['date']);
@@ -1660,7 +1671,7 @@ class PhotographerAvailabilityController extends Controller
 
     protected function isStaffAvailabilityViewer(User $user): bool
     {
-        return in_array($user->role, ['admin', 'superadmin', 'editing_manager', 'salesRep', 'rep', 'representative'], true);
+        return app(\App\Services\Shoots\ShootAuthorizationSupport::class)->hasRole($user, ['admin', 'superadmin', 'editing_manager', 'salesRep']);
     }
 
 

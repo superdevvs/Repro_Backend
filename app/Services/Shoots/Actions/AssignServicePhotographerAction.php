@@ -52,6 +52,9 @@ class AssignServicePhotographerAction
             if ($radiusViolations !== []) {
                 $this->logRadiusOverrides($shoot, $radiusViolations, $radiusOverrideReason, $actor);
             }
+            app(\App\Services\GoogleCalendar\GoogleCalendarSyncDispatcher::class)->dispatchShootSync($shoot->id);
+            $scope = app(\App\Services\Schedule\ScheduleDateScopeService::class);
+            $scope->invalidateDates([$scope->localDateForShoot($shoot), now()->toDateString()]);
 
             return $shoot->fresh(['client', 'rep', 'photographer', 'services.category']);
         }
@@ -84,6 +87,10 @@ class AssignServicePhotographerAction
                 );
             }
         }, 3));
+
+        app(\App\Services\GoogleCalendar\GoogleCalendarSyncDispatcher::class)->dispatchShootSync($shoot->id);
+        $scope = app(\App\Services\Schedule\ScheduleDateScopeService::class);
+        $scope->invalidateDates([$scope->localDateForShoot($shoot), now()->toDateString()]);
 
         return $shoot->fresh(['client', 'rep', 'photographer', 'services.category'])
             ?? $shoot->load(['client', 'rep', 'photographer', 'services.category']);
@@ -200,6 +207,10 @@ class AssignServicePhotographerAction
     protected function collectRadiusViolations(Shoot $shoot, array $assignments): array
     {
         $photographerIds = collect($assignments)
+            ->filter(function (array $assignment) use ($shoot): bool {
+                $serviceId = $assignment['service_id'] ?? $shoot->serviceItems()->whereKey($assignment['shoot_service_id'] ?? 0)->value('service_id');
+                return \App\Models\Service::find($serviceId)?->requiresPhotographer() ?? false;
+            })
             ->pluck('photographer_id')
             ->filter(fn ($id) => $id !== null && (int) $id > 0)
             ->map(fn ($id) => (int) $id)

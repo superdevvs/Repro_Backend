@@ -160,6 +160,7 @@ class ShootNotificationDispatchService
 
         if (
             $photographerNewlyAssigned
+            && $notifyClient !== false
             && $shoot->photographer
             && $this->automationService->shouldUseFallback('SHOOT_SCHEDULED')
             && $this->automationService->shouldUseFallback('PHOTOGRAPHER_ASSIGNED')

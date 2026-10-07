@@ -337,6 +337,14 @@ class ShootAuthorizationSupport
             && $this->canViewShootDetails($shoot, $user);
     }
 
+    public function canEditShootAppointment(Shoot $shoot, ?User $user): bool
+    {
+        $editable = ['scheduled', 'uploaded', 'editing', 'review', 'ready'];
+        return $this->hasRole($user, ['salesRep']) && ! $shoot->isImportDraft()
+            && in_array($shoot->status, $editable, true)
+            && in_array($shoot->workflow_status ?: $shoot->status, $editable, true);
+    }
+
     public function ensureShootAccess(Shoot $shoot, ?User $user = null): void
     {
         abort_unless($this->canViewShootDetails($shoot, $user), 403, 'Forbidden');

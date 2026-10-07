@@ -573,6 +573,9 @@ class ShootPresenter
         $shoot->company_notes = ($isEditorRole || $isClientRole) ? null : $shoot->company_notes;
         $shoot->photographer_notes = ($isEditorRole || $isClientRole) ? null : $shoot->photographer_notes;
         $shoot->editor_notes = $isClientRole ? null : $shoot->editor_notes;
+        if (! app(ShootAuthorizationSupport::class)->hasRole(auth()->user(), ['admin', 'superadmin', 'editing_manager', 'salesRep'])) {
+            $shoot->makeHidden('approval_annotation');
+        }
 
         // Complimentary-reshoot notes are the internal reason narrative. The
         // affected-work mapping below is admin-only, so do not leak the same

@@ -35,7 +35,8 @@ class RoleMiddleware
 
         $normalize = static function (?string $role): string {
             if ($role === null) return '';
-            return strtolower(str_replace(['_', '-'], '', $role));
+            $normalized = strtolower(str_replace(['_', '-', ' '], '', trim($role)));
+            return in_array($normalized, ['rep', 'representative', 'salesrep'], true) ? 'salesrep' : $normalized;
         };
 
         $normalizedUserRole = $normalize($user->role);

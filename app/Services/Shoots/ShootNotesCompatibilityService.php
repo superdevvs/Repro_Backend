@@ -13,6 +13,7 @@ class ShootNotesCompatibilityService
         'company_notes' => [ShootNote::TYPE_COMPANY, ShootNote::VISIBILITY_INTERNAL],
         'photographer_notes' => [ShootNote::TYPE_PHOTOGRAPHER, ShootNote::VISIBILITY_PHOTOGRAPHER_ONLY],
         'editor_notes' => [ShootNote::TYPE_EDITING, ShootNote::VISIBILITY_INTERNAL],
+        'approval_annotation' => [ShootNote::TYPE_APPROVAL, ShootNote::VISIBILITY_INTERNAL],
     ];
 
     public function syncScalarField(
@@ -30,6 +31,19 @@ class ShootNotesCompatibilityService
         $value = trim((string) ($content ?? ''));
         $previous = trim((string) ($previousContent ?? ''));
         $managedSources = ['legacy_scalar:'.$field, 'scalar_compat:'.$field];
+
+        // Approval annotations have an append-only history. A blank annotation is
+        // a tombstone so clearing it never resurfaces an older annotation/decision.
+        if ($field === 'approval_annotation') {
+            $shoot->notes()->create([
+                'author_id' => $author?->id,
+                'type' => $type,
+                'visibility' => $visibility,
+                'content' => $value,
+                'source' => 'scalar_compat:'.$field,
+            ]);
+            return;
+        }
 
         $managed = $shoot->notes()
             ->whereIn('source', $managedSources)

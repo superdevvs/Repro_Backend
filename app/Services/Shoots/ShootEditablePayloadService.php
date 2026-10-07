@@ -763,8 +763,7 @@ class ShootEditablePayloadService
             strtolower(trim((string) ($actor?->role ?? ''))),
             ['admin', 'superadmin', 'super_admin'],
             true
-        ) || (app(ShootAuthorizationSupport::class)->hasRole($actor, ['salesRep'])
-                    && app(ShootAuthorizationSupport::class)->canManageRequestedShoot($shoot, $actor));
+        );
         $currentItems = $shoot->serviceItems->keyBy(fn ($item) => (int) $item->service_id);
         $serviceModels = \App\Models\Service::query()
             ->whereIn('id', collect($merged)->pluck('id')->filter()->unique()->all())
