@@ -70,10 +70,11 @@ class SalesShootManagementTest extends TestCase
             $actor = User::factory()->create(['role' => $role, 'secondary_roles' => ['sales_rep']]);
             Sanctum::actingAs($actor);
             $shoot = $this->shoot();
-            $editor = User::factory()->create(['role' => 'editor']);
             $this->assertFalse($management->isSalesRep($actor));
-            $this->patchJson('/api/shoots/'.$shoot->id, ['editor_id' => $editor->id, 'notify_client' => false, 'notify_photographer' => false])->assertOk();
-            $this->assertSame($editor->id, $shoot->fresh()->editor_id);
+            $payload = $role === 'editing_manager' ? ['address' => 'Existing manager rights'] : ['is_listing_hidden' => true];
+            $this->patchJson('/api/shoots/'.$shoot->id, $payload + ['notify_client' => false, 'notify_photographer' => false])->assertOk();
+            $this->assertSame($role === 'editing_manager' ? 'Existing manager rights' : true,
+                $role === 'editing_manager' ? $shoot->fresh()->address : (bool) $shoot->fresh()->is_listing_hidden);
             $shoot->status = $shoot->workflow_status = 'delivered';
             $this->assertTrue($management->canEdit($shoot, $actor));
         }
