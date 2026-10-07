@@ -6,8 +6,6 @@ use App\Models\Invoice;
 use App\Models\InvoiceItem;
 use App\Services\MailService;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Log;
 
 class SalesRepInvoiceController extends Controller
 {
@@ -27,7 +25,7 @@ class SalesRepInvoiceController extends Controller
     {
         $user = $request->user();
 
-        if (!$this->isSalesRep($user)) {
+        if (! $this->isSalesRep($user)) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
@@ -62,65 +60,16 @@ class SalesRepInvoiceController extends Controller
     public function addExpense(Request $request, Invoice $invoice)
     {
         $user = $request->user();
-
         if (! $this->ownsSalesRepPayoutInvoice($user, $invoice)) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
-
-        if (!$this->canBeModifiedBySalesRep($invoice)) {
-            return response()->json([
-                'message' => $invoice->editLockedReason() ?? 'Invoice cannot be modified in its current state.'
-            ], 422);
-        }
-
-        $validated = $request->validate([
-            'description' => 'required|string|max:500',
-            'amount' => 'required|numeric|min:0',
-            'quantity' => 'nullable|integer|min:1',
+        $data = $request->validate([
+            'description' => 'required|string|max:500', 'amount' => 'required|numeric|min:0|max:100000',
+            'quantity' => 'nullable|integer|min:1|max:1000', 'shoot_id' => 'prohibited',
         ]);
+        $result = app(\App\Services\Invoices\PayoutInvoiceWorkflow::class)->mutate($invoice, $user, ['action' => 'add_expense'] + $data);
 
-        try {
-            DB::beginTransaction();
-
-            $item = $invoice->items()->create([
-                'type' => InvoiceItem::TYPE_EXPENSE,
-                'description' => $validated['description'],
-                'quantity' => $validated['quantity'] ?? 1,
-                'unit_amount' => $validated['amount'],
-                'total_amount' => ($validated['quantity'] ?? 1) * $validated['amount'],
-                'recorded_at' => now(),
-            ]);
-
-            $invoice->refreshTotals();
-
-            if ($invoice->approval_status !== Invoice::APPROVAL_STATUS_PENDING_APPROVAL) {
-                $invoice->update([
-                    'modified_by' => $user->id,
-                    'modified_at' => now(),
-                ]);
-            }
-            $invoice->recordAuditEvent('payee_edit', $user, 'Sales rep added a commission adjustment.', [
-                'item_id' => $item->id,
-                'description' => $item->description,
-                'amount' => (float) $item->total_amount,
-            ]);
-
-            DB::commit();
-
-            return response()->json([
-                'message' => 'Expense added successfully',
-                'item' => $item,
-                'invoice' => $invoice->fresh(['items']),
-            ], 201);
-        } catch (\Exception $e) {
-            DB::rollBack();
-            \App\Services\ApiErrorResponder::log($e, 'error');
-
-            return response()->json([
-                'message' => 'Failed to add expense',
-                'error' => \App\Services\ApiErrorResponder::publicMessage($e)
-            ], 500);
-        }
+        return response()->json(['message' => 'Invoice updated', 'invoice' => $result, 'item' => $result->items->last()], 201);
     }
 
     /**
@@ -129,57 +78,16 @@ class SalesRepInvoiceController extends Controller
     public function removeExpense(Request $request, Invoice $invoice, InvoiceItem $item)
     {
         $user = $request->user();
-
         if (! $this->ownsSalesRepPayoutInvoice($user, $invoice)) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
-
-        if ($item->invoice_id !== $invoice->id) {
-            return response()->json(['message' => 'Item does not belong to this invoice'], 422);
+        if ((int) $item->invoice_id !== (int) $invoice->id || $item->type !== InvoiceItem::TYPE_EXPENSE) {
+            return response()->json(['message' => 'Item does not belong to this invoice or has the wrong type'], 422);
         }
+        $data = [];
+        $result = app(\App\Services\Invoices\PayoutInvoiceWorkflow::class)->mutate($invoice, $user, ['action' => 'remove'] + $data, $item);
 
-        if ($item->type !== InvoiceItem::TYPE_EXPENSE) {
-            return response()->json(['message' => 'Item is not an expense'], 422);
-        }
-
-        if (!$this->canBeModifiedBySalesRep($invoice)) {
-            return response()->json([
-                'message' => $invoice->editLockedReason() ?? 'Invoice cannot be modified in its current state.'
-            ], 422);
-        }
-
-        try {
-            DB::beginTransaction();
-
-            $item->delete();
-            $invoice->refreshTotals();
-
-            if ($invoice->approval_status !== Invoice::APPROVAL_STATUS_PENDING_APPROVAL) {
-                $invoice->update([
-                    'modified_by' => $user->id,
-                    'modified_at' => now(),
-                ]);
-            }
-            $invoice->recordAuditEvent('payee_edit', $user, 'Sales rep removed a commission adjustment.', [
-                'item_id' => $item->id,
-                'description' => $item->description,
-            ]);
-
-            DB::commit();
-
-            return response()->json([
-                'message' => 'Expense removed successfully',
-                'invoice' => $invoice->fresh(['items']),
-            ]);
-        } catch (\Exception $e) {
-            DB::rollBack();
-            \App\Services\ApiErrorResponder::log($e, 'error');
-
-            return response()->json([
-                'message' => 'Failed to remove expense',
-                'error' => \App\Services\ApiErrorResponder::publicMessage($e)
-            ], 500);
-        }
+        return response()->json(['message' => 'Invoice updated', 'invoice' => $result], 200);
     }
 
     /**
@@ -189,56 +97,13 @@ class SalesRepInvoiceController extends Controller
     public function reject(Request $request, Invoice $invoice)
     {
         $user = $request->user();
-
         if (! $this->ownsSalesRepPayoutInvoice($user, $invoice)) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
+        $data = $request->validate(['reason' => 'required|string|max:1000']);
+        $result = app(\App\Services\Invoices\PayoutInvoiceWorkflow::class)->submit($invoice, $user, $data['reason'] ?? null, true);
 
-        if (!$this->canBeModifiedBySalesRep($invoice)) {
-            return response()->json([
-                'message' => $invoice->editLockedReason() ?? 'Invoice cannot be rejected in its current state.'
-            ], 422);
-        }
-
-        $validated = $request->validate([
-            'reason' => 'nullable|string|max:1000',
-        ]);
-
-        try {
-            $changeSummary = $validated['reason'] ?? 'Sales rep submitted commission changes.';
-
-            DB::transaction(function () use ($invoice, $user, $changeSummary) {
-                $invoice->update([
-                    'approval_status' => Invoice::APPROVAL_STATUS_PENDING_APPROVAL,
-                    'modified_by' => $user->id,
-                    'modified_at' => now(),
-                    'modification_notes' => $changeSummary,
-                    'rejection_reason' => null,
-                    'rejected_by' => null,
-                    'rejected_at' => null,
-                ]);
-                $invoice->recordAuditEvent(
-                    'submitted_with_changes',
-                    $user,
-                    'Sales rep submitted changed commission invoice for admin review.',
-                    ['notes' => $changeSummary]
-                );
-            });
-
-            $this->mailService->sendInvoicePendingApprovalEmail($invoice->fresh());
-
-            return response()->json([
-                'message' => 'Invoice changes submitted for admin review',
-                'invoice' => $invoice->fresh(['items']),
-            ]);
-        } catch (\Exception $e) {
-            \App\Services\ApiErrorResponder::log($e, 'error');
-
-            return response()->json([
-                'message' => 'Failed to submit invoice changes for review',
-                'error' => \App\Services\ApiErrorResponder::publicMessage($e)
-            ], 500);
-        }
+        return response()->json(['message' => 'Invoice submitted for accounts review', 'invoice' => $result]);
     }
 
     /**
@@ -247,52 +112,13 @@ class SalesRepInvoiceController extends Controller
     public function submitForApproval(Request $request, Invoice $invoice)
     {
         $user = $request->user();
-
         if (! $this->ownsSalesRepPayoutInvoice($user, $invoice)) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
+        $data = $request->validate(['notes' => 'nullable|string|max:1000', 'expected_revision' => 'nullable|integer|min:0']);
+        $result = app(\App\Services\Invoices\PayoutInvoiceWorkflow::class)->submit($invoice, $user, $data['notes'] ?? null, false, $data['expected_revision'] ?? null);
 
-        if (!$this->canBeModifiedBySalesRep($invoice)) {
-            return response()->json([
-                'message' => $invoice->editLockedReason() ?? 'Invoice cannot be submitted for approval in its current state.'
-            ], 422);
-        }
-
-        $validated = $request->validate([
-            'notes' => 'nullable|string|max:1000',
-        ]);
-
-        try {
-            DB::transaction(function () use ($invoice, $user, $validated) {
-                $invoice->update([
-                    'approval_status' => Invoice::APPROVAL_STATUS_PENDING_APPROVAL,
-                    'modified_by' => $user->id,
-                    'modified_at' => now(),
-                    'modification_notes' => $validated['notes'] ?? null,
-                    'rejection_reason' => null,
-                    'rejected_by' => null,
-                    'rejected_at' => null,
-                ]);
-                $invoice->recordAuditEvent('submitted_for_approval', $user, 'Sales rep submitted commission invoice for accounts approval.', [
-                    'notes' => $validated['notes'] ?? null,
-                ]);
-            });
-
-            // Notify admins
-            $this->mailService->sendInvoicePendingApprovalEmail($invoice->fresh());
-
-            return response()->json([
-                'message' => 'Invoice submitted for approval',
-                'invoice' => $invoice->fresh(['items']),
-            ]);
-        } catch (\Exception $e) {
-            \App\Services\ApiErrorResponder::log($e, 'error');
-
-            return response()->json([
-                'message' => 'Failed to submit invoice for approval',
-                'error' => \App\Services\ApiErrorResponder::publicMessage($e)
-            ], 500);
-        }
+        return response()->json(['message' => 'Invoice submitted for accounts review', 'invoice' => $result]);
     }
 
     /**
@@ -316,7 +142,7 @@ class SalesRepInvoiceController extends Controller
 
     private function isSalesRep($user): bool
     {
-        if (!$user) {
+        if (! $user) {
             return false;
         }
 

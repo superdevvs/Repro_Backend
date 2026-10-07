@@ -236,6 +236,43 @@ class InvoiceService
                         || $invoice->paid_at
                 );
 
+                if ($existingInvoice?->preservesPayoutReview()) {
+                    $invoices->push($existingInvoice->fresh(['photographer', 'items', 'shoots']));
+                    continue;
+                }
+
+                $photographerServices = $photographerServices->filter(function (array $row) use ($existingInvoice, $photographerId) {
+                    $key = isset($row['shoot_compensation_id']) ? 'compensation:'.$row['shoot_compensation_id']
+                        : (isset($row['shoot_service_id']) ? 'service:'.$row['shoot_service_id'] : null);
+                    $owner = $key ? DB::table('payout_work_allocations')->where('role', Invoice::ROLE_PHOTOGRAPHER)
+                        ->where('recipient_id', $photographerId)->where('work_key', $key)->value('invoice_id') : null;
+                    if (! $owner && ! isset($row['shoot_compensation_id'])) {
+                        $owner = InvoiceItem::where('shoot_id', $row['shoot_id'])->where('type', InvoiceItem::TYPE_CHARGE)
+                            ->whereHas('invoice', fn ($q) => $q->where('role', Invoice::ROLE_PHOTOGRAPHER)
+                                ->where('photographer_id', $photographerId)
+                                ->when($existingInvoice, fn ($i) => $i->where('id', '!=', $existingInvoice->id)))
+                            ->where(fn ($q) => $q->where('meta->shoot_service_id', $row['shoot_service_id'] ?? null)
+                                ->orWhere(fn ($s) => $s->whereNull('meta->shoot_service_id')->whereNull('shoot_compensation_id')))
+                            ->value('invoice_id');
+                    }
+                    if (! $owner && ! isset($row['shoot_compensation_id'])) {
+                        $sourceIds = DB::table('legacy_shoot_imports')->where('shoot_id', $row['shoot_id'])->pluck('source_id');
+                        foreach ($sourceIds as $sourceId) {
+                            $owner = DB::table('payout_work_allocations')->where('role', Invoice::ROLE_PHOTOGRAPHER)
+                                ->where('recipient_id', $photographerId)
+                                ->where('work_key', \App\Services\Invoices\PayoutInvoiceWorkflow::externalWorkKey('viewshoot:'.$sourceId))
+                                ->value('invoice_id');
+                            if ($owner) {
+                                break;
+                            }
+                        }
+                    }
+                    return ! $owner || ($existingInvoice && (int) $owner === (int) $existingInvoice->id);
+                })->values();
+                if ($photographerServices->isEmpty()) {
+                    continue;
+                }
+
                 if ($hasSettledInvoice) {
                     // Never rebuild work already frozen on an approved/paid
                     // invoice. A newly earned correction/reversal becomes a
@@ -884,6 +921,11 @@ class InvoiceService
                         || $invoice->status === Invoice::STATUS_PAID
                         || $invoice->paid_at
                 );
+
+                if ($existingInvoice?->preservesPayoutReview()) {
+                    $invoices->push($existingInvoice->fresh(['salesRep', 'items', 'shoots']));
+                    continue;
+                }
 
                 if ($hasSettledInvoice) {
                     $repShoots = collect();

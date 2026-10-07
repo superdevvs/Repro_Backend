@@ -83,6 +83,11 @@ class Invoice extends Model
         'warning_override_reason',
         'warning_override_by',
         'warning_override_at',
+        'payout_revision',
+        'payout_edited',
+        'payout_submission',
+        'payout_submission_snapshot',
+        'payout_edit_baseline',
     ];
 
     protected $casts = [
@@ -105,6 +110,10 @@ class Invoice extends Model
         'approved_at' => 'datetime',
         'modified_at' => 'datetime',
         'warning_override_at' => 'datetime',
+        'payout_revision' => 'integer',
+        'payout_edited' => 'boolean',
+        'payout_submission_snapshot' => 'array',
+        'payout_edit_baseline' => 'array',
     ];
 
     protected $attributes = [
@@ -124,6 +133,7 @@ class Invoice extends Model
         'overpayment_amount',
         'overpaymentAmount',
         'pricing_breakdown',
+        'payout_review',
     ];
 
     public function getPricingBreakdownAttribute(): array
@@ -313,6 +323,7 @@ class Invoice extends Model
         if (! $this->exists) {
             return false;
         }
+
         return $this->shoots()->withoutGlobalScope('private_import_drafts')->get()->contains(fn (Shoot $shoot) => $shoot->suppressesExternalNotifications())
             || $this->items()->with(['shoot' => fn ($query) => $query->withoutGlobalScope('private_import_drafts')])->get()
                 ->contains(fn (InvoiceItem $item) => $item->shoot?->suppressesExternalNotifications());
@@ -424,7 +435,7 @@ class Invoice extends Model
 
     public function auditEvents()
     {
-        return $this->hasMany(InvoiceAuditEvent::class)->latest();
+        return $this->hasMany(InvoiceAuditEvent::class)->latest('id');
     }
 
     /**
@@ -463,6 +474,7 @@ class Invoice extends Model
             self::APPROVAL_STATUS_REJECTED,
         ], true)
             && $this->status !== self::STATUS_PAID
+            && (float) $this->amount_paid === 0.0
             && ! $isPaidFlag
             && empty($paidAt);
     }
@@ -483,6 +495,9 @@ class Invoice extends Model
 
         if ($this->status === self::STATUS_PAID || $isPaidFlag || ! empty($paidAt)) {
             return 'This invoice has already been paid and can no longer be edited.';
+        }
+        if ((float) $this->amount_paid > 0) {
+            return 'This invoice is partially paid and can no longer be edited.';
         }
 
         if ($this->isAccountsApproved()) {
@@ -529,12 +544,78 @@ class Invoice extends Model
 
     public function recordAuditEvent(string $event, ?User $actor = null, ?string $summary = null, array $metadata = []): InvoiceAuditEvent
     {
+        if ($this->isPayoutInvoice() && in_array($event, ['payee_edit', 'admin_edit'], true)) {
+            $this->forceFill([
+                'payout_edited' => true,
+                'payout_revision' => (int) $this->payout_revision + 1,
+            ])->save();
+        }
+
         return $this->auditEvents()->create([
             'actor_id' => $actor?->id,
             'event' => $event,
             'summary' => $summary,
             'metadata' => $metadata ?: null,
         ]);
+    }
+
+    public function preservesPayoutReview(): bool
+    {
+        return $this->isPayoutInvoice() && (
+            $this->is_paid || $this->paid_at || (float) $this->amount_paid > 0
+            || $this->status === self::STATUS_PAID
+            || $this->approval_status !== self::APPROVAL_STATUS_PENDING
+            || $this->modified_by !== null
+            || $this->payout_edited
+            || $this->auditEvents()->whereIn('event', ['payee_edit', 'admin_edit'])->exists()
+        );
+    }
+
+    public function getPayoutReviewAttribute(): ?array
+    {
+        if (! $this->isPayoutInvoice()) {
+            return null;
+        }
+        $events = $this->relationLoaded('auditEvents') ? $this->auditEvents : $this->auditEvents()->get();
+        $edits = $events->whereIn('event', ['payee_edit', 'admin_edit']);
+        $recalculation = $events->where('event', 'recalculated')->first(fn ($event) => $edits->contains(fn ($edit) => $edit->id < $event->id)
+            && (float) data_get($event->metadata, 'before.total_amount') !== (float) data_get($event->metadata, 'after.total_amount'));
+        $reconciled = $recalculation && $edits->contains(fn ($event) => $event->id > $recalculation->id && $event->event === 'admin_edit'
+            && data_get($event->metadata, 'reconciled_historical_edits') === true);
+        $recovery = $recalculation && ! $reconciled
+            ? [
+                'message' => 'Historical regeneration changed this invoice after a manual edit. Reconcile the earlier changes before approving.',
+                'before_total' => data_get($recalculation->metadata, 'before.total_amount'),
+                'after_total' => data_get($recalculation->metadata, 'after.total_amount'),
+                'recalculation_id' => $recalculation->id,
+            ] : null;
+        $changed = (bool) $this->payout_edited || $edits->isNotEmpty();
+        $kind = $this->payout_submission
+            ?? ($events->contains('event', 'submitted_with_changes') || $changed ? 'changes' : 'unchanged');
+        $label = match ($this->approval_status) {
+            self::APPROVAL_STATUS_PENDING => 'Awaiting photographer',
+            self::APPROVAL_STATUS_REJECTED => 'Returned',
+            self::APPROVAL_STATUS_PENDING_APPROVAL => $edits->first()?->event === 'admin_edit' ? 'Accounts corrected' : ($kind === 'changes' ? 'Changes submitted' : 'Confirmed unchanged'),
+            default => 'Accounts approved',
+        };
+        if ($this->role === self::ROLE_SALES_REP && $this->approval_status === self::APPROVAL_STATUS_PENDING) {
+            $label = 'Awaiting sales rep';
+        }
+
+        return [
+            'revision' => (int) $this->payout_revision,
+            'recovery_required' => $recovery,
+            'has_changes' => $changed,
+            'submission_kind' => $this->approval_status === self::APPROVAL_STATUS_PENDING ? null : $kind,
+            'label' => $label,
+            'last_return_reason' => $this->rejection_reason ?? $events->where('event', 'returned')->first()?->metadata['reason'] ?? null,
+            'changes' => $edits->map(fn ($event) => [
+                'summary' => $event->summary, 'metadata' => $event->metadata,
+                'actor_id' => $event->actor_id, 'created_at' => $event->created_at?->toISOString(),
+            ])->values()->all(),
+            'before_total' => $this->payout_edit_baseline['total_amount'] ?? null,
+            'submitted_total' => $this->payout_submission_snapshot['total_amount'] ?? null,
+        ];
     }
 
     public function buildApprovalSnapshot(): array
@@ -762,7 +843,9 @@ class Invoice extends Model
     /** Batch the same invoice/shoot/item associations used by relatedPaymentRecords, for read-only lists. */
     public static function primePaymentRecords(Collection $invoices): void
     {
-        if ($invoices->isEmpty()) return;
+        if ($invoices->isEmpty()) {
+            return;
+        }
         $ids = $invoices->modelKeys();
         $associations = \Illuminate\Support\Facades\DB::table('invoice_shoot')->whereIn('invoice_id', $ids)->get(['invoice_id', 'shoot_id'])
             ->concat(\Illuminate\Support\Facades\DB::table('invoice_items')->whereIn('invoice_id', $ids)->whereNotNull('shoot_id')->get(['invoice_id', 'shoot_id']))
@@ -775,7 +858,9 @@ class Invoice extends Model
         foreach ($invoices as $invoice) {
             $relatedIds = collect([$invoice->shoot_id])->merge(($associations->get($invoice->id) ?? collect())->pluck('shoot_id'))->filter()->unique();
             $related = $byInvoice->get($invoice->id, collect());
-            foreach ($relatedIds as $shootId) $related = $related->concat($byShoot->get($shootId, collect()));
+            foreach ($relatedIds as $shootId) {
+                $related = $related->concat($byShoot->get($shootId, collect()));
+            }
             $invoice->performancePaymentRecords = $related->unique(fn (Payment $payment) => $invoice->paymentDeduplicationKey($payment))->values();
         }
     }
@@ -789,7 +874,9 @@ class Invoice extends Model
             return collect();
         }
 
-        if ($this->performancePaymentRecords !== null) return $this->performancePaymentRecords;
+        if ($this->performancePaymentRecords !== null) {
+            return $this->performancePaymentRecords;
+        }
 
         $shootIds = collect([$this->shoot_id])
             ->merge($this->exists ? $this->shoots()->pluck('shoots.id') : [])

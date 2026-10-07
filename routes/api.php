@@ -634,6 +634,11 @@ Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager'])->pr
         // Wildcard routes
         Route::get('invoices/{invoice}/download', [InvoiceController::class, 'download']);
         Route::get('invoices/{invoice}/review-detail', [App\Http\Controllers\Admin\InvoiceApprovalController::class, 'reviewDetail']);
+        Route::get('invoices/{invoice}/edit', [App\Http\Controllers\PayoutInvoiceEditController::class, 'show']);
+        Route::get('invoices/{invoice}/shoot-candidates', [App\Http\Controllers\PayoutInvoiceEditController::class, 'candidates']);
+        Route::post('invoices/{invoice}/edit/items', [App\Http\Controllers\PayoutInvoiceEditController::class, 'store']);
+        Route::patch('invoices/{invoice}/edit/items/{item}', [App\Http\Controllers\PayoutInvoiceEditController::class, 'update']);
+        Route::delete('invoices/{invoice}/edit/items/{item}', [App\Http\Controllers\PayoutInvoiceEditController::class, 'destroy']);
         Route::get('invoices/{invoice}/accounts-note', [App\Http\Controllers\Admin\InvoiceAccountsNoteController::class, 'show']);
         Route::put('invoices/{invoice}/accounts-note', [App\Http\Controllers\Admin\InvoiceAccountsNoteController::class, 'update']);
         Route::get('invoices/{invoice}', [App\Http\Controllers\Admin\InvoiceController::class, 'show']);
@@ -1149,6 +1154,11 @@ Route::middleware(['auth:sanctum', 'role:salesRep'])->prefix('reports/sales')->g
 
 // Photographer invoice management
 Route::middleware(['auth:sanctum', 'role:photographer'])->prefix('photographer/invoices')->group(function () {
+    Route::get('{invoice}/edit', [App\Http\Controllers\PayoutInvoiceEditController::class, 'show']);
+    Route::get('{invoice}/shoot-candidates', [App\Http\Controllers\PayoutInvoiceEditController::class, 'candidates']);
+    Route::post('{invoice}/edit/items', [App\Http\Controllers\PayoutInvoiceEditController::class, 'store']);
+    Route::patch('{invoice}/edit/items/{item}', [App\Http\Controllers\PayoutInvoiceEditController::class, 'update']);
+    Route::delete('{invoice}/edit/items/{item}', [App\Http\Controllers\PayoutInvoiceEditController::class, 'destroy']);
     Route::get('/', [App\Http\Controllers\PhotographerInvoiceController::class, 'index']);
     Route::get('{invoice}', [App\Http\Controllers\PhotographerInvoiceController::class, 'show']);
     Route::post('{invoice}/expenses', [App\Http\Controllers\PhotographerInvoiceController::class, 'addExpense']);
@@ -1162,6 +1172,10 @@ Route::middleware(['auth:sanctum', 'role:photographer'])->prefix('photographer/i
 
 // Sales rep invoice management
 Route::middleware(['auth:sanctum', 'role:salesRep'])->prefix('salesrep/invoices')->group(function () {
+    Route::get('{invoice}/edit', [App\Http\Controllers\PayoutInvoiceEditController::class, 'show']);
+    Route::post('{invoice}/edit/items', [App\Http\Controllers\PayoutInvoiceEditController::class, 'store']);
+    Route::patch('{invoice}/edit/items/{item}', [App\Http\Controllers\PayoutInvoiceEditController::class, 'update']);
+    Route::delete('{invoice}/edit/items/{item}', [App\Http\Controllers\PayoutInvoiceEditController::class, 'destroy']);
     Route::get('/', [App\Http\Controllers\SalesRepInvoiceController::class, 'index']);
     Route::get('{invoice}', [App\Http\Controllers\SalesRepInvoiceController::class, 'show']);
     Route::post('{invoice}/expenses', [App\Http\Controllers\SalesRepInvoiceController::class, 'addExpense']);

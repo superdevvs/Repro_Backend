@@ -8,15 +8,15 @@ use App\Models\InvoiceItem;
 use App\Models\User;
 use App\Services\InvoiceService;
 use App\Services\MailService;
-use App\Support\ReportingWeek;
+use App\Support\LockedWrite;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Log;
 
 class InvoiceApprovalController extends Controller
 {
     protected $mailService;
+
     protected $invoiceService;
 
     public function __construct(MailService $mailService, InvoiceService $invoiceService)
@@ -32,21 +32,19 @@ class InvoiceApprovalController extends Controller
     {
         $user = $request->user();
 
-        if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager'])) {
+        if (! in_array($user->role, ['admin', 'superadmin', 'editing_manager'])) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
         $filters = $request->validate([
             'role' => 'nullable|string|in:photographer,salesRep,salesrep',
-            'approval_status' => 'nullable|string|in:pending_approval,approved,accounts_approved,rejected',
+            'approval_status' => 'nullable|string|in:pending,pending_approval,approved,accounts_approved,rejected',
             'search' => 'nullable|string|max:255',
             'start' => 'nullable|date',
             'end' => 'nullable|date',
             'page' => 'nullable|integer|min:1',
             'per_page' => 'nullable|integer|min:1|max:100',
         ]);
-
-        $this->hydrateLatestReviewQueue();
 
         $query = $this->buildReviewQueueQuery($filters);
 
@@ -59,7 +57,8 @@ class InvoiceApprovalController extends Controller
         $summary = [
             'invoice_count' => (clone $query)->count(),
             'total_amount' => round((float) (clone $query)->sum('total_amount'), 2),
-            'needs_review_count' => (int) (($statusBreakdown[Invoice::APPROVAL_STATUS_PENDING_APPROVAL] ?? 0) + ($statusBreakdown[Invoice::APPROVAL_STATUS_PENDING] ?? 0)),
+            'needs_review_count' => (int) ($statusBreakdown[Invoice::APPROVAL_STATUS_PENDING_APPROVAL] ?? 0),
+            'awaiting_payee_count' => (int) ($statusBreakdown[Invoice::APPROVAL_STATUS_PENDING] ?? 0),
             'approved_count' => (int) (($statusBreakdown[Invoice::APPROVAL_STATUS_APPROVED] ?? 0) + ($statusBreakdown[Invoice::APPROVAL_STATUS_LEGACY_APPROVED] ?? 0)),
             'returned_count' => (int) ($statusBreakdown[Invoice::APPROVAL_STATUS_REJECTED] ?? 0),
         ];
@@ -85,11 +84,11 @@ class InvoiceApprovalController extends Controller
     {
         $user = $request->user();
 
-        if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager'])) {
+        if (! in_array($user->role, ['admin', 'superadmin', 'editing_manager'])) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
-        if (!in_array($invoice->role, [
+        if (! in_array($invoice->role, [
             Invoice::ROLE_PHOTOGRAPHER,
             Invoice::ROLE_SALES_REP,
         ], true)) {
@@ -125,7 +124,7 @@ class InvoiceApprovalController extends Controller
     {
         $user = $request->user();
 
-        if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager'])) {
+        if (! in_array($user->role, ['admin', 'superadmin', 'editing_manager'])) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
@@ -144,25 +143,29 @@ class InvoiceApprovalController extends Controller
     {
         $user = $request->user();
 
-        if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager'])) {
+        if (! in_array($user->role, ['admin', 'superadmin', 'editing_manager'])) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
+        if (! $invoice->isPayoutInvoice()) {
+            return response()->json(['message' => 'Payout invoice not found'], 404);
+        }
 
-        if (!in_array($invoice->approval_status, [
+        if (! in_array($invoice->approval_status, [
             Invoice::APPROVAL_STATUS_PENDING_APPROVAL,
             Invoice::APPROVAL_STATUS_PENDING,
         ], true)) {
             return response()->json([
-                'message' => 'Invoice is not pending approval'
+                'message' => 'Invoice is not pending approval',
             ], 422);
         }
 
         $validated = $request->validate([
             'warning_override_reason' => 'nullable|string|max:1000',
+            'expected_revision' => 'nullable|integer|min:0',
         ]);
 
         $warnings = $invoice->unresolved_warnings ?? [];
-        if (!empty($warnings) && empty($validated['warning_override_reason'])) {
+        if (! empty($warnings) && empty($validated['warning_override_reason'])) {
             return response()->json([
                 'message' => 'Unresolved warnings must be fixed or overridden with a reason before approval.',
                 'warnings' => $warnings,
@@ -170,29 +173,43 @@ class InvoiceApprovalController extends Controller
         }
 
         try {
-            DB::beginTransaction();
+            $invoice = LockedWrite::run(fn () => DB::transaction(function () use ($invoice, $user, $validated) {
+                DB::table('invoices')->where('id', $invoice->id)->update(['payout_revision' => DB::raw('payout_revision')]);
+                $invoice = Invoice::query()->lockForUpdate()->findOrFail($invoice->id);
+                app(\App\Services\Invoices\PayoutInvoiceWorkflow::class)->checkRevision($invoice, $validated['expected_revision'] ?? null);
+                if (! in_array($invoice->approval_status, ['pending', 'pending_approval'], true) || $invoice->is_paid || $invoice->paid_at || (float) $invoice->amount_paid > 0 || $invoice->status === Invoice::STATUS_PAID) {
+                    throw \Illuminate\Validation\ValidationException::withMessages(['invoice' => 'This invoice is no longer awaiting approval.']);
+                }
+                $warnings = $invoice->unresolved_warnings ?? [];
+                if ($recovery = $invoice->payout_review['recovery_required']) {
+                    $warnings[] = ['code' => 'historical_edit_recovery', 'message' => $recovery['message']];
+                }
+                if ($warnings && empty(trim($validated['warning_override_reason'] ?? ''))) {
+                    throw \Illuminate\Validation\ValidationException::withMessages(['warning_override_reason' => 'Verify the warnings or provide an accounts override reason.']);
+                }
 
-            $updateData = [
-                'approval_status' => Invoice::APPROVAL_STATUS_APPROVED,
-                'approved_by' => $user->id,
-                'approved_at' => now(),
-                'approval_snapshot' => $invoice->buildApprovalSnapshot(),
-            ];
+                $updateData = [
+                    'approval_status' => Invoice::APPROVAL_STATUS_APPROVED,
+                    'approved_by' => $user->id,
+                    'approved_at' => now(),
+                    'approval_snapshot' => $invoice->buildApprovalSnapshot(),
+                ];
 
-            if (!empty($warnings)) {
-                $updateData['warning_override_reason'] = $validated['warning_override_reason'];
-                $updateData['warning_override_by'] = $user->id;
-                $updateData['warning_override_at'] = now();
-            }
+                if (! empty($warnings)) {
+                    $updateData['warning_override_reason'] = $validated['warning_override_reason'];
+                    $updateData['warning_override_by'] = $user->id;
+                    $updateData['warning_override_at'] = now();
+                }
 
-            $invoice->update($updateData);
-            $invoice->recordAuditEvent('accounts_approved', $user, 'Invoice approved by accounts.', [
-                'warnings' => $warnings,
-                'warning_override_reason' => $validated['warning_override_reason'] ?? null,
-                'snapshot' => $invoice->approval_snapshot,
-            ]);
+                $invoice->update($updateData);
+                $invoice->recordAuditEvent('accounts_approved', $user, 'Invoice approved by accounts.', [
+                    'warnings' => $warnings,
+                    'warning_override_reason' => $validated['warning_override_reason'] ?? null,
+                    'snapshot' => $invoice->approval_snapshot,
+                ]);
 
-            DB::commit();
+                return $invoice;
+            }), 'payout-invoice-approval');
 
             // Notify photographer/sales rep
             $this->mailService->sendInvoiceApprovedEmail($invoice);
@@ -201,13 +218,14 @@ class InvoiceApprovalController extends Controller
                 'message' => 'Invoice approved successfully',
                 'invoice' => $invoice->fresh(['items', 'photographer', 'salesRep', 'shoots']),
             ]);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            throw $e;
         } catch (\Exception $e) {
-            DB::rollBack();
             \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'message' => 'Failed to approve invoice',
-                'error' => \App\Services\ApiErrorResponder::publicMessage($e)
+                'error' => \App\Services\ApiErrorResponder::publicMessage($e),
             ], 500);
         }
     }
@@ -219,33 +237,47 @@ class InvoiceApprovalController extends Controller
     {
         $user = $request->user();
 
-        if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager'])) {
+        if (! in_array($user->role, ['admin', 'superadmin', 'editing_manager'])) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
+        if (! $invoice->isPayoutInvoice()) {
+            return response()->json(['message' => 'Payout invoice not found'], 404);
+        }
 
-        if (!in_array($invoice->approval_status, [
+        if (! in_array($invoice->approval_status, [
             Invoice::APPROVAL_STATUS_PENDING_APPROVAL,
             Invoice::APPROVAL_STATUS_PENDING,
         ], true)) {
             return response()->json([
-                'message' => 'Invoice is not pending approval'
+                'message' => 'Invoice is not pending approval',
             ], 422);
         }
 
         $validated = $request->validate([
             'reason' => 'required|string|max:1000',
+            'expected_revision' => 'nullable|integer|min:0',
         ]);
 
         try {
-            $invoice->update([
-                'approval_status' => Invoice::APPROVAL_STATUS_REJECTED,
-                'rejection_reason' => $validated['reason'],
-                'rejected_by' => $user->id,
-                'rejected_at' => now(),
-            ]);
-            $invoice->recordAuditEvent('returned', $user, 'Invoice returned for changes.', [
-                'reason' => $validated['reason'],
-            ]);
+            $invoice = LockedWrite::run(fn () => DB::transaction(function () use ($invoice, $user, $validated) {
+                DB::table('invoices')->where('id', $invoice->id)->update(['payout_revision' => DB::raw('payout_revision')]);
+                $invoice = Invoice::query()->lockForUpdate()->findOrFail($invoice->id);
+                app(\App\Services\Invoices\PayoutInvoiceWorkflow::class)->checkRevision($invoice, $validated['expected_revision'] ?? null);
+                if (! in_array($invoice->approval_status, ['pending', 'pending_approval'], true) || $invoice->is_paid || $invoice->paid_at || (float) $invoice->amount_paid > 0 || $invoice->status === Invoice::STATUS_PAID) {
+                    throw \Illuminate\Validation\ValidationException::withMessages(['invoice' => 'This invoice is no longer awaiting review.']);
+                }
+                $invoice->update([
+                    'approval_status' => Invoice::APPROVAL_STATUS_REJECTED,
+                    'rejection_reason' => $validated['reason'],
+                    'rejected_by' => $user->id,
+                    'rejected_at' => now(),
+                ]);
+                $invoice->recordAuditEvent('returned', $user, 'Invoice returned for changes.', [
+                    'reason' => $validated['reason'],
+                ]);
+
+                return $invoice;
+            }), 'payout-invoice-return');
 
             // Notify photographer
             $this->mailService->sendInvoiceRejectedEmail($invoice);
@@ -254,12 +286,14 @@ class InvoiceApprovalController extends Controller
                 'message' => 'Invoice rejected successfully',
                 'invoice' => $invoice->fresh(['items', 'photographer', 'salesRep', 'shoots']),
             ]);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            throw $e;
         } catch (\Exception $e) {
             \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'message' => 'Failed to reject invoice',
-                'error' => \App\Services\ApiErrorResponder::publicMessage($e)
+                'error' => \App\Services\ApiErrorResponder::publicMessage($e),
             ], 500);
         }
     }
@@ -282,6 +316,7 @@ class InvoiceApprovalController extends Controller
                 'modifiedBy',
                 'approvedBy',
                 'rejectedBy',
+                'auditEvents.actor',
             ])
             ->withCount([
                 'shoots',
@@ -289,12 +324,9 @@ class InvoiceApprovalController extends Controller
                 'items as expense_count' => fn (Builder $builder) => $builder->where('type', InvoiceItem::TYPE_EXPENSE),
             ]);
 
-        if (!empty($filters['approval_status'])) {
+        if (! empty($filters['approval_status'])) {
             if ($filters['approval_status'] === Invoice::APPROVAL_STATUS_PENDING_APPROVAL) {
-                $query->whereIn('approval_status', [
-                    Invoice::APPROVAL_STATUS_PENDING_APPROVAL,
-                    Invoice::APPROVAL_STATUS_PENDING,
-                ]);
+                $query->where('approval_status', Invoice::APPROVAL_STATUS_PENDING_APPROVAL);
             } elseif ($filters['approval_status'] === Invoice::APPROVAL_STATUS_LEGACY_APPROVED) {
                 $query->whereIn('approval_status', [
                     Invoice::APPROVAL_STATUS_APPROVED,
@@ -305,7 +337,7 @@ class InvoiceApprovalController extends Controller
             }
         }
 
-        if (!empty($filters['search'])) {
+        if (! empty($filters['search'])) {
             $search = trim($filters['search']);
             $relation = $this->normalizeQueueRole($filters['role'] ?? null) === 'salesRep'
                 ? 'salesRep'
@@ -313,19 +345,19 @@ class InvoiceApprovalController extends Controller
 
             $query->whereHas($relation, function (Builder $builder) use ($search) {
                 $builder
-                    ->where('name', 'like', '%' . $search . '%')
-                    ->orWhere('email', 'like', '%' . $search . '%');
+                    ->where('name', 'like', '%'.$search.'%')
+                    ->orWhere('email', 'like', '%'.$search.'%');
             });
         }
 
-        if (!empty($filters['start'])) {
+        if (! empty($filters['start'])) {
             // Include a weekly invoice when any part of its billing period is in
             // the selected range. A week that crosses a month/quarter boundary
             // should not disappear from both periods.
             $query->whereDate('billing_period_end', '>=', $filters['start']);
         }
 
-        if (!empty($filters['end'])) {
+        if (! empty($filters['end'])) {
             $query->whereDate('billing_period_start', '<=', $filters['end']);
         }
 
@@ -345,6 +377,10 @@ class InvoiceApprovalController extends Controller
 
     private function serializeReviewQueueInvoice(Invoice $invoice): array
     {
+        $warnings = $invoice->unresolved_warnings ?? [];
+        if ($recovery = $invoice->payout_review['recovery_required']) {
+            $warnings[] = ['code' => 'historical_edit_recovery', 'message' => $recovery['message']];
+        }
         $role = $invoice->sales_rep_id ? 'salesRep' : 'photographer';
         $payee = $invoice->sales_rep_id ? $invoice->salesRep : $invoice->photographer;
         $lastActivityAt = $invoice->modified_at
@@ -357,6 +393,7 @@ class InvoiceApprovalController extends Controller
             'role' => $role,
             'status' => $invoice->status,
             'approval_status' => $invoice->approval_status,
+            'payout_review' => $invoice->payout_review,
             'billing_period_start' => optional($invoice->billing_period_start)->toDateString(),
             'billing_period_end' => optional($invoice->billing_period_end)->toDateString(),
             'total_amount' => round((float) $invoice->total_amount, 2),
@@ -368,7 +405,7 @@ class InvoiceApprovalController extends Controller
             'approved_by' => $invoice->approved_by,
             'approved_at' => optional($invoice->approved_at)->toISOString(),
             'approval_snapshot' => $invoice->approval_snapshot,
-            'unresolved_warnings' => $invoice->unresolved_warnings ?? [],
+            'unresolved_warnings' => $warnings,
             'warning_override_reason' => $invoice->warning_override_reason,
             'warning_override_by' => $invoice->warning_override_by,
             'warning_override_at' => optional($invoice->warning_override_at)->toISOString(),
@@ -487,7 +524,7 @@ class InvoiceApprovalController extends Controller
 
     private function serializeActor(?User $user): ?array
     {
-        if (!$user) {
+        if (! $user) {
             return null;
         }
 
@@ -506,16 +543,4 @@ class InvoiceApprovalController extends Controller
             default => 'photographer',
         };
     }
-
-    private function hydrateLatestReviewQueue(): void
-    {
-        // Date filters only select existing review records. They must never create
-        // a monthly or partial-week payout invoice as a side effect of browsing.
-        [$start, $end] = ReportingWeek::lastCompleted();
-
-        $this->invoiceService->generateForPeriod($start, $end, false);
-        $this->invoiceService->generateSalesRepInvoicesForPeriod($start, $end, false);
-    }
 }
-
-
