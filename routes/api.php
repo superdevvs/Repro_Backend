@@ -1234,6 +1234,7 @@ Route::prefix('photographer/availability')->group(function () {
 });
 
 Route::middleware('auth:sanctum')->prefix('photographer/availability')->group(function () {
+    Route::get('/day-schedule', \App\Http\Controllers\DayScheduleController::class)->middleware('throttle:60,1');
     Route::post('/feasibility', \App\Http\Controllers\ScheduleFeasibilityController::class)->middleware('throttle:60,1');
     Route::post('/', [PhotographerAvailabilityController::class, 'store']);
     Route::post('/bulk', [PhotographerAvailabilityController::class, 'bulkStore']);

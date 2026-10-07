@@ -53,7 +53,9 @@ class StoreShootRequest extends FormRequest
         $canOmitServices = $userRole === 'superadmin'
             && in_array($shootType, Shoot::INTERNAL_NO_CHARGE_SHOOT_TYPES, true);
 
-        return array_merge(\App\Services\Shoots\MultiUnitBookingService::rules(), [
+        return array_merge(\App\Services\Shoots\MultiUnitBookingService::rules(), \App\Services\Scheduling\DaySchedulePlan::rules(), [
+            'notify_client' => 'sometimes|boolean',
+            'notify_photographer' => 'sometimes|boolean',
             // Client ID: required for admin, optional for client (defaults to auth user)
             'client_id' => [
                 $isInternalScheduler ? 'required' : 'nullable',

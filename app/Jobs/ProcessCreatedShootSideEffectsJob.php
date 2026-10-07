@@ -20,6 +20,8 @@ class ProcessCreatedShootSideEffectsJob implements ShouldQueue
         public readonly int $shootId,
         public readonly bool $treatAsClientRequest,
         public readonly bool $isImmediatelyScheduled,
+        public readonly ?bool $notifyClient = null,
+        public readonly ?bool $notifyPhotographer = null,
     ) {
     }
 
@@ -34,7 +36,9 @@ class ProcessCreatedShootSideEffectsJob implements ShouldQueue
             $dispatcher->processCreatedShoot(
                 $this->shootId,
                 $this->treatAsClientRequest,
-                $this->isImmediatelyScheduled
+                $this->isImmediatelyScheduled,
+                $this->notifyClient ?? null,
+                $this->notifyPhotographer ?? null
             );
         } catch (\Throwable $exception) {
             Log::warning('Queued created-shoot side effects job failed.', [

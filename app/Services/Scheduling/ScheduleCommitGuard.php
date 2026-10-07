@@ -27,6 +27,7 @@ class ScheduleCommitGuard
 
     public function prepareBatch(array $plans, ?User $actor = null): array
     {
+        $plans = app(DaySchedulePlan::class)->expand($plans, $actor);
         if (! $this->enabled() || $plans === []) {
             return ['enabled' => false, 'plans' => $plans, 'actor' => $actor];
         }
@@ -82,8 +83,13 @@ class ScheduleCommitGuard
                             app(ScheduleFeasibilityService::class)->scheduleFingerprint($ids))) {
                             throw new ConflictHttpException('The photographer schedule changed. Refresh availability and try again.');
                         }
+                        $neighbors = app(DaySchedulePlan::class)->apply($prepared['plans'], $prepared['actor']);
                         $value = $write();
                         $saved = $targets ? $targets($value) : $this->defaultTargets($value, $prepared);
+                        // Update adapters may include an unused null return-visit slot.
+                        // Preserve one target per original plan before appending neighbors.
+                        $originalCount = count($prepared['plans']) - count($neighbors);
+                        $saved = array_merge(array_slice(array_pad($saved, $originalCount, null), 0, $originalCount), $neighbors);
                         $this->persistLocations($saved, $prepared);
                         DB::afterCommit(fn () => $this->auditOverride($saved, $prepared));
 

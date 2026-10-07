@@ -27,7 +27,7 @@ class ShootEditablePayloadService
 
     public function validationRules(): array
     {
-        return array_merge(MultiUnitBookingService::rules(), [
+        return array_merge(MultiUnitBookingService::rules(), \App\Services\Scheduling\DaySchedulePlan::rules(), [
             'scheduled_date' => 'nullable|date',
             'expected_edit_version' => 'nullable|string|size:64',
             'scheduled_at' => 'nullable|date',

@@ -1219,7 +1219,7 @@ class AutomationWorkflowExecutor
         if (
             $role === 'client'
             && ($context['notify_client'] ?? null) === false
-            && in_array($automation->trigger_type, ['SHOOT_SCHEDULED', 'SHOOT_UPDATED', 'SHOOT_REQUEST_APPROVED', 'SHOOT_REQUEST_MODIFIED'], true)
+            && in_array($automation->trigger_type, ['SHOOT_BOOKED', 'SHOOT_SCHEDULED', 'SHOOT_UPDATED', 'SHOOT_REQUEST_APPROVED', 'SHOOT_REQUEST_MODIFIED'], true)
         ) {
             return false;
         }
@@ -1227,7 +1227,7 @@ class AutomationWorkflowExecutor
         if (
             $role === 'photographer'
             && ($context['notify_photographer'] ?? null) === false
-            && in_array($automation->trigger_type, ['SHOOT_SCHEDULED', 'SHOOT_UPDATED', 'PHOTOGRAPHER_CHANGED'], true)
+            && in_array($automation->trigger_type, ['SHOOT_BOOKED', 'SHOOT_SCHEDULED', 'SHOOT_UPDATED', 'PHOTOGRAPHER_CHANGED'], true)
         ) {
             return false;
         }

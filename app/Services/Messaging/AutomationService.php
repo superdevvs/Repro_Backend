@@ -1087,6 +1087,7 @@ class AutomationService
             ($context['notify_client'] ?? null) === false
             && in_array($rule->trigger_type, [
                 ShootEmailMatrix::SHOOT_SCHEDULED,
+                'SHOOT_BOOKED',
                 ShootEmailMatrix::SHOOT_UPDATED,
                 'PHOTOGRAPHER_ASSIGNED',
             ], true)
@@ -1107,6 +1108,7 @@ class AutomationService
             ($context['notify_photographer'] ?? null) === false
             && in_array($rule->trigger_type, [
                 ShootEmailMatrix::SHOOT_SCHEDULED,
+                'SHOOT_BOOKED',
                 ShootEmailMatrix::SHOOT_UPDATED,
                 ShootEmailMatrix::PHOTOGRAPHER_CHANGED,
                 'PHOTOGRAPHER_ASSIGNED',

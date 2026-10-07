@@ -13,7 +13,7 @@ class ScheduleFeasibilityController extends Controller
     public function __invoke(Request $request, ScheduleFeasibilityService $evaluator)
     {
         $request->merge(\App\Support\Timezone::scheduleInput($request->only(['timezone'])));
-        $rules = array_merge(MultiUnitBookingService::rules(), [
+        $rules = array_merge(MultiUnitBookingService::rules(), \App\Services\Scheduling\DaySchedulePlan::rules(), [
             'shoot_id' => 'nullable|integer|exists:shoots,id',
             'client_id' => 'nullable|integer|exists:users,id',
             'photographer_id' => 'nullable|integer|exists:users,id',
@@ -57,7 +57,9 @@ class ScheduleFeasibilityController extends Controller
         }
         $shoot = ! empty($data['shoot_id']) ? Shoot::findOrFail($data['shoot_id']) : null;
         app(TravelScheduleAccess::class)->authorizePayload($data, $shoot, $request->user());
-        $result = $evaluator->evaluate($data, $shoot, $request->user(), (bool) ($data['include_alternatives'] ?? false));
+        $plans = app(\App\Services\Scheduling\DaySchedulePlan::class)->expand([['payload' => $data, 'shoot' => $shoot]], $request->user());
+        $result = count($plans) > 1 ? $evaluator->evaluatePlans($plans, $request->user())
+            : $evaluator->evaluate($data, $shoot, $request->user(), (bool) ($data['include_alternatives'] ?? false));
 
         return response()->json(['data' => $evaluator->publicResult($result)]);
     }

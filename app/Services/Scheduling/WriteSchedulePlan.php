@@ -13,6 +13,7 @@ class WriteSchedulePlan
     /** Notes, pricing and unchanged form echoes do not revalidate an old itinerary. */
     public function changesItinerary(array $payload, Shoot $shoot, ?\App\Models\User $actor = null): bool
     {
+        if (! empty($payload['schedule_adjustments'])) return true;
         if (($payload['action_mode'] ?? 'update') !== 'update') {
             return true;
         }

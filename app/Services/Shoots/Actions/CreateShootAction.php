@@ -112,6 +112,9 @@ class CreateShootAction
         }
         $travelGuard = app(\App\Services\Scheduling\ScheduleCommitGuard::class);
         $requestOnly = $userRole === 'client' || $validated['client_id'] == $user->id || $request->boolean('is_client_request');
+        if ($requestOnly && ! empty($validated['schedule_adjustments'])) {
+            throw ValidationException::withMessages(['schedule_adjustments' => 'Existing bookings can only move with a confirmed staff booking.']);
+        }
         $travelPayload = app(\App\Services\Scheduling\WriteSchedulePlan::class)->services(
             $validated, $servicesPayload, $scheduledAt, $validated['photographer_id'] ?? null,
             $validated['timezone'] ?? null, 'create'
@@ -431,7 +434,7 @@ class CreateShootAction
             return new CreateShootResult($shoot, $treatAsClientRequest, $scheduledAt);
         }));
 
-        $this->registerDeferredSideEffects($result);
+        $this->registerDeferredSideEffects($result, $validated['notify_client'] ?? null, $validated['notify_photographer'] ?? null);
 
         if (
             !$result->treatAsClientRequest
@@ -610,12 +613,14 @@ class CreateShootAction
             : Shoot::PRODUCT_STATUS_HAS_PRODUCT;
     }
 
-    protected function registerDeferredSideEffects(CreateShootResult $result): void
+    protected function registerDeferredSideEffects(CreateShootResult $result, ?bool $notifyClient = null, ?bool $notifyPhotographer = null): void
     {
         ProcessCreatedShootSideEffectsJob::dispatch(
             $result->shoot->id,
             $result->treatAsClientRequest,
-            $result->scheduledAt !== null
+            $result->scheduledAt !== null,
+            $notifyClient,
+            $notifyPhotographer
         )->afterCommit();
     }
 }

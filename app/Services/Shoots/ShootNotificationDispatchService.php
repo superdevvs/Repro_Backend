@@ -19,7 +19,7 @@ class ShootNotificationDispatchService
         protected MailService $mailService,
     ) {}
 
-    public function processCreatedShoot(int $shootId, bool $treatAsClientRequest, bool $isImmediatelyScheduled): void
+    public function processCreatedShoot(int $shootId, bool $treatAsClientRequest, bool $isImmediatelyScheduled, ?bool $notifyClient = null, ?bool $notifyPhotographer = null): void
     {
         $shoot = Shoot::with(['client', 'photographer', 'rep', 'service', 'services'])->find($shootId);
         if (! $shoot || $shoot->suppressesExternalNotifications()) {
@@ -28,7 +28,7 @@ class ShootNotificationDispatchService
 
         if ($treatAsClientRequest) {
             try {
-                $context = $this->buildShootContext($shoot);
+                $context = array_merge($this->buildShootContext($shoot), ['notify_client' => $notifyClient, 'notify_photographer' => $notifyPhotographer]);
                 $this->automationService->handleEvent('SHOOT_REQUESTED', $context);
             } catch (\Exception $e) {
                 Log::error('Failed to trigger SHOOT_REQUESTED automation', [
@@ -53,7 +53,7 @@ class ShootNotificationDispatchService
         $shootBookedAttemptedAt = null;
         if (! $treatAsClientRequest) {
             try {
-                $context = $this->buildShootContext($shoot);
+                $context = array_merge($this->buildShootContext($shoot), ['notify_client' => $notifyClient, 'notify_photographer' => $notifyPhotographer]);
                 $shootBookedAttemptedAt = now();
                 $shootBookedDispatch = $this->automationService->handleEvent('SHOOT_BOOKED', $context);
             } catch (\Exception $e) {
@@ -65,7 +65,7 @@ class ShootNotificationDispatchService
         }
 
         if (! $treatAsClientRequest && $isImmediatelyScheduled) {
-            $scheduledDispatch = $this->automationService->handleEvent('SHOOT_SCHEDULED', $this->buildShootContext($shoot));
+            $scheduledDispatch = $this->automationService->handleEvent('SHOOT_SCHEDULED', array_merge($this->buildShootContext($shoot), ['notify_client' => $notifyClient, 'notify_photographer' => $notifyPhotographer]));
             try {
                 $shoot->loadMissing(['client', 'photographer', 'services']);
                 $client = $shoot->client;
@@ -88,7 +88,7 @@ class ShootNotificationDispatchService
                     );
                 }
 
-                if (! $clientEmailSent && $this->automationService->shouldUseFallback('SHOOT_SCHEDULED', $scheduledDispatch)) {
+                if ($notifyClient !== false && ! $clientEmailSent && $this->automationService->shouldUseFallback('SHOOT_SCHEDULED', $scheduledDispatch)) {
                     if (! $client) {
                         $this->clientConfirmationRecoveryService->recordNoDeliveryPath($shoot, null, 'SHOOT_BOOKED');
                     } elseif (! $this->clientConfirmationRecoveryService->hasDeliverableEmail($client)) {
@@ -112,7 +112,7 @@ class ShootNotificationDispatchService
                     }
                 }
 
-                if ($shouldUseFallback && ! $photographerEmailSent) {
+                if ($notifyPhotographer !== false && $shouldUseFallback && ! $photographerEmailSent) {
                     $this->mailService->sendAssignedPhotographerShootScheduledEmails($shoot);
                 }
             } catch (\Exception $e) {

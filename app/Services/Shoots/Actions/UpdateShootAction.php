@@ -466,14 +466,19 @@ class UpdateShootAction
             && $shoot->workflow_status === Shoot::STATUS_REQUESTED
             && ($validated['status'] ?? $shoot->status) === Shoot::STATUS_REQUESTED
             && ($validated['workflow_status'] ?? $shoot->workflow_status) === Shoot::STATUS_REQUESTED;
+        if ($remainsRequest && ! empty($validated['schedule_adjustments'])) {
+            throw ValidationException::withMessages(['schedule_adjustments' => 'Existing bookings can only move with a confirmed staff booking.']);
+        }
         if ($travelGuard->enabled()) {
-            $availabilityRelevantKeys = array_merge($availabilityRelevantKeys, ['address', 'city', 'state', 'zip', 'timezone', 'property_details', 'status', 'workflow_status', 'travel_location_confirmed']);
+            $availabilityRelevantKeys = array_merge($availabilityRelevantKeys, ['address', 'city', 'state', 'zip', 'timezone', 'property_details', 'status', 'workflow_status', 'travel_location_confirmed', 'schedule_adjustments']);
         }
         $needsAvailabilityCheck = count(array_intersect(array_keys($validated), $availabilityRelevantKeys)) > 0;
         // skip_availability_check (or admin) may suppress booking-CONFLICT checks only.
         // The configured-hours availability bound is always enforced, identically to the
         // create path, so a shoot can never be rescheduled outside the photographer's hours.
         $skipConflictCheck = $isRep ? false : ($validated['skip_availability_check'] ?? ($isAdmin || $canManageRequested));
+        // The guarded batch checks conflicts against the final proposed day. Hours still apply.
+        if ($travelGuard->enabled() && ! empty($validated['schedule_adjustments'])) $skipConflictCheck = true;
         if ($needsAvailabilityCheck) {
             $targetPhotographerId = array_key_exists('photographer_id', $validated) ? $validated['photographer_id'] : $shoot->photographer_id;
             $targetScheduledAt = array_key_exists('scheduled_at', $availabilityPayload)

@@ -241,7 +241,8 @@ class ScheduleFeasibilityService
     {
         $public = Arr::only($result, ['enabled', 'status', 'available', 'reason_codes', 'transitions', 'alternatives',
             'can_override', 'can_confirm_location', 'policy_version', 'schedule_version', 'confirmation_version', 'budget']);
-        $public['visits'] = array_map(fn ($visit) => Arr::only($visit, ['photographer_id', 'start', 'end', 'scheduled_at', 'duration_minutes', 'timezone']), $result['visits'] ?? []);
+        $public['visits'] = array_map(fn ($visit) => Arr::only($visit, ['photographer_id', 'start', 'end', 'scheduled_at', 'duration_minutes', 'timezone'])
+            + ['is_target' => ($visit['plan_index'] ?? 0) === 0], $result['visits'] ?? []);
         $public['transitions'] = array_map(fn ($edge) => Arr::only($edge, ['id', 'direction', 'photographer_id', 'source',
             'required_minutes', 'available_minutes', 'shortfall_minutes', 'reason_code', 'review_required',
             'drive_minutes', 'distance_miles', 'attribution', 'candidate_start', 'candidate_end', 'earliest_start', 'latest_start', 'neighbor']), $result['transitions'] ?? []);
