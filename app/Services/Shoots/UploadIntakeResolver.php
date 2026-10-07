@@ -101,15 +101,38 @@ class UploadIntakeResolver
     /**
      * The lane a single file belongs to.
      *
-     * Mime type is the only signal used. Filenames and service names are not
+     * Mime type and camera container headers are used. Filenames and service names are not
      * consulted: a lane decision that depended on naming is exactly the guessing this
      * capability replaced.
      */
     public function laneForMimeType(?string $mimeType): string
     {
-        return is_string($mimeType) && str_starts_with(strtolower($mimeType), 'video/')
+        return is_string($mimeType) && (str_starts_with(strtolower($mimeType), 'video/')
+            || strtolower($mimeType) === 'application/mp4')
             ? Service::LANE_VIDEO
             : Service::LANE_PHOTO;
+    }
+
+    public function detectedMimeType(UploadedFile $file): ?string
+    {
+        $mime = $file->getMimeType();
+        if ($mime === 'application/mp4') {
+            return 'video/mp4';
+        }
+        if ($mime === 'application/octet-stream') {
+            // libmagic does not recognize Sony's XAVC MP4 brand. Read only the
+            // container header; never trust a video extension or declared lane.
+            $header = file_get_contents($file->getPathname(), false, null, 0, 16);
+            if (is_string($header) && strlen($header) === 16
+                && substr($header, 4, 8) === 'ftypXAVC') {
+                $boxSize = unpack('Nsize', substr($header, 0, 4))['size'];
+                if ($boxSize >= 16 && $boxSize <= $file->getSize()) {
+                    return 'video/mp4';
+                }
+            }
+        }
+
+        return $mime;
     }
 
     /**
@@ -136,7 +159,7 @@ class UploadIntakeResolver
                 continue;
             }
 
-            $lanes[] = $this->laneForMimeType($file->getMimeType());
+            $lanes[] = $this->laneForMimeType($this->detectedMimeType($file));
         }
 
         $lanes = array_values(array_unique($lanes));

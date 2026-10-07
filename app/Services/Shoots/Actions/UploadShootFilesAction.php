@@ -683,6 +683,7 @@ class UploadShootFilesAction
                     'file_size' => $file->getSize(),
                 ];
                 try {
+                    $detectedMime = $this->uploadIntake->detectedMimeType($file);
                     $resolvedMediaType = null;
                     if ($mediaTypeOverride && in_array($mediaTypeOverride, ['floorplan', 'extra', 'virtual_staging', 'green_grass', 'twilight', 'drone'], true)) {
                         $resolvedMediaType = $mediaTypeOverride;
@@ -724,6 +725,7 @@ class UploadShootFilesAction
                         $reservedFileIndex,
                         $rawReservation,
                         $rawSequenceIndex,
+                        $detectedMime,
                         &$followUpAttempts
                     ): void {
                         $followUpAttempts++;
@@ -737,6 +739,11 @@ class UploadShootFilesAction
                         }
 
                         $flagUpdates = [];
+                        // Keep downstream video filtering and auto-stacking in sync
+                        // with the content detection used to validate intake.
+                        if ($detectedMime !== $shootFile->file_type) {
+                            $flagUpdates['file_type'] = $detectedMime;
+                        }
                         if ($rawReservation) {
                             $flagUpdates['raw_upload_batch_id'] = $rawReservation->id;
                             $flagUpdates['raw_upload_position'] = $rawReservation->start_position + $reservedFileIndex;

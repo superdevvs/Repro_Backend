@@ -34,6 +34,57 @@ class RawUploadIntakeEnforcementTest extends TestCase
 
     private Shoot $shoot;
 
+    public function test_reserved_chunked_xavc_video_upload_keeps_its_video_lane(): void
+    {
+        $photographer = User::factory()->create(['role' => 'photographer']);
+        $this->shoot->update(['photographer_id' => $photographer->id]);
+        Sanctum::actingAs($photographer);
+        $service = $this->service('HDR Photos & Video', 'Packages', Service::INTAKE_PHOTO_VIDEO, ['uses_hdr_brackets' => true]);
+        $item = $this->item($service, $photographer->id, 5);
+        $batch = 'xavc-regression-batch';
+        $this->postJson('/api/shoots/'.$this->shoot->id.'/upload-batches', [
+            'type' => 'raw', 'batch_id' => $batch, 'total_files' => 27, 'service_id' => $item->id, 'upload_lane' => 'video',
+        ])->assertOk();
+
+        // A Sony camera MP4 container is detected as generic binary by libmagic.
+        $bytes = pack('N', 24).'ftypXAVC'.pack('N', 0).'XAVCmp42'.str_repeat("\0", 4096);
+        $this->assertSame('application/octet-stream', (new \finfo(FILEINFO_MIME_TYPE))->buffer($bytes));
+        $init = $this->postJson('/api/shoots/'.$this->shoot->id.'/upload-sessions', [
+            'filename' => 'C5240.MP4', 'size_bytes' => strlen($bytes), 'upload_type' => 'raw',
+            'fields' => [
+                'upload_type' => 'raw', 'upload_lane' => 'video', 'shoot_service_id' => (string) $item->id,
+                'upload_batch_id' => $batch, 'upload_batch_total' => '27', 'upload_batch_index' => '0',
+                'idempotency_key' => 'xavc-first-clip', 'service_category' => 'video',
+            ],
+        ])->assertCreated();
+        $session = $init->json('session_id');
+        $this->call('PUT', '/api/shoots/'.$this->shoot->id.'/upload-sessions/'.$session.'/chunks/0', [], [], [], [
+            'CONTENT_TYPE' => 'application/octet-stream', 'HTTP_ACCEPT' => 'application/json',
+            'CONTENT_LENGTH' => (string) strlen($bytes),
+        ], $bytes)->assertOk();
+        $this->postJson('/api/shoots/'.$this->shoot->id.'/upload-sessions/'.$session.'/complete')
+            ->assertOk()->assertJsonPath('success_count', 1);
+        $file = ShootFile::where('shoot_id', $this->shoot->id)->sole();
+        $this->assertNull($file->bracket_group);
+        $this->assertSame(0, $file->raw_upload_position);
+        $this->assertSame($item->id, $file->shoot_service_id);
+    }
+
+    public function test_xavc_video_cannot_be_laundered_into_photo_intake(): void
+    {
+        Sanctum::actingAs(User::factory()->create(['role' => 'admin']));
+        $item = $this->item($this->service('Photo only', 'Photos', Service::INTAKE_PHOTO));
+        $path = tempnam(sys_get_temp_dir(), 'xavc');
+        try {
+            file_put_contents($path, pack('N', 24).'ftypXAVC'.pack('N', 0).'XAVCmp42'.str_repeat("\0", 32));
+            $this->upload(['shoot_service_id' => $item->id, 'upload_lane' => 'photo',
+                'files' => [new UploadedFile($path, 'renamed.jpg', null, null, true)]])->assertStatus(422);
+            $this->assertSame(0, ShootFile::where('shoot_id', $this->shoot->id)->count());
+        } finally {
+            @unlink($path);
+        }
+    }
+
     protected function setUp(): void
     {
         parent::setUp();
