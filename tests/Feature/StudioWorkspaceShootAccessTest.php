@@ -189,6 +189,45 @@ class StudioWorkspaceShootAccessTest extends TestCase
         $this->postJson('/api/studio/workspaces', ['name' => 'HDR', 'presetId' => 'listing-ready', 'media' => [$response->json('data.media')]])->assertUnprocessable();
     }
 
+    public function test_raw_comparison_uses_full_embedded_preview_while_thumbnails_stay_small_and_private(): void
+    {
+        $admin = User::factory()->create(['role' => 'superadmin']);
+        $shoot = Shoot::factory()->create();
+        $file = $this->file($shoot, $admin, ['filename' => 'camera.CR3', 'thumbnail_path' => 'small.jpg', 'web_path' => 'web.jpg']);
+        Storage::disk('public')->put('small.jpg', UploadedFile::fake()->image('small.jpg', 320, 200)->getContent());
+        Storage::disk('public')->put('web.jpg', UploadedFile::fake()->image('web.jpg', 1500, 1000)->getContent());
+        $full = tempnam(sys_get_temp_dir(), 'studio-preview-test-');
+        file_put_contents($full, UploadedFile::fake()->image('full.jpg', 2400, 1600)->getContent());
+        $this->partialMock(\App\Services\RawThumbnailService::class)->shouldReceive('extractFullSizeJpeg')->once()->andReturn($full);
+        Sanctum::actingAs($admin);
+        $url = self::SOURCES."/files/{$file->id}/preview";
+        $thumb = $this->get($url.'?size=thumbnail')->assertOk()->assertHeader('Cache-Control', 'no-store, private');
+        $this->assertSame([320, 200], array_slice(getimagesizefromstring($thumb->getContent()), 0, 2));
+        $preview = $this->get($url)->assertOk();
+        $this->assertSame([2048, 1365], array_slice(getimagesizefromstring($preview->getContent()), 0, 2));
+        $this->assertSame($preview->getContent(), $this->get($url)->assertOk()->getContent());
+        $this->getJson($url.'?size=original')->assertUnprocessable();
+        $file->update(['scan_status' => ShootFile::SCAN_STATUS_QUARANTINED]);
+        $this->getJson($url.'?size=thumbnail')->assertUnprocessable();
+    }
+
+    public function test_edited_picker_uses_bounded_thumbnails_instead_of_full_original_downloads(): void
+    {
+        $admin = User::factory()->create(['role' => 'superadmin']);
+        $shoot = Shoot::factory()->create();
+        $file = $this->file($shoot, $admin, ['thumbnail_path' => 'edited-thumb.jpg', 'workflow_stage' => ShootFile::STAGE_COMPLETED]);
+        Storage::disk('public')->put('edited-thumb.jpg', UploadedFile::fake()->image('thumb.jpg', 900, 600)->getContent());
+        Sanctum::actingAs($admin);
+        $response = $this->getJson(self::SOURCES."/shoots/{$shoot->id}/media?workflow=photo-enhancement")->assertOk();
+        $url = $response->json('data.0.thumbnailUrl');
+        $this->assertStringEndsWith('?size=thumbnail', $url);
+        $this->assertNotSame($url, $response->json('data.0.previewUrl'));
+        $thumb = $this->get($url)->assertOk();
+        $this->assertSame([480, 320], array_slice(getimagesizefromstring($thumb->getContent()), 0, 2));
+        Queue::assertNotPushed(\App\Jobs\MergeStudioHdr::class);
+        Queue::assertNotPushed(ProcessStudioWorkspace::class);
+    }
+
     public function test_hdr_merge_rejects_mixed_stacks_and_inaccessible_or_quarantined_exposures(): void
     {
         $editor = User::factory()->create(['role' => 'editor']);

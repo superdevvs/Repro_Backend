@@ -48,8 +48,8 @@ class WorkspaceMediaService
                 if ($kind === 'video') {
                     throw ValidationException::withMessages(['media' => 'Choose photos or RAW images. Video source editing is not supported.']);
                 }
-                $url = $kind === 'raw' ? url("/api/studio/workspaces/sources/files/{$file->id}/preview") : url("/api/shoots/{$shoot->id}/files/{$file->id}/preview");
-                $result[] = ['id' => $item['id'], 'shootId' => $shoot->id, 'fileId' => $file->id, 'url' => $url, 'thumbnailUrl' => $url, 'name' => $file->filename, 'kind' => $kind];
+                $url = url("/api/studio/workspaces/sources/files/{$file->id}/preview");
+                $result[] = ['id' => $item['id'], 'shootId' => $shoot->id, 'fileId' => $file->id, 'url' => $url, 'thumbnailUrl' => $url.'?size=thumbnail', 'name' => $file->filename, 'kind' => $kind];
             } else {
                 $ref = str_replace('\\', '/', (string) ($item['mediaRef'] ?? ''));
                 $prefix = "studio/uploads/{$teamId}/{$user->id}/";
@@ -74,6 +74,11 @@ class WorkspaceMediaService
     /** The original reference stays intact; browsers receive an authenticated JPEG preview. */
     public static function withUploadPreview(array $media): array
     {
+        if (! empty($media['fileId']) && ($media['kind'] ?? '') !== 'video') {
+            $preview = url("/api/studio/workspaces/sources/files/{$media['fileId']}/preview");
+            $media['url'] = $preview;
+            $media['thumbnailUrl'] = $preview.'?size=thumbnail';
+        }
         if (! empty($media['mediaRef']) && empty($media['fileId']) && ($media['kind'] ?? $media['mediaType'] ?? null) === 'raw') {
             $preview = url('/api/studio/workspaces/sources/uploads/preview').'?'.http_build_query(['mediaRef' => $media['mediaRef']], '', '&', PHP_QUERY_RFC3986);
             $media['previewUrl'] = $preview;
@@ -124,29 +129,34 @@ class WorkspaceMediaService
         return $bytes;
     }
 
-    public function filePreview(int $fileId, User $user, int $teamId): string
+    public function filePreview(int $fileId, User $user, int $teamId, bool $thumbnail = false): string
     {
         $media = $this->authorize([['id' => 'file:'.$fileId, 'fileId' => $fileId]], $user, $teamId)[0];
         $file = ShootFile::findOrFail($fileId);
         $key = hash('sha256', json_encode([$file->id, $file->updated_at?->format('U.u'), $file->storage_path, $file->file_size]));
         $cache = Storage::disk('local');
-        $path = 'studio/previews/files/'.$key.'.jpg';
+        // Separate cache versions: old entries may contain a tiny embedded RAW
+        // thumbnail stretched to a large display size.
+        $path = 'studio/previews/files/'.$key.($thumbnail ? '-thumb-v2' : '-preview-v2').'.jpg';
         if ($cache->exists($path)) {
             return $cache->get($path);
         }
         $bytes = null;
         $mediaStorage = app(\App\Services\Media\MediaStorage::class);
-        foreach ([$file->web_path, $file->thumbnail_path] as $preview) {
-            if ($preview && $mediaStorage->exists($preview)) {
+        foreach ($thumbnail ? [$file->thumbnail_path, $file->web_path] : [$file->web_path] as $preview) {
+            if ($preview) {
                 $candidate = $mediaStorage->get($preview);
-                if ($candidate && @getimagesizefromstring($candidate)) {
+                $dimensions = $candidate ? @getimagesizefromstring($candidate) : false;
+                if ($dimensions && ($thumbnail || max($dimensions[0], $dimensions[1]) >= 2048)) {
                     $bytes = $candidate;
                     break;
                 }
             }
         }
-        $bytes = (string) \Intervention\Image\ImageManager::gd()->read($bytes ?? $this->bytes($media))->orient()->scaleDown(width: 2048, height: 2048)->toJpeg(88);
+        $limit = $thumbnail ? 480 : 2048;
+        $bytes = (string) \Intervention\Image\ImageManager::gd()->read($bytes ?? $this->bytes($media))->orient()->scaleDown(width: $limit, height: $limit)->toJpeg($thumbnail ? 78 : 88);
         $cache->put($path, $bytes);
+
         return $bytes;
     }
 
@@ -162,6 +172,7 @@ class WorkspaceMediaService
             if (! Storage::disk('studio_hdr')->exists($path)) {
                 throw new RuntimeException('The merged HDR image is missing. Reopen the picker to merge it again.');
             }
+
             return Storage::disk('studio_hdr')->get($path);
         }
         $cleanup = [];

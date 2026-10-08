@@ -61,7 +61,9 @@ class StudioWorkspaceSourceController extends StudioSourceController
     public function filePreview(Request $request, ShootFile $file, WorkspaceMediaService $media): \Illuminate\Http\Response
     {
         $this->authorizeStudioAction($request->user(), 'view');
-        $bytes = $media->filePreview($file->id, $request->user(), $this->scopeTeamId($request->user()));
+        $input = $request->validate(['size' => ['sometimes', 'in:thumbnail']]);
+        $bytes = $media->filePreview($file->id, $request->user(), $this->scopeTeamId($request->user()), ($input['size'] ?? '') === 'thumbnail');
+
         return response($bytes, 200, ['Content-Type' => 'image/jpeg', 'Cache-Control' => 'private, no-store', 'X-Content-Type-Options' => 'nosniff']);
     }
 
@@ -71,6 +73,7 @@ class StudioWorkspaceSourceController extends StudioSourceController
         $input = $request->validate(['fileIds' => ['required', 'array', 'min:2', 'max:7'], 'fileIds.*' => ['required', 'integer', 'min:1', 'distinct']]);
         $media = $hdr->describe($input['fileIds'], $request->user(), $this->scopeTeamId($request->user()));
         $status = $request->isMethod('post') ? $hdr->start($media, $request->user(), $this->scopeTeamId($request->user())) : $hdr->status($media);
+
         return response()->json(['success' => true, 'data' => $status], $status['status'] === 'processing' ? 202 : 200);
     }
 
@@ -80,6 +83,7 @@ class StudioWorkspaceSourceController extends StudioSourceController
         $input = $request->validate(['fileIds' => ['required', 'array', 'min:2', 'max:7'], 'fileIds.*' => ['required', 'integer', 'min:1', 'distinct']]);
         $media = $hdr->describe($input['fileIds'], $request->user(), $this->scopeTeamId($request->user()));
         abort_unless($hdr->status($media)['status'] === 'ready', 404, 'The merged HDR image is not ready.');
+
         return response(\Illuminate\Support\Facades\Storage::disk('studio_hdr')->get($hdr->path($media)), 200, ['Content-Type' => 'image/jpeg', 'Cache-Control' => 'private, no-store', 'X-Content-Type-Options' => 'nosniff']);
     }
 
@@ -97,10 +101,10 @@ class StudioWorkspaceSourceController extends StudioSourceController
         }));
         $data['data'] = array_map(function ($item) use ($files): array {
             $file = $files->get($item['id']);
-            if ($item['mediaType'] === 'raw') {
-                $item['previewUrl'] = $item['thumbnailUrl'] = url("/api/studio/workspaces/sources/files/{$file->id}/preview");
-            }
+            $item['previewUrl'] = url("/api/studio/workspaces/sources/files/{$file->id}/preview");
+            $item['thumbnailUrl'] = $item['previewUrl'].'?size=thumbnail';
             $mode = $file->serviceItem ? app(\App\Services\Shoots\BracketModeResolver::class)->effectiveBracketMode($file->serviceItem) : ($file->shoot->bracket_mode ?: null);
+
             return array_merge($item, ['shootServiceId' => $file->shoot_service_id, 'bracketGroup' => $file->bracket_group, 'sequence' => $file->sequence,
                 'shootUnitId' => $file->serviceItem?->shoot_unit_id, 'unitLabel' => $file->serviceItem?->unit?->label,
                 'bracketMode' => $mode, 'stackingEnabled' => $file->serviceItem ? $mode !== null : true, 'isExtra' => $file->isExtra(),
