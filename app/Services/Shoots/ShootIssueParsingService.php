@@ -19,7 +19,7 @@ class ShootIssueParsingService
     ) {
     }
 
-    public function parseShootRequests(Shoot $shoot, ?User $viewer = null): array
+    public function parseShootRequests(Shoot $shoot, ?User $viewer = null, bool $sharedEditorInbox = false): array
     {
         $paymentStatus = $shoot->payment_status;
         if (!$paymentStatus || $paymentStatus === 'pending') {
@@ -62,7 +62,7 @@ class ShootIssueParsingService
             $authorization = app(ShootAuthorizationSupport::class);
             $isContractor = ! $authorization->canTriageShootRequests($shoot, $viewer)
                 && $authorization->hasRole($viewer, ['editor', 'photographer']);
-            if ($isContractor && $assignedToUserId && (string) $assignedToUserId !== (string) $viewer->id) {
+            if (! $sharedEditorInbox && $isContractor && $assignedToUserId && (string) $assignedToUserId !== (string) $viewer->id) {
                 continue;
             }
 
@@ -73,7 +73,7 @@ class ShootIssueParsingService
                     $files = $files->filter(fn (ShootFile $file) => app(ShootAuthorizationSupport::class)
                         ->canInteractWithShootMediaFile($shoot, $file, $viewer));
                 }
-                if ($isContractor && $files->count() !== count(array_unique($mediaIds))) {
+                if (! $sharedEditorInbox && $isContractor && $files->count() !== count(array_unique($mediaIds))) {
                     continue;
                 }
                 $mediaIds = $files->pluck('id')->all();
@@ -116,6 +116,12 @@ class ShootIssueParsingService
                 'dismissedAt' => $parsedRequest['dismissedAt'],
                 'createdAt' => $shoot->updated_at->toISOString(),
                 'updatedAt' => $shoot->updated_at->toISOString(),
+                'canOpenShoot' => ! $viewer || $authorization->canViewShootDetails($shoot, $viewer),
+                'canUpdate' => ! $viewer || $authorization->canTriageShootRequests($shoot, $viewer)
+                    || ($authorization->canResolveShootIssues($shoot, $viewer)
+                        && (! $assignedToRole || $authorization->hasRole($viewer, [$assignedToRole]))
+                        && (! $assignedToUserId || (string) $assignedToUserId === (string) $viewer->id)
+                        && count($mediaFiles) === count(array_unique($parsedRequest['mediaIds']))),
             ];
         }
 
@@ -130,7 +136,7 @@ class ShootIssueParsingService
             : strtolower((string) ($viewer?->role ?? ''));
 
         foreach ($shoots as $shoot) {
-            foreach ($this->parseShootRequests($shoot, $viewer) as $request) {
+            foreach ($this->parseShootRequests($shoot, $viewer, $viewerRole === 'editor') as $request) {
                 if (($request['status'] ?? null) === 'dismissed') {
                     continue;
                 }

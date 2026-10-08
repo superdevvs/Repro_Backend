@@ -304,9 +304,13 @@ class ShootRouteSplitControllersTest extends TestCase
         $response = $this->getJson('/api/client-requests');
 
         $response->assertOk()
-            ->assertJsonCount(1, 'data')
+            ->assertJsonCount(2, 'data')
             ->assertJsonPath('data.0.shootId', (string) $assignedShoot->id)
-            ->assertJsonPath('data.0.note', 'Please brighten the kitchen');
+            ->assertJsonPath('data.0.note', 'Please brighten the kitchen')
+            ->assertJsonPath('data.0.canOpenShoot', true)
+            ->assertJsonPath('data.1.shootId', (string) $otherShoot->id)
+            ->assertJsonPath('data.1.canOpenShoot', false)
+            ->assertJsonPath('data.1.canUpdate', false);
     }
 
     #[\PHPUnit\Framework\Attributes\Test]

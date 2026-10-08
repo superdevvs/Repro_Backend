@@ -208,8 +208,11 @@ class ShootIssuesController extends Controller
             ->where('admin_issue_notes', 'like', '%[Request from%')
             ->with(['client:id,name']);
 
-        if (! $canReview && $user->role === 'editor') {
-            $this->shootEditingAssignmentService->scopeAssignedToEditor($shootsQuery, $user->id);
+        $sharedEditorInbox = ! $canReview && $this->shootAuthorizationSupport->hasRole($user, ['editor']);
+        if ($sharedEditorInbox) {
+            // Role-assigned editor requests belong to the shared team inbox.
+            // Individual shoot/media access is still enforced in the payload.
+            $shootsQuery->where('status', '!=', Shoot::STATUS_IMPORT_DRAFT);
         } elseif (! $canReview && $user->role === 'photographer') {
             $shootsQuery->where(function ($query) use ($user) {
                 $query->where('photographer_id', $user->id)
@@ -232,7 +235,7 @@ class ShootIssuesController extends Controller
             ])));
         }
 
-        $shoots = $this->shootAuthorizationSupport->scopeAccessibleShootRequests($shootsQuery, $user)->get();
+        $shoots = ($sharedEditorInbox ? $shootsQuery : $this->shootAuthorizationSupport->scopeAccessibleShootRequests($shootsQuery, $user))->get();
 
         return response()->json([
             'data' => $this->shootIssueParsingService->parseClientRequests($shoots, $user),
