@@ -29,10 +29,12 @@ class WorkspaceMediaService
             if (! empty($item['stackFileIds'])) {
                 $hdr = app(WorkspaceHdrService::class);
                 $merged = $hdr->describe($item['stackFileIds'], $user, $teamId);
-                if ($merged['id'] !== $item['id'] || (! empty($item['shootId']) && (int) $item['shootId'] !== $merged['shootId']) || $hdr->status($merged)['status'] !== 'ready') {
+                if (! $hdr->matchesSource($item, $merged) || (! empty($item['shootId']) && (int) $item['shootId'] !== $merged['shootId']) || $hdr->status($merged)['status'] !== 'ready') {
                     throw ValidationException::withMessages(['media' => 'The merged HDR image is not ready or its raw stack has changed. Reopen the picker.']);
                 }
-                $result[] = $merged;
+                // Existing outputs reference the saved source ID; preserve it for
+                // compatible legacy merges while new selections use the stable ID.
+                $result[] = array_replace($merged, ['id' => $item['id']]);
             } elseif (! empty($item['fileId'])) {
                 $file = ShootFile::with('shoot')->findOrFail($item['fileId']);
                 $shoot = $file->shoot;

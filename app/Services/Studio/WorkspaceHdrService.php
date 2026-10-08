@@ -4,7 +4,9 @@ namespace App\Services\Studio;
 
 use App\Jobs\MergeStudioHdr;
 use App\Models\ShootFile;
+use App\Models\StudioWorkspace;
 use App\Models\User;
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Validator;
@@ -33,11 +35,78 @@ class WorkspaceHdrService
                 throw ValidationException::withMessages(['fileIds' => 'Every exposure in this HDR stack must be available before merging.']);
             }
         }
-        $versions = $files->map(fn ($file) => [$file->id, $file->updated_at?->format('U.u'), $file->storage_path, $file->path, $file->dropbox_path, $file->file_size, $file->bracket_group, $file->sequence])->all();
-        $key = hash('sha256', json_encode(['hdr-v1', $versions]));
+        // Preview generation, scan metadata and storage promotion touch updated_at
+        // without replacing a source. Published replacements increment content_version.
+        $versions = $files->map(fn ($file) => [$file->id, $file->content_version ?: 1, $file->file_size, $file->shoot_service_id, $file->bracket_group, $file->sequence])->all();
+        $key = hash('sha256', json_encode(['hdr-v2', $versions]));
         $url = url('/api/studio/workspaces/sources/hdr/preview').'?'.http_build_query(['fileIds' => $ids]);
 
-        return ['id' => 'hdr:'.$key, 'stackFileIds' => $ids, 'shootId' => $first->shoot_id, 'name' => pathinfo($first->filename, PATHINFO_FILENAME).'-HDR.jpg', 'kind' => 'image', 'url' => $url, 'thumbnailUrl' => $url];
+        $media = ['id' => 'hdr:'.$key, 'stackFileIds' => $ids, 'shootId' => $first->shoot_id, 'name' => pathinfo($first->filename, PATHINFO_FILENAME).'-HDR.jpg', 'kind' => 'image', 'url' => $url, 'thumbnailUrl' => $url];
+        if (! Storage::disk('studio_hdr')->exists($this->path($media))) {
+            $legacy = $this->legacyCache($files);
+            if ($legacy) {
+                $disk = Storage::disk('studio_hdr');
+                $temporary = $this->path($media).'.'.bin2hex(random_bytes(8)).'.tmp';
+                try {
+                    if (! $disk->copy($this->path($legacy), $temporary) || ! $disk->move($temporary, $this->path($media))) {
+                        throw new \RuntimeException('The existing HDR merge could not be recovered.');
+                    }
+                } finally {
+                    $disk->delete($temporary);
+                }
+            }
+        }
+
+        return $media;
+    }
+
+    public function matchesSource(array $media, array $current): bool
+    {
+        if (($media['id'] ?? '') === $current['id']) {
+            return true;
+        }
+        $files = ShootFile::whereIn('id', $current['stackFileIds'])->orderBy('id')->get();
+
+        return ($files->every(fn ($file) => ($file->content_version ?: 1) === 1) && ($media['id'] ?? '') === $this->legacyId($files))
+            || $this->legacyCache($files, $media['id'] ?? '') !== null;
+    }
+
+    private function legacyId(Collection $files): string
+    {
+        $versions = $files->map(fn ($file) => [$file->id, $file->updated_at?->format('U.u'), $file->storage_path, $file->path, $file->dropbox_path, $file->file_size, $file->bracket_group, $file->sequence])->all();
+
+        return 'hdr:'.hash('sha256', json_encode(['hdr-v1', $versions]));
+    }
+
+    /** Recover only a known merge of original, never-replaced exposures. */
+    private function legacyCache(Collection $files, ?string $reference = null): ?array
+    {
+        $disk = Storage::disk('studio_hdr');
+        if ($files->contains(fn ($file) => ($file->content_version ?: 1) !== 1)) {
+            return null;
+        }
+        $exact = ['id' => $this->legacyId($files)];
+        if (($reference === null || $reference === $exact['id']) && $disk->exists($this->path($exact))) {
+            return $exact;
+        }
+        $ids = $files->pluck('id')->all();
+        $latestUpload = $files->max('uploaded_at');
+        $workspaces = StudioWorkspace::where('media', 'like', '%'.($reference ?: $ids[0]).'%')->orderByDesc('created_at')->cursor();
+        foreach ($workspaces as $workspace) {
+            if ($latestUpload && $workspace->created_at->lt($latestUpload)) {
+                continue;
+            }
+            foreach ($workspace->media ?? [] as $item) {
+                $stack = $item['stackFileIds'] ?? [];
+                sort($stack);
+                if ($stack === $ids && preg_match('/^hdr:[a-f0-9]{64}$/', $item['id'] ?? '')
+                    && ($reference === null || $reference === $item['id']) && $disk->exists($this->path($item))) {
+                    return $item;
+                }
+            }
+        }
+
+        return null;
     }
 
     public function path(array $media): string
@@ -78,7 +147,7 @@ class WorkspaceHdrService
     public function process(array $media, int $userId, int $teamId): void
     {
         $current = $this->describe($media['stackFileIds'], User::findOrFail($userId), $teamId);
-        if ($current['id'] !== $media['id']) {
+        if (! $this->matchesSource($media, $current)) {
             throw ValidationException::withMessages(['media' => 'The raw stack changed. Reopen the picker to merge it again.']);
         }
         if ($this->status($current)['status'] === 'ready') {

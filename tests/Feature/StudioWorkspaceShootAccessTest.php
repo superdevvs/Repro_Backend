@@ -245,6 +245,77 @@ class StudioWorkspaceShootAccessTest extends TestCase
         Queue::assertNotPushed(\App\Jobs\MergeStudioHdr::class);
     }
 
+    public function test_hdr_cache_survives_metadata_and_storage_promotion_but_invalidates_replaced_content(): void
+    {
+        $admin = User::factory()->create(['role' => 'superadmin']);
+        $shoot = Shoot::factory()->create();
+        $files = collect([1, 2, 3])->map(fn ($sequence) => $this->file($shoot, $admin, ['bracket_group' => 1, 'sequence' => $sequence, 'content_version' => 1]));
+        Sanctum::actingAs($admin);
+        $input = ['fileIds' => $files->pluck('id')->all()];
+        $service = app(\App\Services\Studio\WorkspaceHdrService::class);
+        $media = $service->describe($input['fileIds'], $admin, $admin->id);
+        $jpeg = UploadedFile::fake()->image('merged.jpg', 640, 480)->getContent();
+        Storage::disk('studio_hdr')->put($service->path($media), $jpeg);
+        $files->first()->update(['is_favorite' => true, 'thumbnail_path' => 'new-thumb.jpg', 'storage_path' => 'promoted-original.jpg', 'updated_at' => now()->addMinute()]);
+        $this->getJson(self::SOURCES.'/hdr?'.http_build_query($input))->assertOk()->assertJsonPath('data.media.id', $media['id'])->assertJsonPath('data.status', 'ready');
+        $this->postJson(self::SOURCES.'/hdr', $input)->assertOk();
+        Queue::assertNotPushed(\App\Jobs\MergeStudioHdr::class);
+        $files->first()->update(['content_version' => 2]);
+        $response = $this->getJson(self::SOURCES.'/hdr?'.http_build_query($input))->assertOk()->assertJsonPath('data.status', 'pending');
+        $this->assertNotSame($media['id'], $response->json('data.media.id'));
+        $this->assertFalse($service->matchesSource($media, $response->json('data.media')));
+    }
+
+    public function test_existing_workspace_hdr_is_recovered_without_merge_and_keeps_saved_media_identity(): void
+    {
+        $admin = User::factory()->create(['role' => 'superadmin']);
+        $shoot = Shoot::factory()->create();
+        $files = collect([1, 2, 3])->map(fn ($sequence) => $this->file($shoot, $admin, ['bracket_group' => 1, 'sequence' => $sequence, 'content_version' => 1]));
+        $versions = $files->map(fn ($file) => [$file->id, $file->updated_at?->format('U.u'), $file->storage_path, $file->path, $file->dropbox_path, $file->file_size, $file->bracket_group, $file->sequence])->all();
+        $legacy = ['id' => 'hdr:'.hash('sha256', json_encode(['hdr-v1', $versions])), 'stackFileIds' => $files->pluck('id')->all(), 'shootId' => $shoot->id, 'name' => 'original-HDR.jpg', 'kind' => 'image'];
+        $service = app(\App\Services\Studio\WorkspaceHdrService::class);
+        $jpeg = UploadedFile::fake()->image('merged.jpg', 640, 480)->getContent();
+        Storage::disk('studio_hdr')->put($service->path($legacy), $jpeg);
+        StudioWorkspace::create(['id' => (string) \Illuminate\Support\Str::uuid(), 'team_id' => $admin->id, 'created_by' => $admin->id, 'name' => 'Saved HDR', 'preset_id' => 'listing-ready', 'media' => [$legacy], 'config' => [], 'status' => 'completed']);
+        $files->first()->update(['thumbnail_path' => 'new-thumb.jpg', 'updated_at' => now()->addMinute()]);
+        Sanctum::actingAs($admin);
+        $current = $service->describe($legacy['stackFileIds'], $admin, $admin->id);
+        $this->assertNotSame($legacy['id'], $current['id']);
+        $this->assertSame($jpeg, $this->get($current['url'])->assertOk()->getContent());
+        $this->assertSame(0660, fileperms(Storage::disk('studio_hdr')->path($service->path($current))) & 0777);
+        $authorized = app(\App\Services\Studio\WorkspaceMediaService::class)->authorize([$legacy], $admin, $admin->id);
+        $this->assertSame($legacy['id'], $authorized[0]['id']);
+        $this->assertSame($jpeg, app(\App\Services\Studio\WorkspaceMediaService::class)->bytes($authorized[0]));
+        $this->postJson(self::SOURCES.'/hdr', ['fileIds' => $legacy['stackFileIds']])->assertOk()->assertJsonPath('data.status', 'ready');
+        Queue::assertNotPushed(\App\Jobs\MergeStudioHdr::class);
+        $files->first()->update(['content_version' => 2]);
+        $changed = $service->describe($legacy['stackFileIds'], $admin, $admin->id);
+        $this->assertSame('pending', $service->status($changed)['status']);
+        $this->assertFalse($service->matchesSource($legacy, $changed));
+        $files->last()->update(['scan_status' => ShootFile::SCAN_STATUS_QUARANTINED]);
+        $this->getJson($current['url'])->assertUnprocessable();
+    }
+
+    public function test_queued_legacy_hdr_job_finishes_when_only_preview_metadata_changes_during_merge(): void
+    {
+        $admin = User::factory()->create(['role' => 'superadmin']);
+        $shoot = Shoot::factory()->create();
+        $files = collect([1, 2, 3])->map(fn ($sequence) => $this->file($shoot, $admin, ['bracket_group' => 1, 'sequence' => $sequence, 'content_version' => 1]));
+        $versions = $files->map(fn ($file) => [$file->id, $file->updated_at?->format('U.u'), $file->storage_path, $file->path, $file->dropbox_path, $file->file_size, $file->bracket_group, $file->sequence])->all();
+        $legacy = ['id' => 'hdr:'.hash('sha256', json_encode(['hdr-v1', $versions])), 'stackFileIds' => $files->pluck('id')->all()];
+        $jpeg = UploadedFile::fake()->image('merged.jpg', 640, 480)->getContent();
+        $this->mock(\App\Services\Studio\HdrExposureFusion::class)->shouldReceive('merge')->once()->andReturnUsing(function () use ($files, $jpeg) {
+            $files->first()->update(['thumbnail_path' => 'new-thumb.jpg', 'updated_at' => now()->addMinute()]);
+
+            return $jpeg;
+        });
+        $service = app(\App\Services\Studio\WorkspaceHdrService::class);
+        $service->process($legacy, $admin->id, $admin->id);
+        $current = $service->describe($legacy['stackFileIds'], $admin, $admin->id);
+        $this->assertSame('ready', $service->status($current)['status']);
+        $this->assertSame($jpeg, Storage::disk('studio_hdr')->get($service->path($current)));
+    }
+
     public function test_hdr_worker_caches_the_merged_image_and_provider_receives_only_that_image(): void
     {
         $admin = User::factory()->create(['role' => 'superadmin']);
