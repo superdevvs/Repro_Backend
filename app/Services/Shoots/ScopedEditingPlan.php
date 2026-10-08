@@ -62,7 +62,8 @@ class ScopedEditingPlan
         $present = $this->intakeFiles($shoot)->map(fn ($file) => $assignments->getFileLane($file))->unique();
         $stage = $shoot->workflow_status ?: $shoot->status;
         $sent = match (true) {
-            in_array($stage, [Shoot::STATUS_SCHEDULED, Shoot::STATUS_UPLOADED], true) => [],
+            in_array($stage, [Shoot::STATUS_SCHEDULED, Shoot::STATUS_UPLOADED], true)
+                || ($stage === Shoot::STATUS_REQUESTED && $user?->role === 'editing_manager') => [],
             $stage !== Shoot::STATUS_EDITING => ['photo', 'video'],
             default => $this->sentLanes($shoot),
         };
@@ -76,7 +77,8 @@ class ScopedEditingPlan
     private function externalAssignments(Shoot $shoot, ?User $user): Collection
     {
         if (!$user || !in_array($user->role, ['admin', 'superadmin', 'editing_manager'], true)
-            || !in_array($shoot->workflow_status ?: $shoot->status, [Shoot::STATUS_SCHEDULED, Shoot::STATUS_UPLOADED, Shoot::STATUS_EDITING], true)) {
+            || (!in_array($shoot->workflow_status ?: $shoot->status, [Shoot::STATUS_SCHEDULED, Shoot::STATUS_UPLOADED, Shoot::STATUS_EDITING], true)
+                && !(($shoot->workflow_status ?: $shoot->status) === Shoot::STATUS_REQUESTED && $user->role === 'editing_manager'))) {
             return collect();
         }
 

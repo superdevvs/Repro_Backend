@@ -34,7 +34,9 @@ class ScopedEditingDispatch
             // and submits normally. Per-file human tasks remain only for revisions after editing.
             $external = collect($plan['items'])->contains('source', 'external');
             $intakeStage = in_array($locked->workflow_status ?: $locked->status, [Shoot::STATUS_UPLOADED, Shoot::STATUS_EDITING], true)
-                || ($external && ($locked->workflow_status ?: $locked->status) === Shoot::STATUS_SCHEDULED);
+                || ($external && ($locked->workflow_status ?: $locked->status) === Shoot::STATUS_SCHEDULED)
+                || (($locked->workflow_status ?: $locked->status) === Shoot::STATUS_REQUESTED
+                    && $user->role === 'editing_manager' && $plan['destination'] === 'human');
             $human = collect($plan['items'])->where('destination', 'human');
             foreach ($plan['items'] as $item) {
                 if ($intakeStage && $item['destination'] === 'human') continue;
@@ -63,7 +65,8 @@ class ScopedEditingDispatch
             : $scopeLanes;
         $tracked = app(ShootEditingAssignmentService::class)->getTrackedServiceAssignments($shoot);
         $planned = collect($plan['items'])->where('destination', 'human');
-        $external = $planned->contains('source', 'external');
+        $external = $planned->contains('source', 'external')
+            || (($shoot->workflow_status ?: $shoot->status) === Shoot::STATUS_REQUESTED && $user->role === 'editing_manager');
         if ($external && $humanLanes === null) $humanLanes = $planned->pluck('lane')->unique()->values()->all();
         $laneEditors = [];
         foreach ([ShootEditingAssignmentService::LANE_PHOTO, ShootEditingAssignmentService::LANE_VIDEO] as $lane) {

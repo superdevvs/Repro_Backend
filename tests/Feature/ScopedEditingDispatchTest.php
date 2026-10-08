@@ -99,11 +99,68 @@ class ScopedEditingDispatchTest extends TestCase
     {
         $this->photo->delete();
         $this->video->delete();
-        foreach (['cancelled', 'on_hold', 'delivered', 'requested'] as $status) {
+        foreach (['cancelled', 'on_hold', 'delivered'] as $status) {
             $this->shoot->update(['status' => $status, 'workflow_status' => $status]);
             $this->send(['mode' => 'editor', 'scope' => 'videos', 'source_versions' => [], 'request_id' => (string) Str::uuid()])->assertStatus(422);
             $this->assertSame($status, $this->shoot->fresh()->workflow_status);
         }
+    }
+
+    public function test_editing_manager_can_send_requested_external_video_to_the_normal_editor_queue(): void
+    {
+        $this->photo->delete();
+        $this->video->delete();
+        $this->shoot->update(['status' => 'requested', 'workflow_status' => 'requested', 'photos_uploaded_at' => null]);
+        DB::table('shoot_service')->where('shoot_id', $this->shoot->id)->update(['editor_id' => null, 'video_editor_id' => null]);
+        $this->getJson('/api/shoots/'.$this->shoot->id.'/editing-plan')->assertOk()
+            ->assertJsonPath('data.lanes.video.available', true)->assertJsonPath('data.lanes.video.sent', false);
+        $data = ['mode' => 'editor', 'scope' => 'videos', 'source_versions' => [], 'request_id' => (string) Str::uuid()];
+        $id = $this->send($data)->assertAccepted()->json('data.dispatchId');
+        $this->send($data)->assertAccepted()->assertJsonPath('data.dispatchId', $id);
+        $this->assertSame('editing', $this->shoot->fresh()->workflow_status);
+        $this->assertNull($this->shoot->fresh()->photos_uploaded_at);
+        $service = DB::table('shoot_service')->where('shoot_id', $this->shoot->id)->first();
+        $this->assertSame($this->videoEditor->id, $service->video_editor_id);
+        $this->assertNull($service->editor_id);
+        $this->assertSame(0, $this->shoot->files()->count());
+        $this->assertSame(0, ShootEditingDispatchItem::where('dispatch_id', $id)->count());
+        $this->actingAs($this->videoEditor)->getJson('/api/shoots?tab=completed&dashboard_open=true&no_cache=true')
+            ->assertOk()->assertJsonPath('data.0.id', $this->shoot->id);
+    }
+
+    public function test_requested_external_handoff_is_not_enabled_for_other_staff_roles(): void
+    {
+        $this->photo->delete();
+        $this->video->delete();
+        $this->shoot->update(['status' => 'requested', 'workflow_status' => 'requested']);
+        foreach (['admin', 'superadmin'] as $role) {
+            $this->actingAs(User::factory()->create(['role' => $role]));
+            $this->send(['mode' => 'editor', 'scope' => 'videos', 'source_versions' => [], 'request_id' => (string) Str::uuid()])->assertStatus(422);
+            $this->assertSame('requested', $this->shoot->fresh()->workflow_status);
+        }
+    }
+
+    public function test_requested_whole_shoot_handoff_assigns_both_external_lanes(): void
+    {
+        $this->photo->delete();
+        $this->video->delete();
+        $this->shoot->update(['status' => 'requested', 'workflow_status' => 'requested', 'photos_uploaded_at' => null]);
+        DB::table('shoot_service')->where('shoot_id', $this->shoot->id)->update(['editor_id' => null, 'video_editor_id' => null]);
+        $this->send(['mode' => 'editor', 'scope' => 'whole', 'source_versions' => [], 'request_id' => (string) Str::uuid()])->assertAccepted();
+        $service = DB::table('shoot_service')->where('shoot_id', $this->shoot->id)->first();
+        $this->assertSame($this->photoEditor->id, $service->editor_id);
+        $this->assertSame($this->videoEditor->id, $service->video_editor_id);
+        $this->assertSame('editing', $this->shoot->fresh()->workflow_status);
+        $this->assertNull($this->shoot->fresh()->photos_uploaded_at);
+    }
+
+    public function test_requested_handoff_with_dashboard_sources_uses_normal_intake_instead_of_revision_tasks(): void
+    {
+        $this->shoot->update(['status' => 'requested', 'workflow_status' => 'requested', 'photos_uploaded_at' => null]);
+        $id = $this->send($this->payload(['mode' => 'editor', 'scope' => 'videos']))->assertAccepted()->json('data.dispatchId');
+        $this->assertSame('editing', $this->shoot->fresh()->workflow_status);
+        $this->assertSame(0, ShootEditingDispatchItem::where('dispatch_id', $id)->count());
+        $this->assertNull($this->shoot->fresh()->photos_uploaded_at);
     }
 
     public function test_non_staff_cannot_send_external_media_to_editors(): void
