@@ -201,6 +201,7 @@ class ShootHistoryService
         }
 
         app(ShootSalesRepFilter::class)->apply($query, $this->normalizeArrayQuery($request, 'sales_rep_id'));
+        app(ShootPaymentFilter::class)->apply($query, $request->query('payment_status'));
 
         $photographerIds = array_merge(
             $this->normalizeArrayQuery($request, 'photographer_id'),
