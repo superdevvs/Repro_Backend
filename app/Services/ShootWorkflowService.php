@@ -203,11 +203,7 @@ class ShootWorkflowService
             abort_unless($user && in_array($user->role, ['admin', 'superadmin', 'editing_manager'], true)
                 && $humanLanes !== null && $humanLanes !== [] && $aiLanes === [], 403);
         }
-        $externalIntake = $externalMedia && (
-            ($shoot->workflow_status ?: $shoot->status) === self::STATUS_SCHEDULED
-            || (($shoot->workflow_status ?: $shoot->status) === self::STATUS_REQUESTED && $user?->role === 'editing_manager')
-        );
-        if (! $isAlreadyEditing && !$externalIntake) {
+        if (! $isAlreadyEditing && !($externalMedia && ($shoot->workflow_status ?: $shoot->status) === self::STATUS_SCHEDULED)) {
             $this->validateTransition($shoot, self::STATUS_EDITING);
         }
 
