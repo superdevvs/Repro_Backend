@@ -320,13 +320,13 @@ class ShootAuthorizationSupport
      */
     public function canScheduleShoot(Shoot $shoot, ?User $user): bool
     {
-        if ($this->hasRole($user, ['editor'])
-            && ! app(ShootEditingAssignmentService::class)->editorHasAssignment($shoot, $user)) {
-            return false;
-        }
         if (app(ShootManagementAccess::class)->isSalesRep($user)) {
             return app(ShootManagementAccess::class)->canEdit($shoot, $user)
                 && app(ShootManagementAccess::class)->can($user, 'manage');
+        }
+        if ($this->hasRole($user, ['editor'])
+            && ! app(ShootEditingAssignmentService::class)->editorHasAssignment($shoot, $user)) {
+            return false;
         }
         if (! $user || ! $this->canViewShootDetails($shoot, $user)) {
             return false;
