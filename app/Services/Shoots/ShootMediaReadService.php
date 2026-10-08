@@ -111,6 +111,7 @@ class ShootMediaReadService
                 (string) $shoot->payment_status,
                 (string) $shoot->delivery_status,
                 (string) $mediaRevision,
+                md5((string) $shoot->admin_issue_notes),
             ])
         );
 
@@ -152,9 +153,6 @@ class ShootMediaReadService
         $files = $filesQuery->get();
         if ($type === 'raw') {
             $files = $files->filter(fn (ShootFile $file) => $file->isRequiredForEditing())->values();
-        }
-        if ($user && $user->role === 'editor') {
-            $files = app(ShootEditingAssignmentService::class)->filterFilesForEditor($files, $shoot, $user);
         }
         if ($user && $user->role === 'photographer') {
             $files = $this->filterFilesForPhotographer($files, $shoot, $user);
@@ -322,11 +320,8 @@ class ShootMediaReadService
             $filesQuery->whereIn('workflow_stage', [ShootFile::STAGE_COMPLETED, ShootFile::STAGE_VERIFIED]);
         }
 
-        $files = app(ShootEditingAssignmentService::class)->filterFilesForEditor(
-            $filesQuery->get(),
-            $shoot,
-            $user
-        );
+        $files = $filesQuery->get()->filter(fn (ShootFile $file) =>
+            $this->authorizationSupport->canInteractWithShootMediaFile($shoot, $file, $user))->values();
 
         if ($normalizedType === 'raw') {
             $files = $files->filter(fn (ShootFile $file) => $file->isRequiredForEditing())->values();
@@ -411,6 +406,9 @@ class ShootMediaReadService
         }
 
         $actor = auth()->user();
+        if ($file->shoot) {
+            $data['has_open_request'] = app(ShootEditorRequestAccess::class)->hasOpenRequest($file->shoot, $file);
+        }
         if ($actor && $file->shoot) {
             // Desktop + mobile viewer/lightbox trust this server flag. Editing
             // managers may delete before and after delivery; editors stay gated

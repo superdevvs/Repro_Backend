@@ -139,6 +139,11 @@ class ShootIssuesController extends Controller
         $visibleIssue = collect($this->shootIssueParsingService->parseShootRequests($shoot, $request->user()))
             ->firstWhere('id', (string) $issueId);
         abort_unless($visibleIssue, 404, 'Request not found');
+        if ($this->shootAuthorizationSupport->hasRole($request->user(), ['editor'])
+            && ! $this->shootEditingAssignmentService->editorHasAssignment($shoot, $request->user())) {
+            abort_unless(app(\App\Services\Shoots\ShootEditorRequestAccess::class)
+                ->allowsRequest($shoot, (string) $issueId, $request->user()), 403, 'Forbidden');
+        }
         if (! $canTriage) {
             abort_if(! empty($visibleIssue['assignedToRole'])
                 && ! $this->shootAuthorizationSupport->hasRole($request->user(), [$visibleIssue['assignedToRole']]), 403, 'Forbidden');
@@ -160,8 +165,7 @@ class ShootIssuesController extends Controller
 
         return response()->json([
             'message' => 'Request updated successfully',
-            'data' => collect($this->shootIssueParsingService->parseShootRequests($shoot->fresh(), $request->user()))
-                ->firstWhere('id', (string) $issueId),
+            'data' => $updatedRequest,
         ]);
     }
 

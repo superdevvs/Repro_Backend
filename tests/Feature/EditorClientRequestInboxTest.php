@@ -15,7 +15,7 @@ class EditorClientRequestInboxTest extends TestCase
 {
     use RefreshDatabase;
 
-    public function test_editors_see_the_shared_editor_queue_without_unrelated_media_or_write_access(): void
+    public function test_editors_see_the_shared_editor_queue_with_tagged_media_and_request_actions_only(): void
     {
         Queue::fake();
         $editor = User::factory()->create(['role' => 'editor']);
@@ -37,13 +37,15 @@ class EditorClientRequestInboxTest extends TestCase
         $rows = collect($response->json('data'))->keyBy('id');
         $this->assertTrue($rows['own']['canOpenShoot']);
         $this->assertTrue($rows['own']['canUpdate']);
-        $this->assertFalse($rows['team']['canOpenShoot']);
-        $this->assertFalse($rows['team']['canUpdate']);
-        $this->assertSame([], $rows['team']['mediaFiles']);
-        $this->assertSame([], $rows['team']['mediaIds']);
+        $this->assertTrue($rows['team']['canOpenShoot']);
+        $this->assertTrue($rows['team']['canUpdate']);
+        $this->assertCount(1, $rows['team']['mediaFiles']);
+        $this->assertTrue($rows['team']['mediaFiles'][0]['canDownload']);
+        $this->assertSame([(string) $file->id], $rows['team']['mediaIds']);
         $this->assertFalse($rows['specific']['canUpdate']);
-        $this->getJson("/api/shoots/{$other->id}/issues")->assertForbidden();
-        $this->patchJson("/api/shoots/{$other->id}/issues/team", ['status' => 'resolved'])->assertForbidden();
+        $this->getJson("/api/shoots/{$other->id}/issues")->assertOk();
+        $this->getJson("/api/shoots/{$other->id}")->assertOk();
+        $this->patchJson("/api/shoots/{$other->id}/issues/team", ['status' => 'resolved'])->assertOk();
         $this->postJson("/api/shoots/{$other->id}/issues/team/assign", ['assignedToRole' => 'editor'])->assertForbidden();
 
         Sanctum::actingAs($otherEditor);

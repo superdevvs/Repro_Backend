@@ -207,7 +207,8 @@ class ShootAuthorizationSupport
         }
 
         if ($this->hasRole($user, ['editor'])) {
-            return app(ShootEditingAssignmentService::class)->editorHasAssignment($shoot, $user);
+            return app(ShootEditingAssignmentService::class)->editorHasAssignment($shoot, $user)
+                || count(app(ShootEditorRequestAccess::class)->requests($shoot, $user)) > 0;
         }
 
         if ($this->isClientUser($user)) {
@@ -319,6 +320,10 @@ class ShootAuthorizationSupport
      */
     public function canScheduleShoot(Shoot $shoot, ?User $user): bool
     {
+        if ($this->hasRole($user, ['editor'])
+            && ! app(ShootEditingAssignmentService::class)->editorHasAssignment($shoot, $user)) {
+            return false;
+        }
         if (app(ShootManagementAccess::class)->isSalesRep($user)) {
             return app(ShootManagementAccess::class)->canEdit($shoot, $user)
                 && app(ShootManagementAccess::class)->can($user, 'manage');
@@ -563,7 +568,8 @@ class ShootAuthorizationSupport
         }
 
         if ($this->hasRole($user, ['editor'])) {
-            return app(ShootEditingAssignmentService::class)->canEditorAccessFile($shoot, $file, $user);
+            return app(ShootEditingAssignmentService::class)->canEditorAccessFile($shoot, $file, $user)
+                || app(ShootEditorRequestAccess::class)->allowsFile($shoot, $file, $user);
         }
 
         if ($this->hasRole($user, ['photographer'])) {
@@ -596,7 +602,8 @@ class ShootAuthorizationSupport
         }
 
         if ($this->hasRole($user, ['editor'])) {
-            return $this->canEditorDownloadRawFile($shoot, $file, $user);
+            return $this->canEditorDownloadRawFile($shoot, $file, $user)
+                || app(ShootEditorRequestAccess::class)->allowsFile($shoot, $file, $user);
         }
 
         if ($this->hasRole($user, ['photographer'])) {

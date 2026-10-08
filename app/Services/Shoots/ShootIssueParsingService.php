@@ -19,6 +19,17 @@ class ShootIssueParsingService
     ) {
     }
 
+    /** Parse identifiers and assignments without invoking authorization or exposing media URLs. */
+    public function requestEntries(Shoot $shoot): array
+    {
+        $requests = [];
+        foreach ($this->splitRequestEntries($shoot->admin_issue_notes) as $index => $note) {
+            $request = $this->parseRequestEntry($shoot, $note, $index);
+            if ($request && ! $this->isAutoExpiredResolvedRequest($request, $shoot)) $requests[] = $request;
+        }
+        return $requests;
+    }
+
     public function parseShootRequests(Shoot $shoot, ?User $viewer = null, bool $sharedEditorInbox = false): array
     {
         $paymentStatus = $shoot->payment_status;
@@ -84,6 +95,8 @@ class ShootIssueParsingService
                     $mediaFiles[] = [
                         'id' => (string) $file->id,
                         'filename' => $file->filename ?? $file->stored_filename ?? 'unknown',
+                        'workflowStage' => $file->workflow_stage,
+                        'canDownload' => $viewer && $authorization->canDownloadShootMediaFile($shoot, $file, $viewer),
                         'url' => $fileUrl,
                         'thumbnail' => $thumbnailUrl,
                     ];
@@ -119,6 +132,9 @@ class ShootIssueParsingService
                 'canOpenShoot' => ! $viewer || $authorization->canViewShootDetails($shoot, $viewer),
                 'canUpdate' => ! $viewer || $authorization->canTriageShootRequests($shoot, $viewer)
                     || ($authorization->canResolveShootIssues($shoot, $viewer)
+                        && (! $authorization->hasRole($viewer, ['editor'])
+                            || app(ShootEditingAssignmentService::class)->editorHasAssignment($shoot, $viewer)
+                            || app(ShootEditorRequestAccess::class)->allowsRequest($shoot, $parsedRequest['id'], $viewer))
                         && (! $assignedToRole || $authorization->hasRole($viewer, [$assignedToRole]))
                         && (! $assignedToUserId || (string) $assignedToUserId === (string) $viewer->id)
                         && count($mediaFiles) === count(array_unique($parsedRequest['mediaIds']))),
@@ -252,7 +268,7 @@ class ShootIssueParsingService
         $shoot->save();
 
         return collect($this->parseShootRequests($shoot->fresh(), $viewer))
-            ->firstWhere('id', $issueId);
+            ->firstWhere('id', $issueId) ?? ['id' => $issueId, 'shootId' => (string) $shoot->id, 'status' => $status];
     }
 
     public function assignIssueRole(Shoot $shoot, string $issueId, string $assignedTo, ?int $assignedToUserId = null, ?User $viewer = null): ?array
