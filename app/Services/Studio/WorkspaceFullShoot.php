@@ -48,6 +48,7 @@ class WorkspaceFullShoot
             if (in_array($group['mediaId'], $workspace->operation['completed'] ?? [], true)) {
                 $submitted++;
                 $complete++;
+
                 continue;
             }
             $key = 'hdr-'.hash('sha256', implode('|', $group['sourceMediaIds']));
@@ -94,10 +95,15 @@ class WorkspaceFullShoot
                     }
                     $uploads[$id] = $upload['id'];
                 }
-                $enhance = $this->photos->once($state, $key.'-enhance', fn () => $client->createEnhance([
+                $payload = [
                     'listing_id' => $listing['id'], 'upload_ids' => array_values($uploads),
                     'input_preview_image_id' => $uploads[$group['mediaId']], 'shot_type' => $scene,
-                ]));
+                ];
+                $preferences = PhotoPresetOptions::fotello($workspace->config['adjustments'] ?? []);
+                if ($preferences) {
+                    $payload['preferences'] = $preferences;
+                }
+                $enhance = $this->photos->once($state, $key.'-enhance', fn () => $client->createEnhance($payload));
                 $state->put($key.'-submitted-at', time());
             }
             if (empty($enhance['id'])) {
@@ -115,11 +121,12 @@ class WorkspaceFullShoot
                     $state->put($key.'-submitted-at', time());
                     throw new StudioProviderException('Fotello is taking longer than expected. Retry to check the existing HDR jobs.');
                 }
+
                 continue;
             }
             $enhanced = $client->downloadBytes($result['enhanced_image_url']);
             $prompt = trim((string) ($workspace->config['prompt'] ?? ''));
-            $prompt .= ' Requested visual adjustments: '.json_encode($workspace->config['adjustments'] ?? []).'. Preserve the actual property structure, materials and photorealism.';
+            $prompt .= ' Preserve the actual property structure, materials and photorealism.';
             $enhanced = app(WorkspaceImageOperations::class)->refineEnhanced($workspace, $operationId, $items[$group['mediaId']], $enhanced, $prompt);
             $bytes = (string) ImageManager::gd()->read($enhanced)->toJpeg(96);
             $outputKey = $operationId.'-'.$group['mediaId'];
@@ -149,6 +156,7 @@ class WorkspaceFullShoot
         $state->put('full-shoot-progress', ['total' => count($groups), 'submitted' => $submitted, 'completed' => $complete,
             'phase' => $submitted < count($groups) ? 'submitting' : 'generating',
             'progress' => (int) round((20 * $submitted + 75 * $complete) / max(1, count($groups)))]);
+
         return $complete === count($groups);
     }
 }

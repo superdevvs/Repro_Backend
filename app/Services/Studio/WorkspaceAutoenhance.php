@@ -109,20 +109,11 @@ class WorkspaceAutoenhance
     private function payload(StudioWorkspace $workspace, array $item, string $service): array
     {
         $options = $workspace->config['adjustments'] ?? [];
-        $payload = [
-            'image_name' => 'photo-'.substr(hash('sha256', $item['id']), 0, 24).'.jpg',
-            'enhance' => $service !== 'upscale',
-            'lens_correction' => $service !== 'upscale' && ($options['lensCorrection'] ?? true),
-            'vertical_correction' => $service !== 'upscale' && ($service === 'perspective-correction' || ($options['verticalCorrection'] ?? true)),
-            'sky_replacement' => $service === 'sky-replacement' || ($options['skyReplacement'] ?? false),
-            'upscale' => $service === 'upscale',
-            'metadata' => ['workspace_id' => $workspace->id, 'operation_id' => $workspace->operation['id'], 'media_id' => $item['id']],
-        ];
-        if ($service === 'green-grass') {
-            $payload['restage'] = ['grass' => 'GREEN'];
-        }
 
-        return $payload;
+        return array_merge(PhotoPresetOptions::autoenhance($service, $options), [
+            'image_name' => 'photo-'.substr(hash('sha256', $item['id']), 0, 24).'.jpg',
+            'metadata' => ['workspace_id' => $workspace->id, 'operation_id' => $workspace->operation['id'], 'media_id' => $item['id']],
+        ]);
     }
 
     private function base(): string

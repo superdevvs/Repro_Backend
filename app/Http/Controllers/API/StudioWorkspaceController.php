@@ -2,10 +2,10 @@
 
 namespace App\Http\Controllers\API;
 
+use App\Exceptions\StudioProviderException;
 use App\Jobs\ProcessStudioWorkspace;
 use App\Models\AiReelJob;
 use App\Models\StudioWorkspace;
-use App\Exceptions\StudioProviderException;
 use App\Services\Studio\VirtualStagingOptions;
 use App\Services\Studio\VirtualStagingProcessor;
 use App\Services\Studio\WorkspaceMediaService;
@@ -36,6 +36,7 @@ class StudioWorkspaceController extends StudioController
         } else {
             $this->scopeStudioQuery($query, $request->user());
         }
+
         return response()->json(['success' => true, 'data' => $query->latest('updated_at')->limit(100)->get()->map->present()]);
     }
 
@@ -55,7 +56,7 @@ class StudioWorkspaceController extends StudioController
             $workspace = StudioWorkspace::create([
                 'team_id' => $this->scopeTeamId($request->user()), 'created_by' => $request->user()->id,
                 'request_id' => $requestId, 'name' => $data['name'], 'preset_id' => $data['presetId'],
-                'media' => $media, 'config' => $this->config($data['config'] ?? [], $media), 'status' => 'draft',
+                'media' => $media, 'config' => $this->config($data['config'] ?? [], $media, $data['presetId']), 'status' => 'draft',
             ]);
         } catch (\Illuminate\Database\QueryException $exception) {
             $existing = $requestId ? StudioWorkspace::where('created_by', $request->user()->id)->where('request_id', $requestId)->first() : null;
@@ -114,7 +115,7 @@ class StudioWorkspaceController extends StudioController
             if (array_key_exists('adjustments', $data['config'] ?? [])) {
                 $next['adjustments'] = $data['config']['adjustments'];
             }
-            $config = $this->config($next, $media);
+            $config = $this->config($next, $media, $data['presetId'] ?? $record->preset_id);
             $preparationChanged = $record->media !== $media || ($record->config['ratio'] ?? null) !== $config['ratio']
                 || collect($record->config['frames'] ?? [])->mapWithKeys(fn ($f) => [$f['mediaId'] => $f['method']])->sortKeys()->all() !== collect($config['frames'])->mapWithKeys(fn ($f) => [$f['mediaId'] => $f['method']])->sortKeys()->all();
             $reviewFields = ['reviewedOutputIds', 'reviewedFrameIds'];
@@ -147,6 +148,38 @@ class StudioWorkspaceController extends StudioController
     public function upscale(Request $request, string $workspace): JsonResponse
     {
         return $this->start($request, $workspace, 'upscale');
+    }
+
+    public function edits(Request $request, string $workspace): JsonResponse
+    {
+        return $this->start($request, $workspace, 'adjust');
+    }
+
+    public function editPreview(Request $request, string $workspace): \Illuminate\Http\Response
+    {
+        $record = $this->find($request, $workspace);
+        $this->mediaService->authorize($record->media, $request->user(), $record->team_id);
+        $data = $request->validate(['mediaId' => ['required', 'string'], 'outputId' => ['required', 'string'], 'edits' => ['required', 'array']]);
+        $recipe = \App\Services\Studio\CustomPhotoEdits::validate($data['edits']);
+        $output = collect($record->outputs ?? [])->firstWhere('id', $data['outputId']);
+        $path = $output['path'] ?? '';
+        abort_unless($output && collect($record->media)->contains('id', $data['mediaId']) && ($output['mediaId'] ?? '') === $data['mediaId'] && ($output['kind'] ?? '') === 'image' && ($output['status'] ?? '') === 'completed'
+            && str_starts_with($path, 'studio/workspaces/'.$record->id.'/') && ! str_contains($path, '..') && ! str_contains($path, '\\') && Storage::disk('public')->exists($path), 422, 'Choose an available completed photo.');
+        $bytes = Storage::disk('public')->get($path);
+        $size = @getimagesizefromstring($bytes);
+        abort_unless($size && $size[0] * $size[1] <= 40000000, 422, 'This photo exceeds the 40 megapixel editing limit.');
+        $small = (string) \Intervention\Image\ImageManager::gd()->read($bytes)->orient()->scaleDown(width: 1000, height: 1000)->toJpeg(96);
+
+        return response(app(\App\Services\Studio\CustomPhotoEdits::class)->apply($small, $recipe, app(\App\Services\Studio\WorkspacePhotoLogo::class)->bytes($record, $recipe)), 200, ['Content-Type' => 'image/jpeg', 'Cache-Control' => 'private, no-store']);
+    }
+
+    public function photoLogo(Request $request, string $workspace): JsonResponse
+    {
+        $record = $this->find($request, $workspace);
+        abort_if($record->isVideo() || $record->isBusy(), 409, 'Wait for the photo operation to finish.');
+        $data = $request->validate(['logo' => ['required', 'file', 'mimes:png,jpg,jpeg,webp', 'max:2048']]);
+
+        return response()->json(['success' => true, 'data' => app(\App\Services\Studio\WorkspacePhotoLogo::class)->store($record, $data['logo']->get())], 201);
     }
 
     public function cancel(Request $request, string $workspace): JsonResponse
@@ -213,6 +246,9 @@ class StudioWorkspaceController extends StudioController
             app(\App\Services\Shoots\ShootPhotoSet::class)->assertFullWorkspace($check);
         }
         $payload = $request->validate([
+            'edits' => [$type === 'adjust' ? 'required' : 'prohibited', 'array'],
+            'targets' => [$type === 'adjust' ? 'required' : 'prohibited', 'array', 'min:1', 'max:300'],
+            'targets.*' => ['array:mediaId,outputId'], 'targets.*.mediaId' => ['required', 'string', 'distinct'], 'targets.*.outputId' => ['required', 'string', 'max:200'],
             'requestId' => ['sometimes', 'string', 'max:64'], 'mediaId' => [in_array($type, ['revision', 'upscale'], true) ? 'required' : 'sometimes', 'string'],
             'outputId' => [$type === 'upscale' ? 'required' : 'sometimes', 'string', 'max:200'],
             'referenceMediaIds' => ['sometimes', 'array', 'max:4'], 'referenceMediaIds.*' => ['string', 'distinct', 'max:100'],
@@ -223,6 +259,16 @@ class StudioWorkspaceController extends StudioController
             'drawing' => ['nullable', 'array', 'max:20'], 'drawing.*' => ['array', 'max:200'], 'drawing.*.*' => ['array:x,y'],
             'drawing.*.*.x' => ['required', 'numeric', 'between:0,1'], 'drawing.*.*.y' => ['required', 'numeric', 'between:0,1'],
         ]);
+        if ($type === 'adjust') {
+            abort_if($record->isVideo(), 422, 'Custom edits are for photos.');
+            $payload['edits'] = \App\Services\Studio\CustomPhotoEdits::validate($payload['edits']);
+            app(\App\Services\Studio\WorkspacePhotoLogo::class)->bytes($record, $payload['edits']);
+            abort_if(count($payload['targets']) > 1 && (! empty($payload['edits']['crop']) || ! empty($payload['edits']['blur']) || ! empty($payload['edits']['marks'])), 422, 'Area selections apply to one photo at a time.');
+            foreach ($payload['targets'] as $target) {
+                $output = collect($record->outputs ?? [])->firstWhere('id', $target['outputId']);
+                abort_unless(collect($record->media)->contains('id', $target['mediaId']) && $output && ($output['mediaId'] ?? null) === $target['mediaId'] && ($output['kind'] ?? null) === 'image' && ($output['status'] ?? null) === 'completed', 422, 'Choose a completed version from this workspace.');
+            }
+        }
         if (isset($payload['region']) && ($payload['region']['x'] + $payload['region']['width'] > 1.00001 || $payload['region']['y'] + $payload['region']['height'] > 1.00001)) {
             throw ValidationException::withMessages(['region' => 'The selected region must fit inside the image.']);
         }
@@ -338,11 +384,12 @@ class StudioWorkspaceController extends StudioController
         ]);
     }
 
-    private function config(array $config, array $media): array
+    private function config(array $config, array $media, string $preset): array
     {
         // Runtime state and file references are exclusively server-owned.
         $config = \Illuminate\Support\Arr::only($config, ['prompt', 'ratio', 'duration', 'transition', 'transitionDuration', 'text', 'adjustments', 'frames', 'reviewedOutputIds', 'reviewedFrameIds']);
         $config = array_replace_recursive(['prompt' => '', 'ratio' => '9:16', 'duration' => 30, 'transition' => 'none', 'transitionDuration' => 0.4, 'text' => ['title' => '', 'subtitle' => '', 'style' => 'none', 'position' => 'bottom'], 'adjustments' => [], 'frames' => []], $config);
+        $config['adjustments'] = \App\Services\Studio\PhotoPresetOptions::normalize($preset, $config['adjustments']);
         $ids = array_column($media, 'id');
         foreach ($config['frames'] as $frame) {
             if (! in_array($frame['mediaId'], $ids, true)) {

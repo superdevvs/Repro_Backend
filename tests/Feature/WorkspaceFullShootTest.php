@@ -81,6 +81,10 @@ class WorkspaceFullShootTest extends TestCase
     public function test_original_exposures_are_merged_per_stack_and_return_to_edited_without_duplicate_jobs(): void
     {
         $workspace = $this->workspace();
+        $config = $workspace->config;
+        $config['adjustments']['cloud_style'] = 'clear_fade';
+        $config['adjustments']['custom_style_id'] = 'saved-style';
+        $workspace->update(['config' => $config]);
         Shoot::findOrFail($workspace->shoot_id)->update(['address' => '2912 Park Avenue']);
         $this->provider();
         $processor = app(WorkspaceProcessor::class);
@@ -89,6 +93,7 @@ class WorkspaceFullShootTest extends TestCase
         $this->assertSame('original-raw-1', $this->uploaded['exposure-1.CR3']);
         $this->assertCount(5, $this->enhancements[0]['upload_ids']);
         $this->assertCount(1, $this->enhancements[1]['upload_ids']);
+        $this->assertSame(['cloud_style' => 'clear_fade', 'custom_style_id' => 'saved-style'], $this->enhancements[0]['preferences']);
         $this->assertSame(['listing', 'listing'], array_column($this->enhancements, 'listing_id'));
         $this->assertSame(['exposure-1.CR3', 'exposure-2.CR3', 'exposure-3.CR3', 'exposure-4.CR3', 'exposure-5.CR3'], $this->enhancements[0]['upload_ids']);
         $this->assertContains($this->enhancements[0]['input_preview_image_id'], $this->enhancements[0]['upload_ids']);

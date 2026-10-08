@@ -181,7 +181,7 @@ class WorkspaceAutoenhanceTest extends TestCase
     public function test_sky_and_perspective_presets_override_disabled_recipe_toggles(): void
     {
         $this->fakeCompleted();
-        foreach (['sky-replacement' => 'sky_replacement', 'perspective-correction' => 'vertical_correction'] as $service => $option) {
+        foreach (['sky-replacement' => 'sky_replacement', 'perspective-correction' => 'perspective_correction'] as $service => $option) {
             $workspace = $this->workspace();
             $workspace->update(['preset_id' => $service, 'config' => ['prompt' => '', 'adjustments' => ['skyReplacement' => false, 'verticalCorrection' => false]]]);
             $this->assertSame($this->image, app(WorkspaceImageOperations::class)->edit($workspace, 'op', ['id' => 'm1'], $this->image, 'Apply the selected preset'));

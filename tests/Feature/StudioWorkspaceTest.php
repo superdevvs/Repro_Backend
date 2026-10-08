@@ -402,6 +402,89 @@ class StudioWorkspaceTest extends TestCase
         $this->get($endpoint)->assertNotFound();
     }
 
+    public function test_custom_edits_create_versions_without_calling_any_provider_and_retry_is_idempotent(): void
+    {
+        \Illuminate\Support\Facades\Http::preventStrayRequests();
+        $w = $this->create($this->actor(), 2, 'full-shoot');
+        $outputs = [];
+        foreach ($w->media as $item) {
+            $path = 'studio/workspaces/'.$w->id.'/'.$item['id'].'.jpg';
+            Storage::disk('public')->put($path, $this->image(64, 64, 64));
+            $outputs[] = ['id' => $item['id'].'-v1', 'mediaId' => $item['id'], 'path' => $path, 'url' => Storage::disk('public')->url($path), 'version' => 1, 'kind' => 'image', 'status' => 'completed'];
+        }
+        // A previous generation scope must not narrow explicit custom edit targets.
+        $config = $w->config;
+        $config['frames'] = [['mediaId' => 'm1', 'method' => 'fit', 'duration' => 5]];
+        $w->update(['outputs' => $outputs, 'status' => 'completed', 'config' => $config]);
+        $payload = ['edits' => ['exposure' => 1], 'targets' => [['mediaId' => 'm1', 'outputId' => 'm1-v1'], ['mediaId' => 'm2', 'outputId' => 'm2-v1']]];
+        $endpoint = '/api/studio/workspaces/'.$w->id.'/edits';
+        $this->postJson($endpoint, array_replace($payload, ['edits' => ['crop' => ['x' => 0, 'y' => 0, 'width' => .5, 'height' => .5]]]))->assertUnprocessable();
+        $this->postJson($endpoint, $payload)->assertAccepted()->assertJsonPath('data.status', 'generating');
+        $w->refresh();
+        app(WorkspaceProcessor::class)->process($w, $w->operation['id']);
+        $w->refresh();
+        $this->assertSame('completed', $w->status);
+        $this->assertCount(4, $w->outputs);
+        $output = collect($w->outputs)->firstWhere('version', 2);
+        $pixels = imagecreatefromstring(Storage::disk('public')->get($output['path']));
+        $this->assertEqualsWithDelta(128, (imagecolorat($pixels, 30, 30) >> 16) & 255, 3);
+        $this->assertSame($outputs[0], $w->outputs[0]);
+        $this->postJson($endpoint, $payload)->assertAccepted()->assertJsonPath('data.status', 'completed');
+        $this->assertCount(4, $w->fresh()->outputs);
+        Queue::assertPushed(ProcessStudioWorkspace::class, 1);
+    }
+
+    public function test_custom_edit_preview_is_private_and_does_not_create_versions_or_jobs(): void
+    {
+        $w = $this->create($this->actor());
+        $path = 'studio/workspaces/'.$w->id.'/base.jpg';
+        Storage::disk('public')->put($path, $this->image(64, 64, 64));
+        $w->update(['outputs' => [['id' => 'v1', 'mediaId' => 'm1', 'path' => $path, 'kind' => 'image', 'status' => 'completed']]]);
+        $response = $this->postJson('/api/studio/workspaces/'.$w->id.'/edit-preview', ['mediaId' => 'm1', 'outputId' => 'v1', 'edits' => ['crop' => ['x' => .25, 'y' => 0, 'width' => .5, 'height' => 1], 'rotation' => 90]])->assertOk()->assertHeader('Content-Type', 'image/jpeg');
+        $this->assertStringContainsString('no-store', $response->headers->get('Cache-Control'));
+        $this->assertSame([90, 80], array_slice(getimagesizefromstring($response->getContent()), 0, 2));
+        $this->assertCount(1, $w->fresh()->outputs);
+        Queue::assertNothingPushed();
+    }
+
+    public function test_custom_edits_reject_foreign_versions_out_of_bounds_areas_and_invalid_values(): void
+    {
+        $w = $this->create($this->actor());
+        $endpoint = '/api/studio/workspaces/'.$w->id.'/edits';
+        $payload = ['targets' => [['mediaId' => 'm1', 'outputId' => 'other-account']], 'edits' => ['exposure' => 1]];
+        $this->postJson($endpoint, $payload)->assertUnprocessable();
+        $payload['edits'] = ['crop' => ['x' => .9, 'y' => 0, 'width' => .5, 'height' => 1]];
+        $this->postJson($endpoint, $payload)->assertUnprocessable();
+        $payload['edits'] = ['exposure' => 500];
+        $this->postJson($endpoint, $payload)->assertUnprocessable();
+        Queue::assertNothingPushed();
+    }
+
+    public function test_logo_upload_and_processing_are_scoped_to_the_workspace(): void
+    {
+        $user = $this->actor();
+        $w = $this->create($user);
+        $upload = \Illuminate\Http\UploadedFile::fake()->image('logo.png', 100, 50);
+        $response = $this->post('/api/studio/workspaces/'.$w->id.'/photo-logo', ['logo' => $upload])->assertCreated();
+        $id = $response->json('data.id');
+        $recipe = ['logo' => ['id' => $id, 'x' => .03, 'y' => .03, 'width' => .2, 'opacity' => 100]];
+        $bytes = app(\App\Services\Studio\WorkspacePhotoLogo::class)->bytes($w, $recipe);
+        $result = app(\App\Services\Studio\CustomPhotoEdits::class)->apply($this->image(0, 0, 0), $recipe, $bytes);
+        $this->assertSame([160, 90], array_slice(getimagesizefromstring($result), 0, 2));
+        $foreign = $this->create($user);
+        $this->postJson('/api/studio/workspaces/'.$foreign->id.'/edits', ['edits' => $recipe, 'targets' => [['mediaId' => 'm1', 'outputId' => 'v1']]])->assertUnprocessable();
+    }
+
+    public function test_photo_presets_remove_irrelevant_options_and_validate_provider_values(): void
+    {
+        $payload = $this->payload($this->actor());
+        $payload['presetId'] = 'sky-replacement';
+        $payload['config']['adjustments'] = ['cloudType' => 'HIGH_CLOUD', 'roomType' => 'bed', 'furnitureStyle' => 'coastal', 'brightness' => 50, 'windowPull' => 'ONLY_WINDOWS'];
+        $this->postJson('/api/studio/workspaces', $payload)->assertCreated()->assertJsonPath('data.config.adjustments', ['cloudType' => 'HIGH_CLOUD']);
+        $payload['config']['adjustments']['cloudType'] = 'invented';
+        $this->postJson('/api/studio/workspaces', $payload)->assertUnprocessable();
+    }
+
     private function actor(string $role = 'admin', int $team = 100): User
     {
         $user = User::factory()->create(['role' => $role, 'metadata' => ['team_id' => $team]]);

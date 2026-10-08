@@ -56,9 +56,14 @@ class WorkspacePhotoEnhancement
             $shotType = $this->sceneType($workspace, $source);
             $state->put($key.'-scene', $shotType);
         }
-        $enhance = $this->once($state, $key.'-enhance', fn () => $client->createEnhance([
+        $payload = [
             'listing_id' => $listing['id'], 'upload_ids' => [$upload['id']], 'input_preview_image_id' => $upload['id'], 'shot_type' => $shotType,
-        ]));
+        ];
+        $preferences = PhotoPresetOptions::fotello($workspace->config['adjustments'] ?? []);
+        if ($preferences) {
+            $payload['preferences'] = $preferences;
+        }
+        $enhance = $this->once($state, $key.'-enhance', fn () => $client->createEnhance($payload));
         $deadline = microtime(true) + (int) config('services.fal.video_poll_timeout', 900);
         do {
             $state->assertActive();
@@ -116,6 +121,7 @@ class WorkspacePhotoEnhancement
         if (in_array($selected, ['interior', 'exterior'], true)) {
             return $selected;
         }
+
         return app(WorkspaceSceneClassifier::class)->classify($source);
     }
 }

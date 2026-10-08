@@ -982,6 +982,9 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/{workspace}/generate', [$controller, 'generate']);
         Route::post('/{workspace}/revisions', [$controller, 'revisions']);
         Route::post('/{workspace}/upscale', [$controller, 'upscale']);
+        Route::post('/{workspace}/edits', [$controller, 'edits']);
+        Route::post('/{workspace}/edit-preview', [$controller, 'editPreview'])->middleware('throttle:60,1');
+        Route::post('/{workspace}/photo-logo', [$controller, 'photoLogo'])->middleware('throttle:20,1');
         Route::post('/{workspace}/segments', [$controller, 'segments']);
         Route::post('/{workspace}/furniture-analysis', [$controller, 'furnitureAnalysis'])->middleware('throttle:30,1');
         Route::post('/{workspace}/cancel', [$controller, 'cancel']);

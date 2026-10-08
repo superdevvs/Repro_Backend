@@ -46,12 +46,17 @@ class WorkspaceProcessor
             } elseif ($this->active($workspace, $operationId)) {
                 \App\Jobs\ProcessStudioWorkspace::dispatch($workspace->id, $operationId)->delay(now()->addSeconds(10));
             }
+
             return;
         }
         $items = $workspace->media;
+        if ($type === 'adjust') {
+            $ids = array_column($workspace->operation['payload']['targets'], 'mediaId');
+            $items = array_values(array_filter($items, fn ($item) => in_array($item['id'], $ids, true)));
+        }
         if (in_array($type, ['revision', 'upscale'], true)) {
             $items = array_values(array_filter($items, fn ($m) => $m['id'] === $workspace->operation['payload']['mediaId']));
-        } elseif (count($workspace->config['frames'] ?? [])) {
+        } elseif ($type !== 'adjust' && count($workspace->config['frames'] ?? [])) {
             $selected = array_column($workspace->config['frames'], 'mediaId');
             $items = array_values(array_filter($items, fn ($m) => in_array($m['id'], $selected, true)));
         }
@@ -77,11 +82,14 @@ class WorkspaceProcessor
             if (in_array($item['id'], $workspace->operation['completed'] ?? [], true)) {
                 continue;
             }
-            $bytes = $type === 'upscale'
+            $bytes = in_array($type, ['upscale', 'adjust'], true)
                 ? $this->upscaleSource($workspace, $item)
                 : $this->sourceBytes($workspace, $item, $type === 'revision');
             $frame = collect($workspace->config['frames'] ?? [])->firstWhere('mediaId', $item['id']) ?? ['mediaId' => $item['id'], 'method' => 'fit'];
-            if ($type === 'prepare') {
+            if ($type === 'adjust') {
+                $recipe = $workspace->operation['payload']['edits'];
+                $result = app(CustomPhotoEdits::class)->apply($bytes, $recipe, app(WorkspacePhotoLogo::class)->bytes($workspace, $recipe));
+            } elseif ($type === 'prepare') {
                 $result = $this->prepareImage($workspace, $operationId, $item, $bytes, $frame);
             } elseif ($type === 'upscale') {
                 $result = (string) $this->images->read(app(WorkspaceImageOperations::class)->upscale($workspace, $operationId, $item['id'], $bytes))->toJpeg(96);
@@ -185,9 +193,6 @@ class WorkspaceProcessor
             $source->crop($width, $height, $x, $y);
         }
         $prompt = $type === 'revision' ? $payload['prompt'] : $this->presetPrompt($w->preset_id).' '.($w->config['prompt'] ?? '');
-        if ($type !== 'revision' && ! empty($w->config['adjustments'])) {
-            $prompt .= ' Requested visual adjustments: '.json_encode($w->config['adjustments']).'.';
-        }
         $prompt .= ' Preserve the actual property structure, perspective, materials, and photorealism. Only make the requested changes.';
         $route = (new WorkspaceProviderState($w, $operationId))->route($type === 'revision' ? 'revision' : $w->preset_id);
         $padding = null;
@@ -467,7 +472,8 @@ class WorkspaceProcessor
 
     private function upscaleSource(StudioWorkspace $workspace, array $item): string
     {
-        $output = collect($workspace->outputs ?? [])->firstWhere('id', $workspace->operation['payload']['outputId'] ?? '');
+        $target = collect($workspace->operation['payload']['targets'] ?? [])->firstWhere('mediaId', $item['id']);
+        $output = collect($workspace->outputs ?? [])->firstWhere('id', $target['outputId'] ?? $workspace->operation['payload']['outputId'] ?? '');
         $path = $output['path'] ?? '';
         if (! $output || ($output['mediaId'] ?? '') !== $item['id'] || ($output['kind'] ?? '') !== 'image' || ! str_starts_with($path, 'studio/workspaces/'.$workspace->id.'/') || str_contains($path, '..') || ! Storage::disk('public')->exists($path)) {
             throw new \App\Exceptions\StudioProviderException('The selected image version is no longer available.');

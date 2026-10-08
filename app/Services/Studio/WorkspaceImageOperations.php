@@ -30,10 +30,7 @@ class WorkspaceImageOperations
         }
         if ($route['provider'] === 'autoenhance') {
             $enhanced = app(WorkspaceAutoenhance::class)->run($workspace, $operationId, $item, $source, $service);
-            $defaults = ['brightness' => 0, 'warmth' => 0, 'windows' => 50, 'look' => 'Natural', 'preserveStructure' => true, 'strength' => 50, 'roomType' => 'living-room', 'furnitureStyle' => 'modern'];
-            $adjustments = \Illuminate\Support\Arr::except($workspace->config['adjustments'] ?? [], ['sceneType', 'lensCorrection', 'verticalCorrection', 'skyReplacement']);
-            $adjustments = array_filter($adjustments, fn ($value, $key) => $value !== null && $value !== '' && (! array_key_exists($key, $defaults) || $value !== $defaults[$key]), ARRAY_FILTER_USE_BOTH);
-            if (trim((string) ($workspace->config['prompt'] ?? '')) !== '' || $adjustments || $references) {
+            if (trim((string) ($workspace->config['prompt'] ?? '')) !== '' || $references || $this->legacyAdjustments($workspace)) {
                 $item['id'] .= '-refine';
 
                 return $this->edit($workspace, $operationId, $item, $enhanced, $prompt, $references, $state->route('revision'));
@@ -50,6 +47,7 @@ class WorkspaceImageOperations
                 throw new StudioProviderException('Start a new photo edit to use the configured photo enhancement service.');
             }
             $enhanced = app(WorkspacePhotoEnhancement::class)->run($workspace, $operationId, $item, $source, $route);
+
             return $this->refineEnhanced($workspace, $operationId, $item, $enhanced, $prompt, $references);
         }
         if ($route['provider'] === 'openai') {
@@ -122,16 +120,26 @@ class WorkspaceImageOperations
     public function refineEnhanced(StudioWorkspace $workspace, string $operationId, array $item, string $enhanced, string $prompt, array $references = []): string
     {
         $state = new WorkspaceProviderState($workspace, $operationId);
-        $defaults = ['brightness' => 0, 'warmth' => 0, 'windows' => 50, 'look' => 'Natural', 'lensCorrection' => true, 'verticalCorrection' => true, 'skyReplacement' => false, 'preserveStructure' => true, 'strength' => 50, 'roomType' => 'living-room', 'furnitureStyle' => 'modern'];
-        $adjustments = \Illuminate\Support\Arr::except($workspace->config['adjustments'] ?? [], ['sceneType']);
-        $adjustments = array_filter($adjustments, fn ($value, $key) => $value !== null && $value !== '' && (! array_key_exists($key, $defaults) || $value !== $defaults[$key]), ARRAY_FILTER_USE_BOTH);
-        if (trim((string) ($workspace->config['prompt'] ?? '')) !== '' || $adjustments || $references) {
+        if (trim((string) ($workspace->config['prompt'] ?? '')) !== '' || $references || $this->legacyAdjustments($workspace)) {
             $item['id'] .= '-refine';
 
             return $this->edit($workspace, $operationId, $item, $enhanced, $prompt, $references, $state->route('revision'));
         }
 
         return $enhanced;
+    }
+
+    /** Resume old persisted recipes/checkpoints; new drafts cannot submit these obsolete keys. */
+    private function legacyAdjustments(StudioWorkspace $workspace): bool
+    {
+        foreach (['brightness' => 0, 'warmth' => 0, 'windows' => 50, 'look' => 'Natural'] as $key => $default) {
+            $value = $workspace->config['adjustments'][$key] ?? $default;
+            if ($value !== '' && $value !== $default) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function falOnce(WorkspaceProviderState $state, string $mediaId, string $model, array $payload, ?array $legacy = null): string
