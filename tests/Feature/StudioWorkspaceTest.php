@@ -496,11 +496,28 @@ class StudioWorkspaceTest extends TestCase
         $upload = \Illuminate\Http\UploadedFile::fake()->image('logo.png', 100, 50);
         $response = $this->post('/api/studio/workspaces/'.$w->id.'/photo-logo', ['logo' => $upload])->assertCreated();
         $id = $response->json('data.id');
+        Storage::disk('public')->assertExists('studio/logos/'.$w->id.'/'.$id.'.png');
+        $response->assertJsonPath('data.url', Storage::disk('public')->url('studio/logos/'.$w->id.'/'.$id.'.png'));
         $recipe = ['logo' => ['id' => $id, 'x' => .03, 'y' => .03, 'width' => .2, 'opacity' => 100]];
         $bytes = app(\App\Services\Studio\WorkspacePhotoLogo::class)->bytes($w, $recipe);
         $result = app(\App\Services\Studio\CustomPhotoEdits::class)->apply($this->image(0, 0, 0), $recipe, $bytes);
         $this->assertSame([160, 90], array_slice(getimagesizefromstring($result), 0, 2));
         $foreign = $this->create($user);
+        $this->postJson('/api/studio/workspaces/'.$foreign->id.'/edits', ['edits' => $recipe, 'targets' => [['mediaId' => 'm1', 'outputId' => 'v1']]])->assertUnprocessable();
+    }
+
+    public function test_existing_workspace_logos_remain_readable_without_allowing_foreign_workspace_logos(): void
+    {
+        $user = $this->actor();
+        $workspace = $this->create($user);
+        $id = (string) \Illuminate\Support\Str::uuid();
+        $bytes = $this->image(0, 0, 0);
+        Storage::disk('public')->put('studio/workspaces/'.$workspace->id.'/logos/'.$id.'.png', $bytes);
+        $service = app(\App\Services\Studio\WorkspacePhotoLogo::class);
+        $this->assertSame($bytes, $service->bytes($workspace, ['logo' => ['id' => $id]]));
+
+        $foreign = $this->create($user);
+        $recipe = ['logo' => ['id' => $id, 'x' => .03, 'y' => .03, 'width' => .2, 'opacity' => 100]];
         $this->postJson('/api/studio/workspaces/'.$foreign->id.'/edits', ['edits' => $recipe, 'targets' => [['mediaId' => 'm1', 'outputId' => 'v1']]])->assertUnprocessable();
     }
 

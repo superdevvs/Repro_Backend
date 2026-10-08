@@ -28,6 +28,10 @@ class WorkspacePhotoLogo
         $id = $recipe['logo']['id'];
         abort_unless(Str::isUuid($id), 422, 'Choose a workspace logo.');
         $path = $this->path($workspace, $id);
+        if (! Storage::disk('public')->exists($path)) {
+            // Preserve recipes created before logos were separated from worker outputs.
+            $path = 'studio/workspaces/'.$workspace->id.'/logos/'.$id.'.png';
+        }
         abort_unless(Storage::disk('public')->exists($path), 422, 'Choose an available workspace logo.');
 
         return Storage::disk('public')->get($path);
@@ -35,6 +39,8 @@ class WorkspacePhotoLogo
 
     private function path(StudioWorkspace $workspace, string $id): string
     {
-        return 'studio/workspaces/'.$workspace->id.'/logos/'.$id.'.png';
+        // PHP owns uploaded logos; queue workers only need to read them. A worker's
+        // output directory can be readable by PHP without allowing PHP to write it.
+        return 'studio/logos/'.$workspace->id.'/'.$id.'.png';
     }
 }
