@@ -65,7 +65,7 @@ class WorkspaceProcessor
 
             return;
         }
-        if ($workspace->preset_id === 'virtual-staging' && in_array($type, ['generate', 'revision'], true)) {
+        if ($workspace->preset_id === 'virtual-staging' && in_array($type, ['generate', 'revision'], true) && empty($workspace->operation['payload']['customEdit'])) {
             if ($items === []) {
                 throw new \App\Exceptions\StudioProviderException('Choose a photo to stage.');
             }
@@ -82,7 +82,7 @@ class WorkspaceProcessor
             if (in_array($item['id'], $workspace->operation['completed'] ?? [], true)) {
                 continue;
             }
-            $bytes = in_array($type, ['upscale', 'adjust'], true)
+            $bytes = (in_array($type, ['upscale', 'adjust'], true) || ($type === 'revision' && ! empty($workspace->operation['payload']['customEdit'])))
                 ? $this->upscaleSource($workspace, $item)
                 : $this->sourceBytes($workspace, $item, $type === 'revision');
             $frame = collect($workspace->config['frames'] ?? [])->firstWhere('mediaId', $item['id']) ?? ['mediaId' => $item['id'], 'method' => 'fit'];

@@ -61,6 +61,21 @@ class WorkspaceImageOperationsTest extends TestCase
         $this->assertStringNotContainsString('nano-banana', $body);
     }
 
+    public function test_custom_revision_skips_an_extra_photo_enhancement_request(): void
+    {
+        $workspace = $this->active(['revision' => ['provider' => 'fal', 'model' => 'fal-ai/flux-kontext/dev']], 'revision');
+        $operation = $workspace->operation;
+        $operation['payload'] = ['customEdit' => true];
+        $workspace->update(['operation' => $operation]);
+        $this->mock(\App\Services\Studio\WorkspaceAutoenhance::class)->shouldNotReceive('run');
+        $fal = $this->mock(FalService::class);
+        $fal->shouldReceive('submitImageEditFromBuffer')->once()->andReturn(['request_id' => 'custom-revision']);
+        $fal->shouldReceive('imageEditStatus')->once()->andReturn(['status' => 'completed']);
+        $fal->shouldReceive('imageEditResult')->once()->andReturn(['edited_image_url' => $this->dataImage()]);
+        $result = app(WorkspaceImageOperations::class)->edit($workspace, 'operation-one', ['id' => 'm1'], $this->image(), 'Remove the chair.');
+        $this->assertNotFalse(getimagesizefromstring($result));
+    }
+
     public function test_openai_route_snapshot_forwards_references_and_reuses_the_saved_bytes_once(): void
     {
         $settings = app(StudioProviderSettings::class);

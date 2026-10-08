@@ -39,7 +39,7 @@ class WorkspaceImageOperations
             return $enhanced;
         }
         // Free-text and twilight effects retain their specialist editor after photo enhancement.
-        if ($routeOverride === null && $route['provider'] !== 'fotello' && ! $workspace->isVideo()) {
+        if ($routeOverride === null && $route['provider'] !== 'fotello' && ! $workspace->isVideo() && empty($workspace->operation['payload']['customEdit'])) {
             $source = app(WorkspaceAutoenhance::class)->run($workspace, $operationId, $item, $source, 'listing-ready');
         }
         if ($route['provider'] === 'fotello') {

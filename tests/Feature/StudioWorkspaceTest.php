@@ -447,6 +447,35 @@ class StudioWorkspaceTest extends TestCase
         Queue::assertNothingPushed();
     }
 
+    public function test_custom_instruction_on_a_staged_photo_uses_the_requested_version_and_revision_service(): void
+    {
+        config(['services.fal.key' => 'revision-fixture']);
+        $w = $this->create($this->actor(), 1, 'virtual-staging');
+        $outputs = [];
+        foreach ([1, 2] as $version) {
+            $path = 'studio/workspaces/'.$w->id.'/v'.$version.'.jpg';
+            Storage::disk('public')->put($path, $this->image($version === 1 ? 64 : 200, 0, 0));
+            $outputs[] = ['id' => 'v'.$version, 'mediaId' => 'm1', 'version' => $version, 'path' => $path, 'url' => Storage::disk('public')->url($path), 'kind' => 'image', 'status' => 'completed'];
+        }
+        $w->update(['status' => 'completed', 'outputs' => $outputs]);
+        $this->mock(\App\Services\Studio\VirtualStagingProcessor::class)->shouldNotReceive('run');
+        $this->mock(\App\Services\Studio\WorkspaceImageOperations::class)->shouldReceive('edit')->once()->andReturnUsing(function ($workspace, $operationId, $item, $source, $prompt) {
+            $pixel = imagecolorat(imagecreatefromstring($source), 30, 30);
+            $this->assertEqualsWithDelta(64, ($pixel >> 16) & 255, 3);
+            $this->assertStringContainsString('Remove the chair.', $prompt);
+
+            return $this->image(0, 200, 0);
+        });
+        $endpoint = '/api/studio/workspaces/'.$w->id.'/revisions';
+        $request = ['mediaId' => 'm1', 'outputId' => 'v1', 'prompt' => 'Remove the chair.', 'customEdit' => true];
+        $this->postJson($endpoint, array_replace($request, ['outputId' => 'foreign']))->assertUnprocessable();
+        $this->postJson($endpoint, $request)->assertAccepted();
+        $w->refresh();
+        app(WorkspaceProcessor::class)->process($w, $w->operation['id']);
+        $this->assertCount(3, $w->fresh()->outputs);
+        $this->assertSame(3, $w->fresh()->outputs[2]['version']);
+    }
+
     public function test_custom_edits_reject_foreign_versions_out_of_bounds_areas_and_invalid_values(): void
     {
         $w = $this->create($this->actor());

@@ -250,8 +250,9 @@ class StudioWorkspaceController extends StudioController
             'targets' => [$type === 'adjust' ? 'required' : 'prohibited', 'array', 'min:1', 'max:300'],
             'targets.*' => ['array:mediaId,outputId'], 'targets.*.mediaId' => ['required', 'string', 'distinct'], 'targets.*.outputId' => ['required', 'string', 'max:200'],
             'requestId' => ['sometimes', 'string', 'max:64'], 'mediaId' => [in_array($type, ['revision', 'upscale'], true) ? 'required' : 'sometimes', 'string'],
-            'outputId' => [$type === 'upscale' ? 'required' : 'sometimes', 'string', 'max:200'],
+            'outputId' => [$type === 'upscale' || ($type === 'revision' && $request->boolean('customEdit')) ? 'required' : 'sometimes', 'string', 'max:200'],
             'referenceMediaIds' => ['sometimes', 'array', 'max:4'], 'referenceMediaIds.*' => ['string', 'distinct', 'max:100'],
+            'customEdit' => [$type === 'revision' ? 'sometimes' : 'prohibited', 'boolean'],
             'prompt' => [$type === 'revision' ? 'required' : 'sometimes', 'string', 'max:4000'],
             'region' => ['nullable', 'array:x,y,width,height'],
             'region.x' => ['required_with:region', 'numeric', 'between:0,1'], 'region.y' => ['required_with:region', 'numeric', 'between:0,1'],
@@ -278,9 +279,9 @@ class StudioWorkspaceController extends StudioController
         foreach ($payload['referenceMediaIds'] ?? [] as $id) {
             abort_unless(collect($record->media)->contains('id', $id), 422, 'Choose reference photos from this workspace.');
         }
-        if ($type === 'upscale') {
+        if ($type === 'upscale' || ! empty($payload['customEdit'])) {
             $output = collect($record->outputs ?? [])->firstWhere('id', $payload['outputId']);
-            abort_unless($output && ($output['mediaId'] ?? null) === $payload['mediaId'] && ($output['kind'] ?? null) === 'image' && ($output['status'] ?? null) === 'completed', 422, 'Choose a completed image version to upscale.');
+            abort_unless($output && ($output['mediaId'] ?? null) === $payload['mediaId'] && ($output['kind'] ?? null) === 'image' && ($output['status'] ?? null) === 'completed', 422, 'Choose a completed image version.');
         }
         $key = $request->header('Idempotency-Key', $payload['requestId'] ?? null);
         if ($key && strlen($key) > 64) {
@@ -300,7 +301,7 @@ class StudioWorkspaceController extends StudioController
             }
             abort_if($record->isBusy(), 409, 'This workspace already has an operation in progress.');
             abort_if(count($record->media) === 0, 422, 'Add source photos before continuing.');
-            if ($record->preset_id === 'virtual-staging' && in_array($type, ['generate', 'revision'], true)) {
+            if ($record->preset_id === 'virtual-staging' && in_array($type, ['generate', 'revision'], true) && empty($payload['customEdit'])) {
                 $settings = app(\App\Services\Studio\StudioProviderSettings::class);
                 $availability = $settings->readiness('virtual-staging', $settings->route('virtual-staging'));
                 abort_unless($availability['ready'], 422, $availability['reason'] ?? 'An administrator needs to finish configuring this service.');
@@ -315,6 +316,12 @@ class StudioWorkspaceController extends StudioController
                 $prepared = collect($record->prepared_frames ?? [])->where('status', 'completed')->keyBy('mediaId');
                 abort_unless(collect($frameIds)->every(fn ($id) => $prepared->has($id)), 422, 'Prepare every selected frame before generating a reel.');
                 abort_if(count($frameIds) > 12, 422, 'A reel supports at most 12 selected source photos.');
+            }
+            if (! empty($payload['customEdit'])) {
+                abort_if($record->isVideo(), 422, 'Custom photo edits are for photos.');
+                $settings = app(\App\Services\Studio\StudioProviderSettings::class);
+                $availability = $settings->readiness('custom-revision', $settings->route('revision'));
+                abort_unless($availability['ready'], 422, $availability['reason'] ?? 'AI refinement is not configured.');
             }
             $operation = $same && $record->status === 'failed' ? $old : ['id' => (string) Str::uuid(), 'key' => $key, 'type' => $type, 'payload' => $payload, 'completed' => [], 'requests' => []];
             if (! isset($operation['routing']) && empty($operation['requests'])) {

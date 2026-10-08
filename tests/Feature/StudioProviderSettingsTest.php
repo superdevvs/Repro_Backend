@@ -153,6 +153,15 @@ class StudioProviderSettingsTest extends TestCase
         }
     }
 
+    public function test_detection_availability_matches_its_credential_without_exposing_it(): void
+    {
+        $this->actor('admin');
+        config(['services.openai.api_key' => null]);
+        $this->getJson('/api/studio/workspaces/capabilities')->assertOk()->assertJsonPath('data.detection.ready', false);
+        config(['services.openai.api_key' => 'detection-fixture']);
+        $this->getJson('/api/studio/workspaces/capabilities')->assertOk()->assertJsonPath('data.detection.ready', true);
+    }
+
     public function test_capabilities_and_upscale_remain_client_gated_before_validation(): void
     {
         foreach ([[], ['superadmin']] as $secondary) {

@@ -12,6 +12,7 @@ use Illuminate\Validation\ValidationException;
 class StudioProviderSettings
 {
     public const AUTOENHANCE_SERVICES = ['listing-ready', 'color-correction', 'sky-replacement', 'perspective-correction', 'green-grass', 'upscale'];
+
     public const PHOTO_SERVICES = ['listing-ready', 'color-correction', 'full-shoot', 'sky-replacement', 'perspective-correction', 'twilight', 'virtual-staging', 'green-grass', 'upscale'];
 
     private const LABELS = [
@@ -176,7 +177,7 @@ class StudioProviderSettings
         $revision = $this->route('revision', $stored);
         $references = $revision['provider'] === 'openai' || $revision['model'] === 'fal-ai/nano-banana-pro/edit';
 
-        return ['presets' => $presets, 'revision' => array_merge($ready('revision'), ['referenceImages' => $references]), 'upscale' => $ready('upscale'), 'outpaint' => $ready('outpaint')];
+        return ['presets' => $presets, 'revision' => array_merge($ready('revision'), ['referenceImages' => $references]), 'customRevision' => array_merge($this->readiness('custom-revision', $revision, $stored), ['referenceImages' => $references]), 'upscale' => $ready('upscale'), 'outpaint' => $ready('outpaint'), 'detection' => filled(config('services.openai.api_key')) ? ['ready' => true] : ['ready' => false, 'reason' => 'Automatic detection is unavailable. Select an area manually.']];
     }
 
     public function save(array $input): array
