@@ -59,6 +59,12 @@ class StudioWorkspace extends Model
             'requiresReview' => $legacyFullShoot,
             'media' => array_map([\App\Services\Studio\WorkspaceMediaService::class, 'withUploadPreview'], $this->media ?? []), 'config' => self::normalizeConfigStrings($this->config ?? []), 'status' => $this->status,
             'progress' => $generation['progress'] ?? $this->progress, 'generation' => $generation ? \Illuminate\Support\Arr::except($generation, ['progress']) : null,
+            'generationScope' => $this->isBusy() && ! $this->isVideo() ? [
+                'mediaIds' => in_array($this->operation['type'] ?? '', ['revision', 'upscale'], true)
+                    ? [$this->operation['payload']['mediaId']]
+                    : (($this->operation['type'] ?? '') === 'adjust' ? array_column($this->operation['payload']['targets'], 'mediaId') : null),
+                'completedMediaIds' => $this->operation['completed'] ?? [],
+            ] : null,
             'error' => $this->error, 'version' => $this->version,
             'outputs' => array_map(fn ($output) => \Illuminate\Support\Arr::except($output, ['reelJobId', 'vsai']), $this->outputs ?? []), 'preparedFrames' => $this->prepared_frames ?? [],
             'history' => array_map(fn ($event) => \Illuminate\Support\Arr::except($event, ['reelJobId']), $this->history ?? []),
