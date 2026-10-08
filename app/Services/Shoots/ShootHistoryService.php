@@ -69,6 +69,7 @@ class ShootHistoryService
                         'filters' => [
                             'clients' => [],
                             'photographers' => [],
+                            'salesReps' => app(ShootSalesRepFilter::class)->options(app(ShootAuthorizationSupport::class)->scopeAccessibleShootMedia(Shoot::query(), $user)),
                             'services' => [],
                         ],
                     ],
@@ -101,7 +102,7 @@ class ShootHistoryService
                     'per_page' => $paginator->perPage(),
                     'total' => $paginator->total(),
                     'group_by' => 'shoot',
-                    'filters' => $this->buildHistoryFilterMetaFromRecords($collection),
+                    'filters' => [...$this->buildHistoryFilterMetaFromRecords($collection), 'salesReps' => app(ShootSalesRepFilter::class)->options(app(ShootAuthorizationSupport::class)->scopeAccessibleShootMedia(Shoot::query(), $user))],
                 ],
             ]);
         } catch (\Exception $e) {
@@ -198,6 +199,8 @@ class ShootHistoryService
         if (! empty($clientIds)) {
             $query->whereIn('client_id', $clientIds);
         }
+
+        app(ShootSalesRepFilter::class)->apply($query, $this->normalizeArrayQuery($request, 'sales_rep_id'));
 
         $photographerIds = array_merge(
             $this->normalizeArrayQuery($request, 'photographer_id'),

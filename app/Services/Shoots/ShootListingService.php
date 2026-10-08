@@ -87,7 +87,7 @@ class ShootListingService
             // second life: asking for bracket=3 straight after bracket=5 returned
             // the 5x list.
             $filterParams = $request->only([
-                'client_id', 'photographer_id', 'services', 'search', 'address',
+                'client_id', 'photographer_id', 'sales_rep_id', 'services', 'search', 'address',
                 'date_range', 'scheduled_start', 'scheduled_end',
                 'completed_start', 'completed_end', 'custom_start', 'custom_end',
                 'date_from', 'date_to', 'private_listing', 'listing_scope', 'include_hidden',
@@ -566,6 +566,8 @@ class ShootListingService
             $query->whereIn('client_id', $clientIds);
         }
 
+        app(ShootSalesRepFilter::class)->apply($query, $this->normalizeArrayQuery($request, 'sales_rep_id'));
+
         $photographerIds = $this->normalizeArrayQuery($request, 'photographer_id');
         if (!empty($photographerIds)) {
             $query->where(function (Builder $scope) use ($photographerIds) {
@@ -703,6 +705,7 @@ class ShootListingService
                 ->values();
 
             return [
+                'salesReps' => app(ShootSalesRepFilter::class)->options($accessible),
                 'clients' => $clients,
                 'photographers' => $photographers,
                 'services' => $services,
@@ -715,7 +718,7 @@ class ShootListingService
             return $build();
         }
 
-        $cacheKey = 'shoots_filter_meta_access_v2_' . $user->id . '_' . $user->role;
+        $cacheKey = 'shoots_filter_meta_access_v3_' . $user->id . '_' . $user->role;
         return Cache::remember($cacheKey, now()->addMinutes(5), $build);
     }
 
