@@ -27,6 +27,7 @@ final class OAuthController extends Controller
 
     public function register(Request $request)
     {
+        app(\App\Services\Copilot\CopilotSettings::class)->assertEnabled();
         $data = $request->validate(['client_name' => 'nullable|string|max:120', 'redirect_uris' => 'required|array|min:1|max:5',
             'redirect_uris.*' => 'required|string|max:2048', 'token_endpoint_auth_method' => 'sometimes|in:none',
             'grant_types' => 'sometimes|array', 'grant_types.*' => 'in:authorization_code,refresh_token',
@@ -50,6 +51,7 @@ final class OAuthController extends Controller
 
     public function authorize(Request $request)
     {
+        app(\App\Services\Copilot\CopilotSettings::class)->assertEnabled();
         $data = $request->validate(['client_id' => 'required|uuid', 'redirect_uri' => 'required|string|max:2048',
             'response_type' => 'required|in:code', 'state' => 'required|string|min:1|max:1024',
             'scope' => 'required|string|max:120', 'resource' => 'required|string',

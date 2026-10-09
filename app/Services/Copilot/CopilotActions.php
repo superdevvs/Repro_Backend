@@ -31,6 +31,7 @@ final class CopilotActions
 
     public function prepare(string $kind, array $payload, Request $request): array
     {
+        app(CopilotSettings::class)->assertAction($kind);
         $user = $request->user();
         $review = $this->review($kind, $payload, $user);
         $id = (string) Str::uuid();
@@ -73,6 +74,7 @@ final class CopilotActions
     public function commit(string $id, string $hash, Request $request): array
     {
         $draft = $this->find($id, $request);
+        app(CopilotSettings::class)->assertAction($draft->kind);
         abort_unless(hash_equals($draft->review_hash, $hash), 409, 'The review does not match this draft.');
         if ($draft->status === 'completed') {
             return json_decode($draft->result, true);

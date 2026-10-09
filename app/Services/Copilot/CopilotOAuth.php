@@ -58,6 +58,7 @@ final class CopilotOAuth
 
     public function assertEligible(User $user): void
     {
+        app(CopilotSettings::class)->assertEnabled();
         abort_unless($user->isAccountEligibleForAuthentication(), 401, 'This account is no longer active.');
         abort_if(app(EmailVerificationPilot::class)->status($user)['required'], 403, 'Verify your current email address to connect Repro.');
         abort_unless(app(RolePermissionService::class)->userCan($user, 'robbie', 'view'), 403, 'AI assistant access is disabled for this account.');

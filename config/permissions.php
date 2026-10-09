@@ -197,6 +197,13 @@ return [
                     'default_roles' => ['superadmin', 'admin', 'editing_manager'],
                 ],
                 [
+                    'resource' => 'integrations',
+                    'action' => 'edit',
+                    'label' => 'Manage Integrations',
+                    'description' => 'Change Repro Copilot integration controls.',
+                    'default_roles' => ['superadmin', 'admin'],
+                ],
+                [
                     'resource' => 'scheduling-settings',
                     'action' => 'view',
                     'label' => 'Scheduling Settings',

@@ -34,9 +34,15 @@ final class CopilotWatches
 
     public function check(): int
     {
+        if (! app(CopilotSettings::class)->enabled('watches')) {
+            return 0;
+        }
         $changed = 0;
         DB::table('copilot_watches')->where('enabled', true)->orderBy('id')->chunk(100, function ($watches) use (&$changed) {
             foreach ($watches as $watch) {
+                if (! app(CopilotSettings::class)->enabled('watches')) {
+                    return;
+                }
                 $grant = DB::table('copilot_grants')->find($watch->grant_id);
                 $user = User::find($watch->user_id);
                 try {
@@ -46,6 +52,9 @@ final class CopilotWatches
                     app(CopilotOAuth::class)->assertEligible($user);
                     $shoot = app(CopilotData::class)->shoot($watch->shoot_id, $user);
                 } catch (\Throwable $error) {
+                    if (! app(CopilotSettings::class)->enabled('watches')) {
+                        return;
+                    }
                     if ($error instanceof \Illuminate\Database\QueryException) {
                         throw $error;
                     }
@@ -56,6 +65,9 @@ final class CopilotWatches
                 $snapshot = $this->snapshot($shoot);
                 $hash = hash('sha256', json_encode($snapshot));
                 $didChange = LockedWrite::run(fn () => DB::transaction(function () use ($watch, $hash, $snapshot, $user) {
+                    if (! app(CopilotSettings::class)->enabled('watches')) {
+                        return false;
+                    }
                     $current = DB::table('copilot_watches')->find($watch->id);
                     if (! $current || ! $current->enabled) {
                         return false;
@@ -90,6 +102,9 @@ final class CopilotWatches
 
     public function notifications(User $user, int $limit = 50): \Illuminate\Support\Collection
     {
+        if (! app(CopilotSettings::class)->enabled('watches')) {
+            return collect();
+        }
         try {
             app(CopilotOAuth::class)->assertEligible($user);
         } catch (\Symfony\Component\HttpKernel\Exception\HttpExceptionInterface) {

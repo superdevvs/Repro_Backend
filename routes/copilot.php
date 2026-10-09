@@ -5,6 +5,10 @@ use App\Http\Controllers\Copilot\OAuthController;
 use Illuminate\Support\Facades\Route;
 
 Route::prefix('copilot')->group(function () {
+    Route::middleware('auth:sanctum')->group(function () {
+        Route::get('settings', [\App\Http\Controllers\Copilot\SettingsController::class, 'show']);
+        Route::put('settings', [\App\Http\Controllers\Copilot\SettingsController::class, 'update']);
+    });
     Route::match(['get', 'post', 'delete'], 'mcp', [McpController::class, 'handle'])->middleware('throttle:120,1');
     Route::prefix('oauth')->group(function () {
         Route::get('metadata', [OAuthController::class, 'metadata']);

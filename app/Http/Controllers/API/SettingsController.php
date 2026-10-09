@@ -76,6 +76,8 @@ class SettingsController extends Controller
 
         abort_if($request->input('key') === \App\Services\Scheduling\SchedulingBufferSettings::KEY, 403,
             'Use scheduling buffer settings to update this policy.');
+        abort_if($request->input('key') === \App\Services\Copilot\CopilotSettings::KEY, 403,
+            'Use the Copilot integration controls to update this policy.');
 
         if ($this->isDropboxSetting($request->input('key'))) {
             return response()->json([
@@ -214,5 +216,4 @@ class SettingsController extends Controller
         return $data;
     }
 }
-
 

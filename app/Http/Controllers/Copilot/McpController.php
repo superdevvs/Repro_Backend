@@ -70,7 +70,10 @@ final class McpController extends Controller
             return $this->rpc($id, (object) []);
         }
         if ($method === 'tools/list') {
-            return $this->rpc($id, ['tools' => $this->catalog->tools()]);
+            $controls = app(\App\Services\Copilot\CopilotSettings::class);
+            $settings = $controls->current();
+            return $this->rpc($id, ['tools' => array_values(array_filter($this->catalog->tools(),
+                fn ($tool) => $controls->allowsTool($tool['name'], $settings)))]);
         }
         if ($method === 'resources/list') {
             return $this->rpc($id, ['resources' => [['uri' => ToolCatalog::UI, 'name' => 'Repro workflow cards', 'mimeType' => 'text/html;profile=mcp-app']]]);
@@ -95,6 +98,7 @@ final class McpController extends Controller
         try {
             $scope = end($tool['securitySchemes'][0]['scopes']);
             $grant = $this->oauth->authenticate($request, $scope);
+            app(\App\Services\Copilot\CopilotSettings::class)->assertTool($name);
             $args = $params['arguments'] ?? [];
             app(ToolInput::class)->validate($args, $tool['inputSchema']);
             $user = $request->user();

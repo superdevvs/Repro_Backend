@@ -16,6 +16,14 @@ The host discovers OAuth metadata and registers a public client automatically. L
 
 Revoke a connection in Repro at https://reprodashboard.com/copilot/connections, also linked from account security. Connecting does not book shoots or send client notifications.
 
+## Integration controls
+
+Open [Settings → Integrations → ChatGPT](https://reprodashboard.com/settings?tab=integrations&integration=copilot). Integration administrators can switch Copilot on or off, select its ten feature groups, enable read-only access, and configure the official published ChatGPT listing URL. These settings apply on the server to existing connections and previously prepared actions. Roles and account permissions still apply. Saves are audited and reject stale versions.
+
+Turning Copilot off blocks new connections and tool access and pauses watch checks. Saved watches resume when enabled. Users can revoke their own connections while Copilot is off. Refresh Repro in ChatGPT after changing controls to update the host's available tool list.
+
+The connection button opens the configured Repro listing directly; ChatGPT and Repro still require the user's approval. Until a published listing URL is configured, the button opens ChatGPT Plugins with custom MCP setup instructions and a copyable server URL. Configuring a URL does not submit or publish an App Store listing.
+
 Try: “Show shoots needing attention this week”, “Find my Oak Lane shoot”, “Compare available photographers for this service”, or “Prepare a photography request for this property”. Review the returned preview before confirming an action.
 
 ## Included workflows
@@ -50,7 +58,7 @@ OAuth uses authorization code + PKCE S256, exact HTTPS ChatGPT callback matching
 
 Discovery: `/.well-known/oauth-authorization-server` and the path-aware `/.well-known/oauth-protected-resource/api/copilot/mcp`, with a root resource-metadata fallback. Canonical metadata also exists at `/api/copilot/oauth/metadata` and `/api/copilot/oauth/resource`. MCP is stateless Streamable HTTP POST with JSON responses. GET/SSE and session deletion return 405.
 
-The existing Laravel scheduler runs `copilot:check-watches` every five minutes and `copilot:prune` daily. Keep the production scheduler enabled. Expired previews cannot submit. An uncertain submitted operation stays in `processing` and is retained during pruning; retrieve that same draft and reconcile its outcome instead of creating a new booking.
+Laravel defines `copilot:check-watches` every five minutes and `copilot:prune` daily. Production runs dedicated Copilot-only cron entries for these commands; preserve those entries without enabling unrelated scheduled tasks. Expired previews cannot submit. An uncertain submitted operation stays in `processing` and is retained during pruning; retrieve that same draft and reconcile its outcome instead of creating a new booking.
 
 Implementation lives in `app/Services/Copilot`, `app/Http/Controllers/Copilot`, `resources/views/copilot/widget.blade.php`, and the frontend consent/connections pages. Feature tests cover OAuth, access boundaries and action behavior; browser tests exercise the host bridge with fixtures. Actual rendering inside the user's ChatGPT host is the final connection check.
 
