@@ -41,7 +41,7 @@ class GoogleCalendarController extends Controller
             return response()->json([
                 'success' => true,
                 'data' => [
-                    'authorization_url' => $this->calendarService->buildAuthorizationUrl($state),
+                    'authorization_url' => $this->calendarService->buildAuthorizationUrl($state, $targetUser->email),
                 ],
             ]);
         } catch (ValidationException $exception) {
@@ -91,9 +91,20 @@ class GoogleCalendarController extends Controller
 
         try {
             $tokenData = $this->calendarService->exchangeAuthorizationCode((string) $request->query('code'));
+            $this->calendarService->assertCalendarPermission($tokenData);
             $user = User::findOrFail((int) $payload['user_id']);
             $existingConnection = GoogleCalendarConnection::query()->where('user_id', $user->id)->first();
             $providerEmail = $this->calendarService->fetchUserEmail((string) $tokenData['access_token']);
+            $sameAccount = $providerEmail && $existingConnection?->provider_email
+                && strcasecmp($providerEmail, $existingConnection->provider_email) === 0;
+            if ($existingConnection && !$sameAccount
+                && GoogleCalendarEventMapping::query()->where('user_id', $user->id)->exists()) {
+                throw new \App\Exceptions\PublicBusinessRuleException('Disconnect your current Google Calendar before connecting a different Google account.');
+            }
+            $refreshToken = $tokenData['refresh_token'] ?? ($sameAccount ? $existingConnection->refresh_token : null);
+            if (!$providerEmail || !$refreshToken) {
+                throw new \App\Exceptions\PublicBusinessRuleException('Google Calendar could not establish ongoing access. Please reconnect your intended Google account and grant calendar permission.');
+            }
 
             GoogleCalendarConnection::updateOrCreate(
                 ['user_id' => $user->id],
@@ -101,7 +112,7 @@ class GoogleCalendarController extends Controller
                     'provider_email' => $providerEmail,
                     'calendar_id' => config('services.google.calendar.default_calendar_id', 'primary'),
                     'access_token' => $tokenData['access_token'],
-                    'refresh_token' => $tokenData['refresh_token'] ?? $existingConnection?->refresh_token,
+                    'refresh_token' => $refreshToken,
                     'token_expires_at' => now()->addSeconds(max(((int) ($tokenData['expires_in'] ?? 3600)) - 60, 0)),
                     'sync_enabled' => true,
                     'last_error' => null,
@@ -148,12 +159,14 @@ class GoogleCalendarController extends Controller
                     'user_id' => $targetUser->id,
                     'user_name' => $targetUser->name,
                     'available' => (bool) (config('services.google.calendar.client_id') && config('services.google.calendar.client_secret')),
-                    'connected' => $connection !== null,
+                    'connected' => $connection !== null && $connection->last_error !== GoogleCalendarService::MISSING_PERMISSION_MESSAGE,
                     'provider_email' => $connection?->provider_email,
                     'calendar_id' => $connection?->calendar_id,
                     'sync_enabled' => (bool) ($connection?->sync_enabled ?? false),
                     'last_synced_at' => $connection?->last_synced_at?->toIso8601String(),
-                    'last_error' => \App\Services\ApiErrorResponder::storedFailure($connection?->last_error),
+                    'last_error' => $connection?->last_error === GoogleCalendarService::MISSING_PERMISSION_MESSAGE
+                        ? GoogleCalendarService::MISSING_PERMISSION_MESSAGE
+                        : \App\Services\ApiErrorResponder::storedFailure($connection?->last_error),
                 ],
             ]);
         } catch (ValidationException $exception) {

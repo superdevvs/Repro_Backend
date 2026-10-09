@@ -113,4 +113,16 @@ class GoogleCalendarServiceTest extends TestCase
 
         $this->assertSame('fresh-access-token', $this->connection->fresh()->access_token);
     }
+
+    public function test_missing_calendar_permission_returns_a_reviewed_reconnect_instruction(): void
+    {
+        Http::fake([
+            'https://www.googleapis.com/calendar/v3/calendars/*/events' => Http::response([
+                'error' => ['errors' => [['reason' => 'insufficientPermissions']]],
+            ], 403),
+        ]);
+        $this->expectException(\App\Exceptions\PublicBusinessRuleException::class);
+        $this->expectExceptionMessage(GoogleCalendarService::MISSING_PERMISSION_MESSAGE);
+        app(GoogleCalendarService::class)->createEvent($this->connection, ['summary' => 'Test']);
+    }
 }

@@ -53,6 +53,7 @@ class GoogleCalendarControllerTest extends TestCase
         $this->assertIsString($authorizationUrl);
         $this->assertStringContainsString('accounts.google.com', $authorizationUrl);
         $this->assertStringContainsString(urlencode('http://backend.test/api/google-calendar/callback'), $authorizationUrl);
+        $this->assertStringContainsString('login_hint=' . urlencode($this->photographer->email), $authorizationUrl);
     }
 
     public function test_non_photographers_cannot_access_google_calendar_management_routes(): void
@@ -127,6 +128,7 @@ class GoogleCalendarControllerTest extends TestCase
                 'access_token' => 'google-access-token',
                 'refresh_token' => 'google-refresh-token',
                 'expires_in' => 3600,
+                'scope' => 'openid email https://www.googleapis.com/auth/calendar.events',
             ], 200),
             'https://openidconnect.googleapis.com/v1/userinfo' => Http::response([
                 'email' => 'calendar-owner@example.com',
@@ -163,6 +165,7 @@ class GoogleCalendarControllerTest extends TestCase
                 'access_token' => 'google-access-token',
                 'refresh_token' => 'google-refresh-token',
                 'expires_in' => 3600,
+                'scope' => 'openid email https://www.googleapis.com/auth/calendar.events',
             ], 200),
             'https://openidconnect.googleapis.com/v1/userinfo' => Http::response([
                 'email' => 'calendar-owner@example.com',
@@ -296,6 +299,107 @@ class GoogleCalendarControllerTest extends TestCase
             ->assertJsonPath('data.connected', false);
 
         Http::assertNothingSent();
+    }
+
+    public function test_callback_rejects_missing_calendar_permission_without_saving_or_syncing(): void
+    {
+        \Illuminate\Support\Facades\Queue::fake();
+        Cache::put('google_calendar_oauth_state:denied-scope', [
+            'user_id' => $this->photographer->id,
+        ], now()->addMinutes(10));
+        Http::fake([
+            'https://oauth2.googleapis.com/token' => Http::response([
+                'access_token' => 'identity-only-token',
+                'scope' => 'openid email https://www.googleapis.com/auth/userinfo.email',
+            ]),
+        ]);
+
+        $response = $this->get('/api/google-calendar/callback?code=code&state=denied-scope');
+        $query = [];
+        parse_str(parse_url($response->headers->get('Location'), PHP_URL_QUERY), $query);
+        $this->assertSame('error', $query['google_calendar']);
+        $this->assertStringContainsString('Calendar permission was not granted', $query['message']);
+        $this->assertDatabaseMissing('google_calendar_connections', ['user_id' => $this->photographer->id]);
+        \Illuminate\Support\Facades\Queue::assertNothingPushed();
+        Http::assertSentCount(1);
+    }
+
+    public function test_callback_checks_tokeninfo_when_token_response_omits_scopes(): void
+    {
+        Cache::put('google_calendar_oauth_state:omitted-scope', [
+            'user_id' => $this->photographer->id,
+        ], now()->addMinutes(10));
+        Http::fake([
+            'https://oauth2.googleapis.com/token' => Http::response(['access_token' => 'token']),
+            'https://oauth2.googleapis.com/tokeninfo*' => Http::response(['scope' => 'openid email']),
+        ]);
+        $response = $this->get('/api/google-calendar/callback?code=code&state=omitted-scope');
+        $this->assertStringContainsString('google_calendar=error', $response->headers->get('Location'));
+        $this->assertDatabaseMissing('google_calendar_connections', ['user_id' => $this->photographer->id]);
+        Http::assertSentCount(2);
+    }
+
+    public function test_missing_permission_status_prompts_reconnection_and_shows_reviewed_message(): void
+    {
+        GoogleCalendarConnection::create([
+            'user_id' => $this->photographer->id,
+            'provider_email' => 'existing@example.com',
+            'calendar_id' => 'primary',
+            'access_token' => 'token',
+            'refresh_token' => 'refresh',
+            'sync_enabled' => false,
+            'last_error' => \App\Services\GoogleCalendar\GoogleCalendarService::MISSING_PERMISSION_MESSAGE,
+        ]);
+        Sanctum::actingAs($this->photographer);
+        $this->getJson('/api/google-calendar/status')->assertOk()
+            ->assertJsonPath('data.connected', false)
+            ->assertJsonPath('data.sync_enabled', false)
+            ->assertJsonPath('data.last_error', \App\Services\GoogleCalendar\GoogleCalendarService::MISSING_PERMISSION_MESSAGE);
+    }
+
+    public function test_switching_accounts_cannot_reuse_the_previous_accounts_refresh_token(): void
+    {
+        $this->assertRefreshTokenReconnect(false);
+    }
+
+    public function test_reconnecting_same_account_can_preserve_its_refresh_token(): void
+    {
+        $this->assertRefreshTokenReconnect(true);
+    }
+
+    private function assertRefreshTokenReconnect(bool $sameAccount): void
+    {
+        \Illuminate\Support\Facades\Queue::fake();
+        GoogleCalendarConnection::create([
+            'user_id' => $this->photographer->id,
+            'provider_email' => 'existing@example.com',
+            'calendar_id' => 'primary',
+            'access_token' => 'old-access',
+            'refresh_token' => 'old-refresh',
+            'token_expires_at' => now()->addHour(),
+            'sync_enabled' => true,
+        ]);
+        Cache::put('google_calendar_oauth_state:reconnect', [
+            'user_id' => $this->photographer->id,
+        ], now()->addMinutes(10));
+        Http::fake([
+            'https://oauth2.googleapis.com/token' => Http::response([
+                'access_token' => 'new-access',
+                'scope' => 'https://www.googleapis.com/auth/calendar.events',
+            ]),
+            'https://openidconnect.googleapis.com/v1/userinfo' => Http::response([
+                'email' => $sameAccount ? 'existing@example.com' : 'different@example.com',
+            ]),
+        ]);
+        $response = $this->get('/api/google-calendar/callback?code=code&state=reconnect');
+        $this->assertStringContainsString('google_calendar=' . ($sameAccount ? 'connected' : 'error'), $response->headers->get('Location'));
+        $connection = GoogleCalendarConnection::where('user_id', $this->photographer->id)->firstOrFail();
+        $this->assertSame('existing@example.com', $connection->provider_email);
+        $this->assertSame('old-refresh', $connection->refresh_token);
+        $this->assertSame($sameAccount ? 'new-access' : 'old-access', $connection->access_token);
+        if (!$sameAccount) {
+            \Illuminate\Support\Facades\Queue::assertNothingPushed();
+        }
     }
 
     public function test_disconnect_revokes_token_and_stops_future_sync_flag_before_cleanup(): void

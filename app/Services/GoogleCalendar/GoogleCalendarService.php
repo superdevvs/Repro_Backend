@@ -3,6 +3,7 @@
 namespace App\Services\GoogleCalendar;
 
 use App\Models\GoogleCalendarConnection;
+use App\Exceptions\PublicBusinessRuleException;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Http;
@@ -10,7 +11,9 @@ use RuntimeException;
 
 class GoogleCalendarService
 {
-    public function buildAuthorizationUrl(string $state): string
+    public const MISSING_PERMISSION_MESSAGE = 'Calendar permission was not granted. Please reconnect, select your intended Google account, and check "View and edit events on all your calendars" before continuing.';
+
+    public function buildAuthorizationUrl(string $state, ?string $email = null): string
     {
         $this->assertConfigured();
 
@@ -23,7 +26,30 @@ class GoogleCalendarService
             'include_granted_scopes' => 'true',
             'scope' => config('services.google.calendar.scope'),
             'state' => $state,
+            'login_hint' => $email,
         ]);
+    }
+
+    public function assertCalendarPermission(array $tokenData): void
+    {
+        $scope = $tokenData['scope'] ?? null;
+        if (!is_string($scope)) {
+            $response = Http::acceptJson()->get('https://oauth2.googleapis.com/tokeninfo', [
+                'access_token' => $tokenData['access_token'],
+            ]);
+            if ($response->failed()) {
+                throw new PublicBusinessRuleException('Unable to verify Google Calendar permission. Please reconnect and try again.');
+            }
+            $scope = $response->json('scope', '');
+        }
+
+        $granted = preg_split('/\s+/', trim((string) $scope));
+        if (!array_intersect($granted, [
+            'https://www.googleapis.com/auth/calendar.events',
+            'https://www.googleapis.com/auth/calendar',
+        ])) {
+            throw new PublicBusinessRuleException(self::MISSING_PERMISSION_MESSAGE);
+        }
     }
 
     public function exchangeAuthorizationCode(string $code): array
@@ -157,6 +183,10 @@ class GoogleCalendarService
     protected function parseCalendarResponse(Response $response): array
     {
         if ($response->failed()) {
+            if ($response->status() === 403
+                && in_array('insufficientPermissions', array_column($response->json('error.errors', []), 'reason'), true)) {
+                throw new PublicBusinessRuleException(self::MISSING_PERMISSION_MESSAGE);
+            }
             throw new RuntimeException('Google Calendar event request failed.');
         }
 
