@@ -1,5 +1,7 @@
 <?php
 
+require __DIR__.'/copilot.php';
+
 use App\Http\Controllers\Admin\AccountingExpenseController;
 use App\Http\Controllers\Admin\AccountLinkController;
 use App\Http\Controllers\Admin\AccountStatusController;

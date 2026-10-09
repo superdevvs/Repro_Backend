@@ -1,5 +1,8 @@
 <?php
 
+\Illuminate\Support\Facades\Schedule::command('copilot:check-watches')->everyFiveMinutes()->withoutOverlapping();
+\Illuminate\Support\Facades\Schedule::command('copilot:prune')->dailyAt('03:35')->withoutOverlapping();
+
 use App\Jobs\SendSystemEmailDispatchJob;
 use App\Models\ShootUploadAttempt;
 use App\Models\SystemEmailDispatch;

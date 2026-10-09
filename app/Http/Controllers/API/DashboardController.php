@@ -1084,6 +1084,7 @@ class DashboardController extends Controller
             }
             // Recheck support visibility on every request, including permission revocation.
             $activityLogs = $activityLogs->concat(app(\App\Services\SupportTicketService::class)->notifications($user, self::NOTIFICATION_FEED_LIMIT))
+                ->concat(app(\App\Services\Copilot\CopilotWatches::class)->notifications($user, self::NOTIFICATION_FEED_LIMIT))
                 ->sortByDesc(fn (array $item) => strtotime((string) ($item['timestamp'] ?? '')) ?: 0)->take(self::NOTIFICATION_FEED_LIMIT)->values();
 
             $includeCalls = in_array($role, ['admin', 'superadmin', 'editing_manager', 'salesrep'], true);

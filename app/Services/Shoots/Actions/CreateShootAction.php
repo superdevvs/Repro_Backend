@@ -381,6 +381,11 @@ class CreateShootAction
                 'editor_notes' => $validated['editor_notes'] ?? null,
             ]);
 
+            if ($operationId = $request->attributes->get('copilot_operation_id')) {
+                // Server-owned operation ID: persisted in the booking transaction for crash reconciliation.
+                $shoot->forceFill(['copilot_operation_id' => $operationId])->save();
+            }
+
             if ($unitBooking) {
                 $unitBooking['services'] = $servicesPayload;
                 $multiUnit->persist($shoot, $unitBooking);
