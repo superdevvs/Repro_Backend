@@ -281,6 +281,77 @@ class HybridSchedulingWritePathsTest extends TestCase
         $this->assertSame('requested', $shoot->fresh()->status);
     }
 
+    public function test_rep_saves_completed_visit_address_staging_and_discount_together_without_rechecking_travel(): void
+    {
+        $this->travelTo(\Carbon\Carbon::parse('2026-10-15T20:00:00Z'));
+        [$admin, $shoot, $service] = $this->fixture();
+        $rep = User::factory()->create(['role' => 'salesRep', 'email_verification_required_at' => null]);
+        Sanctum::actingAs($rep);
+        $shoot->forceFill(['rep_id' => $rep->id, 'status' => 'uploaded', 'workflow_status' => 'uploaded',
+            'photos_uploaded_at' => now(), 'editor_notes' => 'Primary bedroom and two living/dining angles',
+            'state' => 'MD', 'tax_region' => 'MD', 'tax_percent' => 6])->saveQuietly();
+        $staging = Service::factory()->noIntake()->create(['price' => 45, 'allow_multiple' => true,
+            'photographer_required' => false]);
+        $this->postJson('/api/photographer/availability/feasibility', ['shoot_id' => $shoot->id,
+            'action_mode' => 'update', 'address' => '1 Stonehenge Circle',
+            'services' => [['id' => $service->id], ['id' => $staging->id, 'quantity' => 3]]])
+            ->assertOk()->assertJsonPath('data.available', true);
+        $engine = Mockery::mock(ScheduleFeasibilityService::class);
+        $engine->shouldNotReceive('evaluate');
+        $this->app->instance(ScheduleFeasibilityService::class, $engine);
+        $availability = Mockery::mock(PhotographerAvailabilityService::class)->makePartial();
+        $availability->shouldNotReceive('assertWithinAvailabilityBounds');
+        $this->app->instance(PhotographerAvailabilityService::class, $availability);
+        $this->patchJson("/api/shoots/{$shoot->id}", ['address' => '1 Stonehenge Circle',
+            'services' => [['id' => $service->id], ['id' => $staging->id, 'quantity' => 3]],
+            'discount_type' => 'percent', 'discount_value' => 10,
+            'notify_client' => false, 'notify_photographer' => false])->assertOk();
+        $saved = $shoot->fresh();
+        $this->assertSame('1 Stonehenge Circle', $saved->address);
+        $this->assertSame('2026-10-15 14:00:00', $saved->scheduled_at->format('Y-m-d H:i:s'));
+        $this->assertSame('uploaded', $saved->workflow_status);
+        $this->assertSame('Primary bedroom and two living/dining angles', $saved->editor_notes);
+        $this->assertSame(3, (int) $saved->serviceItems()->where('service_id', $staging->id)->sole()->quantity);
+        $this->assertSame(45.0, (float) $saved->serviceItems()->where('service_id', $staging->id)->sole()->price);
+        $this->assertSame('percent', $saved->discount_type);
+        $this->assertSame(10.0, (float) $saved->discount_value);
+        $this->assertSame(23.5, (float) $saved->discount_amount);
+        $this->assertSame(224.19, (float) $saved->total_quote);
+        Mail::assertNothingSent();
+    }
+
+    public static function guardedCompletedVisitEdits(): array
+    {
+        return ['not uploaded' => ['scheduled', null, '2026-10-15T20:00:00Z', 'address'],
+            'future capture' => ['uploaded', '2026-10-15T12:00:00Z', '2026-10-15T13:00:00Z', 'address'],
+            'missing completion evidence' => ['uploaded', null, '2026-10-15T20:00:00Z', 'address'],
+            'reschedule' => ['uploaded', '2026-10-15T15:00:00Z', '2026-10-15T20:00:00Z', 'reschedule'],
+            'additional capture service' => ['uploaded', '2026-10-15T15:00:00Z', '2026-10-15T20:00:00Z', 'capture']];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('guardedCompletedVisitEdits')]
+    public function test_completion_exception_does_not_bypass_real_schedule_changes(string $status, ?string $uploadedAt, string $clock, string $edit): void
+    {
+        $this->travelTo(\Carbon\Carbon::parse($clock));
+        [$admin, $shoot, $service] = $this->fixture();
+        $shoot->forceFill(['status' => $status, 'workflow_status' => $status, 'photos_uploaded_at' => $uploadedAt,
+            'completed_at' => null])->saveQuietly();
+        $payload = ['address' => 'Changed building'];
+        if ($edit === 'reschedule') $payload['scheduled_at'] = '2026-10-16T14:00:00Z';
+        if ($edit === 'capture') {
+            $additional = Service::factory()->create(['photographer_required' => true, 'shoot_duration_minutes' => 45]);
+            $payload['services'] = [['id' => $service->id], ['id' => $additional->id]];
+        }
+        $engine = Mockery::mock(ScheduleFeasibilityService::class);
+        $engine->shouldReceive('evaluate')->once()->andReturn(['enabled' => true]);
+        $engine->shouldReceive('assertResult')->once()->andThrow(new PublicApiResponseException(response()->json(['message' => 'Travel still requires review'], 422)));
+        $this->app->instance(ScheduleFeasibilityService::class, $engine);
+        $originalAddress = $shoot->address;
+        $this->patchJson("/api/shoots/{$shoot->id}", $payload)->assertUnprocessable()->assertJsonPath('message', 'Travel still requires review');
+        $this->assertSame($originalAddress, $shoot->fresh()->address);
+        $this->assertSame(1, $shoot->serviceItems()->count());
+    }
+
     public static function aiScheduleTypes(): array
     {
         return ['zoned single property' => [false, false], 'legacy single property' => [true, false],

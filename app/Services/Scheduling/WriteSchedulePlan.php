@@ -17,11 +17,37 @@ class WriteSchedulePlan
         if (($payload['action_mode'] ?? 'update') !== 'update') {
             return true;
         }
-        foreach (['address', 'city', 'state', 'zip', 'timezone'] as $field) {
+        if (array_key_exists('scheduled_at', $payload)
+            && (empty($payload['scheduled_at']) || ! $shoot->scheduled_at
+                || ! Carbon::parse($payload['scheduled_at'])->equalTo($shoot->scheduled_at))) return true;
+        if (array_key_exists('scheduled_date', $payload)
+            && (string) $payload['scheduled_date'] !== $shoot->scheduled_date?->toDateString()) return true;
+        if (array_key_exists('time', $payload)
+            && Carbon::parse($payload['time'] ?: '00:00')->format('H:i:s') !== Carbon::parse($shoot->time ?: '00:00')->format('H:i:s')) return true;
+        if (array_key_exists('photographer_id', $payload) && (int) $payload['photographer_id'] !== (int) $shoot->photographer_id) return true;
+        $before = app(ShootDurationResolver::class)->windowsForShoot($shoot);
+        $after = app(VisitPlanBuilder::class)->build($payload, $shoot, $actor);
+        $normalize = function (array $rows): array {
+            $keys = array_map(fn ($row) => (int) $row['photographer_id'].':'.Carbon::parse($row['scheduled_at'] ?? $row['start'])->getTimestamp().':'.(int) ($row['duration_minutes'] ?? $row['minutes']),
+                array_filter($rows, fn ($row) => ! empty($row['photographer_id']) && ! empty($row['scheduled_at'] ?? $row['start'])));
+            sort($keys, SORT_STRING);
+            return $keys;
+        };
+        $sameVisits = $normalize($before) === $normalize($after);
+        // Correcting the location of a completed capture cannot change the route
+        // already driven. Upload/completion evidence and unchanged capture windows
+        // are required: new services, return visits and reschedules still check it.
+        $completedCorrection = $sameVisits && $before !== []
+            && ($shoot->photos_uploaded_at || $shoot->completed_at)
+            && in_array((string) ($shoot->workflow_status ?: $shoot->status), ['uploaded', 'completed', 'editing', 'review', 'ready', 'delivered'], true)
+            && collect($before)->every(fn ($window) => $window['start']
+                && $window['start']->copy()->addMinutes($window['minutes'])->lte(now()));
+        foreach (['address', 'city', 'state', 'zip'] as $field) {
             if (array_key_exists($field, $payload) && trim((string) $payload[$field]) !== trim((string) $shoot->{$field})) {
-                return true;
+                if (! $completedCorrection) return true;
             }
         }
+        if (array_key_exists('timezone', $payload) && trim((string) $payload['timezone']) !== trim((string) $shoot->timezone)) return true;
         foreach (['status', 'workflow_status'] as $field) {
             if (array_key_exists($field, $payload) && (string) $payload[$field] !== (string) $shoot->{$field}) {
                 return true;
@@ -30,16 +56,7 @@ class WriteSchedulePlan
         if (! empty($payload['travel_location_confirmed'])) {
             return true;
         }
-        $normalize = function (array $rows): array {
-            $keys = array_map(fn ($row) => (int) $row['photographer_id'].':'.Carbon::parse($row['scheduled_at'] ?? $row['start'])->getTimestamp().':'.(int) ($row['duration_minutes'] ?? $row['minutes']),
-                array_filter($rows, fn ($row) => ! empty($row['photographer_id']) && ! empty($row['scheduled_at'] ?? $row['start'])));
-            sort($keys, SORT_STRING);
-            return $keys;
-        };
-        $before = app(ShootDurationResolver::class)->windowsForShoot($shoot);
-        $after = app(VisitPlanBuilder::class)->build($payload, $shoot, $actor);
-
-        return $normalize($before) !== $normalize($after);
+        return ! $sameVisits;
     }
 
     public function services(array $payload, array $services, ?DateTimeInterface $at, ?int $photographerId, ?string $timezone, string $mode): array
