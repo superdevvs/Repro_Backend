@@ -48,6 +48,7 @@ class ClientBillingService
             ->orderByDesc('created_at')
             ->get()
             ->filter(fn (Invoice $invoice) => $this->isClientBillableInvoice($invoice, $client->id))
+            ->reject(fn(Invoice $invoice)=>$invoice->status==='draft' && $invoice->items->contains(fn($item)=>data_get($item->meta,'source')==='manual_invoice'))
             ->values();
 
         $invoicedShootIds = [];
@@ -174,7 +175,7 @@ class ClientBillingService
             'invoiceId' => $invoice->id,
             'shootId' => $primaryShoot?->id,
             'number' => $invoice->invoice_number ?: (string) $invoice->id,
-            'property' => $this->describeProperty($relatedShoots, $primaryShoot),
+            'property' => $relatedShoots->isEmpty() ? (data_get($invoice->items->first()?->meta,'property_address') ?: $this->describeProperty($relatedShoots, $primaryShoot)) : $this->describeProperty($relatedShoots, $primaryShoot),
             'issueDate' => $issueDate,
             'dueDate' => $dueDate,
             'amount' => $amount,
@@ -195,7 +196,7 @@ class ClientBillingService
             'items' => $this->serializeInvoiceItems($invoice),
             'shoot' => $primaryShoot ? $this->serializeShoot($primaryShoot) : null,
             'shoots' => $relatedShoots->map(fn (Shoot $shoot) => $this->serializeShoot($shoot))->all(),
-            'notes' => $invoice->notes,
+            'notes' => $invoice->notes ?? data_get($invoice->items->first()?->meta,'document_notes'),
             'paidAt' => $this->normalizeDateTime($invoice->paid_at),
         ];
     }

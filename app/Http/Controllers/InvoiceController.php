@@ -131,6 +131,12 @@ class InvoiceController extends Controller
             return response()->json(['data' => [], 'message' => 'No access to invoices'], 403);
         }
 
+        if ($request->query('role') === 'client' && in_array($user->role,['admin','superadmin'],true)) $query->where(fn($q)=>$q->where('role','client')->orWhereNull('role'));
+
+        if($request->filled('search')) {
+            $search='%'.mb_substr((string)$request->query('search'),0,200).'%';
+            $query->where(fn($q)=>$q->where('invoice_number','like',$search)->orWhereHas('client',fn($q)=>$q->where('name','like',$search))->orWhereHas('shoot',fn($q)=>$q->where('address','like',$search))->orWhereHas('shoots',fn($q)=>$q->where('address','like',$search))->orWhereHas('items',fn($q)=>$q->where('meta->property_address','like',$search)));
+        }
         // Additional filters (applied after role filtering)
         if ($request->filled('photographer_id')) {
             $query->where('photographer_id', $request->input('photographer_id'));
@@ -516,6 +522,7 @@ class InvoiceController extends Controller
         $clientPayment = $this->syncShootPaymentFromInvoice($invoice, $paymentAmount, $paymentMethod, $paymentDetails, $paidAt);
 
         $invoice->loadMissing(['client', 'photographer', 'shoot', 'shoot.client']);
+        if (!$isPaid && $paymentAmount > 0) $invoice->recordAuditEvent('payment_recorded',$request->user(),'Partial payment recorded.',['payment_amount'=>$paymentAmount,'amount_paid'=>$amountPaid,'payment_method'=>$paymentMethod,'paid_at'=>$paidAt->toISOString()]);
         if ($isPaid) {
             $this->markPayoutShootsPaid($invoice, $paidAt);
             $invoice->recordAuditEvent('paid', $request->user(), $isNonPositivePayoutSettlement
@@ -587,6 +594,9 @@ class InvoiceController extends Controller
 
         $invoiceAdjustments = app(InvoiceAdjustmentService::class);
         $relatedShoots = $invoiceAdjustments->relatedShoots($invoice);
+        if ($relatedShoots->isEmpty() && $invoice->items()->where('meta->source','manual_invoice')->exists()) {
+            return Payment::create(['invoice_id'=>$invoice->id,'amount'=>$paymentAmount,'currency'=>'USD','payment_method'=>$paymentMethod,'payment_details'=>is_array($paymentDetails)?$paymentDetails:null,'status'=>Payment::STATUS_COMPLETED,'processed_at'=>$paidAt]);
+        }
         if ($relatedShoots->count() !== 1) {
             return null;
         }

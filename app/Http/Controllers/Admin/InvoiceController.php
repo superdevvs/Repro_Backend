@@ -242,6 +242,7 @@ class InvoiceController extends Controller
 
         $invoice->save();
         $clientPayment = $this->syncShootPaymentFromInvoice($invoice, $paymentAmount, $paymentMethod, $paymentDetails, $paidAt);
+        if (!$isPaid && $paymentAmount > 0) $invoice->recordAuditEvent('payment_recorded',$request->user(),'Partial payment recorded.',['payment_amount'=>$paymentAmount,'amount_paid'=>$amountPaid,'payment_method'=>$paymentMethod,'paid_at'=>$paidAt->toISOString()]);
         if ($isPaid) {
             $this->markPayoutShootsPaid($invoice, $paidAt);
             $invoice->recordAuditEvent('paid', $request->user(), $isNonPositivePayoutSettlement
@@ -297,6 +298,9 @@ class InvoiceController extends Controller
         }
 
         $relatedShoots = $this->invoiceAdjustments->relatedShoots($invoice);
+        if ($relatedShoots->isEmpty() && $invoice->items()->where('meta->source','manual_invoice')->exists()) {
+            return Payment::create(['invoice_id'=>$invoice->id,'amount'=>$paymentAmount,'currency'=>'USD','payment_method'=>$paymentMethod,'payment_details'=>is_array($paymentDetails)?$paymentDetails:null,'status'=>Payment::STATUS_COMPLETED,'processed_at'=>$paidAt]);
+        }
         if ($relatedShoots->count() !== 1) {
             return null;
         }

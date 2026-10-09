@@ -1455,3 +1455,13 @@ Route::middleware('throttle:600,1')->post('admin/system-overview/server/validate
 require __DIR__.'/shoot-unit-tours.php';
 
 require __DIR__.'/aryeo.php';
+
+// Accounting Home aggregates and explicit manual client-invoice operations.
+Route::middleware(['auth:sanctum', 'role:admin,superadmin', 'permission:accounting'])->group(function () {
+    Route::get('/admin/accounting-home', \App\Http\Controllers\Admin\AccountingHomeController::class);
+    Route::get('/admin/accounting-home/invoice-options', [\App\Http\Controllers\Admin\AccountingInvoiceComposerController::class, 'options'])->middleware('permission:invoices,create');
+    Route::post('/admin/accounting-home/invoices', [\App\Http\Controllers\Admin\AccountingInvoiceComposerController::class, 'store'])->middleware('permission:invoices,create');
+    Route::post('/admin/accounting-home/invoices/{invoice}/payment', [\App\Http\Controllers\Admin\AccountingInvoiceComposerController::class,'recordPayment'])->middleware('permission:payments,mark-paid');
+    Route::patch('/admin/accounting-home/invoices/{invoice}', [\App\Http\Controllers\Admin\AccountingInvoiceComposerController::class,'update'])->middleware('permission:invoices,update');
+    Route::post('/admin/accounting-home/invoices/{invoice}/send', [\App\Http\Controllers\Admin\AccountingInvoiceComposerController::class, 'send'])->middleware('permission:invoices,update');
+});
