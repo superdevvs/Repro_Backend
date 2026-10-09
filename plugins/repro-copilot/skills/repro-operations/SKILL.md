@@ -7,7 +7,7 @@ Resolve the connected account with `get_profile` when identity or account capabi
 
 Use `search` and `fetch` for source-backed shoot answers. For broader lists, use `list_shoots` and disclose pagination. Resolve ambiguous properties before preparing changes. Use the property's timezone for scheduling, including an explicit offset in appointment timestamps.
 
-For booking, retrieve visible services and actual availability. Ask for missing property, client, service and notification choices. `prepare_booking` returns a stored preview; client bookings retain the Requested approval flow. Multi-unit booking and advanced schedule overrides require the Repro editor.
+For booking, retrieve visible services and actual availability. Staff can find an existing client with `get_services` and `client_query`, resolve ambiguity, then pass the returned client_id to retrieve that client's catalog. Ask for missing property, client, service and notification choices. `prepare_booking` returns a stored preview; client bookings retain the Requested approval flow. New-account creation, multi-unit booking and advanced schedule overrides require the Repro editor.
 
 For changes, use the appropriate prepare tool. Show the exact property, appointment, prices, note content and notification effects. Obtain explicit user approval for the concrete preview before `commit_action`. The review hash is the server's version identifier, not evidence of consent. After an uncertain result, retrieve that same draft with `get_draft`; do not create another draft as a retry. Report returned record status separately from notification/provider delivery.
 

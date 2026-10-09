@@ -88,6 +88,19 @@ final class WorkflowsTest extends CopilotTestCase
         $this->assertDatabaseCount('shoots', 0);
     }
 
+    public function test_staff_can_resolve_client_names_but_clients_cannot_enumerate_accounts(): void
+    {
+        $client = User::factory()->create(['role' => 'client', 'name' => 'Oak Realty', 'email' => 'oak@example.test']);
+        User::factory()->create(['role' => 'client', 'name' => 'Oak Suspended', 'account_status' => 'suspended']);
+        $staff = $this->connection(User::factory()->create(['role' => 'admin']));
+        $this->tool($staff['access_token'], 'get_services', ['client_query' => 'Oak'])
+            ->assertJsonMissingPath('result.isError')->assertJsonCount(1, 'result.structuredContent.clients')
+            ->assertJsonPath('result.structuredContent.clients.0.id', $client->id);
+        $own = $this->connection($client);
+        $this->tool($own['access_token'], 'get_services', ['client_query' => 'Oak'])
+            ->assertJsonPath('result.structuredContent.error.status', 403)->assertDontSee('oak@example.test');
+    }
+
     public function test_booking_permission_override_is_enforced_before_preparation(): void
     {
         $user = User::factory()->create(['role' => 'client', 'permission_overrides' => ['deny' => ['book-shoot-create'], 'allow' => []]]);

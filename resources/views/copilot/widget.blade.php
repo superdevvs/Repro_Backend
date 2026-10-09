@@ -14,6 +14,9 @@
 (() => {
   const root=document.querySelector('main'), content=document.getElementById('content'), message=document.getElementById('message');
   const pending=new Map(); let sequence=0, ready=false, hostOrigin=null;
+  let lastHeight=0;
+  function resize(){if(!ready)return;const height=Math.ceil(root.getBoundingClientRect().height);if(height!==lastHeight){lastHeight=height;notify('ui/notifications/size-changed',{height});}}
+  if(typeof ResizeObserver==='function')new ResizeObserver(()=>requestAnimationFrame(resize)).observe(root);
   const label=value=>String(value).replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase());
   function el(tag,text,className){const node=document.createElement(tag);if(text!==undefined)node.textContent=String(text);if(className)node.className=className;return node;}
   function notify(method,params){window.parent.postMessage({jsonrpc:'2.0',method,params},hostOrigin||'*');}
@@ -48,7 +51,7 @@
       if(data.total!==undefined)content.append(el('p',rows.length+' shown · '+data.total+' total'+(data.has_more||data.truncated?' · More results available':''),'muted'));return;
     }
     if(data.shoot){content.append(el('h2',data.shoot.address||'Shoot details'));content.append(valueNode(data.shoot));const link=safeLink(data.url||data.shoot.source_url,'Open shoot in Repro');if(link)content.append(link);Object.entries(data).filter(([key])=>!['shoot','id','title','text','url','media_url'].includes(key)).forEach(([key,value])=>{content.append(el('h2',label(key)),valueNode(value));});return;}
-    if(data.name&&data.email){content.append(el('h2',data.name),el('p',data.email));content.append(valueNode({role:data.role,scopes:data.scopes}));return;}
+    if(data.name&&data.email){content.append(el('h2',data.name),el('p',data.email));content.append(valueNode({role:data.role,timezone:data.timezone,scopes:data.scopes}));return;}
     content.append(valueNode(data));
   }
   window.addEventListener('message',event=>{
@@ -59,7 +62,7 @@
     if(msg.method==='ui/notifications/host-context-changed'){const theme=msg.params?.theme;if(theme==='dark'||theme==='light')document.documentElement.style.colorScheme=theme;}
   });
   document.getElementById('search-form').addEventListener('submit',event=>{event.preventDefault();call('search',{query:document.getElementById('search').value.trim()}).catch(()=>{});});
-  if(window.parent!==window)rpc('ui/initialize',{appInfo:{name:'repro-copilot',version:'1.0.0'},appCapabilities:{},protocolVersion:'2026-01-26'}).then(result=>{ready=true;const theme=result?.hostContext?.theme;if(theme==='dark'||theme==='light')document.documentElement.style.colorScheme=theme;notify('ui/notifications/initialized',{});}).catch(()=>{message.textContent='Use the conversation for this workflow; the interactive card could not connect.';});
+  if(window.parent!==window)rpc('ui/initialize',{appInfo:{name:'repro-copilot',version:'1.0.1'},appCapabilities:{},protocolVersion:'2026-01-26'}).then(result=>{ready=true;const theme=result?.hostContext?.theme;if(theme==='dark'||theme==='light')document.documentElement.style.colorScheme=theme;notify('ui/notifications/initialized',{});resize();}).catch(()=>{message.textContent='Use the conversation for this workflow; the interactive card could not connect.';});
   else message.textContent='Preview only. Connect this plugin in ChatGPT to use live records.';
 })();
 </script></body></html>

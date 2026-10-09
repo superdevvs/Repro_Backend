@@ -118,6 +118,15 @@ final class CopilotData
 
     public function services(array $args, User $user): array
     {
+        $matches = [];
+        if (isset($args['client_query'])) {
+            abort_unless(app(ShootManagementAccess::class)->can($user) && $this->permissions->userCan($user, 'book-shoot', 'create'), 403, 'Client lookup requires booking management access.');
+            abort_if(trim($args['client_query']) === '', 422, 'Enter a client name or email.');
+            $matches = User::where('role', 'client')->whereNull('locked_at')
+                ->where(fn ($q) => $q->whereNull('account_status')->orWhere('account_status', User::ACCOUNT_STATUS_ACTIVE))
+                ->where(fn ($q) => $q->where('name', 'like', '%'.$args['client_query'].'%')->orWhere('email', 'like', '%'.$args['client_query'].'%'))
+                ->orderBy('name')->limit(20)->get(['id', 'name', 'email'])->toArray();
+        }
         $client = isset($args['client_id']) ? User::findOrFail($args['client_id']) : $user;
         abort_unless($client->id === $user->id || app(ShootManagementAccess::class)->can($user), 403);
         $records = Service::query()->bookable()->with('sqftRanges')->visibleToClient(strtolower($client->role) === 'client' ? $client : null)->orderBy('name')->get();
@@ -125,7 +134,9 @@ final class CopilotData
         return ['data' => $records->map(fn ($s) => ['id' => $s->id, 'name' => $s->name, 'pricing_type' => $s->pricing_type,
             'catalog_price' => $s->pricing_type === 'variable' && ! isset($args['sqft']) ? null : $s->getPriceForSqft($args['sqft'] ?? null),
             'duration_minutes' => $s->getShootDurationMinutes(), 'photographer_required' => $s->requiresPhotographer()])->all(),
-            'price_basis' => 'Catalog only. Tax, discounts and final booking rules are applied during review and submission.'];
+            'price_basis' => 'Catalog only. Tax, discounts and final booking rules are applied during review and submission.',
+            ...(isset($args['client_query']) ? ['clients' => $matches, 'client_lookup_limit' => 20,
+                'next_step' => 'Resolve the exact client, then call get_services with client_id before preparing their booking. New accounts are created in Repro.'] : [])];
     }
 
     public function finance(array $args, User $user): array

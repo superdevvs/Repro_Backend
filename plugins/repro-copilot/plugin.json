@@ -1,6 +1,6 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "repro-copilot",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Search and explain Repro shoots, compare booking options, review actions, and inspect accounting and Studio status."
 }

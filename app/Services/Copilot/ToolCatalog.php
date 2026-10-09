@@ -4,7 +4,7 @@ namespace App\Services\Copilot;
 
 final class ToolCatalog
 {
-    public const UI = 'ui://repro/copilot-v1.html';
+    public const UI = 'ui://repro/copilot-v2.html';
 
     public function tools(): array
     {
@@ -22,7 +22,7 @@ final class ToolCatalog
             $this->tool('list_shoots', 'Browse shoots', 'Browse permission-scoped shoots. Pagination and a total count disclose when results are incomplete.', ['query' => $string, 'status' => $string,
                 ...$range, 'page' => ['type' => 'integer', 'minimum' => 1], 'client_id' => $id, 'photographer_id' => $id]),
             $this->tool('operations_brief', 'Operational exceptions', 'Find unassigned shoots, missing media and pending review. These are observed states, not invented deadlines. Dates refer to scheduled dates.', $range, ['from', 'to']),
-            $this->tool('get_services', 'Bookable service catalog', 'Get catalog prices and durations visible to the selected client. Rates exclude tax and discounts; variable rates require square footage.', ['client_id' => $id, 'sqft' => $id]),
+            $this->tool('get_services', 'Find clients and bookable services', 'Booking staff can use client_query to find an existing client by name or email. Resolve ambiguity, then pass client_id for that client\'s visible catalog prices and durations. Rates exclude tax and discounts; variable rates require square footage.', ['client_id' => $id, 'client_query' => $string, 'sqft' => $id]),
             $this->tool('find_availability', 'Photographer and travel options', 'Check actual availability and travel feasibility. Does not reserve a slot. Recheck during booking. Use the property local date/time.',
                 ['date' => $date, 'time' => $string, 'duration_minutes' => ['type' => 'integer', 'minimum' => 5, 'maximum' => 300],
                     'shoot_address' => $string, 'shoot_city' => $string, 'shoot_state' => $string, 'shoot_zip' => $string,

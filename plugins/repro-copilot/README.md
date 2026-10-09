@@ -25,7 +25,7 @@ Try: “Show shoots needing attention this week”, “Find my Oak Lane shoot”
 | Account | get_profile | Current connected identity and effective permissions |
 | Shoots | search, fetch, list_shoots | Source links, role-scoped records, appropriate notes, pagination |
 | Operations | operations_brief | Recorded workflow/media blockers with date basis |
-| Booking | get_services, find_availability, prepare_booking | Visible catalog, actual availability, immutable priced review |
+| Booking | get_services, find_availability, prepare_booking | Existing-client lookup, visible catalog, actual availability, immutable priced review |
 | Changes | prepare_reschedule, prepare_note, get_draft, commit_action | Expiring previews, stale-state rejection, single operation submission |
 | Watches | prepare_watch, list_watches | Five-minute checks; Repro in-app alerts on changes |
 | Accounting | finance_report | Collections by currency; photographer, editor and sales-rep payouts; explicit bases/exclusions |
@@ -48,9 +48,9 @@ Interactive cards provide shoot inspection, source navigation, account informati
 
 OAuth uses authorization code + PKCE S256, exact HTTPS ChatGPT callback matching, audience-bound opaque tokens stored as hashes, one-use codes, rotating refresh tokens with replay-family revocation, short access expiry and user-controlled revocation. Dashboard tokens are never accepted by MCP. Runtime permissions and active-account status are checked for each tool call.
 
-Discovery: `/.well-known/oauth-authorization-server` and `/.well-known/oauth-protected-resource`; canonical metadata also exists at `/api/copilot/oauth/metadata` and `/api/copilot/oauth/resource`. MCP is stateless Streamable HTTP POST with JSON responses. GET/SSE and session deletion return 405.
+Discovery: `/.well-known/oauth-authorization-server` and the path-aware `/.well-known/oauth-protected-resource/api/copilot/mcp`, with a root resource-metadata fallback. Canonical metadata also exists at `/api/copilot/oauth/metadata` and `/api/copilot/oauth/resource`. MCP is stateless Streamable HTTP POST with JSON responses. GET/SSE and session deletion return 405.
 
-The existing Laravel scheduler runs `copilot:check-watches` every five minutes. Keep the production scheduler enabled. Expired previews cannot submit. An uncertain submitted operation stays in `processing`; retrieve that same draft and reconcile its outcome instead of creating a new booking.
+The existing Laravel scheduler runs `copilot:check-watches` every five minutes and `copilot:prune` daily. Keep the production scheduler enabled. Expired previews cannot submit. An uncertain submitted operation stays in `processing` and is retained during pruning; retrieve that same draft and reconcile its outcome instead of creating a new booking.
 
 Implementation lives in `app/Services/Copilot`, `app/Http/Controllers/Copilot`, `resources/views/copilot/widget.blade.php`, and the frontend consent/connections pages. Feature tests cover OAuth, access boundaries and action behavior; browser tests exercise the host bridge with fixtures. Actual rendering inside the user's ChatGPT host is the final connection check.
 
