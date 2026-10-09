@@ -81,7 +81,7 @@ class GoogleCalendarControllerTest extends TestCase
         $this->assertSame('openid email https://www.googleapis.com/auth/calendar.events.owned', $previewQuery['scope']);
         $this->assertSame($this->photographer->email, $previewQuery['login_hint']);
         Sanctum::actingAs(User::factory()->create(['role' => 'client']));
-        $this->postJson('/api/google-calendar/connect', ['owned_scope_preview' => true])->assertUnprocessable();
+        $this->postJson('/api/google-calendar/connect', ['owned_scope_preview' => true])->assertForbidden();
     }
 
     public function test_admin_can_start_google_calendar_connection_for_a_selected_photographer(): void
