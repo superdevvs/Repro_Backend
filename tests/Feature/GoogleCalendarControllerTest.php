@@ -69,6 +69,21 @@ class GoogleCalendarControllerTest extends TestCase
         $this->postJson('/api/google-calendar/connect')->assertUnprocessable();
     }
 
+    public function test_owned_scope_preview_is_opt_in_and_preserves_photographer_authorization(): void
+    {
+        config(['services.google.calendar.scope' => 'openid email https://www.googleapis.com/auth/calendar.events']);
+        Sanctum::actingAs($this->photographer);
+        $normal = $this->postJson('/api/google-calendar/connect')->assertOk();
+        parse_str(parse_url($normal->json('data.authorization_url'), PHP_URL_QUERY), $normalQuery);
+        $this->assertSame('openid email https://www.googleapis.com/auth/calendar.events', $normalQuery['scope']);
+        $preview = $this->postJson('/api/google-calendar/connect', ['owned_scope_preview' => true])->assertOk();
+        parse_str(parse_url($preview->json('data.authorization_url'), PHP_URL_QUERY), $previewQuery);
+        $this->assertSame('openid email https://www.googleapis.com/auth/calendar.events.owned', $previewQuery['scope']);
+        $this->assertSame($this->photographer->email, $previewQuery['login_hint']);
+        Sanctum::actingAs(User::factory()->create(['role' => 'client']));
+        $this->postJson('/api/google-calendar/connect', ['owned_scope_preview' => true])->assertUnprocessable();
+    }
+
     public function test_admin_can_start_google_calendar_connection_for_a_selected_photographer(): void
     {
         $admin = User::factory()->create([

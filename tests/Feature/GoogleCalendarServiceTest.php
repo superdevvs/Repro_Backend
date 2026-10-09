@@ -132,10 +132,12 @@ class GoogleCalendarServiceTest extends TestCase
             'services.google.calendar.default_calendar_id' => 'primary',
             'services.google.calendar.scope' => 'openid email https://www.googleapis.com/auth/calendar.events',
         ]);
-        parse_str(parse_url(app(GoogleCalendarService::class)->buildAuthorizationUrl('state', 'demo@example.com'), PHP_URL_QUERY), $query);
+        parse_str(parse_url(app(GoogleCalendarService::class)->buildAuthorizationUrl('state', 'demo@example.com', true), PHP_URL_QUERY), $query);
         $this->assertSame('openid email https://www.googleapis.com/auth/calendar.events.owned', $query['scope']);
         $this->assertSame('demo@example.com', $query['login_hint']);
         $this->assertSame('offline', $query['access_type']);
+        parse_str(parse_url(app(GoogleCalendarService::class)->buildAuthorizationUrl('state', 'demo@example.com'), PHP_URL_QUERY), $normalQuery);
+        $this->assertSame('openid email https://www.googleapis.com/auth/calendar.events', $normalQuery['scope']);
     }
 
     public function test_permission_validation_accepts_owned_scope_and_existing_broader_grants(): void

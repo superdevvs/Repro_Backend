@@ -31,6 +31,7 @@ class GoogleCalendarController extends Controller
         try {
             $state = (string) Str::uuid();
             $targetUser = $this->resolveConnectUser($request);
+            $request->validate(['owned_scope_preview' => 'sometimes|boolean']);
             $redirectPath = $this->resolveFrontendRedirectPath((string) $request->input('source', 'photographer-account'));
 
             Cache::put($this->oauthStateKey($state), [
@@ -41,7 +42,7 @@ class GoogleCalendarController extends Controller
             return response()->json([
                 'success' => true,
                 'data' => [
-                    'authorization_url' => $this->calendarService->buildAuthorizationUrl($state, $targetUser->email),
+                    'authorization_url' => $this->calendarService->buildAuthorizationUrl($state, $targetUser->email, $request->boolean('owned_scope_preview')),
                 ],
             ]);
         } catch (ValidationException $exception) {

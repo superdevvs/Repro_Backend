@@ -20,14 +20,14 @@ class GoogleCalendarService
         return in_array($message, [self::MISSING_PERMISSION_MESSAGE, self::LEGACY_MISSING_PERMISSION_MESSAGE], true);
     }
 
-    public function buildAuthorizationUrl(string $state, ?string $email = null): string
+    public function buildAuthorizationUrl(string $state, ?string $email = null, bool $ownedScopePreview = false): string
     {
         $this->assertConfigured();
 
         $scope = (string) config('services.google.calendar.scope');
         // Older production environments explicitly configured this scope. The
         // primary-calendar workflow needs access only to calendars the user owns.
-        if (config('services.google.calendar.default_calendar_id', 'primary') === 'primary') {
+        if ($ownedScopePreview && config('services.google.calendar.default_calendar_id', 'primary') === 'primary') {
             $scope = implode(' ', array_unique(array_map(
                 static fn (string $item) => $item === 'https://www.googleapis.com/auth/calendar.events'
                     ? 'https://www.googleapis.com/auth/calendar.events.owned'
