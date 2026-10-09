@@ -558,7 +558,7 @@ class GoogleCalendarShootSyncService
 
         $connection->forceFill([
             'last_error' => $message,
-            'sync_enabled' => $message === GoogleCalendarService::MISSING_PERMISSION_MESSAGE
+            'sync_enabled' => GoogleCalendarService::isMissingCalendarPermission($message)
                 ? false : $connection->sync_enabled,
         ])->save();
 

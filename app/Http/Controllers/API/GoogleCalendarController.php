@@ -159,12 +159,12 @@ class GoogleCalendarController extends Controller
                     'user_id' => $targetUser->id,
                     'user_name' => $targetUser->name,
                     'available' => (bool) (config('services.google.calendar.client_id') && config('services.google.calendar.client_secret')),
-                    'connected' => $connection !== null && $connection->last_error !== GoogleCalendarService::MISSING_PERMISSION_MESSAGE,
+                    'connected' => $connection !== null && !GoogleCalendarService::isMissingCalendarPermission($connection->last_error),
                     'provider_email' => $connection?->provider_email,
                     'calendar_id' => $connection?->calendar_id,
                     'sync_enabled' => (bool) ($connection?->sync_enabled ?? false),
                     'last_synced_at' => $connection?->last_synced_at?->toIso8601String(),
-                    'last_error' => $connection?->last_error === GoogleCalendarService::MISSING_PERMISSION_MESSAGE
+                    'last_error' => GoogleCalendarService::isMissingCalendarPermission($connection?->last_error)
                         ? GoogleCalendarService::MISSING_PERMISSION_MESSAGE
                         : \App\Services\ApiErrorResponder::storedFailure($connection?->last_error),
                 ],

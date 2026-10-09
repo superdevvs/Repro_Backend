@@ -11,11 +11,30 @@ use RuntimeException;
 
 class GoogleCalendarService
 {
-    public const MISSING_PERMISSION_MESSAGE = 'Calendar permission was not granted. Please reconnect, select your intended Google account, and check "View and edit events on all your calendars" before continuing.';
+    public const MISSING_PERMISSION_MESSAGE = 'Calendar permission was not granted. Please reconnect, select your intended Google account, and grant the requested Calendar event permission before continuing.';
+
+    private const LEGACY_MISSING_PERMISSION_MESSAGE = 'Calendar permission was not granted. Please reconnect, select your intended Google account, and check "View and edit events on all your calendars" before continuing.';
+
+    public static function isMissingCalendarPermission(?string $message): bool
+    {
+        return in_array($message, [self::MISSING_PERMISSION_MESSAGE, self::LEGACY_MISSING_PERMISSION_MESSAGE], true);
+    }
 
     public function buildAuthorizationUrl(string $state, ?string $email = null): string
     {
         $this->assertConfigured();
+
+        $scope = (string) config('services.google.calendar.scope');
+        // Older production environments explicitly configured this scope. The
+        // primary-calendar workflow needs access only to calendars the user owns.
+        if (config('services.google.calendar.default_calendar_id', 'primary') === 'primary') {
+            $scope = implode(' ', array_unique(array_map(
+                static fn (string $item) => $item === 'https://www.googleapis.com/auth/calendar.events'
+                    ? 'https://www.googleapis.com/auth/calendar.events.owned'
+                    : $item,
+                preg_split('/\s+/', trim($scope))
+            )));
+        }
 
         return config('services.google.calendar.auth_url') . '?' . http_build_query([
             'client_id' => config('services.google.calendar.client_id'),
@@ -24,7 +43,7 @@ class GoogleCalendarService
             'access_type' => 'offline',
             'prompt' => 'consent select_account',
             'include_granted_scopes' => 'true',
-            'scope' => config('services.google.calendar.scope'),
+            'scope' => $scope,
             'state' => $state,
             'login_hint' => $email,
         ]);
@@ -45,6 +64,7 @@ class GoogleCalendarService
 
         $granted = preg_split('/\s+/', trim((string) $scope));
         if (!array_intersect($granted, [
+            'https://www.googleapis.com/auth/calendar.events.owned',
             'https://www.googleapis.com/auth/calendar.events',
             'https://www.googleapis.com/auth/calendar',
         ])) {

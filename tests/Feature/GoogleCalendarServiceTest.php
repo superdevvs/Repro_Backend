@@ -125,4 +125,43 @@ class GoogleCalendarServiceTest extends TestCase
         $this->expectExceptionMessage(GoogleCalendarService::MISSING_PERMISSION_MESSAGE);
         app(GoogleCalendarService::class)->createEvent($this->connection, ['summary' => 'Test']);
     }
+
+    public function test_primary_calendar_authorization_narrows_legacy_scope_without_losing_identity_scopes(): void
+    {
+        config([
+            'services.google.calendar.default_calendar_id' => 'primary',
+            'services.google.calendar.scope' => 'openid email https://www.googleapis.com/auth/calendar.events',
+        ]);
+        parse_str(parse_url(app(GoogleCalendarService::class)->buildAuthorizationUrl('state', 'demo@example.com'), PHP_URL_QUERY), $query);
+        $this->assertSame('openid email https://www.googleapis.com/auth/calendar.events.owned', $query['scope']);
+        $this->assertSame('demo@example.com', $query['login_hint']);
+        $this->assertSame('offline', $query['access_type']);
+    }
+
+    public function test_permission_validation_accepts_owned_scope_and_existing_broader_grants(): void
+    {
+        foreach (['calendar.events.owned', 'calendar.events', 'calendar'] as $scope) {
+            app(GoogleCalendarService::class)->assertCalendarPermission([
+                'scope' => 'openid email https://www.googleapis.com/auth/'.$scope,
+            ]);
+        }
+        $this->addToAssertionCount(3);
+    }
+
+    public function test_owned_readonly_permission_is_not_enough_to_sync_appointments(): void
+    {
+        $this->expectException(\App\Exceptions\PublicBusinessRuleException::class);
+        app(GoogleCalendarService::class)->assertCalendarPermission([
+            'scope' => 'openid email https://www.googleapis.com/auth/calendar.events.owned.readonly',
+        ]);
+    }
+
+    public function test_tokeninfo_fallback_accepts_owned_calendar_permission(): void
+    {
+        Http::fake(['https://oauth2.googleapis.com/tokeninfo*' => Http::response([
+            'scope' => 'openid email https://www.googleapis.com/auth/calendar.events.owned',
+        ])]);
+        app(GoogleCalendarService::class)->assertCalendarPermission(['access_token' => 'test-token']);
+        Http::assertSentCount(1);
+    }
 }

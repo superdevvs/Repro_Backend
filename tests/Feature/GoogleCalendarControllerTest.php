@@ -128,7 +128,7 @@ class GoogleCalendarControllerTest extends TestCase
                 'access_token' => 'google-access-token',
                 'refresh_token' => 'google-refresh-token',
                 'expires_in' => 3600,
-                'scope' => 'openid email https://www.googleapis.com/auth/calendar.events',
+                'scope' => 'openid email https://www.googleapis.com/auth/calendar.events.owned',
             ], 200),
             'https://openidconnect.googleapis.com/v1/userinfo' => Http::response([
                 'email' => 'calendar-owner@example.com',
@@ -348,7 +348,7 @@ class GoogleCalendarControllerTest extends TestCase
             'access_token' => 'token',
             'refresh_token' => 'refresh',
             'sync_enabled' => false,
-            'last_error' => \App\Services\GoogleCalendar\GoogleCalendarService::MISSING_PERMISSION_MESSAGE,
+            'last_error' => 'Calendar permission was not granted. Please reconnect, select your intended Google account, and check "View and edit events on all your calendars" before continuing.',
         ]);
         Sanctum::actingAs($this->photographer);
         $this->getJson('/api/google-calendar/status')->assertOk()
