@@ -32,7 +32,7 @@ class AryeoDiscovery
         if (! $order->shoot_id) {
             $normalize = fn ($s) => strtolower(trim(preg_replace('/\s+/', ' ', (string) $s)));
             $candidates = $this->catalog->query($connection)->whereHas('client', fn ($q) => $q->whereRaw('lower(email) = ?', [strtolower($data['requester_email'])]))
-                ->with(['client', 'units'])->get()->filter(fn ($s) => $normalize($s->address) === $normalize($data['address'])
+                ->with(['client', 'units'])->get()->filter(fn ($s) => $this->normalizeStreet($s->address) === $this->normalizeStreet($data['address'])
                     && (! isset($data['scheduled_date']) || $s->scheduled_date?->format('Y-m-d') === $data['scheduled_date']));
             if ($candidates->count() === 1) {
                 $shoot = $candidates->first();
@@ -51,5 +51,14 @@ class AryeoDiscovery
         $order->save();
 
         return $order;
+    }
+
+    private function normalizeStreet(?string $address): string
+    {
+        $value = strtolower(trim(preg_replace('/\s+/', ' ', (string) $address)));
+
+        // Aryeo uses Dr/Rd while the dashboard stores Drive/Road. Only expand
+        // a trailing street suffix; email, unit, date and uniqueness still gate matching.
+        return preg_replace_callback('/\b(dr|rd)\.?$/', fn ($m) => $m[1] === 'dr' ? 'drive' : 'road', $value);
     }
 }

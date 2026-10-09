@@ -363,6 +363,36 @@ class AryeoIntegrationTest extends TestCase
         $this->assertSame(1, AryeoRequest::count());
     }
 
+    public function test_discovery_matches_verified_client_with_abbreviated_street_suffix(): void
+    {
+        foreach (['1036 Scenic Drive' => '  1036   Scenic Dr.  ', '1732 Fletchers Drive' => '1732 Fletchers Dr', '9407 Reservoir Road' => '9407 Reservoir Rd'] as $canonical => $source) {
+            $this->shoot->update(['address' => $canonical]);
+            $payload = [...$this->order->discovery, 'source_id' => $canonical, 'request_id' => $canonical, 'address' => $source];
+            $this->worker()->postJson($this->prefix.'/requests', $payload)->assertOk()
+                ->assertJsonPath('shoot_id', $this->shoot->id)->assertJsonPath('match_status', 'matched')
+                ->assertJsonPath('discovery.address', trim($source));
+        }
+    }
+
+    public function test_abbreviated_street_match_does_not_guess_between_repeat_shoots(): void
+    {
+        $this->shoot->update(['address' => '1036 Scenic Drive']);
+        Shoot::factory()->create(['client_id' => $this->shoot->client_id, 'address' => '1036 Scenic Dr']);
+        $payload = [...$this->order->discovery, 'source_id' => 'repeat-address', 'request_id' => 'repeat-address', 'address' => '1036 Scenic Dr.'];
+        $this->worker()->postJson($this->prefix.'/requests', $payload)->assertOk()
+            ->assertJsonPath('shoot_id', null)->assertJsonPath('match_status', 'needs_matching');
+    }
+
+    public function test_abbreviated_street_match_retains_client_and_street_number_checks(): void
+    {
+        $this->shoot->update(['address' => '1036 Scenic Drive']);
+        foreach ([['address' => '1036 Scenic Dr', 'requester_email' => 'another-client@example.test'], ['address' => '1037 Scenic Dr']] as $index => $changes) {
+            $payload = [...$this->order->discovery, 'source_id' => 'wrong-identity-'.$index, 'request_id' => 'wrong-identity-'.$index, ...$changes];
+            $this->worker()->postJson($this->prefix.'/requests', $payload)->assertOk()
+                ->assertJsonPath('shoot_id', null)->assertJsonPath('match_status', 'unmatched');
+        }
+    }
+
     public function test_paid_shoot_does_not_release_unready_service_media(): void
     {
         $line = \App\Models\ShootService::create(['shoot_id' => $this->shoot->id, 'service_id' => $this->shoot->service_id, 'price' => 100, 'quantity' => 1, 'is_deliverable' => true, 'delivery_status' => 'not_started']);
