@@ -150,7 +150,13 @@ class InvoiceController extends Controller
         $end = isset($filters['end']) ? Carbon::parse($filters['end'])->endOfDay() : null;
         $this->applyInvoiceDateRange($query, $start, $end);
 
-        $normalizedStatus = "CASE WHEN status = 'paid' OR is_paid = 1 OR total_amount <= 0.01 OR (total_amount > 0.01 AND COALESCE(amount_paid, 0) + 0.005 >= total_amount) THEN 'paid' WHEN due_date IS NOT NULL AND DATE(due_date) < DATE('now') AND MAX(COALESCE(balance_due, 0), total_amount - COALESCE(amount_paid, 0)) > 0.01 THEN 'overdue' ELSE COALESCE(NULLIF(status, ''), 'pending') END";
+        // Preserve document lifecycle states before inferring payment/aging status.
+        $normalizedStatus = "CASE "
+            ."WHEN LOWER(COALESCE(status, '')) IN ('draft', 'void', 'cancelled', 'canceled', 'refunded') THEN LOWER(status) "
+            ."WHEN COALESCE(payment_required, 1) = 0 OR document_type = 'complimentary_receipt' OR LOWER(COALESCE(status, '')) = 'no_payment_required' THEN 'no_payment_required' "
+            ."WHEN status = 'paid' OR is_paid = 1 OR total_amount <= 0.01 OR (total_amount > 0.01 AND COALESCE(amount_paid, 0) + 0.005 >= total_amount) THEN 'paid' "
+            ."WHEN due_date IS NOT NULL AND DATE(due_date) < DATE('now') AND MAX(COALESCE(balance_due, 0), total_amount - COALESCE(amount_paid, 0)) > 0.01 THEN 'overdue' "
+            ."ELSE COALESCE(NULLIF(status, ''), 'pending') END";
         if (($filters['status'] ?? 'all') !== 'all') {
             $statuses = $filters['status'] === 'pending' ? ['pending', 'sent', 'partial', 'unpaid'] : [$filters['status']];
             $query->whereIn(DB::raw($normalizedStatus), $statuses);

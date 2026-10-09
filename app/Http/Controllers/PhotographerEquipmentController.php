@@ -2,9 +2,9 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\AccountingExpense;
 use App\Models\PhotographerEquipment;
 use App\Models\PhotographerEquipmentPhoto;
-use App\Models\AccountingExpense;
 use App\Models\User;
 use App\Services\MailService;
 use Illuminate\Http\Request;
@@ -18,13 +18,32 @@ class PhotographerEquipmentController extends Controller
 {
     public function adminIndex(Request $request)
     {
-        if (!$this->equipmentTablesReady()) {
+        if (! $this->equipmentTablesReady()) {
             return $this->equipmentTablesMissingResponse();
         }
+
+        $dates = $request->validate([
+            'start_date' => ['nullable', 'required_with:end_date', 'date_format:Y-m-d'],
+            'end_date' => ['nullable', 'required_with:start_date', 'date_format:Y-m-d', 'after_or_equal:start_date'],
+        ]);
 
         $query = PhotographerEquipment::query()
             ->with(['photographer:id,name,email,role', 'photos', 'verifier:id,name,email', 'expense'])
             ->latest();
+
+        if (! empty($dates['start_date']) && ! empty($dates['end_date'])) {
+            $query->where(function ($dateQuery) use ($dates) {
+                $dateQuery->where(function ($issuedQuery) use ($dates) {
+                    $issuedQuery->whereDate('issue_date', '>=', $dates['start_date'])
+                        ->whereDate('issue_date', '<=', $dates['end_date']);
+                })
+                    ->orWhere(function ($createdQuery) use ($dates) {
+                        $createdQuery->whereNull('issue_date')
+                            ->whereDate('created_at', '>=', $dates['start_date'])
+                            ->whereDate('created_at', '<=', $dates['end_date']);
+                    });
+            });
+        }
 
         if ($request->filled('photographer_id')) {
             $query->where('photographer_id', (int) $request->input('photographer_id'));
@@ -53,7 +72,7 @@ class PhotographerEquipmentController extends Controller
 
     public function adminStore(Request $request, MailService $mailService)
     {
-        if (!$this->equipmentTablesReady()) {
+        if (! $this->equipmentTablesReady()) {
             return $this->equipmentTablesMissingResponse();
         }
 
@@ -71,13 +90,13 @@ class PhotographerEquipmentController extends Controller
             'photos.*' => ['file', 'image', 'max:10240'],
         ]);
 
-        if ($this->containsFinancialData($request) && !$this->canManageFinancials($request->user())) {
+        if ($this->containsFinancialData($request) && ! $this->canManageFinancials($request->user())) {
             return response()->json(['message' => 'Only admins and superadmins can manage equipment financials.'], 403);
         }
 
-        if (!empty($validated['photographer_id'])) {
+        if (! empty($validated['photographer_id'])) {
             $photographer = User::query()->findOrFail($validated['photographer_id']);
-            if (!$this->isPhotographer($photographer)) {
+            if (! $this->isPhotographer($photographer)) {
                 return response()->json(['message' => 'Equipment can only be assigned to photographers.'], 422);
             }
         }
@@ -120,7 +139,7 @@ class PhotographerEquipmentController extends Controller
 
     public function adminUpdate(Request $request, int $equipmentId, MailService $mailService)
     {
-        if (!$this->equipmentTablesReady()) {
+        if (! $this->equipmentTablesReady()) {
             return $this->equipmentTablesMissingResponse();
         }
 
@@ -139,13 +158,13 @@ class PhotographerEquipmentController extends Controller
             'status' => ['sometimes', Rule::in(PhotographerEquipment::STATUSES)],
         ]);
 
-        if ($this->containsFinancialData($request) && !$this->canManageFinancials($request->user())) {
+        if ($this->containsFinancialData($request) && ! $this->canManageFinancials($request->user())) {
             return response()->json(['message' => 'Only admins and superadmins can manage equipment financials.'], 403);
         }
 
-        if (array_key_exists('photographer_id', $validated) && !empty($validated['photographer_id'])) {
+        if (array_key_exists('photographer_id', $validated) && ! empty($validated['photographer_id'])) {
             $photographer = User::query()->findOrFail($validated['photographer_id']);
-            if (!$this->isPhotographer($photographer)) {
+            if (! $this->isPhotographer($photographer)) {
                 return response()->json(['message' => 'Equipment can only be assigned to photographers.'], 422);
             }
         }
@@ -161,7 +180,7 @@ class PhotographerEquipmentController extends Controller
             $photographerChanged = array_key_exists('photographer_id', $validated)
                 && (string) ($validated['photographer_id'] ?? '') !== (string) ($equipment->photographer_id ?? '');
 
-            if ($photographerChanged && !empty($validated['photographer_id'])) {
+            if ($photographerChanged && ! empty($validated['photographer_id'])) {
                 $validated['status'] = PhotographerEquipment::STATUS_PENDING;
                 $validated['verification_requested_at'] = null;
                 $validated['submitted_at'] = null;
@@ -188,7 +207,7 @@ class PhotographerEquipmentController extends Controller
 
     public function adminDestroy(int $equipmentId)
     {
-        if (!$this->equipmentTablesReady()) {
+        if (! $this->equipmentTablesReady()) {
             return $this->equipmentTablesMissingResponse();
         }
 
@@ -205,7 +224,7 @@ class PhotographerEquipmentController extends Controller
 
     public function adminUploadPhotos(Request $request, int $equipmentId)
     {
-        if (!$this->equipmentTablesReady()) {
+        if (! $this->equipmentTablesReady()) {
             return $this->equipmentTablesMissingResponse();
         }
 
@@ -231,7 +250,7 @@ class PhotographerEquipmentController extends Controller
 
     public function approve(Request $request, int $equipmentId, MailService $mailService)
     {
-        if (!$this->equipmentTablesReady()) {
+        if (! $this->equipmentTablesReady()) {
             return $this->equipmentTablesMissingResponse();
         }
 
@@ -259,7 +278,7 @@ class PhotographerEquipmentController extends Controller
 
     public function reject(Request $request, int $equipmentId, MailService $mailService)
     {
-        if (!$this->equipmentTablesReady()) {
+        if (! $this->equipmentTablesReady()) {
             return $this->equipmentTablesMissingResponse();
         }
 
@@ -290,7 +309,7 @@ class PhotographerEquipmentController extends Controller
 
     public function sendVerificationEmail(Request $request, int $equipmentId, MailService $mailService)
     {
-        if (!$this->equipmentTablesReady()) {
+        if (! $this->equipmentTablesReady()) {
             return $this->equipmentTablesMissingResponse();
         }
 
@@ -298,7 +317,7 @@ class PhotographerEquipmentController extends Controller
         $equipment->load('photographer');
         $photographer = $equipment->photographer;
 
-        if (!$photographer) {
+        if (! $photographer) {
             return response()->json(['message' => 'Assigned photographer could not be found.'], 404);
         }
 
@@ -307,7 +326,7 @@ class PhotographerEquipmentController extends Controller
             ->whereIn('status', [PhotographerEquipment::STATUS_PENDING, PhotographerEquipment::STATUS_REJECTED])
             ->count();
 
-        if (!$mailService->sendPhotographerEquipmentVerificationEmail($photographer, $pendingCount)) {
+        if (! $mailService->sendPhotographerEquipmentVerificationEmail($photographer, $pendingCount)) {
             return response()->json(['message' => 'Unable to send verification email.'], 500);
         }
 
@@ -321,7 +340,7 @@ class PhotographerEquipmentController extends Controller
 
     public function photographerIndex(Request $request)
     {
-        if (!$this->equipmentTablesReady()) {
+        if (! $this->equipmentTablesReady()) {
             return $this->equipmentTablesMissingResponse();
         }
 
@@ -338,7 +357,7 @@ class PhotographerEquipmentController extends Controller
 
     public function photographerUploadVerificationPhotos(Request $request, int $equipmentId)
     {
-        if (!$this->equipmentTablesReady()) {
+        if (! $this->equipmentTablesReady()) {
             return $this->equipmentTablesMissingResponse();
         }
 
@@ -377,7 +396,7 @@ class PhotographerEquipmentController extends Controller
 
     public function showPhoto(Request $request, int $equipmentId, int $photoId)
     {
-        if (!$this->equipmentTablesReady()) {
+        if (! $this->equipmentTablesReady()) {
             return $this->equipmentTablesMissingResponse();
         }
 
@@ -388,22 +407,22 @@ class PhotographerEquipmentController extends Controller
             abort(404);
         }
 
-        if (!$this->canViewEquipment($request->user(), $equipment)) {
+        if (! $this->canViewEquipment($request->user(), $equipment)) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
-        if (!Storage::disk($photo->disk)->exists($photo->path)) {
+        if (! Storage::disk($photo->disk)->exists($photo->path)) {
             abort(404);
         }
 
         return response()->file(Storage::disk($photo->disk)->path($photo->path), [
             'Content-Type' => $photo->mime_type ?: 'application/octet-stream',
-            'Content-Disposition' => 'inline; filename="' . addslashes($photo->original_name ?: basename($photo->path)) . '"',
+            'Content-Disposition' => 'inline; filename="'.addslashes($photo->original_name ?: basename($photo->path)).'"',
         ]);
     }
 
     /**
-     * @param array<int, UploadedFile>|UploadedFile|null $files
+     * @param  array<int, UploadedFile>|UploadedFile|null  $files
      */
     public function storeAdminReferencePhotosFromAccountCreation(PhotographerEquipment $equipment, array|UploadedFile|null $files, User $uploadedBy): void
     {
@@ -473,14 +492,14 @@ class PhotographerEquipmentController extends Controller
     }
 
     /**
-     * @param array<int, UploadedFile>|UploadedFile|null $files
+     * @param  array<int, UploadedFile>|UploadedFile|null  $files
      */
     private function storePhotos(PhotographerEquipment $equipment, array|UploadedFile|null $files, string $type, ?User $uploadedBy): void
     {
         $files = $files instanceof UploadedFile ? [$files] : ($files ?: []);
 
         foreach ($files as $file) {
-            if (!$file instanceof UploadedFile) {
+            if (! $file instanceof UploadedFile) {
                 continue;
             }
 
@@ -513,7 +532,7 @@ class PhotographerEquipmentController extends Controller
     {
         $equipment->loadMissing('photographer');
 
-        if (!$equipment->photographer) {
+        if (! $equipment->photographer) {
             return;
         }
 
@@ -568,16 +587,16 @@ class PhotographerEquipmentController extends Controller
 
     private function syncEquipmentExpense(PhotographerEquipment $equipment, Request $request): void
     {
-        if (!$this->canManageFinancials($request->user())) {
+        if (! $this->canManageFinancials($request->user())) {
             return;
         }
 
         $shouldSync = $request->boolean('add_to_expense') || $equipment->expense_id;
-        if (!$shouldSync) {
+        if (! $shouldSync) {
             return;
         }
 
-        if (!$equipment->purchase_date) {
+        if (! $equipment->purchase_date) {
             throw new \App\Exceptions\PublicBusinessRuleException('Purchase date is required when adding equipment as an expense.');
         }
 
@@ -587,7 +606,7 @@ class PhotographerEquipmentController extends Controller
 
         $expenseData = [
             'category' => 'Equipment',
-            'description' => trim($equipment->name . ($equipment->serial_number ? ' - Serial #' . $equipment->serial_number : '')),
+            'description' => trim($equipment->name.($equipment->serial_number ? ' - Serial #'.$equipment->serial_number : '')),
             'amount' => $equipment->purchase_cost ?? 0,
             'expense_date' => $equipment->purchase_date,
             'vendor' => $equipment->vendor,

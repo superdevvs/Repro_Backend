@@ -7,6 +7,8 @@ use App\Services\PayoutReportService;
 use App\Support\ReportingWeek;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
+use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class PayoutReportController extends Controller
@@ -21,12 +23,6 @@ class PayoutReportController extends Controller
      */
     public function index(Request $request)
     {
-        $request->validate([
-            'start' => 'nullable|date',
-            'end' => 'nullable|date',
-            'role' => 'nullable|string|in:all,photographer,salesRep,editor',
-        ]);
-
         [$start, $end] = $this->resolveReportingWindow($request);
 
         $role = $request->input('role', 'all');
@@ -70,12 +66,6 @@ class PayoutReportController extends Controller
      */
     public function download(Request $request): StreamedResponse
     {
-        $request->validate([
-            'start' => 'nullable|date',
-            'end' => 'nullable|date',
-            'role' => 'nullable|string|in:all,photographer,salesRep,editor',
-        ]);
-
         [$start, $end] = $this->resolveReportingWindow($request);
 
         $role = $request->input('role', 'all');
@@ -178,12 +168,6 @@ class PayoutReportController extends Controller
 
     public function send(Request $request)
     {
-        $request->validate([
-            'start' => 'nullable|date',
-            'end' => 'nullable|date',
-            'role' => 'nullable|string|in:all,photographer,salesRep,editor',
-        ]);
-
         [$start, $end] = $this->resolveReportingWindow($request);
 
         $role = $request->input('role', 'all');
@@ -246,6 +230,18 @@ class PayoutReportController extends Controller
      */
     private function resolveReportingWindow(Request $request): array
     {
+        // Query-string booleans arrive as text; accept the same flag in query and JSON requests.
+        if (in_array($request->input('exact_range'), ['true', 'false'], true)) {
+            $request->merge(['exact_range' => $request->boolean('exact_range')]);
+        }
+        $exactRange = $request->boolean('exact_range');
+        $request->validate([
+            'exact_range' => 'sometimes|boolean',
+            'start' => ['nullable', 'date', Rule::requiredIf($exactRange), ...($exactRange ? ['date_format:Y-m-d'] : [])],
+            'end' => ['nullable', 'date', Rule::requiredIf($exactRange), ...($request->filled('start') ? ['after_or_equal:start'] : []), ...($exactRange ? ['date_format:Y-m-d'] : [])],
+            'role' => 'nullable|string|in:all,photographer,salesRep,editor',
+        ]);
+
         if ($request->filled('start') || $request->filled('end')) {
             $rangeStart = $request->filled('start')
                 ? $request->input('start')
@@ -253,10 +249,19 @@ class PayoutReportController extends Controller
             $rangeEnd = $request->filled('end')
                 ? $request->input('end')
                 : $rangeStart;
+            $start = Carbon::parse($rangeStart)->startOfDay();
+            $end = Carbon::parse($rangeEnd)->endOfDay();
+            if ($start->diffInDays($end->copy()->startOfDay()) > 365) {
+                throw ValidationException::withMessages(['end' => 'Select at most 366 calendar days.']);
+            }
+
+            if ($exactRange) {
+                return [$start, $end];
+            }
 
             return ReportingWeek::normalizeRange(
-                Carbon::parse($rangeStart),
-                Carbon::parse($rangeEnd)
+                $start,
+                $end
             );
         }
 
