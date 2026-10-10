@@ -84,14 +84,16 @@ class ShootActivityLogger
             // Fire broadcast event for real-time notifications
             $shouldSuppressNotifications = (bool) ($metadata['suppress_notifications'] ?? false);
             if (!$shouldSuppressNotifications && in_array($action, $this->broadcastableActions)) {
-                $broadcast = function () use ($shoot, $action, $description, $metadata, $user): void {
+                $broadcast = function () use ($shoot, $action, $description, $metadata, $user, $activityLog): void {
                     try {
                         event(new ShootActivityBroadcast(
                             $shoot,
                             $action,
                             $description,
                             $metadata,
-                            $user?->id ?? auth()->id()
+                            $user?->id ?? auth()->id(),
+                            $activityLog->id,
+                            $activityLog->created_at?->toIso8601String()
                         ));
                     } catch (\Exception $e) {
                         // Log but don't fail if broadcast fails
@@ -313,4 +315,3 @@ class ShootActivityLogger
         return $query->get();
     }
 }
-

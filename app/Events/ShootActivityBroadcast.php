@@ -20,6 +20,8 @@ class ShootActivityBroadcast implements ShouldBroadcast
     public string $message;
     public array $metadata;
     public ?int $userId;
+    public ?int $activityLogId = null;
+    public ?string $activityTimestamp = null;
 
     /**
      * Activity types visible to clients (their own shoots only)
@@ -72,7 +74,9 @@ class ShootActivityBroadcast implements ShouldBroadcast
         string $activityType,
         string $message,
         array $metadata = [],
-        ?int $userId = null
+        ?int $userId = null,
+        ?int $activityLogId = null,
+        ?string $activityTimestamp = null
     ) {
         // Loading display-only relations must not truncate recipients on the
         // caller's model before subsequent workflow emails are dispatched.
@@ -81,6 +85,8 @@ class ShootActivityBroadcast implements ShouldBroadcast
         $this->message = $message;
         $this->metadata = $metadata;
         $this->userId = $userId ?? auth()->id();
+        $this->activityLogId = $activityLogId;
+        $this->activityTimestamp = $activityTimestamp;
     }
 
     public function broadcastOn(): array
@@ -125,7 +131,7 @@ class ShootActivityBroadcast implements ShouldBroadcast
     public function broadcastWith(): array
     {
         return [
-            'id' => 'shoot-' . $this->shoot->id . '-' . time(),
+            'id' => $this->activityLogId !== null ? 'sa-'.$this->activityLogId : 'shoot-'.$this->shoot->id.'-'.time(),
             'shootId' => $this->shoot->id,
             'activityType' => $this->activityType,
             'message' => $this->message,
@@ -136,7 +142,7 @@ class ShootActivityBroadcast implements ShouldBroadcast
             // Only include non-sensitive metadata
             'metadata' => $this->sanitizeMetadata($this->metadata),
             'userId' => $this->userId,
-            'timestamp' => now()->toIso8601String(),
+            'timestamp' => $this->activityTimestamp ?? now()->toIso8601String(),
         ];
     }
 

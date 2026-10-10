@@ -594,6 +594,10 @@ Route::middleware(['auth:sanctum'])->get(
     '/notifications',
     [DashboardController::class, 'notifications']
 );
+Route::middleware(['auth:sanctum', 'throttle:120,1'])->post(
+    '/notifications/read-state',
+    [\App\Http\Controllers\API\NotificationReadStateController::class, 'update']
+);
 
 // Robbie Insights - dynamic, context-aware insights for all authenticated users
 Route::middleware(['auth:sanctum'])->get(

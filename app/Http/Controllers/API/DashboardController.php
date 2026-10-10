@@ -1093,6 +1093,7 @@ class DashboardController extends Controller
             return response()->json([
                 'data' => [
                     'activity_log' => $activityLogs,
+                    'read_state' => app(\App\Services\NotificationReadStateService::class)->get($request),
                     'user_role' => $role,
                     'unread_counts' => $unreadCounts,
                 ],
@@ -1315,7 +1316,7 @@ class DashboardController extends Controller
                         : "Email sent to {$email->to_address}: {$preview}"),
                 'action' => $isInternal ? 'internal_message_received' : ($isInbound ? 'email_received' : 'email_sent'),
                 'type' => 'message',
-                'timestamp' => optional($email->created_at)->toDateTimeString(),
+                'timestamp' => optional($email->created_at)->toIso8601String(),
                 // Internal message clicks must open the conversation, not the
                 // generic shoot modal.
                 'shootId' => $isInternal ? null : $email->related_shoot_id,
@@ -1326,10 +1327,10 @@ class DashboardController extends Controller
                 'to' => $email->to_address,
                 'subject' => $email->subject,
                 'direction' => $email->direction,
-                'metadata' => $isInternal ? [
+                'metadata' => [
                     'related_shoot_id' => $email->related_shoot_id,
                     'thread_id' => $email->thread_id,
-                ] : null,
+                ],
             ];
         });
     }
@@ -1349,6 +1350,7 @@ class DashboardController extends Controller
                     'email_delivery_risky',
                     'email_verification_requested',
                     'email_corrected_after_bounce',
+                    'email_verified',
                 ])
                 ->get();
         } elseif ($role === 'salesrep') {
@@ -1358,6 +1360,7 @@ class DashboardController extends Controller
                     'email_delivery_risky',
                     'email_verification_requested',
                     'email_corrected_after_bounce',
+                    'email_verified',
                 ])
                 ->get()
                 ->filter(fn (UserActivityLog $log) => (int) ($log->metadata['sales_rep_id'] ?? 0) === $userId)
@@ -1370,6 +1373,7 @@ class DashboardController extends Controller
                     'email_delivery_risky',
                     'email_verification_requested',
                     'email_corrected_after_bounce',
+                    'email_verified',
                 ])
                 ->get();
         } else {
@@ -1384,7 +1388,7 @@ class DashboardController extends Controller
                 'message' => $log->description ?: $log->title,
                 'action' => $log->event_type,
                 'type' => 'system',
-                'timestamp' => optional($log->occurred_at ?? $log->created_at)->toDateTimeString(),
+                'timestamp' => optional($log->occurred_at ?? $log->created_at)->toIso8601String(),
                 'emailId' => null,
                 'accountId' => $log->user_id,
                 'accountName' => $log->user?->name,
@@ -1396,6 +1400,7 @@ class DashboardController extends Controller
                     : ($accountSearch !== '' ? '/accounts?role=client&search='.$accountSearch : '/accounts?role=client'),
                 'actionLabel' => $role === 'client' ? 'Update email' : 'View account',
                 'metadata' => array_merge($log->metadata ?? [], [
+                    'user_id' => $log->user_id,
                     'email_status' => $log->user?->email_status,
                 ]),
             ];
@@ -1412,9 +1417,10 @@ class DashboardController extends Controller
             'message' => $log->description ?? $log->action ?? 'Activity',
             'action' => $log->action ?? '',
             'type' => $this->inferActivityType($log->action ?? ''),
-            'timestamp' => optional($log->created_at)->toDateTimeString(),
+            'timestamp' => optional($log->created_at)->toIso8601String(),
             'shootId' => $log->shoot_id,
             'address' => $log->shoot?->address ?? '',
+            'isOwnAction' => $log->user_id !== null && (int) $log->user_id === (int) auth()->id(),
         ];
 
         // Admins get full data
