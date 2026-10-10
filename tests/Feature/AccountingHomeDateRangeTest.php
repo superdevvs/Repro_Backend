@@ -62,11 +62,10 @@ class AccountingHomeDateRangeTest extends TestCase
     {
         $invoice = $this->invoice();
         $payment = $this->payment($invoice, '2026-10-06', 100);
-        $payment->refunds()->create([
+        $payment->refunds()->make([
             'shoot_id' => $invoice->shoot_id, 'amount' => 20, 'provider' => 'stripe',
             'provider_refund_id' => 're_range', 'operation_key' => 'range-refund', 'status' => 'succeeded',
-            'created_at' => '2026-10-08',
-        ]);
+        ])->forceFill(['created_at' => '2026-10-08'])->save();
         $this->home('2026-10-05')->assertJsonPath('data.open', 100)->assertJsonPath('data.received', 0);
         $this->home('2026-10-07')->assertJsonPath('data.open', 0)->assertJsonPath('data.received', 100);
         $this->home()->assertJsonPath('data.open', 20)->assertJsonPath('data.received', 80)->assertJsonPath('data.collected', 80);

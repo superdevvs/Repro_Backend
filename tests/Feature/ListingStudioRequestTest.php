@@ -201,7 +201,7 @@ class ListingStudioRequestTest extends TestCase
         $notifications = collect($this->getJson('/api/notifications')->assertOk()->json('data.activity_log'));
         $expectedIds = ['sa-'.$newer->id, 'listing-studio-'.$id.'-pending', 'sa-'.$older->id];
         $this->assertSame($expectedIds, $notifications->whereIn('id', $expectedIds)->pluck('id')->values()->all());
-        $this->assertSame('2026-09-27 11:15:00', $notifications->firstWhere('id', 'sa-'.$newer->id)['timestamp']);
+        $this->assertSame('2026-09-27T11:15:00+00:00', $notifications->firstWhere('id', 'sa-'.$newer->id)['timestamp']);
         $this->assertSame('2026-09-27T09:15:00+00:00', $notifications->firstWhere('id', 'listing-studio-'.$id.'-pending')['timestamp']);
     }
 

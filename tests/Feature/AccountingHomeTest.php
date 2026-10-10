@@ -123,7 +123,8 @@ class AccountingHomeTest extends TestCase
         $invoice = Invoice::factory()->create(['role' => 'client', 'issue_date' => '2026-10-01', 'client_id' => $client->id, 'shoot_id' => $shoot->id, 'status' => 'sent', 'total' => 1000, 'total_amount' => 1000, 'amount_paid' => 0, 'is_paid' => false, 'paid_at' => null]);
         $p = Payment::factory()->create(['shoot_id' => $shoot->id, 'invoice_id' => $invoice->id, 'amount' => 1000, 'currency' => 'USD', 'status' => 'completed', 'processed_at' => '2026-10-02', 'stripe_payment_id' => 'pi_qa_unique']);
         Payment::factory()->create(['shoot_id' => $shoot->id, 'invoice_id' => $invoice->id, 'amount' => 1000, 'currency' => 'USD', 'status' => 'completed', 'processed_at' => '2026-10-02', 'stripe_payment_id' => 'pi_qa_unique']);
-        $p->refunds()->create(['shoot_id' => $shoot->id, 'amount' => 100, 'provider' => 'stripe', 'provider_refund_id' => 're_qa', 'operation_key' => 'qa-refund', 'status' => 'succeeded', 'created_at' => '2026-10-03']);
+        $p->refunds()->make(['shoot_id' => $shoot->id, 'amount' => 100, 'provider' => 'stripe', 'provider_refund_id' => 're_qa', 'operation_key' => 'qa-refund', 'status' => 'succeeded'])
+            ->forceFill(['created_at' => '2026-10-03'])->save();
         $this->getJson('/api/admin/accounting-home?start=2026-10-01&end=2026-10-09')->assertOk()->assertJsonPath('data.received', 900)->assertJsonPath('data.open', 100);
     }
 
