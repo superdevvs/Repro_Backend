@@ -2017,6 +2017,18 @@ class MailService
     /**
      * Format shoot data for email templates
      */
+    /** Use the same live shoot formatter and editable office template as Dashboard notifications. */
+    public function buildWebsiteBookingEmail(Shoot $shoot): array
+    {
+        $payload = app(\App\Services\SystemEmails\EmailContextBuilder::class)->build([
+            'recipient' => ['name' => 'R/E Pro Photos Office', 'email' => 'contact@reprophotos.com'],
+            'shoot' => $this->formatShootData($shoot),
+            'meta' => ['recipient_type' => 'admin', 'is_admin' => true],
+        ]);
+
+        return app(\App\Services\SystemEmails\SystemEmailBuilder::class)->build('SHOOT_REQUESTED', $payload);
+    }
+
     private function formatShootData(
         Shoot $shoot,
         ?User $recipient = null,

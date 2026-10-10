@@ -325,6 +325,8 @@ Route::post('integrations/mmm/return', [IntegrationController::class, 'mmmReturn
 // External Booking API (for Lovable / third-party sites)
 // Secured via X-API-Key header, no user login required
 Route::middleware('external_api_key')->prefix('external')->group(function () {
+    Route::post('/website-email', [App\Http\Controllers\API\WebsiteEmailController::class, 'send'])
+        ->middleware('throttle:60,1')->name('external.website-email');
     Route::post('/book-shoot', [App\Http\Controllers\API\ExternalBookingController::class, 'bookShoot'])
         ->name('external.book-shoot');
     Route::post('/check-client', [App\Http\Controllers\API\ExternalBookingController::class, 'checkClient'])

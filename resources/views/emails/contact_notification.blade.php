@@ -1,11 +1,11 @@
 @extends('emails.layouts.master')
 
 @section('title', 'New Contact Form Submission')
-@section('preheader', 'A new message has arrived through your portfolio contact form.')
+@section('preheader', !empty($isWebsiteInquiry) ? 'A new message has arrived through reprophotos.com.' : 'A new message has arrived through your portfolio contact form.')
 
 @section('hero')
     <p class="dark-muted" style="margin:0 0 12px; font-size:11px; line-height:1.4; letter-spacing:2px; text-transform:uppercase; color:#5d7493; font-weight:700;">New Inquiry</p>
-    <p class="hero-title-td dark-title" style="margin:0; font-size:30px; line-height:1.1; font-weight:300; letter-spacing:-1.2px; color:#10192f;">You have a new portfolio lead.</p>
+    <p class="hero-title-td dark-title" style="margin:0; font-size:30px; line-height:1.1; font-weight:300; letter-spacing:-1.2px; color:#10192f;">{{ !empty($isWebsiteInquiry) ? 'You have a new website inquiry.' : 'You have a new portfolio lead.' }}</p>
     <p class="dark-body" style="margin:20px 0 0; font-size:15px; line-height:1.8; color:#667a96;">A visitor submitted a message through your contact form. Their full details and message are listed below for quick follow-up.</p>
 @endsection
 
@@ -28,6 +28,12 @@
                         <td class="detail-value-td detail-border dark-heading" style="padding:10px 0; border-bottom:1px solid #edf2f7; vertical-align:top; font-size:14px; line-height:1.65; color:#10233b; font-weight:600;">{{ $submission->sender_phone }}</td>
                     </tr>
                     @endif
+                    @if(!empty($isWebsiteInquiry))
+                    <tr>
+                        <td class="detail-label-td dark-muted" width="34%" style="padding:10px 14px 10px 0; font-size:14px; color:#6f86a4; font-weight:700;">SMS consent</td>
+                        <td class="detail-value-td dark-heading" style="padding:10px 0; font-size:14px; color:#10233b;">{{ $smsConsent ? 'Yes' : 'No' }}</td>
+                    </tr>
+                    @endif
                     <tr>
                         <td class="detail-label-td dark-muted" width="34%" style="padding:10px 14px 10px 0; vertical-align:top; font-size:14px; line-height:1.65; color:#6f86a4; font-weight:700;">Received</td>
                         <td class="detail-value-td dark-heading" style="padding:10px 0; vertical-align:top; font-size:14px; line-height:1.65; color:#10233b; font-weight:600;">{{ $submission->created_at->format('F j, Y \a\t g:i A') }}</td>
@@ -48,5 +54,5 @@
 @endsection
 
 @section('footer_note')
-    This inquiry was submitted through your REPRO HQ portfolio experience.
+    {{ !empty($isWebsiteInquiry) ? 'Submitted through reprophotos.com. Inquiry reference: '.$inquiryReference : 'This inquiry was submitted through your REPRO HQ portfolio experience.' }}
 @endsection
