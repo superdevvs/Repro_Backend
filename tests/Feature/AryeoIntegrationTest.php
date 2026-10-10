@@ -205,6 +205,50 @@ class AryeoIntegrationTest extends TestCase
         $this->worker()->postJson($this->prefix.'/requests', $payload)->assertUnprocessable();
     }
 
+    public function test_job_and_receipt_include_only_requested_categories(): void
+    {
+        $floorplan = $this->file->replicate();
+        $floorplan->filename = 'floorplan.jpg';
+        $floorplan->media_type = 'floorplan';
+        $floorplan->save();
+        $video = $this->file->replicate();
+        $video->filename = 'video.mp4';
+        $video->file_type = 'video/mp4';
+        $video->save();
+        $this->shoot->update(['tour_links' => ['zillow_3d' => 'https://www.zillow.com/view-3d-home/test']]);
+
+        $id = $this->enqueue();
+        $job = AryeoJob::findOrFail($id);
+        $this->assertSame(['photos' => 1, 'floorplans' => 1, 'videos' => 1, 'tours' => 1], $job->snapshot['available']);
+        $this->assertSame([$this->file->id], array_column($job->snapshot['assets'], 'id'));
+        $this->assertSame([], $job->snapshot['tours']);
+        $this->worker()->getJson($this->prefix.'/jobs/'.$id.'/assets/'.$floorplan->id.'/preparation?media_version='.$job->media_version)->assertNotFound();
+        $this->claim()->assertOk();
+        $this->worker()->postJson($this->prefix.'/jobs/'.$id.'/result', [
+            'lease_token' => 'claim_secret_12345678901234567890', 'steps' => ['delivery' => 'success'],
+            'receipt' => ['request_id' => 'aryeo-1', 'listing_id' => 'listing-1', 'media_version' => $job->media_version,
+                'verified_at' => now()->toIso8601String(), 'asset_ids' => [$this->file->id], 'tour_ids' => []],
+        ])->assertOk();
+    }
+
+    public function test_unspecified_quantities_include_requested_photos_and_tours_without_other_media(): void
+    {
+        $floorplan = $this->file->replicate();
+        $floorplan->media_type = 'floorplan';
+        $floorplan->save();
+        $this->shoot->update(['tour_links' => ['zillow_3d' => 'https://www.zillow.com/view-3d-home/test']]);
+        $requirements = ['photos' => null, 'floorplans' => 0, 'videos' => 0, 'tours' => null];
+        $ready = app(AryeoCatalog::class)->readiness($this->shoot->fresh(), null, $requirements);
+        $this->assertTrue($ready['eligible']);
+        $this->assertSame([$this->file->id], array_column($ready['assets'], 'id'));
+        $this->assertSame(['zillow_3d'], array_column($ready['tours'], 'id'));
+        $floorplan->update(['filename' => 'replacement-floorplan.jpg']);
+        $this->assertSame($ready['media_version'], app(AryeoCatalog::class)->readiness($this->shoot->fresh(), null, $requirements)['media_version']);
+        $empty = app(AryeoCatalog::class)->readiness($this->shoot->fresh(), null, array_fill_keys(array_keys($requirements), 0));
+        $this->assertFalse($empty['eligible']);
+        $this->assertContains('no_approved_media', $empty['blockers']);
+    }
+
     public function test_paywall_override_does_not_replace_paid_requirement_for_aryeo(): void
     {
         $this->shoot->update(['payment_status' => 'unpaid', 'bypass_paywall' => true]);

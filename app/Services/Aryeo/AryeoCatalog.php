@@ -150,6 +150,18 @@ class AryeoCatalog
         if (array_sum($available) === 0) {
             $blockers[] = 'no_approved_media';
         }
+        // Availability describes the shoot; the manifest describes this request.
+        // Null means a requested category with no specified quantity, while zero
+        // means it was not requested and must not be uploaded or receipted.
+        if ($requirements !== null) {
+            $requested = fn (string $kind) => array_key_exists($kind, $requirements)
+                && ($requirements[$kind] === null || $requirements[$kind] > 0);
+            $assets = array_values(array_filter($assets, fn ($asset) => $requested($asset['type'])));
+            $tours = $requested('tours') ? $tours : [];
+            if (! $assets && ! $tours) {
+                $blockers[] = 'no_approved_media';
+            }
+        }
         $version = hash('sha256', json_encode([$shoot->id, $unitId, $assets, $tours]));
 
         return [
