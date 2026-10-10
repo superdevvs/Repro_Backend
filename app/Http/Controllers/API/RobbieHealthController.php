@@ -48,7 +48,7 @@ class RobbieHealthController extends Controller
                 [['role' => 'user', 'content' => 'ping']],
                 [],
                 stream: false,
-                options: ['max_tokens' => 1]
+                options: ['max_tokens' => 1, 'usage_feature' => 'health_check']
             );
 
             $result['reachable'] = true;

@@ -10,6 +10,7 @@ use Illuminate\Support\Facades\Http;
 use Intervention\Image\ImageManager;
 use Intervention\Image\Interfaces\ImageInterface;
 use Throwable;
+use App\Services\Accounting\AiUsageRecorder;
 
 /**
  * One synchronous request, with no automatic retries or fallback orchestration.
@@ -139,6 +140,9 @@ class OpenAiImageProvider
             }
             $referenceImages[] = (string) $this->read($bytes)->scaleDown(width: 2048, height: 2048)->toPng();
         }
+        $recorder = app(AiUsageRecorder::class);
+        $usageId = $recorder->begin($mask === null ? 'image_edit' : 'image_outpaint', $model, 'images/edits');
+        $started = hrtime(true);
         try {
             $request = Http::withToken((string) ($options['api_key'] ?? config('services.openai.api_key')))->acceptJson()
                 ->connectTimeout(15)->timeout(max(30, min(600, (int) config('services.openai.image_timeout', 180))))
@@ -154,10 +158,17 @@ class OpenAiImageProvider
             $response = $request->post(self::ENDPOINT, ['model' => $model, 'prompt' => $prompt,
                 'n' => 1, 'quality' => 'high', 'size' => $width.'x'.$height, 'output_format' => 'png', 'background' => 'opaque']);
         } catch (ConnectionException) {
+            $recorder->finish($usageId, $model, null, 'unknown', durationMs: (int) ((hrtime(true) - $started) / 1e6));
             throw new OpenAiImageException(ambiguous: true, reason: 'transport');
         } catch (RequestException $exception) {
+            $status = $exception->response->status();
+            $recorder->finish($usageId, $model, null, $status >= 500 ? 'unknown' : 'failed', $status,
+                $exception->response->header('x-request-id'), (int) ((hrtime(true) - $started) / 1e6));
             throw $this->failure($exception->response->status(), $exception->response->json('error.code'));
         }
+        $recorder->finish($usageId, $model, is_array($response->json('usage')) ? $response->json('usage') : null,
+            $response->successful() ? 'success' : ($response->status() >= 500 ? 'unknown' : 'failed'),
+            $response->status(), $response->header('x-request-id'), (int) ((hrtime(true) - $started) / 1e6));
         if (! $response->successful()) {
             throw $this->failure($response->status(), $response->json('error.code'));
         }

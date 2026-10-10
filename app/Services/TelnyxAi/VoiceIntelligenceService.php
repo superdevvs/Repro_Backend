@@ -228,7 +228,7 @@ class VoiceIntelligenceService
                 ['role' => 'system', 'content' => $this->systemPrompt($final)],
                 ['role' => 'user', 'content' => $this->buildContextObject($call, $triggers)],
             ];
-            $response = $this->llm->chatCompletion($messages, [], false, ['temperature' => 0.3, 'max_tokens' => 600]);
+            $response = $this->llm->chatCompletion($messages, [], false, ['temperature' => 0.3, 'max_tokens' => 600, 'usage_feature' => 'voice_summary']);
             $content = $response['choices'][0]['message']['content'] ?? '';
             $usageData = $response['usage'] ?? [];
             $this->usage->record(

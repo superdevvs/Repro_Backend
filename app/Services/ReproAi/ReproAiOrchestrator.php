@@ -28,6 +28,7 @@ class ReproAiOrchestrator
         // Store user message for error handling
         $currentUserMessage = $userMessage;
         $chatOptions = $this->getChatOptions($context);
+        $chatOptions['usage_feature'] = 'robbie_chat';
         
         // Build conversation history
         $messages = $this->buildMessageHistory($session);
@@ -783,6 +784,7 @@ class ReproAiOrchestrator
 
             // Get final response
             $chatOptions = $this->getChatOptions($context);
+            $chatOptions['usage_feature'] = 'robbie_chat';
             $finalResponse = $this->llmClient->chatCompletion($followUpMessages, [], stream: false, options: $chatOptions);
             $finalChoice = $finalResponse['choices'][0] ?? null;
             

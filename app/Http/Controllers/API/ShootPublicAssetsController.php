@@ -219,6 +219,7 @@ class ShootPublicAssetsController extends Controller
                 ],
             ], [], false, [
                 'model' => 'gpt-4o',
+                'usage_feature' => 'property_description',
                 'temperature' => 0.7,
                 'max_tokens' => 300,
             ]);

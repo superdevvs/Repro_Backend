@@ -19,6 +19,7 @@ class EmailComposeAssistant
             ['role' => 'user', 'content' => $this->userPrompt($mode, $instruction, $subject, $body, $variables)],
         ], [], false, [
             'temperature' => 0.4,
+            'usage_feature' => 'email_assistant',
             'max_tokens' => 900,
         ]);
 

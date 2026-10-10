@@ -1461,6 +1461,8 @@ require __DIR__.'/shoot-unit-tours.php';
 require __DIR__.'/aryeo.php';
 
 // Accounting Home aggregates and explicit manual client-invoice operations.
+Route::get('/admin/accounting-ai-usage', \App\Http\Controllers\Admin\AccountingAiUsageController::class)
+    ->middleware(['auth:sanctum', 'role:superadmin', 'permission:accounting']);
 Route::middleware(['auth:sanctum', 'role:admin,superadmin', 'permission:accounting'])->group(function () {
     Route::get('/admin/accounting-home', \App\Http\Controllers\Admin\AccountingHomeController::class);
     Route::get('/admin/accounting-home/invoice-options', [\App\Http\Controllers\Admin\AccountingInvoiceComposerController::class, 'options'])->middleware('permission:invoices,create');

@@ -91,7 +91,7 @@ class WorkspaceSceneClassifier
             $response = app(LlmClient::class)->chatCompletion([
                 ['role' => 'system', 'content' => self::PROMPT.' Return exactly interior or exterior.'],
                 ['role' => 'user', 'content' => [['type' => 'image_url', 'image_url' => ['url' => $data]]]],
-            ], [], false, ['temperature' => 0, 'max_tokens' => 10]);
+            ], [], false, ['temperature' => 0, 'max_tokens' => 10, 'usage_feature' => 'photo_classification']);
         } catch (\Exception) {
             throw new StudioProviderException('OpenAI photo type detection is unavailable. Ask an administrator to check API credits and limits, or choose Interior or Exterior. Saved editing progress is retained.');
         }

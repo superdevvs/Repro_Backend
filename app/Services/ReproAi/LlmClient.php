@@ -6,6 +6,9 @@ use GuzzleHttp\Client;
 use GuzzleHttp\Exception\GuzzleException;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Config;
+use App\Services\Accounting\AiUsageRecorder;
+use GuzzleHttp\Exception\RequestException;
+use GuzzleHttp\Psr7\Utils;
 
 class LlmClient
 {
@@ -101,9 +104,14 @@ class LlmClient
             $payload['tool_choice'] = 'auto';
         }
 
+        $recorder = app(AiUsageRecorder::class);
+        $usageId = $recorder->begin((string) ($options['usage_feature'] ?? 'other'), $model, 'chat/completions');
+        $started = hrtime(true);
+
         if ($stream) {
             $payload['stream'] = true;
-            return $this->streamCompletion($payload);
+            $payload['stream_options'] = ['include_usage' => true];
+            return $this->streamCompletion($payload, $usageId, $started);
         }
 
         try {
@@ -113,16 +121,23 @@ class LlmClient
 
             $data = json_decode($response->getBody()->getContents(), true);
 
+            $recorder->finish($usageId, (string) ($data['model'] ?? $model), is_array($data['usage'] ?? null) ? $data['usage'] : null,
+                'success', $response->getStatusCode(), $response->getHeaderLine('x-request-id') ?: null, (int) ((hrtime(true) - $started) / 1e6));
+
             if (!isset($data['choices'][0])) {
                 throw new \Exception('Invalid response from OpenAI API');
             }
 
             return $data;
-        } catch (GuzzleException $e) {
+        } catch (\Throwable $e) {
+            $providerResponse = $e instanceof RequestException ? $e->getResponse() : null;
+            $status = $providerResponse?->getStatusCode();
+            if ($e instanceof GuzzleException) $recorder->finish($usageId, $model, null, $status !== null && $status < 500 ? 'failed' : 'unknown',
+                $status, $providerResponse?->getHeaderLine('x-request-id') ?: null, (int) ((hrtime(true) - $started) / 1e6));
             $responseBody = '';
-            if ($e->hasResponse()) {
+            if ($providerResponse !== null) {
                 try {
-                    $responseBody = $e->getResponse()->getBody()->getContents();
+                    $responseBody = $providerResponse->getBody()->getContents();
                 } catch (\Exception $bodyError) {
                     $responseBody = 'Could not read response body';
                 }
@@ -145,7 +160,7 @@ class LlmClient
      * @param array $payload Request payload
      * @return string Streamed response chunks
      */
-    private function streamCompletion(array $payload): string
+    private function streamCompletion(array $payload, ?string $usageId, int $started): string
     {
         try {
             $response = $this->client->post('chat/completions', [
@@ -156,9 +171,11 @@ class LlmClient
             $stream = $response->getBody();
             $fullContent = '';
             $toolCalls = [];
+            $usage = null;
+            $model = $payload['model'];
 
             while (!$stream->eof()) {
-                $line = $stream->readLine();
+                $line = Utils::readLine($stream);
                 
                 if (empty(trim($line))) {
                     continue;
@@ -166,13 +183,15 @@ class LlmClient
 
                 // SSE format: "data: {...}"
                 if (strpos($line, 'data: ') === 0) {
-                    $data = substr($line, 6);
+                    $data = trim(substr($line, 6));
                     
                     if ($data === '[DONE]') {
                         break;
                     }
 
                     $decoded = json_decode($data, true);
+                    if (is_array($decoded['usage'] ?? null)) $usage = $decoded['usage'];
+                    if (is_string($decoded['model'] ?? null)) $model = $decoded['model'];
                     
                     if (isset($decoded['choices'][0]['delta'])) {
                         $delta = $decoded['choices'][0]['delta'];
@@ -207,6 +226,9 @@ class LlmClient
                 }
             }
 
+            app(AiUsageRecorder::class)->finish($usageId, $model, $usage, 'success', $response->getStatusCode(),
+                $response->getHeaderLine('x-request-id') ?: null, (int) ((hrtime(true) - $started) / 1e6));
+
             // Return structured response
             $result = [
                 'content' => $fullContent,
@@ -214,7 +236,11 @@ class LlmClient
             ];
 
             return json_encode($result);
-        } catch (GuzzleException $e) {
+        } catch (\Throwable $e) {
+            $providerResponse = $e instanceof RequestException ? $e->getResponse() : null;
+            $status = $providerResponse?->getStatusCode();
+            app(AiUsageRecorder::class)->finish($usageId, $payload['model'], null, $status !== null && $status < 500 ? 'failed' : 'unknown',
+                $status, $providerResponse?->getHeaderLine('x-request-id') ?: null, (int) ((hrtime(true) - $started) / 1e6));
             Log::error('OpenAI streaming request failed', [
                 'error' => $e->getMessage(),
             ]);
@@ -247,7 +273,5 @@ class LlmClient
         return null;
     }
 }
-
-
 
 
