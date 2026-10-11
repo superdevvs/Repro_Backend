@@ -109,12 +109,28 @@ final class PhotographerPayoutReconciliation
             ->filter(fn ($r) => ! $r['owner_invoice_id'] || (int)$r['owner_invoice_id'] === (int)$invoice->id);
         $pending = $rows->where('eligible', false)->whereNull('owner_invoice_id');
         $unallocated = $rows->where('eligible', true)->whereNull('owner_invoice_id');
+        $basisWarnings = [];
+        foreach ($rows->where('owner_invoice_id', $invoice->id) as $row) {
+            $item = $invoice->items->first(fn ($i) => (int) data_get($i->meta, 'shoot_service_id') === (int) $row['shoot_service_id'] && $i->type === 'charge');
+            if (! $item) continue;
+            $saved = data_get($item->meta, 'payout_basis');
+            $current = $row['payout_basis'];
+            $changed = $saved
+                ? abs((float)$saved['booked_price'] - (float)$current['booked_price']) > 0.005
+                    || abs((float)$saved['unit_pay'] - (float)$current['unit_pay']) > 0.005
+                    || (int)$saved['quantity'] !== (int)$current['quantity']
+                    || (int)$saved['service_id'] !== (int)$current['service_id']
+                : (bool) ($current['review_required'] ?? false);
+            if ($changed) $basisWarnings[] = ['code'=>'booking_changed_after_invoice','shoot_id'=>$row['shoot_id'],
+                'message'=>$row['address'].': booking package / rate changed after this invoice line was saved. Invoice line $'.number_format((float)$item->total_amount,2).' is retained; current booked payout $'.number_format($row['photographer_pay'],2).'. Verify the agreement and correct the invoice explicitly if required.'];
+        }
         $public = fn ($r) => [
             'shoot_id'=>$r['shoot_id'], 'shoot_service_id'=>$r['shoot_service_id'], 'address'=>$r['address'],
             'service_name'=>$r['service_name'], 'work_date'=>$r['scheduled_date']->toDateString(),
             'amount'=>$r['photographer_pay'], 'reason'=>$r['pending_reason'], 'late_work'=>$r['late_work'],
         ];
         return [
+            'basis_warnings'=>$basisWarnings,
             'pending_count'=>$pending->pluck('shoot_id')->unique()->count(), 'pending_total'=>round($pending->sum('photographer_pay'),2),
             'pending_lines'=>$pending->map($public)->values()->all(),
             'unallocated_count'=>$unallocated->count(), 'unallocated_total'=>round($unallocated->sum('photographer_pay'),2),

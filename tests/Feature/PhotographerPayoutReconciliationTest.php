@@ -161,4 +161,19 @@ class PhotographerPayoutReconciliationTest extends TestCase
         $this->assertCount(1,$invoice->items);
         $this->assertSame(0,app(PhotographerPayoutReconciliation::class)->review($invoice)['pending_count']);
     }
+
+    public function test_a_changed_booking_is_flagged_even_after_submission_without_rewriting_the_invoice(): void
+    {
+        $person=User::factory()->photographer()->create();
+        $shoot=$this->work($person);
+        $invoice=$this->generate()->sole();
+        $invoice->update(['approval_status'=>'pending_approval','payout_edited'=>true]);
+        $shoot->services()->updateExistingPivot($shoot->services()->first()->id,['price'=>199,'photographer_pay'=>89.55]);
+        $review=app(PhotographerPayoutReconciliation::class)->review($invoice->fresh());
+        $this->assertSame('booking_changed_after_invoice',$review['basis_warnings'][0]['code']);
+        $this->assertSame(78.75,(float)$invoice->fresh()->total_amount);
+        \Laravel\Sanctum\Sanctum::actingAs(User::factory()->admin()->create());
+        $this->postJson('/api/admin/invoices/'.$invoice->id.'/approve')->assertUnprocessable()->assertJsonValidationErrors('warning_override_reason');
+        $this->assertSame('pending_approval',$invoice->fresh()->approval_status);
+    }
 }

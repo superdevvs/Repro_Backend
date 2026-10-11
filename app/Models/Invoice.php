@@ -616,11 +616,12 @@ class Invoice extends Model
             'before_total' => $this->payout_edit_baseline['total_amount'] ?? null,
             'submitted_total' => $this->payout_submission_snapshot['total_amount'] ?? null,
             'reconciliation' => $this->payoutReconciliationRequested && $this->role === self::ROLE_PHOTOGRAPHER && $this->billing_period_start && $this->billing_period_end
-                ? app(\App\Services\Invoices\PhotographerPayoutReconciliation::class)->review($this) : null,
+                ? ($this->payoutReconciliationCache ??= app(\App\Services\Invoices\PhotographerPayoutReconciliation::class)->review($this)) : null,
         ];
     }
 
     protected bool $payoutReconciliationRequested = false;
+    protected ?array $payoutReconciliationCache = null;
 
     public function withPayoutReconciliation(): self
     {

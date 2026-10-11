@@ -181,6 +181,9 @@ class InvoiceApprovalController extends Controller
                     throw \Illuminate\Validation\ValidationException::withMessages(['invoice' => 'This invoice is no longer awaiting approval.']);
                 }
                 $warnings = $invoice->unresolved_warnings ?? [];
+                if ($invoice->role === Invoice::ROLE_PHOTOGRAPHER) {
+                    $warnings = array_merge($warnings, app(\App\Services\Invoices\PhotographerPayoutReconciliation::class)->review($invoice)['basis_warnings']);
+                }
                 if ($recovery = $invoice->payout_review['recovery_required']) {
                     $warnings[] = ['code' => 'historical_edit_recovery', 'message' => $recovery['message']];
                 }
