@@ -73,8 +73,14 @@ class RunSystemAutomations extends Command
                     // workflow, including its channels, template, recipients and filters.
                     if ($generatedInvoices === null) {
                         $generatedInvoices = app(InvoiceService::class)->generateForLastCompletedWeek(false);
-                        $generatedInvoiceIds = $generatedInvoices->filter(fn ($invoice) => $invoice->created_at
-                            && $invoice->created_at->gte($dispatch->created_at->copy()->startOfSecond()))->pluck('id')->all();
+                    }
+                    // Recap preparation may create Sunday's invoice before this
+                    // Monday rule. Its per-invoice dispatch key still prevents a
+                    // duplicate notice, while unrelated old/manual drafts stay out.
+                    if ($generatedInvoiceIds === []) {
+                        $generatedInvoiceIds = $generatedInvoices->filter(fn ($invoice) => ($invoice->created_at
+                            && $invoice->created_at->gte($dispatch->created_at->copy()->startOfSecond()))
+                            || $invoice->auditEvents()->where('event', 'generated')->where('metadata->reconciliation_version', 1)->exists())->pluck('id')->all();
                     }
                     // Every due rule sees the same generation batch. Persist its IDs
                     // before delivery so a failed clone can retry without regenerating
@@ -117,6 +123,11 @@ class RunSystemAutomations extends Command
                         $delivered++;
                     }
                 } else {
+                    if (in_array($rule->trigger_type, ['WEEKLY_PAYOUT_REPORT', 'WEEKLY_PAYOUT_DIGEST'], true)) {
+                        // Reconcile silently before computing recipient contexts.
+                        // Recaps never run against a different pre-invoice ledger.
+                        $generatedInvoices ??= app(InvoiceService::class)->generateForLastCompletedWeek(false);
+                    }
                     foreach (app(WeeklyDigestContexts::class)->forRule($rule) as $key => $context) {
                         if ($dispatcher->alreadyDispatched($rule, $key)) {
                             continue;

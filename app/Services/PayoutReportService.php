@@ -34,113 +34,48 @@ class PayoutReportService
      */
     public function buildPhotographerSummaries(Carbon $start, Carbon $end): Collection
     {
-        $shoots = Shoot::with([
-                'photographer:id,name,email',
-                'services' => function ($q) {
-                    $q->withPivot(['photographer_id', 'photographer_pay', 'quantity']);
-                },
-            ])
-            ->excludeHistoricalImportsFromNewBilling()
-            ->where(function ($query) {
-                $query->whereNull('shoot_type')
-                    ->orWhereNotIn('shoot_type', [Shoot::SHOOT_TYPE_COMPLIMENTARY_RESHOOT, Shoot::SHOOT_TYPE_INTERNAL_TEST]);
-            })
-            ->whereDate('scheduled_date', '>=', $start->toDateString())
-            ->whereDate('scheduled_date', '<=', $end->toDateString())
-            ->where(function ($q) {
-                $q->whereNotNull('completed_at')->orWhereNotNull('admin_verified_at');
-            })
-            ->whereIn('workflow_status', [
-                Shoot::WORKFLOW_COMPLETED,
-                Shoot::WORKFLOW_ADMIN_VERIFIED,
-            ])
-            ->get();
-
-        // Flatten to service-level rows with resolved photographer
-        $serviceRows = collect();
-        
-        foreach ($shoots as $shoot) {
-            $fallbackId = $shoot->photographer_id;
-            
-            foreach ($shoot->services as $service) {
-                $resolvedId = $service->pivot->photographer_id ?? $fallbackId;
-                if (!$resolvedId) {
-                    \Log::warning('Unresolved photographer for payout', [
-                        'shoot_id' => $shoot->id,
-                        'service_id' => $service->id,
-                        'service_name' => $service->name,
-                    ]);
-                    continue;
-                }
-                
-                // Pivot snapshot → catalog pay (fixed or percent of price) → 0
-                $pivotPay = $service->pivot->photographer_pay;
-                $pay = $pivotPay !== null && $pivotPay !== ''
-                    ? (float) $pivotPay
-                    : (float) ($service->getPhotographerPayForSqft($shoot->propertySqft()) ?? 0);
-                $qty = (int) ($service->pivot->quantity ?? 1);
-                
-                $serviceRows->push([
-                    'shoot_id' => $shoot->id,
-                    'resolved_photographer_id' => $resolvedId,
-                    'photographer_pay' => $pay * $qty,
-                ]);
-            }
-        }
-
-        $compensations = ShootCompensation::query()
-            ->whereDoesntHave('shoot', fn ($query) => $query->where('shoot_type', Shoot::SHOOT_TYPE_INTERNAL_TEST))
-            ->where('recipient_type', ShootCompensation::RECIPIENT_PHOTOGRAPHER)
-            ->where('mode', '!=', ShootCompensation::MODE_NONE)
-            ->whereNull('voided_at')
-            ->whereNotNull('recipient_user_id')
-            ->where('amount', '!=', 0)
-            ->whereBetween('earned_at', [$start, $end])
-            ->get();
-
-        foreach ($compensations as $compensation) {
-            $serviceRows->push([
-                'shoot_id' => $compensation->shoot_id,
-                'resolved_photographer_id' => $compensation->recipient_user_id,
-                'photographer_pay' => (float) $compensation->amount,
-                'is_compensation' => true,
-            ]);
-        }
-
-        $serviceRows = $serviceRows
-            ->filter(fn (array $row) => abs((float) ($row['photographer_pay'] ?? 0)) >= 0.005)
-            ->values();
-
-        // Group by resolved photographer
-        return $serviceRows
-            ->groupBy('resolved_photographer_id')
-            ->map(function (Collection $rows, $photographerId) {
-                $photographer = User::find($photographerId);
-                if (!$photographer) return null;
-
-                $gross = $rows->sum('photographer_pay');
-                $compensationTotal = $rows
-                    ->where('is_compensation', true)
-                    ->sum('photographer_pay');
-                $shootCount = $rows->pluck('shoot_id')->unique()->count();
-
-                return [
-                    'id' => $photographer->id,
-                    'name' => $photographer->name,
-                    'email' => $photographer->email,
-                    'role' => 'photographer',
-                    'shoot_count' => $shootCount,
-                    'service_count' => $rows->count(),
-                    'gross_total' => round($gross, 2),
-                    'average_value' => round($gross / max($shootCount, 1), 2),
-                    'commission_rate' => null,
-                    'commission_total' => null,
-                    'compensation_total' => round($compensationTotal, 2),
-                    'payout_total' => round($gross, 2),
-                ];
-            })
-            ->filter()
-            ->values();
+        $rows = app(\App\Services\Invoices\PhotographerPayoutReconciliation::class)->rows($start, $end);
+        $compensations = ShootCompensation::where('recipient_type', ShootCompensation::RECIPIENT_PHOTOGRAPHER)
+            ->whereDoesntHave('shoot', fn ($q) => $q->where('shoot_type', Shoot::SHOOT_TYPE_INTERNAL_TEST))
+            ->whereNull('voided_at')->where('mode', '!=', ShootCompensation::MODE_NONE)
+            ->whereBetween('earned_at', [$start, $end])->where('amount', '!=', 0)->get();
+        $invoices = \App\Models\Invoice::with('items')
+            ->where('role', \App\Models\Invoice::ROLE_PHOTOGRAPHER)
+            ->whereDate('billing_period_start', '>=', $start->toDateString())
+            ->whereDate('billing_period_end', '<=', $end->toDateString())
+            ->whereNotIn('status', ['cancelled', 'void'])->get();
+        $recipientIds = $rows->pluck('resolved_photographer_id')->merge($invoices->pluck('photographer_id'))->merge($compensations->pluck('recipient_user_id'))->unique();
+        return $recipientIds->map(function ($id) use ($rows, $invoices, $compensations) {
+            $user = User::find($id);
+            if (!$user) return null;
+            $recipientRows = $rows->where('resolved_photographer_id', $id);
+            $recipientInvoices = $invoices->where('photographer_id', $id);
+            $eligible = $recipientRows->where('eligible', true);
+            $pending = $recipientRows->where('eligible', false)->whereNull('owner_invoice_id');
+            $unallocated = $eligible->whereNull('owner_invoice_id');
+            $items = $recipientInvoices->flatMap->items;
+            $recipientCompensations = $compensations->where('recipient_user_id', $id);
+            // Reviewed invoice lines (including corrections/reimbursements) win.
+            // An unsaved dashboard preview is labelled as a calculation only.
+            $gross = $recipientInvoices->isNotEmpty() ? $recipientInvoices->sum('total_amount') : $eligible->sum('photographer_pay') + $recipientCompensations->sum('amount');
+            $count = $recipientInvoices->isNotEmpty() ? $items->where('type', 'charge')->pluck('shoot_id')->filter()->unique()->count() : $eligible->pluck('shoot_id')->merge($recipientCompensations->pluck('shoot_id'))->unique()->count();
+            $public = fn ($r) => ['shoot_id'=>$r['shoot_id'], 'address'=>$r['address'], 'service_name'=>$r['service_name'], 'work_date'=>$r['scheduled_date']->toDateString(), 'amount'=>$r['photographer_pay'], 'reason'=>$r['pending_reason']];
+            return [
+                'id'=>$user->id, 'name'=>$user->name, 'email'=>$user->email, 'role'=>'photographer',
+                'shoot_count'=>$count, 'service_count'=>$recipientInvoices->isNotEmpty() ? $items->where('type','charge')->count() : $eligible->count(),
+                'gross_total'=>round($gross,2), 'average_value'=>round($gross/max($count,1),2),
+                'commission_rate'=>null, 'commission_total'=>null,
+                'compensation_total'=>round($recipientInvoices->isNotEmpty() ? $items->sum(fn($i)=>(float)data_get($i->meta,'compensation_amount',0)) : $recipientCompensations->sum('amount'),2),
+                'payout_total'=>round($gross,2), 'invoice_ids'=>$recipientInvoices->pluck('id')->all(),
+                'invoice_basis'=>$recipientInvoices->isNotEmpty() ? 'reconciled_invoices' : 'calculated_preview',
+                'pending_count'=>$pending->pluck('shoot_id')->unique()->count(), 'pending_total'=>round($pending->sum('photographer_pay'),2),
+                'pending_lines'=>$pending->map($public)->values()->all(),
+                'unallocated_count'=>$recipientInvoices->isNotEmpty() ? $unallocated->count() : 0,
+                'unallocated_total'=>$recipientInvoices->isNotEmpty() ? round($unallocated->sum('photographer_pay'),2) : 0,
+                'late_count'=>$items->filter(fn($i)=>data_get($i->meta,'late_work',false))->count(),
+                'invoice_lines'=>$items->filter(fn($i)=>$i->type!=='payment')->map(fn($i)=>['description'=>$i->description,'amount'=>(float)$i->total_amount,'work_date'=>$i->recorded_at?->toDateString()])->values()->all(),
+            ];
+        })->filter(fn($row)=>$row && ($row['shoot_count'] || $row['pending_count'] || abs($row['gross_total'])>=0.005))->values();
     }
 
     public function buildSalesRepSummaries(Carbon $start, Carbon $end): Collection

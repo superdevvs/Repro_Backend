@@ -7,6 +7,7 @@ use Illuminate\Database\Eloquent\Model;
 
 class ShootService extends Model
 {
+    protected $hidden = ['payout_snapshot'];
     use HasFactory;
 
     protected $table = 'shoot_service';
@@ -65,6 +66,7 @@ class ShootService extends Model
         'contracted_photo_count' => 'integer',
         'bracket_mode' => 'integer',
         'photographer_pay' => 'decimal:2',
+        'payout_snapshot' => 'array',
         'editing_completed_at' => 'datetime',
         'video_editing_completed_at' => 'datetime',
         'scheduled_at' => 'datetime',
@@ -84,6 +86,9 @@ class ShootService extends Model
 
             if ($shoot?->isComplimentaryReshoot()) {
                 $serviceItem->price = 0;
+            } elseif ($shoot && \Illuminate\Support\Facades\Schema::hasColumn('shoot_service', 'payout_snapshot') && (! $serviceItem->payout_snapshot || $serviceItem->isDirty(['service_id', 'price', 'photographer_pay', 'quantity', 'contracted_photo_count']))) {
+                $service = $serviceItem->service()->first();
+                if ($service) app(\App\Services\Invoices\PhotographerPayoutBasis::class)->capture($serviceItem, $shoot, $service);
             }
         });
     }

@@ -1057,15 +1057,18 @@ class Shoot extends Model
     public function services()
     {
         return $this->belongsToMany(Service::class, 'shoot_service')
+            ->using(ShootServicePivot::class)
             ->withPivot([
                 'id',
                 'shoot_unit_id',
                 'client_key',
                 'duration_minutes',
+                'contracted_photo_count',
                 'price',
                 'nominal_value_snapshot',
                 'quantity',
                 'photographer_pay',
+                'payout_snapshot',
                 'photographer_id',
                 'editor_id',
                 'editing_completed_at',

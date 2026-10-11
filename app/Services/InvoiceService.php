@@ -40,106 +40,14 @@ class InvoiceService
      * REFACTORED: Now uses SERVICE-LEVEL grouping for multi-photographer support
      * Fallback: shoot_service.photographer_id ?? shoot.photographer_id
      */
-    public function generateForPeriod(Carbon $start, Carbon $end, bool $sendEmails = false): Collection
+    public function generateForPeriod(Carbon $start, Carbon $end, bool $sendEmails = false, ?int $photographerId = null): Collection
     {
         $start = $start->copy()->startOfDay();
         $end = $end->copy()->endOfDay();
 
-        $shoots = Shoot::with([
-            'photographer',
-            'service',
-            'services' => function ($q) {
-                $q->withPivot(['photographer_id', 'photographer_pay', 'quantity']);
-            },
-        ])
-            ->excludeHistoricalImportsFromNewBilling()
-            ->where(function ($query) {
-                $query->whereNull('shoot_type')
-                    ->orWhere('shoot_type', '!=', Shoot::SHOOT_TYPE_COMPLIMENTARY_RESHOOT);
-            })
-            // The shoot date assigns the billing week. Completion/verification
-            // remains an eligibility gate, even when it happens in a later week.
-            ->whereDate('scheduled_date', '>=', $start->toDateString())
-            ->whereDate('scheduled_date', '<=', $end->toDateString())
-            ->where(function ($query) {
-                $query->whereNotNull('completed_at')->orWhereNotNull('admin_verified_at');
-            })
-            ->whereIn('workflow_status', [
-                Shoot::WORKFLOW_COMPLETED,
-                Shoot::WORKFLOW_ADMIN_VERIFIED,
-            ])
-            ->get();
-
-        // Flatten to service-level rows with resolved photographer
-        $serviceRows = collect();
-        foreach ($shoots as $shoot) {
-            $fallbackId = $shoot->photographer_id;
-            $unitsById = $shoot->units->keyBy('id');
-            $services = $shoot->services;
-
-            if ($services->isEmpty() && $shoot->service) {
-                $propertySqft = $this->extractShootSqft($shoot);
-                $defaultPay = method_exists($shoot->service, 'getPhotographerPayForSqft')
-                    ? $shoot->service->getPhotographerPayForSqft($propertySqft)
-                    : null;
-
-                $serviceRows->push([
-                    'shoot_id' => $shoot->id,
-                    'shoot' => $shoot,
-                    'service_id' => $shoot->service->id,
-                    'service_name' => $shoot->service->name ?? 'Service',
-                    'resolved_photographer_id' => $fallbackId,
-                    'photographer_pay' => (float) ($defaultPay ?? $shoot->service->photographer_pay ?? 0),
-                    'scheduled_date' => $shoot->scheduled_date,
-                    'address' => $shoot->address ?? 'Location TBD',
-                ]);
-
-                continue;
-            }
-
-            foreach ($services as $service) {
-                $resolvedId = $service->pivot->photographer_id ?? $fallbackId;
-                if (! $resolvedId) {
-                    \Log::warning('Unresolved photographer for invoice', [
-                        'shoot_id' => $shoot->id,
-                        'service_id' => $service->id,
-                        'service_name' => $service->name,
-                    ]);
-
-                    continue;
-                }
-
-                // Precedence: an explicit per-shoot override always wins, then the
-                // service's own configuration. Going through
-                // getPhotographerPayForSqft() (rather than reading
-                // photographer_pay directly) is what lets a service configured as
-                // a percentage of its price resolve correctly here.
-                $pivotPay = $service->pivot->photographer_pay ?? null;
-                if ($pivotPay !== null && $pivotPay !== '') {
-                    $pay = (float) $pivotPay;
-                } else {
-                    $resolvedPay = method_exists($service, 'getPhotographerPayForSqft')
-                        ? $service->getPhotographerPayForSqft($unitsById->get($service->pivot->shoot_unit_id)?->sqft ?? $this->extractShootSqft($shoot))
-                        : null;
-                    $pay = (float) ($resolvedPay ?? $service->photographer_pay ?? 0);
-                }
-                $qty = (int) ($service->pivot->quantity ?? 1);
-
-                $serviceRows->push([
-                    'shoot_id' => $shoot->id,
-                    'shoot' => $shoot,
-                    'service_id' => $service->id,
-                    'shoot_service_id' => $service->pivot->id,
-                    'shoot_unit_id' => $service->pivot->shoot_unit_id,
-                    'unit_label' => $unitsById->get($service->pivot->shoot_unit_id)?->label,
-                    'service_name' => ($unitsById->get($service->pivot->shoot_unit_id)?->label ? $unitsById->get($service->pivot->shoot_unit_id)->label.' · ' : '').$service->name,
-                    'resolved_photographer_id' => $resolvedId,
-                    'photographer_pay' => $pay * $qty,
-                    'scheduled_date' => $shoot->scheduled_date,
-                    'address' => $shoot->address ?? 'Location TBD',
-                ]);
-            }
-        }
+        $serviceRows = app(\App\Services\Invoices\PhotographerPayoutReconciliation::class)
+            ->rows($start, $end, true, $photographerId)->where('eligible', true)
+            ->when($photographerId !== null, fn ($rows) => $rows->where('resolved_photographer_id', $photographerId))->values();
 
         // An explicit zero on a standard service line means the photographer is
         // not being paid for that line (for example, a paid return visit where
@@ -149,7 +57,7 @@ class InvoiceService
             ->filter(fn (array $row) => abs((float) ($row['photographer_pay'] ?? 0)) >= 0.005)
             ->values();
 
-        return DB::transaction(function () use ($serviceRows, $start, $end, $sendEmails) {
+        return \App\Support\LockedWrite::run(fn () => DB::transaction(function () use ($serviceRows, $start, $end, $sendEmails, $photographerId) {
             $this->acquirePayoutGenerationLock(Invoice::ROLE_PHOTOGRAPHER, $start, $end);
 
             // Eligible compensation is selected under the same transaction and
@@ -164,6 +72,8 @@ class InvoiceService
                     'invoiceItem.invoice',
                 ])
                 ->where('recipient_type', ShootCompensation::RECIPIENT_PHOTOGRAPHER)
+                ->whereDoesntHave('shoot', fn ($q) => $q->where('shoot_type', Shoot::SHOOT_TYPE_INTERNAL_TEST))
+                ->when($photographerId !== null, fn ($q) => $q->where('recipient_user_id', $photographerId))
                 ->where('mode', '!=', ShootCompensation::MODE_NONE)
                 ->whereNull('voided_at')
                 ->whereNotNull('recipient_user_id')
@@ -226,25 +136,16 @@ class InvoiceService
                     ->lockForUpdate()
                     ->get();
                 $existingInvoice = $periodInvoices->first(
-                    fn (Invoice $invoice) => ! $invoice->isAccountsApproved()
-                        && $invoice->status !== Invoice::STATUS_PAID
-                        && ! $invoice->paid_at
-                );
-                $hasSettledInvoice = $periodInvoices->contains(
-                    fn (Invoice $invoice) => $invoice->isAccountsApproved()
-                        || $invoice->status === Invoice::STATUS_PAID
-                        || $invoice->paid_at
+                    fn (Invoice $invoice) => ! $invoice->preservesPayoutReview()
                 );
 
-                if ($existingInvoice?->preservesPayoutReview()) {
-                    $invoices->push($existingInvoice->fresh(['photographer', 'items', 'shoots']));
-
-                    continue;
+                foreach ($periodInvoices->filter(fn ($invoice) => $invoice->preservesPayoutReview()) as $frozen) {
+                    $invoices->push($frozen->fresh(['photographer', 'items', 'shoots']));
                 }
 
                 $photographerServices = $photographerServices->filter(function (array $row) use ($existingInvoice, $photographerId) {
                     $key = isset($row['shoot_compensation_id']) ? 'compensation:'.$row['shoot_compensation_id']
-                        : (isset($row['shoot_service_id']) ? 'service:'.$row['shoot_service_id'] : null);
+                        : ($row['work_key'] ?? (isset($row['shoot_service_id']) ? 'service:'.$row['shoot_service_id'] : null));
                     $owner = $key ? DB::table('payout_work_allocations')->where('role', Invoice::ROLE_PHOTOGRAPHER)
                         ->where('recipient_id', $photographerId)->where('work_key', $key)->value('invoice_id') : null;
                     if (! $owner && ! isset($row['shoot_compensation_id'])) {
@@ -273,31 +174,6 @@ class InvoiceService
                 })->values();
                 if ($photographerServices->isEmpty()) {
                     continue;
-                }
-
-                if ($hasSettledInvoice) {
-                    // Never rebuild work already frozen on an approved/paid
-                    // invoice. A newly earned correction/reversal becomes a
-                    // supplemental draft for the same earning period.
-                    $photographerServices = $photographerServices
-                        ->filter(function (array $row) use ($existingInvoice) {
-                            $compensationId = $row['shoot_compensation_id'] ?? null;
-                            if (! $compensationId) {
-                                return false;
-                            }
-
-                            $invoiceId = $row['payout_invoice_id'] ?? null;
-
-                            return $invoiceId === null
-                                || ($existingInvoice && (int) $invoiceId === (int) $existingInvoice->id);
-                        })
-                        ->values();
-
-                    if ($photographerServices->isEmpty()) {
-                        $invoices->push($periodInvoices->sortByDesc('id')->first());
-
-                        continue;
-                    }
                 }
 
                 $shootIds = $photographerServices->pluck('shoot_id')->unique();
@@ -332,6 +208,7 @@ class InvoiceService
                     ]);
                     $existingInvoice->shoots()->sync($shootIds->all());
                     $existingInvoice->refreshTotals();
+                    $this->reservePhotographerRows($existingInvoice, $photographerServices);
                     $existingInvoice->recordAuditEvent('recalculated', null, 'Photographer invoice recalculated.', [
                         'before' => $before,
                         'after' => [
@@ -398,7 +275,9 @@ class InvoiceService
 
                 // Refresh totals
                 $invoice->refreshTotals();
+                $this->reservePhotographerRows($invoice, $photographerServices);
                 $invoice->recordAuditEvent('generated', null, 'Photographer invoice generated.', [
+                    'reconciliation_version' => 1,
                     'total_amount' => round((float) $invoice->total_amount, 2),
                     'service_count' => $photographerServices->count(),
                 ]);
@@ -430,7 +309,30 @@ class InvoiceService
             }
 
             return $invoices;
-        });
+        }), 'photographer-payout-reconciliation');
+    }
+
+    private function reservePhotographerRows(Invoice $invoice, Collection $rows): void
+    {
+        foreach ($rows as $row) {
+            $key = $row['work_key'] ?? (!empty($row['shoot_compensation_id']) ? 'compensation:'.$row['shoot_compensation_id'] : null);
+            if (!$key) continue;
+            DB::table('payout_work_allocations')->insertOrIgnore([
+                'role' => Invoice::ROLE_PHOTOGRAPHER, 'recipient_id' => $invoice->photographer_id,
+                'work_key' => $key, 'invoice_id' => $invoice->id, 'created_at' => now(), 'updated_at' => now(),
+            ]);
+            $owner = DB::table('payout_work_allocations')->where('role', Invoice::ROLE_PHOTOGRAPHER)
+                ->where('recipient_id', $invoice->photographer_id)->where('work_key', $key)->value('invoice_id');
+            if ((int)$owner !== (int)$invoice->id) throw new \RuntimeException('Payout work was allocated concurrently. Retry reconciliation.');
+        }
+        $warnings = collect($invoice->unresolved_warnings ?? [])->reject(fn($w) => ($w['code'] ?? '') === 'payout_basis_changed');
+        foreach ($rows as $row) {
+            if (data_get($row, 'payout_basis.review_required')) $warnings->push([
+                'code'=>'payout_basis_changed', 'shoot_id'=>$row['shoot_id'],
+                'message'=>($row['address'] ?? '').': '.(data_get($row, 'payout_basis.warning') ?? 'The booked service / payout basis changed. Verify the agreed package before approval.'),
+            ]);
+        }
+        $invoice->update(['unresolved_warnings'=>$warnings->values()->all()]);
     }
 
     private function photographerPayoutItemPayload(array $serviceRow): array
@@ -468,6 +370,10 @@ class InvoiceService
                 'adjusts_compensation_id' => $serviceRow['adjusts_compensation_id'] ?? null,
                 'basis_amount_snapshot' => $serviceRow['basis_amount_snapshot'] ?? null,
                 'rate_snapshot' => $serviceRow['rate_snapshot'] ?? null,
+                'payout_basis' => $serviceRow['payout_basis'] ?? null,
+                'work_key' => $serviceRow['work_key'] ?? null,
+                'late_work' => $serviceRow['late_work'] ?? false,
+                'photographer_completed_at' => $serviceRow['completed_date'] ?? null,
             ], fn ($value) => $value !== null),
         ];
     }

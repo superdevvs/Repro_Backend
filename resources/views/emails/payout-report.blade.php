@@ -30,18 +30,32 @@
             </td>
             <td class="stat-td" style="padding:0 8px 10px 0; vertical-align:top;">
                 <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%"><tr><td class="stat-card-bg" style="border-radius:14px; background-color:#f5f9ff; border:1px solid #dbe6f3; padding:16px 16px 14px;">
-                    <p class="dark-muted" style="margin:0 0 6px; font-size:11px; line-height:1.3; letter-spacing:1.6px; text-transform:uppercase; color:#7f95b1; font-weight:700;">Completed Shoots</p>
+                    <p class="dark-muted" style="margin:0 0 6px; font-size:11px; line-height:1.3; letter-spacing:1.6px; text-transform:uppercase; color:#7f95b1; font-weight:700;">{{ $audience === 'photographer' ? 'Photographer work completed' : 'Completed Shoots' }}</p>
                     <p class="dark-heading" style="margin:0; font-size:22px; line-height:1.2; font-weight:800; color:#071223;">{{ $summary['shoot_count'] ?? 0 }}</p>
                 </td></tr></table>
             </td>
             <td class="stat-td" style="padding:0 0 10px 0; vertical-align:top;">
                 <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%"><tr><td class="stat-card-bg" style="border-radius:14px; background-color:#f5f9ff; border:1px solid #dbe6f3; padding:16px 16px 14px;">
-                    <p class="dark-muted" style="margin:0 0 6px; font-size:11px; line-height:1.3; letter-spacing:1.6px; text-transform:uppercase; color:#7f95b1; font-weight:700;">Gross Total</p>
+                    <p class="dark-muted" style="margin:0 0 6px; font-size:11px; line-height:1.3; letter-spacing:1.6px; text-transform:uppercase; color:#7f95b1; font-weight:700;">{{ $audience === 'photographer' ? 'Invoice payout total' : 'Gross Total' }}</p>
                     <p class="dark-heading" style="margin:0; font-size:22px; line-height:1.2; font-weight:800; color:#071223;">{{ '$' . number_format($summary['gross_total'] ?? 0, 2) }}</p>
                 </td></tr></table>
             </td>
         </tr>
     </table>
+
+    @if($audience === 'photographer')
+    <p class="dark-body" style="color:#2d4769;font-size:14px;line-height:1.6;">Submitted / uploaded photographer work and completed floorplans are included without waiting for client delivery. Invoice review and payment approval remain separate.</p>
+    @if(($summary['pending_count'] ?? 0) > 0)
+    <p class="dark-body" style="color:#2d4769;font-size:14px;line-height:1.6;"><strong>{{ $summary['pending_count'] }} shoots awaiting photographer completion — ${{ number_format($summary['pending_total'], 2) }}</strong>. These are excluded from the invoice total.</p>
+    <ul>@foreach(($summary['pending_lines'] ?? []) as $line)<li>{{ $line['work_date'] }} · {{ $line['address'] }} · {{ $line['service_name'] }} — ${{ number_format($line['amount'], 2) }}</li>@endforeach</ul>
+    @endif
+    @if(($summary['unallocated_count'] ?? 0) > 0)
+    <p class="dark-body" style="color:#2d4769;font-size:14px;line-height:1.6;">{{ $summary['unallocated_count'] }} completed service lines need accounts reconciliation — ${{ number_format($summary['unallocated_total'], 2) }}. They have not been added to the total.</p>
+    @endif
+    @if(!empty($summary['invoice_lines']))
+    <table role="presentation" width="100%" cellpadding="8" cellspacing="0" style="font-size:13px;color:#2d4769;">@foreach($summary['invoice_lines'] as $line)<tr><td>{{ $line['work_date'] }} · {{ $line['description'] }}</td><td align="right">${{ number_format($line['amount'], 2) }}</td></tr>@endforeach</table>
+    @endif
+    @endif
 
     @if(($summary['compensation_total'] ?? 0) > 0)
     <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-bottom:18px;">

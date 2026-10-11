@@ -77,6 +77,18 @@
     </table>
 
     {{-- Sales Reps section --}}
+    @foreach($photographers as $row)
+        @if(($row['pending_count'] ?? 0) > 0 || ($row['unallocated_count'] ?? 0) > 0)
+        <p class="dark-body" style="margin:0 0 16px; font-size:14px; line-height:1.7; color:#47627f;">
+            <strong>{{ $row['name'] }}:</strong>
+            {{ $row['pending_count'] ?? 0 }} shoots awaiting photographer completion — {{ '$' . number_format($row['pending_total'] ?? 0, 2) }} excluded.
+            @if(($row['unallocated_count'] ?? 0) > 0)
+                {{ $row['unallocated_count'] }} completed lines — {{ '$' . number_format($row['unallocated_total'], 2) }} awaiting supplemental reconciliation.
+            @endif
+        </p>
+        @endif
+    @endforeach
+
     <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-bottom:18px;">
         <tr>
             <td class="section-card-bg section-inner" style="background-color:#ffffff; border:1px solid #dbe6f3; border-radius:18px; padding:20px 22px;">

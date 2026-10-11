@@ -98,6 +98,7 @@ class WeeklyDigestContexts
             'rep' => $service->buildSalesRepSummaries($start, $end),
         ];
         $groups = array_map(fn (Collection $rows) => $rows->filter(fn ($row) => (int) ($row['shoot_count'] ?? 0) > 0
+            || (int) ($row['pending_count'] ?? 0) > 0
             || abs((float) ($row['payout_total'] ?? $row['gross_total'] ?? 0)) >= 0.005)->values(), $groups);
         if (collect($groups)->sum(fn ($rows) => $rows->count()) === 0) {
             return;

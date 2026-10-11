@@ -211,6 +211,20 @@ class ScheduledAutomationCommandsTest extends TestCase
         $this->assertEqualsCanonicalizing(['First rule', 'Second rule'], Message::pluck('subject')->all());
     }
 
+    public function test_invoice_prepared_for_recap_still_gets_one_scheduled_invoice_notice(): void
+    {
+        $photographer = User::factory()->photographer()->create();
+        $this->rule('WEEKLY_AUTOMATED_INVOICING', ['type'=>'weekly','day_of_week'=>1,'time'=>'01:00'], 'Invoice notice', ['photographer']);
+        $invoice = $this->invoice($photographer, 0, ['role'=>'photographer','photographer_id'=>$photographer->id,'created_at'=>now()->subDay()]);
+        $invoice->recordAuditEvent('generated', null, 'Reconciled before recap', ['reconciliation_version'=>1]);
+        $service = Mockery::mock(InvoiceService::class);
+        $service->shouldReceive('generateForLastCompletedWeek')->twice()->with(false)->andReturn(collect([$invoice]));
+        $this->app->instance(InvoiceService::class, $service);
+        $this->assertSame(0, Artisan::call('automations:run-system'));
+        $this->assertSame(0, Artisan::call('automations:run-system', ['--force'=>true]));
+        $this->assertSame(1, Message::where('to_address', $photographer->email)->count());
+    }
+
     public function test_weekly_summaries_exclude_staff_and_draft_invoices_and_keep_each_client_scoped(): void
     {
         $rep = User::factory()->create(['role' => 'salesRep']);

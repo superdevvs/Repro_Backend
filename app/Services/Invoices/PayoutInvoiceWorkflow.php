@@ -110,7 +110,7 @@ final class PayoutInvoiceWorkflow
                     'before' => $before, 'after' => $locked->buildApprovalSnapshot(),
                 ]);
 
-            return $locked->fresh(['items', 'shoots', 'photographer', 'salesRep', 'auditEvents.actor']);
+            return $locked->fresh(['items', 'shoots', 'photographer', 'salesRep', 'auditEvents.actor'])->withPayoutReconciliation();
         });
     }
 
@@ -168,7 +168,7 @@ final class PayoutInvoiceWorkflow
             ->excludeHistoricalImportsFromNewBilling()
             ->where(fn ($q) => $q->where('photographer_id', $recipient)
                 ->orWhereHas('services', fn ($s) => $s->where('shoot_service.photographer_id', $recipient)))
-            ->where(fn ($q) => $q->whereNull('shoot_type')->orWhere('shoot_type', '!=', Shoot::SHOOT_TYPE_COMPLIMENTARY_RESHOOT))
+            ->where(fn ($q) => $q->whereNull('shoot_type')->orWhereNotIn('shoot_type', [Shoot::SHOOT_TYPE_COMPLIMENTARY_RESHOOT, Shoot::SHOOT_TYPE_INTERNAL_TEST]))
             ->when($search !== '', fn ($q) => $q->where(fn ($s) => $s->where('address', 'like', '%'.$search.'%')->orWhere('id', ctype_digit($search) ? (int) $search : -1)))
             ->when($date, fn ($q) => $q->whereDate('scheduled_date', $date))
             ->orderByDesc('scheduled_date')->limit(50)->get();
@@ -179,21 +179,20 @@ final class PayoutInvoiceWorkflow
                     continue;
                 }
                 $amount = $this->servicePay($shoot, $service);
-                $earned = $shoot->completed_at ?? $shoot->admin_verified_at;
+                $earned = app(PhotographerPayoutBasis::class)->completion($shoot, $service->pivot);
                 $workDate = $shoot->scheduled_date;
                 $existing = $this->allocatedInvoice($invoice, 'service:'.$service->pivot->id, $shoot->id, $service->pivot->id);
                 $reason = $existing ? 'Already allocated to invoice W-'.$existing
                     : ($shoot->photographer_paid_at ? 'Payout already recorded'
-                    : (! in_array($shoot->workflow_status, [Shoot::WORKFLOW_COMPLETED, Shoot::WORKFLOW_ADMIN_VERIFIED], true) ? 'Not completed / verified'
-                    : (! $earned ? 'Missing completion / verification date'
+                    : (! $earned ? 'Photographer work not submitted / uploaded or completed'
                     : (! $workDate ? 'Missing shoot date'
-                    : ($amount <= 0 ? 'No photographer payout configured' : null)))));
+                    : ($amount <= 0 ? 'No photographer payout configured' : null))));
                 [$weekStart, $weekEnd] = $workDate ? ReportingWeek::containing($workDate) : [null, null];
                 $rows[] = [
                     'shoot_id' => $shoot->id, 'shoot_service_id' => $service->pivot->id,
                     'address' => $shoot->address, 'service_name' => $this->serviceName($shoot, $service),
                     'scheduled_date' => $shoot->scheduled_date?->toDateString(),
-                    'completed_date' => $earned?->toDateString(), 'amount' => $amount,
+                    'completed_date' => $earned ? substr((string)$earned, 0, 10) : null, 'amount' => $amount,
                     'eligible' => $reason === null, 'unavailable_reason' => $reason,
                     'earning_week' => $weekStart ? $weekStart->toDateString().' – '.$weekEnd->toDateString() : null,
                     'outside_period' => (bool) ($workDate && ($workDate->lt($invoice->billing_period_start) || $workDate->gt($invoice->billing_period_end->copy()->endOfDay()))),
@@ -209,11 +208,11 @@ final class PayoutInvoiceWorkflow
         $shoot = Shoot::with(['services', 'units'])->excludeHistoricalImportsFromNewBilling()->find($data['shoot_id']);
         $service = $shoot?->services->first(fn ($s) => (int) $s->pivot->id === (int) $data['shoot_service_id']);
         if (! $shoot || ! $service || (int) ($service->pivot->photographer_id ?? $shoot->photographer_id) !== (int) $invoice->photographer_id
-            || $shoot->isComplimentaryReshoot() || $shoot->photographer_paid_at
-            || ! in_array($shoot->workflow_status, [Shoot::WORKFLOW_COMPLETED, Shoot::WORKFLOW_ADMIN_VERIFIED], true)) {
-            throw ValidationException::withMessages(['shoot_id' => 'Choose a completed, unpaid service assigned to this photographer.']);
+            || $shoot->isComplimentaryReshoot() || $shoot->shoot_type === Shoot::SHOOT_TYPE_INTERNAL_TEST || $shoot->photographer_paid_at
+            || ! app(PhotographerPayoutBasis::class)->completion($shoot, $service->pivot)) {
+            throw ValidationException::withMessages(['shoot_id' => 'Choose submitted / uploaded or delivered, unpaid work assigned to this photographer.']);
         }
-        $earned = $shoot->completed_at ?? $shoot->admin_verified_at;
+        $earned = app(PhotographerPayoutBasis::class)->completion($shoot, $service->pivot);
         if (! $earned) {
             throw ValidationException::withMessages(['shoot_id' => 'Accounts must verify the completion date before adding this service.']);
         }
@@ -239,6 +238,7 @@ final class PayoutInvoiceWorkflow
             'quantity' => 1, 'unit_amount' => $amount, 'total_amount' => $amount,
             'recorded_at' => $workDate,
             'meta' => ['source' => 'linked_work', 'service_id' => $service->id,
+                'payout_basis' => app(PhotographerPayoutBasis::class)->forLine($service->pivot, $shoot, $service),
                 'shoot_unit_id' => $service->pivot->shoot_unit_id,
                 'unit_label' => $shoot->units->firstWhere('id', $service->pivot->shoot_unit_id)?->label,
                 'shoot_service_id' => $service->pivot->id, 'work_key' => $key, 'reason' => $data['reason'] ?? null],
@@ -274,13 +274,7 @@ final class PayoutInvoiceWorkflow
 
     private function servicePay(Shoot $shoot, $service): float
     {
-        $pivot = $service->pivot;
-        $sqft = $shoot->units->firstWhere('id', $pivot->shoot_unit_id)?->sqft
-            ?? data_get($shoot->property_details, 'sqft') ?? data_get($shoot->property_details, 'squareFeet')
-            ?? data_get($shoot->property_details, 'square_feet');
-        $pay = $pivot->photographer_pay ?? $service->getPhotographerPayForSqft($sqft) ?? $service->photographer_pay ?? 0;
-
-        return round((float) $pay * (int) ($pivot->quantity ?? 1), 2);
+        return app(PhotographerPayoutBasis::class)->amount($service->pivot, $shoot, $service);
     }
 
     private function serviceName(Shoot $shoot, $service): string

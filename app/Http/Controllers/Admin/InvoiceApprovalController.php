@@ -113,7 +113,7 @@ class InvoiceApprovalController extends Controller
         ]);
 
         return response()->json([
-            'data' => $this->serializeReviewDetailInvoice($invoice),
+            'data' => $this->serializeReviewDetailInvoice($invoice->withPayoutReconciliation()),
         ]);
     }
 

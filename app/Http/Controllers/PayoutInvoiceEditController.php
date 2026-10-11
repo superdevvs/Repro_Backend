@@ -17,7 +17,7 @@ class PayoutInvoiceEditController extends Controller
     {
         $this->authorizeInvoice($request->user(), $invoice);
 
-        return response()->json(['invoice' => $invoice->load(['items', 'shoots', 'photographer', 'salesRep', 'auditEvents.actor'])]);
+        return response()->json(['invoice' => $invoice->load(['items', 'shoots', 'photographer', 'salesRep', 'auditEvents.actor'])->withPayoutReconciliation()]);
     }
 
     public function candidates(Request $request, Invoice $invoice)
