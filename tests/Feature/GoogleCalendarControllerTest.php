@@ -69,13 +69,13 @@ class GoogleCalendarControllerTest extends TestCase
         $this->postJson('/api/google-calendar/connect')->assertUnprocessable();
     }
 
-    public function test_owned_scope_preview_is_opt_in_and_preserves_photographer_authorization(): void
+    public function test_normal_and_preview_use_owned_scope_and_preserve_photographer_authorization(): void
     {
         config(['services.google.calendar.scope' => 'openid email https://www.googleapis.com/auth/calendar.events']);
         Sanctum::actingAs($this->photographer);
         $normal = $this->postJson('/api/google-calendar/connect')->assertOk();
         parse_str(parse_url($normal->json('data.authorization_url'), PHP_URL_QUERY), $normalQuery);
-        $this->assertSame('openid email https://www.googleapis.com/auth/calendar.events', $normalQuery['scope']);
+        $this->assertSame('openid email https://www.googleapis.com/auth/calendar.events.owned', $normalQuery['scope']);
         $preview = $this->postJson('/api/google-calendar/connect', ['owned_scope_preview' => true])->assertOk();
         parse_str(parse_url($preview->json('data.authorization_url'), PHP_URL_QUERY), $previewQuery);
         $this->assertSame('openid email https://www.googleapis.com/auth/calendar.events.owned', $previewQuery['scope']);

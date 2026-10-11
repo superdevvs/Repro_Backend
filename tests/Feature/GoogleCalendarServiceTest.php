@@ -137,7 +137,7 @@ class GoogleCalendarServiceTest extends TestCase
         $this->assertSame('demo@example.com', $query['login_hint']);
         $this->assertSame('offline', $query['access_type']);
         parse_str(parse_url(app(GoogleCalendarService::class)->buildAuthorizationUrl('state', 'demo@example.com'), PHP_URL_QUERY), $normalQuery);
-        $this->assertSame('openid email https://www.googleapis.com/auth/calendar.events', $normalQuery['scope']);
+        $this->assertSame($query['scope'], $normalQuery['scope']);
     }
 
     public function test_permission_validation_accepts_owned_scope_and_existing_broader_grants(): void

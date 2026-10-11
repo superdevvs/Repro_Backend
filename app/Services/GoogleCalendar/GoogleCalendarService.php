@@ -27,7 +27,9 @@ class GoogleCalendarService
         $scope = (string) config('services.google.calendar.scope');
         // Older production environments explicitly configured this scope. The
         // primary-calendar workflow needs access only to calendars the user owns.
-        if ($ownedScopePreview && config('services.google.calendar.default_calendar_id', 'primary') === 'primary') {
+        // Use the same narrow permission in ordinary and preview connections.
+        // Keep the preview argument for compatibility with deployed callers.
+        if (config('services.google.calendar.default_calendar_id', 'primary') === 'primary') {
             $scope = implode(' ', array_unique(array_map(
                 static fn (string $item) => $item === 'https://www.googleapis.com/auth/calendar.events'
                     ? 'https://www.googleapis.com/auth/calendar.events.owned'
