@@ -142,4 +142,23 @@ class PhotographerPayoutReconciliationTest extends TestCase
         $shoot->services()->updateExistingPivot($floor->id,['ready_at'=>'2026-10-10 22:00:00']);
         $this->assertSame(22.50,(float)$this->generate()->sole()->total_amount);
     }
+
+    public function test_multiple_raw_files_are_completion_evidence_not_multiple_earnings(): void
+    {
+        $person=User::factory()->photographer()->create();
+        $other=User::factory()->photographer()->create();
+        $shoot=$this->work($person);
+        $first=$shoot->services()->first();
+        $floor=Service::factory()->create(['name'=>'Floorplan','photographer_pay'=>22.50,'pricing_type'=>'fixed']);
+        $shoot->services()->attach($floor->id,['photographer_id'=>$other->id,'quantity'=>1]);
+        foreach(['one.jpg','two.jpg'] as $name) \App\Models\ShootFile::create([
+            'shoot_id'=>$shoot->id,'shoot_service_id'=>$first->pivot->id,'filename'=>$name,'stored_filename'=>$name,
+            'path'=>'shoots/'.$name,'file_type'=>'image/jpeg','file_size'=>100,'uploaded_by'=>$person->id,'media_type'=>'raw',
+        ]);
+        $invoice=$this->generate()->sole();
+        $this->assertSame($person->id,$invoice->photographer_id);
+        $this->assertSame(78.75,(float)$invoice->total_amount);
+        $this->assertCount(1,$invoice->items);
+        $this->assertSame(0,app(PhotographerPayoutReconciliation::class)->review($invoice)['pending_count']);
+    }
 }

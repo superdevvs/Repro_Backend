@@ -14,7 +14,8 @@ final class PhotographerPayoutReconciliation
     public function rows(Carbon $start, Carbon $end, bool $includeLate = true, ?int $recipientId = null): Collection
     {
         $basis = app(PhotographerPayoutBasis::class);
-        $shoots = Shoot::with(['services', 'units', 'service', 'files' => fn ($q) => $q->whereIn('media_type', ['raw', 'floorplan'])])
+        $shoots = Shoot::with(['services', 'units', 'service', 'files' => fn ($q) => $q
+            ->select(['shoot_id', 'shoot_service_id', 'media_type'])->distinct()->whereIn('media_type', ['raw', 'floorplan'])])
             ->excludeHistoricalImportsFromNewBilling()
             ->where(fn ($q) => $q->whereNull('shoot_type')->orWhereNotIn('shoot_type', [Shoot::SHOOT_TYPE_COMPLIMENTARY_RESHOOT, Shoot::SHOOT_TYPE_INTERNAL_TEST]))
             ->whereDate('scheduled_date', '<=', $end->toDateString())
