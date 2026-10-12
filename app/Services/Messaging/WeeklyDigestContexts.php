@@ -127,7 +127,11 @@ class WeeklyDigestContexts
             return;
         }
 
+        $configured = (array) $rule->recipients_json;
+        $roles = array_is_list($configured) ? $configured : ($configured['roles'] ?? []);
+        $roles = array_map(fn ($role) => in_array($role, ['salesRep','sales_rep','salesrep'], true) ? 'rep' : $role, $roles);
         foreach ($groups as $role => $summaries) {
+            if (! in_array($role, $roles, true)) continue;
             foreach ($summaries as $summary) {
                 $recipient = User::find($summary['id'] ?? null);
                 if (! $recipient || ($recipient->account_status ?? 'active') !== 'active') {

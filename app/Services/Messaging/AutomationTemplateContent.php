@@ -19,6 +19,7 @@ class AutomationTemplateContent
         }
 
         $details = match ($template['slug']) {
+            'weekly-invoice-generated' => ['{{invoice_reconciliation_text}}', '{{invoice_reconciliation_html}}'],
             'account-created' => ['Next step: sign in and complete your profile.', '<p><a href="{{portal_url}}">Sign in and complete your profile</a>. Support: {{company_email}}</p>'],
             'shoot-requested' => ['Your request has been received and is not yet confirmed.', '<p>Your request has been received and is <strong>not yet confirmed</strong>.</p>'],
             'shoot-scheduled', 'shoot-request-approved', 'shoot-request-modified' => ['Manage this booking: {{dashboard_link}}', '<p><a href="{{dashboard_link}}">View booking, reschedule or cancel</a></p>'],

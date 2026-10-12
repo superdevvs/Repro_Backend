@@ -155,7 +155,7 @@ class EmailAtelierDirectFlowsTest extends TestCase
             $service->shouldReceive('build'.$method.'Summaries')->twice()->andReturn(collect([$this->payoutSummary($role, true)]));
         }
         $this->app->instance(PayoutReportService::class, $service);
-        $sent = $this->capture($disabled === 'payout-report' ? 1 : ($disabled === 'payout-digest' ? 3 : 4));
+        $sent = $this->capture($disabled === 'payout-report' ? 1 : ($disabled === 'payout-digest' ? 2 : 3));
 
         $this->artisan('payouts:send')->assertExitCode(0);
 
@@ -169,7 +169,7 @@ class EmailAtelierDirectFlowsTest extends TestCase
                     $this->assertStringContainsString($name, $payload['body_html']);
                 }
             } else {
-                $this->assertContains($payload['to'], ['photographer@example.test', 'editor@example.test', 'salesRep@example.test']);
+                $this->assertContains($payload['to'], ['editor@example.test', 'salesRep@example.test']);
             }
         }
         $this->assertNoOutbound();

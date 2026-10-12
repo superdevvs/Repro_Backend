@@ -324,6 +324,9 @@ class AutomationController extends Controller
             'schedule.time' => ['sometimes', 'regex:/^(?:[01]\d|2[0-3]):[0-5]\d$/'],
             'schedule.days_before' => ['sometimes', 'integer', 'min:0', 'max:365'],
             'schedule.day_of_week' => ['sometimes', 'integer', 'between:0,6'],
+            'schedule.timezone' => ['sometimes', 'timezone'],
+            'schedule.effective_from' => ['sometimes', 'date_format:Y-m-d'],
+            'schedule.delivery_mode' => ['sometimes', Rule::in(['recipient_week'])],
             'schedule.accounting_email' => ['sometimes', 'nullable', 'email'],
             'schedule.monthly_day_of_week' => ['sometimes', 'integer', 'between:0,6'],
             'schedule.overdue_days' => ['sometimes', 'array'],
@@ -354,7 +357,7 @@ class AutomationController extends Controller
     private function persistResolvedWorkflow(AutomationRule $automation, array $data): AutomationRule
     {
         $workflow = $data['workflow_definition_json'] ?? $this->workflowConverter->getWorkflowDefinition($automation);
-        foreach (['system_default_key', 'defaults_repaired_20260927'] as $key) {
+        foreach (['system_default_key', 'defaults_repaired_20260927', 'weekly_invoice_sunday_20261012', 'before_weekly_invoice_sunday_20261012'] as $key) {
             $original = $automation->getRawOriginal('workflow_definition_json');
             $original = is_string($original) ? json_decode($original, true) : $original;
             if (array_key_exists($key, $original['meta'] ?? [])) {

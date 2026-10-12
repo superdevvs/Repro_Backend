@@ -294,8 +294,8 @@ class SystemAutomationDefaults
             [
                 'name' => 'Weekly Automated Invoicing', 'description' => 'Generate weekly invoices and notify payees only when a nonzero invoice exists.',
                 'trigger_type' => 'WEEKLY_AUTOMATED_INVOICING', 'template_id' => MessageTemplate::where('slug', 'weekly-invoice-generated')->value('id'),
-                'schedule_json' => ['type' => 'weekly', 'day_of_week' => 1, 'time' => '01:00'],
-                'recipients_json' => ['photographer', 'rep'],
+                'schedule_json' => ['type' => 'weekly', 'day_of_week' => 0, 'time' => '10:00', 'timezone'=>'America/New_York', 'delivery_mode'=>'recipient_week'],
+                'recipients_json' => ['photographer'],
             ],
             [
                 'name' => 'Weekly Sales Reports', 'description' => 'Send the previous completed week KPIs to each sales rep with activity.',
@@ -313,9 +313,9 @@ class SystemAutomationDefaults
                 'schedule_json' => ['type' => 'weekly', 'day_of_week' => 1, 'time' => '03:00'], 'recipients_json' => ['rep'],
             ],
             [
-                'name' => 'Weekly Payout Reports', 'description' => 'Send each photographer, editor and sales rep their own previous-week payout recap.',
+                'name' => 'Weekly Payout Reports', 'description' => 'Send editors and sales reps their own previous-week payout recap. Photographers receive one weekly invoice email.',
                 'trigger_type' => 'WEEKLY_PAYOUT_REPORT', 'template_id' => MessageTemplate::where('slug', 'payout-report')->value('id'),
-                'schedule_json' => ['type' => 'weekly', 'day_of_week' => 0, 'time' => '05:00'], 'recipients_json' => ['photographer', 'editor', 'rep'],
+                'schedule_json' => ['type' => 'weekly', 'day_of_week' => 0, 'time' => '05:00'], 'recipients_json' => ['editor', 'rep'],
             ],
             [
                 'name' => 'Weekly Accounting Payout Digest', 'description' => 'Send accounting the previous completed week payout totals when there is activity.',

@@ -285,6 +285,7 @@ class ShootEmailCompletenessPreservationTest extends TestCase
     private function expectedVariables(string $slug, array $original): array
     {
         $added = match ($slug) {
+            'weekly-invoice-generated' => ['invoice_reconciliation_text', 'invoice_reconciliation_html'],
             'shoot-scheduled', 'shoot-request-approved', 'shoot-request-modified', 'shoot-updated' => ['dashboard_link'],
             'shoot-request-declined' => ['portal_url'],
             'photographer-assigned', 'shoot-reminder' => ['map_link', 'property_contact_name', 'property_contact_phone', 'access_instructions', 'dashboard_link'],

@@ -88,16 +88,23 @@ class RunSystemAutomations extends Command
                     $previousBatch = json_decode((string) $dispatch->output, true);
                     $invoiceIds = array_values(array_unique(array_merge($generatedInvoiceIds, (array) ($previousBatch['invoice_ids'] ?? []))));
                     $dispatch->update(['output' => json_encode(['invoice_ids' => $invoiceIds])]);
-                    foreach ($generatedInvoices as $invoice) {
+                    $deliveries = ($rule->schedule_json['delivery_mode'] ?? null) === 'recipient_week'
+                        ? $contexts->photographerInvoiceBatches()
+                        : $generatedInvoices->map(fn ($invoice) => ['invoice'=>$invoice, 'context'=>$contexts->invoice($invoice), 'key'=>'weekly-invoice:'.$invoice->id]);
+                    foreach ($deliveries as $delivery) {
+                        $invoice = $delivery['invoice'];
                         if ((float) ($invoice->total_amount ?? $invoice->total) <= 0
-                            || ! in_array($invoice->id, $invoiceIds, true)) {
+                            || (($rule->schedule_json['delivery_mode'] ?? null) !== 'recipient_week' && ! in_array($invoice->id, $invoiceIds, true))) {
                             continue;
                         }
-                        $key = 'weekly-invoice:'.$invoice->id;
-                        if ($dispatcher->alreadyDispatched($rule, $key)) {
+                        $key = $delivery['key'];
+                        $consolidated = ($rule->schedule_json['delivery_mode'] ?? null) === 'recipient_week';
+                        if ($consolidated ? $dispatcher->alreadyDispatchedGlobally($key) : $dispatcher->alreadyDispatched($rule, $key)) {
                             continue;
                         }
-                        if (! $dispatcher->dispatch($rule, $contexts->invoice($invoice), $key)) {
+                        $sent = $consolidated ? $dispatcher->dispatchRecipientWeek($rule, $delivery['context'], $key)
+                            : $dispatcher->dispatch($rule, $delivery['context'], $key);
+                        if (! $sent) {
                             throw new \RuntimeException('Weekly invoice workflow did not complete.');
                         }
                         $delivered++;
@@ -171,8 +178,12 @@ class RunSystemAutomations extends Command
             return null;
         }
         [$hour, $minute] = array_map('intval', explode(':', $time));
-        $scheduled = $now->copy()->startOfWeek(Carbon::SUNDAY)->addDays($day)->setTime($hour, $minute);
+        $timezone = (string) ($schedule['timezone'] ?? config('app.timezone', 'UTC'));
+        if (! in_array($timezone, \DateTimeZone::listIdentifiers(), true)) return null;
+        $scheduled = $now->copy()->setTimezone($timezone)->startOfWeek(Carbon::SUNDAY)->addDays($day)->setTime($hour, $minute);
+        // A schedule change must not replay the already-delivered old week.
+        if (! empty($schedule['effective_from']) && $scheduled->toDateString() < $schedule['effective_from']) return null;
 
-        return $now->gte($scheduled) || $this->option('force') ? $scheduled : null;
+        return $now->gte($scheduled) || $this->option('force') ? $scheduled->setTimezone('UTC') : null;
     }
 }

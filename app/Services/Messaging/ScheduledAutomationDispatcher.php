@@ -10,6 +10,23 @@ use Carbon\Carbon;
 /** Shared eligibility and deduplication for database-backed schedules. */
 class ScheduledAutomationDispatcher
 {
+    public function alreadyDispatchedGlobally(string $key): bool
+    {
+        return \App\Models\AutomationRun::where('context_json->schedule_dispatch_key', $key)->exists()
+            || Message::whereJsonContains('tags_json', 'WEEKLY_PHOTOGRAPHER_INVOICE:'.$key)->exists();
+    }
+
+    public function dispatchRecipientWeek(AutomationRule $rule, array $context, string $key): bool
+    {
+        // Prevent two enabled rules or concurrent invocations sending the same
+        // photographer two weekly emails. Prior attempts remain protected.
+        return (bool) \Illuminate\Support\Facades\Cache::lock('weekly-invoice-mail:'.sha1($key), 120)->get(function () use ($rule, $context, $key) {
+            if ($this->alreadyDispatchedGlobally($key)) return true;
+            $context['tags_json'][] = 'WEEKLY_PHOTOGRAPHER_INVOICE:'.$key;
+            return $this->dispatch($rule, $context, $key);
+        });
+    }
+
     public function dailyTimeReached(AutomationRule $rule, Carbon $now, string $defaultTime): bool
     {
         $time = (string) ($rule->schedule_json['time'] ?? $defaultTime);

@@ -282,8 +282,9 @@ class ScheduledAutomationCommandsTest extends TestCase
         Carbon::setTestNow(now()->setTime(11, 0));
         $this->assertSame(0, Artisan::call('automations:run-system'));
         $this->assertSame(0, Artisan::call('payouts:send'));
-        $this->assertSame(4, Message::count());
-        foreach ($people as $person) {
+        $this->assertSame(3, Message::count());
+        $this->assertSame(0, Message::where('to_address', $people['photographer']->email)->count());
+        foreach ($people->except('photographer') as $person) {
             $message = Message::where('to_address', $person->email)->firstOrFail();
             $this->assertSame('Edited payout report', $message->subject);
             $this->assertStringContainsString('$321.45', $message->body_html);
@@ -307,6 +308,97 @@ class ScheduledAutomationCommandsTest extends TestCase
         AutomationRule::whereIn('trigger_type', ['WEEKLY_PAYOUT_REPORT', 'WEEKLY_PAYOUT_DIGEST'])->update(['is_active' => true]);
         $this->assertSame(0, Artisan::call('payouts:send'));
         $this->assertSame(0, Message::count());
+    }
+
+    public function test_sunday_invoice_time_follows_eastern_daylight_saving_time(): void
+    {
+        $rule = $this->rule('WEEKLY_AUTOMATED_INVOICING', ['type'=>'weekly','day_of_week'=>0,'time'=>'10:00','timezone'=>'America/New_York'], 'Sunday invoice', ['photographer']);
+        $person = User::factory()->photographer()->create();
+        $invoice = $this->invoice($person, 0, ['role'=>'photographer','photographer_id'=>$person->id]);
+        $invoice->recordAuditEvent('generated', null, 'Reconciled', ['reconciliation_version'=>1]);
+        $service = Mockery::mock(InvoiceService::class);
+        $service->shouldReceive('generateForLastCompletedWeek')->twice()->with(false)->andReturn(collect([$invoice]));
+        $this->app->instance(InvoiceService::class, $service);
+        foreach (['2026-10-18 14:00:00','2026-11-01 15:00:00'] as $utcTime) {
+            Carbon::setTestNow(Carbon::parse($utcTime,'UTC')->subMinute());
+            $before = Message::count();
+            $this->assertSame(0, Artisan::call('automations:run-system'));
+            $this->assertSame($before, Message::count());
+            Carbon::setTestNow(Carbon::parse($utcTime,'UTC'));
+            // The same invoice remains protected from duplicate delivery even on a later week.
+            $this->assertSame(0, Artisan::call('automations:run-system'));
+            $this->assertSame($utcTime, AutomationDispatch::where('automation_rule_id',$rule->id)->latest('scheduled_for')->first()->scheduled_for->setTimezone('UTC')->format('Y-m-d H:i:s'));
+        }
+    }
+
+    public function test_recipient_week_email_includes_supplemental_invoices_and_pending_work_once(): void
+    {
+        Carbon::setTestNow(Carbon::parse('2026-10-18 14:00:00','UTC'));
+        $schedule=['type'=>'weekly','day_of_week'=>0,'time'=>'10:00','timezone'=>'America/New_York','delivery_mode'=>'recipient_week'];
+        $first=$this->rule('WEEKLY_AUTOMATED_INVOICING',$schedule,'One invoice',['photographer']);
+        $this->rule('WEEKLY_AUTOMATED_INVOICING',$schedule,'Duplicate rule',['photographer']);
+        $workflow=$first->workflow_definition_json;
+        $workflow['nodes'][1]['config']['bodyText']='{{invoice_total}} {{invoice_items_text}} {{invoice_reconciliation_text}}';
+        $first->update(['workflow_definition_json'=>$workflow]);
+        $person=User::factory()->photographer()->create();
+        $other=User::factory()->photographer()->create();
+        $period=['role'=>'photographer','billing_period_start'=>'2026-10-11','billing_period_end'=>'2026-10-17'];
+        $invoice=$this->invoice($person,0,$period+['photographer_id'=>$person->id,'total_amount'=>100]);
+        $supplement=$this->invoice($person,0,$period+['photographer_id'=>$person->id,'total_amount'=>35]);
+        $invoice->items()->create(['type'=>'charge','description'=>'First capture','quantity'=>1,'unit_amount'=>100,'total_amount'=>100]);
+        $supplement->items()->create(['type'=>'expense','description'=>'Approved parking reimbursement','quantity'=>1,'unit_amount'=>35,'total_amount'=>35]);
+        $foreign=$this->invoice($other,0,$period+['photographer_id'=>$other->id,'total_amount'=>45]);
+        $foreign->items()->create(['type'=>'charge','description'=>'Other photographer private work','quantity'=>1,'unit_amount'=>45,'total_amount'=>45]);
+        $service=\App\Models\Service::factory()->create(['name'=>'Pending floorplan','price'=>50,'pricing_type'=>'fixed','photographer_pay'=>22.5]);
+        $shoot=Shoot::factory()->create(['photographer_id'=>$person->id,'scheduled_date'=>'2026-10-17','status'=>'scheduled','workflow_status'=>'scheduled','shoot_type'=>'standard','completed_at'=>null,'admin_verified_at'=>null,'photos_uploaded_at'=>null]);
+        $shoot->services()->attach($service->id,['photographer_id'=>$person->id,'price'=>50,'quantity'=>1]);
+        $generator=Mockery::mock(InvoiceService::class);
+        $generator->shouldReceive('generateForLastCompletedWeek')->twice()->with(false)->andReturn(collect([$invoice,$supplement,$foreign]));
+        $this->app->instance(InvoiceService::class,$generator);
+        $this->assertSame(0,Artisan::call('automations:run-system'));
+        $this->assertSame(0,Artisan::call('automations:run-system',['--force'=>true]));
+        $messages=Message::where('to_address',$person->email)->get();
+        $this->assertCount(1,$messages);
+        $body=$messages->sole()->body_text;
+        $this->assertStringContainsString('$135.00',$body);
+        $this->assertStringContainsString('First capture',$body);
+        $this->assertStringContainsString('parking reimbursement',$body);
+        $this->assertStringContainsString('1 shoot awaiting photographer completion',$body);
+        $this->assertStringContainsString('$22.50',$body);
+        $this->assertStringNotContainsString('Other photographer private work',$body);
+        $this->assertSame(2,Message::count());
+    }
+
+    public function test_new_effective_date_does_not_replay_this_weeks_old_invoice_email(): void
+    {
+        Carbon::setTestNow(Carbon::parse('2026-10-12 07:00:00','UTC'));
+        $this->rule('WEEKLY_AUTOMATED_INVOICING',['type'=>'weekly','day_of_week'=>0,'time'=>'10:00','timezone'=>'America/New_York','effective_from'=>'2026-10-18','delivery_mode'=>'recipient_week'],'Next Sunday',['photographer']);
+        $service=Mockery::mock(InvoiceService::class);
+        $service->shouldNotReceive('generateForLastCompletedWeek');
+        $this->app->instance(InvoiceService::class,$service);
+        $this->assertSame(0,Artisan::call('automations:run-system'));
+        $this->assertSame(0,Artisan::call('automations:run-system',['--force'=>true]));
+        $this->assertSame(0,Message::count());
+    }
+
+    public function test_consolidation_migration_preserves_other_recaps_and_existing_messages(): void
+    {
+        Carbon::setTestNow(Carbon::parse('2026-10-12 07:00:00','UTC'));
+        $rule=$this->rule('WEEKLY_AUTOMATED_INVOICING',['type'=>'weekly','day_of_week'=>1,'time'=>'01:00'],'Old invoice',['photographer']);
+        $rule->update(['name'=>'Weekly Automated Invoicing']);
+        $recap=$this->rule('WEEKLY_PAYOUT_REPORT',['type'=>'weekly','day_of_week'=>0,'time'=>'05:00'],'Recap',['photographer','editor','rep']);
+        $migration=require database_path('migrations/2026_10_12_090000_consolidate_photographer_weekly_invoice_email.php');
+        $migration->up();
+        $this->assertSame('10:00',$rule->fresh()->schedule_json['time']);
+        $this->assertSame('America/New_York',$rule->fresh()->schedule_json['timezone']);
+        $this->assertSame('2026-10-18',$rule->fresh()->schedule_json['effective_from']);
+        $this->assertSame(['editor','rep'],$recap->fresh()->recipients_json);
+        $this->assertSame(['editor','rep'],$recap->fresh()->workflow_definition_json['nodes'][1]['config']['recipientRoles']);
+        $this->assertSame('05:00',$recap->fresh()->schedule_json['time']);
+        $edited=$rule->fresh()->schedule_json; $edited['time']='11:00'; $rule->update(['schedule_json'=>$edited]);
+        $migration->up();
+        $this->assertSame('11:00',$rule->fresh()->schedule_json['time']);
+        $this->assertSame(0,Message::count());
     }
 
     private function invoice(User $client, int $dueInDays, array $overrides = []): Invoice
