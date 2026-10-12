@@ -165,4 +165,48 @@ class DayScheduleAdjustmentTest extends TestCase
         $this->assertSame('10:30', substr($neighbor->fresh()->time, 0, 5));
         Queue::assertNothingPushed();
     }
+
+    public function test_multi_unit_approval_and_neighbor_move_share_the_final_schedule_for_admin_and_rep(): void
+    {
+        foreach (['admin', 'salesRep'] as $role) {
+            $actor = $role === 'admin' ? $this->admin : User::factory()->create(['role' => 'salesRep', 'email_verification_required_at' => null]);
+            Sanctum::actingAs($actor);
+            $photographer = User::factory()->photographer()->create(['timezone' => 'America/New_York']);
+            $this->photographer = $photographer;
+            $neighbor = $this->booked();
+            $target = $this->booked();
+            $target->update(['status' => 'requested', 'workflow_status' => 'requested', 'rep_id' => $actor->id]);
+            $target->forceFill(['units_revision' => 1])->save();
+            $unit = $target->units()->create(['client_key' => 'unit-'.$target->id, 'label' => '1', 'kind' => 'unit', 'sqft' => 4512, 'sort_order' => 0]);
+            $line = $target->serviceItems()->sole();
+            $line->update(['shoot_unit_id' => $unit->id, 'client_key' => 'photos-'.$target->id, 'duration_minutes' => 75]);
+            $floorplan = Service::factory()->create(['photographer_required' => true, 'shoot_duration_minutes' => 5]);
+            $target->services()->attach($floorplan->id, ['shoot_unit_id' => $unit->id, 'client_key' => 'floorplan-'.$target->id,
+                'duration_minutes' => 5, 'quantity' => 1, 'price' => 175, 'photographer_id' => $photographer->id,
+                'scheduled_at' => '2026-10-09 15:45:00', 'workflow_status' => 'scheduled']);
+            $payload = ['shoot_id' => $target->id, 'action_mode' => 'approve', 'expected_units_revision' => 1,
+                'timezone' => 'America/New_York', 'scheduled_at' => '2026-10-09T14:30:00Z',
+                'notify_client' => false, 'notify_photographer' => false,
+                'service_lines' => $target->serviceItems()->get()->map(fn ($row) => ['shoot_service_id' => $row->id,
+                    'client_key' => $row->client_key, 'shoot_unit_id' => $row->shoot_unit_id, 'service_id' => $row->service_id,
+                    'quantity' => $row->quantity, 'duration_minutes' => $row->duration_minutes,
+                    'scheduled_at' => $row->scheduled_at->toIso8601String(), 'photographer_id' => $row->photographer_id])->all(),
+                'schedule_adjustments' => [['shoot_id' => $neighbor->id, 'photographer_id' => $photographer->id,
+                    'from_start' => '2026-10-09T14:30:00Z', 'scheduled_at' => '2026-10-09T11:00:00Z',
+                    'expected_edit_version' => app(ShootManagementAccess::class)->editVersion($neighbor->fresh())]]];
+            $invalid = $payload;
+            $invalid['schedule_adjustments'][0]['scheduled_at'] = '2026-10-09T14:00:00Z';
+            $this->postJson('/api/shoots/'.$target->id.'/approve', $invalid)->assertUnprocessable();
+            $this->assertSame('requested', $target->fresh()->status);
+            $this->assertSame('10:30', substr($neighbor->fresh()->time, 0, 5));
+            $this->postJson('/api/photographer/availability/feasibility', $payload)->assertOk()->assertJsonPath('data.available', true);
+            $this->postJson('/api/shoots/'.$target->id.'/approve', $payload)->assertOk();
+            $this->assertSame('scheduled', $target->fresh()->status, $role);
+            $this->assertSame('07:00', substr($neighbor->fresh()->time, 0, 5), $role);
+            $this->assertSame(['2026-10-09 14:30:00', '2026-10-09 15:45:00'], $target->serviceItems()->orderBy('id')->get()->map(fn ($row) => $row->getRawOriginal('scheduled_at'))->all());
+            $this->assertSame([75, 5], $target->serviceItems()->orderBy('id')->pluck('duration_minutes')->all());
+            $this->assertSame([100.0, 175.0], $target->serviceItems()->orderBy('id')->pluck('price')->map(fn ($price) => (float) $price)->all());
+            Queue::assertPushed(ProcessUpdatedShootSideEffectsJob::class, fn ($job) => $job->shootId === $neighbor->id && $job->notifyClient === false && $job->notifyPhotographer === false);
+        }
+    }
 }

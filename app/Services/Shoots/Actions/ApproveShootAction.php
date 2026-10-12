@@ -84,6 +84,11 @@ class ApproveShootAction
             );
 
         $skipAvailabilityCheck = $management->isRestrictedSalesRep($user) ? false : ($validated['skip_availability_check'] ?? in_array($user->role, ['admin', 'superadmin']));
+        // The guarded batch checks the final day after staged neighbor moves.
+        // Configured working hours remain enforced before and during the guard.
+        if (app(\App\Services\Scheduling\ScheduleCommitGuard::class)->enabled() && ! empty($validated['schedule_adjustments'])) {
+            $skipAvailabilityCheck = true;
+        }
         $targetPhotographerId = $validated['photographer_id'] ?? $shoot->photographer_id;
         $targetServices = $this->editablePayloadService->targetServicesFor($shoot, $validated, $user);
         $isMultiUnit = $shoot->units()->exists();
