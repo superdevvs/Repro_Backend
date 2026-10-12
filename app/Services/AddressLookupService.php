@@ -653,9 +653,9 @@ class AddressLookupService
      *
      * @return array{latitude: float, longitude: float}|null
      */
-    public function geocodeAddress(array $address): ?array
+    public function geocodeAddress(array $address, ?array $lookupPolicy = null): ?array
     {
-        $coordinates = $this->geocodeWithCache($address);
+        $coordinates = $this->geocodeWithCache($address, $lookupPolicy);
         if ($coordinates) {
             return $coordinates;
         }
@@ -667,7 +667,7 @@ class AddressLookupService
         unset($locality['address']);
 
         return $this->formatAddressForApi($locality)
-            ? $this->geocodeWithCache($locality)
+            ? $this->geocodeWithCache($locality, $lookupPolicy)
             : null;
     }
 

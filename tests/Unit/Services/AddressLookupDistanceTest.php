@@ -24,6 +24,17 @@ class AddressLookupDistanceTest extends TestCase
     }
 
     #[Test]
+    public function map_geocoding_obeys_network_policy_and_expired_deadline(): void
+    {
+        Http::fake();
+        $service = app(AddressLookupService::class);
+        $address = ['address' => '10 Uncached Road', 'city' => 'Rockville', 'state' => 'MD'];
+        $this->assertNull($service->geocodeAddress($address, ['network_allowed' => false]));
+        $this->assertNull($service->geocodeAddress($address, ['network_allowed' => true, 'deadline' => microtime(true) - 1]));
+        Http::assertNothingSent();
+    }
+
+    #[Test]
     public function saved_coordinates_provide_distance_without_an_external_lookup(): void
     {
         Http::fake();

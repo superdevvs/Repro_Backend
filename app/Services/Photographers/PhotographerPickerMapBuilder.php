@@ -51,8 +51,8 @@ class PhotographerPickerMapBuilder
         ?array $lookupPolicy = null,
         bool $lastLegAlreadyResolved = false,
     ): array {
-        $home = $this->homeCoords($photographer);
-        $jobCoords = $this->resolveCoords($job);
+        $home = $this->homeCoords($photographer, $lookupPolicy);
+        $jobCoords = $this->resolveCoords($job, $lookupPolicy);
 
         $lastShoot = null;
         $nextShoot = null;
@@ -62,8 +62,8 @@ class PhotographerPickerMapBuilder
             $jobEnd = $jobStart->copy()->addMinutes(max(1, $jobDurationMinutes));
             [$lastShoot, $lastEndsAt] = $this->findLastShoot($shootsOnDate, $jobStart);
             [$nextShoot, $nextStartsAt] = $this->findNextShoot($shootsOnDate, $jobEnd);
-            $last = $lastShoot ? $this->shootPin($lastShoot, 'ends_at', $lastEndsAt) : null;
-            $next = $nextShoot ? $this->shootPin($nextShoot, 'starts_at', $nextStartsAt) : null;
+            $last = $lastShoot ? $this->shootPin($lastShoot, 'ends_at', $lastEndsAt, $lookupPolicy) : null;
+            $next = $nextShoot ? $this->shootPin($nextShoot, 'starts_at', $nextStartsAt, $lookupPolicy) : null;
         }
 
         $lastLeg = $knownLastToJobDistance;
@@ -156,9 +156,9 @@ class PhotographerPickerMapBuilder
     }
 
     /** Response-level job pin echoed once for FE route drawing. */
-    public function jobPin(array $job): array
+    public function jobPin(array $job, ?array $lookupPolicy = null): array
     {
-        $coords = $this->resolveCoords($job);
+        $coords = $this->resolveCoords($job, $lookupPolicy);
 
         return [
             'lat' => $coords['lat'] ?? null,
@@ -170,7 +170,7 @@ class PhotographerPickerMapBuilder
         ];
     }
 
-    private function homeCoords(User $photographer): ?array
+    private function homeCoords(User $photographer, ?array $lookupPolicy): ?array
     {
         $metadata = is_string($photographer->metadata)
             ? json_decode($photographer->metadata, true)
@@ -189,7 +189,7 @@ class PhotographerPickerMapBuilder
 
         // Display-only: miles already geocodes home internally; expose pin coords
         // without persisting to users.metadata (fail open).
-        return $this->geocodePin($this->homeAddressPayload($photographer, null));
+        return $this->geocodePin($this->homeAddressPayload($photographer, null), $lookupPolicy);
     }
 
     private function coords(mixed $lat, mixed $lng): ?array
@@ -210,17 +210,17 @@ class PhotographerPickerMapBuilder
      * Resolve pin coords from explicit lat/lng, else shared AddressLookup geocode cache.
      * Used so map.job/home/last/next can pin when miles already resolved via address.
      */
-    private function resolveCoords(array $payload): ?array
+    private function resolveCoords(array $payload, ?array $lookupPolicy): ?array
     {
         $stored = $this->coords($payload['latitude'] ?? null, $payload['longitude'] ?? null);
         if ($stored !== null) {
             return $stored;
         }
 
-        return $this->geocodePin($payload);
+        return $this->geocodePin($payload, $lookupPolicy);
     }
 
-    private function geocodePin(array $payload): ?array
+    private function geocodePin(array $payload, ?array $lookupPolicy): ?array
     {
         $hasAddress = (($payload['address'] ?? '') !== '')
             || (($payload['city'] ?? '') !== '' && ($payload['state'] ?? '') !== '');
@@ -233,7 +233,7 @@ class PhotographerPickerMapBuilder
                 'city' => (string) ($payload['city'] ?? ''),
                 'state' => (string) ($payload['state'] ?? ''),
                 'zip' => (string) ($payload['zip'] ?? ''),
-            ]);
+            ], $lookupPolicy);
         } catch (\Throwable) {
             return null;
         }
@@ -288,9 +288,9 @@ class PhotographerPickerMapBuilder
         return [$best, $bestStart];
     }
 
-    private function shootPin(Shoot $shoot, string $timeKey, CarbonInterface $when): array
+    private function shootPin(Shoot $shoot, string $timeKey, CarbonInterface $when, ?array $lookupPolicy): array
     {
-        $coords = $this->resolveCoords($this->shootAddressPayload($shoot));
+        $coords = $this->resolveCoords($this->shootAddressPayload($shoot), $lookupPolicy);
         $address = trim(implode(', ', array_filter([
             $shoot->property_address ?? $shoot->address ?? null,
             $shoot->city ?? null,

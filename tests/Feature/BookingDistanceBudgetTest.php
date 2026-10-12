@@ -41,16 +41,31 @@ class BookingDistanceBudgetTest extends TestCase
     {
         $ids = $this->photographers(3);
         Http::fake(['*' => Http::response(['status' => 'REQUEST_DENIED'], 403)]);
+        \Laravel\Sanctum\Sanctum::actingAs(User::factory()->create(['role' => 'admin']));
         $rows = $this->postJson('/api/photographer/availability/for-booking', $this->payload($ids))
             ->assertOk()->assertJsonCount(3, 'data')->json('data');
         foreach ($rows as $row) {
             $this->assertNull($row['distance']);
             $this->assertTrue($row['is_available_at_time']);
         }
-        // Map pins may geocode addresses independently of optional road distances.
-        // With radius enforcement off, no distance provider may be called.
-        Http::assertNotSent(fn ($request) => str_contains($request->url(), 'distancematrix')
-            || str_contains($request->url(), 'directions'));
+        // Optional distances and map pins must both remain cache-only.
+        Http::assertNothingSent();
+    }
+
+    public function test_optional_pins_use_cached_coordinates_without_network_calls(): void
+    {
+        $ids = $this->photographers(1);
+        $service = app(AddressLookupService::class);
+        Http::fake(['nominatim.openstreetmap.org/*' => Http::response([['lat' => '39.2', 'lon' => '-77']])]);
+        $service->geocodeAddress(['address' => '15 Photographer Road', 'city' => 'Rockville', 'state' => 'MD', 'zip' => '20850']);
+        $service->geocodeAddress(['address' => '100 Candidate Street', 'city' => 'Baltimore', 'state' => 'MD', 'zip' => '21201']);
+        $before = count(Http::recorded());
+        \Laravel\Sanctum\Sanctum::actingAs(User::factory()->create(['role' => 'admin']));
+        $json = $this->postJson('/api/photographer/availability/for-booking', $this->payload($ids))
+            ->assertOk()->assertJsonCount(1, 'data')->json();
+        $this->assertSame(39.2, $json['data'][0]['map']['home']['lat']);
+        $this->assertSame(39.2, $json['job']['lat']);
+        $this->assertCount($before, Http::recorded());
     }
 
     public function test_required_radius_distance_still_fails_closed_on_provider_failure(): void

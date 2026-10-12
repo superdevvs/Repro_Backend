@@ -1385,7 +1385,7 @@ class PhotographerAvailabilityController extends Controller
             'zip' => $shootZip,
             'latitude' => $validated['shoot_latitude'] ?? null,
             'longitude' => $validated['shoot_longitude'] ?? null,
-        ]);
+        ], $distanceLookupPolicy);
 
         return response()->json([
             'data' => $result,
