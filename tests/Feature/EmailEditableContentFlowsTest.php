@@ -72,7 +72,7 @@ class EmailEditableContentFlowsTest extends TestCase
         $this->app->instance(PayoutReportService::class, $report);
         $sent = (object) ['items' => []];
         $messaging = Mockery::mock(MessagingService::class);
-        $messaging->shouldReceive('sendEmail')->times($enabled ? 4 : 3)->andReturnUsing(function (array $payload) use ($sent): Message {
+        $messaging->shouldReceive('sendEmail')->times($enabled ? 3 : 2)->andReturnUsing(function (array $payload) use ($sent): Message {
             $sent->items[] = $payload;
 
             return new Message;
@@ -83,7 +83,8 @@ class EmailEditableContentFlowsTest extends TestCase
 
         $digests = collect($sent->items)->where('to', 'accounting@example.test')->values();
         $this->assertCount($enabled ? 1 : 0, $digests);
-        $this->assertCount(3, collect($sent->items)->where('to', '!=', 'accounting@example.test'));
+        $this->assertCount(2, collect($sent->items)->where('to', '!=', 'accounting@example.test'));
+        $this->assertCount(0, collect($sent->items)->where('to', 'photographer@example.test'));
         if ($enabled) {
             $digest = $digests->first();
             $this->assertSame('accounting@example.test', $digest['to']);

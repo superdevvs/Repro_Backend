@@ -59,6 +59,8 @@ class EmailPreviewVariables
             'report_total_revenue' => '1000.00', 'report_total_paid' => '750.00',
             'report_outstanding_balance' => '250.00', 'report_average_shoot_value' => '250.00',
             'invoice_next_step' => 'Preview example: review the itemized invoice in your dashboard.',
+            'invoice_reconciliation_text' => 'Preview example: 2 shoots awaiting photographer completion — $135.00 excluded from this invoice. Approval and payment remain separate.',
+            'invoice_reconciliation_html' => '<p>Preview example: 2 shoots awaiting photographer completion — <strong>$135.00</strong> excluded from this invoice. Approval and payment remain separate.</p>',
             'approval_note' => 'Preview example: the team will review this invoice.',
             'payment_details' => 'Preview receipt: $250.00 paid by card for the example shoot.',
             'support_link' => 'mailto:'.config('mail.contact_address', 'contact@reprophotos.com'),
