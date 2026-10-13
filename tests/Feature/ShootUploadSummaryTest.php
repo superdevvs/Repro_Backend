@@ -4,13 +4,19 @@ namespace Tests\Feature;
 
 use App\Models\Service;
 use App\Models\Shoot;
+use App\Models\ShootFile;
 use App\Models\ShootService;
 use App\Models\ShootUnit;
 use App\Models\ShootUploadAttempt;
 use App\Models\User;
+use App\Services\ShootMediaStorageService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Laravel\Sanctum\Sanctum;
+use Mockery;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
@@ -96,5 +102,48 @@ class ShootUploadSummaryTest extends TestCase
         $this->getJson('/api/shoots/'.$shoot->id.'/upload-summaries')->assertOk()->assertJsonCount(2, 'data');
         $this->getJson('/api/shoots/'.$shoot->id.'/upload-summaries?unit_id='.$units[1]->id)->assertOk()->assertJsonCount(1, 'data');
         $this->getJson('/api/shoots/'.$shoot->id.'/upload-summaries?unit_id=property')->assertOk()->assertJsonCount(0, 'data');
+    }
+
+    public function test_actual_upload_acknowledgements_complete_once_and_retries_keep_the_timestamp(): void
+    {
+        Queue::fake();
+        Storage::fake('public');
+        $actor = User::factory()->create(['role' => 'photographer']);
+        $shoot = Shoot::factory()->create(['photographer_id' => $actor->id,
+            'status' => Shoot::STATUS_SCHEDULED, 'workflow_status' => Shoot::STATUS_SCHEDULED]);
+        $service = Service::factory()->create(['upload_intake_type' => 'photo', 'uses_hdr_brackets' => true]);
+        $item = ShootService::create(['shoot_id' => $shoot->id, 'service_id' => $service->id,
+            'photographer_id' => $actor->id, 'bracket_mode' => 5, 'price' => 1, 'quantity' => 1]);
+        Sanctum::actingAs($actor);
+        $this->postJson('/api/shoots/'.$shoot->id.'/upload-batches', [
+            'type' => 'raw', 'batch_id' => 'summary-real-upload', 'total_files' => 2,
+            'service_id' => $item->id, 'upload_lane' => 'photo',
+        ])->assertOk();
+        $storage = Mockery::mock(ShootMediaStorageService::class);
+        $storage->shouldReceive('uploadToTodo')->twice()->andReturnUsing(
+            fn (Shoot $target, UploadedFile $file, int $actorId) => ShootFile::create([
+                'shoot_id' => $target->id, 'filename' => $file->getClientOriginalName(),
+                'stored_filename' => $file->getClientOriginalName(), 'path' => 'shoots/'.$target->id.'/todo/'.$file->getClientOriginalName(),
+                'file_type' => 'image/jpeg', 'file_size' => $file->getSize(),
+                'media_type' => 'raw', 'uploaded_by' => $actorId, 'workflow_stage' => ShootFile::STAGE_TODO,
+            ])
+        );
+        app()->instance(ShootMediaStorageService::class, $storage);
+        $payload = fn ($index) => [
+            'files' => [UploadedFile::fake()->create('summary-'.$index.'.jpg', 10, 'image/jpeg')],
+            'upload_type' => 'raw', 'upload_lane' => 'photo', 'shoot_service_id' => $item->id,
+            'idempotency_key' => 'summary-'.$index, 'upload_batch_id' => 'summary-real-upload',
+            'upload_batch_index' => $index, 'upload_batch_total' => 2,
+        ];
+        $this->post('/api/shoots/'.$shoot->id.'/upload', $payload(0), ['Accept' => 'application/json'])->assertOk();
+        $this->getJson('/api/shoots/'.$shoot->id.'/upload-summaries')->assertOk()->assertJsonCount(0, 'data');
+        $this->post('/api/shoots/'.$shoot->id.'/upload', $payload(1), ['Accept' => 'application/json'])->assertOk();
+        $completed = $this->getJson('/api/shoots/'.$shoot->id.'/upload-summaries')->assertOk()
+            ->assertJsonCount(1, 'data')->assertJsonPath('data.0.fileCount', 2)->json('data.0.completedAt');
+        $this->travel(2)->hours();
+        $this->post('/api/shoots/'.$shoot->id.'/upload', $payload(1), ['Accept' => 'application/json'])->assertOk();
+        $this->getJson('/api/shoots/'.$shoot->id.'/upload-summaries')->assertOk()
+            ->assertJsonCount(1, 'data')->assertJsonPath('data.0.completedAt', $completed);
+        $this->assertSame(2, $shoot->files()->count());
     }
 }
