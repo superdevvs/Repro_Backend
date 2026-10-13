@@ -202,9 +202,10 @@ class UploadIntakeResolver
             return null;
         }
 
-        $perItemCount = $item->shoot_unit_id
-            ? $item->contracted_photo_count
-            : $this->serviceFor($item)?->contractedPhotoCount();
+        // Single-property bookings also carry a count snapshot. A unit ID is
+        // only a scope, not a condition for honoring the agreed package size.
+        $perItemCount = $item->contracted_photo_count
+            ?? ($item->shoot_unit_id ? null : $this->serviceFor($item)?->contractedPhotoCount());
 
         // Quantity scales a known package size; it never supplies a missing count.
         return $perItemCount === null ? null : $perItemCount * max(1, (int) ($item->quantity ?? 1));
