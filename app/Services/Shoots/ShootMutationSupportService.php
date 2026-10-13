@@ -463,6 +463,21 @@ class ShootMutationSupportService
         $pivotData = collect($services)->mapWithKeys(function ($service) use ($serviceModels, $currentItems, $shoot) {
             $serviceModel = $serviceModels->get($service['id']);
             $currentItem = $currentItems->get($service['id']);
+            $photographerId = ($serviceModel && ! $serviceModel->allowsPhotographerAssignment())
+                ? null
+                : (array_key_exists('photographer_id', $service)
+                    ? $this->normalizeNullableInteger($service['photographer_id'])
+                    : $currentItem?->photographer_id);
+            // A newly assigned offsite fee recipient must meet the same role
+            // requirement as the dedicated assignment endpoint. Keep existing
+            // legacy assignments intact when the recipient was not changed.
+            if ($photographerId && $serviceModel && ! $serviceModel->allowsArtistAssignment()
+                && (int) $photographerId !== (int) $currentItem?->photographer_id
+                && ! User::query()->whereKey($photographerId)->where('role', 'photographer')->exists()) {
+                throw ValidationException::withMessages([
+                    'services' => ['The selected travel fee recipient must be a photographer.'],
+                ]);
+            }
             $scheduledAt = array_key_exists('scheduled_at', $service)
                 ? $this->normalizeDateTimeForDatabase($service['scheduled_at'])
                 : ($currentItem?->scheduled_at?->format('Y-m-d H:i:s') ?? $shoot->scheduled_at?->format('Y-m-d H:i:s'));
@@ -484,11 +499,7 @@ class ShootMutationSupportService
                         ? app(ShootDurationResolver::class)->forServiceItem($currentItem)
                         : app(ShootDurationResolver::class)->forService($serviceModel, $shoot->propertySqft())),
                     'photographer_pay' => $service['photographer_pay'] ?? $currentItem?->photographer_pay,
-                    'photographer_id' => ($serviceModel && ! $serviceModel->allowsArtistAssignment())
-                        ? null
-                        : (array_key_exists('photographer_id', $service)
-                            ? $this->normalizeNullableInteger($service['photographer_id'])
-                            : $currentItem?->photographer_id),
+                    'photographer_id' => $photographerId,
                     'editor_id' => array_key_exists('editor_id', $service)
                         ? $this->normalizeNullableInteger($service['editor_id'])
                         : $currentItem?->editor_id,
@@ -674,7 +685,7 @@ class ShootMutationSupportService
                         : null;
 
                 $catalogService = Service::query()->find((int) $serviceId);
-                if ($catalogService && ! $catalogService->allowsArtistAssignment()) {
+                if ($catalogService && ! $catalogService->allowsPhotographerAssignment()) {
                     if ($assignedPhotographerId) {
                         throw ValidationException::withMessages([
                             'service_photographers' => [

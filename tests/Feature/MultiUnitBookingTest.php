@@ -110,6 +110,21 @@ class MultiUnitBookingTest extends TestCase
         $this->assertSame(0, (int) $this->shoot->serviceItems()->sole()->duration_minutes);
     }
 
+    public function test_unit_travel_fee_recipient_is_retained_without_an_onsite_visit(): void
+    {
+        $this->service->update(['name' => 'Travel Fee - 120 miles', 'photographer_required' => false, 'shoot_duration_minutes' => 0]);
+        $recipient = User::factory()->photographer()->create();
+        $payload = $this->payload(1);
+        $payload['service_lines'][0]['photographer_id'] = $recipient->id;
+        $this->persist($payload);
+        $this->assertSame($recipient->id, (int) $this->shoot->serviceItems()->sole()->photographer_id);
+        $this->assertSame(0, (int) $this->shoot->serviceItems()->sole()->duration_minutes);
+
+        $this->patchJson('/api/shoots/'.$this->shoot->id, $this->existingPayload())->assertOk();
+        $this->assertSame($recipient->id, (int) $this->shoot->serviceItems()->sole()->photographer_id);
+        $this->assertSame([], app(\App\Services\Shoots\ShootDurationResolver::class)->windowsForShoot($this->shoot->fresh(), $recipient->id));
+    }
+
     public function test_unit_service_edits_update_shoot_anchor_and_preserve_separate_visits(): void
     {
         $this->shoot->update(['timezone' => 'America/New_York']);

@@ -191,6 +191,13 @@ class Service extends Model
             || str_contains(strtolower((string) $this->name), 'virtual staging');
     }
 
+    /** Travel fees need a payout recipient without creating another onsite visit. */
+    public function allowsPhotographerAssignment(): bool
+    {
+        return $this->allowsArtistAssignment()
+            || str_contains(strtolower((string) $this->name), 'travel fee');
+    }
+
     public function requiresPhotographerForBooking(mixed $createdAt = null): bool
     {
         if (! $this->requiresPhotographer() && $this->allowsArtistAssignment()) return false;

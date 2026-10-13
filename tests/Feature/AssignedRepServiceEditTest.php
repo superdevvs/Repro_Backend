@@ -199,6 +199,114 @@ class AssignedRepServiceEditTest extends TestCase
         Notification::assertNothingSent();
     }
 
+    public static function travelFeeAssignmentPaths(): array
+    {
+        $cases = [];
+        foreach (['admin', 'salesRep'] as $role) {
+            foreach (['services', 'service_items', 'service_photographers', 'assignment_endpoint'] as $path) {
+                $cases["$role $path"] = [$role, $path];
+            }
+        }
+
+        return $cases;
+    }
+
+    #[DataProvider('travelFeeAssignmentPaths')]
+    public function test_travel_fee_recipient_saves_and_survives_later_service_edits(string $role, string $path): void
+    {
+        [$shoot, $photo, $rep] = $this->fixture('scheduled');
+        Sanctum::actingAs($role === 'salesRep' ? $rep : User::factory()->create(['role' => $role]));
+        $recipient = User::factory()->photographer()->create(['name' => 'Travel Fee Recipient']);
+        $fee = Service::factory()->noIntake()->create([
+            'name' => 'Travel fee - 90 Miles', 'photographer_required' => false,
+            'requires_editing' => false, 'shoot_duration_minutes' => 0, 'price' => 75,
+            'photographer_pay_type' => 'percent', 'photographer_pay_percent' => 100,
+        ]);
+        $shoot->services()->attach($fee->id, [
+            'price' => 75, 'quantity' => 1, 'duration_minutes' => 0,
+            'photographer_id' => null, 'scheduled_at' => $shoot->scheduled_at,
+        ]);
+        $endpoint = '/api/shoots/'.$shoot->id;
+        $assignment = ['service_id' => $fee->id, 'photographer_id' => $recipient->id];
+        if ($path === 'assignment_endpoint') {
+            $this->postJson($endpoint.'/assign-service-photographer', $assignment)->assertOk();
+        } else {
+            $rows = $path === 'services'
+                ? [['id' => $photo->id], ['id' => $fee->id, 'photographer_id' => $recipient->id]]
+                : [$assignment];
+            $this->patchJson($endpoint, [
+                $path => $rows, 'notify_client' => false, 'notify_photographer' => false,
+            ])->assertOk();
+        }
+
+        $this->assertSame($recipient->id, (int) $shoot->serviceItems()->where('service_id', $fee->id)->value('photographer_id'));
+        // A later service save used to clear optional-service assignments again.
+        $this->patchJson($endpoint, [
+            'services' => [['id' => $photo->id], ['id' => $fee->id]],
+            'notify_client' => false, 'notify_photographer' => false,
+        ])->assertOk();
+
+        $item = $shoot->serviceItems()->where('service_id', $fee->id)->firstOrFail();
+        $this->assertSame($recipient->id, (int) $item->photographer_id);
+        $this->assertSame(0, (int) $item->duration_minutes);
+        $this->assertSame(75.0, (float) $item->price);
+        $this->assertSame($shoot->photographer_id, $shoot->fresh()->photographer_id);
+        $this->assertSame($shoot->photographer_id, (int) $shoot->serviceItems()->where('service_id', $photo->id)->value('photographer_id'));
+        $this->assertSame([], app(\App\Services\Shoots\ShootDurationResolver::class)->windowsForShoot($shoot->fresh(), $recipient->id));
+
+        $serialized = collect($this->getJson($endpoint)->assertOk()->json('data.service_items'))->firstWhere('service_id', $fee->id);
+        $this->assertSame($recipient->id, $serialized['photographer_id']);
+        $this->assertSame($recipient->id, $serialized['resolved_photographer_id']);
+        $this->assertSame('Travel Fee Recipient', $serialized['resolved_photographer']['name']);
+        Mail::assertNothingSent();
+        Notification::assertNothingSent();
+    }
+
+    public function test_other_optional_services_still_reject_photographer_assignment(): void
+    {
+        [$shoot] = $this->fixture('scheduled');
+        $addon = Service::factory()->noIntake()->create([
+            'name' => 'Image enhancements', 'photographer_required' => false,
+            'shoot_duration_minutes' => 0,
+        ]);
+        $shoot->services()->attach($addon->id, ['price' => 20, 'quantity' => 1, 'duration_minutes' => 0]);
+        $recipient = User::factory()->photographer()->create();
+        $this->postJson('/api/shoots/'.$shoot->id.'/assign-service-photographer', [
+            'service_id' => $addon->id, 'photographer_id' => $recipient->id,
+        ])->assertUnprocessable();
+        $this->assertNull($shoot->serviceItems()->where('service_id', $addon->id)->value('photographer_id'));
+    }
+
+    public static function invalidTravelFeeRecipients(): array
+    {
+        $cases = [];
+        foreach (['client', 'editor'] as $role) {
+            foreach (['services', 'service_items', 'service_photographers'] as $path) {
+                $cases["$role $path"] = [$role, $path];
+            }
+        }
+
+        return $cases;
+    }
+
+    #[DataProvider('invalidTravelFeeRecipients')]
+    public function test_travel_fee_rejects_non_photographer_recipients_on_edit_paths(string $role, string $path): void
+    {
+        [$shoot, $photo] = $this->fixture('scheduled');
+        $fee = Service::factory()->noIntake()->create([
+            'name' => 'Travel Fee', 'photographer_required' => false, 'shoot_duration_minutes' => 0,
+        ]);
+        $shoot->services()->attach($fee->id, ['price' => 50, 'quantity' => 1, 'duration_minutes' => 0]);
+        $recipient = User::factory()->create(['role' => $role]);
+        $rows = $path === 'services'
+            ? [['id' => $photo->id], ['id' => $fee->id, 'photographer_id' => $recipient->id]]
+            : [['service_id' => $fee->id, 'photographer_id' => $recipient->id]];
+        $this->patchJson('/api/shoots/'.$shoot->id, [
+            $path => $rows, 'notify_client' => false, 'notify_photographer' => false,
+        ])->assertUnprocessable();
+        $this->assertNull($shoot->serviceItems()->where('service_id', $fee->id)->value('photographer_id'));
+    }
+
     public function test_global_rep_cannot_save_a_genuine_availability_conflict(): void
     {
         [$shoot, $service] = $this->fixture('scheduled');
