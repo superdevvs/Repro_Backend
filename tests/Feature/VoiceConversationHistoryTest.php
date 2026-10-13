@@ -68,6 +68,9 @@ class VoiceConversationHistoryTest extends TestCase
 
     public function test_late_live_snapshots_cannot_replace_newer_or_final_speech(): void
     {
+        // Event ordering is provider time, independent of how long a database
+        // write takes on the runner. Keep both offsets on the same clock.
+        $this->freezeTime();
         $call = $this->makeCall();
         $service = app(VoiceConversationHistoryService::class);
         $service->ingest($call, $this->event([['role' => 'user', 'content' => 'Newer words']], 2));
