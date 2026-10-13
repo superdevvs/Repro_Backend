@@ -14,7 +14,7 @@ use Illuminate\Http\Request;
 class ReconcileConfirmedSalesShootEdits extends Command
 {
     protected $signature = 'shoots:reconcile-confirmed-sales-edits {--apply} {--actor=} {--shoot=}';
-    protected $description = 'Verify Botanical; reconcile Woodmire/Butterfruit without notifications, charges or travel overrides';
+    protected $description = 'Verify Botanical; reconcile Woodmire and skip retired Butterfruit staging photographer repair';
 
     public function handle(UpdateShootAction $update, ShootAuthorizationSupport $access): int
     {
@@ -57,12 +57,12 @@ class ReconcileConfirmedSalesShootEdits extends Command
                     $this->error('Butterfruit assignments no longer match the confirmed repair.');
                     return self::FAILURE;
                 }
-                if ((int) $staging->first()->photographer_id === 2264) {
-                    $this->info('388: staging already assigned; no changes.');
-                    continue;
-                }
-                $this->assertArtist(2264, 'R/E Pro Photos Editor');
-                $payload['service_photographers'] = [['service_id' => 87, 'photographer_id' => 2264]];
+                // This repair predated digital editor assignments. User 2264 is a
+                // photographer; its display name does not authorize editor work.
+                // Preserve explicit historical recipients without reinserting one
+                // for an unassigned digital line or guessing an editor.
+                $this->info('388: staging photographer repair retired; choose an editor through the shoot editor controls. No changes.');
+                continue;
             } else {
                 $photo = $shoot->serviceItems->where('service_id', 2);
                 $floor = $shoot->serviceItems->where('service_id', 17);

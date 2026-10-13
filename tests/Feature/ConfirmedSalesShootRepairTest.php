@@ -10,6 +10,7 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Facades\Queue;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 class ConfirmedSalesShootRepairTest extends TestCase
@@ -43,28 +44,42 @@ class ConfirmedSalesShootRepairTest extends TestCase
         Mail::assertNothingSent(); Notification::assertNothingSent();
     }
 
-    public function test_staging_repair_is_scoped_muted_and_idempotent(): void
+    public static function legacyStagingPhotographers(): array
+    {
+        return ['unassigned digital work' => [null], 'explicit historical recipient' => [2264]];
+    }
+
+    #[DataProvider('legacyStagingPhotographers')]
+    public function test_retired_staging_repair_never_reinserts_a_photographer_or_guesses_an_editor(?int $legacyPhotographer): void
     {
         Http::preventStrayRequests(); Mail::fake(); Notification::fake(); Queue::fake();
         $admin = User::factory()->admin()->create();
         $harrison = User::factory()->photographer()->create(['id' => 1141, 'name' => 'Harrison Hart']);
         User::factory()->photographer()->create(['id' => 2264, 'name' => 'R/E Pro Photos Editor']);
+        $editor = User::factory()->create(['role' => 'editor']);
         $photo = Service::factory()->create(['id' => 53, 'name' => 'HDR Photos & Video']);
         $staging = Service::factory()->noIntake()->create(['id' => 87, 'name' => 'Virtual staging (per image)', 'photographer_required' => false, 'shoot_duration_minutes' => 0]);
         $shoot = Shoot::factory()->create(['id' => 388, 'address' => '11413 Butterfruit Way Ellicott City', 'photographer_id' => $harrison->id, 'status' => 'scheduled', 'workflow_status' => 'scheduled']);
         $shoot->services()->attach($photo->id, ['photographer_id' => $harrison->id, 'price' => 525, 'duration_minutes' => 120]);
-        $shoot->services()->attach($staging->id, ['photographer_id' => null, 'price' => 45, 'duration_minutes' => 0]);
-        $this->artisan('shoots:reconcile-confirmed-sales-edits', ['--shoot' => 388])->assertSuccessful();
-        $this->assertNull($shoot->serviceItems()->where('service_id', 87)->value('photographer_id'));
+        $shoot->services()->attach($staging->id, ['photographer_id' => $legacyPhotographer, 'editor_id' => $editor->id, 'price' => 45, 'duration_minutes' => 0]);
+        $beforeShoot = $shoot->fresh()->getAttributes();
+        $beforeServices = $shoot->serviceItems()->orderBy('id')->get()->map(fn ($item) => $item->getAttributes())->all();
+        $this->artisan('shoots:reconcile-confirmed-sales-edits', ['--shoot' => 388])
+            ->expectsOutput('388: staging photographer repair retired; choose an editor through the shoot editor controls. No changes.')
+            ->assertSuccessful();
+        $this->assertSame($legacyPhotographer, $shoot->serviceItems()->where('service_id', 87)->value('photographer_id'));
         $this->artisan('shoots:reconcile-confirmed-sales-edits', ['--shoot' => 388, '--apply' => true, '--actor' => $admin->id])->assertSuccessful();
-        $this->assertSame(2264, (int) $shoot->serviceItems()->where('service_id', 87)->value('photographer_id'));
+        $this->assertSame($legacyPhotographer, $shoot->serviceItems()->where('service_id', 87)->value('photographer_id'));
+        $this->assertSame($editor->id, $shoot->serviceItems()->where('service_id', 87)->value('editor_id'));
         $this->assertSame(1141, (int) $shoot->fresh()->photographer_id);
         $this->assertSame(1141, (int) $shoot->serviceItems()->where('service_id', 53)->value('photographer_id'));
         $this->assertSame(0, (int) $shoot->serviceItems()->where('service_id', 87)->value('duration_minutes'));
         $jobs = Queue::pushedJobs();
         $this->artisan('shoots:reconcile-confirmed-sales-edits', ['--shoot' => 388, '--apply' => true, '--actor' => $admin->id])->assertSuccessful();
         $this->assertSame($jobs, Queue::pushedJobs());
+        $this->assertSame($beforeShoot, $shoot->fresh()->getAttributes());
+        $this->assertSame($beforeServices, $shoot->serviceItems()->orderBy('id')->get()->map(fn ($item) => $item->getAttributes())->all());
         Mail::assertNothingSent(); Notification::assertNothingSent();
-        Queue::assertPushed(\App\Jobs\ProcessUpdatedShootSideEffectsJob::class, fn ($job) => $job->notifyClient === false && $job->notifyPhotographer === false);
+        Queue::assertNothingPushed();
     }
 }
