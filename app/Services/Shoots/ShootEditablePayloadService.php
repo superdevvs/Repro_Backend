@@ -300,6 +300,11 @@ class ShootEditablePayloadService
         $targetClientId = (int) ($validated['client_id'] ?? $shoot->client_id);
         $targetServices = $this->targetServicesFor($shoot, $validated, $actor);
 
+        if (($serviceChangeRequested || array_key_exists('photographer_id', $validated))
+            && $this->support->hasOnlyDigitalServices($targetServices)) {
+            $validated['photographer_id'] = null;
+        }
+
         $this->support->ensureClientCanBookServices($targetClientId, $targetServices, $shoot, $actor);
 
         if (array_key_exists('scheduled_at', $validated) && $validated['scheduled_at']) {
@@ -663,6 +668,12 @@ class ShootEditablePayloadService
             $this->invoiceService->refreshClientInvoicesForShoot($shoot->fresh());
         }
 
+        $editorChangeRequested = collect(['services', 'service_items', 'service_lines'])
+            ->contains(fn (string $field) => collect($validated[$field] ?? [])->contains(fn (array $line) => array_key_exists('editor_id', $line)));
+        if ($editorChangeRequested) {
+            app(ShootEditingAssignmentService::class)->syncLegacyShootEditor($shoot->fresh(['services.category']));
+        }
+
         $shoot->refresh();
     }
 
@@ -764,7 +775,7 @@ class ShootEditablePayloadService
             true
         );
         $currentItems = $shoot->serviceItems->keyBy(fn ($item) => (int) $item->service_id);
-        $serviceModels = \App\Models\Service::query()
+        $serviceModels = \App\Models\Service::with('category')
             ->whereIn('id', collect($merged)->pluck('id')->filter()->unique()->all())
             ->get()
             ->keyBy(fn ($service) => (int) $service->id);
@@ -787,6 +798,10 @@ class ShootEditablePayloadService
             $serviceId = (int) ($service['id'] ?? 0);
             $currentItem = $currentItems->get($serviceId);
             $serviceModel = $serviceModels->get($serviceId);
+            if ($serviceModel?->isDigitalEnhancement()) {
+                $service['photographer_id'] = null;
+                $service['duration_minutes'] = 0;
+            }
             $submittedPrice = $service['price'] ?? null;
             $service['duration_minutes'] = $service['duration_minutes']
                 ?? ($currentItem

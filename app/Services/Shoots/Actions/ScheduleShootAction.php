@@ -44,16 +44,25 @@ class ScheduleShootAction
                 'requested_time' => $local->format('H:i'), 'units_revision' => $validated['expected_units_revision'] ?? null]);
             $plannedServices = app(\App\Services\Shoots\MultiUnitRescheduleService::class)->plan($shoot, $move, $user)['services'];
         }
+        $onlyDigitalServices = $this->support->hasOnlyDigitalServices($plannedServices);
+        if ($onlyDigitalServices) {
+            $validated['photographer_id'] = null;
+            $targetPhotographer = null;
+        }
         $travelGuard = app(\App\Services\Scheduling\ScheduleCommitGuard::class);
         $travelPrepared = $travelGuard->prepare(app(\App\Services\Scheduling\WriteSchedulePlan::class)->services(
             $validated, $plannedServices, $scheduledAt, $targetPhotographer ? (int) $targetPhotographer : null,
             $shoot->timezone, 'schedule'
         ), $shoot, $user);
-        $travelGuard->commit($travelPrepared, function () use ($shoot, $scheduledAt, $validated, $user, $isMultiUnit, $wasOnHold) {
+        $travelGuard->commit($travelPrepared, function () use ($shoot, $scheduledAt, $validated, $user, $isMultiUnit, $wasOnHold, $onlyDigitalServices) {
             if ($isMultiUnit) {
                 $this->resumeUnitPlan($shoot, $scheduledAt, $validated, $user);
             }
-            $photographerId = $validated['photographer_id'] ?? $shoot->photographer_id;
+            if ($onlyDigitalServices && $shoot->photographer_id !== null) {
+                $shoot->photographer_id = null;
+                $shoot->save();
+            }
+            $photographerId = $onlyDigitalServices ? null : ($validated['photographer_id'] ?? $shoot->photographer_id);
             if (! $isMultiUnit) {
                 if ($photographerId) {
                     $carbonDate = \Carbon\Carbon::parse($scheduledAt);

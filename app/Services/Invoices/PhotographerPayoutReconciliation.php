@@ -14,7 +14,7 @@ final class PhotographerPayoutReconciliation
     public function rows(Carbon $start, Carbon $end, bool $includeLate = true, ?int $recipientId = null): Collection
     {
         $basis = app(PhotographerPayoutBasis::class);
-        $shoots = Shoot::with(['services', 'units', 'service', 'files' => fn ($q) => $q
+        $shoots = Shoot::with(['services.category', 'units', 'service.category', 'files' => fn ($q) => $q
             ->select(['shoot_id', 'shoot_service_id', 'media_type'])->distinct()->whereIn('media_type', ['raw', 'floorplan'])])
             ->excludeHistoricalImportsFromNewBilling()
             ->where(fn ($q) => $q->whereNull('shoot_type')->orWhereNotIn('shoot_type', [Shoot::SHOOT_TYPE_COMPLIMENTARY_RESHOOT, Shoot::SHOOT_TYPE_INTERNAL_TEST]))
@@ -52,6 +52,9 @@ final class PhotographerPayoutReconciliation
             }
             foreach ($services as $service) {
                 $line = $service->pivot;
+                // An unassigned editing extra cannot inherit the onsite photographer's pay.
+                // Explicit historical recipients and their booked payout evidence stay intact.
+                if ($line->photographer_id === null && $service->isDigitalEnhancement()) continue;
                 $recipient = $line->photographer_id ?? $shoot->photographer_id;
                 if (! $recipient || ($recipientId && (int) $recipient !== $recipientId) || $line->cancelled_at || in_array($line->workflow_status, ['cancelled', 'declined'], true)) continue;
                 $snapshot = $basis->forLine($line, $shoot, $service);

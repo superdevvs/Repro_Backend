@@ -357,7 +357,9 @@ class ShootMutationSupportService
     ): void {
         $explicitTimezone = $this->validTimezoneName($timezone);
         $rows = array_map(function (array $row) use ($fallbackPhotographerId) {
-            $row['photographer_id'] = $row['photographer_id'] ?? $fallbackPhotographerId;
+            if (! array_key_exists('photographer_id', $row)) {
+                $row['photographer_id'] = $fallbackPhotographerId;
+            }
 
             return $row;
         }, $services);
@@ -458,7 +460,7 @@ class ShootMutationSupportService
         }
 
         $serviceIds = collect($services)->pluck('id');
-        $serviceModels = Service::whereIn('id', $serviceIds)->get()->keyBy('id');
+        $serviceModels = Service::with('category')->whereIn('id', $serviceIds)->get()->keyBy('id');
 
         $pivotData = collect($services)->mapWithKeys(function ($service) use ($serviceModels, $currentItems, $shoot) {
             $serviceModel = $serviceModels->get($service['id']);
@@ -478,6 +480,12 @@ class ShootMutationSupportService
                     'services' => ['The selected travel fee recipient must be a photographer.'],
                 ]);
             }
+            $editorId = array_key_exists('editor_id', $service)
+                ? $this->normalizeNullableInteger($service['editor_id'])
+                : $currentItem?->editor_id;
+            if ($editorId && (int) $editorId !== (int) $currentItem?->editor_id && $serviceModel) {
+                $this->assertServiceEditorAllowed($serviceModel, (int) $editorId, 'service_items');
+            }
             $scheduledAt = array_key_exists('scheduled_at', $service)
                 ? $this->normalizeDateTimeForDatabase($service['scheduled_at'])
                 : ($currentItem?->scheduled_at?->format('Y-m-d H:i:s') ?? $shoot->scheduled_at?->format('Y-m-d H:i:s'));
@@ -495,14 +503,12 @@ class ShootMutationSupportService
                             ?? 0)
                         : ($currentItem?->nominal_value_snapshot),
                     'quantity' => $service['quantity'] ?? $currentItem?->quantity ?? 1,
-                    'duration_minutes' => $service['duration_minutes'] ?? ($currentItem
+                    'duration_minutes' => $serviceModel?->isDigitalEnhancement() ? 0 : ($service['duration_minutes'] ?? ($currentItem
                         ? app(ShootDurationResolver::class)->forServiceItem($currentItem)
-                        : app(ShootDurationResolver::class)->forService($serviceModel, $shoot->propertySqft())),
+                        : app(ShootDurationResolver::class)->forService($serviceModel, $shoot->propertySqft()))),
                     'photographer_pay' => $service['photographer_pay'] ?? $currentItem?->photographer_pay,
                     'photographer_id' => $photographerId,
-                    'editor_id' => array_key_exists('editor_id', $service)
-                        ? $this->normalizeNullableInteger($service['editor_id'])
-                        : $currentItem?->editor_id,
+                    'editor_id' => $editorId,
                     'scheduled_at' => $scheduledAt,
                     'workflow_status' => $service['workflow_status']
                         ?? $currentItem?->workflow_status
@@ -694,7 +700,6 @@ class ShootMutationSupportService
                         ]);
                     }
 
-                    continue;
                 }
 
                 if ($assignedPhotographerId) {
@@ -775,6 +780,28 @@ class ShootMutationSupportService
                 );
             }
         }, 3);
+    }
+
+    public function assertServiceEditorAllowed(Service $service, int $editorId, string $field): void
+    {
+        $editor = User::query()->whereKey($editorId)->where('role', 'editor')->first();
+        $lane = app(ShootEditingAssignmentService::class)->serviceEditingLanes($service)[0] ?? null;
+        if (! $editor || ($lane && ! $editor->canEditLane($lane))) {
+            throw ValidationException::withMessages([
+                $field => ['Choose an editor who can edit this service lane.'],
+            ]);
+        }
+    }
+
+    public function hasOnlyDigitalServices(array $services): bool
+    {
+        $ids = collect($services)->map(fn (array $row) => $row['id'] ?? $row['service_id'] ?? null)->filter()->unique();
+        if ($ids->isEmpty()) {
+            return false;
+        }
+        $catalog = Service::with('category')->whereIn('id', $ids)->get();
+
+        return $catalog->count() === $ids->count() && $catalog->every(fn (Service $service) => $service->isDigitalEnhancement());
     }
 
     public function normalizeDateTimeForDatabase(mixed $value): ?string

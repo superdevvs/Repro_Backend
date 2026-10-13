@@ -93,7 +93,7 @@ class MultiUnitBookingTest extends TestCase
         $this->assertSame(100.0, (float) $this->shoot->serviceItems()->sole()->price);
     }
 
-    public function test_unit_virtual_staging_assignment_ignores_offsite_artist_hours(): void
+    public function test_unit_virtual_staging_cannot_acquire_a_photographer_or_onsite_duration(): void
     {
         $this->service->update(['name' => 'Virtual Staging', 'photographer_required' => false, 'shoot_duration_minutes' => 0]);
         $this->persist($this->payload(1));
@@ -106,7 +106,8 @@ class MultiUnitBookingTest extends TestCase
         $edit['service_lines'][0]['scheduled_at'] = '2031-10-09T15:00:00Z';
         $edit['service_lines'][0]['duration_minutes'] = 0;
         $this->patchJson('/api/shoots/'.$this->shoot->id, $edit)->assertOk();
-        $this->assertSame($artist->id, (int) $this->shoot->serviceItems()->sole()->photographer_id);
+        $this->assertNull($this->shoot->serviceItems()->sole()->photographer_id);
+        $this->assertNull($this->shoot->fresh()->photographer_id);
         $this->assertSame(0, (int) $this->shoot->serviceItems()->sole()->duration_minutes);
     }
 

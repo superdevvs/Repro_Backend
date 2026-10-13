@@ -110,6 +110,9 @@ class CreateShootAction
             );
             $this->support->assertNewServiceQuantitiesAllowed($servicesPayload);
         }
+        if ($this->support->hasOnlyDigitalServices($servicesPayload)) {
+            $validated['photographer_id'] = null;
+        }
         $travelGuard = app(\App\Services\Scheduling\ScheduleCommitGuard::class);
         $requestOnly = $userRole === 'client' || $validated['client_id'] == $user->id || $request->boolean('is_client_request');
         if ($requestOnly && ! empty($validated['schedule_adjustments'])) {
@@ -391,6 +394,10 @@ class CreateShootAction
                 $multiUnit->persist($shoot, $unitBooking);
             } else {
                 $this->support->attachServices($shoot, $servicesPayload);
+            }
+            if (collect($servicesPayload)->contains(fn (array $line) => ! empty($line['editor_id']))) {
+                app(\App\Services\Shoots\ShootEditingAssignmentService::class)->syncLegacyShootEditor($shoot->fresh(['services.category']));
+                $shoot->refresh();
             }
 
             // Services are authoritative once persisted, including requests.

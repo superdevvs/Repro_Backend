@@ -750,8 +750,9 @@ class ShootPresenter
                         return $service;
                     }
 
-                    $pivotPhotographerId = $service->pivot?->photographer_id ?? null;
-                    $resolvedPhotographerId = $pivotPhotographerId ?? $shootPhotographerId;
+                    $canAssignPhotographer = $service->allowsPhotographerAssignment();
+                    $pivotPhotographerId = $canAssignPhotographer ? ($service->pivot?->photographer_id ?? null) : null;
+                    $resolvedPhotographerId = $canAssignPhotographer ? ($pivotPhotographerId ?? $shootPhotographerId) : null;
 
                     $resolvedPhotographer = null;
                     if (! $isEditorRole && $resolvedPhotographerId) {
@@ -808,7 +809,8 @@ class ShootPresenter
                         'quantity' => (int) ($service->pivot?->quantity ?? 1),
                         'allow_multiple' => (bool) $service->allow_multiple,
                         'pricing_type' => $service->pricing_type,
-                        'photographer_required' => (bool) $service->photographer_required,
+                        'photographer_required' => $service->requiresPhotographer(),
+                        'editing_lanes' => $this->editingAssignmentService->serviceEditingLanes($service),
                         // Canonical contracted photo count. Null means unspecified, and
                         // booking quantity is never substituted for it.
                         'photo_count' => array_key_exists('photo_count', $serviceItemSummary)

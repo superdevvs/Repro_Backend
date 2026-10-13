@@ -80,6 +80,11 @@ class ShootServiceItemSupport
 
         $serviceSummaries = $items->map(function (ShootService $item) use ($shoot, $paidByItem, $hasAllocations, $brackets, $intake) {
             $item->setRelation('shoot', $shoot);
+            $canAssignPhotographer = $item->service?->allowsPhotographerAssignment() ?? true;
+            $photographerId = $canAssignPhotographer ? $item->photographer_id : null;
+            $photographer = $canAssignPhotographer ? $item->photographer : null;
+            $resolvedPhotographerId = $canAssignPhotographer ? ($photographerId ?? $shoot->photographer_id) : null;
+            $resolvedPhotographer = $canAssignPhotographer ? ($photographer ?: $shoot->photographer) : null;
             $subtotal = $this->subtotal($item);
             $paidAmount = (float) ($paidByItem[$item->id] ?? 0);
 
@@ -114,6 +119,7 @@ class ShootServiceItemSupport
                 'shoot_duration_minutes' => $item->service?->shoot_duration_minutes,
                 'photographer_required' => $item->service?->requiresPhotographer() ?? false,
                 'requires_editing' => app(ShootEditingAssignmentService::class)->serviceRequiresEditing($item),
+                'editing_lanes' => app(ShootEditingAssignmentService::class)->serviceEditingLanes($item),
                 'shoot_service_id' => $item->id,
                 'shootServiceId' => $item->id,
                 'service_id' => $item->service_id,
@@ -128,9 +134,9 @@ class ShootServiceItemSupport
                 'subtotal' => $subtotal,
                 'photographer_pay' => $photographerPay !== null ? (float) $photographerPay : null,
                 'photographerPay' => $photographerPay !== null ? (float) $photographerPay : null,
-                'photographer_id' => $item->photographer_id,
-                'photographerId' => $item->photographer_id,
-                'photographer' => $this->compactUser($item->photographer),
+                'photographer_id' => $photographerId,
+                'photographerId' => $photographerId,
+                'photographer' => $this->compactUser($photographer),
                 // Bracket state is per service item because two services on one
                 // shoot can be captured by different photographers at different
                 // sizes. `uses_hdr_brackets` says whether this deliverable stacks
@@ -162,10 +168,10 @@ class ShootServiceItemSupport
                 'expectedRawUnspecified' => $brackets->expectedRawUnspecified($item),
                 'photo_count' => $intake->contractedPhotoCount($item),
                 'photoCount' => $intake->contractedPhotoCount($item),
-                'resolved_photographer_id' => $item->photographer_id ?? $shoot->photographer_id,
-                'resolvedPhotographerId' => $item->photographer_id ?? $shoot->photographer_id,
-                'resolved_photographer' => $this->compactUser($item->photographer ?: $shoot->photographer),
-                'resolvedPhotographer' => $this->compactUser($item->photographer ?: $shoot->photographer),
+                'resolved_photographer_id' => $resolvedPhotographerId,
+                'resolvedPhotographerId' => $resolvedPhotographerId,
+                'resolved_photographer' => $this->compactUser($resolvedPhotographer),
+                'resolvedPhotographer' => $this->compactUser($resolvedPhotographer),
                 'editor_id' => $item->editor_id,
                 'editorId' => $item->editor_id,
                 'editor' => $this->compactUser($item->editor),

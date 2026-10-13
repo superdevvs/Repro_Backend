@@ -78,7 +78,7 @@ class AssignedRepDroneTravelTest extends TestCase
         $items = $shoot->fresh()->serviceItems()->get()->keyBy('service_id');
         $this->assertSame($shoot->photographer_id, $items[$drone->id]->photographer_id);
         $this->assertSame($shoot->photographer_id, $items[$old->id]->photographer_id);
-        $this->assertSame($editor->id, $items[$staging->id]->photographer_id);
+        $this->assertNull($items[$staging->id]->photographer_id);
         $this->assertSame(2, (int) $items[$staging->id]->quantity);
         $this->assertSame(199.0, (float) $items[$drone->id]->price);
         $this->assertSame(120, (int) $items[$old->id]->duration_minutes);

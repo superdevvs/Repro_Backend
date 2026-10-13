@@ -15,7 +15,8 @@ class ServiceController extends Controller
 {
     public function store(Request $request)
     {
-        $requiresPhotographer = $request->boolean('photographer_required');
+        $targetService = new Service($request->only(['name', 'category_id']));
+        $requiresPhotographer = ! $targetService->isDigitalEnhancement() && $request->boolean('photographer_required');
         $minDuration = $requiresPhotographer ? (int) config('availability.min_shoot_duration_minutes', 5) : 0;
         $maxDuration = (int) config('availability.max_shoot_duration_minutes', 300);
         $rules = [
@@ -145,9 +146,11 @@ class ServiceController extends Controller
             ], 404);
         }
 
-        $requiresPhotographer = $request->has('photographer_required')
+        $targetService = clone $service;
+        $targetService->fill($request->only(['name', 'category_id']));
+        $requiresPhotographer = ! $targetService->isDigitalEnhancement() && ($request->has('photographer_required')
             ? $request->boolean('photographer_required')
-            : $service->requiresPhotographer();
+            : $service->requiresPhotographer());
         $minDuration = $requiresPhotographer ? (int) config('availability.min_shoot_duration_minutes', 5) : 0;
         $maxDuration = (int) config('availability.max_shoot_duration_minutes', 300);
         $rules = [

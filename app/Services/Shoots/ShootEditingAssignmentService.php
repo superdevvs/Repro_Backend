@@ -37,6 +37,26 @@ class ShootEditingAssignmentService
         };
     }
 
+    /** Editing output lanes are independent of onsite capture and RAW intake. */
+    public function serviceEditingLanes(mixed $service): array
+    {
+        $catalog = $service instanceof ShootService ? $service->service : $service;
+        if (! $catalog || ! $this->serviceRequiresEditing($service)) return [];
+        if ($catalog->supportsPhotoIntake() && $catalog->supportsVideoIntake()) return [self::LANE_PHOTO, self::LANE_VIDEO];
+        if ($catalog->isDigitalEnhancement()) {
+            $name = strtolower((string) $catalog->name);
+            if (str_contains($name, 'video')) {
+                return str_contains($name, 'photo') ? [self::LANE_PHOTO, self::LANE_VIDEO] : [self::LANE_VIDEO];
+            }
+            return [self::LANE_PHOTO];
+        }
+        $categoryName = $catalog->category?->name ?? $catalog->category_name ?? $catalog->name;
+        $legacyLane = $this->normalizeLane($categoryName);
+
+        return array_values(array_filter([$legacyLane ?? ($catalog->supportsVideoIntake() ? self::LANE_VIDEO
+            : ($catalog->supportsPhotoIntake() ? self::LANE_PHOTO : null))]));
+    }
+
     public function scopeAssignedToEditor(Builder $query, int|string $editorId): Builder
     {
         return $query->where(function (Builder $scope) use ($editorId) {
@@ -499,10 +519,7 @@ class ShootEditingAssignmentService
             if (! is_object($service) || ! $this->serviceRequiresEditing($service)) {
                 return [];
             }
-            $categoryName = $service->category?->name ?? $service->category_name ?? $service->name ?? null;
-            $legacyLane = $this->normalizeLane($categoryName);
-            $lanes = $service->supportsPhotoIntake() && $service->supportsVideoIntake() ? [self::LANE_PHOTO, self::LANE_VIDEO]
-                : array_filter([$legacyLane ?? ($service->supportsVideoIntake() ? self::LANE_VIDEO : ($service->supportsPhotoIntake() ? self::LANE_PHOTO : null))]);
+            $lanes = $this->serviceEditingLanes($service);
             $bundled = count($lanes) === 2;
             return collect($lanes)->map(function ($lane) use ($service, $bundled) {
                 $editorColumn = $bundled && $lane === self::LANE_VIDEO ? 'video_editor_id' : 'editor_id';

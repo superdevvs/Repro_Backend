@@ -14,7 +14,23 @@ class Service extends Model
 {
     use HasFactory;
 
-    protected $appends = ['booking_duration_defaults'];
+    protected $appends = ['booking_duration_defaults', 'editing_lanes'];
+
+    public function getEditingLanesAttribute(): array
+    {
+        return app(\App\Services\Shoots\ShootEditingAssignmentService::class)->serviceEditingLanes($this);
+    }
+
+    protected static function booted(): void
+    {
+        static::saving(function (Service $service): void {
+            if ($service->isDigitalEnhancement()) {
+                $service->photographer_required = false;
+                $service->shoot_duration_minutes = 0;
+                $service->requires_editing = true;
+            }
+        });
+    }
 
     public function getBookingDurationDefaultsAttribute(): array
     {
@@ -180,27 +196,42 @@ class Service extends Model
 
     public function requiresPhotographer(): bool
     {
-        return (bool) $this->getAttribute('photographer_required');
+        return ! $this->isDigitalEnhancement() && (bool) $this->getAttribute('photographer_required');
     }
 
-    /** Preserve the pre-policy occupation of already-booked fee rows only. */
-    /** Digital staging has an artist assignment, but never an onsite visit. */
+    /** Digital work belongs to the editor lane, never a photographer visit. */
+    public function isDigitalEnhancement(): bool
+    {
+        $name = strtolower(trim((string) $this->name));
+        if (preg_match('/^virtual staging(?:\s*\(per image\))?$/i', $name)) {
+            return true;
+        }
+        if (! $this->isDirty('category_id')) {
+            $this->loadMissing('category');
+            $categoryName = $this->category?->name;
+        } else {
+            $categoryName = $this->category_id ? $this->category()->value('name') : null;
+        }
+
+        return strtolower(trim((string) $categoryName)) === 'digital enhancements';
+    }
+
     public function allowsArtistAssignment(): bool
     {
-        return $this->requiresPhotographer()
-            || str_contains(strtolower((string) $this->name), 'virtual staging');
+        return $this->requiresPhotographer();
     }
 
     /** Travel fees need a payout recipient without creating another onsite visit. */
     public function allowsPhotographerAssignment(): bool
     {
-        return $this->allowsArtistAssignment()
-            || str_contains(strtolower((string) $this->name), 'travel fee');
+        return ! $this->isDigitalEnhancement() && ($this->allowsArtistAssignment()
+            || str_contains(strtolower((string) $this->name), 'travel fee'));
     }
 
     public function requiresPhotographerForBooking(mixed $createdAt = null): bool
     {
-        if (! $this->requiresPhotographer() && $this->allowsArtistAssignment()) return false;
+        // A prior bad catalogue flag cannot turn digital editing into an onsite visit.
+        if ($this->isDigitalEnhancement()) return false;
         if ($this->requiresPhotographer() || ! $createdAt) {
             return $this->requiresPhotographer();
         }
@@ -411,6 +442,9 @@ class Service extends Model
      */
     public function getShootDurationMinutes(?int $sqft = null, bool $useCatalogDefault = true): int
     {
+        if ($this->isDigitalEnhancement()) {
+            return 0;
+        }
         // Editing, enhancements and fees consume no photographer time, even when
         // an older catalogue row still carries a nonzero duration.
         $legacyService = ! $useCatalogDefault

@@ -113,7 +113,7 @@ class MultiUnitBookingService
         if (! $rawLines) {
             $this->fail('service_lines', 'At least one booked service line is required.');
         }
-        $catalog = Service::query()->whereIn('id', collect($rawLines)->pluck('service_id'))->get()->keyBy('id');
+        $catalog = Service::with('category')->whereIn('id', collect($rawLines)->pluck('service_id'))->get()->keyBy('id');
         $assignmentRoles = User::query()->whereIn('id', collect($rawLines)
             ->flatMap(fn ($line) => [$line['photographer_id'] ?? null, $line['editor_id'] ?? null])
             ->push($data['photographer_id'] ?? $shoot?->photographer_id)->filter()->unique())
@@ -184,9 +184,9 @@ class MultiUnitBookingService
                 'shoot_unit_id' => $unit['id'], 'quantity' => $quantity,
                 'price' => $canOverride && isset($line['price']) ? (float) $line['price'] : ($current?->price ?? $pricing[$priceKey]['price']),
                 'photographer_pay' => $current?->photographer_pay ?? $pricing[$priceKey]['photographer_pay'],
-                'duration_minutes' => $line['duration_minutes'] ?? ($current
+                'duration_minutes' => $service->isDigitalEnhancement() ? 0 : ($line['duration_minutes'] ?? ($current
                     ? app(ShootDurationResolver::class)->forServiceItem($current)
-                    : $pricing[$priceKey]['duration_minutes']),
+                    : $pricing[$priceKey]['duration_minutes'])),
                 'contracted_photo_count' => $current ? $current->contracted_photo_count : $pricing[$priceKey]['contracted_photo_count'],
                 'photographer_required' => $current ? $service->requiresPhotographerForBooking($current->created_at) : $service->requiresPhotographer(),
                 'created_at' => $current?->created_at,
@@ -200,6 +200,9 @@ class MultiUnitBookingService
                     && strtolower((string) $assignmentRoles->get($row[$field])) !== $role) {
                     $this->fail("service_lines.$index.$field", "Choose a user with the {$role} role for this assignment.");
                 }
+            }
+            if ($row['editor_id'] && (! $current || (int) $current->editor_id !== (int) $row['editor_id'])) {
+                app(ShootMutationSupportService::class)->assertServiceEditorAllowed($service, (int) $row['editor_id'], "service_lines.$index.editor_id");
             }
             $services[] = $row;
         }

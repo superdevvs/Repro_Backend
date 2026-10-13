@@ -180,7 +180,7 @@ class AssignedRepServiceEditTest extends TestCase
         ])->assertForbidden();
     }
 
-    public function test_offsite_staging_reassignment_only_survives_without_changing_onsite_artist(): void
+    public function test_offsite_staging_cannot_acquire_a_photographer_when_rep_edits_assignments(): void
     {
         [$shoot, $photo] = $this->fixture('scheduled');
         $staging = Service::factory()->noIntake()->create(['name' => 'Virtual staging (per image)', 'photographer_required' => false, 'shoot_duration_minutes' => 0]);
@@ -191,7 +191,7 @@ class AssignedRepServiceEditTest extends TestCase
             'service_photographers' => [['service_id' => $staging->id, 'photographer_id' => $artist->id]],
             'notify_client' => false, 'notify_photographer' => false,
         ])->assertOk();
-        $this->assertSame($artist->id, (int) $shoot->serviceItems()->where('service_id', $staging->id)->value('photographer_id'));
+        $this->assertNull($shoot->serviceItems()->where('service_id', $staging->id)->value('photographer_id'));
         $this->assertSame(0, (int) $shoot->serviceItems()->where('service_id', $staging->id)->value('duration_minutes'));
         $this->assertSame($shoot->photographer_id, $shoot->fresh()->photographer_id);
         $this->assertSame($shoot->photographer_id, (int) $shoot->serviceItems()->where('service_id', $photo->id)->value('photographer_id'));

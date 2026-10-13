@@ -60,6 +60,24 @@ class PhotographerPayoutReconciliationTest extends TestCase
         $this->assertSame(78.75,(float)$invoice->fresh()->total_amount);
     }
 
+    public function test_unassigned_digital_services_do_not_inherit_onsite_payouts_but_historical_recipient_is_retained(): void
+    {
+        $person = User::factory()->photographer()->create();
+        $shoot = $this->work($person);
+        $digital = Service::factory()->noIntake()->create([
+            'name' => 'Virtual Staging (per image)', 'photographer_required' => false,
+            'price' => 45, 'photographer_pay' => 20, 'pricing_type' => 'fixed',
+        ]);
+        $shoot->services()->attach($digital->id, ['price' => 45, 'quantity' => 1, 'photographer_id' => null, 'photographer_pay' => 20]);
+        $rows = app(PhotographerPayoutReconciliation::class)->rows(Carbon::parse('2026-10-04'), Carbon::parse('2026-10-10'));
+        $this->assertFalse($rows->contains('service_id', $digital->id));
+        $this->assertSame(78.75, (float) $this->generate()->sole()->total_amount);
+        $shoot->services()->updateExistingPivot($digital->id, ['photographer_id' => $person->id]);
+        $historical = app(PhotographerPayoutReconciliation::class)->rows(Carbon::parse('2026-10-04'), Carbon::parse('2026-10-10'))->firstWhere('service_id', $digital->id);
+        $this->assertSame($person->id, $historical['resolved_photographer_id']);
+        $this->assertSame(20.0, $historical['photographer_pay']);
+    }
+
     public function test_pending_work_is_explicit_and_not_in_invoice_amount(): void
     {
         $person=User::factory()->photographer()->create();

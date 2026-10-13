@@ -24,6 +24,10 @@ class ShootDurationResolver
 
     public function forServiceItem(ShootService $item): int
     {
+        $item->loadMissing(['service.category', 'unit']);
+        if ($item->service?->isDigitalEnhancement()) {
+            return 0;
+        }
         // A booked line is a snapshot. Later catalogue/default edits must not shorten it.
         if ((int) $item->duration_minutes > 0) {
             return (int) $item->duration_minutes;
@@ -46,10 +50,15 @@ class ShootDurationResolver
     /** Snapshot new booking lengths before both availability validation and persistence. */
     public function withDurations(array $rows, ?int $sqft = null): array
     {
-        $models = Service::whereIn('id', collect($rows)->map(fn (array $row) => $row['service_id'] ?? $row['id'] ?? null)->filter()->unique())
+        $models = Service::with('category')->whereIn('id', collect($rows)->map(fn (array $row) => $row['service_id'] ?? $row['id'] ?? null)->filter()->unique())
             ->get()->keyBy('id');
 
         return array_map(function (array $row) use ($models, $sqft) {
+            if ($models->get($row['service_id'] ?? $row['id'] ?? null)?->isDigitalEnhancement()) {
+                $row['duration_minutes'] = 0;
+
+                return $row;
+            }
             $minutes = (int) ($row['duration_minutes'] ?? 0);
             $row['duration_minutes'] = $minutes > 0 ? $minutes : $this->forService(
                 $models->get($row['service_id'] ?? $row['id'] ?? null),
@@ -80,7 +89,7 @@ class ShootDurationResolver
         ?string $timezone = null,
         ?int $photographerId = null,
     ): array {
-        $models = Service::whereIn('id', collect($rows)->map(fn (array $row) => $row['service_id'] ?? $row['id'] ?? null)->filter()->unique())
+        $models = Service::with('category')->whereIn('id', collect($rows)->map(fn (array $row) => $row['service_id'] ?? $row['id'] ?? null)->filter()->unique())
             ->get()->keyBy('id');
         $windows = [];
         foreach ($rows as $index => $row) {
