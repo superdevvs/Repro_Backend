@@ -62,6 +62,20 @@ class ShootAppointmentRemindersTest extends TestCase
         $this->assertSame(1, Message::where('to_address', $photographer->email)->count());
     }
 
+    public function test_scheduled_email_counts_use_the_booked_contract_and_recipient_scope(): void
+    {
+        [$shoot, $client, $photographer] = $this->appointment('2026-10-03 10:00');
+        $service = \App\Models\Service::factory()->create(['name' => 'HDR Photos', 'photo_count' => 99, 'upload_intake_type' => 'photo', 'uses_hdr_brackets' => true]);
+        $shoot->serviceItems()->create(['service_id' => $service->id, 'contracted_photo_count' => 35, 'quantity' => 2, 'bracket_mode' => 3, 'scheduled_at' => Carbon::parse('2026-10-03 10:00', 'America/New_York')->utc(), 'workflow_status' => 'scheduled', 'photographer_id' => $photographer->id, 'price' => 100]);
+        $this->tick('2026-10-02 07:00');
+        $clientBody = Message::where('to_address', $client->email)->firstOrFail()->body_text;
+        $this->assertStringContainsString('70 final photos', $clientBody);
+        $this->assertStringNotContainsString('raw images required', $clientBody);
+        $this->tick('2026-10-02 10:00');
+        $photographerBody = Message::where('to_address', $photographer->email)->firstOrFail()->body_text;
+        $this->assertStringContainsString('70 final photos · 210 raw images required', $photographerBody);
+    }
+
     public function test_disabled_cancelled_and_finished_shoots_do_not_send(): void
     {
         [$shoot] = $this->appointment('2026-10-03 10:00');

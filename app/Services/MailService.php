@@ -2354,7 +2354,7 @@ class MailService
             }
             $formattedSchedule = $this->formatServiceSchedule($scheduledAt, $shoot->timezone);
 
-            $rows[] = [
+            $rows[] = array_merge([
                 'shoot_service_id' => $shootServiceId ?: null,
                 'shoot_unit_id' => $unit?->id,
                 'unit_label' => $unit?->label,
@@ -2375,7 +2375,7 @@ class MailService
                 'delivery_status' => $service->pivot->delivery_status ?? null,
                 'payment_status' => null,
                 'meta' => implode(' | ', $meta),
-            ];
+            ], app(\App\Services\SystemEmails\EmailServiceImageRequirements::class)->forService($shoot, $service));
         }
 
         if (empty($rows) && (! $recipient || ! $roleContext) && $serviceItemScope->isEmpty()) {

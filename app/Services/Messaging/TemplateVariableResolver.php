@@ -84,7 +84,7 @@ class TemplateVariableResolver
 
         $shoot = $this->resolveShoot($context);
         if ($shoot) {
-            $derived = array_merge($derived, $this->resolveShootVariables($shoot, ! in_array($recipientType, ['photographer', 'previous_photographer', 'new_photographer'], true)));
+            $derived = array_merge($derived, $this->resolveShootVariables($shoot, ! in_array($recipientType, ['photographer', 'previous_photographer', 'new_photographer'], true), $recipientType, strtolower((string) ($context['channel'] ?? '')) === 'email'));
             if ($shoot->exists) {
                 $derived['remaining_balance'] = number_format(max((float) $shoot->total_quote - $shoot->calculateCanonicalTotalPaid(), 0), 2);
             }
@@ -359,7 +359,7 @@ class TemplateVariableResolver
     /**
      * @return array<string, mixed>
      */
-    private function resolveShootVariables(Shoot $shoot, bool $includeClientPrices = true): array
+    private function resolveShootVariables(Shoot $shoot, bool $includeClientPrices = true, string $recipientType = 'client', bool $includeImageRequirements = false): array
     {
         if ($this->canLoadShootRelations($shoot)) {
             $shoot->loadMissing(['photographer', 'services', 'notes']);
@@ -386,7 +386,7 @@ class TemplateVariableResolver
         )
             ? app(\App\Services\Payments\PublicPaymentAccessTokenService::class)->buildPublicUrl($shoot)
             : null;
-        $formattedServices = $this->formatServices($shoot, $includeClientPrices);
+        $formattedServices = $this->formatServices($shoot, $includeClientPrices, $recipientType, $includeImageRequirements);
         $servicesProvided = $formattedServices['text'];
         $servicesProvidedHtml = $formattedServices['html'];
         $assignedPhotographers = $this->formatAssignedPhotographers($shoot);
@@ -440,7 +440,7 @@ class TemplateVariableResolver
     /**
      * @return array{text: string, html: string}
      */
-    private function formatServices(Shoot $shoot, bool $includeClientPrices): array
+    private function formatServices(Shoot $shoot, bool $includeClientPrices, string $recipientType, bool $includeImageRequirements): array
     {
         $services = $shoot->relationLoaded('services')
             ? collect($shoot->getRelation('services') ?? [])
@@ -473,6 +473,12 @@ class TemplateVariableResolver
                 }
 
                 $line = implode(' - ', array_filter($lineParts, fn ($part) => $part !== ''));
+                $imageRequirement = $includeImageRequirements && $this->canUseApplicationContainer()
+                    ? \App\Services\SystemEmails\EmailServiceImageRequirements::label(app(\App\Services\SystemEmails\EmailServiceImageRequirements::class)->forService($shoot, $service), $recipientType)
+                    : '';
+                if ($imageRequirement !== '') {
+                    $line .= ' ('.$imageRequirement.')';
+                }
                 $schedule = \App\Support\ShootEmailSchedule::format($service->pivot?->scheduled_at, $shoot->timezone);
                 if ($schedule !== null) {
                     $line .= ' (Scheduled: '.$schedule.')';
@@ -486,6 +492,7 @@ class TemplateVariableResolver
                     .e($service->name ?? 'Service')
                     .($quantity > 1 ? ' <span style="color:#64748b;">x'.e((string) $quantity).'</span>' : '')
                     .($price !== null && $price !== '' ? ' <strong style="color:#0f172a;">$'.e(number_format((float) $price, 2)).'</strong>' : '')
+                    .($imageRequirement !== '' ? '<div style="font-size:12px;color:#295391;margin-top:2px;">'.e($imageRequirement).'</div>' : '')
                     .($assignedPhotographerName !== '' ? '<div style="font-size:12px;color:#64748b;margin-top:2px;">Assigned photographer: '.e($assignedPhotographerName).'</div>' : '')
                     .($schedule !== null ? '<div style="font-size:12px;color:#64748b;margin-top:2px;">Scheduled: '.e($schedule).'</div>' : '')
                     .'</li>';

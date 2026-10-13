@@ -40,8 +40,8 @@ class EmailPreviewContext
                 'rep_name' => 'Taylor Example', 'primary_photographer' => $photographer['name'],
                 'photographers_label' => $photographer['name'], 'photographers' => [$photographer],
                 'services' => [
-                    ['id' => null, 'display_name' => 'Premium Photo Package', 'meta' => '48 edited photos · next-day delivery', 'formatted_total' => '$249.00', 'photographer_name' => $photographer['name']],
-                    ['id' => null, 'display_name' => 'Aerial Drone Add-on', 'meta' => '10 aerial stills', 'formatted_total' => '$120.00', 'photographer_name' => $photographer['name']],
+                    ['id' => null, 'display_name' => 'Premium Photo Package', 'photo_count' => 48, 'expected_raw_count' => 240, 'meta' => '48 edited photos · next-day delivery', 'formatted_total' => '$249.00', 'photographer_name' => $photographer['name']],
+                    ['id' => null, 'display_name' => 'Aerial Drone Add-on', 'photo_count' => 10, 'expected_raw_count' => 10, 'meta' => '10 aerial stills', 'formatted_total' => '$120.00', 'photographer_name' => $photographer['name']],
                 ],
                 'service_category' => 'Real Estate Photography', 'formatted_subtotal' => '$369.00',
                 'formatted_tax' => '$0.00', 'formatted_grand_total' => '$369.00', 'tax' => 0, 'tax_rate' => 0,

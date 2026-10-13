@@ -521,7 +521,7 @@ class AutomationWorkflowExecutor
 
             try {
                 $message = $this->deliverOnce($automation, $node, $context, $recipient['email'], 'email', function (string $tag) use ($automation, $config, $context, $recipient, $template) {
-                    $recipientContext = $this->recipientContext($automation, $recipient, $context);
+                    $recipientContext = $this->recipientContext($automation, $recipient, $context, 'email');
                     $recipientContext = app(\App\Services\SystemEmails\BookingInvoiceContext::class)
                         ->forAutomationEmail($automation->trigger_type, $recipient, $recipientContext);
                     if ($recipientContext === null) {
@@ -1283,13 +1283,14 @@ class AutomationWorkflowExecutor
         return ['client'];
     }
 
-    private function recipientContext(AutomationRule $automation, array $recipient, array $context): array
+    private function recipientContext(AutomationRule $automation, array $recipient, array $context, string $channel = 'sms'): array
     {
         $context = array_merge($context, [
             'recipient' => $recipient,
             'recipient_name' => $recipient['name'] ?? '',
             'recipient_email' => $recipient['email'] ?? '',
             'recipient_type' => $recipient['type'] ?? 'other',
+            'channel' => $channel,
         ]);
         if ($automation->trigger_type === 'PHOTOGRAPHER_CHANGED') {
             $assignedIds = collect($context['photographers'] ?? [])->pluck('id')->all();
@@ -1301,10 +1302,22 @@ class AutomationWorkflowExecutor
         }
         $resolved = $this->variableResolver->resolve($context);
         if (! empty($context['shoot_service_id']) && ! empty($context['service_items'])) {
-            $names = collect($context['service_items'])->pluck('name')->filter()->values()->all();
-            $resolved['services_provided'] = implode(', ', $names);
-            $resolved['services_provided_html'] = '<ul><li>'.implode('</li><li>', array_map('e', $names)).'</li></ul>';
+            $items = collect($context['service_items'])->filter(fn ($item) => ! empty($item['name']));
+            $shoot = $context['shoot'] ?? null;
+            if ($channel === 'email' && $shoot instanceof Shoot) {
+                $shoot->loadMissing(['serviceItems.service', 'serviceItems.photographer']);
+            }
+            $requirements = $items->map(function ($row) use ($shoot, $recipient, $channel) {
+                $item = $channel === 'email' && $shoot instanceof Shoot ? $shoot->serviceItems->firstWhere('id', $row['shoot_service_id'] ?? null) : null;
+                $counts = $item ? app(\App\Services\SystemEmails\EmailServiceImageRequirements::class)->forItem($shoot, $item) : [];
+                return \App\Services\SystemEmails\EmailServiceImageRequirements::label($counts, $recipient['type'] ?? null);
+            });
+            $names = $items->pluck('name')->values()->all();
+            $details = $items->map(fn ($row, $key) => $requirements[$key] !== '' ? $row['name'].': '.$requirements[$key] : null)->filter()->values()->all();
+            $resolved['services_provided'] = implode(', ', $names).($details ? "\n".implode("\n", $details) : '');
+            $resolved['services_provided_html'] = '<ul>'.implode('', $items->map(fn ($row, $key) => '<li>'.e($row['name']).($requirements[$key] !== '' ? '<br>'.e($requirements[$key]) : '').'</li>')->all()).'</ul>';
             $resolved['shoot_packages'] = $resolved['services_provided'];
+            if ($details) $resolved['shoot_services'] = implode(', ', $names).' — '.implode('; ', $details);
         }
 
         return $resolved;

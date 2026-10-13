@@ -280,6 +280,7 @@ class SystemEmailRenderer
         $invoiceItems = (array) (Arr::get($invoice, 'items') ?? []);
 
         $resolverContext = array_merge($this->scalarPayloadVariables($payload), [
+            'channel' => 'email',
             'recipient' => $recipient,
             'recipient_type' => $recipientType,
             'recipient_name' => $recipientName,

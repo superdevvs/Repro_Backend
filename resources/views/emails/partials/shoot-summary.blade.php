@@ -137,6 +137,10 @@
                 <tr>
                     <td class="line-td detail-border" style="padding:12px 0; border-bottom:1px solid #edf2f7; text-align:left; vertical-align:top;">
                         <span class="dark-heading" style="color:#071223; font-weight:700; font-size:14px;">{{ $service['display_name'] }}</span>
+                        @php($imageRequirement = \App\Services\SystemEmails\EmailServiceImageRequirements::label($service, $recipientType ?: ($isPhotographer ? 'photographer' : 'client')))
+                        @if($imageRequirement !== '')
+                            <span class="dark-heading" style="display:block; margin-top:4px; color:#295391; font-size:12px; line-height:1.55; font-weight:600;">{{ $imageRequirement }}</span>
+                        @endif
                         @if(!empty($service['meta']))
                             <span class="dark-muted" style="display:block; margin-top:4px; color:#7188a6; font-size:12px; line-height:1.55;">{{ $service['meta'] }}</span>
                         @endif

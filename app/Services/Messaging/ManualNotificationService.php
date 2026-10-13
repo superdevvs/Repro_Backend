@@ -593,6 +593,7 @@ class ManualNotificationService
             'shoot_id'       => $shoot->id,
             'account_id'     => $shoot->client_id,
             'notification_type' => $type,
+            'channel' => $channel,
             'recipient'      => $recipient,
             'recipient_type' => $recipientType,
             'recipient_name' => $recipient->name,
