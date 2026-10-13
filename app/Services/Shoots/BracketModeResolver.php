@@ -289,7 +289,8 @@ class BracketModeResolver
     /**
      * Final photos this item is contracted to deliver, or null when unspecified.
      *
-     * Only the catalogue's photo_count counts. `quantity` is deliberately not a
+     * The booked snapshot or configured catalogue tier supplies the count.
+     * `quantity` is deliberately not a
      * fallback: it defaults to 1 on every booked item, so treating it as a photo count
      * invented a raw expectation for floor plans, virtual staging and drone rows whose
      * real counts were never stored there.

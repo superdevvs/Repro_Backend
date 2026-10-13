@@ -205,10 +205,28 @@ class UploadIntakeResolver
         // Single-property bookings also carry a count snapshot. A unit ID is
         // only a scope, not a condition for honoring the agreed package size.
         $perItemCount = $item->contracted_photo_count
-            ?? ($item->shoot_unit_id ? null : $this->serviceFor($item)?->contractedPhotoCount());
+            ?? ($item->shoot_unit_id ? null : $this->legacyPhotoCount($item));
 
         // Quantity scales a known package size; it never supplies a missing count.
         return $perItemCount === null ? null : $perItemCount * max(1, (int) ($item->quantity ?? 1));
+    }
+
+    /** Resolve pre-snapshot single-property bookings from their configured tier. */
+    private function legacyPhotoCount(ShootService $item): ?int
+    {
+        $service = $this->serviceFor($item);
+        if ($service?->pricing_type === 'variable') {
+            $sqft = $item->shoot?->propertySqft();
+            if ($sqft > 0) {
+                $service->loadMissing('sqftRanges');
+                $range = $service->sqftRanges->first(fn ($range) => $range->sqft_from <= $sqft && $range->sqft_to >= $sqft);
+                if ($range?->photo_count !== null) {
+                    return $range->photo_count > 0 ? (int) $range->photo_count : null;
+                }
+            }
+        }
+
+        return $service?->contractedPhotoCount();
     }
 
     public function capabilityAvailable(): bool

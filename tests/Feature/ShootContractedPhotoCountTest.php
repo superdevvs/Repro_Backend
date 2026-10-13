@@ -84,6 +84,42 @@ class ShootContractedPhotoCountTest extends TestCase
         $this->assertTrue(app(BracketModeResolver::class)->expectedRawUnspecified($unknown));
     }
 
+    public function test_legacy_variable_booking_uses_its_property_tier_without_inventing_a_target(): void
+    {
+        $shoot = Shoot::factory()->create(['property_details' => ['sqft' => 3943]]);
+        $service = $this->service(0, true);
+        $service->update(['pricing_type' => 'variable']);
+        $service->sqftRanges()->create(['sqft_from' => 1, 'sqft_to' => 3000, 'price' => 199, 'photo_count' => 35]);
+        $service->sqftRanges()->create(['sqft_from' => 3001, 'sqft_to' => 5000, 'price' => 275, 'photo_count' => 45]);
+        $item = $this->item($shoot, $service, null);
+        $resolver = app(BracketModeResolver::class);
+
+        $this->assertSame(225, $resolver->expectedRawForService($item->fresh()));
+        $this->assertSame(45, app(UploadIntakeResolver::class)->contractedPhotoCount($item->fresh()));
+        $response = $this->actingAs(User::factory()->create(['role' => 'admin']))
+            ->getJson('/api/shoots/'.$shoot->id)->assertOk();
+        $this->assertSame(45, $response->json('data.service_items.0.photo_count'));
+        $this->assertSame(225, $response->json('data.service_items.0.expected_raw_count'));
+        $this->assertNull($item->fresh()->contracted_photo_count, 'Reading a legacy target must not rewrite the booking');
+
+        $shoot->update(['property_details' => ['sqft' => 9000]]);
+        $this->assertNull($resolver->expectedRawForService($item->fresh()));
+        $shoot->update(['property_details' => []]);
+        $this->assertNull($resolver->expectedRawForService($item->fresh()));
+    }
+
+    public function test_a_unit_without_a_snapshot_does_not_borrow_the_main_property_target(): void
+    {
+        $shoot = Shoot::factory()->create(['property_details' => ['sqft' => 3943]]);
+        $unit = $shoot->units()->create(['client_key' => 'unit-1', 'label' => 'Unit 1', 'kind' => 'unit', 'sqft' => 1200]);
+        $item = $this->item($shoot, $this->service(45, true), null);
+        $item->update(['shoot_unit_id' => $unit->id]);
+
+        $this->assertNull(app(BracketModeResolver::class)->expectedRawForService($item->fresh()));
+        $item->update(['contracted_photo_count' => 25]);
+        $this->assertSame(125, app(BracketModeResolver::class)->expectedRawForService($item->fresh()));
+    }
+
     private function service(?int $count, bool $hdr, string $intake = Service::INTAKE_PHOTO): Service
     {
         return Service::create([
