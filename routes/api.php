@@ -794,6 +794,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // File workflow endpoints
     Route::post('/shoots/{shoot}/upload', [ShootMediaController::class, 'uploadFiles']);
+    Route::get('/shoots/{shoot}/upload-summaries', [\App\Http\Controllers\API\ShootUploadSummaryController::class, 'index']);
     Route::post('/shoots/{shoot}/upload-batches', [\App\Http\Controllers\API\ShootRawUploadBatchController::class, 'store']);
     Route::post('/shoots/{shoot}/upload-sessions', [\App\Http\Controllers\API\ShootMediaChunkUploadController::class, 'initiate']);
     Route::put('/shoots/{shoot}/upload-sessions/{session}/chunks/{index}', [\App\Http\Controllers\API\ShootMediaChunkUploadController::class, 'storeChunk'])
