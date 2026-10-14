@@ -20,6 +20,11 @@ class VoicePhoneOffer extends Model
         return $this->belongsTo(VoiceIncomingOffer::class);
     }
 
+    public function sipDevice()
+    {
+        return $this->belongsTo(VoiceSipDevice::class);
+    }
+
     public function user()
     {
         return $this->belongsTo(User::class);

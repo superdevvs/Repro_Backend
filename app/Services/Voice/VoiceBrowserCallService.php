@@ -10,6 +10,7 @@ use App\Models\VoiceCall;
 use App\Models\VoiceCallTranscript;
 use App\Models\VoiceIncomingOffer;
 use App\Models\VoicePhoneOffer;
+use App\Models\VoiceSipDevice;
 use App\Services\TelnyxAi\TelnyxVoiceCallService;
 use App\Services\TelnyxAi\VoiceNumberSettingsResolver;
 use App\Services\TelnyxAi\VoiceRoutingService;
@@ -116,6 +117,50 @@ class VoiceBrowserCallService
         }));
     }
 
+    /** A parked native SIP call uses the same conference, logging and busy-user lifecycle. */
+    public function startSipOutbound(VoiceSipDevice $device, array $payload): VoiceCall
+    {
+        $user = $device->user;
+        abort_unless(app(VoiceSipDeviceService::class)->allowed($device), 403);
+        $to = (string) ($payload['to'] ?? '');
+        if (preg_match('/^sips?:([^@;]+)@/i', $to, $match)) {
+            $to = $match[1];
+        }
+        $to = $this->numbers->normalize($to);
+        $from = $this->sourceNumber($device->caller_id);
+        abort_unless(preg_match('/^\+[1-9]\d{7,14}$/', $to) && $to !== $from && ! $this->numbers->matching($to)->isNotEmpty(), 422, 'Dial an external customer number in international format.');
+        $this->assertOutboundAllowed($to);
+        $control = (string) $payload['call_control_id'];
+        $key = 'sip:'.hash('sha256', $control);
+        $browser = VoiceLocks::lock('voice-browser-user:'.$user->id, 60)->block(5, function () use ($device, $user, $payload, $to, $from, $control, $key): VoiceBrowserCall {
+            $existing = VoiceBrowserCall::where('owner_id', $user->id)->where('idempotency_key', $key)->first();
+            if ($existing) {
+                return $existing;
+            }
+            abort_unless(app(VoiceIncomingOfferService::class)->eligible($user), 409, 'You are already handling a call or are unavailable.');
+
+            return LockedWrite::run(fn () => DB::transaction(function () use ($device, $user, $payload, $to, $from, $control, $key): VoiceBrowserCall {
+                $resolved = $this->calls->resolveCaller($to);
+                $call = VoiceCall::create(['provider' => 'telnyx', 'direction' => 'OUTBOUND', 'status' => 'dialing', 'handled_by' => 'human',
+                    'from_phone' => $from, 'to_phone' => $to, 'created_by_user_id' => $user->id, 'caller_user_id' => $resolved['user']?->id,
+                    'caller_contact_id' => $resolved['contact']?->id, 'metadata' => ['source' => 'groundwire_staff']]);
+                $browser = VoiceBrowserCall::create(['voice_call_id' => $call->id, 'owner_id' => $user->id, 'session_id' => null,
+                    'mode' => 'human_outbound', 'idempotency_key' => $key, 'request_hash' => $this->hash(['to' => $to, 'from' => $from])]);
+                $agent = $this->newLeg($browser, 'agent', 'sip:'.$device->sip_username.'@sip.telnyx.com', null, 'sip');
+                $agent->update(['sip_device_id' => $device->id, 'user_id' => $user->id, 'call_control_id' => $control,
+                    'call_session_id' => $payload['call_session_id'] ?? null, 'state' => 'dialing']);
+                $this->newLeg($browser, 'customer', $to);
+
+                return $browser;
+            }));
+        });
+        if (! in_array($browser->state, self::TERMINAL, true)) {
+            $this->gateway->command('sip-answer:'.$control, '/calls/'.rawurlencode($control).'/actions/answer');
+        }
+
+        return $browser->voiceCall->fresh();
+    }
+
     public function takeover(VoiceCall $call, User $user, VoiceBrowserSession $session, array $data): VoiceBrowserCall
     {
         abort_if($call->voicemail, 409, 'The caller is leaving voicemail.');
@@ -159,9 +204,9 @@ class VoiceBrowserCallService
         $browser = VoiceBrowserCall::create(['voice_call_id' => $call->id, 'owner_id' => $user->id, 'session_id' => $session?->id,
             'mode' => 'human_inbound', 'idempotency_key' => 'incoming:'.$offerId, 'request_hash' => $this->hash(['offer' => $offerId]),
             'metadata' => ['incoming_offer_id' => $offerId]]);
-        $agent = $this->newLeg($browser, 'agent', $phone?->destination ?? $this->sip($session), $session, $phone ? 'phone' : null);
+        $agent = $this->newLeg($browser, 'agent', $phone?->destination ?? $this->sip($session), $session, $phone ? ($phone->sip_device_id ? 'sip' : 'phone') : null);
         if ($phone) {
-            $agent->update(['user_id' => $user->id, 'call_control_id' => $phone->call_control_id, 'answered_at' => now(), 'state' => 'answered']);
+            $agent->update(['user_id' => $user->id, 'sip_device_id' => $phone->sip_device_id, 'call_control_id' => $phone->call_control_id, 'answered_at' => now(), 'state' => 'answered']);
         }
         $customer = $this->newLeg($browser, 'customer', $this->remote($call));
         $customer->update(['call_control_id' => $call->call_control_id, 'answered_at' => $call->answered_at]);
@@ -340,6 +385,7 @@ class VoiceBrowserCallService
     /** Safety net for a missing terminal webhook or a closed browser tab. */
     public function reconcile(): int
     {
+        app(VoiceSipDeviceService::class)->reconcile();
         app(VoiceTranscriptRecoveryService::class)->reconcile();
         app(VoiceIncomingOfferService::class)->reconcile();
         $count = 0;
@@ -352,10 +398,11 @@ class VoiceBrowserCallService
                     return;
                 }
                 $session = $agent->session;
-                $stale = $agent->mode === 'phone' ? ! ($phoneUser = User::find($agent->user_id)) || ! $this->sessions->canOperate($phoneUser)
+                $stale = $agent->mode === 'sip' ? ! ($sipDevice = VoiceSipDevice::find($agent->sip_device_id)) || ! app(VoiceSipDeviceService::class)->authorized($sipDevice)
+                    : ($agent->mode === 'phone' ? ! ($phoneUser = User::find($agent->user_id)) || ! $this->sessions->canOperate($phoneUser)
                     : ! $session || $session->revoked_at || $session->expires_at->isPast()
                     || ! $this->sessions->canOperate($session->user)
-                    || ($session->heartbeat_at ?? $session->created_at)->lt(now()->subMinutes(2));
+                    || ($session->heartbeat_at ?? $session->created_at)->lt(now()->subMinutes(2)));
                 foreach ($browser->legs()->where('role', 'supervisor')->whereNull('ended_at')->with('session.user')->get() as $supervisor) {
                     $device = $supervisor->session;
                     if (! $device || $device->revoked_at || $device->expires_at->isPast() || ! $this->sessions->canSupervise($device->user)
@@ -404,6 +451,9 @@ class VoiceBrowserCallService
     /** Called only after the outer webhook handler verifies Telnyx's signature. */
     public function handleWebhook(array $envelope): ?array
     {
+        if ($sip = app(VoiceSipDeviceService::class)->webhook($envelope)) {
+            return $sip;
+        }
         if ($phone = app(VoiceIncomingOfferService::class)->handlePhoneWebhook($envelope)) {
             return $phone;
         }
@@ -666,8 +716,11 @@ class VoiceBrowserCallService
             return;
         }
         $phoneUser = $agent->mode === 'phone' ? User::find($agent->user_id) : null;
-        if ($agent->mode === 'phone' ? (! $phoneUser || ! $this->sessions->canOperate($phoneUser))
-            : (! $agent->session || $agent->session->revoked_at || ! $this->sessions->canOperate($agent->session->user))) {
+        $sipDevice = $agent->mode === 'sip' ? VoiceSipDevice::find($agent->sip_device_id) : null;
+        $authorized = $agent->mode === 'sip' ? $sipDevice && app(VoiceSipDeviceService::class)->allowed($sipDevice)
+            : ($agent->mode === 'phone' ? $phoneUser && $this->sessions->canOperate($phoneUser)
+                : $agent->session && ! $agent->session->revoked_at && $this->sessions->canOperate($agent->session->user));
+        if (! $authorized) {
             $this->agentUnavailable($browser, 'The staff phone is no longer authorized.');
 
             return;

@@ -5,6 +5,11 @@ use App\Http\Controllers\API\Voice\VoiceTeamController;
 use Illuminate\Support\Facades\Route;
 
 // Session endpoints authorize operate OR supervise internally; the parent requires view.
+Route::get('sip/devices', [\App\Http\Controllers\API\Voice\VoiceSipDeviceController::class, 'index']);
+Route::post('sip/devices', [\App\Http\Controllers\API\Voice\VoiceSipDeviceController::class, 'store'])->middleware(['permission:voice-calls,operate', 'throttle:5,10']);
+Route::post('sip/devices/{device}/credentials', [\App\Http\Controllers\API\Voice\VoiceSipDeviceController::class, 'credentials'])->middleware(['permission:voice-calls,operate', 'throttle:10,1']);
+Route::patch('sip/devices/{device}', [\App\Http\Controllers\API\Voice\VoiceSipDeviceController::class, 'update'])->middleware('permission:voice-calls,operate');
+Route::delete('sip/devices/{device}', [\App\Http\Controllers\API\Voice\VoiceSipDeviceController::class, 'destroy']);
 Route::get('browser/config', [VoiceBrowserController::class, 'config']);
 Route::post('browser/sessions', [VoiceBrowserController::class, 'connect'])->middleware('throttle:20,1');
 Route::get('browser/sessions/{session}', [VoiceBrowserController::class, 'session']);

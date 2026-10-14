@@ -50,7 +50,7 @@ class VoiceIncomingOfferService
             $candidates = $candidates->merge(VoicePushSubscription::whereNull('revoked_at')->pluck('user_id'));
         }
         if ($policy) {
-            // Only currently registered Dashboard devices count as reachable.
+            // Only registered Dashboard or enrolled native SIP devices count as reachable.
             // Push subscriptions and verified personal numbers cannot expand this group.
             $candidates = $policies->recipients($policy)->filter(fn ($u) => $policies->registered($u))->pluck('id');
         }
@@ -64,6 +64,7 @@ class VoiceIncomingOfferService
         ]));
         $call->update(['status' => 'ringing', 'metadata' => array_merge($call->metadata ?? [], ['incoming_offer_id' => $offer->id])]);
         $this->notify($offer);
+        app(VoiceSipDeviceService::class)->offer($offer);
         if (config('voice_calls.realtime_connection') !== 'sync') {
             ReconcileVoiceIncomingOffer::dispatch($offer->id)->delay(now()->addSeconds(8))->afterCommit();
             ReconcileVoiceIncomingOffer::dispatch($offer->id)->delay($offer->expires_at)->afterCommit();
@@ -245,6 +246,12 @@ class VoiceIncomingOfferService
         ])->fresh();
     }
 
+    private function destinationValid(VoicePhoneOffer $phone): bool
+    {
+        return $phone->sip_device_id ? app(VoiceSipDeviceService::class)->validOffer($phone)
+            : $this->phones->destination($phone->user, $phone->incomingOffer->voiceCall) === $phone->destination;
+    }
+
     public function dialPhone(string $id): void
     {
         VoiceLocks::lock('voice-phone-dial:'.$id, 40)->block(3, function () use ($id): void {
@@ -253,20 +260,29 @@ class VoiceIncomingOfferService
                 return;
             }
             $offer = $phone->incomingOffer;
-            if (app(VoiceLinePolicyService::class)->dashboardOnly($offer->voiceCall) || $offer->status !== 'waiting' || $offer->expires_at->isPast() || ! $this->live($offer->voiceCall)
-                || ! $this->eligible($phone->user) || $this->phones->destination($phone->user, $offer->voiceCall) !== $phone->destination) {
+            if ((! $phone->sip_device_id && app(VoiceLinePolicyService::class)->dashboardOnly($offer->voiceCall)) || $offer->status !== 'waiting' || $offer->expires_at->isPast() || ! $this->live($offer->voiceCall)
+                || ! $this->eligible($phone->user) || ! $this->destinationValid($phone)) {
                 $phone->update(['state' => 'cancelled']);
 
                 return;
             }
             $phone->update(['state' => 'dialing']);
-            $result = $this->gateway->command('phone-offer:'.$phone->id, '/calls', [
+            $native = [];
+            if ($phone->sip_device_id) {
+                $lineName = app(\App\Services\TelnyxAi\VoiceNumberSettingsResolver::class)->matching((string) $offer->voiceCall->to_phone)->first()?->label ?? 'REPro';
+                $callerName = $offer->voiceCall->callerUser?->name ?? $offer->voiceCall->callerContact?->name ?? $offer->voiceCall->from_phone;
+                $native = ['media_encryption' => 'SRTP', 'sip_transport_protocol' => 'TLS',
+                    'from_display_name' => substr(preg_replace('/[^A-Za-z0-9 _~!.+\-]/', '', $lineName.' - '.$callerName), 0, 128),
+                    'diversion' => $offer->voiceCall->to_phone];
+            }
+            $result = $this->gateway->command('phone-offer:'.$phone->id, '/calls', array_merge([
                 'connection_id' => (string) config('services.telnyx.voice.connection_id'), 'to' => $phone->destination,
-                'from' => $offer->voiceCall->to_phone, 'webhook_url' => (string) config('services.telnyx.voice.webhook_url'),
-                'timeout_secs' => 25, 'client_state' => $phone->client_state,
-            ]);
+                'from' => $phone->sip_device_id && preg_match('/^\+[1-9]\d{7,14}$/', (string) $offer->voiceCall->from_phone) ? $offer->voiceCall->from_phone : $offer->voiceCall->to_phone, 'webhook_url' => (string) config('services.telnyx.voice.webhook_url'),
+                'timeout_secs' => $phone->sip_device_id ? max(1, (int) now()->diffInSeconds($offer->expires_at)) : 25, 'client_state' => $phone->client_state,
+                'custom_headers' => $phone->sip_device_id ? [['name' => 'X-Repro-Offer', 'value' => $phone->client_state]] : [],
+            ], $native));
             if (! empty($result['call_control_id'])) {
-                $phone->update(['call_control_id' => $result['call_control_id']]);
+                $phone->update(['call_control_id' => $result['call_control_id'], 'call_session_id' => $result['call_session_id'] ?? null]);
             }
             // Cancellation can arrive before the carrier returns its new call ID.
             $phone->refresh();
@@ -311,8 +327,23 @@ class VoiceIncomingOfferService
             if (in_array($type, ['call.hangup', 'call.ended', 'call.failed', 'call.no_answer'], true)) {
                 $phone->update(['state' => 'ended']);
             } elseif (in_array($phone->state, ['ended', 'cancelled', 'cancel_requested'], true) || $offer->status !== 'waiting' || $offer->expires_at->isPast() || ! $this->live($offer->voiceCall) || ! $this->eligible($phone->user)
-                || $this->phones->destination($phone->user, $offer->voiceCall) !== $phone->destination) {
+                || ! $this->destinationValid($phone)) {
                 $next = 'hangup';
+            } elseif ($type === 'call.answered' && $phone->sip_device_id) {
+                try {
+                    $browser = VoiceLocks::lock('voice-browser-user:'.$phone->user_id, 60)->block(5, function () use ($offer, $phone) {
+                        $this->assertClaimable($offer, $phone->user);
+
+                        return $this->commitClaim($offer, $phone->user, null, 'sip:'.$phone->id, $phone);
+                    });
+                    $this->closeDevices($offer, 'claimed', true);
+                } catch (\Symfony\Component\HttpKernel\Exception\HttpExceptionInterface $e) {
+                    if (! in_array($e->getStatusCode(), [403, 409], true)) {
+                        throw $e;
+                    }
+                    $phone->update(['state' => 'cancel_requested']);
+                    $next = 'hangup';
+                }
             } elseif ($type === 'call.answered') {
                 $phone->update(['state' => 'awaiting_acceptance']);
                 $next = 'prompt';

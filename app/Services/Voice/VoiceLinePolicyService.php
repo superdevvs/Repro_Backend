@@ -60,7 +60,9 @@ class VoiceLinePolicyService
 
     public function voicemailRecipients(VoiceLinePolicy $policy): Collection
     {
-        if ($policy->mode !== 'robbie') return $this->recipients($policy);
+        if ($policy->mode !== 'robbie') {
+            return $this->recipients($policy);
+        }
 
         return User::where(fn ($q) => $q->where('role', 'superadmin')->orWhereJsonContains('secondary_roles', 'superadmin'))
             ->get()->filter(fn ($user) => $user->isAccountEligibleForAuthentication()
@@ -71,7 +73,8 @@ class VoiceLinePolicyService
     {
         return VoiceBrowserSession::where('user_id', $user->id)->whereNull('revoked_at')->where('status', 'ready')->where('registered', true)
             ->where('heartbeat_at', '>=', now()->subSeconds(60))->where('expires_at', '>', now())->get()
-            ->contains(fn ($session) => app(VoiceBrowserSessionService::class)->usable($session));
+            ->contains(fn ($session) => app(VoiceBrowserSessionService::class)->usable($session))
+            || app(VoiceSipDeviceService::class)->reachable($user);
     }
 
     public function canAccess(User $user, VoiceCall $call): bool
