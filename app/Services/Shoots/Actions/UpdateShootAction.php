@@ -121,6 +121,7 @@ class UpdateShootAction
             'travel_override_confirmed',
             'travel_override_confirmation_version',
             'travel_override_reason',
+            'force_save', 'force_save_confirmed', 'force_save_reason', 'force_save_confirmation_version',
             // Product: assigned sales reps may reassign shoot + service-line photographers.
             'photographer_id',
             'service_photographers',
@@ -276,6 +277,7 @@ class UpdateShootAction
                         'confirm_service_detach', 'service_detach_confirmation_token',
                         'travel_location_confirmed', 'travel_override', 'travel_override_confirmed',
                         'travel_override_confirmation_version', 'travel_override_reason',
+                        'force_save', 'force_save_confirmed', 'force_save_reason', 'force_save_confirmation_version',
                     ]);
                 }
                 $onlyRepEditableFields = $isRep
@@ -455,6 +457,7 @@ class UpdateShootAction
             'services',
             'service_items',
             'service_photographers',
+            'force_save',
         ];
         $travelGuard = app(\App\Services\Scheduling\ScheduleCommitGuard::class);
         $planBuilder = app(\App\Services\Scheduling\WriteSchedulePlan::class);
@@ -473,6 +476,9 @@ class UpdateShootAction
             $availabilityRelevantKeys = array_merge($availabilityRelevantKeys, ['address', 'city', 'state', 'zip', 'timezone', 'property_details', 'status', 'workflow_status', 'travel_location_confirmed', 'schedule_adjustments']);
         }
         $needsAvailabilityCheck = count(array_intersect(array_keys($validated), $availabilityRelevantKeys)) > 0;
+        if (filter_var($validated['force_save'] ?? false, FILTER_VALIDATE_BOOLEAN) && ! $travelGuard->enabled()) {
+            $this->abortJson('Temporary force save is unavailable while scheduling checks are disabled.', 403);
+        }
         // skip_availability_check (or admin) may suppress booking-CONFLICT checks only.
         // The configured-hours availability bound is always enforced, identically to the
         // create path, so a shoot can never be rescheduled outside the photographer's hours.
@@ -506,7 +512,15 @@ class UpdateShootAction
                     $targetScheduledAt, $targetPhotographerId ? (int) $targetPhotographerId : null, $assertTimezone, 'update');
                 $parentChanges = ! $remainsRequest && $planBuilder->changesItinerary($travelPayload, $shoot, $user);
             }
-            if (! $travelGuard->enabled() || $parentChanges) {
+            // Eligible temporary staff edits use the mandatory shared evaluator
+            // below, so its warning can be reviewed before an explicit override.
+            $deferAvailability = $travelGuard->enabled() && $parentChanges
+                && app(\App\Services\Scheduling\TemporaryStaffEditForceSave::class)->eligible($travelPayload, $shoot, $user);
+            if (filter_var($validated['force_save'] ?? false, FILTER_VALIDATE_BOOLEAN)
+                && ! app(\App\Services\Scheduling\TemporaryStaffEditForceSave::class)->eligible($travelPayload ?? [], $shoot, $user)) {
+                $this->abortJson('You cannot force save this booking edit.', 403);
+            }
+            if ((! $travelGuard->enabled() || $parentChanges) && ! $deferAvailability) {
                 if ($targetPhotographerId && $targetScheduledAt && ! $isMultiUnit) {
                     $windows = app(\App\Services\Shoots\ShootDurationResolver::class)->windowsForServices(
                         $targetServices, $shoot->propertySqft(), $targetScheduledAt, $assertTimezone, (int) $targetPhotographerId
@@ -548,7 +562,7 @@ class UpdateShootAction
                 $needsAvailabilityCheck ? ($targetPhotographerId ? (int) $targetPhotographerId : null) : $shoot->photographer_id,
                 $assertTimezone ?? $shoot->timezone, 'update');
             $parentChanges = ! $remainsRequest && $planBuilder->changesItinerary($travelPayload, $shoot, $user);
-            if ($parentChanges) {
+            if ($parentChanges || filter_var($validated['force_save'] ?? false, FILTER_VALIDATE_BOOLEAN)) {
                 $travelPlans[] = ['payload' => $travelPayload, 'shoot' => $shoot->fresh()];
             }
             if (is_array($complimentaryServiceOptions) && ! Shoot::query()->where('complimentary_reshoot_idempotency_key', $complimentaryServiceOptions['idempotency_key'])->exists()) {

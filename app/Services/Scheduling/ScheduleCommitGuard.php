@@ -83,6 +83,14 @@ class ScheduleCommitGuard
                             app(ScheduleFeasibilityService::class)->scheduleFingerprint($ids))) {
                             throw new ConflictHttpException('The photographer schedule changed. Refresh availability and try again.');
                         }
+                        $forcePayload = $prepared['plans'][0]['payload'];
+                        if (filter_var($forcePayload['force_save'] ?? false, FILTER_VALIDATE_BOOLEAN)) {
+                            $currentActor = $prepared['actor'] ? User::query()->find($prepared['actor']->id) : null;
+                            $currentShoot = ($prepared['plans'][0]['shoot'] ?? null)?->fresh();
+                            // Permission and the temporary switch may change after preview.
+                            app(ScheduleFeasibilityService::class)->assertResult($prepared['result'],
+                                $forcePayload, $currentShoot, $currentActor);
+                        }
                         $neighbors = app(DaySchedulePlan::class)->apply($prepared['plans'], $prepared['actor']);
                         $value = $write();
                         $saved = $targets ? $targets($value) : $this->defaultTargets($value, $prepared);
@@ -91,6 +99,7 @@ class ScheduleCommitGuard
                         $originalCount = count($prepared['plans']) - count($neighbors);
                         $saved = array_merge(array_slice(array_pad($saved, $originalCount, null), 0, $originalCount), $neighbors);
                         $this->persistLocations($saved, $prepared);
+                        $this->auditForceSave($saved, $prepared);
                         DB::afterCommit(fn () => $this->auditOverride($saved, $prepared));
 
                         return $value;
@@ -202,6 +211,23 @@ class ScheduleCommitGuard
             'transition_ids' => collect($transitions)->pluck('id')->filter()->unique()->values()->all(),
             'reason_codes' => $prepared['result']['reason_codes'] ?? [],
             'policy_version' => $prepared['result']['policy_version'] ?? null,
+        ]);
+    }
+
+    private function auditForceSave(array $targets, array $prepared): void
+    {
+        $payload = $prepared['plans'][0]['payload'];
+        if (! filter_var($payload['force_save'] ?? false, FILTER_VALIDATE_BOOLEAN)) return;
+        app(AuditLogService::class)->record('schedule.staff_force_save', $prepared['actor'], $targets[0] ?? null, [
+            'reason' => trim((string) ($payload['force_save_reason'] ?? '')),
+            'confirmed' => filter_var($payload['force_save_confirmed'] ?? false, FILTER_VALIDATE_BOOLEAN),
+            'confirmed_at' => now()->toIso8601String(),
+            'confirmation_version' => $payload['force_save_confirmation_version'] ?? null,
+            'schedule_version' => $prepared['result']['schedule_version'] ?? null,
+            'reason_codes' => $prepared['result']['reason_codes'] ?? [],
+            'policy_version' => $prepared['result']['policy_version'] ?? null,
+            'shoot_ids' => collect($targets)->filter(fn ($target) => $target instanceof Shoot)->pluck('id')->all(),
+            'temporary' => true,
         ]);
     }
 

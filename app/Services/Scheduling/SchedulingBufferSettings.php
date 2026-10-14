@@ -44,6 +44,7 @@ class SchedulingBufferSettings
 
     public function version(bool $fresh = false): string
     {
-        return hash('sha256', json_encode([$this->current($fresh), $this->enabled()], JSON_THROW_ON_ERROR));
+        return hash('sha256', json_encode([$this->current($fresh), $this->enabled(),
+            (bool) config('availability.temporary_staff_shoot_force_save', false)], JSON_THROW_ON_ERROR));
     }
 }

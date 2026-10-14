@@ -111,6 +111,14 @@ class ScheduleFeasibilityService
         if ($result['can_override'] && ! $result['available']) {
             $result['confirmation_version'] = $this->confirmationVersion($result, $actor);
         }
+        $forceSave = app(TemporaryStaffEditForceSave::class);
+        $result['can_force_save'] = count($plans) === 1 && ! $result['available']
+            && $forceSave->canSave($result, $plans[0]['payload'], $plans[0]['shoot'] ?? null, $actor);
+        if ($result['can_force_save']) {
+            $result['force_save_confirmation_version'] = $forceSave->confirmationVersion(
+                $result, $plans[0]['payload'], $plans[0]['shoot'], $actor
+            );
+        }
         Log::channel('scheduling')->info('Travel feasibility evaluated', [
             'status' => $result['status'], 'reason_codes' => $result['reason_codes'],
             'visits' => count($proposed), 'transitions' => count($result['transitions']),
@@ -198,7 +206,38 @@ class ScheduleFeasibilityService
     public function assertResult(array $result, array $payload, ?Shoot $shoot = null, ?User $actor = null): void
     {
         if (! $result['enabled']) {
+            abort_if(filter_var($payload['force_save'] ?? false, FILTER_VALIDATE_BOOLEAN), 403,
+                'Temporary force save is unavailable while scheduling checks are disabled.');
             return;
+        }
+        if (filter_var($payload['force_save'] ?? false, FILTER_VALIDATE_BOOLEAN)) {
+            $forceSave = app(TemporaryStaffEditForceSave::class);
+            abort_unless($forceSave->eligible($payload, $shoot, $actor), 403,
+                'You cannot force save this booking edit.');
+            if ($forceSave->canSave($result, $payload, $shoot, $actor)) {
+                if (! filter_var($payload['force_save_confirmed'] ?? false, FILTER_VALIDATE_BOOLEAN)) {
+                    throw \Illuminate\Validation\ValidationException::withMessages([
+                        'force_save_confirmed' => ['Review the warning and explicitly confirm force save before continuing.'],
+                    ]);
+                }
+                if (mb_strlen(trim((string) ($payload['force_save_reason'] ?? ''))) < 5) {
+                    throw \Illuminate\Validation\ValidationException::withMessages([
+                        'force_save_reason' => ['Explain why this edit should be saved despite the warning (at least 5 characters).'],
+                    ]);
+                }
+                $expected = $forceSave->confirmationVersion($result, $payload, $shoot, $actor);
+                if (! is_string($payload['force_save_confirmation_version'] ?? null)
+                    || ! hash_equals($expected, $payload['force_save_confirmation_version'])) {
+                    $result['can_force_save'] = true;
+                    $result['force_save_confirmation_version'] = $expected;
+                    $message = 'This booking or warning changed. Review the current warning and confirm force save again.';
+                    throw new PublicApiResponseException(response()->json(['message' => $message,
+                        'errors' => ['force_save_confirmation_version' => [$message]],
+                        'feasibility' => $this->publicResult($result)], 422));
+                }
+
+                return;
+            }
         }
         $override = filter_var($payload['travel_override'] ?? false, FILTER_VALIDATE_BOOLEAN);
         if ($override) {
@@ -240,7 +279,8 @@ class ScheduleFeasibilityService
     public function publicResult(array $result): array
     {
         $public = Arr::only($result, ['enabled', 'status', 'available', 'reason_codes', 'transitions', 'alternatives',
-            'can_override', 'can_confirm_location', 'policy_version', 'schedule_version', 'confirmation_version', 'budget']);
+            'can_override', 'can_confirm_location', 'can_force_save', 'force_save_confirmation_version',
+            'policy_version', 'schedule_version', 'confirmation_version', 'budget']);
         $public['visits'] = array_map(fn ($visit) => Arr::only($visit, ['photographer_id', 'start', 'end', 'scheduled_at', 'duration_minutes', 'timezone'])
             + ['is_target' => ($visit['plan_index'] ?? 0) === 0], $result['visits'] ?? []);
         $public['transitions'] = array_map(fn ($edge) => Arr::only($edge, ['id', 'direction', 'photographer_id', 'source',
@@ -254,7 +294,7 @@ class ScheduleFeasibilityService
     {
         return ['enabled' => false, 'available' => true, 'status' => 'available', 'reason_codes' => [],
             'transitions' => [], 'visits' => [], 'alternatives' => [], 'can_override' => false,
-            'can_confirm_location' => false, 'policy_version' => self::POLICY_VERSION.':'.app(SchedulingBufferSettings::class)->version(), 'schedule_version' => null,
+            'can_confirm_location' => false, 'can_force_save' => false, 'policy_version' => self::POLICY_VERSION.':'.app(SchedulingBufferSettings::class)->version(), 'schedule_version' => null,
             'photographer_ids' => [], 'location' => [], 'plan_results' => []];
     }
 }

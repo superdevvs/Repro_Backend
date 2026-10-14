@@ -2,6 +2,8 @@
 
 return [
     'hybrid_travel_enabled' => (bool) env('HYBRID_TRAVEL_ENABLED', false),
+    // Temporary staff exception for service changes on an unchanged booked visit.
+    'temporary_staff_shoot_force_save' => (bool) env('TEMPORARY_STAFF_SHOOT_FORCE_SAVE', false),
     'scheduling_lock_store' => env('SCHEDULING_LOCK_STORE', 'scheduling'),
     'scheduling_lock_seconds' => (int) env('SCHEDULING_LOCK_SECONDS', 30),
     'scheduling_lock_wait_seconds' => (int) env('SCHEDULING_LOCK_WAIT_SECONDS', 5),
