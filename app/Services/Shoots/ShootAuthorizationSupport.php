@@ -645,7 +645,21 @@ class ShootAuthorizationSupport
             && strtolower((string) $file->media_type) !== 'raw'
             && $classifier->isImage($file) && ! $classifier->isVideo($file)
             && ! $this->isRawCameraFile($file) && ! $file->isBlockedFromDelivery()
-            && $this->canEditVideoTourLinks($shoot, $user);
+            && $this->canEditVideoTourLinks($shoot, $user)
+            && $this->hasVideoReferenceAssignment($shoot, $user);
+    }
+
+    private function hasVideoReferenceAssignment(Shoot $shoot, User $user): bool
+    {
+        // Older unspecified editors default to both capabilities for existing
+        // workflows. That default must not expand photo editors' downloads.
+        $explicitVideo = collect($user->metadata['editing_capabilities'] ?? [])
+            ->contains(fn ($lane) => in_array(strtolower(trim((string) $lane)), ['video', 'videos'], true));
+        return $explicitVideo || $shoot->serviceItems->contains(function ($item) use ($user) {
+            $intake = $item->service?->uploadIntakeType();
+            return ($intake === Service::INTAKE_PHOTO_VIDEO && (string) $item->video_editor_id === (string) $user->id)
+                || ($intake === Service::INTAKE_VIDEO && (string) $item->editor_id === (string) $user->id);
+        });
     }
 
     public function canViewShootMediaFile(Shoot $shoot, ShootFile $file, ?User $user = null): bool

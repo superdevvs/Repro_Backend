@@ -89,6 +89,23 @@ class VideoEditorFinalImageAccessTest extends TestCase
         $this->getJson("/api/shoots/{$shoot->id}/files/{$image->id}/preview")->assertForbidden();
     }
 
+    public function test_legacy_default_capabilities_do_not_expand_photo_downloads(): void
+    {
+        [$shoot, $item, $video, , $files] = $this->fixture();
+        $video->update(['metadata' => []]);
+        $policy = app(ShootAuthorizationSupport::class);
+        // Explicit video assignment works even for older accounts.
+        $this->assertTrue($policy->canVideoEditorReadFinalImage($shoot->fresh(), $files[0], $video));
+        $item->update(['video_editor_id' => null, 'editor_id' => $video->id]);
+        $item->service->update(['upload_intake_type' => Service::INTAKE_PHOTO]);
+        $this->assertFalse($policy->canVideoEditorReadFinalImage($shoot->fresh(), $files[0], $video));
+        $item->service->update(['upload_intake_type' => Service::INTAKE_VIDEO]);
+        $this->assertTrue($policy->canVideoEditorReadFinalImage($shoot->fresh(), $files[0], $video));
+        $item->service->update(['upload_intake_type' => Service::INTAKE_PHOTO]);
+        $video->update(['metadata' => ['editing_capabilities' => ['video']]]);
+        $this->assertTrue($policy->canVideoEditorReadFinalImage($shoot->fresh(), $files[0], $video));
+    }
+
     public function test_raw_photo_and_existing_photo_editor_permissions_are_unchanged(): void
     {
         [$shoot, , $video, $photo, $files] = $this->fixture();

@@ -463,8 +463,10 @@ class ShootMediaReadService
                 $data['can_download'] = $this->authorizationSupport->canDownloadShootMediaFile($file->shoot, $file, $actor)
                     && ! $file->isBlockedFromDelivery();
                 $data['can_interact'] = $contractorAccess;
-                $data['can_manage_visibility'] = $contractorAccess;
-                $data['can_set_hero'] = $contractorAccess;
+                if (! $customerActor) {
+                    $data['can_manage_visibility'] = $contractorAccess;
+                    $data['can_set_hero'] = $contractorAccess;
+                }
                 if ($this->authorizationSupport->canVideoEditorReadFinalImage($file->shoot, $file, $actor)) {
                     $preview = \App\Http\Controllers\API\VideoEditorReferenceMediaController::fileUrl($file, $actor);
                     $original = \App\Http\Controllers\API\VideoEditorReferenceMediaController::fileUrl($file, $actor, true);
