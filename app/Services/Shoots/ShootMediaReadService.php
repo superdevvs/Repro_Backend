@@ -124,9 +124,9 @@ class ShootMediaReadService
         // Staff keep the short authorized cache. Clients may also cache: the key
         // already includes payment/delivery/file mtimes, so paywall and release
         // flips invalidate within the same 30s window without sync preview work.
-        $canCache = true;
+        $canCache = ! $this->authorizationSupport->hasRole($user, ['editor']);
         $cacheStoreKey = ($this->authorizationSupport->canManageShootOperations($user) ? 'authorized_v2_' : 'client_v1_').$cacheKey;
-        $cached = Cache::get($cacheStoreKey);
+        $cached = $canCache ? Cache::get($cacheStoreKey) : null;
         if ($cached !== null) {
             return ['data' => $cached, 'media_revision' => $mediaRevision];
         }
@@ -167,7 +167,7 @@ class ShootMediaReadService
             ? (((! $file->is_hidden || $includeHidden) && $this->authorizationSupport->isCustomerCuratableFile($file))
                 || ($assignedRepExtraRead && $this->isSafeVisibleExtraFile($file))
                 || ($this->authorizationSupport->hasRole($user, ['photographer', 'editor']) && $this->authorizationSupport->canInteractWithShootMediaFile($shoot, $file, $user)))
-            : $this->authorizationSupport->canInteractWithShootMediaFile($shoot, $file, $user))->values();
+            : $this->authorizationSupport->canViewShootMediaFile($shoot, $file, $user))->values();
         if ($type === 'edited') {
             $files = $files
                 ->reject(fn (ShootFile $file) => $this->authorizationSupport->isRawCameraFile($file))
@@ -318,7 +318,10 @@ class ShootMediaReadService
         // must follow the delivery order rather than primary-key order.
         $files = $shoot->files()->whereIn('id', $fileIds)->inDeliveryOrder()->get();
 
-        return $files->map(fn (ShootFile $file) => $this->shootFileAccessService->resolveFileUrl($file))
+        $actor = auth()->user();
+        return $files->map(fn (ShootFile $file) => $this->authorizationSupport->canVideoEditorReadFinalImage($shoot, $file, $actor)
+            ? \App\Http\Controllers\API\VideoEditorReferenceMediaController::fileUrl($file, $actor, true)
+            : $this->shootFileAccessService->resolveFileUrl($file))
             ->filter()
             ->values()
             ->all();
@@ -339,7 +342,7 @@ class ShootMediaReadService
         }
 
         $files = $filesQuery->get()->filter(fn (ShootFile $file) =>
-            $this->authorizationSupport->canInteractWithShootMediaFile($shoot, $file, $user))->values();
+            $this->authorizationSupport->canViewShootMediaFile($shoot, $file, $user))->values();
 
         if ($normalizedType === 'raw') {
             $files = $files->filter(fn (ShootFile $file) => $file->isRequiredForEditing())->values();
@@ -456,6 +459,24 @@ class ShootMediaReadService
             // managers may delete before and after delivery; editors stay gated
             // by ShootMediaDeletionPolicy (own video lane / review boundary).
             $data['can_delete'] = app(ShootMediaDeletionPolicy::class)->allows($file->shoot, $file, $actor);
+            if ($this->authorizationSupport->hasRole($actor, ['editor'])) {
+                $data['can_download'] = $this->authorizationSupport->canDownloadShootMediaFile($file->shoot, $file, $actor)
+                    && ! $file->isBlockedFromDelivery();
+                $data['can_interact'] = $contractorAccess;
+                $data['can_manage_visibility'] = $contractorAccess;
+                $data['can_set_hero'] = $contractorAccess;
+                if ($this->authorizationSupport->canVideoEditorReadFinalImage($file->shoot, $file, $actor)) {
+                    $preview = \App\Http\Controllers\API\VideoEditorReferenceMediaController::fileUrl($file, $actor);
+                    $original = \App\Http\Controllers\API\VideoEditorReferenceMediaController::fileUrl($file, $actor, true);
+                    foreach (['url', 'thumbnail_url', 'thumb_url', 'thumb', 'grid_url', 'web_url', 'medium_url', 'medium', 'large_url', 'large', 'placeholder_url'] as $key) $data[$key] = $preview;
+                    foreach (['original_url', 'original'] as $key) $data[$key] = $original;
+                    foreach (['path', 'storage_path', 'provider_source_url', 'providerSourceUrl', 'thumbnail_path', 'web_path', 'placeholder_path', 'watermarked_storage_path', 'watermarked_web_path', 'watermarked_thumbnail_path', 'watermarked_placeholder_path'] as $key) $data[$key] = null;
+                    unset($data['preview_images'], $data['previewImages']);
+                    if (! $contractorAccess) {
+                        unset($data['source_file_id'], $data['ai_editing_metadata'], $data['aiEditingMetadata']);
+                    }
+                }
+            }
         }
 
         return $data;

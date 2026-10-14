@@ -55,6 +55,10 @@ class ImageDownloadController extends Controller
                 ], 403);
             }
 
+            if (app(ShootAuthorizationSupport::class)->canVideoEditorReadFinalImage($shoot, $shootFile, $user)) {
+                return redirect(VideoEditorReferenceMediaController::fileUrl($shootFile, $user, true));
+            }
+
             // R2-first: serve the original via a short-lived presigned URL once
             // reads are flipped (raw originals are never exposed via the CDN).
             $media = app(\App\Services\Media\MediaStorage::class);
@@ -151,6 +155,10 @@ class ImageDownloadController extends Controller
 
             if (app(ShootClientReleaseAccessService::class)->isFileReleaseLocked($shoot, $shootFile, $user)) {
                 return app(ShootMediaReadService::class)->previewFileResponse($shootFile, true);
+            }
+
+            if (app(ShootAuthorizationSupport::class)->canVideoEditorReadFinalImage($shoot, $shootFile, $user)) {
+                return app(VideoEditorReferenceMediaController::class)->file($request, $shoot, $shootFile, $user);
             }
 
             // Check if web version exists
@@ -335,7 +343,7 @@ class ImageDownloadController extends Controller
     {
         $authorization = app(ShootAuthorizationSupport::class);
 
-        return $authorization->canInteractWithShootMediaFile($shoot, $file, $user)
+        return $authorization->canViewShootMediaFile($shoot, $file, $user)
             && (! $file->isIguideOfflinePackage() || $authorization->canManageShootOperations($user));
     }
 

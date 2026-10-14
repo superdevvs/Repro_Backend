@@ -9,6 +9,7 @@ use App\Models\ShootService;
 use App\Models\ShootShareLink;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Queue;
 use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
 
@@ -16,8 +17,9 @@ class VideoEditorMediaListScopingTest extends TestCase
 {
     use RefreshDatabase;
 
-    public function test_video_only_editor_sees_raw_video_but_not_photo_media_or_photo_share_links(): void
+    public function test_video_only_editor_sees_final_images_and_raw_video_but_not_raw_photos_or_photo_share_links(): void
     {
+        Queue::fake();
         $photoEditor = User::factory()->create(['role' => 'editor']);
         $photoEditor->setEditingCapabilities(['photo']);
         $photoEditor->save();
@@ -65,6 +67,7 @@ class VideoEditorMediaListScopingTest extends TestCase
             'shoot_id' => $shoot->id,
             'shoot_service_id' => $item->id,
             'filename' => 'final-01.jpg',
+            'scan_status' => 'clean',
             'stored_filename' => 'final-01.jpg',
             'path' => 'shoots/'.$shoot->id.'/completed/final-01.jpg',
             'media_type' => 'edited',
@@ -116,14 +119,14 @@ class VideoEditorMediaListScopingTest extends TestCase
         $edited->assertOk();
         $editedIds = collect($edited->json('data'))->pluck('id')->all();
         $this->assertContains($editedVideo->id, $editedIds);
-        $this->assertNotContains($editedPhoto->id, $editedIds);
+        $this->assertContains($editedPhoto->id, $editedIds);
         $this->assertNotContains($rawPhoto->id, $editedIds);
 
         $media = $this->getJson("/api/shoots/{$shoot->id}/media?type=edited");
         $media->assertOk();
         $mediaIds = collect($media->json('data'))->pluck('id')->all();
         $this->assertContains($editedVideo->id, $mediaIds);
-        $this->assertNotContains($editedPhoto->id, $mediaIds);
+        $this->assertContains($editedPhoto->id, $mediaIds);
 
         $links = $this->getJson("/api/shoots/{$shoot->id}/share-links");
         $links->assertOk();

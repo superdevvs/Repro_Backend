@@ -636,6 +636,25 @@ class ShootAuthorizationSupport
         return true;
     }
 
+    /** Read-only reference images for the currently assigned video editor. */
+    public function canVideoEditorReadFinalImage(Shoot $shoot, ShootFile $file, ?User $user): bool
+    {
+        $classifier = app(ShootDownloadAssetClassifier::class);
+        return (string) $file->shoot_id === (string) $shoot->id
+            && in_array($file->workflow_stage, [ShootFile::STAGE_COMPLETED, ShootFile::STAGE_VERIFIED], true)
+            && strtolower((string) $file->media_type) !== 'raw'
+            && $classifier->isImage($file) && ! $classifier->isVideo($file)
+            && ! $this->isRawCameraFile($file) && ! $file->isBlockedFromDelivery()
+            && $this->canEditVideoTourLinks($shoot, $user);
+    }
+
+    public function canViewShootMediaFile(Shoot $shoot, ShootFile $file, ?User $user = null): bool
+    {
+        $user = $user ?? auth()->user();
+        return $this->canVideoEditorReadFinalImage($shoot, $file, $user)
+            || $this->canInteractWithShootMediaFile($shoot, $file, $user);
+    }
+
     public function canDownloadShootMediaFile(Shoot $shoot, ShootFile $file, ?User $user = null): bool
     {
         if ((string) $file->shoot_id !== (string) $shoot->id) {
@@ -644,6 +663,9 @@ class ShootAuthorizationSupport
         $user = $user ?? auth()->user();
         if (! $this->canDownloadShootMedia($shoot, $user)) {
             return false;
+        }
+        if ($this->canVideoEditorReadFinalImage($shoot, $file, $user)) {
+            return true;
         }
         $contractorDownload = $this->hasRole($user, ['photographer']) ? $this->canPhotographerAccessFile($shoot, $file, $user)
             : ($this->hasRole($user, ['editor']) && ($this->canEditorDownloadRawFile($shoot, $file, $user)

@@ -639,6 +639,10 @@ class ShootMediaController extends Controller
             return $this->downloadShootMediaAction->downloadResponse($file, $request);
         }
 
+        if ($this->shootAuthorizationSupport->canVideoEditorReadFinalImage($shoot, $file, $user)) {
+            return response()->json(['type' => 'redirect', 'url' => VideoEditorReferenceMediaController::fileUrl($file, $user, true)]);
+        }
+
         $acceptHeader = $request->headers->get('Accept', '');
         if (
             $request->prefers(['application/json', 'application/zip']) !== 'application/zip'
@@ -659,7 +663,7 @@ class ShootMediaController extends Controller
     {
         $user = auth()->user();
         $this->shootAuthorizationSupport->ensureFileBelongsToShoot($shoot, $file);
-        if (! $this->shootAuthorizationSupport->canInteractWithShootMediaFile($shoot, $file, $user)) {
+        if (! $this->shootAuthorizationSupport->canViewShootMediaFile($shoot, $file, $user)) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
         if ($file->isBlockedFromDelivery()) {
@@ -668,6 +672,9 @@ class ShootMediaController extends Controller
 
         $needsWatermark = $this->shootClientReleaseAccessService->isFileReleaseLocked($shoot, $file, $user);
 
+        if ($this->shootAuthorizationSupport->canVideoEditorReadFinalImage($shoot, $file, $user)) {
+            return app(VideoEditorReferenceMediaController::class)->file(request(), $shoot, $file, $user);
+        }
         return $this->shootMediaReadService->previewFileResponse($file, $needsWatermark);
     }
 

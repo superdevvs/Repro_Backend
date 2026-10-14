@@ -252,6 +252,11 @@ Route::get('/public/shoot-media/curation-preview/{shoot}/{file}/{viewer}', App\H
     ->middleware('signed')
     ->name('api.public.shoot-media.curation-preview');
 
+Route::get('/public/video-editor/reference/{shoot}/{file}/{viewer}', [App\Http\Controllers\API\VideoEditorReferenceMediaController::class, 'file'])
+    ->whereNumber(['shoot', 'file', 'viewer'])->middleware('signed')->name('api.video-editor.reference-file');
+Route::get('/public/video-editor/archive/{shoot}/{viewer}', [App\Http\Controllers\API\VideoEditorReferenceMediaController::class, 'archive'])
+    ->whereNumber(['shoot', 'viewer'])->middleware('signed')->name('api.video-editor.reference-archive');
+
 // Short-lived bearer route used by the manual iGUIDE viewer. The signature is
 // deliberately a path segment so index.html's relative asset requests retain it.
 Route::get('/iguide/offline-view/{shootId}/{fileId}/{expires}/{signature}/{path?}', IguideOfflineViewerAssetController::class)

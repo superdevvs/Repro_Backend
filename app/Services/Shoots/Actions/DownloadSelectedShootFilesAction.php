@@ -30,7 +30,8 @@ class DownloadSelectedShootFilesAction
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
-        if ($this->shootAuthorizationSupport->hasRole($user, ['editor'])) {
+        if ($this->shootAuthorizationSupport->hasRole($user, ['editor'])
+            && ! $this->shootAuthorizationSupport->canEditVideoTourLinks($shoot, $user)) {
             return response()->json([
                 'message' => 'Editors can only download raw files via the raw download endpoint.',
             ], 403);
@@ -56,8 +57,17 @@ class DownloadSelectedShootFilesAction
         if ($files->isEmpty()) {
             return response()->json(['error' => 'No files found for selected IDs'], 404);
         }
+        if ($this->shootAuthorizationSupport->hasRole($user, ['editor'])
+            && $files->count() !== count(array_unique($fileIds))) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
 
         foreach ($files as $file) {
+            // Keep the existing raw endpoint and its lane scoping unchanged.
+            if ($this->shootAuthorizationSupport->hasRole($user, ['editor'])
+                && ! $this->shootAuthorizationSupport->canVideoEditorReadFinalImage($shoot, $file, $user)) {
+                return response()->json(['message' => 'Forbidden'], 403);
+            }
             if (! $this->shootAuthorizationSupport->canDownloadShootMediaFile($shoot, $file, $user)) {
                 return response()->json(['message' => 'Forbidden'], 403);
             }

@@ -134,6 +134,15 @@ class DownloadShootMediaZipAction
 
         // Always return JSON redirect/preparing. Streaming multi-GB ZIPs through
         // PHP as BinaryFileResponse caused multi-minute holds and 500s.
+        if ($authorizeFiles && $baseType === 'edited'
+            && $this->shootAuthorizationSupport->canEditVideoTourLinks($shoot, $request->user())
+            && ($archiveResponse['payload']['type'] ?? null) === 'redirect') {
+            $archiveResponse['payload']['url'] = \Illuminate\Support\Facades\URL::temporarySignedRoute(
+                'api.video-editor.reference-archive', now()->addMinutes(15), [
+                    'shoot' => $shoot->id, 'viewer' => $request->user()->id, 'type' => $type, 'size' => $resolvedSize,
+                    'service' => $shootServiceId, 'unit' => $shootUnitId,
+                ]);
+        }
         return response()->json($archiveResponse['payload'], $archiveResponse['status']);
     }
 
