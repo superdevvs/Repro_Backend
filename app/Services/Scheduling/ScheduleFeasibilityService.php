@@ -7,7 +7,6 @@ use App\Models\Shoot;
 use App\Models\User;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Arr;
-use Illuminate\Support\Facades\Log;
 
 class ScheduleFeasibilityService
 {
@@ -119,7 +118,7 @@ class ScheduleFeasibilityService
                 $result, $plans[0]['payload'], $plans[0]['shoot'], $actor
             );
         }
-        Log::channel('scheduling')->info('Travel feasibility evaluated', [
+        SchedulingDiagnostics::info('Travel feasibility evaluated', [
             'status' => $result['status'], 'reason_codes' => $result['reason_codes'],
             'visits' => count($proposed), 'transitions' => count($result['transitions']),
             'sources' => array_values(array_unique(array_column($result['transitions'], 'source'))),

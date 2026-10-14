@@ -4,7 +4,6 @@ namespace App\Services\Scheduling;
 
 use App\Support\LockedWrite;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Log;
 use LogicException;
 
 /** Reservations contain only our usage accounting, never Google route content. */
@@ -30,7 +29,7 @@ class GoogleRoutesBudget
             foreach ([75, 90, 100] as $threshold) {
                 if ($status['usage_percent'] >= $threshold
                     && (($status['used_elements'] - $elements) / $status['limit_elements'] * 100) < $threshold) {
-                    Log::channel('scheduling')->notice('routes_budget_threshold', [
+                    SchedulingDiagnostics::notice('routes_budget_threshold', [
                         'threshold' => $threshold, 'used_elements' => $status['used_elements'],
                         'limit_elements' => $status['limit_elements'],
                     ]);

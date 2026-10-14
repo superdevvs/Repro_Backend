@@ -54,7 +54,7 @@ return [
         'performance' => ['driver' => 'daily', 'path' => storage_path('logs/performance.log'), 'level' => 'info', 'days' => 7],
         'scheduling' => [
             'driver' => 'daily',
-            'path' => storage_path('logs/scheduling.log'),
+            'path' => storage_path('logs/scheduling/scheduling.log'),
             'level' => 'info',
             'days' => 30,
             'replace_placeholders' => true,

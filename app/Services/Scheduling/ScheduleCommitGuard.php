@@ -9,7 +9,6 @@ use App\Support\LockedWrite;
 use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Log;
 use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
 
 /** Evaluate remotely before locking; commit only against the evaluated schedule. */
@@ -205,7 +204,7 @@ class ScheduleCommitGuard
             'shoot_ids' => $shootIds,
             'transitions' => $transitions,
         ]);
-        Log::channel('scheduling')->notice('schedule_travel_override', [
+        SchedulingDiagnostics::notice('schedule_travel_override', [
             'actor_id' => $prepared['actor']?->id,
             'shoot_ids' => $shootIds,
             'transition_ids' => collect($transitions)->pluck('id')->filter()->unique()->values()->all(),

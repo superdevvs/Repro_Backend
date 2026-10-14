@@ -28,7 +28,7 @@ class ScheduleFeasibilityController extends Controller
             'city' => 'sometimes|string|max:255',
             'state' => 'sometimes|string|max:80',
             'zip' => 'sometimes|string|max:20',
-            'property_details' => 'sometimes|array',
+            'property_details' => 'sometimes|nullable|array',
             'property_details.sqft' => 'nullable|integer|min:0|max:10000000',
             'property_details.squareFeet' => 'nullable|integer|min:0|max:10000000',
             'service_photographers' => 'sometimes|array|max:300',

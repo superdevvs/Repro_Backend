@@ -5,7 +5,6 @@ namespace App\Services\Scheduling;
 use Carbon\CarbonInterface;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
-use Illuminate\Support\Facades\Log;
 use Throwable;
 
 class GoogleRoutesProvider
@@ -26,7 +25,7 @@ class GoogleRoutesProvider
         try {
             return $result = $this->resolveRoute($origin, $destination, $departure);
         } finally {
-            Log::channel('scheduling')->info('routes_evaluation', [
+            SchedulingDiagnostics::info('routes_evaluation', [
                 'latency_ms' => (int) round((hrtime(true) - $startedAt) / 1_000_000),
                 'status' => $result['status'], 'reason_code' => $result['reason_code'],
             ]);
@@ -100,7 +99,7 @@ class GoogleRoutesProvider
             return $this->memo[$memoKey] = ['status' => 'ok', 'duration_seconds' => (float) $match[1],
                 'distance_meters' => (float) $route['distanceMeters'], 'reason_code' => 'traffic_aware_route'];
         } catch (Throwable $exception) {
-            Log::channel('scheduling')->notice('routes_unavailable', ['exception_type' => $exception::class]);
+            SchedulingDiagnostics::notice('routes_unavailable', ['exception_type' => $exception::class]);
 
             return $this->memo[$memoKey] = ['status' => 'unavailable', 'reason_code' => 'routes_unavailable'];
         }
