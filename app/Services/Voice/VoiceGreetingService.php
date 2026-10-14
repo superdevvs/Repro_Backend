@@ -49,7 +49,8 @@ class VoiceGreetingService
             throw ValidationException::withMessages(['audio' => 'Use an MP3 greeting between 1 and 90 seconds.']);
         }
         $path = 'voice/greetings/'.hash('sha256', $bytes).'.mp3';
-        abort_unless(Storage::disk('local')->put($path, $bytes, ['visibility' => 'private']), 503, 'Greeting storage failed.');
+        app(VoicePrivateFiles::class)->prepare('voice/greetings');
+        abort_unless(Storage::disk('voice_private')->put($path, $bytes, ['visibility' => 'private']), 503, 'Greeting storage failed.');
 
         return $path;
     }

@@ -108,7 +108,7 @@ class VoiceLinePolicyService
             'id' => $u->id, 'name' => $u->name, 'calling_permission' => app(VoiceBrowserSessionService::class)->canOperate($u),
             'registered' => $this->registered($u),
         ]);
-        $greetings = collect(['office_greeting', 'closed_greeting'])->mapWithKeys(fn ($key) => [$key => $policy->$key && Storage::disk('local')->exists($policy->$key)]);
+        $greetings = collect(['office_greeting', 'closed_greeting'])->mapWithKeys(fn ($key) => [$key => $policy->$key && Storage::disk('voice_private')->exists($policy->$key)]);
         $last = VoiceCallEvent::where('provider', 'telnyx')->whereNotNull('processed_at')->latest('received_at')->first();
 
         return array_merge($policy->only(['mode', 'recipient_role', 'recipient_ids', 'timezone', 'weekly_hours']), [

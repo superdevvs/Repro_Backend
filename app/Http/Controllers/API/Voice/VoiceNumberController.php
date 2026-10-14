@@ -110,9 +110,9 @@ class VoiceNumberController extends Controller
         abort_unless(in_array($kind, ['office', 'closed'], true), 404);
         $policy = app(VoiceLinePolicyService::class)->forNumber($smsNumber->phone_number);
         $path = $policy?->{$kind.'_greeting'};
-        abort_unless($path && \Illuminate\Support\Facades\Storage::disk('local')->exists($path), 404);
+        abort_unless($path && \Illuminate\Support\Facades\Storage::disk('voice_private')->exists($path), 404);
 
-        $response = response()->file(\Illuminate\Support\Facades\Storage::disk('local')->path($path), ['Content-Type' => 'audio/mpeg', 'Cache-Control' => 'no-store']);
+        $response = response()->file(\Illuminate\Support\Facades\Storage::disk('voice_private')->path($path), ['Content-Type' => 'audio/mpeg', 'Cache-Control' => 'no-store']);
         $response->setPrivate();
 
         return $response;

@@ -39,14 +39,15 @@ class VoiceVoicemailStorage
                 $this->download($url, $temporary);
                 rewind($temporary);
                 $path = 'voice/voicemails/'.$vm->id.'/'.$vm->recording_id.'.mp3';
-                if (! Storage::disk('local')->put($path, $temporary, ['visibility' => 'private'])) {
+                app(VoicePrivateFiles::class)->prepare('voice/voicemails/'.$vm->id);
+                if (! Storage::disk('voice_private')->put($path, $temporary, ['visibility' => 'private'])) {
                     throw new RuntimeException('Private recording write failed.');
                 }
                 // Fetch/update under the lifecycle lock so pruning and delayed events cannot resurrect audio.
                 VoiceLocks::lock('voicemail:'.$vm->id, 60)->block(5, function () use ($vm, $path): void {
                     $vm->refresh();
                     if ($vm->state === 'expired' || $vm->expires_at->isPast()) {
-                        Storage::disk('local')->delete($path);
+                        Storage::disk('voice_private')->delete($path);
 
                         return;
                     }

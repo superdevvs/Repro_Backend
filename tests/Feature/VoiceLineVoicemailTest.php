@@ -41,11 +41,14 @@ class VoiceLineVoicemailTest extends TestCase
             'services.telnyx.voice.webhook_url' => 'https://example.test/voice', 'services.telnyx.voice.enabled' => true,
             'services.telnyx.voice.support_handoff_number' => '+12025550999', 'services.voice.canary_mode' => false]);
         Queue::fake();
-        Storage::fake('local');
+        // CI's runner is not a member of the production service group. Exercise
+        // shared modes on its own fake disk; live cutover verifies www-data ownership.
+        config(['filesystems.disks.voice_private.shared_group' => null]);
+        Storage::fake('voice_private', config('filesystems.disks.voice_private'));
         Http::fake(['*' => Http::response(['data' => ['result' => 'ok', 'call_control_id' => 'staff-leg']])]);
         $this->staff = User::factory()->create(['role' => 'editing_manager', 'permission_overrides' => ['allow' => ['voice-calls-view', 'voice-calls-operate'], 'deny' => []]]);
-        Storage::disk('local')->put('voice/greetings/office.mp3', 'office-audio');
-        Storage::disk('local')->put('voice/greetings/closed.mp3', 'closed-audio');
+        Storage::disk('voice_private')->put('voice/greetings/office.mp3', 'office-audio');
+        Storage::disk('voice_private')->put('voice/greetings/closed.mp3', 'closed-audio');
         $this->policy = VoiceLinePolicy::create(['phone_number' => '+12027803332', 'mode' => 'staff_voicemail',
             'recipient_role' => 'editing_manager', 'recipient_ids' => [], 'timezone' => 'Asia/Kolkata',
             'weekly_hours' => array_fill_keys(['mon', 'tue', 'wed', 'thu', 'fri'], [['start' => '09:00', 'end' => '18:00']]),
@@ -166,7 +169,7 @@ class VoiceLineVoicemailTest extends TestCase
         $call = $this->incomingCall();
         $this->route($call);
         $vm = $call->fresh()->voicemail;
-        Storage::disk('local')->put('voice/voicemails/message.mp3', 'message-audio');
+        Storage::disk('voice_private')->put('voice/voicemails/message.mp3', 'message-audio');
         $vm->update(['state' => 'saved', 'saved_at' => now(), 'recording_path' => 'voice/voicemails/message.mp3', 'recording_id' => 'recording-private']);
         $other = User::factory()->create(['role' => 'admin']);
         $this->actingAs($other, 'sanctum')->getJson('/api/voice/calls/'.$call->id)->assertForbidden();
@@ -183,7 +186,7 @@ class VoiceLineVoicemailTest extends TestCase
         $this->travel(91)->days();
         $this->get('/api/voice/calls/'.$call->id.'/voicemail/audio')->assertStatus(410);
         app(VoiceVoicemailService::class)->maintain();
-        Storage::disk('local')->assertMissing('voice/voicemails/message.mp3');
+        Storage::disk('voice_private')->assertMissing('voice/voicemails/message.mp3');
         $this->assertSame('recording-private', $vm->fresh()->recording_id);
         Http::assertSent(fn ($r) => $r->method() === 'DELETE' && str_ends_with($r->url(), '/recordings/recording-private'));
     }
@@ -230,7 +233,7 @@ class VoiceLineVoicemailTest extends TestCase
         $vm = $call->fresh()->voicemail;
         $storage->store($vm);
         $storage->store($vm);
-        Storage::disk('local')->assertExists('voice/voicemails/'.$vm->id.'/private-provider-id.mp3');
+        Storage::disk('voice_private')->assertExists('voice/voicemails/'.$vm->id.'/private-provider-id.mp3');
         $this->assertSame('saved', $vm->fresh()->state);
         $this->assertNull($call->fresh()->recording_url);
         $this->assertCount(1, Http::recorded());
@@ -259,6 +262,9 @@ class VoiceLineVoicemailTest extends TestCase
             $this->assertSame([$support->id], app(VoiceLinePolicyService::class)->forNumber('+18886567627')->recipient_ids);
             $this->assertSame('sms_only', app(VoiceLinePolicyService::class)->forNumber('+18888041663')->mode);
             $this->assertSame(hash('sha256', file_get_contents($source)), basename($this->policy->fresh()->office_greeting, '.mp3'));
+            $stored = Storage::disk('voice_private')->path($this->policy->fresh()->office_greeting);
+            $this->assertSame(0660, fileperms($stored) & 0777);
+            $this->assertSame(02770, fileperms(dirname($stored)) & 07777);
         } finally {
             unlink($source);
         }

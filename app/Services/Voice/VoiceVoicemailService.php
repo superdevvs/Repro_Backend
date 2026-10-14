@@ -133,13 +133,13 @@ class VoiceVoicemailService
         $policy = $this->policies->forNumber($vm->phone_number);
         $path = $vm->greeting_kind === 'closed' ? $policy?->closed_greeting : $policy?->office_greeting;
         $vm->update(['state' => 'greeting']);
-        if (! $path || ! Storage::disk('local')->exists($path)) {
+        if (! $path || ! Storage::disk('voice_private')->exists($path)) {
             $this->fallback($vm);
 
             return;
         }
         try {
-            $this->command($vm, 'playback_start', ['playback_content' => base64_encode(Storage::disk('local')->get($path)), 'audio_type' => 'mp3'], 'greeting');
+            $this->command($vm, 'playback_start', ['playback_content' => base64_encode(Storage::disk('voice_private')->get($path)), 'audio_type' => 'mp3'], 'greeting');
         } catch (Throwable $e) {
             if ($e->getCode() >= 400 && $e->getCode() < 500 && ! in_array($e->getCode(), [408, 429], true)) {
                 $this->fallback($vm);
@@ -273,7 +273,7 @@ class VoiceVoicemailService
                     $vm->refresh()->update(['state' => 'expired', 'failure' => 'Retention deletion pending.']);
                     try {
                         if ($vm->recording_path) {
-                            if (! Storage::disk('local')->delete($vm->recording_path)) {
+                            if (! Storage::disk('voice_private')->delete($vm->recording_path)) {
                                 throw new \RuntimeException('Private recording deletion pending.');
                             }
                         }

@@ -39,9 +39,9 @@ class VoiceVoicemailController extends Controller
     {
         $vm = $call->voicemail()->firstOrFail();
         abort_if($vm->expires_at->isPast() || $vm->state === 'expired', 410, 'Voicemail retention period ended.');
-        abort_unless($vm->state === 'saved' && $vm->recording_path && Storage::disk('local')->exists($vm->recording_path), 404, 'Recording is not ready.');
+        abort_unless($vm->state === 'saved' && $vm->recording_path && Storage::disk('voice_private')->exists($vm->recording_path), 404, 'Recording is not ready.');
 
-        $response = response()->file(Storage::disk('local')->path($vm->recording_path), ['Content-Type' => 'audio/mpeg', 'Cache-Control' => 'no-store']);
+        $response = response()->file(Storage::disk('voice_private')->path($vm->recording_path), ['Content-Type' => 'audio/mpeg', 'Cache-Control' => 'no-store']);
         $response->setPrivate();
 
         return $response;
