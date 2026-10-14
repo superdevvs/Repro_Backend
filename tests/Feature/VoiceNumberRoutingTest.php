@@ -66,7 +66,8 @@ class VoiceNumberRoutingTest extends TestCase
         $otherPhone = $this->number(['phone_number' => '+12025550200', 'voice_ai_enabled' => false]);
         $this->actingAs($admin, 'sanctum')->getJson('/api/voice/numbers')->assertOk()
             ->assertJsonCount(2, 'numbers')->assertJsonPath('numbers.0.id', $canonical->id)
-            ->assertJsonPath('numbers.0.voice_ai_enabled', false);
+            ->assertJsonPath('numbers.0.voice_ai_enabled', false)
+            ->assertJsonPath('numbers.0.phone_number', '+12025550100');
         $this->patchJson("/api/voice/numbers/{$older->id}", [
             'voice_ai_enabled' => true, 'voice_assistant_id_override' => 'new-assistant', 'sms_ai_enabled' => true,
         ])->assertOk()->assertJsonPath('id', $canonical->id);
@@ -76,6 +77,7 @@ class VoiceNumberRoutingTest extends TestCase
             $this->assertSame('new-assistant', $number->fresh()->voice_assistant_id_override);
         }
         $this->assertSame('USER', $older->fresh()->owner_type);
+        $this->assertSame('(202) 555-0100', $canonical->fresh()->phone_number);
         $this->assertSame($admin->id, $older->fresh()->owner_id);
         $this->assertFalse($otherProvider->fresh()->voice_ai_enabled);
         $this->assertFalse($otherPhone->fresh()->voice_ai_enabled);

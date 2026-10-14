@@ -21,7 +21,8 @@ class VoiceNumberController extends Controller
         $lines = app(VoiceLinePolicyService::class);
 
         return array_merge($number->only(['id', 'phone_number', 'label', 'is_default', 'voice_ai_enabled', 'voice_assistant_id_override', 'sms_ai_enabled']),
-            ['line_policy' => $lines->present($lines->forNumber($number->phone_number)),
+            ['phone_number' => app(\App\Services\Messaging\AiSms\SmsContextResolverService::class)->normalize($number->phone_number),
+                'line_policy' => $lines->present($lines->forNumber($number->phone_number)),
                 'can_call_from' => $lines->forNumber($number->phone_number)?->mode !== 'sms_only'
                     && $lines->canAccess(request()->user(), new \App\Models\VoiceCall(['direction' => 'OUTBOUND', 'from_phone' => $number->phone_number]))]);
     }
