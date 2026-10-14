@@ -17,6 +17,7 @@ Route::post('calls/human/cancel', [VoiceBrowserController::class, 'cancelOutboun
 Route::middleware('permission:voice-calls,operate')->group(function (): void {
     Route::get('directory', [VoiceTeamController::class, 'directory']);
     Route::get('incoming-offers', [VoiceTeamController::class, 'offers']);
+    Route::post('incoming-offers/{offer}/robbie', [VoiceTeamController::class, 'sendToRobbie'])->middleware('throttle:20,1');
     Route::post('incoming-offers/{offer}/claim', [VoiceTeamController::class, 'claim'])->middleware('throttle:30,1');
     Route::post('incoming-offers/{offer}/cancel', [VoiceTeamController::class, 'cancelClaim'])->middleware('throttle:30,1');
     Route::get('phone/settings', [VoiceTeamController::class, 'phoneSettings']);

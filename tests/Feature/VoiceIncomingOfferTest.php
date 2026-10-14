@@ -12,6 +12,7 @@ use App\Models\VoicePhoneOffer;
 use App\Models\VoiceStaffPhone;
 use App\Services\Voice\VoiceBrowserCallService;
 use App\Services\Voice\VoiceIncomingOfferService;
+use App\Services\TelnyxAi\VoiceNumberSettingsResolver;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
@@ -394,6 +395,65 @@ class VoiceIncomingOfferTest extends TestCase
     {
         return VoiceBrowserSession::create(['user_id' => $user->id, 'device_id' => (string) Str::uuid(), 'credential_id' => 'credential-'.Str::uuid(),
             'sip_username' => 'gencred'.Str::random(10), 'status' => 'ready', 'registered' => true, 'heartbeat_at' => now(), 'expires_at' => now()->addHour()]);
+    }
+
+    public function test_manual_robbie_reserves_one_offer_waits_for_answer_and_does_not_change_line_defaults(): void
+    {
+        config(['services.telnyx.voice.enabled' => true, 'services.telnyx.voice.assistant_id' => 'robbie']);
+        $this->travelTo(\Carbon\Carbon::parse('2026-10-12 10:00:00', 'UTC'));
+        $this->session->update(['heartbeat_at' => now(), 'expires_at' => now()->addHour()]);
+        \App\Models\VoiceLinePolicy::create(['phone_number' => '+12025550100', 'mode' => 'staff_voicemail', 'recipient_role' => 'admin', 'recipient_ids' => [], 'timezone' => 'UTC', 'weekly_hours' => ['mon' => [['start' => '09:00', 'end' => '18:00']]]]);
+        $offer = $this->offer();
+        $this->assertFalse(app(VoiceNumberSettingsResolver::class)->aiEnabledForCall($offer->voiceCall));
+        $this->postJson('/api/voice/incoming-offers/'.$offer->id.'/robbie', ['idempotency_key' => 'manual'])->assertOk()->assertJsonPath('status', 'robbie_pending');
+        $this->postJson('/api/voice/incoming-offers/'.$offer->id.'/robbie', ['idempotency_key' => 'manual'])->assertOk();
+        $this->postJson('/api/voice/incoming-offers/'.$offer->id.'/robbie', ['idempotency_key' => 'different'])->assertConflict();
+        Queue::assertPushed(\App\Jobs\SendIncomingCallToRobbie::class, 1);
+        $this->claim($offer)->assertConflict();
+        $handoff = app(\App\Services\Voice\ManualVoiceHandoffService::class);
+        try { $handoff->resume($offer); $this->fail('Must wait for answered webhook'); } catch (\RuntimeException $e) { $this->assertStringContainsString('confirm answer', $e->getMessage()); }
+        Http::assertNotSent(fn ($r) => str_ends_with($r->url(), '/ai_assistant_start'));
+        $offer->voiceCall->update(['answered_at' => now()]);
+        $handoff->resume($offer);
+        $handoff->resume($offer);
+        $this->assertSame('robbie', $offer->fresh()->status);
+        $this->assertSame('ai', $offer->voiceCall->fresh()->handled_by);
+        $this->assertTrue(app(VoiceNumberSettingsResolver::class)->aiEnabledForCall($offer->voiceCall->fresh()));
+        $this->assertFalse(app(VoiceNumberSettingsResolver::class)->forNumber('+12025550100')['enabled']);
+        $this->travel(1)->minutes();
+        app(VoiceIncomingOfferService::class)->reconcile($offer->id);
+        $this->assertNull($offer->voiceCall->fresh()->voicemail);
+        $this->assertSame('robbie', $offer->fresh()->status);
+    }
+
+    public function test_manual_robbie_rejects_other_staff_expired_and_already_answered_calls(): void
+    {
+        config(['services.telnyx.voice.enabled' => true, 'services.telnyx.voice.assistant_id' => 'robbie']);
+        $offer = $this->offer();
+        $outsider = User::factory()->create(['role' => 'admin']);
+        $this->actingAs($outsider, 'sanctum')->postJson('/api/voice/incoming-offers/'.$offer->id.'/robbie', ['idempotency_key' => 'other'])->assertForbidden();
+        $this->actingAs($this->admin, 'sanctum');
+        $offer->update(['expires_at' => now()->subSecond()]);
+        $this->postJson('/api/voice/incoming-offers/'.$offer->id.'/robbie', ['idempotency_key' => 'expired'])->assertConflict();
+        $offer->update(['expires_at' => now()->addSeconds(45), 'status' => 'claimed']);
+        $this->postJson('/api/voice/incoming-offers/'.$offer->id.'/robbie', ['idempotency_key' => 'claimed'])->assertConflict();
+        Queue::assertNotPushed(\App\Jobs\SendIncomingCallToRobbie::class);
+    }
+
+    public function test_rejected_manual_assistant_start_falls_back_to_line_voicemail_without_ai_overlap(): void
+    {
+        config(['services.telnyx.voice.enabled' => true, 'services.telnyx.voice.assistant_id' => 'robbie']);
+        $offer = $this->offer();
+        \App\Models\VoiceLinePolicy::create(['phone_number' => '+12025550100', 'mode' => 'staff_voicemail', 'recipient_role' => 'admin', 'recipient_ids' => [], 'timezone' => 'UTC', 'weekly_hours' => []]);
+        $this->postJson('/api/voice/incoming-offers/'.$offer->id.'/robbie', ['idempotency_key' => 'manual'])->assertOk();
+        $offer->voiceCall->update(['answered_at' => now()]);
+        Http::swap(new \Illuminate\Http\Client\Factory);
+        Http::fake(fn ($request) => Http::response(['data' => ['result' => 'ok']], str_ends_with($request->url(), '/ai_assistant_start') ? 422 : 200));
+        $handoff = app(\App\Services\Voice\ManualVoiceHandoffService::class);
+        try { $handoff->resume($offer); $this->fail('Provider rejects start'); } catch (\RuntimeException $e) { $this->assertSame(422, $e->getCode(), $e->getMessage()); $handoff->failed($offer, $e); }
+        $this->assertNotNull($offer->voiceCall->fresh()->voicemail);
+        $this->assertFalse(app(VoiceNumberSettingsResolver::class)->aiEnabledForCall($offer->voiceCall->fresh()));
+        Http::assertNotSent(fn ($request) => str_ends_with($request->url(), '/ai_assistant_stop'));
     }
 
     private function offer(): VoiceIncomingOffer

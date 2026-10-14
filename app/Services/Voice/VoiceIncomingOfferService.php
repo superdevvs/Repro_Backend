@@ -119,7 +119,12 @@ class VoiceIncomingOfferService
 
         return ['id' => $offer->id, 'voice_call_id' => $call->id, 'status' => $status,
             'expires_at' => $offer->expires_at->toIso8601String(), 'caller_name' => $call->callerUser?->name ?? $call->callerContact?->name,
-            'remote_phone' => $call->from_phone, 'claimed_by' => $offer->claimedBy ? ['id' => $offer->claimedBy->id, 'name' => $offer->claimedBy->name] : null,
+            'remote_phone' => $call->from_phone, 'business_phone' => $call->to_phone,
+            'line_label' => app(\App\Services\TelnyxAi\VoiceNumberSettingsResolver::class)->matching((string) $call->to_phone)->first()?->label,
+            'caller_avatar' => $call->callerUser?->avatar, 'caller_company' => $call->callerUser?->company_name,
+            'caller_role' => $call->callerUser?->role,
+            'can_send_robbie' => $status === 'waiting' && ! $offer->expires_at->isPast() && app(ManualVoiceHandoffService::class)->available($offer, $user),
+            'claimed_by' => $offer->claimedBy ? ['id' => $offer->claimedBy->id, 'name' => $offer->claimedBy->name] : null,
             'can_claim' => $status === 'waiting' && in_array($user->id, $offer->eligible_user_ids, true) && $this->eligible($user),
             'phone_available' => ! app(VoiceLinePolicyService::class)->dashboardOnly($call) && $this->phones->destination($user, $call) !== null];
     }
@@ -362,6 +367,11 @@ class VoiceIncomingOfferService
             VoiceLocks::lock('voice-incoming:'.$offer->id, 60)->block(3, function () use ($offer, &$phonesToDial): void {
                 $offer->refresh();
                 $call = $offer->voiceCall->fresh();
+                if (in_array($offer->status, ['robbie_pending', 'robbie'], true)) {
+                    $this->closeDevices($offer, 'sent_to_robbie');
+
+                    return;
+                }
                 if ($offer->status === 'claimed') {
                     $this->closeDevices($offer, 'claimed');
 

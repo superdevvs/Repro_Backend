@@ -46,6 +46,9 @@ class VoiceNumberSettingsResolver
 
     public function aiEnabledForCall(VoiceCall $call): bool
     {
+        if (! empty($call->metadata['manual_robbie_accepted_at'])) {
+            return (bool) $this->settings->all()['enabled'] && $this->forCall($call)['assistant_id'] === $call->assistant_id;
+        }
         return $this->forCall($call)['enabled']
             && ($call->metadata['voice_routing']['enabled'] ?? true) !== false;
     }

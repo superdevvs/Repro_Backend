@@ -61,6 +61,13 @@ class VoiceTeamController extends Controller
         return response()->json($offers->listing($request->user()))->header('Cache-Control', 'private, no-store');
     }
 
+    public function sendToRobbie(Request $request, VoiceIncomingOffer $offer, \App\Services\Voice\ManualVoiceHandoffService $handoff): JsonResponse
+    {
+        $data = $request->validate(['idempotency_key' => ['required', 'string', 'max:128']]);
+
+        return response()->json($handoff->send($offer, $request->user(), $data['idempotency_key']));
+    }
+
     public function claim(Request $request, VoiceIncomingOffer $offer, VoiceIncomingOfferService $offers): JsonResponse
     {
         $data = $request->validate(['device' => ['required', Rule::in(['browser', 'phone'])],
