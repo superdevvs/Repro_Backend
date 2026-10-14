@@ -27,6 +27,7 @@ class IguideService
     private string $legacyBaseUrl;
     private ?string $webhookUrl;
     private ?string $lastFailureReason = null;
+    private ?float $portalReadDeadline = null;
 
     public function getLastFailureReason(): ?string
     {
@@ -64,6 +65,18 @@ class IguideService
 
     public function syncShoot(Shoot $shoot): ?array
     {
+        $previousDeadline = $this->portalReadDeadline;
+        // Leave time for boot/persistence inside the sync job's 120s timeout.
+        $this->portalReadDeadline = microtime(true) + 90;
+        try {
+            return $this->syncShootWithinBudget($shoot);
+        } finally {
+            $this->portalReadDeadline = $previousDeadline;
+        }
+    }
+
+    private function syncShootWithinBudget(Shoot $shoot): ?array
+    {
         if ($shoot->isInternalTestShoot() || (! $shoot->relationLoaded('tourUnit') && $shoot->units()->exists())) {
             return null;
         }
@@ -73,6 +86,21 @@ class IguideService
 
         if ($shoot->iguide_property_id) {
             $iguideData = $this->syncProperty((string) $shoot->iguide_property_id);
+        }
+
+        if (!$iguideData && $this->hasPortalCredentials()) {
+            $links = is_array($shoot->tour_links) ? $shoot->tour_links : [];
+            $seenAliases = [];
+            foreach ([$shoot->iguide_tour_url, $links['iguide_branded'] ?? null, $links['iguide_mls'] ?? null] as $url) {
+                $alias = $this->tourAlias($url);
+                if ($alias !== null && !isset($seenAliases[$alias])) {
+                    $seenAliases[$alias] = true;
+                    $iguideData = $this->searchPortalByAlias($alias);
+                    if ($iguideData) {
+                        break;
+                    }
+                }
+            }
         }
 
         if (!$iguideData && ! $shoot->relationLoaded('tourUnit')) {
@@ -102,8 +130,8 @@ class IguideService
         try {
             if ($this->hasPortalCredentials()) {
                 $response = $this->portalRequest('get', '/iguides/' . rawurlencode($propertyId));
-                if ($response?->successful()) {
-                    return $this->parsePropertyData($response->json());
+                if ($response?->successful() && is_array($response->json())) {
+                    return $this->hydratePortalProperty($response->json());
                 }
                 if ($this->isSignedAppForbidden($response)) {
                     // Token authenticates fine but the Portal blocks signed apps from
@@ -127,6 +155,67 @@ class IguideService
 
             return null;
         }
+    }
+
+    /** Portal metadata and downloadable media are separate API resources. */
+    private function hydratePortalProperty(array $data): array
+    {
+        $generatedUrls = [];
+        $alias = $data['alias'] ?? $data['iguideAlias'] ?? null;
+        if (is_string($alias) && preg_match('/^[A-Za-z0-9][A-Za-z0-9_-]{0,199}$/D', $alias)) {
+            $domain = match ($data['type'] ?? null) {
+                'photos' => 'iguidephotos.com',
+                'radix' => 'iguideradix.com',
+                default => 'youriguide.com',
+            };
+            $urls = is_array($data['urls'] ?? null) ? $data['urls'] : [];
+            $provided = [
+                'publicUrl' => $this->extractTourUrl($data),
+                'unbrandedUrl' => $this->firstString([$urls['unbrandedUrl'] ?? null, $data['unbrandedUrl'] ?? null]),
+                'embeddedUrl' => $this->firstString([$urls['embeddedUrl'] ?? null, $data['embeddedUrl'] ?? null]),
+            ];
+            foreach ([
+                'publicUrl' => "https://{$domain}/{$alias}/",
+                'unbrandedUrl' => "https://unbranded.{$domain}/{$alias}/",
+                'embeddedUrl' => "https://{$domain}/embed/{$alias}/",
+            ] as $key => $fallback) {
+                $urls[$key] = $provided[$key] ?? $fallback;
+                if ($provided[$key] === null) {
+                    $generatedUrls[] = match ($key) {
+                        'publicUrl' => 'tour_url', 'unbrandedUrl' => 'unbranded_url', 'embeddedUrl' => 'embedded_url',
+                    };
+                }
+            }
+            $data['urls'] = $urls;
+        }
+
+        foreach ($data['views'] ?? [] as $view) {
+            if (is_array($view) && !empty($view['isDefault']) && is_string($view['id'] ?? null)) {
+                $data['defaultViewId'] ??= $view['id'];
+                break;
+            }
+        }
+
+        $parsed = $this->parsePropertyData($data);
+        $parsed['_generated_tour_urls'] = $generatedUrls;
+        $id = $parsed['property_id'];
+        if (!empty($parsed['floorplans']) || !is_string($id) || $id === '') {
+            return $parsed;
+        }
+
+        try {
+            $assets = $this->portalRequest('get', '/iguides/' . rawurlencode($id) . '/asset-urls');
+            $languages = $assets?->successful() ? $assets->json('languages') : null;
+            if (is_array($languages) && $languages !== []) {
+                $data['urls']['mediaUrls'] = $languages;
+                return array_replace($this->parsePropertyData($data), ['_generated_tour_urls' => $generatedUrls]);
+            }
+        } catch (\Exception $e) {
+            // A transient media lookup failure must not erase a previous import.
+            Log::warning('iGUIDE asset URL lookup failed', ['property_id' => $id]);
+        }
+
+        return $parsed;
     }
 
     /**
@@ -165,18 +254,37 @@ class IguideService
     public function applyShootData(Shoot $shoot, array $iguideData): Shoot
     {
         if (! $shoot->relationLoaded('tourUnit') && $shoot->units()->exists()) return $shoot;
-        $shoot->iguide_tour_url = $iguideData['tour_url'] ?? $shoot->iguide_tour_url;
-        $shoot->iguide_floorplans = $iguideData['floorplans'] ?? $shoot->iguide_floorplans ?? [];
+        $sameProperty = empty($shoot->iguide_property_id) || empty($iguideData['property_id'])
+            || (string) $shoot->iguide_property_id === (string) $iguideData['property_id'];
+        $existingIguideData = is_array($shoot->iguide_data) ? $shoot->iguide_data : [];
+        if ($sameProperty) {
+            foreach ($iguideData['_generated_tour_urls'] ?? [] as $key) {
+                $existingUrl = $key === 'tour_url' ? $shoot->iguide_tour_url : ($existingIguideData[$key] ?? null);
+                if (is_string($existingUrl) && $this->tourAlias($existingUrl) === ($iguideData['iguide_alias'] ?? null)) {
+                    $iguideData[$key] = $existingUrl;
+                }
+            }
+        }
+        $shoot->iguide_tour_url = $iguideData['tour_url'] ?? ($sameProperty ? $shoot->iguide_tour_url : null);
+        if (!empty($iguideData['floorplans']) && is_array($iguideData['floorplans'])) {
+            $shoot->iguide_floorplans = $iguideData['floorplans'];
+        } elseif (!$sameProperty) {
+            $shoot->iguide_floorplans = [];
+        }
         $shoot->iguide_property_id = $iguideData['property_id'] ?? $shoot->iguide_property_id;
 
         if (!empty($iguideData['work_order_id'])) {
             $shoot->iguide_work_order_id = (string) $iguideData['work_order_id'];
+        } elseif (!$sameProperty) {
+            $shoot->iguide_work_order_id = null;
         }
 
         // Persist a slimmed-down structured payload (no large blobs) for the UI.
         if (Schema::hasColumn('shoots', 'iguide_data')) {
-            $existingIguideData = is_array($shoot->iguide_data) ? $shoot->iguide_data : [];
-            $providerPayload = $this->buildIguideDataPayload($iguideData);
+            $providerPayload = array_replace(
+                $sameProperty ? $this->buildIguideDataPayload($existingIguideData) : [],
+                $this->buildIguideDataPayload($iguideData),
+            );
             // Provider sync/webhook data and a manually uploaded offline export
             // have independent lifecycles. A late provider event must never erase
             // the current private package pointer or its publication attestation.
@@ -502,15 +610,24 @@ class IguideService
 
     private function searchPortalByAddress(string $address): ?array
     {
-        $queries = [
-            ['search' => $address],
-            ['q' => $address],
-            ['address' => $address],
-            ['fullAddress' => $address],
-        ];
+        $components = $this->parseAddressComponents($address);
+        if ($components['house'] === '' || $components['street'] === '') {
+            return null;
+        }
 
-        foreach ($queries as $query) {
-            $response = $this->portalRequest('get', '/iguides', $query);
+        // The Portal ignores search/q/limit. Its documented query keys are
+        // dotted filters and page.limit/page.offset; default lists start oldest.
+        $query = ['filter.house' => $components['house'], 'page.limit' => 100, 'sort' => '-created_at'];
+        foreach (['zip' => 'code', 'state' => 'province'] as $component => $filter) {
+            if ($components[$component] !== '') {
+                $query['filter.' . $filter] = $components[$component];
+            }
+        }
+
+        // Street spelling and city capitalization vary; the provider's exact
+        // text filters would miss them. Check both locally, and bound requests.
+        for ($page = 0; $page < 5; $page++) {
+            $response = $this->portalRequest('get', '/iguides', $query + ['page.offset' => $page * 100]);
             if ($this->isSignedAppForbidden($response)) {
                 $this->lastFailureReason = self::FAILURE_WEBHOOK_ONLY;
                 return null;
@@ -519,15 +636,59 @@ class IguideService
             if ($match) {
                 return $match;
             }
+            if (!$response?->successful() || count($this->extractRecords($response->json())) < 100) {
+                break;
+            }
         }
 
-        $fallbackResponse = $this->portalRequest('get', '/iguides', ['limit' => 100]);
-        if ($this->isSignedAppForbidden($fallbackResponse)) {
+        return null;
+    }
+
+    /** Use a saved provider link as an explicit binding, without fuzzy addresses. */
+    private function searchPortalByAlias(string $alias): ?array
+    {
+        $response = $this->portalRequest('get', '/iguides', ['filter.alias' => $alias, 'page.limit' => 100]);
+        if ($this->isSignedAppForbidden($response)) {
             $this->lastFailureReason = self::FAILURE_WEBHOOK_ONLY;
             return null;
         }
+        if (!$response?->successful()) {
+            return null;
+        }
 
-        return $this->findAddressMatchInPayload($fallbackResponse, $address);
+        foreach ($this->extractRecords($response->json()) as $record) {
+            $id = $this->extractPropertyId($record);
+            if (($record['alias'] ?? null) === $alias && is_string($id) && preg_match('/^ig[A-Za-z0-9_-]+$/D', $id)) {
+                $property = $this->syncProperty($id);
+                if (($property['property_id'] ?? null) === $id) {
+                    return $property;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private function tourAlias(mixed $url): ?string
+    {
+        if (!is_string($url)) {
+            return null;
+        }
+        $parts = parse_url(trim($url));
+        $hosts = ['youriguide.com', 'unbranded.youriguide.com', 'iguidephotos.com',
+            'unbranded.iguidephotos.com', 'iguideradix.com', 'unbranded.iguideradix.com'];
+        if (!is_array($parts) || strtolower($parts['scheme'] ?? '') !== 'https'
+            || !in_array(strtolower($parts['host'] ?? ''), $hosts, true)
+            || isset($parts['user']) || isset($parts['pass'])
+            || (isset($parts['port']) && $parts['port'] !== 443)) {
+            return null;
+        }
+
+        $path = trim($parts['path'] ?? '', '/');
+        if (str_starts_with($path, 'embed/')) {
+            $path = substr($path, 6);
+        }
+        return preg_match('/^[A-Za-z0-9][A-Za-z0-9_-]{0,199}$/D', $path) ? $path : null;
     }
 
     private function findAddressMatchInPayload(?Response $response, string $targetAddress): ?array
@@ -546,7 +707,7 @@ class IguideService
         foreach ($this->extractRecords($response->json()) as $record) {
             foreach ($this->extractCandidateAddresses($record) as $candidate) {
                 if ($this->addressesMatch($candidate, $targetAddress)) {
-                    return $this->parsePropertyData($record);
+                    return $this->hydratePortalProperty($record);
                 }
             }
         }
@@ -771,9 +932,19 @@ class IguideService
             return null;
         }
 
+        $timeout = 20;
+        if ($this->portalReadDeadline !== null) {
+            $remaining = $this->portalReadDeadline - microtime(true);
+            if ($remaining < 1) {
+                $this->lastFailureReason ??= self::FAILURE_OTHER;
+                return null;
+            }
+            $timeout = min($timeout, $remaining);
+        }
+
         $client = Http::baseUrl($this->baseUrl)
             ->acceptJson()
-            ->timeout(20)
+            ->timeout($timeout)
             ->withHeaders([
                 'X-Plntr-App-Id' => $this->appId,
                 'X-Plntr-App-Token' => $this->appToken,
@@ -903,11 +1074,17 @@ class IguideService
             return [];
         }
 
-        $locale = $mediaUrls['en'] ?? null;
-        if (!is_array($locale)) {
-            // Fallback to first locale-shaped entry.
+        $mediaKeys = ['galleryFrontImage', 'pdfMetric', 'pdfImperial', 'galleryZip',
+            'galleryLowResZip', 'sphereZip', 'offlineZip', 'svgZip', 'dxfZip',
+            'embedImage', 'jpgMetric', 'jpgImperial'];
+        // A flat media object may contain array-valued JPG fields. Those arrays
+        // are files, not language objects; detect the object shape first.
+        $locale = array_intersect(array_keys($mediaUrls), $mediaKeys) !== []
+            ? $mediaUrls : ($mediaUrls['en'] ?? null);
+        if (!is_array($locale) || $locale === []) {
+            // Prefer English, then the first language that contains media.
             foreach ($mediaUrls as $key => $value) {
-                if (is_string($key) && is_array($value)) {
+                if (is_string($key) && is_array($value) && array_intersect(array_keys($value), $mediaKeys) !== []) {
                     $locale = $value;
                     break;
                 }
@@ -956,10 +1133,7 @@ class IguideService
     private function extractJpgFloors(array $data, string $units, ?string $authToken): array
     {
         $key = $units === 'metric' ? 'jpgMetric' : 'jpgImperial';
-        $items = Arr::get($data, "urls.mediaUrls.en.$key")
-            ?? Arr::get($data, "mediaUrls.en.$key")
-            ?? Arr::get($data, "urls.mediaUrls.$key")
-            ?? Arr::get($data, "mediaUrls.$key");
+        $items = $this->extractMediaUrls($data, $authToken)[$key] ?? null;
 
         if (!is_array($items)) {
             return [];
@@ -1238,8 +1412,25 @@ class IguideService
 
     private function buildFullAddress(Shoot $shoot): ?string
     {
+        $street = $shoot->address;
+        $city = $this->normalizeAddress($shoot->city);
+        if (is_string($street) && $city !== '') {
+            $normalizedStreet = $this->normalizeAddress($street);
+            $suffix = ' ' . $city;
+            if (str_ends_with($normalizedStreet, $suffix)) {
+                $candidate = trim(substr($normalizedStreet, 0, -strlen($suffix)));
+                $components = $this->parseAddressComponents($candidate);
+                $streetTokens = explode(' ', $components['street']);
+                $last = end($streetTokens);
+                // Strip an appended city only after an actual street type; never
+                // truncate a street merely because its name contains the city.
+                if ($components['house'] !== '' && isset(self::STREET_TYPES[$last])) {
+                    $street = $candidate;
+                }
+            }
+        }
         $parts = array_filter([
-            $shoot->address,
+            $street,
             $shoot->city,
             $shoot->state,
             $shoot->zip,
