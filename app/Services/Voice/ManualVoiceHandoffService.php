@@ -41,8 +41,15 @@ class ManualVoiceHandoffService
             }
             abort_unless($offer->status === 'waiting' && $offer->expires_at->isFuture(), 409, 'This call is no longer waiting.');
             $assistant = app(VoiceNumberSettingsResolver::class)->forCall($offer->voiceCall)['assistant_id'];
-            LockedWrite::run(function () use ($offer, $user, $key, $assistant): void {
-                $offer->update(['status' => 'robbie_pending', 'metadata' => array_merge($offer->metadata ?? [], ['robbie_actor_id' => $user->id, 'robbie_key' => $key, 'robbie_assistant_id' => $assistant])]);
+            $calls = app(\App\Services\TelnyxAi\TelnyxVoiceCallService::class);
+            $variables = $calls->buildDynamicVariables($offer->voiceCall, $calls->resolveCaller((string) $offer->voiceCall->from_phone));
+            if (app(VoiceLinePolicyService::class)->dashboardOnly($offer->voiceCall)) {
+                unset($variables['support_handoff_number']);
+            }
+            $variables = array_merge($variables, ['business_line' => $offer->voiceCall->to_phone, 'handoff_reason' => 'Staff explicitly sent this incoming call to Robbie.']);
+            $clientState = $offer->voiceCall->client_state ?: base64_encode(json_encode(['voice_call_id' => $offer->voice_call_id, 'source' => 'manual_robbie']));
+            LockedWrite::run(function () use ($offer, $user, $key, $assistant, $variables, $clientState): void {
+                $offer->update(['status' => 'robbie_pending', 'metadata' => array_merge($offer->metadata ?? [], ['robbie_actor_id' => $user->id, 'robbie_key' => $key, 'robbie_assistant_id' => $assistant, 'robbie_variables' => $variables, 'robbie_client_state' => $clientState])]);
                 $call = $offer->voiceCall;
                 $call->update(['metadata' => array_merge($call->metadata ?? [], ['manual_robbie_requested_by' => $user->id, 'manual_robbie_requested_at' => now()->toIso8601String()])]);
             });
@@ -62,11 +69,12 @@ class ManualVoiceHandoffService
             $gateway = app(VoiceBrowserGateway::class);
             $path = '/calls/'.rawurlencode($call->call_control_id).'/actions/';
             if (! $call->answered_at) {
-                $gateway->command('manual-robbie-answer:'.$offer->id, $path.'answer');
+                $gateway->command('manual-robbie-answer:'.$offer->id, $path.'answer', ['client_state' => $offer->metadata['robbie_client_state']]);
                 throw new RuntimeException('Waiting for the provider to confirm answer.');
             }
             $result = $gateway->command('manual-robbie-start:'.$offer->id, $path.'ai_assistant_start', [
-                'assistant' => ['id' => $offer->metadata['robbie_assistant_id'], 'dynamic_variables' => ['business_line' => $call->to_phone, 'handoff_reason' => 'Staff explicitly sent this incoming call to Robbie.']],
+                'assistant' => ['id' => $offer->metadata['robbie_assistant_id'], 'dynamic_variables' => $offer->metadata['robbie_variables']],
+                'client_state' => $offer->metadata['robbie_client_state'],
                 'send_message_history_updates' => true,
             ]);
             LockedWrite::run(function () use ($offer, $call, $result): void {

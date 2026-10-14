@@ -416,6 +416,11 @@ class VoiceIncomingOfferTest extends TestCase
         $offer->voiceCall->update(['answered_at' => now()]);
         $handoff->resume($offer);
         $handoff->resume($offer);
+        Http::assertSent(fn ($r) => str_ends_with($r->url(), '/ai_assistant_start')
+            && $r['assistant']['dynamic_variables']['voice_call_id'] === $offer->voice_call_id
+            && $r['assistant']['dynamic_variables']['recording_consent_given'] === false
+            && ! isset($r['assistant']['dynamic_variables']['support_handoff_number'])
+            && isset($r['client_state']));
         $this->assertSame('robbie', $offer->fresh()->status);
         $this->assertSame('ai', $offer->voiceCall->fresh()->handled_by);
         $this->assertTrue(app(VoiceNumberSettingsResolver::class)->aiEnabledForCall($offer->voiceCall->fresh()));
