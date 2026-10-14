@@ -99,6 +99,7 @@ class ShootMediaReadService
         $userRole = $user ? $user->role : 'guest';
         $customerCuration = $this->authorizationSupport->canManageCustomerMediaCuration($shoot, $user);
         $customerCurationRead = $customerCuration && $type !== 'raw';
+        $assignedRepExtraRead = $customerCurationRead && ! $this->authorizationSupport->isClientUser($user);
         $includeHidden = $request->boolean('include_hidden') && $customerCuration;
         $filesUpdatedAt = (string) $shoot->files()->max('updated_at');
         $serviceItemsUpdatedAt = (string) $shoot->serviceItems()->max('updated_at');
@@ -164,6 +165,7 @@ class ShootMediaReadService
         }
         $files = $files->filter(fn (ShootFile $file) => $customerCurationRead
             ? (((! $file->is_hidden || $includeHidden) && $this->authorizationSupport->isCustomerCuratableFile($file))
+                || ($assignedRepExtraRead && $this->isSafeVisibleExtraFile($file))
                 || ($this->authorizationSupport->hasRole($user, ['photographer', 'editor']) && $this->authorizationSupport->canInteractWithShootMediaFile($shoot, $file, $user)))
             : $this->authorizationSupport->canInteractWithShootMediaFile($shoot, $file, $user))->values();
         if ($type === 'edited') {
@@ -197,6 +199,15 @@ class ShootMediaReadService
             'count' => count($formattedFiles),
             'media_revision' => $mediaRevision,
         ];
+    }
+
+    /** Extras enter TODO, but assigned reps retain their existing safe, visible read access. */
+    private function isSafeVisibleExtraFile(ShootFile $file): bool
+    {
+        return ! $file->is_hidden && $file->isExtra()
+            && strtolower((string) $file->media_type) !== 'raw'
+            && ! $this->authorizationSupport->isRawCameraFile($file)
+            && ! $file->isBlockedFromDelivery() && ! $file->isIguideOfflinePackage();
     }
 
     public function listMediaPayload(Shoot $shoot, string $type, ?User $user = null): array

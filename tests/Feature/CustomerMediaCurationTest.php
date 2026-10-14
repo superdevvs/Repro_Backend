@@ -87,6 +87,43 @@ class CustomerMediaCurationTest extends TestCase
         return ['photographer' => ['photographer'], 'editor' => ['editor']];
     }
 
+    #[DataProvider('extraReaderRoles')]
+    public function test_assigned_rep_can_read_clean_visible_extra_intake_without_gaining_curation_rights(string $role): void
+    {
+        $actor = $this->actor($role);
+        $extra = app(\App\Services\ShootMediaStorageService::class)->uploadToExtra(
+            $this->shoot, \Illuminate\Http\UploadedFile::fake()->image('extra.jpg'), $this->client->id
+        );
+        $extra->forceFill(['scan_status' => ShootFile::SCAN_STATUS_CLEAN])->save();
+        $this->assertSame(ShootFile::STAGE_TODO, $extra->workflow_stage);
+        $this->assertSame('extra', $extra->media_type);
+        foreach ([['is_hidden' => true], ['scan_status' => 'quarantined'], ['scan_status' => 'infected'],
+            ['media_type' => 'raw', 'is_extra' => true], ['filename' => 'capture.CR3']] as $attributes) {
+            $this->file(array_merge(['media_type' => 'extra', 'workflow_stage' => 'todo'], $attributes));
+        }
+        $this->file(['media_type' => 'edited', 'workflow_stage' => 'todo']);
+        $endpoint = '/api/shoots/'.$this->shoot->id;
+        Sanctum::actingAs($actor);
+        foreach (['', 'type=extra&'] as $query) {
+            $response = $this->getJson($endpoint.'/files?'.$query.'include_hidden=1')->assertOk();
+            $response->assertJsonCount(1, 'data')->assertJsonPath('data.0.id', $extra->id)
+                ->assertJsonPath('data.0.can_manage_visibility', false)->assertJsonPath('data.0.can_set_hero', false)
+                ->assertJsonPath('data.0.media_curation_scope', null);
+        }
+        $this->getJson($endpoint.'/files?type=edited&include_hidden=1')->assertOk()->assertJsonCount(0, 'data');
+        $this->patchJson($endpoint.'/files/toggle-hidden', ['file_ids' => [$extra->id], 'hidden' => true])->assertUnprocessable();
+        $this->postJson($endpoint.'/media/'.$extra->id.'/cover')->assertUnprocessable();
+        $this->assertFalse($extra->fresh()->is_hidden);
+        Sanctum::actingAs($this->client);
+        $this->getJson($endpoint.'/files?type=extra&include_hidden=1')->assertOk()->assertJsonCount(0, 'data');
+    }
+
+    public static function extraReaderRoles(): array
+    {
+        return ['assigned salesRep' => ['salesRep'], 'secondary photographer' => ['secondary_photographer'],
+            'secondary editor' => ['secondary_editor']];
+    }
+
     #[DataProvider('contractorScopes')]
     public function test_secondary_rep_preserves_only_actual_contractor_files_even_with_another_rep(string $role, bool $isShootRep): void
     {
