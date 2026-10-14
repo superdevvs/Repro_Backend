@@ -3,11 +3,14 @@
 namespace Tests\Feature;
 
 use App\Models\Message;
+use App\Models\Category;
+use App\Models\MessageTemplate;
 use App\Models\Service;
 use App\Models\Shoot;
 use App\Models\User;
 use App\Services\MailService;
 use App\Services\Messaging\MessagingService;
+use App\Services\Messaging\ManualNotificationService;
 use App\Services\Messaging\TemplateVariableResolver;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Mockery;
@@ -64,7 +67,7 @@ class ShootEmailImageRequirementsTest extends TestCase
             $this->assertStringContainsString('35 final photos · 105 raw images required', $body);
             $this->assertStringContainsString('10 final photos · 10 raw images required', $body);
         }
-        foreach (['admin', 'editing_manager', 'rep', 'photographer', 'client'] as $role) {
+        foreach (['admin', 'editing_manager', 'rep', 'photographer', 'previous_photographer', 'new_photographer', 'client'] as $role) {
             $vars = app(TemplateVariableResolver::class)->resolve(['shoot' => $shoot->fresh(), 'recipient_type' => $role, 'channel' => 'email']);
             foreach (['services_provided', 'services_provided_html'] as $key) {
                 $body = $this->visible($vars[$key]);
@@ -87,6 +90,79 @@ class ShootEmailImageRequirementsTest extends TestCase
         $body = $this->visible($deliveries->first()['body_text']);
         $this->assertStringContainsString('Final photo count not set', $body);
         $this->assertStringNotContainsString('7 final photos', $body);
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('photographerRecipientTypes')]
+    public function test_actual_photographer_id_scopes_email_tokens_and_keeps_sms_names_unchanged(string $role): void
+    {
+        [$shoot, , $first, $second] = $this->fixture();
+        foreach ([[$first, '105 raw images required', 'Aerial Photos'], [$second, '10 raw images required', 'HDR Photos']] as [$recipient, $expected, $other]) {
+            $vars = app(TemplateVariableResolver::class)->resolve(['shoot' => $shoot->fresh(), 'recipient' => $recipient,
+                'recipient_type' => $role, 'channel' => 'email']);
+            foreach (['services_provided', 'services_provided_html', 'shoot_packages'] as $key) {
+                $body = $this->visible($vars[$key]);
+                $this->assertStringContainsString($expected, $body);
+                $this->assertStringNotContainsString($other, $body);
+            }
+        }
+        $sms = app(TemplateVariableResolver::class)->resolve(['shoot' => $shoot->fresh(), 'recipient' => $first,
+            'recipient_type' => $role, 'channel' => 'sms']);
+        $this->assertStringContainsString('Aerial Photos', $sms['services_provided']);
+        $this->assertStringNotContainsString('raw images required', $sms['services_provided']);
+    }
+
+    public static function photographerRecipientTypes(): array
+    {
+        return [['photographer'], ['previous_photographer'], ['new_photographer']];
+    }
+
+    public function test_manual_preview_and_protected_override_keep_each_photographers_requirement_scope(): void
+    {
+        [$shoot, , $first, $second] = $this->fixture();
+        MessageTemplate::updateOrCreate(['slug' => 'shoot-reminder', 'channel' => 'EMAIL'], [
+            'name' => 'Scoped reminder', 'scope' => 'SYSTEM', 'is_system' => true, 'is_active' => true,
+            'email_type' => 'SHOOT_REMINDER', 'override_enabled' => true, 'subject' => 'Scoped reminder',
+            'body_html' => '<p>Scoped token {{services_provided_html}} {{shoot_packages}}</p>{{system_body_html}}',
+            'body_text' => "Scoped token {{services_provided}} {{shoot_packages}}\n{{system_body_text}}",
+        ]);
+        $deliveries = $this->captureEmails();
+        foreach ([[$first, '105 raw images required', 'Aerial Photos'], [$second, '10 raw images required', 'HDR Photos']] as [$recipient, $expected, $other]) {
+            $preview = app(ManualNotificationService::class)->preview($shoot->fresh(), 'shoot_reminder', 'photographer', 'email', $recipient->id);
+            $this->assertStringContainsString($expected, $this->visible($preview['body_html']));
+            $this->assertStringNotContainsString($other, $this->visible($preview['body_html']));
+            $this->assertTrue(app(MailService::class)->sendShootReminderEmail($recipient, $shoot->fresh(), shouldNotifyPhotographer: false));
+            $body = $this->visible($deliveries->last()['body_html']);
+            $this->assertStringContainsString('Scoped token', $body);
+            $this->assertStringContainsString($expected, $body);
+            $this->assertStringNotContainsString($other, $body);
+        }
+    }
+
+    public function test_digital_editor_services_never_inherit_a_photographer_in_emails_and_travel_recipient_remains(): void
+    {
+        [$shoot, $client, $first] = $this->fixture();
+        $editor = User::factory()->create(['role' => 'editor']);
+        $category = Category::factory()->create(['name' => 'Digital Enhancements']);
+        foreach (['Green Grass Enhancement', 'Virtual Staging'] as $name) {
+            $digital = Service::factory()->noIntake()->create(['name' => $name, 'category_id' => $category->id, 'requires_editing' => true]);
+            $shoot->services()->attach($digital->id, ['editor_id' => $editor->id, 'photographer_id' => null, 'quantity' => 1, 'price' => 25]);
+        }
+        $travel = Service::factory()->noIntake()->create(['name' => 'Travel Fee', 'photographer_required' => false]);
+        $shoot->services()->attach($travel->id, ['photographer_id' => $first->id, 'photographer_pay' => 27.5, 'quantity' => 1, 'price' => 30]);
+        $deliveries = $this->captureEmails();
+        $this->assertTrue(app(MailService::class)->sendShootScheduledEmail($client, $shoot->fresh(), '', shouldNotifyPhotographer: true));
+        $body = $this->visible($deliveries->firstWhere('to', $first->email)['body_html']);
+        $this->assertStringContainsString('HDR Photos', $body);
+        $this->assertStringContainsString('Travel Fee', $body);
+        $this->assertStringNotContainsString('Green Grass Enhancement', $body);
+        $this->assertStringNotContainsString('Virtual Staging', $body);
+        $vars = app(TemplateVariableResolver::class)->resolve(['shoot' => $shoot->fresh(), 'recipient' => $first, 'recipient_type' => 'photographer', 'channel' => 'email']);
+        $this->assertStringContainsString('Travel Fee', $vars['services_provided']);
+        $this->assertStringNotContainsString('Green Grass Enhancement', $vars['services_provided']);
+        $this->assertStringNotContainsString('Virtual Staging', $vars['services_provided']);
+        $clientVars = app(TemplateVariableResolver::class)->resolve(['shoot' => $shoot->fresh(), 'recipient' => $client, 'recipient_type' => 'client', 'channel' => 'email']);
+        $this->assertStringContainsString('Green Grass Enhancement', $clientVars['services_provided']);
+        $this->assertSame(27.5, (float) $shoot->serviceItems()->where('service_id', $travel->id)->firstOrFail()->photographer_pay);
     }
 
     private function fixture(): array

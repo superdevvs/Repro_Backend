@@ -14,6 +14,7 @@ use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Facades\URL;
 use Illuminate\Support\Str;
 
 class ShootMediaReadService
@@ -88,7 +89,7 @@ class ShootMediaReadService
         $this->authorizationSupport->ensureShootAccess($shoot, $request->user());
         $type = strtolower((string) $request->query('type', ''));
         $user = $request->user();
-        if ($user?->role === 'editor') {
+        if ($user && $this->authorizationSupport->hasRole($user, ['photographer', 'editor'])) {
             $shoot->loadMissing(['services.category', 'serviceItems.service']);
         }
         if ($type === 'raw' && $this->authorizationSupport->isClientUser($user)) {
@@ -96,6 +97,9 @@ class ShootMediaReadService
         }
         $userId = $user ? $user->id : 'guest';
         $userRole = $user ? $user->role : 'guest';
+        $customerCuration = $this->authorizationSupport->canManageCustomerMediaCuration($shoot, $user);
+        $customerCurationRead = $customerCuration && $type !== 'raw';
+        $includeHidden = $request->boolean('include_hidden') && $customerCuration;
         $filesUpdatedAt = (string) $shoot->files()->max('updated_at');
         $serviceItemsUpdatedAt = (string) $shoot->serviceItems()->max('updated_at');
         // Shared per-shoot revision (bumped by mutations including rename /
@@ -111,6 +115,7 @@ class ShootMediaReadService
                 (string) $shoot->payment_status,
                 (string) $shoot->delivery_status,
                 (string) $mediaRevision,
+                $includeHidden ? 'curation_hidden' : 'visible_only',
                 md5((string) $shoot->admin_issue_notes),
             ])
         );
@@ -134,7 +139,7 @@ class ShootMediaReadService
 
         $filesQuery = $shoot->files()->orderBy('sort_order', 'asc')->orderBy('created_at', 'desc');
         $isClientUser = $this->authorizationSupport->isClientUser($user);
-        if ($isClientUser) {
+        if ($isClientUser && ! $includeHidden) {
             $filesQuery->where(function ($query) {
                 $query->where('is_hidden', false)->orWhereNull('is_hidden');
             });
@@ -154,11 +159,13 @@ class ShootMediaReadService
         if ($type === 'raw') {
             $files = $files->filter(fn (ShootFile $file) => $file->isRequiredForEditing())->values();
         }
-        if ($user && $user->role === 'photographer') {
+        if ($user && $user->role === 'photographer' && ! $customerCurationRead) {
             $files = $this->filterFilesForPhotographer($files, $shoot, $user);
         }
-        $files = $files->filter(fn (ShootFile $file) => $this->authorizationSupport
-            ->canInteractWithShootMediaFile($shoot, $file, $user))->values();
+        $files = $files->filter(fn (ShootFile $file) => $customerCurationRead
+            ? (((! $file->is_hidden || $includeHidden) && $this->authorizationSupport->isCustomerCuratableFile($file))
+                || ($this->authorizationSupport->hasRole($user, ['photographer', 'editor']) && $this->authorizationSupport->canInteractWithShootMediaFile($shoot, $file, $user)))
+            : $this->authorizationSupport->canInteractWithShootMediaFile($shoot, $file, $user))->values();
         if ($type === 'edited') {
             $files = $files
                 ->reject(fn (ShootFile $file) => $this->authorizationSupport->isRawCameraFile($file))
@@ -173,12 +180,12 @@ class ShootMediaReadService
         // Queue missing work and serve whatever paths already exist.
         $allowSyncPreviewGeneration = false;
 
-        $formattedFiles = $files->map(function (ShootFile $file) use ($shoot, $user, $mediaUrls, $needsWatermark, $allowSyncPreviewGeneration) {
+        $formattedFiles = $files->map(function (ShootFile $file) use ($shoot, $user, $mediaUrls, $needsWatermark, $allowSyncPreviewGeneration, $customerCuration) {
             $file->setRelation('shoot', $shoot);
             $fileNeedsWatermark = $needsWatermark
                 && $this->shootClientReleaseAccessService->isFileReleaseLocked($shoot, $file, $user);
 
-            return $this->formatFileSafely($file, $mediaUrls, $fileNeedsWatermark, $allowSyncPreviewGeneration);
+            return $this->formatFileSafely($file, $mediaUrls, $fileNeedsWatermark, $allowSyncPreviewGeneration, $customerCuration);
         })->values()->all();
 
         if ($canCache) {
@@ -373,7 +380,7 @@ class ShootMediaReadService
         })->values()->all();
     }
 
-    protected function formatFileSafely(ShootFile $file, array $mediaUrls, bool $needsWatermark, bool $allowSyncPreviewGeneration = true): array
+    protected function formatFileSafely(ShootFile $file, array $mediaUrls, bool $needsWatermark, bool $allowSyncPreviewGeneration = true, ?bool $customerCuration = null): array
     {
         try {
             $data = $this->formatFile($file, $mediaUrls, $needsWatermark, $allowSyncPreviewGeneration);
@@ -410,6 +417,30 @@ class ShootMediaReadService
             $data['has_open_request'] = app(ShootEditorRequestAccess::class)->hasOpenRequest($file->shoot, $file);
         }
         if ($actor && $file->shoot) {
+            // These rows have already passed their existing actor/file read
+            // policy. Customer curation adds only pure scope/safety checks;
+            // avoid re-querying staff editing assignments for every flag.
+            $customerActor = $this->authorizationSupport->isCustomerMediaCurator($actor);
+            $contractorAccess = $this->authorizationSupport->hasRole($actor, ['photographer', 'editor'])
+                && $this->authorizationSupport->canInteractWithShootMediaFile($file->shoot, $file, $actor);
+            $curation = $customerCuration ?? $this->authorizationSupport->canManageCustomerMediaCuration($file->shoot, $actor);
+            $data['can_manage_visibility'] = $customerActor
+                ? ($contractorAccess || ($curation && $this->authorizationSupport->isCustomerCuratableFile($file)))
+                : true;
+            $data['can_set_hero'] = $customerActor
+                ? ($contractorAccess || ($curation && $this->authorizationSupport->isClientHeroEligibleFile($file)))
+                : $this->authorizationSupport->hasRole($actor, ['admin', 'superadmin', 'editing_manager', 'photographer', 'editor']);
+            $data['media_curation_scope'] = $contractorAccess ? 'contractor' : ($customerActor ? ($data['can_manage_visibility'] ? 'customer' : null) : 'staff');
+            if ($customerActor) $data['can_download'] = $this->authorizationSupport->canDownloadShootMediaFile($file->shoot, $file, $actor)
+                && ! $file->isBlockedFromDelivery() && ! $this->shootClientReleaseAccessService->isFileReleaseLocked($file->shoot, $file, $actor);
+            if ($file->is_hidden && $data['media_curation_scope'] === 'customer') {
+                $preview = URL::temporarySignedRoute('api.public.shoot-media.curation-preview', now()->addMinutes(15),
+                    ['shoot' => $file->shoot_id, 'file' => $file->id, 'viewer' => $actor->id]);
+                foreach (['url', 'thumbnail_url', 'thumb_url', 'thumb', 'grid_url', 'web_url', 'medium_url', 'medium', 'large_url', 'large', 'placeholder_url', 'watermarked_thumbnail_path', 'watermarked_web_path', 'watermarked_placeholder_path'] as $key) $data[$key] = $preview;
+                foreach (['original_url', 'original', 'path', 'provider_source_url', 'providerSourceUrl', 'thumbnail_path', 'web_path', 'placeholder_path', 'watermarked_storage_path'] as $key) $data[$key] = null;
+                unset($data['preview_images'], $data['previewImages']);
+                $data['can_download'] = false;
+            }
             // Desktop + mobile viewer/lightbox trust this server flag. Editing
             // managers may delete before and after delivery; editors stay gated
             // by ShootMediaDeletionPolicy (own video lane / review boundary).
@@ -417,6 +448,36 @@ class ShootMediaReadService
         }
 
         return $data;
+    }
+
+    /** A hidden curation card may show derived previews, never its original. */
+    public function curationPreviewFileResponse(ShootFile $file, bool $needsWatermark): \Symfony\Component\HttpFoundation\Response
+    {
+        $paths = $needsWatermark
+            ? [$file->watermarked_web_path, $file->watermarked_thumbnail_path, $file->watermarked_placeholder_path]
+            : [$file->web_path, $file->thumbnail_path, data_get($file->metadata, 'preview_images.0')];
+        $sourceKeys = array_filter(array_map(fn ($path) => $this->previewPathKey($path),
+            [$file->path, $file->storage_path, $file->url, data_get($file->metadata, 'original_url')]));
+        foreach ($paths as $path) {
+            // A video/PDF web path or a legacy original reused as its thumbnail
+            // must not turn the curation preview into an original download.
+            $key = $this->previewPathKey($path);
+            if (! $key || ! preg_match('/\.(?:jpe?g|png|webp|gif)$/i', $key) || in_array($key, $sourceKeys, true)) continue;
+            if ($response = $this->buildPreviewResponseFromPath($path)) {
+                $response->headers->set('Cache-Control', 'private, no-store');
+                return $response;
+            }
+        }
+
+        return response()->json(['message' => 'A safe preview is not available yet.'], 409);
+    }
+
+    private function previewPathKey(?string $path): ?string
+    {
+        if (! $path) return null;
+        $key = ltrim(parse_url($path, PHP_URL_PATH) ?: $path, '/');
+        $key = preg_replace('#^api/public/shoot-media/file/#', '', $key);
+        return $this->mediaStorage->normalizeKey($key);
     }
 
     protected function filterFilesForPhotographer(Collection $files, Shoot $shoot, User $user): Collection

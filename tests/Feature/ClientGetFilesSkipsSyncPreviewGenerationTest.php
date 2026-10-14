@@ -9,6 +9,7 @@ use App\Services\Shoots\ShootFileAccessService;
 use App\Services\Shoots\ShootMediaReadService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Queue;
 use Mockery;
 use Tests\TestCase;
 
@@ -18,6 +19,8 @@ class ClientGetFilesSkipsSyncPreviewGenerationTest extends TestCase
 
     public function test_client_get_files_payload_does_not_sync_generate_optimized_versions(): void
     {
+        // Async archive/preview workers are outside this request-path test.
+        Queue::fake();
         $client = User::factory()->create(['role' => 'client']);
         $shoot = Shoot::factory()->create([
             'client_id' => $client->id,
@@ -30,6 +33,7 @@ class ClientGetFilesSkipsSyncPreviewGenerationTest extends TestCase
             'shoot_id' => $shoot->id,
             'workflow_stage' => ShootFile::STAGE_COMPLETED,
             'media_type' => 'edited',
+            'scan_status' => ShootFile::SCAN_STATUS_CLEAN,
             'filename' => 'room-01.jpg',
             'stored_filename' => 'room-01.jpg',
             'path' => 'shoots/'.$shoot->id.'/edited/room-01.jpg',

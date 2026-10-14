@@ -69,7 +69,11 @@ class BrightMlsService
         $this->apiUser = $settings['apiUser'] ?? config('services.bright_mls.api_user');
         $this->apiKey = $settings['apiKey'] ?? config('services.bright_mls.api_key');
         $this->vendorId = $settings['vendorId'] ?? config('services.bright_mls.vendor_id');
-        $this->vendorName = $settings['vendorName'] ?? config('services.bright_mls.vendor_name', 'Repro Photos');
+        $vendorName = trim((string) ($settings['vendorName'] ?? config('services.bright_mls.vendor_name', 'R/E Pro Photos')));
+        // Upgrade the previous default even when it is saved in integration settings.
+        $this->vendorName = $vendorName === '' || strcasecmp($vendorName, 'Repro Photos') === 0
+            ? 'R/E Pro Photos'
+            : $vendorName;
         $this->defaultDocVisibility = $settings['defaultDocVisibility'] ?? config('services.bright_mls.default_doc_visibility', 'private');
         $this->importUrlBase = $this->normalizeConfiguredUrl(
             $settings['importUrlBase'] ?? config('services.bright_mls.import_url_base', $defaults['import_url_base']),
@@ -347,7 +351,7 @@ class BrightMlsService
 
             $manifestPayloadData = [
                 'vendorId' => $effectiveVendorId,
-                'vendorName' => $this->vendorName ?? ($manifestData['vendorName'] ?? 'Repro Photos'),
+                'vendorName' => $this->vendorName ?? ($manifestData['vendorName'] ?? 'R/E Pro Photos'),
                 'dateFileCreated' => $manifestData['dateFileCreated'] ?? now()->toIso8601String(),
                 'listItems' => $normalizedItems,
             ];

@@ -169,11 +169,15 @@ class ShootAuthorizationSupport
             return $query;
         }
         if ($this->hasRole($user, ['editor'])) {
-            return app(ShootEditingAssignmentService::class)->scopeAssignedToEditor($query, $user->id);
+            return $query->where(function (Builder $scope) use ($user) {
+                app(ShootEditingAssignmentService::class)->scopeAssignedToEditor($scope, $user->id);
+                if (app(ShootManagementAccess::class)->isRestrictedSalesRep($user)) $scope->orWhere('rep_id', $user->id);
+            });
         }
         if ($this->hasRole($user, ['photographer'])) {
             return $query->where(fn (Builder $scope) => $scope->where('photographer_id', $user->id)
-                ->orWhereHas('services', fn (Builder $service) => $service->where('shoot_service.photographer_id', $user->id)));
+                ->orWhereHas('services', fn (Builder $service) => $service->where('shoot_service.photographer_id', $user->id))
+                ->when(app(ShootManagementAccess::class)->isRestrictedSalesRep($user), fn (Builder $rep) => $rep->orWhere('rep_id', $user->id)));
         }
         if ($this->isClientUser($user)) {
             $clientIds = [$user->id, ...AccountLink::getLinkedClientIdsForOwner((int) $user->id, 'shoots')];
@@ -199,6 +203,9 @@ class ShootAuthorizationSupport
         }
 
         if ($this->hasRole($user, ['admin', 'superadmin', 'editing_manager', 'salesRep', 'rep', 'representative'])) {
+            return true;
+        }
+        if ($this->canManageCustomerMediaCuration($shoot, $user)) {
             return true;
         }
 
@@ -541,7 +548,8 @@ class ShootAuthorizationSupport
 
     public function isClientHeroEligibleFile(ShootFile $file): bool
     {
-        if (! $this->isClientManageableEditedFile($file)) {
+        if (! $this->isClientManageableEditedFile($file) || $file->isBlockedFromDelivery()
+            || $file->isIguideOfflinePackage() || strtolower((string) $file->media_type) === 'raw') {
             return false;
         }
 
@@ -555,6 +563,51 @@ class ShootAuthorizationSupport
         }
 
         return $this->isImageMediaFile($file);
+    }
+
+    /** Viewing linked/ghost or globally visible sales shoots is not a curation grant. */
+    public function canManageCustomerMediaCuration(Shoot $shoot, ?User $user): bool
+    {
+        if (! $user || $shoot->isImportDraft()) return false;
+        if ($this->isClientUser($user) && (string) $shoot->client_id === (string) $user->id) return true;
+
+        return app(ShootManagementAccess::class)->isRestrictedSalesRep($user) && $shoot->rep_id !== null
+            && (string) $shoot->rep_id === (string) $user->id;
+    }
+
+    public function isCustomerMediaCurator(?User $user): bool
+    {
+        return $this->isClientUser($user) || app(ShootManagementAccess::class)->isRestrictedSalesRep($user);
+    }
+
+    public function isCustomerCuratableFile(ShootFile $file): bool
+    {
+        return $this->isClientInteractableEditedFile($file)
+            && strtolower((string) $file->media_type) !== 'raw'
+            && ! $file->isBlockedFromDelivery() && ! $file->isIguideOfflinePackage();
+    }
+
+    public function canManageFileVisibility(Shoot $shoot, ShootFile $file, ?User $user, ?bool $customerCuration = null): bool
+    {
+        if ((int) $file->shoot_id !== (int) $shoot->id) return false;
+        if ($this->hasRole($user, ['photographer', 'editor']) && $this->canInteractWithShootMediaFile($shoot, $file, $user)) return true;
+        if ($this->isCustomerMediaCurator($user)) {
+            return ($customerCuration ?? $this->canManageCustomerMediaCuration($shoot, $user)) && $this->isCustomerCuratableFile($file);
+        }
+
+        return $this->canInteractWithShootMediaFile($shoot, $file, $user);
+    }
+
+    public function canSetFileHero(Shoot $shoot, ShootFile $file, ?User $user, ?bool $customerCuration = null): bool
+    {
+        if ((int) $file->shoot_id !== (int) $shoot->id) return false;
+        if ($this->hasRole($user, ['photographer', 'editor']) && $this->canInteractWithShootMediaFile($shoot, $file, $user)) return true;
+        if ($this->isCustomerMediaCurator($user)) {
+            return ($customerCuration ?? $this->canManageCustomerMediaCuration($shoot, $user)) && $this->isClientHeroEligibleFile($file);
+        }
+
+        return $this->hasRole($user, ['admin', 'superadmin', 'editing_manager', 'photographer', 'editor'])
+            && $this->canInteractWithShootMediaFile($shoot, $file, $user);
     }
 
     public function canInteractWithShootMediaFile(Shoot $shoot, ShootFile $file, ?User $user = null): bool
@@ -591,6 +644,15 @@ class ShootAuthorizationSupport
         $user = $user ?? auth()->user();
         if (! $this->canDownloadShootMedia($shoot, $user)) {
             return false;
+        }
+        $contractorDownload = $this->hasRole($user, ['photographer']) ? $this->canPhotographerAccessFile($shoot, $file, $user)
+            : ($this->hasRole($user, ['editor']) && ($this->canEditorDownloadRawFile($shoot, $file, $user)
+                || app(ShootEditorRequestAccess::class)->allowsFile($shoot, $file, $user)));
+        if ($file->is_hidden && $this->isCustomerMediaCurator($user) && ! $contractorDownload) {
+            return false;
+        }
+        if (! $file->is_hidden && $this->canManageCustomerMediaCuration($shoot, $user) && $this->isCustomerCuratableFile($file)) {
+            return true;
         }
 
         // The offline iGUIDE ZIP is an implementation package, not client
@@ -662,7 +724,7 @@ class ShootAuthorizationSupport
             return $this->isPhotographerAssignedToShoot($shoot, $photographer);
         }
 
-        $serviceItem = $shoot->serviceItems()
+        $serviceItem = $shoot->relationLoaded('serviceItems') ? $shoot->serviceItems->find($shootServiceId) : $shoot->serviceItems()
             ->whereKey($shootServiceId)
             ->first();
 

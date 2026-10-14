@@ -229,7 +229,7 @@ return [
         'api_user' => env('BRIGHT_MLS_API_USER'),
         'api_key' => env('BRIGHT_MLS_API_KEY'),
         'vendor_id' => env('BRIGHT_MLS_VENDOR_ID'),
-        'vendor_name' => env('BRIGHT_MLS_VENDOR_NAME', 'Repro Photos'),
+        'vendor_name' => env('BRIGHT_MLS_VENDOR_NAME', 'R/E Pro Photos'),
         'default_doc_visibility' => env('BRIGHT_MLS_DEFAULT_DOC_VISIBILITY', 'private'),
         'enabled' => env('BRIGHT_MLS_ENABLED', true),
     ],

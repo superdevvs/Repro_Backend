@@ -452,10 +452,19 @@ class ShootPublicAssetsService
 
         $shootItems = $shoots->map(function (Shoot $shoot) use ($shoots) {
             $files = $shoot->files ?: collect();
-            $preview = $shoot->hero_image ? $this->resolveLocalPublicUrl($shoot->hero_image) : null;
+            $previewCandidates = $files->filter(fn (ShootFile $file) => app(ShootAuthorizationSupport::class)->isClientHeroEligibleFile($file));
+            $heroKey = $this->normalizedProfileMediaKey($shoot->hero_image);
+            $heroBlocked = $heroKey && $files->contains(fn (ShootFile $file) => ! $previewCandidates->contains('id', $file->id)
+                && collect([$file->path, $file->storage_path, $file->url, data_get($file->metadata, 'original_url'), $file->web_path, $file->thumbnail_path, $file->placeholder_path,
+                    $file->watermarked_storage_path, $file->watermarked_web_path, $file->watermarked_thumbnail_path, $file->watermarked_placeholder_path,
+                    ...((array) data_get($file->metadata, 'preview_images', []))])
+                    ->contains(fn ($path) => is_string($path) && $this->normalizedProfileMediaKey($path) === $heroKey));
+            // Existing manual URLs remain valid. A known hidden/raw/unsafe
+            // file must not bypass the visible candidates through a stale hero.
+            $preview = $shoot->hero_image && ! $heroBlocked ? $this->resolveLocalPublicUrl($shoot->hero_image) : null;
 
             if (!$preview) {
-                $verifiedImage = $files->where('workflow_stage', ShootFile::STAGE_VERIFIED)
+                $verifiedImage = $previewCandidates->where('workflow_stage', ShootFile::STAGE_VERIFIED)
                     ->first(fn (ShootFile $file) => str_starts_with(strtolower((string) $file->file_type), 'image/'));
                 if ($verifiedImage) {
                     $preview = $this->resolveClientProfileFileUrl($verifiedImage, $shoots, 'thumbnail');
@@ -463,7 +472,7 @@ class ShootPublicAssetsService
             }
 
             if (!$preview) {
-                $imageFile = $files->first(fn (ShootFile $file) => str_starts_with(strtolower((string) $file->file_type), 'image/'));
+                $imageFile = $previewCandidates->first(fn (ShootFile $file) => str_starts_with(strtolower((string) $file->file_type), 'image/'));
                 if ($imageFile) {
                     $preview = $this->resolveClientProfileFileUrl($imageFile, $shoots, 'thumbnail');
                 }
@@ -1171,6 +1180,15 @@ class ShootPublicAssetsService
 
 
         return null;
+    }
+
+    private function normalizedProfileMediaKey(?string $path): ?string
+    {
+        if (! $path) return null;
+        $key = rawurldecode(ltrim(parse_url($path, PHP_URL_PATH) ?: $path, '/'));
+        $key = preg_replace('#^(?:storage/|api/public/shoot-media/file/)#', '', $key);
+
+        return $key ?: null;
     }
 
     protected function resolveLocalPublicUrl(?string $path): ?string

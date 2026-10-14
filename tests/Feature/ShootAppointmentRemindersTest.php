@@ -76,6 +76,39 @@ class ShootAppointmentRemindersTest extends TestCase
         $this->assertStringContainsString('70 final photos · 210 raw images required', $photographerBody);
     }
 
+    #[DataProvider('emailReminderTriggers')]
+    public function test_same_appointment_photographers_receive_only_their_assigned_image_requirements(string $trigger): void
+    {
+        [$shoot, , $first] = $this->appointment('2026-10-03 10:00');
+        $second = User::factory()->photographer()->create();
+        $rule = AutomationRule::active()->where('trigger_type', 'SHOOT_REMINDER')->firstOrFail();
+        $workflow = $rule->workflow_definition_json;
+        $workflow['nodes'][0]['config']['triggerType'] = $trigger;
+        $workflow['nodes'][1]['config']['bodyText'] = '{{shoot_services}} {{services_provided}} {{services_provided_html}}';
+        $rule->update(['trigger_type' => $trigger, 'recipients_json' => ['photographer'], 'schedule_json' => ['offset' => '-24h'], 'workflow_definition_json' => $workflow]);
+        foreach ([['HDR Photos', $first, 35, true], ['Aerial Photos', $second, 10, false]] as [$name, $photographer, $count, $hdr]) {
+            $service = \App\Models\Service::factory()->create(['name' => $name, 'photo_count' => 99, 'upload_intake_type' => 'photo', 'uses_hdr_brackets' => $hdr]);
+            $shoot->serviceItems()->create(['service_id' => $service->id, 'contracted_photo_count' => $count, 'quantity' => 1, 'bracket_mode' => 3,
+                'scheduled_at' => $shoot->scheduled_at, 'workflow_status' => 'scheduled', 'photographer_id' => $photographer->id, 'price' => 100]);
+        }
+        $this->tick('2026-10-02 10:00');
+        $this->assertSame(1, Message::where('to_address', $first->email)->count());
+        $this->assertSame(1, Message::where('to_address', $second->email)->count());
+        $firstBody = Message::where('to_address', $first->email)->firstOrFail()->body_text;
+        $secondBody = Message::where('to_address', $second->email)->firstOrFail()->body_text;
+        $this->assertStringContainsString('35 final photos · 105 raw images required', $firstBody);
+        $this->assertStringNotContainsString('Aerial Photos', $firstBody);
+        $this->assertStringNotContainsString('10 raw images required', $firstBody);
+        $this->assertStringContainsString('10 final photos · 10 raw images required', $secondBody);
+        $this->assertStringNotContainsString('HDR Photos', $secondBody);
+        $this->assertStringNotContainsString('105 raw images required', $secondBody);
+    }
+
+    public static function emailReminderTriggers(): array
+    {
+        return [['SHOOT_REMINDER'], ['PHOTOGRAPHER_SHOOT_REMINDER']];
+    }
+
     public function test_disabled_cancelled_and_finished_shoots_do_not_send(): void
     {
         [$shoot] = $this->appointment('2026-10-03 10:00');
@@ -166,7 +199,16 @@ class ShootAppointmentRemindersTest extends TestCase
         $address = $channel === 'sms' ? $photographer->phonenumber : $photographer->email;
         $this->assertSame(1, Message::where('to_address', $address)->count());
         foreach (Message::all() as $message) {
-            $this->assertStringContainsString('Photos, Floor plan, Drone', $message->body_text);
+            if ($channel === 'email' && $message->to_address === $photographer->email) {
+                $this->assertStringContainsString('Photos, Floor plan', $message->body_text);
+                $this->assertStringNotContainsString('Drone', $message->body_text);
+            } elseif ($channel === 'email' && $message->to_address === $other->email) {
+                $this->assertStringContainsString('Drone', $message->body_text);
+                $this->assertStringNotContainsString('Photos', $message->body_text);
+                $this->assertStringNotContainsString('Floor plan', $message->body_text);
+            } else {
+                $this->assertStringContainsString('Photos, Floor plan, Drone', $message->body_text);
+            }
             $this->assertStringNotContainsString('Video', $message->body_text);
             $this->assertStringNotContainsString('Cancelled service', $message->body_text);
         }

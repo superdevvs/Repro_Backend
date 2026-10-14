@@ -289,11 +289,34 @@ class ShootMediaInteractionService
         ];
     }
 
-    public function toggleHidden(Shoot $shoot, array $fileIds, bool $hidden): array
+    public function toggleHidden(Shoot $shoot, array $fileIds, bool $hidden, ?User $actor = null): array
     {
-        $updated = ShootFile::where('shoot_id', $shoot->id)
-            ->whereIn('id', $fileIds)
-            ->update(['is_hidden' => $hidden]);
+        $updated = \App\Support\LockedWrite::run(fn () => DB::transaction(function () use ($shoot, $fileIds, $hidden, $actor) {
+            // Take the SQLite writer before reading cover state; visibility and
+            // the stored listing hero must change together.
+            $updated = ShootFile::where('shoot_id', $shoot->id)->whereIn('id', $fileIds)->update(['is_hidden' => $hidden]);
+            $selected = ShootFile::where('shoot_id', $shoot->id)->whereIn('id', $fileIds)->get();
+            $freshShoot = Shoot::findOrFail($shoot->id);
+            if ($actor) {
+                $access = app(ShootAuthorizationSupport::class);
+                $customerCuration = $access->canManageCustomerMediaCuration($freshShoot, $actor);
+                abort_unless(count(array_unique($fileIds)) === $selected->count()
+                    && $selected->every(fn (ShootFile $file) => $access->canManageFileVisibility($freshShoot, $file, $actor, $customerCuration)),
+                    $access->isCustomerMediaCurator($actor) ? 422 : 403, 'These files or their assignment changed. Reload before changing visibility.');
+            }
+            if ($hidden) {
+                $heroKey = $this->normalizedHeroKey($freshShoot->hero_image);
+                $containsHero = $selected->contains(fn (ShootFile $file) => $file->is_cover || ($heroKey && collect([
+                    $file->path, $file->storage_path, $file->web_path, $file->thumbnail_path,
+                ])->contains(fn ($path) => $this->normalizedHeroKey($path) === $heroKey)));
+                ShootFile::where('shoot_id', $shoot->id)->whereIn('id', $fileIds)->where('is_cover', true)->update(['is_cover' => false]);
+                if ($containsHero) {
+                    $freshShoot->hero_image = null;
+                    $freshShoot->save();
+                }
+            }
+            return $updated;
+        }), 'shoot-media.visibility');
 
         $this->shootMediaMutationSupportService->clearShootFilesCache($shoot);
 
@@ -302,6 +325,15 @@ class ShootMediaInteractionService
             'updated_count' => $updated,
             'hidden' => $hidden,
         ];
+    }
+
+    private function normalizedHeroKey(?string $path): ?string
+    {
+        if (! $path) return null;
+        $key = ltrim(parse_url($path, PHP_URL_PATH) ?: $path, '/');
+        $key = preg_replace('#^(?:storage/|api/public/shoot-media/file/)#', '', $key);
+
+        return $key ?: null;
     }
 
     /**

@@ -321,21 +321,25 @@ class ShootMediaController extends Controller
         $user = auth()->user();
         $this->shootAuthorizationSupport->ensureFileBelongsToShoot($shoot, $file);
         $this->shootAuthorizationSupport->ensureShootAccess($shoot, $user);
-        if (! $this->shootAuthorizationSupport->isClientUser($user)) {
-            abort_unless($this->shootAuthorizationSupport->canInteractWithShootMediaFile($shoot, $file, $user), 403, 'Forbidden');
-        }
-
-        if (! $this->shootAuthorizationSupport->hasRole($user, ['admin', 'superadmin', 'editing_manager', 'photographer', 'editor', 'client'])) {
+        $customer = $this->shootAuthorizationSupport->isCustomerMediaCurator($user);
+        if ($customer && ! $this->shootAuthorizationSupport->canManageCustomerMediaCuration($shoot, $user)
+            && ! $this->shootAuthorizationSupport->hasRole($user, ['photographer', 'editor'])) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
-        if ($this->shootAuthorizationSupport->isClientUser($user) && (string) $shoot->client_id !== (string) $user->id) {
-            return response()->json(['message' => 'Forbidden'], 403);
+        if (! $this->shootAuthorizationSupport->canSetFileHero($shoot, $file, $user)) {
+            return response()->json(['message' => 'Choose a visible, safe edited photo for the hero image.'], $customer ? 422 : 403);
         }
-        if ($this->shootAuthorizationSupport->isClientUser($user) && ! $this->shootAuthorizationSupport->isClientHeroEligibleFile($file)) {
-            return response()->json(['message' => 'Clients can only set hero images from visible edited photo media.'], 422);
+        $result = $this->assignHeroMediaAction->execute($shoot, $file, $user);
+        if ($this->shootAuthorizationSupport->isClientUser($user)) {
+            $result['file'] = ['id' => $file->id, 'is_cover' => true];
+            if ($this->shootClientReleaseAccessService->isFileReleaseLocked($shoot, $file, $user)) {
+                $result['hero_image'] = app(\App\Services\Shoots\ShootFileAccessService::class)->resolvePublicStorageUrl(
+                    $file->watermarked_web_path ?: $file->watermarked_thumbnail_path ?: $file->watermarked_placeholder_path
+                );
+            }
         }
 
-        return response()->json($this->assignHeroMediaAction->execute($shoot, $file, $user));
+        return response()->json($result);
     }
 
     public function flagMedia(Request $request, Shoot $shoot, ShootFile $file)
@@ -1029,29 +1033,21 @@ class ShootMediaController extends Controller
         if (! $this->shootAuthorizationSupport->canAccessShootMedia($shoot, $user)) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
-        if (! $this->shootAuthorizationSupport->isClientUser($user)) {
-            $this->ensureManageableFileIds($shoot, $request->input('file_ids', []), $user);
-        } else {
-            abort_unless((string) $shoot->client_id === (string) $user->id, 403, 'Forbidden');
-        }
-
-        if ($this->shootAuthorizationSupport->isClientUser($user)) {
-            $fileIds = $request->input('file_ids', []);
-            $manageableCount = $shoot->files()
-                ->whereIn('id', $fileIds)
-                ->get()
-                ->filter(fn (ShootFile $file) => $this->shootAuthorizationSupport->isClientInteractableEditedFile($file))
-                ->count();
-
-            if ($manageableCount !== count(array_unique($fileIds))) {
-                return response()->json(['message' => 'Clients can only update edited media from their own shoot.'], 422);
-            }
+        $customer = $this->shootAuthorizationSupport->isCustomerMediaCurator($user);
+        $curation = $this->shootAuthorizationSupport->canManageCustomerMediaCuration($shoot, $user);
+        abort_if($customer && ! $curation && ! $this->shootAuthorizationSupport->hasRole($user, ['photographer', 'editor']), 403, 'Forbidden');
+        $fileIds = array_values(array_unique($request->input('file_ids', [])));
+        $files = $shoot->files()->whereIn('id', $fileIds)->get();
+        if ($files->count() !== count($fileIds)
+            || $files->contains(fn (ShootFile $file) => ! $this->shootAuthorizationSupport->canManageFileVisibility($shoot, $file, $user, $curation))) {
+            return response()->json(['message' => 'Only safe completed media from this shoot can be hidden or restored.'], $customer ? 422 : 403);
         }
 
         return response()->json($this->shootMediaInteractionService->toggleHidden(
             $shoot,
             $request->input('file_ids'),
-            $request->boolean('hidden')
+            $request->boolean('hidden'),
+            $user
         ));
     }
 

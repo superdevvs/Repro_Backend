@@ -6,12 +6,92 @@ use App\Services\BrightMls\LegacyBrightMlsStrategy;
 use App\Services\BrightMls\NewBrightMlsStrategy;
 use App\Services\BrightMlsService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Test;
 use Tests\TestCase;
 
 class BrightMlsServiceTest extends TestCase
 {
     use RefreshDatabase;
+
+    public static function apiModes(): array
+    {
+        return [['legacy'], ['new']];
+    }
+
+    #[Test]
+    #[DataProvider('apiModes')]
+    public function publishing_updates_vendor_credit_even_with_saved_legacy_branding(string $mode): void
+    {
+        $this->configureBrightMls();
+        config(['services.bright_mls.api_mode' => $mode]);
+        DB::table('settings')->insert([
+            'key' => 'integrations.bright_mls',
+            'type' => 'json',
+            'value' => json_encode(['vendorName' => 'Repro Photos']),
+        ]);
+        Http::preventStrayRequests();
+        Http::fake(['*/manifest' => Http::response(['manifestId' => 'manifest-test'], 200)]);
+
+        $service = app(BrightMlsService::class);
+        $manifest = $service->buildManifestFromShoot($this->shootData(), [
+            'photos' => [['url' => 'https://cdn.example.com/front.jpg', 'filename' => 'front.jpg']],
+        ]);
+        $this->assertSame('R/E Pro Photos', $manifest['vendorName']);
+
+        // Older callers or stored manifests must not restore the previous spelling.
+        $manifest['vendorName'] = 'Repro Photos';
+        $result = $service->publishManifest($manifest);
+
+        $this->assertTrue($result['success']);
+        $this->assertSame('R/E Pro Photos', $result['payload_snapshot']['vendorName']);
+        Http::assertSentCount(1);
+        Http::assertSent(function ($request) {
+            $payload = $request->data();
+
+            return $payload['vendorName'] === 'R/E Pro Photos'
+                && $payload['vendorId'] === 'vendor-test'
+                && $request->hasHeader('x-api-user', 'vendor-test')
+                && $payload['mlsId'] === 'MLS-123'
+                && $payload['listItems'][0]['imageUrls']['fullSize'] === 'https://cdn.example.com/front.jpg';
+        });
+    }
+
+    #[Test]
+    #[DataProvider('apiModes')]
+    public function strategies_default_to_current_vendor_credit(string $mode): void
+    {
+        $strategy = $mode === 'legacy'
+            ? new LegacyBrightMlsStrategy('https://bright.example.test', 'https://import.example.test')
+            : new NewBrightMlsStrategy('https://bright.example.test');
+
+        $payload = $strategy->buildManifest([
+            'vendorId' => 'vendor-test',
+            'listItems' => [],
+        ]);
+
+        $this->assertSame('R/E Pro Photos', $payload['vendorName']);
+        $this->assertSame('vendor-test', $payload['vendorId']);
+    }
+
+    #[Test]
+    #[DataProvider('apiModes')]
+    public function vendor_credit_normalization_preserves_custom_saved_names(string $mode): void
+    {
+        $this->configureBrightMls();
+        config(['services.bright_mls.api_mode' => $mode]);
+        Http::preventStrayRequests();
+        foreach (['   ' => 'R/E Pro Photos', ' rEpRo PhOtOs ' => 'R/E Pro Photos', 'Custom Photo Studio' => 'Custom Photo Studio'] as $saved => $expected) {
+            DB::table('settings')->updateOrInsert(['key' => 'integrations.bright_mls'],
+                ['type' => 'json', 'value' => json_encode(['vendorName' => $saved])]);
+            $manifest = (new BrightMlsService)->buildManifestFromShoot($this->shootData(), [
+                'photos' => [['url' => 'https://cdn.example.com/front.jpg', 'filename' => 'front.jpg']],
+            ]);
+            $this->assertSame($expected, $manifest['vendorName']);
+        }
+    }
 
     #[Test]
     public function build_manifest_from_shoot_normalizes_photo_filenames_to_jpeg(): void

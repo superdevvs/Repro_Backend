@@ -1306,6 +1306,13 @@ class AutomationWorkflowExecutor
             $shoot = $context['shoot'] ?? null;
             if ($channel === 'email' && $shoot instanceof Shoot) {
                 $shoot->loadMissing(['serviceItems.service', 'serviceItems.photographer']);
+                if (\App\Services\SystemEmails\EmailServiceImageRequirements::isPhotographerRecipient($recipient['type'] ?? null)) {
+                    $items = $items->filter(function ($row) use ($shoot, $recipient) {
+                        $item = $shoot->serviceItems->firstWhere('id', $row['shoot_service_id'] ?? null);
+                        return $item && app(\App\Services\SystemEmails\EmailServiceImageRequirements::class)
+                            ->isAssignedToPhotographer($shoot, $item, $recipient['id'] ?? null);
+                    })->values();
+                }
             }
             $requirements = $items->map(function ($row) use ($shoot, $recipient, $channel) {
                 $item = $channel === 'email' && $shoot instanceof Shoot ? $shoot->serviceItems->firstWhere('id', $row['shoot_service_id'] ?? null) : null;
@@ -1317,7 +1324,7 @@ class AutomationWorkflowExecutor
             $resolved['services_provided'] = implode(', ', $names).($details ? "\n".implode("\n", $details) : '');
             $resolved['services_provided_html'] = '<ul>'.implode('', $items->map(fn ($row, $key) => '<li>'.e($row['name']).($requirements[$key] !== '' ? '<br>'.e($requirements[$key]) : '').'</li>')->all()).'</ul>';
             $resolved['shoot_packages'] = $resolved['services_provided'];
-            if ($details) $resolved['shoot_services'] = implode(', ', $names).' — '.implode('; ', $details);
+            if ($channel === 'email') $resolved['shoot_services'] = implode(', ', $names).($details ? ' — '.implode('; ', $details) : '');
         }
 
         return $resolved;

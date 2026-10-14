@@ -242,6 +242,11 @@ Route::get('/public/shoot-media/file/{path}', [PublicShootMediaFileController::c
     ->middleware('signed')
     ->name('api.public.shoot-media.file');
 
+Route::get('/public/shoot-media/curation-preview/{shoot}/{file}/{viewer}', App\Http\Controllers\API\ShootMediaCurationPreviewController::class)
+    ->whereNumber(['shoot', 'file', 'viewer'])
+    ->middleware('signed')
+    ->name('api.public.shoot-media.curation-preview');
+
 // Short-lived bearer route used by the manual iGUIDE viewer. The signature is
 // deliberately a path segment so index.html's relative asset requests retain it.
 Route::get('/iguide/offline-view/{shootId}/{fileId}/{expires}/{signature}/{path?}', IguideOfflineViewerAssetController::class)

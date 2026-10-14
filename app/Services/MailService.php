@@ -2304,7 +2304,8 @@ class MailService
             $quantity = (int) ($service->pivot->quantity ?? 1);
             $unitPrice = (float) ($service->pivot->price ?? $service->price ?? 0);
             $lineTotal = $unitPrice * $quantity;
-            $resolvedPhotographerId = $service->pivot->photographer_id ?? $shoot->photographer_id;
+            $resolvedPhotographerId = $service->allowsPhotographerAssignment()
+                ? ($service->pivot->photographer_id ?? $shoot->photographer_id) : null;
             $resolvedEditorId = $service->pivot->editor_id ?? $shoot->editor_id;
 
             if (

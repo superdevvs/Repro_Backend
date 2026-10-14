@@ -41,6 +41,7 @@ class ShootAccessSecurityTest extends TestCase
             'uploaded_at' => now(),
             'scan_status' => ShootFile::SCAN_STATUS_CLEAN,
             'workflow_stage' => ShootFile::STAGE_COMPLETED,
+            'media_type' => 'edited',
             'url' => 'https://media.example.test/security-photo.jpg',
             'is_hidden' => false,
             'sort_order' => 1,
@@ -179,7 +180,7 @@ class ShootAccessSecurityTest extends TestCase
         $shoot = $this->shoot();
         $visible = $this->file($shoot);
         $hidden = $this->file($shoot, ['is_hidden' => true]);
-        $raw = $this->file($shoot, ['workflow_stage' => ShootFile::STAGE_TODO]);
+        $raw = $this->file($shoot, ['workflow_stage' => ShootFile::STAGE_TODO, 'media_type' => 'raw']);
         Sanctum::actingAs($shoot->client);
         $this->getJson("/api/shoots/{$shoot->id}/files")->assertOk()->assertJsonCount(1, 'data');
         $this->getJson("/api/shoots/{$shoot->id}/media?type=edited")->assertOk()->assertJsonCount(1, 'data');

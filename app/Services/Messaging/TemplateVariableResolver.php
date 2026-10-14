@@ -84,7 +84,7 @@ class TemplateVariableResolver
 
         $shoot = $this->resolveShoot($context);
         if ($shoot) {
-            $derived = array_merge($derived, $this->resolveShootVariables($shoot, ! in_array($recipientType, ['photographer', 'previous_photographer', 'new_photographer'], true), $recipientType, strtolower((string) ($context['channel'] ?? '')) === 'email'));
+            $derived = array_merge($derived, $this->resolveShootVariables($shoot, ! in_array($recipientType, ['photographer', 'previous_photographer', 'new_photographer'], true), $recipientType, strtolower((string) ($context['channel'] ?? '')) === 'email', data_get($context, 'recipient.id')));
             if ($shoot->exists) {
                 $derived['remaining_balance'] = number_format(max((float) $shoot->total_quote - $shoot->calculateCanonicalTotalPaid(), 0), 2);
             }
@@ -359,7 +359,7 @@ class TemplateVariableResolver
     /**
      * @return array<string, mixed>
      */
-    private function resolveShootVariables(Shoot $shoot, bool $includeClientPrices = true, string $recipientType = 'client', bool $includeImageRequirements = false): array
+    private function resolveShootVariables(Shoot $shoot, bool $includeClientPrices = true, string $recipientType = 'client', bool $includeImageRequirements = false, int|string|null $recipientId = null): array
     {
         if ($this->canLoadShootRelations($shoot)) {
             $shoot->loadMissing(['photographer', 'services', 'notes']);
@@ -386,7 +386,7 @@ class TemplateVariableResolver
         )
             ? app(\App\Services\Payments\PublicPaymentAccessTokenService::class)->buildPublicUrl($shoot)
             : null;
-        $formattedServices = $this->formatServices($shoot, $includeClientPrices, $recipientType, $includeImageRequirements);
+        $formattedServices = $this->formatServices($shoot, $includeClientPrices, $recipientType, $includeImageRequirements, $recipientId);
         $servicesProvided = $formattedServices['text'];
         $servicesProvidedHtml = $formattedServices['html'];
         $assignedPhotographers = $this->formatAssignedPhotographers($shoot);
@@ -440,12 +440,24 @@ class TemplateVariableResolver
     /**
      * @return array{text: string, html: string}
      */
-    private function formatServices(Shoot $shoot, bool $includeClientPrices, string $recipientType, bool $includeImageRequirements): array
+    private function formatServices(Shoot $shoot, bool $includeClientPrices, string $recipientType, bool $includeImageRequirements, int|string|null $recipientId): array
     {
         $services = $shoot->relationLoaded('services')
             ? collect($shoot->getRelation('services') ?? [])
             : collect();
         $photographerName = $this->resolveLoadedPhotographerName($shoot);
+
+        if ($includeImageRequirements && $shoot->exists && $recipientId && $this->canUseApplicationContainer()
+            && \App\Services\SystemEmails\EmailServiceImageRequirements::isPhotographerRecipient($recipientType)) {
+            $hasBookedServices = $services->isNotEmpty();
+            $shoot->loadMissing(['serviceItems.service', 'serviceItems.photographer']);
+            $services = $services->filter(function ($service) use ($shoot, $recipientId) {
+                $item = $shoot->serviceItems->firstWhere('id', $service->pivot?->id);
+                return $item && app(\App\Services\SystemEmails\EmailServiceImageRequirements::class)
+                    ->isAssignedToPhotographer($shoot, $item, $recipientId);
+            })->values();
+            if ($hasBookedServices && $services->isEmpty()) return ['text' => '', 'html' => ''];
+        }
 
         if ($services->count() > 0) {
             $textLines = [];
@@ -466,9 +478,10 @@ class TemplateVariableResolver
 
                 $assignedPhotographerName = '';
                 $assignedPhotographerId = $service->pivot->photographer_id ?? null;
-                if ($assignedPhotographerId && $this->canUseApplicationContainer()) {
+                $canAssignPhotographer = ! $service instanceof \App\Models\Service || $service->allowsPhotographerAssignment();
+                if ($canAssignPhotographer && $assignedPhotographerId && $this->canUseApplicationContainer()) {
                     $assignedPhotographerName = User::find($assignedPhotographerId)?->name ?? '';
-                } elseif ($photographerName !== '') {
+                } elseif ($canAssignPhotographer && $photographerName !== '') {
                     $assignedPhotographerName = $photographerName;
                 }
 

@@ -40,6 +40,18 @@ class EmailServiceImageRequirements
         ];
     }
 
+    public function isAssignedToPhotographer(Shoot $shoot, ShootService $item, int|string|null $recipientId): bool
+    {
+        return $recipientId && ($item->service?->allowsPhotographerAssignment() ?? true) && (int) $item->shoot_id === (int) $shoot->id
+            && (string) ($item->photographer_id ?? $shoot->photographer_id) === (string) $recipientId;
+    }
+
+    public static function isPhotographerRecipient(?string $recipientType): bool
+    {
+        return in_array(strtolower(str_replace(['_', '-', ' '], '', $recipientType ?? '')),
+            ['photographer', 'previousphotographer', 'newphotographer'], true);
+    }
+
     public static function label(array $counts, ?string $recipientType): string
     {
         if (! array_key_exists('photo_count', $counts)) {
@@ -49,7 +61,7 @@ class EmailServiceImageRequirements
             ? 'Final photo count not set'
             : $counts['photo_count'].' final '.((int) $counts['photo_count'] === 1 ? 'photo' : 'photos');
         $role = strtolower(str_replace(['_', '-', ' '], '', $recipientType ?? 'client'));
-        if (! in_array($role, ['photographer', 'admin', 'superadmin', 'editingmanager', 'rep', 'salesrep', 'editor'], true)) {
+        if (! in_array($role, ['photographer', 'previousphotographer', 'newphotographer', 'admin', 'superadmin', 'editingmanager', 'rep', 'salesrep', 'editor'], true)) {
             return $final;
         }
         $raw = $counts['expected_raw_count'] ?? null;
