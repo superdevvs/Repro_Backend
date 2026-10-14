@@ -9,7 +9,6 @@ use App\Services\Scheduling\GoogleRoutesBudget;
 use App\Services\Scheduling\ScheduleCommitGuard;
 use App\Services\Scheduling\ScheduleFeasibilityService;
 use App\Services\Scheduling\SchedulingBufferSettings;
-use App\Services\Scheduling\SchedulingDiagnostics;
 use App\Services\Scheduling\TravelLocationResolver;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -69,7 +68,7 @@ class SchedulingDiagnosticsIsolationTest extends TestCase
     {
         Log::partialMock();
         $broken = Mockery::mock(\Psr\Log\LoggerInterface::class);
-        $broken->shouldReceive('log')->andThrow(new \UnexpectedValueException('Scheduling log permission denied'));
+        $broken->shouldReceive('info', 'notice')->andThrow(new \UnexpectedValueException('Scheduling log permission denied'));
         Log::shouldReceive('channel')->with('scheduling')->andReturn($broken);
         Log::shouldReceive('error')->andThrow(new \UnexpectedValueException('Fallback log permission denied'));
     }
@@ -130,23 +129,43 @@ class SchedulingDiagnosticsIsolationTest extends TestCase
             ->assertUnprocessable()->assertJsonValidationErrors('property_details.sqft');
     }
 
-    public function test_fresh_scheduling_directory_uses_the_shared_group_and_setgid(): void
+    public function test_fresh_scheduling_directory_is_shared_when_permitted_and_nonfatal_otherwise(): void
     {
-        if (PHP_OS_FAMILY === 'Windows') $this->markTestSkipped('Unix runtime permissions are exercised in Docker.');
         $previousStorage = $this->app->storagePath();
         $previousPath = config('logging.channels.scheduling.path');
         $temporary = sys_get_temp_dir().'/qa-scheduling-'.bin2hex(random_bytes(8));
         mkdir($temporary.'/logs', 0777, true);
         try {
+            // Probe the real process capability without touching the directory being tested.
+            $canShareDirectory = PHP_OS_FAMILY === 'Windows' || @chgrp($temporary.'/logs', 'www-data');
             $this->app->useStoragePath($temporary);
             config(['logging.channels.scheduling.path' => $temporary.'/logs/scheduling/scheduling.log']);
             Log::partialMock();
-            Log::shouldReceive('channel')->with('scheduling')->once()->andReturn(new \Psr\Log\NullLogger);
-            SchedulingDiagnostics::info('qa_directory');
+            if ($canShareDirectory) {
+                Log::shouldReceive('channel')->with('scheduling')->once()->andReturn(new \Psr\Log\NullLogger);
+                Log::shouldReceive('error')->never();
+            } else {
+                Log::shouldReceive('channel')->with('scheduling')->never();
+                Log::shouldReceive('error')->once()->with('Scheduling diagnostics could not be written.', [
+                    'diagnostic_event' => 'Travel feasibility evaluated', 'exception_type' => \RuntimeException::class,
+                ]);
+            }
+            $result = app(ScheduleFeasibilityService::class)->evaluate($this->payload, null, $this->actor);
+            $this->assertSame('available', $result['status']);
+            $this->assertSame(45, $result['visits'][0]['duration_minutes']);
             $directory = $temporary.'/logs/scheduling';
             $this->assertDirectoryExists($directory);
-            $this->assertSame(02770, fileperms($directory) & 07777);
-            $this->assertSame(posix_getgrnam('www-data')['gid'], filegroup($directory));
+            clearstatcache(true, $directory);
+            if (PHP_OS_FAMILY !== 'Windows') {
+                if ($canShareDirectory) {
+                    $this->assertSame(02770, fileperms($directory) & 07777);
+                    $this->assertSame(filegroup($temporary.'/logs'), filegroup($directory));
+                } else {
+                    // Failed sharing cannot make the fresh directory accessible to other users.
+                    $this->assertSame(0, fileperms($directory) & 0007);
+                    $this->assertFileDoesNotExist($directory.'/scheduling.log');
+                }
+            }
         } finally {
             $this->app->useStoragePath($previousStorage);
             config(['logging.channels.scheduling.path' => $previousPath]);

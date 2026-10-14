@@ -22,7 +22,7 @@ final class SchedulingDiagnostics
     {
         try {
             self::prepareDirectory();
-            Log::channel('scheduling')->log($level, $event, $context);
+            Log::channel('scheduling')->{$level}($event, $context);
         } catch (Throwable $exception) {
             try {
                 // Do not copy the original exception message, log path, or provider data.
