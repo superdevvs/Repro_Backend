@@ -16,6 +16,7 @@ class VoiceTransferController extends Controller
     public function __invoke(Request $request, VoiceCall $call, VoiceRoutingService $routing, VoiceSettingsService $settings): JsonResponse
     {
         $data = $request->validate(['reason' => ['sometimes', 'string', 'max:500']]);
+        abort_if(app(\App\Services\Voice\VoiceLinePolicyService::class)->forCall($call), 422, 'This line uses Dashboard staff and voicemail; external forwarding is disabled.');
         if (strtolower((string) $call->provider) !== 'telnyx') {
             return response()->json(['message' => 'Live transfer is only available for Telnyx calls.'], 422);
         }

@@ -57,14 +57,14 @@ class VoiceBrowserCallService
                 'transcription_active' => (bool) ($call->metadata['browser_transcription_enabled'] ?? false),
                 'transcription_pending' => (bool) ($call->metadata['browser_transcription_pending'] ?? false)],
             'capabilities' => [
-                'can_takeover' => $operate && $this->callIsLive($call) && $call->status !== 'human_handoff' && filled($call->call_control_id) && ! $this->active($call)
+                'can_takeover' => $operate && ! $call->voicemail && $this->callIsLive($call) && $call->status !== 'human_handoff' && filled($call->call_control_id) && ! $this->active($call)
                     && ! VoiceIncomingOffer::where('voice_call_id', $call->id)->where('status', 'waiting')->exists(),
                 'can_monitor' => (bool) ($supervise && $active),
                 'can_whisper' => (bool) ($supervise && $active),
                 'can_barge' => (bool) ($supervise && $active),
                 'can_control' => (bool) ($operate && $owner && $active && $own?->role === 'agent'),
                 'can_end' => (bool) ($this->sessions->canOperate($user) && $owner && ! in_array($browser?->state, self::TERMINAL, true)),
-                'can_transfer' => (bool) ($operate && $owner && $active),
+                'can_transfer' => (bool) ($operate && $owner && $active && ! app(VoiceLinePolicyService::class)->dashboardOnly($call)),
                 'can_record' => (bool) ($operate && $owner && $active && $this->calls->recordingEnabled()),
             ],
             'supervision_unavailable_reason' => $active ? null : 'Monitor and coach are available after a staff member joins a human call. Listening to Robbie-only calls is not available in this workspace yet.',
@@ -76,6 +76,12 @@ class VoiceBrowserCallService
         $this->assertSession($session, $user);
         $to = $this->numbers->normalize($data['to']);
         $from = $this->sourceNumber($data['from'] ?? null);
+        $line = app(VoiceLinePolicyService::class)->forNumber($from);
+        abort_if($line?->mode === 'sms_only', 422, 'This number is SMS-only. Choose a voice business line.');
+        if ($line) {
+            $probe = new VoiceCall(['direction' => 'OUTBOUND', 'from_phone' => $from]);
+            abort_unless(app(VoiceLinePolicyService::class)->canAccess($user, $probe), 403, 'You are not assigned to this caller ID.');
+        }
         abort_unless(preg_match('/^\+[1-9]\d{7,14}$/', $to) && $to !== $from, 422, 'Enter a valid customer phone number.');
         $this->assertOutboundAllowed($to);
         $hash = $this->hash($data);
@@ -112,6 +118,7 @@ class VoiceBrowserCallService
 
     public function takeover(VoiceCall $call, User $user, VoiceBrowserSession $session, array $data): VoiceBrowserCall
     {
+        abort_if($call->voicemail, 409, 'The caller is leaving voicemail.');
         $this->assertSession($session, $user);
         abort_if(! $this->callIsLive($call) || $call->status === 'human_handoff' || ! $call->call_control_id, 409, 'This call is no longer available for takeover.');
         $hash = $this->hash(array_merge($data, ['voice_call_id' => $call->id]));
@@ -282,6 +289,7 @@ class VoiceBrowserCallService
         } elseif ($action === 'dtmf') {
             $this->gateway->command($key, '/calls/'.rawurlencode($customer->call_control_id).'/actions/send_dtmf', ['digits' => $data['digits']]);
         } elseif ($action === 'transfer') {
+            abort_if(app(VoiceLinePolicyService::class)->dashboardOnly($call), 422, 'This line cannot forward to personal or external phones.');
             $to = $this->numbers->normalize($data['to'] ?? '');
             abort_unless(preg_match('/^\+[1-9]\d{7,14}$/', $to) && $to !== $this->local($call), 422, 'Enter a valid transfer destination.');
             $this->gateway->command($key, '/calls/'.rawurlencode($customer->call_control_id).'/actions/transfer', ['to' => $to]);

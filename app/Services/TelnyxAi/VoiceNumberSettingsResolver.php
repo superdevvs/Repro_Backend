@@ -28,7 +28,8 @@ class VoiceNumberSettingsResolver
             'number_id' => $number?->id,
             'phone_number' => $normalized,
             'voice_ai_enabled' => $override,
-            'enabled' => (bool) ($settings['enabled'] ?? false) && $override !== false,
+            'enabled' => (bool) ($settings['enabled'] ?? false) && $override !== false
+                && ! app(\App\Services\Voice\VoiceLinePolicyService::class)->forNumber($normalized),
             'assistant_id' => $assistant !== '' ? $assistant : null,
         ];
     }

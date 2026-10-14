@@ -22,7 +22,8 @@ class VoiceCallController extends Controller
 {
     public function index(Request $request): JsonResponse
     {
-        $query = VoiceCall::query()->with(['callerUser:id,name,email', 'callerContact:id,name,email,phone', 'relatedShoot:id,address,status', 'scheduledCallback']);
+        $query = VoiceCall::query()->with(['callerUser:id,name,email', 'callerContact:id,name,email,phone', 'relatedShoot:id,address,status', 'scheduledCallback', 'voicemail']);
+        app(\App\Services\Voice\VoiceLinePolicyService::class)->scope($query, $request->user());
 
         if ($status = $request->query('status')) {
             $query->where('status', $status);
@@ -96,6 +97,7 @@ class VoiceCallController extends Controller
             'relatedShoot.photographer:id,name',
             'aiChatSession',
             'scheduledCallback',
+            'voicemail',
         ]));
     }
 

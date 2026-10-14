@@ -20,11 +20,11 @@ class VoiceBrowserGateway
         } catch (Throwable $e) {
             throw new RuntimeException('The phone provider did not confirm the request. Retry to check its result.');
         }
-        if ($method === 'DELETE' && str_starts_with($path, '/telephony_credentials/') && $response->status() === 404) {
+        if ($method === 'DELETE' && (str_starts_with($path, '/telephony_credentials/') || str_starts_with($path, '/recordings/')) && $response->status() === 404) {
             return [];
         }
         if (! $response->successful()) {
-            throw new RuntimeException('The phone provider could not complete the request.');
+            throw new RuntimeException('The phone provider could not complete the request.', $response->status());
         }
 
         return $plain ? trim($response->body()) : ($response->json('data') ?? $response->json() ?? []);
@@ -50,7 +50,8 @@ class VoiceBrowserGateway
 
                 return $result;
             } catch (Throwable $e) {
-                LockedWrite::run(fn () => $command->update(['state' => 'uncertain']));
+                $definite = $e->getCode() >= 400 && $e->getCode() < 500 && ! in_array($e->getCode(), [408, 429], true);
+                LockedWrite::run(fn () => $command->update(['state' => $definite ? 'failed' : 'uncertain']));
                 throw $e;
             }
         });

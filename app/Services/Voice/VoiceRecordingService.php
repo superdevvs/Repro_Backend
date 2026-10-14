@@ -12,6 +12,10 @@ class VoiceRecordingService
 {
     public function playbackUrl(VoiceCall $call): ?string
     {
+        if ($call->voicemail) {
+            // Dedicated authenticated audio endpoint; never leak provider links.
+            return null;
+        }
         if (! $call->recording_consent_given) {
             return null;
         }

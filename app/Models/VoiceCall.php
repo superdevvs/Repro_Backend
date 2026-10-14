@@ -80,6 +80,11 @@ class VoiceCall extends Model
         return $this->belongsTo(User::class, 'caller_user_id');
     }
 
+    public function voicemail(): \Illuminate\Database\Eloquent\Relations\HasOne
+    {
+        return $this->hasOne(VoiceVoicemail::class);
+    }
+
     public function callerContact(): BelongsTo
     {
         return $this->belongsTo(Contact::class, 'caller_contact_id');

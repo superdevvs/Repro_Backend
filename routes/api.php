@@ -180,7 +180,7 @@ Route::middleware('auth:sanctum')->prefix('voice')->group(function () {
     require __DIR__.'/voice-push.php';
 });
 
-Route::middleware(['auth:sanctum', 'permission:voice-calls'])->prefix('voice')->group(function () {
+Route::middleware(['auth:sanctum', 'permission:voice-calls', \App\Http\Middleware\VoiceLineAccess::class])->prefix('voice')->group(function () {
     require __DIR__.'/voice-browser.php';
     Route::get('calls', [VoiceCallController::class, 'index']);
     Route::get('calls/stats', [VoiceCallController::class, 'stats']);
@@ -217,7 +217,12 @@ Route::middleware(['auth:sanctum', 'permission:voice-calls'])->prefix('voice')->
     Route::post('scheduled-calls/{scheduledCall}/cancel', [ScheduledVoiceCallController::class, 'cancel'])->middleware('permission:voice-calls,operate');
     Route::post('scheduled-calls/{scheduledCall}/retry', [ScheduledVoiceCallController::class, 'retry'])->middleware('permission:voice-calls,operate');
     Route::get('numbers', [VoiceNumberController::class, 'index']);
+    Route::get('numbers/staff', [VoiceNumberController::class, 'staff'])->middleware('permission:voice-calls,manage');
     Route::patch('numbers/{smsNumber}', [VoiceNumberController::class, 'update'])->middleware('permission:voice-calls,manage');
+    Route::post('numbers/{smsNumber}/greeting', [VoiceNumberController::class, 'greeting'])->middleware('permission:voice-calls,manage');
+    Route::get('numbers/{smsNumber}/greeting/{kind}', [VoiceNumberController::class, 'greetingAudio'])->middleware('permission:voice-calls,manage');
+    Route::patch('calls/{call}/voicemail', [\App\Http\Controllers\API\Voice\VoiceVoicemailController::class, 'update'])->middleware('permission:voice-calls,operate');
+    Route::get('calls/{call}/voicemail/audio', [\App\Http\Controllers\API\Voice\VoiceVoicemailController::class, 'audio']);
     Route::get('handoffs/recent', [VoiceHandoffController::class, 'index']);
     Route::get('settings', [VoiceSettingsController::class, 'show']);
     Route::patch('settings', [VoiceSettingsController::class, 'update'])->middleware('permission:voice-calls,manage');

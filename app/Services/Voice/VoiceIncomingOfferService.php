@@ -28,6 +28,11 @@ class VoiceIncomingOfferService
 
     public function create(VoiceCall $call): bool
     {
+        $policies = app(VoiceLinePolicyService::class);
+        $policy = $policies->forCall($call);
+        if ($policy && ($policy->mode !== 'staff_voicemail' || ! $policies->open($policy) || $call->voicemail)) {
+            return false;
+        }
         if (! config('services.telnyx.voice.browser_enabled') || ! $this->live($call) || ! $call->call_control_id) {
             return false;
         }
@@ -43,6 +48,11 @@ class VoiceIncomingOfferService
         $push = app(VoicePushService::class);
         if ($push->configuration()['configured']) {
             $candidates = $candidates->merge(VoicePushSubscription::whereNull('revoked_at')->pluck('user_id'));
+        }
+        if ($policy) {
+            // Only currently registered Dashboard devices count as reachable.
+            // Push subscriptions and verified personal numbers cannot expand this group.
+            $candidates = $policies->recipients($policy)->filter(fn ($u) => $policies->registered($u))->pluck('id');
         }
         $eligible = User::whereIn('id', $candidates->unique()->all())->get()
             ->filter(fn (User $user) => $this->eligible($user) && $this->reachable($user, $call))->pluck('id')->all();
@@ -76,6 +86,9 @@ class VoiceIncomingOfferService
 
     public function reachable(User $user, VoiceCall $call): bool
     {
+        if (app(VoiceLinePolicyService::class)->dashboardOnly($call)) {
+            return app(VoiceLinePolicyService::class)->registered($user);
+        }
         if ($this->phones->destination($user, $call)) {
             return true;
         }
@@ -108,7 +121,7 @@ class VoiceIncomingOfferService
             'expires_at' => $offer->expires_at->toIso8601String(), 'caller_name' => $call->callerUser?->name ?? $call->callerContact?->name,
             'remote_phone' => $call->from_phone, 'claimed_by' => $offer->claimedBy ? ['id' => $offer->claimedBy->id, 'name' => $offer->claimedBy->name] : null,
             'can_claim' => $status === 'waiting' && in_array($user->id, $offer->eligible_user_ids, true) && $this->eligible($user),
-            'phone_available' => $this->phones->destination($user, $call) !== null];
+            'phone_available' => ! app(VoiceLinePolicyService::class)->dashboardOnly($call) && $this->phones->destination($user, $call) !== null];
     }
 
     public function claim(VoiceIncomingOffer $offer, User $user, array $data): array
@@ -116,6 +129,7 @@ class VoiceIncomingOfferService
         abort_unless($this->sessions->canOperate($user) && in_array($user->id, $offer->eligible_user_ids, true), 403);
         $this->assertNotCancelled($offer, $user, $data['idempotency_key']);
         if (($data['device'] ?? 'browser') === 'phone') {
+            abort_if(app(VoiceLinePolicyService::class)->dashboardOnly($offer->voiceCall), 422, 'This line rings Dashboard devices only.');
             $phone = VoiceLocks::lock('voice-incoming:'.$offer->id, 60)->block(5, function () use ($offer, $user, $data) {
                 $this->assertNotCancelled($offer, $user, $data['idempotency_key']);
                 $offer->refresh();
@@ -193,6 +207,7 @@ class VoiceIncomingOfferService
 
     private function assertClaimable(VoiceIncomingOffer $offer, User $user): void
     {
+        abort_unless(app(VoiceLinePolicyService::class)->canAccess($user, $offer->voiceCall), 403);
         abort_unless($this->sessions->canOperate($user) && in_array($user->id, $offer->eligible_user_ids, true), 403);
         abort_unless($offer->status === 'waiting' && $offer->expires_at->isFuture() && $this->live($offer->voiceCall->fresh()), 409, 'This call was answered elsewhere or is no longer available.');
         abort_unless($this->eligible($user), 409, 'You are unavailable or already handling a call.');
@@ -216,6 +231,7 @@ class VoiceIncomingOfferService
 
     private function preparePhone(VoiceIncomingOffer $offer, User $user): VoicePhoneOffer
     {
+        abort_if(app(VoiceLinePolicyService::class)->dashboardOnly($offer->voiceCall), 422, 'This line rings Dashboard devices only.');
         $destination = $this->phones->destination($user, $offer->voiceCall);
         abort_unless($destination, 422, 'Set up and verify your staff phone first.');
 
@@ -232,7 +248,7 @@ class VoiceIncomingOfferService
                 return;
             }
             $offer = $phone->incomingOffer;
-            if ($offer->status !== 'waiting' || $offer->expires_at->isPast() || ! $this->live($offer->voiceCall)
+            if (app(VoiceLinePolicyService::class)->dashboardOnly($offer->voiceCall) || $offer->status !== 'waiting' || $offer->expires_at->isPast() || ! $this->live($offer->voiceCall)
                 || ! $this->eligible($phone->user) || $this->phones->destination($phone->user, $offer->voiceCall) !== $phone->destination) {
                 $phone->update(['state' => 'cancelled']);
 
@@ -369,7 +385,7 @@ class VoiceIncomingOfferService
                         app(VoiceRoutingService::class)->resumeAfterTeamOffer($call);
                         $offer->update(['metadata' => array_merge($offer->metadata ?? [], ['fallback_completed_at' => now()->toIso8601String()])]);
                     }
-                } elseif ($offer->status === 'waiting' && $offer->created_at->lte(now()->subSeconds(8))) {
+                } elseif ($offer->status === 'waiting' && $offer->created_at->lte(now()->subSeconds(8)) && ! app(VoiceLinePolicyService::class)->dashboardOnly($call)) {
                     foreach (User::whereIn('id', $offer->eligible_user_ids)->get() as $user) {
                         if ($this->eligible($user) && $this->phones->destination($user, $call)) {
                             $phonesToDial[] = $this->preparePhone($offer, $user)->id;

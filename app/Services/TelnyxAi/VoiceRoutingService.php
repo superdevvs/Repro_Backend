@@ -21,6 +21,19 @@ class VoiceRoutingService
 
     public function beginInboundCall(VoiceCall $voiceCall, array $resolved): VoiceCall
     {
+        if ($line = app(\App\Services\Voice\VoiceLinePolicyService::class)->forCall($voiceCall)) {
+            if ($line->mode === 'sms_only') {
+                $this->calls->hangup($voiceCall);
+
+                return $voiceCall->fresh();
+            }
+            $open = app(\App\Services\Voice\VoiceLinePolicyService::class)->open($line);
+            if ($open && app(\App\Services\Voice\VoiceBrowserCallService::class)->offerInbound($voiceCall)) {
+                return $voiceCall->fresh();
+            }
+
+            return app(\App\Services\Voice\VoiceVoicemailService::class)->begin($voiceCall, ! $open);
+        }
         if (app(\App\Services\Voice\VoiceBrowserCallService::class)->offerInbound($voiceCall)) {
             return $voiceCall->fresh();
         }
@@ -65,6 +78,9 @@ class VoiceRoutingService
         if ($voiceCall->ended_at) {
             return $voiceCall;
         }
+        if (app(\App\Services\Voice\VoiceLinePolicyService::class)->dashboardOnly($voiceCall)) {
+            return app(\App\Services\Voice\VoiceVoicemailService::class)->begin($voiceCall, false);
+        }
         if ($this->numbers->aiEnabledForCall($voiceCall) && filled($voiceCall->assistant_id)) {
             if (! $voiceCall->answered_at && ! $this->calls->answer($voiceCall)) {
                 throw new RuntimeException('The inbound call could not be answered.');
@@ -104,6 +120,9 @@ class VoiceRoutingService
 
     public function transferToStaff(VoiceCall $voiceCall, string $reason): VoiceCall
     {
+        if (app(\App\Services\Voice\VoiceLinePolicyService::class)->forCall($voiceCall)) {
+            return $this->beginInboundCall($voiceCall, []);
+        }
         $to = (string) ($this->settings->all()['support_handoff_number'] ?? '');
         $voiceCall->forceFill([
             'intent' => 'human_transfer',
@@ -144,6 +163,11 @@ class VoiceRoutingService
 
     public function createCallback(VoiceCall $voiceCall, string $reason): VoiceCall
     {
+        if (app(\App\Services\Voice\VoiceLinePolicyService::class)->forCall($voiceCall)) {
+            $voiceCall->update(['needs_follow_up' => true]);
+
+            return $voiceCall->fresh();
+        }
         if (! $this->numbers->aiEnabledForCall($voiceCall) && ! $this->scheduledCalls->hasCustomRuleForReason($reason)) {
             return $this->routeWithoutAi($voiceCall, $reason);
         }
@@ -195,6 +219,9 @@ class VoiceRoutingService
     /** Route a disabled line without invoking AI or scheduling an AI callback. */
     public function routeWithoutAi(VoiceCall $voiceCall, string $reason = 'voice_ai_disabled', bool $skipBrowser = false): VoiceCall
     {
+        if (app(\App\Services\Voice\VoiceLinePolicyService::class)->forCall($voiceCall)) {
+            return $skipBrowser ? $this->resumeAfterTeamOffer($voiceCall) : $this->beginInboundCall($voiceCall, []);
+        }
         $voiceCall->refresh();
         $metadata = $voiceCall->metadata ?? [];
         if (! empty($metadata['non_ai_route_completed_at'])) {

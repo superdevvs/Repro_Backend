@@ -32,7 +32,7 @@ class TelnyxWebhookHandler
         if ($event->processed_at) {
             return ['status' => 'duplicate', 'event_id' => $eventId, 'voice_call_id' => $event->voice_call_id];
         }
-        $browserResult = $this->browserCalls->handleWebhook($payload);
+        $browserResult = app(VoiceVoicemailService::class)->handleWebhook($data) ?? $this->browserCalls->handleWebhook($payload);
         $result = $browserResult ?? $this->legacyProcessor->process($payload, $rawBody);
         $call = $this->findCall($data, $result['voice_call_id'] ?? null);
 

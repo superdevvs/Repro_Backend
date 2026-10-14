@@ -1,5 +1,11 @@
 <?php
 
+\Illuminate\Support\Facades\Artisan::command('voice:maintain-voicemail', function (\App\Services\Voice\VoiceVoicemailService $voicemail) {
+    $voicemail->maintain();
+    $this->info('Voicemail maintenance completed.');
+});
+\Illuminate\Support\Facades\Schedule::command('voice:maintain-voicemail')->everyMinute()->withoutOverlapping();
+
 \Illuminate\Support\Facades\Schedule::command('copilot:check-watches')->everyFiveMinutes()->withoutOverlapping();
 \Illuminate\Support\Facades\Schedule::command('copilot:prune')->dailyAt('03:35')->withoutOverlapping();
 
