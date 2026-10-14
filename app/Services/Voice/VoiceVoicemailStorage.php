@@ -36,7 +36,9 @@ class VoiceVoicemailStorage
                 throw new RuntimeException('Private recording storage unavailable.');
             }
             try {
-                $this->download($url, $temporary);
+                // Keep the PSR stream alive: its destructor owns the supplied
+                // resource and would otherwise close it before rewind/put.
+                $audioStream = $this->download($url, $temporary);
                 rewind($temporary);
                 $path = 'voice/voicemails/'.$vm->id.'/'.$vm->recording_id.'.mp3';
                 app(VoicePrivateFiles::class)->prepare('voice/voicemails/'.$vm->id);
@@ -51,11 +53,16 @@ class VoiceVoicemailStorage
 
                         return;
                     }
+                    $failure = $vm->failure;
                     $vm->update(['state' => 'saved', 'recording_path' => $path, 'saved_at' => $vm->saved_at ?? now(), 'failure' => null]);
-                    $vm->voiceCall->update(['disposition' => 'voicemail', 'recording_provider' => 'telnyx', 'needs_follow_up' => true]);
+                    $call = $vm->voiceCall->fresh();
+                    $call->update(['disposition' => 'voicemail', 'recording_provider' => 'telnyx', 'needs_follow_up' => $vm->resolved_at === null,
+                        'summary' => $failure && $call->summary === $failure ? 'Voicemail received.' : $call->summary]);
                 });
             } finally {
-                fclose($temporary);
+                if (is_resource($temporary)) {
+                    fclose($temporary);
+                }
             }
         });
     }
@@ -73,7 +80,12 @@ class VoiceVoicemailStorage
             && ! preg_match('~(?:^|/)\.\.(?:/|$)|[\\\\\x00-\x20\x7f]~', rawurldecode($parts['path'] ?? ''));
     }
 
-    protected function download(string $url, $temporary): void
+    protected function recordingClient(): \GuzzleHttp\ClientInterface
+    {
+        return new Client;
+    }
+
+    protected function download(string $url, $temporary): \Psr\Http\Message\StreamInterface
     {
         $stream = Utils::streamFor($temporary);
         $written = 0;
@@ -91,7 +103,7 @@ class VoiceVoicemailStorage
                 return $n;
             },
         ]);
-        $response = (new Client)->request('GET', $url, [
+        $response = $this->recordingClient()->request('GET', $url, [
             'allow_redirects' => false, 'connect_timeout' => 5, 'timeout' => 20,
             'verify' => true, 'cookies' => false, 'decode_content' => false, 'sink' => $sink,
             'headers' => ['Accept' => 'audio/mpeg', 'Accept-Encoding' => 'identity'],
@@ -104,5 +116,7 @@ class VoiceVoicemailStorage
         if (! $written || $response->getStatusCode() !== 200) {
             throw new RuntimeException('Empty recording download.');
         }
+
+        return $stream;
     }
 }

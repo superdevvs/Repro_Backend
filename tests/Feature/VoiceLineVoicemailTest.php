@@ -228,7 +228,12 @@ class VoiceLineVoicemailTest extends TestCase
         Http::fake(['*' => Http::response(['data' => ['download_urls' => ['mp3' => 'https://s3.amazonaws.com/telephony-recorder-prod/message.mp3?signature=temporary']]])]);
         $storage = new class(app(VoiceBrowserGateway::class)) extends VoiceVoicemailStorage
         {
-            protected function download(string $url, $temporary): void { fwrite($temporary, 'private-message'); }
+            protected function download(string $url, $temporary): \Psr\Http\Message\StreamInterface
+            {
+                fwrite($temporary, 'private-message');
+
+                return \GuzzleHttp\Psr7\Utils::streamFor($temporary);
+            }
         };
         $vm = $call->fresh()->voicemail;
         $storage->store($vm);
@@ -277,6 +282,35 @@ class VoiceLineVoicemailTest extends TestCase
         $this->assertTrue($call->fresh()->needs_follow_up);
         $this->assertDatabaseCount('scheduled_voice_calls', 0);
         Http::assertNothingSent();
+    }
+
+    public function test_real_streaming_download_keeps_the_sink_resource_open_until_private_storage_finishes(): void
+    {
+        $call = $this->incomingCall();
+        $this->route($call);
+        $this->event($call, 'call.answered');
+        $this->event($call, 'call.playback.ended', 'greeting');
+        $this->event($call, 'call.recording.saved', 'recording', ['recording_id' => 'stream-recording', 'duration_seconds' => 5]);
+        Http::swap(new \Illuminate\Http\Client\Factory);
+        Http::fake(['*' => Http::response(['data' => ['download_urls' => ['mp3' => 'https://s3.amazonaws.com/telephony-recorder-prod/message.mp3']]])]);
+        $storage = new class(app(VoiceBrowserGateway::class)) extends VoiceVoicemailStorage
+        {
+            protected function recordingClient(): \GuzzleHttp\ClientInterface
+            {
+                return new \GuzzleHttp\Client(['handler' => function ($request, array $options) {
+                    $response = new \GuzzleHttp\Psr7\Response(200, ['Content-Length' => '14']);
+                    ($options['on_headers'])($response);
+                    $options['sink']->write('stream-message');
+
+                    return new \GuzzleHttp\Promise\FulfilledPromise($response);
+                }]);
+            }
+        };
+        $vm = $call->fresh()->voicemail;
+        $storage->store($vm);
+        $this->assertSame('stream-message', Storage::disk('voice_private')->get($vm->fresh()->recording_path));
+        $this->assertSame('saved', $vm->fresh()->state);
+        Queue::assertPushed(StoreVoiceVoicemail::class, fn ($job) => $job->queue === config('voice_calls.transcript_queue'));
     }
 
     private function incomingCall(): VoiceCall
