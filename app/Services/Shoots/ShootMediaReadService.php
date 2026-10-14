@@ -460,14 +460,17 @@ class ShootMediaReadService
             // by ShootMediaDeletionPolicy (own video lane / review boundary).
             $data['can_delete'] = app(ShootMediaDeletionPolicy::class)->allows($file->shoot, $file, $actor);
             if ($this->authorizationSupport->hasRole($actor, ['editor'])) {
-                $data['can_download'] = $this->authorizationSupport->canDownloadShootMediaFile($file->shoot, $file, $actor)
-                    && ! $file->isBlockedFromDelivery();
                 $data['can_interact'] = $contractorAccess;
+                // Secondary rep roles keep the customer curation and release
+                // flags resolved above; reference access adds no write rights.
                 if (! $customerActor) {
+                    $data['can_download'] = $this->authorizationSupport->canDownloadShootMediaFile($file->shoot, $file, $actor)
+                        && ! $file->isBlockedFromDelivery();
                     $data['can_manage_visibility'] = $contractorAccess;
                     $data['can_set_hero'] = $contractorAccess;
                 }
                 if ($this->authorizationSupport->canVideoEditorReadFinalImage($file->shoot, $file, $actor)) {
+                    $data['can_download'] = $this->authorizationSupport->canDownloadShootMediaFile($file->shoot, $file, $actor);
                     $preview = \App\Http\Controllers\API\VideoEditorReferenceMediaController::fileUrl($file, $actor);
                     $original = \App\Http\Controllers\API\VideoEditorReferenceMediaController::fileUrl($file, $actor, true);
                     foreach (['url', 'thumbnail_url', 'thumb_url', 'thumb', 'grid_url', 'web_url', 'medium_url', 'medium', 'large_url', 'large', 'placeholder_url'] as $key) $data[$key] = $preview;

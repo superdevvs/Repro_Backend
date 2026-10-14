@@ -1272,10 +1272,12 @@ class ShootMediaActionsTest extends TestCase
     }
 
     #[\PHPUnit\Framework\Attributes\Test]
-    public function editor_cannot_download_archive_zip_files(): void
+    public function photo_only_editor_cannot_download_archive_zip_files(): void
     {
         Storage::fake('public');
         Storage::fake('local');
+        $this->editor->setEditingCapabilities(['photo']);
+        $this->editor->save();
         Sanctum::actingAs($this->editor);
 
         $shoot = $this->createShoot([
@@ -1301,10 +1303,12 @@ class ShootMediaActionsTest extends TestCase
     }
 
     #[\PHPUnit\Framework\Attributes\Test]
-    public function editor_cannot_download_selected_files_zip(): void
+    public function photo_only_editor_cannot_download_selected_files_zip(): void
     {
         Storage::fake('public');
         Storage::fake('local');
+        $this->editor->setEditingCapabilities(['photo']);
+        $this->editor->save();
         Sanctum::actingAs($this->editor);
 
         $shoot = $this->createShoot([
@@ -1361,10 +1365,12 @@ class ShootMediaActionsTest extends TestCase
     }
 
     #[\PHPUnit\Framework\Attributes\Test]
-    public function editor_cannot_download_an_edited_single_file(): void
+    public function photo_only_editor_cannot_download_an_edited_single_file(): void
     {
         Storage::fake('public');
         Storage::fake('local');
+        $this->editor->setEditingCapabilities(['photo']);
+        $this->editor->save();
         Sanctum::actingAs($this->editor);
 
         $shoot = $this->createShoot([
@@ -1385,6 +1391,35 @@ class ShootMediaActionsTest extends TestCase
         $response = $this->getJson('/api/shoots/'.$shoot->id.'/media/'.$file->id.'/download');
 
         $response->assertForbidden();
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
+    public function unassigned_video_editor_cannot_download_final_images_via_archive_selected_or_single_endpoints(): void
+    {
+        Storage::fake('public');
+        Storage::fake('local');
+        $this->editor->setEditingCapabilities(['video']);
+        $this->editor->save();
+        Sanctum::actingAs($this->editor);
+
+        $otherEditor = User::factory()->create(['role' => 'editor']);
+        $shoot = $this->createShoot(['editor_id' => $otherEditor->id]);
+        $originalPath = 'shoots/'.$shoot->id.'/completed/unassigned-video-editor-final.jpg';
+        Storage::disk('public')->put($originalPath, 'unassigned-video-editor-final-bytes');
+        $file = $this->createShootFile($shoot, [
+            'filename' => 'unassigned-video-editor-final.jpg',
+            'stored_filename' => 'unassigned-video-editor-final.jpg',
+            'path' => $originalPath,
+            'storage_path' => $originalPath,
+            'media_type' => 'edited',
+            'workflow_stage' => ShootFile::STAGE_COMPLETED,
+        ]);
+
+        $this->getJson('/api/shoots/'.$shoot->id.'/media/download-zip?type=edited&size=small')->assertForbidden();
+        $this->postJson('/api/shoots/'.$shoot->id.'/files/download', [
+            'file_ids' => [$file->id], 'size' => 'original',
+        ])->assertForbidden();
+        $this->getJson('/api/shoots/'.$shoot->id.'/media/'.$file->id.'/download')->assertForbidden();
     }
 
     #[\PHPUnit\Framework\Attributes\Test]

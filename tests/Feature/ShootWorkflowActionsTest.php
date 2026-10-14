@@ -129,9 +129,14 @@ class ShootWorkflowActionsTest extends TestCase
         Event::fake([ShootActivityBroadcast::class]);
         Sanctum::actingAs($this->client);
 
+        $scheduledAt = now('UTC')->addDay();
         $shoot = $this->makeShoot([
             'status' => Shoot::STATUS_SCHEDULED,
             'workflow_status' => Shoot::STATUS_SCHEDULED,
+            'scheduled_at' => $scheduledAt,
+            'timezone' => 'UTC',
+            'scheduled_date' => $scheduledAt->toDateString(),
+            'time' => $scheduledAt->format('H:i'),
         ]);
 
         $response = $this->postJson("/api/shoots/{$shoot->id}/request-cancellation", [

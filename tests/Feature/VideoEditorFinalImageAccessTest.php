@@ -106,6 +106,29 @@ class VideoEditorFinalImageAccessTest extends TestCase
         $this->assertTrue($policy->canVideoEditorReadFinalImage($shoot->fresh(), $files[0], $video));
     }
 
+    public function test_secondary_rep_hidden_final_image_download_flag_matches_reference_access_and_revocation(): void
+    {
+        [$shoot, $item, $video, $photo, $files] = $this->fixture();
+        $video->forceFill(['secondary_roles' => ['sales_rep']])->save();
+        $shoot->update(['rep_id' => $video->id]);
+        $image = $files[0];
+        $image->update(['is_hidden' => true]);
+        Sanctum::actingAs($video->fresh());
+
+        $endpoint = "/api/shoots/{$shoot->id}/files?type=edited&include_hidden=1";
+        $row = collect($this->getJson($endpoint)->assertOk()->json('data'))->firstWhere('id', $image->id);
+        $this->assertSame('customer', $row['media_curation_scope']);
+        $this->assertTrue($row['can_manage_visibility']);
+        $this->assertTrue($row['can_download']);
+        $this->get($row['original_url'])->assertOk();
+
+        $item->update(['video_editor_id' => $photo->id]);
+        $this->get($row['original_url'])->assertForbidden();
+        $fresh = collect($this->getJson($endpoint)->assertOk()->json('data'))->firstWhere('id', $image->id);
+        $this->assertFalse($fresh['can_download']);
+        $this->assertNull($fresh['original_url']);
+    }
+
     public function test_raw_photo_and_existing_photo_editor_permissions_are_unchanged(): void
     {
         [$shoot, , $video, $photo, $files] = $this->fixture();

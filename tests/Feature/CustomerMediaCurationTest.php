@@ -128,6 +128,9 @@ class CustomerMediaCurationTest extends TestCase
     public function test_secondary_rep_preserves_only_actual_contractor_files_even_with_another_rep(string $role, bool $isShootRep): void
     {
         $actor = $this->actor('secondary_'.$role);
+        if ($role === 'editor') {
+            $actor->forceFill(['metadata' => ['editing_capabilities' => ['photo']]])->save();
+        }
         $other = User::factory()->create(['role' => $role]);
         $this->shoot->forceFill([$role === 'photographer' ? 'photographer_id' : 'editor_id' => $actor->id,
             'rep_id' => $isShootRep ? $actor->id : User::factory()->create(['role' => 'salesRep'])->id])->save();
