@@ -8,5 +8,5 @@ class VoiceLinePolicy extends Model
 {
     protected $guarded = ['id'];
 
-    protected $casts = ['recipient_ids' => 'array', 'weekly_hours' => 'array'];
+    protected $casts = ['recipient_roles' => 'array', 'recipient_ids' => 'array', 'weekly_hours' => 'array'];
 }

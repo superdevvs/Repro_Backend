@@ -45,13 +45,15 @@ class VoiceNumberController extends Controller
             'voice_ai_enabled' => ['sometimes', 'nullable', 'boolean'],
             'voice_assistant_id_override' => ['sometimes', 'nullable', 'string', 'max:255'],
             'sms_ai_enabled' => ['sometimes', 'nullable', 'boolean'],
-            'line_policy' => ['sometimes', 'array:mode,recipient_role,recipient_ids,timezone,weekly_hours'],
-            'line_policy.mode' => ['required_with:line_policy', 'in:staff_voicemail,sms_only'],
+            'line_policy' => ['sometimes', 'array:mode,recipient_role,recipient_roles,recipient_ids,timezone,weekly_hours'],
+            'line_policy.mode' => ['required_with:line_policy', 'in:staff_voicemail,sms_only,robbie'],
             'line_policy.recipient_role' => ['nullable', 'in:superadmin,editing_manager'],
+            'line_policy.recipient_roles' => ['sometimes', 'array', 'max:2'],
+            'line_policy.recipient_roles.*' => ['string', 'distinct', 'in:superadmin,editing_manager'],
             'line_policy.recipient_ids' => ['sometimes', 'array'],
             'line_policy.recipient_ids.*' => ['integer', 'distinct', 'exists:users,id'],
             'line_policy.timezone' => ['required_with:line_policy', 'timezone:all'],
-            'line_policy.weekly_hours' => ['required_with:line_policy', 'array:mon,tue,wed,thu,fri,sat,sun'],
+            'line_policy.weekly_hours' => ['present_with:line_policy', 'array:mon,tue,wed,thu,fri,sat,sun'],
             'line_policy.weekly_hours.*' => ['array', 'max:4'],
             'line_policy.weekly_hours.*.*' => ['array:start,end'],
             'line_policy.weekly_hours.*.*.start' => ['required', 'date_format:H:i'],
@@ -68,16 +70,18 @@ class VoiceNumberController extends Controller
                     abort_unless($slot['start'] < $slot['end'], 422, 'Opening windows must end after they start.');
                 }
             }
-            $policyData['recipient_role'] = $policyData['recipient_role'] ?? null;
+            $policyData['recipient_roles'] = $policyData['recipient_roles'] ?? array_values(array_filter([$policyData['recipient_role'] ?? null]));
+            $policyData['recipient_role'] = $policyData['recipient_roles'][0] ?? null;
             $policyData['recipient_ids'] = $policyData['recipient_ids'] ?? [];
             abort_if($phone === '+18888041663' && $policyData['mode'] !== 'sms_only', 422, 'Robbie remains SMS-only.');
-            if ($policyData['mode'] === 'sms_only') {
+            if ($policyData['mode'] !== 'staff_voicemail') {
                 $policyData['recipient_ids'] = [];
                 $policyData['recipient_role'] = null;
+                $policyData['recipient_roles'] = [];
             }
-            $data['voice_ai_enabled'] = false;
+            $data['voice_ai_enabled'] = $policyData['mode'] === 'robbie';
         }
-        abort_if(($data['voice_ai_enabled'] ?? false) && app(VoiceLinePolicyService::class)->forNumber($phone), 422, 'This line uses staff voicemail or SMS-only routing.');
+        abort_if(($data['voice_ai_enabled'] ?? false) && (($policyData['mode'] ?? app(VoiceLinePolicyService::class)->forNumber($phone)?->mode) !== 'robbie') && app(VoiceLinePolicyService::class)->forNumber($phone), 422, 'This line uses staff voicemail or SMS-only routing.');
         $canonical = LockedWrite::run(fn () => DB::transaction(function () use ($smsNumber, $numbers, $data, $phone, $policyData): SmsNumber {
             $duplicates = $numbers->matching($smsNumber->phone_number, $smsNumber->provider);
             abort_if($duplicates->isEmpty(), 422, 'This number has no valid phone address.');

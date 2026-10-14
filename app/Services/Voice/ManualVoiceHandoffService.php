@@ -7,6 +7,7 @@ use App\Jobs\SendIncomingCallToRobbie;
 use App\Models\User;
 use App\Models\VoiceBrowserCommand;
 use App\Models\VoiceIncomingOffer;
+use App\Models\VoiceCall;
 use App\Services\TelnyxAi\VoiceNumberSettingsResolver;
 use App\Services\TelnyxAi\VoiceSettingsService;
 use App\Support\LockedWrite;
@@ -16,6 +17,30 @@ use RuntimeException;
 /** A staff decision on one ringing call; never changes automatic line routing. */
 class ManualVoiceHandoffService
 {
+    /** Automatic Robbie lines reuse the durable answer/start lifecycle, without staff invitations. */
+    public function beginAutomatic(VoiceCall $call): VoiceCall
+    {
+        if ($call->ended_at || $call->voicemail) return $call;
+        $numbers = app(VoiceNumberSettingsResolver::class);
+        $assistant = $numbers->forCall($call)['assistant_id'];
+        if (! $numbers->aiEnabledForCall($call) || ! filled($assistant)) {
+            return app(VoiceVoicemailService::class)->begin($call, false);
+        }
+        $calls = app(\App\Services\TelnyxAi\TelnyxVoiceCallService::class);
+        $variables = $calls->buildDynamicVariables($call, $calls->resolveCaller((string) $call->from_phone));
+        unset($variables['support_handoff_number']);
+        $variables['business_line'] = $call->to_phone;
+        $variables['call_intent'] = 'general_support';
+        $state = $call->client_state ?: base64_encode(json_encode(['voice_call_id' => $call->id, 'source' => 'robbie_line']));
+        $offer = LockedWrite::run(fn () => VoiceIncomingOffer::firstOrCreate(['voice_call_id' => $call->id], [
+            'status' => 'robbie_pending', 'eligible_user_ids' => [], 'expires_at' => now()->addSeconds(45),
+            'metadata' => ['automatic_robbie' => true, 'robbie_assistant_id' => $assistant, 'robbie_variables' => $variables, 'robbie_client_state' => $state],
+        ]));
+        if ($offer->status === 'robbie_pending') SendIncomingCallToRobbie::dispatch($offer->id);
+
+        return $call->fresh();
+    }
+
     public function available(VoiceIncomingOffer $offer, User $user): bool
     {
         $call = $offer->voiceCall;
@@ -82,7 +107,7 @@ class ManualVoiceHandoffService
                 if ($call->ended_at) return;
                 $call->update(['assistant_id' => $offer->metadata['robbie_assistant_id'], 'handled_by' => 'ai', 'status' => 'ai_active', 'ai_current_state' => 'active',
                     'telnyx_conversation_id' => $result['conversation_id'] ?? $call->telnyx_conversation_id,
-                    'metadata' => array_merge($call->metadata ?? [], ['manual_robbie_accepted_at' => now()->toIso8601String()])]);
+                    'metadata' => array_merge($call->metadata ?? [], [empty($offer->metadata['automatic_robbie']) ? 'manual_robbie_accepted_at' : 'automatic_robbie_accepted_at' => now()->toIso8601String()])]);
                 $offer->update(['status' => 'robbie']);
             });
         });

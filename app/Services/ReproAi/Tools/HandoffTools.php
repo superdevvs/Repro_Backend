@@ -40,6 +40,7 @@ class HandoffTools
         if ($voiceCallId) {
             $voiceCall = VoiceCall::query()->find($voiceCallId);
             if ($voiceCall) {
+                if (app(\App\Services\Voice\VoiceLinePolicyService::class)->forCall($voiceCall)) return $this->policyFollowUp($voiceCall, (string) ($params['reason'] ?? 'ai_handoff_requested'));
                 $scheduled = $this->scheduledCalls->createCallbackForCall(
                     $voiceCall,
                     (string) ($params['reason'] ?? 'ai_handoff_requested')
@@ -90,6 +91,11 @@ class HandoffTools
             return ['ok' => false, 'error' => 'trusted_call_not_found'];
         }
 
+        if (app(\App\Services\Voice\VoiceLinePolicyService::class)->forCall($voiceCall)) {
+            $result = $this->policyFollowUp($voiceCall, (string) ($params['reason'] ?? 'caller_requested_staff'));
+
+            return array_merge($result, ['ok' => false, 'error' => 'live_transfer_unavailable', 'message' => 'A Dashboard follow-up was recorded. Do not promise a live transfer or an automatic callback.']);
+        }
         $transferOk = $this->telnyxCalls->transfer($voiceCall, $to);
         $transferStatus = $voiceCall->fresh()->last_telnyx_command_status['status'] ?? null;
 
@@ -141,5 +147,16 @@ class HandoffTools
                 'call_control_id' => $callControlId,
             ],
         ];
+    }
+    private function policyFollowUp(VoiceCall $call, string $reason): array
+    {
+        \App\Support\LockedWrite::run(function () use ($call, $reason): void {
+            $call->update(['needs_follow_up' => true, 'escalation_reason' => $reason]);
+            \App\Models\VoiceFollowUpTask::firstOrCreate(['voice_call_id' => $call->id], [
+                'title' => 'Follow up with '.$call->from_phone, 'status' => 'open', 'due_at' => now()->addHours(4),
+            ]);
+        });
+
+        return ['ok' => true, 'result' => ['handoff_requested' => true, 'voice_call_id' => $call->id, 'automatic_callback' => false]];
     }
 }

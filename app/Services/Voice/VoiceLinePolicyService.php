@@ -52,10 +52,19 @@ class VoiceLinePolicyService
 
         return User::query()->where(function ($q) use ($policy): void {
             $q->whereIn('id', $policy->recipient_ids ?? []);
-            if ($policy->recipient_role) {
-                $q->orWhere('role', $policy->recipient_role)->orWhereJsonContains('secondary_roles', $policy->recipient_role);
+            foreach ($policy->recipient_roles ?? array_filter([$policy->recipient_role]) as $role) {
+                $q->orWhere('role', $role)->orWhereJsonContains('secondary_roles', $role);
             }
         })->get()->filter(fn (User $user) => $user->isAccountEligibleForAuthentication())->values();
+    }
+
+    public function voicemailRecipients(VoiceLinePolicy $policy): Collection
+    {
+        if ($policy->mode !== 'robbie') return $this->recipients($policy);
+
+        return User::where(fn ($q) => $q->where('role', 'superadmin')->orWhereJsonContains('secondary_roles', 'superadmin'))
+            ->get()->filter(fn ($user) => $user->isAccountEligibleForAuthentication()
+                && app(VoiceBrowserSessionService::class)->canOperate($user))->values();
     }
 
     public function registered(User $user): bool
@@ -111,7 +120,7 @@ class VoiceLinePolicyService
         $greetings = collect(['office_greeting', 'closed_greeting'])->mapWithKeys(fn ($key) => [$key => $policy->$key && Storage::disk('voice_private')->exists($policy->$key)]);
         $last = VoiceCallEvent::where('provider', 'telnyx')->whereNotNull('processed_at')->latest('received_at')->first();
 
-        return array_merge($policy->only(['mode', 'recipient_role', 'recipient_ids', 'timezone', 'weekly_hours']), [
+        return array_merge($policy->only(['mode', 'recipient_role', 'recipient_roles', 'recipient_ids', 'timezone', 'weekly_hours']), [
             'staff' => $staff, 'greetings' => $greetings, 'open_now' => $this->open($policy),
             'readiness' => [
                 'recipients' => $staff->isNotEmpty(), 'calling_permission' => $staff->isNotEmpty() && $staff->every('calling_permission'),

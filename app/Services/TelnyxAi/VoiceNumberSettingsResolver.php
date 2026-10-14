@@ -22,6 +22,7 @@ class VoiceNumberSettingsResolver
         $number = $rows->first();
         $settings = $this->settings->all();
         $override = $this->voiceOverride($rows);
+        $line = app(\App\Services\Voice\VoiceLinePolicyService::class)->forNumber($normalized);
         $assistant = trim((string) ($number?->voice_assistant_id_override ?: ($settings['assistant_id'] ?? '')));
 
         return [
@@ -29,7 +30,7 @@ class VoiceNumberSettingsResolver
             'phone_number' => $normalized,
             'voice_ai_enabled' => $override,
             'enabled' => (bool) ($settings['enabled'] ?? false) && $override !== false
-                && ! app(\App\Services\Voice\VoiceLinePolicyService::class)->forNumber($normalized),
+                && (! $line || $line->mode === 'robbie'),
             'assistant_id' => $assistant !== '' ? $assistant : null,
         ];
     }

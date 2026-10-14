@@ -27,6 +27,9 @@ class VoiceRoutingService
 
                 return $voiceCall->fresh();
             }
+            if ($line->mode === 'robbie') {
+                return app(\App\Services\Voice\ManualVoiceHandoffService::class)->beginAutomatic($voiceCall);
+            }
             $open = app(\App\Services\Voice\VoiceLinePolicyService::class)->open($line);
             if ($open && app(\App\Services\Voice\VoiceBrowserCallService::class)->offerInbound($voiceCall)) {
                 return $voiceCall->fresh();
@@ -120,7 +123,12 @@ class VoiceRoutingService
 
     public function transferToStaff(VoiceCall $voiceCall, string $reason): VoiceCall
     {
-        if (app(\App\Services\Voice\VoiceLinePolicyService::class)->forCall($voiceCall)) {
+        if ($policy = app(\App\Services\Voice\VoiceLinePolicyService::class)->forCall($voiceCall)) {
+            if ($policy->mode === 'robbie') {
+                $voiceCall->update(['needs_follow_up' => true, 'escalation_reason' => $reason]);
+
+                return $voiceCall->fresh();
+            }
             return $this->beginInboundCall($voiceCall, []);
         }
         $to = (string) ($this->settings->all()['support_handoff_number'] ?? '');
@@ -219,7 +227,8 @@ class VoiceRoutingService
     /** Route a disabled line without invoking AI or scheduling an AI callback. */
     public function routeWithoutAi(VoiceCall $voiceCall, string $reason = 'voice_ai_disabled', bool $skipBrowser = false): VoiceCall
     {
-        if (app(\App\Services\Voice\VoiceLinePolicyService::class)->forCall($voiceCall)) {
+        if ($policy = app(\App\Services\Voice\VoiceLinePolicyService::class)->forCall($voiceCall)) {
+            if ($policy->mode === 'robbie') return app(\App\Services\Voice\VoiceVoicemailService::class)->begin($voiceCall, false);
             return $skipBrowser ? $this->resumeAfterTeamOffer($voiceCall) : $this->beginInboundCall($voiceCall, []);
         }
         $voiceCall->refresh();

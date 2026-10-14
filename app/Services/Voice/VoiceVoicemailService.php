@@ -20,11 +20,11 @@ class VoiceVoicemailService
     public function begin(VoiceCall $call, bool $closed): VoiceCall
     {
         $policy = $this->policies->forCall($call);
-        if (! $policy || $policy->mode !== 'staff_voicemail' || $call->ended_at) {
+        if (! $policy || ! in_array($policy->mode, ['staff_voicemail', 'robbie'], true) || $call->ended_at) {
             return $call;
         }
         $vm = LockedWrite::run(fn () => VoiceVoicemail::firstOrCreate(['voice_call_id' => $call->id], [
-            'phone_number' => $policy->phone_number, 'recipient_ids' => $this->policies->recipients($policy)->pluck('id')->all(),
+            'phone_number' => $policy->phone_number, 'recipient_ids' => $this->policies->voicemailRecipients($policy)->pluck('id')->all(),
             'greeting_kind' => $closed ? 'closed' : 'office', 'expires_at' => now()->addDays(90),
         ]));
         VoiceLocks::lock('voicemail:'.$vm->id, 60)->block(5, function () use ($call, $vm): void {

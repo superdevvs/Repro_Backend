@@ -16,8 +16,8 @@ use Illuminate\Support\Facades\DB;
 /** Explicit cutover preparation only. Does not submit/activate ports or attach provider numbers. */
 class ConfigureBusinessVoiceLines extends Command
 {
-    protected $signature = 'voice:configure-business-lines {office : Validated office MP3 path} {closed : Validated after-hours MP3 path} {--support-email= : Verified active support account} {--canary= : Separate owned test number}';
-    protected $description = 'Configure approved Dashboard-only business lines and their private greetings';
+    protected $signature = 'voice:configure-business-lines {office : Validated office MP3 path} {closed : Validated after-hours MP3 path} {--support-email= : Verified active Cherisea account for the main line} {--canary= : Separate owned test number}';
+    protected $description = 'Configure approved business line groups, Robbie support, and private greetings';
 
     public function handle(VoiceGreetingService $greetings, VoiceNumberSettingsResolver $numbers, RolePermissionService $permissions): int
     {
@@ -43,27 +43,27 @@ class ConfigureBusinessVoiceLines extends Command
         $office = $greetings->store($this->argument('office'));
         $closed = $greetings->store($this->argument('closed'));
         $lines = [
-            ['+12027803332', 'Editing', 'Asia/Kolkata', 'editing_manager', []],
-            ['+12028681663', 'Main', 'America/New_York', 'superadmin', []],
-            ['+18886567627', 'Support', 'Europe/London', null, [$support->id]],
+            ['+12027803332', 'Editing', 'Asia/Kolkata', ['editing_manager', 'superadmin'], [], 'staff_voicemail'],
+            ['+12028681663', 'Main', 'America/New_York', ['superadmin'], [$support->id], 'staff_voicemail'],
+            ['+18886567627', 'Support', 'UTC', [], [], 'robbie'],
         ];
         if ($canary) {
-            $lines[] = [$canary, 'Voice readiness test', 'Asia/Kolkata', 'superadmin', []];
+            $lines[] = [$canary, 'Voice readiness test', 'Asia/Kolkata', ['superadmin'], [], 'staff_voicemail'];
         }
         LockedWrite::run(fn () => DB::transaction(function () use ($lines, $numbers, $permissions, $office, $closed): void {
-            foreach ($lines as [$phone, $label, $timezone, $role, $ids]) {
+            foreach ($lines as [$phone, $label, $timezone, $roles, $ids, $mode]) {
                 if ($numbers->matching($phone)->isEmpty()) {
                     SmsNumber::create(['phone_number' => $phone, 'provider' => 'TELNYX', 'label' => $label,
                         'owner_type' => 'SYSTEM', 'is_default' => false, 'voice_ai_enabled' => false, 'sms_ai_enabled' => false]);
                 }
-                SmsNumber::whereIn('id', $numbers->matching($phone)->modelKeys())->update(['voice_ai_enabled' => false]);
-                VoiceLinePolicy::updateOrCreate(['phone_number' => $phone], ['mode' => 'staff_voicemail', 'recipient_role' => $role,
+                SmsNumber::whereIn('id', $numbers->matching($phone)->modelKeys())->update(['voice_ai_enabled' => $mode === 'robbie']);
+                VoiceLinePolicy::updateOrCreate(['phone_number' => $phone], ['mode' => $mode, 'recipient_role' => $roles[0] ?? null, 'recipient_roles' => $roles,
                     'recipient_ids' => $ids, 'timezone' => $timezone,
-                    'weekly_hours' => array_merge(array_fill_keys(['mon', 'tue', 'wed', 'thu', 'fri'], [['start' => '09:00', 'end' => '18:00']]), ['sat' => [], 'sun' => []]),
+                    'weekly_hours' => $mode === 'robbie' ? [] : array_merge(array_fill_keys(['mon', 'tue', 'wed', 'thu', 'fri'], [['start' => '09:00', 'end' => '18:00']]), ['sat' => [], 'sun' => []]),
                     'office_greeting' => $office, 'closed_greeting' => $closed]);
             }
             VoiceLinePolicy::updateOrCreate(['phone_number' => '+18888041663'], ['mode' => 'sms_only', 'timezone' => 'UTC',
-                'recipient_role' => null, 'recipient_ids' => [], 'weekly_hours' => [], 'office_greeting' => null, 'closed_greeting' => null]);
+                'recipient_role' => null, 'recipient_roles' => [], 'recipient_ids' => [], 'weekly_hours' => [], 'office_greeting' => null, 'closed_greeting' => null]);
             SmsNumber::whereIn('id', $numbers->matching('+18888041663')->modelKeys())->update(['voice_ai_enabled' => false]);
             $editing = User::where('role', 'editing_manager')->orWhereJsonContains('secondary_roles', 'editing_manager')->get()
                 ->filter(fn ($u) => $u->isAccountEligibleForAuthentication() && $u->role !== 'superadmin');

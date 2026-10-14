@@ -264,7 +264,9 @@ class VoiceLineVoicemailTest extends TestCase
             $this->assertTrue($robbie->fresh()->is_default);
             $this->assertFalse($robbie->fresh()->voice_ai_enabled);
             $this->assertTrue(app(\App\Services\Voice\VoiceBrowserSessionService::class)->canOperate($this->staff->fresh()));
-            $this->assertSame([$support->id], app(VoiceLinePolicyService::class)->forNumber('+18886567627')->recipient_ids);
+            $this->assertSame([$support->id], app(VoiceLinePolicyService::class)->forNumber('+12028681663')->recipient_ids);
+            $this->assertSame('robbie', app(VoiceLinePolicyService::class)->forNumber('+18886567627')->mode);
+            $this->assertSame(['editing_manager', 'superadmin'], app(VoiceLinePolicyService::class)->forNumber('+12027803332')->recipient_roles);
             $this->assertSame('sms_only', app(VoiceLinePolicyService::class)->forNumber('+18888041663')->mode);
             $this->assertSame(hash('sha256', file_get_contents($source)), basename($this->policy->fresh()->office_greeting, '.mp3'));
             $stored = Storage::disk('voice_private')->path($this->policy->fresh()->office_greeting);
@@ -311,6 +313,105 @@ class VoiceLineVoicemailTest extends TestCase
         $this->assertSame('stream-message', Storage::disk('voice_private')->get($vm->fresh()->recording_path));
         $this->assertSame('saved', $vm->fresh()->state);
         Queue::assertPushed(StoreVoiceVoicemail::class, fn ($job) => $job->queue === config('voice_calls.transcript_queue'));
+    }
+
+
+    public function test_combined_roles_are_dynamic_unique_and_main_adds_only_the_selected_staff(): void
+    {
+        $admin = User::factory()->create(['role' => 'superadmin']);
+        $support = User::factory()->create(['role' => 'admin']);
+        $dual = User::factory()->create(['role' => 'editing_manager', 'secondary_roles' => ['superadmin']]);
+        $this->policy->update(['recipient_role' => 'editing_manager', 'recipient_roles' => ['editing_manager', 'superadmin'], 'recipient_ids' => [$dual->id]]);
+        $lines = app(VoiceLinePolicyService::class);
+        $this->assertEqualsCanonicalizing([$this->staff->id, $admin->id, $dual->id], $lines->recipients($this->policy->fresh())->pluck('id')->all());
+        $later = User::factory()->create(['role' => 'superadmin']);
+        $this->assertTrue($lines->recipients($this->policy->fresh())->contains('id', $later->id));
+        $this->policy->update(['recipient_roles' => ['superadmin'], 'recipient_ids' => [$support->id]]);
+        $this->assertEqualsCanonicalizing([$admin->id, $dual->id, $later->id, $support->id], $lines->recipients($this->policy->fresh())->pluck('id')->all());
+        $this->assertFalse($lines->canAccess($this->staff, $this->incomingCall()));
+    }
+
+    public function test_combined_group_busy_staff_are_skipped_and_first_answer_wins_across_roles_and_tabs(): void
+    {
+        $admin = User::factory()->create(['role' => 'superadmin']);
+        $adminDevice = $this->device($admin);
+        $editDevice = $this->device($this->staff);
+        $secondEditDevice = $this->device($this->staff);
+        $this->policy->update(['recipient_roles' => ['editing_manager', 'superadmin']]);
+        $call = $this->incomingCall(); $this->route($call);
+        $offer = VoiceIncomingOffer::sole();
+        $this->assertEqualsCanonicalizing([$admin->id, $this->staff->id], $offer->eligible_user_ids);
+        $this->actingAs($this->staff, 'sanctum')->postJson('/api/voice/incoming-offers/'.$offer->id.'/claim', [
+            'device' => 'browser', 'session_id' => $editDevice->id, 'idempotency_key' => 'editing-wins',
+        ])->assertOk();
+        $this->actingAs($admin, 'sanctum')->postJson('/api/voice/incoming-offers/'.$offer->id.'/claim', [
+            'device' => 'browser', 'session_id' => $adminDevice->id, 'idempotency_key' => 'late-admin',
+        ])->assertConflict()->assertJsonPath('incoming_offer.claimed_by.id', $this->staff->id);
+        $this->actingAs($this->staff, 'sanctum')->postJson('/api/voice/incoming-offers/'.$offer->id.'/claim', [
+            'device' => 'browser', 'session_id' => $secondEditDevice->id, 'idempotency_key' => 'late-tab',
+        ])->assertConflict();
+        $this->assertDatabaseCount('voice_browser_calls', 1);
+        $this->assertSame($this->staff->id, $offer->fresh()->claimed_by_id);
+        $next = $this->incomingCall(); $this->route($next);
+        $this->assertSame([$admin->id], VoiceIncomingOffer::where('voice_call_id', $next->id)->sole()->eligible_user_ids);
+        Http::assertNotSent(fn ($r) => str_contains($r->url(), '/calls/'.$call->call_control_id.'/actions/hangup'));
+    }
+
+    public function test_robbie_line_answers_without_staff_invites_even_when_closed_and_retries_start_once(): void
+    {
+        config(['services.telnyx.voice.assistant_id' => 'robbie']);
+        $this->policy->update(['mode' => 'robbie', 'recipient_roles' => [], 'recipient_ids' => [], 'weekly_hours' => []]);
+        $this->device($this->staff);
+        $call = $this->incomingCall(); $this->route($call); $this->route($call);
+        $offer = VoiceIncomingOffer::sole();
+        $this->assertSame([], $offer->eligible_user_ids);
+        $this->assertSame('robbie_pending', $offer->status);
+        $this->actingAs($this->staff, 'sanctum')->getJson('/api/voice/incoming-offers')->assertOk()->assertJsonCount(0, 'data');
+        $handoff = app(\App\Services\Voice\ManualVoiceHandoffService::class);
+        try { $handoff->resume($offer); $this->fail('Wait for answer'); } catch (\RuntimeException $e) { $this->assertStringContainsString('confirm answer', $e->getMessage()); }
+        Http::assertNotSent(fn ($r) => str_ends_with($r->url(), '/ai_assistant_start'));
+        $call->update(['answered_at' => now()]);
+        $handoff->resume($offer); $handoff->resume($offer);
+        $this->assertCount(1, Http::recorded(fn ($r) => str_ends_with($r->url(), '/ai_assistant_start')));
+        $this->assertTrue(isset($call->fresh()->metadata['automatic_robbie_accepted_at']));
+        $this->assertFalse(isset($call->fresh()->metadata['manual_robbie_accepted_at']));
+        Http::assertSent(fn ($r) => str_ends_with($r->url(), '/ai_assistant_start') && $r['assistant']['dynamic_variables']['voice_call_id'] === $call->id && !isset($r['assistant']['dynamic_variables']['support_handoff_number']));
+        $this->assertNull($call->fresh()->voicemail);
+        $this->assertSame('ai', $call->fresh()->handled_by);
+        Http::assertNotSent(fn ($r) => str_ends_with($r->url(), '/v2/calls') || str_ends_with($r->url(), '/transfer'));
+    }
+
+    public function test_disabled_robbie_uses_voicemail_for_superadmins_and_never_schedules_or_transfers(): void
+    {
+        config(['services.telnyx.voice.enabled' => false]);
+        $admin = User::factory()->create(['role' => 'superadmin']);
+        $this->policy->update(['mode' => 'robbie', 'recipient_ids' => [], 'recipient_roles' => []]);
+        $call = $this->incomingCall(); $this->route($call);
+        $this->assertSame([$admin->id], $call->fresh()->voicemail->recipient_ids);
+        $this->assertDatabaseCount('voice_incoming_offers', 0);
+        $tools = app(\App\Services\ReproAi\Tools\HandoffTools::class);
+        $context = ['channel' => 'VOICE', 'voice_call_id' => $call->id, 'call_control_id' => $call->call_control_id];
+        $this->assertFalse($tools->transferToStaff(['reason' => 'human'], $context)['ok']);
+        $tools->handoffToStaff(['reason' => 'human'], $context);
+        $this->assertDatabaseCount('voice_follow_up_tasks', 1);
+        $this->assertDatabaseCount('scheduled_voice_calls', 0);
+        $this->assertNoAiOrForward();
+    }
+
+    public function test_number_api_supports_combined_roles_and_robbie_but_preserves_sms_only_line(): void
+    {
+        $admin = User::factory()->create(['role' => 'superadmin']);
+        $number = SmsNumber::create(['phone_number' => '+12027803332', 'provider' => 'TELNYX', 'owner_type' => 'SYSTEM']);
+        $this->actingAs($admin, 'sanctum')->patchJson('/api/voice/numbers/'.$number->id, ['line_policy' => [
+            'mode' => 'staff_voicemail', 'recipient_roles' => ['editing_manager', 'superadmin'], 'recipient_ids' => [], 'timezone' => 'Asia/Kolkata', 'weekly_hours' => $this->policy->weekly_hours,
+        ]])->assertOk()->assertJsonPath('line_policy.recipient_roles', ['editing_manager', 'superadmin']);
+        $this->patchJson('/api/voice/numbers/'.$number->id, ['line_policy' => [
+            'mode' => 'robbie', 'recipient_roles' => ['editing_manager'], 'recipient_ids' => [$this->staff->id], 'timezone' => 'UTC', 'weekly_hours' => [],
+        ]])->assertOk()->assertJsonPath('voice_ai_enabled', true)->assertJsonPath('line_policy.recipient_ids', []);
+        $this->assertTrue(app(\App\Services\TelnyxAi\VoiceNumberSettingsResolver::class)->forNumber('+12027803332')['enabled']);
+        $sms = SmsNumber::create(['phone_number' => '+18888041663', 'provider' => 'TELNYX', 'owner_type' => 'SYSTEM', 'sms_ai_enabled' => true]);
+        $this->patchJson('/api/voice/numbers/'.$sms->id, ['line_policy' => ['mode' => 'robbie', 'timezone' => 'UTC', 'weekly_hours' => []]])->assertStatus(422);
+        $this->assertTrue($sms->fresh()->sms_ai_enabled);
     }
 
     private function incomingCall(): VoiceCall

@@ -58,7 +58,7 @@ class VoiceBrowserCallService
                 'transcription_pending' => (bool) ($call->metadata['browser_transcription_pending'] ?? false)],
             'capabilities' => [
                 'can_takeover' => $operate && ! $call->voicemail && $this->callIsLive($call) && $call->status !== 'human_handoff' && filled($call->call_control_id) && ! $this->active($call)
-                    && ! VoiceIncomingOffer::where('voice_call_id', $call->id)->where('status', 'waiting')->exists(),
+                    && ! VoiceIncomingOffer::where('voice_call_id', $call->id)->whereIn('status', ['waiting', 'robbie_pending'])->exists(),
                 'can_monitor' => (bool) ($supervise && $active),
                 'can_whisper' => (bool) ($supervise && $active),
                 'can_barge' => (bool) ($supervise && $active),
@@ -124,7 +124,7 @@ class VoiceBrowserCallService
         $hash = $this->hash(array_merge($data, ['voice_call_id' => $call->id]));
 
         return VoiceLocks::lock('voice-browser-user:'.$user->id, 60)->block(5, fn () => VoiceLocks::lock('voice-browser-device:'.$session->id, 60)->block(5, fn () => VoiceLocks::lock('voice-browser-import:'.$call->id, 60)->block(5, function () use ($call, $user, $session, $data, $hash): VoiceBrowserCall {
-            abort_if(VoiceIncomingOffer::where('voice_call_id', $call->id)->where('status', 'waiting')->exists(), 409, 'Answer this call from its shared incoming offer.');
+            abort_if(VoiceIncomingOffer::where('voice_call_id', $call->id)->whereIn('status', ['waiting', 'robbie_pending'])->exists(), 409, 'Answer this call from its shared incoming offer.');
             $existing = $this->replay($user, $data['idempotency_key'], $hash);
             if ($existing) {
                 $this->kickoff($existing);
@@ -776,7 +776,7 @@ class VoiceBrowserCallService
         } elseif ($browser->mode === 'human_inbound' && ! $call->ended_at) {
             app(VoiceRoutingService::class)->resumeAfterTeamOffer($call);
         } elseif ($browser->mode === 'takeover' && ! $call->ended_at && ! empty($browser->metadata['ai_stopped'])) {
-            $destination = $this->numbers->normalize((string) ($this->settings->all()['support_handoff_number'] ?? ''));
+            $destination = app(VoiceLinePolicyService::class)->forCall($call) ? '' : $this->numbers->normalize((string) ($this->settings->all()['support_handoff_number'] ?? ''));
             if ($destination && $destination !== $this->local($call)) {
                 $this->gateway->command('takeover-fallback:'.$browser->id, '/calls/'.rawurlencode($call->call_control_id).'/actions/transfer', ['to' => $destination]);
                 $call->update(['status' => 'human_handoff', 'disposition' => 'transfer_requested']);
