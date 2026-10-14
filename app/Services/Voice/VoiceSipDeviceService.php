@@ -162,7 +162,7 @@ class VoiceSipDeviceService
         if ($device->connection_id) {
             $this->gateway->request('PATCH', '/credential_connections/'.$device->connection_id, ['active' => false]);
         }
-        Cache::forget('voice-sip-registration:'.$device->id);
+        Cache::forget('voice-sip-registration-v2:'.$device->id);
         LockedWrite::run(fn () => $device->update(['state' => 'revoked']));
     }
 
@@ -182,14 +182,23 @@ class VoiceSipDeviceService
             return false;
         }
         try {
-            $result = Cache::remember('voice-sip-registration:'.$device->id, 10, fn () => $this->gateway->request('POST', '/credential_connections/'.$device->connection_id.'/actions/check_registration_status', [], false, 3));
-            $ready = ($result['status'] ?? '') === 'Registered' && ($result['sip_username'] ?? '') === $device->sip_username;
+            // The legacy check action performs a slow SIP probe. This endpoint reads the live registrar directly.
+            $result = Cache::remember('voice-sip-registration-v2:'.$device->id, 10, fn () => $this->gateway->request('GET', '/sip_registration_status', [
+                'credential_type' => 'sip_credential_connection', 'username' => $device->sip_username,
+            ], timeout: 3));
+            $ready = ($result['registered'] ?? null) === true && ($result['sip_registration_status'] ?? '') === 'registered'
+                && ($result['credential_type'] ?? '') === 'sip_credential_connection'
+                && (string) ($result['connection_id'] ?? '') === $device->connection_id
+                && ($result['credential_username'] ?? '') === $device->sip_username;
         } catch (Throwable) {
             $ready = false;
         }
-        LockedWrite::run(fn () => $device->update(['registered' => $ready, 'registration_checked_at' => now()]));
+        // A concurrent revoke or pause cannot be revived by a delayed registration result.
+        $updated = LockedWrite::run(fn () => VoiceSipDevice::whereKey($device->id)->whereNull('revoked_at')->where('enabled', true)->where('state', 'ready')
+            ->update(['registered' => $ready, 'registration_checked_at' => now()]));
+        $device->refresh();
 
-        return $ready;
+        return $updated === 1 && $ready && $this->allowed($device);
     }
 
     public function reachable(User $user): bool

@@ -31,6 +31,8 @@ class VoiceSipDeviceTest extends TestCase
 
     private bool $registered = true;
 
+    private bool $wrongRegistrationIdentity = false;
+
     private int $dials = 0;
 
     private bool $ambiguous = false;
@@ -68,8 +70,11 @@ class VoiceSipDeviceTest extends TestCase
 
                 return Http::response(['data' => $this->connections[$m[1]] ?? []]);
             }
-            if (preg_match('#/credential_connections/([^/]+)/actions/check_registration_status$#', $p, $m)) {
-                return Http::response(['data' => ['status' => $this->registered ? 'Registered' : 'Unregistered', 'sip_username' => $this->connections[$m[1]]['user_name'] ?? '']]);
+            if ($p === '/v2/sip_registration_status') {
+                $id = collect($this->connections)->first(fn ($c) => $c['user_name'] === $r['username'])['id'] ?? '';
+
+                return Http::response(['data' => ['registered' => $this->registered, 'sip_registration_status' => $this->registered ? 'registered' : 'unregistered',
+                    'credential_type' => 'sip_credential_connection', 'connection_id' => $this->wrongRegistrationIdentity ? 'wrong-connection' : $id, 'credential_username' => $r['username']]]);
             }
             if ($p === '/v2/calls') {
                 return Http::response(['data' => ['call_control_id' => 'offer-leg-'.++$this->dials, 'call_session_id' => 'session-'.$this->dials]]);
@@ -80,6 +85,18 @@ class VoiceSipDeviceTest extends TestCase
 
             return Http::response(['data' => ['result' => 'ok']]);
         });
+    }
+
+    public function test_registration_requires_the_server_owned_identity_from_the_fast_endpoint(): void
+    {
+        $device = $this->createDevice();
+        $this->wrongRegistrationIdentity = true;
+        $this->assertFalse(app(VoiceSipDeviceService::class)->registered($device));
+        Cache::flush();
+        $this->wrongRegistrationIdentity = false;
+        $this->assertTrue(app(VoiceSipDeviceService::class)->registered($device));
+        Http::assertSent(fn ($r) => str_contains($r->url(), '/sip_registration_status') && $r->method() === 'GET' && $r['credential_type'] === 'sip_credential_connection');
+        Http::assertNotSent(fn ($r) => str_contains($r->url(), '/actions/check_registration_status'));
     }
 
     private function policy(array $ids): VoiceLinePolicy
