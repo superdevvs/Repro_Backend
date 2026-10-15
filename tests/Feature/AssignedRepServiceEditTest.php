@@ -144,8 +144,26 @@ class AssignedRepServiceEditTest extends TestCase
     public function test_sealed_shoots_remain_restricted(string $status): void
     {
         [$shoot, $service] = $this->fixture($status);
-        $this->patchJson('/api/shoots/'.$shoot->id, ['services' => [['id' => $service->id]]])
+        $additionalService = Service::factory()->noIntake()->create(['photographer_required' => false]);
+        $this->patchJson('/api/shoots/'.$shoot->id, ['services' => [['id' => $service->id], ['id' => $additionalService->id]]])
             ->assertStatus($status === 'import_draft' ? 404 : 403);
+        $this->assertSame([$service->id], $shoot->serviceItems()->pluck('service_id')->all());
+    }
+
+    public function test_delivered_service_context_is_accepted_without_changing_the_booked_plan_or_financials(): void
+    {
+        [$shoot, $service] = $this->fixture('delivered');
+        $serviceBefore = $shoot->serviceItems()->sole()->getRawOriginal();
+        $protectedFields = ['status', 'workflow_status', 'scheduled_at', 'scheduled_date', 'time',
+            'photographer_id', 'rep_id', 'base_quote', 'tax_amount', 'total_quote', 'payment_status'];
+        $shootBefore = $shoot->fresh()->only($protectedFields);
+
+        $this->patchJson('/api/shoots/'.$shoot->id, ['services' => [['id' => $service->id]]])->assertOk();
+
+        $this->assertSame($serviceBefore, $shoot->serviceItems()->sole()->getRawOriginal());
+        $this->assertEquals($shootBefore, $shoot->fresh()->only($protectedFields));
+        Mail::assertNothingSent();
+        Notification::assertNothingSent();
     }
 
     public function test_other_reps_can_edit_the_uploaded_shoot(): void
@@ -174,10 +192,20 @@ class AssignedRepServiceEditTest extends TestCase
         $this->assertSame(5, (int) $shoot->serviceItems()->sole()->duration_minutes);
         $this->assertSame(175.0, (float) $shoot->serviceItems()->sole()->price);
         $shoot->update(['status' => 'delivered', 'workflow_status' => 'delivered']);
-        $this->patchJson('/api/shoots/'.$shoot->id, ['photographer_id' => $shoot->photographer_id])->assertForbidden();
+        $assignmentBefore = $shoot->photographer_id;
+        $serviceBefore = $shoot->serviceItems()->sole()->getRawOriginal();
+        $this->patchJson('/api/shoots/'.$shoot->id, ['photographer_id' => $assignmentBefore])->assertOk();
+        $this->assertSame($assignmentBefore, $shoot->fresh()->photographer_id);
+        $this->assertSame($serviceBefore, $shoot->serviceItems()->sole()->getRawOriginal());
+        $differentPhotographer = User::factory()->photographer()->create();
+        $this->patchJson('/api/shoots/'.$shoot->id, ['photographer_id' => $differentPhotographer->id])->assertForbidden();
+        $this->patchJson('/api/shoots/'.$shoot->id, ['scheduled_at' => '2026-10-02T11:00:00-04:00'])->assertForbidden();
+        $this->patchJson('/api/shoots/'.$shoot->id, ['workflow_status' => 'editing'])->assertForbidden();
         $this->postJson('/api/shoots/'.$shoot->id.'/assign-service-photographer', [
             'service_id' => $service->id, 'photographer_id' => $shoot->photographer_id,
         ])->assertForbidden();
+        $this->assertSame($assignmentBefore, $shoot->fresh()->photographer_id);
+        $this->assertSame($serviceBefore, $shoot->serviceItems()->sole()->getRawOriginal());
     }
 
     public function test_offsite_staging_cannot_acquire_a_photographer_when_rep_edits_assignments(): void
