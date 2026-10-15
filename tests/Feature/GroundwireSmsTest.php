@@ -128,6 +128,30 @@ class GroundwireSmsTest extends TestCase
         $this->postSms('fetch')->assertOk()->assertJsonPath('sent_smss.0.sms_id', $r->json('sms_id'));
     }
 
+    public function test_phone_can_reply_to_another_managed_business_number(): void
+    {
+        SmsNumber::create(['provider' => 'TELNYX', 'phone_number' => '+12025550200', 'messaging_profile_id' => 'profile', 'owner_type' => 'SYSTEM']);
+        Http::fake(['api.telnyx.com/*' => Http::response(['data' => ['id' => 'internal-reply']])]);
+
+        $this->postSms('send', ['to' => '+12025550200', 'body' => 'TEST OK'])->assertOk();
+
+        Http::assertSentCount(1);
+        Http::assertSent(fn ($request) => $request['from'] === '+12025550100'
+            && $request['to'] === '+12025550200' && $request['text'] === 'TEST OK');
+        $this->assertDatabaseHas('messages', ['direction' => 'OUTBOUND', 'from_address' => '+12025550100',
+            'to_address' => '+12025550200', 'body_text' => 'TEST OK', 'status' => 'SENT']);
+    }
+
+    public function test_phone_cannot_text_its_own_normalized_sender_number(): void
+    {
+        $this->postSms('send', ['to' => '(202) 555-0100', 'body' => 'Self message'])->assertStatus(422)
+            ->assertJsonPath('message', 'Choose a different recipient number.');
+
+        $this->assertDatabaseCount('groundwire_sms_sends', 0);
+        $this->assertDatabaseCount('messages', 0);
+        Http::assertNothingSent();
+    }
+
     public function test_ambiguous_provider_send_is_not_retried_or_resent(): void
     {
         Http::fake(['api.telnyx.com/*' => Http::response([], 503)]);

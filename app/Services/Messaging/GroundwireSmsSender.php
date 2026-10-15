@@ -16,7 +16,7 @@ class GroundwireSmsSender
         $sms = app(GroundwireSmsService::class);
         $to = $sms->normalize($data['to']);
         abort_unless(preg_match('/^\+[1-9]\d{7,14}$/', $to), 422, 'Use the recipient country code, for example +1.');
-        abort_if($sms->number($to), 422, 'Choose an external recipient.');
+        abort_if($to === $sms->normalize($d->sms_number), 422, 'Choose a different recipient number.');
         $body = trim($data['body']);
         abort_if($body === '', 422, 'Enter a text message.');
 
