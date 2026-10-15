@@ -43,9 +43,24 @@ class ShootManagementAccess
     {
         if (! $this->can($user) || $shoot->isImportDraft()) return false;
         if (! $this->isRestrictedSalesRep($user)) return true;
-        $editable = ['requested', 'on_hold', 'hold_on', 'scheduled', 'booked', 'uploaded', 'completed', 'editing', 'review', 'ready'];
+        if (data_get($shoot->external_booking_payload, 'legacy_migration.historical_payments_only')) return false;
+        $editable = ['requested', 'on_hold', 'hold_on', 'scheduled', 'booked', 'uploaded', 'completed', 'editing', 'review', 'ready', 'delivered', 'ready_for_client', 'admin_verified'];
         return in_array(strtolower((string) $shoot->status), $editable, true)
             && in_array(strtolower((string) ($shoot->workflow_status ?: $shoot->status)), $editable, true);
+    }
+
+    /** Delivered corrections do not grant appointment or workflow actions. */
+    public function canEditAppointment(Shoot $shoot, ?User $user): bool
+    {
+        return $this->canEdit($shoot, $user) && (! $this->isRestrictedSalesRep($user)
+            || ! $this->isDeliveredForSalesEdits($shoot));
+    }
+
+    private function isDeliveredForSalesEdits(Shoot $shoot): bool
+    {
+        return collect([$shoot->status, $shoot->workflow_status])->contains(
+            fn ($status) => in_array(strtolower((string) $status), ['delivered', 'ready_for_client', 'admin_verified'], true)
+        );
     }
 
     /** Preserve all booking fields, while refusing unrelated workflow/media writes. */
@@ -84,6 +99,9 @@ class ShootManagementAccess
                 foreach (['price', 'photographer_pay', 'editor_id', 'video_editor_id', 'is_deliverable', 'workflow_status', 'delivery_status', 'force_unlock_delivery', 'unlock_reason'] as $key) unset($line[$key]);
             }
             unset($line);
+        }
+        if ($this->isDeliveredForSalesEdits($shoot)) {
+            $payload = app(DeliveredSalesEditPayload::class)->normalize($shoot, $payload);
         }
         foreach (['admin_adjusted_total_quote', 'discount_type', 'discount_value'] as $field) {
             if (! array_key_exists($field, $payload)) continue;

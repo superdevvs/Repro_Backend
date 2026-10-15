@@ -274,7 +274,7 @@ class ShootController extends Controller
     {
         $user = $request->user();
         $management = app(\App\Services\Shoots\ShootManagementAccess::class);
-        if (!$management->can($user, 'manage') || !$management->canEdit($shoot, $user)) {
+        if (!$management->can($user, 'manage') || !$management->canEditAppointment($shoot, $user)) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 

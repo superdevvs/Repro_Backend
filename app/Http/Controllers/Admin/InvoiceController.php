@@ -9,6 +9,7 @@ use App\Models\Payment;
 use App\Models\Shoot;
 use App\Models\User;
 use App\Services\Invoices\InvoiceAdjustmentService;
+use App\Services\Invoices\InvoiceAdjustmentAccess;
 use App\Services\InvoiceService;
 use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
@@ -22,7 +23,8 @@ class InvoiceController extends Controller
 {
     public function __construct(
         private readonly InvoiceService $invoiceService,
-        private readonly InvoiceAdjustmentService $invoiceAdjustments
+        private readonly InvoiceAdjustmentService $invoiceAdjustments,
+        private readonly InvoiceAdjustmentAccess $adjustmentAccess
     ) {}
 
     public function index(Request $request)
@@ -385,6 +387,7 @@ class InvoiceController extends Controller
 
     public function addMiscItem(Request $request, Invoice $invoice)
     {
+        $this->adjustmentAccess->authorize($invoice, $request->user(), $request->boolean('bills_client'));
         $data = $request->validate([
             'description' => ['required', 'string', 'max:500'],
             'amount' => ['required', 'numeric'],
@@ -409,6 +412,7 @@ class InvoiceController extends Controller
         try {
             DB::beginTransaction();
             $invoice = Invoice::query()->lockForUpdate()->findOrFail($invoice->id);
+            $this->adjustmentAccess->authorize($invoice, $request->user(), $billsClient);
             $targetShoot = $this->invoiceAdjustments->resolveTargetShoot(
                 $invoice,
                 $data['shoot_id'] ?? null,
@@ -489,7 +493,7 @@ class InvoiceController extends Controller
                 'invoice' => $this->buildInvoiceResponse($invoice),
                 'affected_shoot_ids' => $affectedShoots->pluck('id')->values()->all(),
             ], 201);
-        } catch (ValidationException $e) {
+        } catch (ValidationException|\Symfony\Component\HttpKernel\Exception\HttpExceptionInterface $e) {
             DB::rollBack();
 
             throw $e;
@@ -506,6 +510,7 @@ class InvoiceController extends Controller
 
     public function updateMiscItem(Request $request, Invoice $invoice, InvoiceItem $item)
     {
+        $this->adjustmentAccess->authorize($invoice, $request->user(), $request->boolean('bills_client') || (bool) data_get($item->meta, 'bills_client'));
         $data = $request->validate([
             'description' => ['required', 'string', 'max:500'],
             'amount' => ['required', 'numeric'],
@@ -523,6 +528,7 @@ class InvoiceController extends Controller
             // deriving ownership, the previous contribution, or either target.
             $invoice = Invoice::query()->lockForUpdate()->findOrFail($invoice->id);
             $item = InvoiceItem::query()->lockForUpdate()->findOrFail($item->id);
+            $this->adjustmentAccess->authorize($invoice, $request->user(), $request->boolean('bills_client') || (bool) data_get($item->meta, 'bills_client'));
 
             if ((int) $item->invoice_id !== (int) $invoice->id) {
                 DB::rollBack();
@@ -622,7 +628,7 @@ class InvoiceController extends Controller
                 'invoice' => $this->buildInvoiceResponse($invoice),
                 'affected_shoot_ids' => $affectedShoots->pluck('id')->values()->all(),
             ]);
-        } catch (ValidationException $e) {
+        } catch (ValidationException|\Symfony\Component\HttpKernel\Exception\HttpExceptionInterface $e) {
             DB::rollBack();
 
             throw $e;
@@ -639,11 +645,13 @@ class InvoiceController extends Controller
 
     public function removeMiscItem(Request $request, Invoice $invoice, InvoiceItem $item)
     {
+        $this->adjustmentAccess->authorize($invoice, $request->user(), (bool) data_get($item->meta, 'bills_client'));
         try {
             DB::beginTransaction();
 
             $invoice = Invoice::query()->lockForUpdate()->findOrFail($invoice->id);
             $item = InvoiceItem::query()->lockForUpdate()->findOrFail($item->id);
+            $this->adjustmentAccess->authorize($invoice, $request->user(), (bool) data_get($item->meta, 'bills_client'));
 
             if ((int) $item->invoice_id !== (int) $invoice->id) {
                 DB::rollBack();
@@ -691,7 +699,7 @@ class InvoiceController extends Controller
                 'invoice' => $this->buildInvoiceResponse($invoice),
                 'affected_shoot_ids' => $affectedShoots->pluck('id')->values()->all(),
             ]);
-        } catch (ValidationException $e) {
+        } catch (ValidationException|\Symfony\Component\HttpKernel\Exception\HttpExceptionInterface $e) {
             DB::rollBack();
 
             throw $e;

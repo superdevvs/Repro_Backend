@@ -34,7 +34,7 @@ class DaySchedulePlan
     private function adjustable(Shoot $shoot, ?User $actor, array $visits): bool
     {
         // A single capture window can move without changing other photographers or units.
-        return app(ShootManagementAccess::class)->canEdit($shoot, $actor)
+        return app(ShootManagementAccess::class)->canEditAppointment($shoot, $actor)
             && count($visits) === 1 && ! $shoot->units()->exists();
     }
 
@@ -49,7 +49,7 @@ class DaySchedulePlan
         foreach ($all as $visit) {
             if (Carbon::parse($visit['start'])->gte($end) || Carbon::parse($visit['end'])->lte($start)) continue;
             $shoot = $visit['_shoot'];
-            $visible = $management->canEdit($shoot, $actor) || $access->canViewShootDetails($shoot, $actor);
+            $visible = $management->canEditAppointment($shoot, $actor) || $access->canViewShootDetails($shoot, $actor);
             $shootVisits = app(\App\Services\Shoots\ShootDurationResolver::class)->windowsForShoot($shoot);
             $rows[] = [
                 'id' => $visible ? $visit['id'] : hash('sha256', $visit['id']), 'start' => $visit['start'], 'end' => $visit['end'],
@@ -57,7 +57,7 @@ class DaySchedulePlan
                 'label' => $visible ? $shoot->address : 'Booked',
                 'shoot_id' => $visible ? $shoot->id : null,
                 'can_adjust' => $visible && $this->adjustable($shoot, $actor, $shootVisits),
-                'expected_edit_version' => $visible && $management->canEdit($shoot, $actor) ? $management->editVersion($shoot) : null,
+                'expected_edit_version' => $visible && $management->canEditAppointment($shoot, $actor) ? $management->editVersion($shoot) : null,
             ];
         }
         usort($rows, fn ($a, $b) => strcmp($a['start'], $b['start']));
@@ -75,12 +75,12 @@ class DaySchedulePlan
         if (! app(ScheduleCommitGuard::class)->enabled()) $this->invalid('Schedule adjustment is unavailable. Refresh and try again.');
         $main = $plans[0];
         app(TravelScheduleAccess::class)->authorizePayload($main['payload'], $main['shoot'] ?? null, $actor);
-        abort_unless($main['shoot'] ? app(ShootManagementAccess::class)->canEdit($main['shoot'], $actor)
+        abort_unless($main['shoot'] ? app(ShootManagementAccess::class)->canEditAppointment($main['shoot'], $actor)
             : app(ShootManagementAccess::class)->can($actor), 403);
         $proposed = app(VisitPlanBuilder::class)->build($main['payload'], $main['shoot'] ?? null, $actor);
         foreach ($changes as $change) {
             $shoot = Shoot::with(['serviceItems.service', 'serviceItems.unit', 'services', 'photographer'])->findOrFail($change['shoot_id']);
-            abort_unless(app(ShootManagementAccess::class)->canEdit($shoot, $actor), 403);
+            abort_unless(app(ShootManagementAccess::class)->canEditAppointment($shoot, $actor), 403);
             app(ShootManagementAccess::class)->assertVersion($shoot, $change['expected_edit_version']);
             if (collect($plans)->contains(fn ($p) => ($p['shoot']?->id ?? null) === $shoot->id)) $this->invalid('A booking may only be adjusted once.');
             $ids = array_values(array_unique(array_filter(array_merge([(int) $shoot->photographer_id], $shoot->serviceItems->pluck('photographer_id')->all()))));

@@ -634,6 +634,15 @@ Route::middleware('auth:sanctum')->prefix('client')->group(function () {
     Route::get('billing', [ClientBillingController::class, 'index']);
 });
 
+// Client-invoice corrections are available to the assigned sales rep. Keep
+// these three routes separate from staff-only invoice and payout administration.
+Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager,salesRep', 'permission:accounting', 'permission:invoices,update'])
+    ->prefix('admin/invoices')->group(function () {
+        Route::post('{invoice}/misc-items', [App\Http\Controllers\Admin\InvoiceController::class, 'addMiscItem']);
+        Route::match(['put', 'patch'], '{invoice}/misc-items/{item}', [App\Http\Controllers\Admin\InvoiceController::class, 'updateMiscItem']);
+        Route::delete('{invoice}/misc-items/{item}', [App\Http\Controllers\Admin\InvoiceController::class, 'removeMiscItem']);
+    });
+
 Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager'])->prefix('admin')->group(function () {
     Route::middleware('role:admin,superadmin')->group(function () {
         Route::get('shoots/{sourceShoot}/complimentary-reshoots', [ComplimentaryReshootController::class, 'template']);
@@ -669,9 +678,6 @@ Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager'])->pr
         Route::post('invoices/{invoice}/send', [InvoiceController::class, 'send']);
         Route::post('invoices/{invoice}/mark-paid', [InvoiceController::class, 'markPaid'])->middleware('permission:payments,mark-paid');
         Route::patch('invoices/{invoice}/mark-paid', [InvoiceController::class, 'markPaid'])->middleware('permission:payments,mark-paid');
-        Route::post('invoices/{invoice}/misc-items', [App\Http\Controllers\Admin\InvoiceController::class, 'addMiscItem']);
-        Route::match(['put', 'patch'], 'invoices/{invoice}/misc-items/{item}', [App\Http\Controllers\Admin\InvoiceController::class, 'updateMiscItem']);
-        Route::delete('invoices/{invoice}/misc-items/{item}', [App\Http\Controllers\Admin\InvoiceController::class, 'removeMiscItem']);
 
         // Manual payment reminder (meeting 26 Jul 2026, [00:15:28]). Sales reps and
         // editing managers chase payment too, so this is not admin-only; the parent

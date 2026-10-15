@@ -165,7 +165,7 @@ final class CopilotActions
                 'effects' => 'Check workflow and media status every five minutes. Notify this account in Repro only when the state changes. Revoking the connection stops the watch.'];
         }
         if ($kind === 'reschedule') {
-            abort_unless(app(ShootManagementAccess::class)->canEdit($shoot, $user), 403, 'Appointment editing requires booking management access.');
+            abort_unless(app(ShootManagementAccess::class)->canEditAppointment($shoot, $user), 403, 'Appointment editing requires booking management access.');
             $this->assertInstant($payload);
             abort_unless(in_array($shoot->status, ['requested', 'scheduled', 'on_hold'], true), 409, 'Use Repro to review scheduling changes after production has started.');
             abort_if($shoot->units()->count() > 1, 422, 'Use the multi-unit booking editor for this appointment.');

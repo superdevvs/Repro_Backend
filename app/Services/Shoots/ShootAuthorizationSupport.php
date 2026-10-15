@@ -339,7 +339,7 @@ class ShootAuthorizationSupport
     public function canScheduleShoot(Shoot $shoot, ?User $user): bool
     {
         if (app(ShootManagementAccess::class)->isSalesRep($user)) {
-            return app(ShootManagementAccess::class)->canEdit($shoot, $user)
+            return app(ShootManagementAccess::class)->canEditAppointment($shoot, $user)
                 && app(ShootManagementAccess::class)->can($user, 'manage');
         }
         if ($this->hasRole($user, ['editor'])
@@ -354,7 +354,7 @@ class ShootAuthorizationSupport
             return true;
         }
 
-        return app(ShootManagementAccess::class)->canEdit($shoot, $user)
+        return app(ShootManagementAccess::class)->canEditAppointment($shoot, $user)
             && app(ShootManagementAccess::class)->can($user, 'manage');
     }
 
@@ -368,7 +368,7 @@ class ShootAuthorizationSupport
 
     public function canEditShootAppointment(Shoot $shoot, ?User $user): bool
     {
-        return app(ShootManagementAccess::class)->canEdit($shoot, $user);
+        return app(ShootManagementAccess::class)->canEditAppointment($shoot, $user);
     }
 
     public function ensureShootAccess(Shoot $shoot, ?User $user = null): void

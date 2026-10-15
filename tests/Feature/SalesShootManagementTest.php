@@ -107,7 +107,7 @@ class SalesShootManagementTest extends TestCase
         $this->postJson('/api/shoots/'.$shoot->id.'/assign-editor', [])->assertForbidden();
         $this->patchJson('/api/shoots/'.$shoot->id, ['editor_id' => User::factory()->create(['role' => 'editor'])->id])->assertForbidden();
         $this->patchJson('/api/shoots/'.$shoot->id, ['workflow_status' => 'delivered'])->assertForbidden();
-        $shoot->update(['status' => 'delivered', 'workflow_status' => 'delivered']);
+        $shoot->update(['status' => 'cancelled', 'workflow_status' => 'cancelled']);
         $this->patchJson('/api/shoots/'.$shoot->id, ['city' => 'Blocked'])->assertForbidden();
         $shoot->update(['status' => 'scheduled', 'workflow_status' => 'scheduled']);
         $rep->update(['permission_overrides' => ['allow' => [], 'deny' => ['shoots-update']]]);
@@ -195,5 +195,150 @@ class SalesShootManagementTest extends TestCase
         $method = new \ReflectionMethod($action, 'hasClientFacingRequestModifications');
         $this->assertFalse($method->invoke($action, ['expected_edit_version' => str_repeat('a', 64), 'notify_client' => false]));
         $this->assertTrue($method->invoke($action, ['expected_edit_version' => str_repeat('a', 64), 'address' => 'Actual property change']));
+    }
+
+    public function test_delivered_details_and_pricing_corrections_preserve_production_and_payment_history(): void
+    {
+        $rep = User::factory()->create(['role' => 'salesRep']);
+        Sanctum::actingAs($rep);
+        $shoot = $this->shoot();
+        $shoot->update(['status' => 'delivered', 'workflow_status' => 'delivered', 'delivery_status' => 'delivered', 'rep_id' => $rep->id, 'payment_status' => 'unpaid']);
+        $item = $shoot->serviceItems()->sole();
+        $item->update(['workflow_status' => 'delivered', 'delivery_status' => 'delivered']);
+        $invoice = app(\App\Services\InvoiceService::class)->generateForShoot($shoot->fresh());
+        $payment = \App\Models\Payment::create(['shoot_id' => $shoot->id, 'invoice_id' => $invoice->id, 'amount' => 50, 'currency' => 'USD', 'status' => \App\Models\Payment::STATUS_COMPLETED, 'processed_at' => now()]);
+        $paymentBefore = $payment->fresh()->getRawOriginal();
+        $lineBefore = $item->fresh()->getRawOriginal();
+
+        $this->getJson('/api/shoots/'.$shoot->id)->assertOk()->assertJsonPath('data.canManageBooking', true);
+        $this->patchJson('/api/shoots/'.$shoot->id, [
+            'address' => 'Corrected delivered address', 'shoot_notes' => 'Corrected client instructions',
+            'discount_type' => 'percent', 'discount_value' => 10,
+            'status' => 'delivered', 'workflow_status' => 'delivered', 'photographer_id' => null,
+            'services' => [['id' => $item->service_id, 'quantity' => 1, 'duration_minutes' => 0]],
+            'service_items' => [['service_id' => $item->service_id, 'quantity' => 1, 'duration_minutes' => 0]],
+            'notify_client' => false, 'notify_photographer' => false,
+        ])->assertOk();
+
+        $this->assertSame('delivered', $shoot->fresh()->status);
+        $this->assertSame('delivered', $shoot->fresh()->workflow_status);
+        $this->assertSame('Corrected client instructions', $shoot->fresh()->shoot_notes);
+        $this->assertSame(94.45, (float) $shoot->fresh()->total_quote);
+        $this->assertSame(5.35, (float) $shoot->fresh()->tax_amount);
+        $this->assertSame(94.45, (float) $invoice->fresh()->total);
+        $this->assertSame(50.0, (float) $invoice->fresh()->amount_paid);
+        $this->assertSame($paymentBefore, $payment->fresh()->getRawOriginal());
+        $this->assertSame($lineBefore, $item->fresh()->getRawOriginal());
+        $this->patchJson('/api/shoots/'.$shoot->id, ['admin_adjusted_total_quote' => 120, 'notify_client' => false, 'notify_photographer' => false])->assertOk();
+        $this->assertSame(120.0, (float) $invoice->fresh()->total);
+        $this->assertSame(6.79, (float) $shoot->fresh()->tax_amount);
+        $this->assertSame($paymentBefore, $payment->fresh()->getRawOriginal());
+        Mail::assertNothingSent(); Notification::assertNothingSent();
+    }
+
+    public function test_delivered_sales_edits_do_not_reopen_scheduling_services_or_production(): void
+    {
+        Sanctum::actingAs(User::factory()->create(['role' => 'photographer', 'secondary_roles' => ['sales_rep']]));
+        $shoot = $this->shoot();
+        $shoot->update(['status' => 'delivered', 'workflow_status' => 'delivered']);
+        $item = $shoot->serviceItems()->sole();
+        $photographer = User::factory()->photographer()->create();
+        foreach ([
+            ['scheduled_at' => '2026-12-01T12:00:00Z'],
+            ['photographer_id' => $photographer->id],
+            ['rep_id' => User::factory()->create(['role' => 'salesRep'])->id],
+            ['service_id' => \App\Models\Service::factory()->create()->id],
+            ['service_photographers' => [['service_id' => $item->service_id, 'photographer_id' => $photographer->id]]],
+            ['services' => []],
+            ['services' => [['id' => $item->service_id, 'quantity' => 2]]],
+            ['services' => [['id' => $item->service_id, 'scheduled_at' => '2026-12-01T12:00:00Z']]],
+            ['workflow_status' => 'editing'],
+            ['editor_id' => User::factory()->create(['role' => 'editor'])->id],
+        ] as $payload) {
+            $this->patchJson('/api/shoots/'.$shoot->id, $payload)->assertForbidden();
+        }
+        $this->assertSame('delivered', $shoot->fresh()->workflow_status);
+        $this->assertNull($shoot->fresh()->scheduled_at);
+        $this->assertNull($shoot->fresh()->photographer_id);
+        $this->assertCount(1, $shoot->fresh()->serviceItems);
+        $this->postJson('/api/shoots/'.$shoot->id.'/cancel', ['notify_client' => false])->assertForbidden();
+        $this->postJson('/api/shoots/'.$shoot->id.'/put-on-hold', ['notify_client' => false])->assertForbidden();
+        $this->postJson('/api/shoots/'.$shoot->id.'/schedule', ['scheduled_at' => '2026-12-01T12:00:00Z'])->assertForbidden();
+        $this->postJson('/api/shoots/'.$shoot->id.'/apply-alternate-date', [])->assertForbidden();
+        $this->postJson('/api/shoots/'.$shoot->id.'/assign-service-photographer', ['service_id' => $item->service_id, 'photographer_id' => $photographer->id])->assertForbidden();
+        $this->postJson('/api/shoots/'.$shoot->id.'/assign-service-photographers', ['service_photographers' => [['service_id' => $item->service_id, 'photographer_id' => $photographer->id]]])->assertForbidden();
+        Mail::assertNothingSent(); Notification::assertNothingSent();
+    }
+
+    public function test_delivered_multi_unit_echoes_do_not_modify_units_or_service_execution_rows(): void
+    {
+        Sanctum::actingAs(User::factory()->create(['role' => 'salesRep']));
+        $shoot = $this->shoot();
+        $shoot->update(['status' => 'delivered', 'workflow_status' => 'delivered']);
+        $unit = $shoot->units()->create(['client_key' => 'delivered-unit', 'label' => 'Unit 1', 'kind' => 'unit', 'sqft' => 1000, 'sort_order' => 0]);
+        $item = $shoot->serviceItems()->sole();
+        $item->update(['client_key' => 'delivered-line', 'shoot_unit_id' => $unit->id, 'workflow_status' => 'delivered', 'delivery_status' => 'delivered']);
+        $before = $item->fresh()->getRawOriginal();
+        $context = ['units' => [['id' => $unit->id, 'client_key' => $unit->client_key, 'label' => $unit->label, 'kind' => $unit->kind, 'sqft' => 1000]],
+            'service_lines' => [['shoot_service_id' => $item->id, 'client_key' => 'delivered-line', 'unit_client_key' => 'delivered-unit', 'service_id' => $item->service_id, 'quantity' => 1, 'duration_minutes' => 0]],
+            'expected_units_revision' => $shoot->units_revision, 'notify_client' => false, 'notify_photographer' => false];
+        $this->patchJson('/api/shoots/'.$shoot->id, $context + ['city' => 'Unit property correction'])->assertOk();
+        $this->assertSame($before, $item->fresh()->getRawOriginal());
+        $changed = $context;
+        $changed['units'][0]['label'] = 'Changed execution unit';
+        $this->patchJson('/api/shoots/'.$shoot->id, $changed)->assertForbidden();
+        $changed = $context;
+        $changed['service_lines'][0]['quantity'] = 2;
+        $this->patchJson('/api/shoots/'.$shoot->id, $changed)->assertForbidden();
+    }
+
+    public function test_delivered_detail_only_full_form_echoes_preserve_agreed_price_and_booked_discount(): void
+    {
+        Sanctum::actingAs(User::factory()->create(['role' => 'salesRep']));
+        foreach (['override', 'discount'] as $pricing) {
+            $shoot = $this->shoot();
+            $shoot->update(['status' => 'delivered', 'workflow_status' => 'delivered',
+                'base_quote' => $pricing === 'override' ? 122.64 : 89.10,
+                'tax_amount' => $pricing === 'override' ? 7.36 : 5.35,
+                'total_quote' => $pricing === 'override' ? 130 : 94.45,
+                'discount_type' => $pricing === 'discount' ? 'percent' : null,
+                'discount_value' => $pricing === 'discount' ? 10 : null,
+                'discount_amount' => $pricing === 'discount' ? 9.90 : 0]);
+            $invoice = app(\App\Services\InvoiceService::class)->generateForShoot($shoot->fresh());
+            $invoiceBefore = $invoice->fresh()->getRawOriginal();
+            $before = $shoot->fresh()->only(['base_quote', 'tax_amount', 'total_quote', 'discount_type', 'discount_value', 'discount_amount']);
+            $this->patchJson('/api/shoots/'.$shoot->id, ['client_id' => $shoot->client_id, 'state' => 'MD',
+                'city' => 'Detail-only correction', 'shoot_notes' => 'Updated instructions',
+                'notify_client' => false, 'notify_photographer' => false])->assertOk();
+            $this->assertSame($before, $shoot->fresh()->only(array_keys($before)));
+            $this->assertSame($invoiceBefore, $invoice->fresh()->getRawOriginal());
+        }
+    }
+
+    public function test_delivered_aliases_are_editable_but_imports_and_denied_accounts_stay_locked(): void
+    {
+        $rep = User::factory()->create(['role' => 'salesRep']);
+        Sanctum::actingAs($rep);
+        $shoot = $this->shoot();
+        foreach (['delivered', 'ready_for_client', 'admin_verified'] as $status) {
+            $shoot->update(['status' => 'delivered', 'workflow_status' => $status]);
+            $this->patchJson('/api/shoots/'.$shoot->id, ['city' => 'Corrected '.$status, 'notify_client' => false, 'notify_photographer' => false])->assertOk();
+            $this->assertSame($status, $shoot->fresh()->workflow_status);
+        }
+        foreach ([
+            ['status' => 'import_draft', 'workflow_status' => 'delivered'],
+            ['status' => 'declined', 'workflow_status' => 'declined'],
+            ['status' => 'delivered', 'workflow_status' => 'delivered', 'external_booking_payload' => ['legacy_migration' => ['historical_payments_only' => true]]],
+        ] as $attributes) {
+            $shoot = $this->shoot();
+            $shoot->update($attributes);
+            $response = $this->patchJson('/api/shoots/'.$shoot->id, ['city' => 'Blocked']);
+            $attributes['status'] === 'import_draft' ? $response->assertNotFound() : $response->assertForbidden();
+        }
+        $shoot = $this->shoot();
+        $shoot->update(['status' => 'delivered', 'workflow_status' => 'delivered', 'external_booking_payload' => null]);
+        $rep->update(['permission_overrides' => ['allow' => [], 'deny' => ['shoots-update']]]);
+        $this->patchJson('/api/shoots/'.$shoot->id, ['city' => 'Blocked'])->assertForbidden();
+        Mail::assertNothingSent(); Notification::assertNothingSent();
     }
 }

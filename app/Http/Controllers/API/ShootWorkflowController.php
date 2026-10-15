@@ -49,7 +49,7 @@ class ShootWorkflowController extends Controller
         app(\App\Services\Shoots\ShootAuthorizationSupport::class)->ensureShootAccess($shoot, $request->user());
         $user = $request->user();
         $management = app(\App\Services\Shoots\ShootManagementAccess::class);
-        if (!$management->can($user, 'manage') || ($management->isSalesRep($user) && !$management->canEdit($shoot, $user))) {
+        if (!$management->can($user, 'manage') || ($management->isSalesRep($user) && !$management->canEditAppointment($shoot, $user))) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
@@ -73,7 +73,7 @@ class ShootWorkflowController extends Controller
         app(\App\Services\Shoots\ShootAuthorizationSupport::class)->ensureShootAccess($shoot, $request->user());
         $user = $request->user();
         $management = app(\App\Services\Shoots\ShootManagementAccess::class);
-        if (!$management->can($user, 'manage') || ($management->isSalesRep($user) && !$management->canEdit($shoot, $user))) {
+        if (!$management->can($user, 'manage') || ($management->isSalesRep($user) && !$management->canEditAppointment($shoot, $user))) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
