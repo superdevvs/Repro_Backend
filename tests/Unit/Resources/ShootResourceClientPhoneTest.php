@@ -46,7 +46,7 @@ class ShootResourceClientPhoneTest extends TestCase
         ]);
     }
 
-    private function clientPayloadFor(User $user): array
+    private function clientPayloadFor(User $user): ?array
     {
         $request = Request::create('/api/shoots/' . $this->shoot->id);
         $request->setUserResolver(fn () => $user);
@@ -97,10 +97,33 @@ class ShootResourceClientPhoneTest extends TestCase
     {
         $this->travelTo('2026-07-10 09:00:00');
         $admin = User::factory()->create(['role' => 'admin']);
-        $editor = User::factory()->create(['role' => 'editor']);
+        $editor = User::factory()->create(['role' => 'editor', 'metadata' => ['editing_capabilities' => ['photo']]]);
 
         $this->assertSame('555-0100', $this->clientPayloadFor($admin)['phone']);
-        $this->assertNull($this->clientPayloadFor($editor)['phone']);
+        $this->assertNull($this->clientPayloadFor($editor));
+        $this->shoot->update([
+            'editor_id' => $editor->id,
+            'status' => Shoot::STATUS_EDITING,
+            'workflow_status' => Shoot::STATUS_EDITING,
+        ]);
+        $this->assertNull($this->clientPayloadFor($editor));
+    }
+
+    #[Test]
+    public function it_exposes_only_the_client_name_to_the_assigned_video_editor(): void
+    {
+        $editor = User::factory()->create(['role' => 'editor', 'metadata' => ['editing_capabilities' => ['video']]]);
+        $this->shoot->update([
+            'editor_id' => $editor->id,
+            'status' => Shoot::STATUS_EDITING,
+            'workflow_status' => Shoot::STATUS_EDITING,
+        ]);
+
+        $payload = $this->clientPayloadFor($editor);
+
+        $this->assertSame(['id' => (string) $this->client->id, 'name' => $this->client->name], $payload);
+        $this->assertArrayNotHasKey('phone', $payload);
+        $this->assertArrayNotHasKey('email', $payload);
     }
 
     #[Test]
