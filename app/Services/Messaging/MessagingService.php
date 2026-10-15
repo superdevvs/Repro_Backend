@@ -324,6 +324,7 @@ class MessagingService
             $providerMessageId = $this->telnyxProvider->send($number, [
                 'to' => $payload['to'],
                 'text' => $payload['body_text'] ?? '',
+                'single_attempt' => (bool) ($payload['single_attempt'] ?? false),
             ]);
 
             $message->update([
@@ -1177,6 +1178,11 @@ class MessagingService
 
     public function dispatchStoredSmsMessage(Message $message): Message
     {
+        if (data_get($message->metadata, 'groundwire_request_id')) {
+            // A stalled native send may already have reached the carrier. Only an
+            // operator can reconcile it; generic queue recovery must never resend.
+            return $message;
+        }
         if (app(ShootPaymentReminderEligibility::class)->storedReminderIsStale($message)) {
             $message->forceFill(['status' => 'CANCELLED', 'error_message' => 'Payment reminder is no longer current.'])->save();
 

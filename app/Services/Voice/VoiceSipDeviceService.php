@@ -67,7 +67,8 @@ class VoiceSipDeviceService
     private function present(VoiceSipDevice $d): array
     {
         return ['id' => $d->id, 'creation_key' => $d->creation_key, 'label' => $d->label, 'caller_id' => $d->caller_id, 'state' => $d->state,
-            'enabled' => $d->enabled, 'registered' => $d->registered, 'registration_checked_at' => $d->registration_checked_at?->toIso8601String()];
+            'enabled' => $d->enabled, 'registered' => $d->registered, 'registration_checked_at' => $d->registration_checked_at?->toIso8601String(),
+            'sms' => app(\App\Services\Messaging\GroundwireSmsService::class)->state($d)];
     }
 
     public function create(User $user, array $data): array

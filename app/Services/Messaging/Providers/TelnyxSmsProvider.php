@@ -53,7 +53,7 @@ class TelnyxSmsProvider implements SmsProviderInterface
         }
 
         try {
-            $response = $this->client()->post('/messages', $request);
+            $response = $this->client((bool) ($payload['single_attempt'] ?? false))->post('/messages', $request);
         } catch (RequestException $exception) {
             $this->logFailure($number, $from, $to, $exception);
             throw new RuntimeException($exception->getMessage(), previous: $exception);
@@ -165,7 +165,7 @@ class TelnyxSmsProvider implements SmsProviderInterface
         return $global !== '' ? $global : null;
     }
 
-    protected function client(): PendingRequest
+    protected function client(bool $singleAttempt = false): PendingRequest
     {
         $apiKey = (string) config('services.telnyx.api_key');
         if ($apiKey === '') {
@@ -179,7 +179,7 @@ class TelnyxSmsProvider implements SmsProviderInterface
             ->asJson()
             ->baseUrl($baseUrl)
             ->timeout(15)
-            ->retry(3, 250, function ($exception, $request) {
+            ->retry($singleAttempt ? 1 : 3, 250, function ($exception, $request) {
                 if ($exception instanceof RequestException) {
                     $status = $exception->response?->status();
                     return $status === 429 || ($status !== null && $status >= 500);

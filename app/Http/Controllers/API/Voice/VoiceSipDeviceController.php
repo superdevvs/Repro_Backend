@@ -37,6 +37,17 @@ class VoiceSipDeviceController extends Controller
         return $this->result(fn () => $this->devices->update($r->user(), $device, $data));
     }
 
+    public function sms(Request $r, VoiceSipDevice $device): JsonResponse
+    {
+        $data = $r->validate(['number' => ['nullable', 'regex:/^\+[1-9]\d{7,14}$/'], 'reset_pairing' => ['sometimes', 'boolean']]);
+        return $this->result(function () use ($r, $device, $data) {
+            abort_unless($device->user_id === $r->user()->id, 403);
+            $sms = app(\App\Services\Messaging\GroundwireSmsService::class);
+            $sms->configure($device, $data['number'] ?? $device->sms_number, (bool) ($data['reset_pairing'] ?? false));
+            return $sms->state($device->fresh());
+        });
+    }
+
     public function destroy(Request $r, VoiceSipDevice $device): JsonResponse
     {
         return $this->result(function () use ($r, $device) {

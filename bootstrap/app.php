@@ -25,6 +25,7 @@ return Application::configure(basePath: dirname(__DIR__))
     )
     ->withSchedule(function (Schedule $schedule) {
         $schedule->command('voice-browser:reconcile')->everyMinute()->withoutOverlapping();
+        $schedule->command('groundwire-sms:recover')->everyMinute()->withoutOverlapping();
         // Laravel 11 in this project boots schedules from the application builder.
         $schedule->command('automations:run-system')->everyMinute()->withoutOverlapping();
         $schedule->job(new DispatchScheduledMessages)->everyMinute();

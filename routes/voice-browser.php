@@ -10,6 +10,7 @@ Route::post('sip/devices', [\App\Http\Controllers\API\Voice\VoiceSipDeviceContro
 Route::post('sip/devices/{device}/credentials', [\App\Http\Controllers\API\Voice\VoiceSipDeviceController::class, 'credentials'])->middleware(['permission:voice-calls,operate', 'throttle:10,1']);
 Route::patch('sip/devices/{device}', [\App\Http\Controllers\API\Voice\VoiceSipDeviceController::class, 'update'])->middleware('permission:voice-calls,operate');
 Route::delete('sip/devices/{device}', [\App\Http\Controllers\API\Voice\VoiceSipDeviceController::class, 'destroy']);
+Route::patch('sip/devices/{device}/sms', [\App\Http\Controllers\API\Voice\VoiceSipDeviceController::class, 'sms'])->middleware(['permission:voice-calls,operate', 'throttle:10,1']);
 Route::get('browser/config', [VoiceBrowserController::class, 'config']);
 Route::post('browser/sessions', [VoiceBrowserController::class, 'connect'])->middleware('throttle:20,1');
 Route::get('browser/sessions/{session}', [VoiceBrowserController::class, 'session']);

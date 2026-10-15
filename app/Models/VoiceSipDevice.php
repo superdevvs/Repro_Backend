@@ -11,10 +11,11 @@ class VoiceSipDevice extends Model
 
     protected $guarded = ['id'];
 
-    protected $hidden = ['sip_password', 'sip_username', 'connection_id'];
+    protected $hidden = ['sip_password', 'sip_username', 'connection_id', 'sms_install_hash', 'sms_push'];
 
     protected $casts = ['sip_password' => 'encrypted', 'enabled' => 'boolean', 'registered' => 'boolean',
-        'registration_checked_at' => 'datetime', 'provision_attempted_at' => 'datetime', 'revoked_at' => 'datetime'];
+        'registration_checked_at' => 'datetime', 'provision_attempted_at' => 'datetime', 'revoked_at' => 'datetime',
+        'sms_push' => 'encrypted:array', 'sms_bound_at' => 'datetime', 'sms_last_fetch_at' => 'datetime', 'sms_last_send_at' => 'datetime'];
 
     public function user()
     {

@@ -1,6 +1,7 @@
 <?php
 
 require __DIR__.'/copilot.php';
+require __DIR__.'/groundwire-sms.php';
 
 use App\Http\Controllers\Admin\AccountingExpenseController;
 use App\Http\Controllers\Admin\AccountLinkController;

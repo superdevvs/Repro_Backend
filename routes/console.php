@@ -100,3 +100,8 @@ Artisan::command('shoot-uploads:audit-pending {--minutes=5}', function () {
 
     $this->info(sprintf('Upload attempt audit complete: %d stale pending attempt(s).', $stale->count()));
 })->purpose('Alert on pending upload attempts that require safe reconciliation');
+
+Artisan::command('groundwire-sms:recover', function () {
+    app(\App\Services\Messaging\GroundwireSmsPushService::class)->recover();
+    $this->info('Groundwire notification recovery complete.');
+})->purpose('Recover recent Groundwire SMS notifications without resending messages');

@@ -73,7 +73,8 @@ class TelnyxWebhookController extends Controller
             return response()->json(['status' => 'ignored']);
         }
 
-        if (Message::where('provider_message_id', $messageId)->exists()) {
+        if ($existing = Message::where('provider_message_id', $messageId)->first()) {
+            app(\App\Services\Messaging\GroundwireSmsPushService::class)->queueIncoming($existing->id);
             return response()->json(['status' => 'duplicate']);
         }
 
@@ -130,6 +131,9 @@ class TelnyxWebhookController extends Controller
             SmsThreadUpdated::dispatch($thread->fresh()->load(['contact', 'assignedTo']));
         });
 
+        if ($createdMessageId !== null) {
+            app(\App\Services\Messaging\GroundwireSmsPushService::class)->queueIncoming($createdMessageId);
+        }
         $number = $this->findSmsNumber($to);
         Log::info('Telnyx inbound SMS stored', [
             'provider_message_id' => $messageId,
