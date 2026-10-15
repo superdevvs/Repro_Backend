@@ -2960,7 +2960,7 @@
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/nikic/PHP-Parser/zipball/044a6a392ff8ad0d61f14370a5fbbd0a0107152f",
+                "url": "https://codeload.github.com/nikic/PHP-Parser/zip/044A6A392FF8AD0D61F14370A5FBBD0A0107152F",
                 "reference": "044a6a392ff8ad0d61f14370a5fbbd0a0107152f",
                 "shasum": ""
             },
