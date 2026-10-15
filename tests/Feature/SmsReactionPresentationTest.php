@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Events\SmsMessageReceived;
+use App\Http\Resources\Messaging\SmsThreadResource;
 use App\Models\Contact;
 use App\Models\Message;
 use App\Models\MessageThread;
@@ -179,6 +180,59 @@ class SmsReactionPresentationTest extends TestCase
         $this->assertNull($payload['message']['reaction']['targetMessageId']);
         $this->assertSame('A aprobat „Hello”', $payload['message']['body']);
         $this->assertCount(0, $queries);
+    }
+
+    public function test_thread_list_reaction_preview_uses_the_complete_latest_message_instead_of_truncated_snippet(): void
+    {
+        Sanctum::actingAs(User::factory()->create(['role' => 'admin']));
+        $reactionThread = $this->thread();
+        $normalThread = $this->thread();
+        $quoted = str_repeat('Shoot reminder with the full address and appointment details. ', 6);
+        $body = 'A aprobat „'.$quoted.'”';
+        $this->message($reactionThread, 'INBOUND', $body, '2026-10-15 12:02:00');
+        $reactionThread->update([
+            'last_direction' => 'INBOUND',
+            'last_snippet' => mb_substr($body, 0, 200),
+            'last_message_at' => '2026-10-15 12:02:00',
+        ]);
+        $this->message($normalThread, 'INBOUND', 'I will be there on time.', '2026-10-15 12:01:00');
+        $normalThread->update([
+            'last_direction' => 'INBOUND',
+            'last_snippet' => 'I will be there on time.',
+            'last_message_at' => '2026-10-15 12:01:00',
+        ]);
+
+        $response = $this->getJson('/api/messaging/sms/threads')->assertOk();
+        $threads = collect($response->json('data'))->keyBy('id');
+
+        $this->assertSame('👍', $threads[(string) $reactionThread->id]['lastReaction']['emoji']);
+        $this->assertSame($quoted, $threads[(string) $reactionThread->id]['lastReaction']['quotedMessage']);
+        $this->assertSame(200, mb_strlen($threads[(string) $reactionThread->id]['lastMessageSnippet']));
+        $this->assertNull($threads[(string) $normalThread->id]['lastReaction']);
+    }
+
+    public function test_thread_preview_uses_latest_sms_and_resource_does_not_lazy_load_it(): void
+    {
+        $thread = $this->thread();
+        $this->message($thread, 'INBOUND', 'Liked "Hello"', '2026-10-15 12:00:00');
+        $this->message($thread, 'INBOUND', 'Ordinary reply', '2026-10-15 12:01:00');
+        $this->message($thread, 'INBOUND', 'Loved "Hello"', '2026-10-15 12:02:00', ['channel' => 'EMAIL']);
+        $thread->update(['last_direction' => 'INBOUND', 'last_snippet' => 'Liked "Hello"']);
+        $thread->load(['latestSmsMessage', 'contact', 'assignedTo']);
+        DB::enableQueryLog();
+        DB::flushQueryLog();
+
+        $payload = SmsThreadResource::make($thread)->resolve();
+
+        $queries = DB::getQueryLog();
+        DB::disableQueryLog();
+        $this->assertNull($payload['lastReaction']);
+        $this->assertCount(0, $queries);
+
+        $thread->unsetRelation('latestSmsMessage');
+        $this->assertSame('👍', SmsThreadResource::make($thread)->resolve()['lastReaction']['emoji']);
+        $thread->last_snippet = str_repeat('Liked "Long quoted message ', 10);
+        $this->assertNull(SmsThreadResource::make($thread)->resolve()['lastReaction']);
     }
 
     private function thread(): MessageThread

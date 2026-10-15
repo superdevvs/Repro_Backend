@@ -40,7 +40,7 @@ class SmsMessagingController extends Controller
 
         $threads = $this->messaging
             ->listThreads(['channel' => 'SMS'])
-            ->with(['contact', 'assignedTo', 'smsGroup' => fn ($query) => $query->withCount('members')])
+            ->with(['contact', 'assignedTo', 'latestSmsMessage', 'smsGroup' => fn ($query) => $query->withCount('members')])
             ->where(function ($query) {
                 $query->whereNotNull('sms_group_id')
                     ->orWhereHas('messages', function ($messages) {

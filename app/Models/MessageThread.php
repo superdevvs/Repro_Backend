@@ -6,6 +6,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
 class MessageThread extends Model
 {
@@ -59,6 +60,14 @@ class MessageThread extends Model
     public function messages(): HasMany
     {
         return $this->hasMany(Message::class, 'thread_id');
+    }
+
+    public function latestSmsMessage(): HasOne
+    {
+        return $this->hasOne(Message::class, 'thread_id')->ofMany(
+            ['created_at' => 'max', 'id' => 'max'],
+            fn ($query) => $query->where('channel', 'SMS'),
+        );
     }
 
     /**

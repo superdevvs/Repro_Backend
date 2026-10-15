@@ -2,6 +2,7 @@
 
 namespace App\Http\Resources\Messaging;
 
+use App\Services\Messaging\SmsReactionParser;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
@@ -17,11 +18,21 @@ class SmsThreadResource extends JsonResource
         $userId = optional($request->user())->id;
         $unreadFor = $this->unread_for_user_ids_json ?? [];
         $isUnread = $userId ? in_array($userId, $unreadFor) : false;
+        $lastReaction = null;
+        if ($this->resource->relationLoaded('latestSmsMessage')) {
+            $latest = $this->resource->getRelation('latestSmsMessage');
+            if ($latest?->direction === 'INBOUND') {
+                $lastReaction = app(SmsReactionParser::class)->parse((string) $latest->body_text);
+            }
+        } elseif ($this->channel === 'SMS' && $this->last_direction === 'INBOUND') {
+            $lastReaction = app(SmsReactionParser::class)->parse((string) $this->last_snippet);
+        }
 
         return [
             'id' => (string) $this->id,
             'contact' => SmsContactResource::make($this->whenLoaded('contact')),
             'lastMessageSnippet' => $this->last_snippet,
+            'lastReaction' => $lastReaction,
             'lastMessageAt' => optional($this->last_message_at)->toIso8601String(),
             'lastDirection' => $this->last_direction,
             'unread' => $isUnread,
@@ -52,4 +63,3 @@ class SmsThreadResource extends JsonResource
         ];
     }
 }
-
