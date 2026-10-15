@@ -527,8 +527,10 @@ class ShootEditablePayloadService
         if (is_string($propertyDetails)) {
             $propertyDetails = json_decode($propertyDetails, true) ?? [];
         }
+        $previousPropertyDetails = $propertyDetails;
 
         $propertyDetailsUpdated = false;
+        $yearBuiltOnlyUpdate = false;
         if (array_key_exists('property_details', $validated) && is_array($validated['property_details'])) {
             $propertyDetails = array_merge($propertyDetails, $validated['property_details']);
             $propertyDetailsUpdated = true;
@@ -550,12 +552,23 @@ class ShootEditablePayloadService
         }
 
         if ($propertyDetailsUpdated) {
+            $changedPropertyKeys = array_keys(array_filter(
+                $propertyDetails,
+                static fn ($value, $key) => ! array_key_exists($key, $previousPropertyDetails)
+                    || $previousPropertyDetails[$key] !== $value,
+                ARRAY_FILTER_USE_BOTH
+            ));
+            $yearBuiltOnlyUpdate = array_diff($changedPropertyKeys, ['year_built', 'yearBuilt']) === [];
             $shoot->property_details = $propertyDetails;
-            $shoot->mls_id = $validated['mls_id']
-                ?? data_get($propertyDetails, 'mls_id')
-                ?? data_get($propertyDetails, 'mlsId')
-                ?? $shoot->mls_id;
-            $invoiceNeedsRefresh = true;
+            // Year built has no billing effect. Do not rebuild paid invoice
+            // charge rows or copy unrelated MLS/tour fields for this correction.
+            if (! $yearBuiltOnlyUpdate) {
+                $shoot->mls_id = $validated['mls_id']
+                    ?? data_get($propertyDetails, 'mls_id')
+                    ?? data_get($propertyDetails, 'mlsId')
+                    ?? $shoot->mls_id;
+                $invoiceNeedsRefresh = true;
+            }
         }
 
         if (array_key_exists('listing_type', $validated)) {
@@ -591,7 +604,7 @@ class ShootEditablePayloadService
         }
 
         $autoPropertyTourLinks = [];
-        if ($propertyDetailsUpdated) {
+        if ($propertyDetailsUpdated && ! $yearBuiltOnlyUpdate) {
             $autoPropertyTourLinks = array_filter([
                 'property_mls' => $validated['mls_id']
                     ?? data_get($propertyDetails, 'mls_id')
