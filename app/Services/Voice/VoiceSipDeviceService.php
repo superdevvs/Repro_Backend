@@ -247,8 +247,12 @@ class VoiceSipDeviceService
             return null;
         }
         // Receiving SIP peer notifications are never a new customer call. The API-side offer leg controls the atomic claim.
-        if (($p['direction'] ?? '') === 'incoming') {
-            $token = collect($p['custom_headers'] ?? [])->first(fn ($h) => strcasecmp($h['name'] ?? '', 'X-Repro-Offer') === 0)['value'] ?? null;
+        $direction = (string) ($p['direction'] ?? '');
+        if (in_array($direction, ['incoming', ''], true)) {
+            // Follow-ups can omit direction. Require a known peer or provider session then; a SIP header alone is not enough.
+            $token = $direction === 'incoming'
+                ? (collect($p['custom_headers'] ?? [])->first(fn ($h) => strcasecmp($h['name'] ?? '', 'X-Repro-Offer') === 0)['value'] ?? null)
+                : null;
             $session = (string) ($p['call_session_id'] ?? '');
             $offer = VoicePhoneOffer::where('sip_device_id', $device->id)->where(function ($q) use ($token, $session, $control): void {
                 $q->where('peer_call_control_id', $control);
@@ -265,7 +269,7 @@ class VoiceSipDeviceService
                     return ['status' => 'processed_sip_peer', 'voice_call_id' => $offer->incomingOffer->voice_call_id];
                 }
             }
-        } elseif ($type === 'call.initiated' && ($p['direction'] ?? '') === 'outgoing' && $this->allowed($device)) {
+        } elseif ($type === 'call.initiated' && $direction === 'outgoing' && $this->allowed($device)) {
             try {
                 $call = app(VoiceBrowserCallService::class)->startSipOutbound($device, $p);
 

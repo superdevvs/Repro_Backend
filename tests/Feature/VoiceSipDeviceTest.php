@@ -253,6 +253,89 @@ class VoiceSipDeviceTest extends TestCase
         $this->assertDatabaseCount('voice_browser_calls', 1);
     }
 
+    private function nativeOffer(): array
+    {
+        $device = $this->createDevice();
+        $call = $this->incoming();
+        $service = app(VoiceIncomingOfferService::class);
+        $this->assertTrue($service->create($call));
+        $offer = VoiceIncomingOffer::where('voice_call_id', $call->id)->firstOrFail();
+        $phone = $offer->phoneOffers()->firstOrFail();
+        $service->dialPhone($phone->id);
+
+        return [$device, $call, $offer, $phone->fresh()];
+    }
+
+    public function test_directionless_native_peer_events_preserve_the_answered_conference(): void
+    {
+        [$device, $call, $offer, $phone] = $this->nativeOffer();
+        $peer = ['connection_id' => $device->connection_id];
+        $this->assertSame('processed_sip_peer', $this->event('call.initiated', 'native-peer', array_merge($peer, [
+            'direction' => 'incoming', 'call_session_id' => $phone->call_session_id,
+        ]))['status']);
+        // Telnyx's receiving-peer follow-ups omit direction and may omit correlation fields.
+        foreach (['call.bridged', 'call.answered'] as $type) {
+            $this->assertSame('processed_sip_peer', $this->event($type, 'native-peer', $peer)['status']);
+        }
+        $this->assertSame('waiting', $offer->fresh()->status);
+        $this->event('call.answered', $phone->call_control_id);
+        $this->assertSame('claimed', $offer->fresh()->status);
+        $this->event('call.answered', 'native-peer', $peer);
+        $this->event('conference.participant.joined', $phone->call_control_id, ['conference_id' => 'conference-one']);
+        $this->event('call.answered', $call->call_control_id);
+        $this->event('conference.participant.joined', $call->call_control_id, ['conference_id' => 'conference-one']);
+        $this->assertSame('active', VoiceBrowserCall::firstOrFail()->state);
+        $agent = VoiceBrowserLeg::where('role', 'agent')->firstOrFail();
+        $this->assertNotNull($agent->joined_at);
+        $this->assertNull($agent->ended_at);
+        $this->assertDatabaseCount('voice_calls', 1);
+        $this->assertDatabaseCount('voice_browser_calls', 1);
+        $this->assertCount(1, Http::recorded(fn ($r) => parse_url($r->url(), PHP_URL_PATH) === '/v2/conferences'));
+        Http::assertNotSent(fn ($r) => str_ends_with($r->url(), '/calls/native-peer/actions/hangup'));
+    }
+
+    public function test_reordered_directionless_peer_events_require_the_same_device_and_provider_session(): void
+    {
+        [$device, $call, $offer, $phone] = $this->nativeOffer();
+        $peer = ['connection_id' => $device->connection_id, 'call_session_id' => $phone->call_session_id];
+        $this->assertSame('processed_sip_peer', $this->event('call.bridged', 'reordered-peer', $peer)['status']);
+        $this->assertSame('processed_sip_peer', $this->event('call.initiated', 'reordered-peer', array_merge($peer, ['direction' => 'incoming']))['status']);
+        $this->assertSame('processed_sip_peer', $this->event('call.answered', 'reordered-peer', $peer)['status']);
+        $other = User::factory()->create(['role' => 'admin']);
+        $this->policy([$this->staff->id, $other->id]);
+        $otherDevice = $this->createDevice($other);
+        $this->assertSame('rejected_sip_device', $this->event('call.bridged', 'foreign-peer', [
+            'connection_id' => $otherDevice->connection_id, 'call_session_id' => $phone->call_session_id,
+        ])['status']);
+        $this->assertSame('reordered-peer', $phone->fresh()->peer_call_control_id);
+        $this->assertSame('waiting', $offer->fresh()->status);
+        $this->assertDatabaseCount('voice_calls', 1);
+        $this->assertDatabaseCount('voice_browser_calls', 0);
+        Http::assertNotSent(fn ($r) => str_ends_with($r->url(), '/calls/reordered-peer/actions/hangup'));
+        Http::assertSent(fn ($r) => str_ends_with($r->url(), '/calls/foreign-peer/actions/hangup'));
+    }
+
+    public function test_unknown_directionless_and_outgoing_calls_cannot_spoof_a_receiving_peer(): void
+    {
+        [$device, $call, $offer, $phone] = $this->nativeOffer();
+        $header = [['name' => 'X-Repro-Offer', 'value' => $phone->client_state]];
+        $this->assertSame('rejected_sip_device', $this->event('call.answered', 'header-only', [
+            'connection_id' => $device->connection_id, 'custom_headers' => $header,
+        ])['status']);
+        app(\App\Services\TelnyxAi\VoiceSettingsService::class)->update(['outbound_mode' => 'none']);
+        $this->assertSame('rejected_sip_device', $this->event('call.initiated', 'outgoing-spoof', [
+            'connection_id' => $device->connection_id, 'direction' => 'outgoing', 'to' => '+12025550222',
+            'call_session_id' => $phone->call_session_id, 'custom_headers' => $header,
+        ])['status']);
+        $this->assertNull($phone->fresh()->peer_call_control_id);
+        $this->assertSame('waiting', $offer->fresh()->status);
+        $this->assertDatabaseCount('voice_calls', 1);
+        $this->assertDatabaseCount('voice_browser_calls', 0);
+        $this->assertSame(1, $this->dials);
+        Http::assertSent(fn ($r) => str_ends_with($r->url(), '/calls/header-only/actions/hangup'));
+        Http::assertSent(fn ($r) => str_ends_with($r->url(), '/calls/outgoing-spoof/actions/hangup'));
+    }
+
     public function test_expired_or_revoked_native_offer_is_hung_up_without_claiming(): void
     {
         $d = $this->createDevice();
