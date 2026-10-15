@@ -48,17 +48,18 @@ class EditingTaskController extends Controller
         if ($request->filled('shoot_id')) $query->where('shoot_id', $request->integer('shoot_id'));
         $page = $query->latest()->paginate(30);
         $addresses = Shoot::whereIn('id', $page->getCollection()->pluck('shoot_id'))
-            ->with($request->boolean('summary') ? ['photographer', 'services.category'] : [])->get()->keyBy('id');
+            ->with(['services.category', 'client:id,name', 'serviceItems.service'])->get()->keyBy('id');
         return response()->json(['data' => $page->getCollection()->map(function ($dispatch) use ($request, $addresses) {
             if ($request->boolean('summary')) {
                 return $dispatch->only(['id', 'shoot_id', 'scope', 'status', 'created_at'])
                     + ['address' => $addresses->get($dispatch->shoot_id)?->address,
                         'pending_items_count' => $dispatch->items->whereNotIn('status', ['completed', 'cancelled'])->count(),
-                        'shoot' => $addresses->has($dispatch->shoot_id) ? app(\App\Services\Shoots\EditorTaskShootSummary::class)->present($addresses->get($dispatch->shoot_id)) : null];
+                        'shoot' => $addresses->has($dispatch->shoot_id) ? app(\App\Services\Shoots\EditorTaskShootSummary::class)->present($addresses->get($dispatch->shoot_id), $dispatch) : null];
             }
             // Do not expose another editor's files through the stored preview plan.
             return $dispatch->only(['id', 'shoot_id', 'scope', 'workflow', 'instructions', 'status', 'error', 'created_at'])
                 + ['address' => $addresses->get($dispatch->shoot_id)?->address,
+                    'shoot' => $addresses->has($dispatch->shoot_id) ? app(\App\Services\Shoots\EditorTaskShootSummary::class)->present($addresses->get($dispatch->shoot_id), $dispatch) : null,
                     'items' => $dispatch->items->map(function ($item) {
                         $version = $item->primary_version_id ? ShootFileVersion::find($item->primary_version_id) : null;
                         return $item->present() + ['returnedVersion' => $version?->present()];

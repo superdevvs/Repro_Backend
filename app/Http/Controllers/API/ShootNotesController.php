@@ -43,7 +43,7 @@ class ShootNotesController extends Controller
             ->with('author:id,name,email')
             ->latest('id')
             ->get();
-        $notes = $this->notesAccess->visibleNotes($notes, $user)
+        $notes = $this->notesAccess->visibleNotes($notes, $user, $shoot)
             ->values();
 
         return response()->json([
@@ -368,7 +368,8 @@ class ShootNotesController extends Controller
             'admin', 'superadmin' => ['id', 'shoot_notes', 'company_notes', 'photographer_notes', 'editor_notes', 'approval_annotation'],
             'client' => ['id', 'shoot_notes'],
             'photographer' => ['id', 'shoot_notes', 'photographer_notes'],
-            'editor' => ['id', 'editor_notes'],
+            'editor' => app(ShootAuthorizationSupport::class)->canVideoEditorReadClientContext($shoot, $user)
+                ? ['id', 'editor_notes', 'company_notes'] : ['id', 'editor_notes'],
             default => ['id'],
         };
 

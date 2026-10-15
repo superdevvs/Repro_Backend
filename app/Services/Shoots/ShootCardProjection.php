@@ -12,6 +12,7 @@ final class ShootCardProjection
             'address', 'city', 'state', 'zip', 'latitude', 'longitude', 'location',
             'scheduled_date', 'scheduled_at', 'time', 'timezone', 'scheduled_timezone', 'completed_at', 'completed_date',
             'client', 'photographer', 'editor', 'rep', 'services', 'service_items', 'editor_assignments',
+            'can_view_video_editor_context', 'canViewVideoEditorContext',
             'base_quote', 'tax_amount', 'total_quote', 'payment_status', 'payment_type', 'payment_summary', 'financials', 'payment',
             'bypass_paywall', 'client_release_access', 'can_download', 'can_view_originals', 'permissions',
             'hero_image', 'preview_images', 'media_summary', 'package_name', 'package_details',

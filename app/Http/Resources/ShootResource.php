@@ -94,6 +94,8 @@ class ShootResource extends JsonResource
         $isBookingRep = app(\App\Services\Shoots\ShootManagementAccess::class)->isSalesRep($requestingUser)
             && app(\App\Services\Shoots\ShootManagementAccess::class)->can($requestingUser);
         $isEditor = strtolower((string) ($requestingUser?->role ?? '')) === 'editor' && ! $isBookingRep;
+        $canViewVideoEditorContext = $isEditor
+            && app(\App\Services\Shoots\ShootAuthorizationSupport::class)->canVideoEditorReadClientContext($this->resource, $requestingUser);
         $isPhotographer = strtolower((string) ($requestingUser?->role ?? '')) === 'photographer' && ! $isBookingRep;
         $assignmentService = app(\App\Services\Shoots\ShootEditingAssignmentService::class);
         $serviceCollection = $this->services;
@@ -209,7 +211,10 @@ class ShootResource extends JsonResource
 
         return [
             'id' => (string) $this->id,
-            'client' => [
+            'client' => $isEditor ? ($canViewVideoEditorContext ? [
+                'id' => (string) $this->client_id,
+                'name' => $this->client?->name ?? 'Unknown',
+            ] : null) : [
                 'id' => (string) $this->client_id,
                 'name' => $this->client?->name ?? 'Unknown',
                 'email' => $this->client?->email ?? '',
@@ -219,6 +224,9 @@ class ShootResource extends JsonResource
                 'phone' => app(\App\Services\Shoots\ShootClientContactVisibility::class)
                     ->phoneFor($this->resource, $requestingUser),
             ],
+            'can_view_video_editor_context' => $canViewVideoEditorContext,
+            'canViewVideoEditorContext' => $canViewVideoEditorContext,
+            'company_notes' => $this->when($canViewVideoEditorContext, $this->company_notes),
             'rep' => $this->when($this->rep_id, function () {
                 return [
                     'id' => (string) $this->rep_id,

@@ -80,7 +80,7 @@ class ShootNotesAccessService
     }
 
     /** @param Collection<int, ShootNote> $notes */
-    public function visibleNotes(Collection $notes, User $user): Collection
+    public function visibleNotes(Collection $notes, User $user, Shoot $shoot): Collection
     {
         return match ($this->role($user)) {
             'admin', 'superadmin', 'editing_manager', 'sales_rep' => $notes,
@@ -91,7 +91,9 @@ class ShootNotesAccessService
                 $note->type === ShootNote::TYPE_PHOTOGRAPHER
                 || ($note->type === ShootNote::TYPE_SHOOT
                     && $note->visibility === ShootNote::VISIBILITY_CLIENT_VISIBLE)),
-            'editor' => $notes->filter(fn (ShootNote $note) => $note->type === ShootNote::TYPE_EDITING),
+            'editor' => $notes->filter(fn (ShootNote $note) => $note->type === ShootNote::TYPE_EDITING
+                || ($note->type === ShootNote::TYPE_COMPANY
+                    && $this->shootAuthorization->canVideoEditorReadClientContext($shoot, $user))),
             default => collect(),
         };
     }

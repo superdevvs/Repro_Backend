@@ -45,6 +45,17 @@ class ShootAuthorizationSupport
             && $items->every(fn ($item) => ! $item->editor_id && ! $item->video_editor_id);
     }
 
+    /** Client display name and Company notes are read-only context for the current video editor. */
+    public function canVideoEditorReadClientContext(Shoot $shoot, ?User $user): bool
+    {
+        // The video checks load raw serviceItems. Keep that relation off the
+        // source model so it cannot replace the presenter's sanitized alias.
+        $contextShoot = clone $shoot;
+
+        return $this->canEditVideoTourLinks($contextShoot, $user)
+            && $this->hasVideoReferenceAssignment($contextShoot, $user);
+    }
+
     private const CLIENT_DELIVERED_STATUSES = [
         Shoot::STATUS_DELIVERED,
         'ready_for_client',

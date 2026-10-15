@@ -355,6 +355,8 @@ class ShootHistoryService
         $isBookingStaff = app(ShootManagementAccess::class)->can(auth()->user());
         $isEditor = $requestingRole === 'editor' && !$isBookingStaff;
         $isClient = $requestingRole === 'client' && !$isBookingStaff;
+        $canViewVideoEditorContext = $isEditor
+            && app(ShootAuthorizationSupport::class)->canVideoEditorReadClientContext($shoot, auth()->user());
         $visibleServices = $isEditor
             ? app(ShootEditingAssignmentService::class)->filterServicesForEditor($shoot, auth()->user())
             : collect($shoot->services);
@@ -395,7 +397,10 @@ class ShootHistoryService
             'scheduledAt' => $shoot->scheduled_at?->toIso8601String(),
             'completedDate' => $completedDate,
             'status' => $shoot->workflow_status ?? $shoot->status,
-            'client' => [
+            'client' => $isEditor ? ($canViewVideoEditorContext ? [
+                'id' => $client->id ?? null,
+                'name' => $client->name ?? null,
+            ] : null) : [
                 'id' => $client->id ?? null,
                 'name' => $client->name ?? null,
                 'email' => $client->email ?? null,
@@ -403,6 +408,8 @@ class ShootHistoryService
                 'company' => $client->company_name ?? null,
                 'totalShoots' => $clientCounts[$shoot->client_id] ?? 0,
             ],
+            'can_view_video_editor_context' => $canViewVideoEditorContext,
+            'canViewVideoEditorContext' => $canViewVideoEditorContext,
             'address' => [
                 'street' => $shoot->address,
                 'city' => $shoot->city,
@@ -437,7 +444,7 @@ class ShootHistoryService
                 'approval' => ($isEditor || $isClient) ? null : $shoot->approval_annotation,
                 'shoot' => $isEditor ? null : ($shoot->shoot_notes ?? $shoot->notes),
                 'photographer' => ($isEditor || $isClient) ? null : $shoot->photographer_notes,
-                'company' => ($isEditor || $isClient) ? null : $shoot->company_notes,
+                'company' => (($isEditor && ! $canViewVideoEditorContext) || $isClient) ? null : $shoot->company_notes,
                 'editing' => $isClient ? null : $shoot->editor_notes,
             ],
             'userCreatedBy' => $shoot->created_by,

@@ -393,6 +393,10 @@ class ShootPresenter
         $isPhotographerRole = $requestingRole === 'photographer' && ! $isBookingRep;
         $isEditorRole = $requestingRole === 'editor' && ! $isBookingRep;
         $isClientRole = $requestingRole === 'client' && ! $isBookingRep;
+        $canViewVideoEditorContext = $isEditorRole
+            && app(ShootAuthorizationSupport::class)->canVideoEditorReadClientContext($shoot, $requestingUser);
+        $shoot->setAttribute('can_view_video_editor_context', $canViewVideoEditorContext);
+        $shoot->setAttribute('canViewVideoEditorContext', $canViewVideoEditorContext);
         $canManageReshoots = in_array($requestingRole, ['admin', 'superadmin'], true);
         if ($canManageReshoots) {
             $shoot->makeVisible('external_booking_payload');
@@ -470,7 +474,10 @@ class ShootPresenter
             $shoot->setAttribute('client', $clientData);
             $shoot->unsetRelation('client');
         } elseif ($isEditorRole) {
-            $shoot->setAttribute('client', null);
+            $shoot->setAttribute('client', $canViewVideoEditorContext && $shoot->client ? [
+                'id' => $shoot->client->id,
+                'name' => $shoot->client->name,
+            ] : null);
             $shoot->unsetRelation('client');
         }
 
@@ -484,7 +491,7 @@ class ShootPresenter
             $shoot->total_paid = null;
             $shoot->remaining_balance = null;
             $shoot->shoot_notes = null;
-            $shoot->company_notes = null;
+            $shoot->company_notes = $canViewVideoEditorContext ? $shoot->company_notes : null;
             $shoot->photographer_notes = null;
         }
 
@@ -574,7 +581,7 @@ class ShootPresenter
         );
 
         $shoot->shoot_notes = ($isEditorRole || $isGhostVisibleForUser) ? null : $shoot->shoot_notes;
-        $shoot->company_notes = ($isEditorRole || $isClientRole) ? null : $shoot->company_notes;
+        $shoot->company_notes = (($isEditorRole && ! $canViewVideoEditorContext) || $isClientRole) ? null : $shoot->company_notes;
         $shoot->photographer_notes = ($isEditorRole || $isClientRole) ? null : $shoot->photographer_notes;
         $shoot->editor_notes = $isClientRole ? null : $shoot->editor_notes;
         if (app(ShootManagementAccess::class)->isSalesRep($requestingUser)) {
