@@ -15,6 +15,7 @@ use App\Models\SmsGroup;
 use App\Models\SmsGroupMember;
 use App\Models\User;
 use App\Services\Messaging\MessagingService;
+use App\Services\Messaging\SmsReactionPresenter;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Arr;
@@ -74,13 +75,14 @@ class SmsMessagingController extends Controller
         return SmsThreadResource::collection($threads)->response();
     }
 
-    public function showThread(MessageThread $thread, Request $request): JsonResponse
+    public function showThread(MessageThread $thread, Request $request, SmsReactionPresenter $reactions): JsonResponse
     {
         $this->ensureSmsThread($thread);
         $this->authorizeThread($thread, $request->user()?->id);
 
         $thread->load(['contact', 'assignedTo', 'smsGroup.members']);
         $messages = $thread->messages()->orderBy('created_at')->get();
+        $messages = $reactions->present($thread, $messages);
         $this->markThreadAsRead($thread, $request->user()?->id);
 
         return response()->json([
