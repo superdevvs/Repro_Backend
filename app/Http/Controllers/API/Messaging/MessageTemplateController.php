@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\MessageTemplate;
 use App\Models\Shoot;
 use App\Services\Messaging\EmailPreviewVariables;
+use App\Services\Messaging\EmailTemplateDocument;
 use App\Services\Messaging\ManualNotificationService;
 use App\Services\Messaging\TemplateRenderer;
 use App\Services\SystemEmails\DirectEmailTemplates;
@@ -68,7 +69,7 @@ class MessageTemplateController extends Controller
 
     public function update(Request $request, MessageTemplate $template): JsonResponse
     {
-        $data = $this->validatePayload($request);
+        $data = $this->validatePayload($request, $template);
 
         DB::transaction(function () use ($data, $request, $template): void {
             $template->update(array_merge($data, [
@@ -156,7 +157,10 @@ class MessageTemplateController extends Controller
         $draft->fill(Arr::only($overrides, [
             'channel', 'name', 'slug', 'description', 'category', 'subject',
             'body_html', 'body_text', 'scope', 'email_type', 'override_enabled', 'variables_json', 'content_blocks_json',
+            'editor_document_json',
         ]));
+
+        $draft->fill(app(EmailTemplateDocument::class)->prepare($draft->toArray(), $template->exists ? $template : null));
 
         return $draft;
     }
@@ -174,7 +178,7 @@ class MessageTemplateController extends Controller
         $variables = app(ProtectedEmailTemplates::class)->previewVariables($renderTemplate, $variables);
         $result = $renderer->render($renderTemplate, $variables, $data['theme'] ?? null);
 
-        return response()->json($result);
+        return response()->json(array_merge($result, ['source_html' => $this->sourceHtml($renderTemplate)]));
     }
 
     public function previewDraft(Request $request): JsonResponse
@@ -190,12 +194,26 @@ class MessageTemplateController extends Controller
         $variables = app(DirectEmailTemplates::class)->previewVariables($template, $variables);
         $variables = app(ProtectedEmailTemplates::class)->previewVariables($template, $variables);
 
-        return response()->json(app(TemplateRenderer::class)->render($template, $variables, $data['theme'] ?? null));
+        return response()->json(array_merge(app(TemplateRenderer::class)->render($template, $variables, $data['theme'] ?? null), ['source_html' => $this->sourceHtml($template)]));
+    }
+
+    private function sourceHtml(MessageTemplate $template): string
+    {
+        if (($template->editor_document_json['format'] ?? null) !== 'sections') {
+            return (string) $template->body_html;
+        }
+        $renderer = app(TemplateRenderer::class);
+        $variables = [];
+        foreach ($renderer->variableKeys($template) as $key) {
+            $variables[$key] = '{{'.$key.'}}';
+        }
+
+        return $renderer->render($template, $variables)['html'];
     }
 
     private function draftPreviewRules(bool $requireTemplate = false): array
     {
-        return [
+        return array_merge([
             'variables' => ['array'],
             'theme' => ['nullable', Rule::in(['light', 'dark'])],
             'template' => [$requireTemplate ? 'required' : 'sometimes', 'array'],
@@ -216,13 +234,14 @@ class MessageTemplateController extends Controller
             'template.content_blocks_json.*' => ['array:body_html,body_text'],
             'template.content_blocks_json.*.body_html' => ['sometimes', 'string'],
             'template.content_blocks_json.*.body_text' => ['sometimes', 'string'],
-        ];
+        ], EmailTemplateDocument::rules('template.'));
     }
 
     private function templateResponseData(MessageTemplate $template): array
     {
         return array_merge($template->toArray(), [
-            'editable_body_html' => app(TemplateRenderer::class)->editableBodyHtml((string) $template->body_html),
+            'editable_body_html' => ($template->editor_document_json['format'] ?? null) === 'html'
+                ? (string) $template->body_html : app(TemplateRenderer::class)->editableBodyHtml((string) $template->body_html),
             'editable_body_text' => (string) $template->body_text,
             'editable_subject' => app(EditableEmailContent::class)->editableSubject($template),
             'editable_content_blocks' => app(EditableEmailContent::class)->blocks($template),
@@ -444,12 +463,12 @@ class MessageTemplateController extends Controller
         return $request->validate($rules);
     }
 
-    protected function validatePayload(Request $request): array
+    protected function validatePayload(Request $request, ?MessageTemplate $original = null): array
     {
         $categories = ['BOOKING', 'REMINDER', 'PAYMENT', 'INVOICE', 'ACCOUNT', 'GENERAL'];
         $channels = $request->boolean('override_enabled') ? ['EMAIL'] : ['EMAIL', 'SMS'];
 
-        $data = $request->validate([
+        $data = $request->validate(array_merge([
             'channel' => ['required', Rule::in($channels)],
             'name' => ['required', 'string', 'max:255'],
             'slug' => ['nullable', 'string', 'max:255'],
@@ -474,9 +493,14 @@ class MessageTemplateController extends Controller
                 Rule::in($this->emailTypeRegistry->protectedAliases()),
             ],
             'override_enabled' => ['boolean'],
-        ]);
+        ], EmailTemplateDocument::rules()));
 
-        if (isset($data['body_html'])) {
+        $data = app(EmailTemplateDocument::class)->prepare($data, $original);
+        if ($original && ! $request->exists('editor_document_json') && isset($data['body_html']) && $data['body_html'] !== $original->body_html) {
+            $data['editor_document_json'] = null;
+        }
+
+        if (isset($data['body_html']) && ($data['editor_document_json']['format'] ?? null) !== 'html') {
             $data['body_html'] = app(TemplateRenderer::class)->editableBodyHtml($data['body_html']);
         }
         foreach ($data['content_blocks_json'] ?? [] as $key => $block) {

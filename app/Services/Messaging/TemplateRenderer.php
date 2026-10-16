@@ -17,6 +17,16 @@ class TemplateRenderer
      */
     public function render(MessageTemplate $template, array $variables, ?string $previewTheme = null): array
     {
+        // Imported HTML is authored as a complete layout. Substitute its fields,
+        // but never strip its head, tables, comments, or wrap it in another email.
+        if (($template->editor_document_json['format'] ?? null) === 'html') {
+            $html = $this->replacePlaceholders((string) $template->body_html, $variables);
+            $text = $this->replacePlaceholders((string) $template->body_text, $variables);
+            $subject = $this->replacePlaceholders((string) $template->subject, $variables);
+
+            return ['subject' => $subject, 'html' => $html, 'text' => $text,
+                'body_html' => $html, 'body_text' => $text, 'missing' => $this->missingVariables($template, $variables)];
+        }
         // Normalize static template copy before inserting any variables. This
         // corrects legacy brand numbers without ever rewriting a client,
         // photographer, access-contact, or SMS-recipient phone value.
@@ -104,6 +114,7 @@ class TemplateRenderer
             (string) $template->subject,
             (string) $template->body_html,
             (string) $template->body_text,
+            ($template->editor_document_json['format'] ?? null) !== 'html' ? (string) ($template->editor_document_json['preheader'] ?? '') : '',
         ]))));
     }
 
@@ -220,7 +231,7 @@ class TemplateRenderer
             'bodyHtml' => $bodyHtml,
             'heroTitleHtml' => $this->buildHeroTitleHtml($template, $subject !== '' ? $subject : ($template->name ?? 'R/E Pro Photos Update')),
             'heroCopy' => $this->resolveHeroCopy($template),
-            'preheaderText' => $this->buildPreheaderText($bodyHtml, $template),
+            'preheaderText' => $this->replacePlaceholders($this->buildPreheaderText($bodyHtml, $template), $variables),
             'branding' => $this->branding(),
             'emailAtelier' => app(EmailArtwork::class)->forTemplate($template, $variables),
             'emailFooterNote' => (string) ($variables['email_footer_note'] ?? ''),
@@ -392,6 +403,9 @@ class TemplateRenderer
 
     protected function buildPreheaderText(string $bodyHtml, MessageTemplate $template): string
     {
+        if (filled($template->editor_document_json['preheader'] ?? '')) {
+            return (string) $template->editor_document_json['preheader'];
+        }
         $text = $this->htmlToPreviewText($bodyHtml);
         if ($text === '') {
             $text = $this->resolveHeroCopy($template);

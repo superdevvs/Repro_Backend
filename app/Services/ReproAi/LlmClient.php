@@ -98,6 +98,9 @@ class LlmClient
             'temperature' => $temperature,
             'max_tokens' => $maxTokens,
         ];
+        if (isset($options['response_format'])) {
+            $payload['response_format'] = $options['response_format'];
+        }
 
         if (!empty($tools)) {
             $payload['tools'] = $tools;

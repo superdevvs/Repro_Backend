@@ -1307,6 +1307,9 @@ Route::middleware(['auth:sanctum'])->prefix('messaging')->group(function () {
         Route::post('/email/recovery/client-confirmations/replay', [ClientConfirmationRecoveryController::class, 'replay']);
 
         // Templates
+        Route::post('/templates/assist', [\App\Http\Controllers\API\Messaging\EmailTemplateWorkspaceController::class, 'assist'])->middleware('throttle:12,1');
+        Route::post('/templates/artwork', [\App\Http\Controllers\API\Messaging\EmailTemplateWorkspaceController::class, 'artwork'])->middleware('throttle:4,1');
+        Route::get('/templates/artwork/{artwork}', [\App\Http\Controllers\API\Messaging\EmailTemplateWorkspaceController::class, 'artworkStatus']);
         Route::get('/templates', [MessageTemplateController::class, 'index']);
         Route::post('/templates/preview', [MessageTemplateController::class, 'previewDraft']);
         Route::get('/templates/{template}', [MessageTemplateController::class, 'show']);

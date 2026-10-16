@@ -21,6 +21,7 @@ class MessageTemplate extends Model
         'body_text',
         'variables_json',
         'content_blocks_json',
+        'editor_document_json',
         'created_by',
         'updated_by',
         'scope',
@@ -37,6 +38,7 @@ class MessageTemplate extends Model
     protected $casts = [
         'variables_json' => 'array',
         'content_blocks_json' => 'array',
+        'editor_document_json' => 'array',
         'is_system' => 'bool',
         'is_active' => 'bool',
         'override_enabled' => 'bool',
