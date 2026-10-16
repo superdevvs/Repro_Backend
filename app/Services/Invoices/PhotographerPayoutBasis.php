@@ -39,6 +39,7 @@ final class PhotographerPayoutBasis
             'sqft' => $sqft, 'source' => $legacy ? 'legacy_booking_freeze' : 'booking',
             'captured_at' => now()->toIso8601String(),
         ];
+        if ($before['billing_correction_only'] ?? false) $basis['billing_correction_only'] = true;
         if ($before && $line->exists) {
             $basis['previous_basis'] = collect($before)->except(['previous_basis'])->all();
             $basis['review_required'] = true;
@@ -79,7 +80,13 @@ final class PhotographerPayoutBasis
     {
         if ($line->cancelled_at || in_array($line->workflow_status, ['cancelled', 'declined'], true)
             || in_array($shoot->workflow_status, ['cancelled', 'declined', 'on_hold'], true)) return null;
-        foreach ([$line->delivered_at, $line->ready_at, $shoot->completed_at, $shoot->admin_verified_at] as $date) {
+        foreach ([$line->delivered_at, $line->ready_at] as $date) {
+            if ($date) return (string) $date;
+        }
+        // A service added to a delivered work order has not inherited the
+        // original capture. An explicit later line completion can qualify it.
+        if (data_get($line->payout_snapshot, 'billing_correction_only', false)) return null;
+        foreach ([$shoot->completed_at, $shoot->admin_verified_at] as $date) {
             if ($date) return (string) $date;
         }
         if (! in_array($shoot->workflow_status, ['uploaded', 'editing', 'review', 'ready', 'delivered'], true)

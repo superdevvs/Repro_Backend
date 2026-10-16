@@ -449,18 +449,18 @@ class InvoiceService
         return is_numeric($sqft) ? (int) $sqft : null;
     }
 
-    public function generateInvoice(User $user, string $role, Carbon $start, Carbon $end): Invoice
+    public function generateInvoice(User $user, string $role, Carbon $start, Carbon $end, bool $preserveGeneratedItems = false): Invoice
     {
         $normalizedRole = strtolower($role);
 
         return match ($normalizedRole) {
-            Invoice::ROLE_CLIENT => $this->generateClientInvoice($user, $start, $end),
+            Invoice::ROLE_CLIENT => $this->generateClientInvoice($user, $start, $end, $preserveGeneratedItems),
             Invoice::ROLE_PHOTOGRAPHER => $this->generatePhotographerInvoice($user, $start, $end),
             default => throw new \InvalidArgumentException("Unsupported invoice role [{$role}]"),
         };
     }
 
-    protected function generateClientInvoice(User $user, Carbon $start, Carbon $end): Invoice
+    protected function generateClientInvoice(User $user, Carbon $start, Carbon $end, bool $preserveGeneratedItems = false): Invoice
     {
         $start = $start->copy()->startOfDay();
         $end = $end->copy()->endOfDay();
@@ -516,7 +516,7 @@ class InvoiceService
             }
         }
 
-        return DB::transaction(function () use ($user, $start, $end, $shoots) {
+        return DB::transaction(function () use ($user, $start, $end, $shoots, $preserveGeneratedItems) {
             $invoice = Invoice::query()
                 ->where('user_id', $user->id)
                 ->where('role', Invoice::ROLE_CLIENT)
@@ -546,6 +546,9 @@ class InvoiceService
                 // on the invoice so refreshTotals includes it exactly once.
                 'tax' => round((float) $shoots->sum(fn (Shoot $shoot) => (float) ($shoot->tax_amount ?? 0)), 2),
             ];
+            if ($preserveGeneratedItems && $invoice->exists) {
+                unset($invoiceData['issue_date'], $invoiceData['due_date']);
+            }
 
             if ($this->invoiceTableHasColumn('client_id')) {
                 $invoiceData['client_id'] = $user->id;
@@ -578,9 +581,13 @@ class InvoiceService
                 })
                 ->pluck('id');
 
-            if ($itemIdsToDelete->isNotEmpty()) {
+            if (! $preserveGeneratedItems && $itemIdsToDelete->isNotEmpty()) {
                 $invoice->items()->whereKey($itemIdsToDelete->all())->delete();
             }
+            $existingGeneratedItems = $preserveGeneratedItems
+                ? $invoice->items()->whereIn('type', [InvoiceItem::TYPE_CHARGE, InvoiceItem::TYPE_PAYMENT])->get()
+                : null;
+            $retainedItemIds = [];
 
             // Only adjustments actually retained on this period invoice may be
             // split out of its generated shoot charges. An adjustment living
@@ -640,7 +647,7 @@ class InvoiceService
                 }
                 $shootBasePayable = round($shootBasePayable, 2);
 
-                $invoice->items()->create([
+                $this->persistClientInvoiceItem($invoice, [
                     'shoot_id' => $shoot->id,
                     'type' => InvoiceItem::TYPE_CHARGE,
                     'description' => $description,
@@ -652,7 +659,7 @@ class InvoiceService
                         'shoot_id' => $shoot->id,
                         'pricing_snapshot' => app(InvoicePricingBreakdown::class)->snapshotForShoot($shoot, $shootBasePayable),
                     ],
-                ]);
+                ], $existingGeneratedItems, $retainedItemIds);
 
                 foreach ($shoot->payments as $payment) {
                     $netAmount = $payment->netAmount();
@@ -660,7 +667,7 @@ class InvoiceService
                         continue;
                     }
 
-                    $invoice->items()->create([
+                    $this->persistClientInvoiceItem($invoice, [
                         'shoot_id' => $shoot->id,
                         'type' => InvoiceItem::TYPE_PAYMENT,
                         'description' => 'Payment received',
@@ -672,7 +679,18 @@ class InvoiceService
                             'payment_id' => $payment->id,
                             'payment_method' => $payment->payment_method,
                         ],
-                    ]);
+                    ], $existingGeneratedItems, $retainedItemIds);
+                }
+            }
+
+            if ($existingGeneratedItems !== null) {
+                // Service corrections may remove generated charges. Payment
+                // rows remain the same ledger entries throughout the edit.
+                $staleChargeIds = $existingGeneratedItems
+                    ->filter(fn (InvoiceItem $item) => $item->type === InvoiceItem::TYPE_CHARGE && ! isset($retainedItemIds[$item->id]))
+                    ->pluck('id');
+                if ($staleChargeIds->isNotEmpty()) {
+                    $invoice->items()->whereKey($staleChargeIds->all())->delete();
                 }
             }
 
@@ -1286,7 +1304,7 @@ class InvoiceService
     /**
      * Generate an individual invoice for a shoot (client-facing invoice)
      */
-    public function refreshClientInvoicesForShoot(Shoot $shoot): Collection
+    public function refreshClientInvoicesForShoot(Shoot $shoot, bool $preserveGeneratedItems = false): Collection
     {
         $invoiceAdjustments = app(InvoiceAdjustmentService::class);
         $invoices = $invoiceAdjustments->clientInvoicesForShoot($shoot);
@@ -1297,7 +1315,7 @@ class InvoiceService
 
         $refreshed = collect();
         if ($invoices->contains(fn (Invoice $invoice) => (int) $invoice->shoot_id === (int) $shoot->id)) {
-            $direct = $this->generateForShoot($shoot->fresh());
+            $direct = $this->generateForShoot($shoot->fresh(), $preserveGeneratedItems);
             if ($direct) {
                 $refreshed->push($direct);
             }
@@ -1323,16 +1341,17 @@ class InvoiceService
                 $client,
                 Invoice::ROLE_CLIENT,
                 Carbon::parse($startValue),
-                Carbon::parse($endValue)
+                Carbon::parse($endValue),
+                $preserveGeneratedItems
             ));
         }
 
         return $refreshed->unique('id')->values();
     }
 
-    public function generateForShoot(Shoot $shoot): ?Invoice
+    public function generateForShoot(Shoot $shoot, bool $preserveGeneratedItems = false): ?Invoice
     {
-        return DB::transaction(function () use ($shoot) {
+        return DB::transaction(function () use ($shoot, $preserveGeneratedItems) {
             // Serialize invoice generation per shoot. This closes the former gap
             // where regenerating an existing invoice happened outside a
             // transaction and could expose a half-rebuilt set of line items.
@@ -1375,14 +1394,23 @@ class InvoiceService
                 : (float) ($shoot->tax_amount ?? 0);
             $total = $isCancellationFeeOnly ? $subtotal : $subtotal + $taxAmount;
             $totalPaid = $isComplimentaryReceipt ? 0.0 : $shoot->calculateCanonicalTotalPaid();
+            if ($preserveGeneratedItems && $existingInvoice && ! $isComplimentaryReceipt
+                && ! $existingInvoice->hasRelatedPaymentRecords()) {
+                // Older ordinary invoices can carry settlement evidence only
+                // in their ledger rows. Actual payments/refunds take precedence.
+                $totalPaid = max((float) $existingInvoice->amount_paid, (float) $existingInvoice->payments_total,
+                    (float) $existingInvoice->items()->where('type', InvoiceItem::TYPE_PAYMENT)->sum('total_amount'));
+            }
 
             if ($existingInvoice) {
-                $existingInvoice->items()
-                    ->where('type', InvoiceItem::TYPE_CHARGE)
-                    ->where('shoot_id', $shoot->id)
-                    ->delete();
+                if (! $preserveGeneratedItems) {
+                    $existingInvoice->items()
+                        ->where('type', InvoiceItem::TYPE_CHARGE)
+                        ->where('shoot_id', $shoot->id)
+                        ->delete();
+                }
 
-                $this->createShootChargeItems($existingInvoice, $shoot, $isCancellationFeeOnly);
+                $this->createShootChargeItems($existingInvoice, $shoot, $isCancellationFeeOnly, $preserveGeneratedItems);
                 $existingInvoice->shoots()->syncWithoutDetaching([$shoot->id]);
 
                 $adjustmentTotal = $existingInvoice->items()
@@ -1715,8 +1743,12 @@ class InvoiceService
         return app(ScheduleInstantResolver::class)->isWithinCancellationFeeWindowAt($scheduledAt);
     }
 
-    protected function createShootChargeItems(Invoice $invoice, Shoot $shoot, bool $isCancellationFeeOnly = false): void
+    protected function createShootChargeItems(Invoice $invoice, Shoot $shoot, bool $isCancellationFeeOnly = false, bool $preserveGeneratedItems = false): void
     {
+        $existingGeneratedItems = $preserveGeneratedItems
+            ? $invoice->items()->where('type', InvoiceItem::TYPE_CHARGE)->where('shoot_id', $shoot->id)->get()
+            : null;
+        $retainedItemIds = [];
         $isComplimentaryReceipt = $shoot->isComplimentaryReshoot();
         $reshootItems = $shoot->relationLoaded('compReshootItems')
             ? $shoot->compReshootItems->keyBy('shoot_service_id')
@@ -1767,7 +1799,7 @@ class InvoiceService
                 $meta['original_amount'] = round($originalAmount, 2);
             }
 
-            $invoice->items()->create([
+            $this->persistClientInvoiceItem($invoice, [
                 'shoot_id' => $shoot->id,
                 'type' => InvoiceItem::TYPE_CHARGE,
                 'description' => $isComplimentaryReceipt
@@ -1778,10 +1810,11 @@ class InvoiceService
                 'total_amount' => ($isCancellationFeeOnly || $isComplimentaryReceipt) ? 0 : $originalAmount,
                 'recorded_at' => $shoot->scheduled_at ?? $shoot->scheduled_date,
                 'meta' => $meta,
-            ]);
+            ], $existingGeneratedItems, $retainedItemIds);
         }
 
         if (! $isCancellationFeeOnly) {
+            $this->deleteStaleClientChargeItems($invoice, $existingGeneratedItems, $retainedItemIds);
             return;
         }
 
@@ -1790,10 +1823,11 @@ class InvoiceService
             ->sum(fn (InvoiceItem $item) => (float) $item->total_amount);
         $cancellationFee = max((float) ($shoot->total_quote ?? 0) - $billableAdjustments, 0);
         if ($cancellationFee <= 0) {
+            $this->deleteStaleClientChargeItems($invoice, $existingGeneratedItems, $retainedItemIds);
             return;
         }
 
-        $invoice->items()->create([
+        $this->persistClientInvoiceItem($invoice, [
             'shoot_id' => $shoot->id,
             'type' => InvoiceItem::TYPE_CHARGE,
             'description' => 'Cancellation Fee - '.$shoot->address,
@@ -1807,7 +1841,48 @@ class InvoiceService
                 'shoot_id' => $shoot->id,
                 'shoot_address' => $shoot->address,
             ],
-        ]);
+        ], $existingGeneratedItems, $retainedItemIds);
+        $this->deleteStaleClientChargeItems($invoice, $existingGeneratedItems, $retainedItemIds);
+    }
+
+    /** Reuse generated ledger rows without discarding their external/audit metadata. */
+    private function persistClientInvoiceItem(Invoice $invoice, array $payload, ?Collection $existing, array &$retainedIds): InvoiceItem
+    {
+        $meta = $payload['meta'] ?? [];
+        $candidates = $existing?->filter(fn (InvoiceItem $item) => ! isset($retainedIds[$item->id])
+            && $item->type === $payload['type'] && (int) $item->shoot_id === (int) ($payload['shoot_id'] ?? 0));
+        $item = null;
+        if ($candidates !== null) {
+            if (isset($meta['payment_id'])) {
+                $item = $candidates->first(fn (InvoiceItem $candidate) => (string) data_get($candidate->meta, 'payment_id') === (string) $meta['payment_id']);
+            } elseif (isset($meta['shoot_service_id'])) {
+                $item = $candidates->first(fn (InvoiceItem $candidate) => (string) data_get($candidate->meta, 'shoot_service_id') === (string) $meta['shoot_service_id']);
+                $item ??= $candidates->first(fn (InvoiceItem $candidate) => ! data_get($candidate->meta, 'shoot_service_id')
+                    && (string) data_get($candidate->meta, 'service_id') === (string) $meta['service_id']
+                    && (! data_get($candidate->meta, 'shoot_unit_id') || (string) data_get($candidate->meta, 'shoot_unit_id') === (string) ($meta['shoot_unit_id'] ?? '')));
+            } else {
+                $item = $candidates->first(fn (InvoiceItem $candidate) => ! data_get($candidate->meta, 'shoot_service_id')
+                    && ! data_get($candidate->meta, 'service_id')
+                    && (data_get($candidate->meta, 'type') === 'cancellation_fee') === (($meta['type'] ?? null) === 'cancellation_fee'));
+            }
+        }
+        if ($item) {
+            $payload['meta'] = array_replace(is_array($item->meta) ? $item->meta : [], $meta);
+            $item->fill($payload)->save();
+        } else {
+            $item = $invoice->items()->create($payload);
+        }
+        $retainedIds[$item->id] = true;
+
+        return $item;
+    }
+
+    private function deleteStaleClientChargeItems(Invoice $invoice, ?Collection $existing, array $retainedIds): void
+    {
+        $staleIds = $existing?->reject(fn (InvoiceItem $item) => isset($retainedIds[$item->id]))->pluck('id');
+        if ($staleIds?->isNotEmpty()) {
+            $invoice->items()->whereKey($staleIds->all())->delete();
+        }
     }
 
     protected function describeShootService(Shoot $shoot, Service $service): string

@@ -137,7 +137,7 @@ class AssignedRepServiceEditTest extends TestCase
 
     public static function sealedStages(): array
     {
-        return [['delivered'], ['cancelled'], ['declined'], ['import_draft']];
+        return [['cancelled'], ['declined'], ['import_draft']];
     }
 
     #[DataProvider('sealedStages')]

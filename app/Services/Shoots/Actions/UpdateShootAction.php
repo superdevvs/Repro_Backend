@@ -392,6 +392,7 @@ class UpdateShootAction
         $serviceChangeRequested = array_key_exists('services', $validated)
             || array_key_exists('service_items', $validated) || array_key_exists('service_lines', $validated);
         $isMultiUnit = app(\App\Services\Shoots\MultiUnitBookingService::class)->handles($shoot, $validated);
+        $deliveredCorrection = app(\App\Services\Shoots\DeliveredSalesServicePlan::class)->applies($shoot, $user, $validated);
         $hasAdjustedTotal = array_key_exists('admin_adjusted_total_quote', $validated)
             && $validated['admin_adjusted_total_quote'] !== null;
         $targetServicesForChange = $serviceChangeRequested
@@ -415,7 +416,7 @@ class UpdateShootAction
                 );
             }
 
-            $serviceDetachImpact = $isMultiUnit ? null : $this->serviceChangeGuard->assertChangeAllowed(
+            $serviceDetachImpact = ($isMultiUnit && ! $deliveredCorrection) ? null : $this->serviceChangeGuard->assertChangeAllowed(
                 $shoot,
                 $targetServicesForChange,
                 $user,
@@ -476,6 +477,8 @@ class UpdateShootAction
             $availabilityRelevantKeys = array_merge($availabilityRelevantKeys, ['address', 'city', 'state', 'zip', 'timezone', 'property_details', 'status', 'workflow_status', 'travel_location_confirmed', 'schedule_adjustments']);
         }
         $needsAvailabilityCheck = count(array_intersect(array_keys($validated), $availabilityRelevantKeys)) > 0;
+        // This edits the completed work order's billing plan, never its past visit.
+        if ($deliveredCorrection) $needsAvailabilityCheck = false;
         if (filter_var($validated['force_save'] ?? false, FILTER_VALIDATE_BOOLEAN) && ! $travelGuard->enabled()) {
             $this->abortJson('Temporary force save is unavailable while scheduling checks are disabled.', 403);
         }
@@ -1011,7 +1014,7 @@ class UpdateShootAction
             $this->dispatchCreatedAdditionalWorkSideEffects($createdReturnVisit);
         }
 
-        if (! $onlyFeaturedMarketing) {
+        if (! $onlyFeaturedMarketing && ! $deliveredCorrection) {
             $this->googleCalendarSyncDispatcher->dispatchShootSync($shoot->id);
         }
         if ($createdReturnVisit && ! $returnVisitReplayed) {

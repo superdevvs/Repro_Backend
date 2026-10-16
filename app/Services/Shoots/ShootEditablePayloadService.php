@@ -214,7 +214,8 @@ class ShootEditablePayloadService
                 ]);
             }
 
-            if ($serviceChangeRequested && ! $isMultiUnit) {
+            $deliveredCorrection = app(DeliveredSalesServicePlan::class)->applies($lockedShoot, $actor, $validated);
+            if ($serviceChangeRequested && (! $isMultiUnit || $deliveredCorrection)) {
                 $targetServices = $this->targetServicesFor($lockedShoot, $validated, $actor);
                 $serviceDetachImpact = $this->serviceChangeGuard->assertChangeAllowed(
                     $lockedShoot,
@@ -289,6 +290,7 @@ class ShootEditablePayloadService
         $isMultiUnit = app(MultiUnitBookingService::class)->handles($shoot, $validated);
         $serviceChangeRequested = array_key_exists('services', $validated)
             || array_key_exists('service_items', $validated) || array_key_exists('service_lines', $validated);
+        $deliveredCorrection = app(DeliveredSalesServicePlan::class)->applies($shoot, $actor, $validated);
         $discountChangeRequested = array_key_exists('discount_type', $validated)
             || array_key_exists('discount_value', $validated);
         $hasAdjustedTotal = array_key_exists('admin_adjusted_total_quote', $validated)
@@ -304,7 +306,7 @@ class ShootEditablePayloadService
         $targetClientId = (int) ($validated['client_id'] ?? $shoot->client_id);
         $targetServices = $this->targetServicesFor($shoot, $validated, $actor);
 
-        if (($serviceChangeRequested || array_key_exists('photographer_id', $validated))
+        if (! $deliveredCorrection && ($serviceChangeRequested || array_key_exists('photographer_id', $validated))
             && $this->support->hasOnlyDigitalServices($targetServices)) {
             $validated['photographer_id'] = null;
         }
@@ -348,7 +350,10 @@ class ShootEditablePayloadService
                 : null;
         }
 
-        if ($isMultiUnit && (array_key_exists('units', $validated) || array_key_exists('service_lines', $validated))) {
+        if ($deliveredCorrection) {
+            app(DeliveredSalesServicePlan::class)->persist($shoot, $targetServices);
+            $invoiceNeedsRefresh = true;
+        } elseif ($isMultiUnit && (array_key_exists('units', $validated) || array_key_exists('service_lines', $validated))) {
             $prepared = app(MultiUnitBookingService::class)->prepare($shoot, $validated, $actor);
             app(MultiUnitBookingService::class)->persist($shoot, $prepared);
             $shoot->service_id = $targetServices[0]['id'] ?? null;
@@ -673,16 +678,16 @@ class ShootEditablePayloadService
         });
 
         if ($serviceChangeRequested) {
-            $this->serviceItemSupport->reconcileAllocationsAfterServiceChange($shoot->fresh());
+            $this->serviceItemSupport->reconcileAllocationsAfterServiceChange($shoot->fresh(), $deliveredCorrection);
         }
 
         if ($shouldRecalculatePricing || $paymentFieldsProvided) {
             $shoot->refresh();
-            $shoot->syncPaymentStatusFromRecords();
+            $shoot->syncPaymentStatusFromRecords(null, ! $deliveredCorrection);
         }
 
         if ($invoiceNeedsRefresh) {
-            $this->invoiceService->refreshClientInvoicesForShoot($shoot->fresh());
+            $this->invoiceService->refreshClientInvoicesForShoot($shoot->fresh(), $deliveredCorrection);
         }
 
         $editorChangeRequested = collect(['services', 'service_items', 'service_lines'])
@@ -757,6 +762,9 @@ class ShootEditablePayloadService
 
     public function targetServicesFor(Shoot $shoot, array $validated, ?User $actor = null): array
     {
+        if (app(DeliveredSalesServicePlan::class)->applies($shoot, $actor, $validated)) {
+            return app(DeliveredSalesServicePlan::class)->services($shoot, $validated, $actor);
+        }
         $multiUnit = app(MultiUnitBookingService::class);
         if ($multiUnit->handles($shoot, $validated)) {
             return $multiUnit->prepare($shoot, $validated, $actor)['services'];
@@ -866,7 +874,7 @@ class ShootEditablePayloadService
             ]);
         }
 
-        if (array_key_exists('services', $validated) || array_key_exists('service_items', $validated)) {
+        if (array_key_exists('services', $validated) || array_key_exists('service_items', $validated) || array_key_exists('service_lines', $validated)) {
             throw ValidationException::withMessages([
                 'services' => [
                     'Service lines on a complimentary reshoot are fixed at booking. Book separate additional work or create a new complimentary reshoot instead.',

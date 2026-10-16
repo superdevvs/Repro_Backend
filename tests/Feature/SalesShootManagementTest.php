@@ -249,8 +249,6 @@ class SalesShootManagementTest extends TestCase
             ['rep_id' => User::factory()->create(['role' => 'salesRep'])->id],
             ['service_id' => \App\Models\Service::factory()->create()->id],
             ['service_photographers' => [['service_id' => $item->service_id, 'photographer_id' => $photographer->id]]],
-            ['services' => []],
-            ['services' => [['id' => $item->service_id, 'quantity' => 2]]],
             ['services' => [['id' => $item->service_id, 'scheduled_at' => '2026-12-01T12:00:00Z']]],
             ['workflow_status' => 'editing'],
             ['editor_id' => User::factory()->create(['role' => 'editor'])->id],
@@ -288,7 +286,7 @@ class SalesShootManagementTest extends TestCase
         $changed['units'][0]['label'] = 'Changed execution unit';
         $this->patchJson('/api/shoots/'.$shoot->id, $changed)->assertForbidden();
         $changed = $context;
-        $changed['service_lines'][0]['quantity'] = 2;
+        $changed['service_lines'][0]['scheduled_at'] = '2026-12-01T12:00:00Z';
         $this->patchJson('/api/shoots/'.$shoot->id, $changed)->assertForbidden();
     }
 

@@ -56,11 +56,17 @@ class ShootManagementAccess
             || ! $this->isDeliveredForSalesEdits($shoot));
     }
 
-    private function isDeliveredForSalesEdits(Shoot $shoot): bool
+    public function isDeliveredForSalesEdits(Shoot $shoot): bool
     {
         return collect([$shoot->status, $shoot->workflow_status])->contains(
             fn ($status) => in_array(strtolower((string) $status), ['delivered', 'ready_for_client', 'admin_verified'], true)
         );
+    }
+
+    public function canCorrectDeliveredServices(Shoot $shoot, ?User $user): bool
+    {
+        return $this->isRestrictedSalesRep($user) && $this->canEdit($shoot, $user)
+            && $this->isDeliveredForSalesEdits($shoot);
     }
 
     /** Preserve all booking fields, while refusing unrelated workflow/media writes. */

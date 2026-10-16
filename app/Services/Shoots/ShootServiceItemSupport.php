@@ -257,7 +257,7 @@ class ShootServiceItemSupport
      * removed, replaced, or repriced. Payment records remain authoritative and
      * untouched; only their operational allocation rows are rebuilt.
      */
-    public function reconcileAllocationsAfterServiceChange(Shoot $shoot): void
+    public function reconcileAllocationsAfterServiceChange(Shoot $shoot, bool $preserveRowIdentities = false): void
     {
         $items = $shoot->serviceItems()
             ->orderByRaw('scheduled_at is null')
@@ -286,7 +286,7 @@ class ShootServiceItemSupport
                 ->all(),
         ]);
 
-        PaymentServiceAllocation::query()->whereIn('payment_id', $paymentIds)->delete();
+        if (! $preserveRowIdentities) PaymentServiceAllocation::query()->whereIn('payment_id', $paymentIds)->delete();
 
         if ($items->isEmpty()) {
             return;
@@ -297,6 +297,9 @@ class ShootServiceItemSupport
             ->pluck('id')
             ->map(fn ($id) => (int) $id)
             ->all();
+        if ($preserveRowIdentities) {
+            PaymentServiceAllocation::whereIn('payment_id', $paymentIds)->whereNotIn('payment_id', $canonicalPaymentIds)->delete();
+        }
         $capacity = $items->mapWithKeys(fn (ShootService $item) => [
             (int) $item->id => $this->subtotal($item),
         ])->all();
@@ -347,12 +350,11 @@ class ShootServiceItemSupport
             }
 
             foreach ($rows as $itemId => $amount) {
-                PaymentServiceAllocation::create([
-                    'payment_id' => $payment->id,
-                    'shoot_service_id' => $itemId,
-                    'amount' => $amount,
-                ]);
+                $identity = ['payment_id' => $payment->id, 'shoot_service_id' => $itemId];
+                if ($preserveRowIdentities) PaymentServiceAllocation::updateOrCreate($identity, ['amount' => $amount]);
+                else PaymentServiceAllocation::create($identity + ['amount' => $amount]);
             }
+            if ($preserveRowIdentities) PaymentServiceAllocation::where('payment_id', $payment->id)->whereNotIn('shoot_service_id', array_keys($rows))->delete();
         }
     }
 

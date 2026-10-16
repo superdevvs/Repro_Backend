@@ -1370,7 +1370,7 @@ class Shoot extends Model
         );
     }
 
-    public function syncPaymentStatusFromRecords(?string $paymentType = null): array
+    public function syncPaymentStatusFromRecords(?string $paymentType = null, bool $sendSettlementSummary = true): array
     {
         $previousStatus = $this->payment_status;
         $totalPaid = $this->calculateCanonicalTotalPaid();
@@ -1427,7 +1427,7 @@ class Shoot extends Model
             $newSettlement = ($this->total_quote !== null && $totalQuote <= 0.01)
                 || $this->payments()->where('status', Payment::STATUS_COMPLETED)
                     ->where('updated_at', '>=', now()->subHour())->exists();
-            if ($newSettlement && $this->workflow_status === self::STATUS_DELIVERED && $this->delivery_status === 'delivered') {
+            if ($sendSettlementSummary && $newSettlement && $this->workflow_status === self::STATUS_DELIVERED && $this->delivery_status === 'delivered') {
                 \App\Jobs\MaybeSendShootSummary::dispatch($this->id)->afterCommit();
             }
         }

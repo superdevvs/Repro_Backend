@@ -37,6 +37,7 @@ class ShootServiceChangeGuard
             && (in_array($this->normalizeRole($actor->role), self::ZERO_SERVICE_ROLES, true)
                 || (app(ShootManagementAccess::class)->isSalesRep($actor)
                     && app(ShootManagementAccess::class)->canEdit($shoot, $actor)))
+            && ! app(ShootManagementAccess::class)->isDeliveredForSalesEdits($shoot)
             && in_array($this->normalizeStatus($shoot), self::PRE_DELIVERY_STATUSES, true);
     }
 
@@ -68,8 +69,11 @@ class ShootServiceChangeGuard
             ], 422));
         }
 
+        $byLineIdentity = $shoot->units()->exists();
+        $targetLineIds = collect($targetServices)->pluck('shoot_service_id')->filter()->map(fn ($id) => (int) $id);
         $removedItems = $shoot->serviceItems
-            ->filter(fn (ShootService $item) => ! $targetServiceIds->contains((int) $item->service_id))
+            ->filter(fn (ShootService $item) => $byLineIdentity
+                ? ! $targetLineIds->contains((int) $item->id) : ! $targetServiceIds->contains((int) $item->service_id))
             ->values();
 
         if ($removedItems->isEmpty()) {
@@ -88,11 +92,28 @@ class ShootServiceChangeGuard
         // Delivered shoots still need billing corrections (flight restrictions,
         // client-requested cancellations of a line, etc.). Admin/SuperAdmin may
         // detach with the normal confirmation token. Cancelled/declined remain sealed.
-        if (! $isPreDelivery && ! ($isDelivered && $actorIsPrivilegedAdmin)) {
+        $deliveredSalesCorrection = app(ShootManagementAccess::class)->canCorrectDeliveredServices($shoot, $actor);
+        if (! $isPreDelivery && ! ($isDelivered && $actorIsPrivilegedAdmin) && ! $deliveredSalesCorrection) {
             throw new PublicApiResponseException(response()->json([
                 'message' => 'Services cannot be removed after delivery or from a cancelled or declined shoot.',
                 'errors' => ['services' => ['Service removal is only available before delivery.']],
             ], 422));
+        }
+
+        if ($deliveredSalesCorrection) {
+            foreach ($removedItems as $item) {
+                $accountingHistory = $item->compensations()->exists() || $item->sourceForCompReshootItems()->exists()
+                    || \Illuminate\Support\Facades\DB::table('editor_payouts')->where('shoot_service_id', $item->id)->exists();
+                $providerHistory = \App\Models\StudioWorkspace::where('shoot_id', $shoot->id)->get()
+                    ->contains(fn ($workspace) => \App\Services\Studio\WorkspaceServiceScope::contains($workspace, (int) $item->id));
+                $providerHistory = $providerHistory || \Illuminate\Support\Facades\DB::table('iguide_offline_upload_sessions')->where('shoot_service_id', $item->id)->exists();
+                if ($accountingHistory || $providerHistory) {
+                    throw new PublicApiResponseException(response()->json([
+                        'message' => 'This service has recorded payouts, compensation or provider work and needs an admin review before removal.',
+                        'errors' => ['services' => ['This service has protected accounting or provider history.']],
+                    ], 422));
+                }
+            }
         }
 
         $impact = $this->buildImpact(
