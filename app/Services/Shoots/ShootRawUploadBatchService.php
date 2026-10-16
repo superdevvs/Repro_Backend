@@ -26,12 +26,24 @@ class ShootRawUploadBatchService
         if (!$scope && $items->isNotEmpty()) {
             $eligible = $items->filter(fn ($item) => $this->intake->supportsLane($item, $lane)
                 && $this->authorization->canUploadShootMedia($shoot, $actor, 'raw', $item->id));
-            abort_unless($eligible->count() === 1, 422, 'Select one assigned service item for this batch.');
+            if ($eligible->isEmpty()) {
+                throw new PublicApiException(
+                    "No assigned service on this shoot accepts {$lane} uploads. Ask an admin to add or enable a {$lane} service.",
+                    'upload_service_unavailable',
+                );
+            }
+            if ($eligible->count() > 1) {
+                throw new PublicApiException('Choose a service for these files before uploading.', 'upload_service_required');
+            }
             $scope = (int) $eligible->first()->id;
         }
         $item = $scope ? $items->firstWhere('id', $scope) : null;
-        abort_if($scope && !$item, 422, 'Selected service item does not belong to this shoot.');
-        abort_if($item && !$this->intake->supportsLane($item, $lane), 422, 'Service does not accept this upload lane.');
+        if ($scope && !$item) {
+            throw new PublicApiException('The selected service does not belong to this shoot.', 'upload_service_invalid');
+        }
+        if ($item && !$this->intake->supportsLane($item, $lane)) {
+            throw new PublicApiException("The selected service does not accept {$lane} uploads. Choose a compatible service.", 'upload_service_unavailable');
+        }
         $mode = $lane === 'photo' ? (int) ($item ? $this->brackets->effectiveBracketMode($item) : $this->brackets->normalize($shoot->bracket_mode)) : 0;
 
         return $this->reserve($shoot, $actor, $data['batch_id'], $data['total_files'], $scope, $lane, $mode, true);
