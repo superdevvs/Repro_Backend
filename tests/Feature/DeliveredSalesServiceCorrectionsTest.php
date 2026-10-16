@@ -195,8 +195,10 @@ class DeliveredSalesServiceCorrectionsTest extends TestCase
     #[\PHPUnit\Framework\Attributes\DataProvider('deliveredStates')]
     public function test_delivered_aliases_and_mixed_active_states_use_the_same_guarded_service_correction(string $status, string $workflow): void
     {
-        [$shoot, $item] = $this->fixture();
+        [$shoot, $item, $service] = $this->fixture();
         $shoot->update(['status' => $status, 'workflow_status' => $workflow]);
+        $this->save($shoot, ['services' => [['id' => $service->id, 'duration_minutes' => 90]]])->assertForbidden();
+        $this->assertSame(60, $item->fresh()->duration_minutes);
         $other = Service::factory()->noIntake()->create(['price' => 25, 'photographer_required' => false]);
         $payload = ['services' => [['id' => $other->id]]];
         $confirmation = $this->save($shoot, $payload)->assertConflict()->assertJsonPath('code', 'service_detach_confirmation_required');

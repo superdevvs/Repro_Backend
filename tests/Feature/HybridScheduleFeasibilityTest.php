@@ -78,7 +78,7 @@ class HybridScheduleFeasibilityTest extends TestCase
         $start = Carbon::parse('2026-10-02 '.$time, 'America/New_York')->utc();
         $shoot = Shoot::factory()->create(['photographer_id' => $photographer->id, 'scheduled_at' => $start,
             'scheduled_date' => '2026-10-02', 'time' => $time, 'timezone' => 'America/New_York', 'address' => $address,
-            'status' => Shoot::STATUS_SCHEDULED]);
+            'status' => Shoot::STATUS_SCHEDULED, 'workflow_status' => Shoot::STATUS_SCHEDULED]);
         $shoot->services()->attach($this->service->id, ['duration_minutes' => $duration, 'scheduled_at' => $start,
             'photographer_id' => $photographer->id, 'workflow_status' => 'scheduled']);
 
