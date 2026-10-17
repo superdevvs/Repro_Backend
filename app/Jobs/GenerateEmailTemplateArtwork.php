@@ -31,7 +31,14 @@ class GenerateEmailTemplateArtwork implements ShouldQueue
         $row = DB::table('email_template_artworks')->find($this->artworkId);
         try {
             $instructions = 'Create a new '.($row->kind === 'icon' ? 'simple isolated icon' : 'email hero illustration').' matching the visual style of this REPRO email artwork reference: restrained navy and cobalt blue, pale ice blue, warm white, soft editorial 3D forms, minimal composition, subtle shadows, premium real-estate photography brand. Use a clean white background, no lettering, labels, watermark or logo. Replace the reference subject entirely with: '.$row->prompt;
-            $bytes = $provider->edit(file_get_contents(public_path('images/email-atelier/v6/editing.png')), $instructions);
+            $reference = file_get_contents(public_path('images/email-atelier/v6/editing.png'));
+            if ($row->kind === 'icon') {
+                $reference = (string) \Intervention\Image\ImageManager::gd()->read($reference)->cover(1024, 1024)->toPng();
+            }
+            $bytes = $provider->edit($reference, $instructions, ['model' => config('services.openai.email_image_model', 'gpt-image-2.5-sunburst')]);
+            if (! str_starts_with($bytes, "\x89PNG\r\n\x1a\n") || (@getimagesizefromstring($bytes)['mime'] ?? null) !== 'image/png') {
+                throw new \RuntimeException('Generated artwork must be a valid PNG image.');
+            }
             $path = 'email-template-artwork/'.$this->artworkId.'.png';
             if (! Storage::disk('public')->put($path, $bytes)) {
                 throw new \RuntimeException('Could not save artwork.');

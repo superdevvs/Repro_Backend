@@ -42,6 +42,22 @@ class OpenAiImageProviderTest extends TestCase
         Http::assertSentCount(1);
     }
 
+    public function test_email_model_override_requests_and_returns_png_without_changing_studio_default(): void
+    {
+        Http::fake(function (Request $request) {
+            $fields = collect($request->data())->keyBy('name');
+            $this->assertSame('gpt-image-2.5-sunburst', $fields['model']['contents']);
+            $this->assertSame('png', $fields['output_format']['contents']);
+            [$width, $height] = array_map('intval', explode('x', $fields['size']['contents']));
+            return Http::response(['data' => [['b64_json' => base64_encode($this->png($width, $height, [0, 100, 220]))]]]);
+        });
+        $bytes = app(OpenAiImageProvider::class)->edit($this->png(128, 128, [200, 0, 0]), 'A blue invoice icon', ['model' => 'gpt-image-2.5-sunburst']);
+        $this->assertSame('image/png', getimagesizefromstring($bytes)['mime']);
+        $this->assertSame("\x89PNG\r\n\x1a\n", substr($bytes, 0, 8));
+        $this->assertSame('gpt-image-2', config('services.openai.image_model'));
+        Http::assertSentCount(1);
+    }
+
     #[DataProvider('outpaintRatios')]
     public function test_outpaint_has_transparent_edges_and_restores_the_original_pixels(string $ratio, int $sw, int $sh, int $fw, int $fh): void
     {

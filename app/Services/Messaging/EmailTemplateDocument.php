@@ -21,9 +21,9 @@ class EmailTemplateDocument
             $key.'.format' => ['required_with:'.$key, Rule::in(['sections', 'html', 'legacy'])],
             $key.'.preheader' => ['nullable', 'string', 'max:255'],
             $key.'.sections' => ['sometimes', 'array', 'max:40'],
-            $key.'.sections.*' => ['array:id,type,heading,body,image_url,alt,url,alignment,spacing'],
+            $key.'.sections.*' => ['array:id,type,heading,body,image_url,alt,url,alignment,spacing,eyebrow,layout,tone,image_width,image_prompt,artwork_id,artwork_key'],
             $key.'.sections.*.id' => ['required', 'string', 'max:150', 'distinct'],
-            $key.'.sections.*.type' => ['required', Rule::in(['text', 'tips', 'notice', 'image', 'button', 'divider'])],
+            $key.'.sections.*.type' => ['required', Rule::in(['text', 'tips', 'notice', 'image', 'button', 'divider', 'hero', 'feature', 'steps', 'details'])],
             $key.'.sections.*.heading' => ['nullable', 'string', 'max:500'],
             $key.'.sections.*.body' => ['nullable', 'string', 'max:20000'],
             $key.'.sections.*.image_url' => ['nullable', 'string', 'max:2000'],
@@ -31,6 +31,13 @@ class EmailTemplateDocument
             $key.'.sections.*.url' => ['nullable', 'string', 'max:2000'],
             $key.'.sections.*.alignment' => ['sometimes', Rule::in(['left', 'center', 'right'])],
             $key.'.sections.*.spacing' => ['sometimes', 'integer', 'min:8', 'max:48'],
+            $key.'.sections.*.eyebrow' => ['nullable', 'string', 'max:150'],
+            $key.'.sections.*.layout' => ['sometimes', Rule::in(['stacked', 'image-left', 'image-right'])],
+            $key.'.sections.*.tone' => ['sometimes', Rule::in(['plain', 'soft', 'accent'])],
+            $key.'.sections.*.image_width' => ['sometimes', 'integer', 'min:80', 'max:280'],
+            $key.'.sections.*.image_prompt' => ['nullable', 'string', 'max:2000'],
+            $key.'.sections.*.artwork_id' => ['nullable', 'uuid'],
+            $key.'.sections.*.artwork_key' => ['nullable', Rule::in(EmailTemplateSectionRenderer::ARTWORK)],
         ];
     }
 
@@ -61,24 +68,7 @@ class EmailTemplateDocument
 
     public function html(array $sections): string
     {
-        $html = '';
-        foreach ($sections as $section) {
-            $align = in_array($section['alignment'] ?? '', ['left', 'center', 'right'], true) ? $section['alignment'] : 'left';
-            $spacing = max(8, min(48, (int) ($section['spacing'] ?? 24)));
-            $body = nl2br(e($section['body'] ?? ''), false);
-            $heading = filled($section['heading'] ?? '') ? '<h2 style="margin:0 0 12px;font-size:22px;line-height:1.3;">'.e($section['heading']).'</h2>' : '';
-            $content = match ($section['type']) {
-                'image' => '<img src="'.e($this->url($section['image_url'] ?? '', true)).'" alt="'.e($section['alt'] ?? '').'" width="520" style="display:block;width:100%;max-width:520px;height:auto;margin:0 auto;">',
-                'button' => '<p style="margin:8px 0;"><a class="atelier-button" href="'.e($this->url($section['url'] ?? '')).'" style="display:inline-block;background:#195fe6;color:#fff;padding:14px 24px;border-radius:7px;text-decoration:none;font-weight:600;">'.e(($section['heading'] ?? '') ?: 'Learn more').'</a></p>',
-                'divider' => '<hr style="border:0;border-top:1px solid #dce3ed;margin:0;">',
-                'tips' => $heading.'<ul style="padding-left:20px;margin:0;">'.implode('', array_map(fn ($line) => '<li style="padding:0 0 12px;">'.e($line).'</li>', array_filter(explode("\n", $section['body'] ?? '')))).'</ul>',
-                'notice' => '<div class="info-box" style="padding:20px;border:1px solid #dce3ed;border-radius:8px;">'.$heading.'<p style="margin:0;">'.$body.'</p></div>',
-                default => $heading.'<p style="margin:0;line-height:1.75;">'.$body.'</p>',
-            };
-            $html .= '<div data-email-section="'.e($section['id']).'" style="text-align:'.$align.';padding-bottom:'.$spacing.'px;">'.$content.'</div>';
-        }
-
-        return $html;
+        return app(EmailTemplateSectionRenderer::class)->render($sections, $this);
     }
 
     public function url(string $url, bool $image = false): string

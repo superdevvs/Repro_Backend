@@ -1,6 +1,6 @@
 {
-  "version": "2026-10-01.5",
-  "reviewed_at": "2026-10-01",
+  "version": "2026-10-17.1",
+  "reviewed_at": "2026-10-17",
   "articles": [
     {
       "id": "account-login",
@@ -1430,6 +1430,54 @@
         "frontend/src/components/layout/sidebar/SidebarLinks.tsx",
         "frontend/src/components/layout/MobileMenu.tsx",
         "frontend/src/pages/messaging/EmailInbox.tsx"
+      ]
+    },
+    {
+      "id": "photographer-invoice-review",
+      "category": "Billing & earnings",
+      "roles": [
+        "photographer",
+        "admin",
+        "superadmin"
+      ],
+      "title": "Review and submit a photographer weekly invoice",
+      "summary": "Photographers review their weekly payout invoice in Earnings, correct any eligible items, then explicitly submit it to accounts. Submission, approval and payment are separate states.",
+      "keywords": [
+        "photographer invoice",
+        "weekly invoice",
+        "review invoice",
+        "submit invoice",
+        "submit changes",
+        "confirm invoice is correct",
+        "payout",
+        "earnings",
+        "expenses",
+        "accounts review"
+      ],
+      "steps": [
+        "Open Earnings in the dashboard and find Weekly invoices. Select the relevant billing period and invoice. The invoice period runs Sunday–Saturday.",
+        "Choose View invoice to review the shoot lines, dates, amounts, expenses and total. Opening or viewing an invoice does not submit it.",
+        "If a correction is needed and the invoice is editable, use Edit invoice, update the eligible items and save the correction. Each saved correction is recorded in the invoice history.",
+        "If everything is correct, choose Confirm invoice is correct. If you made changes, enter an explanation of those changes and choose Submit changes. A note to accounts is optional for an unchanged invoice.",
+        "Submitted invoices show pending_approval and wait for accounts review; editing is locked while they are under review. Approval means awaiting payment, not already paid.",
+        "If accounts returns an invoice, read the return reason, correct the editable invoice, explain the changes and resubmit. Paid invoices are locked."
+      ],
+      "troubleshooting": [
+        "If an invoice or shoot line is missing or a fee is wrong, contact accounting with the invoice, shoot and billing-period references. Do not promise a payment date or create an invoice in an external app."
+      ],
+      "escalation": "Contact accounting or dashboard Support with the invoice and billing-period reference; never send bank passwords or payment-card details.",
+      "links": [
+        {
+          "label": "Open Earnings",
+          "url": "/accounting"
+        }
+      ],
+      "sources": [
+        "frontend/src/pages/Accounting.tsx",
+        "frontend/src/components/invoices/WeeklyInvoiceReview.tsx",
+        "frontend/src/components/invoices/PayoutInvoiceEditor.tsx",
+        "backend/app/Http/Controllers/PhotographerInvoiceController.php",
+        "backend/app/Services/Invoices/PayoutInvoiceWorkflow.php"
       ]
     }
   ]

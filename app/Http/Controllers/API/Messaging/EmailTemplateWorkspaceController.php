@@ -42,14 +42,16 @@ class EmailTemplateWorkspaceController extends Controller
         $template = isset($data['template_id']) ? MessageTemplate::findOrFail($data['template_id']) : null;
         abort_if($template && $template->channel !== 'EMAIL', 422, 'Open an email template.');
         try {
-            $proposal = $assistant->suggest($data['draft'], trim($data['instruction']), $data['scope'], $data['section_id'] ?? null, $template);
+            $context = $assistant->context(trim($data['instruction']), $data['draft'], $request->user());
+            $proposal = $assistant->suggest($data['draft'], trim($data['instruction']), $data['scope'], $data['section_id'] ?? null, $template, $context);
         } catch (ValidationException $exception) {
             throw $exception;
         } catch (Throwable) {
             return response()->json(['message' => 'Robbie could not prepare that revision. Your draft is unchanged. Try again.'], 502);
         }
 
-        return response()->json(['draft' => $proposal]);
+        return response()->json(['draft' => $proposal, 'context' => ['model' => config('services.openai.email_model', 'gpt-6-astra'),
+            'sources' => array_map(fn ($article) => ['id' => $article['id'], 'title' => $article['title'], 'url' => $article['url']], $context)]]);
     }
 
     public function artwork(Request $request): JsonResponse

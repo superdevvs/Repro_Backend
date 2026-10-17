@@ -132,6 +132,8 @@ return [
     'openai' => [
         'api_key' => env('OPENAI_API_KEY'),
         'model' => env('OPENAI_MODEL', 'gpt-4o'),
+        'email_model' => env('OPENAI_EMAIL_MODEL', 'gpt-6-astra'),
+        'email_image_model' => env('OPENAI_EMAIL_IMAGE_MODEL', 'gpt-image-2.5-sunburst'),
     ],
 
     'cubicasa' => [

@@ -99,7 +99,19 @@ class EmailPresentation
                     $styles['color'] = '#ffffff';
                     break;
                 }
+                if (in_array('ws-accent', preg_split('/\s+/', $ancestor->getAttribute('class')), true)) {
+                    if ($has(['dark-title', 'dark-heading', 'dark-strong', 'dark-body', 'dark-muted']) || $node->tagName === 'a') {
+                        $styles['color'] = $has(['dark-muted']) || $node->tagName === 'a' ? '#9cbdff' : '#edf4ff';
+                    }
+                    break;
+                }
             }
+            if ($has(['ws-accent'])) {
+                $styles['background'] = '#09223c';
+                $styles['background-color'] = '#09223c';
+                $node->setAttribute('bgcolor', '#09223c');
+            }
+            if ($has(['ws-headline'])) $styles['margin'] = '0 0 20px';
             self::style($node, $styles);
         }
         // Only standalone CTA tables move; onboarding step labels and content tables retain order.

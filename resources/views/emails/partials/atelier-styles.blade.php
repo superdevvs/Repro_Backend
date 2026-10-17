@@ -28,7 +28,13 @@
     .body-inner img { max-width:100%; height:auto; }
     .body-inner table { max-width:100%; }
     .btn-secondary-bg { background-color:{{ $colors['surface'] }} !important; color:{{ $colors['ink'] }} !important; }
+    .ws-eyebrow { font-size:11px !important; line-height:16px !important; }
     @media only screen and (max-width:600px) {
+        .ws-feature-image { width:88px !important; padding-left:8px !important; padding-right:16px !important; }
+        .ws-feature-image img { max-width:88px !important; }
+        .ws-feature-copy h2 { font-size:21px !important; }
+        .ws-headline { font-size:30px !important; line-height:36px !important; }
+
         .email-outer { padding:16px !important; }
         .email-container { width:100% !important; }
         .email-inset { padding-left:24px !important; padding-right:24px !important; }
@@ -65,5 +71,8 @@
         [data-ogsc] .atelier-link, [data-ogsc] .footer-contact-link { color:#9cbdff !important; }
         [data-ogsc] .footer-inner, [data-ogsc] .footer-rule { border-color:#2c425e !important; }
     @endif
+    .body-inner .ws-accent { background:#09223c !important; }
+    .ws-accent .dark-title, .ws-accent .dark-heading, .ws-accent .dark-strong, .ws-accent .dark-body { color:#edf4ff !important; }
+    .ws-accent .dark-muted { color:#9cbdff !important; }
     .body-inner .atelier-button * { color:#ffffff !important; }
 </style>

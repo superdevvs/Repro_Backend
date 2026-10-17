@@ -223,6 +223,14 @@ class TemplateRenderer
      */
     protected function wrapWithLayout(MessageTemplate $template, string $bodyHtml, string $subject, array $variables, ?string $previewTheme = null): string
     {
+        if (($template->editor_document_json['format'] ?? null) === 'sections') {
+            return view('emails.messaging.workspace', [
+                'subject' => $subject, 'bodyHtml' => $bodyHtml, 'branding' => $this->branding(),
+                'preheaderText' => $this->replacePlaceholders($this->buildPreheaderText($bodyHtml, $template), $variables),
+                'emailAtelier' => ['kind' => 'none'], 'emailWorkspaceLayout' => true,
+                'emailPreviewTheme' => in_array($previewTheme, ['light', 'dark'], true) ? $previewTheme : null,
+            ])->render();
+        }
         $bodyHtml = $this->stabilizeEmailBodyHtml($this->stripLegacyWrapper($bodyHtml));
 
         return view('emails.messaging.atelier', [

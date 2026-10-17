@@ -11,7 +11,7 @@
     $websiteUrl = $brand['website_url'];
     $emailLogoUrl = $brand['email_logo_grey_url'];
     $heroHtml = \App\Services\SystemEmails\EmailPresentation::format($__env->yieldContent('hero'), $theme, true);
-    $contentHtml = \App\Services\SystemEmails\EmailPresentation::format($__env->yieldContent('content'), $theme, false, !str_starts_with($artwork['design'] ?? '', 'account_created'));
+    $contentHtml = \App\Services\SystemEmails\EmailPresentation::format($__env->yieldContent('content'), $theme, (bool) ($emailWorkspaceLayout ?? false), !($emailWorkspaceLayout ?? false) && !str_starts_with($artwork['design'] ?? '', 'account_created'));
 @endphp
 <!DOCTYPE html>
 <html lang="{{ str_replace('_', '-', app()->getLocale()) }}" xmlns="http://www.w3.org/1999/xhtml" xmlns:o="urn:schemas-microsoft-com:office:office">

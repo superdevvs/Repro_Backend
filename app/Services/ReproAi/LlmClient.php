@@ -98,6 +98,12 @@ class LlmClient
             'temperature' => $temperature,
             'max_tokens' => $maxTokens,
         ];
+        // Reasoning models use a completion budget and reject sampling parameters.
+        if (preg_match('/^(gpt-[56](?:[.-])|o[134](?:-|$))/', $model)) {
+            unset($payload['temperature'], $payload['max_tokens']);
+            $payload['max_completion_tokens'] = $maxTokens;
+            $payload['reasoning_effort'] = $options['reasoning_effort'] ?? 'medium';
+        }
         if (isset($options['response_format'])) {
             $payload['response_format'] = $options['response_format'];
         }
@@ -118,9 +124,9 @@ class LlmClient
         }
 
         try {
-            $response = $this->client->post('chat/completions', [
-                'json' => $payload,
-            ]);
+            $request = ['json' => $payload];
+            if (isset($options['timeout'])) $request['timeout'] = max(30, min(240, (int) $options['timeout']));
+            $response = $this->client->post('chat/completions', $request);
 
             $data = json_decode($response->getBody()->getContents(), true);
 
