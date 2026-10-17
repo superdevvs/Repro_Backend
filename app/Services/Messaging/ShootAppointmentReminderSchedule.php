@@ -8,10 +8,10 @@ use Carbon\Carbon;
 class ShootAppointmentReminderSchedule
 {
     public const CLIENT_DEFAULTS = [
-        'previous_day_time' => '07:00',
-        'day_of_time' => '07:00',
-        'morning_start' => '07:00',
-        'morning_end' => '12:00',
+        'previous_day_time' => '09:00',
+        'day_of_time' => '09:00',
+        'morning_start' => '09:00',
+        'morning_end' => '11:00',
         'morning_previous_evening_time' => '19:00',
         'morning_lead_minutes' => 120,
     ];
@@ -21,6 +21,15 @@ class ShootAppointmentReminderSchedule
     {
         $client = $clientReminder && is_array($schedule['client_email_schedule'] ?? null)
             ? array_replace(self::CLIENT_DEFAULTS, $schedule['client_email_schedule']) : null;
+        if ($client) {
+            // Saved rules cannot widen the early-morning exception or precede 9am.
+            foreach (['previous_day_time', 'day_of_time'] as $key) {
+                $client[$key] = max('09:00', $client[$key]);
+            }
+            $client['morning_start'] = '09:00';
+            $client['morning_end'] = '11:00';
+            $client['morning_lead_minutes'] = 120;
+        }
         $occurrences = [];
         $offset = $schedule['offset'] ?? ($clientReminder ? '-24h' : '-2h');
         if (preg_match('/^-(\d+)([mhd])$/', (string) $offset, $matches)) {
@@ -36,7 +45,7 @@ class ShootAppointmentReminderSchedule
             'at' => $day->copy()->subDay()->setTimeFromTimeString($client['previous_day_time']), 'audience' => 'client_email',
         ];
         $clock = $appointment->format('H:i');
-        // Noon belongs to the morning exception, matching the business's 7am-12 noon window.
+        // Only appointments from 9am through 11am get the two-hour early reminder.
         if ($clock >= $client['morning_start'] && $clock <= $client['morning_end']) {
             $occurrences['client_previous_evening'] = [
                 'at' => $day->copy()->subDay()->setTimeFromTimeString($client['morning_previous_evening_time']), 'audience' => 'client_email',

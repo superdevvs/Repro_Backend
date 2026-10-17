@@ -163,6 +163,10 @@ class MessagingService
             return $this->markMessageBlocked($message, 'EMAIL');
         }
 
+        if ($this->deferClientNotification($message, $payload['attachments'] ?? [])) {
+            return $message->fresh();
+        }
+
         try {
             $provider = $this->getEmailProvider($channel);
             $providerName = $this->emailProviderName($channel);
@@ -320,6 +324,10 @@ class MessagingService
             return $this->markMessageBlocked($message, 'SMS');
         }
 
+        if ($this->deferClientNotification($message)) {
+            return $message->fresh();
+        }
+
         try {
             $providerMessageId = $this->telnyxProvider->send($number, [
                 'to' => $payload['to'],
@@ -386,6 +394,42 @@ class MessagingService
         ]);
 
         return $message->fresh();
+    }
+
+    private function deferClientNotification(Message $message, array $attachments = []): bool
+    {
+        $window = app(ClientNotificationDeliveryWindow::class);
+        if ($window->staleAppointment($message)) {
+            $message->update(['status' => 'CANCELLED', 'error_message' => 'Appointment reminder is no longer current.']);
+
+            return true;
+        }
+        $next = $window->nextAllowedAt($message);
+        if (! $next) {
+            return false;
+        }
+
+        // Keep raw attachments on the private disk for the existing scheduled dispatcher.
+        $stored = $message->attachments_json ?? [];
+        if ($stored === []) {
+            foreach ($attachments as $index => $attachment) {
+                $path = 'messaging/deferred/'.$message->id.'/'.$index;
+                if (! Storage::disk('local')->put($path, $attachment['content'] ?? '')) {
+                    throw new RuntimeException('Unable to store deferred notification attachment.');
+                }
+                $stored[] = ['disk' => 'local', 'storage_path' => $path,
+                    'name' => $attachment['filename'] ?? 'attachment', 'type' => $attachment['content_type'] ?? 'application/octet-stream'];
+            }
+        }
+        $message->update([
+            'status' => 'SCHEDULED', 'scheduled_at' => $next, 'attachments_json' => $stored ?: null,
+            'metadata' => $this->mergeDeliveryMetadata($message->metadata, [
+                'status' => 'SCHEDULED', 'deferred_reason' => 'client_notification_quiet_hours',
+                'deferred_until' => $next->toIso8601String(),
+            ]),
+        ]);
+
+        return true;
     }
 
     /**
@@ -1159,6 +1203,10 @@ class MessagingService
             return $message->refresh();
         }
 
+        if ($this->deferClientNotification($message)) {
+            return $message->refresh();
+        }
+
         $channel = $message->channelConfig ?? $this->resolveEmailChannel([
             'channel_id' => $message->message_channel_id,
             'user_id' => $message->created_by,
@@ -1259,6 +1307,10 @@ class MessagingService
         }
         if (! $this->deliveryGuard->allows('SMS', (string) $message->to_address)) {
             return $this->markMessageBlocked($message, 'SMS');
+        }
+
+        if ($this->deferClientNotification($message)) {
+            return $message->refresh();
         }
 
         try {

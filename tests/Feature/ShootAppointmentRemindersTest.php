@@ -43,7 +43,7 @@ class ShootAppointmentRemindersTest extends TestCase
     public function test_morning_client_emails_use_previous_day_evening_and_two_hours_before_without_extra_day_of(): void
     {
         [$shoot, $client, $photographer] = $this->appointment('2026-10-03 10:00');
-        foreach (['2026-10-02 06:59', '2026-10-02 07:00', '2026-10-02 10:00', '2026-10-02 19:00', '2026-10-03 07:00', '2026-10-03 08:00'] as $at) {
+        foreach (['2026-10-02 08:59', '2026-10-02 09:00', '2026-10-02 10:00', '2026-10-02 19:00', '2026-10-03 07:00', '2026-10-03 08:00'] as $at) {
             $this->tick($at);
         }
         $this->assertSame(3, Message::where('to_address', $client->email)->count());
@@ -52,10 +52,10 @@ class ShootAppointmentRemindersTest extends TestCase
         $this->assertStringContainsString('10:00 AM EDT', Message::where('to_address', $client->email)->first()->body_text);
     }
 
-    public function test_afternoon_client_emails_use_7am_previous_day_and_day_of_only(): void
+    public function test_afternoon_client_emails_use_9am_previous_day_and_day_of_only(): void
     {
         [, $client, $photographer] = $this->appointment('2026-10-03 15:00');
-        foreach (['2026-10-02 07:00', '2026-10-02 15:00', '2026-10-02 19:00', '2026-10-03 07:00', '2026-10-03 13:00'] as $at) {
+        foreach (['2026-10-02 09:00', '2026-10-02 15:00', '2026-10-02 19:00', '2026-10-03 09:00', '2026-10-03 13:00'] as $at) {
             $this->tick($at);
         }
         $this->assertSame(2, Message::where('to_address', $client->email)->count());
@@ -67,7 +67,7 @@ class ShootAppointmentRemindersTest extends TestCase
         [$shoot, $client, $photographer] = $this->appointment('2026-10-03 10:00');
         $service = \App\Models\Service::factory()->create(['name' => 'HDR Photos', 'photo_count' => 99, 'upload_intake_type' => 'photo', 'uses_hdr_brackets' => true]);
         $shoot->serviceItems()->create(['service_id' => $service->id, 'contracted_photo_count' => 35, 'quantity' => 2, 'bracket_mode' => 3, 'scheduled_at' => Carbon::parse('2026-10-03 10:00', 'America/New_York')->utc(), 'workflow_status' => 'scheduled', 'photographer_id' => $photographer->id, 'price' => 100]);
-        $this->tick('2026-10-02 07:00');
+        $this->tick('2026-10-02 09:00');
         $clientBody = Message::where('to_address', $client->email)->firstOrFail()->body_text;
         $this->assertStringContainsString('70 final photos', $clientBody);
         $this->assertStringNotContainsString('raw images required', $clientBody);
@@ -113,7 +113,7 @@ class ShootAppointmentRemindersTest extends TestCase
     {
         [$shoot] = $this->appointment('2026-10-03 10:00');
         $shoot->update(['status' => 'cancelled']);
-        $this->tick('2026-10-02 07:00');
+        $this->tick('2026-10-02 09:00');
         $shoot->update(['status' => 'scheduled', 'workflow_status' => 'delivered']);
         $this->tick('2026-10-02 19:00');
         $shoot->update(['workflow_status' => 'scheduled']);
@@ -132,7 +132,7 @@ class ShootAppointmentRemindersTest extends TestCase
                 'workflow_status' => 'scheduled', 'photographer_id' => $photographer->id, 'price' => 100,
             ]);
         }
-        $this->tick('2026-10-02 07:00');
+        $this->tick('2026-10-02 09:00');
         $messages = Message::where('to_address', $client->email)->get();
         $this->assertCount(2, $messages);
         $this->assertStringContainsString('Photos, Floor plan', $messages[0]->body_text);
@@ -154,10 +154,10 @@ class ShootAppointmentRemindersTest extends TestCase
         $workflow['edges'][0]['target'] = 'wait';
         $workflow['edges'][] = ['source' => 'wait', 'target' => 'email'];
         $rule->update(['workflow_definition_json' => $workflow]);
-        $this->tick('2026-10-02 07:00');
+        $this->tick('2026-10-02 09:00');
         $this->assertSame(1, \App\Models\AutomationRun::where('status', 'waiting')->count());
         $shoot->update(['scheduled_at' => $shoot->scheduled_at->addDay(), 'scheduled_date' => '2026-10-04']);
-        Carbon::setTestNow(Carbon::parse('2026-10-02 08:00', 'America/New_York')->utc());
+        Carbon::setTestNow(Carbon::parse('2026-10-02 10:00', 'America/New_York')->utc());
         app(\App\Services\Messaging\AutomationWorkflowExecutor::class)->resumeDueSteps();
         $this->assertSame(0, Message::count());
         $this->assertSame(1, \App\Models\AutomationRun::where('status', 'cancelled')->count());
@@ -231,9 +231,9 @@ class ShootAppointmentRemindersTest extends TestCase
         [$shoot] = $this->appointment('2026-10-03 10:00');
         foreach (['hold_on', 'on_hold', 'requested'] as $status) {
             $shoot->update(['status' => $status, 'workflow_status' => 'scheduled']);
-            $this->tick('2026-10-02 07:00');
+            $this->tick('2026-10-02 09:00');
             $shoot->update(['status' => 'scheduled', 'workflow_status' => $status]);
-            $this->tick('2026-10-02 07:00');
+            $this->tick('2026-10-02 09:00');
         }
         $this->assertSame(0, Message::count());
         $this->assertSame(0, \App\Models\AutomationRun::count());
@@ -253,7 +253,7 @@ class ShootAppointmentRemindersTest extends TestCase
         $rule->update(['workflow_definition_json' => $workflow]);
         app(MessagingService::class)->shouldReceive('sendSms')->once()->with(Mockery::on(fn ($payload) => $payload['to'] === $client->phonenumber))
             ->andReturn(new Message(['status' => 'SENT']));
-        foreach (['2026-10-02 07:00', '2026-10-02 10:00', '2026-10-02 19:00', '2026-10-03 08:00'] as $at) {
+        foreach (['2026-10-02 09:00', '2026-10-02 10:00', '2026-10-02 19:00', '2026-10-03 08:00'] as $at) {
             $this->tick($at);
         }
         $this->assertSame(3, Message::where('to_address', $client->email)->count());
@@ -265,10 +265,9 @@ class ShootAppointmentRemindersTest extends TestCase
         $scheduler = new ShootAppointmentReminderSchedule;
         $at = Carbon::parse('2026-11-01 12:00', 'America/New_York');
         $occurrences = $scheduler->occurrences($at, ['client_email_schedule' => ShootAppointmentReminderSchedule::CLIENT_DEFAULTS], true);
-        $this->assertArrayNotHasKey('client_day_of', $occurrences);
-        $this->assertSame('2026-10-31 07:00 -04:00', $occurrences['client_previous_day']['at']->format('Y-m-d H:i P'));
-        $this->assertSame('2026-10-31 19:00 -04:00', $occurrences['client_previous_evening']['at']->format('Y-m-d H:i P'));
-        $this->assertSame('2026-11-01 10:00 -05:00', $occurrences['client_before_shoot']['at']->format('Y-m-d H:i P'));
+        $this->assertArrayNotHasKey('client_before_shoot', $occurrences);
+        $this->assertSame('2026-10-31 09:00 -04:00', $occurrences['client_previous_day']['at']->format('Y-m-d H:i P'));
+        $this->assertSame('2026-11-01 09:00 -05:00', $occurrences['client_day_of']['at']->format('Y-m-d H:i P'));
     }
 
     public function test_migration_preserves_authored_actions_disabled_state_and_custom_offsets(): void

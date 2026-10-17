@@ -31,7 +31,6 @@ class DispatchScheduledMessages implements ShouldBeUnique, ShouldQueue
             ->where('status', 'SCHEDULED')
             ->whereNotNull('scheduled_at')
             ->where('scheduled_at', '<=', now())
-            ->orderBy('scheduled_at')
             ->chunkById(50, function ($messages) use ($messaging) {
                 foreach ($messages as $message) {
                     $messaging->dispatchScheduledMessage($message);

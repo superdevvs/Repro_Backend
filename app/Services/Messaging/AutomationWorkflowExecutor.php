@@ -531,6 +531,7 @@ class AutomationWorkflowExecutor
 
                     return $this->messagingService->sendEmail([
                         'to' => $recipient['email'],
+                        'contact_user_id' => $recipient['id'] ?? null,
                         'subject' => $rendered['subject'] ?? '',
                         'body_html' => $rendered['body_html'] ?? '',
                         'body_text' => $rendered['body_text'] ?? '',
@@ -545,7 +546,7 @@ class AutomationWorkflowExecutor
                         'contact_type' => $recipient['type'] ?? 'other',
                         'tags_json' => array_values(array_unique(array_merge((array) ($context['tags_json'] ?? []), [$tag]))),
                         'attachments_json' => $context['attachments_json'] ?? null,
-                        'metadata' => $context['metadata'] ?? null,
+                        'metadata' => $this->notificationMetadata($automation, $context),
                     ]);
                 });
 
@@ -985,7 +986,7 @@ class AutomationWorkflowExecutor
                         'contact_type' => $recipient['type'] ?? 'other',
                         'tags_json' => array_values(array_unique(array_merge((array) ($context['tags_json'] ?? []), [$tag]))),
                         'attachments_json' => $context['attachments_json'] ?? null,
-                        'metadata' => $context['metadata'] ?? null,
+                        'metadata' => $this->notificationMetadata($automation, $context),
                     ]);
                 });
 
@@ -1026,6 +1027,16 @@ class AutomationWorkflowExecutor
         }
 
         return $context;
+    }
+
+    private function notificationMetadata(AutomationRule $automation, array $context): array
+    {
+        return array_replace_recursive((array) ($context['metadata'] ?? []), [
+            'notification' => [
+                'trigger' => $automation->trigger_type,
+                'appointment_at' => $context['notification_appointment_at'] ?? null,
+            ],
+        ]);
     }
 
     private function resolveSmsSender(AutomationRule $automation, array $config): ?int

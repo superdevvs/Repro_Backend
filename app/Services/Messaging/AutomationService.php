@@ -908,6 +908,7 @@ class AutomationService
                 continue;
             }
             $stageContext = $context;
+            $stageContext['notification_appointment_at'] = $scheduledAt->copy()->utc()->toIso8601String();
             // Email and SMS delivery belong to the appointment, not each service row.
             // Keep service-specific runs for recipient routing and stale-run checks.
             $stageContext['appointment_dispatch_key'] = $rule->trigger_type.':rule:'.$rule->id
