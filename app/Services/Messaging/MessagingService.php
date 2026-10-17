@@ -409,15 +409,19 @@ class MessagingService
             return false;
         }
 
-        // Keep raw attachments on the private disk for the existing scheduled dispatcher.
+        // Web and queue processes have different users; the private shared adapter
+        // preserves www-data group access without making these attachments public.
         $stored = $message->attachments_json ?? [];
         if ($stored === []) {
+            if ($attachments !== []) {
+                $this->prepareDeferredAttachmentDirectory($message);
+            }
             foreach ($attachments as $index => $attachment) {
                 $path = 'messaging/deferred/'.$message->id.'/'.$index;
-                if (! Storage::disk('local')->put($path, $attachment['content'] ?? '')) {
+                if (! Storage::disk('media_local')->put($path, $attachment['content'] ?? '')) {
                     throw new RuntimeException('Unable to store deferred notification attachment.');
                 }
-                $stored[] = ['disk' => 'local', 'storage_path' => $path,
+                $stored[] = ['disk' => 'media_local', 'storage_path' => $path,
                     'name' => $attachment['filename'] ?? 'attachment', 'type' => $attachment['content_type'] ?? 'application/octet-stream'];
             }
         }
@@ -430,6 +434,25 @@ class MessagingService
         ]);
 
         return true;
+    }
+
+    private function prepareDeferredAttachmentDirectory(Message $message): void
+    {
+        $disk = Storage::disk('media_local');
+        $group = function_exists('posix_getgrnam') ? posix_getgrnam('www-data') : false;
+        $relative = '';
+        foreach (['messaging', 'deferred', (string) $message->id] as $part) {
+            $relative = $relative === '' ? $part : $relative.'/'.$part;
+            $disk->makeDirectory($relative);
+            $path = $disk->path($relative);
+            clearstatcache(true, $path);
+            if ($group && filegroup($path) !== $group['gid'] && ! @chgrp($path, $group['gid'])) {
+                throw new RuntimeException('Deferred attachment service-group access requires repair.');
+            }
+            if (PHP_OS_FAMILY !== 'Windows' && (fileperms($path) & 07777) !== 02770 && ! @chmod($path, 02770)) {
+                throw new RuntimeException('Deferred attachment directory permissions require repair.');
+            }
+        }
     }
 
     private function completeDeferredClientNotification(Message $message): void

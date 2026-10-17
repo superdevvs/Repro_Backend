@@ -33,6 +33,7 @@ class ClientNotificationDeliveryWindowTest extends TestCase
         OutboundDeliveryGuard::allowFakeProviderPipelineForTesting();
         SmsNumber::create(['phone_number' => '+12025550100', 'label' => 'Test', 'is_default' => true]);
         Storage::fake('local');
+        Storage::fake('media_local', config('filesystems.disks.media_local'));
     }
 
     protected function tearDown(): void
@@ -142,6 +143,11 @@ class ClientNotificationDeliveryWindowTest extends TestCase
         $payload['attachments'] = [['filename' => 'invoice.pdf', 'content' => '%PDF-test', 'content_type' => 'application/pdf']];
         $message = app(MessagingService::class)->sendEmail($payload);
         $this->assertSame('SCHEDULED', $message->status);
+        $attachment = $message->attachments_json[0];
+        $this->assertSame('media_local', $attachment['disk']);
+        $this->assertSame(0660, fileperms(Storage::disk('media_local')->path($attachment['storage_path'])) & 0777);
+        $this->assertSame(02770, fileperms(dirname(Storage::disk('media_local')->path($attachment['storage_path']))) & 07777);
+        $this->assertSame(posix_getgrnam('www-data')['gid'], filegroup(Storage::disk('media_local')->path($attachment['storage_path'])));
         $this->clock('2026-10-17 09:00');
         $provider = \Mockery::mock(CakemailProvider::class);
         $provider->shouldReceive('send')->once()->withArgs(function ($channel, $payload) use ($client) {
