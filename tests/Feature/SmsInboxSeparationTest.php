@@ -254,6 +254,8 @@ class SmsInboxSeparationTest extends TestCase
         $this->assertFalse($thread->fresh()->sms_inbox_active);
         \Illuminate\Support\Facades\Bus::assertNotDispatched(\App\Jobs\ProcessInboundSmsAiJob::class);
         $this->postJson('/api/webhooks/telnyx/messaging', $payload('reply', 'Running late'))->assertOk();
+        \Illuminate\Support\Facades\Bus::assertDispatched(\App\Jobs\ProcessInboundSmsAiJob::class,
+            fn ($job) => $job->messageId === Message::where('provider_message_id', 'reply')->value('id'));
         $this->assertSame($thread->id, Message::where('provider_message_id', 'reply')->value('thread_id'));
         $this->assertTrue($thread->fresh()->sms_inbox_active);
         $this->postJson('/api/webhooks/telnyx/messaging', $payload('other-line', 'Different line', '+12025550101'))->assertOk();

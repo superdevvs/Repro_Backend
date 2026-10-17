@@ -38,6 +38,7 @@ class SmsThreadResource extends JsonResource
             'id' => (string) $this->id,
             'inboxScope' => $this->sms_inbox_active ? 'inbox' : 'system',
             'needsReply' => (bool) $this->sms_needs_reply,
+            'businessNumber' => app(\App\Services\Messaging\SmsInboxPolicy::class)->businessNumber($this->resource),
             'contact' => SmsContactResource::make($this->whenLoaded('contact')),
             'lastMessageSnippet' => $snippet,
             'lastReaction' => $lastReaction,

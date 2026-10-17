@@ -476,14 +476,24 @@ class MessagingService
         string $status = 'QUEUED',
         ?string $providerOverride = null
     ): Message {
-        $thread = $channelType === 'SMS'
-            ? (! empty($payload['sms_thread_id'])
-                ? MessageThread::query()->where('channel', 'SMS')->find($payload['sms_thread_id'])
-                : app(SmsInboxPolicy::class)->threadForPair((string) $payload['to'], (string) ($payload['from'] ?? '')))
-            : null;
+        $thread = null;
+        if ($channelType === 'SMS') {
+            if (! empty($payload['sms_group_id'])) {
+                $groupContact = $this->resolveContact($payload);
+                $thread = \App\Support\LockedWrite::run(fn () => DB::transaction(fn () =>
+                    app(SmsInboxPolicy::class)->threadForGroup((int) $payload['sms_group_id'], (string) ($payload['from'] ?? ''))
+                    ?? MessageThread::create(['contact_id' => $groupContact->id, 'channel' => 'SMS',
+                        'sms_group_id' => (int) $payload['sms_group_id'], 'last_message_at' => now()])
+                ), 'sms.group-thread');
+            } elseif (! empty($payload['sms_thread_id'])) {
+                $thread = MessageThread::query()->where('channel', 'SMS')->find($payload['sms_thread_id']);
+            } else {
+                $thread = app(SmsInboxPolicy::class)->threadForPair((string) $payload['to'], (string) ($payload['from'] ?? ''));
+            }
+        }
         $contact = $thread?->contact ?? $this->resolveContact($payload);
-        $thread ??= $channelType === 'SMS' && ! str_starts_with((string) $payload['to'], 'group:')
-            ? MessageThread::create(['contact_id' => $contact->id, 'channel' => 'SMS', 'last_message_at' => now()])
+        $thread ??= $channelType === 'SMS'
+            ? MessageThread::create(['contact_id' => $contact->id, 'channel' => 'SMS', 'last_message_at' => now(), 'sms_group_id' => $payload['sms_group_id'] ?? null])
             : $this->findOrCreateThread($contact, $channelType, $this->resolveThreadShootId($payload, $channelType, $providerOverride));
 
         $message = Message::create([
@@ -567,7 +577,7 @@ class MessagingService
     protected function updateThreadForMessage(MessageThread $thread, Message $message): MessageThread
     {
         if ($message->channel === 'SMS' && $message->hidden_from_inbox) {
-            return $thread->refresh()->load(['contact', 'assignedTo']);
+            return $thread->refresh()->load(['contact', 'assignedTo', 'latestSmsMessage']);
         }
         $snippet = $this->extractThreadSnippet($message);
 
@@ -579,7 +589,7 @@ class MessagingService
             'unread_for_user_ids_json' => $this->resolveUnreadRecipients($thread, $message),
         ])->save();
 
-        return $thread->refresh()->load(['contact', 'assignedTo']);
+        return $thread->refresh()->load($thread->channel === 'SMS' ? ['contact', 'assignedTo', 'latestSmsMessage'] : ['contact', 'assignedTo']);
     }
 
     public function rebuildThreadState(MessageThread $thread): MessageThread

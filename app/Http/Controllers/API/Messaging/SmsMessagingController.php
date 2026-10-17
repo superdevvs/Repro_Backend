@@ -13,6 +13,7 @@ use App\Models\MessageThread;
 use App\Models\Shoot;
 use App\Models\SmsGroup;
 use App\Models\SmsGroupMember;
+use App\Models\SmsNumber;
 use App\Models\User;
 use App\Services\Messaging\MessagingService;
 use App\Services\Messaging\SmsInboxPolicy;
@@ -22,6 +23,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 
 class SmsMessagingController extends Controller
@@ -30,6 +32,17 @@ class SmsMessagingController extends Controller
 
     public function __construct(private readonly MessagingService $messaging)
     {
+    }
+
+    public function senders(Request $request): JsonResponse
+    {
+        $policy = app(SmsInboxPolicy::class);
+        abort_unless($policy->canSms($request->user()) && $policy->isSuperadmin($request->user()), 403);
+
+        return response()->json(['numbers' => SmsNumber::query()->where('provider', 'TELNYX')
+            ->whereNotNull('phone_number')->where('phone_number', '!=', '')
+            ->orderByDesc('is_default')->orderBy('label')->orderBy('id')
+            ->get(['id', 'phone_number', 'label', 'is_default'])->toArray()]);
     }
 
     public function threads(Request $request): JsonResponse
@@ -289,7 +302,7 @@ class SmsMessagingController extends Controller
             'group_ids' => ['nullable', 'array', 'max:10'],
             'group_ids.*' => ['integer', 'exists:sms_groups,id'],
             'body_text' => ['required', 'string', 'max:1200'],
-            'sms_number_id' => ['nullable', 'exists:sms_numbers,id'],
+            'sms_number_id' => ['nullable', 'integer', Rule::exists('sms_numbers', 'id')->where('provider', 'TELNYX')],
             'contact_name' => ['nullable', 'string'],
             'contact_type' => ['nullable', 'string'],
         ]);
@@ -334,13 +347,22 @@ class SmsMessagingController extends Controller
 
         $data = $request->validate([
             'body' => ['required', 'string', 'max:1200'],
-            'sms_number_id' => ['nullable', 'exists:sms_numbers,id'],
+            'sms_number_id' => ['nullable', 'integer', Rule::exists('sms_numbers', 'id')->where('provider', 'TELNYX')],
         ]);
-
+        $thread->loadMissing('latestSmsMessage');
+        $business = app(SmsInboxPolicy::class)->businessNumber($thread);
+        $person = app(SmsInboxPolicy::class)->personNumber($thread);
+        $sender = ! empty($data['sms_number_id']) ? SmsNumber::findOrFail($data['sms_number_id']) : null;
+        if (! $sender && $business) {
+            $sender = SmsNumber::query()->where('provider', 'TELNYX')->get()->first(fn ($number) => $this->normalizePhone($number->phone_number) === $business);
+            if (! $sender) {
+                throw ValidationException::withMessages(['sms_number_id' => 'This conversation sending number is no longer configured. Select an available sender.']);
+            }
+        }
         if ($thread->sms_group_id) {
-            return response()->json([
-                'message' => 'Reply from the group conversation sends to the whole group. Use New SMS for one person.',
-            ], 422);
+            return $this->sendGroups($request, [(int) $thread->sms_group_id], [], [
+                'body_text' => $data['body'], 'sms_number_id' => $sender?->id,
+            ]);
         }
 
         $contact = $thread->contact ?? Contact::findOrFail($thread->contact_id);
@@ -356,13 +378,14 @@ class SmsMessagingController extends Controller
             $message = $this->messaging->sendSms([
                 'to' => $toNumber,
                 'body_text' => $data['body'],
-                'sms_number_id' => $data['sms_number_id'] ?? null,
+                'sms_number_id' => $sender?->id,
                 'user_id' => $request->user()?->id,
                 'contact_phone' => $toNumber,
                 'contact_name' => $contact->name,
                 'contact_type' => $contact->type,
                 'contact_user_id' => $contact->user_id,
-                'sms_thread_id' => $thread->id,
+                'sms_thread_id' => (! $person || $this->normalizePhone($toNumber) === $person)
+                    && (! $sender || ! $business || $this->normalizePhone($sender->phone_number) === $business) ? $thread->id : null,
                 'metadata' => ['sms_inbox' => ['kind' => 'manual']],
             ]);
         } catch (SmsSendException $e) {
@@ -386,6 +409,7 @@ class SmsMessagingController extends Controller
         }
 
         // Staff manual reply pauses AI on this thread (per-thread takeover).
+        $thread = $message->thread;
         $pauseMinutes = (int) config('services.telnyx.ai_takeover_pause_minutes', 120);
         $thread->forceFill([
             'ai_paused_until' => now()->addMinutes(max(1, $pauseMinutes)),
@@ -461,7 +485,7 @@ class SmsMessagingController extends Controller
                     continue;
                 }
                 $sent++;
-                $primaryThread ??= $message->thread->load(['contact', 'assignedTo']);
+                $primaryThread ??= $message->thread->load(['contact', 'assignedTo', 'latestSmsMessage']);
                 $primaryMessage ??= $message;
                 $results[] = ['to' => $destination['phone'], 'status' => 'sent'];
             } catch (SmsSendException $e) {
@@ -490,7 +514,7 @@ class SmsMessagingController extends Controller
             ], 422);
         }
 
-        $primaryThread->load(['contact', 'assignedTo', 'smsGroup.members']);
+        $primaryThread->load(['contact', 'assignedTo', 'latestSmsMessage', 'smsGroup.members']);
 
         return response()->json([
             'sent' => $sent,
@@ -577,12 +601,13 @@ class SmsMessagingController extends Controller
                 'contact_email' => $email,
                 'contact_name' => $group->name,
                 'contact_type' => 'group',
+                'sms_group_id' => $group->id,
                 'hidden_from_inbox' => false,
                 'metadata' => ['sms_inbox' => ['kind' => 'manual']],
             ]);
             $thread = $message->thread;
             $thread->forceFill(['sms_group_id' => $group->id])->save();
-            $thread = $thread->fresh(['contact', 'assignedTo', 'smsGroup.members']);
+            $thread = $thread->fresh(['contact', 'assignedTo', 'latestSmsMessage', 'smsGroup.members']);
         }
 
         return [
@@ -671,7 +696,7 @@ class SmsMessagingController extends Controller
             return $this->blockedSmsResponse($message);
         }
 
-        $thread = $message->thread->load(['contact', 'assignedTo']);
+        $thread = $message->thread->load(['contact', 'assignedTo', 'latestSmsMessage']);
 
         return response()->json([
             'message' => SmsMessageResource::make($message),
@@ -716,7 +741,7 @@ class SmsMessagingController extends Controller
                     $results[] = ['to' => $destination['phone'], 'status' => 'failed', 'error' => $this->blockedSmsError($message)];
                     continue;
                 }
-                $thread = $message->thread->load(['contact', 'assignedTo']);
+                $thread = $message->thread->load(['contact', 'assignedTo', 'latestSmsMessage']);
                 $sent++;
                 $firstMessage ??= $message;
                 $firstThread ??= $thread;

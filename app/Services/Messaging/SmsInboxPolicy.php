@@ -38,6 +38,47 @@ class SmsInboxPolicy
         return $this->canSms($user) && $this->role($user) !== 'photographer';
     }
 
+    public function isSuperadmin(?User $user): bool
+    {
+        return $user && $this->role($user) === 'superadmin';
+    }
+
+    public function businessNumber(MessageThread $thread): ?string
+    {
+        $latest = $thread->relationLoaded('latestSmsMessage') ? $thread->getRelation('latestSmsMessage') : null;
+        if (! $latest) {
+            return null;
+        }
+        $digits = $this->phone((string) ($latest->direction === 'INBOUND' ? $latest->to_address : $latest->from_address));
+
+        return $digits ? '+'.$digits : null;
+    }
+
+    public function personNumber(MessageThread $thread): ?string
+    {
+        $latest = $thread->relationLoaded('latestSmsMessage') ? $thread->getRelation('latestSmsMessage') : null;
+        if (! $latest || $thread->sms_group_id) {
+            return null;
+        }
+        $digits = $this->phone((string) ($latest->direction === 'INBOUND' ? $latest->from_address : $latest->to_address));
+
+        return $digits ? '+'.$digits : null;
+    }
+
+    public function threadForGroup(int $groupId, string $business): ?MessageThread
+    {
+        $business = $this->phone($business);
+        if (! $business) {
+            return null;
+        }
+
+        return MessageThread::query()->where('channel', 'SMS')->where('sms_group_id', $groupId)
+            ->where(fn ($q) => $this->currentPair($q, null, $business))
+            ->whereHas('messages', fn ($q) => $this->visibleMessages($q)->where('direction', 'OUTBOUND')
+                ->whereRaw($this->phoneSql('from_address').' = ?', [$business]))
+            ->orderByDesc('last_message_at')->orderByDesc('id')->first();
+    }
+
     public function forUser(Builder $query, User $user): Builder
     {
         if ($this->role($user) !== 'photographer') {
@@ -143,7 +184,8 @@ class SmsInboxPolicy
             return null;
         }
         $query = Message::query()->where('channel', 'SMS')
-            ->whereHas('thread', fn ($q) => $q->where('channel', 'SMS')->whereNull('sms_group_id'))
+            ->whereHas('thread', fn ($q) => $q->where('channel', 'SMS')->whereNull('sms_group_id')
+                ->where(fn ($pair) => $this->currentPair($pair, $person, $business)))
             ->where(fn ($q) => $this->pair($q, $person, $business))
             ->orderByDesc('created_at')->orderByDesc('id');
         $message = (clone $query)->whereHas('thread', fn ($q) => $q->where('sms_inbox_active', true))->first()
@@ -213,6 +255,16 @@ class SmsInboxPolicy
             ->whereRaw($this->phoneSql('to_address').' = ?', [$business]))
             ->orWhere(fn ($q) => $q->whereRaw($this->phoneSql('from_address').' = ?', [$business])
                 ->whereRaw($this->phoneSql('to_address').' = ?', [$person]));
+    }
+
+    private function currentPair(Builder $threads, ?string $person, string $business): void
+    {
+        $threads->whereDoesntHave('latestSmsMessage')->orWhereHas('latestSmsMessage', function ($latest) use ($person, $business) {
+            $latest->whereRaw($this->phoneSql("(CASE WHEN messages.direction = 'INBOUND' THEN messages.to_address ELSE messages.from_address END)").' = ?', [$business]);
+            if ($person) {
+                $latest->whereRaw($this->phoneSql("(CASE WHEN messages.direction = 'INBOUND' THEN messages.from_address ELSE messages.to_address END)").' = ?', [$person]);
+            }
+        });
     }
 
     private function phone(string $value): ?string
