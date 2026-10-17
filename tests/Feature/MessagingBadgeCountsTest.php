@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\Contact;
+use App\Models\Message;
 use App\Models\MessageThread;
 use App\Models\User;
 use App\Models\VoiceCall;
@@ -35,13 +36,16 @@ class MessagingBadgeCountsTest extends TestCase
             'unread_for_user_ids_json' => [$admin->id],
             'last_message_at' => now(),
         ]);
-        MessageThread::query()->create([
+        $sms = MessageThread::query()->create([
             'contact_id' => $this->makeContact('sms-shared')->id,
             'channel' => 'SMS',
             'status' => 'OPEN',
             'unread_for_user_ids_json' => [$admin->id, $other->id],
             'last_message_at' => now(),
         ]);
+        Message::create(['thread_id' => $sms->id, 'channel' => 'SMS', 'direction' => 'INBOUND',
+            'provider' => 'TEST', 'from_address' => '+12025550112', 'to_address' => '+12025550100',
+            'body_text' => 'Unread customer reply', 'status' => 'DELIVERED']);
         MessageThread::query()->create([
             'contact_id' => $this->makeContact('email-other')->id,
             'channel' => 'EMAIL',
