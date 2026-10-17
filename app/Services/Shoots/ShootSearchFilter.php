@@ -22,21 +22,38 @@ class ShootSearchFilter
             ? 'CAST(shoots.id AS TEXT)'
             : 'CAST(shoots.id AS CHAR)';
 
-        return $query->where(function (Builder $scope) use ($term, $idCast) {
+        $viewer = auth()->user();
+        $isEditor = $viewer && app(ShootAuthorizationSupport::class)->hasRole($viewer, ['editor']);
+        $namedVideoShoots = [];
+        if ($isEditor && $viewer->canEditLane('video')) {
+            // Reuse the same per-shoot policy as the presenter. A hidden client
+            // email/company must not become a search-result or count oracle.
+            $namedVideoShoots = (clone $query)->whereHas('client', fn (Builder $client) => $client->where('name', 'like', "%{$term}%"))
+                ->with('serviceItems.service')->get()
+                ->filter(fn ($shoot) => app(ShootAuthorizationSupport::class)->canVideoEditorReadClientContext($shoot, $viewer))
+                ->modelKeys();
+        }
+
+        return $query->where(function (Builder $scope) use ($term, $idCast, $isEditor, $namedVideoShoots) {
             $scope->where('address', 'like', "%{$term}%")
                 ->orWhere('city', 'like', "%{$term}%")
                 ->orWhere('state', 'like', "%{$term}%")
                 ->orWhere('zip', 'like', "%{$term}%")
-                ->orWhereHas('client', function (Builder $clientQuery) use ($term) {
+                ->orWhereHas('photographer', function (Builder $photographerQuery) use ($term) {
+                    $photographerQuery->where('name', 'like', "%{$term}%");
+                });
+
+            if (!$isEditor) {
+                $scope->orWhereHas('client', function (Builder $clientQuery) use ($term) {
                     // Soft-deleted clients are excluded by User SoftDeletes.
                     $clientQuery->where('name', 'like', "%{$term}%")
                         ->orWhere('email', 'like', "%{$term}%")
                         ->orWhere('phonenumber', 'like', "%{$term}%")
                         ->orWhere('company_name', 'like', "%{$term}%");
-                })
-                ->orWhereHas('photographer', function (Builder $photographerQuery) use ($term) {
-                    $photographerQuery->where('name', 'like', "%{$term}%");
                 });
+            } elseif ($namedVideoShoots !== []) {
+                $scope->orWhereIn('shoots.id', $namedVideoShoots);
+            }
 
             // Command bar historically matched shoot ids client-side. Keep id in
             // the shared BE filter. Pure digits: exact int match (zero-padded

@@ -37,6 +37,19 @@ class StudioWorkspaceController extends StudioController
             $this->scopeStudioQuery($query, $request->user());
         }
 
+        $request->validate(['search' => 'nullable|string|max:200']);
+        if ($term = trim((string) $request->query('search', ''))) {
+            $query->where(function ($scope) use ($term) {
+                $scope->where('name', 'like', '%'.$term.'%')->orWhere('id', $term)
+                    ->orWhere('preset_id', 'like', '%'.str_replace(' ', '-', $term).'%');
+                if (ctype_digit($term)) $scope->orWhere('shoot_id', (int) $term);
+            });
+        }
+
+        if ($request->attributes->get('contextual_search_source')) {
+            $page = $query->latest('updated_at')->paginate(max(1, min(100, $request->integer('per_page', 8))));
+            return response()->json(['data' => $page->getCollection()->map->present(), 'meta' => ['current_page' => $page->currentPage(), 'per_page' => $page->perPage(), 'total' => $page->total()]]);
+        }
         return response()->json(['success' => true, 'data' => $query->latest('updated_at')->limit(100)->get()->map->present()]);
     }
 

@@ -43,6 +43,7 @@ class InvoiceController extends Controller
         }
 
         $filters = $request->validate([
+            'invoice_id' => ['nullable', 'integer', 'min:1'],
             'status' => ['nullable', 'in:all,pending,paid,overdue'],
             'sort' => ['nullable', 'in:date_desc,date_asc,amount_desc,amount_asc'],
             'start' => ['nullable', 'date'],
@@ -133,6 +134,7 @@ class InvoiceController extends Controller
 
         if ($request->query('role') === 'client' && in_array($user->role,['admin','superadmin'],true)) $query->where(fn($q)=>$q->where('role','client')->orWhereNull('role'));
 
+        if ($request->filled('invoice_id')) $query->whereKey($request->integer('invoice_id'));
         if($request->filled('search')) {
             $search='%'.mb_substr((string)$request->query('search'),0,200).'%';
             $query->where(fn($q)=>$q->where('invoice_number','like',$search)->orWhereHas('client',fn($q)=>$q->where('name','like',$search))->orWhereHas('shoot',fn($q)=>$q->where('address','like',$search))->orWhereHas('shoots',fn($q)=>$q->where('address','like',$search))->orWhereHas('items',fn($q)=>$q->where('meta->property_address','like',$search)));

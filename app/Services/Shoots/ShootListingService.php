@@ -87,7 +87,7 @@ class ShootListingService
             // second life: asking for bracket=3 straight after bracket=5 returned
             // the 5x list.
             $filterParams = $request->only([
-                'client_id', 'photographer_id', 'sales_rep_id', 'payment_status', 'services', 'search', 'address',
+                'client_id', 'photographer_id', 'sales_rep_id', 'payment_status', 'services', 'search', 'address', 'shoot_id',
                 'date_range', 'scheduled_start', 'scheduled_end',
                 'completed_start', 'completed_end', 'custom_start', 'custom_end',
                 'date_from', 'date_to', 'private_listing', 'listing_scope', 'include_hidden',
@@ -556,6 +556,7 @@ class ShootListingService
 
     protected function applyOperationalFilters(Builder $query, Request $request, string $tab, ?User $user = null): void
     {
+        if ($request->filled('shoot_id')) $query->whereKey($request->integer('shoot_id'));
         $search = trim((string) $request->query('search', ''));
         if ($search !== '') {
             $this->applySearchFilter($query, $search);

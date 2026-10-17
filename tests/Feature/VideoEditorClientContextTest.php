@@ -96,6 +96,17 @@ class VideoEditorClientContextTest extends TestCase
         $this->assertSame($shoot->company_notes, $shoot->fresh()->company_notes);
     }
 
+    public function test_search_matches_only_the_client_name_visible_to_the_assigned_video_editor(): void
+    {
+        [$shoot, $item, $video, $photo, $client] = $this->fixture();
+        $search = app(\App\Services\Shoots\ShootSearchFilter::class);
+        $this->assertSame(1, $search->apply(Shoot::query()->whereKey($shoot->id), $client->name)->count());
+        $this->assertSame(0, $search->apply(Shoot::query()->whereKey($shoot->id), $client->email)->count());
+        $this->assertSame(0, $search->apply(Shoot::query()->whereKey($shoot->id), $client->company_name)->count());
+        $item->update(['video_editor_id' => $photo->id, 'editor_id' => $video->id]);
+        $this->assertSame(0, $search->apply(Shoot::query()->whereKey($shoot->id), $client->name)->count());
+    }
+
     public function test_photo_lane_and_unspecified_legacy_editors_keep_client_context_hidden(): void
     {
         [$shoot, , , $photo] = $this->fixture();

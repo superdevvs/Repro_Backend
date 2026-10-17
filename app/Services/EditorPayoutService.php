@@ -186,10 +186,10 @@ class EditorPayoutService
         }
     }
 
-    public function getAdminEarnings(array $filters = []): array
+    public function getAdminEarnings(array $filters = [], bool $sync = true): array
     {
         [$start, $end] = $this->resolveDateRange($filters);
-        $this->syncPayouts($start, $end);
+        if ($sync) $this->syncPayouts($start, $end);
 
         $query = $this->basePayoutQuery($filters, $start, $end)
             ->with('editor:id,name,email,metadata');

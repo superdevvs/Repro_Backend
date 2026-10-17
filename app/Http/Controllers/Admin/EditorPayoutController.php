@@ -26,7 +26,7 @@ class EditorPayoutController extends Controller
             'service_type' => 'nullable|string|max:50',
         ]);
 
-        return response()->json($this->service->getAdminEarnings($filters));
+        return response()->json($this->service->getAdminEarnings($filters, !$request->attributes->get('contextual_search_source', false)));
     }
 
     public function detail(Request $request, User $editor)

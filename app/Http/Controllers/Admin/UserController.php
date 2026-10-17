@@ -118,6 +118,22 @@ class UserController extends Controller
         return response()->json(['users' => $users]);
     }
 
+    /** Paginated, read-only directory search; keeps the legacy directory contract intact. */
+    public function search(Request $request)
+    {
+        $request->validate(['search' => 'nullable|string|max:200', 'page' => 'nullable|integer|min:1', 'per_page' => 'nullable|integer|min:1|max:100']);
+        $filters = $request->only(['role', 'rep', 'status']);
+        $query = app(\App\Services\Search\AccountSearchQuery::class)->forViewer($request->user(), (string) $request->query('search', ''), $filters);
+        if ($this->serviceGroupsFeatureAvailable()) $query->with('serviceGroups');
+        $sorts = ['default' => 'id', 'name' => 'name', 'email' => 'email', 'company' => 'company_name', 'role' => 'role', 'accountStatus' => 'account_status'];
+        $sort = $sorts[$request->query('sort', 'default')] ?? 'id';
+        $direction = $request->query('direction') === 'desc' ? 'desc' : 'asc';
+        $page = $query->orderBy($sort, $direction)->orderBy('id')->paginate((int) $request->query('per_page', 16));
+        $empty = collect();
+        $users = $page->getCollection()->map(fn ($record) => $this->presentUserForViewerOptimized($record, $request->user(), $empty, $empty, $empty));
+        return response()->json(['users' => $users, 'meta' => ['total' => $page->total(), 'last_page' => $page->lastPage(), 'current_page' => $page->currentPage()]]);
+    }
+
     public function show(Request $request, $id)
     {
         $viewer = $request->user();

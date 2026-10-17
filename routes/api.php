@@ -108,6 +108,12 @@ use App\Http\Controllers\StripePaymentController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
+Route::middleware(['auth:sanctum', 'throttle:120,1'])->prefix('search')->group(function () {
+    Route::get('/scopes', [\App\Http\Controllers\API\ContextualSearchController::class, 'scopes']);
+    Route::get('/', [\App\Http\Controllers\API\ContextualSearchController::class, 'index']);
+    Route::get('/{scope}/{id}/preview', [\App\Http\Controllers\API\ContextualSearchController::class, 'preview']);
+});
+
 Route::get('/user', [AuthController::class, 'currentUser'])->middleware('auth:sanctum');
 Route::middleware('throttle:120,1')->prefix('edit-helper')->group(function () {
     Route::post('/pairings/{pairing}/claim', [\App\Http\Controllers\API\EditHelperController::class, 'claimPairing'])->middleware('throttle:60,1');
@@ -470,6 +476,7 @@ Route::middleware(['auth:sanctum', 'role:client,salesRep,rep,admin,superadmin'])
 });
 
 Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager,salesRep'])->get('/admin/users', [UserController::class, 'index']);
+Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager,salesRep', 'permission:accounts'])->get('/admin/users/search', [UserController::class, 'search']);
 Route::middleware(['auth:sanctum', 'role:admin,superadmin'])->get('/admin/permissions', [PermissionController::class, 'index']);
 Route::middleware(['auth:sanctum', 'role:admin,superadmin'])->put('/admin/permissions', [PermissionController::class, 'update']);
 // Per-user tri-state overrides (allow / deny) layered on the role map.

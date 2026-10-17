@@ -28,6 +28,18 @@ class EditingRequestController extends Controller
             $query->whereIn(DB::raw('LOWER(target_team)'), ['editor', 'editing', 'hybrid']);
         }
 
+        if ($request->attributes->get('contextual_search_source')) {
+            $term = trim((string) $request->query('search', ''));
+            $like = '%'.str_replace(['\\', '%', '_'], ['\\\\', '\\%', '\\_'], $term).'%';
+            $query->where(function ($builder) use ($like) {
+                $builder->whereRaw("summary LIKE ? ESCAPE '\\'", [$like])
+                    ->orWhereRaw("tracking_code LIKE ? ESCAPE '\\'", [$like])
+                    ->orWhereRaw("details LIKE ? ESCAPE '\\'", [$like])
+                    ->orWhereHas('shoot', fn ($shoot) => $shoot->whereRaw("address LIKE ? ESCAPE '\\'", [$like]))
+                    ->orWhereHas('requester', fn ($user) => $user->whereRaw("name LIKE ? ESCAPE '\\'", [$like]));
+            });
+            return response()->json($query->paginate(min(100, max(1, $request->integer('per_page', 8)))));
+        }
         $requests = $query->limit(50)->get();
 
         return response()->json([
