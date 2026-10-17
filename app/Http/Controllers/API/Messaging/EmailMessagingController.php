@@ -10,6 +10,7 @@ use App\Models\MessageTemplate;
 use App\Models\MessageThread;
 use App\Models\Shoot;
 use App\Models\User;
+use App\Services\Messaging\EmailMessageSearch;
 use App\Services\Messaging\InternalMessageNotificationService;
 use App\Services\Messaging\MessagingService;
 use App\Services\Messaging\TemplateRenderer;
@@ -35,24 +36,19 @@ class EmailMessagingController extends Controller
     public function messages(Request $request): JsonResponse
     {
         app(\App\Services\Messaging\DashboardMessagingPolicy::class)->authorizeEmail(request()->user());
+        $request->validate([
+            'search' => ['nullable', 'string', 'max:300'],
+            'page' => ['nullable', 'integer', 'min:1'],
+            'per_page' => ['nullable', 'integer', 'min:1', 'max:100'],
+            'channel_id' => ['nullable', 'integer', 'min:1'],
+            'send_source' => ['nullable', 'string', 'in:MANUAL,AUTOMATION,SYSTEM'],
+        ]);
         $user = $request->user();
 
         $filters = [
             'channel' => 'EMAIL',
             'status' => $request->query('status'),
         ];
-
-        if ($request->has('channel_id')) {
-            $filters['message_channel_id'] = $request->query('channel_id');
-        }
-
-        if ($request->has('send_source')) {
-            $filters['send_source'] = $request->query('send_source');
-        }
-
-        if ($request->has('search')) {
-            $filters['search'] = $request->query('search');
-        }
 
         $messagesQuery = $this->messaging
             ->getMessageLogs($filters)
@@ -63,7 +59,11 @@ class EmailMessagingController extends Controller
             $this->applyMessageVisibilityScope($messagesQuery, $user);
         }
 
-        $request->validate(['per_page' => ['nullable', 'integer', 'min:1', 'max:100']]);
+        $messagesQuery
+            ->when($request->filled('channel_id'), fn (Builder $query) => $query->where('message_channel_id', $request->integer('channel_id')))
+            ->when($request->filled('send_source'), fn (Builder $query) => $query->where('send_source', $request->query('send_source')))
+            ->orderByDesc('messages.id');
+        app(EmailMessageSearch::class)->apply($messagesQuery, (string) $request->query('search', ''));
         $messages = $messagesQuery->paginate($request->query('per_page', 25));
 
         return response()->json($messages);

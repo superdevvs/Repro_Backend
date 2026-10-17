@@ -28,9 +28,18 @@ class SupportTicketController extends Controller
         if ($status = $data['status'] ?? null) {
             $query->where('status', $status);
         }
-        if ($search = trim($data['query'] ?? '')) {
-            $query->where(function ($q) use ($search) {
-                $q->whereRaw("subject LIKE ? ESCAPE '\\'", ['%'.addcslashes($search, '%_\\').'%']);
+        $search = trim($data['query'] ?? '');
+        if ($search !== '') {
+            $pattern = '%'.addcslashes($search, '%_\\').'%';
+            $query->where(function ($q) use ($search, $pattern, $canManage) {
+                $q->whereRaw("subject LIKE ? ESCAPE '\\'", [$pattern])
+                    ->orWhereHas('requester', fn ($requester) => $requester->where(function ($identity) use ($pattern) {
+                        $identity->whereRaw("name LIKE ? ESCAPE '\\'", [$pattern])
+                            ->orWhereRaw("email LIKE ? ESCAPE '\\'", [$pattern]);
+                    }))
+                    ->orWhereHas('messages', fn ($message) => $message
+                        ->when(! $canManage, fn ($visible) => $visible->where('internal', false))
+                        ->whereRaw("body LIKE ? ESCAPE '\\'", [$pattern]));
                 if (preg_match('/^(?:SUP-)?0*([0-9]+)$/i', $search, $match)) {
                     $q->orWhere('id', (int) $match[1]);
                 }
