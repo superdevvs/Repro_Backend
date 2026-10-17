@@ -39,6 +39,7 @@ class SendShootReadyEmailJobCadenceWiringTest extends TestCase
 
     private function mockMail(): void
     {
+        $this->travelTo(now('America/New_York')->setTime(12, 0));
         Mail::fake();
         OutboundDeliveryGuard::allowFakeProviderPipelineForTesting();
         MessageChannel::create(['type' => 'EMAIL', 'provider' => 'LOCAL_SMTP', 'display_name' => 'Test delivery',

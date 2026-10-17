@@ -1035,6 +1035,7 @@ class AutomationWorkflowExecutor
             'notification' => [
                 'trigger' => $automation->trigger_type,
                 'appointment_at' => $context['notification_appointment_at'] ?? null,
+                'full_order_delivery' => ($context['delivery_notification_full_order'] ?? false) === true,
             ],
         ]);
     }

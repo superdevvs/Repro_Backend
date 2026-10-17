@@ -33,6 +33,8 @@ class PaymentReminderCancelOnPaidWiringTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        // Transport and content checks run during client delivery hours.
+        $this->travelTo(now('America/New_York')->setTime(12, 0));
         \App\Services\Messaging\OutboundDeliveryGuard::allowFakeProviderPipelineForTesting();
     }
 

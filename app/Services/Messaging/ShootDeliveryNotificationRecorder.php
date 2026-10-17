@@ -16,7 +16,7 @@ class ShootDeliveryNotificationRecorder
     {
         return Message::whereIn('id', $ids)->whereIn('channel', ['EMAIL', 'SMS'])
             ->where('direction', 'OUTBOUND')->where('provider', '!=', 'INTERNAL')
-            ->whereIn('status', ['SENT', 'DELIVERED'])->get();
+            ->whereIn('status', ['SENT', 'DELIVERED', 'SCHEDULED'])->get();
     }
 
     public function clientWasNotified(Collection $messages, ?User $client): bool
@@ -27,6 +27,9 @@ class ShootDeliveryNotificationRecorder
         $phone = $this->phoneDigits((string) ($client->phonenumber ?? $client->phone ?? ''));
 
         return $messages->contains(function (Message $message) use ($client, $phone): bool {
+            if (! in_array($message->status, ['SENT', 'DELIVERED'], true)) {
+                return false;
+            }
             if ($message->channel === 'EMAIL') {
                 return $client->email && strtolower(trim($message->to_address)) === strtolower(trim($client->email));
             }
@@ -67,7 +70,8 @@ class ShootDeliveryNotificationRecorder
         }
         $clientNotified = $this->record($shoot, $messages);
         $progress->stageCompleted($shoot->id, FinalizeProgressTracker::STAGE_DELIVERY_EMAIL,
-            $clientNotified ? 'Client notification accepted for delivery' : 'Notification sent to configured recipients');
+            $clientNotified ? 'Client notification accepted for delivery' : ($messages->contains('status', 'SCHEDULED')
+                ? 'Client notification queued for the next allowed delivery time' : 'Notification sent to configured recipients'));
     }
 
     private function phoneDigits(string $phone): string

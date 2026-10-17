@@ -432,6 +432,27 @@ class MessagingService
         return true;
     }
 
+    private function completeDeferredClientNotification(Message $message): void
+    {
+        if (data_get($message->metadata, 'delivery.deferred_reason') !== 'client_notification_quiet_hours') {
+            return;
+        }
+        $dispatch = \App\Models\SystemEmailDispatch::where('message_id', $message->id)->first();
+        if ($dispatch) {
+            app(\App\Services\SystemEmails\EmailAuditService::class)->sent($dispatch, $message);
+        }
+        $fullDelivery = data_get($message->metadata, 'canonical_email.is_full_order_delivery') === true
+            || (data_get($message->metadata, 'notification.trigger') === 'SHOOT_COMPLETED'
+                && data_get($message->metadata, 'notification.full_order_delivery') === true);
+        if ($fullDelivery && $message->related_shoot_id && $shoot = Shoot::find($message->related_shoot_id)) {
+            $recorder = app(ShootDeliveryNotificationRecorder::class);
+            if ($recorder->record($shoot, collect([$message]))) {
+                app(\App\Services\Shoots\FinalizeProgressTracker::class)->stageCompleted($shoot->id,
+                    \App\Services\Shoots\FinalizeProgressTracker::STAGE_DELIVERY_EMAIL, 'Client notification accepted for delivery');
+            }
+        }
+    }
+
     /**
      * Build a client-safe error message for a failed SMS send. When the provider error
      * indicates the Telnyx sending number is unverified, surface that condition; otherwise
@@ -1257,6 +1278,8 @@ class MessagingService
             throw $exception;
         }
 
+        $this->completeDeferredClientNotification($message->refresh());
+
         return $message->refresh();
     }
 
@@ -1356,6 +1379,8 @@ class MessagingService
 
             throw $exception;
         }
+
+        $this->completeDeferredClientNotification($message->refresh());
 
         return $message->refresh();
     }

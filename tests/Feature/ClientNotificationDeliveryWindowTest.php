@@ -241,6 +241,67 @@ class ClientNotificationDeliveryWindowTest extends TestCase
         $this->assertSame($action, $rule->workflow_definition_json['nodes'][1]);
     }
 
+    #[DataProvider('deliveryBalances')]
+    public function test_overnight_full_delivery_waits_without_retrying_and_starts_follow_up_only_after_sending(bool $settled): void
+    {
+        $this->clock('2026-10-17 05:00');
+        [$shoot] = $this->shoot('2026-10-17 15:00');
+        $shoot->update(['status' => 'delivered', 'workflow_status' => 'delivered', 'delivery_status' => 'delivered',
+            'total_quote' => $settled ? 0 : 500, 'base_quote' => $settled ? 0 : 500,
+            'payment_status' => $settled ? 'paid' : 'unpaid', 'completed_at' => now(), 'shoot_ready_notified_at' => null]);
+        AutomationRule::whereIn('trigger_type', ['SHOOT_COMPLETED', 'SHOOT_PAYMENT_REMINDER'])->update(['is_active' => true]);
+        app(\App\Services\Shoots\FinalizeProgressTracker::class)->start($shoot->id);
+        $job = new \App\Jobs\SendShootReadyEmailJob($shoot->id, null, true, true);
+        $job->handle(app(\App\Services\MailService::class), app(AutomationService::class));
+        $job->handle(app(\App\Services\MailService::class), app(AutomationService::class));
+        $messages = Message::where('related_shoot_id', $shoot->id)->where('to_address', $shoot->client->email)->get();
+        $this->assertCount(1, $messages);
+        $this->assertSame('SCHEDULED', $messages->first()->status);
+        $this->assertNull($shoot->fresh()->shoot_ready_notified_at);
+        $this->assertSame(0, \App\Models\PaymentReminder::where('shoot_id', $shoot->id)->count());
+        $ledger = \App\Models\SystemEmailDispatch::where('message_id', $messages->first()->id)->sole();
+        $this->assertSame('scheduled', $ledger->status);
+        $this->assertCount(0, FakeCakemailProvider::sent());
+        $this->clock('2026-10-17 09:00');
+        $this->dispatch();
+        $this->assertSame('SENT', $messages->first()->fresh()->status);
+        $this->assertSame('sent', $ledger->fresh()->status);
+        $this->assertSame(now()->toDateTimeString(), $shoot->fresh()->shoot_ready_notified_at->toDateTimeString());
+        $count = \App\Models\PaymentReminder::where('shoot_id', $shoot->id)->count();
+        $settled ? $this->assertSame(0, $count) : $this->assertGreaterThan(0, $count);
+        $this->dispatch();
+        $this->assertCount(1, FakeCakemailProvider::sent());
+    }
+
+    public static function deliveryBalances(): array
+    {
+        return [[false], [true]];
+    }
+
+    public function test_manual_ready_notice_anchors_payment_follow_up_after_the_morning_send(): void
+    {
+        $this->clock('2026-10-17 05:00');
+        [$shoot] = $this->shoot('2026-10-17 15:00');
+        $shoot->update(['status' => 'delivered', 'workflow_status' => 'delivered', 'delivery_status' => 'delivered',
+            'total_quote' => 500, 'base_quote' => 500, 'payment_status' => 'unpaid', 'completed_at' => now(), 'shoot_ready_notified_at' => null]);
+        AutomationRule::where('trigger_type', 'SHOOT_PAYMENT_REMINDER')->update(['is_active' => true]);
+        \App\Models\MessageTemplate::updateOrCreate(['slug' => 'shoot-ready'], [
+            'channel' => 'EMAIL', 'name' => 'Ready', 'category' => 'GENERAL', 'scope' => 'SYSTEM', 'is_system' => true,
+            'is_active' => true, 'subject' => 'Ready', 'body_text' => 'Ready for {{recipient_first_name}}',
+            'body_html' => '<p>Ready for {{recipient_first_name}}</p>',
+        ]);
+        $sender = User::factory()->create(['role' => 'admin']);
+        $message = app(\App\Services\Messaging\ManualNotificationService::class)->send($shoot, 'shoot_ready', 'client', 'email', $sender);
+        $this->assertSame('SCHEDULED', $message->status);
+        $this->assertNull($shoot->fresh()->shoot_ready_notified_at);
+        $this->assertSame(0, \App\Models\PaymentReminder::where('shoot_id', $shoot->id)->count());
+        $this->clock('2026-10-17 09:00');
+        $this->dispatch();
+        $this->assertSame('SENT', $message->fresh()->status);
+        $this->assertSame(now()->toDateTimeString(), $shoot->fresh()->shoot_ready_notified_at->toDateTimeString());
+        $this->assertGreaterThan(0, \App\Models\PaymentReminder::where('shoot_id', $shoot->id)->count());
+    }
+
     private function shoot(string $local): array
     {
         $client = User::factory()->create(['role' => 'client', 'timezone' => 'America/New_York', 'phonenumber' => '+12025550123']);

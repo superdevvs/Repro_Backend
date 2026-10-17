@@ -21,6 +21,8 @@ class ClientConfirmationRecoveryTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        // Transport and content checks run during client delivery hours.
+        $this->travelTo(now('America/New_York')->setTime(12, 0));
 
         // The replay test asserts a confirmation is actually re-sent and marked
         // recovered, so it needs the send pipeline rather than the guard's

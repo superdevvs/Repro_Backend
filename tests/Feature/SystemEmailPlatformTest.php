@@ -28,6 +28,8 @@ class SystemEmailPlatformTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        // Transport and content checks run during client delivery hours.
+        $this->travelTo(now('America/New_York')->setTime(12, 0));
 
         // Asserts canonical dispatch records and delivery metadata, so the mail
         // has to travel the full path rather than being withheld by the delivery

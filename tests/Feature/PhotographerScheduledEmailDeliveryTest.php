@@ -29,6 +29,13 @@ class PhotographerScheduledEmailDeliveryTest extends TestCase
     use MockeryPHPUnitIntegration;
     use RefreshDatabase;
 
+    protected function setUp(): void
+    {
+        parent::setUp();
+        // Transport and content checks run during client delivery hours.
+        $this->travelTo(now('America/New_York')->setTime(12, 0));
+    }
+
     #[DataProvider('providerFailures')]
     public function test_booking_retries_only_explicit_rejections_and_preserves_successful_deliveries(bool $retryable): void
     {

@@ -22,6 +22,7 @@ class BookingToolsTest extends TestCase
     #[\PHPUnit\Framework\Attributes\DataProvider('clientRuleStates')]
     public function test_ai_date_time_booking_uses_the_saved_client_confirmation_and_honors_pause(bool $active): void
     {
+        $this->travelTo(now('America/Los_Angeles')->setTime(12, 0));
         $this->seed(\Database\Seeders\MessagingSystemSeeder::class);
         \App\Services\Messaging\OutboundDeliveryGuard::allowFakeProviderPipelineForTesting();
         \App\Models\MessageChannel::create(['type' => 'EMAIL', 'provider' => 'LOCAL_SMTP', 'display_name' => 'AI fixture sender',

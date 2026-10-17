@@ -368,6 +368,10 @@ class ManualNotificationService
         $message = $this->dispatchForChannel($channel, [
             'to'               => $address,
             'notification_type' => $type,
+            'metadata' => ['notification' => [
+                'trigger' => in_array($type, ['shoot_ready', 'shoot_delivered'], true) ? 'SHOOT_COMPLETED' : null,
+                'full_order_delivery' => $stampReady && $recipientType === 'client' && in_array($type, ['shoot_ready', 'shoot_delivered'], true),
+            ]],
             'subject'          => $rendered['subject'] ?? $template->subject,
             'body_html'        => $rendered['body_html'] ?? $rendered['html'] ?? null,
             'body_text'        => $rendered['body_text'] ?? $rendered['text'] ?? null,
@@ -385,7 +389,7 @@ class ManualNotificationService
         ]);
 
         // AC 12.10 — stamp once per manual shoot_ready dispatch, not per photographer copy.
-        if ($stampReady && in_array($type, ['shoot_ready', 'shoot_delivered'], true) && $message->status !== 'BLOCKED') {
+        if ($stampReady && in_array($type, ['shoot_ready', 'shoot_delivered'], true) && ! in_array($message->status, ['BLOCKED', 'SCHEDULED'], true)) {
             $shoot->forceFill(['shoot_ready_notified_at' => now()])->save();
             $this->automationService->schedulePaymentReminders($shoot->refresh());
         }

@@ -175,6 +175,7 @@ class TelnyxMessagingTest extends TestCase
 
     public function test_sms_automation_uses_telnyx_provider(): void
     {
+        $this->travelTo(now('America/New_York')->setTime(12, 0));
         $this->bindTelnyxProviderMock('telnyx-msg-2', null);
         $this->createDefaultSmsNumber();
 

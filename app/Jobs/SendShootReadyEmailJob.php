@@ -102,7 +102,7 @@ class SendShootReadyEmailJob implements ShouldQueue
                     : $mail->sendShootReadyEmail($client, $shoot, [], true, $messageId);
                 if ($sent) {
                     $accepted = Message::whereKey($messageId)->where('related_shoot_id', $shoot->id)->where('send_source', $source)
-                        ->where('to_address', $client->email)->whereIn('status', ['SENT', 'DELIVERED'])->get();
+                        ->where('to_address', $client->email)->whereIn('status', ['SENT', 'DELIVERED', 'SCHEDULED'])->get();
                     $systemEmailAlreadySent = $accepted->isNotEmpty();
                     if (! $systemEmailAlreadySent) {
                         $failure = new \RuntimeException('The protected delivery email has no accepted message. The notification will be retried.');
@@ -124,7 +124,7 @@ class SendShootReadyEmailJob implements ShouldQueue
                 $sent = $mail->sendShootReadyEmail($client, $shoot, [$this->shootServiceId], false, $messageId);
                 if ($sent) {
                     $accepted = Message::whereKey($messageId)->where('related_shoot_id', $shoot->id)->where('send_source', 'SHOOT_DELIVERED')
-                        ->where('to_address', $client->email)->whereIn('status', ['SENT', 'DELIVERED'])->get();
+                        ->where('to_address', $client->email)->whereIn('status', ['SENT', 'DELIVERED', 'SCHEDULED'])->get();
                     if ($accepted->isEmpty()) {
                         $failure = new \RuntimeException('The partial delivery email has no accepted message. The notification will be retried.');
                     }
@@ -184,7 +184,8 @@ class SendShootReadyEmailJob implements ShouldQueue
         $progress->stageCompleted(
             $this->shootId,
             FinalizeProgressTracker::STAGE_DELIVERY_EMAIL,
-            $clientNotified ? 'Client notification accepted for delivery' : 'Notification sent to configured recipients'
+            $clientNotified ? 'Client notification accepted for delivery' : ($accepted->contains('status', 'SCHEDULED')
+                ? 'Client notification queued for the next allowed delivery time' : 'Notification sent to configured recipients')
         );
     }
 

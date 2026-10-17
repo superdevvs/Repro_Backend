@@ -1345,6 +1345,7 @@ class MailService
                 ),
                 'require_confirmed_duplicate' => true,
                 'retry_failed' => true,
+                'canonical_metadata' => ['is_full_order_delivery' => $isFullOrderDelivery],
             ], $acceptedMessageId);
             if (! $accepted) {
                 return false;
@@ -1410,6 +1411,7 @@ class MailService
                     'idempotency_key' => sprintf('SHOOT_SUMMARY:%d:%d', $shoot->id, $user->id),
                     'require_confirmed_duplicate' => true,
                     'retry_failed' => true,
+                    'canonical_metadata' => ['is_full_order_delivery' => true],
                 ],
                 $acceptedMessageId,
             );
@@ -3390,10 +3392,10 @@ class MailService
         ]);
 
         $accepted = ($options['require_fresh_send'] ?? false) === true
-            ? (bool) ($result['sent'] ?? false)
+            ? (bool) (($result['sent'] ?? false) || ($result['queued'] ?? false))
             : ((($options['require_confirmed_duplicate'] ?? false) === true && ($result['duplicate'] ?? false))
-                ? in_array(strtolower((string) (($result['dispatch'] ?? null)?->status ?? '')), ['sent', 'delivered'], true)
-                : (bool) ($result['sent'] || $result['duplicate']));
+                ? in_array(strtolower((string) (($result['dispatch'] ?? null)?->status ?? '')), ['sent', 'delivered', 'scheduled'], true)
+                : (bool) ($result['sent'] || ($result['queued'] ?? false) || $result['duplicate']));
         if ($accepted) {
             $id = (int) ($result['message_id'] ?? 0);
             $acceptedMessageId = $id > 0 ? $id : null;

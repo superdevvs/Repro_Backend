@@ -25,7 +25,7 @@ class SystemEmailOrchestrator
      * @param  array<string, mixed>  $payload
      * @param  array<string, mixed>  $transport
      * @param  array<string, mixed>  $options
-     * @return array{sent: bool, duplicate: bool, dispatch: ?SystemEmailDispatch, message_id: ?int}
+     * @return array{sent: bool, queued?: bool, duplicate: bool, dispatch: ?SystemEmailDispatch, message_id: ?int}
      */
     public function send(string $emailAlias, array $payload, array $transport, array $options = []): array
     {
@@ -49,6 +49,7 @@ class SystemEmailOrchestrator
 
             return [
                 'sent' => false,
+                'queued' => in_array(strtolower((string) $auditState['dispatch']->status), ['queued', 'scheduled'], true),
                 'duplicate' => true,
                 'dispatch' => $auditState['dispatch'],
                 'message_id' => $auditState['dispatch']->message_id,
@@ -85,6 +86,7 @@ class SystemEmailOrchestrator
 
             return [
                 'sent' => in_array(strtoupper((string) $message->status), ['SENT', 'DELIVERED'], true),
+                'queued' => in_array(strtoupper((string) $message->status), ['QUEUED', 'SCHEDULED'], true),
                 'duplicate' => false,
                 'dispatch' => $savedDispatch,
                 'message_id' => $message->id,
@@ -123,7 +125,7 @@ class SystemEmailOrchestrator
         if ($auditState['duplicate']) {
             return [
                 'sent' => strtolower((string) $dispatch->status) === 'sent',
-                'queued' => in_array(strtolower((string) $dispatch->status), ['pending', 'processing'], true),
+                'queued' => in_array(strtolower((string) $dispatch->status), ['pending', 'processing', 'scheduled'], true),
                 'duplicate' => true,
                 'dispatch' => $dispatch,
                 'message_id' => $dispatch->message_id,

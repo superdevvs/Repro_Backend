@@ -38,6 +38,13 @@ class DeliveryEmailPreservationTest extends TestCase
 {
     use RefreshDatabase;
 
+    protected function setUp(): void
+    {
+        parent::setUp();
+        // Transport and content checks run during client delivery hours.
+        $this->travelTo(now('America/New_York')->setTime(12, 0));
+    }
+
     private function createDefaultEmailChannel(): MessageChannel
     {
         \App\Services\Messaging\OutboundDeliveryGuard::allowFakeProviderPipelineForTesting();
