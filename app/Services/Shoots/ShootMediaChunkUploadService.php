@@ -197,6 +197,10 @@ class ShootMediaChunkUploadService
         $meta = $this->loadMeta($sessionId);
         $this->assertSessionOwner($meta, $shoot, $user);
         $this->assertNotExpired($meta);
+        $scope = ! empty($meta['fields']['shoot_service_id']) ? (int) $meta['fields']['shoot_service_id'] : null;
+        if (! $this->authorization->canUploadShootMedia($shoot, $user, (string) $meta['upload_type'], $scope)) {
+            throw new HttpException(403, 'Your upload assignment has changed. Ask an admin to review this shoot.');
+        }
 
         $totalChunks = (int) $meta['total_chunks'];
         $received = array_map('intval', $meta['received'] ?? []);

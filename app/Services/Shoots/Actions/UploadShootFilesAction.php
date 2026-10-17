@@ -60,6 +60,11 @@ class UploadShootFilesAction
 
     public function execute(Request $request, Shoot $shoot, ?User $user): array
     {
+        if ($request->input('upload_type') === 'additional') {
+            abort_unless(app(\App\Services\Shoots\ShootAuthorizationSupport::class)->canUploadShootMedia(
+                $shoot, $user, 'additional', $request->filled('shoot_service_id') ? (int) $request->input('shoot_service_id') : null
+            ), 403);
+        }
         $files = $request->file('files');
         $normalizedFiles = $files ? (is_array($files) ? $files : [$files]) : [];
 
@@ -251,6 +256,9 @@ class UploadShootFilesAction
 
         $request->files->set('files', $files);
         $uploadType = $request->input('upload_type', 'raw');
+        if ($uploadType === 'additional' && $user) {
+            return app(\App\Services\Shoots\AdditionalFileIntake::class)->upload($request, $shoot, $user);
+        }
         $shootServiceId = $request->input('shoot_service_id');
         $shootServiceId = $shootServiceId !== null && $shootServiceId !== '' ? (int) $shootServiceId : null;
         $replaceFileId = $request->input('replace_file_id');

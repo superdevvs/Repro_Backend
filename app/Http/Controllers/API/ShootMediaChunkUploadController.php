@@ -27,7 +27,7 @@ class ShootMediaChunkUploadController extends Controller
         $validated = $request->validate([
             'filename' => ['required', 'string', 'max:255'],
             'size_bytes' => ['required', 'integer', 'min:1'],
-            'upload_type' => ['nullable', 'string', 'in:raw,edited'],
+            'upload_type' => ['nullable', 'string', 'in:raw,edited,additional'],
             'fields' => ['nullable', 'array'],
             'fields.*' => ['nullable', 'string'],
         ]);

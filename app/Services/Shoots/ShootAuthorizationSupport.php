@@ -249,6 +249,10 @@ class ShootAuthorizationSupport
         string $uploadType = 'raw',
         ?int $shootServiceId = null
     ): bool {
+        if (strtolower(trim($uploadType)) === 'additional') {
+            $shoot = Shoot::find($shoot->id);
+            if (! $shoot) return false;
+        }
         if ($shoot->isImportDraft()) {
             return false;
         }
@@ -259,7 +263,7 @@ class ShootAuthorizationSupport
         }
 
         $normalizedUploadType = strtolower(trim($uploadType));
-        if (! in_array($normalizedUploadType, ['raw', 'edited'], true)) {
+        if (! in_array($normalizedUploadType, ['raw', 'edited', 'additional'], true)) {
             return false;
         }
 
@@ -268,7 +272,7 @@ class ShootAuthorizationSupport
         }
 
         if ($this->hasRole($user, ['photographer'])) {
-            if ($normalizedUploadType !== 'raw') {
+            if (! in_array($normalizedUploadType, ['raw', 'additional'], true)) {
                 return false;
             }
 

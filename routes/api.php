@@ -840,6 +840,8 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/shoots/{shoot}/files/download', [ShootMediaController::class, 'downloadSelectedFiles']);
     Route::get('/shoots/{shoot}/files/{file}/preview', [ShootMediaController::class, 'previewFile']);
     Route::get('/shoots/{shoot}/media', [ShootMediaController::class, 'listMedia']);
+    Route::get('/shoots/{shoot}/additional-files', [\App\Http\Controllers\API\ShootAdditionalFileController::class, 'index']);
+    Route::get('/shoots/{shoot}/additional-files/{additionalFile}/download', [\App\Http\Controllers\API\ShootAdditionalFileController::class, 'download']);
     Route::get('/shoots/{shoot}/media/download-zip', [ShootMediaController::class, 'downloadMediaZip']);
     Route::get('/shoots/{shoot}/editor-download-raw', [ShootMediaController::class, 'editorDownloadRaw'])->middleware('role:editor,admin,superadmin,editing_manager');
     Route::post('/shoots/{shoot}/generate-share-link', [ShootMediaController::class, 'generateShareLink'])->middleware('role:editor');

@@ -69,15 +69,27 @@ class ShootUploadIdempotencyService
             ];
         }
 
-        if ($attempt->status === ShootUploadAttempt::STATUS_FAILED
+        if ($request->input('upload_type') === 'additional') {
+            $scopes = \App\Models\ShootFile::where('shoot_id', $shoot->id)
+                ->whereIn('id', (array) $attempt->result_file_ids)->pluck('shoot_service_id')->filter()->unique();
+            foreach ($scopes as $scope) {
+                if (! app(ShootAuthorizationSupport::class)->canUploadShootMedia($shoot, $actor, 'additional', (int) $scope)) {
+                    return ['attempt' => null, 'replay' => ['status' => 403, 'payload' => $this->typedError('forbidden', 'Your upload assignment has changed. Ask an admin to review this shoot.')]];
+                }
+            }
+        }
+
+        $resumeAdditional = $request->input('upload_type') === 'additional'
+            && in_array($attempt->status, [ShootUploadAttempt::STATUS_COMPLETED, ShootUploadAttempt::STATUS_FAILED], true)
+            && collect((array) $attempt->result_errors)->contains(fn ($error) => is_array($error) && ($error['retryable'] ?? false) === true);
+        if ($resumeAdditional || ($attempt->status === ShootUploadAttempt::STATUS_FAILED
             && empty($attempt->result_file_ids)
             && (collect((array) $attempt->result_errors)->contains(fn ($error) => is_array($error) && ($error['retryable'] ?? false) === true)
-                || $this->permissionRejectionIsNowAuthorized($attempt, $request, $shoot, $actor))) {
-            // Reuse the identity only when the previous attempt explicitly failed
-            // without committed results. A pending worker might still be writing;
-            // it is never reclaimed based on elapsed time alone.
+                || $this->permissionRejectionIsNowAuthorized($attempt, $request, $shoot, $actor)))) {
+            // Additional-file retries replay successful child identities and resume
+            // only failed entries. Pending attempts are never reclaimed by age.
             $claimed = LockedWrite::run(fn () => ShootUploadAttempt::query()->whereKey($attempt->id)
-                ->where('status', ShootUploadAttempt::STATUS_FAILED)->update([
+                ->where('status', $attempt->status)->update([
                     'status' => ShootUploadAttempt::STATUS_PENDING, 'http_status' => null,
                     'result_payload' => null, 'result_errors' => null, 'failed_at' => null, 'updated_at' => now(),
                 ]), "shoot.{$shoot->id}.upload-attempt.retry", 6);
@@ -215,6 +227,7 @@ class ShootUploadIdempotencyService
             'service_category',
             'photographer_notes',
             'editor_notes',
+            'route_media',
         ]))->sortKeys()->all();
 
         return hash('sha256', json_encode([
