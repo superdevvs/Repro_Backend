@@ -4,7 +4,6 @@ namespace App\Events;
 
 use App\Http\Resources\Messaging\SmsThreadResource;
 use App\Models\MessageThread;
-use Illuminate\Broadcasting\PrivateChannel;
 use Illuminate\Broadcasting\InteractsWithSockets;
 use Illuminate\Contracts\Broadcasting\ShouldBroadcast;
 use Illuminate\Foundation\Events\Dispatchable;
@@ -18,12 +17,12 @@ class SmsThreadUpdated implements ShouldBroadcast
 
     public function __construct(public MessageThread $thread)
     {
-        $this->thread->loadMissing('contact', 'assignedTo');
+        $this->thread->loadMissing('contact', 'assignedTo', 'latestSmsMessage');
     }
 
     public function broadcastOn(): array
     {
-        return [new PrivateChannel('sms.thread-list')];
+        return app(\App\Services\Messaging\SmsInboxPolicy::class)->channels($this->thread);
     }
 
     public function broadcastAs(): string

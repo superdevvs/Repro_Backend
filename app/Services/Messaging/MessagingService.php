@@ -342,7 +342,7 @@ class MessagingService
                     'status' => 'FAILED',
                     'failed_at' => now(),
                     'error_message' => $staffError,
-                    'hidden_from_inbox' => false,
+                    'hidden_from_inbox' => $message->hidden_from_inbox,
                     'metadata' => $this->mergeDeliveryMetadata($message->metadata, [
                         'provider' => 'TELNYX',
                         'status' => 'FAILED',
@@ -476,12 +476,15 @@ class MessagingService
         string $status = 'QUEUED',
         ?string $providerOverride = null
     ): Message {
-        $contact = $this->resolveContact($payload);
-        $thread = $this->findOrCreateThread(
-            $contact,
-            $channelType,
-            $this->resolveThreadShootId($payload, $channelType, $providerOverride)
-        );
+        $thread = $channelType === 'SMS'
+            ? (! empty($payload['sms_thread_id'])
+                ? MessageThread::query()->where('channel', 'SMS')->find($payload['sms_thread_id'])
+                : app(SmsInboxPolicy::class)->threadForPair((string) $payload['to'], (string) ($payload['from'] ?? '')))
+            : null;
+        $contact = $thread?->contact ?? $this->resolveContact($payload);
+        $thread ??= $channelType === 'SMS' && ! str_starts_with((string) $payload['to'], 'group:')
+            ? MessageThread::create(['contact_id' => $contact->id, 'channel' => 'SMS', 'last_message_at' => now()])
+            : $this->findOrCreateThread($contact, $channelType, $this->resolveThreadShootId($payload, $channelType, $providerOverride));
 
         $message = Message::create([
             'channel' => $channelType,
@@ -518,7 +521,7 @@ class MessagingService
 
         $thread = $this->updateThreadForMessage($thread, $message);
 
-        if ($channelType === 'SMS') {
+        if ($channelType === 'SMS' && ! $message->hidden_from_inbox) {
             $message->loadMissing('thread.contact');
 
             if ($direction === 'OUTBOUND') {
@@ -563,6 +566,9 @@ class MessagingService
 
     protected function updateThreadForMessage(MessageThread $thread, Message $message): MessageThread
     {
+        if ($message->channel === 'SMS' && $message->hidden_from_inbox) {
+            return $thread->refresh()->load(['contact', 'assignedTo']);
+        }
         $snippet = $this->extractThreadSnippet($message);
 
         $thread->fill([
@@ -579,6 +585,7 @@ class MessagingService
     public function rebuildThreadState(MessageThread $thread): MessageThread
     {
         $messages = $thread->messages()
+            ->when($thread->channel === 'SMS', fn ($q) => app(SmsInboxPolicy::class)->visibleMessages($q))
             ->orderBy('created_at')
             ->orderBy('id')
             ->get();
@@ -699,6 +706,9 @@ class MessagingService
      */
     protected function resolveUnreadRecipientsFromState(array $currentUnread, Message $message): array
     {
+        if ($message->channel === 'SMS' && ! in_array(app(SmsInboxPolicy::class)->kind($message), ['incoming', 'manual'], true)) {
+            return $currentUnread;
+        }
         $current = collect($currentUnread)->map(fn ($id) => (int) $id);
 
         if ($message->direction === 'OUTBOUND') {
@@ -728,12 +738,17 @@ class MessagingService
             return $this->resolveLinkedInternalUnreadRecipients($message);
         }
 
-        $roles = ['admin', 'superadmin', 'salesRep'];
+        $roles = $message->channel === 'SMS'
+            ? ['admin', 'superadmin', 'editing_manager', 'salesRep', 'sales_rep', 'salesrep']
+            : ['admin', 'superadmin', 'salesRep'];
 
         $userIds = User::query()
             ->whereIn('role', $roles)
             ->pluck('id')
             ->all();
+        if ($message->channel === 'SMS' && $message->thread) {
+            $userIds = array_merge($userIds, app(SmsInboxPolicy::class)->photographerRecipients($message->thread));
+        }
 
         return array_values(array_unique($userIds));
     }

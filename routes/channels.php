@@ -13,11 +13,24 @@ $normalizeNotificationRole = static function ($role): string {
 };
 
 Broadcast::channel('sms.thread-list', function ($user) {
-    return ! is_null($user);
+    return app(\App\Services\Messaging\SmsInboxPolicy::class)->canSharedInbox($user);
+});
+
+Broadcast::channel('sms.user.{userId}', function ($user, $userId) {
+    return $user && $user->id === (int) $userId
+        && app(\App\Services\Messaging\SmsInboxPolicy::class)->canSms($user);
+});
+
+Broadcast::channel('sms.system-thread-list', function ($user) {
+    $policy = app(\App\Services\Messaging\SmsInboxPolicy::class);
+
+    return $policy->canSms($user) && $policy->isAdmin($user);
 });
 
 Broadcast::channel('sms.thread.{threadId}', function ($user, $threadId) {
-    return ! is_null($user);
+    $thread = \App\Models\MessageThread::find($threadId);
+
+    return $thread && app(\App\Services\Messaging\SmsInboxPolicy::class)->canView($user, $thread);
 });
 
 // Admin notifications channel - admins, superadmins, editing managers, and sales reps can subscribe

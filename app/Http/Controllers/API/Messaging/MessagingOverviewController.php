@@ -39,6 +39,16 @@ class MessagingOverviewController extends Controller
         $activeAutomations = AutomationRule::where('is_active', true)->count();
 
         $recentActivity = Message::with(['thread.contact', 'template', 'channelConfig'])
+            ->where(function ($query) use ($request) {
+                $query->where('channel', '!=', 'SMS')->orWhere(function ($sms) use ($request) {
+                    $sms->where('channel', 'SMS')->where(fn ($visible) => $visible->where('hidden_from_inbox', false)->orWhereNull('hidden_from_inbox'));
+                    if (! app(\App\Services\Messaging\SmsInboxPolicy::class)->isAdmin($request->user())) {
+                        $sms->whereHas('thread', fn ($thread) => app(\App\Services\Messaging\SmsInboxPolicy::class)->forUser(
+                            app(\App\Services\Messaging\SmsInboxPolicy::class)->scope($thread), $request->user()
+                        ));
+                    }
+                });
+            })
             ->whereNotIn('messages.id', \App\Models\SupportTicketMessage::whereNotNull('source_message_id')->select('source_message_id'))
             ->orderByDesc('created_at')
             ->limit(10)

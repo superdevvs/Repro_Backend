@@ -10,6 +10,7 @@ use App\Models\Contact;
 use App\Models\Message;
 use App\Models\MessageThread;
 use App\Models\SmsNumber;
+use App\Support\LockedWrite;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -80,9 +81,12 @@ class TelnyxWebhookController extends Controller
 
         $createdMessageId = null;
 
-        DB::transaction(function () use ($payload, $messageId, $from, $to, $text, &$createdMessageId): void {
+        $knownThread = app(\App\Services\Messaging\SmsInboxPolicy::class)->threadForPair($from, $to);
+        $knownContact = $knownThread?->contact ?? $this->findContactByPhone($this->normalizePhoneNumber($from));
+        LockedWrite::run(fn () => DB::transaction(function () use ($payload, $messageId, $from, $to, $text, $knownThread, $knownContact, &$createdMessageId): void {
             $contactPhone = $this->normalizePhoneNumber($from);
-            $contact = $this->findContactByPhone($contactPhone)
+            $thread = $knownThread?->fresh();
+            $contact = $knownContact?->fresh() ?? $this->findContactByPhone($contactPhone)
                 ?? Contact::create([
                     'name' => $this->formatPhoneForDisplay($contactPhone),
                     'phone' => $contactPhone,
@@ -93,10 +97,7 @@ class TelnyxWebhookController extends Controller
                 $contact->update(['phone' => $contactPhone]);
             }
 
-            $thread = MessageThread::firstOrCreate(
-                ['contact_id' => $contact->id, 'channel' => 'SMS'],
-                ['last_message_at' => now()]
-            );
+            $thread ??= MessageThread::create(['contact_id' => $contact->id, 'channel' => 'SMS', 'last_message_at' => now()]);
 
             $message = Message::create([
                 'channel' => 'SMS',
@@ -124,12 +125,16 @@ class TelnyxWebhookController extends Controller
                 'last_snippet' => Str::limit($text, 200),
             ]);
 
-            $thread->markUnreadForStaff();
-            $message->loadMissing('thread.contact');
+            if (app(\App\Services\Messaging\SmsInboxPolicy::class)->kind($message) === 'incoming') {
+                $thread->markUnreadForStaff();
+            }
+        }), 'sms.inbound.persist');
 
+        if ($createdMessageId !== null) {
+            $message = Message::with('thread.contact', 'thread.assignedTo')->findOrFail($createdMessageId);
             SmsMessageReceived::dispatch($message);
-            SmsThreadUpdated::dispatch($thread->fresh()->load(['contact', 'assignedTo']));
-        });
+            SmsThreadUpdated::dispatch($message->thread);
+        }
 
         if ($createdMessageId !== null) {
             app(\App\Services\Messaging\GroundwireSmsPushService::class)->queueIncoming($createdMessageId);
@@ -141,7 +146,8 @@ class TelnyxWebhookController extends Controller
         ]);
 
         $isComplianceKeyword = app(\App\Services\Messaging\AiSms\SmsComplianceService::class)->detectKeyword($text) !== null;
-        if ($createdMessageId !== null && (config('services.telnyx.ai_sms_enabled', false) || $isComplianceKeyword)) {
+        $isReaction = app(\App\Services\Messaging\SmsReactionParser::class)->parse($text) !== null;
+        if ($createdMessageId !== null && ! $isReaction && (config('services.telnyx.ai_sms_enabled', false) || $isComplianceKeyword)) {
             ProcessInboundSmsAiJob::dispatch($createdMessageId);
         }
 

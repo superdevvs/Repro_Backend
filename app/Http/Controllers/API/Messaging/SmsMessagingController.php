@@ -15,6 +15,7 @@ use App\Models\SmsGroup;
 use App\Models\SmsGroupMember;
 use App\Models\User;
 use App\Services\Messaging\MessagingService;
+use App\Services\Messaging\SmsInboxPolicy;
 use App\Services\Messaging\SmsReactionPresenter;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -35,33 +36,20 @@ class SmsMessagingController extends Controller
     {
         $user = $request->user();
         $filter = Str::of($request->string('filter')->toString())->lower()->value();
-        $search = $request->string('search')->toString();
-        $perPage = (int) $request->integer('per_page', 25);
+        $search = trim($request->string('search')->toString());
+        $perPage = max(1, min(100, (int) $request->integer('per_page', 25)));
+        $scope = $request->query('scope', 'inbox');
+        abort_unless(in_array($scope, ['inbox', 'system'], true), 422, 'Choose an inbox or system SMS view.');
+        $inbox = app(SmsInboxPolicy::class);
+        abort_unless($inbox->canSms($user) && ($scope !== 'system' || $inbox->isAdmin($user)), 403);
 
         $threads = $this->messaging
             ->listThreads(['channel' => 'SMS'])
             ->with(['contact', 'assignedTo', 'latestSmsMessage', 'smsGroup' => fn ($query) => $query->withCount('members')])
-            ->where(function ($query) {
-                $query->whereNotNull('sms_group_id')
-                    ->orWhereHas('messages', function ($messages) {
-                        $messages->where(function ($inner) {
-                            $inner->where('direction', 'INBOUND')
-                                ->orWhere('hidden_from_inbox', false)
-                                ->orWhereNull('hidden_from_inbox');
-                        });
-                    });
-            })
-            ->when($search, function ($query) use ($search) {
-                $query->where(function ($inner) use ($search) {
-                    $inner->whereHas('contact', function ($sub) use ($search) {
-                        $sub->where('name', 'like', "%{$search}%")
-                            ->orWhere('phone', 'like', "%{$search}%");
-                    })->orWhereHas('smsGroup', function ($sub) use ($search) {
-                        $sub->where('name', 'like', "%{$search}%");
-                    });
-                });
-            })
-            ->when($filter === 'unanswered', fn ($query) => $query->where('last_direction', 'INBOUND'))
+            ->where(fn ($query) => $inbox->scope($query, $scope))
+            ->where(fn ($query) => $inbox->forUser($query, $user))
+            ->when($search !== '', fn ($query) => $this->searchThreads($query, $search))
+            ->when($filter === 'unanswered', fn ($query) => $query->where('sms_needs_reply', true))
             ->when($filter === 'my_recents', function ($query) use ($user) {
                 if ($user) {
                     $query->where('assigned_to_user_id', $user->id);
@@ -78,10 +66,10 @@ class SmsMessagingController extends Controller
     public function showThread(MessageThread $thread, Request $request, SmsReactionPresenter $reactions): JsonResponse
     {
         $this->ensureSmsThread($thread);
-        $this->authorizeThread($thread, $request->user()?->id);
+        $this->authorizeThread($thread, $request->user());
 
-        $thread->load(['contact', 'assignedTo', 'smsGroup.members']);
-        $messages = $thread->messages()->orderBy('created_at')->get();
+        $thread->load(['contact', 'assignedTo', 'latestSmsMessage', 'smsGroup.members']);
+        $messages = app(SmsInboxPolicy::class)->history($thread);
         $messages = $reactions->present($thread, $messages);
         $this->markThreadAsRead($thread, $request->user()?->id);
 
@@ -99,6 +87,7 @@ class SmsMessagingController extends Controller
         $roleLimit = $role !== '' ? 100 : 50;
         $limit = max(5, min((int) $request->query('limit', $role !== '' ? 100 : 20), $roleLimit));
         $actor = $request->user();
+        $ownOnly = ! app(SmsInboxPolicy::class)->canSharedInbox($actor);
         $isSalesRep = $this->normalizedRole($actor?->role) === 'salesrep';
         $allowedClientIds = $isSalesRep && $actor ? $this->allowedClientIds($actor) : [];
         if ($role !== '' && !in_array($role, ['photographer', 'client', 'editor', 'salesrep', 'admin', 'editingmanager'], true)) {
@@ -140,6 +129,9 @@ class SmsMessagingController extends Controller
             } else {
                 $userQuery->where('role', 'client')->whereIn('id', $allowedClientIds);
             }
+        }
+        if ($ownOnly) {
+            $userQuery->whereKey($actor->id);
         }
 
         foreach ($userQuery->orderBy('name')->limit($limit)->get() as $recipient) {
@@ -192,6 +184,9 @@ class SmsMessagingController extends Controller
                 }
             });
         }
+        if ($ownOnly) {
+            $contactQuery->where('user_id', $actor->id);
+        }
 
         foreach ($contactQuery->orderBy('name')->limit($limit)->get() as $contact) {
             $phone = $this->normalizePhone((string) ($contact->phone ?: Arr::get($contact->phones_json, '0.number')));
@@ -219,8 +214,11 @@ class SmsMessagingController extends Controller
         return response()->json($payload);
     }
 
-    public function groups(): JsonResponse
+    public function groups(Request $request): JsonResponse
     {
+        if (! app(SmsInboxPolicy::class)->canSharedInbox($request->user())) {
+            return response()->json([]);
+        }
         $groups = SmsGroup::query()
             ->with('members')
             ->orderBy('name')
@@ -233,6 +231,7 @@ class SmsMessagingController extends Controller
 
     public function storeGroup(Request $request): JsonResponse
     {
+        abort_unless(app(SmsInboxPolicy::class)->canSharedInbox($request->user()), 403);
         $group = new SmsGroup(['created_by' => $request->user()?->id]);
         $group = $this->persistGroup($group, $request);
 
@@ -241,13 +240,15 @@ class SmsMessagingController extends Controller
 
     public function updateGroup(SmsGroup $smsGroup, Request $request): JsonResponse
     {
+        abort_unless(app(SmsInboxPolicy::class)->canSharedInbox($request->user()), 403);
         $group = $this->persistGroup($smsGroup, $request);
 
         return response()->json($this->presentGroup($group));
     }
 
-    public function destroyGroup(SmsGroup $smsGroup): JsonResponse
+    public function destroyGroup(SmsGroup $smsGroup, Request $request): JsonResponse
     {
+        abort_unless(app(SmsInboxPolicy::class)->canSharedInbox($request->user()), 403);
         $smsGroup->delete();
 
         return response()->json(['status' => 'ok']);
@@ -295,12 +296,19 @@ class SmsMessagingController extends Controller
 
         $groupIds = array_values(array_unique(array_map('intval', $data['group_ids'] ?? [])));
         if ($groupIds !== []) {
+            abort_unless(app(SmsInboxPolicy::class)->canSharedInbox($request->user()), 403);
             $direct = $this->collectDestinations(array_merge($data, ['group_ids' => []]));
 
             return $this->sendGroups($request, $groupIds, $direct, $data);
         }
 
         $destinations = $this->collectDestinations($data);
+        if (! app(SmsInboxPolicy::class)->canSharedInbox($request->user())) {
+            $ownPhones = array_filter([$this->normalizePhone((string) $request->user()->phone), $this->normalizePhone((string) $request->user()->phonenumber)]);
+            foreach ($destinations as $destination) {
+                abort_unless(in_array($destination['phone'], $ownPhones, true), 403);
+            }
+        }
         if (count($destinations) > self::MAX_RECIPIENTS) {
             throw ValidationException::withMessages([
                 'to' => 'You can send to at most '.self::MAX_RECIPIENTS.' people at once.',
@@ -322,7 +330,7 @@ class SmsMessagingController extends Controller
     public function sendToThread(MessageThread $thread, Request $request): JsonResponse
     {
         $this->ensureSmsThread($thread);
-        $this->authorizeThread($thread, $request->user()?->id);
+        $this->authorizeThread($thread, $request->user());
 
         $data = $request->validate([
             'body' => ['required', 'string', 'max:1200'],
@@ -354,6 +362,8 @@ class SmsMessagingController extends Controller
                 'contact_name' => $contact->name,
                 'contact_type' => $contact->type,
                 'contact_user_id' => $contact->user_id,
+                'sms_thread_id' => $thread->id,
+                'metadata' => ['sms_inbox' => ['kind' => 'manual']],
             ]);
         } catch (SmsSendException $e) {
             return response()->json([
@@ -381,7 +391,7 @@ class SmsMessagingController extends Controller
             'ai_paused_until' => now()->addMinutes(max(1, $pauseMinutes)),
         ])->save();
 
-        $thread->refresh()->load(['contact', 'assignedTo']);
+        $thread->refresh()->load(['contact', 'assignedTo', 'latestSmsMessage']);
 
         return response()->json([
             'message' => SmsMessageResource::make($message),
@@ -392,10 +402,10 @@ class SmsMessagingController extends Controller
     public function resumeAi(MessageThread $thread, Request $request): JsonResponse
     {
         $this->ensureSmsThread($thread);
-        $this->authorizeThread($thread, $request->user()?->id);
+        $this->authorizeThread($thread, $request->user());
 
         $thread->forceFill(['ai_paused_until' => null])->save();
-        $thread->refresh()->load(['contact', 'assignedTo']);
+        $thread->refresh()->load(['contact', 'assignedTo', 'latestSmsMessage']);
 
         return response()->json([
             'thread' => SmsThreadResource::make($thread),
@@ -405,7 +415,7 @@ class SmsMessagingController extends Controller
     public function markRead(MessageThread $thread, Request $request): JsonResponse
     {
         $this->ensureSmsThread($thread);
-        $this->authorizeThread($thread, $request->user()?->id);
+        $this->authorizeThread($thread, $request->user());
 
         $this->markThreadAsRead($thread, $request->user()?->id);
 
@@ -568,6 +578,7 @@ class SmsMessagingController extends Controller
                 'contact_name' => $group->name,
                 'contact_type' => 'group',
                 'hidden_from_inbox' => false,
+                'metadata' => ['sms_inbox' => ['kind' => 'manual']],
             ]);
             $thread = $message->thread;
             $thread->forceFill(['sms_group_id' => $group->id])->save();
@@ -600,6 +611,7 @@ class SmsMessagingController extends Controller
             'contact_type' => $destination['type'] ?? null,
             'contact_user_id' => $destination['user_id'] ?? null,
             'hidden_from_inbox' => $hidden,
+            'metadata' => ['sms_inbox' => ['kind' => 'manual']],
         ];
     }
 
@@ -619,6 +631,7 @@ class SmsMessagingController extends Controller
                 'contact_name' => $destination['name'] ?? ($data['contact_name'] ?? null),
                 'contact_type' => $destination['type'] ?? ($data['contact_type'] ?? null),
                 'contact_user_id' => $destination['user_id'] ?? null,
+                'metadata' => ['sms_inbox' => ['kind' => 'manual']],
             ]);
         } catch (SmsSendException $e) {
             return response()->json([
@@ -697,6 +710,7 @@ class SmsMessagingController extends Controller
                     'contact_name' => $destination['name'] ?? null,
                     'contact_type' => $destination['type'] ?? null,
                     'contact_user_id' => $destination['user_id'] ?? null,
+                    'metadata' => ['sms_inbox' => ['kind' => 'manual']],
                 ]);
                 if ($message->status === 'BLOCKED') {
                     $results[] = ['to' => $destination['phone'], 'status' => 'failed', 'error' => $this->blockedSmsError($message)];
@@ -999,11 +1013,32 @@ class SmsMessagingController extends Controller
         abort_if($thread->channel !== 'SMS', 404);
     }
 
-    protected function authorizeThread(MessageThread $thread, ?int $userId): void
+    protected function authorizeThread(MessageThread $thread, ?User $user): void
     {
-        if (!$userId) {
-            abort(403);
-        }
+        abort_unless(app(SmsInboxPolicy::class)->canView($user, $thread), 403);
+    }
+
+    protected function searchThreads(\Illuminate\Database\Eloquent\Builder $query, string $search): void
+    {
+        // User input is literal: percent and underscore must not match every thread.
+        $pattern = '%'.str_replace(['\\', '%', '_'], ['\\\\', '\\%', '\\_'], $search).'%';
+        $digits = preg_match('/^[+0-9 ().\/-]+$/', $search) ? (preg_replace('/\D/', '', $search) ?? '') : '';
+        $query->where(function ($inner) use ($pattern, $digits) {
+            $inner->whereHas('contact', function ($contact) use ($pattern, $digits) {
+                $contact->whereRaw("LOWER(COALESCE(name, '')) LIKE LOWER(?) ESCAPE '\\'", [$pattern])
+                    ->orWhereRaw("LOWER(COALESCE(phone, '')) LIKE LOWER(?) ESCAPE '\\'", [$pattern]);
+                if (strlen($digits) >= 3) {
+                    $phone = "COALESCE(phone, '')";
+                    foreach ([' ', '+', '-', '(', ')', '.', '/'] as $separator) {
+                        $phone = "REPLACE({$phone}, '{$separator}', '')";
+                    }
+                    $contact->orWhereRaw("{$phone} LIKE ?", ['%'.$digits.'%']);
+                }
+            })->orWhereHas('smsGroup', fn ($group) => $group->whereRaw("LOWER(COALESCE(name, '')) LIKE LOWER(?) ESCAPE '\\'", [$pattern]))
+                ->orWhereHas('messages', fn ($messages) => app(SmsInboxPolicy::class)->visibleMessages($messages)
+                    ->whereRaw("LOWER(COALESCE(body_text, '')) LIKE LOWER(?) ESCAPE '\\'", [$pattern]))
+                ->orWhere(fn ($context) => app(SmsInboxPolicy::class)->searchContext($context, $pattern));
+        });
     }
 
     protected function markThreadAsRead(MessageThread $thread, ?int $userId): void

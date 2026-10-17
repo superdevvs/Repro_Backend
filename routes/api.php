@@ -1369,7 +1369,7 @@ Route::middleware(['auth:sanctum'])->prefix('messaging')->group(function () {
         Route::get('/notifications/catalogue', [MessageTemplateController::class, 'notificationCatalogue']);
     });
 
-    Route::middleware('role:superadmin,admin,editing_manager,sales_rep,photographer')->group(function () {
+    Route::middleware(['role:superadmin,admin,editing_manager,sales_rep,photographer', 'permission:messaging-sms,view'])->group(function () {
         Route::get('/sms/recipients', [SmsMessagingController::class, 'recipients']);
         Route::get('/sms/groups', [SmsMessagingController::class, 'groups']);
         Route::post('/sms/groups', [SmsMessagingController::class, 'storeGroup']);

@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\Contact;
+use App\Models\Message;
 use App\Models\MessageThread;
 use App\Models\Shoot;
 use App\Models\ShootActivityLog;
@@ -29,13 +30,20 @@ class MessagingUnreadCountsTest extends TestCase
 
     private function makeUnreadThread(string $channel, array $userIds, ?Contact $contact = null): MessageThread
     {
-        return MessageThread::query()->create([
+        $thread = MessageThread::query()->create([
             'channel' => $channel,
             'contact_id' => ($contact ?? $this->makeContact($channel.uniqid()))->id,
             'last_direction' => 'INBOUND',
             'last_message_at' => now(),
             'unread_for_user_ids_json' => $userIds,
         ]);
+        if ($channel === 'SMS') {
+            Message::create(['thread_id' => $thread->id, 'channel' => 'SMS', 'direction' => 'INBOUND',
+                'provider' => 'TEST', 'from_address' => '+12025550112', 'to_address' => '+12025550100',
+                'body_text' => 'Unread customer reply', 'status' => 'DELIVERED']);
+        }
+
+        return $thread;
     }
 
     public function test_unread_count_service_scopes_email_and_sms_to_the_viewer(): void

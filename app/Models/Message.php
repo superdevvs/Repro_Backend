@@ -11,6 +11,11 @@ class Message extends Model
 {
     use HasFactory;
 
+    protected static function booted(): void
+    {
+        static::created(fn (Message $message) => app(\App\Services\Messaging\SmsInboxPolicy::class)->record($message));
+    }
+
     protected $fillable = [
         'channel',
         'direction',

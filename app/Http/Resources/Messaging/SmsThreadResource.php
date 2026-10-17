@@ -19,8 +19,14 @@ class SmsThreadResource extends JsonResource
         $unreadFor = $this->unread_for_user_ids_json ?? [];
         $isUnread = $userId ? in_array($userId, $unreadFor) : false;
         $lastReaction = null;
+        $snippet = $this->last_snippet;
+        $direction = $this->last_direction;
+        $messageAt = $this->last_message_at;
         if ($this->resource->relationLoaded('latestSmsMessage')) {
             $latest = $this->resource->getRelation('latestSmsMessage');
+            $snippet = $latest ? mb_substr(trim((string) $latest->body_text), 0, 200) : null;
+            $direction = $latest?->direction;
+            $messageAt = $latest?->created_at;
             if ($latest?->direction === 'INBOUND') {
                 $lastReaction = app(SmsReactionParser::class)->parse((string) $latest->body_text);
             }
@@ -30,11 +36,13 @@ class SmsThreadResource extends JsonResource
 
         return [
             'id' => (string) $this->id,
+            'inboxScope' => $this->sms_inbox_active ? 'inbox' : 'system',
+            'needsReply' => (bool) $this->sms_needs_reply,
             'contact' => SmsContactResource::make($this->whenLoaded('contact')),
-            'lastMessageSnippet' => $this->last_snippet,
+            'lastMessageSnippet' => $snippet,
             'lastReaction' => $lastReaction,
-            'lastMessageAt' => optional($this->last_message_at)->toIso8601String(),
-            'lastDirection' => $this->last_direction,
+            'lastMessageAt' => optional($messageAt)->toIso8601String(),
+            'lastDirection' => $direction,
             'unread' => $isUnread,
             'status' => $this->status,
             'tags' => $this->tags_json ?? [],

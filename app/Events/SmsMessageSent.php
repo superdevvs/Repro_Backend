@@ -4,7 +4,6 @@ namespace App\Events;
 
 use App\Http\Resources\Messaging\SmsMessageResource;
 use App\Models\Message;
-use Illuminate\Broadcasting\PrivateChannel;
 use Illuminate\Broadcasting\InteractsWithSockets;
 use Illuminate\Contracts\Broadcasting\ShouldBroadcast;
 use Illuminate\Foundation\Events\Dispatchable;
@@ -23,10 +22,9 @@ class SmsMessageSent implements ShouldBroadcast
 
     public function broadcastOn(): array
     {
-        return [
-            new PrivateChannel('sms.thread.'.$this->message->thread_id),
-            new PrivateChannel('sms.thread-list'),
-        ];
+        return $this->message->thread
+            ? app(\App\Services\Messaging\SmsInboxPolicy::class)->channels($this->message->thread, $this->message)
+            : [];
     }
 
     public function broadcastAs(): string

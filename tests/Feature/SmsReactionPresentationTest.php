@@ -202,13 +202,14 @@ class SmsReactionPresentationTest extends TestCase
             'last_message_at' => '2026-10-15 12:01:00',
         ]);
 
-        $response = $this->getJson('/api/messaging/sms/threads')->assertOk();
+        $response = $this->getJson('/api/messaging/sms/threads?scope=system')->assertOk();
         $threads = collect($response->json('data'))->keyBy('id');
 
         $this->assertSame('👍', $threads[(string) $reactionThread->id]['lastReaction']['emoji']);
         $this->assertSame($quoted, $threads[(string) $reactionThread->id]['lastReaction']['quotedMessage']);
         $this->assertSame(200, mb_strlen($threads[(string) $reactionThread->id]['lastMessageSnippet']));
-        $this->assertNull($threads[(string) $normalThread->id]['lastReaction']);
+        $this->getJson('/api/messaging/sms/threads')->assertOk()->assertJsonCount(1, 'data')
+            ->assertJsonPath('data.0.id', (string) $normalThread->id)->assertJsonPath('data.0.lastReaction', null);
     }
 
     public function test_thread_preview_uses_latest_sms_and_resource_does_not_lazy_load_it(): void

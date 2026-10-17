@@ -17,7 +17,7 @@ class UnreadCountService
     {
         $user = \App\Models\User::find($userId);
         $email = $user && app(DashboardMessagingPolicy::class)->canEmail($user) ? $this->countUnreadThreads('EMAIL', $userId) : 0;
-        $sms = $this->countUnreadThreads('SMS', $userId);
+        $sms = app(SmsInboxPolicy::class)->canSms($user) ? $this->countUnreadThreads('SMS', $userId) : 0;
         $call = $includeCalls ? $this->countAttentionCalls() : 0;
 
         return [
@@ -30,8 +30,15 @@ class UnreadCountService
 
     public function countUnreadThreads(string $channel, int $userId): int
     {
+        $smsUser = strtoupper($channel) === 'SMS' ? \App\Models\User::find($userId) : null;
+        if (strtoupper($channel) === 'SMS' && ! app(SmsInboxPolicy::class)->canSms($smsUser)) {
+            return 0;
+        }
+
         return MessageThread::query()
             ->where('channel', strtoupper($channel))
+            ->when(strtoupper($channel) === 'SMS', fn ($q) => app(SmsInboxPolicy::class)->scope($q))
+            ->when($smsUser, fn ($q) => app(SmsInboxPolicy::class)->forUser($q, $smsUser))
             ->when(strtoupper($channel) === 'EMAIL', fn ($q) => $q->whereDoesntHave('messages', fn ($messages) => $messages->whereIn('id', \App\Models\SupportTicketMessage::whereNotNull('source_message_id')->select('source_message_id'))))
             ->where(function ($query) use ($userId) {
                 // IDs may be stored as int or string depending on encoder / DB.

@@ -62,6 +62,7 @@ class SmsReactionPresenter
             $external = Message::query()
                 ->where('channel', 'SMS')
                 ->where('direction', 'OUTBOUND')
+                ->where(fn ($query) => $query->where('hidden_from_inbox', false)->orWhereNull('hidden_from_inbox'))
                 ->where('thread_id', '!=', $thread->id)
                 ->whereHas('thread', fn ($query) => $query->where('channel', 'SMS')->whereNull('sms_group_id'))
                 ->where('created_at', '<=', $messages->max('created_at'))
@@ -113,6 +114,7 @@ class SmsReactionPresenter
         return $candidates->filter(function (Message $candidate) use ($event, $quoted, $from, $to) {
             return $candidate->channel === 'SMS'
                 && $candidate->direction === 'OUTBOUND'
+                && ! $candidate->hidden_from_inbox
                 && $candidate->body_text === $quoted
                 && $this->phone((string) $candidate->from_address) === $to
                 && $this->phone((string) $candidate->to_address) === $from

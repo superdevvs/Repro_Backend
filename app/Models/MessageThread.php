@@ -27,6 +27,8 @@ class MessageThread extends Model
         'ai_session_id',
         'metadata',
         'sms_group_id',
+        'sms_inbox_active',
+        'sms_needs_reply',
     ];
 
     protected $casts = [
@@ -35,6 +37,8 @@ class MessageThread extends Model
         'unread_for_user_ids_json' => 'array',
         'ai_paused_until' => 'datetime',
         'metadata' => 'array',
+        'sms_inbox_active' => 'boolean',
+        'sms_needs_reply' => 'boolean',
     ];
 
     public function contact(): BelongsTo
@@ -66,7 +70,7 @@ class MessageThread extends Model
     {
         return $this->hasOne(Message::class, 'thread_id')->ofMany(
             ['created_at' => 'max', 'id' => 'max'],
-            fn ($query) => $query->where('channel', 'SMS'),
+            fn ($query) => $query->where('channel', 'SMS')->where(fn ($visible) => $visible->where('hidden_from_inbox', false)->orWhereNull('hidden_from_inbox')),
         );
     }
 
@@ -75,12 +79,15 @@ class MessageThread extends Model
      */
     public function markUnreadForStaff(): void
     {
-        $staffRoles = ['admin', 'superadmin', 'editing_manager', 'salesRep'];
+        $staffRoles = ['admin', 'superadmin', 'editing_manager', 'salesRep', 'sales_rep', 'salesrep'];
         
         $userIds = User::query()
             ->whereIn('role', $staffRoles)
             ->pluck('id')
             ->all();
+        if ($this->channel === 'SMS') {
+            $userIds = array_merge($userIds, app(\App\Services\Messaging\SmsInboxPolicy::class)->photographerRecipients($this->fresh()));
+        }
 
         $this->update([
             'unread_for_user_ids_json' => array_values(array_unique($userIds)),
