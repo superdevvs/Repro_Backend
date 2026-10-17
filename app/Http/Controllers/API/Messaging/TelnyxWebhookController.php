@@ -79,11 +79,9 @@ class TelnyxWebhookController extends Controller
             return response()->json(['status' => 'duplicate']);
         }
 
-        $createdMessageId = null;
-
         $knownThread = app(\App\Services\Messaging\SmsInboxPolicy::class)->threadForPair($from, $to);
         $knownContact = $knownThread?->contact ?? $this->findContactByPhone($this->normalizePhoneNumber($from));
-        LockedWrite::run(fn () => DB::transaction(function () use ($payload, $messageId, $from, $to, $text, $knownThread, $knownContact, &$createdMessageId): void {
+        $createdMessageId = LockedWrite::run(fn () => DB::transaction(function () use ($payload, $messageId, $from, $to, $text, $knownThread, $knownContact): int {
             $contactPhone = $this->normalizePhoneNumber($from);
             $thread = $knownThread?->fresh();
             $contact = $knownContact?->fresh() ?? $this->findContactByPhone($contactPhone)
@@ -117,8 +115,6 @@ class TelnyxWebhookController extends Controller
                 ],
             ]);
 
-            $createdMessageId = $message->id;
-
             $thread->update([
                 'last_message_at' => now(),
                 'last_direction' => 'INBOUND',
@@ -128,6 +124,7 @@ class TelnyxWebhookController extends Controller
             if (app(\App\Services\Messaging\SmsInboxPolicy::class)->kind($message) === 'incoming') {
                 $thread->markUnreadForStaff();
             }
+            return $message->id;
         }), 'sms.inbound.persist');
 
         if ($createdMessageId !== null) {
