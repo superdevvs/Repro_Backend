@@ -474,17 +474,21 @@ class MessagingService
         string $channelType,
         string $direction = 'OUTBOUND',
         string $status = 'QUEUED',
-        ?string $providerOverride = null
+        ?string $providerOverride = null,
+        bool $deferSmsBroadcast = false
     ): Message {
+        if ($channelType === 'SMS' && ! empty($payload['sms_group_id']) && ! $deferSmsBroadcast) {
+            $message = \App\Support\LockedWrite::run(fn () => DB::transaction(fn () => $this->storeMessageRecord(
+                $payload, $channel, $channelType, $direction, $status, $providerOverride, deferSmsBroadcast: true
+            )), 'sms.group-message');
+            $this->broadcastSmsMessage($message);
+
+            return $message;
+        }
         $thread = null;
         if ($channelType === 'SMS') {
             if (! empty($payload['sms_group_id'])) {
-                $groupContact = $this->resolveContact($payload);
-                $thread = \App\Support\LockedWrite::run(fn () => DB::transaction(fn () =>
-                    app(SmsInboxPolicy::class)->threadForGroup((int) $payload['sms_group_id'], (string) ($payload['from'] ?? ''))
-                    ?? MessageThread::create(['contact_id' => $groupContact->id, 'channel' => 'SMS',
-                        'sms_group_id' => (int) $payload['sms_group_id'], 'last_message_at' => now()])
-                ), 'sms.group-thread');
+                $thread = app(SmsInboxPolicy::class)->threadForGroup((int) $payload['sms_group_id'], (string) ($payload['from'] ?? ''));
             } elseif (! empty($payload['sms_thread_id'])) {
                 $thread = MessageThread::query()->where('channel', 'SMS')->find($payload['sms_thread_id']);
             } else {
@@ -531,16 +535,9 @@ class MessagingService
 
         $thread = $this->updateThreadForMessage($thread, $message);
 
-        if ($channelType === 'SMS' && ! $message->hidden_from_inbox) {
-            $message->loadMissing('thread.contact');
-
-            if ($direction === 'OUTBOUND') {
-                SmsMessageSent::dispatch($message);
-            } else {
-                SmsMessageReceived::dispatch($message);
-            }
-
-            SmsThreadUpdated::dispatch($thread);
+        if ($channelType === 'SMS' && ! $deferSmsBroadcast) {
+            $message->setRelation('thread', $thread);
+            $this->broadcastSmsMessage($message);
         }
 
         // Dispatch email events for real-time notifications
@@ -555,6 +552,20 @@ class MessagingService
         }
 
         return $message;
+    }
+
+    private function broadcastSmsMessage(Message $message): void
+    {
+        if ($message->hidden_from_inbox) {
+            return;
+        }
+        $message->loadMissing('thread.contact');
+        if ($message->direction === 'OUTBOUND') {
+            SmsMessageSent::dispatch($message);
+        } else {
+            SmsMessageReceived::dispatch($message);
+        }
+        SmsThreadUpdated::dispatch($message->thread);
     }
 
     protected function findOrCreateThread(Contact $contact, string $channel, ?int $relatedShootId = null): MessageThread
