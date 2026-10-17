@@ -157,10 +157,10 @@ PROMPT],
         $section = array_fill_keys(['id', 'heading', 'body', 'image_url', 'alt', 'url', 'eyebrow', 'image_prompt'], $text);
         $section['type'] = ['type' => 'string', 'enum' => ['text', 'tips', 'notice', 'image', 'button', 'divider', 'hero', 'feature', 'steps', 'details']];
         $section['alignment'] = ['type' => 'string', 'enum' => ['left', 'center', 'right']];
-        $section['spacing'] = ['type' => 'integer', 'minimum' => 8, 'maximum' => 48];
+        $section['spacing'] = ['type' => 'integer', 'enum' => [8, 16, 24, 32, 40, 48]];
         $section['layout'] = ['type' => 'string', 'enum' => ['stacked', 'image-left', 'image-right']];
         $section['tone'] = ['type' => 'string', 'enum' => ['plain', 'soft', 'accent']];
-        $section['image_width'] = ['type' => 'integer', 'minimum' => 80, 'maximum' => 280];
+        $section['image_width'] = ['type' => 'integer', 'enum' => [80, 120, 160, 200, 240, 280]];
         $section['artwork_key'] = ['type' => 'string', 'enum' => EmailTemplateSectionRenderer::ARTWORK];
         $object = fn (array $properties) => ['type' => 'object', 'properties' => $properties, 'required' => array_keys($properties), 'additionalProperties' => false];
 

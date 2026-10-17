@@ -85,6 +85,11 @@ class EmailTemplateSectionRenderer
 
     private function inline(string $text): string
     {
-        return preg_replace('/<img\b[^>]*>/i', '', nl2br((string) Str::inlineMarkdown($text, ['html_input' => 'escape', 'allow_unsafe_links' => false]), false)) ?? '';
+        $html = preg_replace('/<img\b[^>]*>/i', '', nl2br((string) Str::inlineMarkdown($text, ['html_input' => 'escape', 'allow_unsafe_links' => false]), false)) ?? '';
+        // CommonMark percent-encodes braces in link destinations. Keep only
+        // recognized connected fields intact for recipient-time substitution.
+        preg_match_all('/\{\{\s*[a-zA-Z0-9_.]+\s*\}\}/', $text, $fields);
+        foreach (array_unique($fields[0]) as $field) $html = str_ireplace(rawurlencode($field), $field, $html);
+        return $html;
     }
 }

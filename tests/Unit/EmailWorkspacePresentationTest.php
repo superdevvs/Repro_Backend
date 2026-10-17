@@ -19,4 +19,16 @@ class EmailWorkspacePresentationTest extends TestCase
             $this->assertStringContainsString('margin:0 0 20px;', $presented);
         }
     }
+
+    public function test_formatted_text_links_keep_connected_fields_for_recipient_rendering(): void
+    {
+        $draft = app(EmailTemplateDocument::class)->prepare(['channel' => 'EMAIL', 'subject' => 'Your invoice', 'editor_document_json' => ['version' => 1, 'format' => 'sections', 'sections' => [
+            ['id' => 'guide', 'type' => 'text', 'body' => 'Hi **{{client_name}}**, [open your invoice]({{portal_url}}).'],
+        ]]]);
+        $this->assertStringContainsString('href="{{portal_url}}"', $draft['body_html']);
+        $rendered = app(\App\Services\Messaging\TemplateRenderer::class)->render(new \App\Models\MessageTemplate($draft), ['client_name' => 'Alex', 'portal_url' => 'https://reprodashboard.com/accounting']);
+        $this->assertStringContainsString('<strong>Alex</strong>', $rendered['html']);
+        $this->assertStringContainsString('href="https://reprodashboard.com/accounting"', $rendered['html']);
+        $this->assertStringNotContainsString('%7B%7B', $rendered['html']);
+    }
 }
