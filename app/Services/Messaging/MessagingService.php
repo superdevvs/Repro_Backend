@@ -439,7 +439,8 @@ class MessagingService
     private function prepareDeferredAttachmentDirectory(Message $message): void
     {
         $disk = Storage::disk('media_local');
-        $group = function_exists('posix_getgrnam') ? posix_getgrnam('www-data') : false;
+        $sharedGroup = config('filesystems.disks.media_local.shared_group', 'www-data');
+        $group = function_exists('posix_getgrnam') ? posix_getgrnam($sharedGroup) : false;
         $relative = '';
         foreach (['messaging', 'deferred', (string) $message->id] as $part) {
             $relative = $relative === '' ? $part : $relative.'/'.$part;
