@@ -128,4 +128,24 @@ class EditorOverviewDispatchReturnsTest extends TestCase
         $this->assertSame(1, $result['changed_count']);
         $this->assertSame([['id' => $this->source->id, 'version' => 2]], $this->item->fresh()->overview_return_files);
     }
+
+    public function test_scoped_requests_expose_only_the_optional_service_lines_needed_to_choose_a_return(): void
+    {
+        $first = $this->shoot->serviceItems()->first();
+        $first->service->update(['requires_editing' => false]);
+        $this->source->update(['shoot_service_id' => $first->id, 'required_for_editing' => false]);
+        $this->item->update(['shoot_service_id' => $first->id]);
+        $other = $this->shoot->serviceItems()->create(['service_id' => Service::factory()->create([
+            'name' => 'Optional drone edit', 'upload_intake_type' => 'photo', 'requires_editing' => false,
+        ])->id, 'quantity' => 1, 'price' => 50]);
+        $assignments = app(ShootEditingAssignmentService::class);
+        $this->assertSame([$first->service_id], $assignments->filterServicesForEditor($this->shoot->fresh(), $this->editor)->pluck('id')->all());
+        $this->assertFalse(app(ShootAuthorizationSupport::class)->canUploadShootMedia($this->shoot, $this->editor, 'edited', $other->id));
+        $second = $this->item->replicate();
+        $second->fill(['input_key' => 'source:2', 'shoot_service_id' => $other->id])->save();
+        $detail = $this->actingAs($this->editor)->getJson('/api/shoots/'.$this->shoot->id)->assertOk()->json('data');
+        $this->assertCount(2, $detail['service_items']);
+        $this->assertNull($detail['service_items'][0]['price']);
+        $this->assertNull($detail['service_items'][1]['price']);
+    }
 }

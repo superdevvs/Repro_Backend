@@ -189,16 +189,16 @@ class ShootEditingAssignmentService
             ? collect($shoot->services)
             : $shoot->services()->with('category')->get();
 
-        // Optional services stay hidden unless their intake was explicitly
-        // marked for human editing. Assignment permissions are checked below.
-        $services = $services->filter(fn ($service) => $this->serviceRequiresEditing($service));
-
         $trackedAssignments = $this->getTrackedServiceAssignments($shoot);
         // A dispatch task is an assignment even when the service pivot editor is still null.
         // Unscoped tasks (null shoot_service_id) belong to the shoot's existing services,
         // not to a guessed line. Scoped tasks reveal only the lines they name.
         $unscopedDispatch = $this->hasUnscopedOpenDispatch($shoot, $editor);
         $dispatchLineIds = $this->openDispatchServiceIds($shoot, $editor);
+        // A scoped human request explicitly opts its service into this return
+        // flow, including optional editing products. Other optional lines stay hidden.
+        $services = $services->filter(fn ($service) => $this->serviceRequiresEditing($service)
+            || in_array((int) ($service->pivot?->id ?? 0), $dispatchLineIds, true));
         $assignedToLine = function ($service) use ($editor, $unscopedDispatch, $dispatchLineIds): bool {
             if (! is_object($service)) {
                 return false;
