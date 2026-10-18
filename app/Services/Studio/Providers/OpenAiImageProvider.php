@@ -21,6 +21,8 @@ class OpenAiImageProvider
 {
     public const MODELS = ['gpt-image-2', 'gpt-image-2-2026-04-21', 'gpt-image-2.5-sunburst', 'gpt-image-2.5-sunburst-2026-09-08', 'gpt-image-2.5-flare', 'gpt-image-2.5-flare-2026-09-08'];
 
+    public const ARTWORK_SIZES = ['icon' => [1024, 1024], 'illustration' => [1536, 1024], 'header' => [1536, 640]];
+
     private const ENDPOINT = 'https://api.openai.com/v1/images/edits';
 
     private const MAX_INPUT_BYTES = 50_000_000;
@@ -67,6 +69,17 @@ class OpenAiImageProvider
         $image = $this->readResult($result)->resize($canvasWidth, $canvasHeight);
 
         return (string) $image->crop($placed->width(), $placed->height(), $x, $y)->resize($width, $height)->toPng();
+    }
+
+    /** Generate a new transparent composition; a style reference must not dictate its proportions. */
+    public function artwork(string $reference, string $prompt, string $kind, array $options = []): string
+    {
+        if (! isset(self::ARTWORK_SIZES[$kind])) throw new OpenAiImageException(reason: 'invalid_ratio');
+        [$width, $height] = self::ARTWORK_SIZES[$kind];
+        $source = (string) $this->read($reference)->scaleDown(width: 2048, height: 2048)->toPng();
+        $result = $this->request($source, $prompt, $width, $height, options: array_merge($options, ['background' => 'transparent']));
+
+        return (string) $this->readResult($result)->resize($width, $height)->toPng();
     }
 
     /**
@@ -156,7 +169,7 @@ class OpenAiImageProvider
             }
             // GPT Image 2 always uses high input fidelity: input_fidelity is not accepted.
             $response = $request->post(self::ENDPOINT, ['model' => $model, 'prompt' => $prompt,
-                'n' => 1, 'quality' => 'high', 'size' => $width.'x'.$height, 'output_format' => 'png', 'background' => 'opaque']);
+                'n' => 1, 'quality' => 'high', 'size' => $width.'x'.$height, 'output_format' => 'png', 'background' => $options['background'] ?? 'opaque']);
         } catch (ConnectionException) {
             $recorder->finish($usageId, $model, null, 'unknown', durationMs: (int) ((hrtime(true) - $started) / 1e6));
             throw new OpenAiImageException(ambiguous: true, reason: 'transport');

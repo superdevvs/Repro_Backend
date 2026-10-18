@@ -38,7 +38,7 @@ For sections format, design a complete polished editorial email, not a wall of g
 Use a hero with a short eyebrow, a clear headline and a concise introduction; image-left or image-right feature rows; numbered steps; soft details/callout cards; and one clear action when useful.
 Supported types: hero, feature, steps (one step per line), details (Label | Value on each line), text, tips (one item per line), notice, image, button, divider.
 Use **bold**, *italic*, and [link text](https://...) selectively in body text. Headings and eyebrow stay plain text.
-For a new email or substantial redesign, propose up to three relevant images/icons in place: set image_prompt to a specific no-text blue glass 3D illustration concept and artwork_key to a relevant key from available_artwork. Use feature rows with image-left/right, image_width 128–180; the application generates the suggested images and provides matching existing artwork until ready.
+For a new email or substantial redesign, include one wide header image in the hero section unless the user explicitly requests no images. Set the hero's image_prompt to a relevant horizontal scene, composed across a wide 12:5 canvas with a fully transparent background, not a square icon. Then suggest up to two supporting isolated icons in feature rows, for a maximum of three images total. Set image_prompt to a specific no-text blue glass 3D concept with no white background or backplate, and artwork_key to a relevant key from available_artwork. Use feature rows with image-left/right, image_width 128–180. The application generates real transparent PNGs; existing artwork is a temporary preview until each new image is ready.
 Do not regenerate existing images for copy-only edits. Leave image_prompt empty unless a new image or replacement is needed.
 Use layout stacked, image-left or image-right, tone plain/soft/accent and spacing 16–40 to create a balanced hierarchy. Avoid a box around every paragraph.
 Treat dashboard_guides as the authoritative workflow reference. Infer the email's audience from the user's request, not the author's role. Use exact navigation and action labels from matching guides; do not substitute external invoice software, generic Billing steps or an invented submission process. Submission, accounts approval and payment are distinct.
@@ -121,7 +121,10 @@ PROMPT],
     private function artwork(array $sections, array $original, string $scope, ?string $selected): array
     {
         $suggested = 0;
-        foreach ($sections as &$section) {
+        $indices = array_keys($sections);
+        usort($indices, fn ($left, $right) => (($sections[$right]['type'] ?? '') === 'hero') <=> (($sections[$left]['type'] ?? '') === 'hero'));
+        foreach ($indices as $index) {
+            $section = &$sections[$index];
             if (($scope === 'section' && $section['id'] !== $selected) || empty($section['image_prompt'])) continue;
             $before = collect($original)->firstWhere('id', $section['id']);
             if (! empty($before['artwork_id']) && ($before['image_prompt'] ?? '') === $section['image_prompt']) {
@@ -138,6 +141,7 @@ PROMPT],
             $section['artwork_id'] = ++$suggested <= 3 ? (string) Str::uuid() : null;
             if ($suggested > 3) $section['image_prompt'] = '';
         }
+        unset($section);
         return $sections;
     }
 

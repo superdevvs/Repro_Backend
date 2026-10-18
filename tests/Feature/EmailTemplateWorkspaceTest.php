@@ -155,7 +155,9 @@ class EmailTemplateWorkspaceTest extends TestCase
         $id = (string) Str::uuid();
         DB::table('email_template_artworks')->insert(['id' => $id, 'user_id' => $owner->id, 'kind' => 'illustration', 'prompt' => 'Camera equipment', 'status' => 'queued', 'created_at' => now(), 'updated_at' => now()]);
         $provider = $this->mock(OpenAiImageProvider::class);
-        $provider->shouldReceive('edit')->once()->withArgs(fn ($bytes, $prompt, $options) => strlen($bytes) > 100 && str_contains($prompt, 'navy and cobalt blue') && str_contains($prompt, 'Camera equipment') && $options['model'] === 'gpt-image-2.5-sunburst')->andReturn(file_get_contents(public_path('images/email-atelier/v6/editing.png')));
+        $image = \Intervention\Image\ImageManager::gd()->create(1536, 1024);
+        $image->place(\Intervention\Image\ImageManager::gd()->create(512, 512)->fill('195fe6'), 'center');
+        $provider->shouldReceive('artwork')->once()->withArgs(fn ($bytes, $prompt, $kind, $options) => strlen($bytes) > 100 && str_contains($prompt, 'navy and cobalt blue') && str_contains($prompt, 'Camera equipment') && $kind === 'illustration' && $options['model'] === 'gpt-image-2.5-sunburst')->andReturn((string) $image->toPng());
         $job = new GenerateEmailTemplateArtwork($id);
         $job->handle($provider); $job->handle($provider);
         Storage::disk('public')->assertExists('email-template-artwork/'.$id.'.png');

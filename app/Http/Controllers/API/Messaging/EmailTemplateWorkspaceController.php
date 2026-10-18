@@ -56,7 +56,7 @@ class EmailTemplateWorkspaceController extends Controller
 
     public function artwork(Request $request): JsonResponse
     {
-        $data = $request->validate(['id' => ['required', 'uuid'], 'kind' => ['required', 'in:illustration,icon'], 'prompt' => ['required', 'string', 'max:2000']]);
+        $data = $request->validate(['id' => ['required', 'uuid'], 'kind' => ['required', 'in:illustration,icon,header'], 'prompt' => ['required', 'string', 'max:2000']]);
         abort_unless(filled(config('services.openai.api_key')), 503, 'OpenAI image generation is not configured.');
         $created = DB::table('email_template_artworks')->insertOrIgnore([
             'id' => $data['id'], 'user_id' => $request->user()->id, 'kind' => $data['kind'], 'prompt' => $data['prompt'],

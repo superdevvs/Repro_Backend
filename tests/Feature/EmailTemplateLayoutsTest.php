@@ -63,6 +63,7 @@ class EmailTemplateLayoutsTest extends TestCase
         Sanctum::actingAs(User::factory()->create(['role' => 'admin']));
         $sections = [];
         for ($i = 0; $i < 4; $i++) $sections[] = $this->section(['id' => 'art-'.$i, 'type' => 'feature', 'layout' => 'image-left', 'image_width' => 160, 'tone' => 'plain', 'image_prompt' => 'A blue glass invoice with a check mark', 'artwork_key' => 'invoice']);
+        $sections[] = $this->section(['id' => 'header', 'type' => 'hero', 'image_prompt' => 'Wide blue glass invoice workflow scene', 'artwork_key' => 'invoice']);
         $proposal = ['subject' => 'Review and submit your photographer invoice', 'preheader' => 'A guide to Earnings.', 'sections' => $sections, 'body_html' => '', 'body_text' => '', 'blocks' => []];
         $this->mock(LlmClient::class, function ($mock) use ($proposal) {
             $mock->shouldReceive('chatCompletion')->once()->withArgs(function ($messages, $tools, $stream, $options) {
@@ -73,6 +74,7 @@ class EmailTemplateLayoutsTest extends TestCase
                 $this->assertStringContainsString('Submit changes', implode(' ', $article['steps']));
                 $this->assertStringContainsString('pending_approval', implode(' ', $article['steps']));
                 $this->assertSame('gpt-6-astra', $options['model']);
+                $this->assertStringContainsString('wide header image', $messages[0]['content']);
                 $this->assertFalse($stream);
                 return true;
             })->andReturn(['choices' => [['message' => ['content' => json_encode($proposal)]]]]);
@@ -81,6 +83,7 @@ class EmailTemplateLayoutsTest extends TestCase
         $response = $this->postJson('/api/messaging/templates/assist', ['draft' => $draft, 'scope' => 'email', 'instruction' => 'Create an email about how photographers should review and submit their invoices'])->assertOk();
         $result = $response->json('draft.editor_document_json.sections');
         $this->assertCount(3, array_filter(array_column($result, 'artwork_id')));
+        $this->assertNotEmpty($result[4]['artwork_id'], 'Reserve a generation slot for the header even when it follows other image sections.');
         $this->assertStringContainsString('/images/email-atelier/v6/invoice.png', $result[0]['image_url']);
         $response->assertJsonPath('context.model', 'gpt-6-astra');
         $this->assertContains('photographer-invoice-review', array_column($response->json('context.sources'), 'id'));
@@ -119,9 +122,9 @@ class EmailTemplateLayoutsTest extends TestCase
         $id = (string) \Illuminate\Support\Str::uuid();
         \Illuminate\Support\Facades\DB::table('email_template_artworks')->insert(['id' => $id, 'user_id' => User::factory()->create()->id, 'kind' => 'icon', 'prompt' => 'Invoice', 'status' => 'queued', 'created_at' => now(), 'updated_at' => now()]);
         $provider = $this->mock(\App\Services\Studio\Providers\OpenAiImageProvider::class);
-        $provider->shouldReceive('edit')->once()->withArgs(function ($reference, $prompt, $options) {
-            $this->assertSame([1024, 1024], array_slice(getimagesizefromstring($reference), 0, 2));
-            return $options['model'] === 'gpt-image-2.5-sunburst';
+        $provider->shouldReceive('artwork')->once()->withArgs(function ($reference, $prompt, $kind, $options) {
+            $this->assertNotFalse(getimagesizefromstring($reference));
+            return $kind === 'icon' && $options['model'] === 'gpt-image-2.5-sunburst';
         })->andReturn((string) \Intervention\Image\ImageManager::gd()->create(16, 16)->toJpeg());
         (new \App\Jobs\GenerateEmailTemplateArtwork($id))->handle($provider);
         $this->assertDatabaseHas('email_template_artworks', ['id' => $id, 'status' => 'failed', 'path' => null]);
