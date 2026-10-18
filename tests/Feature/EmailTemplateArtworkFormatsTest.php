@@ -60,13 +60,13 @@ class EmailTemplateArtworkFormatsTest extends TestCase
     }
 
     #[DataProvider('invalidAlpha')]
-    public function test_a_png_extension_cannot_hide_an_opaque_or_empty_image(bool $opaque, bool $empty): void
+    public function test_invalid_png_content_or_wrong_header_canvas_is_not_published(bool $opaque, bool $empty, string $kind = 'icon', int $width = 1024, int $height = 1024): void
     {
         Storage::fake('public');
         config(['services.openai.api_key' => 'fixture-key']);
         $id = (string) Str::uuid();
-        DB::table('email_template_artworks')->insert(['id' => $id, 'user_id' => User::factory()->create()->id, 'kind' => 'icon', 'prompt' => 'Gift', 'status' => 'queued', 'created_at' => now(), 'updated_at' => now()]);
-        Http::fake(fn () => Http::response(['data' => [['b64_json' => base64_encode($this->png(1024, 1024, $opaque, $empty))]]]));
+        DB::table('email_template_artworks')->insert(['id' => $id, 'user_id' => User::factory()->create()->id, 'kind' => $kind, 'prompt' => 'Gift', 'status' => 'queued', 'created_at' => now(), 'updated_at' => now()]);
+        Http::fake(fn () => Http::response(['data' => [['b64_json' => base64_encode($this->png($width, $height, $opaque, $empty))]]]));
         $job = new GenerateEmailTemplateArtwork($id);
         $job->handle(app(OpenAiImageProvider::class));
         $job->handle(app(OpenAiImageProvider::class));
@@ -75,7 +75,7 @@ class EmailTemplateArtworkFormatsTest extends TestCase
         Storage::disk('public')->assertMissing('email-template-artwork/'.$id.'.png');
     }
 
-    public static function invalidAlpha(): array { return ['opaque white box' => [true, false], 'empty transparent image' => [false, true]]; }
+    public static function invalidAlpha(): array { return ['opaque white box' => [true, false], 'empty transparent image' => [false, true], 'square returned for a wide header' => [false, false, 'header', 1024, 1024]]; }
 
     private function png(int $width, int $height, bool $opaque = false, bool $empty = false): string
     {

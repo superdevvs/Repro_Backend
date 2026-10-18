@@ -79,7 +79,7 @@ class OpenAiImageProvider
         $source = (string) $this->read($reference)->scaleDown(width: 2048, height: 2048)->toPng();
         $result = $this->request($source, $prompt, $width, $height, options: array_merge($options, ['background' => 'transparent']));
 
-        return (string) $this->readResult($result)->resize($width, $height)->toPng();
+        return (string) $this->readResult($result)->toPng();
     }
 
     /**
