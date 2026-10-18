@@ -38,6 +38,9 @@ class AutomationWorkflowExecutorRecipientTest extends TestCase
             $context['notify_photographer'] = true;
             $this->assertCount(2, $method->invoke($executor, $automation, [], $context, $channel));
             $context['notify_photographer'] = false;
+            $context['notify_client'] = false;
+            $this->assertSame([], $method->invoke($executor, $automation, [], $context, $channel));
+            $context['notify_client'] = true;
         }
     }
 

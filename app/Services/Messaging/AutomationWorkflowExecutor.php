@@ -1231,7 +1231,7 @@ class AutomationWorkflowExecutor
         if (
             $role === 'client'
             && ($context['notify_client'] ?? null) === false
-            && in_array($automation->trigger_type, ['SHOOT_BOOKED', 'SHOOT_SCHEDULED', 'SHOOT_UPDATED', 'SHOOT_REQUEST_APPROVED', 'SHOOT_REQUEST_MODIFIED'], true)
+            && in_array($automation->trigger_type, ['SHOOT_BOOKED', 'SHOOT_SCHEDULED', 'SHOOT_UPDATED', 'SHOOT_REQUEST_APPROVED', 'SHOOT_REQUEST_MODIFIED', 'PHOTOGRAPHER_ASSIGNED'], true)
         ) {
             return false;
         }
