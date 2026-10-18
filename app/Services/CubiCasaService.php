@@ -465,6 +465,19 @@ class CubiCasaService
                 return DB::transaction(function () use ($shoot, $candidate): string {
                     $scope = app(\App\Services\Shoots\ShootUnitTourScope::class);
                     $fresh = $scope->refreshProjection($shoot, true);
+                    $line = $fresh->getRelation('tourServiceLine');
+                    if ($line) {
+                        // A key claim must not switch the unit's flat provider mirror:
+                        // its order/external ID still belong to the previous line.
+                        $unit = $fresh->getRelation('tourUnit');
+                        $data = $unit->provider_data ?? [];
+                        $key = data_get($data, 'lines.'.$line->id.'.cubicasa_idempotency_key')
+                            ?: ($fresh->cubicasa_idempotency_key ?: $candidate);
+                        $data['lines'][$line->id]['cubicasa_idempotency_key'] = $key;
+                        $unit->provider_data = $data;
+                        $unit->save();
+                        return (string) $key;
+                    }
                     if (empty($fresh->cubicasa_idempotency_key)) {
                         $fresh->cubicasa_idempotency_key = $candidate;
                         $scope->persistProvider($fresh);

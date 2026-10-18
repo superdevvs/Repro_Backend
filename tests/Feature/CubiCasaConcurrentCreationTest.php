@@ -124,4 +124,33 @@ class CubiCasaConcurrentCreationTest extends TestCase
     {
         return ['id' => 'created-order', 'info' => ['status' => 'Draft'], 'delivery_assets' => []];
     }
+
+    public function test_new_unit_line_key_does_not_claim_a_sibling_order_and_retries_keep_line_identity(): void
+    {
+        $shoot = Shoot::factory()->create();
+        $unit = $shoot->units()->create(['client_key' => 'two-lines', 'label' => 'A', 'kind' => 'unit']);
+        $lines = collect([1, 2])->map(fn () => $shoot->serviceItems()->create([
+            'shoot_unit_id' => $unit->id, 'service_id' => Service::factory()->create(['name' => '2D Floor plans'])->id,
+            'price' => 100, 'quantity' => 1,
+        ]));
+        $scope = app(ShootUnitTourScope::class);
+        $secondAttempts = 0;
+        Http::fake(['https://cubicasa.test/orders/draft' => function ($request) use ($lines, &$secondAttempts) {
+            if (str_ends_with($request['external_id'], '-line-'.$lines[1]->id) && ++$secondAttempts === 1) return Http::response([], 503);
+            return Http::response(['id' => 'order-'.$request['external_id'], 'info' => ['status' => 'New', 'external_id' => $request['external_id']]]);
+        }]);
+        $service = app(CubiCasaService::class);
+        $service->createOrder($scope->project($shoot, $unit->fresh(), $lines[0]));
+        $firstOrder = $scope->project($shoot, $unit->fresh(), $lines[0])->cubicasa_order_id;
+        $second = $scope->project($shoot, $unit->fresh(), $lines[1]);
+        $this->assertNull($service->createOrder($second));
+        $this->assertSame($lines[0]->id, data_get($unit->fresh()->provider_data, 'cubicasa_service_line_id'));
+        $this->assertSame($firstOrder, $scope->project($shoot, $unit->fresh(), $lines[0])->cubicasa_order_id);
+        $this->assertNotNull($service->createOrder($second));
+        $fresh = $unit->fresh();
+        $this->assertSame('order-shoot-'.$shoot->id.'-unit-'.$unit->id.'-line-'.$lines[1]->id, $scope->project($shoot, $fresh, $lines[1])->cubicasa_order_id);
+        $this->assertSame(data_get($fresh->provider_data, 'lines.'.$lines[1]->id.'.cubicasa_idempotency_key'), $fresh->provider_data['cubicasa_idempotency_key']);
+        Http::assertSentCount(3);
+        Http::assertNotSent(fn ($request) => $request->method() === 'GET');
+    }
 }

@@ -182,7 +182,11 @@ class ShootUnitTourScope
             if ($lineId) {
                 $data['lines'][$lineId] = array_replace($data['lines'][$lineId] ?? [], $provider);
                 foreach (['iguide', 'cubicasa'] as $prefix) {
-                    if (collect(array_keys($provider))->contains(fn ($key) => str_starts_with($key, $prefix.'_'))) $data[$prefix.'_service_line_id'] = $lineId;
+                    if (collect(array_keys($provider))->contains(fn ($key) => str_starts_with($key, $prefix.'_'))) {
+                        $data[$prefix.'_service_line_id'] = $lineId;
+                        $key = $prefix.'_idempotency_key';
+                        if (array_key_exists($key, $data['lines'][$lineId])) $data[$key] = $data['lines'][$lineId][$key];
+                    }
                 }
             }
             $unit->provider_data = $data;
