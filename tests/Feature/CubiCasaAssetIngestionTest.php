@@ -179,4 +179,99 @@ class CubiCasaAssetIngestionTest extends TestCase
         (new IngestCubiCasaAssetsJob($shoot->id, $this->floorplans()))
             ->handle(app(\App\Services\ShootActivityLogger::class));
     }
+
+    public function test_partial_download_failure_retries_only_missing_assets(): void
+    {
+        Queue::fake();
+        Http::fake([
+            '*521-merged-dim.pdf*' => Http::sequence()
+                ->push('temporarily unavailable', 503)
+                ->push('PDFDATA', 200, ['Content-Type' => 'application/pdf']),
+            '*floor-1-dim.jpg*' => Http::response('JPGDATA', 200, ['Content-Type' => 'image/jpeg']),
+        ]);
+
+        User::factory()->create(['role' => 'admin']);
+        $shoot = Shoot::factory()->create();
+        $this->attachCubicasaService($shoot);
+        $job = new IngestCubiCasaAssetsJob($shoot->id, $this->floorplans());
+
+        try {
+            $job->handle(app(\App\Services\ShootActivityLogger::class));
+            $this->fail('A partial download failure must be retried by the queue.');
+        } catch (\RuntimeException $exception) {
+            $this->assertStringContainsString('1 CubiCasa asset(s) could not be ingested', $exception->getMessage());
+            $this->assertStringContainsString('HTTP 503', $exception->getPrevious()->getMessage());
+        }
+
+        $files = ShootFile::where('shoot_id', $shoot->id)->where('media_type', 'floorplan')->get();
+        $this->assertCount(1, $files);
+        $existingFileId = $files->first()->id;
+        $this->assertSame('jpg_listing_dim_0', $files->first()->metadata['cubicasa_asset_key']);
+
+        $job->handle(app(\App\Services\ShootActivityLogger::class));
+        $job->handle(app(\App\Services\ShootActivityLogger::class));
+
+        $files = ShootFile::where('shoot_id', $shoot->id)->where('media_type', 'floorplan')->get();
+        $this->assertCount(2, $files);
+        $this->assertTrue($files->contains('id', $existingFileId));
+        Http::assertSentCount(3);
+    }
+
+    public function test_empty_download_is_retryable_and_creates_no_file(): void
+    {
+        Queue::fake();
+        Http::fake(['*' => Http::response('', 200)]);
+
+        User::factory()->create(['role' => 'admin']);
+        $shoot = Shoot::factory()->create();
+        $this->attachCubicasaService($shoot);
+
+        try {
+            (new IngestCubiCasaAssetsJob($shoot->id, [$this->floorplans()[0]]))
+                ->handle(app(\App\Services\ShootActivityLogger::class));
+            $this->fail('An empty download must be retried by the queue.');
+        } catch (\RuntimeException $exception) {
+            $this->assertSame('The floorplan download was empty.', $exception->getPrevious()->getMessage());
+        }
+
+        $this->assertSame(0, ShootFile::where('shoot_id', $shoot->id)->count());
+    }
+
+    public function test_storage_failure_is_retryable_and_creates_no_file(): void
+    {
+        Queue::fake();
+        Http::fake(['*' => Http::response('PDFDATA', 200, ['Content-Type' => 'application/pdf'])]);
+        $this->mock(\App\Services\Media\MediaStorage::class)
+            ->shouldReceive('put')->once()->andReturnFalse();
+
+        User::factory()->create(['role' => 'admin']);
+        $shoot = Shoot::factory()->create();
+        $this->attachCubicasaService($shoot);
+
+        try {
+            (new IngestCubiCasaAssetsJob($shoot->id, [$this->floorplans()[0]]))
+                ->handle(app(\App\Services\ShootActivityLogger::class));
+            $this->fail('A storage failure must be retried by the queue.');
+        } catch (\RuntimeException $exception) {
+            $this->assertSame('The imported floorplan could not be stored.', $exception->getPrevious()->getMessage());
+        }
+
+        $this->assertSame(0, ShootFile::where('shoot_id', $shoot->id)->count());
+    }
+
+    public function test_repeated_asset_keys_in_one_payload_are_ingested_once(): void
+    {
+        Queue::fake();
+        Http::fake(['*' => Http::response('PDFDATA', 200, ['Content-Type' => 'application/pdf'])]);
+
+        User::factory()->create(['role' => 'admin']);
+        $shoot = Shoot::factory()->create();
+        $this->attachCubicasaService($shoot);
+
+        (new IngestCubiCasaAssetsJob($shoot->id, [$this->floorplans()[0], $this->floorplans()[0]]))
+            ->handle(app(\App\Services\ShootActivityLogger::class));
+
+        $this->assertSame(1, ShootFile::where('shoot_id', $shoot->id)->where('media_type', 'floorplan')->count());
+        Http::assertSentCount(1);
+    }
 }

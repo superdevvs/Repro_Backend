@@ -162,7 +162,7 @@ class VideoEditorClientContextTest extends TestCase
             ->assertJsonPath('data.client', null)->assertJsonPath('data.company_notes', null);
     }
 
-    public function test_scoped_video_task_exposes_a_narrow_brief_without_granting_full_shoot_access_and_revokes_on_reassignment(): void
+    public function test_scoped_video_task_opens_a_narrow_overview_and_revokes_context_on_reassignment(): void
     {
         [$shoot, $item, $video, $photo, $client] = $this->fixture();
         $item->update(['video_editor_id' => $photo->id]);
@@ -187,8 +187,12 @@ class VideoEditorClientContextTest extends TestCase
             $this->assertSame($shoot->company_notes, $summary['companyNotes']);
             $this->assertArrayNotHasKey('client', $summary);
         }
-        $this->getJson('/api/shoots/'.$shoot->id)->assertForbidden();
-        $this->getJson('/api/shoots/'.$shoot->id.'/notes')->assertForbidden();
+        $detail = $this->getJson('/api/shoots/'.$shoot->id)->assertOk()->json('data');
+        $this->assertSame(['id' => $client->id, 'name' => $client->name], $detail['client']);
+        $this->assertNull($detail['shoot_notes']);
+        $this->assertStringNotContainsString($client->email, json_encode($detail));
+        $notes = $this->getJson('/api/shoots/'.$shoot->id.'/notes')->assertOk()->json('data');
+        $this->assertEqualsCanonicalizing(['editing', 'company'], array_column($notes, 'type'));
         $task->update(['status' => 'completed']);
         $this->getJson('/api/editing-tasks')->assertOk()->assertJsonPath('data.0.shoot.canViewVideoEditorContext', false);
         $task->update(['status' => 'ready', 'editor_id' => $photo->id]);

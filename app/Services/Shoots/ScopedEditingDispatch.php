@@ -122,15 +122,18 @@ class ScopedEditingDispatch
             foreach ($active->groupBy(fn ($item) => $item->shoot_service_id.':'.$item->lane) as $group) {
                 if (!$group->every(fn ($item) => $item->status === 'completed')) continue;
                 $first = $group->first();
-                $otherPending = \App\Models\ShootEditingDispatchItem::where('shoot_service_id', $first->shoot_service_id)->where('lane', $first->lane)
+                $otherPending = \App\Models\ShootEditingDispatchItem::where('lane', $first->lane)
+                    ->when($first->shoot_service_id, fn ($query) => $query->where(fn ($scope) => $scope->where('shoot_service_id', $first->shoot_service_id)->orWhereNull('shoot_service_id')))
                     ->whereNotIn('status', ['completed', 'cancelled'])->whereHas('dispatch', fn ($query) => $query->where('shoot_id', $shoot->id)->where('scope', '!=', 'selected'))->exists();
                 if ($otherPending) continue;
-                $assignment = $assignments->getTrackedServiceAssignments($shoot)->first(fn ($assignment) => $assignment['shoot_service_id'] === (int) $first->shoot_service_id && $assignment['lane'] === $first->lane);
-                if ($assignment) DB::table('shoot_service')->where('shoot_id', $shoot->id)->where('id', $first->shoot_service_id)
+                $matching = $assignments->getTrackedServiceAssignments($shoot)->filter(fn ($assignment) => $assignment['lane'] === $first->lane
+                    && (! $first->shoot_service_id || $assignment['shoot_service_id'] === (int) $first->shoot_service_id));
+                foreach ($matching as $assignment) DB::table('shoot_service')->where('shoot_id', $shoot->id)->where('id', $assignment['shoot_service_id'])
                     ->whereNull($assignment['completed_column'])->update([$assignment['completed_column'] => now(), 'updated_at' => now()]);
             }
             // Delivered revisions never reopen the shoot or resend delivery notifications.
-            if ($complete && $shoot->workflow_status === Shoot::STATUS_EDITING && $assignments->allTrackedLanesReady($shoot->fresh(['services.category']))) {
+            if ($complete && $shoot->workflow_status === Shoot::STATUS_EDITING && $assignments->allTrackedLanesReady($shoot->fresh(['services.category']))
+                && ! $dispatch->items->contains(fn ($item) => ! empty($item->overview_return_files))) {
                 $shoot->updateWorkflowStatus(Shoot::STATUS_READY, $dispatch->created_by);
             }
         }), 'editing-dispatch.reconcile');

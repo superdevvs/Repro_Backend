@@ -333,16 +333,19 @@ class UploadShootFilesAction
 
         if ($user?->role === 'editor' && $uploadType === 'edited' && $allServiceItems->isNotEmpty()) {
             $eligibleItems = $allServiceItems
-                ->filter(fn (ShootService $item) => $this->editingAssignmentService->serviceRequiresEditing($item))
                 ->filter(function (ShootService $item) use ($shoot, $user) {
+                    $dispatchAssigned = $this->editingAssignmentService->hasOpenDispatchForService($shoot, $user, (int) $item->id);
+                    if (! $this->editingAssignmentService->serviceRequiresEditing($item) && ! $dispatchAssigned) {
+                        return false;
+                    }
                     if ((string) $shoot->editor_id === (string) $user->id) {
                         // The legacy top-level editor owns every editing-required item.
-                        return true;
+                        return $this->editingAssignmentService->serviceRequiresEditing($item);
                     }
 
                     // Photo-lane assignments live on editor_id.
                     if ((string) ($item->editor_id ?? '') === (string) $user->id) {
-                        return true;
+                        return $this->editingAssignmentService->serviceRequiresEditing($item);
                     }
 
                     // Bundled photo_video (and video-capable) services assign the video
@@ -354,19 +357,28 @@ class UploadShootFilesAction
                         return $item->service?->supportsVideoIntake() ?? false;
                     }
 
-                    return false;
+                    return $dispatchAssigned;
                 })
                 ->values();
 
+            // Tasks that name no service line are still an assignment. Do not
+            // invent a line and do not write editor_id. A caller who picks a
+            // line on this shoot may use it; a line they were not given, on a
+            // shoot whose tasks are tied to other lines, stays denied.
+            $unscopedDispatch = $this->editingAssignmentService->hasUnscopedOpenDispatch($shoot, $user);
             if ($shootServiceId && ! $eligibleItems->contains(fn (ShootService $item) => (int) $item->id === $shootServiceId)) {
-                return [
-                    'status' => 403,
-                    'payload' => $this->typedUploadError(
-                        'forbidden',
-                        'You can only upload edits for service items assigned to you.',
-                        $uploadLimits
-                    ),
-                ];
+                $lineOnShoot = $unscopedDispatch
+                    && $allServiceItems->contains(fn (ShootService $item) => (int) $item->id === $shootServiceId);
+                if (! $lineOnShoot) {
+                    return [
+                        'status' => 403,
+                        'payload' => $this->typedUploadError(
+                            'forbidden',
+                            'You can only upload edits for service items assigned to you.',
+                            $uploadLimits
+                        ),
+                    ];
+                }
             }
 
             if (! $shootServiceId && $eligibleItems->count() === 1) {
@@ -380,7 +392,7 @@ class UploadShootFilesAction
                         $uploadLimits
                     ),
                 ];
-            } elseif (! $shootServiceId && $eligibleItems->isEmpty()) {
+            } elseif (! $shootServiceId && $eligibleItems->isEmpty() && ! $unscopedDispatch) {
                 return [
                     'status' => 403,
                     'payload' => $this->typedUploadError(
@@ -514,7 +526,8 @@ class UploadShootFilesAction
         // already used for photographers above and for media access in
         // ShootAuthorizationSupport.
         $editorHasEditingAssignment = $isEditor
-            && $this->editingAssignmentService->editorHasAssignment($shoot, $user);
+            && ($this->editingAssignmentService->editorHasAssignment($shoot, $user)
+                || $this->editingAssignmentService->hasOpenDispatchAssignment($shoot, $user));
         $isEditedUploadManager = $isAdmin || $editorHasEditingAssignment;
         // Photographers may upload raw revisions even after delivery (client revision
         // requests). Service-item / assignment scoping is already enforced above, so a

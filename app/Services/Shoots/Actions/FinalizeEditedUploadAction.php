@@ -100,7 +100,7 @@ class FinalizeEditedUploadAction
     {
         $assignments = app(\App\Services\Shoots\ShootEditingAssignmentService::class);
         $capabilities = app(\App\Services\Shoots\ShootSubmissionCapabilityService::class);
-        if ($user?->role === 'editor' && !$assignments->editorHasAssignment($shoot, $user)) {
+        if ($user?->role === 'editor' && !$assignments->editorHasAssignment($shoot, $user) && !$assignments->hasDispatchAccess($shoot, $user)) {
             return ['status' => 403, 'payload' => ['error_type' => 'forbidden', 'message' => 'This shoot is not assigned to you.', 'workflow_status_changed' => false]];
         }
         $lock = Cache::lock('shoot:finalize-edited:' . $shoot->id, 15);
@@ -142,7 +142,7 @@ class FinalizeEditedUploadAction
                     ];
                 }
 
-                if ($user?->role === 'editor' && !$assignments->editorHasAssignment($locked, $user)) {
+                if ($user?->role === 'editor' && !$assignments->editorHasAssignment($locked, $user) && !$assignments->hasDispatchAccess($locked, $user)) {
                     return ['status' => 403, 'payload' => ['error_type' => 'forbidden', 'message' => 'This shoot is not assigned to you.', 'workflow_status_changed' => false]];
                 }
                 $savedReturns = \App\Models\ShootFileVersion::where('shoot_id', $locked->id)
@@ -234,12 +234,18 @@ class FinalizeEditedUploadAction
                 }
 
                 $pendingBefore = $assignments->getTrackedServiceAssignments($shoot)->filter(fn ($assignment) => empty($assignment['editing_completed_at']))->count();
+                $returnedCount = 0;
+                if ($user?->role === 'editor') {
+                    $dispatchSubmission = app(\App\Services\Shoots\ShootDispatchOverviewReturns::class)->submit($shoot, $user);
+                    if (isset($dispatchSubmission['status'])) return $dispatchSubmission;
+                    $returnedCount = $dispatchSubmission['changed_count'];
+                }
                 if ($user) $assignments->markAssignedServicesReadyForUser($shoot, $user);
                 $pendingAfter = $assignments->getTrackedServiceAssignments($shoot->fresh(['services.category']))->filter(fn ($assignment) => empty($assignment['editing_completed_at']))->count();
                 $allLanesReady = $assignments->allTrackedLanesReady($shoot->fresh(['services.category']));
                 $targetStatus = in_array($currentStatus, $capabilities::DELIVERED_STATUSES, true) ? $currentStatus
                     : ($allLanesReady ? ($canSkipReview ? Shoot::STATUS_READY : Shoot::STATUS_REVIEW) : Shoot::STATUS_EDITING);
-                $editingSubmissionChanged = $pendingAfter < $pendingBefore || $targetStatus !== $currentStatus;
+                $editingSubmissionChanged = $returnedCount > 0 || $pendingAfter < $pendingBefore || $targetStatus !== $currentStatus;
                 if ($targetStatus !== $currentStatus) {
                     $shoot->updateWorkflowStatus($targetStatus, $user?->id ?? auth()->id());
                     $workflowStatusChanged = true;

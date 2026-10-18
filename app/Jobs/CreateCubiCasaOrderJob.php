@@ -17,6 +17,14 @@ class CreateCubiCasaOrderJob implements ShouldQueue
 
     public int $tries = 3;
 
+    /** States in which an approved booking can still need its first order. */
+    public const AUTO_CREATE_STATUSES = [
+        Shoot::STATUS_SCHEDULED,
+        Shoot::STATUS_UPLOADED,
+        Shoot::STATUS_EDITING,
+        Shoot::STATUS_REVIEW,
+    ];
+
     public function __construct(
         public readonly int $shootId,
         public readonly string $source = 'auto',
@@ -37,20 +45,14 @@ class CreateCubiCasaOrderJob implements ShouldQueue
             return;
         }
 
-        // Req 3.2 — cancelled/declined (either status or workflow_status): complete silently.
-        // Also skip unapproved client requests and already-delivered shoots: creating a
-        // CubiCasa draft after the booking is done (or before anyone approved it) is how
-        // empty drafts orphan completed scans (see shoot 162 / Welsh Road).
-        $skipStatuses = [
-            Shoot::STATUS_CANCELLED,
-            Shoot::STATUS_DECLINED,
-            Shoot::STATUS_REQUESTED,
-            Shoot::STATUS_DELIVERED,
-            Shoot::STATUS_ON_HOLD,
-            'hold_on',
-        ];
-        if ($shoot->scheduled_at === null || in_array($shoot->status, $skipStatuses, true)
-            || in_array($shoot->workflow_status, $skipStatuses, true)
+        // Re-check at execution time: a queued booking can be unapproved,
+        // unscheduled, held or delivered before the worker reaches it. Manual
+        // creation calls the service directly and keeps its explicit behavior.
+        $status = strtolower(trim((string) $shoot->status));
+        $workflowStatus = strtolower(trim((string) $shoot->workflow_status)) ?: $status;
+        if ($shoot->scheduled_at === null
+            || !in_array($status, self::AUTO_CREATE_STATUSES, true)
+            || !in_array($workflowStatus, self::AUTO_CREATE_STATUSES, true)
         ) {
             return;
         }

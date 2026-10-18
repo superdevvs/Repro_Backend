@@ -19,6 +19,23 @@ class PhotographerAvailabilityBookedTimeTest extends TestCase
 {
     use RefreshDatabase;
 
+    public function test_edit_lookup_excludes_only_the_authorized_current_shoot_and_keeps_other_bookings(): void
+    {
+        $photographer = User::factory()->photographer()->create(['timezone' => 'America/New_York']);
+        PhotographerAvailability::create(['photographer_id' => $photographer->id, 'day_of_week' => 'wednesday',
+            'start_time' => '09:00', 'end_time' => '18:00', 'status' => 'available']);
+        $current = $this->shoot($photographer, '2026-10-21 19:00:00', 'America/New_York');
+        $other = $this->shoot($photographer, '2026-10-21 14:00:00', 'America/New_York');
+        $data = ['photographer_id' => $photographer->id, 'date' => '2026-10-21'];
+        Sanctum::actingAs(User::factory()->admin()->create());
+        $this->postJson('/api/photographer/availability/check', $data)->assertOk(); // Prime the normal cache.
+        $slots = collect($this->postJson('/api/photographer/availability/check', $data + ['shoot_id' => $current->id])->assertOk()->json('data'));
+        $this->assertSame([$other->id], $slots->where('status', 'booked')->pluck('shoot_id')->all());
+        $this->assertTrue($slots->where('status', 'available')->contains(fn ($slot) => $slot['start_time'] <= '15:00' && $slot['end_time'] > '15:00'));
+        Sanctum::actingAs(User::factory()->create(['role' => 'client']));
+        $this->postJson('/api/photographer/availability/check', $data + ['shoot_id' => $current->id])->assertForbidden();
+    }
+
     protected function setUp(): void
     {
         parent::setUp();

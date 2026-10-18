@@ -3,7 +3,9 @@
 namespace App\Services\Shoots;
 
 use App\Models\Shoot;
+use App\Models\ShootEditingDispatchItem;
 use App\Models\ShootFile;
+use App\Models\ShootFileVersion;
 use App\Models\ShootService;
 use App\Models\User;
 use Illuminate\Database\Eloquent\Builder;
@@ -63,8 +65,66 @@ class ShootEditingAssignmentService
             $scope->where('editor_id', $editorId)
                 ->orWhereHas('services', function (Builder $serviceQuery) use ($editorId) {
                     $serviceQuery->where(fn ($query) => $query->where('shoot_service.editor_id', $editorId)->orWhere('shoot_service.video_editor_id', $editorId));
-                });
+                })
+                ->orWhereExists(fn ($exists) => $this->constrainOpenDispatchItems($exists, $editorId));
         });
+    }
+
+    /** Human send-to-editing tasks. Reading them must not change shoot or service editor rows. */
+    public function hasOpenDispatchAssignment(Shoot $shoot, User $editor): bool
+    {
+        return $this->openDispatchItemsQuery($shoot->id, $editor->id)->exists();
+    }
+
+    public function hasDispatchAccess(Shoot $shoot, User $editor): bool
+    {
+        return app(ShootDispatchOverviewReturns::class)->items($shoot, $editor, false)->isNotEmpty();
+    }
+
+    /** Open send-to-editing task for one service line. Does not write editor_id. */
+    public function hasOpenDispatchForService(Shoot $shoot, User $editor, int $shootServiceId): bool
+    {
+        return $this->openDispatchItemsQuery($shoot->id, $editor->id)
+            ->where('shoot_service_id', $shootServiceId)
+            ->exists();
+    }
+
+    /**
+     * Open human task that is not tied to a service line.
+     * Shoot 379 is this shape: every file and task has a null shoot_service_id
+     * even though the shoot still has booked services. Does not write editor_id.
+     */
+    public function hasUnscopedOpenDispatch(Shoot $shoot, User $editor): bool
+    {
+        return $this->openDispatchItemsQuery($shoot->id, $editor->id)
+            ->whereNull('shoot_service_id')
+            ->exists();
+    }
+
+    /** Service-line ids named by this editor's open tasks. Unscoped tasks are omitted. */
+    public function openDispatchServiceIds(Shoot $shoot, User $editor): array
+    {
+        return $this->openDispatchItemsQuery($shoot->id, $editor->id)
+            ->whereNotNull('shoot_service_id')
+            ->pluck('shoot_service_id')
+            ->map(fn ($id) => (int) $id)
+            ->unique()
+            ->values()
+            ->all();
+    }
+
+    /** Source files, and a returned image, for this editor's open tasks on the shoot. */
+    public function openDispatchFileIds(Shoot $shoot, User $editor): array
+    {
+        $key = 'dispatch-file-ids:'.$shoot->id.':'.$editor->id;
+        $request = request();
+        $cache = $request->attributes->get('editor_dispatch_file_ids', []);
+        if (! array_key_exists($key, $cache)) {
+            $cache[$key] = $this->loadOpenDispatchFileIds($shoot, $editor);
+            $request->attributes->set('editor_dispatch_file_ids', $cache);
+        }
+
+        return $cache[$key];
     }
 
     public function scopeUnassignedEditing(Builder $query): Builder
@@ -134,18 +194,33 @@ class ShootEditingAssignmentService
         $services = $services->filter(fn ($service) => $this->serviceRequiresEditing($service));
 
         $trackedAssignments = $this->getTrackedServiceAssignments($shoot);
-        if ($trackedAssignments->isEmpty()) {
-            return (string) $shoot->editor_id === (string) $editor->id ? $services->values() : collect();
-        }
-
-        return $services->filter(function ($service) use ($editor) {
-            if (!is_object($service)) {
+        // A dispatch task is an assignment even when the service pivot editor is still null.
+        // Unscoped tasks (null shoot_service_id) belong to the shoot's existing services,
+        // not to a guessed line. Scoped tasks reveal only the lines they name.
+        $unscopedDispatch = $this->hasUnscopedOpenDispatch($shoot, $editor);
+        $dispatchLineIds = $this->openDispatchServiceIds($shoot, $editor);
+        $assignedToLine = function ($service) use ($editor, $unscopedDispatch, $dispatchLineIds): bool {
+            if (! is_object($service)) {
                 return false;
             }
+            if ($unscopedDispatch) {
+                return true;
+            }
+            $pivotId = (int) ($service->pivot?->id ?? 0);
 
-            return (string) ($service->pivot?->editor_id ?? '') === (string) $editor->id
+            return in_array($pivotId, $dispatchLineIds, true)
+                || (string) ($service->pivot?->editor_id ?? '') === (string) $editor->id
                 || (string) ($service->pivot?->video_editor_id ?? '') === (string) $editor->id;
-        })->values();
+        };
+        if ($trackedAssignments->isEmpty()) {
+            if ((string) $shoot->editor_id === (string) $editor->id || $unscopedDispatch) {
+                return $services->values();
+            }
+
+            return $services->filter($assignedToLine)->values();
+        }
+
+        return $services->filter($assignedToLine)->values();
     }
 
     /**
@@ -235,6 +310,11 @@ class ShootEditingAssignmentService
 
     public function canEditorAccessFile(Shoot $shoot, ShootFile $file, User $editor): bool
     {
+        // A send-to-editing task grants only its source files, not the shoot.
+        if (in_array((int) $file->id, $this->openDispatchFileIds($shoot, $editor), true)) {
+            return ! $file->is_hidden;
+        }
+
         // Withhold non-required extras from editors regardless of any other
         // assignment they hold (Req 13.2, 13.4).
         if (!$this->isEditable($file)) {
@@ -311,11 +391,18 @@ class ShootEditingAssignmentService
     public function filterFilesForEditor(Collection $files, Shoot $shoot, User $editor): Collection
     {
         $assignedLanes = $this->getAssignedLanesForEditor($shoot, $editor);
-        if (empty($assignedLanes)) {
+        $dispatchFileIds = array_flip($this->openDispatchFileIds($shoot, $editor));
+        if (empty($assignedLanes) && $dispatchFileIds === []) {
             return collect();
         }
 
-        return $files->filter(function (ShootFile $file) use ($assignedLanes, $shoot, $editor) {
+        return $files->filter(function (ShootFile $file) use ($assignedLanes, $dispatchFileIds, $shoot, $editor) {
+            if (isset($dispatchFileIds[(int) $file->id])) {
+                return ! $file->is_hidden;
+            }
+            if (empty($assignedLanes)) {
+                return false;
+            }
             if ($file->shoot_service_id) return $this->canEditorAccessFile($shoot, $file, $editor);
             // Withhold non-required extras from the editor view in addition to
             // lane filtering (Req 13.2, 13.4).
@@ -417,6 +504,7 @@ class ShootEditingAssignmentService
         }
 
         if ($trackedAssignments->isEmpty()) {
+            if ($this->hasDispatchAccess($shoot, $user)) return [];
             throw new \App\Exceptions\PublicBusinessRuleException('No editing lanes are assigned to this user for the shoot.');
         }
 
@@ -457,9 +545,6 @@ class ShootEditingAssignmentService
     public function buildEditorAssignmentsPayload(Shoot $shoot, ?User $viewer = null): array
     {
         $trackedAssignments = $this->getTrackedServiceAssignments($shoot);
-        if ($trackedAssignments->isEmpty()) {
-            return [];
-        }
 
         $editorIds = $trackedAssignments
             ->pluck('editor_id')
@@ -504,9 +589,145 @@ class ShootEditingAssignmentService
             $payload = $payload
                 ->filter(fn (array $assignment) => (string) ($assignment['editor_id'] ?? '') === (string) $viewer->id)
                 ->values();
+            // Open media tasks keep the card in the editor queue without writing editor_id.
+            if ($this->hasOpenDispatchAssignment($shoot, $viewer)) {
+                foreach ($this->openDispatchLanes($shoot, $viewer) as $lane) {
+                    $index = $payload->search(fn (array $row) => ($row['lane'] ?? null) === $lane);
+                    if ($index === false) {
+                        $payload->push($this->openDispatchViewerAssignment($viewer, $lane));
+                        continue;
+                    }
+                    $row = $payload[$index];
+                    $row['ready'] = false;
+                    $row['ready_at'] = null;
+                    $payload[$index] = $row;
+                }
+            }
         }
 
         return $payload->all();
+    }
+
+    private function openDispatchItemsQuery(int|string $shootId, int|string $editorId)
+    {
+        return ShootEditingDispatchItem::query()
+            ->where('editor_id', $editorId)
+            ->where('destination', 'human')
+            ->whereNotIn('status', ['completed', 'cancelled'])
+            ->whereHas('dispatch', fn ($query) => $query->where('shoot_id', $shootId)->where('status', '!=', 'cancelled'));
+    }
+
+    public function constrainOpenDispatchItems($query, int|string $editorId): void
+    {
+        $query->select(DB::raw('1'))
+            ->from('shoot_editing_dispatch_items')
+            ->join('shoot_editing_dispatches', 'shoot_editing_dispatches.id', '=', 'shoot_editing_dispatch_items.dispatch_id')
+            ->whereColumn('shoot_editing_dispatches.shoot_id', 'shoots.id')
+            ->where('shoot_editing_dispatch_items.editor_id', $editorId)
+            ->where('shoot_editing_dispatch_items.destination', 'human')
+            ->where('shoot_editing_dispatches.status', '!=', 'cancelled')
+            ->whereNotIn('shoot_editing_dispatch_items.status', ['completed', 'cancelled']);
+    }
+
+    public function openDispatchFileIdsByShoot(array $shootIds, int|string $editorId): array
+    {
+        $shootIds = array_values(array_unique(array_map('intval', $shootIds)));
+        $grouped = array_fill_keys($shootIds, []);
+        if ($shootIds === []) {
+            return $grouped;
+        }
+        $items = ShootEditingDispatchItem::query()
+            ->select('shoot_editing_dispatch_items.sources', 'shoot_editing_dispatch_items.primary_version_id', 'shoot_editing_dispatches.shoot_id')
+            ->join('shoot_editing_dispatches', 'shoot_editing_dispatches.id', '=', 'shoot_editing_dispatch_items.dispatch_id')
+            ->whereIn('shoot_editing_dispatches.shoot_id', $shootIds)
+            ->where('shoot_editing_dispatch_items.editor_id', $editorId)
+            ->where('shoot_editing_dispatch_items.destination', 'human')
+            ->whereNotIn('shoot_editing_dispatch_items.status', ['completed', 'cancelled'])
+            ->get();
+        $versionShoots = [];
+        foreach ($items as $item) {
+            $shootId = (int) $item->shoot_id;
+            foreach ((array) $item->sources as $source) {
+                if (isset($source['id'])) {
+                    $grouped[$shootId][] = (int) $source['id'];
+                }
+            }
+            if ($item->primary_version_id) {
+                $versionShoots[(string) $item->primary_version_id] = $shootId;
+            }
+        }
+        if ($versionShoots !== []) {
+            $published = ShootFileVersion::query()->whereIn('id', array_keys($versionShoots))->pluck('published_file_id', 'id');
+            foreach ($published as $versionId => $fileId) {
+                if ($fileId) {
+                    $grouped[$versionShoots[(string) $versionId]][] = (int) $fileId;
+                }
+            }
+        }
+        foreach ($grouped as $shootId => $ids) {
+            $grouped[$shootId] = array_values(array_unique($ids));
+        }
+
+        return $grouped;
+    }
+
+    private function loadOpenDispatchFileIds(Shoot $shoot, User $editor): array
+    {
+        $items = app(ShootDispatchOverviewReturns::class)->items($shoot, $editor, false);
+        $ids = [];
+        foreach ($items as $item) {
+            foreach ((array) $item->sources as $source) {
+                if (isset($source['id'])) {
+                    $ids[] = (int) $source['id'];
+                }
+            }
+            foreach ($item->overview_return_files ?? [] as $file) $ids[] = (int) $file['id'];
+        }
+        $versionIds = $items->pluck('primary_version_id')->filter()->values();
+        if ($versionIds->isNotEmpty()) {
+            $ids = array_merge($ids, ShootFileVersion::query()
+                ->whereIn('id', $versionIds)
+                ->pluck('published_file_id')
+                ->filter()
+                ->map(fn ($id) => (int) $id)
+                ->all());
+        }
+
+        return array_values(array_unique(array_merge($ids, app(ShootDispatchOverviewReturns::class)->visibleFileIds($shoot, $editor))));
+    }
+
+    private function openDispatchLanes(Shoot $shoot, User $editor): array
+    {
+        $lanes = $this->openDispatchItemsQuery($shoot->id, $editor->id)
+            ->pluck('lane')
+            ->map(fn ($lane) => $this->normalizeLane($lane))
+            ->filter()
+            ->unique()
+            ->values()
+            ->all();
+
+        return $lanes === [] ? [self::LANE_PHOTO] : $lanes;
+    }
+
+    private function openDispatchViewerAssignment(User $viewer, string $lane): array
+    {
+        return [
+            'lane' => $lane,
+            'label' => ucfirst($lane),
+            'editor_id' => (string) $viewer->id,
+            'editor' => array_merge([
+                'id' => (string) $viewer->id,
+                'name' => $viewer->name,
+                'avatar' => $viewer->avatar ?? null,
+                'email' => $viewer->email,
+                'role' => $viewer->role,
+            ], $viewer->presentEditingIdentity()),
+            'service_ids' => [],
+            'shoot_service_ids' => [],
+            'service_names' => [],
+            'ready' => false,
+            'ready_at' => null,
+        ];
     }
 
     public function getTrackedServiceAssignments(Shoot $shoot): Collection

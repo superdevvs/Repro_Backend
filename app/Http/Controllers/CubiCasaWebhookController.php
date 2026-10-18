@@ -34,14 +34,22 @@ class CubiCasaWebhookController extends Controller
             $rawBody = $request->getContent();
             $data = $request->all();
 
-            // Shared-secret verification. Missing secret or missing/invalid
-            // signature fails closed so unauthenticated webhook posts are rejected.
+            // The documented v3 webhook sends the integration API key. Retain
+            // HMAC support for existing registrations, but never accept unsigned
+            // requests when neither credential validates.
             $secret = trim((string) (
                 $this->loadCubicasaSetting('webhookSecret')
                 ?? config('services.cubicasa.webhook_secret', '')
             ));
-            if ($unconfigured = \App\Support\InboundWebhookGuard::requireConfiguredSecret($secret)) {
-                return $unconfigured;
+            $apiKey = trim((string) (
+                $this->loadCubicasaSetting('apiKey')
+                ?? config('services.cubicasa.api_key', '')
+            ));
+            if ($secret === '' && $apiKey === '') {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Webhook credentials are not configured',
+                ], 503);
             }
 
             $signature = (string) (
@@ -50,11 +58,12 @@ class CubiCasaWebhookController extends Controller
                 ?: $request->header('X-Signature')
                 ?: ''
             );
-            if (!$this->verifySignature($rawBody, $signature, $secret)) {
-                Log::warning('CubiCasa webhook: invalid signature');
+            $validApiKey = $apiKey !== '' && hash_equals($apiKey, (string) $request->header('api-key', ''));
+            if (!$validApiKey && !$this->verifySignature($rawBody, $signature, $secret)) {
+                Log::warning('CubiCasa webhook: invalid credentials');
                 return response()->json([
                     'success' => false,
-                    'message' => 'Invalid signature',
+                    'message' => 'Invalid webhook credentials',
                 ], 401);
             }
 
@@ -71,8 +80,6 @@ class CubiCasaWebhookController extends Controller
                 'previous_status' => $previousStatus,
                 'delivery_type' => $deliveryType,
                 'product_type' => $productType,
-                // First-delivery debugging: log header keys so we can pin the
-                // exact signature-header name CubiCasa actually sends.
                 'headers' => $this->safeHeaderNames($request),
             ]);
 
@@ -102,8 +109,40 @@ class CubiCasaWebhookController extends Controller
                 ]);
             }
 
-            // Resolve a Shoot. Precedence: cubicasa_order_id -> external_id (in payload) -> address.
-            $shoot = $this->matchShoot($orderId, $data);
+            // Resolve existing order links first. Ready notifications contain no
+            // address/external ID, so retrieve authoritative order details before
+            // attempting to reconcile a separately submitted scan.
+            $shoot = $this->matchShootByOrderId($orderId);
+            $shouldFetch = $this->shouldFetchDeliverables($currentStatus, $deliveryType);
+            $raw = null;
+            if ($shouldFetch) {
+                $raw = $this->cubicasa->getOrder($orderId);
+                if (!$raw || ($raw['id'] ?? null) !== $orderId) {
+                    if ($shoot) {
+                        $this->cubicasa->markSyncFailed(
+                            $shoot,
+                            CubiCasaService::SYNC_STATUS_FAILED,
+                            'Webhook received but CubiCasa order detail fetch failed.'
+                        );
+                    }
+                    Log::warning('CubiCasa webhook: order detail fetch failed', [
+                        'order_id' => $orderId,
+                        'failure' => $this->cubicasa->getLastFailureReason(),
+                    ]);
+                    // Do not cache this delivery: CubiCasa must be able to retry.
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'CubiCasa order detail fetch failed',
+                        'order_id' => $orderId,
+                    ], 503);
+                }
+            }
+            if (!$shoot) {
+                $shoot = $this->matchShootByExternalId($orderId, $raw ?? $data);
+            }
+            if (!$shoot && $raw) {
+                $shoot = $this->matchDeliveredOrder($raw);
+            }
             if (!$shoot) {
                 Log::warning('CubiCasa webhook: shoot not found', [
                     'order_id' => $orderId,
@@ -117,7 +156,8 @@ class CubiCasaWebhookController extends Controller
                 ], 200);
             }
 
-            // Persist lightweight status info immediately (no follow-up call needed).
+            // Persist only after a required detail fetch succeeds, so a transient
+            // failure cannot turn an unclaimed draft into a progressed order.
             $shoot->cubicasa_order_id = (string) $orderId;
             if (is_string($currentStatus) && $currentStatus !== '') {
                 $shoot->cubicasa_status = $currentStatus;
@@ -129,31 +169,16 @@ class CubiCasaWebhookController extends Controller
             app(\App\Services\Shoots\ShootUnitTourScope::class)->persistProvider($shoot);
 
             // For Ready / Fixing-resolved: pull full delivery_assets and ingest.
-            $shouldFetch = $this->shouldFetchDeliverables($currentStatus, $deliveryType);
             $assetCount = 0;
 
-            if ($shouldFetch) {
-                $raw = $this->cubicasa->getOrder((string) $orderId);
-                if ($raw) {
-                    $parsed = $this->cubicasa->parseOrderData($raw);
-                    $this->cubicasa->applyShootData($shoot, $parsed);
+            if ($raw) {
+                $parsed = $this->cubicasa->parseOrderData($raw);
+                $this->cubicasa->applyShootData($shoot, $parsed);
 
-                    $floorplans = is_array($parsed['floorplans'] ?? null) ? $parsed['floorplans'] : [];
-                    if (!empty($floorplans) && $shoot->hasCubiCasaEligibleService()) {
-                        IngestCubiCasaAssetsJob::dispatch($shoot->id, $floorplans, $shoot->relationLoaded('tourServiceLine') ? $shoot->getRelation('tourServiceLine')?->id : null);
-                        $assetCount = count($floorplans);
-                    }
-                } else {
-                    $this->cubicasa->markSyncFailed(
-                        $shoot,
-                        CubiCasaService::SYNC_STATUS_FAILED,
-                        'Webhook received but CubiCasa order detail fetch failed.'
-                    );
-
-                    Log::warning('CubiCasa webhook: order detail fetch failed', [
-                        'order_id' => $orderId,
-                        'failure' => $this->cubicasa->getLastFailureReason(),
-                    ]);
+                $floorplans = is_array($parsed['floorplans'] ?? null) ? $parsed['floorplans'] : [];
+                if (!empty($floorplans) && $shoot->hasCubiCasaEligibleService()) {
+                    IngestCubiCasaAssetsJob::dispatch($shoot->id, $floorplans, $shoot->relationLoaded('tourServiceLine') ? $shoot->getRelation('tourServiceLine')?->id : null);
+                    $assetCount = count($floorplans);
                 }
             }
 
@@ -203,19 +228,25 @@ class CubiCasaWebhookController extends Controller
         return false;
     }
 
-    private function matchShoot(string $orderId, array $data): ?Shoot
+    private function matchShootByOrderId(string $orderId): ?Shoot
     {
-        $scoped = app(\App\Services\Shoots\ShootUnitTourScope::class)->matchProvider('cubicasa', ['cubicasa_order_id' => $orderId, 'cubicasa_external_id' => $data['external_id'] ?? data_get($data, 'info.external_id')]);
-        if ($scoped) return $scoped;
-        $byOrderId = Shoot::where('cubicasa_order_id', $orderId)->first();
-        if ($byOrderId) {
-            return $byOrderId;
-        }
+        $scoped = app(\App\Services\Shoots\ShootUnitTourScope::class)->matchProvider('cubicasa', ['cubicasa_order_id' => $orderId]);
+        return $scoped ?? Shoot::where('cubicasa_order_id', $orderId)->first();
+    }
 
+    private function matchShootByExternalId(string $orderId, array $data): ?Shoot
+    {
         $externalId = $data['external_id'] ?? data_get($data, 'info.external_id');
         if (is_string($externalId) && trim($externalId) !== '') {
             $woId = trim((string) $externalId);
-            $shoot = Shoot::where('cubicasa_external_id', $woId)->first();
+            $shoot = app(\App\Services\Shoots\ShootUnitTourScope::class)->matchProvider('cubicasa', ['cubicasa_external_id' => $woId]);
+            if (!$shoot) {
+                $matches = Shoot::where('cubicasa_external_id', $woId)->limit(2)->get();
+                if ($matches->count() > 1) {
+                    return null;
+                }
+                $shoot = $matches->first();
+            }
             if (!$shoot) {
                 if (preg_match('/^shoot[:\-_](\d+)$/i', $woId, $m)) {
                     $shoot = Shoot::find((int) $m[1]);
@@ -223,12 +254,49 @@ class CubiCasaWebhookController extends Controller
                     $shoot = Shoot::find((int) $woId);
                 }
             }
-            if ($shoot) {
+            if ($shoot && $this->canLinkExternalOrder($shoot, $orderId, $woId)) {
                 return $shoot;
             }
         }
 
         return null;
+    }
+
+    private function canLinkExternalOrder(Shoot $shoot, string $orderId, string $externalId): bool
+    {
+        if ($shoot->isInternalTestShoot() || !$shoot->hasCubiCasaEligibleService()
+            || in_array($shoot->status, [Shoot::STATUS_CANCELLED, Shoot::STATUS_DECLINED], true)
+            || in_array($shoot->workflow_status, [Shoot::STATUS_CANCELLED, Shoot::STATUS_DECLINED], true)
+            || (!$shoot->relationLoaded('tourUnit') && $shoot->units()->exists())) {
+            return false;
+        }
+        $existingExternalId = trim((string) $shoot->cubicasa_external_id);
+        if ($existingExternalId !== '' && $existingExternalId !== $externalId) {
+            return false;
+        }
+        $existingOrderId = trim((string) $shoot->cubicasa_order_id);
+        if ($existingOrderId !== '' && $existingOrderId !== $orderId) {
+            return in_array(strtolower(trim((string) $shoot->cubicasa_status)), ['', 'draft', 'new'], true)
+                && empty($shoot->cubicasa_floorplans)
+                && !$shoot->files()->where('metadata->source', 'cubicasa')->exists();
+        }
+        return true;
+    }
+
+    private function matchDeliveredOrder(array $raw): ?Shoot
+    {
+        $match = null;
+        foreach (Shoot::query()->whereNotNull('scheduled_at')->whereDoesntHave('units')->with('services.category')->lazyById(100) as $candidate) {
+            if (!$this->cubicasa->matchesDeliveredOrderToShoot($candidate, $raw)) {
+                continue;
+            }
+            if ($match !== null) {
+                // Never let database ordering decide between repeat bookings.
+                return null;
+            }
+            $match = $candidate;
+        }
+        return $match;
     }
 
     private function loadCubicasaSetting(string $key): ?string
@@ -243,7 +311,7 @@ class CubiCasaWebhookController extends Controller
                 return null;
             }
             $value = $payload[$key] ?? null;
-            return is_string($value) && trim($value) !== '' ? trim($value) : null;
+            return is_string($value) ? trim($value) : null;
         } catch (\Throwable $e) {
             return null;
         }

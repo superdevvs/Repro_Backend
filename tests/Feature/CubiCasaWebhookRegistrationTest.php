@@ -11,44 +11,41 @@ class CubiCasaWebhookRegistrationTest extends TestCase
 {
     use RefreshDatabase;
 
-    private const BASE_URL = 'https://app.cubi.casa/api/integrate/v3';
-
     protected function setUp(): void
     {
         parent::setUp();
-
         config()->set('services.cubicasa.api_key', 'test-key');
-        config()->set('services.cubicasa.base_url', self::BASE_URL);
-        config()->set('services.cubicasa.environment', 'production');
-        config()->set('services.cubicasa.webhook_url', 'https://api.reprodashboard.com/cubicasa_webhook.php');
-        config()->set('app.url', 'https://api.reprodashboard.com');
+        config()->set('services.cubicasa.base_url', 'https://cubicasa.test');
+        config()->set('services.cubicasa.webhook_url', 'https://reprodashboard.com/cubicasa_webhook.php');
+        Http::preventStrayRequests();
     }
 
-    public function test_register_webhook_sends_v3_webhook_urls_and_triggers(): void
+    public function test_registers_v3_arrays_preserves_other_consumers_and_verifies_saved_configuration(): void
     {
+        $url = 'https://reprodashboard.com/cubicasa_webhook.php';
         Http::fake([
-            self::BASE_URL . '/companies/webhook' => Http::response([
-                'webhook_urls' => ['https://api.reprodashboard.com/cubicasa_webhook.php'],
-                'webhook_triggers' => CubiCasaService::WEBHOOK_TRIGGERS,
-            ], 200),
+            'https://cubicasa.test/companies/info' => Http::sequence()
+                ->push(['configs' => ['webhook_urls' => ['https://other.example/webhook'], 'webhook_triggers' => ['moved_to_draft']]])
+                ->push(['configs' => ['webhook_urls' => ['https://other.example/webhook', $url], 'webhook_triggers' => ['moved_to_ready']]]),
+            'https://cubicasa.test/companies/webhook' => Http::response([], 200),
         ]);
+        $this->assertTrue(app(CubiCasaService::class)->registerWebhook()['ok']);
+        Http::assertSent(fn ($request) => $request->method() === 'PATCH'
+            && $request['webhook_urls'] === ['https://other.example/webhook', $url]
+            && $request['webhook_triggers'] === ['moved_to_draft', 'moved_to_ready', 'moved_to_fixing', 'moved_to_pending']
+            && !isset($request['url']) && !isset($request['secret']));
+    }
 
-        $result = app(CubiCasaService::class)->registerWebhook();
+    public function test_does_not_replace_webhooks_when_existing_configuration_cannot_be_read(): void
+    {
+        Http::fake(['*' => Http::response([], 503)]);
+        $this->assertFalse(app(CubiCasaService::class)->registerWebhook()['ok']);
+        Http::assertNotSent(fn ($request) => $request->method() === 'PATCH');
+    }
 
-        $this->assertTrue($result['ok']);
-        $this->assertSame('https://api.reprodashboard.com/cubicasa_webhook.php', $result['url']);
-
-        Http::assertSent(function ($request) {
-            if ($request->method() !== 'PATCH' || $request->url() !== self::BASE_URL . '/companies/webhook') {
-                return false;
-            }
-
-            $body = $request->data();
-
-            return ($body['webhook_urls'] ?? null) === ['https://api.reprodashboard.com/cubicasa_webhook.php']
-                && ($body['webhook_triggers'] ?? null) === CubiCasaService::WEBHOOK_TRIGGERS
-                && !array_key_exists('url', $body)
-                && !array_key_exists('secret', $body);
-        });
+    public function test_success_response_alone_does_not_claim_registration_succeeded(): void
+    {
+        Http::fake(['*' => Http::response(['configs' => ['webhook_urls' => []]], 200)]);
+        $this->assertFalse(app(CubiCasaService::class)->registerWebhook()['ok']);
     }
 }

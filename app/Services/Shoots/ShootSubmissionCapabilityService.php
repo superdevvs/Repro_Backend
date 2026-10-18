@@ -15,6 +15,7 @@ class ShootSubmissionCapabilityService
 
     public function pendingEditorAssignments(Shoot $shoot, User $user): bool
     {
+        if (app(ShootEditingAssignmentService::class)->hasOpenDispatchAssignment($shoot, $user)) return true;
         return app(ShootEditingAssignmentService::class)->getTrackedServiceAssignments($shoot)
             ->contains(fn ($assignment) => (int) $assignment['editor_id'] === (int) $user->id && empty($assignment['editing_completed_at']));
     }
@@ -51,7 +52,7 @@ class ShootSubmissionCapabilityService
     {
         if (!$user || !in_array($user->role, ['admin', 'superadmin', 'editing_manager', 'editor'], true)) return false;
         $assignments = app(ShootEditingAssignmentService::class);
-        if ($user->role === 'editor' && !$assignments->editorHasAssignment($shoot, $user)) return false;
+        if ($user->role === 'editor' && !$assignments->editorHasAssignment($shoot, $user) && !$assignments->hasOpenDispatchAssignment($shoot, $user)) return false;
         $files = $this->editedFiles($shoot, $user);
         if ($files->isEmpty() && !$this->hasVideoLinkOutput($shoot, $user)) return false;
         $status = strtolower((string) ($shoot->workflow_status ?: $shoot->status));

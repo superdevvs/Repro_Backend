@@ -93,7 +93,7 @@ class ProviderFloorplanRecoveryTest extends TestCase
         $shoot->update(['cubicasa_floorplans' => [], 'cubicasa_status' => 'Ready', 'cubicasa_order_id' => 'ready-order']);
         $this->mock(\App\Services\CubiCasaService::class, function ($mock) use ($shoot) {
             $mock->shouldReceive('hasCredentials')->once()->andReturn(true);
-            $mock->shouldReceive('syncShoot')->once()->withArgs(fn ($candidate) => $candidate->id === $shoot->id)->andReturn(null);
+            $mock->shouldReceive('syncShoot')->once()->withArgs(fn ($candidate) => $candidate->id === $shoot->id)->andReturn(['floorplans' => []]);
         });
         $this->artisan('cubicasa:resync-pending')->assertSuccessful();
     }
@@ -164,7 +164,7 @@ class ProviderFloorplanRecoveryTest extends TestCase
         $this->file($iguide, 'iguide', 'clean')->update(['file_type' => 'text/html']);
         $this->mock(\App\Services\CubiCasaService::class, function ($mock) use ($cubicasa) {
             $mock->shouldReceive('hasCredentials')->once()->andReturn(true);
-            $mock->shouldReceive('syncShoot')->once()->withArgs(fn ($shoot) => $shoot->id === $cubicasa->id)->andReturn(null);
+            $mock->shouldReceive('syncShoot')->once()->withArgs(fn ($shoot) => $shoot->id === $cubicasa->id)->andReturn(['floorplans' => []]);
         });
         $this->artisan('cubicasa:resync-pending')->assertSuccessful();
         $this->artisan('iguide:resync-pending')->assertSuccessful();

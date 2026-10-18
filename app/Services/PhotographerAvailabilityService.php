@@ -20,13 +20,13 @@ class PhotographerAvailabilityService
      * Get available time slots for a photographer in a date range
      * Results are cached for 5 minutes to improve performance
      */
-    public function getAvailableSlots(int $photographerId, Carbon $from, Carbon $to): array
+    public function getAvailableSlots(int $photographerId, Carbon $from, Carbon $to, ?int $excludeShootId = null): array
     {
         $policy = app(\App\Services\Scheduling\SchedulingBufferSettings::class)->enabled() ? 'hybrid' : 'fixed';
         // Read the current occupied windows before using cached net slots. A TTL
         // alone leaves cancelled/rescheduled work blocking otherwise free times.
         // Reuse this snapshot on cache misses instead of querying each day again.
-        $appointments = $this->bookedAppointments($photographerId, $from, null, $to);
+        $appointments = $this->bookedAppointments($photographerId, $from, $excludeShootId, $to);
         $hours = PhotographerAvailability::where('photographer_id', $photographerId)
             ->where(fn ($query) => $query->whereNull('date')->orWhereBetween('date', [$from->toDateString(), $to->toDateString()]))
             ->orderBy('id')->get(['id', 'date', 'day_of_week', 'start_time', 'end_time', 'status'])->toArray();
@@ -141,15 +141,15 @@ class PhotographerAvailabilityService
     }
 
     /** Actual onsite appointments; the inter-visit buffer is not displayed as work. */
-    public function getBookedSlots(int $photographerId, Carbon $date): array
+    public function getBookedSlots(int $photographerId, Carbon $date, ?int $excludeShootId = null): array
     {
-        return $this->getBookedSlotsForRange($photographerId, $date, $date);
+        return $this->getBookedSlotsForRange($photographerId, $date, $date, $excludeShootId);
     }
 
-    public function getBookedSlotsForRange(int $photographerId, Carbon $from, Carbon $to): array
+    public function getBookedSlotsForRange(int $photographerId, Carbon $from, Carbon $to, ?int $excludeShootId = null): array
     {
         $slots = [];
-        foreach ($this->bookedAppointments($photographerId, $from, null, $to) as $window) {
+        foreach ($this->bookedAppointments($photographerId, $from, $excludeShootId, $to) as $window) {
             $start = $window['start'];
             if ($start->toDateString() < $from->toDateString() || $start->toDateString() > $to->toDateString()) {
                 continue;

@@ -3,8 +3,10 @@
 namespace App\Services;
 
 use App\Models\Shoot;
+use App\Models\ShootUnit;
 use App\Models\User;
 use App\Support\LockedWrite;
+use Carbon\CarbonImmutable;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\DB;
@@ -53,6 +55,8 @@ class CubiCasaService
     private ?string $webhookSecret;
     private ?string $lastFailureReason = null;
     private AuditLogService $auditLog;
+    private bool $recoveryOrdersLoaded = false;
+    private ?array $recoveryOrders = null;
 
     public function __construct(?AuditLogService $auditLog = null)
     {
@@ -182,21 +186,30 @@ class CubiCasaService
             return ['ok' => false, 'status' => 0, 'message' => 'CUBICASA_API_KEY is not configured'];
         }
         try {
-            $url = $this->getWebhookUrl();
+            // CubiCasa replaces the entire configuration. Preserve other
+            // registered consumers and use the v3 arrays, not url/secret.
+            $current = $this->client()->get($this->baseUrl . '/companies/info');
+            if (!$current->successful()) {
+                return ['ok' => false, 'status' => $current->status(), 'message' => 'Could not read existing CubiCasa webhooks.'];
+            }
             $payload = [
-                'webhook_urls' => [$url],
-                'webhook_triggers' => self::WEBHOOK_TRIGGERS,
+                'webhook_urls' => array_values(array_unique(array_merge(
+                    (array) $current->json('configs.webhook_urls', []),
+                    [$this->getWebhookUrl()]
+                ))),
+                'webhook_triggers' => array_values(array_unique(array_merge(
+                    (array) $current->json('configs.webhook_triggers', []),
+                    self::WEBHOOK_TRIGGERS
+                ))),
             ];
             $resp = $this->client()->patch($this->baseUrl . '/companies/webhook', $payload);
             if ($resp->successful()) {
-                return [
-                    'ok' => true,
-                    'status' => $resp->status(),
-                    'message' => 'Webhook registered',
-                    'url' => $url,
-                    'triggers' => self::WEBHOOK_TRIGGERS,
-                    'response' => $resp->json(),
-                ];
+                $verified = $this->client()->get($this->baseUrl . '/companies/info');
+                if (!$verified->successful() || !in_array($this->getWebhookUrl(), (array) $verified->json('configs.webhook_urls', []), true)
+                    || !in_array('moved_to_ready', (array) $verified->json('configs.webhook_triggers', []), true)) {
+                    return ['ok' => false, 'status' => $verified->status(), 'message' => 'CubiCasa webhook registration could not be verified.'];
+                }
+                return ['ok' => true, 'status' => $resp->status(), 'message' => 'Webhook registered', 'url' => $this->getWebhookUrl()];
             }
             return ['ok' => false, 'status' => $resp->status(), 'message' => $resp->body()];
         } catch (\Throwable $e) {
@@ -269,22 +282,12 @@ class CubiCasaService
             $resolvedViaFullGet = false;
         }
 
-        // Older empty Drafts (auto-created after a scan already finished in the
-        // CubiCasa app under a different order id) block the scheduled resync
-        // forever: we keep re-fetching the draft and never see the Ready order.
-        // Rematch to a Ready order at the same address when the linked order has
-        // nothing useful to show.
-        if ($this->shouldRematchEmptyOrder($raw)) {
-            $rematched = $this->findReadyOrderByAddress($shoot, $linkedOrderId);
-            if ($rematched) {
-                Log::info('CubiCasa rematched empty linked order to Ready order by address', [
-                    'shoot_id' => $shoot->id,
-                    'previous_order_id' => $linkedOrderId,
-                    'rematched_order_id' => Arr::get($rematched, 'id'),
-                ]);
-                $raw = $rematched;
-                $resolvedViaFullGet = true;
-            }
+        // A scan started independently in the mobile app has its own order ID.
+        // Only replace an unused draft, and only when exact property/date matching
+        // identifies one unclaimed delivered order. Never replace work in progress.
+        if ($raw && in_array(strtolower((string) Arr::get($raw, 'info.status')), ['draft', 'new'], true)
+            && empty($this->parseOrderData($raw)['floorplans'])) {
+            $raw = $this->findDeliveredOrderForShoot($shoot) ?? $raw;
         }
 
         if (!$raw) {
@@ -351,6 +354,10 @@ class CubiCasaService
 
         $createEvent = $source === 'auto' ? 'cubicasa.auto_create' : 'cubicasa.manual_create';
 
+        // Lifecycle and scheduled jobs can hold different model snapshots for
+        // the same shoot. Decide against persisted identity, not either snapshot.
+        $this->refreshOrderIdentity($shoot);
+
         // AC 19.5 — already linked: sync the existing order instead of creating.
         if (!empty($shoot->cubicasa_order_id) || !empty($shoot->cubicasa_external_id)) {
             $parsed = $this->syncShoot($shoot);
@@ -385,13 +392,13 @@ class CubiCasaService
             return null;
         }
 
-        // AC 19.6 — reuse a per-shoot Idempotency-Key so repeated create requests
-        // never duplicate the order. Persist it on first use.
-        $idempotencyKey = $shoot->cubicasa_idempotency_key
-            ?? tap(Str::uuid()->toString(), function (string $key) use ($shoot): void {
-                $shoot->cubicasa_idempotency_key = $key;
-                app(\App\Services\Shoots\ShootUnitTourScope::class)->persistProvider($shoot);
-            });
+        // Claim one persisted key before contacting the provider. A second
+        // worker must reuse the winner's key even if its model was loaded first.
+        $idempotencyKey = $this->claimOrderIdempotencyKey($shoot);
+        $this->refreshOrderIdentity($shoot);
+        if (!empty($shoot->cubicasa_order_id) || !empty($shoot->cubicasa_external_id)) {
+            return $this->createOrder($shoot, $actor, $source);
+        }
 
         try {
             $resp = $this->client()
@@ -435,6 +442,50 @@ class CubiCasaService
         ]);
 
         return $parsed;
+    }
+
+    private function refreshOrderIdentity(Shoot $shoot): void
+    {
+        $fresh = app(\App\Services\Shoots\ShootUnitTourScope::class)->refreshProjection($shoot);
+        $columns = ['cubicasa_order_id', 'cubicasa_external_id', 'cubicasa_idempotency_key'];
+        foreach ($columns as $column) {
+            $shoot->setAttribute($column, $fresh->getAttribute($column));
+        }
+        $shoot->syncOriginalAttributes($columns);
+    }
+
+    private function claimOrderIdempotencyKey(Shoot $shoot): string
+    {
+        $candidate = Str::uuid()->toString();
+        if ($shoot->relationLoaded('tourUnit')) {
+            // Unit identities live in JSON on a shared unit row. Read and update
+            // within one short transaction, retrying the whole read on SQLite
+            // contention so another service line's provider data is preserved.
+            return LockedWrite::run(function () use ($shoot, $candidate): string {
+                return DB::transaction(function () use ($shoot, $candidate): string {
+                    $scope = app(\App\Services\Shoots\ShootUnitTourScope::class);
+                    $fresh = $scope->refreshProjection($shoot, true);
+                    if (empty($fresh->cubicasa_idempotency_key)) {
+                        $fresh->cubicasa_idempotency_key = $candidate;
+                        $scope->persistProvider($fresh);
+                    }
+                    return (string) $fresh->cubicasa_idempotency_key;
+                });
+            }, 'cubicasa.claimUnitOrderKey');
+        }
+
+        LockedWrite::run(fn () => Shoot::query()
+            ->whereKey($shoot->id)
+            ->where(function ($query) {
+                $query->whereNull('cubicasa_idempotency_key')->orWhere('cubicasa_idempotency_key', '');
+            })
+            ->update(['cubicasa_idempotency_key' => $candidate]), 'cubicasa.claimOrderKey');
+
+        $key = Shoot::query()->whereKey($shoot->id)->value('cubicasa_idempotency_key');
+        if (!is_string($key) || $key === '') {
+            throw new \RuntimeException('Could not claim a CubiCasa order idempotency key.');
+        }
+        return $key;
     }
 
     /**
@@ -508,8 +559,8 @@ class CubiCasaService
         }
 
         $offset = 0;
-        $limit = 50;
-        for ($page = 0; $page < 5; $page++) {
+        $limit = 100;
+        for ($page = 0; $page < 20; $page++) {
             try {
                 $resp = $this->client()->get($this->baseUrl . '/orders', [
                     'limit' => $limit,
@@ -523,7 +574,10 @@ class CubiCasaService
                 foreach ($items as $item) {
                     $candidate = Arr::get($item, 'info.external_id');
                     if (is_string($candidate) && $candidate === $externalId) {
-                        return $item;
+                        // List responses omit delivery_assets. Fetching only the
+                        // summary used to mark Ready while discarding the files.
+                        $id = Arr::get($item, 'id');
+                        return is_string($id) && $id !== '' ? $this->getOrder($id) : null;
                     }
                 }
                 $hasMore = (bool) $resp->json('pagination.has_more');
@@ -543,134 +597,224 @@ class CubiCasaService
         return null;
     }
 
-    /**
-     * True when the linked CubiCasa order cannot supply floor plans — typically
-     * an empty Draft created by our auto-order path after the photographer
-     * already finished a scan under a separate Ready order in the CubiCasa app.
-     */
-    private function shouldRematchEmptyOrder(?array $raw): bool
+    /** Find a delivered scan made outside the draft, without fuzzy address guesses. */
+    public function findDeliveredOrderForShoot(Shoot $shoot): ?array
     {
-        // Only empty Drafts are rematched. Fresh auto-creates land as New/Draft
-        // with no assets yet; rematching those would spam GET /orders on every
-        // sync. The orphan case we fix is specifically: our Draft vs a separate
-        // Ready order the photographer finished in the CubiCasa app.
-        if ($raw === null) {
-            return true;
-        }
-
-        $status = strtolower((string) (Arr::get($raw, 'info.status') ?? Arr::get($raw, 'status') ?? ''));
-        if ($status !== 'draft') {
-            return false;
-        }
-
-        $parsed = $this->parseOrderData($raw);
-        $floorplans = $parsed['floorplans'] ?? [];
-
-        return !is_array($floorplans) || $floorplans === [];
-    }
-
-    /**
-     * Locate a Ready CubiCasa order whose address matches the shoot.
-     *
-     * Photographers often finish the scan in the CubiCasa mobile app, which
-     * creates a Ready order with no external_id. Our auto-create then opens a
-     * separate empty Draft with external_id=shoot-{id}. Matching by address is
-     * how we reconnect those completed scans.
-     *
-     * @return array<string, mixed>|null full order payload (GET /orders/{id})
-     */
-    public function findReadyOrderByAddress(Shoot $shoot, ?string $excludeOrderId = null): ?array
-    {
-        $needle = $this->normalizeAddress((string) ($shoot->address ?? ''));
-        if ($needle === '') {
+        if (!$this->canRecoverDeliveredOrder($shoot)) {
             return null;
         }
 
-        $offset = 0;
-        $limit = 50;
-        for ($page = 0; $page < 20; $page++) {
-            try {
-                $resp = $this->client()->get($this->baseUrl . '/orders', [
-                    'limit' => $limit,
-                    'offset' => $offset,
-                    'status' => 'Ready',
-                ]);
-                if (!$resp->successful()) {
-                    $this->lastFailureReason = $this->classifyFailure($resp);
-                    return null;
-                }
+        $orders = $this->recoveryOrderSummaries();
+        if ($orders === null) {
+            return null;
+        }
 
-                $items = $resp->json('items') ?? [];
-                foreach ($items as $item) {
-                    $id = (string) Arr::get($item, 'id', '');
-                    if ($excludeOrderId && $id === $excludeOrderId) {
-                        continue;
-                    }
-                    if (!$this->orderMatchesShootAddress($item, $needle, $shoot)) {
-                        continue;
-                    }
+        $matches = array_values(array_filter($orders, fn (array $order): bool => $this->matchesDeliveredOrderToShoot($shoot, $order)));
+        if (count($matches) !== 1) {
+            return null;
+        }
 
-                    // List rows omit delivery_assets — fetch the full order.
-                    $full = $id !== '' ? $this->getOrder($id) : null;
-                    return $full ?: $item;
-                }
+        $raw = $this->getOrder((string) $matches[0]['id']);
+        if (!$raw || !$this->matchesDeliveredOrderToShoot($shoot, $raw)
+            || empty($this->parseOrderData($raw)['floorplans'])) {
+            return null;
+        }
 
-                $hasMore = (bool) $resp->json('pagination.has_more');
-                $next = $resp->json('pagination.next_offset');
-                if (!$hasMore || !is_numeric($next)) {
-                    break;
-                }
-                $offset = (int) $next;
-            } catch (\Throwable $e) {
-                $this->lastFailureReason = self::FAILURE_OTHER;
-                Log::error('CubiCasa findReadyOrderByAddress exception', [
-                    'shoot_id' => $shoot->id,
-                    'error' => $e->getMessage(),
-                ]);
+        // The same address can be booked more than once. Do not let the order
+        // in which the scheduler visits shoots decide which booking gets files.
+        $createdAt = $this->providerOrderCreatedAt($raw);
+        $otherBookings = Shoot::query()
+            ->where('id', '!=', $shoot->id)
+            ->whereBetween('scheduled_at', [$createdAt->subDays(3), $createdAt->addDays(3)])
+            ->with('services.category')
+            ->get();
+        foreach ($otherBookings as $other) {
+            if ($this->matchesDeliveredOrderToShoot($other, $raw)) {
                 return null;
             }
         }
 
-        return null;
+        return $raw;
     }
 
-    /**
-     * @param  array<string, mixed>  $order
-     */
-    private function orderMatchesShootAddress(array $order, string $normalizedShootAddress, Shoot $shoot): bool
+    /** Shared by scheduled recovery and authenticated webhook reconciliation. */
+    public function matchesDeliveredOrderToShoot(Shoot $shoot, array $order): bool
     {
-        $full = $this->normalizeAddress((string) (
-            Arr::get($order, 'address.full_address')
-            ?? Arr::get($order, 'address.full')
-            ?? ''
-        ));
-        $street = $this->normalizeAddress((string) (Arr::get($order, 'address.street') ?? ''));
-
-        if ($full !== '' && (str_contains($full, $normalizedShootAddress) || str_contains($normalizedShootAddress, $full))) {
-            return true;
+        if ($shoot->scheduled_at === null
+            || strtolower(trim((string) Arr::get($order, 'info.status'))) !== 'ready') {
+            return false;
+        }
+        $id = Arr::get($order, 'id');
+        if (!is_string($id) || $id === '' || $id === $shoot->cubicasa_order_id) {
+            return false;
+        }
+        $externalId = trim((string) Arr::get($order, 'info.external_id', ''));
+        $expectedExternalId = trim((string) ($shoot->cubicasa_external_id ?: 'shoot-'.$shoot->id));
+        if ($externalId !== '' && $externalId !== $expectedExternalId) {
+            return false;
+        }
+        $createdAt = $this->providerOrderCreatedAt($order);
+        if (!$createdAt || abs($createdAt->getTimestamp() - $shoot->scheduled_at->getTimestamp()) > 3 * 86400) {
+            return false;
         }
 
-        // CubiCasa sometimes stores street without the house number ("Welsh Road"
-        // vs shoot "2361-73 Welsh Road"). Require the street fragment to appear
-        // in the shoot address, and when both sides have a city, require a match.
-        if ($street !== '' && str_contains($normalizedShootAddress, $street)) {
-            $orderCity = $this->normalizeAddress((string) (Arr::get($order, 'address.city') ?? ''));
-            $shootCity = $this->normalizeAddress((string) ($shoot->city ?? ''));
-            if ($orderCity === '' || $shootCity === '' || str_contains($orderCity, $shootCity) || str_contains($shootCity, $orderCity)) {
-                return true;
+        $address = (array) Arr::get($order, 'address', []);
+        $number = trim((string) ($address['number'] ?? ''));
+        $street = trim((string) ($address['street'] ?? ''));
+        // Some v3 responses split number/street; draft responses put both in street.
+        if ($number !== '' && !str_starts_with($street, $number.' ') && $street !== $number) {
+            $street = $number.' '.$street;
+        }
+        $details = is_array($shoot->property_details) ? $shoot->property_details : [];
+        $suite = $details['apt_suite'] ?? $details['aptSuite'] ?? $details['suite'] ?? '';
+        $localZip = $this->normalizeZip($shoot->zip);
+        $localState = $this->normalizeState($shoot->state);
+        if ($localZip === '' || $localState === ''
+            || $this->normalizeAddressPart($shoot->address, true) === ''
+            || $this->normalizeAddressPart($shoot->city) === '') {
+            return false;
+        }
+        if ($this->normalizeAddressPart($street, true) !== $this->normalizeAddressPart($shoot->address, true)
+            || $this->normalizeAddressPart($address['city'] ?? '') !== $this->normalizeAddressPart($shoot->city)
+            || $this->normalizeState($address['state'] ?? '') !== $localState
+            || $this->normalizeZip($address['postalCode'] ?? '') !== $localZip
+            || $this->normalizeSuite($address['suite'] ?? '') !== $this->normalizeSuite($suite)
+            || !in_array($this->normalizeAddressPart($address['country'] ?? ''), ['us', 'usa', 'united states', 'united states of america'], true)) {
+            return false;
+        }
+
+        // Run database eligibility/ownership checks only after cheap property
+        // matching; a scheduled run may compare over a thousand order summaries.
+        if (!$this->canRecoverDeliveredOrder($shoot)
+            || Shoot::query()->where('id', '!=', $shoot->id)->where('cubicasa_order_id', $id)->exists()) {
+            return false;
+        }
+        // Unit provider IDs also occur below provider_data.lines, so inspect
+        // those as well as the current unit-level mirror before claiming an ID.
+        foreach (ShootUnit::query()->whereNotNull('provider_data')->get(['provider_data']) as $unit) {
+            $data = $unit->provider_data ?? [];
+            if (($data['cubicasa_order_id'] ?? null) === $id) {
+                return false;
+            }
+            foreach ($data['lines'] ?? [] as $line) {
+                if (($line['cubicasa_order_id'] ?? null) === $id) {
+                    return false;
+                }
             }
         }
 
-        return false;
+        return true;
     }
 
-    private function normalizeAddress(string $value): string
+    private function canRecoverDeliveredOrder(Shoot $shoot): bool
     {
-        $value = strtolower(trim($value));
-        $value = preg_replace('/[^a-z0-9]+/', ' ', $value) ?? '';
-        $value = preg_replace('/\s+/', ' ', $value) ?? '';
+        return !$shoot->isInternalTestShoot()
+            && !$shoot->relationLoaded('tourUnit')
+            && !$shoot->units()->exists()
+            && $shoot->scheduled_at !== null
+            && !in_array($shoot->status, [Shoot::STATUS_CANCELLED, Shoot::STATUS_DECLINED], true)
+            && !in_array($shoot->workflow_status, [Shoot::STATUS_CANCELLED, Shoot::STATUS_DECLINED], true)
+            && in_array(strtolower(trim((string) $shoot->cubicasa_status)), ['', 'draft', 'new'], true)
+            && empty($shoot->cubicasa_floorplans)
+            && !$shoot->files()->where('metadata->source', 'cubicasa')->exists()
+            && $shoot->hasCubiCasaEligibleService();
+    }
 
-        return trim($value);
+    private function recoveryOrderSummaries(): ?array
+    {
+        if ($this->recoveryOrdersLoaded) {
+            return $this->recoveryOrders;
+        }
+        $this->recoveryOrdersLoaded = true;
+        if (!$this->hasCredentials()) {
+            return null;
+        }
+        $orders = [];
+        $offset = 0;
+        try {
+            for ($page = 0; $page < 20; $page++) {
+                $response = $this->client()->get($this->baseUrl.'/orders', ['limit' => 100, 'offset' => $offset]);
+                $items = $response->json('items');
+                if (!$response->successful() || !is_array($items)) {
+                    return null;
+                }
+                foreach ($items as $item) {
+                    if (is_array($item) && is_string($item['id'] ?? null)) {
+                        $orders[$item['id']] = $item;
+                    }
+                }
+                if ($response->json('pagination.has_more') === false) {
+                    return $this->recoveryOrders = array_values($orders);
+                }
+                $next = $response->json('pagination.next_offset');
+                if (!is_numeric($next) || (int) $next <= $offset) {
+                    return null;
+                }
+                $offset = (int) $next;
+            }
+        } catch (\Throwable $e) {
+            Log::error('CubiCasa delivered-order discovery failed', ['error' => $e->getMessage()]);
+        }
+
+        // An incomplete list cannot prove that a matching scan is unique.
+        return null;
+    }
+
+    private function providerOrderCreatedAt(array $order): ?CarbonImmutable
+    {
+        $value = Arr::get($order, 'info.created_at');
+        try {
+            if (is_numeric($value)) {
+                return CarbonImmutable::createFromTimestampUTC((float) $value);
+            }
+            return is_string($value) && trim($value) !== '' ? CarbonImmutable::parse($value, 'UTC') : null;
+        } catch (\Throwable) {
+            return null;
+        }
+    }
+
+    private function normalizeAddressPart(mixed $value, bool $street = false): string
+    {
+        $value = strtolower(Str::ascii(trim((string) $value)));
+        $value = str_replace(['–', '—'], '-', $value);
+        // Keep hyphens and slashes: house-number ranges must remain distinct.
+        $value = preg_replace('/[^a-z0-9\s\/-]/', ' ', $value) ?? '';
+        $value = trim(preg_replace('/\s+/', ' ', $value) ?? '');
+        if ($street) {
+            $aliases = ['road' => 'rd', 'street' => 'st', 'avenue' => 'ave', 'boulevard' => 'blvd', 'drive' => 'dr', 'lane' => 'ln', 'court' => 'ct', 'circle' => 'cir', 'place' => 'pl', 'terrace' => 'ter', 'parkway' => 'pkwy', 'highway' => 'hwy'];
+            $value = implode(' ', array_map(fn (string $part): string => $aliases[$part] ?? $part, explode(' ', $value)));
+        }
+        return $value;
+    }
+
+    private function normalizeSuite(mixed $value): string
+    {
+        return trim(preg_replace('/^(?:apartment|apt|suite|unit)\s+/', '', $this->normalizeAddressPart($value)) ?? '');
+    }
+
+    private function normalizeZip(mixed $value): string
+    {
+        return preg_match('/^(\d{5})(?:[-\s]\d{4})?$/', trim((string) $value), $matches) ? $matches[1] : '';
+    }
+
+    private function normalizeState(mixed $value): string
+    {
+        $states = [
+            'alabama' => 'al', 'alaska' => 'ak', 'arizona' => 'az', 'arkansas' => 'ar', 'california' => 'ca', 'colorado' => 'co', 'connecticut' => 'ct', 'delaware' => 'de', 'district of columbia' => 'dc',
+            'florida' => 'fl', 'georgia' => 'ga', 'hawaii' => 'hi', 'idaho' => 'id', 'illinois' => 'il', 'indiana' => 'in', 'iowa' => 'ia', 'kansas' => 'ks', 'kentucky' => 'ky', 'louisiana' => 'la',
+            'maine' => 'me', 'maryland' => 'md', 'massachusetts' => 'ma', 'michigan' => 'mi', 'minnesota' => 'mn', 'mississippi' => 'ms', 'missouri' => 'mo', 'montana' => 'mt', 'nebraska' => 'ne', 'nevada' => 'nv',
+            'new hampshire' => 'nh', 'new jersey' => 'nj', 'new mexico' => 'nm', 'new york' => 'ny', 'north carolina' => 'nc', 'north dakota' => 'nd', 'ohio' => 'oh', 'oklahoma' => 'ok', 'oregon' => 'or',
+            'pennsylvania' => 'pa', 'rhode island' => 'ri', 'south carolina' => 'sc', 'south dakota' => 'sd', 'tennessee' => 'tn', 'texas' => 'tx', 'utah' => 'ut', 'vermont' => 'vt', 'virginia' => 'va', 'washington' => 'wa', 'west virginia' => 'wv', 'wisconsin' => 'wi', 'wyoming' => 'wy',
+        ];
+        $value = $this->normalizeAddressPart($value);
+        return $states[$value] ?? (in_array($value, $states, true) ? $value : '');
+    }
+
+    /** Compatibility entry point; recovery must use complete property/date identity. */
+    public function findReadyOrderByAddress(Shoot $shoot, ?string $excludeOrderId = null): ?array
+    {
+        $order = $this->findDeliveredOrderForShoot($shoot);
+        return $order && ($order['id'] ?? null) !== $excludeOrderId ? $order : null;
     }
 
     /**

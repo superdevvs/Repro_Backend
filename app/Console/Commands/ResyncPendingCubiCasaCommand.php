@@ -7,18 +7,18 @@ use App\Jobs\IngestCubiCasaAssetsJob;
 use App\Models\Shoot;
 use App\Services\CubiCasaService;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 /**
- * Re-fetch CubiCasa orders that are still in non-Ready states (Pending,
- * Fixing, New, Draft) so we catch any missed Ready transitions where the
- * webhook didn't reach us. Mirrors ResyncPendingIguidesCommand.
+ * Reconcile unfinished orders and incomplete Ready deliveries, including
+ * orders whose webhook never reached us.
  */
 class ResyncPendingCubiCasaCommand extends Command
 {
     protected $signature = 'cubicasa:resync-pending {--limit=100 : Max shoots per run}';
 
-    protected $description = 'Re-fetch CubiCasa orders for shoots whose status is still pending/fixing/new/draft.';
+    protected $description = 'Reconcile unfinished CubiCasa orders and recover missing floorplan deliveries.';
 
     public function handle(CubiCasaService $cubicasa): int
     {
@@ -29,6 +29,7 @@ class ResyncPendingCubiCasaCommand extends Command
 
         $limit = max(1, (int) $this->option('limit'));
         app(\App\Services\Shoots\ProviderFloorplanRecovery::class)->recover('cubicasa', $limit);
+        $missingAssetShootIds = $this->readyShootsMissingAssets();
 
         // Collect the ids and let the read finish before any write happens.
         //
@@ -40,17 +41,28 @@ class ResyncPendingCubiCasaCommand extends Command
         // partway through, which also meant backfillMissingOrders() below never
         // ran on those runs.
         $shootIds = Shoot::query()
-            ->whereNotNull('cubicasa_order_id')
+            ->where(fn ($q) => $q->whereNull('shoot_type')->orWhere('shoot_type', '!=', Shoot::SHOOT_TYPE_INTERNAL_TEST))
+            ->whereDoesntHave('units')
             ->where(function ($q) {
-                $q->whereNull('cubicasa_status')
-                    ->orWhereIn('cubicasa_status', ['Pending', 'Fixing', 'New', 'Draft'])
-                    ->orWhere(fn ($ready) => $ready->where('cubicasa_status', 'Ready')->where(fn ($assets) => $assets->whereNull('cubicasa_floorplans')->orWhere('cubicasa_floorplans', '[]'))
-                        ->whereDoesntHave('files', fn ($files) => $files->where('media_type', 'floorplan')));
-                $q->orWhereHas('files', fn ($files) => $files->where('media_type', 'floorplan')->where('metadata->source', 'cubicasa')
-                    ->where(fn ($mime) => $mime->where('file_type', 'like', 'text/html%')->orWhere('mime_type', 'like', 'text/html%'))
-                    ->where(fn ($scan) => $scan->whereNull('scan_status')->orWhere('scan_status', '!=', 'infected')));
+                $q->whereNotNull('cubicasa_order_id')->orWhereNotNull('cubicasa_external_id');
             })
-            ->orderByDesc('id')
+            ->where(function ($q) use ($missingAssetShootIds) {
+                $q->whereNull('cubicasa_status')
+                    ->orWhereRaw('LOWER(cubicasa_status) NOT IN (?, ?, ?, ?)', ['ready', 'cancelled', 'canceled', 'declined'])
+                    ->orWhere('cubicasa_sync_status', CubiCasaService::SYNC_STATUS_FAILED)
+                    ->orWhereIn('id', $missingAssetShootIds);
+            })
+            ->where(function ($q) {
+                $q->whereNull('cubicasa_sync_status')
+                    ->orWhereNotIn('cubicasa_sync_status', [CubiCasaService::SYNC_STATUS_QUEUED, CubiCasaService::SYNC_STATUS_RUNNING])
+                    ->orWhereNull('cubicasa_sync_started_at')
+                    ->orWhere('cubicasa_sync_started_at', '<=', now()->subMinutes(10));
+            })
+            // Ordering by newest id kept older shoots outside the same first
+            // 100 forever. Include attempts as well as successes so failed
+            // provider requests also rotate behind untouched orders.
+            ->orderByRaw('CASE WHEN cubicasa_sync_started_at IS NULL THEN cubicasa_last_synced_at WHEN cubicasa_last_synced_at IS NULL OR cubicasa_sync_started_at > cubicasa_last_synced_at THEN cubicasa_sync_started_at ELSE cubicasa_last_synced_at END ASC')
+            ->orderBy('id')
             ->limit($limit)
             ->pluck('id');
 
@@ -78,6 +90,7 @@ class ResyncPendingCubiCasaCommand extends Command
             }
 
             if (!$parsed) {
+                $failed++;
                 continue;
             }
 
@@ -93,13 +106,44 @@ class ResyncPendingCubiCasaCommand extends Command
         $this->info("Re-synced {$count} CubiCasa shoot(s); queued {$created} missing order(s).");
 
         if ($failed > 0) {
-            // Still a visible failure: the retry inside the service is bounded,
-            // so reaching here means contention did not clear.
+            // Provider failures and exhausted write retries must be visible
+            // to scheduler monitoring without aborting other shoots.
             $this->error("{$failed} CubiCasa shoot(s) could not be re-synced.");
             return self::FAILURE;
         }
 
         return self::SUCCESS;
+    }
+
+    /**
+     * A Ready provider status only completes delivery once all returned asset
+     * keys exist locally. Read this set fully before dispatching any writes;
+     * even a partial ingestion failure must be recoverable on SQLite.
+     *
+     * @return array<int, int>
+     */
+    private function readyShootsMissingAssets(): array
+    {
+        return Shoot::query()
+            ->where(fn ($q) => $q->whereNull('shoot_type')->orWhere('shoot_type', '!=', Shoot::SHOOT_TYPE_INTERNAL_TEST))
+            ->whereDoesntHave('units')
+            ->whereRaw('LOWER(cubicasa_status) = ?', ['ready'])
+            ->with(['files' => fn ($q) => $q->where('media_type', 'floorplan')->whereNull('shoot_service_id')->select('id', 'shoot_id', 'metadata', 'media_type', 'file_type', 'mime_type', 'scan_status')])
+            ->get(['id', 'cubicasa_floorplans'])
+            ->filter(function (Shoot $shoot): bool {
+                $floorplans = collect($shoot->cubicasa_floorplans ?? [])
+                    ->filter(fn ($item) => is_array($item) && !empty($item['asset_key']) && !empty($item['url']));
+                if ($shoot->files->contains(fn ($file) => $file->isInvalidProviderFloorplan() && $file->scan_status !== 'infected')) return true;
+                if ($floorplans->isEmpty()) {
+                    // A local replacement deliberately clears provider originals.
+                    return $shoot->files->isEmpty();
+                }
+
+                $existingKeys = $shoot->files->pluck('metadata.cubicasa_asset_key')->filter();
+                return $floorplans->pluck('asset_key')->diff($existingKeys)->isNotEmpty();
+            })
+            ->pluck('id')
+            ->all();
     }
 
     /**
@@ -138,28 +182,22 @@ class ResyncPendingCubiCasaCommand extends Command
      */
     private function backfillMissingOrders(int $limit): int
     {
-        // Skip terminal + unapproved + already-completed. Backfilling a Draft onto
-        // a delivered shoot is exactly how empty drafts blocked Ready rematches.
-        $skip = [
-            Shoot::STATUS_CANCELLED,
-            Shoot::STATUS_DECLINED,
-            Shoot::STATUS_REQUESTED,
-            Shoot::STATUS_DELIVERED,
-            Shoot::STATUS_ON_HOLD,
-            'hold_on',
-        ];
-
         // Same reason as handle(): dispatching a job is itself a write to the
         // `jobs` table, so the read must be finished first.
         $candidateIds = Shoot::query()
             ->cubicasaAutoOrderEligible()
-            ->whereDoesntHave('units')
             ->whereNull('cubicasa_order_id')
             ->whereNull('cubicasa_external_id')
             ->whereNotNull('scheduled_at')
-            ->whereNotIn('status', $skip)
-            ->whereNotIn('workflow_status', $skip)
-            ->orderByDesc('id')
+            ->whereIn(DB::raw('LOWER(TRIM(status))'), CreateCubiCasaOrderJob::AUTO_CREATE_STATUSES)
+            ->whereIn(DB::raw("LOWER(COALESCE(NULLIF(TRIM(workflow_status), ''), TRIM(status)))"), CreateCubiCasaOrderJob::AUTO_CREATE_STATUSES)
+            ->where(fn ($q) => $q->whereNull('shoot_type')->orWhere('shoot_type', '!=', Shoot::SHOOT_TYPE_INTERNAL_TEST))
+            ->whereDoesntHave('units')
+            // Filter before LIMIT: unrelated photo bookings must not consume
+            // all of the reconciliation slots and hide eligible older shoots.
+            ->cubicasaEligible()
+            ->orderBy('scheduled_at')
+            ->orderBy('id')
             ->limit($limit)
             ->pluck('id');
 

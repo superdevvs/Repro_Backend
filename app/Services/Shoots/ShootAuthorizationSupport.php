@@ -48,6 +48,9 @@ class ShootAuthorizationSupport
     /** Client display name and Company notes are read-only context for the current video editor. */
     public function canVideoEditorReadClientContext(Shoot $shoot, ?User $user): bool
     {
+        if ($user?->role === 'editor' && app(ShootDispatchOverviewReturns::class)->items($shoot, $user)->contains('lane', 'video')) {
+            return true;
+        }
         // The video checks load raw serviceItems. Keep that relation off the
         // source model so it cannot replace the presenter's sanitized alias.
         $contextShoot = clone $shoot;
@@ -225,7 +228,11 @@ class ShootAuthorizationSupport
         }
 
         if ($this->hasRole($user, ['editor'])) {
-            return app(ShootEditingAssignmentService::class)->editorHasAssignment($shoot, $user)
+            $assignments = app(ShootEditingAssignmentService::class);
+
+            // Dispatch tasks open the existing overview. They are not a shoot editor row.
+            return $assignments->editorHasAssignment($shoot, $user)
+                || $assignments->hasDispatchAccess($shoot, $user)
                 || count(app(ShootEditorRequestAccess::class)->requests($shoot, $user)) > 0;
         }
 
@@ -287,7 +294,8 @@ class ShootAuthorizationSupport
 
         $assignmentService = app(ShootEditingAssignmentService::class);
         if (! $shootServiceId) {
-            return $assignmentService->editorHasAssignment($shoot, $user);
+            return $assignmentService->editorHasAssignment($shoot, $user)
+                || $assignmentService->hasOpenDispatchAssignment($shoot, $user);
         }
 
         $serviceItem = $shoot->serviceItems()
@@ -295,28 +303,35 @@ class ShootAuthorizationSupport
             ->whereKey($shootServiceId)
             ->first();
 
-        if (! $serviceItem || ! $assignmentService->serviceRequiresEditing($serviceItem)) {
+        if (! $serviceItem) {
             return false;
         }
 
-        // Legacy top-level editors retain access to all editing-required items.
-        if ((string) $shoot->editor_id === (string) $user->id) {
-            return true;
+        if ($assignmentService->serviceRequiresEditing($serviceItem)) {
+            // Legacy top-level editors retain access to all editing-required items.
+            if ((string) $shoot->editor_id === (string) $user->id) {
+                return true;
+            }
+
+            // Photo-lane (and non-bundled) assignments live on editor_id.
+            if ((string) ($serviceItem->editor_id ?? '') === (string) $user->id) {
+                return true;
+            }
+
+            // Bundled photo_video (and video-capable) services assign the video lane
+            // on video_editor_id. FE always sends shoot_service_id for edited uploads,
+            // so omitting this check 403s video editors (e.g. user 1100 on #145/#377).
+            if ((string) ($serviceItem->video_editor_id ?? '') === (string) $user->id) {
+                return $serviceItem->service?->supportsVideoIntake() ?? false;
+            }
         }
 
-        // Photo-lane (and non-bundled) assignments live on editor_id.
-        if ((string) ($serviceItem->editor_id ?? '') === (string) $user->id) {
-            return true;
-        }
-
-        // Bundled photo_video (and video-capable) services assign the video lane
-        // on video_editor_id. FE always sends shoot_service_id for edited uploads,
-        // so omitting this check 403s video editors (e.g. user 1100 on #145/#377).
-        if ((string) ($serviceItem->video_editor_id ?? '') === (string) $user->id) {
-            return $serviceItem->service?->supportsVideoIntake() ?? false;
-        }
-
-        return false;
+        // Send-to-editing assigns the task, not the shoot or service editor row.
+        // A task tied to this line is enough. A task with no line still covers
+        // the lines that belong to this shoot, because the files were not split
+        // across them. A line on another shoot never reaches this return.
+        return $assignmentService->hasOpenDispatchForService($shoot, $user, (int) $serviceItem->id)
+            || $assignmentService->hasUnscopedOpenDispatch($shoot, $user);
     }
 
     public function canViewShootDetails(Shoot $shoot, ?User $user = null): bool

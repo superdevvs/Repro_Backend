@@ -432,7 +432,7 @@ class CubiCasaAutoOrderTest extends TestCase
      * Feature: auto-create-cubicasa-order, Property 1: Eligible, unlinked,
      * active shoots trigger an auto create.
      *
-     * For any shoot that exists, is not cancelled or declined, has a
+     * For any shoot that exists, is confirmed, dated and unfinished, has a
      * CubiCasa-eligible service, is not already linked, and has credentials
      * available, running CreateCubiCasaOrderJob invokes
      * CubiCasaService::createOrder() exactly once with the shoot and a source
@@ -453,24 +453,20 @@ class CubiCasaAutoOrderTest extends TestCase
     {
         mt_srand(self::SEED);
 
-        // Statuses that are NOT cancelled/declined/requested/delivered, so the
-        // active auto-create guard passes. Requested (unapproved) and delivered
-        // (already-completed) must not open CubiCasa drafts.
+        // Only confirmed, unfinished bookings may create an automatic order.
         $activeStatuses = [
             Shoot::STATUS_SCHEDULED,
             Shoot::STATUS_UPLOADED,
             Shoot::STATUS_EDITING,
             Shoot::STATUS_REVIEW,
-            Shoot::STATUS_READY,
         ];
 
         $suiteKeys = ['apt_suite', 'aptSuite', 'suite'];
 
         for ($i = 0; $i < self::PROPERTY_ITERATIONS; $i++) {
-            // Randomize the active status/workflow_status pair: any pairing of
-            // non-cancelled/declined values must still trigger the create.
+            // Randomize confirmed, unfinished status/workflow_status pairs.
             $status = $activeStatuses[mt_rand(0, count($activeStatuses) - 1)];
-            $workflowStatus = $activeStatuses[mt_rand(0, count($activeStatuses) - 1)];
+            $workflowStatus = $i === 0 ? '' : $activeStatuses[mt_rand(0, count($activeStatuses) - 1)];
 
             // Randomize otherwise-irrelevant payload inputs.
             $propertyDetails = mt_rand(0, 1) === 1
@@ -480,6 +476,7 @@ class CubiCasaAutoOrderTest extends TestCase
             $shoot = Shoot::factory()->create([
                 'status' => $status,
                 'workflow_status' => $workflowStatus,
+                'scheduled_at' => now()->addDay(),
                 // Unlinked: no existing CubiCasa order/external id.
                 'cubicasa_order_id' => null,
                 'cubicasa_external_id' => null,
@@ -1242,6 +1239,9 @@ class CubiCasaAutoOrderTest extends TestCase
     private function unlinkedShoot(): Shoot
     {
         return Shoot::factory()->create([
+            'status' => Shoot::STATUS_SCHEDULED,
+            'workflow_status' => Shoot::STATUS_SCHEDULED,
+            'scheduled_at' => now()->addDay(),
             'cubicasa_order_id' => null,
             'cubicasa_external_id' => null,
             'cubicasa_idempotency_key' => null,

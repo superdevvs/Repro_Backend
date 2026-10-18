@@ -62,10 +62,12 @@ class CubiCasaWebhookControllerTest extends TestCase
                 'status' => 'Ready',
                 'order_type' => 'Tier3-LiDAR',
                 'first_delivered_at' => 1778406163.891521,
+                'created_at' => '2026-10-01T14:00:00Z',
                 'external_id' => null,
             ],
             'address' => [
                 'full_address' => '521 Brightfield Road, Lutherville Timonium, MD 21093',
+                'number' => '521',
                 'street' => 'Brightfield Road',
                 'city' => 'Lutherville Timonium',
                 'state' => 'Maryland',
@@ -133,6 +135,7 @@ class CubiCasaWebhookControllerTest extends TestCase
     public function test_returns_200_when_no_shoot_matches(): void
     {
         Queue::fake();
+        Http::fake(['*' => Http::response(array_replace($this->fakeOrderDetail(), ['id' => 'unknown-order-id']), 200)]);
 
         $response = $this->postWebhook($this->buildWebhookPayload([
             'id' => 'unknown-order-id',
@@ -235,9 +238,10 @@ class CubiCasaWebhookControllerTest extends TestCase
         $this->assertSame('https://visithome.ai/abc?mu=ft', $cubicasaData['tour']['link'] ?? null);
     }
 
-    public function test_missing_secret_rejects_webhook_and_does_not_process(): void
+    public function test_missing_all_credentials_rejects_webhook_and_does_not_process(): void
     {
         config()->set('services.cubicasa.webhook_secret', '');
+        config()->set('services.cubicasa.api_key', '');
         Queue::fake();
         Http::fake();
 
@@ -286,5 +290,188 @@ class CubiCasaWebhookControllerTest extends TestCase
 
         $this->assertNull($shoot->fresh()->cubicasa_status);
         Queue::assertNothingPushed();
+    }
+
+    public function test_documented_api_key_authentication_works_without_hmac_secret(): void
+    {
+        config()->set('services.cubicasa.webhook_secret', '');
+        Queue::fake();
+        Http::fake();
+        $shoot = Shoot::factory()->create(['cubicasa_order_id' => self::ORDER_ID]);
+
+        $this->withHeader('api-key', 'test-key')->postJson('/cubicasa_webhook.php', $this->buildWebhookPayload([
+            'current_status' => 'Pending', 'delivery_type' => 'moved_to_pending',
+        ]))->assertOk()->assertJsonPath('success', true);
+
+        $this->assertSame('Pending', $shoot->fresh()->cubicasa_status);
+        Http::assertNothingSent();
+    }
+
+    public function test_api_key_only_configuration_rejects_missing_or_wrong_key(): void
+    {
+        config()->set('services.cubicasa.webhook_secret', '');
+        Queue::fake();
+        Http::fake();
+        $shoot = Shoot::factory()->create(['cubicasa_order_id' => self::ORDER_ID]);
+
+        $this->postJson('/cubicasa_webhook.php', $this->buildWebhookPayload())->assertUnauthorized();
+        $this->withHeader('api-key', 'wrong-key')->postJson('/cubicasa_webhook.php', $this->buildWebhookPayload())->assertUnauthorized();
+
+        $this->assertNull($shoot->fresh()->cubicasa_status);
+        Http::assertNothingSent();
+        Queue::assertNothingPushed();
+    }
+
+    public function test_database_api_key_takes_precedence_over_environment_key(): void
+    {
+        config()->set('services.cubicasa.webhook_secret', '');
+        Queue::fake();
+        Http::fake();
+        DB::table('settings')->insert([
+            'key' => 'integrations.cubicasa', 'type' => 'json',
+            'value' => json_encode(['apiKey' => 'database-key']),
+        ]);
+        $shoot = Shoot::factory()->create(['cubicasa_order_id' => self::ORDER_ID]);
+        $payload = $this->buildWebhookPayload(['current_status' => 'Pending', 'delivery_type' => 'moved_to_pending']);
+
+        $this->withHeader('api-key', 'test-key')->postJson('/cubicasa_webhook.php', $payload)->assertUnauthorized();
+        $this->withHeader('api-key', 'database-key')->postJson('/cubicasa_webhook.php', $payload)
+            ->assertOk()->assertJsonPath('success', true);
+
+        $this->assertSame('Pending', $shoot->fresh()->cubicasa_status);
+    }
+
+    private function recoveryShoot(array $overrides = []): Shoot
+    {
+        $shoot = Shoot::factory()->create(array_replace([
+            'address' => '521 Brightfield Rd', 'city' => 'Lutherville Timonium',
+            'state' => 'MD', 'zip' => '21093', 'scheduled_at' => '2026-10-01 14:00:00',
+            'cubicasa_order_id' => 'existing-draft', 'cubicasa_status' => 'Draft',
+        ], $overrides));
+        $this->attachCubicasaService($shoot);
+        return $shoot;
+    }
+
+    public function test_status_only_ready_webhook_matches_separate_scan_by_exact_property_and_date(): void
+    {
+        Queue::fake();
+        Http::fake(['*' => Http::response($this->fakeOrderDetail(), 200)]);
+        $shoot = $this->recoveryShoot();
+
+        $this->postWebhook($this->buildWebhookPayload())->assertOk()->assertJsonPath('shoot_id', $shoot->id);
+
+        $this->assertSame(self::ORDER_ID, $shoot->fresh()->cubicasa_order_id);
+        $this->assertSame('Ready', $shoot->fresh()->cubicasa_status);
+        Queue::assertPushed(IngestCubiCasaAssetsJob::class, fn ($job) => $job->shootId === $shoot->id);
+        Http::assertSentCount(1);
+        Http::assertSent(fn ($request) => $request->hasHeader('api-key', 'test-key'));
+    }
+
+    public function test_fetched_external_id_is_used_before_address_matching(): void
+    {
+        Queue::fake();
+        $shoot = $this->recoveryShoot(['address' => 'A differently formatted provider address']);
+        $raw = $this->fakeOrderDetail();
+        $raw['info']['external_id'] = 'shoot-'.$shoot->id;
+        Http::fake(['*' => Http::response($raw, 200)]);
+
+        $this->postWebhook($this->buildWebhookPayload())->assertOk()->assertJsonPath('shoot_id', $shoot->id);
+
+        $this->assertSame(self::ORDER_ID, $shoot->fresh()->cubicasa_order_id);
+        $this->assertSame('shoot-'.$shoot->id, $shoot->fresh()->cubicasa_external_id);
+        Http::assertSentCount(1);
+    }
+
+    public function test_ambiguous_property_matches_are_left_untouched(): void
+    {
+        Queue::fake();
+        Http::fake(['*' => Http::response($this->fakeOrderDetail(), 200)]);
+        $first = $this->recoveryShoot(['cubicasa_order_id' => 'draft-one']);
+        $second = $this->recoveryShoot(['cubicasa_order_id' => 'draft-two']);
+
+        $this->postWebhook($this->buildWebhookPayload())->assertOk()->assertJsonPath('success', false);
+
+        $this->assertSame('draft-one', $first->fresh()->cubicasa_order_id);
+        $this->assertSame('draft-two', $second->fresh()->cubicasa_order_id);
+        Queue::assertNothingPushed();
+    }
+
+    public function test_property_match_outside_scan_date_window_is_left_untouched(): void
+    {
+        Queue::fake();
+        Http::fake(['*' => Http::response($this->fakeOrderDetail(), 200)]);
+        $shoot = $this->recoveryShoot(['scheduled_at' => '2026-09-01 14:00:00']);
+
+        $this->postWebhook($this->buildWebhookPayload())->assertOk()->assertJsonPath('success', false);
+
+        $this->assertSame('existing-draft', $shoot->fresh()->cubicasa_order_id);
+        Queue::assertNothingPushed();
+    }
+
+    public function test_external_id_cannot_replace_an_already_progressed_order(): void
+    {
+        Queue::fake();
+        $shoot = $this->recoveryShoot(['cubicasa_status' => 'Processing']);
+        $raw = $this->fakeOrderDetail();
+        $raw['info']['external_id'] = 'shoot-'.$shoot->id;
+        Http::fake(['*' => Http::response($raw, 200)]);
+
+        $this->postWebhook($this->buildWebhookPayload())->assertOk()->assertJsonPath('success', false);
+
+        $this->assertSame('existing-draft', $shoot->fresh()->cubicasa_order_id);
+        $this->assertSame('Processing', $shoot->fresh()->cubicasa_status);
+        Queue::assertNothingPushed();
+    }
+
+    public function test_conflicting_external_id_cannot_claim_an_exact_property_match(): void
+    {
+        Queue::fake();
+        $shoot = $this->recoveryShoot(['cubicasa_external_id' => 'another-booking']);
+        $raw = $this->fakeOrderDetail();
+        $raw['info']['external_id'] = 'shoot-'.$shoot->id;
+        Http::fake(['*' => Http::response($raw, 200)]);
+
+        $this->postWebhook($this->buildWebhookPayload())->assertOk()->assertJsonPath('success', false);
+
+        $this->assertSame('existing-draft', $shoot->fresh()->cubicasa_order_id);
+        $this->assertSame('another-booking', $shoot->fresh()->cubicasa_external_id);
+        Queue::assertNothingPushed();
+    }
+
+    public function test_unknown_ready_order_fetch_failure_is_not_cached_and_can_retry(): void
+    {
+        Queue::fake();
+        Http::fake(['*' => Http::sequence()->push([], 503)->push($this->fakeOrderDetail(), 200)]);
+        $shoot = $this->recoveryShoot();
+        $payload = $this->buildWebhookPayload();
+
+        $this->postWebhook($payload)->assertStatus(503);
+        $this->assertSame('existing-draft', $shoot->fresh()->cubicasa_order_id);
+        $this->assertSame('Draft', $shoot->fresh()->cubicasa_status);
+        $this->assertFalse(Cache::has('cubicasa:webhook:'.self::ORDER_ID.':Ready:moved_to_ready'));
+        Queue::assertNothingPushed();
+
+        $this->postWebhook($payload)->assertOk()->assertJsonPath('success', true);
+        $this->assertSame(self::ORDER_ID, $shoot->fresh()->cubicasa_order_id);
+        Queue::assertPushed(IngestCubiCasaAssetsJob::class);
+        Http::assertSentCount(2);
+    }
+
+    public function test_known_ready_order_fetch_failure_is_not_cached_and_can_retry(): void
+    {
+        Queue::fake();
+        Http::fake(['*' => Http::sequence()->push([], 503)->push($this->fakeOrderDetail(), 200)]);
+        $shoot = $this->recoveryShoot(['cubicasa_order_id' => self::ORDER_ID]);
+        $payload = $this->buildWebhookPayload();
+
+        $this->postWebhook($payload)->assertStatus(503);
+        $this->assertSame('Draft', $shoot->fresh()->cubicasa_status);
+        $this->assertFalse(Cache::has('cubicasa:webhook:'.self::ORDER_ID.':Ready:moved_to_ready'));
+        Queue::assertNothingPushed();
+
+        $this->postWebhook($payload)->assertOk()->assertJsonPath('success', true);
+        $this->assertSame('Ready', $shoot->fresh()->cubicasa_status);
+        Queue::assertPushed(IngestCubiCasaAssetsJob::class);
+        Http::assertSentCount(2);
     }
 }

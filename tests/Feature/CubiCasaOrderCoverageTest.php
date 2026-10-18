@@ -61,6 +61,8 @@ class CubiCasaOrderCoverageTest extends TestCase
             'state' => 'CA',
             'zip' => '91364',
             'scheduled_at' => null,
+            'status' => Shoot::STATUS_SCHEDULED,
+            'workflow_status' => Shoot::STATUS_SCHEDULED,
         ], $attributes));
 
         $service = $eligible ? $this->eligibleService() : Service::factory()->create(['name' => 'HDR Photography']);

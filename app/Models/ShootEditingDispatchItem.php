@@ -9,7 +9,7 @@ class ShootEditingDispatchItem extends Model
 {
     use HasUuids;
     protected $guarded = [];
-    protected $casts = ['sources' => 'array'];
+    protected $casts = ['sources' => 'array', 'overview_return_files' => 'array'];
 
     public function dispatch() { return $this->belongsTo(ShootEditingDispatch::class, 'dispatch_id'); }
 

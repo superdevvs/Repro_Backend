@@ -20,6 +20,27 @@ use Tests\TestCase;
 
 class AutomationWorkflowExecutorRecipientTest extends TestCase
 {
+    public function test_muted_assignment_workflows_suppress_all_photographer_targets_on_both_channels(): void
+    {
+        $executor = $this->makeExecutor();
+        $method = new ReflectionMethod($executor, 'resolveActionRecipients');
+        $automation = new AutomationRule(['trigger_type' => 'PHOTOGRAPHER_ASSIGNED', 'recipients_json' => ['client', 'photographer']]);
+        $person = ['email' => 'photo@example.test', 'phonenumber' => '+12025550101'];
+        $context = ['notify_photographer' => false, 'client' => ['email' => 'client@example.test'],
+            'photographer' => $person, 'photographers' => [$person], 'previous_photographer' => $person, 'new_photographer' => $person];
+        foreach (['email', 'sms'] as $channel) {
+            $this->assertSame(['client@example.test'], array_column($method->invoke($executor, $automation, [], $context, $channel), 'email'));
+            foreach (['photographer', 'Photographer', 'previous_photographer', 'new_photographer'] as $role) {
+                foreach ([['recipientMode' => 'roles', 'recipientRoles' => [$role]], ['recipientMode' => 'context', 'contextKey' => $role]] as $config) {
+                    $this->assertSame([], $method->invoke($executor, $automation, $config, $context, $channel));
+                }
+            }
+            $context['notify_photographer'] = true;
+            $this->assertCount(2, $method->invoke($executor, $automation, [], $context, $channel));
+            $context['notify_photographer'] = false;
+        }
+    }
+
     public function test_request_actions_route_legacy_photographer_targets_to_sales_rep(): void
     {
         $executor = $this->makeExecutor();

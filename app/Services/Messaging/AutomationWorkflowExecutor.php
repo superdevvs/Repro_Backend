@@ -1237,9 +1237,9 @@ class AutomationWorkflowExecutor
         }
 
         if (
-            $role === 'photographer'
+            in_array($role, ['photographer', 'previous_photographer', 'new_photographer'], true)
             && ($context['notify_photographer'] ?? null) === false
-            && in_array($automation->trigger_type, ['SHOOT_BOOKED', 'SHOOT_SCHEDULED', 'SHOOT_UPDATED', 'PHOTOGRAPHER_CHANGED'], true)
+            && in_array($automation->trigger_type, ['SHOOT_BOOKED', 'SHOOT_SCHEDULED', 'SHOOT_UPDATED', 'PHOTOGRAPHER_CHANGED', 'PHOTOGRAPHER_ASSIGNED'], true)
         ) {
             return false;
         }

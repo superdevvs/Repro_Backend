@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\PhotographerAvailability;
+use App\Models\Shoot;
 use App\Models\User;
 use App\Services\PhotographerAvailabilityService;
 use App\Services\AddressLookupService;
@@ -338,12 +339,18 @@ class PhotographerAvailabilityController extends Controller
             $validated = $request->validate([
                 'photographer_id' => 'required|exists:users,id',
                 'date' => 'required|date',
+                'shoot_id' => 'nullable|integer|exists:shoots,id',
             ]);
 
             if ($response = $this->denyUnlessCanViewAvailability($request->user(), (int) $validated['photographer_id'])) {
                 return $response;
             }
 
+            $excludeShootId = isset($validated['shoot_id']) ? (int) $validated['shoot_id'] : null;
+            if ($excludeShootId && !app(\App\Services\Shoots\ShootAuthorizationSupport::class)
+                ->canScheduleShoot(Shoot::findOrFail($excludeShootId), $request->user())) {
+                return response()->json(['message' => 'You cannot edit this appointment.'], 403);
+            }
             $dayOfWeek = strtolower(date('l', strtotime($validated['date'])));
             $date = \Carbon\Carbon::parse($validated['date']);
 
@@ -358,7 +365,8 @@ class PhotographerAvailabilityController extends Controller
             $availableSlots = $this->availabilityService->getAvailableSlots(
                 $validated['photographer_id'],
                 $date,
-                $date // Same date for from and to (single day)
+                $date, // Same date for from and to (single day)
+                $excludeShootId
             );
 
             // The method returns slots grouped by date, so get slots for this specific date
@@ -384,7 +392,8 @@ class PhotographerAvailabilityController extends Controller
             // Get booked slots (existing shoots) for this day
             $bookedSlots = $this->availabilityService->getBookedSlots(
                 $validated['photographer_id'],
-                $date
+                $date,
+                $excludeShootId
             );
 
             $bookedShoots = \App\Models\Shoot::with(['client:id,name', 'services', 'serviceItems.service'])

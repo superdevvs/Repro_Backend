@@ -35,7 +35,8 @@ class ShootNotesAccessService
         }
 
         if ($role === 'editor') {
-            return $this->editingAssignments->editorHasAssignment($shoot, $user);
+            return $this->editingAssignments->editorHasAssignment($shoot, $user)
+                || $this->editingAssignments->hasDispatchAccess($shoot, $user);
         }
 
         return false;

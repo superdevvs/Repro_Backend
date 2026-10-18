@@ -25,7 +25,7 @@ class CubiCasaRematchReadyOrderTest extends TestCase
         config()->set('services.cubicasa.environment', 'production');
     }
 
-    public function test_sync_rematches_empty_draft_to_ready_order_by_address(): void
+    public function test_sync_does_not_rematch_a_loose_address_without_property_and_date_identity(): void
     {
         $draft = [
             'id' => self::DRAFT_ID,
@@ -104,9 +104,9 @@ class CubiCasaRematchReadyOrderTest extends TestCase
         $fresh = $shoot->fresh();
 
         $this->assertNotNull($parsed);
-        $this->assertSame(self::READY_ID, $fresh->cubicasa_order_id);
-        $this->assertSame('Ready', $fresh->cubicasa_status);
-        $this->assertCount(4, $fresh->cubicasa_floorplans);
+        $this->assertSame(self::DRAFT_ID, $fresh->cubicasa_order_id);
+        $this->assertSame('Draft', $fresh->cubicasa_status);
+        $this->assertEmpty($fresh->cubicasa_floorplans);
         $this->assertSame('shoot-162', $fresh->cubicasa_external_id);
     }
 }

@@ -342,8 +342,31 @@ class ShootListingService
                 ->groupBy('shoot_id');
         }
 
+        $viewer = auth()->user();
+        $dispatchOnly = [];
+        $dispatchFiles = [];
+        if ($viewer && $viewer->role === 'editor') {
+            $permanent = DB::table('shoots')->whereIn('id', $ids)->where('editor_id', $viewer->id)->pluck('id')
+                ->merge(DB::table('shoot_service')->whereIn('shoot_id', $ids)->where(function ($query) use ($viewer) {
+                    $query->where('editor_id', $viewer->id)->orWhere('video_editor_id', $viewer->id);
+                })->pluck('shoot_id'))
+                ->map(fn ($id) => (int) $id)
+                ->all();
+            $dispatchOnly = array_fill_keys(array_map('intval', $ids), true);
+            foreach ($permanent as $id) {
+                unset($dispatchOnly[(int) $id]);
+            }
+            if ($dispatchOnly !== []) {
+                $dispatchFiles = app(ShootEditingAssignmentService::class)->openDispatchFileIdsByShoot(array_keys($dispatchOnly), $viewer->id);
+            }
+        }
+
         foreach ($shoots as $shoot) {
             $group = $preferred->get($shoot->id) ?? $fallback->get($shoot->id) ?? collect();
+            if (isset($dispatchOnly[(int) $shoot->id])) {
+                $allowed = array_flip($dispatchFiles[(int) $shoot->id] ?? []);
+                $group = $group->filter(fn (ShootFile $file) => isset($allowed[(int) $file->id]))->values();
+            }
             $shoot->setRelation('list_preview_files', $group->take(6)->values());
         }
     }
@@ -533,15 +556,19 @@ class ShootListingService
                                 $delivered->whereIn('status', $deliveredStatuses)
                                     ->orWhereIn('workflow_status', $deliveredStatuses);
                             })
-                            ->whereHas('services', function (Builder $serviceQuery) use ($editorId) {
-                                $serviceQuery->where(function (Builder $lane) use ($editorId) {
-                                    $lane->where(function (Builder $photo) use ($editorId) {
-                                        $photo->where('shoot_service.editor_id', $editorId)
-                                            ->whereNull('shoot_service.editing_completed_at');
-                                    })->orWhere(function (Builder $video) use ($editorId) {
-                                        $video->where('shoot_service.video_editor_id', $editorId)
-                                            ->whereNull('shoot_service.video_editing_completed_at');
+                            ->where(function (Builder $work) use ($editorId) {
+                                $work->whereHas('services', function (Builder $serviceQuery) use ($editorId) {
+                                    $serviceQuery->where(function (Builder $lane) use ($editorId) {
+                                        $lane->where(function (Builder $photo) use ($editorId) {
+                                            $photo->where('shoot_service.editor_id', $editorId)
+                                                ->whereNull('shoot_service.editing_completed_at');
+                                        })->orWhere(function (Builder $video) use ($editorId) {
+                                            $video->where('shoot_service.video_editor_id', $editorId)
+                                                ->whereNull('shoot_service.video_editing_completed_at');
+                                        });
                                     });
+                                })->orWhereExists(function ($exists) use ($editorId) {
+                                    app(ShootEditingAssignmentService::class)->constrainOpenDispatchItems($exists, $editorId);
                                 });
                             });
                     });

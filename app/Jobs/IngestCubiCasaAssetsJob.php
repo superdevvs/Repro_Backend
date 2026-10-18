@@ -78,6 +78,7 @@ class IngestCubiCasaAssetsJob implements ShouldQueue
         $ingestedFileIds = [];
         $retryPending = false;
         $failedKeys = [];
+        $firstFailure = null;
         $mediaStorage = app(\App\Services\Media\MediaStorage::class);
 
         foreach ($this->floorplans as $item) {
@@ -122,20 +123,12 @@ class IngestCubiCasaAssetsJob implements ShouldQueue
                 ])->get($url);
 
                 if (!$response->successful()) {
-                    Log::warning('IngestCubiCasaAssetsJob: download failed', [
-                        'shoot_id' => $shoot->id,
-                        'asset_key' => $assetKey,
-                        'status' => $response->status(),
-                        'url' => $url,
-                    ]);
-                    $failedKeys[] = $assetKey;
-                    continue;
+                    throw new \RuntimeException(sprintf('The floorplan download returned HTTP %d.', $response->status()));
                 }
 
                 $binary = $response->body();
                 if ($binary === '' || $binary === null) {
-                    $failedKeys[] = $assetKey;
-                    continue;
+                    throw new \RuntimeException('The floorplan download was empty.');
                 }
 
                 $mimeType = $response->header('Content-Type') ?: $this->guessMimeType($extension);
@@ -196,6 +189,7 @@ class IngestCubiCasaAssetsJob implements ShouldQueue
                     $shootFile = ShootFile::create($attributes);
                 }
 
+                $existingByKey->put($assetKey, $shootFile);
                 $ingestedFileIds[] = $shootFile->id;
                 // Provider files must follow the same quarantine lifecycle as uploads.
                 // Clean scan release queues processing, which renders floorplan previews.
@@ -219,6 +213,7 @@ class IngestCubiCasaAssetsJob implements ShouldQueue
                     'error' => $e->getMessage(),
                 ]);
                 $failedKeys[] = $assetKey;
+                $firstFailure ??= $e;
                 continue;
             }
         }
@@ -229,7 +224,8 @@ class IngestCubiCasaAssetsJob implements ShouldQueue
         if (!empty($failedKeys)) {
             throw new \RuntimeException(
                 'CubiCasa asset download failed for shoot '.$shoot->id
-                .' ('.implode(', ', array_values(array_unique($failedKeys))).')'
+                .': '.count($failedKeys).' CubiCasa asset(s) could not be ingested ('.implode(', ', array_values(array_unique($failedKeys))).')',
+                0, $firstFailure
             );
         }
 
@@ -257,6 +253,7 @@ class IngestCubiCasaAssetsJob implements ShouldQueue
                 ]);
             }
         }
+
     }
 
     public function failed(\Throwable $exception): void
