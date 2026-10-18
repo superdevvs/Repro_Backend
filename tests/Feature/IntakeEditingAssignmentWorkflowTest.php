@@ -137,7 +137,9 @@ class IntakeEditingAssignmentWorkflowTest extends TestCase
             $dispatch->items()->create(['input_key' => "full-shoot:stack:{$bracket}", 'workflow' => 'full-shoot', 'sources' => [], 'shoot_service_id' => $this->item->id,
                 'lane' => 'photo', 'destination' => 'human', 'editor_id' => $this->editor->id, 'status' => 'assigned']);
         }
-        $this->actingAs($this->editor)->postJson("/api/shoots/{$this->shoot->id}/upload/finalize-edited")->assertForbidden();
+        $this->actingAs($this->editor)->postJson("/api/shoots/{$this->shoot->id}/upload/finalize-edited")
+            ->assertUnprocessable()->assertJsonPath('error_type', 'no_files');
+        $this->assertNull($this->item->fresh()->editor_id);
 
         (require database_path('migrations/2026_10_04_120000_assign_intake_editing_dispatch_lanes.php'))->up();
 

@@ -10,6 +10,7 @@ class ShootDispatchOverviewReturns
 {
     public function items(Shoot $shoot, User $editor, bool $open = true): Collection
     {
+        if (!$shoot->exists || !$editor->exists) return collect();
         $query = ShootEditingDispatchItem::with('dispatch')->where('editor_id', $editor->id)
             ->where('destination', 'human')->where('status', '!=', 'cancelled')
             ->whereHas('dispatch', fn ($query) => $query->where('shoot_id', $shoot->id)->where('status', '!=', 'cancelled'));
@@ -20,6 +21,7 @@ class ShootDispatchOverviewReturns
     public function visibleFileIds(Shoot $shoot, User $editor): array
     {
         $items = $this->items($shoot, $editor);
+        if ($items->isEmpty()) return [];
         return $this->outputs($shoot, $editor)->filter(fn ($file) => $items->contains(fn ($item) => $this->matches($file, $item)))->modelKeys();
     }
 

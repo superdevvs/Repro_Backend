@@ -73,6 +73,7 @@ class ShootEditingAssignmentService
     /** Human send-to-editing tasks. Reading them must not change shoot or service editor rows. */
     public function hasOpenDispatchAssignment(Shoot $shoot, User $editor): bool
     {
+        if (!$shoot->exists || !$editor->exists) return false;
         return $this->openDispatchItemsQuery($shoot->id, $editor->id)->exists();
     }
 
@@ -84,6 +85,7 @@ class ShootEditingAssignmentService
     /** Open send-to-editing task for one service line. Does not write editor_id. */
     public function hasOpenDispatchForService(Shoot $shoot, User $editor, int $shootServiceId): bool
     {
+        if (!$shoot->exists || !$editor->exists) return false;
         return $this->openDispatchItemsQuery($shoot->id, $editor->id)
             ->where('shoot_service_id', $shootServiceId)
             ->exists();
@@ -96,6 +98,7 @@ class ShootEditingAssignmentService
      */
     public function hasUnscopedOpenDispatch(Shoot $shoot, User $editor): bool
     {
+        if (!$shoot->exists || !$editor->exists) return false;
         return $this->openDispatchItemsQuery($shoot->id, $editor->id)
             ->whereNull('shoot_service_id')
             ->exists();
@@ -104,6 +107,7 @@ class ShootEditingAssignmentService
     /** Service-line ids named by this editor's open tasks. Unscoped tasks are omitted. */
     public function openDispatchServiceIds(Shoot $shoot, User $editor): array
     {
+        if (!$shoot->exists || !$editor->exists) return [];
         return $this->openDispatchItemsQuery($shoot->id, $editor->id)
             ->whereNotNull('shoot_service_id')
             ->pluck('shoot_service_id')
@@ -116,6 +120,7 @@ class ShootEditingAssignmentService
     /** Source files, and a returned image, for this editor's open tasks on the shoot. */
     public function openDispatchFileIds(Shoot $shoot, User $editor): array
     {
+        if (!$shoot->exists || !$editor->exists) return [];
         $key = 'dispatch-file-ids:'.$shoot->id.':'.$editor->id;
         $request = request();
         $cache = $request->attributes->get('editor_dispatch_file_ids', []);
@@ -674,6 +679,7 @@ class ShootEditingAssignmentService
     private function loadOpenDispatchFileIds(Shoot $shoot, User $editor): array
     {
         $items = app(ShootDispatchOverviewReturns::class)->items($shoot, $editor, false);
+        if ($items->isEmpty()) return [];
         $ids = [];
         foreach ($items as $item) {
             foreach ((array) $item->sources as $source) {
