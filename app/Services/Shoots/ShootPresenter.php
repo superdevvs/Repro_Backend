@@ -869,6 +869,8 @@ class ShootPresenter
                         'scheduledAt' => $serviceItemSummary['scheduledAt'] ?? null,
                         'workflow_status' => $serviceItemSummary['workflow_status'] ?? ($service->pivot?->workflow_status ?? null),
                         'workflowStatus' => $serviceItemSummary['workflowStatus'] ?? ($service->pivot?->workflow_status ?? null),
+                        'progress_status' => $serviceItemSummary['progress_status'] ?? null,
+                        'progressStatus' => $serviceItemSummary['progressStatus'] ?? null,
                         'delivery_status' => $serviceItemSummary['delivery_status'] ?? ($service->pivot?->delivery_status ?? null),
                         'deliveryStatus' => $serviceItemSummary['deliveryStatus'] ?? ($service->pivot?->delivery_status ?? null),
                         'ready_at' => $serviceItemSummary['ready_at'] ?? null,

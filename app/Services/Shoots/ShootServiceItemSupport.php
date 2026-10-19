@@ -77,8 +77,9 @@ class ShootServiceItemSupport
 
         $brackets = app(BracketModeResolver::class);
         $intake = app(UploadIntakeResolver::class);
+        $progress = app(ShootServiceProgress::class)->forItems($shoot, $items);
 
-        $serviceSummaries = $items->map(function (ShootService $item) use ($shoot, $paidByItem, $hasAllocations, $brackets, $intake) {
+        $serviceSummaries = $items->map(function (ShootService $item) use ($shoot, $paidByItem, $hasAllocations, $brackets, $intake, $progress) {
             $item->setRelation('shoot', $shoot);
             $canAssignPhotographer = $item->service?->allowsPhotographerAssignment() ?? true;
             $photographerId = $canAssignPhotographer ? $item->photographer_id : null;
@@ -179,6 +180,8 @@ class ShootServiceItemSupport
                 'scheduledAt' => $item->scheduled_at?->toIso8601String(),
                 'workflow_status' => $item->workflow_status ?? ShootService::WORKFLOW_PENDING,
                 'workflowStatus' => $item->workflow_status ?? ShootService::WORKFLOW_PENDING,
+                'progress_status' => $progress[$item->id] ?? 'pending',
+                'progressStatus' => $progress[$item->id] ?? 'pending',
                 'delivery_status' => $item->delivery_status ?? ShootService::DELIVERY_NOT_STARTED,
                 'deliveryStatus' => $item->delivery_status ?? ShootService::DELIVERY_NOT_STARTED,
                 'ready_at' => $item->ready_at?->toIso8601String(),
