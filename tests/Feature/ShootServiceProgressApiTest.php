@@ -30,9 +30,9 @@ class ShootServiceProgressApiTest extends TestCase
         $photographer = User::factory()->photographer()->create();
         $shoot = Shoot::factory()->create(['client_id' => $client->id, 'photographer_id' => $photographer->id,
             'status' => 'delivered', 'workflow_status' => 'delivered']);
-        $catalog = Service::factory()->create(['name' => '35 HDR Photos', 'requires_editing' => true]);
         $lines = collect(['delivered', 'ready', 'pending'])->map(fn ($status) => ShootService::create([
-            'shoot_id' => $shoot->id, 'service_id' => $catalog->id, 'photographer_id' => $photographer->id,
+            'shoot_id' => $shoot->id, 'service_id' => Service::factory()->create(['name' => 'HDR Photos '.$status, 'requires_editing' => true])->id,
+            'photographer_id' => $photographer->id,
             'price' => 100, 'quantity' => 1, 'workflow_status' => $status,
             'delivery_status' => $status === 'pending' ? 'not_started' : $status, 'is_deliverable' => true,
         ]));
@@ -67,8 +67,9 @@ class ShootServiceProgressApiTest extends TestCase
             'shoot_id' => $shoot->id, 'unit_id' => $unitA->id, 'match_status' => 'matched', 'discovery' => ['required' => []]]);
         $this->mock(AryeoCatalog::class)->shouldReceive('readiness')->once()->withArgs(fn ($s, $unit) => $s->id === $shoot->id && $unit === $unitA->id)
             ->andReturn(['media_version' => 'v', 'blockers' => ['missing_floorplans'], 'assets' => [], 'tours' => []]);
-        $before = $order->getRawOriginal();
-        $result = app(ShootServiceProgress::class)->forItems($shoot, $lines->load('service.category', 'unit'));
+        $before = $order->fresh()->getRawOriginal();
+        $lines->each(fn ($line) => $line->load(['service.category', 'unit']));
+        $result = app(ShootServiceProgress::class)->forItems($shoot, $lines);
         $this->assertSame('awaiting_assets', $result[$lines[0]->id]);
         $this->assertSame('received', $result[$lines[1]->id]);
         $this->assertSame($before, $order->fresh()->getRawOriginal());
