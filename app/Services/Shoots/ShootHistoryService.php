@@ -80,7 +80,7 @@ class ShootHistoryService
             $sort = $ordering->mode($request->query('sort'));
             $paginator = $sort
                 ? $ordering->paginate($query, $sort, $perPage, (int) $request->query('page', 1))
-                : $query->orderByRaw('COALESCE(admin_verified_at, editing_completed_at, scheduled_date, created_at) DESC')->paginate($perPage);
+                : $ordering->deliveredNewest($query)->paginate($perPage);
 
             $pageCollection = $paginator->getCollection();
             $clientCounts = $this->loadClientShootCounts($pageCollection, $user);
@@ -133,7 +133,7 @@ class ShootHistoryService
         $sort = $ordering->mode($request->query('sort'));
         $shoots = $sort
             ? $ordering->get($query, $sort)
-            : $query->orderByRaw('COALESCE(admin_verified_at, editing_completed_at, scheduled_date, created_at) DESC')->get();
+            : $ordering->deliveredNewest($query)->get();
 
         $clientCounts = $this->loadClientShootCounts($shoots, $user);
 

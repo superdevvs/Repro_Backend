@@ -74,6 +74,89 @@ class ShootListOrderingTest extends TestCase
         $this->assertSame(2, $second['meta']['current_page']);
     }
 
+    public function test_recent_delivery_of_an_old_shoot_comes_first_before_pagination(): void
+    {
+        $expected = [];
+        for ($day = 10; $day >= 1; $day--) {
+            $expected[] = $this->shoot([
+                'status' => Shoot::STATUS_DELIVERED, 'workflow_status' => Shoot::STATUS_DELIVERED,
+                'scheduled_date' => '2026-09-'.sprintf('%02d', 28 - $day),
+                'admin_verified_at' => '2026-09-'.sprintf('%02d', $day + 10).' 12:00:00',
+                // Editing or a later unrelated update must not replace delivery time.
+                'editing_completed_at' => '2026-09-28 12:00:00',
+                'updated_at' => '2026-09-28 16:00:00',
+            ])->id;
+        }
+        $recent = $this->shoot([
+            'status' => Shoot::STATUS_DELIVERED, 'workflow_status' => Shoot::STATUS_DELIVERED,
+            'scheduled_date' => '2026-09-01', 'admin_verified_at' => null,
+            'completed_at' => '2026-09-28 15:00:00',
+        ])->id;
+        array_unshift($expected, $recent);
+        foreach ([null, 'delivered_desc'] as $sort) {
+            $params = ['tab' => 'delivered', 'per_page' => 9];
+            if ($sort) {
+                $params['sort'] = $sort;
+            }
+            $first = $this->listing($this->admin, $params);
+            $second = $this->listing($this->admin, $params + ['page' => 2]);
+            $this->assertSame(array_slice($expected, 0, 9), array_column($first['data'], 'id'));
+            $this->assertSame(array_slice($expected, 9), array_column($second['data'], 'id'));
+            $history = app(ShootHistoryService::class)->history(
+                Request::create('/api/shoots/history', 'GET', $params), $this->admin
+            )->getData(true);
+            $this->assertSame(array_slice($expected, 0, 9), array_column($history['data'], 'id'));
+        }
+        $byAppointment = $this->listing($this->admin, ['tab' => 'delivered', 'sort' => 'date_desc']);
+        $this->assertSame($recent, array_column($byAppointment['data'], 'id')[10]);
+    }
+
+    public function test_delivery_ties_and_legacy_rows_keep_date_order_and_exports_match(): void
+    {
+        $status = ['status' => Shoot::STATUS_DELIVERED, 'workflow_status' => Shoot::STATUS_DELIVERED];
+        $early = $this->shoot($status + ['scheduled_date' => '2026-09-20', 'admin_verified_at' => '2026-09-28 12:00:00']);
+        $later = $this->shoot($status + ['scheduled_date' => '2026-09-21', 'admin_verified_at' => '2026-09-28 12:00:00']);
+        $legacy = $this->shoot($status + ['scheduled_date' => '2026-09-19']);
+        $older = $this->shoot($status + ['scheduled_date' => '2026-09-18']);
+        $expected = [$later->id, $early->id, $legacy->id, $older->id];
+        $this->assertSame($expected, array_column($this->listing($this->admin, ['tab' => 'delivered', 'sort' => 'delivered_desc'])['data'], 'id'));
+        $response = app(ShootHistoryService::class)->exportHistory(
+            Request::create('/api/shoots/history/export', 'GET', ['sort' => 'delivered_desc']), $this->admin
+        );
+        ob_start();
+        $response->sendContent();
+        $rows = array_map('str_getcsv', array_filter(explode("\n", trim(ob_get_clean()))));
+        array_shift($rows);
+        $this->assertSame(['2026-09-21', '2026-09-20', '2026-09-19', '2026-09-18'], array_column($rows, 0));
+    }
+
+    public function test_dashboard_selects_recent_deliveries_before_its_card_limit(): void
+    {
+        $status = ['status' => Shoot::STATUS_DELIVERED, 'workflow_status' => Shoot::STATUS_DELIVERED];
+        for ($day = 1; $day <= 17; $day++) {
+            $this->shoot($status + [
+                'scheduled_date' => '2026-09-20',
+                'completed_at' => '2026-09-'.sprintf('%02d', $day).' 12:00:00',
+                'updated_at' => '2026-09-28 16:00:00',
+            ]);
+        }
+        $newest = $this->shoot($status + [
+            'scheduled_date' => '2026-09-01', 'admin_verified_at' => '2026-09-28 15:00:00',
+            'completed_at' => null, 'updated_at' => '2026-09-28 15:00:00',
+        ]);
+        $controller = new \App\Http\Controllers\API\DashboardController();
+        $latest = new \ReflectionMethod($controller, 'latestDeliveredShoots');
+        $rows = $latest->invoke($controller);
+        $this->assertCount(6, $rows);
+        $this->assertSame($newest->id, $rows->first()->id);
+        $workflow = new \ReflectionMethod($controller, 'buildWorkflowColumns');
+        $columns = $workflow->invoke($controller, Carbon::now()->startOfDay());
+        $ready = collect($columns['columns'])->firstWhere('key', 'ready');
+        $this->assertCount(15, $ready['shoots']);
+        $this->assertSame($newest->id, $ready['shoots'][0]['id']);
+        $this->assertSame('2026-09-28T15:00:00+00:00', $ready['shoots'][0]['delivered_at']);
+    }
+
     public function test_date_modes_normalize_booking_clocks_keep_missing_values_last_and_isolate_cache(): void
     {
         $afternoon = $this->shoot(['time' => '1:00 PM'])->id;

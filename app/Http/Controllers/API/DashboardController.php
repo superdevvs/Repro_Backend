@@ -41,7 +41,7 @@ class DashboardController extends Controller
         }
 
         // Cache key includes user role to ensure proper access control
-        $cacheKey = 'dashboard_overview_deliveries_v3_'.$user->role.'_'.$user->id;
+        $cacheKey = 'dashboard_overview_deliveries_v4_'.$user->role.'_'.$user->id;
         $todayDate = now()->startOfDay()->toDateString();
 
         $data = app(ScheduleDateScopeService::class)->rememberForDate($todayDate, $cacheKey, 60, function () {
@@ -373,6 +373,7 @@ class DashboardController extends Controller
                 'status' => $shoot->status,
                 'workflow_status' => $shoot->workflow_status,
                 'completed_at' => optional($shoot->completed_at)->toIso8601String(),
+                'delivered_at' => optional($shoot->admin_verified_at ?? $shoot->completed_at)->toIso8601String(),
                 // Same payment truth as shoot detail header (ShootPresenter / payment_status).
                 // Required for Delivered cards — overview was omitting this so pills defaulted to Unpaid,
                 // including historical imports that are paid in the old dashboard ($ paid on record).
@@ -729,12 +730,10 @@ class DashboardController extends Controller
 
     protected function latestDeliveredShoots(): Collection
     {
-        return Shoot::query()
+        return app(\App\Services\Shoots\ShootListOrdering::class)->deliveredNewest(Shoot::query()
             ->where('status', Shoot::STATUS_DELIVERED)
-            ->with(['client', 'photographer', 'service.category', 'services.category', 'payments'])
+            ->with(['client', 'photographer', 'service.category', 'services.category', 'payments']))
             // Import and payment updates must never make old deliveries look recent.
-            ->orderByRaw("COALESCE(NULLIF(completed_at, ''), NULLIF(editing_completed_at, ''), NULLIF(scheduled_at, ''), scheduled_date) DESC")
-            ->orderByDesc('id')
             ->limit(6)
             ->get();
     }
@@ -781,7 +780,7 @@ class DashboardController extends Controller
                 'scheduled_date', 'time', 'status', 'workflow_status', 'is_flagged', 'admin_issue_notes',
                 'editing_completed_at', 'submitted_for_review_at', 'shoot_notes', 'company_notes',
                 'photographer_notes', 'editor_notes', 'property_details', 'created_by', 'hero_image',
-                'scheduled_at', 'timezone',
+                'scheduled_at', 'timezone', 'completed_at', 'admin_verified_at',
                 'cancellation_requested_at', 'cancellation_reason', 'hold_requested_at', 'hold_requested_by', 'hold_reason',
                 // Required for Delivered Paid/Unpaid pills — same fields as shoot detail header.
                 'payment_status', 'total_paid', 'total_quote'];
@@ -825,7 +824,11 @@ class DashboardController extends Controller
                     }
                 );
             } else {
-                $query->orderByDesc('updated_at');
+                if ($column['key'] === 'ready') {
+                    app(\App\Services\Shoots\ShootListOrdering::class)->deliveredNewest($query);
+                } else {
+                    $query->orderByDesc('updated_at');
+                }
                 $shoots = $query->limit(15)->get();
             }
 

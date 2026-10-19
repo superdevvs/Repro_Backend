@@ -679,7 +679,9 @@ class ShootListingService
                 ];
             case 'delivered':
                 return [
-                    ['raw' => 'COALESCE(admin_verified_at, editing_completed_at, scheduled_date) DESC'],
+                    ['raw' => ShootListOrdering::DELIVERED_NEWEST],
+                    ['column' => 'scheduled_date', 'direction' => 'desc'],
+                    ['column' => 'id', 'direction' => 'desc'],
                 ];
             case 'completed':
             case 'hold':

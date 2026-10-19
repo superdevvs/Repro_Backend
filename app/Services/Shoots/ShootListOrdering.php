@@ -11,13 +11,25 @@ use Illuminate\Support\Collection;
 /** Order the authorized schedule before selecting a page, without loading its media. */
 class ShootListOrdering
 {
+    public const DELIVERED_NEWEST = "COALESCE(NULLIF(shoots.admin_verified_at, ''), NULLIF(shoots.completed_at, ''), NULLIF(shoots.editing_completed_at, ''), NULLIF(shoots.scheduled_date, ''), shoots.created_at) DESC";
+
     public function mode(mixed $value): ?string
     {
-        return is_string($value) && in_array($value, ['next_up', 'date_asc', 'date_desc'], true) ? $value : null;
+        return is_string($value) && in_array($value, ['next_up', 'date_asc', 'date_desc', 'delivered_desc'], true) ? $value : null;
+    }
+
+    public function deliveredNewest(Builder $query): Builder
+    {
+        return $query->reorder()->orderByRaw(self::DELIVERED_NEWEST)
+            ->orderByDesc('shoots.scheduled_date')->orderByDesc('shoots.id');
     }
 
     public function paginate(Builder $query, string $mode, int $perPage, int $page): LengthAwarePaginator
     {
+        if ($mode === 'delivered_desc') {
+            return $this->deliveredNewest($query)->paginate($perPage, ['*'], 'page', max(1, $page));
+        }
+
         $ids = $this->orderedIds($query, $mode);
         $page = max(1, $page);
         $pageIds = array_slice($ids, ($page - 1) * $perPage, $perPage);
@@ -37,6 +49,10 @@ class ShootListOrdering
 
     public function get(Builder $query, string $mode): Collection
     {
+        if ($mode === 'delivered_desc') {
+            return $this->deliveredNewest($query)->get();
+        }
+
         $positions = array_flip($this->orderedIds($query, $mode));
 
         return (clone $query)->reorder()->get()->sortBy(fn ($shoot) => $positions[$shoot->id] ?? PHP_INT_MAX)->values();
