@@ -17,7 +17,7 @@ class NewBrightMlsStrategy implements BrightMlsStrategyInterface
     {
         $payload = [
             'vendorId' => $manifestData['vendorId'] ?? null,
-            'vendorName' => $manifestData['vendorName'] ?? 'R/E Pro Photos',
+            'vendorName' => BrightMlsVendorName::normalize($manifestData['vendorName'] ?? null),
             'dateFileCreated' => $manifestData['dateFileCreated'] ?? now()->toIso8601String(),
             'listItems' => $manifestData['listItems'] ?? [],
         ];

@@ -93,6 +93,130 @@ class BrightMlsServiceTest extends TestCase
         }
     }
 
+    public static function vendorSettings(): array
+    {
+        $cases = [
+            'missing settings and config' => [null, [], 'R/E Pro Photos'],
+            'null config' => [null, ['vendor_name' => null], 'R/E Pro Photos'],
+            'blank config' => [null, ['vendor_name' => '  '], 'R/E Pro Photos'],
+            'legacy config' => [null, ['vendor_name' => ' RePrO PhOtOs '], 'R/E Pro Photos'],
+            'custom config' => [null, ['vendor_name' => 'Acme Photography'], 'Acme Photography'],
+            'missing saved name' => [[], ['vendor_name' => 'Acme Photography'], 'Acme Photography'],
+            'null saved name' => [['vendorName' => null], ['vendor_name' => 'Acme Photography'], 'Acme Photography'],
+            'blank saved name' => [['vendorName' => ''], ['vendor_name' => 'Acme Photography'], 'R/E Pro Photos'],
+            'whitespace saved name' => [['vendorName' => '  '], [], 'R/E Pro Photos'],
+            'legacy saved name' => [['vendorName' => 'Repro Photos'], [], 'R/E Pro Photos'],
+            'mixed case saved name' => [['vendorName' => ' rEpRo pHoToS '], ['vendor_name' => 'Acme Photography'], 'R/E Pro Photos'],
+            'current saved name' => [['vendorName' => 'R/E Pro Photos'], [], 'R/E Pro Photos'],
+            'custom saved name' => [['vendorName' => 'Acme Photography'], ['vendor_name' => 'Repro Photos'], 'Acme Photography'],
+            'custom legacy prefix' => [['vendorName' => 'Repro Photos Studio'], [], 'Repro Photos Studio'],
+            'custom legacy suffix' => [['vendorName' => 'My Repro Photos'], [], 'My Repro Photos'],
+        ];
+
+        $result = [];
+        foreach (['legacy', 'new'] as $mode) {
+            foreach ($cases as $name => $case) {
+                $result[$mode . ': ' . $name] = [$mode, ...$case];
+            }
+        }
+
+        return $result;
+    }
+
+    #[Test]
+    #[DataProvider('vendorSettings')]
+    public function publishing_normalizes_default_credit_and_preserves_custom_settings(
+        string $mode,
+        ?array $settings,
+        array $vendorConfig,
+        string $expectedVendorName
+    ): void
+    {
+        $this->configureBrightMls();
+        config(['services.bright_mls' => array_replace(
+            array_diff_key(config('services.bright_mls'), ['vendor_name' => true]),
+            $vendorConfig,
+            ['api_mode' => $mode]
+        )]);
+        if ($settings !== null) {
+            DB::table('settings')->insert([
+                'key' => 'integrations.bright_mls',
+                'type' => 'json',
+                'value' => json_encode($settings),
+            ]);
+        }
+        Http::preventStrayRequests();
+        Http::fake(['*/manifest' => Http::response(['manifestId' => 'manifest-test'], 200)]);
+
+        $service = app(BrightMlsService::class);
+        $manifest = $service->buildManifestFromShoot($this->shootData(), [
+            'photos' => [['url' => 'https://cdn.example.com/front.jpg', 'filename' => 'front.jpg']],
+        ]);
+        $this->assertSame($expectedVendorName, $manifest['vendorName']);
+
+        // Older callers or stored manifests must not restore the previous spelling.
+        $manifest['vendorName'] = 'Repro Photos';
+        $result = $service->publishManifest($manifest);
+
+        $this->assertTrue($result['success']);
+        $this->assertSame($expectedVendorName, $result['payload_snapshot']['vendorName']);
+        Http::assertSentCount(1);
+        Http::assertSent(function ($request) use ($expectedVendorName) {
+            $payload = $request->data();
+
+            return $payload['vendorName'] === $expectedVendorName
+                && $payload['vendorId'] === 'vendor-test'
+                && $request->hasHeader('x-api-user', 'vendor-test')
+                && $payload['mlsId'] === 'MLS-123'
+                && $payload['listItems'][0]['imageUrls']['fullSize'] === 'https://cdn.example.com/front.jpg';
+        });
+    }
+
+    public static function manifestVendorNames(): array
+    {
+        $cases = [
+            'missing' => [[], 'R/E Pro Photos'],
+            'null' => [['vendorName' => null], 'R/E Pro Photos'],
+            'blank' => [['vendorName' => ''], 'R/E Pro Photos'],
+            'whitespace' => [['vendorName' => '  '], 'R/E Pro Photos'],
+            'legacy' => [['vendorName' => 'Repro Photos'], 'R/E Pro Photos'],
+            'mixed case legacy' => [['vendorName' => ' rEpRo pHoToS '], 'R/E Pro Photos'],
+            'current' => [['vendorName' => 'R/E Pro Photos'], 'R/E Pro Photos'],
+            'custom' => [['vendorName' => 'Acme Photography'], 'Acme Photography'],
+            'custom legacy prefix' => [['vendorName' => 'Repro Photos Studio'], 'Repro Photos Studio'],
+        ];
+
+        $result = [];
+        foreach (['legacy', 'new'] as $mode) {
+            foreach ($cases as $name => $case) {
+                $result[$mode . ': ' . $name] = [$mode, ...$case];
+            }
+        }
+
+        return $result;
+    }
+
+    #[Test]
+    #[DataProvider('manifestVendorNames')]
+    public function strategies_normalize_default_credit_and_preserve_custom_names(
+        string $mode,
+        array $vendorData,
+        string $expectedVendorName
+    ): void
+    {
+        $strategy = $mode === 'legacy'
+            ? new LegacyBrightMlsStrategy('https://bright.example.test', 'https://import.example.test')
+            : new NewBrightMlsStrategy('https://bright.example.test');
+
+        $payload = $strategy->buildManifest($vendorData + [
+            'vendorId' => 'vendor-test',
+            'listItems' => [],
+        ]);
+
+        $this->assertSame($expectedVendorName, $payload['vendorName']);
+        $this->assertSame('vendor-test', $payload['vendorId']);
+    }
+
     #[Test]
     public function build_manifest_from_shoot_normalizes_photo_filenames_to_jpeg(): void
     {
