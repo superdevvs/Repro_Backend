@@ -176,7 +176,7 @@ class HybridBookingCreateScheduleTest extends TestCase
         if ($change === 'duration') $payload['services'][0]['duration_minutes'] = 30;
         if ($change === 'time') $payload['scheduled_at'] = '2026-10-02T17:00:00-04:00';
         if ($change === 'availability') PhotographerAvailability::create(['photographer_id' => $this->photographer->id,
-            'date' => '2026-10-02', 'start_time' => '09:00', 'end_time' => '16:50', 'status' => 'available']);
+            'date' => '2026-10-02', 'day_of_week' => 'friday', 'start_time' => '09:00', 'end_time' => '16:50', 'status' => 'available']);
         $this->postJson('/api/shoots', $payload + $flags)->assertUnprocessable()->assertJsonValidationErrors('working_hours_override_confirmation_version');
         $this->assertSame(0, Shoot::count());
     }
@@ -211,7 +211,7 @@ class HybridBookingCreateScheduleTest extends TestCase
     {
         $payload = $this->outsideHoursPayload();
         $second = User::factory()->photographer()->create(['timezone' => 'America/New_York']);
-        PhotographerAvailability::create(['photographer_id' => $second->id, 'date' => '2026-10-02',
+        PhotographerAvailability::create(['photographer_id' => $second->id, 'date' => '2026-10-02', 'day_of_week' => 'friday',
             'start_time' => '09:00', 'end_time' => '16:00', 'status' => 'available']);
         $payload['services'][] = ['id' => Service::factory()->create(['photographer_required' => true, 'shoot_duration_minutes' => 30])->id,
             'photographer_id' => $second->id, 'scheduled_at' => '2026-10-02T16:55:00-04:00'];
