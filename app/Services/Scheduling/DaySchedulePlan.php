@@ -162,6 +162,7 @@ class DaySchedulePlan
                     'service_durations' => $change['service_durations'] ?? [],
                 ], $currentActor);
             }
+            if ($shoot->units()->exists()) $shoot->units_revision = ((int) $shoot->units_revision) + 1;
             $shoot->save();
             $shoot->unsetRelation('serviceItems');
             $summary = $mail->buildShootChangeSummary($before, $shoot);

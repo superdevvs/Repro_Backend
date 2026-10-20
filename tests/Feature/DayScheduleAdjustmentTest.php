@@ -212,6 +212,7 @@ class DayScheduleAdjustmentTest extends TestCase
         $neighbor = $this->booked(); $first = $neighbor->serviceItems()->sole();
         $unit = $neighbor->units()->create(['client_key' => 'one', 'label' => 'One', 'kind' => 'unit', 'sort_order' => 0]);
         $first->update(['shoot_unit_id' => $unit->id]);
+        $neighbor->forceFill(['units_revision' => 3])->save();
         $extra = Service::factory()->create(['photographer_required' => true, 'shoot_duration_minutes' => 60]);
         $neighbor->services()->attach($extra->id, ['shoot_unit_id' => $unit->id, 'duration_minutes' => 60, 'price' => 200,
             'photographer_id' => $this->photographer->id, 'scheduled_at' => '2026-10-09 19:30:00', 'workflow_status' => 'scheduled']);
@@ -228,6 +229,7 @@ class DayScheduleAdjustmentTest extends TestCase
         $this->assertSame(30, $second->fresh()->duration_minutes);
         $this->assertSame('2026-10-09 19:30:00', $second->fresh()->getRawOriginal('scheduled_at'));
         $this->assertSame(200.0, (float) $second->fresh()->price);
+        $this->assertSame(4, $neighbor->fresh()->units_revision);
         Queue::assertPushed(ProcessUpdatedShootSideEffectsJob::class, 1);
     }
 
