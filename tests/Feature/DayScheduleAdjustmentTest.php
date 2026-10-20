@@ -166,6 +166,99 @@ class DayScheduleAdjustmentTest extends TestCase
         Queue::assertNothingPushed();
     }
 
+    public function test_duration_only_reduction_saves_the_booked_line_and_new_shoot_together(): void
+    {
+        $neighbor = $this->booked(); $payload = $this->payload($neighbor);
+        $line = $neighbor->serviceItems()->sole();
+        $payload['schedule_adjustments'][0]['scheduled_at'] = $payload['schedule_adjustments'][0]['from_start'];
+        $payload['schedule_adjustments'][0]['service_durations'] = [['shoot_service_id' => $line->id, 'duration_minutes' => 45]];
+        $this->postJson('/api/photographer/availability/feasibility', $payload)->assertOk()->assertJsonPath('data.available', true);
+        $this->assertSame(135, $line->fresh()->duration_minutes, 'Preview must be read only.');
+        $this->postJson('/api/shoots', $payload)->assertCreated();
+        $this->assertSame(45, $line->fresh()->duration_minutes);
+        $this->assertSame('10:30', substr($neighbor->fresh()->time, 0, 5));
+        $this->assertSame(100.0, (float) $line->fresh()->price);
+        $this->assertSame(135, $this->service->fresh()->shoot_duration_minutes);
+        Queue::assertPushed(ProcessUpdatedShootSideEffectsJob::class, fn ($job) => str_contains($job->changesSummary, '135 min to 45 min'));
+        Queue::assertPushed(ProcessUpdatedShootSideEffectsJob::class, fn ($job) => $job->shootId === $neighbor->id && $job->notifyClient === false && $job->notifyPhotographer === true);
+    }
+
+    public function test_duration_increase_cannot_create_overlap_or_leave_partial_changes(): void
+    {
+        $neighbor = $this->booked(); $payload = $this->payload($neighbor);
+        $line = $neighbor->serviceItems()->sole();
+        $payload['schedule_adjustments'][0]['scheduled_at'] = $payload['schedule_adjustments'][0]['from_start'];
+        $payload['schedule_adjustments'][0]['service_durations'] = [['shoot_service_id' => $line->id, 'duration_minutes' => 150]];
+        $this->postJson('/api/shoots', $payload)->assertUnprocessable();
+        $this->assertSame(135, $line->fresh()->duration_minutes);
+        $this->assertSame(1, Shoot::count()); Queue::assertNothingPushed();
+    }
+
+    public function test_invalid_duration_and_foreign_capture_line_are_rejected(): void
+    {
+        $neighbor = $this->booked(); $other = $this->booked('2026-10-08');
+        $payload = $this->payload($neighbor); $line = $neighbor->serviceItems()->sole();
+        foreach ([0, 4, 301, 22.5] as $minutes) {
+            $payload['schedule_adjustments'][0]['service_durations'] = [['shoot_service_id' => $line->id, 'duration_minutes' => $minutes]];
+            $this->postJson('/api/shoots', $payload)->assertUnprocessable();
+        }
+        $payload['schedule_adjustments'][0]['service_durations'] = [['shoot_service_id' => $other->serviceItems()->sole()->id, 'duration_minutes' => 30]];
+        $this->postJson('/api/shoots', $payload)->assertUnprocessable();
+        $this->assertSame(135, $line->fresh()->duration_minutes); Queue::assertNothingPushed();
+    }
+
+    public function test_multiple_visits_of_one_multi_unit_neighbor_keep_unselected_lines_unchanged(): void
+    {
+        $neighbor = $this->booked(); $first = $neighbor->serviceItems()->sole();
+        $unit = $neighbor->units()->create(['client_key' => 'one', 'label' => 'One', 'kind' => 'unit', 'sort_order' => 0]);
+        $first->update(['shoot_unit_id' => $unit->id]);
+        $extra = Service::factory()->create(['photographer_required' => true, 'shoot_duration_minutes' => 60]);
+        $neighbor->services()->attach($extra->id, ['shoot_unit_id' => $unit->id, 'duration_minutes' => 60, 'price' => 200,
+            'photographer_id' => $this->photographer->id, 'scheduled_at' => '2026-10-09 19:30:00', 'workflow_status' => 'scheduled']);
+        $second = $neighbor->serviceItems()->where('service_id', $extra->id)->sole();
+        $payload = $this->payload($neighbor, '18:00');
+        $payload['schedule_adjustments'][0]['service_durations'] = [['shoot_service_id' => $first->id, 'duration_minutes' => 90]];
+        $payload['schedule_adjustments'][] = ['shoot_id' => $neighbor->id, 'photographer_id' => $this->photographer->id,
+            'from_start' => '2026-10-09T15:30:00-04:00', 'scheduled_at' => '2026-10-09T15:30:00-04:00',
+            'expected_edit_version' => app(ShootManagementAccess::class)->editVersion($neighbor->fresh()),
+            'service_durations' => [['shoot_service_id' => $second->id, 'duration_minutes' => 30]]];
+        $this->postJson('/api/photographer/availability/feasibility', $payload)->assertOk()->assertJsonPath('data.available', true)->assertJsonCount(3, 'data.visits');
+        $this->postJson('/api/shoots', $payload)->assertCreated();
+        $this->assertSame(90, $first->fresh()->duration_minutes);
+        $this->assertSame(30, $second->fresh()->duration_minutes);
+        $this->assertSame('2026-10-09 19:30:00', $second->fresh()->getRawOriginal('scheduled_at'));
+        $this->assertSame(200.0, (float) $second->fresh()->price);
+        Queue::assertPushed(ProcessUpdatedShootSideEffectsJob::class, 1);
+    }
+
+    public function test_stale_duration_confirmation_and_duplicate_visit_are_rejected(): void
+    {
+        $neighbor = $this->booked(); $payload = $this->payload($neighbor, '11:30');
+        $preview = $this->postJson('/api/photographer/availability/feasibility', $payload)->assertOk()->json('data');
+        $payload += ['travel_override' => true, 'travel_override_confirmed' => true, 'travel_override_reason' => 'Approved shorter travel gap.',
+            'travel_override_confirmation_version' => $preview['confirmation_version']];
+        $line = $neighbor->serviceItems()->sole();
+        $payload['schedule_adjustments'][0]['service_durations'] = [['shoot_service_id' => $line->id, 'duration_minutes' => 140]];
+        $this->postJson('/api/shoots', $payload)->assertUnprocessable();
+        $payload['schedule_adjustments'][] = $payload['schedule_adjustments'][0];
+        $this->postJson('/api/shoots', $payload)->assertUnprocessable();
+        $this->assertSame(135, $line->fresh()->duration_minutes); Queue::assertNothingPushed();
+    }
+
+    public function test_failed_target_write_rolls_back_neighbor_duration(): void
+    {
+        $neighbor = $this->booked(); $payload = $this->payload($neighbor);
+        $line = $neighbor->serviceItems()->sole();
+        $payload['schedule_adjustments'][0]['service_durations'] = [['shoot_service_id' => $line->id, 'duration_minutes' => 90]];
+        $guard = app(ScheduleCommitGuard::class); $prepared = $guard->prepare($payload, null, $this->admin);
+        try {
+            $guard->commit($prepared, fn () => throw new \RuntimeException('Target write failed'));
+            $this->fail('Expected rollback');
+        } catch (\RuntimeException $e) { $this->assertSame('Target write failed', $e->getMessage()); }
+        $this->assertSame(135, $line->fresh()->duration_minutes);
+        $this->assertSame('10:30', substr($neighbor->fresh()->time, 0, 5)); Queue::assertNothingPushed();
+    }
+
     public function test_multi_unit_approval_and_neighbor_move_share_the_final_schedule_for_admin_and_rep(): void
     {
         foreach (['admin', 'salesRep'] as $role) {
