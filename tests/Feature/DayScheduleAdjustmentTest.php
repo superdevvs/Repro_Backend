@@ -217,7 +217,8 @@ class DayScheduleAdjustmentTest extends TestCase
         $neighbor->services()->attach($extra->id, ['shoot_unit_id' => $unit->id, 'duration_minutes' => 60, 'price' => 200,
             'photographer_id' => $this->photographer->id, 'scheduled_at' => '2026-10-09 19:30:00', 'workflow_status' => 'scheduled']);
         $second = $neighbor->serviceItems()->where('service_id', $extra->id)->sole();
-        $payload = $this->payload($neighbor, '18:00');
+        $payload = $this->payload($neighbor, '20:00');
+        $payload['schedule_adjustments'][0]['scheduled_at'] = '2026-10-09T17:00:00-04:00';
         $payload['schedule_adjustments'][0]['service_durations'] = [['shoot_service_id' => $first->id, 'duration_minutes' => 90]];
         $payload['schedule_adjustments'][] = ['shoot_id' => $neighbor->id, 'photographer_id' => $this->photographer->id,
             'from_start' => '2026-10-09T15:30:00-04:00', 'scheduled_at' => '2026-10-09T15:30:00-04:00',
@@ -230,6 +231,7 @@ class DayScheduleAdjustmentTest extends TestCase
         $this->assertSame('2026-10-09 19:30:00', $second->fresh()->getRawOriginal('scheduled_at'));
         $this->assertSame(200.0, (float) $second->fresh()->price);
         $this->assertSame(4, $neighbor->fresh()->units_revision);
+        $this->assertSame('15:30', substr($neighbor->fresh()->time, 0, 5), 'The earliest remaining visit owns the shoot summary.');
         Queue::assertPushed(ProcessUpdatedShootSideEffectsJob::class, 1);
     }
 
