@@ -10,11 +10,11 @@ use Illuminate\Validation\ValidationException;
 
 class MultiUnitRescheduleService
 {
-    public function apply(Shoot $shoot, ShootRescheduleRequest $request, User $actor, array $durationChanges = []): void
+    public function apply(Shoot $shoot, ShootRescheduleRequest $request, User $actor, array $durationChanges = [], bool $approvedWorkingHoursOverride = false): void
     {
         $plan = $this->plan($shoot, $request, $actor, $durationChanges);
         app(ShootMutationSupportService::class)->checkServiceItemPhotographerAvailability(
-            $plan['services'], $shoot->photographer_id, $shoot->id, $shoot->timezone, false, $plan['at']
+            $plan['services'], $shoot->photographer_id, $shoot->id, $shoot->timezone, false, $plan['at'], $approvedWorkingHoursOverride
         );
         app(ShootEditablePayloadService::class)->apply($shoot, $plan['changes'], $actor);
     }

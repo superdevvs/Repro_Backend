@@ -216,6 +216,10 @@ class ShootRescheduleRequestController extends Controller
         abort_unless($this->authorization->canSubmitShootRequest($shoot, $request->user()), 403, 'Forbidden');
         $validated = $request->validate([
             'travel_location_confirmed' => 'nullable|boolean',
+            'working_hours_override' => 'nullable|boolean',
+            'working_hours_override_confirmed' => 'nullable|boolean',
+            'working_hours_override_confirmation_version' => 'nullable|string|size:64',
+            'working_hours_override_reason' => 'nullable|string|max:500',
             'travel_override' => 'nullable|boolean',
             'travel_override_confirmed' => 'nullable|boolean',
             'travel_override_confirmation_version' => 'nullable|string|size:64',
@@ -234,6 +238,9 @@ class ShootRescheduleRequestController extends Controller
 
         $user = $request->user();
         $canApplyDirectly = $this->userCanReviewRequests($user);
+        if (filter_var($validated['working_hours_override'] ?? false, FILTER_VALIDATE_BOOLEAN)) {
+            abort_unless($canApplyDirectly && app(\App\Services\Scheduling\ScheduleCommitGuard::class)->enabled(), 403);
+        }
         if (! $canApplyDirectly && (! empty($validated['services']) || ! empty($validated['service_lines']))) {
             throw \Illuminate\Validation\ValidationException::withMessages(['services' => ['Only scheduling staff can change service durations when rescheduling.']]);
         }
@@ -294,6 +301,10 @@ class ShootRescheduleRequestController extends Controller
         abort_unless($this->authorization->canTriageShootRequests($rescheduleRequest->shoot, $request->user()), 403, 'Forbidden');
 
         $validated = $request->validate([
+            'working_hours_override' => 'nullable|boolean',
+            'working_hours_override_confirmed' => 'nullable|boolean',
+            'working_hours_override_confirmation_version' => 'nullable|string|size:64',
+            'working_hours_override_reason' => 'nullable|string|max:500',
             'travel_location_confirmed' => 'nullable|boolean',
             'travel_override' => 'nullable|boolean',
             'travel_override_confirmed' => 'nullable|boolean',
@@ -328,6 +339,7 @@ class ShootRescheduleRequestController extends Controller
         }
 
         $travelGuard = app(\App\Services\Scheduling\ScheduleCommitGuard::class);
+        abort_if(filter_var($validated['working_hours_override'] ?? false, FILTER_VALIDATE_BOOLEAN) && !$travelGuard->enabled(), 403);
         $travelPrepared = $validated['status'] === ShootRescheduleRequest::STATUS_APPROVED && $travelGuard->enabled()
             ? $travelGuard->prepare(app(\App\Services\Scheduling\RescheduleWritePlan::class)->build(
                 $rescheduleRequest->shoot, $rescheduleRequest, $request->user(), $validated
@@ -350,7 +362,7 @@ class ShootRescheduleRequestController extends Controller
                         throw new \RuntimeException('Reschedule request is not linked to a shoot.');
                     }
 
-                    $this->applyScheduleChanges($shoot, $rescheduleRequest);
+                    $this->applyScheduleChanges($shoot, $rescheduleRequest, $validated);
                     $applied = true;
                 }
 
@@ -389,12 +401,14 @@ class ShootRescheduleRequestController extends Controller
         $mailService = app(MailService::class);
         $shoot->loadMissing('services');
         $beforeSnapshot = $mailService->captureShootSnapshot($shoot);
+        // Only reached after the signed plan passed ScheduleCommitGuard.
+        $overrideWorkingHours = filter_var($durationChanges['working_hours_override'] ?? false, FILTER_VALIDATE_BOOLEAN);
 
         if ($shoot->units()->exists()) {
             if (! empty($durationChanges['services'])) {
                 throw \Illuminate\Validation\ValidationException::withMessages(['services' => ['Identify each unit service by its booked service line.']]);
             }
-            app(\App\Services\Shoots\MultiUnitRescheduleService::class)->apply($shoot, $request, auth()->user(), $durationChanges['service_lines'] ?? []);
+            app(\App\Services\Shoots\MultiUnitRescheduleService::class)->apply($shoot, $request, auth()->user(), $durationChanges['service_lines'] ?? [], $overrideWorkingHours);
         } else {
             // Match MultiUnitRescheduleService TZ handling: wall-clock in shoot
             // timezone → UTC instant when zoned; legacy unzoned keeps local clock.
@@ -434,15 +448,15 @@ class ShootRescheduleRequestController extends Controller
             $zone = $resolved['has_timezone'] ? $resolved['timezone'] : null;
             $rows = app(\App\Services\Scheduling\WriteSchedulePlan::class)->storedServices($proposed);
             if ($rows === [] && $shoot->photographer_id) {
-                $support->assertWithinAvailabilityBounds((int) $shoot->photographer_id, $resolved['local'], $durations->defaultMinutes(), $shoot->id, false, $zone);
+                $support->assertWithinAvailabilityBounds((int) $shoot->photographer_id, $resolved['local'], $durations->defaultMinutes(), $shoot->id, false, $zone, $overrideWorkingHours);
             }
             foreach ($durations->windowsForShoot($proposed) as $window) {
                 if ($window['start'] && $window['photographer_id']) {
                     $localStart = $zone ? $window['start']->copy()->setTimezone($zone) : $window['start'];
-                    $support->assertWithinAvailabilityBounds($window['photographer_id'], $localStart, $window['minutes'], $shoot->id, false, $zone);
+                    $support->assertWithinAvailabilityBounds($window['photographer_id'], $localStart, $window['minutes'], $shoot->id, false, $zone, $overrideWorkingHours);
                 }
             }
-            $support->checkServiceItemPhotographerAvailability($rows, $shoot->photographer_id, $shoot->id, $zone, false, $resolved['local']);
+            $support->checkServiceItemPhotographerAvailability($rows, $shoot->photographer_id, $shoot->id, $zone, false, $resolved['local'], $overrideWorkingHours);
             foreach ($lines as $line) {
                 if ($line->isDirty()) {
                     $line->save();

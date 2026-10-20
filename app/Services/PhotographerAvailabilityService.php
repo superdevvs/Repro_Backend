@@ -115,7 +115,8 @@ class PhotographerAvailabilityService
             $slots = array_merge($slots, $availableSlots);
         }
 
-        return $slots;
+        return array_map(fn ($range) => ['start' => $range['start_time'], 'end' => $range['end_time']],
+            \App\Services\Scheduling\AvailableTimeWindows::merge($slots, 'start', 'end'));
     }
 
     /**
@@ -392,9 +393,9 @@ class PhotographerAvailabilityService
         $available = false;
         if ($availableSlots->isNotEmpty()) {
             // First, check if requested time range falls fully within any available slot
-            foreach ($availableSlots as $slot) {
-                $slotStart = Carbon::parse($slot->start_time)->format('H:i');
-                $slotEnd = Carbon::parse($slot->end_time)->format('H:i');
+            foreach (\App\Services\Scheduling\AvailableTimeWindows::merge($availableSlots) as $slot) {
+                $slotStart = $slot['start_time'];
+                $slotEnd = $slot['end_time'];
                 
                 // Requested slot must be fully within available slot
                 // Available slot must start before or at requested start
@@ -724,8 +725,8 @@ class PhotographerAvailabilityService
             return $this->requestWithinWindow($fallbackStart, $fallbackEnd, $time, $requestEndTime);
         }
 
-        foreach ($slots as $slot) {
-            if ($this->requestWithinWindow($slot->start_time, $slot->end_time, $time, $requestEndTime)) {
+        foreach (\App\Services\Scheduling\AvailableTimeWindows::merge($slots) as $slot) {
+            if ($this->requestWithinWindow($slot['start_time'], $slot['end_time'], $time, $requestEndTime)) {
                 return true;
             }
         }

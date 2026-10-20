@@ -7,14 +7,22 @@ use App\Models\Shoot;
 use App\Models\User;
 use Illuminate\Validation\ValidationException;
 
-/** A deliberate, signed superadmin exception for one new booking. */
+/** A deliberate, signed superadmin exception for one booking or reschedule. */
 class WorkingHoursOverride
 {
     public function eligible(array $payload, ?Shoot $shoot, ?User $actor): bool
     {
-        return $actor && strtolower((string) $actor->role) === 'superadmin'
-            && ! $shoot && ($payload['action_mode'] ?? '') === 'create'
-            && (int) ($payload['client_id'] ?? 0) !== (int) $actor->id
+        $action = $payload['action_mode'] ?? '';
+        $allowed = $shoot
+            ? $shoot->exists && in_array($action, ['update', 'reschedule'], true)
+                && in_array((string) ($shoot->workflow_status ?: $shoot->status), ['scheduled', 'booked'], true)
+                && app(\App\Services\Shoots\ShootManagementAccess::class)->canEditAppointment($shoot, $actor)
+                && empty($payload['complimentary_service_options'])
+                && (!isset($payload['status']) || $payload['status'] === $shoot->status)
+                && (!isset($payload['workflow_status']) || $payload['workflow_status'] === $shoot->workflow_status)
+            : $action === 'create';
+        return $actor && strtolower((string) $actor->role) === 'superadmin' && $allowed
+            && (int) ($payload['client_id'] ?? $shoot?->client_id ?? 0) !== (int) $actor->id
             && ! filter_var($payload['is_client_request'] ?? false, FILTER_VALIDATE_BOOLEAN)
             && empty($payload['schedule_adjustments']);
     }
@@ -29,13 +37,15 @@ class WorkingHoursOverride
 
     public function confirmationVersion(array $result, ?User $actor): string
     {
-        return hash_hmac('sha256', 'new-booking-working-hours-v1:'.app(ScheduleFeasibilityService::class)->confirmationVersion($result, $actor),
+        $shoot = $result['_plans'][0]['shoot'] ?? null;
+        $target = $shoot ? $shoot->id.':'.app(\App\Services\Shoots\ShootManagementAccess::class)->editVersion($shoot) : 'new';
+        return hash_hmac('sha256', 'booking-working-hours-v2:'.$target.':'.app(ScheduleFeasibilityService::class)->confirmationVersion($result, $actor),
             (string) config('app.key'));
     }
 
     public function assertConfirmed(array $result, array $payload, ?Shoot $shoot, ?User $actor): void
     {
-        abort_unless($this->eligible($payload, $shoot, $actor), 403, 'Only a superadmin may override working hours for a new staff booking.');
+        abort_unless($this->eligible($payload, $shoot, $actor), 403, 'Only a superadmin may override working hours for a staff booking or scheduled appointment.');
         if (! $this->canSave($result, $payload, $shoot, $actor)) {
             throw ValidationException::withMessages(['working_hours_override' => 'This schedule cannot use a working-hours override. Refresh availability; overlapping bookings must be resolved.']);
         }

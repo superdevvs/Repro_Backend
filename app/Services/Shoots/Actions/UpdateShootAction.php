@@ -459,8 +459,14 @@ class UpdateShootAction
             'service_items',
             'service_photographers',
             'force_save',
+            'working_hours_override',
         ];
         $travelGuard = app(\App\Services\Scheduling\ScheduleCommitGuard::class);
+        $overrideWorkingHours = filter_var($validated['working_hours_override'] ?? false, FILTER_VALIDATE_BOOLEAN);
+        if ($overrideWorkingHours) {
+            abort_unless($travelGuard->enabled() && app(\App\Services\Scheduling\WorkingHoursOverride::class)->eligible(
+                [...$availabilityPayload, 'action_mode' => 'update'], $shoot, $user), 403, 'You cannot override working hours for this edit.');
+        }
         $planBuilder = app(\App\Services\Scheduling\WriteSchedulePlan::class);
         $travelPayload = null;
         $parentChanges = false;
@@ -518,7 +524,8 @@ class UpdateShootAction
             // Eligible temporary staff edits use the mandatory shared evaluator
             // below, so its warning can be reviewed before an explicit override.
             $deferAvailability = $travelGuard->enabled() && $parentChanges
-                && app(\App\Services\Scheduling\TemporaryStaffEditForceSave::class)->eligible($travelPayload, $shoot, $user);
+                && (app(\App\Services\Scheduling\TemporaryStaffEditForceSave::class)->eligible($travelPayload, $shoot, $user)
+                    || app(\App\Services\Scheduling\WorkingHoursOverride::class)->eligible($travelPayload, $shoot, $user));
             if (filter_var($validated['force_save'] ?? false, FILTER_VALIDATE_BOOLEAN)
                 && ! app(\App\Services\Scheduling\TemporaryStaffEditForceSave::class)->eligible($travelPayload ?? [], $shoot, $user)) {
                 $this->abortJson('You cannot force save this booking edit.', 403);
@@ -565,7 +572,7 @@ class UpdateShootAction
                 $needsAvailabilityCheck ? ($targetPhotographerId ? (int) $targetPhotographerId : null) : $shoot->photographer_id,
                 $assertTimezone ?? $shoot->timezone, 'update');
             $parentChanges = ! $remainsRequest && $planBuilder->changesItinerary($travelPayload, $shoot, $user);
-            if ($parentChanges || filter_var($validated['force_save'] ?? false, FILTER_VALIDATE_BOOLEAN)) {
+            if ($parentChanges || $overrideWorkingHours || filter_var($validated['force_save'] ?? false, FILTER_VALIDATE_BOOLEAN)) {
                 $travelPlans[] = ['payload' => $travelPayload, 'shoot' => $shoot->fresh()];
             }
             if (is_array($complimentaryServiceOptions) && ! Shoot::query()->where('complimentary_reshoot_idempotency_key', $complimentaryServiceOptions['idempotency_key'])->exists()) {
