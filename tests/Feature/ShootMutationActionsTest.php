@@ -2071,6 +2071,17 @@ class ShootMutationActionsTest extends TestCase
         $this->assertSame('$500,000', $details['price'] ?? null);
         $this->assertSame('MLS-KEEP', $details['mls_id'] ?? null);
 
+        $this->patchJson("/api/shoots/{$shoot->id}", [
+            'property_details' => ['presenceOption' => 'self', 'lockboxCode' => null, 'lockboxLocation' => null],
+        ])->assertOk();
+        $this->assertSame('self', $shoot->fresh()->property_details['presenceOption']);
+        $this->patchJson("/api/shoots/{$shoot->id}", [
+            'property_details' => ['accessContactName' => null],
+        ])->assertOk();
+        $this->assertSame('self', $shoot->fresh()->property_details['presenceOption']);
+        $this->assertFalse(app(\App\Services\Messaging\PropertyAccessReminderEligibility::class)
+            ->missing($shoot->fresh()->property_details));
+
         // Attempting to change a non-access property_details key is forbidden.
         $this->patchJson("/api/shoots/{$shoot->id}", [
             'property_details' => [

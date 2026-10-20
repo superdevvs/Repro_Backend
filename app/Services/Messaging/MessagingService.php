@@ -398,6 +398,11 @@ class MessagingService
 
     private function deferClientNotification(Message $message, array $attachments = []): bool
     {
+        if (app(PropertyAccessReminderEligibility::class)->storedReminderIsStale($message)) {
+            $message->update(['status' => 'CANCELLED', 'error_message' => 'Property access reminder is no longer current.']);
+
+            return true;
+        }
         $window = app(ClientNotificationDeliveryWindow::class);
         if ($window->staleAppointment($message)) {
             $message->update(['status' => 'CANCELLED', 'error_message' => 'Appointment reminder is no longer current.']);

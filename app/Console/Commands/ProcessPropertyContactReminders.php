@@ -81,38 +81,6 @@ class ProcessPropertyContactReminders extends Command
      */
     private function isPropertyContactMissing(Shoot $shoot): bool
     {
-        $propertyDetails = $shoot->property_details ?? [];
-        if (trim((string) ($propertyDetails['lockboxCode'] ?? $propertyDetails['lockbox_code'] ?? '')) !== '') {
-            return false;
-        }
-        $presenceOption = trim((string) ($propertyDetails['presenceOption'] ?? ''));
-
-        // If no presence option is set, details are missing
-        if (! in_array($presenceOption, ['self', 'other', 'lockbox'], true)) {
-            return true;
-        }
-
-        // If presence is "other", check for contact name and phone
-        if ($presenceOption === 'other') {
-            $hasContactName = trim((string) ($propertyDetails['accessContactName'] ?? '')) !== '';
-            $hasContactPhone = trim((string) ($propertyDetails['accessContactPhone'] ?? '')) !== '';
-
-            if (! $hasContactName || ! $hasContactPhone) {
-                return true;
-            }
-        }
-
-        // If presence is "lockbox", check for lockbox code and location
-        if ($presenceOption === 'lockbox') {
-            $hasLockboxCode = trim((string) ($propertyDetails['lockboxCode'] ?? '')) !== '';
-            $hasLockboxLocation = trim((string) ($propertyDetails['lockboxLocation'] ?? '')) !== '';
-
-            if (! $hasLockboxCode || ! $hasLockboxLocation) {
-                return true;
-            }
-        }
-
-        // If presence is "self", details are provided (client will be there)
-        return false;
+        return app(\App\Services\Messaging\PropertyAccessReminderEligibility::class)->missing($shoot->property_details ?? []);
     }
 }

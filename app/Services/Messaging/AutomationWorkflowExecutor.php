@@ -1437,6 +1437,10 @@ class AutomationWorkflowExecutor
             || in_array(strtolower((string) $shoot->workflow_status), ['cancelled', 'canceled', 'declined', 'completed', 'delivered', 'hold_on', 'on_hold', 'requested'], true)) {
             return true;
         }
+        if ($automation->trigger_type === 'PROPERTY_CONTACT_REMINDER'
+            && ! app(PropertyAccessReminderEligibility::class)->missing($shoot->property_details ?? [])) {
+            return true;
+        }
         $current = app(\App\Services\Schedule\ScheduleInstantResolver::class)->forShoot($shoot);
         if (! empty($context['shoot_service_id'])) {
             $item = $shoot->serviceItems()->find($context['shoot_service_id']);

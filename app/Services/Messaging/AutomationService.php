@@ -773,6 +773,17 @@ class AutomationService
      */
     private function evaluateCondition(AutomationRule $rule, array $context): bool
     {
+        if ($rule->trigger_type === 'PROPERTY_CONTACT_REMINDER') {
+            $shoot = Shoot::find($context['shoot_id'] ?? null);
+            $presence = data_get($context, 'presence_option');
+            $missing = $shoot
+                ? app(PropertyAccessReminderEligibility::class)->missing($shoot->property_details ?? [])
+                : ($presence !== 'self' && ($presence === 'other'
+                    ? ! data_get($context, 'has_contact_details', false)
+                    : ! data_get($context, 'has_lockbox_details', false)));
+            if (! $missing) return false;
+        }
+
         if (empty($rule->condition_json)) {
             return true;
         }
@@ -801,33 +812,6 @@ class AutomationService
                     return false;
                 }
             }
-        }
-
-        // Special handling for PROPERTY_CONTACT_REMINDER - only trigger if contact details are missing
-        if ($rule->trigger_type === 'PROPERTY_CONTACT_REMINDER') {
-            $hasContactDetails = data_get($context, 'has_contact_details', false);
-            $hasLockboxDetails = data_get($context, 'has_lockbox_details', false);
-            $presenceOption = data_get($context, 'presence_option');
-
-            if ($hasLockboxDetails) {
-                return false;
-            }
-
-            // If presence option is not set, or required details are missing, trigger reminder
-            if (! $presenceOption) {
-                return true; // No presence option set, trigger reminder
-            }
-
-            if ($presenceOption === 'other' && ! $hasContactDetails) {
-                return true; // Other contact selected but details missing
-            }
-
-            if ($presenceOption === 'lockbox' && ! $hasLockboxDetails) {
-                return true; // Lockbox selected but details missing
-            }
-
-            // If presence is 'self' or all required details are provided, don't trigger
-            return false;
         }
 
         return true;
@@ -1022,7 +1006,7 @@ class AutomationService
             'access_instructions' => implode(' - ', array_filter([$propertyDetails['presenceOption'] ?? null, $propertyDetails['lockboxLocation'] ?? null, $propertyDetails['lockboxCode'] ?? null, $propertyDetails['accessNotes'] ?? null])),
             'payment_status' => $shoot->payment_status,
             'special_instructions' => $this->formatShootNotes($shoot),
-            'presence_option' => $propertyDetails['presenceOption'] ?? null,
+            'presence_option' => app(PropertyAccessReminderEligibility::class)->presence($propertyDetails),
             'has_contact_details' => ! empty($propertyDetails['accessContactName']) && ! empty($propertyDetails['accessContactPhone']),
             'has_lockbox_details' => trim((string) ($propertyDetails['lockboxCode'] ?? $propertyDetails['lockbox_code'] ?? '')) !== '',
         ];
