@@ -80,7 +80,9 @@ class ScheduleFeasibilityService
                 : app(TravelLocationResolver::class)->forPayload($plan['payload'], $plan['shoot'] ?? null, $actor);
             $planResults[$index]['location'] = $locations[$index];
         }
-        $assessment = app(ScheduleTransitionEvaluator::class)->evaluate($proposed, $existing, $locations);
+        $hoursOverride = app(WorkingHoursOverride::class);
+        $hoursEligible = count($plans) === 1 && $hoursOverride->eligible($plans[0]['payload'], $plans[0]['shoot'] ?? null, $actor);
+        $assessment = app(ScheduleTransitionEvaluator::class)->evaluate($proposed, $existing, $locations, $hoursEligible);
         $existingById = array_column($existing, null, 'id');
         foreach ($assessment['transitions'] as &$transition) {
             $neighbor = $existingById[$transition['from_visit_id'] ?? '']
@@ -109,6 +111,10 @@ class ScheduleFeasibilityService
         }
         if ($result['can_override'] && ! $result['available']) {
             $result['confirmation_version'] = $this->confirmationVersion($result, $actor);
+        }
+        $result['can_override_working_hours'] = $hoursEligible && $hoursOverride->canSave($result, $plans[0]['payload'], $plans[0]['shoot'] ?? null, $actor);
+        if ($result['can_override_working_hours']) {
+            $result['working_hours_confirmation_version'] = $hoursOverride->confirmationVersion($result, $actor);
         }
         $forceSave = app(TemporaryStaffEditForceSave::class);
         $result['can_force_save'] = count($plans) === 1 && ! $result['available']
@@ -204,6 +210,10 @@ class ScheduleFeasibilityService
 
     public function assertResult(array $result, array $payload, ?Shoot $shoot = null, ?User $actor = null): void
     {
+        if (filter_var($payload['working_hours_override'] ?? false, FILTER_VALIDATE_BOOLEAN)) {
+            app(WorkingHoursOverride::class)->assertConfirmed($result, $payload, $shoot, $actor);
+            return;
+        }
         if (! $result['enabled']) {
             abort_if(filter_var($payload['force_save'] ?? false, FILTER_VALIDATE_BOOLEAN), 403,
                 'Temporary force save is unavailable while scheduling checks are disabled.');
@@ -279,6 +289,7 @@ class ScheduleFeasibilityService
     {
         $public = Arr::only($result, ['enabled', 'status', 'available', 'reason_codes', 'transitions', 'alternatives',
             'can_override', 'can_confirm_location', 'can_force_save', 'force_save_confirmation_version',
+            'can_override_working_hours', 'working_hours_confirmation_version',
             'policy_version', 'schedule_version', 'confirmation_version', 'budget']);
         $public['visits'] = array_map(fn ($visit) => Arr::only($visit, ['photographer_id', 'start', 'end', 'scheduled_at', 'duration_minutes', 'timezone'])
             + ['is_target' => ($visit['plan_index'] ?? 0) === 0], $result['visits'] ?? []);

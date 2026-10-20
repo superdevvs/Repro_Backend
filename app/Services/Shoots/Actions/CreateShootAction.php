@@ -122,8 +122,14 @@ class CreateShootAction
             $validated, $servicesPayload, $scheduledAt, $validated['photographer_id'] ?? null,
             $validated['timezone'] ?? null, 'create'
         );
+        $overrideWorkingHours = filter_var($validated['working_hours_override'] ?? false, FILTER_VALIDATE_BOOLEAN);
+        if ($overrideWorkingHours) {
+            abort_unless(! $requestOnly && $travelGuard->enabled()
+                && app(\App\Services\Scheduling\WorkingHoursOverride::class)->eligible($travelPayload, null, $user),
+                403, 'Only a superadmin may override working hours for a new staff booking with scheduling checks enabled.');
+        }
         $travelPrepared = $requestOnly ? ['enabled' => false] : $travelGuard->prepare($travelPayload, null, $user);
-        $result = $travelGuard->commit($travelPrepared, fn () => DB::transaction(function () use ($validated, $user, $request, $client, $unitBooking, $multiUnit, $userRole, $scheduledAt, $servicesPayload) {
+        $result = $travelGuard->commit($travelPrepared, fn () => DB::transaction(function () use ($validated, $user, $request, $client, $unitBooking, $multiUnit, $userRole, $scheduledAt, $servicesPayload, $overrideWorkingHours) {
             $pricingCalculation = $this->support->buildPricingCalculation(
                 $servicesPayload,
                 $client,
@@ -187,7 +193,7 @@ class CreateShootAction
             // Admins/superadmins may pass skip_availability_check to suppress booking-CONFLICT
             // checks only; configured-hours bounds remain enforced (same contract as update).
             $isPrivilegedScheduler = in_array($userRole, ['admin', 'superadmin', 'editing_manager'], true);
-            $skipConflictCheck = (bool) ($validated['skip_availability_check'] ?? false);
+            $skipConflictCheck = ! $overrideWorkingHours && (bool) ($validated['skip_availability_check'] ?? false);
             if ($skipConflictCheck && ! $isPrivilegedScheduler) {
                 $skipConflictCheck = false;
             }
@@ -210,7 +216,7 @@ class CreateShootAction
                 foreach ($windows as $window) {
                     $this->support->assertWithinAvailabilityBounds(
                         $photographerId, $window['start'] ?? $scheduledAt, $window['minutes'],
-                        null, $skipConflictCheck, $scheduleTimezone ?: null
+                        null, $skipConflictCheck, $scheduleTimezone ?: null, $overrideWorkingHours
                     );
                 }
 
@@ -230,7 +236,8 @@ class CreateShootAction
                                 (int) $line['duration_minutes'],
                                 null,
                                 $skipConflictCheck,
-                                $lineTz
+                                $lineTz,
+                                $overrideWorkingHours
                             );
                         }
                     }
@@ -238,7 +245,7 @@ class CreateShootAction
                 $this->support->checkServiceItemPhotographerAvailability(
                     $servicesPayload, $photographerId, null,
                     $scheduleTimezone !== '' ? $scheduleTimezone : null,
-                    $skipConflictCheck, $scheduledAt
+                    $skipConflictCheck, $scheduledAt, $overrideWorkingHours
                 );
             }
 

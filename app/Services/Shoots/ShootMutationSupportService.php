@@ -266,7 +266,8 @@ class ShootMutationSupportService
      * keyed on `start_time` is thrown (HTTP 422) when the time is out of bounds.
      *
      * @param bool $skipConflictCheck Skip ONLY the booking-conflict check; the
-     *                                configured-hours bound is always enforced.
+     *                                configured-hours bound is checked separately.
+     * @param bool $skipWorkingHoursCheck Trusted exception after ScheduleCommitGuard authorization only.
      */
     public function assertWithinAvailabilityBounds(
         int $photographerId,
@@ -274,7 +275,8 @@ class ShootMutationSupportService
         ?int $durationMinutes = null,
         ?int $excludeShootId = null,
         bool $skipConflictCheck = false,
-        ?string $timezone = null
+        ?string $timezone = null,
+        bool $skipWorkingHoursCheck = false
     ): void {
         // Do not auto-fill photographer profile timezone — only an explicit request/
         // shoot timezone should reinterpret wall clocks.
@@ -284,7 +286,8 @@ class ShootMutationSupportService
             $durationMinutes,
             $excludeShootId,
             $skipConflictCheck,
-            $timezone
+            $timezone,
+            $skipWorkingHoursCheck
         );
     }
 
@@ -354,6 +357,7 @@ class ShootMutationSupportService
         ?string $timezone = null,
         bool $skipConflictCheck = false,
         ?\DateTimeInterface $appointmentStart = null,
+        bool $skipWorkingHoursCheck = false,
     ): void {
         $explicitTimezone = $this->validTimezoneName($timezone);
         $rows = array_map(function (array $row) use ($fallbackPhotographerId) {
@@ -380,7 +384,7 @@ class ShootMutationSupportService
             try {
                 $this->assertWithinAvailabilityBounds(
                     $window['photographer_id'], $window['start'], $window['minutes'],
-                    $excludeShootId, $skipConflictCheck, $explicitTimezone
+                    $excludeShootId, $skipConflictCheck, $explicitTimezone, $skipWorkingHoursCheck
                 );
             } catch (ValidationException $exception) {
                 throw ValidationException::withMessages([

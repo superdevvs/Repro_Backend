@@ -11,7 +11,7 @@ class ScheduleTransitionEvaluator
 {
     private const DAY_BREAK_MINUTES = 480;
 
-    public function evaluate(array $proposed, array $existing, array $locations): array
+    public function evaluate(array $proposed, array $existing, array $locations, bool $evaluateOutsideHoursTravel = false): array
     {
         $reasons = [];
         $transitions = [];
@@ -36,7 +36,7 @@ class ScheduleTransitionEvaluator
             }
         }
         // Do not spend provider quota on a schedule that cannot fit capture work.
-        if ($reasons !== []) {
+        if ($reasons !== [] && (! $evaluateOutsideHoursTravel || in_array('capture_overlap', $reasons, true))) {
             return ['reason_codes' => array_values(array_unique($reasons)), 'transitions' => [],
                 'hard_conflict' => true, 'status' => 'conflict'];
         }

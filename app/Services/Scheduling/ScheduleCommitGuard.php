@@ -83,7 +83,8 @@ class ScheduleCommitGuard
                             throw new ConflictHttpException('The photographer schedule changed. Refresh availability and try again.');
                         }
                         $forcePayload = $prepared['plans'][0]['payload'];
-                        if (filter_var($forcePayload['force_save'] ?? false, FILTER_VALIDATE_BOOLEAN)) {
+                        if (filter_var($forcePayload['force_save'] ?? false, FILTER_VALIDATE_BOOLEAN)
+                            || filter_var($forcePayload['working_hours_override'] ?? false, FILTER_VALIDATE_BOOLEAN)) {
                             $currentActor = $prepared['actor'] ? User::query()->find($prepared['actor']->id) : null;
                             $currentShoot = ($prepared['plans'][0]['shoot'] ?? null)?->fresh();
                             // Permission and the temporary switch may change after preview.
@@ -99,6 +100,7 @@ class ScheduleCommitGuard
                         $saved = array_merge(array_slice(array_pad($saved, $originalCount, null), 0, $originalCount), $neighbors);
                         $this->persistLocations($saved, $prepared);
                         $this->auditForceSave($saved, $prepared);
+                        $this->auditWorkingHoursOverride($saved, $prepared);
                         DB::afterCommit(fn () => $this->auditOverride($saved, $prepared));
 
                         return $value;
@@ -227,6 +229,22 @@ class ScheduleCommitGuard
             'policy_version' => $prepared['result']['policy_version'] ?? null,
             'shoot_ids' => collect($targets)->filter(fn ($target) => $target instanceof Shoot)->pluck('id')->all(),
             'temporary' => true,
+        ]);
+    }
+
+    private function auditWorkingHoursOverride(array $targets, array $prepared): void
+    {
+        $payload = $prepared['plans'][0]['payload'];
+        if (! filter_var($payload['working_hours_override'] ?? false, FILTER_VALIDATE_BOOLEAN)) return;
+        app(AuditLogService::class)->record('schedule.working_hours_override', $prepared['actor'], $targets[0] ?? null, [
+            'reason' => trim((string) ($payload['working_hours_override_reason'] ?? '')),
+            'confirmed' => true, 'confirmed_at' => now()->toIso8601String(),
+            'confirmation_version' => $payload['working_hours_override_confirmation_version'],
+            'schedule_version' => $prepared['result']['schedule_version'],
+            'reason_codes' => $prepared['result']['reason_codes'],
+            'policy_version' => $prepared['result']['policy_version'],
+            'visits' => app(ScheduleFeasibilityService::class)->publicResult($prepared['result'])['visits'],
+            'shoot_ids' => collect($targets)->filter(fn ($target) => $target instanceof Shoot)->pluck('id')->all(),
         ]);
     }
 

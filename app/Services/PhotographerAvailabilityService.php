@@ -486,8 +486,8 @@ class PhotographerAvailabilityService
      * exist, so a bound is ALWAYS enforced.
      *
      * The configured-hours bound (unavailability blocks + effective working
-     * window) is ALWAYS enforced and is identical on the create and update
-     * paths. The booking-conflict check (step 2) may be suppressed via
+     * window) is enforced on create and update, except for a signed superadmin
+     * new-booking exception authorized by ScheduleCommitGuard. The booking-conflict check (step 2) may be suppressed via
      * $skipConflictCheck for privileged overrides (e.g. an admin update passing
      * skip_availability_check); suppressing it NEVER relaxes the configured-hours
      * bound.
@@ -497,6 +497,7 @@ class PhotographerAvailabilityService
      * @param int|null  $durationMinutes   Requested slot duration (defaults to config default)
      * @param int|null  $excludeShootId    Shoot to exclude from conflict checks (updates)
      * @param bool      $skipConflictCheck Skip ONLY the booking-conflict check (bounds still enforced)
+     * @param bool      $skipWorkingHoursCheck Trusted, separately authorized working-hours exception; never request input
      *
      * @throws ValidationException keyed on `start_time` (HTTP 422)
      */
@@ -506,7 +507,8 @@ class PhotographerAvailabilityService
         ?int $durationMinutes = null,
         ?int $excludeShootId = null,
         bool $skipConflictCheck = false,
-        ?string $timezone = null
+        ?string $timezone = null,
+        bool $skipWorkingHoursCheck = false
     ): void {
         $durationMinutes ??= app(\App\Services\Shoots\ShootDurationResolver::class)->defaultMinutes();
 
@@ -528,13 +530,13 @@ class PhotographerAvailabilityService
         $requestStartUtc = $datetimeLocal->copy()->utc();
         $requestEndUtc = $requestEndTime->copy()->utc();
 
-        if ($requestEndTime->toDateString() !== $datetimeLocal->toDateString()) {
+        if (! $skipWorkingHoursCheck && $requestEndTime->toDateString() !== $datetimeLocal->toDateString()) {
             throw $this->outsideHoursException($photographerId, $date, $dayOfWeek, $datetimeLocal);
         }
 
         // 1) Specific-date or recurring unavailability blocks => outside available hours.
-        //    This is part of the configured-hours bound and is always enforced.
-        if ($this->overlapsUnavailability($photographerId, $date, $dayOfWeek, $time, $requestEndTime)) {
+        //    Only a separately authorized working-hours exception can skip this.
+        if (! $skipWorkingHoursCheck && $this->overlapsUnavailability($photographerId, $date, $dayOfWeek, $time, $requestEndTime)) {
             throw $this->outsideHoursException($photographerId, $date, $dayOfWeek, $datetimeLocal);
         }
 
@@ -548,8 +550,8 @@ class PhotographerAvailabilityService
         }
 
         // 3) Effective working window (configured slots, else Backend_Fallback_Hours).
-        //    Always enforced — this is the configured-hours bound shared by create and update.
-        if (!$this->isWithinEffectiveWindow($photographerId, $date, $dayOfWeek, $time, $requestEndTime)) {
+        //    Only a separately authorized working-hours exception can skip this.
+        if (! $skipWorkingHoursCheck && !$this->isWithinEffectiveWindow($photographerId, $date, $dayOfWeek, $time, $requestEndTime)) {
             throw $this->outsideHoursException($photographerId, $date, $dayOfWeek, $datetimeLocal);
         }
     }

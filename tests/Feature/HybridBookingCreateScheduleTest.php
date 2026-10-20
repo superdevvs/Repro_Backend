@@ -105,6 +105,166 @@ class HybridBookingCreateScheduleTest extends TestCase
         return Shoot::findOrFail($id);
     }
 
+    private function outsideHoursPayload(): array
+    {
+        config(['availability.fallback_start_time' => '09:00', 'availability.fallback_end_time' => '17:00']);
+        $this->admin->update(['role' => 'superadmin']);
+        return $this->payload('2026-10-02T16:55:00-04:00') + ['notify_client' => false, 'notify_photographer' => false];
+    }
+
+    private function hoursConfirmation(array $preview): array
+    {
+        return ['working_hours_override' => true, 'working_hours_override_confirmed' => true,
+            'working_hours_override_reason' => 'Photographer agreed to finish this appointment after hours.',
+            'working_hours_override_confirmation_version' => $preview['working_hours_confirmation_version']];
+    }
+
+    public function test_superadmin_can_book_outside_hours_with_one_audited_confirmation(): void
+    {
+        $payload = $this->outsideHoursPayload();
+        $preview = $this->preview($payload);
+        $this->assertTrue($preview['can_override_working_hours']);
+        $this->assertFalse($preview['can_override']);
+        $this->postJson('/api/shoots', $payload)->assertUnprocessable();
+        $saved = $this->save($payload + $this->hoursConfirmation($preview));
+        $this->assertSame('2026-10-02 20:55:00', $saved->getRawOriginal('scheduled_at'));
+        $this->assertSame(15, $saved->serviceItems()->sole()->duration_minutes);
+        $audit = UserActivityLog::where('event_type', 'schedule.working_hours_override')->sole();
+        $this->assertSame($this->admin->id, $audit->actor_user_id);
+        $this->assertSame($saved->id, (int) $audit->target_id);
+        $metadata = is_array($audit->metadata) ? $audit->metadata : json_decode($audit->metadata, true);
+        $this->assertSame(['outside_working_hours'], $metadata['reason_codes']);
+        $this->assertSame($this->hoursConfirmation($preview)['working_hours_override_reason'], $metadata['reason']);
+        $this->assertSame(0, PhotographerAvailability::count());
+        Mail::assertNothingSent();
+    }
+
+    #[\PHPUnit\Framework\Attributes\TestWith(['admin'])]
+    #[\PHPUnit\Framework\Attributes\TestWith(['salesRep'])]
+    #[\PHPUnit\Framework\Attributes\TestWith(['client'])]
+    public function test_other_roles_cannot_forge_a_working_hours_override(string $role): void
+    {
+        $payload = $this->outsideHoursPayload();
+        $flags = $this->hoursConfirmation($this->preview($payload));
+        $actor = $role === 'client' ? $this->client : User::factory()->create(['role' => $role, 'email_verification_required_at' => null]);
+        Sanctum::actingAs($actor);
+        $this->assertFalse($this->preview($payload)['can_override_working_hours']);
+        $this->postJson('/api/shoots', $payload + $flags)->assertForbidden();
+        $this->assertSame(0, Shoot::count());
+    }
+
+    #[\PHPUnit\Framework\Attributes\TestWith(['working_hours_override_reason', ' '])]
+    #[\PHPUnit\Framework\Attributes\TestWith(['working_hours_override_confirmed', false])]
+    #[\PHPUnit\Framework\Attributes\TestWith(['working_hours_override_confirmation_version', null])]
+    #[\PHPUnit\Framework\Attributes\TestWith(['working_hours_override_confirmation_version', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'])]
+    public function test_working_hours_confirmation_reason_and_signature_are_required(string $field, mixed $value): void
+    {
+        $payload = $this->outsideHoursPayload();
+        $flags = $this->hoursConfirmation($this->preview($payload));
+        $flags[$field] = $value;
+        $this->postJson('/api/shoots', $payload + $flags)->assertUnprocessable()->assertJsonValidationErrors($field);
+        $this->assertSame(0, Shoot::count());
+    }
+
+    #[\PHPUnit\Framework\Attributes\TestWith(['duration'])]
+    #[\PHPUnit\Framework\Attributes\TestWith(['time'])]
+    #[\PHPUnit\Framework\Attributes\TestWith(['availability'])]
+    public function test_working_hours_confirmation_is_invalid_after_the_proposal_or_availability_changes(string $change): void
+    {
+        $payload = $this->outsideHoursPayload();
+        $flags = $this->hoursConfirmation($this->preview($payload));
+        if ($change === 'duration') $payload['services'][0]['duration_minutes'] = 30;
+        if ($change === 'time') $payload['scheduled_at'] = '2026-10-02T17:00:00-04:00';
+        if ($change === 'availability') PhotographerAvailability::create(['photographer_id' => $this->photographer->id,
+            'date' => '2026-10-02', 'start_time' => '09:00', 'end_time' => '16:50', 'status' => 'available']);
+        $this->postJson('/api/shoots', $payload + $flags)->assertUnprocessable()->assertJsonValidationErrors('working_hours_override_confirmation_version');
+        $this->assertSame(0, Shoot::count());
+    }
+
+    public function test_working_hours_override_never_bypasses_an_overlap_even_with_skip_availability(): void
+    {
+        $payload = $this->outsideHoursPayload();
+        $flags = $this->hoursConfirmation($this->preview($payload));
+        $this->booked('17:00', 30);
+        $preview = $this->preview($payload);
+        $this->assertContains('capture_overlap', $preview['reason_codes']);
+        $this->assertFalse($preview['can_override_working_hours']);
+        $this->postJson('/api/shoots', $payload + $flags + ['skip_availability_check' => true])->assertUnprocessable();
+        $this->assertSame(1, Shoot::count());
+        $this->assertSame(0, UserActivityLog::where('event_type', 'schedule.working_hours_override')->count());
+    }
+
+    public function test_outside_hours_still_evaluates_travel_and_confirms_the_displayed_warning(): void
+    {
+        $payload = $this->outsideHoursPayload();
+        $this->booked('16:30', 15);
+        $this->driveSeconds = 1200;
+        $preview = $this->preview($payload);
+        $this->assertContains('insufficient_travel_time', $preview['reason_codes']);
+        $this->assertTrue($preview['can_override_working_hours']);
+        $this->assertCount(1, $preview['transitions']);
+        $this->save($payload + $this->hoursConfirmation($preview));
+        $this->assertSame(2, Shoot::count());
+    }
+
+    public function test_working_hours_override_handles_each_service_photographer_and_dated_hours(): void
+    {
+        $payload = $this->outsideHoursPayload();
+        $second = User::factory()->photographer()->create(['timezone' => 'America/New_York']);
+        PhotographerAvailability::create(['photographer_id' => $second->id, 'date' => '2026-10-02',
+            'start_time' => '09:00', 'end_time' => '16:00', 'status' => 'available']);
+        $payload['services'][] = ['id' => Service::factory()->create(['photographer_required' => true, 'shoot_duration_minutes' => 30])->id,
+            'photographer_id' => $second->id, 'scheduled_at' => '2026-10-02T16:55:00-04:00'];
+        $preview = $this->preview($payload);
+        $this->assertCount(2, $preview['visits']);
+        $this->save($payload + $this->hoursConfirmation($preview));
+        $this->assertSame(1, PhotographerAvailability::count());
+    }
+
+    public function test_working_hours_override_is_rejected_for_client_requests_and_disabled_scheduling(): void
+    {
+        $payload = $this->outsideHoursPayload();
+        $flags = $this->hoursConfirmation($this->preview($payload));
+        $this->postJson('/api/shoots', $payload + $flags + ['is_client_request' => true])->assertForbidden();
+        config(['availability.hybrid_travel_enabled' => false]);
+        $this->postJson('/api/shoots', $payload + $flags)->assertForbidden();
+        $this->assertSame(0, Shoot::count());
+    }
+
+    public function test_working_hours_override_rechecks_superadmin_permission_under_the_commit_lock(): void
+    {
+        $payload = $this->outsideHoursPayload();
+        $flags = $this->hoursConfirmation($this->preview($payload));
+        $guard = app(\App\Services\Scheduling\ScheduleCommitGuard::class);
+        $prepared = $guard->prepare($payload + $flags + ['action_mode' => 'create'], null, $this->admin);
+        User::whereKey($this->admin->id)->update(['role' => 'admin']);
+        try {
+            $guard->commit($prepared, function () { $this->fail('The write must not run after permission is revoked.'); });
+            $this->fail('Expected permission check under lock.');
+        } catch (\Symfony\Component\HttpKernel\Exception\HttpException $exception) {
+            $this->assertSame(403, $exception->getStatusCode());
+        }
+    }
+
+    public function test_superadmin_working_hours_override_supports_sequential_multi_unit_visits(): void
+    {
+        $payload = $this->outsideHoursPayload();
+        unset($payload['services']);
+        $payload['units'] = [['client_key' => 'unit-a', 'label' => 'Unit A', 'kind' => 'unit'],
+            ['client_key' => 'unit-b', 'label' => 'Unit B', 'kind' => 'unit']];
+        $payload['service_lines'] = [
+            ['client_key' => 'line-a', 'unit_client_key' => 'unit-a', 'service_id' => $this->service->id,
+                'photographer_id' => $this->photographer->id, 'scheduled_at' => '2026-10-02T16:55:00-04:00', 'duration_minutes' => 15],
+            ['client_key' => 'line-b', 'unit_client_key' => 'unit-b', 'service_id' => $this->service->id,
+                'photographer_id' => $this->photographer->id, 'scheduled_at' => '2026-10-02T17:10:00-04:00', 'duration_minutes' => 15],
+        ];
+        $preview = $this->preview($payload);
+        $this->assertTrue($preview['can_override_working_hours']);
+        $saved = $this->save($payload + $this->hoursConfirmation($preview));
+        $this->assertSame(2, $saved->units()->count());
+        $this->assertSame([15, 15], $saved->serviceItems()->orderBy('id')->pluck('duration_minutes')->all());
+    }
+
     #[\PHPUnit\Framework\Attributes\TestWith(['admin'])]
     #[\PHPUnit\Framework\Attributes\TestWith(['client'])]
     public function test_create_derives_shoot_time_from_explicit_service_time(string $role): void

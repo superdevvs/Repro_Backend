@@ -153,6 +153,10 @@ class StoreShootRequest extends FormRequest
             'travel_override_confirmed' => 'nullable|boolean',
             'travel_override_confirmation_version' => 'nullable|string|size:64',
             'travel_override_reason' => 'nullable|string|max:500',
+            'working_hours_override' => 'nullable|boolean',
+            'working_hours_override_confirmed' => 'nullable|boolean',
+            'working_hours_override_reason' => 'nullable|string|max:500',
+            'working_hours_override_confirmation_version' => 'nullable|string|size:64',
             'skip_availability_check' => 'nullable|boolean',
             'time' => 'nullable|string|max:10', // Legacy support
 
