@@ -130,8 +130,11 @@ class PendingApprovalWorkingHoursOverrideTest extends TestCase
         $this->assertStillRequested();
     }
 
-    public function test_revoking_request_management_permission_invalidates_an_offered_exception(): void
+    #[\PHPUnit\Framework\Attributes\TestWith([false])]
+    #[\PHPUnit\Framework\Attributes\TestWith([true])]
+    public function test_revoking_request_management_permission_invalidates_an_offered_exception(bool $secondary): void
     {
+        if ($secondary) $this->actor->update(['role' => 'editor', 'secondary_roles' => ['sales_rep']]);
         $flags = $this->flags($this->preview());
         $this->actor->update(['permission_overrides' => ['allow' => [], 'deny' => ['shoots-manage']]]);
         $this->assertFalse($this->preview()['can_override_working_hours']);
@@ -141,6 +144,7 @@ class PendingApprovalWorkingHoursOverrideTest extends TestCase
 
     #[\PHPUnit\Framework\Attributes\TestWith(['admin'])]
     #[\PHPUnit\Framework\Attributes\TestWith(['client'])]
+    #[\PHPUnit\Framework\Attributes\TestWith(['editor'])]
     public function test_unapproved_roles_cannot_forge_the_hours_exception(string $role): void
     {
         $flags = $this->flags($this->preview());

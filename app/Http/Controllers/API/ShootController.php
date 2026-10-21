@@ -18,6 +18,7 @@ use App\Services\Shoots\Actions\UpdateShootAction;
 use App\Services\Shoots\ShootAuthorizationSupport;
 use App\Services\Shoots\ShootHistoryService;
 use App\Services\Shoots\ShootListingService;
+use App\Services\Shoots\ShootManagementAccess;
 use App\Services\Shoots\ShootPresenter;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
@@ -167,7 +168,8 @@ class ShootController extends Controller
     {
         $user = $request->user();
 
-        if (! $this->shootAuthorizationSupport->hasRole($user, ['admin', 'superadmin', 'editing_manager', 'salesRep'])
+        if ((! $this->shootAuthorizationSupport->hasRole($user, ['admin', 'superadmin', 'editing_manager'])
+                && ! app(ShootManagementAccess::class)->can($user, 'manage'))
             || ! $this->shootAuthorizationSupport->canViewShootDetails($shoot, $user)) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
