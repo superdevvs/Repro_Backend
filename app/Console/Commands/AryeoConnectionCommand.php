@@ -8,14 +8,14 @@ use Illuminate\Console\Command;
 
 class AryeoConnectionCommand extends Command
 {
-    protected $signature = 'aryeo:connection {name} {--company=} {--clients=} {--token-file=} {--enable-processing} {--allow-shoots=} {--disable-processing} {--revoke}';
+    protected $signature = 'aryeo:connection {name} {--company=} {--clients=} {--token-file=} {--enable-processing} {--allow-shoots=} {--disable-processing} {--enable-discovery} {--disable-discovery} {--revoke}';
 
     protected $description = 'Provision or rotate a client-scoped Aryeo worker credential without printing secrets';
 
     public function handle(): int
     {
         $connection = AryeoConnection::where('name', $this->argument('name'))->first();
-        if ($this->option('revoke') || $this->option('disable-processing') || $this->option('enable-processing')) {
+        if ($this->option('revoke') || $this->option('disable-processing') || $this->option('enable-processing') || $this->option('enable-discovery') || $this->option('disable-discovery')) {
             if (! $connection) {
                 $this->error('Connection not found.');
 
@@ -26,6 +26,14 @@ class AryeoConnectionCommand extends Command
             }
             if ($this->option('disable-processing')) {
                 $connection->processing_enabled = false;
+            }
+            if ($this->option('enable-discovery') && $this->option('disable-discovery')) {
+                $this->error('Choose either --enable-discovery or --disable-discovery.');
+
+                return self::FAILURE;
+            }
+            if ($this->option('enable-discovery') || $this->option('disable-discovery')) {
+                $connection->discover_all_clients = (bool) $this->option('enable-discovery');
             }
             if ($this->option('enable-processing')) {
                 $ids = array_values(array_unique(array_filter(array_map('intval', explode(',', (string) $this->option('allow-shoots'))))));

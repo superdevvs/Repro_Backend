@@ -17,7 +17,7 @@ umask 077
 php artisan aryeo:connection 'Mac mini Aryeo' --company=repro --clients=1225 --token-file=/private/operator/directory/aryeo-worker-token
 ```
 
-Use an actual private directory. The command refuses to overwrite an existing file and saves the credential with mode 0600; the database stores only its SHA-256 hash. Transfer the file through an existing secure channel into the Mac's Keychain or a private 0600 configuration file. The company key is an operator-assigned label; the explicit client ID allowlist is the authorization boundary. Add all and only verified company clients. No wildcard is supported. Running provisioning again rotates the credential and disables processing. `--revoke` disables the connection; `--disable-processing` stops new processing while allowing read-only synchronization.
+Use an actual private directory. The command refuses to overwrite an existing file and saves the credential with mode 0600; the database stores only its SHA-256 hash. Transfer the file through an existing secure channel into the Mac's Keychain or a private 0600 configuration file. The company key is an operator-assigned label; the explicit client ID allowlist is the media-access authorization boundary. Add all and only verified company clients. No wildcard media access is supported. Running provisioning again rotates the credential and disables processing. `--revoke` disables the connection; `--disable-processing` stops new processing while allowing request synchronization.
 
 Only after the user selects a delivery test and both sides pass read-only validation:
 
@@ -26,6 +26,48 @@ php artisan aryeo:connection 'Mac mini Aryeo' --enable-processing --allow-shoots
 ```
 
 This example is a command template, not approval to deliver shoot 115. Enabling requires selected shoot IDs belonging to allowed clients. The Mac must acknowledge `dashboard_jobs` mode. Disable both Gmail-triggered processing and watchdog processing outside a claimed dashboard job, while leaving discovery enabled.
+
+## Request discovery before media is ready
+
+Request discovery is independent of upload and delivery eligibility. To allow an
+existing connection to discover request metadata for new Dashboard clients:
+
+```sh
+php artisan aryeo:connection 'Mac mini Aryeo' --enable-discovery
+```
+
+This sets `discover_all_clients` without changing the credential, `client_ids`,
+`delivery_shoot_ids`, or processing enablement. `--disable-discovery` reverses
+the opt-in. Existing connections default to the original client-scoped behavior.
+The worker receives the flag in each heartbeat response.
+
+With metadata discovery enabled, `POST /requests` may register a request while
+its shoot is scheduled, unpaid, awaiting editing, or not yet booked. Exact
+requester email plus normalized street/locality still gate automatic matching;
+ambiguous bookings and units require review. A known city appended to the
+Dashboard street and common trailing street abbreviations are normalized.
+Optional `city`, `state`, `zip`, and `scheduled_date` narrow matching.
+
+Mail ingestion must not require the delivery browser to be working. Verify the
+actual Aryeo sender and request link before submitting Gmail `source_id`, real
+`request_id`, `address`, `requester_name`, and known requirements. The opt-in
+accepts `requester_email:null` when the provider's email has not been verified.
+These records remain unmatched. Exact-name/address candidates appear in Tours
+for review; names alone never authorize delivery. Retry unmatched metadata so a
+request received before booking can match after the booking arrives.
+
+The response retains the request record and adds `discovery_only`, a minimal
+canonical `identity` when matched, and `match_confirmed` for a staff-reviewed
+association. No media manifest is granted by this response. Media lookup,
+readiness, inventory writes, originals, preparation, and execution remain gated
+by their existing client and selected-shoot scopes. Missing requester email also
+blocks queueing delivery even after staff confirm the request's association.
+
+A different verified requester email and canonical client email remain distinct.
+Staff's explicit Tours match stores a server-controlled verification bound to
+the source, request, client identity, and unit. It survives unchanged watchdog
+replays and is revoked when those identities change; it never adds media or
+delivery permissions. Workers cannot supply their own match verification.
 
 ## Initial read-only example
 
@@ -37,7 +79,7 @@ Read-only production lookup on 2026-10-03 matched:
 - Stored state: delivered, paid; admin verified at `2026-10-02 13:13:47` as stored by the database.
 - Gmail request source ID from the Mac handoff: `1a0fedd16d78cc61`.
 
-This is identity/state evidence, not a complete readiness response or delivery receipt. The real Aryeo request ID, requirements and current inventory still need to be read on the Mac. The discovery matcher deliberately does not guess that `Rd` and `Road` are identical. Use the full canonical address and verified requester email or manually confirm the match in Tours. Never reuse the Gmail source ID as an Aryeo request/listing ID.
+This is identity/state evidence, not a complete readiness response or delivery receipt. The real Aryeo request ID, requirements and current inventory still need to be read on the Mac. Current matching normalizes common trailing street abbreviations, while retaining exact email, locality, unit, date, and uniqueness checks. Never reuse the Gmail source ID as an Aryeo request/listing ID.
 
 A subsequent read-only evaluation of the new catalog against production records at `2026-10-03T04:36:56Z` returned **49 approved photo records**, zero floor-plan/video/tour records, zero payment-withheld records, and `eligible:false` with the sole blocker `request_requirements_unknown`. This was a temporary CLI evaluation, not a deployed HTTP endpoint; no files were downloaded and no delivery was triggered. Media version at that check: `cc8e4f6c70fb87c134331ecc6562bceb7ba5a9f81e7146d6875a74f060a49f99`. The Mac must supply actual request requirements before the endpoint can make a complete readiness decision.
 
@@ -95,7 +137,7 @@ Heartbeat body:
 {"version":"mac-connector-1","processing_mode":"dashboard_jobs","shoot_executor":true,"inventory_refresh":true}
 ```
 
-Response contains `processing_enabled`, `processing_mode:"dashboard_jobs"`, `lease_seconds:90`, `poll_seconds:15`. Offline means no successful heartbeat within two minutes.
+Response contains `processing_enabled`, `discover_all_clients`, `processing_mode:"dashboard_jobs"`, `lease_seconds:90`, `poll_seconds:15`. Offline means no successful heartbeat within two minutes.
 
 ## Durable job protocol
 

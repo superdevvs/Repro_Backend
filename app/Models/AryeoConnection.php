@@ -10,5 +10,5 @@ class AryeoConnection extends Model
 
     protected $hidden = ['token_hash'];
 
-    protected $casts = ['client_ids' => 'array', 'delivery_shoot_ids' => 'array', 'capabilities' => 'array', 'enabled' => 'boolean', 'processing_enabled' => 'boolean', 'last_seen_at' => 'datetime'];
+    protected $casts = ['client_ids' => 'array', 'delivery_shoot_ids' => 'array', 'capabilities' => 'array', 'enabled' => 'boolean', 'processing_enabled' => 'boolean', 'discover_all_clients' => 'boolean', 'last_seen_at' => 'datetime'];
 }

@@ -25,6 +25,7 @@ class AryeoJobs
             $order->refresh();
             abort_unless(in_array((int) $order->shoot_id, $connection->delivery_shoot_ids ?? [], true), 409, 'This shoot is not enabled for delivery.');
             abort_unless($order->match_status === 'matched' && $order->request_id, 409, 'An exact Aryeo request match is required.');
+            abort_unless(filter_var($order->discovery['requester_email'] ?? null, FILTER_VALIDATE_EMAIL), 409, 'Verify the Aryeo requester email before delivery.');
             $current = AryeoJob::where('request_record_id', $order->id)->whereNotIn('status', ['completed', 'cancelled'])->first();
             // Network retries and further clicks always reuse an unfinished job.
             if ($current) {

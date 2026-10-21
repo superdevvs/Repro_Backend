@@ -30,7 +30,8 @@ class AryeoWorkerController extends Controller
         $c = $this->connection($r);
         $c->update(['last_seen_at' => now(), 'capabilities' => $data]);
 
-        return response()->json(['processing_mode' => 'dashboard_jobs', 'processing_enabled' => $c->processing_enabled, 'lease_seconds' => 90, 'poll_seconds' => 15]);
+        return response()->json(['processing_mode' => 'dashboard_jobs', 'processing_enabled' => $c->processing_enabled,
+            'discover_all_clients' => (bool) $c->discover_all_clients, 'lease_seconds' => 90, 'poll_seconds' => 15]);
     }
 
     public function shoots(Request $r)
@@ -71,14 +72,27 @@ class AryeoWorkerController extends Controller
     {
         $data = $r->validate([
             'source_id' => 'required|string|max:200', 'request_id' => 'nullable|string|max:200', 'listing_id' => 'nullable|string|max:200',
-            'address' => 'required|string|max:255', 'requester_email' => 'required|email|max:255', 'unit_label' => 'nullable|string|max:100',
+            'address' => 'required|string|max:255', 'requester_email' => 'nullable|email|max:255', 'unit_label' => 'nullable|string|max:100',
+            'requester_name' => 'required_without:requester_email|nullable|string|max:255', 'city' => 'nullable|string|max:100', 'state' => 'nullable|string|max:100', 'zip' => 'nullable|string|max:20',
             'scheduled_date' => 'nullable|date_format:Y-m-d', 'summary_present' => 'required|boolean',
             'required' => 'present|nullable|array:photos,floorplans,videos,tours|required_array_keys:photos,floorplans,videos,tours',
             'required.photos' => 'nullable|integer|min:0|max:2000',
             'required.floorplans' => 'nullable|integer|min:0|max:200', 'required.videos' => 'nullable|integer|min:0|max:100', 'required.tours' => 'nullable|integer|min:0|max:100',
         ]);
 
-        return response()->json(LockedWrite::run(fn () => DB::transaction(fn () => $discovery->record($this->connection($r), $data)), 'aryeo.discovery'));
+        $connection = $this->connection($r);
+        abort_if(empty($data['requester_email']) && ! $connection->discover_all_clients, 422, 'Email-only discovery is not enabled.');
+        $record = LockedWrite::run(fn () => DB::transaction(fn () => $discovery->record($connection, $data)), 'aryeo.discovery');
+        $shoot = $record->shoot_id ? \App\Models\Shoot::with(['client', 'units'])->find($record->shoot_id) : null;
+        $mediaEnabled = $shoot && in_array((int) $shoot->client_id, $connection->client_ids ?? [], true);
+        $payload = $record->toArray();
+        if (! $mediaEnabled) {
+            unset($payload['inventory'], $payload['inventory_checked_at']);
+        }
+
+        return response()->json([...$payload, 'discovery_only' => ! $mediaEnabled,
+            'match_confirmed' => $shoot && $discovery->hasConfirmedMatch($record, $shoot, $record->discovery),
+            'identity' => $shoot ? $this->catalog->identity($shoot) : null]);
     }
 
     public function inventory(Request $r, int $order)

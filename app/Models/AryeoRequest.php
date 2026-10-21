@@ -8,5 +8,7 @@ class AryeoRequest extends Model
 {
     protected $guarded = [];
 
-    protected $casts = ['discovery' => 'array', 'inventory' => 'array', 'inventory_checked_at' => 'datetime'];
+    protected $hidden = ['match_verification'];
+
+    protected $casts = ['discovery' => 'array', 'inventory' => 'array', 'inventory_checked_at' => 'datetime', 'match_verification' => 'array'];
 }
