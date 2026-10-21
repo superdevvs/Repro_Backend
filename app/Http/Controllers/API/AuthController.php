@@ -66,6 +66,7 @@ class AuthController extends Controller
             'avatar' => 'nullable|url',
             'bio' => 'nullable|string',
             'email_warning_override' => 'sometimes|boolean',
+            'return_to' => ['nullable', 'string', Rule::in([ClientEmailVerificationLinkService::FREE_EDITS_RETURN_PATH])],
         ]);
 
         $emailHealthMutation = $this->resolveEmailHealthMutation(
@@ -152,6 +153,7 @@ class AuthController extends Controller
         $notificationDelivery = app(AccountCreatedNotificationService::class)->dispatch($user, [
             'actor' => $user,
             'issued_context' => 'registration',
+            'return_to' => $validated['return_to'] ?? null,
         ]);
         unset($notificationDelivery['links']);
         $deliveryFailed = collect([$notificationDelivery['email']['account_created'], $notificationDelivery['email']['verification'], $notificationDelivery['sms']])
@@ -781,6 +783,7 @@ class AuthController extends Controller
 
     public function resendEmailVerification(Request $request)
     {
+        $data = $request->validate(['return_to' => ['nullable', 'string', Rule::in([ClientEmailVerificationLinkService::FREE_EDITS_RETURN_PATH])]]);
         $user = $request->user();
         app(\App\Services\Users\AuthSecurityLimiter::class)->recovery($request, 'resend', (string) $user?->email);
 
@@ -809,6 +812,7 @@ class AuthController extends Controller
                 'issued_context' => 'dashboard_resend',
                 'issued_by' => $user->id,
                 'throw_on_failure' => true,
+                'return_to' => $data['return_to'] ?? null,
             ]);
         } catch (\Throwable $sendException) {
             \App\Services\ApiErrorResponder::log($sendException, 'warning');

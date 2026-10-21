@@ -136,6 +136,12 @@ class ClientEmailVerificationController extends Controller
             return redirect()->away($this->passwordCreationUrl($user));
         }
 
+        if ($user->role === 'client'
+            && ($verificationResult?->token?->metadata['return_to'] ?? null) === ClientEmailVerificationLinkService::FREE_EDITS_RETURN_PATH) {
+            return redirect()->away(rtrim((string) Config::get('app.frontend_url', 'https://reprodashboard.com'), '/')
+                .ClientEmailVerificationLinkService::FREE_EDITS_RETURN_PATH);
+        }
+
         return response()->view('email_verification_result', $this->pageData(
             'Email verified',
             'This email address is now verified. Sign in with this address to use the verified account.',

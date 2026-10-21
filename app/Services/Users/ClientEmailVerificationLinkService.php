@@ -12,6 +12,8 @@ class ClientEmailVerificationLinkService
 {
     public const SIGNATURE_VERSION = '2';
 
+    public const FREE_EDITS_RETURN_PATH = '/listing-studio/free-edits';
+
     public function buildUrl(User $user, DateTimeInterface|int|null $expiresAt = null, array $context = []): string
     {
         $token = $this->issueVerificationToken($user, array_merge($context, [
@@ -58,6 +60,11 @@ class ClientEmailVerificationLinkService
         $issuedBy = $context['issued_by'] ?? null;
         $issuedContext = trim((string) ($context['issued_context'] ?? 'system')) ?: 'system';
         $metadata = (array) ($context['metadata'] ?? []);
+        // Store this destination with the token; never trust a verification URL's query redirect.
+        unset($metadata['return_to']);
+        if (($context['return_to'] ?? null) === self::FREE_EDITS_RETURN_PATH && $user->role === 'client') {
+            $metadata['return_to'] = self::FREE_EDITS_RETURN_PATH;
+        }
 
         $this->supersedeActiveTokens($user, $emailHash);
 

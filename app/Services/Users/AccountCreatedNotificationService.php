@@ -71,6 +71,7 @@ class AccountCreatedNotificationService
                     $verificationToken ??= $this->verificationLinks->issueVerificationToken($user, array_filter([
                         'issued_context' => $context,
                         'issued_by' => $actor?->id ?? $user->id,
+                        'return_to' => $options['return_to'] ?? null,
                     ]));
                     $result['verification_token_id'] = $verificationToken->id;
                     $result['links']['verification'] ??= $this->verificationLinks->buildUrlForIssuedToken($user, $verificationToken);
@@ -120,6 +121,7 @@ class AccountCreatedNotificationService
                     'issued_by' => $actor?->id ?? $user->id,
                     'verification_token' => $verificationToken,
                     'verification_link' => $result['links']['verification'],
+                    'return_to' => $options['return_to'] ?? null,
                 ]);
                 $result['email']['verification'] = $this->channel(true, $sent, $sent ? null : 'Provider did not accept the verification email.');
                 if ($sent) {

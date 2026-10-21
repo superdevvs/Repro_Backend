@@ -131,6 +131,12 @@ Route::middleware('auth:sanctum')->group(function () {
 
 Route::middleware('auth:sanctum')->get('/me/permissions', [PermissionController::class, 'me']);
 
+// Team-fulfilled introductory offer uses private support delivery, not client Studio access.
+Route::middleware(['auth:sanctum', 'permission:support,view'])->prefix('listing-studio/free-edits')->group(function () {
+    Route::get('/', [App\Http\Controllers\API\ListingStudioTrialController::class, 'show']);
+    Route::post('/', [App\Http\Controllers\API\ListingStudioTrialController::class, 'store'])->middleware('throttle:10,1');
+});
+
 Route::middleware(['auth:sanctum', 'permission:support,view'])->prefix('support/tickets')->group(function () {
     Route::get('/', [App\Http\Controllers\API\SupportTicketController::class, 'index']);
     Route::get('/assignees', [App\Http\Controllers\API\SupportTicketController::class, 'assignees']);
