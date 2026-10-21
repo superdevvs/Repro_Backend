@@ -50,6 +50,16 @@ class VoiceLinePolicyService
             return collect();
         }
 
+        return $this->assignedRecipients($policy);
+    }
+
+    /** Staff assignments are shared by SMS and calls; only voice modes ring. */
+    public function assignedRecipients(VoiceLinePolicy $policy): Collection
+    {
+        if (! in_array($policy->mode, ['staff_voicemail', 'sms_only'], true)) {
+            return collect();
+        }
+
         return User::query()->where(function ($q) use ($policy): void {
             $q->whereIn('id', $policy->recipient_ids ?? []);
             foreach ($policy->recipient_roles ?? array_filter([$policy->recipient_role]) as $role) {

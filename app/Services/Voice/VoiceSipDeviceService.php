@@ -126,7 +126,8 @@ class VoiceSipDeviceService
 
     public function credentials(User $user, VoiceSipDevice $device): array
     {
-        abort_unless($device->user_id === $user->id && $this->allowed($device), 403);
+        abort_unless($device->user_id === $user->id && ($this->allowed($device)
+            || app(\App\Services\Messaging\GroundwireSmsService::class)->permitted($device)), 403);
 
         return ['title' => 'REPro · '.$user->name, 'username' => $device->sip_username, 'password' => $device->sip_password,
             'domain' => 'sip.telnyx.com', 'port' => 5061, 'transport' => 'TLS (sip)', 'media' => 'SRTP', 'caller_id' => $device->caller_id];

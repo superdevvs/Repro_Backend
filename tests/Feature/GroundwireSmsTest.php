@@ -104,6 +104,63 @@ class GroundwireSmsTest extends TestCase
             ->assertOk()->assertJsonCount(0, 'received_smss')->assertJsonCount(0, 'sent_smss');
     }
 
+    public function test_sms_only_assigned_device_can_text_without_voice_access(): void
+    {
+        $this->staff->update(['role' => 'editing_manager']);
+        VoiceLinePolicy::first()->update(['mode' => 'sms_only']);
+        $this->message();
+        $this->postSms('fetch')->assertOk()->assertJsonCount(1, 'received_smss');
+        $device = $this->device->fresh();
+        $this->assertFalse(app(\App\Services\Voice\VoiceSipDeviceService::class)->allowed($device));
+        $this->assertCount(0, app(\App\Services\Voice\VoiceLinePolicyService::class)->recipients(VoiceLinePolicy::first()));
+        $this->assertSame([], app(\App\Services\Voice\VoiceSipDeviceService::class)->lines($this->staff));
+
+        Http::fake(['api.telnyx.com/*' => Http::response(['data' => ['id' => 'sms-only-provider']])]);
+        $this->postSms('send', ['to' => '+12025550200', 'body' => 'Text only'])->assertOk();
+        Http::assertSentCount(1);
+        Http::assertSent(fn ($r) => str_ends_with($r->url(), '/messages') && $r['from'] === '+12025550100');
+        $this->actingAs($this->staff, 'sanctum');
+        $this->patchJson('/api/voice/sip/devices/'.$device->id.'/sms', ['number' => '+12025550100'])->assertOk()->assertJsonPath('ready', true);
+        $credentials = app(\App\Services\Voice\VoiceSipDeviceService::class)->credentials($this->staff, $device);
+        $this->assertSame('private-user', $credentials['username']);
+    }
+
+    public function test_sms_only_assignment_and_device_restrictions_still_fail_closed(): void
+    {
+        VoiceLinePolicy::first()->update(['mode' => 'sms_only']);
+        foreach (['enabled' => false, 'revoked_at' => now(), 'state' => 'uncertain', 'connection_id' => null] as $key => $value) {
+            $this->device->update([$key => $value]);
+            $this->postSms('fetch')->assertForbidden();
+            $this->device->update(['enabled' => true, 'revoked_at' => null, 'state' => 'ready', 'connection_id' => 'connection']);
+        }
+        VoiceLinePolicy::first()->update(['recipient_ids' => []]);
+        $this->postSms('fetch')->assertForbidden();
+        VoiceLinePolicy::first()->update(['recipient_roles' => ['editing_manager']]);
+        $this->postSms('fetch')->assertForbidden();
+        $this->staff->update(['role' => 'editing_manager']);
+        $this->postSms('fetch')->assertOk();
+        VoiceLinePolicy::first()->update(['mode' => 'robbie']);
+        $this->postSms('fetch')->assertForbidden();
+        Http::assertNothingSent();
+    }
+
+    public function test_changing_between_text_only_and_calls_keeps_staff_and_pairing(): void
+    {
+        $this->postSms('fetch')->assertOk();
+        $pairing = $this->device->fresh()->sms_install_hash;
+        $this->actingAs(User::factory()->create(['role' => 'superadmin']), 'sanctum');
+        foreach (['sms_only', 'staff_voicemail'] as $mode) {
+            $this->patchJson('/api/voice/numbers/'.$this->number->id, ['line_policy' => [
+                'mode' => $mode, 'recipient_ids' => [$this->staff->id], 'recipient_roles' => ['editing_manager'],
+                'timezone' => 'UTC', 'weekly_hours' => [],
+            ]])->assertOk()->assertJsonPath('line_policy.recipient_ids', [$this->staff->id])
+                ->assertJsonPath('line_policy.recipient_roles', ['editing_manager']);
+            $this->assertTrue(app(\App\Services\Messaging\GroundwireSmsService::class)->permitted($this->device->fresh()));
+            $this->assertSame($mode === 'staff_voicemail', app(\App\Services\Voice\VoiceSipDeviceService::class)->allowed($this->device->fresh()));
+            $this->assertSame($pairing, $this->device->fresh()->sms_install_hash);
+        }
+    }
+
     public function test_one_install_is_bound_and_pairing_reset_is_owner_only(): void
     {
         $this->postSms('fetch')->assertOk();

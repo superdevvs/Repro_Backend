@@ -74,7 +74,7 @@ class VoiceNumberController extends Controller
             $policyData['recipient_role'] = $policyData['recipient_roles'][0] ?? null;
             $policyData['recipient_ids'] = $policyData['recipient_ids'] ?? [];
             abort_if($phone === '+18888041663' && $policyData['mode'] !== 'sms_only', 422, 'Robbie remains SMS-only.');
-            if ($policyData['mode'] !== 'staff_voicemail') {
+            if ($policyData['mode'] === 'robbie') {
                 $policyData['recipient_ids'] = [];
                 $policyData['recipient_role'] = null;
                 $policyData['recipient_roles'] = [];

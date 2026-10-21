@@ -6,8 +6,8 @@ use App\Models\Message;
 use App\Models\SmsNumber;
 use App\Models\VoiceLinePolicy;
 use App\Models\VoiceSipDevice;
+use App\Services\Voice\VoiceBrowserSessionService;
 use App\Services\Voice\VoiceLinePolicyService;
-use App\Services\Voice\VoiceSipDeviceService;
 use App\Support\LockedWrite;
 use App\Support\VoiceLocks;
 use Illuminate\Http\Request;
@@ -33,14 +33,21 @@ class GroundwireSmsService
 
     public function lines(VoiceSipDevice $device): array
     {
-        if (! app(VoiceSipDeviceService::class)->allowed($device)) {
+        if (! $this->deviceActive($device)) {
             return [];
         }
         $policies = app(VoiceLinePolicyService::class);
 
-        return VoiceLinePolicy::where('mode', 'staff_voicemail')->get()
-            ->filter(fn ($p) => $policies->recipients($p)->contains('id', $device->user_id) && $this->number($p->phone_number))
+        return VoiceLinePolicy::whereIn('mode', ['staff_voicemail', 'sms_only'])->get()
+            ->filter(fn ($p) => $policies->assignedRecipients($p)->contains('id', $device->user_id) && $this->number($p->phone_number))
             ->map(fn ($p) => $p->phone_number)->values()->all();
+    }
+
+    private function deviceActive(VoiceSipDevice $device): bool
+    {
+        return $device->enabled && ! $device->revoked_at && $device->state === 'ready'
+            && filled($device->connection_id) && $device->user
+            && app(VoiceBrowserSessionService::class)->canOperate($device->user);
     }
 
     public function permitted(VoiceSipDevice $device): bool
@@ -61,7 +68,7 @@ class GroundwireSmsService
 
     public function configure(VoiceSipDevice $device, ?string $number, bool $reset = false): void
     {
-        abort_unless(app(VoiceSipDeviceService::class)->allowed($device), 403);
+        abort_unless($this->deviceActive($device), 403);
         abort_if($number !== null && ! in_array($number, $this->lines($device), true), 422, 'Choose an assigned SMS-ready staff line.');
         VoiceLocks::lock('groundwire-bind:'.$device->id, 20)->block(3, function () use ($device, $number, $reset) {
             $device->refresh();
