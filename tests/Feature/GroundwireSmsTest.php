@@ -106,7 +106,8 @@ class GroundwireSmsTest extends TestCase
 
     public function test_sms_only_assigned_device_can_text_without_voice_access(): void
     {
-        $this->staff->update(['role' => 'editing_manager']);
+        $this->staff->update(['role' => 'editing_manager',
+            'permission_overrides' => ['allow' => ['voice-calls-view', 'voice-calls-operate'], 'deny' => []]]);
         VoiceLinePolicy::first()->update(['mode' => 'sms_only']);
         $this->message();
         $this->postSms('fetch')->assertOk()->assertJsonCount(1, 'received_smss');
@@ -138,6 +139,8 @@ class GroundwireSmsTest extends TestCase
         VoiceLinePolicy::first()->update(['recipient_roles' => ['editing_manager']]);
         $this->postSms('fetch')->assertForbidden();
         $this->staff->update(['role' => 'editing_manager']);
+        $this->postSms('fetch')->assertForbidden();
+        $this->staff->update(['permission_overrides' => ['allow' => ['voice-calls-view', 'voice-calls-operate'], 'deny' => []]]);
         $this->postSms('fetch')->assertOk();
         VoiceLinePolicy::first()->update(['mode' => 'robbie']);
         $this->postSms('fetch')->assertForbidden();
