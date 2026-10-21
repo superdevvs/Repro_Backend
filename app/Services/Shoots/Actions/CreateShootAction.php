@@ -126,7 +126,7 @@ class CreateShootAction
         if ($overrideWorkingHours) {
             abort_unless(! $requestOnly && $travelGuard->enabled()
                 && app(\App\Services\Scheduling\WorkingHoursOverride::class)->eligible($travelPayload, null, $user),
-                403, 'Only a superadmin may override working hours for a new staff booking with scheduling checks enabled.');
+                403, 'An authorized superadmin or sales rep must confirm this new booking outside working hours with scheduling checks enabled.');
         }
         $travelPrepared = $requestOnly ? ['enabled' => false] : $travelGuard->prepare($travelPayload, null, $user);
         $result = $travelGuard->commit($travelPrepared, fn () => DB::transaction(function () use ($validated, $user, $request, $client, $unitBooking, $multiUnit, $userRole, $scheduledAt, $servicesPayload, $overrideWorkingHours) {

@@ -119,9 +119,14 @@ class HybridBookingCreateScheduleTest extends TestCase
             'working_hours_override_confirmation_version' => $preview['working_hours_confirmation_version']];
     }
 
-    public function test_superadmin_can_book_outside_hours_with_one_audited_confirmation(): void
+    #[\PHPUnit\Framework\Attributes\TestWith(['superadmin'])]
+    #[\PHPUnit\Framework\Attributes\TestWith(['salesRep'])]
+    #[\PHPUnit\Framework\Attributes\TestWith(['sales_rep'])]
+    #[\PHPUnit\Framework\Attributes\TestWith(['editor', ['sales_rep']])]
+    public function test_authorized_staff_can_book_outside_hours_with_one_audited_confirmation(string $role, array $secondary = []): void
     {
         $payload = $this->outsideHoursPayload();
+        $this->admin->update(['role' => $role, 'secondary_roles' => $secondary]);
         $preview = $this->preview($payload);
         $this->assertTrue($preview['can_override_working_hours']);
         $this->assertFalse($preview['can_override']);
@@ -140,7 +145,6 @@ class HybridBookingCreateScheduleTest extends TestCase
     }
 
     #[\PHPUnit\Framework\Attributes\TestWith(['admin'])]
-    #[\PHPUnit\Framework\Attributes\TestWith(['salesRep'])]
     #[\PHPUnit\Framework\Attributes\TestWith(['client'])]
     public function test_other_roles_cannot_forge_a_working_hours_override(string $role): void
     {
@@ -231,13 +235,17 @@ class HybridBookingCreateScheduleTest extends TestCase
         $this->assertSame(0, Shoot::count());
     }
 
-    public function test_working_hours_override_rechecks_superadmin_permission_under_the_commit_lock(): void
+    #[\PHPUnit\Framework\Attributes\TestWith(['superadmin'])]
+    #[\PHPUnit\Framework\Attributes\TestWith(['salesRep'])]
+    public function test_working_hours_override_rechecks_staff_permission_under_the_commit_lock(string $role): void
     {
         $payload = $this->outsideHoursPayload();
+        $this->admin->update(['role' => $role]);
         $flags = $this->hoursConfirmation($this->preview($payload));
         $guard = app(\App\Services\Scheduling\ScheduleCommitGuard::class);
         $prepared = $guard->prepare($payload + $flags + ['action_mode' => 'create'], null, $this->admin);
-        User::whereKey($this->admin->id)->update(['role' => 'admin']);
+        User::findOrFail($this->admin->id)->update($role === 'salesRep'
+            ? ['permission_overrides' => ['allow' => [], 'deny' => ['book-shoot-create']]] : ['role' => 'admin']);
         try {
             $guard->commit($prepared, function () { $this->fail('The write must not run after permission is revoked.'); });
             $this->fail('Expected permission check under lock.');

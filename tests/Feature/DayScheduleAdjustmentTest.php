@@ -97,8 +97,11 @@ class DayScheduleAdjustmentTest extends TestCase
         Queue::assertPushed(SyncShootToGoogleCalendarJob::class, fn ($job) => $job->shootId === $neighbor->id);
     }
 
-    public function test_update_uses_same_batch_and_preview_confirmation_for_short_gap(): void
+    #[\PHPUnit\Framework\Attributes\TestWith(['admin'])]
+    #[\PHPUnit\Framework\Attributes\TestWith(['salesRep'])]
+    public function test_update_uses_same_batch_and_preview_confirmation_for_short_gap(string $role): void
     {
+        $this->admin->update(['role' => $role]);
         $neighbor = $this->booked();
         $main = $this->booked('2026-10-08');
         $payload = $this->payload($neighbor, '11:30');
@@ -147,8 +150,11 @@ class DayScheduleAdjustmentTest extends TestCase
         $this->assertSame('2026-10-09 09:00:00', $neighbor->serviceItems()->sole()->getRawOriginal('scheduled_at'));
     }
 
-    public function test_day_endpoint_filters_date_and_hides_other_client_booking_details(): void
+    #[\PHPUnit\Framework\Attributes\TestWith(['admin'])]
+    #[\PHPUnit\Framework\Attributes\TestWith(['salesRep'])]
+    public function test_day_endpoint_filters_date_and_hides_other_client_booking_details(string $role): void
     {
+        $this->admin->update(['role' => $role]);
         $today = $this->booked(); $this->booked('2026-10-08'); $this->booked('2026-10-10');
         $query = '/api/photographer/availability/day-schedule?photographer_id='.$this->photographer->id.'&date=2026-10-09&timezone=America%2FNew_York';
         $this->getJson($query)->assertOk()->assertJsonCount(1, 'data.bookings')->assertJsonPath('data.bookings.0.can_adjust', true);
@@ -166,15 +172,19 @@ class DayScheduleAdjustmentTest extends TestCase
         Queue::assertNothingPushed();
     }
 
-    public function test_duration_only_reduction_saves_the_booked_line_and_new_shoot_together(): void
+    #[\PHPUnit\Framework\Attributes\TestWith(['admin'])]
+    #[\PHPUnit\Framework\Attributes\TestWith(['salesRep'])]
+    public function test_duration_only_reduction_saves_the_booked_line_and_new_shoot_together(string $role): void
     {
+        $this->admin->update(['role' => $role]);
         $neighbor = $this->booked(); $payload = $this->payload($neighbor);
         $line = $neighbor->serviceItems()->sole();
         $payload['schedule_adjustments'][0]['scheduled_at'] = $payload['schedule_adjustments'][0]['from_start'];
         $payload['schedule_adjustments'][0]['service_durations'] = [['shoot_service_id' => $line->id, 'duration_minutes' => 45]];
         $this->postJson('/api/photographer/availability/feasibility', $payload)->assertOk()->assertJsonPath('data.available', true);
         $this->assertSame(135, $line->fresh()->duration_minutes, 'Preview must be read only.');
-        $this->postJson('/api/shoots', $payload)->assertCreated();
+        $savedId = $this->postJson('/api/shoots', $payload)->assertCreated()->json('data.id');
+        $this->assertSame(150, Shoot::findOrFail($savedId)->serviceItems()->sole()->duration_minutes);
         $this->assertSame(45, $line->fresh()->duration_minutes);
         $this->assertSame('10:30', substr($neighbor->fresh()->time, 0, 5));
         $this->assertSame(100.0, (float) $line->fresh()->price);
@@ -183,8 +193,11 @@ class DayScheduleAdjustmentTest extends TestCase
         Queue::assertPushed(ProcessUpdatedShootSideEffectsJob::class, fn ($job) => $job->shootId === $neighbor->id && $job->notifyClient === false && $job->notifyPhotographer === true);
     }
 
-    public function test_duration_increase_cannot_create_overlap_or_leave_partial_changes(): void
+    #[\PHPUnit\Framework\Attributes\TestWith(['admin'])]
+    #[\PHPUnit\Framework\Attributes\TestWith(['salesRep'])]
+    public function test_duration_increase_cannot_create_overlap_or_leave_partial_changes(string $role): void
     {
+        $this->admin->update(['role' => $role]);
         $neighbor = $this->booked(); $payload = $this->payload($neighbor);
         $line = $neighbor->serviceItems()->sole();
         $payload['schedule_adjustments'][0]['scheduled_at'] = $payload['schedule_adjustments'][0]['from_start'];

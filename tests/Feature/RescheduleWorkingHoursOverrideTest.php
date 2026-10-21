@@ -63,8 +63,12 @@ class RescheduleWorkingHoursOverrideTest extends TestCase
         $this->assertSame('2026-10-20 20:30:00', $this->shoot->fresh()->getRawOriginal('scheduled_at'));
         $this->assertSame(35, $this->shoot->serviceItems()->sole()->duration_minutes);
     }
-    public function test_signed_superadmin_exception_saves_reschedule_and_audit_without_changing_hours(): void
+    #[\PHPUnit\Framework\Attributes\TestWith(['superadmin'])]
+    #[\PHPUnit\Framework\Attributes\TestWith(['salesRep'])]
+    #[\PHPUnit\Framework\Attributes\TestWith(['representative'])]
+    public function test_signed_staff_exception_saves_reschedule_and_audit_without_changing_hours(string $role): void
     {
+        $this->actor->update(['role' => $role]);
         $preview = $this->preview(); $this->assertTrue($preview['can_override_working_hours']);
         $body = ['requested_date' => '2026-10-20', 'requested_time' => '16:30'];
         $this->postJson('/api/shoots/'.$this->shoot->id.'/reschedule', $body)->assertUnprocessable();
@@ -73,8 +77,12 @@ class RescheduleWorkingHoursOverrideTest extends TestCase
         $this->assertSame(1, PhotographerAvailability::count());
         $this->assertSame(1, DB::table('user_activity_logs')->where('event_type', 'schedule.working_hours_override')->count());
     }
-    public function test_update_edit_can_use_same_explicit_exception(): void
+    #[\PHPUnit\Framework\Attributes\TestWith(['superadmin', []])]
+    #[\PHPUnit\Framework\Attributes\TestWith(['salesRep', []])]
+    #[\PHPUnit\Framework\Attributes\TestWith(['editor', ['sales_rep']])]
+    public function test_update_edit_can_use_same_explicit_exception(string $role, array $secondary): void
     {
+        $this->actor->update(['role' => $role, 'secondary_roles' => $secondary]);
         $body = ['scheduled_at' => '2026-10-20T20:30:00Z'];
         $preview = $this->postJson('/api/photographer/availability/feasibility', $body + ['shoot_id' => $this->shoot->id, 'action_mode' => 'update'])->assertOk()->json('data');
         $this->patchJson('/api/shoots/'.$this->shoot->id, $body + $this->flags($preview))->assertOk();
@@ -101,8 +109,11 @@ class RescheduleWorkingHoursOverrideTest extends TestCase
             'start_time' => '16:45', 'end_time' => '16:46', 'status' => 'unavailable']);
         $this->assertContains('outside_working_hours', $this->preview()['reason_codes']);
     }
-    public function test_working_hours_confirmation_never_allows_capture_overlap(): void
+    #[\PHPUnit\Framework\Attributes\TestWith(['superadmin'])]
+    #[\PHPUnit\Framework\Attributes\TestWith(['salesRep'])]
+    public function test_working_hours_confirmation_never_allows_capture_overlap(string $role): void
     {
+        $this->actor->update(['role' => $role]);
         $flags = $this->flags($this->preview());
         $other = $this->shoot->replicate();
         $other->scheduled_at = '2026-10-20 20:45:00'; $other->time = '16:45'; $other->save();
@@ -114,13 +125,28 @@ class RescheduleWorkingHoursOverrideTest extends TestCase
         $this->postJson('/api/shoots/'.$this->shoot->id.'/reschedule', ['requested_date' => '2026-10-20', 'requested_time' => '16:30'] + $flags)->assertUnprocessable();
         $this->assertSame('17:00', substr($this->shoot->fresh()->time, 0, 5));
     }
-    public function test_multi_unit_reschedule_uses_the_same_signed_exception(): void
+    #[\PHPUnit\Framework\Attributes\TestWith(['superadmin'])]
+    #[\PHPUnit\Framework\Attributes\TestWith(['salesRep'])]
+    public function test_multi_unit_reschedule_uses_the_same_signed_exception(string $role): void
     {
+        $this->actor->update(['role' => $role]);
         $unit = $this->shoot->units()->create(['client_key' => 'unit-one', 'label' => 'One', 'kind' => 'unit', 'sort_order' => 0]);
         $this->shoot->serviceItems()->sole()->update(['shoot_unit_id' => $unit->id, 'client_key' => 'photos']);
         $this->shoot->forceFill(['units_revision' => 1])->save();
         $flags = $this->flags($this->preview());
         $this->postJson('/api/shoots/'.$this->shoot->id.'/reschedule', ['requested_date' => '2026-10-20', 'requested_time' => '16:30', 'expected_units_revision' => 1] + $flags)->assertCreated();
         $this->assertSame('2026-10-20 20:30:00', $this->shoot->serviceItems()->sole()->getRawOriginal('scheduled_at'));
+    }
+
+    public function test_sales_rep_cannot_confirm_after_booking_permission_is_revoked(): void
+    {
+        $this->actor->update(['role' => 'salesRep']);
+        $flags = $this->flags($this->preview());
+        $this->actor->update(['permission_overrides' => ['allow' => [], 'deny' => ['shoots-update', 'shoots-manage']]]);
+        $body = ['requested_date' => '2026-10-20', 'requested_time' => '16:30'];
+        $this->postJson('/api/shoots/'.$this->shoot->id.'/reschedule', $body + $flags)->assertForbidden();
+        $this->patchJson('/api/shoots/'.$this->shoot->id, ['scheduled_at' => '2026-10-20T20:30:00Z'] + $flags)->assertForbidden();
+        $this->assertSame('17:00', substr($this->shoot->fresh()->time, 0, 5));
+        $this->assertSame(0, DB::table('user_activity_logs')->where('event_type', 'schedule.working_hours_override')->count());
     }
 }

@@ -7,21 +7,26 @@ use App\Models\Shoot;
 use App\Models\User;
 use Illuminate\Validation\ValidationException;
 
-/** A deliberate, signed superadmin exception for one booking or reschedule. */
+/** A deliberate, signed staff exception for one booking or reschedule. */
 class WorkingHoursOverride
 {
     public function eligible(array $payload, ?Shoot $shoot, ?User $actor): bool
     {
         $action = $payload['action_mode'] ?? '';
+        $management = app(\App\Services\Shoots\ShootManagementAccess::class);
+        $authorized = $actor && (strtolower((string) $actor->role) === 'superadmin'
+            || ($management->isSalesRep($actor) && ($shoot ? $management->can($actor)
+                : app(\App\Services\RolePermissionService::class)->userCan($actor, 'book-shoot', 'create'))));
         $allowed = $shoot
             ? $shoot->exists && in_array($action, ['update', 'reschedule'], true)
                 && in_array((string) ($shoot->workflow_status ?: $shoot->status), ['scheduled', 'booked'], true)
-                && app(\App\Services\Shoots\ShootManagementAccess::class)->canEditAppointment($shoot, $actor)
+                && $management->canEditAppointment($shoot, $actor)
+                && ($action !== 'reschedule' || app(\App\Services\Shoots\ShootAuthorizationSupport::class)->canReviewShootRequests($actor))
                 && empty($payload['complimentary_service_options'])
                 && (!isset($payload['status']) || $payload['status'] === $shoot->status)
                 && (!isset($payload['workflow_status']) || $payload['workflow_status'] === $shoot->workflow_status)
             : $action === 'create';
-        return $actor && strtolower((string) $actor->role) === 'superadmin' && $allowed
+        return $authorized && $allowed
             && (int) ($payload['client_id'] ?? $shoot?->client_id ?? 0) !== (int) $actor->id
             && ! filter_var($payload['is_client_request'] ?? false, FILTER_VALIDATE_BOOLEAN)
             && empty($payload['schedule_adjustments']);
@@ -45,7 +50,7 @@ class WorkingHoursOverride
 
     public function assertConfirmed(array $result, array $payload, ?Shoot $shoot, ?User $actor): void
     {
-        abort_unless($this->eligible($payload, $shoot, $actor), 403, 'Only a superadmin may override working hours for a staff booking or scheduled appointment.');
+        abort_unless($this->eligible($payload, $shoot, $actor), 403, 'An authorized superadmin or sales rep must confirm this working-hours exception.');
         if (! $this->canSave($result, $payload, $shoot, $actor)) {
             throw ValidationException::withMessages(['working_hours_override' => 'This schedule cannot use a working-hours override. Refresh availability; overlapping bookings must be resolved.']);
         }

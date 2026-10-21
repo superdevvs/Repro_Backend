@@ -13,7 +13,8 @@ class TravelScheduleAccess
     {
         abort_unless($actor, 401);
         $access = app(ShootAuthorizationSupport::class);
-        $staff = $access->hasRole($actor, ['admin', 'superadmin', 'editing_manager', 'salesRep']);
+        $staff = $access->hasRole($actor, ['admin', 'superadmin', 'editing_manager', 'salesRep'])
+            || app(\App\Services\Shoots\ShootManagementAccess::class)->isSalesRep($actor);
         if ($shoot) {
             abort_unless($access->canViewShootDetails($shoot, $actor)
                 || ($staff && $access->canTriageShootRequests($shoot, $actor)), 403);
@@ -35,31 +36,21 @@ class TravelScheduleAccess
         if (! $actor || $shoot?->isImportDraft()) {
             return false;
         }
-        $primaryRep = $access->hasRole($actor, ['salesRep']);
-        $requestReview = $shoot && in_array($payload['action_mode'] ?? '', ['reschedule', 'alternate'], true)
-            && $access->canTriageShootRequests($shoot, $actor);
-        if ($requestReview && ! $primaryRep) {
-            // Secondary sales roles already have shared request-review rights;
-            // they do not gain generic booking mutation rights from this check.
-            $secondaryActor = clone $actor;
-            foreach ($actor->secondary_roles ?? [] as $role) {
-                $secondaryActor->role = $role;
-                if ($access->hasRole($secondaryActor, ['salesRep'])) {
-                    return true;
-                }
-            }
-        }
-        if (! $primaryRep) {
+        $management = app(\App\Services\Shoots\ShootManagementAccess::class);
+        if (! $management->isSalesRep($actor)) {
             return false;
         }
 
-        // Broad read access does not grant a rep permission to change another
-        // rep's active booking. Shared request-review paths retain their authority;
-        // mutation adapters set action_mode themselves from the authorized action.
-        return ! $shoot || (int) $shoot->rep_id === (int) $actor->id
-            || $access->canManageRequestedShoot($shoot, $actor)
-            || $access->canManageHoldShoot($shoot, $actor)
-            || $requestReview;
+        // Match the write's booking permissions, including secondary sales roles
+        // and explicit denies. Read access or an assignment alone is insufficient.
+        if (! $shoot) return app(\App\Services\RolePermissionService::class)->userCan($actor, 'book-shoot', 'create');
+        if (! $management->canEditAppointment($shoot, $actor)) return false;
+        return match ($payload['action_mode'] ?? '') {
+            'reschedule', 'alternate' => $access->canTriageShootRequests($shoot, $actor),
+            'approve' => $access->canManageRequestedShoot($shoot, $actor),
+            'schedule' => $access->canManageHoldShoot($shoot, $actor),
+            default => true,
+        };
     }
 
     public function isAdmin(?User $actor): bool

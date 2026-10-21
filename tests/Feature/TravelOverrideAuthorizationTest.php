@@ -18,7 +18,7 @@ class TravelOverrideAuthorizationTest extends TestCase
 {
     use \Tests\Concerns\FreshDatabaseOutsideTransaction;
 
-    public function test_unrelated_rep_cannot_confirm_generic_update_but_shared_request_review_is_preserved(): void
+    public function test_booking_manager_can_edit_another_rep_shoot_and_shared_review_uses_the_guard(): void
     {
         config(['availability.hybrid_travel_enabled' => true]);
         Queue::fake();
@@ -32,17 +32,11 @@ class TravelOverrideAuthorizationTest extends TestCase
         $flags = ['travel_override' => true, 'travel_override_confirmed' => true,
             'travel_override_confirmation_version' => str_repeat('a', 64), 'travel_override_reason' => 'Reviewed by the request reviewer'];
         $access = app(TravelScheduleAccess::class);
-        $this->assertFalse($access->canOverride(['action_mode' => 'update'], $shoot, $rep));
-        try {
-            app(ScheduleFeasibilityService::class)->assertResult(['enabled' => true, 'available' => false,
-                'can_override' => true], $flags + ['action_mode' => 'update'], $shoot, $rep);
-            $this->fail('Broad read access must not grant an unrelated rep a generic update override.');
-        } catch (\Symfony\Component\HttpKernel\Exception\HttpExceptionInterface $exception) {
-            $this->assertSame(403, $exception->getStatusCode());
-        }
+        $this->assertTrue($access->canOverride(['action_mode' => 'update'], $shoot, $rep));
         Sanctum::actingAs($rep);
         $this->patchJson('/api/shoots/'.$shoot->id, $flags + ['scheduled_at' => '2026-10-16T14:00:00Z',
-            'action_mode' => 'reschedule'])->assertForbidden();
+            'action_mode' => 'reschedule'])->assertOk();
+        $this->assertSame('2026-10-16 14:00:00', $shoot->fresh()->getRawOriginal('scheduled_at'));
         $pending = ShootRescheduleRequest::create(['shoot_id' => $shoot->id, 'requested_by' => $shoot->client_id,
             'requested_date' => '2026-10-16', 'requested_time' => '10:00', 'status' => 'pending']);
         $engine = Mockery::mock(ScheduleFeasibilityService::class);
@@ -68,7 +62,7 @@ class TravelOverrideAuthorizationTest extends TestCase
         $this->assertTrue($access->canOverride(['action_mode' => 'create'], null, $rep));
         $this->assertTrue($access->canOverride(['action_mode' => 'update'], $shoot, $rep));
         $shoot->rep_id = null;
-        $this->assertFalse($access->canOverride(['action_mode' => 'update'], $shoot, $rep));
+        $this->assertTrue($access->canOverride(['action_mode' => 'update'], $shoot, $rep));
         $shoot->status = $shoot->workflow_status = 'requested';
         $this->assertTrue($access->canOverride(['action_mode' => 'approve'], $shoot, $rep));
         $shoot->status = $shoot->workflow_status = 'on_hold';
@@ -77,16 +71,32 @@ class TravelOverrideAuthorizationTest extends TestCase
         $this->assertFalse($access->canOverride(['action_mode' => 'reschedule'], $shoot, $rep));
     }
 
-    public function test_secondary_sales_role_is_limited_to_its_existing_shared_review_authority(): void
+    public function test_secondary_sales_role_uses_booking_permissions_and_respects_explicit_denials(): void
     {
         $rep = User::factory()->create(['role' => 'editor', 'secondary_roles' => ['sales_rep']]);
         $shoot = Shoot::factory()->create(['rep_id' => $rep->id, 'status' => 'scheduled', 'workflow_status' => 'scheduled']);
         $access = app(TravelScheduleAccess::class);
-        $this->assertFalse($access->canOverride(['action_mode' => 'create'], null, $rep));
-        $this->assertFalse($access->canOverride(['action_mode' => 'update'], $shoot, $rep));
+        $this->assertTrue($access->canOverride(['action_mode' => 'create'], null, $rep));
+        $this->assertTrue($access->canOverride(['action_mode' => 'update'], $shoot, $rep));
         $this->assertTrue($access->canOverride(['action_mode' => 'reschedule'], $shoot, $rep));
         $this->assertTrue($access->canOverride(['action_mode' => 'alternate'], $shoot, $rep));
         $shoot->status = $shoot->workflow_status = Shoot::STATUS_IMPORT_DRAFT;
         $this->assertFalse($access->canOverride(['action_mode' => 'reschedule'], $shoot, $rep));
+        $shoot->status = $shoot->workflow_status = 'scheduled';
+        $rep->permission_overrides = ['allow' => [], 'deny' => ['book-shoot-create', 'shoots-update', 'shoots-manage']];
+        $this->assertFalse($access->canOverride(['action_mode' => 'create'], null, $rep));
+        $this->assertFalse($access->canOverride(['action_mode' => 'update'], $shoot, $rep));
+        $this->assertFalse($access->canOverride(['action_mode' => 'reschedule'], $shoot, $rep));
+    }
+
+    public function test_authorized_rep_cannot_forge_a_travel_warning_confirmation(): void
+    {
+        $rep = User::factory()->create(['role' => 'salesRep']);
+        $shoot = Shoot::factory()->create(['status' => 'scheduled', 'workflow_status' => 'scheduled']);
+        $this->expectException(PublicApiResponseException::class);
+        app(ScheduleFeasibilityService::class)->assertResult(['enabled' => true, 'available' => false, 'can_override' => true], [
+            'action_mode' => 'update', 'travel_override' => true, 'travel_override_confirmed' => true,
+            'travel_override_confirmation_version' => str_repeat('a', 64), 'travel_override_reason' => 'Reviewed this travel warning',
+        ], $shoot, $rep);
     }
 }
