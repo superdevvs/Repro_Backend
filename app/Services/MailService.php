@@ -615,7 +615,8 @@ class MailService
         Shoot $shoot,
         ?string $changesSummary = null,
         ?bool $notifyClient = null,
-        ?bool $notifyPhotographer = null
+        ?bool $notifyPhotographer = null,
+        array $notificationMetadata = []
     ): bool {
         if ($shoot->isInternalTestShoot()) {
             return false;
@@ -626,6 +627,7 @@ class MailService
             $shootData = $this->formatShootData($shoot);
             $clientCcEmails = $this->resolveShootCcEmailsForRecipient($shoot, $user);
             $normalizedChangesSummary = $this->normalizeChangeSummaryText($changesSummary);
+            $notificationMetadata['urgent'] = \App\Services\Messaging\ClientNotificationTimingPolicy::urgentShootUpdate($normalizedChangesSummary);
             $shouldNotifyClient = $notifyClient !== false;
             $shouldNotifyPhotographer = $notifyPhotographer !== false;
             $isPrimaryRecipientPhotographer = $this->isPhotographerRecipient($user, $shoot);
@@ -658,6 +660,7 @@ class MailService
                         'related_shoot_id' => $shoot->id,
                     ]), [
                         'idempotency_key' => sprintf('SHOOT_UPDATED:%d:%d:client:%s', $shoot->id, $user->id, sha1($normalizedChangesSummary)),
+                        'notification_metadata' => $notificationMetadata,
                     ]);
                     $sentClient = true;
 
@@ -717,6 +720,7 @@ class MailService
                             $this->serviceScopeHash($photographerShootData),
                             sha1($photographerChangesSummary)
                         ),
+                        'notification_metadata' => $notificationMetadata,
                     ]);
                     $sentPhotographer = true;
                     Log::info('Shoot updated email sent to photographer', [
@@ -3378,6 +3382,7 @@ class MailService
             'related_shoot_id' => $extraPayload['related_shoot_id'] ?? null,
             'related_invoice_id' => $extraPayload['related_invoice_id'] ?? null,
             'send_source' => $emailAlias,
+            'notification_metadata' => $options['notification_metadata'] ?? [],
             'contact_email' => $to,
             'contact_name' => $payload['recipient']['name'] ?? 'Recipient',
             'contact_type' => $payload['meta']['recipient_type'] ?? 'other',
@@ -3467,8 +3472,10 @@ class MailService
      */
     private function addChangeLine(array &$changes, string $label, ?string $before, ?string $after): void
     {
-        $before = trim((string) $before);
-        $after = trim((string) $after);
+        // Keep one field per summary line; multiline notes must not become a
+        // separate operational change when notification purposes are classified.
+        $before = trim(preg_replace('/\R+/', ' ', (string) $before));
+        $after = trim(preg_replace('/\R+/', ' ', (string) $after));
         if ($before === $after || ($before === '' && $after === '')) {
             return;
         }

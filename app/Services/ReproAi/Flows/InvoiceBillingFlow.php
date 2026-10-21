@@ -391,6 +391,12 @@ class InvoiceBillingFlow
                     'body_html' => $rendered['body_html'],
                     'body_text' => $rendered['body_text'],
                     'related_invoice_id' => $invoice->id,
+                    'metadata' => ['notification' => array_merge(
+                        ['type' => 'CLIENT_INVOICE'],
+                        (int) $session->user_id === (int) $invoice->client_id && $invoice->client?->role === 'client'
+                            ? ['origin' => 'client_action', 'intent' => 'requested_link']
+                            : []
+                    )],
                 ]);
                 $emailSent = true;
             } catch (\Exception $e) {

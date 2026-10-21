@@ -4,12 +4,16 @@ namespace Tests\Feature;
 
 use App\Jobs\DispatchScheduledMessages;
 use App\Models\AutomationRule;
+use App\Models\Invoice;
 use App\Models\Message;
+use App\Models\MessageTemplate;
+use App\Models\Payment;
 use App\Models\Shoot;
 use App\Models\SmsNumber;
 use App\Models\User;
 use App\Services\Messaging\AutomationService;
 use App\Services\Messaging\AutomationWorkflowExecutor;
+use App\Services\Messaging\ManualNotificationService;
 use App\Services\Messaging\MessagingService;
 use App\Services\Messaging\OutboundDeliveryGuard;
 use App\Services\Messaging\Providers\CakemailProvider;
@@ -91,6 +95,353 @@ class ClientNotificationDeliveryWindowTest extends TestCase
         }
 
         return $out;
+    }
+
+    #[DataProvider('transactionalNotifications')]
+    public function test_transactional_confirmations_reach_the_provider_before_9am(string $channel, string $trigger, bool $directSource): void
+    {
+        [$shoot, $client] = $this->shoot('2026-10-18 15:00');
+        $this->clock('2026-10-17 05:00');
+        $payload = $this->payload($shoot, $client, $trigger);
+        if ($directSource) {
+            $payload['send_source'] = $trigger;
+            unset($payload['metadata'], $payload['automation_trigger']);
+        }
+
+        $message = $this->sendPayload($channel, $client, $payload);
+
+        $this->assertSame('SENT', $message->status);
+        $this->assertNull($message->scheduled_at);
+        $this->assertSame(now()->toDateTimeString(), $message->sent_at->toDateTimeString());
+        $this->assertProviderSends($channel, 1);
+        $this->dispatch();
+        $this->assertProviderSends($channel, 1);
+    }
+
+    public static function transactionalNotifications(): array
+    {
+        $types = [
+            'SHOOT_REQUESTED' => false, 'SHOOT_BOOKED' => false, 'SHOOT_SCHEDULED' => true,
+            'SHOOT_REQUEST_APPROVED' => false, 'SHOOT_REQUEST_MODIFIED' => true, 'SHOOT_REQUEST_DECLINED' => true,
+            'PAYMENT_COMPLETED' => false, 'PAYMENT_CONFIRMATION' => true, 'SHOOT_PAID' => true,
+            'PAYMENT_REFUNDED' => false, 'SHOOT_CANCELLED' => true, 'SHOOT_CANCELED' => false, 'SHOOT_ON_HOLD' => false,
+            'SHOOT_REMOVED' => true, 'SHOOT_DELETED' => false,
+        ];
+        $cases = [];
+        foreach (['email', 'sms'] as $channel) {
+            foreach ($types as $trigger => $directSource) {
+                $cases[$channel.'-'.$trigger] = [$channel, $trigger, $directSource];
+            }
+        }
+
+        return $cases;
+    }
+
+    #[DataProvider('routineNotifications')]
+    public function test_routine_automation_notices_still_wait_for_9am(string $channel, string $trigger): void
+    {
+        [$shoot, $client] = $this->shoot('2026-10-17 10:00');
+        $this->clock('2026-10-17 05:00');
+        $message = $this->send($channel, $shoot, $client, $trigger);
+        $this->assertSame('SCHEDULED', $message->status);
+        $this->assertSame('2026-10-17 09:00', $message->scheduled_at->setTimezone('America/New_York')->format('Y-m-d H:i'));
+        $this->assertProviderSends($channel, 0);
+        $this->clock('2026-10-17 09:00');
+        $this->dispatch();
+        $this->assertSame('SENT', $message->fresh()->status);
+        $this->assertProviderSends($channel, 1);
+    }
+
+    public static function routineNotifications(): array
+    {
+        $cases = [];
+        foreach (['email', 'sms'] as $channel) {
+            foreach (['PROPERTY_CONTACT_REMINDER', 'INVOICE_DUE', 'INVOICE_OVERDUE', 'WEEKLY_SALES_REPORT', 'SHOOT_COMPLETED'] as $trigger) {
+                $cases[$channel.'-'.$trigger] = [$channel, $trigger];
+            }
+        }
+
+        return $cases;
+    }
+
+    #[DataProvider('manualNotifications')]
+    public function test_manual_notification_templates_keep_their_confirmation_or_reminder_timing(string $channel, string $type, bool $immediate): void
+    {
+        [$shoot, $client] = $this->shoot('2026-10-18 15:00');
+        $this->clock('2026-10-17 05:00');
+        if (in_array($type, ['payment_receipt', 'refund_submitted'], true)) {
+            $payment = Payment::factory()->create([
+                'shoot_id' => $shoot->id, 'invoice_id' => null, 'amount' => 100,
+                'status' => Payment::STATUS_COMPLETED, 'payment_method' => 'card', 'processed_at' => now(),
+            ]);
+            if ($type === 'refund_submitted') {
+                $payment->refunds()->create([
+                    'shoot_id' => $shoot->id, 'amount' => 25, 'status' => 'succeeded', 'provider' => 'manual',
+                ]);
+            }
+        }
+        if ($type === 'payment_due_reminder') {
+            Invoice::factory()->create([
+                'shoot_id' => $shoot->id, 'client_id' => $client->id, 'user_id' => $client->id,
+                'role' => Invoice::ROLE_CLIENT, 'total' => 100, 'subtotal' => 100, 'tax' => 0,
+            ]);
+        }
+        $slug = ManualNotificationService::TYPES[$type].($channel === 'sms' ? '-sms' : '');
+        MessageTemplate::updateOrCreate(['slug' => $slug], [
+            'channel' => strtoupper($channel), 'name' => 'Timing fixture', 'category' => 'GENERAL',
+            'scope' => 'SYSTEM', 'is_system' => true, 'is_active' => true, 'variables_json' => [],
+            'subject' => 'Notification', 'body_text' => 'A notification for your shoot.',
+            'body_html' => '<p>A notification for your shoot.</p>',
+        ]);
+        $sender = User::factory()->create(['role' => 'admin']);
+        $message = app(ManualNotificationService::class)->send($shoot, $type, 'client', $channel, $sender);
+
+        $this->assertSame('MANUAL', $message->send_source);
+        $this->assertSame($slug, $message->template->slug);
+        $this->assertSame($immediate ? 'SENT' : 'SCHEDULED', $message->status);
+        $this->assertProviderSends($channel, $immediate ? 1 : 0);
+        if (! $immediate) {
+            $this->assertSame('2026-10-17 09:00', $message->scheduled_at->setTimezone('America/New_York')->format('Y-m-d H:i'));
+            $this->clock('2026-10-17 09:00');
+            $this->dispatch();
+            $this->assertSame('SENT', $message->fresh()->status);
+            $this->assertProviderSends($channel, 1);
+        }
+    }
+
+    public static function manualNotifications(): array
+    {
+        return [
+            'booking-email' => ['email', 'shoot_requested', true],
+            'booking-sms' => ['sms', 'shoot_requested', true],
+            'receipt-email' => ['email', 'payment_receipt', true],
+            'receipt-sms' => ['sms', 'payment_receipt', true],
+            'refund-email' => ['email', 'refund_submitted', true],
+            'reminder-email' => ['email', 'shoot_reminder', false],
+            'reminder-sms' => ['sms', 'shoot_reminder', false],
+            'payment-reminder-email' => ['email', 'payment_due_reminder', false],
+            'payment-due-email' => ['email', 'payment_due', false],
+            'payment-due-sms' => ['sms', 'payment_due', false],
+            'ready-sms' => ['sms', 'shoot_ready', false],
+            'summary-email' => ['email', 'shoot_summary', false],
+        ];
+    }
+
+    #[DataProvider('channels')]
+    public function test_a_manual_10am_shoot_reminder_uses_the_same_8am_release_as_automation(string $channel): void
+    {
+        [$shoot] = $this->shoot('2026-10-17 10:00');
+        $this->clock('2026-10-17 05:00');
+        MessageTemplate::updateOrCreate(['slug' => 'shoot-reminder'.($channel === 'sms' ? '-sms' : '')], [
+            'channel' => strtoupper($channel), 'name' => 'Shoot reminder', 'category' => 'REMINDER',
+            'scope' => 'SYSTEM', 'is_system' => true, 'is_active' => true, 'variables_json' => [],
+            'subject' => 'Shoot reminder', 'body_text' => 'Your shoot is scheduled for today.',
+            'body_html' => '<p>Your shoot is scheduled for today.</p>',
+        ]);
+        $sender = User::factory()->create(['role' => 'admin']);
+        $message = app(ManualNotificationService::class)->send($shoot, 'shoot_reminder', 'client', $channel, $sender);
+        $this->assertSame('SCHEDULED', $message->status);
+        $this->assertSame('2026-10-17 08:00', $message->scheduled_at->setTimezone('America/New_York')->format('Y-m-d H:i'));
+        $this->assertProviderSends($channel, 0);
+        $this->clock('2026-10-17 07:59');
+        $this->dispatch();
+        $this->assertSame('SCHEDULED', $message->fresh()->status);
+        $this->clock('2026-10-17 08:00');
+        $this->dispatch();
+        $this->assertSame('SENT', $message->fresh()->status);
+        $this->assertProviderSends($channel, 1);
+    }
+
+    public static function channels(): array
+    {
+        return [['email'], ['sms']];
+    }
+
+    #[DataProvider('channels')]
+    public function test_a_queued_manual_reminder_is_cancelled_after_its_appointment_is_rescheduled(string $channel): void
+    {
+        [$shoot] = $this->shoot('2026-10-17 10:00');
+        $this->clock('2026-10-17 05:00');
+        MessageTemplate::updateOrCreate(['slug' => 'shoot-reminder'.($channel === 'sms' ? '-sms' : '')], [
+            'channel' => strtoupper($channel), 'name' => 'Shoot reminder', 'category' => 'REMINDER',
+            'scope' => 'SYSTEM', 'is_system' => true, 'is_active' => true, 'variables_json' => [],
+            'subject' => 'Shoot reminder', 'body_text' => 'Your shoot is at 10am.', 'body_html' => '<p>Your shoot is at 10am.</p>',
+        ]);
+        $sender = User::factory()->create(['role' => 'admin']);
+        $message = app(ManualNotificationService::class)->send($shoot, 'shoot_reminder', 'client', $channel, $sender);
+        $this->assertSame('SCHEDULED', $message->status);
+        $this->assertSame('08:00', $message->scheduled_at->setTimezone('America/New_York')->format('H:i'));
+        $shoot->update(['scheduled_at' => Carbon::parse('2026-10-17 15:00', 'America/New_York')->utc()]);
+        $this->clock('2026-10-17 08:00');
+        $this->dispatch();
+        $this->assertSame('CANCELLED', $message->fresh()->status);
+        $this->assertProviderSends($channel, 0);
+    }
+
+    #[DataProvider('manualReplyContexts')]
+    public function test_a_direct_manual_reply_remains_immediate_when_attached_to_a_shoot_or_invoice(string $channel, string $context): void
+    {
+        [$shoot, $client] = $this->shoot('2026-10-18 15:00');
+        $this->clock('2026-10-17 05:00');
+        $payload = ['to' => $client->email, 'subject' => 'Re: Your question', 'body_text' => 'Here is the answer you requested.', 'send_source' => 'MANUAL'];
+        if ($context === 'invoice') {
+            $invoice = Invoice::factory()->create(['user_id' => $client->id, 'client_id' => $client->id, 'shoot_id' => $shoot->id]);
+            $payload['related_invoice_id'] = $invoice->id;
+        } else {
+            $payload['related_shoot_id'] = $shoot->id;
+        }
+        $message = $this->sendPayload($channel, $client, $payload);
+        $this->assertSame('SENT', $message->status);
+        $this->assertNull($message->template_id);
+        $this->assertNull($message->scheduled_at);
+        $this->assertProviderSends($channel, 1);
+    }
+
+    public static function manualReplyContexts(): array
+    {
+        return [['email', 'shoot'], ['sms', 'shoot'], ['email', 'invoice'], ['sms', 'invoice']];
+    }
+
+    #[DataProvider('routineManualMarkers')]
+    public function test_explicit_reminder_identity_is_not_bypassed_by_a_manual_send_source(string $channel, string $identity): void
+    {
+        [$shoot, $client] = $this->shoot('2026-10-18 15:00');
+        $this->clock('2026-10-17 05:00');
+        $payload = $this->payload($shoot, $client, 'SHOOT_PAYMENT_REMINDER');
+        $payload['send_source'] = 'MANUAL';
+        if ($identity === 'template') {
+            unset($payload['metadata'], $payload['automation_trigger']);
+            $template = MessageTemplate::updateOrCreate(['slug' => 'shoot-payment-reminder'.($channel === 'sms' ? '-sms' : '')], [
+                'channel' => strtoupper($channel), 'name' => 'Payment reminder', 'category' => 'PAYMENT',
+                'scope' => 'SYSTEM', 'is_active' => true, 'body_text' => 'A payment reminder.',
+            ]);
+            $payload['template_id'] = $template->id;
+        }
+        $message = $this->sendPayload($channel, $client, $payload);
+        $this->assertSame('SCHEDULED', $message->status);
+        $this->assertSame('09:00', $message->scheduled_at->setTimezone('America/New_York')->format('H:i'));
+        $this->assertProviderSends($channel, 0);
+    }
+
+    public static function routineManualMarkers(): array
+    {
+        return [['email', 'trigger'], ['sms', 'trigger'], ['email', 'template'], ['sms', 'template']];
+    }
+
+    #[DataProvider('sameDayUpdates')]
+    public function test_only_future_same_day_operational_updates_bypass_quiet_hours(string $channel, string $trigger, string $appointment, bool $immediate): void
+    {
+        [$shoot, $client] = $this->shoot($appointment);
+        $this->clock('2026-10-17 05:00');
+        $payload = $this->payload($shoot, $client, $trigger);
+        if ($trigger === 'SHOOT_UPDATED') {
+            $payload['metadata']['notification']['urgent'] = true;
+        }
+        $message = $this->sendPayload($channel, $client, $payload);
+        $this->assertSame($immediate ? 'SENT' : 'SCHEDULED', $message->status);
+        $this->assertProviderSends($channel, $immediate ? 1 : 0);
+        if (! $immediate) {
+            $this->assertSame('2026-10-17 09:00', $message->scheduled_at->setTimezone('America/New_York')->format('Y-m-d H:i'));
+        }
+    }
+
+    public static function sameDayUpdates(): array
+    {
+        $cases = [];
+        foreach (['email', 'sms'] as $channel) {
+            foreach (['SHOOT_UPDATED', 'PHOTOGRAPHER_CHANGED'] as $trigger) {
+                foreach (['2026-10-17 10:00' => true, '2026-10-18 10:00' => false, '2026-10-17 04:00' => false] as $appointment => $immediate) {
+                    $cases[$channel.'-'.$trigger.'-'.$appointment] = [$channel, $trigger, $appointment, $immediate];
+                }
+            }
+        }
+
+        return $cases;
+    }
+
+    #[DataProvider('channels')]
+    public function test_a_routine_update_about_todays_shoot_still_waits_until_9am(string $channel): void
+    {
+        [$shoot, $client] = $this->shoot('2026-10-17 10:00');
+        $this->clock('2026-10-17 05:00');
+        $message = $this->send($channel, $shoot, $client, 'SHOOT_UPDATED');
+        $this->assertSame('SCHEDULED', $message->status);
+        $this->assertSame('09:00', $message->scheduled_at->setTimezone('America/New_York')->format('H:i'));
+        $this->assertProviderSends($channel, 0);
+    }
+
+    public function test_a_requested_service_item_does_not_make_an_update_urgent_for_today(): void
+    {
+        [$shoot, $client] = $this->shoot('2026-10-18 15:00');
+        $shoot->serviceItems()->create([
+            'service_id' => \App\Models\Service::factory()->create()->id,
+            'scheduled_at' => Carbon::parse('2026-10-17 10:00', 'America/New_York')->utc(),
+            'workflow_status' => 'requested', 'price' => 100,
+        ]);
+        $this->clock('2026-10-17 05:00');
+        $payload = $this->payload($shoot, $client, 'SHOOT_UPDATED');
+        $payload['metadata']['notification']['urgent'] = true;
+        $message = $this->sendPayload('email', $client, $payload);
+        $this->assertSame('SCHEDULED', $message->status);
+        $this->assertSame('09:00', $message->scheduled_at->setTimezone('America/New_York')->format('H:i'));
+        $this->assertProviderSends('email', 0);
+    }
+
+    public function test_an_urgent_update_uses_the_recipients_local_day_for_the_appointment(): void
+    {
+        [$shoot, $client] = $this->shoot('2026-10-18 00:00'); // 9pm October 17 for the client.
+        $client->update(['timezone' => 'America/Los_Angeles']);
+        $this->clock('2026-10-17 05:00'); // 2am October 17 for the client.
+        $payload = $this->payload($shoot, $client, 'SHOOT_UPDATED');
+        $payload['metadata']['notification']['urgent'] = true;
+        $message = $this->sendPayload('email', $client, $payload);
+        $this->assertSame('SENT', $message->status);
+        $this->assertProviderSends('email', 1);
+    }
+
+    #[DataProvider('paymentFailureOrigins')]
+    public function test_payment_failures_bypass_quiet_hours_only_for_an_active_client_action(string $channel, ?string $origin): void
+    {
+        [$shoot, $client] = $this->shoot('2026-10-18 15:00');
+        $this->clock('2026-10-17 05:00');
+        $payload = $this->payload($shoot, $client, 'PAYMENT_FAILED');
+        if ($origin) {
+            $payload['metadata']['notification']['origin'] = $origin;
+        }
+        $message = $this->sendPayload($channel, $client, $payload);
+        $immediate = $origin === 'client_action';
+        $this->assertSame($immediate ? 'SENT' : 'SCHEDULED', $message->status);
+        $this->assertProviderSends($channel, $immediate ? 1 : 0);
+        if (! $immediate) {
+            $this->assertSame('09:00', $message->scheduled_at->setTimezone('America/New_York')->format('H:i'));
+        }
+    }
+
+    public static function paymentFailureOrigins(): array
+    {
+        return [['email', 'client_action'], ['sms', 'client_action'], ['email', 'background'], ['sms', 'background'], ['email', null], ['sms', null]];
+    }
+
+    #[DataProvider('securityNotifications')]
+    public function test_security_verification_and_phone_change_notices_reach_the_provider_immediately(string $channel, string $source): void
+    {
+        [$shoot, $client] = $this->shoot('2026-10-18 15:00');
+        $this->clock('2026-10-17 05:00');
+        $message = $this->sendPayload($channel, $client, [
+            'to' => $client->email, 'subject' => 'Account security', 'body_text' => 'Your requested account security message.',
+            'send_source' => $source, 'related_shoot_id' => $shoot->id,
+        ]);
+        $this->assertSame('SENT', $message->status);
+        $this->assertProviderSends($channel, 1);
+    }
+
+    public static function securityNotifications(): array
+    {
+        return [
+            ['email', 'PASSWORD_RESET'], ['email', 'CLIENT_EMAIL_VERIFICATION'], ['email', 'CLIENT_EMAIL_VERIFIED'],
+            ['sms', 'VOICE_PHONE_VERIFICATION'], ['sms', 'VOICE_CALLER_VERIFICATION'],
+            ['sms', 'PHONE_NUMBER_CHANGED_PREVIOUS'], ['sms', 'PHONE_NUMBER_CHANGED_NEW'],
+        ];
     }
 
     public function test_existing_scheduled_messages_are_checked_again_and_rescheduled_reminders_are_cancelled(): void
@@ -328,7 +679,11 @@ class ClientNotificationDeliveryWindowTest extends TestCase
 
     private function send(string $channel, Shoot $shoot, User $recipient, string $trigger): Message
     {
-        $payload = $this->payload($shoot, $recipient, $trigger);
+        return $this->sendPayload($channel, $recipient, $this->payload($shoot, $recipient, $trigger));
+    }
+
+    private function sendPayload(string $channel, User $recipient, array $payload): Message
+    {
         if ($channel === 'sms') {
             $payload['to'] = $recipient->phonenumber;
 
@@ -336,6 +691,12 @@ class ClientNotificationDeliveryWindowTest extends TestCase
         }
 
         return app(MessagingService::class)->sendEmail($payload);
+    }
+
+    private function assertProviderSends(string $channel, int $count): void
+    {
+        $this->assertCount($channel === 'email' ? $count : 0, FakeCakemailProvider::sent());
+        $this->assertCount($channel === 'sms' ? $count : 0, FakeSmsProvider::sent());
     }
 
     private function clock(string $local): void

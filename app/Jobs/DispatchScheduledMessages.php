@@ -6,6 +6,7 @@ use App\Models\Message;
 use App\Models\PaymentReminder;
 use App\Services\Messaging\AutomationService;
 use App\Services\Messaging\AutomationWorkflowExecutor;
+use App\Services\Messaging\ClientNotificationDeliveryWindow;
 use App\Services\Messaging\MessagingService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldBeUnique;
@@ -27,12 +28,22 @@ class DispatchScheduledMessages implements ShouldBeUnique, ShouldQueue
         AutomationWorkflowExecutor $workflowExecutor,
         AutomationService $automation,
     ): void {
+        $deliveryWindow = app(ClientNotificationDeliveryWindow::class);
+
         Message::query()
             ->where('status', 'SCHEDULED')
             ->whereNotNull('scheduled_at')
-            ->where('scheduled_at', '<=', now())
-            ->chunkById(50, function ($messages) use ($messaging) {
+            ->where(function ($query) {
+                $query->where('scheduled_at', '<=', now())
+                    ->orWhere('metadata->delivery->deferred_reason', 'client_notification_quiet_hours');
+            })
+            ->chunkById(50, function ($messages) use ($messaging, $deliveryWindow) {
                 foreach ($messages as $message) {
+                    // Policy changes may release a quiet-hours hold before its old time.
+                    // Explicit schedules and subsequently rescheduled messages remain intact.
+                    if ($message->scheduled_at->isFuture() && ! $deliveryWindow->canReleaseQuietHoursDeferral($message)) {
+                        continue;
+                    }
                     $messaging->dispatchScheduledMessage($message);
                 }
             });

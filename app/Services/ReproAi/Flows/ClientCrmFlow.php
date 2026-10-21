@@ -335,6 +335,8 @@ class ClientCrmFlow
         }
         
         // Send email
+        $emailSent = false;
+        $emailQueued = false;
         try {
             $type = in_array($data['follow_up_type'], ['thank_you', 'feedback', 'referral', 'rebook'], true) ? $data['follow_up_type'] : 'thank_you';
             $rendered = app(EmailAtelierTemplates::class)->render('crm_'.$type, [
@@ -342,13 +344,16 @@ class ClientCrmFlow
                 'recipient_email' => $client->email,
             ]);
             $messagingService = app(MessagingService::class);
-            $messagingService->sendEmail([
+            $delivery = $messagingService->sendEmail([
                 'to' => $client->email,
                 'subject' => $rendered['subject'],
                 'body_text' => $rendered['body_text'],
                 'body_html' => $rendered['body_html'],
+                'send_source' => 'CRM_FOLLOW_UP',
+                'metadata' => ['notification' => ['type' => 'CRM_FOLLOW_UP']],
             ]);
-            $emailSent = true;
+            $emailSent = in_array(strtoupper((string) $delivery->status), ['SENT', 'DELIVERED'], true);
+            $emailQueued = in_array(strtoupper((string) $delivery->status), ['SCHEDULED', 'QUEUED'], true);
         } catch (\Exception $e) {
             \Log::warning('Failed to send follow-up email', ['error' => $e->getMessage()]);
             $emailSent = false;
@@ -357,8 +362,9 @@ class ClientCrmFlow
         $this->setStepAndData($session, null, []);
         $session->save();
         
-        $statusMessage = $emailSent 
-            ? "✅ **Follow-up sent to {$client->name}!**\n\n📧 Email: {$client->email}\n📝 Type: " . ucfirst(str_replace('_', ' ', $data['follow_up_type']))
+        $deliveryLabel = $emailQueued ? 'queued' : 'sent';
+        $statusMessage = $emailSent || $emailQueued
+            ? "✅ **Follow-up {$deliveryLabel} to {$client->name}!**\n\n📧 Email: {$client->email}\n📝 Type: " . ucfirst(str_replace('_', ' ', $data['follow_up_type']))
             : "❌ **Failed to send follow-up** - please check email settings.";
         
         return [
@@ -368,6 +374,7 @@ class ClientCrmFlow
                     'step' => 'done',
                     'client_id' => $client->id,
                     'email_sent' => $emailSent,
+                    'email_queued' => $emailQueued,
                 ],
             ]],
             'suggestions' => [

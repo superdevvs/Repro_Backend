@@ -9,6 +9,7 @@ use App\Models\Shoot;
 use App\Models\User;
 use App\Services\AuditLogService;
 use App\Services\Payments\PublicPaymentAccessTokenService;
+use App\Services\Schedule\ScheduleInstantResolver;
 use Illuminate\Support\Collection;
 use InvalidArgumentException;
 use RuntimeException;
@@ -369,7 +370,10 @@ class ManualNotificationService
             'to'               => $address,
             'notification_type' => $type,
             'metadata' => ['notification' => [
+                'type' => strtoupper($type),
+                'urgent' => $type === 'shoot_updated' && ClientNotificationTimingPolicy::urgentShootUpdate((string) ($context['shoot_changes'] ?? '')),
                 'trigger' => in_array($type, ['shoot_ready', 'shoot_delivered'], true) ? 'SHOOT_COMPLETED' : null,
+                'appointment_at' => $type === 'shoot_reminder' ? $this->reminderAppointmentAt($shoot) : null,
                 'full_order_delivery' => $stampReady && $recipientType === 'client' && in_array($type, ['shoot_ready', 'shoot_delivered'], true),
             ]],
             'subject'          => $rendered['subject'] ?? $template->subject,
@@ -583,6 +587,20 @@ class ManualNotificationService
             ->where('channel', 'EMAIL')
             ->where('is_active', true)
             ->firstOrFail();
+    }
+
+    /** Snapshot the appointment so queued reminders cannot follow a later reschedule. */
+    private function reminderAppointmentAt(Shoot $shoot): ?string
+    {
+        $resolver = app(ScheduleInstantResolver::class);
+        $items = $shoot->serviceItems->whereNotNull('scheduled_at');
+        $inactive = ['cancelled', 'canceled', 'declined', 'requested', 'on_hold', 'hold_on', 'completed', 'delivered'];
+        $appointments = $items->isNotEmpty()
+            ? $items->filter(fn ($item) => ! in_array(strtolower((string) $item->workflow_status), $inactive, true))
+                ->map(fn ($item) => $resolver->forServiceItem($shoot, $item))->filter()
+            : collect([$resolver->forShoot($shoot)])->filter();
+
+        return $appointments->sortBy(fn ($at) => $at->getTimestamp())->first()?->toIso8601String();
     }
 
     /**

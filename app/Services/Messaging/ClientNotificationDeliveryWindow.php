@@ -15,12 +15,15 @@ class ClientNotificationDeliveryWindow
 {
     public function nextAllowedAt(Message $message): ?CarbonImmutable
     {
-        if (! $this->isNotification($message)) {
+        if ($message->direction !== 'OUTBOUND' || $message->provider === 'INTERNAL') {
             return null;
         }
 
         $next = null;
         foreach ($this->clientTimezones($message) as $timezone) {
+            if (! app(ClientNotificationTimingPolicy::class)->requiresQuietHours($message, $timezone)) {
+                continue;
+            }
             $local = CarbonImmutable::now($timezone);
             $opens = $local->startOfDay()->setTime(9, 0);
             $appointment = $this->appointment($message);
@@ -50,19 +53,23 @@ class ClientNotificationDeliveryWindow
         return ! $appointment || $appointment->lte(CarbonImmutable::now());
     }
 
-    private function isNotification(Message $message): bool
+    /** Release only a schedule owned by quiet hours, never a later explicit reschedule. */
+    public function canReleaseQuietHoursDeferral(Message $message): bool
     {
-        if ($message->direction !== 'OUTBOUND' || $message->provider === 'INTERNAL') {
+        if ($message->status !== 'SCHEDULED' || ! $message->scheduled_at
+            || data_get($message->metadata, 'delivery.deferred_reason') !== 'client_notification_quiet_hours') {
             return false;
         }
-        $source = strtoupper((string) $message->send_source);
-        // These are user-requested access/compliance replies, rather than scheduled notifications.
-        if (in_array($source, ['PASSWORD_RESET', 'CLIENT_EMAIL_VERIFICATION', 'VOICE_PHONE_VERIFICATION',
-            'VOICE_CALLER_VERIFICATION', 'SMS_COMPLIANCE', 'AI_SMS_AGENT'], true)) {
+        $until = data_get($message->metadata, 'delivery.deferred_until');
+        if (! is_string($until) || $until === '') {
             return false;
         }
-
-        return $source !== 'MANUAL' || $message->related_shoot_id || $message->related_invoice_id || $message->template_id;
+        try {
+            return $message->scheduled_at->equalTo(CarbonImmutable::parse($until))
+                && $this->nextAllowedAt($message) === null;
+        } catch (\InvalidArgumentException) {
+            return false;
+        }
     }
 
     /** @return list<string> */
@@ -134,7 +141,13 @@ class ClientNotificationDeliveryWindow
 
     private function isReminder(Message $message): bool
     {
-        if (data_get($message->metadata, 'notification.trigger') === 'SHOOT_REMINDER' || $message->send_source === 'SHOOT_REMINDER') {
+        if (data_get($message->metadata, 'notification.trigger') === 'SHOOT_REMINDER'
+            || data_get($message->metadata, 'notification.type') === 'SHOOT_REMINDER'
+            || $message->send_source === 'SHOOT_REMINDER') {
+            return true;
+        }
+        if ($message->template_id && in_array($message->template?->slug,
+            ['shoot-reminder', 'shoot-reminder-sms', 'system-shoot-reminder', 'automation-shoot-reminder-sms'], true)) {
             return true;
         }
         foreach ($message->tags_json ?? [] as $tag) {

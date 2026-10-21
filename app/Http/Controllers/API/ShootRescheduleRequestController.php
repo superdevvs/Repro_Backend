@@ -498,6 +498,14 @@ class ShootRescheduleRequestController extends Controller
             $changesSummary = $shootChangeSummary['summary'];
             $context['shoot_changes'] = $changesSummary;
             $context['shoot_changes_html'] = $shootChangeSummary['html'];
+            // A decision on the client's own request is a direct acknowledgement.
+            // Staff-initiated schedule maintenance keeps the ordinary update policy.
+            $notificationMetadata = (int) $request->requested_by === (int) $shoot->client_id
+                ? ['origin' => 'client_action']
+                : [];
+            if ($notificationMetadata !== []) {
+                $context['metadata']['notification'] = $notificationMetadata;
+            }
             $scheduledContext = array_merge($context, [
                 'notify_client' => false,
                 'notify_photographer' => $automationService->shouldUseFallback('SHOOT_UPDATED'),
@@ -506,7 +514,7 @@ class ShootRescheduleRequestController extends Controller
             $shootUpdatedDispatch = $automationService->handleEvent('SHOOT_UPDATED', $context);
 
             if ($shoot->client && $automationService->shouldUseFallback('SHOOT_UPDATED', $shootUpdatedDispatch) !== false) {
-                $mailService->sendShootUpdatedEmail($shoot->client, $shoot, $changesSummary);
+                $mailService->sendShootUpdatedEmail($shoot->client, $shoot, $changesSummary, null, null, $notificationMetadata);
             }
 
             $this->logRescheduleActivity($shoot, $request);

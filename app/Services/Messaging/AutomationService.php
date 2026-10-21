@@ -494,6 +494,7 @@ class AutomationService
             }
             $context['shoot_changes'] = implode("\n", $material);
             $context['shoot_changes_html'] = '<ul><li>'.implode('</li><li>', array_map('e', $material)).'</li></ul>';
+            $context['metadata']['notification']['urgent'] = ClientNotificationTimingPolicy::urgentShootUpdate($context['shoot_changes']);
         }
         try {
             return $this->workflowExecutor->executeEventTrigger($triggerType, $context);
@@ -591,6 +592,12 @@ class AutomationService
             'body_html' => $rendered['body_html'] ?? null,
             'body_text' => $rendered['body_text'] ?? null,
             'send_source' => 'AUTOMATION',
+            'metadata' => array_replace_recursive((array) ($context['metadata'] ?? []), [
+                'notification' => [
+                    'trigger' => $rule->trigger_type,
+                    'appointment_at' => $context['notification_appointment_at'] ?? null,
+                ],
+            ]),
             'template_id' => $rule->template_id,
             'related_shoot_id' => $resolvedContext['shoot_id'] ?? null,
             'related_account_id' => $resolvedContext['account_id'] ?? null,

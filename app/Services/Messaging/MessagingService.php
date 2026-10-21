@@ -1200,7 +1200,9 @@ class MessagingService
     {
         $sent = Cache::lock('scheduled-message:'.$message->getKey(), 300)->get(function () use ($message): Message {
             $message->refresh();
-            if ($message->status !== 'SCHEDULED' || $message->scheduled_at?->isFuture()) {
+            if ($message->status !== 'SCHEDULED'
+                || ($message->scheduled_at?->isFuture()
+                    && ! app(ClientNotificationDeliveryWindow::class)->canReleaseQuietHoursDeferral($message))) {
                 return $message;
             }
             $channel = strtoupper((string) $message->channel);

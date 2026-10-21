@@ -19,6 +19,15 @@ class SystemEmailDispatcher
      */
     public function dispatch(array $built, array $transport, array $metadata): Message
     {
+        // This context comes from server-side producers, not compose request data.
+        // Keep the canonical audit metadata separate from notification timing.
+        if (! empty($transport['notification_metadata']) && is_array($transport['notification_metadata'])) {
+            $metadata['notification'] = array_replace(
+                (array) ($metadata['notification'] ?? []),
+                $transport['notification_metadata']
+            );
+        }
+
         $payload = [
             'to' => $transport['to'],
             'cc' => $transport['cc'] ?? [],

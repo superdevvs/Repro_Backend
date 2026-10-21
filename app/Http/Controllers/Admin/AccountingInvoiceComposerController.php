@@ -133,7 +133,7 @@ class AccountingInvoiceComposerController extends Controller
             try {
                 $rows = $invoice->items->filter(fn ($i) => $i->type !== 'payment')->map(fn ($i) => '<tr><td>'.e($i->description).'</td><td>'.e($i->quantity).'</td><td>$'.number_format((float) $i->total_amount, 2).'</td></tr>')->implode('');
                 $html = '<h2>Invoice '.e($invoice->invoice_number).'</h2><p>'.nl2br(e($input['message'])).'</p><table>'.$rows.'</table><p>Total: $'.number_format((float) $invoice->total, 2).'</p><p>Tax included: $'.number_format((float) $invoice->tax, 2).'</p><p>Due: '.e($invoice->due_date?->toDateString()).'</p><p><a href="'.e(config('app.url').'/accounting').'">View your invoices in Repro</a></p>';
-                $message = $messaging->sendEmail(['to' => $invoice->client->email, 'subject' => $input['subject'], 'body_html' => $html, 'body_text' => strip_tags(str_replace('</p>', "\n", $html)), 'send_source' => 'MANUAL', 'user_id' => $request->user()->id, 'related_invoice_id' => $invoice->id, 'related_account_id' => $invoice->client_id]);
+                $message = $messaging->sendEmail(['to' => $invoice->client->email, 'subject' => $input['subject'], 'body_html' => $html, 'body_text' => strip_tags(str_replace('</p>', "\n", $html)), 'send_source' => 'MANUAL', 'user_id' => $request->user()->id, 'related_invoice_id' => $invoice->id, 'related_account_id' => $invoice->client_id, 'metadata' => ['notification' => ['type' => 'CLIENT_INVOICE']]]);
                 $accepted = in_array(strtoupper($message->status), ['SENT', 'DELIVERED'], true);
                 if ($accepted) {
                     if ($invoice->status === 'draft') {
