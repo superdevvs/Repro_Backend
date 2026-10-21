@@ -30,6 +30,10 @@ class ApproveShootAction
         'travel_override_confirmed',
         'travel_override_confirmation_version',
         'travel_override_reason',
+        'working_hours_override',
+        'working_hours_override_confirmed',
+        'working_hours_override_confirmation_version',
+        'working_hours_override_reason',
         'notify_client',
         'notify_photographer',
         'service_photographers',
@@ -83,6 +87,17 @@ class ApproveShootAction
                     : ($shoot->scheduled_at ? new \DateTime((string) $shoot->scheduled_at) : new \DateTime)
             );
 
+        $travelGuard = app(\App\Services\Scheduling\ScheduleCommitGuard::class);
+        // The shared evaluator returns the signed warning and rechecks the final
+        // itinerary. Legacy hours validation must not strand eligible approvals
+        // before that confirmation can be offered.
+        $deferAvailability = $travelGuard->enabled()
+            && app(\App\Services\Scheduling\WorkingHoursOverride::class)->eligible(
+                [...$validated, 'action_mode' => 'approve'], $shoot, $user
+            );
+        if (filter_var($validated['working_hours_override'] ?? false, FILTER_VALIDATE_BOOLEAN)) {
+            abort_unless($deferAvailability, 403, 'You cannot approve this request outside working hours.');
+        }
         $skipAvailabilityCheck = $management->isRestrictedSalesRep($user) ? false : ($validated['skip_availability_check'] ?? in_array($user->role, ['admin', 'superadmin']));
         // The guarded batch checks the final day after staged neighbor moves.
         // Configured working hours remain enforced before and during the guard.
@@ -159,20 +174,21 @@ class ApproveShootAction
             }
             unset($service);
         }
-        if ($targetServices === [] && $targetPhotographerId) {
+        if (! $deferAvailability && $targetServices === [] && $targetPhotographerId) {
             $this->support->assertWithinAvailabilityBounds(
                 (int) $targetPhotographerId, $scheduledAt,
                 app(\App\Services\Shoots\ShootDurationResolver::class)->defaultMinutes(),
                 $shoot->id, $skipAvailabilityCheck, $timezone
             );
         }
-        $this->support->checkServiceItemPhotographerAvailability(
-            $availabilityServices,
-            $targetPhotographerId ? (int) $targetPhotographerId : null,
-            $shoot->id, $timezone, $skipAvailabilityCheck, $scheduledAt
-        );
+        if (! $deferAvailability) {
+            $this->support->checkServiceItemPhotographerAvailability(
+                $availabilityServices,
+                $targetPhotographerId ? (int) $targetPhotographerId : null,
+                $shoot->id, $timezone, $skipAvailabilityCheck, $scheduledAt
+            );
+        }
 
-        $travelGuard = app(\App\Services\Scheduling\ScheduleCommitGuard::class);
         $travelPrepared = $travelGuard->prepare(app(\App\Services\Scheduling\WriteSchedulePlan::class)->services(
             $validated, $availabilityServices, $scheduledAt, $targetPhotographerId ? (int) $targetPhotographerId : null,
             $timezone, 'approve'

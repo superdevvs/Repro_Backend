@@ -17,9 +17,11 @@ class WorkingHoursOverride
         $authorized = $actor && (strtolower((string) $actor->role) === 'superadmin'
             || ($management->isSalesRep($actor) && ($shoot ? $management->can($actor)
                 : app(\App\Services\RolePermissionService::class)->userCan($actor, 'book-shoot', 'create'))));
+        $approval = $shoot && $action === 'approve'
+            && app(\App\Services\Shoots\ShootAuthorizationSupport::class)->canManageRequestedShoot($shoot, $actor);
         $allowed = $shoot
-            ? $shoot->exists && in_array($action, ['update', 'reschedule'], true)
-                && in_array((string) ($shoot->workflow_status ?: $shoot->status), ['scheduled', 'booked'], true)
+            ? $shoot->exists && ($approval || (in_array($action, ['update', 'reschedule'], true)
+                && in_array((string) ($shoot->workflow_status ?: $shoot->status), ['scheduled', 'booked'], true)))
                 && $management->canEditAppointment($shoot, $actor)
                 && ($action !== 'reschedule' || app(\App\Services\Shoots\ShootAuthorizationSupport::class)->canReviewShootRequests($actor))
                 && empty($payload['complimentary_service_options'])
