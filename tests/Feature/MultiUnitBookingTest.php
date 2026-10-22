@@ -535,6 +535,58 @@ class MultiUnitBookingTest extends TestCase
         $this->assertSame(2, $this->shoot->fresh()->units_revision);
     }
 
+    #[\PHPUnit\Framework\Attributes\TestWith([false])]
+    #[\PHPUnit\Framework\Attributes\TestWith([true])]
+    public function test_header_reassignment_preserves_untouched_non_capture_owners_in_the_unit_plan(bool $digital): void
+    {
+        $this->service->update(['photographer_required' => false]
+            + ($digital ? ['name' => 'Virtual Staging'] : []));
+        $this->persist($this->payload());
+        $owner = User::factory()->photographer()->create();
+        $replacement = User::factory()->photographer()->create();
+        $lines = $this->shoot->serviceItems()->orderBy('id')->get();
+        $lines[0]->update(['photographer_id' => $owner->id]);
+        $service = app(MultiUnitBookingService::class);
+        $prepared = $service->prepare($this->shoot, ['photographer_id' => $replacement->id], $this->admin);
+
+        $this->assertSame($owner->id, $prepared['services'][0]['photographer_id']);
+        $this->assertNull($prepared['services'][1]['photographer_id']);
+        app(ShootMutationSupportService::class)->persistResolvedPhotographerAssignments($this->shoot, $prepared['services'], $this->admin);
+        $this->assertSame($owner->id, $lines[0]->fresh()->photographer_id);
+        $this->assertNull($lines[1]->fresh()->photographer_id);
+        $this->assertSame(1, $this->shoot->fresh()->units_revision);
+
+        // Explicit line assignment still follows the existing non-capture clear policy.
+        $explicit = $this->existingPayload();
+        $explicit['service_lines'][0]['photographer_id'] = $replacement->id;
+        $this->assertNull($service->prepare($this->shoot, $explicit, $this->admin)['services'][0]['photographer_id']);
+    }
+
+    #[\PHPUnit\Framework\Attributes\TestWith([false])]
+    #[\PHPUnit\Framework\Attributes\TestWith([true])]
+    public function test_resume_ignores_replacement_header_when_the_unit_plan_has_no_capture_services(bool $hasMainPhotographer): void
+    {
+        $this->service->update(['photographer_required' => false]);
+        $this->persist($this->payload());
+        $owner = User::factory()->photographer()->create();
+        $replacement = User::factory()->photographer()->create();
+        $main = $hasMainPhotographer ? $owner->id : null;
+        $this->shoot->update(['photographer_id' => $main, 'scheduled_at' => '2026-10-05 10:00:00',
+            'scheduled_date' => '2026-10-05', 'time' => '10:00', 'timezone' => null,
+            'status' => 'hold_on', 'workflow_status' => 'on_hold']);
+        $lines = $this->shoot->serviceItems()->orderBy('id')->get();
+        $lines[0]->update(['scheduled_at' => '2026-10-05 10:00:00', 'photographer_id' => $owner->id]);
+
+        $this->postJson('/api/shoots/'.$this->shoot->id.'/schedule', ['scheduled_at' => '2026-10-05 10:00:00',
+            'photographer_id' => $replacement->id, 'expected_units_revision' => 1])->assertOk();
+
+        $this->assertSame($main, $this->shoot->fresh()->photographer_id);
+        $this->assertSame($owner->id, $lines[0]->fresh()->photographer_id);
+        $this->assertNull($lines[1]->fresh()->photographer_id);
+        $this->assertNull($lines[1]->fresh()->scheduled_at);
+        $this->assertSame(1, $this->shoot->fresh()->units_revision);
+    }
+
     public function test_alternate_date_moves_all_unit_offsets_and_date_only_retains_local_start(): void
     {
         $this->persist($this->payload());

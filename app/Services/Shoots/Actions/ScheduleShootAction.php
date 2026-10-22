@@ -262,7 +262,9 @@ class ScheduleShootAction
             if (! isset($validated['expected_units_revision']) || (int) $validated['expected_units_revision'] !== (int) $current->units_revision) {
                 throw ValidationException::withMessages(['expected_units_revision' => ['The unit visit plan changed. Reload before resuming it.']]);
             }
-            if (array_key_exists('photographer_id', $validated) && (int) $validated['photographer_id'] !== (int) $current->photographer_id) {
+            $hasCaptureServices = collect($plannedServices)->contains(fn (array $line) => (bool) ($line['photographer_required'] ?? false));
+            if ($hasCaptureServices && array_key_exists('photographer_id', $validated)
+                && (int) $validated['photographer_id'] !== (int) $current->photographer_id) {
                 $this->support->persistResolvedPhotographerAssignments($current, $plannedServices, $user);
                 $current->photographer_id = $validated['photographer_id'];
                 $current->save();

@@ -443,12 +443,15 @@ class ShootMutationSupportService
         foreach ($rows as &$row) {
             $serviceId = (int) ($row['service_id'] ?? $row['id'] ?? 0);
             $current = isset($row['shoot_service_id']) ? $byId->get($row['shoot_service_id']) : $byService->get($serviceId);
-            if ($catalog->get($serviceId)?->isDigitalEnhancement()) {
-                $row['photographer_id'] = null;
-                continue;
-            }
             $assignment = isset($row['shoot_service_id']) ? ($explicitByLine[$row['shoot_service_id']] ?? $explicitByClientKey[$row['client_key'] ?? ''] ?? null)
                 : ($explicitByClientKey[$row['client_key'] ?? ''] ?? $explicitByService[$serviceId] ?? null);
+            $service = $catalog->get($serviceId);
+            if ($service && ! $service->allowsPhotographerAssignment()
+                && ! ($current && $service->requiresPhotographerForBooking($current->created_at))) {
+                // Planner normalization is not a request to remove historical offsite staff.
+                $row['photographer_id'] = $current && $assignment === null ? $current->photographer_id : null;
+                continue;
+            }
             if ($assignment !== null) {
                 $row['photographer_id'] = $this->normalizeNullableInteger($assignment['photographer_id']);
             } elseif ($mainChanged && ($catalog->get($serviceId)?->allowsPhotographerAssignment() ?? false)
