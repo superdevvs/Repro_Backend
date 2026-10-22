@@ -42,6 +42,8 @@ class DayScheduleAdjustmentTest extends TestCase
         $this->photographer = User::factory()->photographer()->create(['timezone' => 'America/New_York']);
         $this->service = Service::factory()->create(['name' => 'HDR Photos and Video', 'price' => 100,
             'photographer_required' => true, 'shoot_duration_minutes' => 135]);
+        $this->photographer->setServiceCapabilities([(string) $this->service->id]);
+        $this->photographer->save();
         Sanctum::actingAs($this->admin);
         $locations = Mockery::mock(TravelLocationResolver::class);
         $locations->shouldReceive('reset')->andReturnNull();
@@ -227,6 +229,8 @@ class DayScheduleAdjustmentTest extends TestCase
         $first->update(['shoot_unit_id' => $unit->id]);
         $neighbor->forceFill(['units_revision' => 3])->save();
         $extra = Service::factory()->create(['photographer_required' => true, 'shoot_duration_minutes' => 60]);
+        $this->photographer->setServiceCapabilities([(string) $this->service->id, (string) $extra->id]);
+        $this->photographer->save();
         $neighbor->services()->attach($extra->id, ['shoot_unit_id' => $unit->id, 'duration_minutes' => 60, 'price' => 200,
             'photographer_id' => $this->photographer->id, 'scheduled_at' => '2026-10-09 19:30:00', 'workflow_status' => 'scheduled']);
         $second = $neighbor->serviceItems()->where('service_id', $extra->id)->sole();
@@ -281,7 +285,8 @@ class DayScheduleAdjustmentTest extends TestCase
         foreach (['admin', 'salesRep'] as $role) {
             $actor = $role === 'admin' ? $this->admin : User::factory()->create(['role' => 'salesRep', 'email_verification_required_at' => null]);
             Sanctum::actingAs($actor);
-            $photographer = User::factory()->photographer()->create(['timezone' => 'America/New_York']);
+            $photographer = User::factory()->photographer()->create(['timezone' => 'America/New_York',
+                'metadata' => ['specialties' => [(string) $this->service->id]]]);
             $this->photographer = $photographer;
             $neighbor = $this->booked();
             $target = $this->booked();
@@ -291,6 +296,8 @@ class DayScheduleAdjustmentTest extends TestCase
             $line = $target->serviceItems()->sole();
             $line->update(['shoot_unit_id' => $unit->id, 'client_key' => 'photos-'.$target->id, 'duration_minutes' => 75]);
             $floorplan = Service::factory()->create(['photographer_required' => true, 'shoot_duration_minutes' => 5]);
+            $photographer->setServiceCapabilities([(string) $this->service->id, (string) $floorplan->id]);
+            $photographer->save();
             $target->services()->attach($floorplan->id, ['shoot_unit_id' => $unit->id, 'client_key' => 'floorplan-'.$target->id,
                 'duration_minutes' => 5, 'quantity' => 1, 'price' => 175, 'photographer_id' => $photographer->id,
                 'scheduled_at' => '2026-10-09 15:45:00', 'workflow_status' => 'scheduled']);

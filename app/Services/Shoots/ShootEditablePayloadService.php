@@ -314,6 +314,8 @@ class ShootEditablePayloadService
             && $this->support->hasOnlyDigitalServices($targetServices)) {
             $validated['photographer_id'] = null;
         }
+        $mainPhotographerChanged = array_key_exists('photographer_id', $validated)
+            && (int) $validated['photographer_id'] !== (int) $shoot->photographer_id;
 
         $this->support->ensureClientCanBookServices($targetClientId, $targetServices, $shoot, $actor);
 
@@ -367,12 +369,15 @@ class ShootEditablePayloadService
             || array_key_exists('service_items', $validated)
             || array_key_exists('service_photographers', $validated)
         )) {
-            $this->support->attachServices($shoot, $targetServices);
+            $this->support->attachServices($shoot, $targetServices,
+                isset($validated['photographer_id']) ? (int) $validated['photographer_id'] : null);
             $shoot->service_id = collect($targetServices)
                 ->map(fn (array $service) => (int) ($service['id'] ?? $service['service_id'] ?? 0))
                 ->filter()
                 ->first();
             $invoiceNeedsRefresh = array_key_exists('services', $validated) || array_key_exists('service_items', $validated);
+        } elseif ($mainPhotographerChanged) {
+            $this->support->persistResolvedPhotographerAssignments($shoot, $targetServices, $actor);
         }
 
         if (array_key_exists('address', $validated)) {
@@ -818,7 +823,7 @@ class ShootEditablePayloadService
             ?? data_get($propertyDetails, 'square_feet');
         $sqft = is_numeric($sqftValue) ? (int) $sqftValue : null;
 
-        return collect($merged)->map(function (array $service, int $index) use (
+        $rows = collect($merged)->map(function (array $service, int $index) use (
             $canOverrideLinePrice,
             $currentItems,
             $serviceModels,
@@ -861,6 +866,8 @@ class ShootEditablePayloadService
 
             return $service;
         })->values()->all();
+
+        return $this->support->resolveServicePhotographerAssignments($shoot, $rows, $validated);
     }
 
     private function assertComplimentaryReshootMutationAllowed(Shoot $shoot, array $validated): void

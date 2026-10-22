@@ -85,6 +85,7 @@ class ShootMutationActionsTest extends TestCase
             'name' => 'Floor Plan',
             'price' => 90.00,
         ]);
+        $this->qualifyPhotographer($this->photographer, $this->service, $this->secondService);
     }
 
     #[\PHPUnit\Framework\Attributes\Test]
@@ -473,6 +474,8 @@ class ShootMutationActionsTest extends TestCase
 
         $conflictingPhotographer = User::factory()->create(['role' => 'photographer']);
         $servicePhotographer = User::factory()->create(['role' => 'photographer']);
+        $this->qualifyPhotographer($servicePhotographer, $this->service);
+        $this->qualifyPhotographer($conflictingPhotographer, $this->service, $feeService);
 
         // Another shoot occupies the fee photographer at the same slot.
         $conflict = Shoot::factory()->create([
@@ -607,6 +610,7 @@ class ShootMutationActionsTest extends TestCase
             'name' => 'Zillow 3D Home Tour',
             'price' => 180.00,
         ]);
+        $this->qualifyPhotographer($this->photographer, $zillow);
         $zillow->forceFill(['is_migration_only' => false])->save();
 
         $this->patchJson("/api/shoots/{$shoot->id}", [
@@ -620,6 +624,7 @@ class ShootMutationActionsTest extends TestCase
         $this->assertSame('Reviewed active appointment', $shoot->fresh()->address);
 
         $legacy = Service::factory()->create(['name' => 'Legacy Migration Only', 'price' => 10]);
+        $this->qualifyPhotographer($this->photographer, $legacy);
         $legacy->forceFill(['is_migration_only' => true])->save();
         $this->patchJson("/api/shoots/{$shoot->id}", [
             'services' => [
@@ -668,6 +673,7 @@ class ShootMutationActionsTest extends TestCase
             'name' => 'Zillow 3D Home Tour',
             'price' => 180.00,
         ]);
+        $this->qualifyPhotographer($this->photographer, $zillow);
         $zillow->forceFill(['is_migration_only' => false])->save();
 
         $this->patchJson("/api/shoots/{$shoot->id}", [
@@ -683,6 +689,7 @@ class ShootMutationActionsTest extends TestCase
         $this->assertEqualsWithDelta(180.0, (float) $shoot->services->firstWhere('id', $zillow->id)->pivot->price, 0.01);
 
         $legacy = Service::factory()->create(['name' => 'Migration Only Legacy', 'price' => 5]);
+        $this->qualifyPhotographer($this->photographer, $legacy);
         $legacy->forceFill(['is_migration_only' => true])->save();
 
         $this->patchJson("/api/shoots/{$shoot->id}", [
@@ -727,6 +734,7 @@ class ShootMutationActionsTest extends TestCase
             'name' => 'Rep Reassign Photographer',
             'email' => 'rep-reassign-photographer@test.com',
         ]);
+        $this->qualifyPhotographer($replacement, $this->service);
 
         $shoot = Shoot::factory()->create([
             'client_id' => $this->client->id,
@@ -825,6 +833,7 @@ class ShootMutationActionsTest extends TestCase
             'name' => 'Zillow 3D w/Floor plans',
             'price' => 150.00,
         ]);
+        $this->qualifyPhotographer($this->photographer, $zillow);
         $zillow->forceFill(['is_migration_only' => false])->save();
 
         $this->patchJson("/api/shoots/{$shoot->id}", [
@@ -1138,6 +1147,7 @@ class ShootMutationActionsTest extends TestCase
             'name' => 'Category Photographer',
             'email' => 'category-photographer@test.com',
         ]);
+        $this->qualifyPhotographer($servicePhotographer, $this->secondService);
 
         $shoot = Shoot::factory()->create([
             'client_id' => $this->client->id,
@@ -1705,6 +1715,7 @@ class ShootMutationActionsTest extends TestCase
             'name' => 'Replacement Photographer',
             'email' => 'replacement-photographer@test.com',
         ]);
+        $this->qualifyPhotographer($replacementPhotographer, $this->service);
 
         $shoot = Shoot::factory()->create([
             'client_id' => $this->client->id,
@@ -2732,6 +2743,7 @@ class ShootMutationActionsTest extends TestCase
         Sanctum::actingAs($this->admin);
 
         $replacement = Service::factory()->create(['name' => 'Video Tour', 'price' => 200]);
+        $this->qualifyPhotographer($this->photographer, $replacement);
         $shoot = Shoot::factory()->create([
             'client_id' => $this->client->id,
             'service_id' => $this->service->id,
@@ -2767,6 +2779,7 @@ class ShootMutationActionsTest extends TestCase
             ],
         ]);
 
+        $this->qualifyPhotographer($shoot->photographer, $this->service, $this->secondService, $replacement);
         $target = [
             ['id' => $this->secondService->id],
             ['id' => $replacement->id],
@@ -2805,6 +2818,7 @@ class ShootMutationActionsTest extends TestCase
         Sanctum::actingAs($this->admin);
 
         $newService = Service::factory()->create(['name' => 'Drone Add-on', 'price' => 55]);
+        $this->qualifyPhotographer($this->photographer, $newService);
         $shoot = Shoot::factory()->create([
             'client_id' => $this->client->id,
             'service_id' => $this->service->id,
@@ -2827,6 +2841,7 @@ class ShootMutationActionsTest extends TestCase
             'unlocked_by' => $this->admin->id,
         ]);
         $shoot->services()->attach($this->secondService->id, ['price' => 80, 'quantity' => 3]);
+        $this->qualifyPhotographer($shoot->photographer, $this->service, $this->secondService, $newService);
 
         $this->patchJson("/api/shoots/{$shoot->id}", [
             'services' => [
@@ -3034,8 +3049,18 @@ class ShootMutationActionsTest extends TestCase
         });
     }
 
+    private function qualifyPhotographer(User $photographer, Service ...$services): void
+    {
+        $metadata = $photographer->metadata ?? [];
+        $metadata['specialties'] = array_values(array_unique(array_merge($metadata['specialties'] ?? [], array_map(fn (Service $service) => (string) $service->id, $services))));
+        $photographer->update(['metadata' => $metadata]);
+    }
+
     protected function attachPrimaryService(Shoot $shoot): void
     {
+        if ($shoot->photographer) {
+            $this->qualifyPhotographer($shoot->photographer, $this->service, $this->secondService);
+        }
         $shoot->services()->attach($this->service->id, [
             'price' => 150,
             'quantity' => 1,

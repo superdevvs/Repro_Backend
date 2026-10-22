@@ -66,12 +66,12 @@ class SystemEmailBuilder
             'SHOOT_REQUEST_DECLINED' => 'Your Shoot Request Was Declined',
             'SHOOT_REQUESTED' => ! empty($meta['is_admin']) ? 'New Shoot Request Needs Review' : 'We Received Your Shoot Request',
             'SHOOT_CANCELLATION_REQUESTED' => 'Shoot Cancellation Request Received',
-            'SHOOT_DELIVERED' => (! empty($payload['links']['payment'])
-                ? 'Photos Ready - Balance Due'
-                : 'Your Photos Are Ready').$this->propertySuffix($payload),
+            'SHOOT_DELIVERED' => (! empty($meta['delivery_is_update']) ? 'Your Shoot Has Updated Deliverables'
+                : (($meta['is_full_order_delivery'] ?? true) === false ? 'Part of Your Shoot Is Ready'
+                    : (! empty($payload['links']['payment']) ? 'Photos Ready - Balance Due' : 'Your Photos Are Ready'))).$this->propertySuffix($payload),
             'SHOOT_SUMMARY' => trim((string) ($meta['address'] ?? '')) !== ''
-                ? $meta['address'].' - Shoot Summary'
-                : 'Your Shoot Summary',
+                ? $meta['address'].' - '.(! empty($meta['delivery_is_update']) ? 'Shoot Update' : 'Shoot Summary')
+                : (! empty($meta['delivery_is_update']) ? 'Your Shoot Update' : 'Your Shoot Summary'),
             'PAYMENT_CONFIRMATION' => 'Thank You for Your Payment!',
             'PAYMENT_COMPLETED' => 'Your Shoot Balance Is Paid in Full',
             'INVOICE_GENERATED' => 'Weekly Invoice - '.($meta['period'] ?? 'Current Period'),

@@ -113,6 +113,8 @@ class CreateShootAction
         if ($this->support->hasOnlyDigitalServices($servicesPayload)) {
             $validated['photographer_id'] = null;
         }
+        app(\App\Services\Photographers\PhotographerServiceEligibility::class)->assertServices($servicesPayload,
+            isset($validated['photographer_id']) ? (int) $validated['photographer_id'] : null);
         $travelGuard = app(\App\Services\Scheduling\ScheduleCommitGuard::class);
         $requestOnly = $userRole === 'client' || $validated['client_id'] == $user->id || $request->boolean('is_client_request');
         if ($requestOnly && ! empty($validated['schedule_adjustments'])) {

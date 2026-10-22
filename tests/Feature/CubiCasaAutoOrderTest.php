@@ -967,6 +967,7 @@ class CubiCasaAutoOrderTest extends TestCase
 
         [$admin, $client, $photographer] = $this->bookingActors();
         $eligible = $this->eligibleService();
+        $photographer->update(['metadata' => array_replace($photographer->metadata ?? [], ['specialties' => [(string) $eligible->id]])]);
 
         Sanctum::actingAs($admin);
 
@@ -1042,6 +1043,7 @@ class CubiCasaAutoOrderTest extends TestCase
 
         [$admin, $client, $photographer] = $this->bookingActors();
         $ineligible = $this->ineligibleService();
+        $photographer->update(['metadata' => array_replace($photographer->metadata ?? [], ['specialties' => [(string) $ineligible->id]])]);
 
         Sanctum::actingAs($admin);
 
@@ -1559,6 +1561,11 @@ class CubiCasaAutoOrderTest extends TestCase
      */
     private function approveShoot(Shoot $shoot, User $user, array $payload = []): Shoot
     {
+        $photographer = User::find($payload['photographer_id'] ?? $shoot->photographer_id);
+        if ($photographer) {
+            $serviceIds = $shoot->serviceItems()->pluck('service_id')->map(fn ($id) => (string) $id)->all();
+            $photographer->update(['metadata' => array_replace($photographer->metadata ?? [], ['specialties' => $serviceIds])]);
+        }
         $request = Request::create("/api/shoots/{$shoot->id}/approve", 'POST', $payload);
         $request->setUserResolver(fn () => $user);
 

@@ -21,6 +21,11 @@ class AssignServicePhotographerAction
     public function execute(Shoot $shoot, array $payload, User $actor): Shoot
     {
         $assignments = $this->normalizeAssignments($payload);
+        if (! $shoot->units()->exists()) {
+            app(\App\Services\Photographers\PhotographerServiceEligibility::class)->assertServices(
+                $this->buildTargetServices($shoot, $assignments), $shoot->photographer_id
+            );
+        }
         $radiusViolations = [];
         $radiusOverrideReason = null;
 
@@ -35,15 +40,18 @@ class AssignServicePhotographerAction
             $radiusViolations = $this->collectRadiusViolations($shoot, $assignments);
 
             if (! empty($radiusViolations)) {
-                $override = filter_var($payload['override'] ?? false, FILTER_VALIDATE_BOOLEAN);
+                $override = filter_var($payload['travel_override'] ?? $payload['override'] ?? false, FILTER_VALIDATE_BOOLEAN);
 
                 if (! $override) {
                     throw ValidationException::withMessages([
                         'service_photographers' => array_map(fn ($v) => $v['message'], $radiusViolations),
                     ]);
                 }
+                abort_unless(app(\App\Services\Scheduling\TravelScheduleAccess::class)->canOverride(
+                    ['action_mode' => 'assign'], $shoot, $actor
+                ), 403, 'Only an authorized administrator or sales rep may approve a location exception.');
 
-                $radiusOverrideReason = $payload['override_reason'] ?? null;
+                $radiusOverrideReason = $payload['travel_override_reason'] ?? $payload['override_reason'] ?? null;
             }
         }
 

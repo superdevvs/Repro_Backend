@@ -32,6 +32,8 @@ class HybridTravelNeighborContextTest extends TestCase
             'availability.fallback_start_time' => '00:00', 'availability.fallback_end_time' => '23:59']);
         $this->photographer = User::factory()->photographer()->create(['timezone' => 'America/New_York']);
         $this->capture = Service::factory()->create(['name' => '15 Exterior Photos', 'shoot_duration_minutes' => 15]);
+        $this->photographer->setServiceCapabilities([(string) $this->capture->id]);
+        $this->photographer->save();
         $locations = Mockery::mock(TravelLocationResolver::class);
         $locations->shouldReceive('reset')->andReturnNull();
         $locations->shouldReceive('forPayload', 'forShoot')->andReturn(['verified' => true, 'building_key' => 'test']);

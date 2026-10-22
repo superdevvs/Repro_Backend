@@ -321,9 +321,10 @@ class ShootMediaArchiveService
         Shoot $shoot,
         string $type,
         string $size,
-        ?\DateTimeInterface $expiresAt = null
+        ?\DateTimeInterface $expiresAt = null,
+        ?int $shootServiceId = null
     ): string {
-        $canonical = $this->buildCanonicalPublicDownloadUrl($shoot, $type, $size, $expiresAt);
+        $canonical = $this->buildCanonicalPublicDownloadUrl($shoot, $type, $size, $expiresAt, $shootServiceId);
 
         return app(ShortLinkService::class)->maybeShorten(
             ShortLink::TYPE_MEDIA_ZIP,
@@ -331,6 +332,7 @@ class ShootMediaArchiveService
             (int) $shoot->id,
             $canonical,
             $this->canonicalizeType($type).':'.$this->normalizeSize($size)
+                .($shootServiceId !== null ? ':service:'.$shootServiceId : '')
         );
     }
 
@@ -338,13 +340,15 @@ class ShootMediaArchiveService
         Shoot $shoot,
         string $type,
         string $size,
-        ?\DateTimeInterface $expiresAt = null
+        ?\DateTimeInterface $expiresAt = null,
+        ?int $shootServiceId = null
     ): string {
         $signedUrl = $this->buildSignedStatusUrl(
             $shoot,
             $type,
             $size,
-            $expiresAt
+            $expiresAt,
+            $shootServiceId
         );
 
         return rtrim($this->resolveFrontendUrl(), '/')
@@ -356,7 +360,8 @@ class ShootMediaArchiveService
         Shoot $shoot,
         string $type,
         string $size,
-        ?\DateTimeInterface $expiresAt = null
+        ?\DateTimeInterface $expiresAt = null,
+        ?int $shootServiceId = null
     ): string {
         $filters = $this->parseTypeFilters($type);
         return URL::temporarySignedRoute(
@@ -367,6 +372,8 @@ class ShootMediaArchiveService
                 'type' => $this->normalizeType($type),
                 'size' => $this->normalizeSize($size),
             ] + array_filter([
+                'shoot_service_id' => $shootServiceId,
+                'verified_only' => $filters['verified_only'] ? 1 : null,
                 'include_extras' => $filters['include_extras'] ? 1 : null,
                 'media_types' => $filters['media_types'] ?: null,
                 'asset_type' => $filters['asset_type'],
@@ -387,6 +394,9 @@ class ShootMediaArchiveService
         }
         if ($shootUnitId !== null) {
             $query->whereHas('serviceItem', fn ($line) => $line->where('shoot_unit_id', $shootUnitId)->where('shoot_id', $shoot->id));
+        }
+        if ($this->parseTypeFilters($type)['verified_only']) {
+            $query->where('workflow_stage', ShootFile::STAGE_VERIFIED);
         }
 
         if ($this->normalizeType($type) === 'raw') {
@@ -720,7 +730,8 @@ class ShootMediaArchiveService
             $this->normalizeType($type),
             $filters['include_extras'],
             $filters['media_types'],
-            $filters['asset_type']
+            $filters['asset_type'],
+            $filters['verified_only']
         );
     }
 
@@ -732,7 +743,7 @@ class ShootMediaArchiveService
      * (with-extras) segment. Media types are lower-cased and sorted so the same
      * selection always yields the same token (and the same cache key).
      */
-    public function buildArchiveTypeToken(string $base, bool $includeExtras = false, array $mediaTypes = [], ?string $assetType = null): string
+    public function buildArchiveTypeToken(string $base, bool $includeExtras = false, array $mediaTypes = [], ?string $assetType = null, bool $verifiedOnly = false): string
     {
         $token = $this->normalizeType($base);
         $segments = [];
@@ -752,6 +763,9 @@ class ShootMediaArchiveService
         if (in_array($assetType, ['photos', 'videos', 'floorplans'], true)) {
             $segments[] = 'asset='.$assetType;
         }
+        if ($verifiedOnly) {
+            $segments[] = 'verified';
+        }
 
         return empty($segments) ? $token : $token . '|' . implode(';', $segments);
     }
@@ -761,6 +775,7 @@ class ShootMediaArchiveService
         $includeExtras = false;
         $mediaTypes = [];
         $assetType = null;
+        $verifiedOnly = false;
 
         $parts = explode('|', (string) $type, 2);
         if (isset($parts[1]) && $parts[1] !== '') {
@@ -768,6 +783,8 @@ class ShootMediaArchiveService
                 $segment = trim($segment);
                 if ($segment === 'we') {
                     $includeExtras = true;
+                } elseif ($segment === 'verified') {
+                    $verifiedOnly = true;
                 } elseif (str_starts_with($segment, 'mt=')) {
                     $mediaTypes = array_values(array_filter(
                         array_map('trim', explode(',', substr($segment, 3))),
@@ -779,7 +796,7 @@ class ShootMediaArchiveService
             }
         }
 
-        return ['include_extras' => $includeExtras, 'media_types' => $mediaTypes, 'asset_type' => $assetType];
+        return ['include_extras' => $includeExtras, 'media_types' => $mediaTypes, 'asset_type' => $assetType, 'verified_only' => $verifiedOnly];
     }
 
     /**
@@ -805,6 +822,9 @@ class ShootMediaArchiveService
         }
         if ($filters['asset_type'] !== null) {
             $suffix .= '-asset-'.$filters['asset_type'];
+        }
+        if ($filters['verified_only']) {
+            $suffix .= '-verified';
         }
 
         return $base . $suffix;

@@ -124,6 +124,8 @@ class SchedulingBufferSettingsTest extends TestCase
         config(['app.timezone' => 'UTC', 'availability.fallback_start_time' => '00:00', 'availability.fallback_end_time' => '23:59']);
         $photographer = User::factory()->photographer()->create(['timezone' => 'UTC']);
         $service = Service::factory()->create(['shoot_duration_minutes' => 30]);
+        $photographer->setServiceCapabilities([(string) $service->id]);
+        $photographer->save();
         $shoot = Shoot::factory()->create(['photographer_id' => $photographer->id,
             'scheduled_at' => Carbon::parse('2026-11-02 08:00:00', 'UTC'), 'timezone' => 'UTC',
             'scheduled_date' => '2026-11-02', 'time' => '08:00', 'status' => Shoot::STATUS_SCHEDULED]);

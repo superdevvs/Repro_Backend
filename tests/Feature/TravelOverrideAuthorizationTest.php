@@ -27,6 +27,9 @@ class TravelOverrideAuthorizationTest extends TestCase
             'status' => 'scheduled', 'workflow_status' => 'scheduled', 'timezone' => 'America/New_York',
             'scheduled_at' => '2026-10-15 14:00:00', 'scheduled_date' => '2026-10-15', 'time' => '10:00']);
         $service = Service::factory()->create(['photographer_required' => true]);
+        $photographer = $shoot->photographer;
+        $photographer->setServiceCapabilities([(string) $service->id]);
+        $photographer->save();
         $shoot->services()->attach($service->id, ['photographer_id' => $shoot->photographer_id,
             'scheduled_at' => '2026-10-15 14:00:00', 'duration_minutes' => 15, 'workflow_status' => 'scheduled']);
         $flags = ['travel_override' => true, 'travel_override_confirmed' => true,

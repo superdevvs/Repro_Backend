@@ -49,6 +49,7 @@ class DigitalEnhancementAssignmentTest extends TestCase
     private function mixedShoot(Service $digital, bool $legacyAssignment = false): array
     {
         $photo = Service::factory()->create(['photographer_required' => true, 'shoot_duration_minutes' => 30, 'price' => 100]);
+        $this->photographer->update(['metadata' => array_replace($this->photographer->metadata ?? [], ['specialties' => [(string) $photo->id]])]);
         $shoot = Shoot::factory()->create([
             'status' => 'requested', 'workflow_status' => 'requested',
             'photographer_id' => $this->photographer->id, 'scheduled_at' => null,

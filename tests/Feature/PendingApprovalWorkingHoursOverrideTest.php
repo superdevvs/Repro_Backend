@@ -58,6 +58,8 @@ class PendingApprovalWorkingHoursOverrideTest extends TestCase
         $photographer = User::factory()->photographer()->create(['timezone' => 'America/New_York']);
         $client = User::factory()->create(['role' => 'client']);
         $service = Service::factory()->create(['photographer_required' => true, 'shoot_duration_minutes' => 75]);
+        $photographer->setServiceCapabilities([(string) $service->id]);
+        $photographer->save();
         $this->shoot = Shoot::factory()->create(['client_id' => $client->id, 'rep_id' => $this->actor->id,
             'photographer_id' => $photographer->id, 'status' => 'requested', 'workflow_status' => 'requested',
             'timezone' => 'America/New_York', 'scheduled_at' => '2026-10-22 18:00:00', 'scheduled_date' => '2026-10-22', 'time' => '14:00']);

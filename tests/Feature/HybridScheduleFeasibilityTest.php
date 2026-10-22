@@ -41,6 +41,8 @@ class HybridScheduleFeasibilityTest extends TestCase
         $this->photographer = User::factory()->photographer()->create(['timezone' => 'America/New_York']);
         $this->admin = User::factory()->create(['role' => 'admin']);
         $this->service = Service::factory()->create(['shoot_duration_minutes' => 15]);
+        $this->photographer->setServiceCapabilities([(string) $this->service->id]);
+        $this->photographer->save();
         $locations = Mockery::mock(TravelLocationResolver::class);
         $locations->shouldReceive('reset')->andReturnNull();
         $locations->shouldReceive('forPayload')->andReturnUsing(fn ($p, $s = null) => $this->location($p['address'] ?? $s?->address ?? '20 Candidate Road'));
@@ -214,6 +216,8 @@ class HybridScheduleFeasibilityTest extends TestCase
         $secondary = User::factory()->photographer()->create();
         $this->booked('09:00', 'Secondary Road', 15, $secondary);
         $second = Service::factory()->create(['shoot_duration_minutes' => 15]);
+        $secondary->setServiceCapabilities([(string) $this->service->id, (string) $second->id]);
+        $secondary->save();
         $payload = $this->payload();
         $payload['services'][] = ['id' => $second->id, 'photographer_id' => $secondary->id, 'duration_minutes' => 15];
         $result = $this->evaluate($payload);
@@ -255,6 +259,8 @@ class HybridScheduleFeasibilityTest extends TestCase
     public function test_multiple_proposed_visits_check_each_other_and_keep_internal_gap_zero(): void
     {
         $second = Service::factory()->create(['shoot_duration_minutes' => 15]);
+        $this->photographer->setServiceCapabilities([(string) $this->service->id, (string) $second->id]);
+        $this->photographer->save();
         $payload = $this->payload();
         $payload['services'][] = ['id' => $second->id, 'scheduled_at' => '2026-10-02T09:15:00-04:00', 'duration_minutes' => 15];
         $result = $this->evaluate($payload);

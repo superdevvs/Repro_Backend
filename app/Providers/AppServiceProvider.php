@@ -58,6 +58,7 @@ class AppServiceProvider extends ServiceProvider
         ShootService::observe(ShootServiceObserver::class);
         ShootCompensation::observe(ShootCompensationObserver::class);
         ShootFile::observe(ShootFileObserver::class);
+        \App\Models\ShootUnit::observe(\App\Observers\ShootUnitObserver::class);
 
         // Deployment provisions and verifies public/storage as the deploy user.
         // PHP-FPM must never mutate the application public directory on boot.

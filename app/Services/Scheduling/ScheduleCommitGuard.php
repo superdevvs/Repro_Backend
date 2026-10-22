@@ -27,6 +27,11 @@ class ScheduleCommitGuard
     public function prepareBatch(array $plans, ?User $actor = null): array
     {
         $plans = app(DaySchedulePlan::class)->expand($plans, $actor);
+        foreach ($plans as $plan) {
+            app(\App\Services\Photographers\PhotographerServiceEligibility::class)->assertPayload(
+                $plan['payload'], $plan['shoot'] ?? null, $actor
+            );
+        }
         if (! $this->enabled() || $plans === []) {
             return ['enabled' => false, 'plans' => $plans, 'actor' => $actor];
         }
@@ -205,6 +210,7 @@ class ScheduleCommitGuard
             'policy_version' => $prepared['result']['policy_version'] ?? null,
             'shoot_ids' => $shootIds,
             'transitions' => $transitions,
+            'radius_checks' => $prepared['result']['radius_checks'] ?? [],
         ]);
         SchedulingDiagnostics::notice('schedule_travel_override', [
             'actor_id' => $prepared['actor']?->id,

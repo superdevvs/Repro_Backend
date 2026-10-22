@@ -38,6 +38,7 @@ class ScheduleFeasibilityController extends Controller
             'exclude_shoot_id' => 'prohibited',
             'exclude_shoot_ids' => 'prohibited',
             '_schedule_visits' => 'prohibited',
+            '_schedule_services' => 'prohibited',
         ]);
         foreach (['services' => 'id', 'service_items' => 'service_id'] as $field => $id) {
             $rules[$field] = 'sometimes|array|max:300';

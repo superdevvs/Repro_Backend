@@ -68,6 +68,8 @@ class ShootUpdateOutOfHoursRejectionTest extends TestCase
             'name' => 'HDR Photos',
             'price' => 150.00,
         ]);
+        $this->photographer->setServiceCapabilities([$this->service->id]);
+        $this->photographer->save();
     }
 
     #[\PHPUnit\Framework\Attributes\Test]

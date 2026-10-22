@@ -60,6 +60,8 @@ class TemporaryStaffEditForceSaveTest extends TestCase
         $photographer = User::factory()->photographer()->create(['timezone' => 'America/New_York']);
         $this->service = Service::factory()->create(['name' => 'HDR Photos', 'price' => 275,
             'photographer_required' => true, 'shoot_duration_minutes' => 75]);
+        $photographer->setServiceCapabilities([(string) $this->service->id]);
+        $photographer->save();
         $this->shoot = Shoot::factory()->create(['rep_id' => $this->actor->id, 'photographer_id' => $photographer->id,
             'status' => 'scheduled', 'workflow_status' => 'scheduled', 'timezone' => 'America/New_York',
             'scheduled_at' => '2026-10-13 15:30:00', 'scheduled_date' => '2026-10-13', 'time' => '11:30',
@@ -142,6 +144,9 @@ class TemporaryStaffEditForceSaveTest extends TestCase
             'amount' => 275, 'allocation_strategy' => 'selected_services']);
         $replacement = Service::factory()->create(['name' => '55 HDR Photos', 'price' => 350,
             'photographer_required' => true, 'shoot_duration_minutes' => 90]);
+        $photographer = $this->shoot->photographer;
+        $photographer->setServiceCapabilities([(string) $this->service->id, (string) $replacement->id]);
+        $photographer->save();
         // Mirror the browser: line null means inherit the booked anchor, and
         // assignments are separate from service schedule/pricing rows.
         $payload = ['services' => [['id' => $replacement->id, 'scheduled_at' => $serviceAt, 'duration_minutes' => 90]],

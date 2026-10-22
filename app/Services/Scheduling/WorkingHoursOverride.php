@@ -38,7 +38,7 @@ class WorkingHoursOverride
     {
         return $this->eligible($payload, $shoot, $actor) && ! empty($result['enabled'])
             && in_array('outside_working_hours', $result['reason_codes'] ?? [], true)
-            && array_diff($result['reason_codes'] ?? [], ['outside_working_hours', 'travel_review_required', 'insufficient_travel_time']) === []
+            && array_diff($result['reason_codes'] ?? [], ['outside_working_hours', 'travel_review_required', 'insufficient_travel_time', 'outside_service_radius', 'service_radius_unverified']) === []
             && ! empty($result['visits']);
     }
 

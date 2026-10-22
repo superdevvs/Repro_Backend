@@ -59,6 +59,8 @@ class HybridSchedulingPreviewParityTest extends TestCase
         $photographer = User::factory()->photographer()->create(['timezone' => 'America/New_York']);
         $admin = User::factory()->admin()->create();
         $service = Service::factory()->create(['shoot_duration_minutes' => 15]);
+        $photographer->setServiceCapabilities([(string) $service->id]);
+        $photographer->save();
         $result = app(ScheduleFeasibilityService::class)->evaluate([
             'photographer_id' => $photographer->id, 'scheduled_at' => '2026-10-02 17:00:00',
             'services' => [['id' => $service->id, 'duration_minutes' => 15]],

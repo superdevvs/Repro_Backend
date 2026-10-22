@@ -76,6 +76,8 @@ class ShootAlternateDateFieldTest extends TestCase
             'name' => 'Alt HDR Photos',
             'price' => 150.00,
         ]);
+        $this->photographer->setServiceCapabilities([$this->service->id]);
+        $this->photographer->save();
     }
 
     // ==================================================================

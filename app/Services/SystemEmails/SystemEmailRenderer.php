@@ -34,7 +34,10 @@ class SystemEmailRenderer
         // Opt-in override: if an admin has enabled a DB template for this
         // protected email type, render that instead of the hardcoded Blade
         // view. Disabled by default, so behavior is unchanged until enabled.
-        $override = $this->resolveOverrideTemplate($definition);
+        // Whole-order template variables may resolve other pending service
+        // media. Partial deliveries always use the protected scoped renderer.
+        $override = $definition->alias === 'SHOOT_DELIVERED' && data_get($payload, 'meta.is_full_order_delivery') === false
+            ? null : $this->resolveOverrideTemplate($definition);
         if ($override && $this->mustUseProtectedBlade($definition, $payload)
             && ! ProtectedEmailTemplates::hasScopedRuntimeBlock($override)) {
             $this->recordOverrideHealth($override, 'unhealthy', 'This email requires the {{system_body_html}} block for current payment and delivery links. Canonical content was used.');
@@ -127,6 +130,10 @@ class SystemEmailRenderer
      */
     private function violatesProtectedOutcome(EmailTypeDefinition $definition, array $payload, array $rendered): bool
     {
+        if (in_array($definition->alias, ['SHOOT_DELIVERED', 'SHOOT_SUMMARY'], true)
+            && $this->violatesDeliveryLinks($rendered)) {
+            return true;
+        }
         if ($this->payableFromPayload($payload)) {
             return false;
         }
@@ -138,6 +145,29 @@ class SystemEmailRenderer
         $copy = strip_tags((string) ($rendered['body_html'] ?? '')).' '.(string) ($rendered['body_text'] ?? '');
 
         return preg_match('/\b(pay\s+now|pay\s+remaining|remaining\s+balance|complete\s+(?:the\s+)?payment)\b/i', $copy) === 1;
+    }
+
+    /** Saved copy may customize delivery, but cannot hard-code unreleased media URLs. */
+    private function violatesDeliveryLinks(array $rendered): bool
+    {
+        $share = (array) data_get($rendered, 'view_data.deliveryShare', []);
+        $allowed = array_column((array) ($share['links'] ?? []), 'url');
+        $html = (string) ($rendered['body_html'] ?? '');
+        if (empty($share['video_download_link']) && preg_match('/\bvideo\s+download\b/i', strip_tags($html))) {
+            return true;
+        }
+        preg_match_all('/\bhref\s*=\s*[\'"]([^\'"]+)[\'"]/i', $html, $matches);
+        preg_match_all('~https?://[^\s<>"\']+~i', (string) ($rendered['body_text'] ?? ''), $textMatches);
+        foreach (array_merge($matches[1], $textMatches[0]) as $href) {
+            $url = rtrim(html_entity_decode($href, ENT_QUOTES | ENT_HTML5, 'UTF-8'), '.,)');
+            $videoHost = preg_match('/(?:^|\.)(?:youtube\.com|youtu\.be|vimeo\.com|wistia\.(?:com|net)|loom\.com|dailymotion\.com)$/i', (string) parse_url($url, PHP_URL_HOST));
+            if (($videoHost || preg_match('~(?:\.(?:zip|mp4|mov|jpe?g|png|pdf|tiff?)(?:[?#]|$)|/(?:storage/|videos?/|download/media(?:[/?#]|$)|api/public/shoot-media/))~i', $url))
+                && ! in_array($url, $allowed, true)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -190,6 +220,20 @@ class SystemEmailRenderer
         $renderer = $this->templateRenderer ?? app(TemplateRenderer::class);
 
         $variables = $this->overrideVariables($payload);
+        $deliveryShare = null;
+        if (in_array($definition->alias, ['SHOOT_DELIVERED', 'SHOOT_SUMMARY'], true)) {
+            $deliveryShare = $definition->alias === 'SHOOT_SUMMARY'
+                ? $this->summaryShareForShoot($payload) : $this->deliveryShareForShoot($payload);
+            // The general resolver accepts caller context. Delivery values must
+            // instead come from the current payment/approval/booked-service gate.
+            foreach (['small_zip_link', 'full_zip_link', 'floorplans_link', 'mls_tour_link', 'branded_tour_link', 'video_download_link', 'zillow_3d_link'] as $key) {
+                $variables[$key] = $deliveryShare[$key] ?? '';
+            }
+            $safeLinks = collect($deliveryShare['links'] ?? [])->keyBy('key');
+            foreach (['video_mls', 'video_branded', 'video_generic', 'video_link'] as $key) {
+                $variables[$key] = data_get($safeLinks->get('additional_'.$key), 'url') ?? $deliveryShare['video_download_link'] ?? '';
+            }
+        }
         $variables['system_subject'] = $subject;
         if ($definition->alias === 'SHOOT_SCHEDULED'
             && Arr::get($payload, 'meta.recipient_type') === 'client'
@@ -214,11 +258,20 @@ class SystemEmailRenderer
             // Fall back to the Blade view if the override produced nothing.
             return null;
         }
+        if ($deliveryShare !== null) {
+            if (! collect($deliveryShare['links'] ?? [])->contains(fn ($link) => str_contains((string) ($link['key'] ?? ''), 'video'))) {
+                $html = preg_replace('/(?<=>)\s*property\s+and\s+video\s*(?=<)/i', 'Property', $html) ?? $html;
+            }
+            $html = preg_replace('/<a\b[^>]*href\s*=\s*([\'"])\s*\1[^>]*>.*?<\/a>/is', '', $html) ?? $html;
+        }
 
         $resolvedSubject = trim((string) ($rendered['subject'] ?? ''));
         $text = (string) ($rendered['text'] ?? $rendered['body_text'] ?? '');
         if (trim($text) === '') {
             $text = EditableEmailContent::plainText($html);
+        }
+        if ($deliveryShare !== null && ! collect($deliveryShare['links'] ?? [])->contains(fn ($link) => str_contains((string) ($link['key'] ?? ''), 'video'))) {
+            $text = preg_replace('/^\s*property\s+and\s+video\s*$/im', 'Property', $text) ?? $text;
         }
 
         return [
@@ -569,9 +622,12 @@ class SystemEmailRenderer
             ],
             'SHOOT_DELIVERED' => $shared + [
                 'paymentLink' => $links['payment'] ?? null,
+                'isFullOrderDelivery' => (bool) ($meta->is_full_order_delivery ?? true),
+                'deliveryIsUpdate' => (bool) ($meta->delivery_is_update ?? false),
                 'deliveryShare' => $this->deliveryShareForShoot($payload),
             ],
             'SHOOT_SUMMARY' => $shared + [
+                'deliveryIsUpdate' => (bool) ($meta->delivery_is_update ?? false),
                 'deliveryShare' => $this->summaryShareForShoot($payload),
             ],
             'INVOICE_GENERATED' => $shared + [
@@ -650,7 +706,11 @@ class SystemEmailRenderer
                 return ['links' => [], 'has_links' => false, 'completed_shoots_note' => ''];
             }
 
-            return app(DeliveryShareLinksBuilder::class)->forShoot($shoot);
+            $builder = app(DeliveryShareLinksBuilder::class);
+
+            return data_get($payload, 'meta.is_full_order_delivery') === false
+                ? $builder->forDeliveredServices($shoot, (array) data_get($payload, 'meta.shoot_service_ids', []))
+                : $builder->forShoot($shoot);
         } catch (\Throwable $e) {
             return ['links' => [], 'has_links' => false, 'completed_shoots_note' => ''];
         }
@@ -667,7 +727,6 @@ class SystemEmailRenderer
                     ['key' => 'full_zip', 'label' => 'Full-Size Images Download', 'url' => 'https://example.com/download/example-full.zip'],
                     ['key' => 'mls_tour', 'label' => 'MLS-Compliant Tour (non-branded)', 'url' => 'https://example.com/tour/example-mls'],
                     ['key' => 'branded_tour', 'label' => 'Branded Tour', 'url' => 'https://example.com/tour/example-branded'],
-                    ['key' => 'video', 'label' => 'Video Download', 'url' => 'https://example.com/video/example.mp4'],
                     ['key' => 'zillow_3d', 'label' => 'Zillow 3D Home Tour', 'url' => 'https://example.com/zillow/example'],
                 ];
 

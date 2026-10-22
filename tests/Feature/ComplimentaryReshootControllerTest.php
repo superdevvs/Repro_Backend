@@ -49,6 +49,7 @@ class ComplimentaryReshootControllerTest extends TestCase
             'photographer_pay_type' => Service::PAY_TYPE_FIXED,
             'exclude_from_sales_commission' => false,
         ]);
+        $this->photographer->update(['metadata' => array_replace($this->photographer->metadata ?? [], ['specialties' => [(string) $this->service->id]])]);
         $this->sourceShoot = Shoot::factory()->create([
             'client_id' => $this->client->id,
             'rep_id' => $this->salesRep->id,
@@ -551,6 +552,7 @@ class ComplimentaryReshootControllerTest extends TestCase
         $this->postJson("/api/admin/shoots/{$this->sourceShoot->id}/complimentary-reshoots", $payload)
             ->assertUnprocessable()->assertJsonValidationErrors('items.0.quantity');
         $payload['items'][0]['service_id'] = Service::factory()->create(['allow_multiple' => false])->id;
+        $this->photographer->update(['metadata' => array_replace($this->photographer->metadata ?? [], ['specialties' => [(string) $this->service->id, (string) $payload['items'][0]['service_id']]])]);
         $payload['items'][0]['quantity'] = 2;
         $this->postJson("/api/admin/shoots/{$this->sourceShoot->id}/complimentary-reshoots", $payload)
             ->assertUnprocessable()->assertJsonValidationErrors('items.0.quantity');

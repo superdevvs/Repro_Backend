@@ -68,6 +68,8 @@ class GoogleCalendarShootSyncTest extends TestCase
             'name' => 'Floor Plan',
             'delivery_time' => 1,
         ]);
+        $this->photographer->setServiceCapabilities([$this->service->id, $this->secondService->id]);
+        $this->photographer->save();
     }
 
     public function test_scheduled_shoot_creation_syncs_to_google_calendar_for_connected_photographers(): void
@@ -212,6 +214,8 @@ class GoogleCalendarShootSyncTest extends TestCase
         ]);
 
         $this->createGoogleCalendarConnection($this->photographer, 'old-calendar@example.com', 'access-token-old');
+        $replacementPhotographer->setServiceCapabilities([$this->service->id, $this->secondService->id]);
+        $replacementPhotographer->save();
         $this->createGoogleCalendarConnection($replacementPhotographer, 'new-calendar@example.com', 'access-token-new');
 
         $shoot = Shoot::factory()->create([

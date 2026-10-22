@@ -35,6 +35,11 @@ class ScheduleFeasibilityService
 
     private function evaluatePreparedPlans(array $plans, ?User $actor, bool $alternatives): array
     {
+        foreach ($plans as $plan) {
+            app(\App\Services\Photographers\PhotographerServiceEligibility::class)->assertPayload(
+                $plan['payload'], $plan['shoot'] ?? null, $actor
+            );
+        }
         if (! app(\App\Services\Scheduling\SchedulingBufferSettings::class)->enabled()) {
             return $this->disabled();
         }
@@ -83,6 +88,15 @@ class ScheduleFeasibilityService
         $hoursOverride = app(WorkingHoursOverride::class);
         $hoursEligible = count($plans) === 1 && $hoursOverride->eligible($plans[0]['payload'], $plans[0]['shoot'] ?? null, $actor);
         $assessment = app(ScheduleTransitionEvaluator::class)->evaluate($proposed, $existing, $locations, $hoursEligible);
+        $radiusChecks = app(ScheduleRadiusEvaluator::class)->evaluate($proposed, $existing, $locations);
+        foreach ($radiusChecks as $check) {
+            if (! $check['eligible']) {
+                $assessment['reason_codes'][] = $check['reason'] === 'outside_radius' ? 'outside_service_radius' : 'service_radius_unverified';
+                if ($assessment['status'] === 'available') $assessment['status'] = 'review_required';
+            }
+        }
+        $assessment['reason_codes'] = array_values(array_unique($assessment['reason_codes']));
+        $assessment['radius_checks'] = $radiusChecks;
         $existingById = array_column($existing, null, 'id');
         foreach ($assessment['transitions'] as &$transition) {
             $neighbor = $existingById[$transition['from_visit_id'] ?? '']
@@ -192,6 +206,7 @@ class ScheduleFeasibilityService
             'actor_id' => $actor?->id, 'policy_version' => $result['policy_version'] ?? self::POLICY_VERSION,
             'schedule_version' => $result['schedule_version'] ?? null, 'status' => $result['status'] ?? null,
             'reason_codes' => $reasons, 'visits' => $this->sortedConfirmationRows($visits),
+            'radius_checks' => $result['radius_checks'] ?? [],
             'transitions' => $this->sortedConfirmationRows($transitions),
         ], JSON_THROW_ON_ERROR), $key);
     }
@@ -288,6 +303,7 @@ class ScheduleFeasibilityService
     public function publicResult(array $result): array
     {
         $public = Arr::only($result, ['enabled', 'status', 'available', 'reason_codes', 'transitions', 'alternatives',
+            'radius_checks',
             'can_override', 'can_confirm_location', 'can_force_save', 'force_save_confirmation_version',
             'can_override_working_hours', 'working_hours_confirmation_version',
             'policy_version', 'schedule_version', 'confirmation_version', 'budget']);

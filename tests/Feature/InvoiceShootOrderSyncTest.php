@@ -37,6 +37,7 @@ class InvoiceShootOrderSyncTest extends TestCase
         $this->client = User::factory()->create(['role' => 'client']);
         $this->photographer = User::factory()->create(['role' => 'photographer']);
         $this->service = Service::factory()->create(['name' => 'HDR Photos', 'price' => 100]);
+        $this->photographer->update(['metadata' => array_replace($this->photographer->metadata ?? [], ['specialties' => [(string) $this->service->id]])]);
 
         Sanctum::actingAs($this->admin);
     }

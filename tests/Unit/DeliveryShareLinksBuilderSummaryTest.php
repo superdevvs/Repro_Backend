@@ -23,6 +23,7 @@ class DeliveryShareLinksBuilderSummaryTest extends TestCase
     {
         $archives = Mockery::mock(ShootMediaArchiveService::class);
         $archives->shouldNotReceive('hasDownloadableFiles');
+        $archives->shouldReceive('hasDownloadableFiles')->with(Mockery::type(Shoot::class), 'edited|asset=floorplans;verified', 'original')->zeroOrMoreTimes()->andReturn(false);
         $builder = $this->makeBuilder($archives);
         $shoot = $this->makeShoot([
             'payment_status' => 'partial',
@@ -41,7 +42,8 @@ class DeliveryShareLinksBuilderSummaryTest extends TestCase
     public function test_summary_only_includes_available_safe_links_and_omits_empty_sections(): void
     {
         $archives = Mockery::mock(ShootMediaArchiveService::class);
-        $archives->shouldReceive('hasDownloadableFiles')->twice()->andReturn(false);
+        $archives->shouldReceive('hasDownloadableFiles')->times(3)->andReturn(false);
+        $archives->shouldReceive('hasDownloadableFiles')->with(Mockery::type(Shoot::class), 'edited|asset=floorplans;verified', 'original')->zeroOrMoreTimes()->andReturn(false);
         $builder = $this->makeBuilder($archives);
         $shoot = $this->makeShoot([
             'payment_status' => 'paid',
@@ -68,7 +70,7 @@ class DeliveryShareLinksBuilderSummaryTest extends TestCase
         $this->assertSame('https://example.test/property', $links['property_url']);
         $this->assertNull($links['video_download_link']);
         $this->assertSame('https://www.zillow.com/view-3d-home/example', $links['zillow_3d_link']);
-        $this->assertContains('https://vimeo.com/12345', array_column($links['additional_links'], 'url'));
+        $this->assertNotContains('https://vimeo.com/12345', array_column($links['additional_links'], 'url'));
         $this->assertContains('https://my.matterport.com/show/?m=example', array_column($links['additional_links'], 'url'));
         $this->assertNotContains('javascript:alert(1).mp4', array_column($links['links'], 'url'));
 
@@ -86,9 +88,10 @@ class DeliveryShareLinksBuilderSummaryTest extends TestCase
     {
         config(['app.frontend_url' => 'https://app.example.test']);
         $archives = Mockery::mock(ShootMediaArchiveService::class);
-        $archives->shouldReceive('hasDownloadableFiles')->with(Mockery::type(Shoot::class), 'edited', 'small')->once()->andReturn(true);
-        $archives->shouldReceive('buildPublicDownloadUrl')->with(Mockery::type(Shoot::class), 'edited', 'small')->once()->andReturn('https://app.example.test/download/small');
-        $archives->shouldReceive('hasDownloadableFiles')->with(Mockery::type(Shoot::class), 'edited', 'original')->once()->andReturn(false);
+        $archives->shouldReceive('hasDownloadableFiles')->with(Mockery::type(Shoot::class), 'edited|verified', 'small')->once()->andReturn(true);
+        $archives->shouldReceive('buildPublicDownloadUrl')->with(Mockery::type(Shoot::class), 'edited|verified', 'small')->once()->andReturn('https://app.example.test/download/small');
+        $archives->shouldReceive('hasDownloadableFiles')->with(Mockery::type(Shoot::class), 'edited|verified', 'original')->once()->andReturn(false);
+        $archives->shouldReceive('hasDownloadableFiles')->with(Mockery::type(Shoot::class), 'edited|asset=floorplans;verified', 'original')->zeroOrMoreTimes()->andReturn(false);
         $builder = $this->makeBuilder($archives);
         $shoot = $this->makeShoot(['payment_status' => 'paid', 'total_paid' => 299, 'total_quote' => 299]);
         $shoot->setRelation('files', collect());
@@ -104,9 +107,10 @@ class DeliveryShareLinksBuilderSummaryTest extends TestCase
     public function test_explicit_zero_dollar_summary_includes_deliverable_links_without_bypass_flag(): void
     {
         $archives = Mockery::mock(ShootMediaArchiveService::class);
-        $archives->shouldReceive('hasDownloadableFiles')->with(Mockery::type(Shoot::class), 'edited', 'small')->once()->andReturn(true);
-        $archives->shouldReceive('buildPublicDownloadUrl')->with(Mockery::type(Shoot::class), 'edited', 'small')->once()->andReturn('https://app.example.test/download/free-shoot');
-        $archives->shouldReceive('hasDownloadableFiles')->with(Mockery::type(Shoot::class), 'edited', 'original')->once()->andReturn(false);
+        $archives->shouldReceive('hasDownloadableFiles')->with(Mockery::type(Shoot::class), 'edited|verified', 'small')->once()->andReturn(true);
+        $archives->shouldReceive('buildPublicDownloadUrl')->with(Mockery::type(Shoot::class), 'edited|verified', 'small')->once()->andReturn('https://app.example.test/download/free-shoot');
+        $archives->shouldReceive('hasDownloadableFiles')->with(Mockery::type(Shoot::class), 'edited|verified', 'original')->once()->andReturn(false);
+        $archives->shouldReceive('hasDownloadableFiles')->with(Mockery::type(Shoot::class), 'edited|asset=floorplans;verified', 'original')->zeroOrMoreTimes()->andReturn(false);
         $builder = $this->makeBuilder($archives);
         $shoot = $this->makeShoot([
             'payment_status' => Shoot::PAYMENT_STATUS_NO_PAYMENT_REQUIRED,
@@ -134,6 +138,51 @@ class DeliveryShareLinksBuilderSummaryTest extends TestCase
         $this->assertStringNotContainsString('Virtual tours', $html);
     }
 
+    public function test_video_links_require_a_booked_video_and_do_not_label_property_links_as_video(): void
+    {
+        $archives = Mockery::mock(ShootMediaArchiveService::class);
+        $archives->shouldReceive('hasDownloadableFiles')->andReturn(false);
+        $builder = $this->makeBuilder($archives);
+        $shoot = $this->makeShoot([
+            'payment_status' => 'paid', 'total_paid' => 299, 'total_quote' => 299,
+            'tour_links' => ['branded' => 'https://example.test/property', 'video_mls' => 'https://example.test/property.mp4'],
+        ]);
+        $shoot->setRelation('files', collect());
+        $withoutVideo = $builder->forShootSummary($shoot);
+        $this->assertNull($withoutVideo['video_download_link']);
+        $this->assertNotContains('https://example.test/property.mp4', array_column($withoutVideo['links'], 'url'));
+        $html = view('emails.shoot_summary', [
+            'shoot' => (object) ['location' => '100 Test St', 'services' => [], 'dashboard_url' => 'https://reprodashboard.com'],
+            'deliveryShare' => $withoutVideo,
+        ])->render();
+        $this->assertStringContainsString('Property / Address Link', $html);
+        $this->assertStringNotContainsString('Property and video', $html);
+        $this->assertStringNotContainsString('Video Download', $html);
+
+        $shoot->setRelation('service', new \App\Models\Service(['upload_intake_type' => 'video']));
+        $withVideo = $builder->forShootSummary($shoot);
+        $this->assertSame('https://example.test/property.mp4', $withVideo['video_download_link']);
+    }
+
+    public function test_floorplans_have_their_own_available_download_section(): void
+    {
+        $archives = Mockery::mock(ShootMediaArchiveService::class);
+        $archives->shouldReceive('hasDownloadableFiles')->with(Mockery::type(Shoot::class), 'edited|verified', Mockery::any())->andReturn(false);
+        $archives->shouldReceive('hasDownloadableFiles')->with(Mockery::type(Shoot::class), 'edited|asset=floorplans;verified', 'original')->once()->andReturn(true);
+        $archives->shouldReceive('buildPublicDownloadUrl')->with(Mockery::type(Shoot::class), 'edited|asset=floorplans;verified', 'original')->once()->andReturn('https://example.test/floorplans.zip');
+        $shoot = $this->makeShoot(['payment_status' => 'paid', 'total_paid' => 299, 'total_quote' => 299]);
+        $shoot->setRelation('files', collect());
+        $links = $this->makeBuilder($archives)->forShootSummary($shoot);
+        $this->assertSame('https://example.test/floorplans.zip', $links['floorplans_link']);
+        $this->assertNull($links['video_download_link']);
+        $html = view('emails.shoot_summary', [
+            'shoot' => (object) ['location' => '100 Test St', 'services' => [], 'dashboard_url' => 'https://reprodashboard.com'],
+            'deliveryShare' => $links,
+        ])->render();
+        $this->assertStringContainsString('Floor Plans Download', $html);
+        $this->assertStringNotContainsString('Video Download', $html);
+    }
+
     private function makeBuilder(ShootMediaArchiveService $archives): DeliveryShareLinksBuilder
     {
         return new DeliveryShareLinksBuilder(
@@ -150,6 +199,8 @@ class DeliveryShareLinksBuilderSummaryTest extends TestCase
         ], $attributes));
         $shoot->id = 385;
         $shoot->exists = true;
+        $shoot->setRelation('serviceItems', collect());
+        $shoot->setRelation('service', null);
 
         return $shoot;
     }

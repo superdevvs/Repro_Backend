@@ -30,6 +30,9 @@ class ImportLegacyShootRequestTest extends TestCase
             'base_quote' => 100, 'tax_amount' => 6, 'total_quote' => 106,
             'notes' => 'Exterior photos now; interior work later.', 'property_details' => ['sqft' => 4033],
         ];
+        $photographer = User::findOrFail($input['photographer_id']);
+        $photographer->setServiceCapabilities([$input['service_id']]);
+        $photographer->save();
         $path = tempnam(sys_get_temp_dir(), 'legacy-request-');
         try {
             file_put_contents($path, json_encode($input));

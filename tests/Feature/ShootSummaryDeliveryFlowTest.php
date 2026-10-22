@@ -73,6 +73,8 @@ class ShootSummaryDeliveryFlowTest extends TestCase
         ]);
         $this->payment($shoot, 500);
         $this->assertSame('paid', $shoot->fresh(['payments'])->syncPaymentStatusFromRecords('card')['payment_status']);
+        $video = \App\Models\Service::factory()->create(['name' => 'Property Video', 'upload_intake_type' => 'video']);
+        $shoot->services()->attach($video->id, ['workflow_status' => 'delivered', 'delivery_status' => 'delivered']);
         $shoot->update([
             'status' => Shoot::STATUS_DELIVERED,
             'workflow_status' => Shoot::STATUS_DELIVERED,

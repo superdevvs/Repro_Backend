@@ -53,6 +53,8 @@ class ShootBookingTest extends TestCase
             'name' => 'Test Service',
             'price' => 100.00,
         ]);
+        $this->photographer->setServiceCapabilities([(string) $this->service->id]);
+        $this->photographer->save();
     }
 
     protected function tearDown(): void

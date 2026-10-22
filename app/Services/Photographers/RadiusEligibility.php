@@ -7,7 +7,7 @@ namespace App\Services\Photographers;
  *
  * Pure, side-effect-free decision logic shared by the booking `for-booking` eligibility path and
  * the manual/auto assignment path, so both gate identically. Gated by
- * `config('availability.radius_enforcement')` — when OFF (production default) every call reports
+ * `config('availability.radius_enforcement')` — when explicitly OFF every call reports
  * eligible and the historical behavior is unchanged.
  *
  * Decision table (when enforcement is ON), per the QA §4 matrix:

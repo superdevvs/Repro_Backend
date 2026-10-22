@@ -42,21 +42,22 @@ class ScheduleShootAction
             $local = \Carbon\Carbon::instance($scheduledAt)->setTimezone($shoot->timezone ?: config('app.timezone', 'UTC'));
             $move = new \App\Models\ShootRescheduleRequest(['requested_date' => $local->toDateString(),
                 'requested_time' => $local->format('H:i'), 'units_revision' => $validated['expected_units_revision'] ?? null]);
-            $plannedServices = app(\App\Services\Shoots\MultiUnitRescheduleService::class)->plan($shoot, $move, $user)['services'];
+            $plannedServices = app(\App\Services\Shoots\MultiUnitRescheduleService::class)->plan($shoot, $move, $user, [], $validated)['services'];
         }
         $onlyDigitalServices = $this->support->hasOnlyDigitalServices($plannedServices);
         if ($onlyDigitalServices) {
             $validated['photographer_id'] = null;
             $targetPhotographer = null;
         }
+        $plannedServices = $this->support->resolveServicePhotographerAssignments($shoot, $plannedServices, $validated);
         $travelGuard = app(\App\Services\Scheduling\ScheduleCommitGuard::class);
         $travelPrepared = $travelGuard->prepare(app(\App\Services\Scheduling\WriteSchedulePlan::class)->services(
             $validated, $plannedServices, $scheduledAt, $targetPhotographer ? (int) $targetPhotographer : null,
             $shoot->timezone, 'schedule'
         ), $shoot, $user);
-        $travelGuard->commit($travelPrepared, function () use ($shoot, $scheduledAt, $validated, $user, $isMultiUnit, $wasOnHold, $onlyDigitalServices) {
+        $travelGuard->commit($travelPrepared, function () use ($shoot, $scheduledAt, $validated, $user, $isMultiUnit, $wasOnHold, $onlyDigitalServices, $plannedServices) {
             if ($isMultiUnit) {
-                $this->resumeUnitPlan($shoot, $scheduledAt, $validated, $user);
+                $this->resumeUnitPlan($shoot, $scheduledAt, $validated, $user, $plannedServices);
             }
             if ($onlyDigitalServices && $shoot->photographer_id !== null) {
                 $shoot->photographer_id = null;
@@ -76,7 +77,7 @@ class ScheduleShootAction
 
                 // Validate the exact times that alignment will save, preserving gaps
                 // between independently timed visits and each booked duration.
-                $targetServices = $this->plannedAvailabilityServices($shoot, $scheduledAt);
+                $targetServices = $plannedServices;
                 if ($targetServices === [] && $photographerId) {
                     $this->support->assertWithinAvailabilityBounds(
                         (int) $photographerId, $scheduledAt,
@@ -90,6 +91,7 @@ class ScheduleShootAction
                 );
 
                 if ($photographerId && $photographerId !== $shoot->photographer_id) {
+                    $this->support->persistResolvedPhotographerAssignments($shoot, $targetServices, $user);
                     $shoot->photographer_id = $photographerId;
                     $shoot->save();
                 }
@@ -243,16 +245,21 @@ class ScheduleShootAction
         return $shoot;
     }
 
-    private function resumeUnitPlan(Shoot $shoot, \DateTime $scheduledAt, array $validated, User $user): void
+    private function resumeUnitPlan(Shoot $shoot, \DateTime $scheduledAt, array $validated, User $user, array $plannedServices): void
     {
         abort_unless(app(\App\Services\Shoots\ShootManagementAccess::class)->can($user, 'manage'), 403);
-        \App\Support\LockedWrite::run(fn () => \Illuminate\Support\Facades\DB::transaction(function () use ($shoot, $scheduledAt, $validated, $user) {
+        \App\Support\LockedWrite::run(fn () => \Illuminate\Support\Facades\DB::transaction(function () use ($shoot, $scheduledAt, $validated, $user, $plannedServices) {
             if (\Illuminate\Support\Facades\DB::connection()->getDriverName() === 'sqlite') {
                 \Illuminate\Support\Facades\DB::table('shoots')->where('id', $shoot->id)->update(['units_revision' => \Illuminate\Support\Facades\DB::raw('units_revision')]);
             }
             $current = Shoot::query()->lockForUpdate()->findOrFail($shoot->id);
             if (! isset($validated['expected_units_revision']) || (int) $validated['expected_units_revision'] !== (int) $current->units_revision) {
                 throw ValidationException::withMessages(['expected_units_revision' => ['The unit visit plan changed. Reload before resuming it.']]);
+            }
+            if (array_key_exists('photographer_id', $validated) && (int) $validated['photographer_id'] !== (int) $current->photographer_id) {
+                $this->support->persistResolvedPhotographerAssignments($current, $plannedServices, $user);
+                $current->photographer_id = $validated['photographer_id'];
+                $current->save();
             }
             foreach ($current->serviceItems()->with('service')->get() as $line) {
                 if ($line->workflow_status !== 'cancelled' && $line->service?->requiresPhotographer() && (! $line->scheduled_at || ! $line->photographer_id)) {

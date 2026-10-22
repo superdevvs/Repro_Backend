@@ -40,6 +40,7 @@ class AssignedRepDroneTravelTest extends TestCase
             'payment_status' => 'unpaid', 'photos_uploaded_at' => now(),
         ]);
         $old = Service::factory()->create(['name' => '25 HDR', 'price' => 175]);
+        $shoot->photographer->update(['metadata' => array_replace($shoot->photographer->metadata ?? [], ['specialties' => [(string) $old->id]])]);
         $shoot->services()->attach($old->id, [
             'price' => 175, 'quantity' => 1, 'photographer_id' => $shoot->photographer_id,
             'scheduled_at' => '2026-10-01 15:00:00', 'workflow_status' => 'in_progress',
@@ -68,6 +69,7 @@ class AssignedRepDroneTravelTest extends TestCase
             'scheduled_at' => $neighbor->scheduled_at, 'duration_minutes' => 120, 'workflow_status' => 'scheduled']);
         $drone = Service::factory()->create(['name' => 'Drone Silver Package', 'price' => 199,
             'shoot_duration_minutes' => 45, 'photographer_required' => true]);
+        $shoot->photographer->update(['metadata' => array_replace($shoot->photographer->metadata ?? [], ['specialties' => [(string) $old->id, (string) $drone->id]])]);
         $this->patchJson('/api/shoots/'.$shoot->id, ['services' => [['id' => $old->id],
             ['id' => $staging->id, 'quantity' => 2], ['id' => $drone->id]],
             'service_photographers' => [['service_id' => $old->id, 'photographer_id' => $shoot->photographer_id],

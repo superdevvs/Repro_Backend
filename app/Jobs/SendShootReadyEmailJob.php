@@ -75,8 +75,7 @@ class SendShootReadyEmailJob implements ShouldQueue
             return;
         }
 
-        if ($this->isFullOrderDelivery
-            && ! $automation->hasActiveTrigger('SHOOT_COMPLETED')
+        if (! $automation->hasActiveTrigger('SHOOT_COMPLETED')
             && ! $automation->shouldUseFallback('SHOOT_COMPLETED')) {
             $progress->stageSkipped($this->shootId, FinalizeProgressTracker::STAGE_DELIVERY_EMAIL, 'The delivery notification rule is disabled.');
 
@@ -117,11 +116,19 @@ class SendShootReadyEmailJob implements ShouldQueue
                 $progress->stageFailed($this->shootId, FinalizeProgressTracker::STAGE_DELIVERY_EMAIL, 'Delivery notification failed and will be retried.');
                 throw $failure;
             }
-        } elseif ($client && $this->shootServiceId) {
-            // Partial service delivery keeps its existing targeted notification.
+        } elseif ($client && ! $this->isFullOrderDelivery) {
+            // Link-only updates cover the already finalized segments. Never name
+            // a pending service as delivered in this partial notification.
+            $serviceItemIds = $this->shootServiceId ? [$this->shootServiceId]
+                : $shoot->serviceItems()->where('delivery_status', 'delivered')->pluck('id')->map(fn ($id) => (int) $id)->all();
+            if ($serviceItemIds === []) {
+                $progress->stageSkipped($this->shootId, FinalizeProgressTracker::STAGE_DELIVERY_EMAIL, 'No finalized service to notify.');
+
+                return;
+            }
             try {
                 $messageId = null;
-                $sent = $mail->sendShootReadyEmail($client, $shoot, [$this->shootServiceId], false, $messageId);
+                $sent = $mail->sendShootReadyEmail($client, $shoot, $serviceItemIds, false, $messageId);
                 if ($sent) {
                     $accepted = Message::whereKey($messageId)->where('related_shoot_id', $shoot->id)->where('send_source', 'SHOOT_DELIVERED')
                         ->where('to_address', $client->email)->whereIn('status', ['SENT', 'DELIVERED', 'SCHEDULED'])->get();

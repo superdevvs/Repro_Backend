@@ -47,6 +47,7 @@ class ShootObserver
 
     public function updated(Shoot $shoot): void
     {
+        app(\App\Services\Messaging\ShootDeliveryUpdateNotifier::class)->linksChanged($shoot);
         $this->ensureCubiCasaOrder($shoot);
         $this->ensureIguideDiscovery($shoot);
         $this->ensureGoogleCalendarSync($shoot);

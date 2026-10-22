@@ -55,22 +55,22 @@ return [
 
     /*
     |--------------------------------------------------------------------------
-    | Photographer service-radius enforcement (Option B — flag-gated rollout)
+    | Photographer service-radius enforcement
     |--------------------------------------------------------------------------
     |
     | When enabled, a photographer is excluded from booking eligibility and
     | manual/auto assignment when the shoot location's distance exceeds their
-    | `metadata.service_radius_miles`. Distance/availability/service-area logic
-    | is unchanged when this is OFF (the historical default), so production can
-    | stay OFF until product sign-off while local/QA runs with it ON.
+    | profile radius (including travel_range). Authorized scheduling staff may
+    | deliberately confirm a signed exception for the booking. Capabilities
+    | remain mandatory regardless of this location policy.
     |
     |   PHOTOGRAPHER_RADIUS_ENFORCEMENT=true        # enable the gate
     |   PHOTOGRAPHER_RADIUS_UNLIMITED_WHEN_NULL=    # null/empty radius → unlimited (only if approved)
     |
     */
 
-    // Master switch for radius gating. Default OFF (safe for production).
-    'radius_enforcement' => env('PHOTOGRAPHER_RADIUS_ENFORCEMENT', false),
+    // Enabled by default for booking and assignment; retain an operational rollback switch.
+    'radius_enforcement' => env('PHOTOGRAPHER_RADIUS_ENFORCEMENT', true),
 
     // When radius is null/empty: treat as unlimited (true) or NOT eligible (false).
     // Product decision; defaults to NOT eligible per QA spec.

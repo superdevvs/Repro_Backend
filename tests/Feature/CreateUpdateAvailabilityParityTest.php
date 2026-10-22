@@ -76,6 +76,8 @@ class CreateUpdateAvailabilityParityTest extends TestCase
             'name' => 'HDR Photos',
             'price' => 150.00,
         ]);
+        $this->photographer->setServiceCapabilities([$this->service->id]);
+        $this->photographer->save();
     }
 
     /**
@@ -251,6 +253,8 @@ class CreateUpdateAvailabilityParityTest extends TestCase
         Sanctum::actingAs($this->admin);
         $day = now()->addMonths(2)->next(\Carbon\Carbon::MONDAY)->format('Y-m-d');
         $otherService = Service::factory()->create(['price' => 100]);
+        $this->photographer->setServiceCapabilities([$this->service->id, $otherService->id]);
+        $this->photographer->save();
         $existing = Shoot::factory()->create(['client_id' => $this->client->id,
             'photographer_id' => $this->photographer->id, 'scheduled_at' => "$day 12:00:00",
             'status' => 'scheduled', 'workflow_status' => 'scheduled', 'timezone' => null]);

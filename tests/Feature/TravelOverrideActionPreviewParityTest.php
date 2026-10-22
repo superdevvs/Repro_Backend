@@ -49,6 +49,8 @@ class TravelOverrideActionPreviewParityTest extends TestCase
         Sanctum::actingAs($admin);
         $photographer = User::factory()->photographer()->create(['timezone' => 'America/New_York']);
         $service = Service::factory()->create(['photographer_required' => true, 'shoot_duration_minutes' => 15]);
+        $photographer->setServiceCapabilities([(string) $service->id]);
+        $photographer->save();
         $shoot = Shoot::factory()->create(['photographer_id' => $photographer->id, 'status' => 'scheduled',
             'workflow_status' => 'scheduled', 'scheduled_at' => '2026-10-02 14:00:00',
             'scheduled_date' => '2026-10-02', 'time' => '10:00', 'timezone' => 'America/New_York',

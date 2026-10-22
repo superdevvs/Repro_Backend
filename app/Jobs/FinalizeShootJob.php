@@ -119,13 +119,13 @@ class FinalizeShootJob implements ShouldQueue
             // is intentionally NOT gated on $processedFileIds.
             if ($shoot->isInternalTestShoot()) {
                 $progress->stageSkipped($this->shootId, FinalizeProgressTracker::STAGE_DELIVERY_EMAIL, 'Internal test: customer notifications suppressed');
-            } elseif ($isFullOrderDelivery) {
+            } elseif ($isFullOrderDelivery || $this->shootServiceId) {
                 $this->dispatchReadyEmail($isFullOrderDelivery, $progress);
             } else {
                 $progress->stageSkipped(
                     $this->shootId,
                     FinalizeProgressTracker::STAGE_DELIVERY_EMAIL,
-                    'Client notification sends on full delivery only'
+                    'No delivered service to notify'
                 );
             }
 

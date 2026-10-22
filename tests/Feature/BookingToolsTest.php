@@ -34,6 +34,8 @@ class BookingToolsTest extends TestCase
         $photographer = User::factory()->photographer()->create(['timezone' => 'America/New_York']);
         $bookingDate = now()->addDays(2)->toDateString();
         $service = Service::factory()->create(['price' => 180]);
+        $photographer->setServiceCapabilities([$service->id]);
+        $photographer->save();
         $this->actingAs($client);
         $storage = Mockery::mock(ShootMediaStorageService::class);
         $storage->shouldReceive('createShootFolders')->once();
@@ -93,6 +95,8 @@ class BookingToolsTest extends TestCase
             'name' => 'AI Booking Service',
             'price' => 180.00,
         ]);
+        $photographer->setServiceCapabilities([$service->id]);
+        $photographer->save();
 
         $this->actingAs($client);
 
@@ -187,6 +191,8 @@ class BookingToolsTest extends TestCase
             'name' => 'AI Booking Service',
             'price' => 180.00,
         ]);
+        $photographer->setServiceCapabilities([$service->id]);
+        $photographer->save();
 
         $this->actingAs($client);
 

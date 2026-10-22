@@ -45,10 +45,18 @@ class HybridSchedulingWritePathsTest extends TestCase
             'timezone' => 'America/New_York', 'alternate_scheduled_date' => '2026-10-16',
             'alternate_time' => '11:00', 'alternate_scheduled_at' => '2026-10-16 15:00:00']);
         $service = Service::factory()->create(['photographer_required' => true, 'shoot_duration_minutes' => 15]);
+        $this->qualify(User::findOrFail($shoot->photographer_id), $service);
         $shoot->services()->attach($service->id, ['price' => 100, 'quantity' => 1, 'duration_minutes' => 17,
             'photographer_id' => $shoot->photographer_id, 'scheduled_at' => '2026-10-15 14:00:00',
             'workflow_status' => 'scheduled', 'is_deliverable' => true]);
         return [$admin, $shoot, $service];
+    }
+
+    private function qualify(User $photographer, Service ...$services): void
+    {
+        $photographer->setServiceCapabilities(array_unique(array_merge($photographer->getServiceCapabilities(),
+            array_map(fn ($service) => (string) $service->id, $services))));
+        $photographer->saveQuietly();
     }
 
     public function test_confirmed_public_write_paths_check_travel_before_any_mutation(): void
@@ -131,6 +139,7 @@ class HybridSchedulingWritePathsTest extends TestCase
         [$admin, $shoot, $service] = $this->fixture();
         $secondary = User::factory()->photographer()->create();
         $other = Service::factory()->create(['photographer_required' => true]);
+        $this->qualify($secondary, $other);
         $shoot->services()->attach($other->id, ['duration_minutes' => 23, 'photographer_id' => $secondary->id,
             'scheduled_at' => '2026-10-15 16:00:00', 'workflow_status' => 'scheduled']);
         $shoot = $shoot->fresh();
@@ -340,6 +349,7 @@ class HybridSchedulingWritePathsTest extends TestCase
         if ($edit === 'reschedule') $payload['scheduled_at'] = '2026-10-16T14:00:00Z';
         if ($edit === 'capture') {
             $additional = Service::factory()->create(['photographer_required' => true, 'shoot_duration_minutes' => 45]);
+            $this->qualify(User::findOrFail($shoot->photographer_id), $additional);
             $payload['services'] = [['id' => $service->id], ['id' => $additional->id]];
         }
         $engine = Mockery::mock(ScheduleFeasibilityService::class);
@@ -375,6 +385,7 @@ class HybridSchedulingWritePathsTest extends TestCase
             $unitId = $secondUnit->id;
         }
         $other = $multiUnit ? $service : Service::factory()->create(['photographer_required' => true]);
+        $this->qualify(User::findOrFail($shoot->photographer_id), $other);
         $shoot->services()->attach($other->id, ['photographer_id' => $shoot->photographer_id,
             'shoot_unit_id' => $unitId, 'client_key' => $multiUnit ? 'line-2' : null,
             'scheduled_at' => $legacy ? '2026-10-15 12:00:00' : '2026-10-15 16:00:00', 'duration_minutes' => 23, 'is_deliverable' => true,

@@ -44,6 +44,7 @@ class AssignedRepServiceEditTest extends TestCase
             'payment_status' => 'unpaid', 'photos_uploaded_at' => now(),
         ]);
         $old = Service::factory()->create(['name' => '25 HDR', 'price' => 175]);
+        $shoot->photographer->update(['metadata' => array_replace($shoot->photographer->metadata ?? [], ['specialties' => [(string) $old->id]])]);
         $shoot->services()->attach($old->id, [
             'price' => 175, 'quantity' => 1, 'photographer_id' => $shoot->photographer_id,
             'scheduled_at' => '2026-10-01 15:00:00', 'workflow_status' => 'in_progress',
@@ -86,6 +87,7 @@ class AssignedRepServiceEditTest extends TestCase
             'uploaded_by' => $shoot->photographer_id, 'workflow_stage' => ShootFile::STAGE_TODO,
         ]);
         $combo = Service::factory()->create(['name' => '30 HDR Photos + Floor plans', 'price' => 270]);
+        $shoot->photographer->update(['metadata' => array_replace($shoot->photographer->metadata ?? [], ['specialties' => [(string) $old->id, (string) $combo->id]])]);
         $staging = Service::factory()->noIntake()->create([
             'name' => 'Virtual Staging', 'price' => 45, 'allow_multiple' => true, 'photographer_required' => false,
         ]);
@@ -197,7 +199,7 @@ class AssignedRepServiceEditTest extends TestCase
         $this->patchJson('/api/shoots/'.$shoot->id, ['photographer_id' => $assignmentBefore])->assertOk();
         $this->assertSame($assignmentBefore, $shoot->fresh()->photographer_id);
         $this->assertSame($serviceBefore, $shoot->serviceItems()->sole()->getRawOriginal());
-        $differentPhotographer = User::factory()->photographer()->create();
+        $differentPhotographer = User::factory()->photographer()->create(['metadata' => ['specialties' => [(string) $service->id]]]);
         $this->patchJson('/api/shoots/'.$shoot->id, ['photographer_id' => $differentPhotographer->id])->assertForbidden();
         $this->patchJson('/api/shoots/'.$shoot->id, ['scheduled_at' => '2026-10-02T11:00:00-04:00'])->assertForbidden();
         $this->patchJson('/api/shoots/'.$shoot->id, ['workflow_status' => 'editing'])->assertForbidden();

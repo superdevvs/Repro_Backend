@@ -408,7 +408,7 @@ class MultiUnitBookingTest extends TestCase
     public function test_same_start_units_form_one_visit_with_sequential_calendar_events_and_one_buffer(): void
     {
         config(['availability.buffer_time_minutes' => 15, 'app.timezone' => 'UTC']);
-        $photographer = User::factory()->photographer()->create(['timezone' => 'America/New_York']);
+        $photographer = User::factory()->photographer()->create(['timezone' => 'America/New_York', 'metadata' => ['specialties' => [(string) $this->service->id]]]);
         $this->shoot->update(['timezone' => 'America/New_York', 'status' => 'scheduled', 'workflow_status' => 'scheduled']);
         $payload = $this->payload();
         foreach ($payload['service_lines'] as &$line) {
@@ -438,7 +438,7 @@ class MultiUnitBookingTest extends TestCase
 
     public function test_grouped_unit_duration_must_fit_working_hours_even_when_individual_lines_fit(): void
     {
-        $photographer = User::factory()->photographer()->create();
+        $photographer = User::factory()->photographer()->create(['metadata' => ['specialties' => [(string) $this->service->id]]]);
         $payload = array_merge($this->payload(), ['client_id' => $this->client->id,
             'address' => '400 Main Street', 'city' => 'Arlington', 'state' => 'VA', 'zip' => '22201',
             'skip_availability_check' => true]);
@@ -456,7 +456,7 @@ class MultiUnitBookingTest extends TestCase
         $payload = array_merge($this->payload(1), ['client_id' => $this->client->id, 'address' => '400 Main Street', 'city' => 'Arlington', 'state' => 'VA', 'zip' => '22201']);
         $payload['service_lines'][0]['photographer_id'] = $this->client->id;
         $this->postJson('/api/shoots', $payload)->assertUnprocessable()->assertJsonValidationErrors('service_lines.0.photographer_id');
-        $photographer = User::factory()->create(['role' => 'photographer']);
+        $photographer = User::factory()->create(['role' => 'photographer', 'metadata' => ['specialties' => [(string) $this->service->id]]]);
         $payload['service_lines'][0]['photographer_id'] = $photographer->id;
         $payload['service_lines'][0]['scheduled_at'] = now()->addDays(10)->setTime(23, 30)->format('Y-m-d H:i:s');
         $this->postJson('/api/shoots', $payload)->assertUnprocessable()->assertJsonValidationErrors('start_time');
@@ -466,7 +466,7 @@ class MultiUnitBookingTest extends TestCase
     public function test_photographer_assignment_endpoint_uses_line_identity_and_rejects_stale_or_ambiguous_updates(): void
     {
         $this->persist($this->payload());
-        $photographer = User::factory()->create(['role' => 'photographer']);
+        $photographer = User::factory()->create(['role' => 'photographer', 'metadata' => ['specialties' => [(string) $this->service->id]]]);
         $line = $this->shoot->serviceItems->first();
         $endpoint = '/api/shoots/'.$this->shoot->id.'/assign-service-photographer';
         $this->postJson($endpoint, ['service_id' => $this->service->id, 'photographer_id' => $photographer->id, 'expected_units_revision' => 1])->assertUnprocessable();
@@ -484,7 +484,7 @@ class MultiUnitBookingTest extends TestCase
     public function test_client_reschedule_request_preserves_unit_offsets_on_approval_and_rejects_stale_requests(): void
     {
         $this->persist($this->payload());
-        $photographer = User::factory()->create(['role' => 'photographer']);
+        $photographer = User::factory()->create(['role' => 'photographer', 'metadata' => ['specialties' => [(string) $this->service->id]]]);
         // A stale shoot clock must not shift either service by an extra hour.
         $this->shoot->update(['scheduled_at' => '2026-10-05 09:00:00', 'scheduled_date' => '2026-10-05', 'time' => '09:00', 'status' => 'scheduled', 'workflow_status' => 'scheduled', 'timezone' => null]);
         $lines = $this->shoot->serviceItems;
@@ -538,7 +538,7 @@ class MultiUnitBookingTest extends TestCase
     public function test_alternate_date_moves_all_unit_offsets_and_date_only_retains_local_start(): void
     {
         $this->persist($this->payload());
-        $photographer = User::factory()->create(['role' => 'photographer']);
+        $photographer = User::factory()->create(['role' => 'photographer', 'metadata' => ['specialties' => [(string) $this->service->id]]]);
         $this->shoot->update(['scheduled_at' => '2026-10-05 10:00:00', 'scheduled_date' => '2026-10-05', 'time' => '10:00', 'alternate_scheduled_date' => '2026-10-12', 'alternate_time' => '11:00', 'timezone' => null]);
         $lines = $this->shoot->serviceItems;
         $lines[0]->update(['scheduled_at' => '2026-10-05 10:00:00', 'photographer_id' => $photographer->id, 'duration_minutes' => 60]);

@@ -104,7 +104,7 @@ class ExternalBookingShootSyncBugConditionTest extends TestCase
         return User::factory()
             ->count($count)
             ->photographer()
-            ->create()
+            ->create(['metadata' => ['specialties' => Service::pluck('id')->map(fn ($id) => (string) $id)->all()]])
             ->all();
     }
 

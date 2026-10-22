@@ -22,7 +22,7 @@ class ConfirmedSalesShootRepairTest extends TestCase
         Http::preventStrayRequests(); Mail::fake(); Notification::fake(); Queue::fake();
         $admin = User::factory()->admin()->create();
         User::factory()->photographer()->create(['id' => 989, 'name' => 'Jay']);
-        User::factory()->photographer()->create(['id' => 1106, 'name' => 'KK - Kumnith Keo']);
+        User::factory()->photographer()->create(['id' => 1106, 'name' => 'KK - Kumnith Keo', 'metadata' => ['specialties' => ['2', '17']]]);
         $photo = Service::factory()->create(['id' => 2, 'name' => 'HDR Photos', 'price' => 999]);
         Service::factory()->create(['id' => 17, 'name' => '2D Floor Plans', 'price' => 125, 'shoot_duration_minutes' => 5]);
         $shoot = Shoot::factory()->create(['id' => 2386, 'address' => '5156 Woodmire Ln', 'photographer_id' => 989, 'status' => 'scheduled', 'workflow_status' => 'scheduled',

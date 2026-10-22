@@ -1314,6 +1314,9 @@ class MailService
                 return false;
             }
             $shootData = $this->formatShootData($shoot, $user, 'client', $serviceItemIds);
+            $revisionService = app(\App\Services\Messaging\ShootDeliveryRevision::class);
+            $revision = $revisionService->forShoot($shoot, $serviceItemIds);
+            $isUpdate = $revisionService->isUpdate($shoot, 'SHOOT_DELIVERED', $revision);
             $clientCcEmails = $this->resolveShootCcEmailsForRecipient($shoot, $user);
             $paymentLink = $this->shouldShowShootReadyPaymentLink($shoot)
                 ? $this->generatePaymentLink($shoot)
@@ -1330,6 +1333,8 @@ class MailService
                     'role_context' => 'client',
                     'shoot_service_ids' => $shootData->service_item_ids ?? [],
                     'is_full_order_delivery' => $isFullOrderDelivery,
+                    'delivery_is_update' => $isUpdate,
+                    'delivery_revision' => $revision,
                     'event_version' => $shoot->updated_at?->toIso8601String() ?? $shoot->id,
                 ],
             ]);
@@ -1341,15 +1346,16 @@ class MailService
                 'enforce_email_health_gate' => false,
             ]), [
                 'idempotency_key' => sprintf(
-                    'SHOOT_DELIVERED:%d:%d:%s:%s',
+                    'SHOOT_DELIVERED:%d:%d:%s:%s:%s',
                     $shoot->id,
                     $user->id,
                     $isFullOrderDelivery ? 'full' : 'partial',
-                    $this->serviceScopeHash($shootData)
+                    $this->serviceScopeHash($shootData),
+                    $revision
                 ),
                 'require_confirmed_duplicate' => true,
                 'retry_failed' => true,
-                'canonical_metadata' => ['is_full_order_delivery' => $isFullOrderDelivery],
+                'canonical_metadata' => ['is_full_order_delivery' => $isFullOrderDelivery, 'delivery_revision' => $revision],
             ], $acceptedMessageId);
             if (! $accepted) {
                 return false;
@@ -1389,6 +1395,9 @@ class MailService
             }
 
             $shootData = $this->formatShootData($shoot, $user, 'client');
+            $revisionService = app(\App\Services\Messaging\ShootDeliveryRevision::class);
+            $revision = $revisionService->forShoot($shoot);
+            $isUpdate = $revisionService->isUpdate($shoot, 'SHOOT_SUMMARY', $revision);
             $payload = $this->buildProtectedEmailPayload([
                 'recipient' => $this->formatUserData($user),
                 'account' => $this->formatUserData($shoot->client),
@@ -1397,7 +1406,9 @@ class MailService
                     'recipient_type' => 'client',
                     'role_context' => 'client',
                     'address' => $shootData->location ?? null,
-                    'event_version' => 'full-delivery-and-settled',
+                    'event_version' => $revision,
+                    'delivery_is_update' => $isUpdate,
+                    'delivery_revision' => $revision,
                 ],
             ]);
 
@@ -1412,10 +1423,10 @@ class MailService
                     'enforce_email_health_gate' => false,
                 ]),
                 [
-                    'idempotency_key' => sprintf('SHOOT_SUMMARY:%d:%d', $shoot->id, $user->id),
+                    'idempotency_key' => sprintf('SHOOT_SUMMARY:%d:%d:%s', $shoot->id, $user->id, $revision),
                     'require_confirmed_duplicate' => true,
                     'retry_failed' => true,
-                    'canonical_metadata' => ['is_full_order_delivery' => true],
+                    'canonical_metadata' => ['is_full_order_delivery' => true, 'delivery_revision' => $revision],
                 ],
                 $acceptedMessageId,
             );

@@ -73,6 +73,7 @@ class WriteSchedulePlan
         }
         $payload = array_filter($payload, fn ($key) => ! str_starts_with((string) $key, '_'), ARRAY_FILTER_USE_KEY);
         $payload['action_mode'] = $mode;
+        $payload['_schedule_services'] = $resolved;
         $windows = $this->normalizeWindowsTimezone($windows, $timezone);
         $payload['_schedule_visits'] = array_values(array_map(fn ($window) => [
             'photographer_id' => $window['photographer_id'],

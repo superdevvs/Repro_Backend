@@ -84,7 +84,7 @@ class ShootApprovalScheduleSyncTest extends TestCase
     {
         $shoot = $this->requestedShoot();
         $service = $this->attachService($shoot, '2026-10-06 10:30:00');
-        $specialist = User::factory()->photographer()->create();
+        $specialist = User::factory()->photographer()->create(['metadata' => ['specialties' => [(string) $service->id]]]);
 
         $this->approve($shoot, [
             'scheduled_at' => '2026-10-06T12:00:00',
@@ -322,6 +322,11 @@ class ShootApprovalScheduleSyncTest extends TestCase
     private function attachService(Shoot $shoot, ?string $scheduledAt, ?int $photographerId = null): Service
     {
         $service = Service::factory()->create(['name' => 'Photos', 'price' => 100]);
+        $photographer = User::find($photographerId ?? $shoot->photographer_id);
+        if ($photographer) {
+            $photographer->setServiceCapabilities([...$photographer->getServiceCapabilities(), (string) $service->id]);
+            $photographer->save();
+        }
         $shoot->services()->attach($service->id, [
             'price' => 100, 'quantity' => 1, 'scheduled_at' => $scheduledAt,
             'photographer_id' => $photographerId, 'workflow_status' => 'scheduled',

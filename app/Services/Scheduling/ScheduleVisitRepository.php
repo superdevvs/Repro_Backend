@@ -89,6 +89,9 @@ class ScheduleVisitRepository
         ])->all();
         $hours = $ids ? PhotographerAvailability::whereIn('photographer_id', $ids)->orderBy('id')->get()->toArray() : [];
 
-        return hash('sha256', json_encode([$ids, $state, $hours], JSON_THROW_ON_ERROR));
+        $profiles = $ids ? User::whereIn('id', $ids)->orderBy('id')
+            ->get(['id', 'role', 'metadata', 'address', 'city', 'state', 'zip', 'timezone', 'account_status', 'locked_at'])->toArray() : [];
+
+        return hash('sha256', json_encode([$ids, $state, $hours, $profiles], JSON_THROW_ON_ERROR));
     }
 }

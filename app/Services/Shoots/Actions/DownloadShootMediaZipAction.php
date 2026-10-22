@@ -53,6 +53,7 @@ class DownloadShootMediaZipAction
             'media_types' => 'nullable|array',
             'media_types.*' => 'string|max:40',
             'asset_type' => 'nullable|in:photos,videos,floorplans',
+            'verified_only' => 'nullable|boolean',
         ]);
 
         $baseType = $validated['type'] ?? 'raw';
@@ -64,7 +65,7 @@ class DownloadShootMediaZipAction
             (array) ($validated['media_types'] ?? []),
             fn ($value) => is_string($value) && $value !== ''
         ));
-        $type = $this->shootMediaArchiveService->buildArchiveTypeToken($baseType, $includeExtras, $mediaTypes, $validated['asset_type'] ?? null);
+        $type = $this->shootMediaArchiveService->buildArchiveTypeToken($baseType, $includeExtras, $mediaTypes, $validated['asset_type'] ?? null, $request->boolean('verified_only'));
         $requestedSize = $validated['size'] ?? 'original';
         $resolvedSize = $this->shootMediaArchiveService->normalizeSize($requestedSize);
         $shootServiceId = isset($validated['shoot_service_id']) ? (int) $validated['shoot_service_id'] : null;
@@ -79,6 +80,11 @@ class DownloadShootMediaZipAction
         }
         if ($shootUnitId !== null && $shootServiceId !== null && ! $shoot->serviceItems()->whereKey($shootServiceId)->where('shoot_unit_id', $shootUnitId)->exists()) {
             return response()->json(['message' => 'Selected service item does not belong to this unit'], 422);
+        }
+        if (! $authorizeFiles && $request->boolean('verified_only') && $shootServiceId !== null
+            && ! $shoot->serviceItems()->whereKey($shootServiceId)
+                ->where('workflow_status', 'delivered')->where('delivery_status', 'delivered')->exists()) {
+            return response()->json(['message' => 'This service is not finalized for delivery.', 'code' => 'content_not_finalized'], 403);
         }
 
         $releaseScopes = $shootUnitId !== null && $shootServiceId === null

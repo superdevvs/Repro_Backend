@@ -516,6 +516,9 @@ class UpdateShootAction
             }
 
             $assertTimezone = $scheduleTimezone !== '' ? $scheduleTimezone : null;
+            $capabilityPayload = $planBuilder->services($availabilityPayload, $targetServices,
+                $targetScheduledAt, $targetPhotographerId ? (int) $targetPhotographerId : null, $assertTimezone, 'update');
+            app(\App\Services\Photographers\PhotographerServiceEligibility::class)->assertPayload($capabilityPayload, $shoot, $user);
             if ($travelGuard->enabled()) {
                 $travelPayload = $planBuilder->services($availabilityPayload, $targetServices,
                     $targetScheduledAt, $targetPhotographerId ? (int) $targetPhotographerId : null, $assertTimezone, 'update');

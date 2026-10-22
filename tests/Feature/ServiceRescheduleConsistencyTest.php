@@ -235,6 +235,8 @@ class ServiceRescheduleConsistencyTest extends TestCase
                 'is_deliverable' => true,
             ]);
         }
+        $photographer->setServiceCapabilities($shoot->serviceItems()->pluck('service_id')->all());
+        $photographer->save();
 
         return $shoot->fresh(['serviceItems']);
     }

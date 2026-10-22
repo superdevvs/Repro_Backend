@@ -1,7 +1,7 @@
 @extends('emails.layouts.master')
 
-@section('title', 'Shoot Summary')
-@section('preheader', 'Your completed shoot and available delivery links are ready.')
+@section('title', ($deliveryIsUpdate ?? false) ? 'Shoot Update' : 'Shoot Summary')
+@section('preheader', ($deliveryIsUpdate ?? false) ? 'Your available shoot deliverables have changed.' : 'Your completed shoot and available delivery links are ready.')
 
 @php
     $showWebsiteTile = false;
@@ -12,15 +12,17 @@
     $linkSections = [
         ['heading' => 'Image downloads', 'keys' => ['small_zip', 'full_zip']],
         ['heading' => 'Virtual tours', 'keys' => ['mls_tour', 'branded_tour']],
-        ['heading' => 'Property and video', 'keys' => ['property', 'video']],
+        ['heading' => 'Floor plans', 'keys' => ['floorplans']],
+        ['heading' => 'Property', 'keys' => ['property']],
+        ['heading' => 'Video', 'keys' => ['video']],
         ['heading' => 'Zillow 3D', 'keys' => ['zillow_3d']],
     ];
 @endphp
 
 @section('hero')
-    <p class="dark-muted" style="margin:0 0 12px; font-size:11px; line-height:1.4; letter-spacing:2px; text-transform:uppercase; color:#5d7493; font-weight:700;">Shoot Summary</p>
-    <p class="hero-title-td dark-title" style="margin:0; font-size:30px; line-height:1.1; font-weight:300; letter-spacing:-1.2px; color:#10192f;">Your shoot is ready to share.</p>
-    <p class="dark-body" style="margin:20px 0 0; font-size:15px; line-height:1.8; color:#667a96;">Your completed shoot and its available downloads, tours, and property links are gathered below.</p>
+    <p class="dark-muted" style="margin:0 0 12px; font-size:11px; line-height:1.4; letter-spacing:2px; text-transform:uppercase; color:#5d7493; font-weight:700;">{{ ($deliveryIsUpdate ?? false) ? 'Shoot Update' : 'Shoot Summary' }}</p>
+    <p class="hero-title-td dark-title" style="margin:0; font-size:30px; line-height:1.1; font-weight:300; letter-spacing:-1.2px; color:#10192f;">{{ ($deliveryIsUpdate ?? false) ? 'Your shoot has updated deliverables.' : 'Your shoot is ready to share.' }}</p>
+    <p class="dark-body" style="margin:20px 0 0; font-size:15px; line-height:1.8; color:#667a96;">{{ ($deliveryIsUpdate ?? false) ? 'New or revised content has been added to your shoot. Your latest available delivery links are gathered below.' : 'Your completed shoot and its available downloads, tours, and property links are gathered below.' }}</p>
 @endsection
 
 @section('content')

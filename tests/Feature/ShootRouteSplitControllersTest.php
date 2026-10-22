@@ -321,6 +321,7 @@ class ShootRouteSplitControllersTest extends TestCase
         $photographer = User::factory()->create([
             'role' => 'photographer',
             'email' => 'route-split-photographer@test.com',
+            'metadata' => ['specialties' => [(string) $this->service->id]],
         ]);
 
         $shoot = Shoot::factory()->create([
@@ -358,6 +359,10 @@ class ShootRouteSplitControllersTest extends TestCase
 
         $firstPhotographer = User::factory()->create(['role' => 'photographer']);
         $secondPhotographer = User::factory()->create(['role' => 'photographer']);
+        $firstPhotographer->setServiceCapabilities([$this->service->id]);
+        $firstPhotographer->save();
+        $secondPhotographer->setServiceCapabilities([$this->secondService->id]);
+        $secondPhotographer->save();
 
         $shoot = Shoot::factory()->create([
             'client_id' => $this->client->id,

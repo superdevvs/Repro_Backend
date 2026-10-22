@@ -206,7 +206,12 @@ class MultiUnitBookingService
             }
             $services[] = $row;
         }
+        if ($shoot) $services = app(ShootMutationSupportService::class)->resolveServicePhotographerAssignments($shoot, $services, $data);
         $removed = $existingLines->reject(fn ($line) => isset($keptIds[$line->id]));
+        if (! $shoot || array_key_exists('service_lines', $data)
+            || (array_key_exists('photographer_id', $data) && (int) $data['photographer_id'] !== (int) $shoot->photographer_id)) {
+            app(\App\Services\Photographers\PhotographerServiceEligibility::class)->assertServices($services);
+        }
         $windows = app(ShootDurationResolver::class)->windowsForServices($services);
         foreach ($windows as $index => $window) {
             if (! $window['start'] || ! $window['photographer_id']) {

@@ -141,6 +141,8 @@ class ShootScheduleUpdateTimezoneTest extends TestCase
         $shoot = $this->shoot();
         $photographer = User::factory()->create(['role' => 'photographer', 'timezone' => 'America/New_York']);
         $service = Service::factory()->create(['price' => 100, 'photographer_required' => true]);
+        $photographer->setServiceCapabilities([$service->id]);
+        $photographer->save();
         $shoot->services()->attach($service->id, [
             'price' => 100, 'quantity' => 1, 'photographer_id' => $photographer->id,
             'scheduled_at' => '2026-09-23 14:00:00',

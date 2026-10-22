@@ -133,10 +133,6 @@ class VisitPlanBuilder
                     $row['scheduled_at'] = ($planned[$current?->id] ?? $anchor)->toIso8601String();
                 }
             }
-            if (array_key_exists('photographer_id', $payload) && ! array_key_exists('photographer_id', $submitted ?? [])
-                && (! $current?->photographer_id || (int) $current->photographer_id === (int) $shoot->photographer_id)) {
-                $row['photographer_id'] = $payload['photographer_id'];
-            }
         }
         unset($row);
 

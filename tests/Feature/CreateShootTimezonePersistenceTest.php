@@ -32,6 +32,8 @@ class CreateShootTimezonePersistenceTest extends TestCase
             'price' => 150,
             'photographer_required' => true,
         ]);
+        $photographer->setServiceCapabilities([$service->id]);
+        $photographer->save();
 
         Sanctum::actingAs($admin);
 
@@ -84,6 +86,8 @@ class CreateShootTimezonePersistenceTest extends TestCase
             'price' => 150,
             'photographer_required' => true,
         ]);
+        $photographer->setServiceCapabilities([$service->id]);
+        $photographer->save();
 
         // Existing #134-like booking: 10:00–12:00 ET.
         $existing = Shoot::factory()->create([
@@ -145,6 +149,8 @@ class CreateShootTimezonePersistenceTest extends TestCase
             'price' => 150,
             'photographer_required' => true,
         ]);
+        $photographer->setServiceCapabilities([$service->id]);
+        $photographer->save();
 
         Sanctum::actingAs($admin);
 

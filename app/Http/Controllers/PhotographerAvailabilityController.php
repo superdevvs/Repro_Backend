@@ -909,8 +909,16 @@ class PhotographerAvailabilityController extends Controller
             'shoot_longitude' => 'sometimes|numeric|between:-180,180',
             'photographer_ids' => 'sometimes|array',
             'service_ids' => 'sometimes|array', // Filter by service capabilities
+            'service_ids.*' => 'integer|exists:services,id',
             'require_all_services' => 'sometimes|boolean', // If true, photographer must have ALL services
+            'include_location_exceptions' => 'sometimes|boolean',
         ]);
+        $includeLocationExceptions = filter_var($validated['include_location_exceptions'] ?? false, FILTER_VALIDATE_BOOLEAN);
+        if ($includeLocationExceptions) {
+            abort_unless(app(\App\Services\Scheduling\TravelScheduleAccess::class)
+                ->canOverride(['action_mode' => 'create'], null, $authUser), 403,
+                'Only an authorized administrator or sales rep may review location exceptions.');
+        }
         $travelFeasibility = $this->selectedTravelFeasibility($request);
 
         // Public/anonymous callers and clients receive no other clients' booking details.
@@ -932,29 +940,25 @@ class PhotographerAvailabilityController extends Controller
         // Get photographers
         $query = \App\Models\User::where('role', 'photographer')
             ->with(['serviceAreas:id,kind,value,label'])
-            ->select('id', 'name', 'email', 'metadata', 'address', 'city', 'state', 'zip');
+            ->select('id', 'role', 'name', 'email', 'metadata', 'address', 'city', 'state', 'zip', 'locked_at', 'account_status');
         
         if ($photographerIds) {
             $query->whereIn('id', $photographerIds);
         }
         
-        $photographers = $query->get();
+        $photographers = $query->get()->filter(fn ($photographer) => $photographer->isAccountEligibleForAuthentication());
         
-        // Filter by service capabilities if specified.
-        // canPerformService fails open when specialties are empty/unconfigured so
-        // imported photographers without an allowlist are not dropped from Book Shoot.
+        // A location exception never restores a photographer without verified capability.
         if ($serviceIds && !empty($serviceIds)) {
-            $photographers = $photographers->filter(function ($photographer) use ($serviceIds, $requireAllServices) {
+            $requiredServices = \App\Models\Service::with('category')->whereIn('id', $serviceIds)->get()
+                ->filter(fn ($service) => $service->requiresPhotographer());
+            $capability = app(\App\Services\Photographers\PhotographerServiceEligibility::class);
+            $photographers = $photographers->filter(function ($photographer) use ($requiredServices, $requireAllServices, $capability) {
+                if ($requiredServices->isEmpty()) return true;
                 if ($requireAllServices) {
-                    return $photographer->canPerformAllServices($serviceIds);
+                    return $requiredServices->every(fn ($service) => $capability->canPerform($photographer, $service));
                 } else {
-                    // At least one service match
-                    foreach ($serviceIds as $serviceId) {
-                        if ($photographer->canPerformService($serviceId)) {
-                            return true;
-                        }
-                    }
-                    return false;
+                    return $requiredServices->contains(fn ($service) => $capability->canPerform($photographer, $service));
                 }
             });
         }
@@ -989,7 +993,8 @@ class PhotographerAvailabilityController extends Controller
 
             // Get photographer's shoots on this local date (UTC storage can land on neighbor day)
             $scheduleInstants = app(ScheduleInstantResolver::class);
-            $candidateShoots = \App\Models\Shoot::where('photographer_id', $photographerId)
+            $candidateShoots = \App\Models\Shoot::where(fn ($query) => $query->where('photographer_id', $photographerId)
+                ->orWhereHas('serviceItems', fn ($items) => $items->where('photographer_id', $photographerId)))
                 ->whereNotNull('scheduled_at')
                 ->whereBetween('scheduled_at', [
                     $date->copy()->subDay()->startOfDay(),
@@ -1016,33 +1021,20 @@ class PhotographerAvailabilityController extends Controller
             $originLongitude = $metadata['longitude'] ?? $metadata['lng'] ?? null;
             $distanceFrom = 'home';
             $previousShootId = null;
+            $visits = $this->availabilityService->getBookedSlots($photographerId, $date);
 
-            // If there are shoots before the requested time, use the last one's location
-            if ($requestedTime && $shootsOnDate->isNotEmpty()) {
-                $requestedDateTime = $date->copy();
-                $timeParts = [];
-                if (preg_match('/^(\d{2}):(\d{2})$/', $this->convertTo24Hour($requestedTime), $timeParts)) {
-                    $requestedDateTime->setTime((int) $timeParts[1], (int) $timeParts[2]);
-                }
-
-                $shootsBefore = $shootsOnDate->filter(function ($shoot) use ($requestedDateTime, $scheduleInstants) {
-                    $shootTime = $scheduleInstants->forShoot($shoot)
-                        ?? \Carbon\Carbon::parse($shoot->scheduled_at);
-                    $duration = $this->calculateShootDurationFromShoot($shoot);
-                    $shootEndTime = $shootTime->copy()->addMinutes($duration);
-                    // Both values represent the selected local civil clock. Comparing
-                    // Carbon instances as instants would turn a 9 AM legacy booking
-                    // in the photographer's zone into a later UTC time than a 1 PM
-                    // booking request without an explicit timezone.
-                    return $shootEndTime->format('Y-m-d H:i:s') <= $requestedDateTime->format('Y-m-d H:i:s');
-                })->sortByDesc(fn ($shoot) => $scheduleInstants->forShoot($shoot)?->format('Y-m-d H:i:s'));
-
-                if ($shootsBefore->isNotEmpty()) {
-                    $lastShoot = $shootsBefore->first();
-                    $originAddress = $lastShoot->property_address ?? $lastShoot->address ?? $homeAddress;
-                    $originCity = $lastShoot->city ?? $homeCity;
-                    $originState = $lastShoot->state ?? $homeState;
-                    $originZip = $lastShoot->zip ?? $homeZip;
+            // Independent service photographers/times are authoritative too. The
+            // shoot's primary photographer and anchor do not describe every visit.
+            if ($requestedTime) {
+                $previousVisit = collect($visits)->filter(fn ($visit) =>
+                    $this->timeToMinutes($visit['end_time']) <= $this->timeToMinutes($this->convertTo24Hour($requestedTime)))
+                    ->sortByDesc(fn ($visit) => $this->timeToMinutes($visit['end_time']))->first();
+                $lastShoot = $previousVisit ? \App\Models\Shoot::find($previousVisit['shoot_id']) : null;
+                if ($lastShoot) {
+                    $originAddress = $lastShoot->address;
+                    $originCity = $lastShoot->city;
+                    $originState = $lastShoot->state;
+                    $originZip = $lastShoot->zip;
                     $originLatitude = $lastShoot->latitude;
                     $originLongitude = $lastShoot->longitude;
                     $distanceFrom = 'previous_shoot';
@@ -1191,7 +1183,6 @@ class PhotographerAvailabilityController extends Controller
             ]);
 
             // Use the same per-photographer service intervals as conflict validation.
-            $visits = $this->availabilityService->getBookedSlots($photographerId, $date);
             $visitShoots = \App\Models\Shoot::with(['client:id,name', 'services', 'serviceItems.service'])
                 ->whereIn('id', array_column($visits, 'shoot_id'))->get()->keyBy('id');
             $bookedSlots = array_map(function (array $visit) use ($includeSensitiveSlotFields, $visitShoots) {
@@ -1279,11 +1270,33 @@ class PhotographerAvailabilityController extends Controller
             // Option B — service-radius gating (flag-gated; config: availability.radius_enforcement).
             // When enforcement is ON, exclude a photographer whose service radius does not cover this
             // shoot's distance. Completely no-op (historical behavior) when the flag is OFF.
+            $radiusEval = ['eligible' => true, 'reason' => 'enforcement_off', 'distance' => $distanceMiles, 'radius' => null];
             if (RadiusEligibility::enforced()) {
                 $radiusEval = RadiusEligibility::evaluate(
                     RadiusEligibility::radiusFromMetadata($metadata),
                     is_numeric($distanceMiles) ? (float) $distanceMiles : null
                 );
+                // A sequence of nearby appointments cannot extend the profile's
+                // home territory indefinitely. Check the home radius separately.
+                if ($distanceFrom === 'previous_shoot') {
+                    [$homeLat, $homeLng] = RadiusEligibility::coordsFromMetadata($metadata);
+                    $homeDistance = null;
+                    try {
+                        $homeLookup = app(AddressLookupService::class)->getDistance(
+                            ['address' => $homeAddress, 'city' => $homeCity, 'state' => $homeState, 'zip' => $homeZip,
+                                'latitude' => $homeLat, 'longitude' => $homeLng],
+                            ['address' => $shootAddress, 'city' => $shootCity, 'state' => $shootState, 'zip' => $shootZip,
+                                'latitude' => $validated['shoot_latitude'] ?? null, 'longitude' => $validated['shoot_longitude'] ?? null],
+                            $distanceLookupPolicy
+                        );
+                        if (is_numeric($homeLookup['distance_value'] ?? null)) $homeDistance = round((float) $homeLookup['distance_value'] / 1609.34, 1);
+                    } catch (\Throwable) {
+                    }
+                    $homeDistance ??= RadiusEligibility::distanceMiles($homeLat, $homeLng,
+                        $validated['shoot_latitude'] ?? null, $validated['shoot_longitude'] ?? null);
+                    $homeEval = RadiusEligibility::evaluate(RadiusEligibility::radiusFromMetadata($metadata), $homeDistance);
+                    if (! $homeEval['eligible']) $radiusEval = $homeEval + ['origin' => 'home'];
+                }
                 if (!$radiusEval['eligible']) {
                     \Log::debug('Radius gate excluded photographer from for-booking', [
                         'photographer_id' => $photographerId,
@@ -1291,7 +1304,7 @@ class PhotographerAvailabilityController extends Controller
                         'distance' => $radiusEval['distance'],
                         'radius' => $radiusEval['radius'],
                     ]);
-                    continue;
+                    if (! $includeLocationExceptions) continue;
                 }
             }
 
@@ -1353,9 +1366,13 @@ class PhotographerAvailabilityController extends Controller
                 'hybrid_travel_enabled' => (bool) app(\App\Services\Scheduling\SchedulingBufferSettings::class)->enabled(),
                 'travel_check_required' => (bool) app(\App\Services\Scheduling\SchedulingBufferSettings::class)->enabled(),
                 'name' => $photographer->name,
+                'eligible_service_ids' => isset($requiredServices) ? $requiredServices
+                    ->filter(fn ($service) => $capability->canPerform($photographer, $service))->pluck('id')->values()->all() : [],
                 'distance' => $distanceMiles,
                 'miles_to_job' => is_numeric($distanceMiles) ? (float) $distanceMiles : null,
                 'distance_from' => $distanceFrom,
+                'location_exception_required' => ! $radiusEval['eligible'],
+                'radius_eligibility' => $radiusEval,
                 'service_area_label' => $serviceAreaLabel,
                 'availability_slots' => $availabilitySlots->map(fn($s) => [
                     'start_time' => $s->start_time,

@@ -45,6 +45,7 @@ class HybridBookingCreateScheduleTest extends TestCase
         $this->photographer = User::factory()->photographer()->create(['timezone' => 'America/New_York']);
         $this->service = Service::factory()->create(['name' => '10 Exterior HDR Photos', 'price' => 100,
             'pricing_type' => 'fixed', 'photographer_required' => true, 'shoot_duration_minutes' => 15]);
+        $this->qualify($this->photographer, $this->service);
         Sanctum::actingAs($this->admin);
         $locations = Mockery::mock(TravelLocationResolver::class);
         $locations->shouldReceive('reset')->andReturnNull();
@@ -72,6 +73,13 @@ class HybridBookingCreateScheduleTest extends TestCase
             'full_address' => $address.', Baltimore, MD', 'latitude' => 39.2, 'longitude' => -76.6];
     }
 
+    private function qualify(User $photographer, Service ...$services): void
+    {
+        $photographer->setServiceCapabilities(array_unique(array_merge($photographer->getServiceCapabilities(),
+            array_map(fn ($service) => (string) $service->id, $services))));
+        $photographer->saveQuietly();
+    }
+
     private function payload(string $at = '2026-10-02T09:00:00-04:00', string $address = '5806 Winner Avenue'): array
     {
         return ['client_id' => $this->client->id, 'photographer_id' => $this->photographer->id,
@@ -83,6 +91,7 @@ class HybridBookingCreateScheduleTest extends TestCase
     private function booked(string $time, int $minutes = 15, string $address = '615 North Highland Avenue', ?User $photographer = null): Shoot
     {
         $photographer ??= $this->photographer;
+        $this->qualify($photographer, $this->service);
         $at = Carbon::parse('2026-10-02 '.$time, 'America/New_York')->utc();
         $shoot = Shoot::factory()->create(['client_id' => $this->client->id, 'photographer_id' => $photographer->id,
             'scheduled_at' => $at, 'scheduled_date' => '2026-10-02', 'time' => $time,
@@ -217,7 +226,9 @@ class HybridBookingCreateScheduleTest extends TestCase
         $second = User::factory()->photographer()->create(['timezone' => 'America/New_York']);
         PhotographerAvailability::create(['photographer_id' => $second->id, 'date' => '2026-10-02', 'day_of_week' => 'friday',
             'start_time' => '09:00', 'end_time' => '16:00', 'status' => 'available']);
-        $payload['services'][] = ['id' => Service::factory()->create(['photographer_required' => true, 'shoot_duration_minutes' => 30])->id,
+        $secondService = Service::factory()->create(['photographer_required' => true, 'shoot_duration_minutes' => 30]);
+        $this->qualify($second, $secondService);
+        $payload['services'][] = ['id' => $secondService->id,
             'photographer_id' => $second->id, 'scheduled_at' => '2026-10-02T16:55:00-04:00'];
         $preview = $this->preview($payload);
         $this->assertCount(2, $preview['visits']);
@@ -480,6 +491,7 @@ class HybridBookingCreateScheduleTest extends TestCase
     {
         $this->booked('09:45', 15, 'Next Property');
         $capture = Service::factory()->create(['photographer_required' => true, 'shoot_duration_minutes' => 13]);
+        $this->qualify($this->photographer, $capture);
         $digital = Service::factory()->create(['photographer_required' => false, 'shoot_duration_minutes' => 0]);
         $payload = $this->payload();
         $payload['services'] = [['id' => $this->service->id, 'duration_minutes' => 17],
@@ -514,6 +526,7 @@ class HybridBookingCreateScheduleTest extends TestCase
             foreach (['Asia/Calcutta' => 'Asia/Kolkata', 'Asia/Katmandu' => 'Asia/Kathmandu',
                 'Europe/Kiev' => 'Europe/Kyiv', 'US/Eastern' => 'America/New_York'] as $alias => $canonical) {
                 $photographer = User::factory()->photographer()->create(['timezone' => $alias]);
+                $this->qualify($photographer, $this->service);
                 // Exact shape of the live browser failure, using local fixture identities.
                 $payload = $this->payload('2026-10-03T04:30:00.000Z');
                 $payload['photographer_id'] = $photographer->id;

@@ -37,128 +37,45 @@ class DeliveryShareLinksBuilder
      */
     public function forShoot(Shoot $shoot): array
     {
-        // Single gate for every email that embeds the share-link block.
+        return $this->forShootSummary($shoot);
+    }
+
+    /** Forwardable ZIPs for finalized segments, with scope and approval signed into each URL. */
+    public function forDeliveredServices(Shoot $shoot, array $serviceItemIds): array
+    {
         if ($this->releaseAccess->isPublicReleaseLocked($shoot)) {
             return $this->emptyShare();
         }
-
-        $tourLinks = $this->normalizeTourLinks($shoot->tour_links ?? null);
         $links = [];
-
-        $small = $this->safeArchiveUrl($shoot, 'edited', 'small');
-        if ($small) {
-            $links[] = [
-                'key' => 'small_zip',
-                'label' => 'Small/MLS-Size Images Download',
-                'url' => $small,
+        $items = $shoot->serviceItems()->with('service')->whereIn('id', $serviceItemIds)
+            ->where('workflow_status', 'delivered')->where('delivery_status', 'delivered')->orderBy('id')->get();
+        foreach ($items as $item) {
+            $variants = [
+                ['photos', 'small', 'Small/MLS-Size Images Download'],
+                ['photos', 'original', 'Full-Size Images Download'],
+                ['floorplans', 'original', 'Floor Plans Download'],
             ];
-        }
-
-        $full = $this->safeArchiveUrl($shoot, 'edited', 'original');
-        if ($full) {
-            $links[] = [
-                'key' => 'full_zip',
-                'label' => 'Full-Size Images Download',
-                'url' => $full,
-            ];
-        }
-
-        $mlsTour = $this->firstUrl(
-            $tourLinks['mls'] ?? null,
-            $tourLinks['generic_mls'] ?? null,
-            $tourLinks['genericMls'] ?? null,
-            $tourLinks['iguide_mls'] ?? null,
-            $this->publicTourUrl($shoot->id, 'mls'),
-            $this->publicTourUrl($shoot->id, 'generic-mls'),
-        );
-        if ($mlsTour) {
-            $links[] = [
-                'key' => 'mls_tour',
-                'label' => 'MLS-Compliant Tour (non-branded)',
-                'url' => $mlsTour,
-            ];
-        }
-
-        $brandedTour = $this->firstUrl(
-            $tourLinks['branded'] ?? null,
-            $tourLinks['iguide_branded'] ?? null,
-            $tourLinks['iGuide'] ?? null,
-            $tourLinks['iguide'] ?? null,
-            $shoot->iguide_tour_url ?? null,
-            $this->publicTourUrl($shoot->id, 'branded'),
-        );
-        if ($brandedTour) {
-            $links[] = [
-                'key' => 'branded_tour',
-                'label' => 'Branded Tour',
-                'url' => $brandedTour,
-            ];
-        }
-
-        $propertyUrl = $this->firstUrl(
-            $brandedTour,
-            $mlsTour,
-            $this->publicTourUrl($shoot->id, 'branded'),
-        );
-        if ($propertyUrl) {
-            $address = trim(implode(', ', array_filter([
-                $shoot->address,
-                trim(implode(' ', array_filter([$shoot->city, $shoot->state]))),
-                $shoot->zip,
-            ])));
-            $links[] = [
-                'key' => 'property',
-                'label' => $address !== '' ? $address : 'Property / Address Link',
-                'url' => $propertyUrl,
-            ];
-        }
-
-        $videoUrl = $this->resolveVideoDownloadUrl($shoot, $tourLinks);
-        if ($videoUrl) {
-            $links[] = [
-                'key' => 'video',
-                'label' => 'Video Download',
-                'url' => $videoUrl,
-            ];
-        }
-
-        $zillow = $this->firstUrl($tourLinks['zillow_3d'] ?? null);
-        if ($zillow) {
-            $links[] = [
-                'key' => 'zillow_3d',
-                'label' => 'Zillow 3D',
-                'url' => $zillow,
-            ];
-        }
-
-        // Deduplicate identical URLs while keeping first label (MLS zip vs full
-        // may legitimately share hosts but not paths; property may match branded).
-        $seen = [];
-        $deduped = [];
-        foreach ($links as $link) {
-            $url = $link['url'];
-            // Allow property to reuse branded/mls tour URL with its own label.
-            $dedupeKey = $link['key'] === 'property' ? 'property:'.$url : $url;
-            if (isset($seen[$dedupeKey])) {
-                continue;
+            if ($item->service?->supportsVideoIntake()) {
+                $variants[] = ['videos', 'original', 'Video Download'];
             }
-            $seen[$dedupeKey] = true;
-            $deduped[] = $link;
+            foreach ($variants as [$asset, $size, $label]) {
+                $type = 'edited|asset='.$asset.';verified';
+                if (! $this->archives->hasDownloadableFiles($shoot, $type, $size, (int) $item->id)) {
+                    continue;
+                }
+                $links[] = [
+                    'key' => 'service_'.$item->id.'_'.$asset.'_'.$size,
+                    'label' => ($item->service?->name ?? 'Delivered service').': '.$label,
+                    'url' => $this->archives->buildCanonicalPublicDownloadUrl($shoot, $type, $size, null, (int) $item->id),
+                ];
+            }
         }
 
-        return [
-            'links' => $deduped,
-            'property_url' => $propertyUrl,
-            'completed_shoots_note' => 'You can also sign in to your client account and open this shoot under Completed Shoots.',
-            'has_links' => $deduped !== [],
-            // Convenience keys for template variables / overrides
-            'small_zip_link' => $small,
-            'full_zip_link' => $full,
-            'mls_tour_link' => $mlsTour,
-            'branded_tour_link' => $brandedTour,
-            'video_download_link' => $videoUrl,
-            'zillow_3d_link' => $zillow,
-        ];
+        return array_replace($this->emptyShare(), [
+            'links' => $links,
+            'has_links' => $links !== [],
+            'completed_shoots_note' => 'These downloads contain the finalized services listed above. Open your shoot in the dashboard for its latest progress.',
+        ]);
     }
 
     /**
@@ -175,9 +92,17 @@ class DeliveryShareLinksBuilder
         }
 
         $tourLinks = $this->normalizeTourLinks($shoot->tour_links ?? null);
-        $small = $this->firstHttpUrl($this->safeArchiveUrl($shoot, 'edited', 'small'));
-        $full = $this->firstHttpUrl($this->safeArchiveUrl($shoot, 'edited', 'original'));
+        $hasBookedVideo = $this->hasBookedVideo($shoot);
+        if (! $hasBookedVideo) {
+            $tourLinks = array_diff_key($tourLinks, array_flip(['video_mls', 'video_branded', 'video_generic', 'video_link']));
+        }
+        $small = $this->firstHttpUrl($this->safeArchiveUrl($shoot, 'edited|verified', 'small'));
+        $full = $this->firstHttpUrl($this->safeArchiveUrl($shoot, 'edited|verified', 'original'));
+        $floorplans = $this->firstHttpUrl($this->safeArchiveUrl($shoot, 'edited|asset=floorplans;verified', 'original'));
         $hasPhotos = $small !== null || $full !== null;
+        $package = app(\App\Services\Messaging\ShootDeliveryRevision::class)->publicOfflinePackage($shoot);
+        $hasVideoEmbed = $hasBookedVideo && collect($tourLinks['embeds'] ?? [])->contains(fn ($embed) => is_array($embed)
+            && $this->firstHttpUrl($embed['url'] ?? null, $embed['mls'] ?? null, $embed['branded'] ?? null) !== null);
         $mlsTour = $this->firstHttpUrl(
             $tourLinks['mls'] ?? null,
             $tourLinks['generic_mls'] ?? null,
@@ -185,7 +110,7 @@ class DeliveryShareLinksBuilder
             $tourLinks['iguide_mls'] ?? null,
             $tourLinks['matterport_mls'] ?? null,
             $tourLinks['cubicasa_mls'] ?? null,
-            $hasPhotos ? $this->publicTourUrl($shoot->id, 'mls') : null,
+            $hasPhotos || $hasVideoEmbed || in_array('mls', $package['audiences'] ?? [], true) ? $this->publicTourUrl($shoot->id, 'mls') : null,
         );
         $brandedTour = $this->firstHttpUrl(
             $tourLinks['branded'] ?? null,
@@ -196,7 +121,7 @@ class DeliveryShareLinksBuilder
             $tourLinks['matterport_branded'] ?? null,
             $tourLinks['matterport'] ?? null,
             $tourLinks['cubicasa_branded'] ?? null,
-            $hasPhotos ? $this->publicTourUrl($shoot->id, 'branded') : null,
+            $hasPhotos || $hasVideoEmbed || in_array('branded', $package['audiences'] ?? [], true) ? $this->publicTourUrl($shoot->id, 'branded') : null,
         );
         $propertyUrl = $this->firstHttpUrl(
             $tourLinks['property_url'] ?? null,
@@ -204,13 +129,14 @@ class DeliveryShareLinksBuilder
             $brandedTour,
             $mlsTour,
         );
-        $videoUrl = $this->summaryVideoDownloadUrl($shoot, $tourLinks);
+        $videoUrl = $hasBookedVideo ? $this->summaryVideoDownloadUrl($shoot, $tourLinks) : null;
         $zillow = $this->firstHttpUrl($tourLinks['zillow_3d'] ?? null);
 
         $links = [];
         foreach ([
             ['small_zip', 'Small/MLS-Size Images Download', $small],
             ['full_zip', 'Full-Size Images Download', $full],
+            ['floorplans', 'Floor Plans Download', $floorplans],
             ['mls_tour', 'MLS-Compliant Tour (non-branded)', $mlsTour],
             ['branded_tour', 'Branded Tour', $brandedTour],
             ['property', 'Property / Address Link', $propertyUrl],
@@ -232,6 +158,7 @@ class DeliveryShareLinksBuilder
             'has_links' => $links !== [] || $additional !== [],
             'small_zip_link' => $small,
             'full_zip_link' => $full,
+            'floorplans_link' => $floorplans,
             'mls_tour_link' => $mlsTour,
             'branded_tour_link' => $brandedTour,
             'video_download_link' => $videoUrl,
@@ -287,11 +214,11 @@ class DeliveryShareLinksBuilder
 
         $files = $shoot->relationLoaded('files')
             ? $shoot->files
-            : $shoot->files()->where('media_type', 'video')->whereIn('workflow_stage', [ShootFile::STAGE_COMPLETED, ShootFile::STAGE_VERIFIED])->orderBy('id')->get();
+            : $shoot->files()->where('media_type', 'video')->whereIn('workflow_stage', [ShootFile::STAGE_VERIFIED])->orderBy('id')->get();
 
         foreach ($files as $file) {
             if (strtolower((string) $file->media_type) !== 'video'
-                || ! in_array($file->workflow_stage, [ShootFile::STAGE_COMPLETED, ShootFile::STAGE_VERIFIED], true)
+                || ! in_array($file->workflow_stage, [ShootFile::STAGE_VERIFIED], true)
                 || $file->is_hidden || $file->isBlockedFromDelivery() || $file->isIguideOfflinePackage()) {
                 continue;
             }
@@ -356,6 +283,7 @@ class DeliveryShareLinksBuilder
             'has_links' => false,
             'small_zip_link' => null,
             'full_zip_link' => null,
+            'floorplans_link' => null,
             'mls_tour_link' => null,
             'branded_tour_link' => null,
             'video_download_link' => null,
@@ -383,43 +311,20 @@ class DeliveryShareLinksBuilder
         }
     }
 
-    private function resolveVideoDownloadUrl(Shoot $shoot, array $tourLinks): ?string
+    /** A saved video URL or stray file is not proof that a video was ordered. */
+    private function hasBookedVideo(Shoot $shoot): bool
     {
-        foreach (['video_mls', 'video_branded', 'video_generic', 'video_link'] as $key) {
-            $candidate = $tourLinks[$key] ?? null;
-            if (!is_string($candidate)) {
-                continue;
-            }
-            $candidate = trim($candidate);
-            if ($candidate !== '' && preg_match('/\.mp4([?#]|$)/i', $candidate)) {
-                return $candidate;
-            }
+        $items = $shoot->relationLoaded('serviceItems')
+            ? $shoot->serviceItems
+            : $shoot->serviceItems()->with('service')->get();
+        if ($items->isNotEmpty()) {
+            return $items->contains(fn ($item) => $item->workflow_status === 'delivered'
+                && $item->delivery_status === 'delivered' && ($item->service?->supportsVideoIntake() ?? false));
         }
 
-        $video = $shoot->relationLoaded('files')
-            ? $shoot->files->first(fn (ShootFile $file) => strtolower((string) $file->media_type) === 'video')
-            : $shoot->files()
-                ->where('media_type', 'video')
-                ->whereIn('workflow_stage', [ShootFile::STAGE_COMPLETED, ShootFile::STAGE_VERIFIED, 'completed', 'verified'])
-                ->orderBy('id')
-                ->first();
+        $service = $shoot->relationLoaded('service') ? $shoot->service : $shoot->service()->first();
 
-        if (!$video) {
-            return null;
-        }
-
-        foreach (['path', 'storage_path', 'web_path'] as $field) {
-            $raw = $video->{$field} ?? null;
-            if (is_string($raw) && str_starts_with($raw, 'http') && preg_match('/\.mp4([?#]|$)/i', $raw)) {
-                return $raw;
-            }
-            $key = $this->media->normalizeKey(is_string($raw) ? $raw : null);
-            if ($key && $this->media->exists($key)) {
-                return $this->media->publicUrl($key);
-            }
-        }
-
-        return null;
+        return $service?->supportsVideoIntake() ?? false;
     }
 
     private function publicTourUrl(int|string $shootId, string $type): string

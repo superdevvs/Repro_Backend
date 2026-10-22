@@ -43,6 +43,8 @@ class SchedulingDiagnosticsIsolationTest extends TestCase
         $this->photographer = User::factory()->photographer()->create(['name' => 'Lee QA', 'timezone' => 'America/New_York']);
         $this->service = Service::factory()->create(['name' => '25 HDR Photos', 'photographer_required' => true,
             'shoot_duration_minutes' => 45, 'price' => 185]);
+        $this->photographer->setServiceCapabilities([(string) $this->service->id]);
+        $this->photographer->save();
         $at = now('America/New_York')->addDay()->setTime(11, 0)->utc()->toIso8601String();
         $this->payload = ['action_mode' => 'create', 'client_id' => $client->id,
             'photographer_id' => $this->photographer->id, 'scheduled_at' => $at, 'timezone' => 'America/New_York',

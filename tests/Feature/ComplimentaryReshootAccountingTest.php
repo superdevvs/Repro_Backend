@@ -521,7 +521,7 @@ class ComplimentaryReshootAccountingTest extends TestCase
     public function test_unlocked_service_reassignment_atomically_moves_compensation_recipient_and_locked_work_blocks_it(): void
     {
         [$shoot, $serviceItem, $compensation] = $this->makeCompReshoot();
-        $replacement = User::factory()->photographer()->create();
+        $replacement = User::factory()->photographer()->create(['metadata' => ['specialties' => [(string) $serviceItem->service_id]]]);
         $admin = User::factory()->admin()->create();
         Sanctum::actingAs($admin);
 
@@ -539,7 +539,7 @@ class ComplimentaryReshootAccountingTest extends TestCase
             'delivery_status' => ShootService::DELIVERY_DELIVERED,
             'delivered_at' => now(),
         ]);
-        $third = User::factory()->photographer()->create();
+        $third = User::factory()->photographer()->create(['metadata' => ['specialties' => [(string) $serviceItem->service_id]]]);
 
         $this->postJson("/api/shoots/{$shoot->id}/assign-service-photographer", [
             'service_id' => $serviceItem->service_id,
@@ -559,7 +559,7 @@ class ComplimentaryReshootAccountingTest extends TestCase
             'recipient_user_id' => null,
         ]);
         $serviceItem->update(['photographer_id' => null]);
-        $replacement = User::factory()->photographer()->create();
+        $replacement = User::factory()->photographer()->create(['metadata' => ['specialties' => [(string) $serviceItem->service_id]]]);
         Sanctum::actingAs(User::factory()->admin()->create());
 
         $this->postJson("/api/shoots/{$shoot->id}/assign-service-photographer", [
@@ -590,6 +590,8 @@ class ComplimentaryReshootAccountingTest extends TestCase
     {
         [$shoot, $serviceItem] = $this->makeCompReshoot();
         $replacementService = Service::factory()->create(['price' => 999]);
+        $photographer = $shoot->photographer;
+        $photographer->update(['metadata' => array_replace($photographer->metadata ?? [], ['specialties' => [(string) $serviceItem->service_id, (string) $replacementService->id]])]);
         $support = app(ShootMutationSupportService::class);
 
         try {
@@ -917,6 +919,7 @@ class ComplimentaryReshootAccountingTest extends TestCase
             'metadata' => ['repDetails' => ['commissionPercentage' => 15]],
         ]);
         $service = Service::factory()->create(['name' => 'Photo package', 'price' => 400]);
+        $photographer->update(['metadata' => array_replace($photographer->metadata ?? [], ['specialties' => [(string) $service->id]])]);
         $shoot = Shoot::factory()->create([
             'client_id' => $client->id,
             'photographer_id' => $photographer->id,

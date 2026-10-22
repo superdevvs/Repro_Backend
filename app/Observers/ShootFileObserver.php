@@ -40,6 +40,7 @@ class ShootFileObserver
 
     public function saved(ShootFile $shootFile): void
     {
+        app(\App\Services\Messaging\ShootDeliveryUpdateNotifier::class)->fileSaved($shootFile);
         // The offline iGUIDE ZIP is an integration attachment, not an edited
         // photo. It must not invalidate or regenerate the shoot delivery ZIP.
         if ($shootFile->isIguideOfflinePackage()) {
@@ -77,6 +78,7 @@ class ShootFileObserver
 
     public function deleted(ShootFile $shootFile): void
     {
+        app(\App\Services\Messaging\ShootDeliveryUpdateNotifier::class)->fileDeleted($shootFile);
         if ($shootFile->isIguideOfflinePackage()) {
             return;
         }

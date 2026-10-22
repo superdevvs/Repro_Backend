@@ -57,7 +57,7 @@ class TemporaryStaffEditForceSave
     {
         return $this->eligible($payload, $shoot, $actor)
             && in_array($result['status'] ?? 'available', ['available', 'review_required', 'conflict'], true)
-            && array_diff($result['reason_codes'] ?? [], ['outside_working_hours', 'travel_review_required', 'insufficient_travel_time']) === []
+            && array_diff($result['reason_codes'] ?? [], ['outside_working_hours', 'travel_review_required', 'insufficient_travel_time', 'outside_service_radius', 'service_radius_unverified']) === []
             && (! ($result['hard_conflict'] ?? false) || in_array('outside_working_hours', $result['reason_codes'] ?? [], true));
     }
 

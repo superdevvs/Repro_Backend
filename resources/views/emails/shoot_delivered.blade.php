@@ -1,6 +1,6 @@
 @extends('emails.layouts.master')
 
-@section('title', 'Your Photos Are Ready to Review')
+@section('title', ($deliveryIsUpdate ?? false) ? 'Your Shoot Has Updated Deliverables' : (($isFullOrderDelivery ?? true) ? 'Your Photos Are Ready to Review' : 'Part of Your Shoot Is Ready'))
 @section('preheader', !empty($paymentLink)
     ? 'Your shoot is ready to review. Complete the remaining balance to unlock downloads.'
     : 'Your shoot is ready to review in your dashboard.')
@@ -17,7 +17,7 @@
 
 @section('hero')
     <p class="dark-muted" style="margin:0 0 12px; font-size:11px; line-height:1.4; letter-spacing:2px; text-transform:uppercase; color:#5d7493; font-weight:700;">Photos Ready</p>
-    <p class="hero-title-td dark-title" style="margin:0; font-size:30px; line-height:1.1; font-weight:300; letter-spacing:-1.2px; color:#10192f;">Your shoot is ready to review.</p>
+    <p class="hero-title-td dark-title" style="margin:0; font-size:30px; line-height:1.1; font-weight:300; letter-spacing:-1.2px; color:#10192f;">{{ ($deliveryIsUpdate ?? false) ? 'Your shoot has updated deliverables.' : (($isFullOrderDelivery ?? true) ? 'Your shoot is ready to review.' : 'Part of your shoot is ready.') }}</p>
     <p class="dark-body" style="margin:20px 0 0; font-size:15px; line-height:1.8; color:#667a96;">
         @if(!empty($paymentLink))
             Open the shoot in your dashboard. Complete the remaining balance to unlock your downloads and receive your Shoot Summary.
@@ -28,7 +28,7 @@
 @endsection
 
 @section('content')
-<p class="dark-body" style="margin:0 0 16px; font-size:16px; line-height:1.75; color:#2d4769;"><strong class="dark-strong" style="color:#071223;">Your shoot is complete and ready to review.</strong></p>
+<p class="dark-body" style="margin:0 0 16px; font-size:16px; line-height:1.75; color:#2d4769;"><strong class="dark-strong" style="color:#071223;">{{ ($deliveryIsUpdate ?? false) ? 'New or revised deliverables are ready to review.' : (($isFullOrderDelivery ?? true) ? 'Your shoot is complete and ready to review.' : 'The services listed below are ready to review. Other ordered services are still in progress.') }}</strong></p>
 @if(!empty($paymentLink))
     <p class="dark-body" style="margin:0 0 16px; font-size:15px; line-height:1.7; color:#2d4769;">Remaining balance: <strong>{{ $formattedBalance }}</strong></p>
 @endif
@@ -66,7 +66,7 @@
                     @if(!empty($paymentLink))
                         Pay the remaining balance to unlock your files. We will email your Shoot Summary with available download and tour links once payment is complete.
                     @else
-                        Open this shoot under Completed Shoots to review the delivered files.
+                        Open this shoot in your dashboard to review the delivered files.
                     @endif
                 </p>
             </td>

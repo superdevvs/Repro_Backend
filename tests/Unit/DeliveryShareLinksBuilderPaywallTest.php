@@ -30,6 +30,7 @@ class DeliveryShareLinksBuilderPaywallTest extends TestCase
         $archives->shouldNotReceive('hasDownloadableFiles');
         $archives->shouldNotReceive('buildPublicDownloadUrl');
 
+        $archives->shouldReceive('hasDownloadableFiles')->with(Mockery::type(Shoot::class), 'edited|asset=floorplans;verified', 'original')->zeroOrMoreTimes()->andReturn(false);
         $builder = $this->makeBuilder($archives);
         $shoot = $this->makeShoot([
             'payment_status' => 'unpaid',
@@ -58,6 +59,7 @@ class DeliveryShareLinksBuilderPaywallTest extends TestCase
         $archives = Mockery::mock(ShootMediaArchiveService::class);
         $archives->shouldNotReceive('hasDownloadableFiles');
 
+        $archives->shouldReceive('hasDownloadableFiles')->with(Mockery::type(Shoot::class), 'edited|asset=floorplans;verified', 'original')->zeroOrMoreTimes()->andReturn(false);
         $builder = $this->makeBuilder($archives);
         $shoot = $this->makeShoot([
             'payment_status' => 'partial',
@@ -79,22 +81,23 @@ class DeliveryShareLinksBuilderPaywallTest extends TestCase
 
         $archives = Mockery::mock(ShootMediaArchiveService::class);
         $archives->shouldReceive('hasDownloadableFiles')
-            ->with(Mockery::type(Shoot::class), 'edited', 'small')
+            ->with(Mockery::type(Shoot::class), 'edited|verified', 'small')
             ->once()
             ->andReturn(true);
         $archives->shouldReceive('buildPublicDownloadUrl')
-            ->with(Mockery::type(Shoot::class), 'edited', 'small')
+            ->with(Mockery::type(Shoot::class), 'edited|verified', 'small')
             ->once()
             ->andReturn('https://cdn.example.test/small.zip');
         $archives->shouldReceive('hasDownloadableFiles')
-            ->with(Mockery::type(Shoot::class), 'edited', 'original')
+            ->with(Mockery::type(Shoot::class), 'edited|verified', 'original')
             ->once()
             ->andReturn(true);
         $archives->shouldReceive('buildPublicDownloadUrl')
-            ->with(Mockery::type(Shoot::class), 'edited', 'original')
+            ->with(Mockery::type(Shoot::class), 'edited|verified', 'original')
             ->once()
             ->andReturn('https://cdn.example.test/full.zip');
 
+        $archives->shouldReceive('hasDownloadableFiles')->with(Mockery::type(Shoot::class), 'edited|asset=floorplans;verified', 'original')->zeroOrMoreTimes()->andReturn(false);
         $builder = $this->makeBuilder($archives);
         $shoot = $this->makeShoot([
             'payment_status' => 'paid',
@@ -135,6 +138,7 @@ class DeliveryShareLinksBuilderPaywallTest extends TestCase
         $archives = Mockery::mock(ShootMediaArchiveService::class);
         $archives->shouldReceive('hasDownloadableFiles')->andReturn(false);
 
+        $archives->shouldReceive('hasDownloadableFiles')->with(Mockery::type(Shoot::class), 'edited|asset=floorplans;verified', 'original')->zeroOrMoreTimes()->andReturn(false);
         $builder = $this->makeBuilder($archives);
         $shoot = $this->makeShoot([
             'payment_status' => 'unpaid',
@@ -146,11 +150,8 @@ class DeliveryShareLinksBuilderPaywallTest extends TestCase
 
         $result = $builder->forShoot($shoot);
 
-        $this->assertTrue($result['has_links']);
-        $keys = array_column($result['links'], 'key');
-        $this->assertContains('mls_tour', $keys);
-        $this->assertContains('branded_tour', $keys);
-        $this->assertContains('property', $keys);
+        $this->assertFalse($result['has_links']);
+        $this->assertSame([], $result['links']);
         $this->assertStringContainsString('Completed Shoots', $result['completed_shoots_note']);
     }
 
@@ -174,6 +175,8 @@ class DeliveryShareLinksBuilderPaywallTest extends TestCase
         ], $attrs));
         $shoot->id = 385;
         $shoot->exists = true;
+        $shoot->setRelation('serviceItems', collect());
+        $shoot->setRelation('service', null);
 
         return $shoot;
     }

@@ -83,6 +83,9 @@ class ShootAlternateDateApplyTest extends TestCase
         $shoot = Shoot::factory()->create($attributes);
 
         $services = Service::factory()->count($serviceCount)->create()->all();
+        $photographer = $shoot->photographer;
+        $photographer->setServiceCapabilities(array_map(fn ($service) => (string) $service->id, $services));
+        $photographer->save();
         foreach ($services as $service) {
             $shoot->services()->attach($service->id, [
                 'price' => 150,

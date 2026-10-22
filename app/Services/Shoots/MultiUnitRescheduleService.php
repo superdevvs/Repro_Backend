@@ -20,7 +20,7 @@ class MultiUnitRescheduleService
     }
 
     /** Pure preparation shared by the travel check and the subsequent write. */
-    public function plan(Shoot $shoot, ShootRescheduleRequest $request, User $actor, array $durationChanges = []): array
+    public function plan(Shoot $shoot, ShootRescheduleRequest $request, User $actor, array $durationChanges = [], array $assignmentChanges = []): array
     {
         $lines = $shoot->serviceItems()->get();
         $durations = collect($durationChanges)->keyBy('shoot_service_id');
@@ -63,6 +63,9 @@ class MultiUnitRescheduleService
                 ];
             })->all(),
         ];
+        if (array_key_exists('photographer_id', $assignmentChanges)) {
+            $changes['photographer_id'] = $assignmentChanges['photographer_id'];
+        }
         $prepared = app(MultiUnitBookingService::class)->prepare($shoot, $changes, $actor);
         $services = $prepared['services'];
         foreach ($services as &$line) {

@@ -410,12 +410,111 @@ class ShootMutationSupportService
         return app(ShootDurationResolver::class)->forShoot($shoot, $photographerId);
     }
 
-    public function attachServices(Shoot $shoot, array $services): void
+    /** Resolve header inheritance once for both itinerary checks and persistence. */
+    public function resolveServicePhotographerAssignments(Shoot $shoot, array $rows, array $payload): array
+    {
+        $items = $shoot->serviceItems()->get();
+        $byId = $items->keyBy('id');
+        $byService = $items->keyBy('service_id');
+        $explicitByLine = [];
+        $explicitByClientKey = [];
+        $explicitByService = [];
+        foreach (['services', 'service_items', 'service_lines', 'service_photographers'] as $field) {
+            foreach ($payload[$field] ?? [] as $assignment) {
+                if (! array_key_exists('photographer_id', $assignment)) {
+                    continue;
+                }
+                if ($field === 'service_lines') {
+                    if (! empty($assignment['shoot_service_id'])) {
+                        $explicitByLine[(int) $assignment['shoot_service_id']] = $assignment;
+                    }
+                    if (! empty($assignment['client_key'])) {
+                        $explicitByClientKey[$assignment['client_key']] = $assignment;
+                    }
+                } else {
+                    $explicitByService[(int) ($assignment['service_id'] ?? $assignment['id'] ?? 0)] = $assignment;
+                }
+            }
+        }
+        $mainChanged = array_key_exists('photographer_id', $payload)
+            && (int) $payload['photographer_id'] !== (int) $shoot->photographer_id;
+        $catalog = Service::with('category')->whereIn('id', collect($rows)
+            ->map(fn ($row) => $row['service_id'] ?? $row['id'] ?? null)->filter()->unique())->get()->keyBy('id');
+        foreach ($rows as &$row) {
+            $serviceId = (int) ($row['service_id'] ?? $row['id'] ?? 0);
+            $current = isset($row['shoot_service_id']) ? $byId->get($row['shoot_service_id']) : $byService->get($serviceId);
+            if ($catalog->get($serviceId)?->isDigitalEnhancement()) {
+                $row['photographer_id'] = null;
+                continue;
+            }
+            $assignment = isset($row['shoot_service_id']) ? ($explicitByLine[$row['shoot_service_id']] ?? $explicitByClientKey[$row['client_key'] ?? ''] ?? null)
+                : ($explicitByClientKey[$row['client_key'] ?? ''] ?? $explicitByService[$serviceId] ?? null);
+            if ($assignment !== null) {
+                $row['photographer_id'] = $this->normalizeNullableInteger($assignment['photographer_id']);
+            } elseif ($mainChanged && ($catalog->get($serviceId)?->allowsPhotographerAssignment() ?? false)
+                && (! $current?->photographer_id || (int) $current->photographer_id === (int) $shoot->photographer_id)) {
+                $row['photographer_id'] = $this->normalizeNullableInteger($payload['photographer_id']);
+            } elseif (! array_key_exists('photographer_id', $row) && $current) {
+                $row['photographer_id'] = $current->photographer_id;
+            }
+        }
+        unset($row);
+
+        return $rows;
+    }
+
+    /** A header-only reassignment changes execution ownership, never line metadata. */
+    public function persistResolvedPhotographerAssignments(Shoot $shoot, array $rows, ?User $actor): void
+    {
+        $items = $shoot->serviceItems()->get();
+        $byId = $items->keyBy('id');
+        $byService = $items->keyBy('service_id');
+        $changes = [];
+        foreach ($rows as $row) {
+            $item = isset($row['shoot_service_id']) ? $byId->get($row['shoot_service_id'])
+                : $byService->get($row['service_id'] ?? $row['id'] ?? null);
+            $id = $this->normalizeNullableInteger($row['photographer_id'] ?? null);
+            if ($item && (int) $item->photographer_id !== (int) $id) {
+                $changes[] = ['item' => $item, 'photographer_id' => $id];
+            }
+        }
+        if ($changes === []) {
+            return;
+        }
+        app(\App\Services\Photographers\PhotographerServiceEligibility::class)->assertServices($rows, $shoot->photographer_id);
+        if (! $shoot->units()->exists()) {
+            $this->assignServicePhotographers($shoot, array_map(fn ($change) => [
+                'service_id' => $change['item']->service_id, 'photographer_id' => $change['photographer_id'],
+            ], $changes), $actor);
+        } else {
+            foreach ($changes as $change) {
+                if ($change['photographer_id'] && ! User::whereKey($change['photographer_id'])->where('role', 'photographer')->exists()) {
+                    throw ValidationException::withMessages(['photographer_id' => ['Choose a user with the photographer role.']]);
+                }
+                $change['item']->photographer_id = $change['photographer_id'];
+                $change['item']->save();
+                app(BracketModeResolver::class)->snapshotOnAssignment($change['item'], $change['photographer_id']);
+            }
+            $shoot->units_revision = (int) $shoot->units_revision + 1;
+        }
+        $shoot->load(['services', 'serviceItems']);
+        app(ShootArchivePrewarmService::class)->whenAssignmentsActionable($shoot);
+    }
+
+    public function attachServices(Shoot $shoot, array $services, ?int $targetPhotographerId = null): void
     {
         if ($shoot->units()->exists()) {
             throw ValidationException::withMessages(['service_lines' => ['Multi-unit bookings must be updated by service-line identity.']]);
         }
         $currentItems = $shoot->serviceItems()->get()->keyBy('service_id');
+        $assignmentChanged = collect($services)->contains(function ($row) use ($currentItems) {
+            $current = $currentItems->get($row['id'] ?? $row['service_id'] ?? null);
+            $incoming = array_key_exists('photographer_id', $row) ? $row['photographer_id'] : $current?->photographer_id;
+            return ! $current || (int) $incoming !== (int) $current->photographer_id;
+        });
+        if ($assignmentChanged) {
+            app(\App\Services\Photographers\PhotographerServiceEligibility::class)->assertServices($services, $targetPhotographerId ?? $shoot->photographer_id);
+        }
 
         if ($shoot->isComplimentaryReshoot() && $currentItems->isNotEmpty()) {
             $requestedIds = collect($services)

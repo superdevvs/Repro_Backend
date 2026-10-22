@@ -61,6 +61,7 @@ class ComplimentaryServicesEditShootTest extends TestCase
             'photographer_pay_type' => Service::PAY_TYPE_FIXED,
             'exclude_from_sales_commission' => false,
         ]);
+        $this->photographer->update(['metadata' => array_replace($this->photographer->metadata ?? [], ['specialties' => [(string) $this->service->id]])]);
         $this->sourceShoot = Shoot::factory()->create([
             'client_id' => $this->client->id,
             'rep_id' => $this->salesRep->id,
