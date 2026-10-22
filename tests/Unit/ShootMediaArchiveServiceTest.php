@@ -22,9 +22,13 @@ class ShootMediaArchiveServiceTest extends TestCase
     use RefreshDatabase;
 
     protected User $admin;
+
     protected User $editor;
+
     protected User $client;
+
     protected User $photographer;
+
     protected Service $service;
 
     protected function setUp(): void
@@ -47,8 +51,8 @@ class ShootMediaArchiveServiceTest extends TestCase
         $this->mockDropboxDisabled();
 
         $shoot = $this->createShoot();
-        $webPath = 'shoots/' . $shoot->id . '/web/front_web.jpg';
-        $originalPath = 'shoots/' . $shoot->id . '/completed/front.jpg';
+        $webPath = 'shoots/'.$shoot->id.'/web/front_web.jpg';
+        $originalPath = 'shoots/'.$shoot->id.'/completed/front.jpg';
         Storage::disk('public')->put($webPath, 'small-preview-bytes');
         Storage::disk('public')->put($originalPath, 'original-photo-bytes');
 
@@ -65,7 +69,7 @@ class ShootMediaArchiveServiceTest extends TestCase
         $archiveService = app(ShootMediaArchiveService::class);
         $archiveService->generateArchive($shoot, 'edited', 'small');
 
-        $zip = new ZipArchive();
+        $zip = new ZipArchive;
         $archivePath = Storage::disk('local')->path($archiveService->getArchivePath($shoot, 'edited', 'small'));
 
         $this->assertTrue($zip->open($archivePath) === true);
@@ -83,8 +87,8 @@ class ShootMediaArchiveServiceTest extends TestCase
         $this->mockDropboxDisabled();
 
         $shoot = $this->createShoot();
-        $webPath = 'shoots/' . $shoot->id . '/web/front_web.jpg';
-        $originalPath = 'shoots/' . $shoot->id . '/completed/front.jpg';
+        $webPath = 'shoots/'.$shoot->id.'/web/front_web.jpg';
+        $originalPath = 'shoots/'.$shoot->id.'/completed/front.jpg';
         Storage::disk('public')->put($webPath, 'small-preview-bytes');
         Storage::disk('public')->put($originalPath, 'original-photo-bytes');
 
@@ -101,7 +105,7 @@ class ShootMediaArchiveServiceTest extends TestCase
         $archiveService = app(ShootMediaArchiveService::class);
         $archiveService->generateArchive($shoot, 'edited', 'original');
 
-        $zip = new ZipArchive();
+        $zip = new ZipArchive;
         $archivePath = Storage::disk('local')->path($archiveService->getArchivePath($shoot, 'edited', 'original'));
 
         $this->assertTrue($zip->open($archivePath) === true);
@@ -117,9 +121,9 @@ class ShootMediaArchiveServiceTest extends TestCase
         $this->mockDropboxDisabled();
 
         $shoot = $this->createShoot();
-        $firstWebPath = 'shoots/' . $shoot->id . '/web/front_web.jpg';
-        $secondWebPath = 'shoots/' . $shoot->id . '/web/front_web_v2.jpg';
-        $originalPath = 'shoots/' . $shoot->id . '/completed/front.jpg';
+        $firstWebPath = 'shoots/'.$shoot->id.'/web/front_web.jpg';
+        $secondWebPath = 'shoots/'.$shoot->id.'/web/front_web_v2.jpg';
+        $originalPath = 'shoots/'.$shoot->id.'/completed/front.jpg';
         Storage::disk('public')->put($firstWebPath, 'small-preview-bytes');
         Storage::disk('public')->put($secondWebPath, 'updated-small-preview-bytes');
         Storage::disk('public')->put($originalPath, 'original-photo-bytes');
@@ -172,8 +176,8 @@ class ShootMediaArchiveServiceTest extends TestCase
             'updated_at' => now(),
         ]);
 
-        $firstPath = 'shoots/' . $shoot->id . '/completed/service-one.jpg';
-        $secondPath = 'shoots/' . $shoot->id . '/completed/service-two.jpg';
+        $firstPath = 'shoots/'.$shoot->id.'/completed/service-one.jpg';
+        $secondPath = 'shoots/'.$shoot->id.'/completed/service-two.jpg';
         Storage::disk('public')->put($firstPath, 'service-one-bytes');
         Storage::disk('public')->put($secondPath, 'service-two-bytes');
 
@@ -195,7 +199,7 @@ class ShootMediaArchiveServiceTest extends TestCase
         $archiveService = app(ShootMediaArchiveService::class);
         $archiveService->generateArchive($shoot, 'edited', 'original', false, $firstServiceItemId);
 
-        $zip = new ZipArchive();
+        $zip = new ZipArchive;
         $archivePath = Storage::disk('local')->path(
             $archiveService->getArchivePath($shoot, 'edited', 'original', $firstServiceItemId)
         );
@@ -321,7 +325,7 @@ class ShootMediaArchiveServiceTest extends TestCase
         $path = $service->getArchivePath($shoot, 'edited', 'original', null, $units[0]->id);
         $this->assertNotSame($path, $service->getArchivePath($shoot, 'edited', 'original', null, $units[1]->id));
         $this->assertNotSame($path, $service->getArchivePath($shoot, 'edited', 'original'));
-        $zip = new ZipArchive();
+        $zip = new ZipArchive;
         $this->assertTrue($zip->open(Storage::disk('local')->path($path)) === true);
         $this->assertSame(1, $zip->numFiles);
         $this->assertSame('bytes-for-unit-1', $zip->getFromIndex(0));
@@ -431,6 +435,7 @@ class ShootMediaArchiveServiceTest extends TestCase
 
     public function test_legacy_scoped_archive_is_reused_only_when_order_names_sizes_and_source_crc_match(): void
     {
+        config()->set('media.editor_archive_reserve_bytes', 0);
         Storage::fake('local');
         Storage::fake('public');
         config()->set('media.local_disk', 'local');
@@ -451,6 +456,38 @@ class ShootMediaArchiveServiceTest extends TestCase
         $this->assertTrue(Storage::disk('local')->exists($legacy));
         Storage::disk('public')->put($path, 'modified-raw');
         $this->assertFalse($scoped->reuseLegacyArchive($shoot, $this->editor, $files, $destination));
+    }
+
+    public function test_editor_job_holds_cleanup_lock_through_generation_and_releases_it_after_publish(): void
+    {
+        Storage::fake('local');
+        Storage::fake('public');
+        config([
+            'media.local_disk' => 'local',
+            'media.editor_archive_reserve_bytes' => 0,
+            'media.editor_archive_tracking_root' => Storage::disk('local')->path('retention-test'),
+        ]);
+        $shoot = $this->createShoot();
+        $path = "shoots/{$shoot->id}/todo/capture.nef";
+        Storage::disk('public')->put($path, 'raw-bytes');
+        $file = $this->createShootFile($shoot, ['path' => $path, 'storage_path' => $path, 'file_size' => 9, 'workflow_stage' => ShootFile::STAGE_TODO]);
+        $descriptor = app(\App\Services\Shoots\EditorRawArchiveService::class)->descriptor($shoot, $this->editor, collect([$file]));
+        $lifecycle = app(\App\Services\Media\EditorArchiveLifecycle::class);
+        $generator = Mockery::mock(\App\Services\Shoots\ShootShareLinkService::class);
+        $generator->shouldReceive('generateFilesZip')->once()->andReturnUsing(function () use ($lifecycle, $descriptor) {
+            $this->assertNull($lifecycle->cleanupLock($descriptor['storage_path'], true));
+            $path = Storage::disk('local')->path('completed-test.zip');
+            file_put_contents($path, 'completed archive');
+
+            return $path;
+        });
+        $job = new \App\Jobs\GenerateEditorRawZipJob((int) $shoot->id, (int) $this->editor->id, [$file->id], $descriptor['storage_path'], $descriptor['lock_key']);
+        $job->handle($generator, app(\App\Services\Shoots\ShootEditingAssignmentService::class), app(\App\Services\Media\MediaStorage::class));
+        $this->assertSame('completed archive', Storage::disk('local')->get($descriptor['storage_path']));
+        $lock = $lifecycle->cleanupLock($descriptor['storage_path'], true);
+        $this->assertNotNull($lock);
+        $lock->release();
+        $this->assertFalse(\Illuminate\Support\Facades\Cache::has($descriptor['lock_key']));
     }
 
     public function test_submission_prewarm_is_gated_and_duplicate_dispatches_are_coalesced(): void
@@ -479,6 +516,56 @@ class ShootMediaArchiveServiceTest extends TestCase
         $prewarm->afterRawSubmission($shoot);
         Queue::assertPushed(GenerateShootMediaArchiveJob::class, 1);
         Queue::assertPushed(GenerateShootMediaArchiveJob::class, fn ($job) => $job->type === 'raw' && $job->size === 'original');
+    }
+
+    public function test_editor_job_releases_all_locks_when_capacity_check_prevents_generation(): void
+    {
+        [$job, $descriptor] = $this->editorJobFixture();
+        $guard = Mockery::mock(\App\Services\Media\EditorArchiveSpaceGuard::class);
+        $guard->shouldReceive('assertCanGenerate')->once()->andThrow(new \RuntimeException('Insufficient archive space'));
+        $this->app->instance(\App\Services\Media\EditorArchiveSpaceGuard::class, $guard);
+        $generator = Mockery::mock(\App\Services\Shoots\ShootShareLinkService::class);
+        $generator->shouldNotReceive('generateFilesZip');
+        \Illuminate\Support\Facades\Cache::put($descriptor['lock_key'], 1, 3600);
+        try {
+            $job->handle($generator, app(\App\Services\Shoots\ShootEditingAssignmentService::class), app(\App\Services\Media\MediaStorage::class));
+            $this->fail('The full-disk check must stop generation.');
+        } catch (\RuntimeException $exception) {
+            $this->assertSame('Insufficient archive space', $exception->getMessage());
+        }
+        Storage::disk('local')->assertMissing($descriptor['storage_path']);
+        $lock = app(\App\Services\Media\EditorArchiveLifecycle::class)->cleanupLock($descriptor['storage_path'], true);
+        $this->assertNotNull($lock);
+        $lock->release();
+        $this->assertFalse(\Illuminate\Support\Facades\Cache::has($descriptor['lock_key']));
+    }
+
+    public function test_editor_job_uses_existing_archive_without_needing_free_generation_space(): void
+    {
+        [$job, $descriptor] = $this->editorJobFixture();
+        Storage::disk('local')->put($descriptor['storage_path'], 'existing complete archive');
+        $guard = Mockery::mock(\App\Services\Media\EditorArchiveSpaceGuard::class);
+        $guard->shouldReceive('assertCanGenerate')->never()->andThrow(new \RuntimeException('Insufficient archive space'));
+        $guard->shouldNotReceive('assertCanPublish');
+        $this->app->instance(\App\Services\Media\EditorArchiveSpaceGuard::class, $guard);
+        $generator = Mockery::mock(\App\Services\Shoots\ShootShareLinkService::class);
+        $generator->shouldNotReceive('generateFilesZip');
+        $job->handle($generator, app(\App\Services\Shoots\ShootEditingAssignmentService::class), app(\App\Services\Media\MediaStorage::class));
+        $this->assertSame('existing complete archive', Storage::disk('local')->get($descriptor['storage_path']));
+    }
+
+    private function editorJobFixture(): array
+    {
+        Storage::fake('local');
+        Storage::fake('public');
+        config(['media.local_disk' => 'local', 'media.editor_archive_tracking_root' => Storage::disk('local')->path('retention-test')]);
+        $shoot = $this->createShoot();
+        $path = "shoots/{$shoot->id}/todo/capture.nef";
+        Storage::disk('public')->put($path, 'raw-bytes');
+        $file = $this->createShootFile($shoot, ['path' => $path, 'storage_path' => $path, 'file_size' => 9, 'workflow_stage' => ShootFile::STAGE_TODO]);
+        $descriptor = app(\App\Services\Shoots\EditorRawArchiveService::class)->descriptor($shoot, $this->editor, collect([$file]));
+
+        return [new \App\Jobs\GenerateEditorRawZipJob((int) $shoot->id, (int) $this->editor->id, [$file->id], $descriptor['storage_path'], $descriptor['lock_key']), $descriptor];
     }
 
     protected function createShoot(array $overrides = []): Shoot
@@ -510,7 +597,7 @@ class ShootMediaArchiveServiceTest extends TestCase
             'shoot_id' => $shoot->id,
             'filename' => 'media-file.jpg',
             'stored_filename' => 'media-file.jpg',
-            'path' => 'shoots/' . $shoot->id . '/completed/media-file.jpg',
+            'path' => 'shoots/'.$shoot->id.'/completed/media-file.jpg',
             'file_type' => 'image/jpeg',
             'file_size' => 1024,
             'media_type' => 'edited',

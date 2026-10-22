@@ -89,6 +89,12 @@ return [
 
     'signed_url_ttl' => (int) env('MEDIA_SIGNED_URL_TTL', 604800),
 
+    // Regenerable editor ZIP caches only. Originals and other archive families
+    // are never touched. The first apply starts the existing-link grace period.
+    'editor_archive_retention_days' => (int) env('MEDIA_EDITOR_ARCHIVE_RETENTION_DAYS', 14),
+    'editor_archive_tracking_root' => storage_path('app/private/editor-archive-retention'),
+    'editor_archive_reserve_bytes' => (int) env('MEDIA_EDITOR_ARCHIVE_RESERVE_BYTES', 20 * 1024 ** 3),
+
     /*
     |--------------------------------------------------------------------------
     | Bright MLS media URL TTL

@@ -140,12 +140,45 @@ function Get-BackendSourceFingerprint {
     return $fingerprint
 }
 
+function Get-ReleaseSizes {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $inputStream = [IO.File]::OpenRead($Path)
+    try {
+        $gzip = [IO.Compression.GZipStream]::new($inputStream, [IO.Compression.CompressionMode]::Decompress)
+        try {
+            $buffer = [byte[]]::new(1048576)
+            [long]$expanded = 0
+            while (($read = $gzip.Read($buffer, 0, $buffer.Length)) -gt 0) { $expanded += $read }
+        } finally { $gzip.Dispose() }
+    } finally { $inputStream.Dispose() }
+    return @{ Archive = (Get-Item -LiteralPath $Path).Length; Expanded = $expanded }
+}
+
+function Get-StorageGuardSource {
+    return [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(
+        (Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'deployment-storage.py'))))
+}
+
+function Test-DeploymentSpace {
+    param([Parameter(Mandatory = $true)][hashtable]$Sizes)
+    $encoded = Get-StorageGuardSource
+    $target = $Component.ToLowerInvariant()
+    Invoke-Ssh -Command "printf '%s' '$encoded' | base64 -d | python3 - preflight $target $($Sizes.Archive) $($Sizes.Expanded)"
+}
+
+function Invoke-DeploymentRetention {
+    # Both remote deployment wrappers have returned, closing their flock FDs.
+    # The retention helper can now acquire backend then frontend without a cycle.
+    Invoke-Ssh -Command 'set -eu; python3 /var/www/backend/scripts/deploy/deployment-storage.py install-cron; python3 /var/www/backend/scripts/deploy/deployment-storage.py retention --apply'
+}
+
 function Deploy-Backend {
     param(
         [Parameter(Mandatory = $true)][string]$RemoteArchive,
         [Parameter(Mandatory = $true)][string]$Commit,
         [Parameter(Mandatory = $true)][bool]$RunMigrations,
-        [Parameter(Mandatory = $true)][string]$SourceFingerprint
+        [Parameter(Mandatory = $true)][string]$SourceFingerprint,
+        [Parameter(Mandatory = $true)][hashtable]$Sizes
     )
     $remoteScript = @'
 set -Eeuo pipefail
@@ -157,6 +190,8 @@ commit="$2"
 run_migrations="$3"
 configure_stripe="$4"
 expected_source="$5"
+archive_bytes="$6"
+release_bytes="$7"
 app="/var/www/backend"
 stamp="$(date +%Y%m%d-%H%M%S)"
 stage="/tmp/repro-backend-$commit"
@@ -172,6 +207,10 @@ code_replaced=0
 command -v flock >/dev/null
 exec 9>"$HOME/.repro-backend-deploy.lock"
 flock -w 300 9 || { echo 'Another backend deployment holds the lock; retry later.' >&2; exit 94; }
+
+# Recheck current free blocks under the deployment lock, before extraction,
+# maintenance or rollback backups. The first check ran before SCP.
+tar -xOf "$archive" scripts/deploy/deployment-storage.py | python3 - preflight backend "$archive_bytes" "$release_bytes"
 
 case "$archive" in /tmp/repro-backend-*.tar.gz) ;; *) echo "Unsafe archive path" >&2; exit 90 ;; esac
 case "$stage" in /tmp/repro-backend-*) ;; *) echo "Unsafe stage path" >&2; exit 91 ;; esac
@@ -402,22 +441,31 @@ pending="$(php artisan migrate:status --no-interaction | grep -c 'Pending' || tr
 test "$pending" = "0"
 curl --fail --silent --show-error --output /dev/null https://api.reprodashboard.com/up
 printf '{"commit":"%s","deployed_at":"%s"}\n' "$commit" "$(date -u +%FT%TZ)" > "$app/storage/app/deploy-meta.json"
+printf '{"component":"backend","backup":"%s","status":"verified","commit":"%s"}\n' "$stamp" "$commit" > "$backup/deployment-succeeded.json"
 echo "backend_deploy_complete:$commit"
 '@
-    Invoke-RemoteBash -Source $remoteScript -Arguments @($RemoteArchive, $Commit, $(if ($RunMigrations) { '1' } else { '0' }), $(if ($ConfigureStripeWebhook) { '1' } else { '0' }), $SourceFingerprint) -SharedWebGroup
+    Invoke-RemoteBash -Source $remoteScript -Arguments @($RemoteArchive, $Commit, $(if ($RunMigrations) { '1' } else { '0' }), $(if ($ConfigureStripeWebhook) { '1' } else { '0' }), $SourceFingerprint, [string]$Sizes.Archive, [string]$Sizes.Expanded) -SharedWebGroup
 }
 
 function Deploy-Frontend {
     param(
         [Parameter(Mandatory = $true)][string]$RemoteArchive,
-        [Parameter(Mandatory = $true)][string]$Commit
+        [Parameter(Mandatory = $true)][string]$Commit,
+        [Parameter(Mandatory = $true)][hashtable]$Sizes
     )
     $remoteScript = @'
 set -Eeuo pipefail
 archive="$1"
 commit="$2"
+archive_bytes="$3"
+release_bytes="$4"
 app="/var/www/frontend"
 stage="/tmp/repro-frontend-$commit"
+
+command -v flock >/dev/null
+exec 9>"$HOME/.repro-frontend-deploy.lock"
+flock -w 300 9 || { echo 'Another frontend deployment holds the lock; retry later.' >&2; exit 94; }
+python3 /var/www/backend/scripts/deploy/deployment-storage.py preflight frontend "$archive_bytes" "$release_bytes"
 
 case "$archive" in /tmp/repro-frontend-*.tar.gz) ;; *) echo "Unsafe archive path" >&2; exit 90 ;; esac
 case "$stage" in /tmp/repro-frontend-*) ;; *) echo "Unsafe stage path" >&2; exit 91 ;; esac
@@ -453,7 +501,7 @@ grep -q "\"commit\":\"$commit\"" "$app/dist/deploy-meta.json"
 curl --fail --silent --show-error --output /dev/null https://reprodashboard.com/
 echo "frontend_deploy_wrapper_complete:$commit"
 '@
-    Invoke-RemoteBash -Source $remoteScript -Arguments @($RemoteArchive, $Commit)
+    Invoke-RemoteBash -Source $remoteScript -Arguments @($RemoteArchive, $Commit, [string]$Sizes.Archive, [string]$Sizes.Expanded)
 }
 
 try {
@@ -545,10 +593,12 @@ try {
         Invoke-Checked -FilePath 'git.exe' -Arguments @('archive', '--format=tar.gz', '-o', $archivePath, 'HEAD')
         $remoteArchive = "/tmp/repro-$($Component.ToLowerInvariant())-$shortCommit.tar.gz"
         & (Join-Path $PSScriptRoot 'Test-ReleaseArchive.ps1') -ArchivePath $archivePath
+        $releaseSizes = Get-ReleaseSizes -Path $archivePath
+        Test-DeploymentSpace -Sizes $releaseSizes
         Invoke-Scp -LocalPath $archivePath -RemotePath $remoteArchive
 
         if ($Component -eq 'Backend') {
-            Deploy-Backend -RemoteArchive $remoteArchive -Commit $commit -RunMigrations:(-not $SkipMigrate) -SourceFingerprint $backendSourceFingerprint
+            Deploy-Backend -RemoteArchive $remoteArchive -Commit $commit -RunMigrations:(-not $SkipMigrate) -SourceFingerprint $backendSourceFingerprint -Sizes $releaseSizes
             $apiStatus = (Invoke-WebRequest -Uri 'https://api.reprodashboard.com/up' -Method Get -TimeoutSec 30 -SkipHttpErrorCheck).StatusCode
             if ($apiStatus -ne 200) {
                 throw "Backend health check returned HTTP $apiStatus."
@@ -558,7 +608,7 @@ try {
                 throw "Unsigned Stripe webhook probe returned HTTP $($webhookProbe.StatusCode), expected 400."
             }
         } else {
-            Deploy-Frontend -RemoteArchive $remoteArchive -Commit $commit
+            Deploy-Frontend -RemoteArchive $remoteArchive -Commit $commit -Sizes $releaseSizes
             $markerUri = "https://reprodashboard.com/deploy-meta.json?commit=$commit"
             $markerResponse = Invoke-WebRequest -Uri $markerUri -Method Get -TimeoutSec 30 -SkipHttpErrorCheck
             if ($markerResponse.StatusCode -ne 200) {
@@ -569,6 +619,7 @@ try {
                 throw "Frontend marker commit did not match $commit."
             }
         }
+        Invoke-DeploymentRetention
         Write-Host "DONE: $Component deployed successfully at commit $commit"
     }
 } catch {

@@ -93,6 +93,16 @@ final class EditorRawArchiveService
         }
         $ids = $files->pluck('id')->map(fn ($id) => (int) $id)->sort()->values()->all();
         $legacyKey = "editor-downloads/{$shoot->id}/".sha1(implode(',', $ids)).'.zip';
+        $legacyLease = app(\App\Services\Media\EditorArchiveLifecycle::class)->acquire($legacyKey);
+        try {
+            return $this->reuseProtectedLegacyArchive($shoot, $user, $files, $destination, $media, $legacyKey, $ids);
+        } finally {
+            $legacyLease?->release();
+        }
+    }
+
+    private function reuseProtectedLegacyArchive(Shoot $shoot, User $user, Collection $files, string $destination, MediaStorage $media, string $legacyKey, array $ids): bool
+    {
         $legacyPath = $media->absolutePath($legacyKey);
         if (! $legacyPath || ! is_file($legacyPath)) {
             return false;
@@ -135,6 +145,7 @@ final class EditorRawArchiveService
         if ($this->descriptor($currentShoot, $currentUser, $currentFiles)['storage_path'] !== $destination) {
             return false;
         }
+        app(\App\Services\Media\EditorArchiveSpaceGuard::class)->assertCanPublish($destination, $legacyPath);
         app(\App\Services\Media\MediaArchivePublisher::class)->publish($destination, $legacyPath);
 
         return true;

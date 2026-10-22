@@ -1,0 +1,80 @@
+Production storage safeguards
+=============================
+
+Deployment backups
+------------------
+The guarded Deploy-App.ps1 release workflow checks capacity before uploading a
+release and again under the deployment lock, before backups or maintenance.
+It budgets staging, source backup, SQLite and WAL, dependencies and release
+assets on their actual filesystems, plus a 20 GiB reserve on each filesystem.
+Insufficient capacity aborts the release without taking the application down.
+
+After a successful release, the wrapper installs one maverick-user cron entry
+and runs retention. The cron repeats daily at 03:47 in the server timezone.
+Only recognized complete timestamp-named bundles inside
+/home/maverick/repro-deploy-backups/backend and /frontend are eligible.
+Both the backup timestamp and its newest file modification must be older than
+14 days. The newest complete backup and newest explicitly verified rollback
+are retained even if older. Unknown, incomplete, redirected or hardlinked
+bundles are preserved for review. Existing frontend release retention is unchanged.
+
+Run as maverick:
+  python3 /var/www/backend/scripts/deploy/deployment-storage.py retention
+  python3 /var/www/backend/scripts/deploy/deployment-storage.py retention --apply
+  python3 /var/www/backend/scripts/deploy/deployment-storage.py install-cron
+
+The first command is read-only. Scheduled output overwrites one bounded log:
+  /home/maverick/.repro-deploy-retention/last-run.log
+The original crontab is preserved once in the same private directory. Existing
+cron entries are preserved; unexpected duplicate retention entries fail closed.
+
+Editor ZIP caches
+-----------------
+Laravel's existing scheduler runs media:prune-editor-archives --apply --json
+daily at 04:15 in the application's schedule timezone, as www-data. The schedule
+is registered in bootstrap/app.php. Its output overwrites
+storage/logs/editor-archive-retention.log instead of accumulating indefinitely.
+
+Only local regenerable editor-downloads/{shoot}/{hash}.zip files are considered.
+Original photos/videos, other archive families, unknown files, symlinks,
+hardlinks, active shoots and remote-storage migrations are excluded. Eligible
+shoots must be delivered, cancelled or declined. ZIPs need at least 14 days of
+inactivity; MEDIA_EDITOR_ARCHIVE_RETENTION_DAYS can increase this minimum.
+
+Generation, URL issuance and streaming share durable per-archive locks with
+cleanup. Usage records protect each signed URL for its actual lifetime plus a
+delivery day. This also covers nginx downloads that outlive the PHP response.
+Unusable usage metadata preserves the ZIP and reports an inspection failure.
+
+On the first apply, a persistent rollout marker starts a one-time grace period
+for URLs issued before tracking existed. The default is 31 days because the
+Bright MLS resolver can issue 30-day signed URLs. A longer configured TTL extends
+the initial grace. Repeated runs never reset the marker. During this grace the
+manifest reports otherwise eligible bytes but does not delete existing ZIPs.
+
+From /var/www/backend, run as the scheduler/service user:
+  php artisan media:prune-editor-archives
+  php artisan media:prune-editor-archives --json
+  php artisan media:prune-editor-archives --apply --json
+
+Without --apply these commands do not create tracking state or delete files.
+The JSON manifest includes grace_until, eligible/deleted counts and bytes,
+and a reason for every inspected file. Tracking is under
+storage/app/private/editor-archive-retention with group-shared permissions;
+never remove lock files while services are running, even after a ZIP is deleted.
+
+New editor ZIP generation also checks capacity before building. The budget uses
+source sizes, temporary build space, remote-source staging and the destination
+copy, grouped by filesystem, plus a default 20 GiB reserve. Legacy ZIP reuse
+checks the destination copy budget before publishing. Ready ZIP downloads do
+not require this new-generation budget. MEDIA_EDITOR_ARCHIVE_RESERVE_BYTES
+configures the reserve; tests use a small fixture budget instead of production
+capacity. These are point-in-time checks, not reservations against other writers.
+
+Verification
+------------
+Run scripts/deploy/test_deployment_storage.py on Linux and the focused backend
+archive-retention, editor-download, media-storage and deployment tests. Verify
+schedule:list, the single maverick crontab entry, both dry-run manifests and
+real signed editor-download range requests after deployment. An eligible byte
+count is an estimate, not space reclaimed; use deleted_bytes and df for results.

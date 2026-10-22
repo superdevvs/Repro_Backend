@@ -3,7 +3,6 @@
 namespace App\Jobs;
 
 use App\Models\Shoot;
-use App\Models\ShootFile;
 use App\Models\User;
 use App\Services\Media\MediaStorage;
 use App\Services\Shoots\ShootEditingAssignmentService;
@@ -53,7 +52,9 @@ class GenerateEditorRawZipJob implements ShouldQueue
         MediaStorage $media
     ): void {
         $zipPath = null;
+        $archiveLease = null;
         try {
+            $archiveLease = app(\App\Services\Media\EditorArchiveLifecycle::class)->acquire($this->storagePath);
             $shoot = Shoot::find($this->shootId);
             $user = User::find($this->userId);
             if (! $shoot || ! $user) {
@@ -71,6 +72,7 @@ class GenerateEditorRawZipJob implements ShouldQueue
             if ($scoped->reuseLegacyArchive($shoot, $user, $files, $this->storagePath)) {
                 return;
             }
+            app(\App\Services\Media\EditorArchiveSpaceGuard::class)->assertCanGenerate($files, $this->storagePath);
             $zipPath = $shareLinkService->generateFilesZip($shoot, $files);
             if (! $zipPath || ! is_file($zipPath)) {
                 throw new \RuntimeException('Failed to generate editor raw ZIP');
@@ -85,6 +87,7 @@ class GenerateEditorRawZipJob implements ShouldQueue
                 @unlink($zipPath);
             }
             Cache::forget($this->lockKey);
+            $archiveLease?->release();
         }
     }
 

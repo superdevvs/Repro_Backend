@@ -80,6 +80,9 @@ return Application::configure(basePath: dirname(__DIR__))
         // Completed/failed upload replays expire after 30 days; pending attempts are never pruned.
         $schedule->command('model:prune')->dailyAt('03:45')->withoutOverlapping()->onOneServer();
         $schedule->command('media:prune-downloads')->hourly()->withoutOverlapping()->onOneServer();
+        $schedule->command('media:prune-editor-archives --apply --json')
+            ->dailyAt('04:15')->withoutOverlapping()->onOneServer()
+            ->sendOutputTo(storage_path('logs/editor-archive-retention.log'));
     })
     ->withMiddleware(function (Middleware $middleware) {
         $middleware->prepend(\App\Http\Middleware\ApiRequestContextMiddleware::class);

@@ -25,7 +25,7 @@ class MediaStorage
 {
     public function __construct(private ?OriginalsStorageGuard $originalsGuard = null)
     {
-        $this->originalsGuard ??= new OriginalsStorageGuard();
+        $this->originalsGuard ??= new OriginalsStorageGuard;
     }
 
     /**
@@ -401,7 +401,7 @@ class MediaStorage
 
             $tmp = tempnam(sys_get_temp_dir(), 'r2src_');
             if ($suffix) {
-                $renamed = $tmp . $suffix;
+                $renamed = $tmp.$suffix;
                 @rename($tmp, $renamed);
                 $tmp = $renamed;
             }
@@ -553,12 +553,22 @@ class MediaStorage
     {
         $key = $this->normalizeKey($key) ?? '';
         $ttl = $ttlSeconds ?? (int) config('media.signed_url_ttl', 604800);
+        $lease = app(EditorArchiveLifecycle::class)->acquire($key, max(1, $ttl));
+        try {
+            // Cleanup and URL issuance share a lock. Never return a new link for
+            // an archive removed between an earlier exists() check and this call.
+            if ($lease && ! $this->exists($key)) {
+                abort(404);
+            }
 
-        return URL::temporarySignedRoute(
-            'api.public.shoot-media.file',
-            now()->addSeconds(max(1, $ttl)),
-            ['path' => $key]
-        );
+            return URL::temporarySignedRoute(
+                'api.public.shoot-media.file',
+                now()->addSeconds(max(1, $ttl)),
+                ['path' => $key]
+            );
+        } finally {
+            $lease?->release();
+        }
     }
 
     /**
@@ -644,6 +654,14 @@ class MediaStorage
     public function streamResponse(string $key, ?string $mimeType = null, array $headers = []): Response
     {
         $key = $this->normalizeKey($key) ?? '';
+
+        return app(EditorArchiveLifecycle::class)->withResponse($key,
+            fn () => $this->streamResponseBody($key, $mimeType, $headers));
+    }
+
+    private function streamResponseBody(string $key, ?string $mimeType, array $headers): Response
+    {
+        $key = $this->normalizeKey($key) ?? '';
         $delivery = app(LocalMediaDelivery::class);
         $delivery->assertSafeKey($key);
         $disk = $this->diskFor($key);
@@ -690,6 +708,14 @@ class MediaStorage
     }
 
     public function downloadResponse(string $key, string $filename, array $headers = []): Response
+    {
+        $key = $this->normalizeKey($key) ?? '';
+
+        return app(EditorArchiveLifecycle::class)->withResponse($key,
+            fn () => $this->downloadResponseBody($key, $filename, $headers));
+    }
+
+    private function downloadResponseBody(string $key, string $filename, array $headers): Response
     {
         $key = $this->normalizeKey($key) ?? '';
         $delivery = app(LocalMediaDelivery::class);
