@@ -195,15 +195,19 @@ class ShootWorkflowService
      * @param  array<string, int>  $laneEditors  Explicit editor per human lane; replaces that lane's assignment.
      * @param  array<int, string>|null  $aiLanes  Lanes handled by AI. Null treats every lane outside $humanLanes as AI.
      *                                            Passing an array also (re)assigns lanes on a shoot already in editing.
+     * @param  bool  $scheduledIntake  A staff dispatch has validated RAW sources before upload finalization.
      */
-    public function startEditing(Shoot $shoot, ?User $user = null, ?array $humanLanes = null, array $laneEditors = [], ?array $aiLanes = null, bool $externalMedia = false): void
+    public function startEditing(Shoot $shoot, ?User $user = null, ?array $humanLanes = null, array $laneEditors = [], ?array $aiLanes = null, bool $externalMedia = false, bool $scheduledIntake = false): void
     {
         $isAlreadyEditing = $this->isAlreadyInStatus($shoot, self::STATUS_EDITING);
+        if ($scheduledIntake) {
+            abort_unless($user && in_array($user->role, ['admin', 'superadmin', 'editing_manager'], true), 403);
+        }
         if ($externalMedia) {
             abort_unless($user && in_array($user->role, ['admin', 'superadmin', 'editing_manager'], true)
                 && $humanLanes !== null && $humanLanes !== [] && $aiLanes === [], 403);
         }
-        if (! $isAlreadyEditing && !($externalMedia && ($shoot->workflow_status ?: $shoot->status) === self::STATUS_SCHEDULED)) {
+        if (! $isAlreadyEditing && !(($externalMedia || $scheduledIntake) && ($shoot->workflow_status ?: $shoot->status) === self::STATUS_SCHEDULED)) {
             $this->validateTransition($shoot, self::STATUS_EDITING);
         }
 

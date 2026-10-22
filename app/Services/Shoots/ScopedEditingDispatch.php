@@ -32,9 +32,9 @@ class ScopedEditingDispatch
             // Before delivery, sending media to a human editor assigns that lane, exactly as Send to
             // editor always has: the editor opens the shoot, edits from its media, uploads in Edited
             // and submits normally. Per-file human tasks remain only for revisions after editing.
-            $external = collect($plan['items'])->contains('source', 'external');
+            $intakeSources = collect($plan['items'])->contains(fn ($item) => in_array($item['source'], ['raw', 'external'], true));
             $intakeStage = in_array($locked->workflow_status ?: $locked->status, [Shoot::STATUS_UPLOADED, Shoot::STATUS_EDITING], true)
-                || ($external && ($locked->workflow_status ?: $locked->status) === Shoot::STATUS_SCHEDULED);
+                || ($intakeSources && ($locked->workflow_status ?: $locked->status) === Shoot::STATUS_SCHEDULED);
             $human = collect($plan['items'])->where('destination', 'human');
             foreach ($plan['items'] as $item) {
                 if ($intakeStage && $item['destination'] === 'human') continue;
@@ -78,7 +78,10 @@ class ScopedEditingDispatch
                 $laneEditors[$lane] = (int) $chosen;
             }
         }
-        app(\App\Services\ShootWorkflowService::class)->startEditing($shoot, $user, $humanLanes, $laneEditors, [], $external);
+        // A reviewed RAW dispatch can start editing before upload finalization advances the shoot.
+        $scheduledIntake = ($shoot->workflow_status ?: $shoot->status) === Shoot::STATUS_SCHEDULED
+            && collect($plan['items'])->contains('source', 'raw');
+        app(\App\Services\ShootWorkflowService::class)->startEditing($shoot, $user, $humanLanes, $laneEditors, [], $external, $scheduledIntake);
     }
 
     /** Editors read request instructions and the requested files from the shoot's editing notes. */

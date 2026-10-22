@@ -94,6 +94,48 @@ class IntakeEditingAssignmentWorkflowTest extends TestCase
         $this->assertEditorCompletesShootNormally($this->editor);
     }
 
+    public function test_editing_manager_can_send_scheduled_hdr_photos_to_the_normal_editor_workflow(): void
+    {
+        // Uploads can exist while the photographer has not finalized the shoot's intake.
+        $this->manager->update(['role' => 'editing_manager']);
+        $this->shoot->update(['status' => 'scheduled', 'workflow_status' => 'scheduled', 'photos_uploaded_at' => null]);
+        $requestId = (string) Str::uuid();
+        $choices = ['scope' => 'photos', 'request_id' => $requestId];
+
+        $id = $this->sendToEditor($choices)->assertAccepted()->json('data.dispatchId');
+
+        $this->assertSame('editing', $this->shoot->fresh()->status);
+        $this->assertSame('editing', $this->shoot->fresh()->workflow_status);
+        $this->assertNotNull($this->shoot->fresh()->photos_uploaded_at);
+        $this->assertSame($this->editor->id, (int) $this->item->fresh()->editor_id);
+        $this->assertSame($this->editor->id, (int) $this->shoot->fresh()->editor_id);
+        $this->assertSame(0, ShootEditingDispatchItem::count());
+        $this->assertSame('raw', ShootEditingDispatch::findOrFail($id)->plan['items'][0]['source']);
+        $this->sendToEditor($choices)->assertAccepted()->assertJsonPath('data.dispatchId', $id);
+        $this->assertSame(1, ShootEditingDispatch::count());
+        $this->getJson("/api/shoots/{$this->shoot->id}/editing-plan")->assertOk()->assertJsonPath('data.lanes.photo.sent', true);
+
+        $this->assertEditorCompletesShootNormally($this->editor);
+    }
+
+    public function test_scheduled_intake_still_rejects_uncleared_or_changed_hdr_sources_without_assigning(): void
+    {
+        $this->manager->update(['role' => 'editing_manager']);
+        $this->shoot->update(['status' => 'scheduled', 'workflow_status' => 'scheduled', 'photos_uploaded_at' => null]);
+        $this->raws[1]->update(['scan_status' => ShootFile::SCAN_STATUS_QUARANTINED]);
+        $this->sendToEditor(['scope' => 'photos'])->assertUnprocessable();
+        $this->raws[1]->update(['scan_status' => ShootFile::SCAN_STATUS_CLEAN]);
+        $versions = collect($this->raws)->mapWithKeys(fn ($file) => [$file->id => $file->content_version])->all();
+        $versions[$this->raws[1]->id]++;
+        $this->sendToEditor(['scope' => 'photos', 'source_versions' => $versions])->assertConflict();
+
+        $this->assertSame('scheduled', $this->shoot->fresh()->workflow_status);
+        $this->assertNull($this->shoot->fresh()->photos_uploaded_at);
+        $this->assertNull($this->item->fresh()->editor_id);
+        $this->assertSame(0, ShootEditingDispatch::count());
+        $this->assertSame(0, ShootEditingDispatchItem::count());
+    }
+
     public function test_editor_override_becomes_the_lane_assignment_and_resending_reassigns(): void
     {
         $other = User::factory()->create(['role' => 'editor', 'name' => 'Another editor', 'metadata' => ['editing_capabilities' => ['photo']]]);
