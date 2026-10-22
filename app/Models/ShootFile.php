@@ -252,6 +252,20 @@ class ShootFile extends Model
         return $this->belongsTo(ShootService::class, 'shoot_service_id');
     }
 
+    /** Verified files are public only while their owning service remains finalized. */
+    public function scopeVerifiedForFinalizedDelivery(\Illuminate\Database\Eloquent\Builder $query): \Illuminate\Database\Eloquent\Builder
+    {
+        return $query->where('shoot_files.workflow_stage', self::STAGE_VERIFIED)
+            ->where(function ($files) {
+                // Older deliveries have no service ownership and retain their existing release policy.
+                $files->whereNull('shoot_files.shoot_service_id')
+                    ->orWhereHas('serviceItem', fn ($line) => $line
+                        ->whereColumn('shoot_service.shoot_id', 'shoot_files.shoot_id')
+                        ->where('workflow_status', ShootService::WORKFLOW_DELIVERED)
+                        ->where('delivery_status', ShootService::DELIVERY_DELIVERED));
+            });
+    }
+
     public function album()
     {
         return $this->belongsTo(ShootMediaAlbum::class, 'album_id');

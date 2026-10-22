@@ -396,7 +396,7 @@ class ShootMediaArchiveService
             $query->whereHas('serviceItem', fn ($line) => $line->where('shoot_unit_id', $shootUnitId)->where('shoot_id', $shoot->id));
         }
         if ($this->parseTypeFilters($type)['verified_only']) {
-            $query->where('workflow_stage', ShootFile::STAGE_VERIFIED);
+            $query->verifiedForFinalizedDelivery();
         }
 
         if ($this->normalizeType($type) === 'raw') {

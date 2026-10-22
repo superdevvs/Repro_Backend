@@ -194,9 +194,14 @@ class DeliveryShareLinksBuilderSummaryTest extends TestCase
 
     private function makeShoot(array $attributes): Shoot
     {
-        $shoot = new Shoot(array_merge([
+        $shoot = Mockery::mock(Shoot::class)->makePartial();
+        $shoot->fill(array_merge([
             'address' => '100 Test St', 'city' => 'Caledonia', 'state' => 'NY', 'zip' => '14423',
         ], $attributes));
+        $items = Mockery::mock(\Illuminate\Database\Eloquent\Relations\HasMany::class);
+        $items->shouldReceive('with')->with('service')->andReturnSelf();
+        $items->shouldReceive('get')->andReturn(collect());
+        $shoot->shouldReceive('serviceItems')->andReturn($items);
         $shoot->id = 385;
         $shoot->exists = true;
         $shoot->setRelation('serviceItems', collect());

@@ -12,14 +12,14 @@ class ShootDeliveryRevision
 {
     public function forShoot(Shoot $shoot, array $serviceItemIds = []): string
     {
-        $files = $shoot->files()->where('workflow_stage', ShootFile::STAGE_VERIFIED)
+        $files = $shoot->files()->verifiedForFinalizedDelivery()
             ->when($serviceItemIds !== [], fn ($query) => $query->whereIn('shoot_service_id', $serviceItemIds))
             ->orderBy('id')->get()
             ->filter(fn (ShootFile $file) => ! $file->is_hidden && ! $file->isBlockedFromDelivery() && ! $file->isIguideOfflinePackage())
             ->map(fn (ShootFile $file) => $file->only([
                 'id', 'shoot_service_id', 'content_version', 'path', 'storage_path', 'file_size', 'media_type',
             ]))->values()->all();
-        $services = $shoot->serviceItems()->where('delivery_status', 'delivered')
+        $services = $shoot->serviceItems()->where('workflow_status', 'delivered')->where('delivery_status', 'delivered')
             ->when($serviceItemIds !== [], fn ($query) => $query->whereIn('id', $serviceItemIds))
             ->orderBy('id')->pluck('id')->all();
         $links = array_intersect_key((array) ($shoot->tour_links ?? []), array_flip([

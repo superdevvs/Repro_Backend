@@ -212,9 +212,8 @@ class DeliveryShareLinksBuilder
             }
         }
 
-        $files = $shoot->relationLoaded('files')
-            ? $shoot->files
-            : $shoot->files()->where('media_type', 'video')->whereIn('workflow_stage', [ShootFile::STAGE_VERIFIED])->orderBy('id')->get();
+        // Re-query ownership even when files are loaded: a line may have been reopened.
+        $files = $shoot->files()->where('media_type', 'video')->verifiedForFinalizedDelivery()->orderBy('id')->get();
 
         foreach ($files as $file) {
             if (strtolower((string) $file->media_type) !== 'video'
@@ -314,9 +313,7 @@ class DeliveryShareLinksBuilder
     /** A saved video URL or stray file is not proof that a video was ordered. */
     private function hasBookedVideo(Shoot $shoot): bool
     {
-        $items = $shoot->relationLoaded('serviceItems')
-            ? $shoot->serviceItems
-            : $shoot->serviceItems()->with('service')->get();
+        $items = $shoot->serviceItems()->with('service')->get();
         if ($items->isNotEmpty()) {
             return $items->contains(fn ($item) => $item->workflow_status === 'delivered'
                 && $item->delivery_status === 'delivered' && ($item->service?->supportsVideoIntake() ?? false));

@@ -117,10 +117,12 @@ class SendShootReadyEmailJob implements ShouldQueue
                 throw $failure;
             }
         } elseif ($client && ! $this->isFullOrderDelivery) {
-            // Link-only updates cover the already finalized segments. Never name
-            // a pending service as delivered in this partial notification.
-            $serviceItemIds = $this->shootServiceId ? [$this->shootServiceId]
-                : $shoot->serviceItems()->where('delivery_status', 'delivered')->pluck('id')->map(fn ($id) => (int) $id)->all();
+            // A service may be reopened or cancelled while this job is queued.
+            // Recheck both current states before formatting copy or its revision.
+            $serviceItemIds = $shoot->serviceItems()
+                ->when($this->shootServiceId !== null, fn ($query) => $query->whereKey($this->shootServiceId))
+                ->where('workflow_status', 'delivered')->where('delivery_status', 'delivered')
+                ->orderBy('id')->pluck('id')->map(fn ($id) => (int) $id)->all();
             if ($serviceItemIds === []) {
                 $progress->stageSkipped($this->shootId, FinalizeProgressTracker::STAGE_DELIVERY_EMAIL, 'No finalized service to notify.');
 

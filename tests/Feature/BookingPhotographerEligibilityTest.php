@@ -315,6 +315,66 @@ class BookingPhotographerEligibilityTest extends TestCase
         }
     }
 
+    #[\PHPUnit\Framework\Attributes\TestWith(['photographer'])]
+    #[\PHPUnit\Framework\Attributes\TestWith(['editor'])]
+    public function test_assigned_media_roles_cannot_reassign_inherited_services_through_schedule(string $role): void
+    {
+        $shoot = $this->existingShoot();
+        $actor = $role === 'photographer' ? $this->photographer
+            : User::factory()->create(['role' => 'editor', 'email_verification_required_at' => null]);
+        if ($role === 'editor') $shoot->update(['editor_id' => $actor->id]);
+        $newMain = $this->qualifiedPhotographer($this->service);
+        $before = $shoot->serviceItems()->firstOrFail()->getAttributes();
+        Sanctum::actingAs($actor);
+
+        $this->postJson("/api/shoots/{$shoot->id}/schedule", [
+            'scheduled_at' => '2031-10-09T10:00:00Z', 'photographer_id' => $newMain->id,
+        ])->assertForbidden();
+
+        $this->assertSame($this->photographer->id, (int) $shoot->fresh()->photographer_id);
+        $this->assertSame($before, $shoot->serviceItems()->firstOrFail()->getAttributes());
+        Mail::assertNothingSent();
+        Queue::assertNothingPushed();
+    }
+
+    #[\PHPUnit\Framework\Attributes\TestWith(['photographer', false])]
+    #[\PHPUnit\Framework\Attributes\TestWith(['photographer', true])]
+    #[\PHPUnit\Framework\Attributes\TestWith(['editor', false])]
+    #[\PHPUnit\Framework\Attributes\TestWith(['editor', true])]
+    public function test_assigned_media_roles_can_still_schedule_without_reassignment(string $role, bool $echoPhotographer): void
+    {
+        $this->photographer->update(['metadata' => array_merge($this->photographer->metadata, ['travel_range' => 40])]);
+        $shoot = $this->existingShoot();
+        $actor = $role === 'photographer' ? $this->photographer
+            : User::factory()->create(['role' => 'editor', 'email_verification_required_at' => null]);
+        if ($role === 'editor') $shoot->update(['editor_id' => $actor->id]);
+        Sanctum::actingAs($actor);
+        $payload = ['scheduled_at' => '2031-10-09T10:00:00Z'];
+        if ($echoPhotographer) $payload['photographer_id'] = $this->photographer->id;
+
+        $this->postJson("/api/shoots/{$shoot->id}/schedule", $payload)->assertOk();
+
+        $this->assertSame($this->photographer->id, (int) $shoot->fresh()->photographer_id);
+        $this->assertSame($this->photographer->id, (int) $shoot->serviceItems()->firstOrFail()->photographer_id);
+    }
+
+    #[\PHPUnit\Framework\Attributes\TestWith(['admin'])]
+    #[\PHPUnit\Framework\Attributes\TestWith(['editing_manager'])]
+    #[\PHPUnit\Framework\Attributes\TestWith(['salesRep'])]
+    public function test_authorized_booking_staff_can_reassign_inherited_services_through_schedule(string $role): void
+    {
+        $shoot = $this->existingShoot();
+        $newMain = $this->qualifiedPhotographer($this->service);
+        $this->admin->update(['role' => $role]);
+
+        $this->postJson("/api/shoots/{$shoot->id}/schedule", [
+            'scheduled_at' => '2031-10-09T10:00:00Z', 'photographer_id' => $newMain->id,
+        ])->assertOk();
+
+        $this->assertSame($newMain->id, (int) $shoot->fresh()->photographer_id);
+        $this->assertSame($newMain->id, (int) $shoot->serviceItems()->firstOrFail()->photographer_id);
+    }
+
     public function test_explicit_service_assignment_is_preserved_when_the_main_changes(): void
     {
         [$shoot, $newMain, $otherPhoto, $video, $specialist] = $this->reassignmentFixture(false);

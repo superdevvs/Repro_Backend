@@ -6,8 +6,10 @@ use App\Jobs\GenerateShootMediaArchiveJob;
 use App\Models\Service;
 use App\Models\Shoot;
 use App\Models\ShootFile;
+use App\Services\Messaging\ShootDeliveryRevision;
 use App\Services\ShootMediaStorageService;
 use App\Services\Shoots\ShootMediaArchiveService;
+use App\Services\SystemEmails\DeliveryShareLinksBuilder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Queue;
@@ -83,6 +85,111 @@ class FinalizedServiceArchiveLinksTest extends TestCase
         $this->getJson($signed)->assertUnprocessable();
     }
 
+    public function test_existing_whole_summary_zip_excludes_pending_and_reopened_service_owners(): void
+    {
+        [$shoot, $serviceId, $pendingId] = $this->fixture();
+        $released = $this->file($shoot, $serviceId, ShootFile::STAGE_VERIFIED, 'released.jpg');
+        $legacy = $this->file($shoot, null, ShootFile::STAGE_VERIFIED, 'legacy.jpg');
+        $archives = app(ShootMediaArchiveService::class);
+        $signed = $archives->buildSignedStatusUrl($shoot, 'edited|verified', 'original');
+        $this->assertStringNotContainsString('shoot_service_id=', $signed);
+        $archives->generateArchive($shoot, 'edited|verified', 'original');
+        $this->assertTrue($archives->hasFreshArchive($shoot, 'edited|verified', 'original'));
+        $this->getJson($signed)->assertOk()->assertJsonPath('type', 'redirect');
+
+        $pending = $this->file($shoot, $pendingId, ShootFile::STAGE_VERIFIED, 'pending-service.jpg');
+        $replacement = $this->file($shoot, $serviceId, ShootFile::STAGE_COMPLETED, 'pending-replacement.jpg');
+        $this->assertEqualsCanonicalizing([$released->id, $legacy->id], $archives->getFilesForType($shoot, 'edited|verified')->pluck('id')->all());
+        $this->assertTrue($archives->hasFreshArchive($shoot, 'edited|verified', 'original'));
+
+        // Both workflow and delivery must remain finalized, even for a previously issued URL.
+        $shoot->serviceItems()->whereKey($serviceId)->update(['delivery_status' => 'in_progress']);
+        $this->assertFalse($archives->hasFreshArchive($shoot, 'edited|verified', 'original'));
+        $this->getJson($signed)->assertAccepted();
+        Queue::assertPushed(GenerateShootMediaArchiveJob::class, fn ($job) => $job->shootServiceId === null && $job->type === 'edited|verified');
+        $this->assertSame([$legacy->id], $archives->getFilesForType($shoot, 'edited|verified')->pluck('id')->all());
+        $shoot->serviceItems()->whereKey($serviceId)->update(['delivery_status' => 'delivered', 'workflow_status' => 'in_progress']);
+        $this->assertSame([$legacy->id], $archives->getFilesForType($shoot, 'edited|verified')->pluck('id')->all());
+
+        $archives->generateArchive($shoot, 'edited|verified', 'original', true);
+        $zip = new ZipArchive;
+        $path = Storage::disk('local')->path($archives->getArchivePath($shoot, 'edited|verified', 'original'));
+        $this->assertTrue($zip->open($path) === true);
+        $this->assertSame(1, $zip->numFiles);
+        $this->assertSame('legacy.jpg', $zip->getFromIndex(0));
+        $zip->close();
+        $this->getJson($signed)->assertOk()->assertJsonPath('type', 'redirect');
+
+        // Staff's plain edited ZIP retains pending/reopened work for manual use.
+        $this->assertEqualsCanonicalizing([$released->id, $legacy->id, $pending->id, $replacement->id],
+            $archives->getFilesForType($shoot, 'edited')->pluck('id')->all());
+    }
+
+    public function test_whole_summary_links_and_old_url_stop_offering_only_pending_or_revoked_media(): void
+    {
+        [$shoot, $serviceId, $pendingId] = $this->fixture();
+        $this->file($shoot, $serviceId, ShootFile::STAGE_VERIFIED, 'released.jpg');
+        $this->file($shoot, $pendingId, ShootFile::STAGE_VERIFIED, 'pending.jpg');
+        $builder = app(DeliveryShareLinksBuilder::class);
+        $this->assertNotNull($builder->forShootSummary($shoot)['full_zip_link']);
+        $signed = app(ShootMediaArchiveService::class)->buildSignedStatusUrl($shoot, 'edited|verified', 'original');
+        Queue::fake();
+        $shoot->serviceItems()->whereKey($serviceId)->update(['workflow_status' => 'in_progress']);
+
+        $share = $builder->forShootSummary($shoot);
+        $this->assertNull($share['full_zip_link']);
+        $this->assertNull($share['small_zip_link']);
+        $this->getJson($signed)->assertNotFound();
+        Queue::assertNotPushed(GenerateShootMediaArchiveJob::class);
+    }
+
+    public function test_summary_direct_video_candidates_require_their_own_service_to_remain_finalized(): void
+    {
+        [$shoot, $serviceId, $pendingId] = $this->fixture();
+        Service::whereIn('id', $shoot->serviceItems()->pluck('service_id'))->update(['upload_intake_type' => 'video']);
+        $pending = $this->file($shoot, $pendingId, ShootFile::STAGE_VERIFIED, 'pending.mp4');
+        $pending->update(['media_type' => 'video', 'path' => 'https://example.test/pending.mp4']);
+        $released = $this->file($shoot, $serviceId, ShootFile::STAGE_VERIFIED, 'released.mp4');
+        $released->update(['media_type' => 'video', 'path' => 'https://example.test/released.mp4']);
+        $shoot->load('files', 'serviceItems.service');
+        $builder = app(DeliveryShareLinksBuilder::class);
+        $this->assertSame('https://example.test/released.mp4', $builder->forShootSummary($shoot)['video_download_link']);
+        $shoot->update(['tour_links' => ['video_mls' => 'https://example.test/saved.mp4',
+            'video_branded' => 'https://example.test/branded.mp4', 'video_generic' => 'https://example.test/generic.mp4',
+            'video_link' => 'https://example.test/link.mp4']]);
+        $this->assertSame('https://example.test/saved.mp4', $builder->forShootSummary($shoot)['video_download_link']);
+
+        // Neither preloaded relation may retain a reopened line's direct or saved URLs.
+        $shoot->serviceItems()->whereKey($serviceId)->update(['delivery_status' => 'in_progress']);
+        $share = $builder->forShootSummary($shoot);
+        $this->assertNull($share['video_download_link']);
+        $this->assertSame([], array_filter($share['links'], fn ($link) => in_array($link['key'],
+            ['video', 'additional_video_mls', 'additional_video_branded', 'additional_video_generic', 'additional_video_link'], true)));
+    }
+
+    public function test_whole_summary_revision_ignores_verified_media_until_its_owner_is_finalized(): void
+    {
+        [$shoot, $serviceId, $pendingId] = $this->fixture();
+        $this->file($shoot, $serviceId, ShootFile::STAGE_VERIFIED, 'released.jpg');
+        $pending = $this->file($shoot, $pendingId, ShootFile::STAGE_VERIFIED, 'pending.jpg');
+        $revisions = app(ShootDeliveryRevision::class);
+        $initial = $revisions->forShoot($shoot);
+        $pending->update(['content_version' => 2]);
+        $this->assertSame($initial, $revisions->forShoot($shoot));
+        $shoot->serviceItems()->whereKey($pendingId)->update(['delivery_status' => 'delivered']);
+        $this->assertSame($initial, $revisions->forShoot($shoot));
+        $shoot->serviceItems()->whereKey($pendingId)->update(['workflow_status' => 'delivered']);
+        $this->assertNotSame($initial, $revisions->forShoot($shoot));
+        $shoot->serviceItems()->whereKey($pendingId)->update(['workflow_status' => 'in_progress']);
+        $this->assertSame($initial, $revisions->forShoot($shoot));
+        $pending->update(['content_version' => 3]);
+        $this->assertSame($initial, $revisions->forShoot($shoot));
+
+        // Existing unassigned delivery media keeps its legacy revision behavior.
+        $this->file($shoot, null, ShootFile::STAGE_VERIFIED, 'legacy.jpg');
+        $this->assertNotSame($initial, $revisions->forShoot($shoot));
+    }
+
     private function fixture(): array
     {
         $shoot = Shoot::factory()->create(['total_quote' => 0, 'payment_status' => 'paid']);
@@ -95,7 +202,7 @@ class FinalizedServiceArchiveLinksTest extends TestCase
             (int) $shoot->serviceItems()->where('service_id', $second->id)->first()->id];
     }
 
-    private function file(Shoot $shoot, int $serviceId, string $stage, string $name): ShootFile
+    private function file(Shoot $shoot, ?int $serviceId, string $stage, string $name): ShootFile
     {
         $path = "shoots/{$shoot->id}/completed/{$name}";
         Storage::disk('public')->put($path, $name);

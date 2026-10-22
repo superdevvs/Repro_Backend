@@ -163,6 +163,58 @@ class ShootDeliveryContentUpdatesTest extends TestCase
         $this->assertStringNotContainsString('Your shoot is complete and ready to review', $message->body_html);
     }
 
+    public function test_queued_partial_delivery_is_skipped_when_its_requested_service_is_no_longer_finalized(): void
+    {
+        foreach ([
+            ['workflow_status' => 'in_progress'],
+            ['delivery_status' => 'in_progress'],
+            ['workflow_status' => 'cancelled', 'delivery_status' => 'cancelled'],
+        ] as $revokedState) {
+            $shoot = $this->shoot(['workflow_status' => Shoot::STATUS_EDITING, 'status' => Shoot::STATUS_EDITING, 'delivery_status' => 'partial']);
+            $service = \App\Models\Service::factory()->create(['name' => 'Reopened Photos']);
+            $shoot->services()->attach($service->id, ['delivery_status' => 'delivered', 'workflow_status' => 'delivered']);
+            $serviceId = (int) $shoot->serviceItems()->first()->id;
+            $progressTracker = app(\App\Services\Shoots\FinalizeProgressTracker::class);
+            $progressTracker->start($shoot->id);
+            $job = new SendShootReadyEmailJob($shoot->id, $serviceId, false, false);
+            Queue::push($job);
+
+            $shoot->serviceItems()->whereKey($serviceId)->update($revokedState);
+            $job->handle(app(MailService::class), app(AutomationService::class));
+
+            $this->assertSame(0, Message::where('related_shoot_id', $shoot->id)->count());
+            $progress = $progressTracker->get($shoot->id);
+            $this->assertSame('skipped', collect($progress['stages'])->firstWhere('key', 'delivery_email')['status']);
+        }
+        Mail::assertNothingSent();
+    }
+
+    public function test_queued_partial_update_uses_only_currently_finalized_services_for_copy_and_revision(): void
+    {
+        $shoot = $this->shoot(['workflow_status' => Shoot::STATUS_EDITING, 'status' => Shoot::STATUS_EDITING, 'delivery_status' => 'partial']);
+        $serviceIds = [];
+        foreach (['Final Plans', 'Reopened Photos', 'Pending Video'] as $name) {
+            $service = \App\Models\Service::factory()->create(['name' => $name]);
+            $shoot->services()->attach($service->id, ['delivery_status' => 'delivered', 'workflow_status' => 'delivered']);
+            $serviceIds[] = (int) $shoot->serviceItems()->where('service_id', $service->id)->first()->id;
+        }
+        $job = new SendShootReadyEmailJob($shoot->id, null, false, false);
+        Queue::push($job);
+        $shoot->serviceItems()->whereKey($serviceIds[1])->update(['workflow_status' => 'in_progress']);
+        $shoot->serviceItems()->whereKey($serviceIds[2])->update(['delivery_status' => 'in_progress']);
+
+        $job->handle(app(MailService::class), app(AutomationService::class));
+
+        $message = Message::where('related_shoot_id', $shoot->id)->where('send_source', 'SHOOT_DELIVERED')->sole();
+        $this->assertStringContainsString('Final Plans', $message->body_html);
+        $this->assertStringNotContainsString('Reopened Photos', $message->body_html);
+        $this->assertStringNotContainsString('Pending Video', $message->body_html);
+        $this->assertSame(
+            app(\App\Services\Messaging\ShootDeliveryRevision::class)->forShoot($shoot->fresh(), [$serviceIds[0]]),
+            data_get($message->metadata, 'canonical_email.delivery_revision'),
+        );
+    }
+
     public function test_link_update_for_a_partial_delivery_names_only_finalized_segments(): void
     {
         $shoot = $this->shoot(['workflow_status' => Shoot::STATUS_EDITING, 'status' => Shoot::STATUS_EDITING, 'delivery_status' => 'partial']);
