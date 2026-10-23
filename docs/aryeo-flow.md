@@ -2,7 +2,7 @@
 
 Status: API and Tours panel deployed on 2026-10-03; the Mac credential passed live authentication and scope checks. Discovery/heartbeat and the dashboard-job executor are being connected separately. No delivery is authorized by this document.
 
-Dashboard-backed processing requires a Showcase request matched to a paid, dashboard-delivered shoot with approved requested media. A Summary email is not required. Dashboard delivery and Aryeo delivery remain separate states; only a verified Aryeo receipt confirms the latter. Non-media fee lines do not block otherwise approved tour links.
+Dashboard-backed processing requires a Showcase request matched to a paid, dashboard-delivered shoot with approved requested media. A Summary email is not required. Dashboard delivery and Aryeo delivery remain separate states. A verified job receipt confirms delivery of a specific Dashboard manifest; an independent provider observation can confirm overall Aryeo delivery without certifying individual Dashboard files. Non-media fee lines do not block otherwise approved tour links.
 
 ## Transport and authentication
 
@@ -95,6 +95,7 @@ A subsequent read-only evaluation of the new catalog against production records 
 | `GET /changes?cursor=0` | Durable changes, 100 at a time. Save `next_cursor` only after processing the entire page. |
 | `POST /requests` | Idempotent upsert by connection + Gmail source ID; automatic exact matching. |
 | `PUT /requests/7/inventory` | Fresh remote inventory, including items added outside this connector. |
+| `PUT /requests/7/provider-status` | Identity-bound provider status and aggregate counts, including deliveries completed outside Dashboard jobs. |
 | `POST /heartbeat` | Worker presence/capabilities; send every 30 seconds. |
 
 Identity response shape (illustrative, not a live response):
@@ -128,6 +129,49 @@ Inventory example:
 ```
 
 Only set `complete:true` after reading all relevant remote media, not from saved workflow state. Missing or incomplete inventory displays **Unknown**, not zero. Complete inventory older than two minutes retains its labelled last-verified counts and requires refreshing before delivery. `delivered` must come from actual destination evidence. Report uploaded-but-unreleased items as false. Older inventories cannot replace newer ones.
+
+### Provider status observations
+
+When a verified request was delivered directly in Aryeo, report the observed
+provider status without inventing a Dashboard job or an item inventory:
+
+```json
+{"request_id":"actual-aryeo-request-id","requester_email":"verified-provider-requester@example.test","listing_id":"actual-existing-listing-id","checked_at":"2026-10-23T05:30:00.123Z","delivery_status":"delivered","counts":{"photos":40,"floorplans":5,"videos":0,"tours":1},"delivered_counts":null}
+```
+
+The request record must belong to this connection and the request ID and
+requester email must match its verified discovery identity. An existing listing
+ID cannot be replaced; delivered status requires a verified listing ID. The
+observation must be no more than ten minutes old and must not be in the future.
+The server normalizes its time to UTC without renewing or dropping precision.
+Older or conflicting observations at the same instant are rejected; identical
+reports are idempotent.
+
+`counts` must contain all four media keys. Null means unknown, while zero means
+an observed absence. Overall delivery alone does not prove per-type delivered
+counts; omit `delivered_counts` or use null unless those counts were independently
+verified. Any provided delivered counts must use all four nullable keys and
+cannot exceed known provider inventory counts.
+
+The response is `{id,request_id,listing_id,provider_status}`. The server stores
+this metadata under `inventory.provider_status` with `origin:aryeo_provider`,
+preserving any existing manifest and receipts. It does not set
+`inventory.complete`, `inventory_checked_at`, per-item delivery flags, or job
+receipts. Full inventory refreshes preserve provider status and supervised
+receipts; their existing identity and manifest checks continue to apply.
+
+Metadata-only reporting requires `discover_all_clients` and, for a matched
+request outside the media allowlist, the current exact automatic match or
+staff-confirmed association. Reassignment revokes that association. Reporting
+grants no media, file-download, or execution permissions. Unmatched requests may
+remain pending without a fabricated shoot or listing.
+
+Tours shows **Delivered in Aryeo** for verified provider delivery without a job
+receipt, the known provider counts, and the actual observation time. A new
+delivery job or an external action is blocked until that existing delivery is
+reconciled. Previously receipted managed jobs retain their update and unfinished
+follow-up workflows. Cached observations must never be relabelled as freshly
+checked; the Mac publisher must read the provider again to obtain a new time.
 
 Changes are a SQLite trigger-backed feed covering shoot, file, service, unit, payment and payment-allocation inserts/updates/deletes, including bulk writes. Events carry `id`, `shoot_id`, `client_id`, `kind`, `created_at`. Refetch identity/readiness on any event; a 404 means remove/revoke that shoot locally. Client ownership changes generate a revocation event for the old scope. Polling may return multiple events for one shoot. Cursor zero also includes a migration-time initial snapshot. Production storage is SQLite; this trigger implementation is not a portable MySQL change feed.
 

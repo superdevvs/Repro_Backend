@@ -696,6 +696,151 @@ class AryeoIntegrationTest extends TestCase
         $this->worker()->getJson($this->prefix.'/shoots/'.$this->shoot->id)->assertOk()->assertJsonPath('imported_pro_shoot_id', null);
     }
 
+    private function providerStatusPayload(): array
+    {
+        return ['request_id' => $this->order->request_id, 'requester_email' => $this->order->discovery['requester_email'],
+            'listing_id' => $this->order->listing_id, 'checked_at' => now()->toIso8601String(), 'delivery_status' => 'delivered',
+            'counts' => ['photos' => 1, 'floorplans' => 0, 'videos' => 0, 'tours' => 0], 'delivered_counts' => null];
+    }
+
+    public function test_provider_status_can_report_an_out_of_media_scope_request_without_granting_media_or_execution(): void
+    {
+        [$client, $shoot, $payload] = $this->scheduledDiscoveryFixture();
+        $this->connection->update(['discover_all_clients' => true]);
+        $clients = $this->connection->client_ids;
+        $allowed = $this->connection->delivery_shoot_ids;
+        $token = $this->connection->token_hash;
+        $id = $this->worker()->postJson($this->prefix.'/requests', $payload)->assertOk()->json('id');
+        $this->worker()->putJson($this->prefix.'/requests/'.$id.'/provider-status', [
+            'request_id' => $payload['request_id'], 'requester_email' => $client->email, 'listing_id' => 'external-listing',
+            'checked_at' => now()->toIso8601String(), 'delivery_status' => 'delivered',
+            'counts' => ['photos' => 40, 'floorplans' => 5, 'videos' => 0, 'tours' => 1],
+        ])->assertOk()->assertJsonPath('provider_status.counts.photos', 40)
+            ->assertJsonPath('provider_status.delivered_counts', null)->assertJsonMissingPath('inventory')->assertJsonMissingPath('assets');
+        $this->actingAs($this->admin)->getJson('/api/shoots/'.$shoot->id.'/aryeo')->assertOk()
+            ->assertJsonPath('orders.0.inventory.provider_status.delivery_status', 'delivered')
+            ->assertJsonPath('orders.0.inventory_checked_at', null)->assertJsonMissingPath('orders.0.inventory.complete');
+        $this->worker()->getJson($this->prefix.'/shoots/'.$shoot->id)->assertNotFound();
+        $this->worker()->getJson($this->prefix.'/requests/'.$id.'/assets/'.$this->file->id.'/original')->assertNotFound();
+        $this->assertSame('scheduled', $shoot->fresh()->status);
+        $this->assertSame($clients, $this->connection->fresh()->client_ids);
+        $this->assertSame($allowed, $this->connection->fresh()->delivery_shoot_ids);
+        $this->assertSame($token, $this->connection->fresh()->token_hash);
+        $this->assertSame(0, AryeoJob::count());
+    }
+
+    public function test_observed_provider_delivery_blocks_a_duplicate_job_and_repeated_external_action(): void
+    {
+        $id = $this->enqueue();
+        $this->claim()->assertOk();
+        $payload = $this->providerStatusPayload();
+        $this->worker()->putJson($this->prefix.'/requests/'.$this->order->id.'/provider-status', $payload)->assertOk();
+        $this->worker()->postJson($this->prefix.'/jobs/'.$id.'/authorize', ['lease_token' => 'claim_secret_12345678901234567890'])
+            ->assertConflict();
+        AryeoJob::findOrFail($id)->update(['status' => 'cancelled']);
+        $this->actingAs($this->admin)->postJson('/api/shoots/'.$this->shoot->id.'/aryeo/requests/'.$this->order->id.'/process')
+            ->assertConflict();
+        $this->assertSame(1, AryeoJob::count());
+        $this->assertNull(AryeoJob::findOrFail($id)->receipt);
+    }
+
+    public function test_provider_status_rejects_wrong_identity_listing_and_invalid_observation_counts(): void
+    {
+        $route = $this->prefix.'/requests/'.$this->order->id.'/provider-status';
+        $payload = $this->providerStatusPayload();
+        foreach ([['request_id' => 'another-request'], ['requester_email' => 'another@example.test'], ['listing_id' => 'another-listing']] as $changes) {
+            $this->worker()->putJson($route, [...$payload, ...$changes])->assertConflict();
+        }
+        foreach ([['checked_at' => now()->addMinute()->toIso8601String()], ['checked_at' => now()->subMinutes(11)->toIso8601String()],
+            ['counts' => ['photos' => 1]], ['counts' => [...$payload['counts'], 'photos' => -1]],
+            ['delivered_counts' => [...$payload['counts'], 'photos' => 2]]] as $changes) {
+            $this->worker()->putJson($route, [...$payload, ...$changes])->assertUnprocessable();
+        }
+        $this->assertNull($this->order->fresh()->inventory);
+    }
+
+    public function test_provider_status_is_idempotent_and_rejects_older_or_same_time_conflicting_evidence(): void
+    {
+        $route = $this->prefix.'/requests/'.$this->order->id.'/provider-status';
+        $payload = $this->providerStatusPayload();
+        $first = $this->worker()->putJson($route, $payload)->assertOk()->json();
+        $this->worker()->putJson($route, $payload)->assertOk()->assertExactJson($first);
+        $this->worker()->putJson($route, [...$payload, 'checked_at' => now()->subSeconds(2)->toIso8601String()])->assertConflict();
+        $this->worker()->putJson($route, [...$payload, 'delivery_status' => 'pending'])->assertConflict();
+        $this->assertSame('delivered', $this->order->fresh()->inventory['provider_status']['delivery_status']);
+    }
+
+    public function test_provider_status_keeps_observation_precision_when_normalizing_timezone(): void
+    {
+        $this->travelTo(\Illuminate\Support\Carbon::parse('2026-10-23T05:30:00Z'));
+        $route = $this->prefix.'/requests/'.$this->order->id.'/provider-status';
+        $payload = [...$this->providerStatusPayload(), 'checked_at' => '2026-10-23T01:29:59.123456-04:00'];
+        $this->worker()->putJson($route, $payload)->assertOk()
+            ->assertJsonPath('provider_status.checked_at', '2026-10-23T05:29:59.123456Z');
+        $this->worker()->putJson($route, [...$payload, 'checked_at' => '2026-10-23T05:29:59.123456Z'])->assertOk();
+        $this->worker()->putJson($route, [...$payload, 'checked_at' => '2026-10-23T05:29:59.123455Z'])->assertConflict();
+        $this->travelBack();
+    }
+
+    public function test_unmatched_pending_provider_status_requires_optin_and_never_invents_a_listing_or_job(): void
+    {
+        $this->order->update(['shoot_id' => null, 'listing_id' => null, 'match_status' => 'unmatched']);
+        $payload = [...$this->providerStatusPayload(), 'delivery_status' => 'pending',
+            'counts' => ['photos' => null, 'floorplans' => null, 'videos' => null, 'tours' => null]];
+        $route = $this->prefix.'/requests/'.$this->order->id.'/provider-status';
+        $this->worker()->putJson($route, $payload)->assertNotFound();
+        $this->connection->update(['discover_all_clients' => true]);
+        $this->worker()->putJson($route, $payload)->assertOk()->assertJsonPath('listing_id', null)
+            ->assertJsonPath('provider_status.counts.photos', null);
+        $this->worker()->putJson($route, [...$payload, 'delivery_status' => 'delivered'])->assertUnprocessable();
+        $this->assertNull($this->order->fresh()->shoot_id);
+        $this->assertSame('unmatched', $this->order->fresh()->match_status);
+        $this->assertSame(0, AryeoJob::count());
+    }
+
+    public function test_provider_status_is_connection_scoped_and_cannot_follow_a_reassigned_client(): void
+    {
+        [$client, $shoot, $payload] = $this->scheduledDiscoveryFixture();
+        $this->connection->update(['discover_all_clients' => true]);
+        $id = $this->worker()->postJson($this->prefix.'/requests', $payload)->assertOk()->json('id');
+        $shoot->update(['client_id' => User::factory()->create(['role' => 'client'])->id]);
+        $status = [...$this->providerStatusPayload(), 'request_id' => $payload['request_id'], 'requester_email' => $client->email];
+        $this->worker()->putJson($this->prefix.'/requests/'.$id.'/provider-status', $status)->assertConflict();
+        $other = $this->connection->replicate();
+        $other->name = 'Another company';
+        $other->token_hash = hash('sha256', 'another-worker-token');
+        $other->save();
+        $this->order->update(['connection_id' => $other->id]);
+        $this->worker()->putJson($this->prefix.'/requests/'.$this->order->id.'/provider-status', $this->providerStatusPayload())->assertNotFound();
+    }
+
+    public function test_provider_status_preserves_inventory_receipts_and_survives_full_inventory_refresh(): void
+    {
+        $receipt = ['operation_id' => 'supervised-existing-delivery'];
+        $this->order->update(['inventory' => ['manual_delivery_receipt' => $receipt]]);
+        $route = $this->prefix.'/requests/'.$this->order->id;
+        $this->worker()->putJson($route.'/provider-status', $this->providerStatusPayload())->assertOk();
+        $this->assertSame($receipt, $this->order->fresh()->inventory['manual_delivery_receipt']);
+        $status = $this->order->fresh()->inventory['provider_status'];
+        $this->worker()->putJson($route.'/inventory', ['request_id' => $this->order->request_id, 'listing_id' => $this->order->listing_id,
+            'checked_at' => now()->toIso8601String(), 'complete' => true, 'assets' => []])->assertOk();
+        $this->assertSame($status, $this->order->fresh()->inventory['provider_status']);
+        $this->assertSame($receipt, $this->order->fresh()->inventory['manual_delivery_receipt']);
+    }
+
+    public function test_provider_delivery_observation_retains_existing_managed_update_workflow(): void
+    {
+        $id = $this->enqueue();
+        $job = AryeoJob::findOrFail($id);
+        $job->update(['status' => 'completed', 'steps' => [...$job->steps, 'delivery' => 'success'],
+            'receipt' => ['request_id' => $job->snapshot['request_id'], 'listing_id' => $job->snapshot['listing_id'],
+                'media_version' => $job->media_version, 'asset_ids' => [$this->file->id], 'tour_ids' => [], 'verified_at' => now()->toIso8601String()]]);
+        $this->worker()->putJson($this->prefix.'/requests/'.$this->order->id.'/provider-status', $this->providerStatusPayload())->assertOk();
+        $this->file->update(['file_size' => 1234]);
+        $this->assertNotSame($id, $this->enqueue());
+        $this->assertSame(2, AryeoJob::count());
+    }
+
     public function test_two_orders_cannot_drive_the_shared_browser_concurrently(): void
     {
         $first = $this->enqueue();

@@ -12,6 +12,7 @@ Route::prefix('integrations/aryeo/v1')->middleware([AuthenticateAryeoWorker::cla
     Route::get('shoots/{shoot}/readiness', [Worker::class, 'readiness'])->whereNumber('shoot');
     Route::get('changes', [Worker::class, 'changes']);
     Route::post('requests', [Worker::class, 'discover']);
+    Route::put('requests/{order}/provider-status', [Worker::class, 'providerStatus'])->whereNumber('order');
     Route::put('requests/{order}/inventory', [Worker::class, 'inventory'])->whereNumber('order');
     Route::get('requests/{order}/assets/{asset}/original', [Worker::class, 'approvedOriginal'])->whereNumber('order')->whereNumber('asset');
     Route::post('jobs/claim', [Worker::class, 'claim']);

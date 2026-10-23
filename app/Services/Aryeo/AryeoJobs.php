@@ -31,6 +31,9 @@ class AryeoJobs
             if ($current) {
                 return $current;
             }
+            abort_if($order->hasVerifiedProviderDelivery()
+                && ! AryeoJob::where('request_record_id', $order->id)->where('steps->delivery', 'success')->whereNotNull('receipt')->exists(),
+                409, 'Aryeo already reports delivery. Reconcile the existing delivery before starting another job.');
             $shoot = $this->catalog->shoot($connection, $order->shoot_id);
             $ready = $this->catalog->readiness($shoot, $order->unit_id, $order->discovery['required'] ?? null);
             abort_unless($ready['eligible'], 409, implode(', ', $ready['blockers']));
@@ -99,6 +102,9 @@ class AryeoJobs
         abort_if(($job->steps['delivery'] ?? '') === 'success', 409, 'Delivery is already confirmed; resume only unfinished follow-up steps.');
         abort_unless(in_array((int) $job->snapshot['shoot_id'], $connection->delivery_shoot_ids ?? [], true), 409, 'Delivery is not enabled for this shoot.');
         $order = AryeoRequest::findOrFail($job->request_record_id);
+        abort_if($order->hasVerifiedProviderDelivery()
+            && ! AryeoJob::where('request_record_id', $order->id)->where('steps->delivery', 'success')->whereNotNull('receipt')->exists(),
+            409, 'Aryeo already reports delivery. Reconcile it before repeating an external action.');
         abort_unless($order->match_status === 'matched' && $order->request_id === $job->snapshot['request_id'], 409, 'Order match changed.');
         abort_unless(($order->discovery['required'] ?? null) === $job->snapshot['required'], 409, 'Order requirements changed; review required.');
         abort_unless($order->inventory_checked_at?->gt(now()->subMinutes(2)) && ($order->inventory['complete'] ?? false), 409, 'Refresh Aryeo inventory before delivery.');

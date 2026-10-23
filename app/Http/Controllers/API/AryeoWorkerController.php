@@ -110,9 +110,29 @@ class AryeoWorkerController extends Controller
         abort_unless($record->request_id === $data['request_id'], 409, 'Inventory request mismatch.');
         abort_if($record->listing_id && $record->listing_id !== ($data['listing_id'] ?? null), 409, 'Inventory listing mismatch.');
         abort_if($record->inventory_checked_at && $record->inventory_checked_at->gt($data['checked_at']), 409, 'Older inventory cannot replace newer inventory.');
+        foreach (['provider_status', 'manual_delivery_receipt'] as $evidence) {
+            if (isset($record->inventory[$evidence])) {
+                $data[$evidence] = $record->inventory[$evidence];
+            }
+        }
         $record->update(['inventory' => $data, 'inventory_checked_at' => $data['checked_at'], 'listing_id' => $data['listing_id'] ?? $record->listing_id]);
 
         return response()->json($record);
+    }
+
+    public function providerStatus(Request $r, int $order, \App\Services\Aryeo\AryeoProviderStatus $status)
+    {
+        $data = $r->validate([
+            'request_id' => 'required|string|max:200', 'requester_email' => 'required|email|max:255',
+            'listing_id' => 'nullable|string|max:200', 'checked_at' => 'required|date|before_or_equal:now|after:-10 minutes',
+            'delivery_status' => 'required|in:pending,uploaded,delivered',
+            'counts' => 'required|array:photos,floorplans,videos,tours|required_array_keys:photos,floorplans,videos,tours',
+            'counts.*' => 'nullable|integer|min:0|max:10000',
+            'delivered_counts' => 'nullable|array:photos,floorplans,videos,tours|required_array_keys:photos,floorplans,videos,tours',
+            'delivered_counts.*' => 'nullable|integer|min:0|max:10000',
+        ]);
+
+        return response()->json($status->record($this->connection($r), $order, $data));
     }
 
     public function claim(Request $r)
