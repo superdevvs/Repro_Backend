@@ -4,6 +4,7 @@ namespace App\Services\Shoots\Actions;
 
 use App\Jobs\GenerateWatermarkedImageJob;
 use App\Models\Shoot;
+use App\Models\ShootFile;
 use App\Models\User;
 use App\Services\Shoots\DeliveryFilenameFormatter;
 use App\Services\Shoots\DeliveryMediaOrderService;
@@ -11,6 +12,7 @@ use App\Services\Shoots\ShootArchiveFilenameFormatter;
 use App\Services\Shoots\ShootAuthorizationSupport;
 use App\Services\Shoots\ShootClientReleaseAccessService;
 use App\Services\Shoots\ShootFileAccessService;
+use App\Services\Shoots\ShootEditorRequestAccess;
 use Illuminate\Http\Request;
 
 class DownloadSelectedShootFilesAction
@@ -28,13 +30,6 @@ class DownloadSelectedShootFilesAction
     {
         if (! $this->shootAuthorizationSupport->canDownloadShootMedia($shoot, $user)) {
             return response()->json(['message' => 'Forbidden'], 403);
-        }
-
-        if ($this->shootAuthorizationSupport->hasRole($user, ['editor'])
-            && ! $this->shootAuthorizationSupport->canEditVideoTourLinks($shoot, $user)) {
-            return response()->json([
-                'message' => 'Editors can only download raw files via the raw download endpoint.',
-            ], 403);
         }
 
         $request->validate([
@@ -63,9 +58,13 @@ class DownloadSelectedShootFilesAction
         }
 
         foreach ($files as $file) {
-            // Keep the existing raw endpoint and its lane scoping unchanged.
+            // Photo editors can already download individual images attached to
+            // their requests. Apply that same narrow permission to selections;
+            // unrelated finals and raw files still use their existing rules.
             if ($this->shootAuthorizationSupport->hasRole($user, ['editor'])
-                && ! $this->shootAuthorizationSupport->canVideoEditorReadFinalImage($shoot, $file, $user)) {
+                && ! $this->shootAuthorizationSupport->canVideoEditorReadFinalImage($shoot, $file, $user)
+                && ! (in_array($file->workflow_stage, [ShootFile::STAGE_COMPLETED, ShootFile::STAGE_VERIFIED], true)
+                    && app(ShootEditorRequestAccess::class)->allowsFile($shoot, $file, $user))) {
                 return response()->json(['message' => 'Forbidden'], 403);
             }
             if (! $this->shootAuthorizationSupport->canDownloadShootMediaFile($shoot, $file, $user)) {
