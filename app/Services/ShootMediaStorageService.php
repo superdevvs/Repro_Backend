@@ -9,6 +9,7 @@ use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Services\Scanning\ClamAvClient;
 use App\Services\Scanning\FileScanService;
+use App\Support\EditingDispatchWriteLock;
 use App\Support\LockedWrite;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
@@ -347,6 +348,10 @@ class ShootMediaStorageService
                     $attempts++;
 
                     return DB::transaction(function () use ($staged) {
+                        // Reserve the writer before the observer reads display order
+                        // or replacement lookup takes a WAL snapshot. Otherwise a
+                        // busy worker can invalidate every one of the six retries.
+                        EditingDispatchWriteLock::acquire((int) $staged->shoot->id);
                         $saved = $this->persistStagedUpload($staged);
                         DB::afterCommit(function () use ($staged, $saved) {
                             try {

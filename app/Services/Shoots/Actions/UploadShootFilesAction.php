@@ -16,6 +16,7 @@ use App\Services\Shoots\ShootNotesCompatibilityService;
 use App\Services\Shoots\ShootUploadIdempotencyService;
 use App\Services\Shoots\UploadIntakeResolver;
 use App\Services\UploadValidationService;
+use App\Support\EditingDispatchWriteLock;
 use App\Support\LockedWrite;
 use App\Support\UploadLimit;
 use Illuminate\Http\Request;
@@ -753,6 +754,10 @@ class UploadShootFilesAction
                         // A replacement is saved separately until all renditions pass validation.
                         // Do not change its current category, service, readiness or delivery state.
                         if ($shootFile->pendingMediaVersionId) return;
+
+                        // This is a separate transaction from saving the media row.
+                        // Reserve its writer before schema/service reads as well.
+                        EditingDispatchWriteLock::acquire((int) $shoot->id);
 
                         if ($shootServiceId && ! $shootFile->shoot_service_id) {
                             $shootFile->shoot_service_id = $shootServiceId;
