@@ -770,6 +770,8 @@ class StripePaymentController extends Controller
             return response()->json(['data' => $result]);
         } catch (ValidationException $e) {
             throw $e;
+        } catch (\Symfony\Component\HttpKernel\Exception\HttpExceptionInterface $e) {
+            throw $e;
         } catch (\Exception $e) {
             \App\Services\ApiErrorResponder::log($e, 'error');
 
