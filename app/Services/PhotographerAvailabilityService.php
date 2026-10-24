@@ -110,6 +110,15 @@ class PhotographerAvailabilityService
             
             // Remove blocked times (existing shoots)
             $blockedTimes = $this->getBlockedTimes($photographerId, $date, $appointments);
+            // Blocks are overlays; retaining the original working hours makes removal reversible.
+            $unavailable = PhotographerAvailability::where('photographer_id', $photographerId)
+                ->where('status', 'unavailable')
+                ->where(fn ($query) => $query->whereDate('date', $date->toDateString())
+                    ->orWhere(fn ($weekly) => $weekly->whereNull('date')->where('day_of_week', $dayOfWeek)))
+                ->get();
+            foreach ($unavailable as $block) {
+                $blockedTimes[] = ['start' => $block->start_time, 'end' => $block->end_time];
+            }
             
             $availableSlots = $this->subtractBlockedTimes($start, $end, $blockedTimes);
             $slots = array_merge($slots, $availableSlots);

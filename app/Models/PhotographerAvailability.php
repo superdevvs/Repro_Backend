@@ -18,6 +18,7 @@ class PhotographerAvailability extends Model
         'start_time',
         'end_time',
         'status',
+        'note',
     ];
 
     /**

@@ -12,6 +12,7 @@ use App\Services\Schedule\ScheduleInstantResolver;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use App\Support\LockedWrite;
 
 class PhotographerAvailabilityController extends Controller
 {
@@ -35,27 +36,17 @@ class PhotographerAvailabilityController extends Controller
      */
     private function hasOverlap($photographerId, $startTime, $endTime, $date = null, $dayOfWeek = null, $excludeId = null)
     {
-        $query = PhotographerAvailability::where('photographer_id', $photographerId);
+        $query = PhotographerAvailability::where('photographer_id', $photographerId)->where('status', 'available');
         
         if ($excludeId) {
             $query->where('id', '!=', $excludeId);
         }
 
         if ($date) {
-            // For specific date: check against other slots on the same date
-            // and also check against recurring slots for that day of week
-            $dayOfWeekForDate = strtolower(date('l', strtotime($date)));
-            
-            $specificSlots = (clone $query)
+            // A dated working window overrides recurring hours for this date.
+            $allSlots = (clone $query)
                 ->whereDate('date', $date)
                 ->get();
-            
-            $recurringSlots = (clone $query)
-                ->whereNull('date')
-                ->where('day_of_week', $dayOfWeekForDate)
-                ->get();
-            
-            $allSlots = $specificSlots->concat($recurringSlots);
         } else {
             // Dated entries override the weekly schedule on their own dates.
             // They must not prevent adding/editing the weekly rule for every
@@ -110,147 +101,6 @@ class PhotographerAvailabilityController extends Controller
         return (int)$hours * 60 + (int)$minutes;
     }
 
-    private function minutesToTime(int $minutes): string
-    {
-        $hours = (int) floor($minutes / 60);
-        $mins = $minutes % 60;
-        return sprintf('%02d:%02d', $hours, $mins);
-    }
-
-    private function splitAvailableSlotsForUnavailable(
-        int $photographerId,
-        string $startTime,
-        string $endTime,
-        ?string $date = null,
-        ?string $dayOfWeek = null,
-        ?int $preserveSlotId = null
-    ): void {
-        if (!$startTime || !$endTime) {
-            return;
-        }
-
-        $blockStart = $this->timeToMinutes($startTime);
-        $blockEnd = $this->timeToMinutes($endTime);
-
-        if ($blockEnd <= $blockStart) {
-            return;
-        }
-
-        $slots = null;
-        $useRecurringAsBase = false;
-        $effectiveDayOfWeek = $dayOfWeek;
-
-        if ($date) {
-            $effectiveDayOfWeek = strtolower(date('l', strtotime($date)));
-            $specificAvailable = PhotographerAvailability::where('photographer_id', $photographerId)
-                ->whereDate('date', $date)
-                ->where('status', 'available')
-                ->get();
-
-            if ($specificAvailable->isEmpty()) {
-                $useRecurringAsBase = true;
-                $slots = PhotographerAvailability::where('photographer_id', $photographerId)
-                    ->whereNull('date')
-                    ->where('day_of_week', $effectiveDayOfWeek)
-                    ->where('status', 'available')
-                    ->get();
-            } else {
-                $slots = $specificAvailable;
-            }
-        } elseif ($dayOfWeek) {
-            $slots = PhotographerAvailability::where('photographer_id', $photographerId)
-                ->whereNull('date')
-                ->where('day_of_week', $dayOfWeek)
-                ->where('status', 'available')
-                ->get();
-        }
-
-        if (!$slots || $slots->isEmpty()) {
-            return;
-        }
-
-        foreach ($slots as $slot) {
-            $slotStart = $this->timeToMinutes($slot->start_time);
-            $slotEnd = $this->timeToMinutes($slot->end_time);
-            $hasOverlap = $this->timesOverlap($startTime, $endTime, $slot->start_time, $slot->end_time);
-            $createOnly = $useRecurringAsBase || ($preserveSlotId && (int) $slot->id === (int) $preserveSlotId);
-
-            if ($createOnly) {
-                $segments = [];
-                if ($hasOverlap) {
-                    if ($blockStart > $slotStart) {
-                        $segments[] = [$slotStart, min($blockStart, $slotEnd)];
-                    }
-                    if ($blockEnd < $slotEnd) {
-                        $segments[] = [max($blockEnd, $slotStart), $slotEnd];
-                    }
-                } else {
-                    $segments[] = [$slotStart, $slotEnd];
-                }
-
-                foreach ($segments as $segment) {
-                    [$segmentStart, $segmentEnd] = $segment;
-                    if ($segmentEnd <= $segmentStart) {
-                        continue;
-                    }
-
-                    $targetDate = $useRecurringAsBase ? $date : $slot->date;
-                    $targetDayOfWeek = $useRecurringAsBase
-                        ? $effectiveDayOfWeek
-                        : ($slot->day_of_week ?: ($targetDate ? strtolower(date('l', strtotime($targetDate))) : $dayOfWeek));
-
-                    PhotographerAvailability::create([
-                        'photographer_id' => $photographerId,
-                        'date' => $targetDate,
-                        'day_of_week' => $targetDayOfWeek,
-                        'start_time' => $this->minutesToTime($segmentStart),
-                        'end_time' => $this->minutesToTime($segmentEnd),
-                        'status' => 'available',
-                    ]);
-                }
-
-                continue;
-            }
-
-            if (!$hasOverlap) {
-                continue;
-            }
-
-            $segments = [];
-            if ($blockStart > $slotStart) {
-                $segments[] = [$slotStart, min($blockStart, $slotEnd)];
-            }
-            if ($blockEnd < $slotEnd) {
-                $segments[] = [max($blockEnd, $slotStart), $slotEnd];
-            }
-
-            if (count($segments) === 0) {
-                $slot->delete();
-                continue;
-            }
-
-            $firstSegment = $segments[0];
-            $slot->update([
-                'start_time' => $this->minutesToTime($firstSegment[0]),
-                'end_time' => $this->minutesToTime($firstSegment[1]),
-            ]);
-
-            if (count($segments) > 1) {
-                $secondSegment = $segments[1];
-                if ($secondSegment[1] > $secondSegment[0]) {
-                    PhotographerAvailability::create([
-                        'photographer_id' => $photographerId,
-                        'date' => $slot->date,
-                        'day_of_week' => $slot->day_of_week,
-                        'start_time' => $this->minutesToTime($secondSegment[0]),
-                        'end_time' => $this->minutesToTime($secondSegment[1]),
-                        'status' => 'available',
-                    ]);
-                }
-            }
-        }
-    }
-
     public function index(Request $request, $photographerId)
     {
         if ($response = $this->denyUnlessCanViewAvailability($request->user(), (int) $photographerId)) {
@@ -258,7 +108,11 @@ class PhotographerAvailabilityController extends Controller
         }
 
         $availabilities = PhotographerAvailability::where('photographer_id', $photographerId)->get();
-        return response()->json(['data' => $availabilities]);
+        $timezone = \App\Support\Timezone::canonical((string) User::findOrFail($photographerId)->timezone);
+        if (!in_array($timezone, timezone_identifiers_list(\DateTimeZone::ALL_WITH_BC), true)) {
+            $timezone = config('app.timezone', 'UTC');
+        }
+        return response()->json(['data' => $availabilities, 'timezone' => $timezone]);
     }
 
     public function store(Request $request)
@@ -270,6 +124,7 @@ class PhotographerAvailabilityController extends Controller
             'start_time' => 'required|date_format:H:i',
             'end_time' => 'required|date_format:H:i|after:start_time',
             'status' => 'sometimes|in:available,unavailable',
+            'note' => 'nullable|string|max:1000',
         ]);
 
         if ($response = $this->denyUnlessCanManageAvailability($request->user(), (int) $validated['photographer_id'])) {
@@ -283,15 +138,7 @@ class PhotographerAvailabilityController extends Controller
         }
 
         $status = $data['status'] ?? 'available';
-        if ($status === 'unavailable') {
-            $this->splitAvailableSlotsForUnavailable(
-                $data['photographer_id'],
-                $data['start_time'],
-                $data['end_time'],
-                $data['date'] ?? null,
-                $data['day_of_week'] ?? null
-            );
-        } else {
+        if ($status !== 'unavailable') {
             // Check for overlaps
             if ($this->hasOverlap(
                 $data['photographer_id'],
@@ -307,7 +154,14 @@ class PhotographerAvailabilityController extends Controller
             }
         }
 
-        $availability = PhotographerAvailability::create($data);
+        $availability = LockedWrite::run(fn () => DB::transaction(function () use ($data, $status) {
+            if ($status === 'unavailable') {
+                app(\App\Services\AvailabilityBlockWindows::class)->preserve(
+                    $data['photographer_id'], $data['date'] ?? null, $data['day_of_week'] ?? null, null
+                );
+            }
+            return PhotographerAvailability::create($data);
+        }), 'availability.store');
         
         // Clear availability cache for this photographer
         $this->clearAvailabilityCache($availability->photographer_id);
@@ -441,6 +295,7 @@ class PhotographerAvailabilityController extends Controller
             'start_time' => 'sometimes|date_format:H:i',
             'end_time' => 'sometimes|date_format:H:i|after:start_time',
             'status' => 'sometimes|in:available,unavailable',
+            'note' => 'nullable|string|max:1000',
         ]);
 
         $availability = PhotographerAvailability::findOrFail($id);
@@ -458,25 +313,17 @@ class PhotographerAvailabilityController extends Controller
         ], $validated);
 
         // Ensure day_of_week is set if date is provided
-        if (isset($finalData['date']) && !isset($finalData['day_of_week'])) {
+        if (isset($validated['date'])) {
             $finalData['day_of_week'] = strtolower(date('l', strtotime($finalData['date'])));
+            $validated['day_of_week'] = $finalData['day_of_week'];
+        }
+
+        if ($this->timeToMinutes($finalData['end_time']) <= $this->timeToMinutes($finalData['start_time'])) {
+            return response()->json(['message' => 'End time must be after start time.'], 422);
         }
 
         $newStatus = $validated['status'] ?? $availability->status ?? 'available';
-        if ($newStatus === 'unavailable') {
-            // For unavailable slots, split any overlapping available slots if transitioning to unavailable
-            if ($availability->status !== 'unavailable') {
-                $this->splitAvailableSlotsForUnavailable(
-                    $finalData['photographer_id'],
-                    $finalData['start_time'],
-                    $finalData['end_time'],
-                    $finalData['date'] ?? null,
-                    $finalData['day_of_week'] ?? null,
-                    $id
-                );
-            }
-            // No overlap check needed for unavailable slots - they're meant to block time
-        } else {
+        if ($newStatus !== 'unavailable') {
             // Check for overlaps only for available slots (excluding the current record)
             if ($this->hasOverlap(
                 $finalData['photographer_id'],
@@ -493,7 +340,17 @@ class PhotographerAvailabilityController extends Controller
             }
         }
 
-        $availability->update($validated);
+        $availability = LockedWrite::run(fn () => DB::transaction(function () use ($id, $validated, $finalData, $newStatus) {
+            $availability = PhotographerAvailability::findOrFail($id);
+            if ($newStatus === 'unavailable') {
+                app(\App\Services\AvailabilityBlockWindows::class)->preserve(
+                    $finalData['photographer_id'], $finalData['date'] ?? null, $finalData['day_of_week'] ?? null,
+                    $availability->status === 'available' ? (int) $id : null
+                );
+            }
+            $availability->update($validated);
+            return $availability;
+        }), 'availability.update');
         
         // Clear availability cache for this photographer
         $this->clearAvailabilityCache($availability->photographer_id);
@@ -511,6 +368,7 @@ class PhotographerAvailabilityController extends Controller
             'availabilities.*.start_time' => 'required|date_format:H:i',
             'availabilities.*.end_time' => 'required|date_format:H:i|after:availabilities.*.start_time',
             'availabilities.*.status' => 'sometimes|in:available,unavailable',
+            'availabilities.*.note' => 'nullable|string|max:1000',
         ]);
 
         if ($response = $this->denyUnlessCanManageAvailability($request->user(), (int) $validated['photographer_id'])) {
@@ -590,30 +448,31 @@ class PhotographerAvailabilityController extends Controller
             ], 422);
         }
 
-        // All checks passed, create all slots
-        foreach ($validated['availabilities'] as $availability) {
-            $day = $availability['day_of_week'] ?? (isset($availability['date']) ? strtolower(date('l', strtotime($availability['date']))) : null);
-            $slotStatus = $availability['status'] ?? 'available';
+        // Keep working-hour preservation and the complete batch atomic.
+        $created = LockedWrite::run(fn () => DB::transaction(function () use ($validated) {
+            $created = [];
+            foreach ($validated['availabilities'] as $availability) {
+                $day = $availability['day_of_week'] ?? (isset($availability['date']) ? strtolower(date('l', strtotime($availability['date']))) : null);
+                $slotStatus = $availability['status'] ?? 'available';
 
-            if ($slotStatus === 'unavailable') {
-                $this->splitAvailableSlotsForUnavailable(
-                    $validated['photographer_id'],
-                    $availability['start_time'],
-                    $availability['end_time'],
-                    $availability['date'] ?? null,
-                    $day
-                );
+                if ($slotStatus === 'unavailable') {
+                    app(\App\Services\AvailabilityBlockWindows::class)->preserve(
+                        $validated['photographer_id'], $availability['date'] ?? null, $day, null
+                    );
+                }
+                $created[] = PhotographerAvailability::create([
+                    'photographer_id' => $validated['photographer_id'],
+                    'date' => $availability['date'] ?? null,
+                    'day_of_week' => $day,
+                    'start_time' => $availability['start_time'],
+                    'end_time' => $availability['end_time'],
+                    'status' => $availability['status'] ?? 'available',
+                    'note' => $availability['note'] ?? null,
+                ]);
             }
-            $created[] = PhotographerAvailability::create([
-                'photographer_id' => $validated['photographer_id'],
-                'date' => $availability['date'] ?? null,
-                'day_of_week' => $day,
-                'start_time' => $availability['start_time'],
-                'end_time' => $availability['end_time'],
-                'status' => $availability['status'] ?? 'available',
-            ]);
-        }
         
+            return $created;
+        }), 'availability.bulk-store');
         // Clear availability cache for this photographer
         $this->clearAvailabilityCache($validated['photographer_id']);
 
@@ -635,6 +494,7 @@ class PhotographerAvailabilityController extends Controller
             'availabilities.*.start_time' => 'required|date_format:H:i',
             'availabilities.*.end_time' => 'required|date_format:H:i|after:availabilities.*.start_time',
             'availabilities.*.status' => 'sometimes|in:available,unavailable',
+            'availabilities.*.note' => 'nullable|string|max:1000',
         ]);
 
         if ($response = $this->denyUnlessCanManageAvailability($request->user(), (int) $validated['photographer_id'])) {
@@ -689,6 +549,7 @@ class PhotographerAvailabilityController extends Controller
                     'start_time' => $availability['start_time'],
                     'end_time' => $availability['end_time'],
                     'status' => $availability['status'] ?? 'available',
+                    'note' => $availability['note'] ?? null,
                 ]);
             }
 
@@ -775,31 +636,14 @@ class PhotographerAvailabilityController extends Controller
         $fromDate = $validated['from_date'] ?? null;
         $toDate = $validated['to_date'] ?? null;
 
-        // Create cache key based on parameters
-        $cacheKey = 'bulk_availability_' . md5(json_encode($photographerIds) . $fromDate . $toDate);
-        
-        $grouped = \Illuminate\Support\Facades\Cache::remember($cacheKey, 60, function () use ($photographerIds, $fromDate, $toDate) {
-            // Get all availability slots for the given photographers
-            $query = PhotographerAvailability::whereIn('photographer_id', $photographerIds);
-            
-            // Optionally filter by date range for specific date slots
-            if ($fromDate && $toDate) {
-                $query->where(function ($q) use ($fromDate, $toDate) {
-                    // Include slots with specific dates within range
-                    $q->whereBetween('date', [$fromDate, $toDate])
-                      // Or include recurring slots (no specific date)
-                      ->orWhereNull('date');
-                });
-            }
-
-            $availabilities = $query->get();
-
-            // Group by photographer_id for easier frontend processing
-            return $availabilities->groupBy('photographer_id')->map(function ($slots) {
-                return $slots->values();
+        // Read current rows so edits, deletes and blocks appear immediately in team calendars.
+        $query = PhotographerAvailability::whereIn('photographer_id', $photographerIds);
+        if ($fromDate && $toDate) {
+            $query->where(function ($q) use ($fromDate, $toDate) {
+                $q->whereBetween('date', [$fromDate, $toDate])->orWhereNull('date');
             });
-        });
-
+        }
+        $grouped = $query->get()->groupBy('photographer_id')->map(fn ($slots) => $slots->values());
         // Team calendars retain the same authorized visit details as individual calendars.
         $rangeStart = \Carbon\Carbon::parse($fromDate ?? now()->toDateString());
         $rangeEnd = \Carbon\Carbon::parse($toDate ?? $rangeStart->copy()->addMonth()->toDateString());
@@ -844,6 +688,8 @@ class PhotographerAvailabilityController extends Controller
                 'id' => $shoot->id,
                 'title' => $shoot->title ?? 'Shoot #'.$shoot->id,
                 'address' => $shoot->property_address ?? $shoot->address,
+                'latitude' => $shoot->latitude,
+                'longitude' => $shoot->longitude,
                 'shoot_status' => $shoot->status,
                 'client' => $shoot->client ? $shoot->client->only(['id', 'name', 'email', 'phone']) : null,
                 'services' => $shoot->services->map(fn ($service) => $service->only(['id', 'name', 'price']))->all(),
