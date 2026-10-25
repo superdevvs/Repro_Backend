@@ -1056,8 +1056,8 @@ class UserEmailHealthTest extends TestCase
         }
 
         $body = $payload['body_text'];
-        $this->assertSame('R/E Pro Photos: Account ready. Check your email for setup. Sign in: https://reprodashboard.com', $body);
-        $this->assertSame(1, preg_match_all('~https?://~', $body));
+        $this->assertSame('R/E Pro Photos: Account ready. Check your email for setup.', $body);
+        $this->assertSame(0, preg_match_all('~https?://~', $body));
         $this->assertStringNotContainsString('{{', $body);
         $this->assertStringNotContainsString($recipient->email, $body);
     }

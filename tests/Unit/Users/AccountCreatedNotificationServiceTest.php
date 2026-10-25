@@ -152,7 +152,7 @@ class AccountCreatedNotificationServiceTest extends TestCase
         MessageTemplate::where('slug', 'automation-account-created-sms')->delete();
         [$service, , , $messaging] = $this->service();
         $messaging->expects($this->once())->method('sendSms')
-            ->with($this->callback(fn (array $payload) => $payload['body_text'] === 'R/E Pro Photos: Account ready. Check your email for setup. Sign in: https://reprodashboard.com'
+            ->with($this->callback(fn (array $payload) => $payload['body_text'] === 'R/E Pro Photos: Account ready. Check your email for setup.'
                 && $payload['template_id'] === null))
             ->willReturn(new Message);
 
