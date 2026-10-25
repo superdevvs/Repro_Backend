@@ -158,7 +158,8 @@ class SystemAutomationDefaultsTest extends TestCase
         $sms = collect($rule->fresh()->workflow_definition_json['nodes'])->firstWhere('type', 'action.sms');
         $this->assertSame($number->id, $sms['config']['smsNumberId']);
         $this->assertSame(['account'], $sms['config']['recipientRoles']);
-        $this->assertStringContainsString('{{portal_url}}', MessageTemplate::findOrFail($sms['config']['templateId'])->body_text);
+        $this->assertStringContainsString('Check your email for setup.', MessageTemplate::findOrFail($sms['config']['templateId'])->body_text);
+        $this->assertStringNotContainsString('{{portal_url}}', MessageTemplate::findOrFail($sms['config']['templateId'])->body_text);
     }
 
     public function test_one_time_repair_fixes_broken_workflows_and_preserves_custom_workflow_and_templates(): void

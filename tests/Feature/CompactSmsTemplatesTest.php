@@ -18,7 +18,7 @@ class CompactSmsTemplatesTest extends TestCase
 
     private const LEGACY_REMINDER = 'Shoot {{shoot_date}} {{shoot_time}}: {{shoot_address}}. Map: {{map_link}}. Contact: {{property_contact_name}} {{property_contact_phone}}. Access: {{access_instructions}}. Services: {{services_provided}}. Details: {{dashboard_link}}';
 
-    public function test_all_default_sms_templates_render_compact_copy_with_one_link(): void
+    public function test_automated_sms_defaults_are_link_free_and_manual_defaults_keep_their_link(): void
     {
         $this->seed(MessagingSystemSeeder::class);
         $variables = app(TemplateVariableResolver::class)->resolve([
@@ -39,12 +39,14 @@ class CompactSmsTemplatesTest extends TestCase
             $rendered = app(TemplateRenderer::class)->render($template, $variables);
             $body = $rendered['body_text'];
             $this->assertSame([], $rendered['missing'], $template->slug);
-            $this->assertSame(1, preg_match_all('~https?://~', $body), $template->slug);
-            $this->assertLessThan(260, strlen($body), $template->slug);
+            $automated = str_starts_with($template->slug, 'automation-') || in_array($template->slug, ['property-contact-reminder-sms', 'shoot-payment-reminder-sms'], true);
+            $this->assertSame($automated ? 0 : 1, preg_match_all('~https?://~', $body), $template->slug);
+            $this->assertLessThan(300, strlen($body), $template->slug);
             $this->assertStringNotContainsString('{{', $body, $template->slug);
             $this->assertDoesNotMatchRegularExpression('/Map:|Access:|Services:|Private access|Detailed change|Long service/', $body);
             if ($template->slug !== 'automation-account-created-sms') {
-                $this->assertStringContainsString("108 James Street Ext, Woodsboro, MD, 21798\nSep 28, 2026 10:00 AM EDT\nContact: Lauren 4435045965\nDetails: https://reprodashboard.com/shoots/104", $body, $template->slug);
+                $this->assertStringContainsString("108 James Street Ext, Woodsboro, MD, 21798\nSep 28, 2026 10:00 AM EDT\nContact: Lauren 4435045965", $body, $template->slug);
+                $this->assertStringContainsString($automated ? 'Check your email or Dashboard for details and links.' : 'Details: https://reprodashboard.com/shoots/104', $body, $template->slug);
             }
         }
     }

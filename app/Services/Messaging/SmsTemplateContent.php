@@ -22,12 +22,12 @@ class SmsTemplateContent
         ];
         $definitions = ['ACCOUNT_CREATED' => [
             'slug' => 'automation-account-created-sms',
-            'body' => 'R/E Pro Photos: Account ready. Check your email for setup. Sign in: {{portal_url}}',
+            'body' => 'R/E Pro Photos: Account ready. Check your email for setup.',
         ]];
         foreach ($labels as $trigger => $label) {
             $definitions[$trigger] = [
                 'slug' => 'automation-'.strtolower(str_replace('_', '-', $trigger)).'-sms',
-                'body' => self::shoot($label),
+                'body' => self::shoot($label, linkFree: true),
             ];
         }
 
@@ -39,8 +39,8 @@ class SmsTemplateContent
         $copy = array_column(self::automationDefinitions(), 'body', 'slug');
 
         return $copy + [
-            'property-contact-reminder-sms' => self::shoot('Confirm property access'),
-            'shoot-payment-reminder-sms' => self::shoot('Payment due'),
+            'property-contact-reminder-sms' => self::shoot('Confirm property access', linkFree: true),
+            'shoot-payment-reminder-sms' => self::shoot('Payment due', linkFree: true),
             'shoot-scheduled-sms' => self::shoot('Booking confirmed'),
             'shoot-requested-sms' => self::shoot('Shoot requested'),
             'shoot-updated-sms' => self::shoot('Shoot updated'),
@@ -68,8 +68,14 @@ class SmsTemplateContent
         return array_values(array_unique($matches[1]));
     }
 
-    private static function shoot(string $label): string
+    private static function shoot(string $label, bool $linkFree = false): string
     {
+        // Temporary mitigation while Telnyx investigates 40002 filtering. Keep
+        // manual templates separate and preserve the full links in email.
+        if ($linkFree) {
+            return 'R/E Pro Photos: '.$label."\n{{shoot_address}}\n{{shoot_date}} {{shoot_time}}\nContact: {{sms_contact}}\nCheck your email or Dashboard for details and links.";
+        }
+
         return $label."\n{{shoot_address}}\n{{shoot_date}} {{shoot_time}}\nContact: {{sms_contact}}\nDetails: {{dashboard_link}}";
     }
 }

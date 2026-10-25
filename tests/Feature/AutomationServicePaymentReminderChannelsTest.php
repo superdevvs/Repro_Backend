@@ -216,11 +216,12 @@ class AutomationServicePaymentReminderChannelsTest extends TestCase
         $this->assertSame($emailMessage->id, $this->service()->sendPaymentReminder($shoot->fresh())?->id);
         $this->assertSame($emailCopy, $emailPayload['body_text']);
         $body = $smsPayload['body_text'];
-        $this->assertStringStartsWith("Payment due\n108 James Street, Woodsboro, MD 21798\n", $body);
+        $this->assertStringStartsWith("R/E Pro Photos: Payment due\n108 James Street, Woodsboro, MD 21798\n", $body);
         $this->assertStringContainsString('Sep 28, 2026', $body);
         $this->assertStringContainsString('10:00 AM', $body);
         $this->assertStringContainsString('Contact: Lauren Agent +12025550111', $body);
-        $this->assertStringContainsString('Details: https://reprodashboard.com/shoots/'.$shoot->id, $body);
+        $this->assertStringContainsString('Check your email or Dashboard for details and links.', $body);
+        $this->assertStringNotContainsString('https://', $body);
         $this->assertStringNotContainsString('balance, services', $body);
         $this->assertStringNotContainsString('maps', $body);
         $this->assertStringNotContainsString('{{', $body);
