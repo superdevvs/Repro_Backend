@@ -271,12 +271,12 @@ class ShootEmailCompletenessPreservationTest extends TestCase
             fn ($v) => $v !== null
         );
 
-        // Reviewed SMS-only copy change: one shoot-specific link and a compact
-        // contact line replace the old portal link and verbose access warning.
+        // Reviewed link-free SMS mitigation: keep the compact shoot/contact
+        // details and direct recipients to the unchanged email for links.
         // Keep the original email snapshots and SMS routing metadata untouched.
         $this->assertSame('SMS', $baseline['property-contact-reminder-sms']['channel']);
-        $baseline['property-contact-reminder-sms']['variables_json'] = ['shoot_address', 'shoot_date', 'shoot_time', 'sms_contact', 'dashboard_link'];
-        $baseline['property-contact-reminder-sms']['body_tokens'] = ['dashboard_link', 'shoot_address', 'shoot_date', 'shoot_time', 'sms_contact'];
+        $baseline['property-contact-reminder-sms']['variables_json'] = ['shoot_address', 'shoot_date', 'shoot_time', 'sms_contact'];
+        $baseline['property-contact-reminder-sms']['body_tokens'] = ['shoot_address', 'shoot_date', 'shoot_time', 'sms_contact'];
 
         return $baseline;
     }
