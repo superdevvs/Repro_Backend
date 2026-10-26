@@ -51,6 +51,7 @@ class GenerateEmailTemplateArtwork implements ShouldQueue
             if (! Storage::disk('public')->put($path, $bytes)) {
                 throw new \RuntimeException('Could not save artwork.');
             }
+            try { app(\App\Services\Messaging\EmailWorkspaceAssets::class)->create($row->user_id, $bytes, mb_substr($row->prompt, 0, 150), ['artwork_id' => $this->artworkId, 'slot' => $row->kind === 'icon' ? 'icon' : 'header'], 'generated'); } catch (Throwable $optimizationError) { report($optimizationError); }
             DB::table('email_template_artworks')->where('id', $this->artworkId)->update(['status' => 'completed', 'path' => $path, 'updated_at' => now()]);
         } catch (Throwable $exception) {
             $ambiguous = $exception instanceof OpenAiImageException && $exception->ambiguous;

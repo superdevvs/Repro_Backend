@@ -10,6 +10,9 @@ class MessageTemplate extends Model
 {
     use HasFactory;
 
+    public bool $workspacePreview = false;
+    public bool $workspaceBodyOverride = false;
+
     protected $fillable = [
         'channel',
         'name',
@@ -44,6 +47,15 @@ class MessageTemplate extends Model
         'override_enabled' => 'bool',
         'override_health_checked_at' => 'datetime',
     ];
+
+    protected static function booted(): void
+    {
+        static::saved(function (self $template) {
+            if ($template->channel !== 'EMAIL' || ! \Illuminate\Support\Facades\Schema::hasTable('email_template_revisions')) return;
+            $snapshot = \Illuminate\Support\Arr::only($template->toArray(), ['channel','name','description','category','subject','body_html','body_text','scope','email_type','override_enabled','content_blocks_json','editor_document_json']);
+            \Illuminate\Support\Facades\DB::table('email_template_revisions')->insert(['template_id' => $template->id, 'user_id' => $template->updated_by, 'snapshot' => json_encode($snapshot), 'created_at' => now(), 'updated_at' => now()]);
+        });
+    }
 
     public function creator(): BelongsTo
     {

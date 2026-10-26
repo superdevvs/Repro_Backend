@@ -693,6 +693,7 @@ class EmailMessagingController extends Controller
             $renderTemplate->subject = $data['subject'];
         }
         if (! empty($data['body_html'])) {
+            $renderTemplate->workspaceBodyOverride = ($template->editor_document_json['version'] ?? 1) === 2 && $data['body_html'] !== $template->body_html;
             $renderTemplate->body_html = $data['body_html'];
         }
         if (! empty($data['body_text'])) {

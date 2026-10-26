@@ -1322,6 +1322,21 @@ Route::middleware(['auth:sanctum'])->prefix('messaging')->group(function () {
         Route::post('/email/recovery/client-confirmations/replay', [ClientConfirmationRecoveryController::class, 'replay']);
 
         // Templates
+        Route::get('/templates/capabilities', [\App\Http\Controllers\API\Messaging\EmailWorkspaceMediaController::class, 'capabilities']);
+        Route::get('/templates/assets', [\App\Http\Controllers\API\Messaging\EmailWorkspaceMediaController::class, 'index']);
+        Route::post('/templates/assets', [\App\Http\Controllers\API\Messaging\EmailWorkspaceMediaController::class, 'store'])->middleware('throttle:30,1');
+        Route::get('/templates/assets/{asset}', [\App\Http\Controllers\API\Messaging\EmailWorkspaceMediaController::class, 'show']);
+        Route::delete('/templates/assets/{asset}', [\App\Http\Controllers\API\Messaging\EmailWorkspaceMediaController::class, 'archive']);
+        Route::post('/templates/assets/{asset}/variants', [\App\Http\Controllers\API\Messaging\EmailWorkspaceMediaController::class, 'variant']);
+        Route::get('/templates/dashboard-media', [\App\Http\Controllers\API\Messaging\EmailWorkspaceMediaController::class, 'dashboard']);
+        Route::post('/templates/dashboard-media', [\App\Http\Controllers\API\Messaging\EmailWorkspaceMediaController::class, 'importDashboard']);
+        Route::post('/templates/video', [\App\Http\Controllers\API\Messaging\EmailWorkspaceMediaController::class, 'video'])->middleware('throttle:20,1');
+        Route::get('/templates/drafts', [\App\Http\Controllers\API\Messaging\EmailWorkspaceDraftController::class, 'show']);
+        Route::put('/templates/drafts/{draft}', [\App\Http\Controllers\API\Messaging\EmailWorkspaceDraftController::class, 'save']);
+        Route::delete('/templates/drafts/{draft}', [\App\Http\Controllers\API\Messaging\EmailWorkspaceDraftController::class, 'destroy']);
+        Route::get('/templates/sections', [\App\Http\Controllers\API\Messaging\EmailWorkspaceDraftController::class, 'sections']);
+        Route::post('/templates/sections', [\App\Http\Controllers\API\Messaging\EmailWorkspaceDraftController::class, 'saveSection']);
+        Route::get('/templates/{template}/revisions', [\App\Http\Controllers\API\Messaging\EmailWorkspaceDraftController::class, 'revisions']);
         Route::post('/templates/assist', [\App\Http\Controllers\API\Messaging\EmailTemplateWorkspaceController::class, 'assist'])->middleware('throttle:12,1');
         Route::post('/templates/artwork', [\App\Http\Controllers\API\Messaging\EmailTemplateWorkspaceController::class, 'artwork'])->middleware('throttle:4,1');
         Route::get('/templates/artwork/{artwork}', [\App\Http\Controllers\API\Messaging\EmailTemplateWorkspaceController::class, 'artworkStatus']);

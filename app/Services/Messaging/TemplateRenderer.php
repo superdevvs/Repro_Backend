@@ -17,10 +17,18 @@ class TemplateRenderer
      */
     public function render(MessageTemplate $template, array $variables, ?string $previewTheme = null): array
     {
+        if (! $template->workspaceBodyOverride && ($template->editor_document_json['version'] ?? 1) === 2 && ($template->editor_document_json['format'] ?? '') === 'sections') {
+            $template = clone $template;
+            $document = $template->editor_document_json;
+            $document['sections'] = app(EmailWorkspaceMediaResolver::class)->resolve($document['sections'] ?? [], $template->workspacePreview);
+            $prepared = app(EmailTemplateDocument::class)->prepare(['editor_document_json' => $document], null, $template->workspacePreview);
+            $template->forceFill($prepared);
+        }
         // Imported HTML is authored as a complete layout. Substitute its fields,
         // but never strip its head, tables, comments, or wrap it in another email.
         if (($template->editor_document_json['format'] ?? null) === 'html') {
-            $html = $this->replacePlaceholders((string) $template->body_html, $variables);
+            $source = app(EmailWorkspaceMediaResolver::class)->html((string) $template->body_html, $template->workspacePreview);
+            $html = $this->replacePlaceholders($source, $variables);
             $text = $this->replacePlaceholders((string) $template->body_text, $variables);
             $subject = $this->replacePlaceholders((string) $template->subject, $variables);
 
@@ -58,6 +66,7 @@ class TemplateRenderer
             ->mapWithKeys(fn ($var) => [$var => Arr::get($variables, $var, '')]);
 
         $html = $this->replacePlaceholders($templateHtml, $available->all());
+        $html = app(EmailWorkspaceMediaResolver::class)->html($html, $template->workspacePreview);
         $text = $this->replacePlaceholders($templateText, $available->all());
         $subject = $this->replacePlaceholders($templateSubject, $available->all());
         $html = $this->normalizeDuplicateInvoiceLabels($html);

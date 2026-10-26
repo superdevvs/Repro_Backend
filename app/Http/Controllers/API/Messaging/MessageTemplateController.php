@@ -69,9 +69,15 @@ class MessageTemplateController extends Controller
 
     public function update(Request $request, MessageTemplate $template): JsonResponse
     {
+        abort_if(($template->editor_document_json['version'] ?? 1) === 2 && ! $request->has('workspace_revision'), 409, 'Refresh the editor before changing this version 2 template.');
+        $request->validate(['workspace_revision' => ['sometimes','integer','min:0']]);
         $data = $this->validatePayload($request, $template);
 
         DB::transaction(function () use ($data, $request, $template): void {
+            $revision = $request->input('workspace_revision');
+            $updated = MessageTemplate::whereKey($template->id)->when($revision !== null, fn ($q) => $q->where('workspace_revision', $revision))->update(['workspace_revision' => DB::raw('workspace_revision + 1')]);
+            abort_unless($updated, 409, 'This template changed in another tab. Reopen the latest version or save a copy.');
+            $template->refresh();
             $template->update(array_merge($data, [
                 'updated_by' => $request->user()->id,
             ]));
@@ -147,20 +153,23 @@ class MessageTemplateController extends Controller
     /**
      * @param  array<string, mixed>  $overrides
      */
-    protected function buildTestTemplate(MessageTemplate $template, array $overrides): MessageTemplate
+    protected function buildTestTemplate(MessageTemplate $template, array $overrides, bool $preview = false): MessageTemplate
     {
         if ($overrides === []) {
+            $template = clone $template; $template->workspacePreview = $preview;
             return $template;
         }
 
         $draft = $template->replicate();
+        $draft->workspacePreview = $preview;
         $draft->fill(Arr::only($overrides, [
             'channel', 'name', 'slug', 'description', 'category', 'subject',
             'body_html', 'body_text', 'scope', 'email_type', 'override_enabled', 'variables_json', 'content_blocks_json',
             'editor_document_json',
         ]));
 
-        $draft->fill(app(EmailTemplateDocument::class)->prepare($draft->toArray(), $template->exists ? $template : null));
+        if (($template->editor_document_json['version'] ?? 1) === 2 && ! array_key_exists('editor_document_json', $overrides) && isset($overrides['body_html']) && $overrides['body_html'] !== $template->body_html) { $draft->workspaceBodyOverride = true; return $draft; }
+        $draft->fill(app(EmailTemplateDocument::class)->prepare($draft->toArray(), $template->exists ? $template : null, $preview));
 
         return $draft;
     }
@@ -172,7 +181,7 @@ class MessageTemplateController extends Controller
         $renderer = app(TemplateRenderer::class);
         $resolver = app(\App\Services\Messaging\TemplateVariableResolver::class);
         $variables = $resolver->resolve($data['variables'] ?? []);
-        $renderTemplate = $this->buildTestTemplate($template, $data['template'] ?? []);
+        $renderTemplate = $this->buildTestTemplate($template, $data['template'] ?? [], true);
         $variables = app(EmailPreviewVariables::class)->apply($renderTemplate, $variables, $data['variables'] ?? []);
         $variables = app(DirectEmailTemplates::class)->previewVariables($renderTemplate, $variables);
         $variables = app(ProtectedEmailTemplates::class)->previewVariables($renderTemplate, $variables);
@@ -188,7 +197,7 @@ class MessageTemplateController extends Controller
             'scope' => 'USER',
             'is_active' => true,
             'is_system' => false,
-        ]), $data['template']);
+        ]), $data['template'], true);
         $variables = app(\App\Services\Messaging\TemplateVariableResolver::class)->resolve($data['variables'] ?? []);
         $variables = app(EmailPreviewVariables::class)->apply($template, $variables, $data['variables'] ?? []);
         $variables = app(DirectEmailTemplates::class)->previewVariables($template, $variables);
@@ -501,10 +510,13 @@ class MessageTemplateController extends Controller
         }
 
         if (isset($data['body_html']) && ($data['editor_document_json']['format'] ?? null) !== 'html') {
+            $data['body_html'] = app(\App\Services\Messaging\EmailWorkspaceMediaResolver::class)->html($data['body_html'], false);
             $data['body_html'] = app(TemplateRenderer::class)->editableBodyHtml($data['body_html']);
         }
+        if (isset($data['body_html']) && (($data['override_enabled'] ?? $original?->override_enabled ?? false) || ($data['is_system'] ?? $original?->is_system ?? false))) $data['body_html'] = app(\App\Services\Messaging\EmailWorkspaceMediaResolver::class)->html($data['body_html'], false);
         foreach ($data['content_blocks_json'] ?? [] as $key => $block) {
             if (array_key_exists('body_html', $block)) {
+                $block['body_html'] = app(\App\Services\Messaging\EmailWorkspaceMediaResolver::class)->html($block['body_html'], false);
                 $data['content_blocks_json'][$key]['body_html'] = app(TemplateRenderer::class)->editableBodyHtml($block['body_html']);
             }
         }

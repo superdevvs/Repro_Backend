@@ -19,11 +19,13 @@ class EmailTemplateWorkspaceController extends Controller
     public function assist(Request $request, EmailTemplateAssistant $assistant): JsonResponse
     {
         $data = $request->validate(array_merge([
+            'videos' => ['sometimes','array','max:6'], 'videos.*.url' => ['required','url:https','max:2000'], 'videos.*.asset_id' => ['nullable','uuid'],
+            'asset_ids' => ['sometimes','array','max:12'], 'asset_ids.*' => ['uuid'], 'video_urls' => ['sometimes','array','max:6'], 'video_urls.*' => ['url:https','max:2000'],
             'template_id' => ['nullable', 'integer', 'exists:message_templates,id'],
             'instruction' => ['required', 'string', 'max:4000'],
             'scope' => ['required', 'in:email,subject,section'],
             'section_id' => ['nullable', 'string', 'max:150'],
-            'draft' => ['required', 'array:channel,name,description,category,scope,subject,body_html,body_text,content_blocks_json,editor_document_json,email_type,override_enabled'],
+            'draft' => ['required', 'array:channel,name,description,category,scope,subject,body_html,body_text,content_blocks_json,editor_document_json,email_type,override_enabled,workspace_revision'],
             'draft.name' => ['required', 'string', 'max:255'],
             'draft.channel' => ['sometimes', 'in:EMAIL'],
             'draft.description' => ['nullable', 'string', 'max:5000'],
@@ -41,16 +43,23 @@ class EmailTemplateWorkspaceController extends Controller
         ], EmailTemplateDocument::rules('draft.')));
         $template = isset($data['template_id']) ? MessageTemplate::findOrFail($data['template_id']) : null;
         abort_if($template && $template->channel !== 'EMAIL', 422, 'Open an email template.');
+        $selectedIds = $data['asset_ids'] ?? [];
+        if (preg_match('/upload|my (?:photo|image)|image library|use.*(?:photo|image)/i', $data['instruction'])) $selectedIds = array_unique([...$selectedIds, ...DB::table('email_template_assets')->where('user_id', $request->user()->id)->where('status', 'ready')->where('archived', false)->latest('created_at')->limit(12)->pluck('id')->all()]);
+        preg_match_all('/[a-zA-Z0-9_.-]+\.(?:jpg|jpeg|png|webp)\b/i', $data['instruction'], $filenames);
+        if ($filenames[0] !== []) $selectedIds = array_unique([...$selectedIds, ...DB::table('email_template_assets')->where('user_id', $request->user()->id)->where('status', 'ready')->where('archived', false)->whereIn('name', $filenames[0])->limit(12)->pluck('id')->all()]);
+        $media = DB::table('email_template_assets')->where('user_id', $request->user()->id)->whereIn('status', ['ready','processing'])->whereIn('id', $selectedIds)->get()->map(fn ($row) => ['id' => $row->id, 'name' => $row->name, 'url' => $row->path ? \App\Services\Messaging\EmailWorkspaceAssets::publicUrl($row->path) : null, 'source' => $row->source])->all();
+        foreach ($data['videos'] ?? [] as $video) { $asset = collect($media)->firstWhere('id', $video['asset_id'] ?? null); if ($asset) $media[] = ['video_url' => $video['url'], 'media_id' => $asset['id'], 'image_url' => $asset['url']]; }
+        foreach ($data['video_urls'] ?? [] as $url) $media[] = ['video_url' => $url];
         try {
             $context = $assistant->context(trim($data['instruction']), $data['draft'], $request->user());
-            $proposal = $assistant->suggest($data['draft'], trim($data['instruction']), $data['scope'], $data['section_id'] ?? null, $template, $context);
+            $proposal = $assistant->suggest($data['draft'], trim($data['instruction']), $data['scope'], $data['section_id'] ?? null, $template, $context, $media);
         } catch (ValidationException $exception) {
             throw $exception;
         } catch (Throwable) {
             return response()->json(['message' => 'Robbie could not prepare that revision. Your draft is unchanged. Try again.'], 502);
         }
 
-        return response()->json(['draft' => $proposal, 'context' => ['model' => config('services.openai.email_model', 'gpt-6-astra'),
+        return response()->json(['draft' => $proposal, 'context' => ['message' => $assistant->message, 'needs_input' => $assistant->needsInput, 'model' => config('services.openai.email_model', 'gpt-6-astra'),
             'sources' => array_map(fn ($article) => ['id' => $article['id'], 'title' => $article['title'], 'url' => $article['url']], $context)]]);
     }
 
@@ -84,8 +93,9 @@ class EmailTemplateWorkspaceController extends Controller
     {
         $stale = in_array($row->status, ['processing', 'queued'], true) && now()->diffInSeconds(\Carbon\Carbon::parse($row->updated_at), true) > 600;
 
+        $optimized = DB::table('email_template_assets')->where('artwork_id', $row->id)->where('status', 'ready')->first();
         return ['id' => $row->id, 'kind' => $row->kind, 'status' => $stale ? 'unknown' : $row->status,
-            'url' => $row->path ? Storage::disk('public')->url($row->path) : null,
+            'url' => ($optimized?->path ?? $row->path) ? \App\Services\Messaging\EmailWorkspaceAssets::publicUrl($optimized?->path ?? $row->path) : null,
             'error' => $stale ? 'Generation could not be confirmed. Check again before starting another request.' : $row->error];
     }
 }

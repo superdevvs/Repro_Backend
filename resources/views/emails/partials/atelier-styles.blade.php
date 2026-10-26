@@ -30,6 +30,7 @@
     .btn-secondary-bg { background-color:{{ $colors['surface'] }} !important; color:{{ $colors['ink'] }} !important; }
     .ws-eyebrow { font-size:11px !important; line-height:16px !important; }
     @media only screen and (max-width:600px) {
+        .ews-email-column { display:block !important; width:100% !important; box-sizing:border-box !important; padding:0 !important; }
         .ws-feature-image { width:88px !important; padding-left:8px !important; padding-right:16px !important; }
         .ws-feature-image img { max-width:88px !important; }
         .ws-feature-copy h2 { font-size:21px !important; }

@@ -14,17 +14,29 @@ class EmailTemplateSectionRenderer
         $html = '';
         foreach ($sections as $section) {
             $type = $section['type'];
+            if (in_array($type, EmailWorkspaceV2Renderer::TYPES, true)) { $html .= app(EmailWorkspaceV2Renderer::class)->render($section, $document); continue; }
             $align = in_array($section['alignment'] ?? '', ['left', 'center', 'right'], true) ? $section['alignment'] : 'left';
             $spacing = max(8, min(48, (int) ($section['spacing'] ?? 24)));
             $title = e($section['heading'] ?? '');
             $heading = $title !== '' ? '<'.($type === 'hero' ? 'h1' : 'h2').' class="'.($type === 'hero' ? 'dark-title ws-headline' : 'dark-heading').'" style="margin:0 0 16px;font-size:'.($type === 'hero' ? 36 : 24).'px;line-height:1.25;letter-spacing:-.6px;font-weight:600;">'.$title.'</'.($type === 'hero' ? 'h1' : 'h2').'>' : '';
             $eyebrow = filled($section['eyebrow'] ?? '') ? '<p class="dark-muted ws-eyebrow" style="margin:0 0 14px;font-size:11px;line-height:16px;font-weight:600;letter-spacing:1.6px;text-transform:uppercase;">'.e($section['eyebrow']).'</p>' : '';
-            $body = $this->paragraphs((string) ($section['body'] ?? ''));
+            $body = isset($section['rich_text']) ? app(EmailWorkspaceRichText::class)->render($section['rich_text']) : $this->paragraphs((string) ($section['body'] ?? ''));
             $width = max(80, min(280, (int) ($section['image_width'] ?? 160)));
             $hasImage = filled($section['image_url'] ?? '');
             $image = $hasImage ? '<img src="'.e($document->url($section['image_url'], true)).'" alt="'.e($section['alt'] ?? '').'" width="'.($type === 'feature' ? $width : 520).'" style="display:block;width:100%;max-width:'.($type === 'feature' ? $width : 520).'px;height:auto;margin:0 auto;border:0;">' : '';
+            if ($hasImage && ! empty($section['styles'])) {
+                $style = $section['styles'];
+                $css = 'object-fit:'.($style['fit'] ?? 'contain').';border-radius:'.($style['radius'] ?? 0).'px;';
+                if (($style['aspect'] ?? 'auto') !== 'auto') $css .= 'aspect-ratio:'.str_replace(':', '/', $style['aspect']).';';
+                $image = str_replace('border:0;', 'border:0;'.$css, $image);
+            }
+            if ($hasImage && ! empty($section['image_link'])) $image = '<a href="'.e($document->url($section['image_link'])).'">'.$image.'</a>';
+            if (! empty($section['caption'])) $image .= '<p class="dark-muted" style="font-size:12px;line-height:1.5;margin:8px 0;">'.e($section['caption']).'</p>';
             $copy = $eyebrow.$heading.$body;
-            if ($type === 'image' && ! $hasImage) $document->url('', true);
+            if ($type === 'image' && ! $hasImage && empty($section['media_id'])) {
+                if ($document->previewing()) $image = '<div style="padding:28px;border:1px dashed #b9cee9;border-radius:10px;color:#6080a0;text-align:center;">Add an image</div>';
+                else $document->url('', true);
+            }
             $content = match ($type) {
                 'hero' => $copy.($hasImage ? '<div style="padding:12px 0 8px;">'.$image.'</div>' : ''),
                 'feature' => $this->feature($copy, $image, $section['layout'] ?? 'image-left', $width),
@@ -39,6 +51,12 @@ class EmailTemplateSectionRenderer
             $tone = $section['tone'] ?? (in_array($type, ['notice', 'steps', 'details'], true) ? 'soft' : 'plain');
             if ($tone !== 'plain') {
                 $content = '<div class="'.($tone === 'accent' ? 'ws-accent' : 'section-card-bg').'" style="padding:24px;border-radius:16px;background:'.($tone === 'accent' ? '#09223c' : '#f5f7fa').';">'.$content.'</div>';
+            }
+            $design = app(EmailWorkspaceStyles::class);
+            $styles = $design->bounded($section['styles'] ?? []);
+            if ($styles !== []) {
+                $content = $design->typography($content, $styles);
+                $content = '<div style="'.e($design->wrapper($styles)).'">'.$content.'</div>';
             }
             $html .= '<div data-email-section="'.e($section['id']).'" data-email-layout="'.e($section['layout'] ?? 'stacked').'" style="text-align:'.$align.';padding-bottom:'.$spacing.'px;">'.$content.'</div>';
         }
@@ -88,8 +106,6 @@ class EmailTemplateSectionRenderer
         $html = preg_replace('/<img\b[^>]*>/i', '', nl2br((string) Str::inlineMarkdown($text, ['html_input' => 'escape', 'allow_unsafe_links' => false]), false)) ?? '';
         // CommonMark percent-encodes braces in link destinations. Keep only
         // recognized connected fields intact for recipient-time substitution.
-        preg_match_all('/\{\{\s*[a-zA-Z0-9_.]+\s*\}\}/', $text, $fields);
-        foreach (array_unique($fields[0]) as $field) $html = str_ireplace(rawurlencode($field), $field, $html);
-        return $html;
+        return app(EmailWorkspaceStyles::class)->connectedFields($html, $text);
     }
 }
