@@ -16,12 +16,17 @@ class EmailWorkspaceV2Renderer
         if ($type === 'columns') {
             $columns = $section['columns'] ?? [];
             $width = (int) floor(100 / max(1, count($columns)));
+            $columnPixels = max(1, (int) floor((520 - 2 * ($section['styles']['padding'] ?? 0)) / max(1, count($columns))) - 20);
             $content = '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="table-layout:fixed;"><tr>';
             foreach ($columns as $column) {
                 $columnHtml = '';
                 foreach ($column as $child) {
                     if ($child['type'] === 'feature') { $child['layout'] = 'stacked'; $child['image_width'] = min(120, $child['image_width'] ?? 120); }
                     $part = $document->html([$child]);
+                    // Keep fallback pixel dimensions inside the cell too;
+                    // responsive CSS alone cannot constrain every mail client.
+                    $imagePixels = max(1, $columnPixels - 2 * ($child['styles']['padding'] ?? 0));
+                    $part = preg_replace_callback('/(<img\b[^>]*\bwidth=")(\d+)(")/i', fn ($match) => $match[1].min((int) $match[2], $imagePixels).$match[3], $part);
                     if (!isset($child['styles']['font_size'])) $part = str_replace(['font-size:24px;', 'font-size:16px;'], [count($columns) === 3 ? 'font-size:18px;' : 'font-size:20px;', count($columns) === 3 ? 'font-size:14px;' : 'font-size:15px;'], $part);
                     $columnHtml .= $part;
                 }

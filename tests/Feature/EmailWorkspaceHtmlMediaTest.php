@@ -69,4 +69,24 @@ class EmailWorkspaceHtmlMediaTest extends TestCase
         $this->assertNotNull($heading);
         $this->assertStringContainsString('font-size:24px', str_replace(' ', '', $heading->getAttribute('style')));
     }
+
+    public function test_gallery_and_video_pixel_widths_fit_two_and_three_column_cells(): void
+    {
+        Sanctum::actingAs(User::factory()->create(['role' => 'admin']));
+        foreach ([2, 3] as $count) {
+            $columns = [];
+            foreach (array_slice(['image', 'video', 'hero'], 0, $count) as $index => $type) $columns[] = [['id' => 'media-'.$index, 'type' => $type, 'image_url' => 'https://example.com/photo.png', 'video_url' => 'https://www.youtube.com/watch?v=abcdefghijk']];
+            $sections = [['id' => 'wide-header', 'type' => 'hero', 'image_url' => 'https://example.com/wide.png'], ['id' => 'gallery', 'type' => 'columns', 'columns' => $columns]];
+            $payload = ['channel' => 'EMAIL', 'name' => 'Gallery', 'scope' => 'USER', 'subject' => 'Our work', 'editor_document_json' => ['version' => 2, 'format' => 'sections', 'sections' => $sections]];
+            $html = $this->postJson('/api/messaging/templates/preview', ['template' => $payload])->assertOk()->json('html');
+            $dom = new \DOMDocument; @$dom->loadHTML($html); $xpath = new \DOMXPath($dom);
+            $images = $xpath->query('//td[contains(@class, "ews-email-column")]//img');
+            $this->assertCount($count, $images);
+            foreach ($images as $image) {
+                $this->assertGreaterThan(0, (int) $image->getAttribute('width'));
+                $this->assertLessThanOrEqual((int) floor(520 / $count) - 20, (int) $image->getAttribute('width'));
+            }
+            $this->assertSame('520', $xpath->query('//img[@src="https://example.com/wide.png"]')->item(0)->getAttribute('width'));
+        }
+    }
 }
