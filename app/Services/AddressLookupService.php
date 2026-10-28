@@ -137,6 +137,14 @@ class AddressLookupService
     public function getAddressDetails(string $placeId, ?string $address = null): ?array
     {
         $normalizedAddress = $address !== null ? trim($address) : null;
+        // Zillow IDs identify the selected autocomplete result. Parcel/assessment
+        // records can disagree with that result and must never relocate it.
+        if (ctype_digit($placeId) && !empty($normalizedAddress)) {
+            $selectedCacheKey = 'address_selected_details_v1_' . md5($placeId . '|' . $normalizedAddress);
+
+            return Cache::remember($selectedCacheKey, 3600,
+                fn () => $this->selectedZillowAddressDetails($placeId, $normalizedAddress));
+        }
         $cacheKey = 'address_details_' . $this->provider . '_' . md5($placeId . '|' . ($normalizedAddress ?? ''));
 
         return Cache::remember($cacheKey, 3600, function () use ($placeId, $normalizedAddress) {
@@ -333,6 +341,60 @@ class AddressLookupService
             'field_sources' => $property['field_sources'] ?? [],
             'property_source_chain' => $property['property_source_chain'] ?? [],
         ];
+    }
+
+    private function selectedZillowAddressDetails(string $placeId, string $address): ?array
+    {
+        $selected = collect($this->zillowAutocomplete($address, []))
+            ->first(fn (array $suggestion) => (string) $suggestion['place_id'] === $placeId);
+        if (!$selected) {
+            // Let the caller retain its selected suggestion and enter metrics
+            // manually if the provider cannot confirm this exact selection.
+            return null;
+        }
+
+        $details = $this->resolvePropertyDetailsByAddress($address, $placeId);
+        foreach (['address', 'city', 'state', 'zip'] as $field) {
+            $expected = trim((string) ($selected[$field] ?? ''));
+            $actual = trim((string) ($details[$field] ?? ''));
+            if ($field === 'zip') {
+                $expected = substr($expected, 0, 5);
+                $actual = substr($actual, 0, 5);
+            }
+            if ($expected !== '' && $actual !== ''
+                && $this->normalizeSelectedAddressPart($expected) !== $this->normalizeSelectedAddressPart($actual)) {
+                // Do not attach another property's dimensions or pricing inputs.
+                $details = null;
+                break;
+            }
+        }
+
+        $result = $details ?? [
+            'bedrooms' => null, 'bathrooms' => null, 'sqft' => null,
+            'property_details' => null, 'source' => 'zillow_autocomplete',
+            'confidence' => 0.35, 'field_sources' => [],
+            'property_source_chain' => ['zillow_autocomplete'],
+        ];
+        foreach (['formatted_address', 'address', 'city', 'state', 'zip', 'country', 'latitude', 'longitude'] as $field) {
+            $result[$field] = $selected[$field] ?? null;
+            $result['field_sources'][$field] = 'zillow_autocomplete';
+        }
+        $result['zpid'] = $placeId;
+
+        return $result;
+    }
+
+    private function normalizeSelectedAddressPart(string $value): string
+    {
+        $tokens = preg_split('/\s+/', trim(preg_replace('/[^a-z0-9]+/', ' ', strtolower($value)) ?? ''));
+        $aliases = [
+            'street' => 'st', 'avenue' => 'ave', 'road' => 'rd', 'drive' => 'dr',
+            'court' => 'ct', 'boulevard' => 'blvd', 'lane' => 'ln', 'place' => 'pl',
+            'circle' => 'cir', 'terrace' => 'ter', 'parkway' => 'pkwy', 'highway' => 'hwy',
+            'north' => 'n', 'south' => 's', 'east' => 'e', 'west' => 'w',
+        ];
+
+        return implode(' ', array_map(fn ($token) => $aliases[$token] ?? $token, $tokens ?: []));
     }
 
     private function firstNumericValue(array $values): int|float|null
@@ -1744,7 +1806,9 @@ class AddressLookupService
                 // Parse address components from display string
                 // Format is typically: "123 Main St, City, State ZIP"
                 $parts = explode(',', $display);
-                $main = trim($parts[0] ?? '');
+                $street = trim(($metaData['streetNumber'] ?? '') . ' ' . ($metaData['streetName'] ?? ''));
+                $main = !empty($metaData['streetNumber']) && !empty($metaData['streetName'])
+                    ? $street : trim($parts[0] ?? '');
                 $city = $metaData['city'] ?? trim($parts[1] ?? '');
 
                 // State/ZIP may be in either the metadata or the final comma section
