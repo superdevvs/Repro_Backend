@@ -50,9 +50,9 @@ class VoiceIncomingOfferService
             $candidates = $candidates->merge(VoicePushSubscription::whereNull('revoked_at')->pluck('user_id'));
         }
         if ($policy) {
-            // Only registered Dashboard or enrolled native SIP devices count as reachable.
-            // Push subscriptions and verified personal numbers cannot expand this group.
-            $candidates = $policies->recipients($policy)->filter(fn ($u) => $policies->registered($u))->pluck('id');
+            // Keep the assigned group; reachability below also accepts an enrolled
+            // browser that can be woken by push before connecting to answer.
+            $candidates = $policies->recipients($policy)->pluck('id');
         }
         $eligible = User::whereIn('id', $candidates->unique()->all())->get()
             ->filter(fn (User $user) => $this->eligible($user) && $this->reachable($user, $call))->pluck('id')->all();
@@ -87,10 +87,12 @@ class VoiceIncomingOfferService
 
     public function reachable(User $user, VoiceCall $call): bool
     {
-        if (app(VoiceLinePolicyService::class)->dashboardOnly($call)) {
-            return app(VoiceLinePolicyService::class)->registered($user);
+        $policies = app(VoiceLinePolicyService::class);
+        $dashboardOnly = $policies->dashboardOnly($call);
+        if ($dashboardOnly && $policies->registered($user)) {
+            return true;
         }
-        if ($this->phones->destination($user, $call)) {
+        if (! $dashboardOnly && $this->phones->destination($user, $call)) {
             return true;
         }
         if (VoiceBrowserSession::where('user_id', $user->id)->whereNull('revoked_at')->where('registered', true)
