@@ -133,8 +133,8 @@ class ShootUnitTourController extends Controller
         }), 'shoot-unit.provider-line');
         $floorplans = is_array($parsed['floorplans'] ?? null) ? $parsed['floorplans'] : [];
         if ($floorplans) {
-            $job = $provider === 'iguide' ? IngestIguideAssetsJob::class : IngestCubiCasaAssetsJob::class;
-            $job::dispatch($shoot->id, $floorplans, $line->id);
+            if ($provider === 'cubicasa') IngestCubiCasaAssetsJob::dispatch($shoot->id, $floorplans, $line->id, true);
+            else IngestIguideAssetsJob::dispatch($shoot->id, $floorplans, $line->id);
         }
         return response()->json(['success' => true, 'queued_assets' => count($floorplans), 'unit' => $unit->fresh()]);
     }

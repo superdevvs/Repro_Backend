@@ -563,7 +563,7 @@ class IntegrationController extends Controller
             $floorplans = is_array($parsed['floorplans'] ?? null) ? $parsed['floorplans'] : [];
             $shouldIngest = !empty($floorplans) && $shoot->hasCubiCasaEligibleService();
             if ($shouldIngest) {
-                IngestCubiCasaAssetsJob::dispatch($shoot->id, $floorplans);
+                IngestCubiCasaAssetsJob::dispatch($shoot->id, $floorplans, null, true);
             }
 
             $shoot->refresh();
@@ -655,7 +655,7 @@ class IntegrationController extends Controller
             $floorplans = is_array($parsed['floorplans'] ?? null) ? $parsed['floorplans'] : [];
             $shouldIngest = !empty($floorplans) && $shoot->hasCubiCasaEligibleService();
             if ($shouldIngest) {
-                IngestCubiCasaAssetsJob::dispatch($shoot->id, $floorplans);
+                IngestCubiCasaAssetsJob::dispatch($shoot->id, $floorplans, null, true);
             }
 
             $shoot->refresh();

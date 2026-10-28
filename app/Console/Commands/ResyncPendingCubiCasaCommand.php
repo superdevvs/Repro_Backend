@@ -96,7 +96,7 @@ class ResyncPendingCubiCasaCommand extends Command
 
             $floorplans = is_array($parsed['floorplans'] ?? null) ? $parsed['floorplans'] : [];
             if (!empty($floorplans) && $shoot->hasCubiCasaEligibleService()) {
-                IngestCubiCasaAssetsJob::dispatch($shoot->id, $floorplans);
+                IngestCubiCasaAssetsJob::dispatch($shoot->id, $floorplans, null, true);
             }
             $count++;
         }

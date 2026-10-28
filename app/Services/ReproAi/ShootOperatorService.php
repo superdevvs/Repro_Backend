@@ -792,7 +792,7 @@ class ShootOperatorService
         $floorplans = is_array($data['floorplans'] ?? null) ? $data['floorplans'] : [];
         $shouldIngest = !empty($floorplans) && $shoot->hasCubiCasaEligibleService();
         if ($shouldIngest) {
-            IngestCubiCasaAssetsJob::dispatch($shoot->id, $floorplans);
+            IngestCubiCasaAssetsJob::dispatch($shoot->id, $floorplans, null, true);
         }
 
         $shoot->refresh();

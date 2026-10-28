@@ -191,7 +191,7 @@ class CubiCasaWebhookControllerTest extends TestCase
         Queue::assertNotPushed(IngestCubiCasaAssetsJob::class);
     }
 
-    public function test_idempotent_replay_returns_duplicate_message(): void
+    public function test_identical_ready_events_are_checked_again_so_quick_edits_are_not_suppressed(): void
     {
         Queue::fake();
         Http::fake([
@@ -208,7 +208,10 @@ class CubiCasaWebhookControllerTest extends TestCase
         $this->postWebhook($payload)->assertStatus(200);
         $this->postWebhook($payload)
             ->assertStatus(200)
-            ->assertJsonPath('message', 'Duplicate event ignored');
+            ->assertJsonPath('message', 'Webhook processed');
+        Http::assertSentCount(2);
+        Queue::assertPushed(IngestCubiCasaAssetsJob::class, 2);
+        Queue::assertPushed(IngestCubiCasaAssetsJob::class, fn ($job) => $job->refreshExisting);
     }
 
     public function test_does_not_promote_visithome_links_into_tour_links(): void

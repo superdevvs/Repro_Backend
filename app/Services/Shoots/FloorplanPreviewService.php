@@ -40,7 +40,7 @@ class FloorplanPreviewService
      *
      * @return array{status:string, thumbnail_path:?string, web_path:?string, preview_images:array<int,string>}
      */
-    public function ensurePreview(ShootFile $file, bool $force = false): array
+    public function ensurePreview(ShootFile $file, bool $force = false, bool $persist = true): array
     {
         $result = [
             'status' => 'skipped',
@@ -86,10 +86,10 @@ class FloorplanPreviewService
 
         // Normalize a generic/bad MIME based on the extension (e.g. CubiCasa downloads
         // arrive as binary/octet-stream). Safe: only when we recognise the extension.
-        $this->normalizeMimeIfNeeded($file, $extension, $isPdf);
+        $this->normalizeMimeIfNeeded($file, $extension, $isPdf, $persist);
 
         if ($isPdf) {
-            return $this->generatePdfPreviews($file, $relativeSource, $result);
+            return $this->generatePdfPreviews($file, $relativeSource, $result, $persist);
         }
 
         if ($isImage) {
@@ -122,7 +122,7 @@ class FloorplanPreviewService
             $file->web_path = $generated['web'];
             $file->grid_path = $generated['grid'] ?? $file->grid_path;
             $file->placeholder_path = $generated['placeholder'] ?? $file->placeholder_path;
-            $file->save();
+            if ($persist) $file->save();
 
             $result['status'] = 'generated';
             $result['thumbnail_path'] = $file->thumbnail_path;
@@ -138,7 +138,7 @@ class FloorplanPreviewService
      * @param array{status:string, thumbnail_path:?string, web_path:?string, preview_images:array<int,string>} $result
      * @return array{status:string, thumbnail_path:?string, web_path:?string, preview_images:array<int,string>}
      */
-    private function generatePdfPreviews(ShootFile $file, string $relativeSource, array $result): array
+    private function generatePdfPreviews(ShootFile $file, string $relativeSource, array $result, bool $persist): array
     {
         $media = app(\App\Services\Media\MediaStorage::class);
         $absoluteSource = $media->absolutePath($relativeSource);
@@ -201,7 +201,9 @@ class FloorplanPreviewService
             foreach ($generated as $tmpFile) {
                 $pageNum++;
                 $relativePreview = sprintf('%s/%s-p%d.jpg', $previewDir, $uniqueBase, $pageNum);
-                app(\App\Services\Media\MediaStorage::class)->put($relativePreview, file_get_contents($tmpFile));
+                if (!$media->put($relativePreview, file_get_contents($tmpFile))) {
+                    throw new \RuntimeException('Could not store the floorplan preview.');
+                }
                 $previewImages[] = $relativePreview;
             }
 
@@ -214,7 +216,7 @@ class FloorplanPreviewService
             $file->thumbnail_path = $primary;
             $file->web_path = $primary;
             $file->metadata = $metadata;
-            $file->save();
+            if ($persist) $file->save();
 
             $result['status'] = 'pdf_rendered';
             $result['thumbnail_path'] = $primary;
@@ -236,7 +238,7 @@ class FloorplanPreviewService
         }
     }
 
-    private function normalizeMimeIfNeeded(ShootFile $file, string $extension, bool $isPdf): void
+    private function normalizeMimeIfNeeded(ShootFile $file, string $extension, bool $isPdf, bool $persist): void
     {
         $currentMime = strtolower((string) $file->file_type);
         $isBadMime = $currentMime === '' || $currentMime === 'binary/octet-stream' || $currentMime === 'application/octet-stream';
@@ -258,7 +260,7 @@ class FloorplanPreviewService
             if (\Illuminate\Support\Facades\Schema::hasColumn('shoot_files', 'mime_type')) {
                 $file->mime_type = $resolved;
             }
-            $file->save();
+            if ($persist) $file->save();
         }
     }
 

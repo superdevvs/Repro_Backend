@@ -49,7 +49,7 @@ class SyncCubiCasaShootJob implements ShouldQueue, ShouldBeUnique
 
             $floorplans = is_array($parsed['floorplans'] ?? null) ? $parsed['floorplans'] : [];
             if (!empty($floorplans) && $shoot->fresh()?->hasCubiCasaEligibleService()) {
-                IngestCubiCasaAssetsJob::dispatch($shoot->id, $floorplans);
+                IngestCubiCasaAssetsJob::dispatch($shoot->id, $floorplans, null, true);
             }
         } catch (\Throwable $exception) {
             $cubicasa->markSyncFailed($shoot, CubiCasaService::SYNC_STATUS_FAILED, $exception->getMessage());

@@ -100,6 +100,7 @@ class Kernel extends ConsoleKernel
         // Re-fetch CubiCasa orders still in non-Ready states in case a webhook
         // delivery was missed.
         $schedule->command('cubicasa:resync-pending')->everyThirtyMinutes()->withoutOverlapping();
+        $schedule->command('cubicasa:refresh-deliveries')->everyThirtyMinutes()->withoutOverlapping();
     }
 
     /**

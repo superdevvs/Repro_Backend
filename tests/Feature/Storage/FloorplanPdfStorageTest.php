@@ -88,6 +88,41 @@ class FloorplanPdfStorageTest extends TestCase
         $this->assertSame($this->pdfBytes(), Storage::disk('local')->get($file->path));
     }
 
+    public function test_pdf_revision_is_rendered_before_publication_and_keeps_the_original(): void
+    {
+        $file = $this->pdfFile('local');
+        app(FloorplanPreviewService::class)->ensurePreview($file);
+        $file->refresh();
+        $original = $file->getAttributes();
+        $this->mock(\App\Services\Scanning\ClamAvClient::class, fn ($mock) => $mock->shouldReceive('scan')->once()->andReturnUsing(function () use ($file, $original) {
+            $this->assertSame($original, $file->fresh()->getAttributes());
+            return \App\Services\Scanning\ClamAvScanResult::clean();
+        }));
+        $revised = str_replace('0 0 1 RG', '1 0 0 RG', $this->pdfBytes());
+        $this->assertTrue(app(\App\Services\Shoots\CubiCasaAssetRevision::class)->replace($file, $revised, ['url' => 'https://assets.test/revised.pdf']));
+        $current = $file->fresh();
+        $this->assertSame(2, $current->content_version);
+        $this->assertSame('clean', $current->scan_status);
+        $this->assertNotSame($file->web_path, $current->web_path);
+        $this->assertSame($revised, Storage::disk('local')->get($current->path));
+        $this->assertSame($this->pdfBytes(), Storage::disk('local')->get($file->path));
+        $this->assertCount(1, $current->metadata['preview_images']);
+        $this->assertNotSame(Storage::disk('local')->get($file->web_path), Storage::disk('local')->get($current->web_path));
+        $this->assertSame(1, ShootFile::count());
+        $this->assertSame(2, \App\Models\ShootFileVersion::count());
+    }
+
+    public function test_unpublished_pdf_preview_does_not_change_the_gallery_row(): void
+    {
+        $file = $this->pdfFile('local')->fresh();
+        $before = $file->getAttributes();
+        $candidate = clone $file;
+        $result = app(FloorplanPreviewService::class)->ensurePreview($candidate, true, false);
+        $this->assertSame('pdf_rendered', $result['status']);
+        $this->assertNotNull($candidate->web_path);
+        $this->assertSame($before, $file->fresh()->getAttributes());
+    }
+
     private function pdfFile(string $disk): ShootFile
     {
         $owner = User::factory()->admin()->create();

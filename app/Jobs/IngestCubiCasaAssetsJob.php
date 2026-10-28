@@ -12,6 +12,7 @@ use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 
@@ -31,17 +32,31 @@ class IngestCubiCasaAssetsJob implements ShouldQueue
     public int $tries = 3;
     public int $timeout = 600;
     public array $backoff = [30, 120, 300];
+    public bool $refreshExisting = false;
 
     public function __construct(
         public int $shootId,
         /** @var array<int, array<string, mixed>> Floorplan items from CubiCasaService::buildFloorplanList() */
         public array $floorplans,
         public ?int $shootServiceId = null,
+        bool $refreshExisting = false,
     ) {
+        $this->refreshExisting = $refreshExisting;
         $this->onQueue('default');
     }
 
     public function handle(ShootActivityLogger $activityLogger): void
+    {
+        $lock = Cache::lock('cubicasa:ingest:'.$this->shootId.':'.($this->shootServiceId ?? 0), 660);
+        if (!$lock->get()) { $this->release(30); return; }
+        try {
+            $this->ingest($activityLogger);
+        } finally {
+            $lock->release();
+        }
+    }
+
+    private function ingest(ShootActivityLogger $activityLogger): void
     {
         $shoot = Shoot::find($this->shootId);
         if (!$shoot || $shoot->isInternalTestShoot()) {
@@ -50,9 +65,8 @@ class IngestCubiCasaAssetsJob implements ShouldQueue
         if ($this->shootServiceId && ! $shoot->serviceItems()->whereKey($this->shootServiceId)->exists()) {
             return;
         }
-        if (empty($this->floorplans)) {
-            return;
-        }
+        $shoot = app(\App\Services\Shoots\ShootUnitTourScope::class)->forLine($shoot, $this->shootServiceId);
+        if (!$this->shootServiceId && $shoot->units()->exists()) return;
 
         // Only ingest for shoots that booked a CubiCasa-eligible service.
         if (!$shoot->hasCubiCasaEligibleService()) {
@@ -61,6 +75,22 @@ class IngestCubiCasaAssetsJob implements ShouldQueue
             ]);
             return;
         }
+
+        if ($this->refreshExisting) {
+            // Resolve current URLs at execution time. An old queued webhook must
+            // never restore an earlier revision over a newer delivery.
+            $provider = app(\App\Services\CubiCasaService::class);
+            if (!$shoot->cubicasa_order_id) return;
+            $raw = $provider->getOrder($shoot->cubicasa_order_id);
+            if (!$raw || ($raw['id'] ?? null) !== $shoot->cubicasa_order_id) {
+                throw new \RuntimeException('Could not fetch the current CubiCasa delivery.');
+            }
+            $parsed = $provider->parseOrderData($raw);
+            if (strtolower($parsed['status'] ?? '') !== 'ready') return;
+            $this->floorplans = $parsed['floorplans'] ?? [];
+            $provider->applyShootData($shoot, $parsed);
+        }
+        if (empty($this->floorplans)) return;
 
         $existingByKey = ShootFile::query()
             ->where('shoot_id', $shoot->id)
@@ -90,7 +120,7 @@ class IngestCubiCasaAssetsJob implements ShouldQueue
 
             try {
                 $existing = $existingByKey->get($assetKey);
-                if ($existing && (!$existing->isInvalidProviderFloorplan() || $existing->scan_status === ShootFile::SCAN_STATUS_INFECTED)) {
+                if ($existing && ((!$this->refreshExisting && !$existing->isInvalidProviderFloorplan()) || $existing->scan_status === ShootFile::SCAN_STATUS_INFECTED)) {
                     $existing = $existingByKey->get($assetKey);
                     if (in_array($existing->scan_status, [ShootFile::SCAN_STATUS_QUARANTINED, ShootFile::SCAN_STATUS_FAILED], true)) {
                         // A retry must also recover a previously missed queue dispatch.
@@ -139,6 +169,21 @@ class IngestCubiCasaAssetsJob implements ShouldQueue
                     continue;
                 }
 
+                if ($existing && !$existing->isInvalidProviderFloorplan()) {
+                    if (in_array($existing->scan_status, [ShootFile::SCAN_STATUS_QUARANTINED, ShootFile::SCAN_STATUS_FAILED], true)) {
+                        ScanShootFileJob::dispatch($existing->id)->afterCommit();
+                        $retryPending = true;
+                        continue;
+                    }
+                    if (!$existing->web_path) ProcessImageJob::dispatch($existing)->afterCommit();
+                    if (app(\App\Services\Shoots\CubiCasaAssetRevision::class)->replace($existing, $binary, $item)) {
+                        $ingestedFileIds[] = $existing->id;
+                        $existingByKey->put($assetKey, $existing->fresh());
+                        if (config('media.dual_write') || config('media.r2_only')) SyncShootFileToR2Job::dispatch($existing->id);
+                    }
+                    continue;
+                }
+
                 if (!$mediaStorage->put($relativePath, $binary)) {
                     throw new \RuntimeException('The imported floorplan could not be stored.');
                 }
@@ -168,6 +213,7 @@ class IngestCubiCasaAssetsJob implements ShouldQueue
                         'floor_id' => $item['floor_id'] ?? null,
                         'label' => $item['label'] ?? null,
                         'original_url' => $url,
+                        'cubicasa_sha256' => hash('sha256', $binary),
                         'ingested_at' => now()->toIso8601String(),
                     ],
                 ];

@@ -90,14 +90,17 @@ class CubiCasaWebhookController extends Controller
                 ], 200);
             }
 
-            // Idempotency on (orderId, currentStatus, deliveryType) for 30 minutes.
+            // Ready notifications do not contain a unique revision ID. Even
+            // identical payloads can represent a second Quick Edit within seconds.
+            // Coalesce status-only events; deduplicate Ready assets by their bytes.
+            $shouldFetch = $this->shouldFetchDeliverables($currentStatus, $deliveryType);
             $idemKey = sprintf(
                 'cubicasa:webhook:%s:%s:%s',
                 $orderId,
                 $currentStatus ?: 'none',
                 $deliveryType ?: 'none',
             );
-            if (Cache::has($idemKey)) {
+            if (!$shouldFetch && Cache::has($idemKey)) {
                 Log::info('CubiCasa webhook: duplicate event ignored', [
                     'order_id' => $orderId,
                     'current_status' => $currentStatus,
@@ -113,7 +116,6 @@ class CubiCasaWebhookController extends Controller
             // address/external ID, so retrieve authoritative order details before
             // attempting to reconcile a separately submitted scan.
             $shoot = $this->matchShootByOrderId($orderId);
-            $shouldFetch = $this->shouldFetchDeliverables($currentStatus, $deliveryType);
             $raw = null;
             if ($shouldFetch) {
                 $raw = $this->cubicasa->getOrder($orderId);
@@ -177,7 +179,7 @@ class CubiCasaWebhookController extends Controller
 
                 $floorplans = is_array($parsed['floorplans'] ?? null) ? $parsed['floorplans'] : [];
                 if (!empty($floorplans) && $shoot->hasCubiCasaEligibleService()) {
-                    IngestCubiCasaAssetsJob::dispatch($shoot->id, $floorplans, $shoot->relationLoaded('tourServiceLine') ? $shoot->getRelation('tourServiceLine')?->id : null);
+                    IngestCubiCasaAssetsJob::dispatch($shoot->id, $floorplans, $shoot->relationLoaded('tourServiceLine') ? $shoot->getRelation('tourServiceLine')?->id : null, true);
                     $assetCount = count($floorplans);
                 }
             }
