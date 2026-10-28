@@ -498,6 +498,8 @@ class ClientNotificationDeliveryWindowTest extends TestCase
         $this->assertSame('SCHEDULED', $message->status);
         $attachment = $message->attachments_json[0];
         $this->assertSame('media_local', $attachment['disk']);
+        // Read final permissions rather than Flysystem's cached pre-chmod stat.
+        clearstatcache();
         $this->assertSame(0660, fileperms(Storage::disk('media_local')->path($attachment['storage_path'])) & 0777);
         $this->assertSame(02770, fileperms(dirname(Storage::disk('media_local')->path($attachment['storage_path']))) & 07777);
         $this->assertSame(posix_getgrnam(config('filesystems.disks.media_local.shared_group'))['gid'], filegroup(Storage::disk('media_local')->path($attachment['storage_path'])));
