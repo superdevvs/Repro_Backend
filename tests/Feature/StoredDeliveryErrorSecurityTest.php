@@ -24,6 +24,16 @@ class StoredDeliveryErrorSecurityTest extends TestCase
 {
     private const CANARY = 'SQLSTATE synthetic-secret-canary Authorization: Bearer fixture /private/fixture.env';
 
+    public function test_email_permission_block_reason_is_public_but_provider_details_stay_private(): void
+    {
+        $reason = 'Recipient email notification permission is disabled.';
+        $message = new Message(['status' => 'BLOCKED', 'error_message' => $reason]);
+        $this->assertSame($reason, $message->toArray()['error_message']);
+        $message->error_message = $reason.' '.self::CANARY;
+        $this->assertStringNotContainsString(self::CANARY, json_encode($message));
+        $this->assertSame($reason.' '.self::CANARY, $message->error_message);
+    }
+
     public function test_scheduled_call_json_redacts_historical_error_without_mutating_model(): void
     {
         $call = new ScheduledVoiceCall();

@@ -83,8 +83,9 @@ class Message extends Model
 
     private function publicDeliveryFailure(mixed $value): ?string
     {
-        // Keep only the reviewed SMS guidance; old provider text stays private.
+        // Keep reviewed recipient guidance; old provider text stays private.
         if (in_array($value, [
+            'Recipient email notification permission is disabled.',
             'SMS could not be sent: the Telnyx sending number is not verified.',
             'SMS could not be sent due to a provider error.',
             'Recipient has disabled all text messages in notification settings.',
