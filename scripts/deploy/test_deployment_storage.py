@@ -207,6 +207,42 @@ class SpaceAndWorkflowTest(unittest.TestCase):
                 self.assertEqual(run.call_count, 1)
                 state.assert_not_called()
 
+    def test_exact_guarded_cron_and_surrounding_jobs_are_preserved_verbatim(self):
+        guarded = ('47 3 * * * /usr/local/sbin/repro-storage-guard --live && /usr/bin/python3 '
+                   '/var/www/backend/scripts/deploy/deployment-storage.py scheduled-retention >/dev/null 2>&1 '
+                   '# repro-deploy-backup-retention')
+        current = 'MAILTO=operations@example.test\n\n' + guarded + '\n* * * * * existing-command\n\n'
+        self.assertEqual(guard.updated_crontab(current), current)
+
+    def test_duplicate_retention_jobs_are_rejected_even_when_both_are_known(self):
+        for first in (guard.CRON_JOB, guard.GUARDED_CRON_JOB):
+            for second in (guard.CRON_JOB, guard.GUARDED_CRON_JOB):
+                with self.subTest(first=first, second=second), self.assertRaises(RuntimeError):
+                    guard.updated_crontab(first + '\n' + second + '\n')
+
+    def test_modified_guarded_retention_jobs_are_rejected(self):
+        for old, new in (('--live', '--check'), ('&&', '||'), ('&&', ';'),
+                         ('/usr/local/sbin/', '/tmp/'), ('47 3 ', '48 3 '),
+                         ('scheduled-retention', 'retention --apply')):
+            with self.subTest(change=new), self.assertRaises(RuntimeError):
+                guard.updated_crontab(guard.GUARDED_CRON_JOB.replace(old, new) + '\n')
+
+    def test_install_preserves_existing_guard_without_rewriting_crontab(self):
+        with tempfile.TemporaryDirectory() as directory:
+            app = Path(directory)
+            helper = app / 'scripts/deploy/deployment-storage.py'
+            helper.parent.mkdir(parents=True)
+            helper.write_text('fixture')
+            current = guard.GUARDED_CRON_JOB + '\n'
+            result = SimpleNamespace(returncode=0, stdout=current, stderr='')
+            with patch.dict(guard.APPS, backend=app), patch.object(guard, 'HOME', app), \
+                    patch.object(guard, 'deployment_lock', return_value=nullcontext()), \
+                    patch.object(guard.subprocess, 'run', return_value=result) as run, redirect_stdout(io.StringIO()):
+                guard.install_cron()
+            self.assertEqual(run.call_count, 1)
+            self.assertEqual(run.call_args.args[0], ['crontab', '-l'])
+            self.assertFalse((app / '.repro-deploy-retention/crontab-before-retention.txt').exists())
+
     def test_scheduled_run_overwrites_one_log_and_records_failure_without_mail(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(guard, 'HOME', Path(directory)):
             with patch.object(guard, 'apply_retention', side_effect=RuntimeError('fixture failure')):

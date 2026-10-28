@@ -285,6 +285,8 @@ class BookingPhotographerEligibilityTest extends TestCase
         [$shoot, $newMain, $otherPhoto, $video, $specialist] = $this->reassignmentFixture($multiUnit);
         $before = $shoot->serviceItems()->get()->keyBy('service_id');
         $beforeRevision = (int) $shoot->units_revision;
+        // Expose timestamp-only writes even when the request finishes within a second.
+        $this->travel(5)->seconds();
         $preview = $this->postJson('/api/photographer/availability/feasibility', ['shoot_id' => $shoot->id,
             'action_mode' => $mode, 'photographer_id' => $newMain->id])->assertOk()->assertJsonPath('data.available', true)->json('data');
         $this->assertEqualsCanonicalizing([$newMain->id, $specialist->id], array_column($preview['visits'], 'photographer_id'));

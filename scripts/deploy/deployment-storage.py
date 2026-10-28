@@ -29,6 +29,9 @@ CRON_TAG = '# repro-deploy-backup-retention'
 CRON_JOB = ('47 3 * * * /usr/bin/python3 '
             '/var/www/backend/scripts/deploy/deployment-storage.py scheduled-retention >/dev/null 2>&1 '
             '# repro-deploy-backup-retention')
+GUARDED_CRON_JOB = ('47 3 * * * /usr/local/sbin/repro-storage-guard --live && /usr/bin/python3 '
+                    '/var/www/backend/scripts/deploy/deployment-storage.py scheduled-retention >/dev/null 2>&1 '
+                    '# repro-deploy-backup-retention')
 
 
 def safe_directory(path):
@@ -240,7 +243,9 @@ def preflight(component, archive_bytes, release_bytes):
 def updated_crontab(current):
     lines = current.splitlines()
     matches = [line for line in lines if CRON_TAG in line]
-    if any(line != CRON_JOB for line in matches) or len(matches) > 1:
+    # Preserve the operator-installed storage prerequisite exactly. Accepting
+    # arbitrary prefixes could silently change which command the tag protects.
+    if any(line not in (CRON_JOB, GUARDED_CRON_JOB) for line in matches) or len(matches) > 1:
         raise RuntimeError('Unexpected existing retention cron entry; preserved for manual review.')
     if matches:
         return current

@@ -156,9 +156,16 @@ class ShootScheduleFromServices
             return 0;
         }
         if (collect($planned)->map(fn (Carbon $time) => $time->format('Y-m-d H:i:s'))->unique()->count() === 1) {
+            $scheduledAt = reset($planned)->format('Y-m-d H:i:s');
             return ShootService::query()->where('shoot_id', $shoot->id)->whereIn('id', array_keys($planned))
+                // A header-only reassignment can keep the existing appointment.
+                // Do not touch unrelated lines already at the intended schedule.
+                ->where(fn ($query) => $query->whereNull('scheduled_at')
+                    ->orWhere('scheduled_at', '!=', $scheduledAt)
+                    ->orWhereNull('workflow_status')
+                    ->orWhere('workflow_status', '!=', ShootService::WORKFLOW_SCHEDULED))
                 ->update([
-                    'scheduled_at' => reset($planned)->format('Y-m-d H:i:s'),
+                    'scheduled_at' => $scheduledAt,
                     'workflow_status' => ShootService::WORKFLOW_SCHEDULED,
                     'updated_at' => now(),
                 ]);
