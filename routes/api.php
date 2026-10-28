@@ -260,6 +260,12 @@ Route::get('/public/shoot-media/file/{path}', [PublicShootMediaFileController::c
     ->middleware('signed')
     ->name('api.public.shoot-media.file');
 
+Route::get('/public/tour-image/{shootId}/{photoId}/{rendition}/{revision}', App\Http\Controllers\API\PublicTourImageController::class)
+    ->whereNumber(['shootId', 'photoId'])
+    ->where('rendition', 'web|grid|thumbnail')
+    ->where('revision', '[a-f0-9]{64}')
+    ->name('api.public.tour-image');
+
 Route::get('/public/shoot-media/curation-preview/{shoot}/{file}/{viewer}', App\Http\Controllers\API\ShootMediaCurationPreviewController::class)
     ->whereNumber(['shoot', 'file', 'viewer'])
     ->middleware('signed')

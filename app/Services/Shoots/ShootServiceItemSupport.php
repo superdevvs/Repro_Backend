@@ -33,13 +33,13 @@ class ShootServiceItemSupport
      */
     public function presentation(Shoot $shoot): array
     {
-        return $shoot->serviceItems()
+        $items = ShootListReadContext::current()?->serviceItems($shoot) ?? $shoot->serviceItems()
             ->with(['service:id,name', 'unit'])
             ->orderByRaw('scheduled_at is null')
             ->orderBy('scheduled_at')
             ->orderBy('id')
-            ->get()
-            ->map(fn (ShootService $item) => array_merge([
+            ->get();
+        return $items->map(fn (ShootService $item) => array_merge([
                 'shoot_service_id' => $item->id,
                 'shootServiceId' => $item->id,
                 'service_id' => $item->service_id,
@@ -59,7 +59,7 @@ class ShootServiceItemSupport
     public function summaries(Shoot $shoot): array
     {
         $shoot->loadMissing('photographer');
-        $items = $shoot->serviceItems()
+        $items = ShootListReadContext::current()?->serviceItems($shoot) ?? $shoot->serviceItems()
             ->with(['service.category', 'unit', 'photographer', 'editor', 'unlockedBy'])
             ->orderByRaw('scheduled_at is null')
             ->orderBy('scheduled_at')
@@ -71,7 +71,8 @@ class ShootServiceItemSupport
         }
 
         $paidByItem = $this->paidAmountsByItem($items);
-        $hasAllocations = PaymentServiceAllocation::query()
+        $preparedAllocations = ShootListReadContext::current()?->allocations($items);
+        $hasAllocations = $preparedAllocations !== null ? $preparedAllocations->isNotEmpty() : PaymentServiceAllocation::query()
             ->whereIn('shoot_service_id', $items->pluck('id'))
             ->exists();
 
@@ -385,7 +386,11 @@ class ShootServiceItemSupport
             return [];
         }
 
-        $allocations = PaymentServiceAllocation::with(['payment.refunds'])
+        $preparedAllocations = ShootListReadContext::current()?->allocations($items);
+        $allocations = $preparedAllocations !== null
+            ? $preparedAllocations->filter(fn ($allocation) => $allocation->payment?->status === Payment::STATUS_COMPLETED
+                && (!$excludePaymentId || (int) $allocation->payment_id !== $excludePaymentId))
+            : PaymentServiceAllocation::with(['payment.refunds'])
             ->whereIn('shoot_service_id', $items->pluck('id')->all())
             ->whereHas('payment', fn ($query) => $query->where('status', Payment::STATUS_COMPLETED))
             ->when($excludePaymentId, fn ($query) => $query->where('payment_id', '!=', $excludePaymentId))

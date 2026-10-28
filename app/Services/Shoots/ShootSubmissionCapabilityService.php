@@ -53,8 +53,12 @@ class ShootSubmissionCapabilityService
         if (!$user || !in_array($user->role, ['admin', 'superadmin', 'editing_manager', 'editor'], true)) return false;
         $assignments = app(ShootEditingAssignmentService::class);
         if ($user->role === 'editor' && !$assignments->editorHasAssignment($shoot, $user) && !$assignments->hasOpenDispatchAssignment($shoot, $user)) return false;
-        $files = $this->editedFiles($shoot, $user);
-        if ($files->isEmpty() && !$this->hasVideoLinkOutput($shoot, $user)) return false;
+        // The page snapshot contains only aggregate facts; editors still use
+        // the assignment-aware file filter and never inherit global counts.
+        $prepared = $user->role !== 'editor' ? ShootListReadContext::current()?->edited($shoot) : null;
+        $files = $prepared === null ? $this->editedFiles($shoot, $user) : collect();
+        $hasFiles = $prepared !== null ? ($prepared['exists'] ?? false) : $files->isNotEmpty();
+        if (!$hasFiles && !$this->hasVideoLinkOutput($shoot, $user)) return false;
         $status = strtolower((string) ($shoot->workflow_status ?: $shoot->status));
         if (in_array($status, ['uploaded', 'editing'], true)) {
             return $user->role !== 'editor' || $assignments->getTrackedServiceAssignments($shoot)->isEmpty() || $this->pendingEditorAssignments($shoot, $user);
@@ -62,7 +66,12 @@ class ShootSubmissionCapabilityService
         if ($user->role === 'editor' && in_array($status, array_merge(['review', 'ready'], self::DELIVERED_STATUSES), true)
             && $this->pendingEditorAssignments($shoot, $user)) return true;
         if ($status === 'review') return $user->role !== 'editor';
-        return $status === 'ready' && (!$shoot->editing_completed_at || $files->contains(fn ($file) => $file->created_at > $shoot->editing_completed_at));
+        if ($status !== 'ready') return false;
+        if (!$shoot->editing_completed_at) return true;
+        $hasNewFiles = $prepared !== null
+            ? (!empty($prepared['latest_created_at']) && \Illuminate\Support\Carbon::parse($prepared['latest_created_at'])->gt($shoot->editing_completed_at))
+            : $files->contains(fn ($file) => $file->created_at > $shoot->editing_completed_at);
+        return $hasNewFiles;
     }
 
     private const SUBMIT_RAW_ALLOWED_STATUSES = [
@@ -84,9 +93,10 @@ class ShootSubmissionCapabilityService
 
         if ($role === 'photographer') {
             $isPrimaryPhotographer = (int) $shoot->photographer_id === (int) $user->id;
-            $isServicePhotographer = $shoot->serviceItems()
-                ->where('photographer_id', $user->id)
-                ->exists();
+            $preparedItems = ShootListReadContext::current()?->serviceItems($shoot);
+            $isServicePhotographer = $preparedItems !== null
+                ? $preparedItems->contains(fn ($item) => (int) $item->photographer_id === (int) $user->id)
+                : $shoot->serviceItems()->where('photographer_id', $user->id)->exists();
 
             if (! $isPrimaryPhotographer && ! $isServicePhotographer) {
                 return false;
@@ -94,8 +104,9 @@ class ShootSubmissionCapabilityService
         }
 
         $status = strtolower((string) ($shoot->workflow_status ?? $shoot->status ?? ''));
+        $preparedRaw = ShootListReadContext::current()?->raw($shoot);
         $hasRawFiles = (int) ($shoot->raw_photo_count ?? 0) > 0
-            || $shoot->files()->where('workflow_stage', ShootFile::STAGE_TODO)->exists();
+            || ($preparedRaw !== null ? ($preparedRaw['exists'] ?? false) : $shoot->files()->where('workflow_stage', ShootFile::STAGE_TODO)->exists());
 
         if (! $hasRawFiles) {
             return false;
@@ -111,6 +122,11 @@ class ShootSubmissionCapabilityService
 
         if (! $shoot->photos_uploaded_at) {
             return true;
+        }
+
+        if ($preparedRaw !== null) {
+            return !empty($preparedRaw['latest_created_at'])
+                && \Illuminate\Support\Carbon::parse($preparedRaw['latest_created_at'])->gt($shoot->photos_uploaded_at);
         }
 
         return $shoot->files()

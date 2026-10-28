@@ -25,6 +25,15 @@ class ShootPresenter
     public function transformOperationalShoot(Shoot $shoot, bool $isClientUser, bool $includeFiles = true): array
     {
         $transformedShoot = $this->transformShoot($shoot, $includeFiles);
+        if (request()->query('view') === 'card') {
+            // The card projection never includes these detail graphs. Exclude
+            // them before Eloquent recursively serializes large import/provider
+            // payloads and duplicate service summaries.
+            $transformedShoot->makeHidden([
+                'external_booking_payload', 'iguide_data', 'iguide_manual_offline_package',
+                'order_items', 'orderItems', 'serviceItems', 'service_lines', 'dropbox_paths',
+            ]);
+        }
         $shootArray = $transformedShoot->toArray();
         $servicesArray = $transformedShoot->getAttribute('services_list')
             ?? $transformedShoot->services->pluck('name')->filter()->values()->all();
@@ -733,7 +742,7 @@ class ShootPresenter
                     ->unique()
                     ->values();
                 $servicePhotographers = $servicePhotographerIds->isNotEmpty()
-                    ? User::whereIn('id', $servicePhotographerIds)->get()->keyBy('id')
+                    ? (ShootListReadContext::current()?->users($servicePhotographerIds) ?? User::whereIn('id', $servicePhotographerIds)->get()->keyBy('id'))
                     : collect();
                 $serviceEditorIds = $servicesSource
                     ->filter(fn ($s) => is_object($s))
@@ -742,7 +751,7 @@ class ShootPresenter
                     ->unique()
                     ->values();
                 $serviceEditors = $serviceEditorIds->isNotEmpty()
-                    ? User::whereIn('id', $serviceEditorIds)->get()->keyBy('id')
+                    ? (ShootListReadContext::current()?->users($serviceEditorIds) ?? User::whereIn('id', $serviceEditorIds)->get()->keyBy('id'))
                     : collect();
 
                 $transformedServices = $servicesSource->map(function ($service) use (

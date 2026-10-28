@@ -125,6 +125,45 @@ class ShootCardProjectionContractTest extends TestCase
         $this->assertArrayNotHasKey('email_verified_at', $card['client']);
     }
 
+    #[Test]
+    public function all_dashboard_roles_keep_their_existing_capabilities_and_service_scope_in_compact_cards(): void
+    {
+        $this->freezeTime();
+        $photographer = User::factory()->photographer()->create();
+        $editor = User::factory()->create(['role' => 'editor']);
+        $shoot = $this->createOperationalShoot(Shoot::STATUS_DELIVERED, $photographer, $editor);
+        $rep = User::factory()->create(['role' => 'salesRep']);
+        $shoot->update(['rep_id' => $rep->id]);
+        $viewers = [
+            User::factory()->create(['role' => 'admin']),
+            User::factory()->create(['role' => 'superadmin']),
+            User::factory()->create(['role' => 'editing_manager']),
+            $photographer, $editor, $rep, $shoot->client,
+        ];
+        foreach ($viewers as $viewer) {
+            Sanctum::actingAs($viewer);
+            $url = '/api/shoots?tab=delivered&include_files=false&include_filters=false&no_cache=true';
+            $full = $this->getJson($url)->assertOk()->assertJsonPath('data.0.id', $shoot->id)->json('data.0');
+            $card = $this->getJson($url.'&view=card')->assertOk()->assertJsonPath('data.0.id', $shoot->id)->json('data.0');
+            foreach ([
+                'status', 'workflow_status', 'services', 'service_items', 'service_presentation',
+                'can_submit_raw', 'can_submit_edits', 'can_view_invoice', 'can_finalize_no_media',
+                'canManageBooking', 'canManageShootActions', 'canAdjustShootPricing',
+                'payment', 'total_paid', 'total_quote', 'editor_assignments', 'scheduled_instant',
+                'company_notes', 'editor_notes', 'photographer_notes',
+            ] as $field) {
+                if (! array_key_exists($field, $full)) {
+                    $this->assertArrayNotHasKey($field, $card, $viewer->role.': '.$field);
+                    continue;
+                }
+                $this->assertArrayHasKey($field, $card, $viewer->role.': '.$field);
+                $this->assertSame($full[$field], $card[$field], $viewer->role.': '.$field);
+            }
+            $this->assertArrayNotHasKey('external_booking_payload', $card);
+            $this->assertArrayNotHasKey('iguide_data', $card);
+        }
+    }
+
     private function createOperationalShoot(string $status, User $photographer, User $editor): Shoot
     {
         $photo = Service::factory()->bracketedPhoto(35)->create(['name' => 'HDR Photos']);

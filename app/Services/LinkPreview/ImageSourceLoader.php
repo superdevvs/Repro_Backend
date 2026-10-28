@@ -125,6 +125,15 @@ class ImageSourceLoader
      */
     private function keyFromOwnUrl(string $url): ?string
     {
+        $path = parse_url($url, PHP_URL_PATH);
+        if (is_string($path) && preg_match('#^/api/public/tour-image/([0-9]+)/([0-9]+)/(web|grid|thumbnail)/([a-f0-9]{64})$#D', $path, $match)) {
+            if (! $this->isOwnTourOrigin($url)) return null;
+            // Use the same live publication/revision gate as the HTTP route;
+            // social cards must not recover a hidden or replaced cached image.
+            return app(\App\Services\Shoots\PublicTourImage::class)->resolvePublishedKey(
+                (int) $match[1], (int) $match[2], $match[3], $match[4]
+            );
+        }
         $fromSigned = $this->keyFromSignedShootMediaUrl($url);
         if ($fromSigned !== null) {
             return $fromSigned;
@@ -157,6 +166,21 @@ class ImageSourceLoader
         }
 
         return null;
+    }
+
+    private function isOwnTourOrigin(string $url): bool
+    {
+        $origin = static function (string $candidate): ?string {
+            $parts = parse_url($candidate);
+            if (! is_array($parts) || isset($parts['user']) || isset($parts['pass'])
+                || empty($parts['host']) || ! in_array(strtolower($parts['scheme'] ?? ''), ['http', 'https'], true)) return null;
+            $scheme = strtolower($parts['scheme']);
+            return $scheme.'://'.strtolower($parts['host']).':'.($parts['port'] ?? ($scheme === 'https' ? 443 : 80));
+        };
+        $requested = $origin($url);
+        return $requested !== null && in_array($requested, array_filter(array_map($origin, [
+            (string) config('app.url'), (string) config('link_preview.frontend_url'),
+        ])), true);
     }
 
     /**

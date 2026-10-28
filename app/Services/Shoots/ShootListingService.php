@@ -214,10 +214,10 @@ class ShootListingService
                 $this->eagerLoadListCardPreviewFiles($shoots->getCollection());
             }
 
-            $transformedShoots = $shoots->getCollection()->map(function (Shoot $shoot) use ($transformShoot, $isClientUser, $needsFiles, $request) {
+            $transformedShoots = ShootListReadContext::run($shoots->getCollection(), fn () => $shoots->getCollection()->map(function (Shoot $shoot) use ($transformShoot, $isClientUser, $needsFiles, $request) {
                 $result = $transformShoot($shoot, $isClientUser, $needsFiles);
                 return $request->query('view') === 'card' ? ShootCardProjection::from($result) : $result;
-            });
+            }));
 
             $shoots->setCollection($transformedShoots);
 

@@ -9,6 +9,8 @@ use App\Services\Shoots\ShootPublicAssetsService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Queue;
+use App\Jobs\ResolvePublicVideoThumbnail;
 use Mockery;
 use PHPUnit\Framework\Attributes\Test;
 use Tests\TestCase;
@@ -44,8 +46,9 @@ class ShootPublicAssetsServiceTest extends TestCase
     }
 
     #[Test]
-    public function it_fetches_a_vimeo_thumbnail_for_public_video_pages(): void
+    public function it_resolves_a_vimeo_thumbnail_off_the_public_page_request(): void
     {
+        Queue::fake();
         Http::fake([
             'https://vimeo.com/api/oembed.json*' => Http::response([
                 'thumbnail_url' => 'https://i.vimeocdn.com/video/123456789-abc.jpg',
@@ -60,11 +63,29 @@ class ShootPublicAssetsServiceTest extends TestCase
 
         $payload = $this->makeService()->buildTypedPublicAssets($shoot, 'branded');
 
+        $this->assertNull($payload['video_thumbnail_url']);
+        Http::assertNothingSent();
+        Queue::assertPushed(ResolvePublicVideoThumbnail::class, fn ($job) => $job->vimeoId === '1186135733');
+        (new ResolvePublicVideoThumbnail('1186135733'))->handle();
+        $payload = $this->makeService()->buildTypedPublicAssets($shoot, 'branded');
+
         $this->assertSame(
             'https://i.vimeocdn.com/video/123456789-abc.jpg',
             $payload['video_thumbnail_url']
         );
 
+        Http::assertSentCount(1);
+    }
+
+    #[Test]
+    public function a_missing_vimeo_thumbnail_is_negatively_cached(): void
+    {
+        Queue::fake();
+        Http::fake(['https://vimeo.com/api/oembed.json*' => Http::response([], 404)]);
+        (new ResolvePublicVideoThumbnail('12345'))->handle();
+        $shoot = Shoot::factory()->create(['tour_links' => ['video_branded' => 'https://vimeo.com/12345']]);
+        $this->assertNull($this->makeService()->buildTypedPublicAssets($shoot, 'branded')['video_thumbnail_url']);
+        Queue::assertNothingPushed();
         Http::assertSentCount(1);
     }
 

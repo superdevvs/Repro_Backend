@@ -188,9 +188,9 @@ class BracketModeResolver
      */
     public function expectedRawForShoot(Shoot $shoot): int
     {
-        $items = $shoot->relationLoaded('serviceItems')
+        $items = ShootListReadContext::current()?->serviceItems($shoot) ?? ($shoot->relationLoaded('serviceItems')
             ? $shoot->getRelation('serviceItems')
-            : $shoot->serviceItems()->with('service')->get();
+            : $shoot->serviceItems()->with('service')->get());
 
         return (int) $items->sum(fn (ShootService $item) => $this->expectedRawForService($item) ?? 0);
     }
@@ -203,9 +203,9 @@ class BracketModeResolver
      */
     public function expectedRawIsExactForShoot(Shoot $shoot): bool
     {
-        $items = $shoot->relationLoaded('serviceItems')
+        $items = ShootListReadContext::current()?->serviceItems($shoot) ?? ($shoot->relationLoaded('serviceItems')
             ? $shoot->getRelation('serviceItems')
-            : $shoot->serviceItems()->with('service')->get();
+            : $shoot->serviceItems()->with('service')->get());
 
         return ! $items->contains(fn (ShootService $item) => $this->expectedRawUnspecified($item));
     }

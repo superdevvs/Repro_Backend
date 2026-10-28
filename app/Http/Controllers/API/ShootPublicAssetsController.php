@@ -25,7 +25,7 @@ class ShootPublicAssetsController extends Controller
             return response()->json(['message' => 'Shoot not found'], 404);
         }
 
-        return $this->publicAssetsResponse($this->buildVisiblePublicAssets($request, $shoot, 'branded'));
+        return $this->publicAssetsResponse($request, $this->buildVisiblePublicAssets($request, $shoot, 'branded'));
     }
 
     public function publicMls(Request $request, $shootId = null)
@@ -35,7 +35,7 @@ class ShootPublicAssetsController extends Controller
             return response()->json(['message' => 'Shoot not found'], 404);
         }
 
-        return $this->publicAssetsResponse($this->buildVisiblePublicAssets($request, $shoot, 'mls'));
+        return $this->publicAssetsResponse($request, $this->buildVisiblePublicAssets($request, $shoot, 'mls'));
     }
 
     public function publicGenericMls(Request $request, $shootId = null)
@@ -45,10 +45,10 @@ class ShootPublicAssetsController extends Controller
             return response()->json(['message' => 'Shoot not found'], 404);
         }
 
-        return $this->publicAssetsResponse($this->buildVisiblePublicAssets($request, $shoot, 'generic-mls'));
+        return $this->publicAssetsResponse($request, $this->buildVisiblePublicAssets($request, $shoot, 'generic-mls'));
     }
 
-    private function publicAssetsResponse(array $assets): JsonResponse
+    private function publicAssetsResponse(Request $request, array $assets): JsonResponse
     {
         $response = response()->json($assets);
         if (filled(data_get($assets, 'iguide_viewer.expires_at'))) {
@@ -58,6 +58,12 @@ class ShootPublicAssetsController extends Controller
             $response->headers->set('Cache-Control', 'no-store, private, max-age=0');
             $response->headers->set('Pragma', 'no-cache');
             $response->headers->set('Expires', '0');
+        } else {
+            // Validate the newly built authorized representation, never skip the
+            // publication/payment/unit gates because the browser has an old copy.
+            $response->headers->set('Cache-Control', 'private, no-cache, max-age=0, must-revalidate');
+            $response->setEtag(hash('sha256', $response->getContent()));
+            $response->isNotModified($request);
         }
 
         return $response;

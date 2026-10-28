@@ -256,6 +256,8 @@ class ShootEditingAssignmentService
         if (!$itemId) {
             return false;
         }
+        $prepared = ShootListReadContext::current()?->requiresEditing($itemId);
+        if ($prepared !== null) return $prepared;
         if (ShootFile::where('shoot_service_id', $itemId)->where('required_for_editing', true)->exists()) {
             return true;
         }
@@ -558,7 +560,7 @@ class ShootEditingAssignmentService
             ->values();
         $editors = $editorIds->isEmpty()
             ? collect()
-            : User::whereIn('id', $editorIds)->get()->keyBy('id');
+            : (ShootListReadContext::current()?->users($editorIds) ?? User::whereIn('id', $editorIds)->get()->keyBy('id'));
 
         $payload = $trackedAssignments
             ->groupBy(fn (array $assignment) => $assignment['lane'].':'.($assignment['editor_id'] ?? 'unassigned'))

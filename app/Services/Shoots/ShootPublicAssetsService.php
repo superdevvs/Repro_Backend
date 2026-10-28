@@ -11,7 +11,6 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 
@@ -693,7 +692,11 @@ class ShootPublicAssetsService
 
         $photos = [];
         $heroPhotos = [];
+        $photoRenditions = [];
         $videos = [];
+        $publicImages = app(PublicTourImage::class);
+        $revalidateImages = ! $this->mediaStorage->readFromR2Enabled() && ! $this->mediaStorage->r2Only()
+            && $publicImages->canPublish($shoot) && ! $shoot->units()->exists();
         foreach ($chosen as $file) {
             // Hidden / delivery-blocked media must never appear on the public tour.
             // Archive and share-link builders already reject these; the tour used to
@@ -728,6 +731,9 @@ class ShootPublicAssetsService
             }
 
             if ($isImage) {
+                $renditions = $this->publicPhotoRenditions($file, $url, $revalidateImages && $publicImages->canPublishFile($file));
+                $url = $renditions['url'];
+                $photoRenditions[$url] = $renditions;
                 $photos[] = $url;
                 if (!empty($file->is_cover)) {
                     $heroPhotos[] = $url;
@@ -749,6 +755,7 @@ class ShootPublicAssetsService
                 'scheduled_date' => optional($shoot->scheduled_date)->toDateString(),
             ],
             'photos' => array_values(array_unique($photos)),
+            'photo_renditions' => array_values($photoRenditions),
             'hero_photos' => array_values(array_unique($heroPhotos)),
             'videos' => array_values(array_unique($videos)),
             'tours' => [
@@ -757,6 +764,17 @@ class ShootPublicAssetsService
                 'cubicasa' => null,
             ],
         ];
+    }
+
+    /** Keep legacy photos[] while giving gallery strips their actual small renditions. */
+    private function publicPhotoRenditions(ShootFile $file, string $fallback, bool $revalidate): array
+    {
+        $images = app(PublicTourImage::class);
+        $web = $revalidate ? ($images->url($file, 'web') ?? $images->url($file, 'thumbnail') ?? $fallback) : $fallback;
+        $grid = ($revalidate ? $images->url($file, 'grid') : $this->resolveLocalPublicUrl($file->grid_path)) ?? $web;
+        $thumbnail = ($revalidate ? $images->url($file, 'thumbnail') : $this->resolveLocalPublicUrl($file->thumbnail_path)) ?? $grid;
+
+        return ['url' => $web, 'web_url' => $web, 'grid_url' => $grid, 'thumbnail_url' => $thumbnail];
     }
 
     protected function resolveEffectiveBrandedClient(Shoot $shoot, array $tourLinks): ?User
@@ -1102,31 +1120,16 @@ class ShootPublicAssetsService
             return null;
         }
 
-        return Cache::remember(
-            "public_video_thumbnail:vimeo:{$vimeoId}",
-            now()->addHours(12),
-            function () use ($vimeoId) {
-                try {
-                    $response = Http::acceptJson()
-                        ->timeout(5)
-                        ->get('https://vimeo.com/api/oembed.json', [
-                            'url' => "https://vimeo.com/{$vimeoId}",
-                        ]);
+        $cached = Cache::get("public_video_thumbnail:vimeo:{$vimeoId}");
+        if (is_string($cached)) return $cached !== '' ? $cached : null;
 
-                    if (!$response->ok()) {
-                        return null;
-                    }
-
-                    $thumbnailUrl = trim((string) $response->json('thumbnail_url'));
-
-                    return $thumbnailUrl !== '' ? $thumbnailUrl : null;
-                } catch (\Throwable $exception) {
-                    \App\Services\ApiErrorResponder::log($exception, 'warning');
-
-                    return null;
-                }
-            }
-        );
+        try {
+            \App\Jobs\ResolvePublicVideoThumbnail::dispatch($vimeoId);
+        } catch (\Throwable $exception) {
+            // A queue outage must not make a usable property page fail.
+            \App\Services\ApiErrorResponder::log($exception, 'warning');
+        }
+        return null;
     }
 
     protected function firstFilled(...$values)
