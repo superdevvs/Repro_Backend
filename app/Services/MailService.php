@@ -2821,7 +2821,11 @@ class MailService
     public function sendInvoicePendingApprovalEmail(\App\Models\Invoice $invoice): bool
     {
         try {
-            $admins = User::whereIn('role', ['admin', 'superadmin'])->get();
+            $permissions = app(RolePermissionService::class);
+            $admins = User::whereIn('role', ['admin', 'superadmin'])->get()
+                ->filter(fn (User $admin) => $admin->isAccountEligibleForAuthentication()
+                    && $permissions->userCan($admin, 'accounting', 'view')
+                    && $permissions->userCan($admin, 'email-notifications', 'payments'));
 
             if ($admins->isEmpty()) {
                 Log::warning('No admins found to send invoice approval email', [
