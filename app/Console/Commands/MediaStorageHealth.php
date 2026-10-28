@@ -33,9 +33,6 @@ class MediaStorageHealth extends Command
                 throw new RuntimeException('Local media, database, or working storage directory is missing.');
             }
             $localDevice = stat($localRoot)['dev'];
-            if (stat($databaseRoot)['dev'] !== $localDevice) {
-                throw new RuntimeException('Previews and the configured database are not on the same local filesystem.');
-            }
             $report['preview_disk'] = $localName;
             $report['preview_root'] = $localRoot;
             $report['database_path'] = $databaseRoot;
@@ -46,6 +43,11 @@ class MediaStorageHealth extends Command
                 $originalRoot = realpath((string) config("filesystems.disks.{$originalName}.root"));
                 if (! $originalRoot || stat($originalRoot)['dev'] === $localDevice) {
                     throw new RuntimeException('Originals and previews must be on different filesystems.');
+                }
+                // The database and previews may use separate SSDs. Each must
+                // remain separate from the bulk originals filesystem.
+                if (stat($originalRoot)['dev'] === stat($databaseRoot)['dev']) {
+                    throw new RuntimeException('The configured database must not use the originals drive.');
                 }
                 if (stat($originalRoot)['dev'] === stat($tempRoot)['dev']) {
                     throw new RuntimeException('Processing temporary files must not use the originals drive.');

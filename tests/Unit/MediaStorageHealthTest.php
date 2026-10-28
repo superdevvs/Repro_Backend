@@ -78,4 +78,73 @@ class MediaStorageHealthTest extends TestCase
         $this->assertSame([], Storage::disk('health_local')->allFiles());
         $this->assertSame([], Storage::disk('health_originals')->allFiles());
     }
+
+    public function test_previews_and_database_can_use_separate_local_filesystems(): void
+    {
+        $previewRoot = $this->separateFilesystemRoot();
+        config()->set('filesystems.disks.health_local.root', $previewRoot);
+        $databaseRoot = realpath(database_path());
+        $this->assertNotSame(stat($databaseRoot)['dev'], stat($previewRoot)['dev']);
+
+        $this->artisan('media:storage-health', ['--probe' => true])
+            ->expectsOutputToContain('"healthy":true,"tiered_storage_enabled":false,"probes":{"preview":"passed"}')
+            ->assertSuccessful();
+
+        $this->assertSame([], Storage::disk('health_local')->allFiles());
+    }
+
+    public function test_database_on_the_originals_drive_fails_before_any_probe_writes(): void
+    {
+        $originalRoot = $this->separateFilesystemRoot();
+        $databaseFile = $originalRoot.'/database.sqlite';
+        File::put($databaseFile, 'existing database fixture');
+        config()->set('database.default', 'sqlite');
+        config()->set('database.connections.sqlite.database', $databaseFile);
+        config()->set('filesystems.disks.health_originals', ['driver' => 'local', 'root' => $originalRoot, 'throw' => true]);
+        config()->set('media.originals_disk', 'health_originals');
+        config()->set('media.tiered_storage_enabled', true);
+        $guard = Mockery::mock(OriginalsStorageGuard::class);
+        $guard->shouldReceive('assertAvailable')->once()->andReturnNull();
+        $this->app->instance(OriginalsStorageGuard::class, $guard);
+
+        $this->artisan('media:storage-health', ['--probe' => true])
+            ->expectsOutputToContain('The configured database must not use the originals drive.')
+            ->assertFailed();
+
+        $this->assertSame([], Storage::disk('health_local')->allFiles());
+        $this->assertSame(['database.sqlite'], Storage::disk('health_originals')->allFiles());
+        $this->assertSame('existing database fixture', File::get($databaseFile));
+    }
+
+    public function test_originals_and_previews_on_the_same_filesystem_remain_rejected(): void
+    {
+        $originalRoot = storage_path('framework/testing/health-originals-'.bin2hex(random_bytes(8)));
+        $this->roots[] = $originalRoot;
+        File::makeDirectory($originalRoot, 0770, true);
+        config()->set('filesystems.disks.health_originals', ['driver' => 'local', 'root' => $originalRoot, 'throw' => true]);
+        config()->set('media.originals_disk', 'health_originals');
+        config()->set('media.tiered_storage_enabled', true);
+        $guard = Mockery::mock(OriginalsStorageGuard::class);
+        $guard->shouldReceive('assertAvailable')->once()->andReturnNull();
+        $this->app->instance(OriginalsStorageGuard::class, $guard);
+
+        $this->artisan('media:storage-health', ['--probe' => true])
+            ->expectsOutputToContain('Originals and previews must be on different filesystems.')
+            ->assertFailed();
+
+        $this->assertSame([], Storage::disk('health_local')->allFiles());
+        $this->assertSame([], Storage::disk('health_originals')->allFiles());
+    }
+
+    private function separateFilesystemRoot(): string
+    {
+        if (! is_dir('/dev/shm') || ! is_writable('/dev/shm')) {
+            $this->markTestSkipped('Requires Linux shared memory for a separate fixture filesystem.');
+        }
+        $root = '/dev/shm/repro-health-'.bin2hex(random_bytes(8));
+        $this->roots[] = $root;
+        File::makeDirectory($root, 0770);
+
+        return $root;
+    }
 }
