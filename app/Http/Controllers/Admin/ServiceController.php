@@ -52,7 +52,10 @@ class ServiceController extends Controller
             $rules['service_group_ids.*'] = 'integer|exists:service_groups,id';
         }
 
-        $validated = $request->validate($rules);
+        $validated = $request->validate($rules + \App\Support\ServiceInclusions::rules());
+        if (array_key_exists('included_components', $validated)) {
+            $validated['included_components'] = \App\Support\ServiceInclusions::normalize($validated['included_components']);
+        }
         $validated['shoot_duration_minutes'] = $requiresPhotographer
             ? ($validated['shoot_duration_minutes'] ?? (int) config('availability.default_shoot_duration_minutes', 60))
             : 0;
@@ -187,7 +190,10 @@ class ServiceController extends Controller
             $rules['service_group_ids.*'] = 'integer|exists:service_groups,id';
         }
 
-        $validated = $request->validate($rules);
+        $validated = $request->validate($rules + \App\Support\ServiceInclusions::rules());
+        if (array_key_exists('included_components', $validated)) {
+            $validated['included_components'] = \App\Support\ServiceInclusions::normalize($validated['included_components']);
+        }
 
         if (! $requiresPhotographer && (array_key_exists('shoot_duration_minutes', $validated) || array_key_exists('photographer_required', $validated))) {
             $validated['shoot_duration_minutes'] = 0;

@@ -24,6 +24,11 @@ class Service extends Model
     protected static function booted(): void
     {
         static::saving(function (Service $service): void {
+            if ($service->included_components !== null) {
+                $components = \App\Support\ServiceInclusions::normalize($service->included_components);
+                $service->included_components = $components;
+                $service->fill(\App\Support\ServiceInclusions::capabilities($components));
+            }
             if ($service->isDigitalEnhancement()) {
                 $service->photographer_required = false;
                 $service->shoot_duration_minutes = 0;
@@ -65,6 +70,7 @@ class Service extends Model
         'photo_count',
         'uses_hdr_brackets',
         'upload_intake_type',
+        'included_components',
         'quantity',
     ];
     
@@ -80,6 +86,7 @@ class Service extends Model
         'exclude_from_sales_commission' => 'boolean',
         'photo_count' => 'integer',
         'uses_hdr_brackets' => 'boolean',
+        'included_components' => 'array',
         'allow_multiple' => 'boolean',
         'quantity' => 'integer',
     ];
