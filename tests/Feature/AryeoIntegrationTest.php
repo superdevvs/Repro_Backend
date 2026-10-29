@@ -528,13 +528,13 @@ class AryeoIntegrationTest extends TestCase
             ->assertJsonPath('shoot_id', $shoot->id)->assertJsonPath('unit_id', $unit->id);
     }
 
-    public function test_metadata_discovery_filters_unmatched_requests_to_the_current_client(): void
+    public function test_unmatched_review_excludes_unrelated_clients_at_other_addresses(): void
     {
         [$client, $shoot, $payload] = $this->scheduledDiscoveryFixture();
         $this->connection->update(['discover_all_clients' => true]);
         $this->worker()->postJson($this->prefix.'/requests', [...$payload, 'address' => '999 Other Road'])->assertOk();
         $this->worker()->postJson($this->prefix.'/requests', [...$payload, 'source_id' => 'someone-else', 'request_id' => 'someone-else',
-            'requester_email' => 'someone-else@example.test'])->assertOk();
+            'requester_email' => 'someone-else@example.test', 'address' => '998 Unrelated Road'])->assertOk();
         $this->actingAs($this->admin)->getJson('/api/shoots/'.$shoot->id.'/aryeo')->assertOk()
             ->assertJsonCount(1, 'unmatched')->assertJsonPath('unmatched.0.requester_email', $client->email);
     }
@@ -568,16 +568,78 @@ class AryeoIntegrationTest extends TestCase
             ->assertJsonPath('shoot_id', null)->assertJsonPath('match_confirmed', false);
     }
 
-    public function test_review_candidate_does_not_match_a_different_name_city_or_street(): void
+    public function test_coordinator_review_candidates_retain_city_state_zip_date_and_street_checks(): void
     {
         [$client, $shoot, $payload] = $this->scheduledDiscoveryFixture();
         $this->connection->update(['discover_all_clients' => true]);
-        foreach ([['requester_name' => 'Someone Else'], ['city' => 'Baltimore'], ['address' => '414 Mahan Ln']] as $index => $change) {
-            $this->worker()->postJson($this->prefix.'/requests', [...$payload, 'requester_name' => 'Trish May',
+        foreach ([['city' => 'Baltimore'], ['state' => 'VA'], ['zip' => '99999'], ['address' => '414 Mahan Ln'],
+            ['address' => '413 Another Lane'], ['scheduled_date' => '2026-10-22']] as $index => $change) {
+            $this->worker()->postJson($this->prefix.'/requests', [...$payload, 'requester_name' => 'Listing Coordinator',
                 'requester_email' => 'different@business.example.test', ...$change,
                 'source_id' => 'review-'.$index, 'request_id' => 'review-'.$index])->assertOk();
         }
         $this->actingAs($this->admin)->getJson('/api/shoots/'.$shoot->id.'/aryeo')->assertOk()->assertJsonCount(0, 'unmatched');
+    }
+
+    public function test_coordinator_mail_is_visible_at_the_exact_scheduled_address_without_matching_or_granting_access(): void
+    {
+        [$client, $shoot, $payload] = $this->scheduledDiscoveryFixture();
+        $shoot->update(['payment_status' => 'unpaid']);
+        $this->connection->update(['discover_all_clients' => true]);
+        $scope = $this->connection->only(['client_ids', 'delivery_shoot_ids', 'processing_enabled', 'token_hash']);
+        $payload = [...$payload, 'requester_name' => 'Listing Coordinator', 'requester_email' => null, 'required' => null];
+        $id = $this->worker()->postJson($this->prefix.'/requests', $payload)->assertOk()
+            ->assertJsonPath('shoot_id', null)->assertJsonPath('match_confirmed', false)->json('id');
+        $before = AryeoRequest::findOrFail($id)->toArray();
+        $this->actingAs($this->admin)->getJson('/api/shoots/'.$shoot->id.'/aryeo')->assertOk()
+            ->assertJsonCount(0, 'orders')->assertJsonCount(1, 'unmatched')->assertJsonPath('unmatched.0.id', $id)
+            ->assertJsonPath('unmatched.0.requester_name', 'Listing Coordinator')->assertJsonPath('unmatched.0.requester_email', null);
+        $this->assertSame($before, AryeoRequest::findOrFail($id)->toArray());
+        $this->assertSame($scope, $this->connection->fresh()->only(array_keys($scope)));
+        $this->actingAs($this->admin)->postJson('/api/shoots/'.$shoot->id.'/aryeo/requests/'.$id.'/match', ['confirm_identity' => false])->assertUnprocessable();
+        $this->actingAs($this->admin)->postJson('/api/shoots/'.$shoot->id.'/aryeo/requests/'.$id.'/process')->assertNotFound();
+        $this->worker()->getJson($this->prefix.'/shoots/'.$shoot->id)->assertNotFound();
+        $this->assertSame('scheduled', $shoot->fresh()->status);
+        $this->assertSame('unpaid', $shoot->fresh()->payment_status);
+        $this->assertSame(0, AryeoJob::count());
+    }
+
+    public function test_verified_coordinator_email_and_whitespace_still_require_staff_review(): void
+    {
+        [$client, $shoot, $payload] = $this->scheduledDiscoveryFixture();
+        $this->connection->update(['discover_all_clients' => true]);
+        $id = $this->worker()->postJson($this->prefix.'/requests', [...$payload,
+            'requester_name' => 'Listing Coordinator', 'requester_email' => 'coordinator@example.test',
+            'address' => '  413    Mahan   Ln.  ', 'scheduled_date' => '2026-10-21'])->assertOk()
+            ->assertJsonPath('shoot_id', null)->assertJsonPath('match_confirmed', false)->json('id');
+        $this->actingAs($this->admin)->getJson('/api/shoots/'.$shoot->id.'/aryeo')->assertOk()
+            ->assertJsonCount(1, 'unmatched')->assertJsonPath('unmatched.0.id', $id);
+        $this->assertNull(AryeoRequest::findOrFail($id)->shoot_id);
+        $this->assertSame(0, AryeoJob::count());
+    }
+
+    public function test_address_only_review_requires_metadata_optin_and_never_exposes_disabled_connections(): void
+    {
+        [$client, $shoot, $payload] = $this->scheduledDiscoveryFixture();
+        $this->connection->update(['client_ids' => [$this->shoot->client_id, $client->id]]);
+        $id = $this->worker()->postJson($this->prefix.'/requests', [...$payload,
+            'requester_name' => 'Listing Coordinator', 'requester_email' => 'coordinator@example.test'])->assertOk()->json('id');
+        $this->actingAs($this->admin)->getJson('/api/shoots/'.$shoot->id.'/aryeo')->assertOk()->assertJsonCount(0, 'unmatched');
+        $this->connection->update(['discover_all_clients' => true]);
+        $this->actingAs($this->admin)->getJson('/api/shoots/'.$shoot->id.'/aryeo')->assertOk()
+            ->assertJsonCount(1, 'unmatched')->assertJsonPath('unmatched.0.id', $id);
+        $this->connection->update(['enabled' => false]);
+        $this->actingAs($this->admin)->getJson('/api/shoots/'.$shoot->id.'/aryeo')->assertOk()
+            ->assertJsonPath('configured', false)->assertJsonCount(0, 'unmatched');
+    }
+
+    public function test_client_cannot_read_coordinator_review_metadata(): void
+    {
+        [$client, $shoot, $payload] = $this->scheduledDiscoveryFixture();
+        $this->connection->update(['discover_all_clients' => true]);
+        $this->worker()->postJson($this->prefix.'/requests', [...$payload,
+            'requester_name' => 'Listing Coordinator', 'requester_email' => 'coordinator@example.test'])->assertOk();
+        $this->actingAs($client)->getJson('/api/shoots/'.$shoot->id.'/aryeo')->assertForbidden();
     }
 
     public function test_an_email_without_provider_browser_access_is_visible_but_never_automatically_matched_or_deliverable(): void

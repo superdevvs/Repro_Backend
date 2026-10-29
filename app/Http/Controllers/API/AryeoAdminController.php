@@ -45,13 +45,37 @@ class AryeoAdminController extends Controller
         $orders = AryeoRequest::whereIn('connection_id', $connections->pluck('id'))->where('shoot_id', $shoot->id)->where('unit_id', $unit)->get();
         $emailColumn = DB::connection()->getQueryGrammar()->wrap('discovery->requester_email');
         $nameColumn = DB::connection()->getQueryGrammar()->wrap('discovery->requester_name');
+        $addressColumn = DB::connection()->getQueryGrammar()->wrap('discovery->address');
         $email = strtolower(trim((string) $shoot->client?->email));
         $name = strtolower(trim((string) $shoot->client?->name));
+        $metadataConnections = $connections->where('discover_all_clients', true)->pluck('id');
+        $streetPrefix = strtolower(preg_split('/\s+/', trim((string) $shoot->address), 2)[0] ?? '');
         $unmatched = AryeoRequest::whereIn('connection_id', $connections->pluck('id'))->whereNull('shoot_id')
-            ->where(fn ($q) => $q->whereRaw('lower('.$emailColumn.') = ?', [$email])
-                ->orWhereRaw('lower('.$nameColumn.') = ?', [$name]))->latest()->get()
-            ->filter(fn ($order) => strtolower(trim($order->discovery['requester_email'] ?? '')) === $email
-                || ($name !== '' && app(AryeoDiscovery::class)->matchesStreet($shoot, $order->discovery)))
+            ->where(function ($q) use ($emailColumn, $nameColumn, $addressColumn, $email, $name, $metadataConnections, $streetPrefix) {
+                $q->whereRaw('lower('.$emailColumn.') = ?', [$email])->orWhereRaw('lower('.$nameColumn.') = ?', [$name]);
+                if ($metadataConnections->isNotEmpty() && $streetPrefix !== '') {
+                    // A coarse query bound only; normalization/locality checks
+                    // below decide whether this is an exact street candidate.
+                    $q->orWhere(fn ($q) => $q->whereIn('connection_id', $metadataConnections)
+                        ->whereRaw('lower(trim('.$addressColumn.')) like ?', [$streetPrefix.' %']));
+                }
+            })->latest()->get()
+            ->filter(function ($order) use ($shoot, $email, $name, $metadataConnections) {
+                if ($email !== '' && strtolower(trim($order->discovery['requester_email'] ?? '')) === $email) {
+                    return true;
+                }
+                if (! app(AryeoDiscovery::class)->matchesStreet($shoot, $order->discovery)) {
+                    return false;
+                }
+                if ($metadataConnections->contains($order->connection_id)) {
+                    // Coordinator identity may differ from the booked client.
+                    // This exposes review metadata, never a match or delivery grant.
+                    return empty($order->discovery['scheduled_date'])
+                        || $order->discovery['scheduled_date'] === $shoot->scheduled_date?->format('Y-m-d');
+                }
+
+                return $name !== '' && strtolower(trim($order->discovery['requester_name'] ?? '')) === $name;
+            })
             ->take(100)->values();
 
         return response()->json([

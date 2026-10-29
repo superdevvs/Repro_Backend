@@ -52,8 +52,12 @@ Mail ingestion must not require the delivery browser to be working. Verify the
 actual Aryeo sender and request link before submitting Gmail `source_id`, real
 `request_id`, `address`, `requester_name`, and known requirements. The opt-in
 accepts `requester_email:null` when the provider's email has not been verified.
-These records remain unmatched. Exact-name/address candidates appear in Tours
-for review; names alone never authorize delivery. Retry unmatched metadata so a
+These records remain unmatched. For metadata-enabled connections, exact-street
+requests appear in Tours for staff review even when a listing coordinator's
+name/email differs from the booked client. Supplied locality and booking dates
+must agree. Candidate visibility never creates a match or grants delivery;
+staff still confirm the request, client and selected unit, and requester email
+must be verified before processing. Retry unmatched metadata so a
 request received before booking can match after the booking arrives.
 
 The response retains the request record and adds `discovery_only`, a minimal
