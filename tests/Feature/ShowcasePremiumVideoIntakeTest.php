@@ -19,7 +19,7 @@ class ShowcasePremiumVideoIntakeTest extends TestCase
             'upload_intake_type' => 'photo', 'uses_hdr_brackets' => true,
             'price' => 425, 'photo_count' => 50,
         ]);
-        $before = $service->getAttributes();
+        $before = $service->fresh()->getAttributes();
         $migration = require database_path('migrations/2026_10_29_030000_enable_showcase_premium_video_intake.php');
         $migration->up(); $migration->up();
         $expected = array_replace($before, ['upload_intake_type' => 'photo_video']);
@@ -36,7 +36,7 @@ class ShowcasePremiumVideoIntakeTest extends TestCase
             'description' => 'Photos and 1 Minute Social Media Video',
             'upload_intake_type' => 'photo',
         ], $overrides));
-        $before = $service->getAttributes();
+        $before = $service->fresh()->getAttributes();
         $migration = require database_path('migrations/2026_10_29_030000_enable_showcase_premium_video_intake.php');
         $migration->up();
         $this->assertSame($before, $service->fresh()->getAttributes());
