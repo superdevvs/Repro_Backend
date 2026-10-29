@@ -376,7 +376,9 @@ class ShootListingService
         $query = Shoot::query()->select([
             'id', 'address', 'city', 'state', 'zip', 'latitude', 'longitude',
             'listing_type', 'property_details',
-        ])->where('is_private_listing', true)
+            // Used only to enforce the existing public-image release gate.
+            'status', 'workflow_status', 'payment_status', 'total_quote', 'total_paid', 'bypass_paywall',
+        ])->withExists('units')->where('is_private_listing', true)
             ->where(fn (Builder $scope) => $scope->where('is_listing_hidden', false)->orWhereNull('is_listing_hidden'))
             ->whereIn(DB::raw("LOWER(COALESCE(NULLIF(workflow_status, ''), status, ''))"), [
                 Shoot::STATUS_DELIVERED, 'ready_for_client', 'admin_verified', 'ready', 'workflow_completed', 'client_delivered',
@@ -397,7 +399,8 @@ class ShootListingService
         $perPage = min(200, max(9, (int) $request->query('per_page', 25)));
         $page = max(1, (int) $request->query('page', 1));
         $shoots = $query->orderBy('id', 'desc')->paginate($perPage, ['*'], 'page', $page);
-        $data = $shoots->getCollection()->map(function (Shoot $shoot): array {
+        $previews = app(ExclusiveListingPreview::class)->forShoots($shoots->getCollection());
+        $data = $shoots->getCollection()->map(function (Shoot $shoot) use ($previews): array {
             // Never serialize the model or feed it to the operational presenter:
             // its relations, accessors, and property JSON contain private data.
             $property = is_array($shoot->property_details) ? $shoot->property_details : [];
@@ -421,6 +424,7 @@ class ShootListingService
                 'discovery_only' => true,
                 'can_view_details' => false,
                 'can_download_media' => false,
+                'preview_image_url' => $previews[$shoot->id] ?? null,
             ];
         })->all();
 
