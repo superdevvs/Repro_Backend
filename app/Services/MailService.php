@@ -1773,8 +1773,12 @@ class MailService
         $this->addChangeLine(
             $changes,
             'Services',
-            $this->formatServiceSummary($before['services'] ?? []),
-            $this->formatServiceSummary($this->formatServicesForComparison($shoot))
+            $this->formatServiceSummary(
+                $before['services'] ?? [],
+                // A recorded null timezone means legacy local-clock storage.
+                array_key_exists('timezone', $before) ? $before['timezone'] : $shoot->timezone
+            ),
+            $this->formatServiceSummary($this->formatServicesForComparison($shoot), $shoot->timezone)
         );
 
         $this->addChangeLine(
@@ -3787,13 +3791,13 @@ HTML;
         })->sortBy('id')->values()->toArray();
     }
 
-    private function formatServiceSummary(array $services): string
+    private function formatServiceSummary(array $services, ?string $timezone = null): string
     {
         if (empty($services)) {
             return 'None';
         }
 
-        return collect($services)->map(function ($s) {
+        return collect($services)->map(function ($s) use ($timezone) {
             $name = $s['name'] ?? 'Service';
             $qty = $s['quantity'] ?? 1;
             $price = $s['price'] ?? 0;
@@ -3811,7 +3815,7 @@ HTML;
                 $line .= ' - Editor: '.$s['editor_name'];
             }
             if (! empty($s['scheduled_at'])) {
-                $line .= ' - Time: '.$this->formatDateTimeValue($s['scheduled_at']);
+                $line .= ' - Time: '.$this->formatServiceSchedule($s['scheduled_at'], $timezone);
             }
             if (! empty($s['workflow_status'])) {
                 $line .= ' - Workflow: '.$this->formatStatusValue($s['workflow_status']);
@@ -3865,19 +3869,6 @@ HTML;
         $formatted = number_format((float) $value, 2);
 
         return ((string) $type === 'percent') ? "{$formatted}%" : '$'.$formatted;
-    }
-
-    private function formatDateTimeValue($value): string
-    {
-        if ($value === null || $value === '') {
-            return '';
-        }
-
-        try {
-            return \Carbon\Carbon::parse($value)->format('M j, Y \a\t g:i A');
-        } catch (\Exception $e) {
-            return (string) $value;
-        }
     }
 
     private function formatNumberValue($value, int $decimals = 0): string
