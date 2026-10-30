@@ -74,11 +74,12 @@ class SmsContextResolverService
 
     public function normalize(string $phone): string
     {
+        $hasCountryCode = str_starts_with(trim($phone), '+');
         $digits = preg_replace('/\D/', '', $phone) ?? '';
         if ($digits === '') {
             return '';
         }
-        if (strlen($digits) === 10) {
+        if (! $hasCountryCode && strlen($digits) === 10) {
             $digits = '1' . $digits;
         }
         return '+' . ltrim($digits, '+');

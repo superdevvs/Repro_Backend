@@ -316,6 +316,25 @@ class VoiceBrowserCallService
         return DB::table('voice_cancelled_attempts')->where('user_id', $userId)->where('idempotency_key', $key)->exists();
     }
 
+    private function stopping(VoiceBrowserCall $browser): bool
+    {
+        if ($browser->state === 'ending') {
+            return true;
+        }
+        if ($browser->mode !== 'human_outbound') {
+            return false;
+        }
+        if ($this->cancelledAttempt($browser->owner_id, $browser->idempotency_key)) {
+            return true;
+        }
+
+        // Native End persists the ticket cancellation before acquiring the call lock.
+        return str_starts_with($browser->idempotency_key, 'mobile:')
+            && VoiceMobileTicket::whereKey(substr($browser->idempotency_key, strlen('mobile:')))
+                ->where('voice_call_id', $browser->voice_call_id)->where('state', 'cancelled')
+                ->whereHas('session', fn ($q) => $q->where('user_id', $browser->owner_id))->exists();
+    }
+
     public function supervise(VoiceCall $call, User $user, VoiceBrowserSession $session, string $mode, string $key): void
     {
         $this->assertSession($session, $user, true);
@@ -670,6 +689,9 @@ class VoiceBrowserCallService
                     if ($leg->role !== 'customer' && $leg->call_control_id && in_array($type, ['call.initiated', 'call.answered'], true)) {
                         $this->gateway->command('late-hangup:'.$leg->id, '/calls/'.rawurlencode($leg->call_control_id).'/actions/hangup');
                     }
+                } elseif ($this->stopping($browser)) {
+                    // Retry cleanup; an unconfirmed hangup must not resume call setup.
+                    $this->end($browser);
                 } elseif ($type === 'call.answered') {
                     $leg->update(['answered_at' => $leg->answered_at ?? now(), 'state' => $leg->joined_at ? 'joined' : 'answered']);
                     if ($leg->role === 'agent') {
@@ -827,7 +849,15 @@ class VoiceBrowserCallService
     private function connectCustomer(VoiceBrowserCall $browser): void
     {
         $browser->refresh();
-        if (! $browser->conference_id || ! $this->joinedAgent($browser) || in_array($browser->state, self::TERMINAL, true)) {
+        if (in_array($browser->state, self::TERMINAL, true)) {
+            return;
+        }
+        if ($this->stopping($browser)) {
+            $this->end($browser);
+
+            return;
+        }
+        if (! $browser->conference_id || ! $this->joinedAgent($browser)) {
             return;
         }
         $agent = $this->joinedAgent($browser);
@@ -841,11 +871,6 @@ class VoiceBrowserCallService
         }
         $customer = $browser->legs()->where('role', 'customer')->firstOrFail();
         $call = $browser->voiceCall->fresh();
-        if ($browser->mode === 'human_outbound' && $this->cancelledAttempt($browser->owner_id, $browser->idempotency_key)) {
-            $this->end($browser);
-
-            return;
-        }
         if ($call->ended_at || $customer->ended_at || $customer->joined_at) {
             return;
         }
@@ -1048,7 +1073,13 @@ class VoiceBrowserCallService
 
     private function kickoff(VoiceBrowserCall $browser): void
     {
+        $browser->refresh();
         if (in_array($browser->state, self::TERMINAL, true)) {
+            return;
+        }
+        if ($this->stopping($browser)) {
+            $this->end($browser);
+
             return;
         }
         $agent = $browser->legs()->where('role', 'agent')->whereNull('ended_at')->latest()->first();

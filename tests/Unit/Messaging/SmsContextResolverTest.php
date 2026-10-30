@@ -22,6 +22,17 @@ class SmsContextResolverTest extends TestCase
         $this->assertSame('', $svc->normalize(''));
     }
 
+    public function test_normalize_preserves_an_explicit_international_country_code(): void
+    {
+        $svc = new SmsContextResolverService();
+
+        $this->assertSame('+4587654321', $svc->normalize('+4587654321'));
+        $this->assertSame('+4587654321', $svc->normalize('  +45 87 65 43 21  '));
+        $this->assertSame('+442079460018', $svc->normalize('+44 (20) 7946-0018'));
+        $this->assertSame('+14587654321', $svc->normalize('4587654321'));
+        $this->assertSame('+12025550100', $svc->normalize('  (202) 555-0100  '));
+    }
+
     public function test_resolve_returns_exact_user_match(): void
     {
         $svc = new SmsContextResolverService();

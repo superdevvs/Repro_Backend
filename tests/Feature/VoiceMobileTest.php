@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\User;
+use App\Models\VoiceBrowserCall;
 use App\Models\VoiceBrowserSession;
 use App\Models\VoiceCall;
 use App\Models\VoiceIncomingOffer;
@@ -19,6 +20,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 class VoiceMobileTest extends TestCase
@@ -36,6 +38,8 @@ class VoiceMobileTest extends TestCase
     private bool $ambiguousCredential = false;
 
     private bool $failRevoke = false;
+
+    private bool $failHangup = false;
 
     protected function setUp(): void
     {
@@ -95,6 +99,10 @@ class VoiceMobileTest extends TestCase
                 return Http::response(['data' => ['id' => 'conference-mobile']]);
             }
             if (str_contains($p, '/actions/')) {
+                if ($this->failHangup && str_ends_with($p, '/actions/hangup')) {
+                    return Http::response([], 503);
+                }
+
                 return Http::response(['data' => ['result' => 'ok']]);
             }
             throw new \RuntimeException('Unexpected fake provider request: '.$r->method().' '.$p);
@@ -139,6 +147,111 @@ class VoiceMobileTest extends TestCase
         $this->postJson('/api/voice/mobile/sessions', ['device_id' => $device, 'platform' => 'ios', 'apns_environment' => 'production', 'push_token' => str_repeat('b', 64)])->assertStatus(409);
         $none = $this->bootstrap($device, '');
         $this->assertFalse($none['receive_calls']);
+    }
+
+    public function test_refresh_without_push_token_preserves_incoming_registration_and_identity(): void
+    {
+        $device = (string) Str::uuid();
+        $first = $this->bootstrap($device);
+        $session = VoiceMobileSession::findOrFail($first['session_id']);
+        $encryptedPush = $session->getRawOriginal('push_token');
+        $hash = $session->push_token_hash;
+        $credential = $session->credential_id;
+        $session->update(['expires_at' => now()->subMinute()]);
+
+        $this->postJson('/api/voice/mobile/sessions', [
+            'device_id' => $device, 'platform' => 'ios', 'apns_environment' => 'debug',
+        ])->assertOk()->assertJsonPath('session_id', $session->id)->assertJsonPath('receive_calls', true);
+
+        $session->refresh();
+        $this->assertSame($encryptedPush, $session->getRawOriginal('push_token'));
+        $this->assertSame(str_repeat('a', 64), $session->push_token);
+        $this->assertSame($hash, $session->push_token_hash);
+        $this->assertSame($credential, $session->credential_id);
+        $this->assertTrue(app(VoiceMobileSessionService::class)->registered($session));
+        $this->assertTrue(app(VoiceMobileSessionService::class)->authorized($session));
+        $this->assertCount(1, $this->connections);
+        $this->assertCount(1, $this->credentials);
+        $this->assertSame(0, $this->dials);
+    }
+
+    public function test_first_bootstrap_without_push_token_is_outgoing_only_and_cannot_take_another_devices_token(): void
+    {
+        $existing = $this->bootstrap();
+        $device = (string) Str::uuid();
+        $data = ['device_id' => $device, 'platform' => 'ios', 'apns_environment' => 'debug'];
+        $response = $this->postJson('/api/voice/mobile/sessions', $data)->assertOk()
+            ->assertJsonPath('receive_calls', false)->assertJsonPath('make_calls', true)->json();
+        $session = VoiceMobileSession::findOrFail($response['session_id']);
+        $this->assertNotSame($existing['session_id'], $session->id);
+        $this->assertNull($session->push_token);
+        $this->assertNull($session->push_token_hash);
+        $this->assertFalse(app(VoiceMobileSessionService::class)->registered($session));
+        $this->assertTrue(app(VoiceMobileSessionService::class)->authorized($session));
+
+        $this->postJson('/api/voice/mobile/sessions', $data + ['push_token' => str_repeat('a', 64)])->assertStatus(409);
+        $this->assertNull($session->fresh()->push_token_hash);
+        $this->assertTrue(app(VoiceMobileSessionService::class)->registered(VoiceMobileSession::findOrFail($existing['session_id'])));
+    }
+
+    public static function explicitPushRemoval(): array
+    {
+        return ['null' => [null], 'empty string' => ['']];
+    }
+
+    #[DataProvider('explicitPushRemoval')]
+    public function test_explicit_push_removal_is_not_restored_by_an_omitted_refresh(?string $push): void
+    {
+        $device = (string) Str::uuid();
+        $first = $this->bootstrap($device);
+        $data = ['device_id' => $device, 'platform' => 'ios', 'apns_environment' => 'debug'];
+        $this->postJson('/api/voice/mobile/sessions', $data + ['push_token' => $push])->assertOk()
+            ->assertJsonPath('session_id', $first['session_id'])->assertJsonPath('receive_calls', false);
+        $this->postJson('/api/voice/mobile/sessions', $data)->assertOk()
+            ->assertJsonPath('session_id', $first['session_id'])->assertJsonPath('receive_calls', false);
+
+        $session = VoiceMobileSession::findOrFail($first['session_id']);
+        $this->assertNull($session->push_token);
+        $this->assertNull($session->push_token_hash);
+        $this->assertFalse(app(VoiceMobileSessionService::class)->registered($session));
+        $this->assertTrue(app(VoiceMobileSessionService::class)->authorized($session));
+    }
+
+    public function test_omitted_push_token_does_not_restore_a_revoked_registration(): void
+    {
+        $device = (string) Str::uuid();
+        $first = $this->bootstrap($device);
+        $this->deleteJson('/api/voice/mobile/sessions/'.$first['session_id'])->assertOk();
+        $second = $this->postJson('/api/voice/mobile/sessions', [
+            'device_id' => $device, 'platform' => 'ios', 'apns_environment' => 'debug',
+        ])->assertOk()->assertJsonPath('receive_calls', false)->json();
+
+        $this->assertNotSame($first['session_id'], $second['session_id']);
+        foreach ([$first['session_id'], $second['session_id']] as $id) {
+            $session = VoiceMobileSession::findOrFail($id);
+            $this->assertNull($session->push_token);
+            $this->assertNull($session->push_token_hash);
+            $this->assertFalse(app(VoiceMobileSessionService::class)->registered($session));
+        }
+        $this->assertNotNull(VoiceMobileSession::findOrFail($first['session_id'])->revoked_at);
+    }
+
+    public function test_omitted_push_token_cannot_inherit_another_accounts_device_registration(): void
+    {
+        $device = (string) Str::uuid();
+        $first = $this->bootstrap($device);
+        $other = User::factory()->create(['role' => 'admin']);
+        $other->withAccessToken($other->createToken('isolated-other-mobile-user')->accessToken);
+        $this->actingAs($other, 'sanctum');
+
+        $second = $this->postJson('/api/voice/mobile/sessions', [
+            'device_id' => $device, 'platform' => 'ios', 'apns_environment' => 'debug',
+        ])->assertOk()->assertJsonPath('receive_calls', false)->json();
+
+        $this->assertNotSame($first['session_id'], $second['session_id']);
+        $this->assertSame($other->id, VoiceMobileSession::findOrFail($second['session_id'])->user_id);
+        $this->assertNull(VoiceMobileSession::findOrFail($second['session_id'])->push_token_hash);
+        $this->assertTrue(app(VoiceMobileSessionService::class)->registered(VoiceMobileSession::findOrFail($first['session_id'])));
     }
 
     public function test_disabled_gate_and_client_role_cannot_provision(): void
@@ -200,6 +313,118 @@ class VoiceMobileTest extends TestCase
         $this->assertSame(1, $this->dials);
         app(VoiceMobileCallService::class)->webhook(['data' => ['event_type' => 'call.initiated', 'payload' => $p]]);
         $this->assertSame(1, VoiceCall::count());
+    }
+
+    public function test_cancelled_outbound_cannot_dial_customer_after_failed_hangup_and_late_agent_events(): void
+    {
+        $s = $this->bootstrap();
+        $ticket = $this->postJson('/api/voice/mobile/sessions/'.$s['session_id'].'/outbound', [
+            'to' => '+12025550199', 'idempotency_key' => (string) Str::uuid(),
+        ])->assertOk()->json();
+        $payload = ['connection_id' => VoiceMobileSession::findOrFail($s['session_id'])->connection_id,
+            'direction' => 'outgoing', 'to' => $ticket['sdk_destination'], 'call_control_id' => 'cancel-test-agent',
+            'call_session_id' => 'cancel-test-provider-session',
+            'custom_headers' => [['name' => 'X-Repro-Offer', 'value' => $ticket['offer_token']]]];
+        app(VoiceMobileCallService::class)->webhook(['data' => ['event_type' => 'call.initiated', 'payload' => $payload]]);
+        $browser = VoiceBrowserCall::sole();
+        $end = '/api/voice/mobile/sessions/'.$s['session_id'].'/calls/'.$ticket['call_id'].'/end';
+        $this->failHangup = true;
+        $this->postJson($end, ['idempotency_key' => $ticket['call_id']])->assertStatus(503);
+        $this->assertSame('cancelled', VoiceMobileTicket::findOrFail($ticket['call_id'])->state);
+        $this->assertSame('ending', $browser->fresh()->state);
+        $this->assertNull($browser->voiceCall->fresh()->ended_at);
+
+        foreach (['call.answered', 'conference.participant.joined'] as $event) {
+            try {
+                app(VoiceBrowserCallService::class)->handleWebhook(['data' => ['id' => (string) Str::uuid(),
+                    'event_type' => $event, 'payload' => $payload + ['conference_id' => 'conference-mobile']]]);
+            } catch (\RuntimeException $e) {
+                $this->assertSame('The phone provider could not complete the request.', $e->getMessage());
+            }
+        }
+
+        $this->assertSame(0, $this->dials, 'A cancelled attempt must never dial the customer after late staff events.');
+        $this->assertSame('ending', $browser->fresh()->state);
+        Http::assertNotSent(fn ($r) => parse_url($r->url(), PHP_URL_PATH) === '/v2/conferences');
+
+        $this->failHangup = false;
+        $this->postJson($end, ['idempotency_key' => $ticket['call_id']])->assertOk();
+        $this->assertSame('ended', $browser->fresh()->state);
+        $this->assertNotNull($browser->voiceCall->fresh()->ended_at);
+        $this->assertSame(0, $this->dials);
+    }
+
+    public function test_durable_native_cancellation_blocks_late_join_before_shared_end_obtains_call_lock(): void
+    {
+        $s = $this->bootstrap();
+        $ticket = $this->postJson('/api/voice/mobile/sessions/'.$s['session_id'].'/outbound', [
+            'to' => '+12025550199', 'idempotency_key' => (string) Str::uuid(),
+        ])->assertOk()->json();
+        $payload = ['connection_id' => VoiceMobileSession::findOrFail($s['session_id'])->connection_id,
+            'direction' => 'outgoing', 'to' => $ticket['sdk_destination'], 'call_control_id' => 'cancel-test-agent',
+            'call_session_id' => 'cancel-test-provider-session',
+            'custom_headers' => [['name' => 'X-Repro-Offer', 'value' => $ticket['offer_token']]]];
+        app(VoiceMobileCallService::class)->webhook(['data' => ['event_type' => 'call.initiated', 'payload' => $payload]]);
+        app(VoiceBrowserCallService::class)->handleWebhook(['data' => ['id' => (string) Str::uuid(),
+            'event_type' => 'call.answered', 'payload' => $payload]]);
+        $browser = VoiceBrowserCall::sole();
+        $this->assertSame('connecting_agent', $browser->state);
+
+        // Model the durable End write winning before its shared call-lock acquisition.
+        VoiceMobileTicket::findOrFail($ticket['call_id'])->update(['state' => 'cancelled']);
+        app(VoiceBrowserCallService::class)->handleWebhook(['data' => ['id' => (string) Str::uuid(),
+            'event_type' => 'conference.participant.joined', 'payload' => $payload + ['conference_id' => 'conference-mobile']]]);
+
+        $this->assertSame(0, $this->dials);
+        $this->assertSame('ended', $browser->fresh()->state);
+        $this->assertSame('cancelled', $browser->voiceCall->fresh()->status);
+        Http::assertSent(fn ($r) => str_ends_with($r->url(), '/calls/cancel-test-agent/actions/hangup'));
+    }
+
+    public function test_active_native_call_stays_active_until_end_and_late_customer_join_cannot_reopen_it(): void
+    {
+        $s = $this->bootstrap();
+        $ticket = $this->postJson('/api/voice/mobile/sessions/'.$s['session_id'].'/outbound', [
+            'to' => '+12025550199', 'idempotency_key' => (string) Str::uuid(),
+        ])->assertOk()->json();
+        $payload = ['connection_id' => VoiceMobileSession::findOrFail($s['session_id'])->connection_id,
+            'direction' => 'outgoing', 'to' => $ticket['sdk_destination'], 'call_control_id' => 'active-test-agent',
+            'call_session_id' => 'active-test-provider-session',
+            'custom_headers' => [['name' => 'X-Repro-Offer', 'value' => $ticket['offer_token']]]];
+        app(VoiceMobileCallService::class)->webhook(['data' => ['event_type' => 'call.initiated', 'payload' => $payload]]);
+        $event = fn (string $type, array $p) => app(VoiceBrowserCallService::class)->handleWebhook([
+            'data' => ['id' => (string) Str::uuid(), 'event_type' => $type, 'payload' => $p],
+        ]);
+        $event('call.answered', $payload);
+        $event('conference.participant.joined', $payload + ['conference_id' => 'conference-mobile']);
+        $customer = ['call_control_id' => 'mobile-leg-1', 'conference_id' => 'conference-mobile'];
+        $event('call.answered', $customer);
+        $event('conference.participant.joined', $customer);
+        $browser = VoiceBrowserCall::sole();
+        $this->assertSame('active', $browser->state);
+        $this->assertSame('started', VoiceMobileTicket::findOrFail($ticket['call_id'])->state);
+        $event('conference.participant.joined', $customer);
+        $this->assertSame('active', $browser->fresh()->state);
+        $this->assertSame(1, $this->dials);
+
+        $end = '/api/voice/mobile/sessions/'.$s['session_id'].'/calls/'.$ticket['call_id'].'/end';
+        $this->failHangup = true;
+        $this->postJson($end, ['idempotency_key' => $ticket['call_id']])->assertStatus(503);
+        try {
+            $event('conference.participant.joined', $customer);
+        } catch (\RuntimeException $e) {
+            $this->assertSame('The phone provider could not complete the request.', $e->getMessage());
+        }
+        $this->assertSame('ending', $browser->fresh()->state);
+        $this->assertSame(1, $this->dials);
+
+        $this->failHangup = false;
+        $this->postJson($end, ['idempotency_key' => $ticket['call_id']])->assertOk();
+        Http::assertSent(fn ($r) => str_ends_with($r->url(), '/calls/mobile-leg-1/actions/hangup'));
+        $event('call.hangup', $customer);
+        $this->assertSame('ended', $browser->fresh()->state);
+        $this->assertNotNull($browser->voiceCall->fresh()->ended_at);
+        $this->assertSame(1, $this->dials);
     }
 
     public function test_two_native_devices_share_one_winner_and_replay_is_stable(): void

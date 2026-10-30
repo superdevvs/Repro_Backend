@@ -23,6 +23,8 @@ class VoiceBrowserCallTest extends TestCase
 
     private int $dialCount = 0;
 
+    private bool $failHangup = false;
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -39,6 +41,9 @@ class VoiceBrowserCallTest extends TestCase
         $this->actingAs($this->operator, 'sanctum');
         Http::fake(function ($request) {
             $path = parse_url($request->url(), PHP_URL_PATH);
+            if ($this->failHangup && str_ends_with($path, '/actions/hangup')) {
+                return Http::response([], 503);
+            }
             if ($path === '/v2/calls') {
                 $n = ++$this->dialCount;
 
@@ -87,6 +92,33 @@ class VoiceBrowserCallTest extends TestCase
         $this->assertDatabaseCount('voice_calls', 1);
         $this->assertNull($call->fresh()->call_control_id);
         Http::assertNotSent(fn ($r) => str_contains($r->url(), 'ai_assistant'));
+    }
+
+    public function test_browser_end_failure_remains_stopping_on_outbound_replay_and_late_join(): void
+    {
+        $call = $this->outbound();
+        $this->event('call.answered', 'origin-1');
+        $this->failHangup = true;
+        $this->postJson('/api/voice/calls/'.$call->id.'/browser-actions', ['action' => 'end'])->assertStatus(502);
+        $this->assertSame('ending', VoiceBrowserCall::sole()->state);
+
+        $this->postJson('/api/voice/calls/human', ['session_id' => $this->session->id,
+            'to' => '+12025550200', 'reason' => 'Booking help', 'idempotency_key' => 'outbound-one'])->assertStatus(502);
+        $this->assertSame('ending', VoiceBrowserCall::sole()->state);
+        try {
+            $this->event('conference.participant.joined', 'origin-1', ['conference_id' => 'conference-one']);
+        } catch (\RuntimeException $e) {
+            $this->assertSame('The phone provider could not complete the request.', $e->getMessage());
+        }
+        $this->assertSame(1, $this->dialCount, 'Only the original staff leg was dialed.');
+        $this->assertNull($call->fresh()->call_control_id);
+        $this->assertSame('ending', VoiceBrowserCall::sole()->state);
+
+        $this->failHangup = false;
+        $this->postJson('/api/voice/calls/'.$call->id.'/browser-actions', ['action' => 'end'])->assertOk();
+        $this->assertSame('ended', VoiceBrowserCall::sole()->state);
+        $this->assertNotNull($call->fresh()->ended_at);
+        $this->assertSame(1, $this->dialCount);
     }
 
     public function test_early_peer_header_correlates_only_expected_device_and_preserves_origin_id(): void

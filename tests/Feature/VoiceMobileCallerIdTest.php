@@ -160,6 +160,41 @@ class VoiceMobileCallerIdTest extends TestCase
         Http::assertNothingSent();
     }
 
+    public function test_explicit_international_destination_does_not_match_a_different_owned_country_code(): void
+    {
+        $this->number(self::LINE_A, 'Main voice');
+        $this->policy(self::LINE_A);
+        $this->number('+14587654321', 'Different owned business line');
+
+        $this->reserve(['to' => '+14587654321'])->assertStatus(422)
+            ->assertJsonPath('message', 'Dial an external customer number in international format.');
+        $this->assertSame(0, VoiceMobileTicket::count());
+
+        $response = $this->reserve(['to' => '+4587654321'])->assertOk()
+            ->assertJsonPath('destination', '+4587654321')
+            ->assertJsonPath('caller_number', self::LINE_A)->json();
+        $ticket = VoiceMobileTicket::findOrFail($response['call_id']);
+        $this->assertSame('+4587654321', $ticket->destination);
+        $this->assertSame(self::LINE_A, $ticket->caller_number);
+        $this->assertSame(1, VoiceMobileTicket::count());
+        $this->assertSame(0, VoiceCall::count());
+        Http::assertNothingSent();
+    }
+
+    public function test_actual_owned_international_destination_remains_blocked(): void
+    {
+        $this->number(self::LINE_A, 'Main voice');
+        $this->policy(self::LINE_A);
+        $this->number('+45 87 65 43 21', 'Owned international business line');
+
+        $this->reserve(['to' => '+4587654321'])->assertStatus(422)
+            ->assertJsonPath('message', 'Dial an external customer number in international format.');
+
+        $this->assertSame(0, VoiceMobileTicket::count());
+        $this->assertSame(0, VoiceCall::count());
+        Http::assertNothingSent();
+    }
+
     public function test_caller_id_routes_require_current_session_owner_login_and_operate_permission(): void
     {
         $this->number(self::LINE_A, 'Main voice');

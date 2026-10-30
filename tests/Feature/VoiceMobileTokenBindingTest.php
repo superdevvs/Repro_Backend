@@ -16,6 +16,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 class VoiceMobileTokenBindingTest extends TestCase
@@ -263,5 +264,52 @@ class VoiceMobileTokenBindingTest extends TestCase
         $this->assertSame('revocation_pending', $session->status);
         $this->assertNull($session->push_token_hash);
         $this->assertFalse($this->service()->registered($session));
+    }
+
+    public function test_omitted_push_refresh_cannot_rebind_a_previous_login_or_environment(): void
+    {
+        $session = $this->ready();
+        $hash = $session->push_token_hash;
+        $data = $this->data($session->device_id);
+        unset($data['push_token']);
+        config(['mobile_voice.push_credentials.production' => 'test-prod-push']);
+        $this->postJson('/api/voice/mobile/sessions', array_replace($data, ['apns_environment' => 'production']))->assertStatus(409);
+        $this->signIn($this->staff);
+        $this->postJson('/api/voice/mobile/sessions', $data)->assertStatus(409);
+
+        $this->assertSame($this->token->id, $session->fresh()->personal_access_token_id);
+        $this->assertSame($hash, $session->fresh()->push_token_hash);
+        Http::assertNothingSent();
+    }
+
+    public static function interruptedPushRefresh(): array
+    {
+        return ['logout' => ['logout'], 'session revoke' => ['revoke']];
+    }
+
+    #[DataProvider('interruptedPushRefresh')]
+    public function test_omitted_push_refresh_cannot_restore_registration_after_logout_or_revocation(string $interruption): void
+    {
+        $data = $this->data();
+        $first = $this->postJson('/api/voice/mobile/sessions', $data)->assertOk()->json();
+        $session = VoiceMobileSession::findOrFail($first['session_id']);
+        $this->assertTrue($this->service()->registered($session));
+        unset($data['push_token']);
+        $this->beforeJWT = function () use ($interruption, $session) {
+            if ($interruption === 'logout') {
+                $this->token->delete();
+            } else {
+                $this->service()->revoke($session);
+            }
+        };
+
+        $this->postJson('/api/voice/mobile/sessions', $data)->assertUnauthorized()->assertJsonMissingPath('jwt');
+
+        $session->refresh();
+        $this->assertNotNull($session->revoked_at);
+        $this->assertNull($session->push_token);
+        $this->assertNull($session->push_token_hash);
+        $this->assertFalse($this->service()->registered($session));
+        $this->assertFalse($this->service()->authorized($session));
     }
 }

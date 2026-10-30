@@ -119,13 +119,18 @@ class VoiceMobileSessionService
             $s ??= VoiceMobileSession::create(['user_id' => $user->id, 'personal_access_token_id' => $token->id, 'device_id' => strtolower($data['device_id']),
                 'apns_environment' => $env, 'bundle_id' => config('mobile_voice.bundle_id'), 'expires_at' => $this->boundedExpiry($token, now()->addHour()), 'registration_expires_at' => $this->boundedExpiry($token, now()->addDays(30)),
                 'connection_username' => 'rpm'.Str::lower(Str::random(24))]);
-            $push = strtolower($data['push_token'] ?? '');
-            // A token cannot silently move between accounts. Sign-out must revoke the previous binding.
-            $hash = $push === '' ? null : hash_hmac('sha256', $push, (string) config('app.key'));
-            if ($hash) {
-                abort_if(VoiceMobileSession::where('push_token_hash', $hash)->whereNull('revoked_at')->where('id', '!=', $s->id)->exists(), 409, 'Revoke the previous phone registration before reconnecting.');
+            // A credential refresh may arrive before PushKit returns its token.
+            // Omission preserves this login's binding; explicit null/empty disables it.
+            $hash = $s->push_token_hash;
+            if (array_key_exists('push_token', $data)) {
+                $push = strtolower($data['push_token'] ?? '');
+                $hash = $push === '' ? null : hash_hmac('sha256', $push, (string) config('app.key'));
+                // A token cannot silently move between accounts. Sign-out must revoke the previous binding.
+                if ($hash) {
+                    abort_if(VoiceMobileSession::where('push_token_hash', $hash)->whereNull('revoked_at')->where('id', '!=', $s->id)->exists(), 409, 'Revoke the previous phone registration before reconnecting.');
+                }
+                $s->update(['push_token' => $push ?: null, 'push_token_hash' => $hash]);
             }
-            $s->update(['push_token' => $push ?: null, 'push_token_hash' => $hash]);
             $this->provision($s);
             $expiry = $this->boundedExpiry($token, now()->addHour());
             $this->gateway->request('PATCH', '/telephony_credentials/'.$s->credential_id, ['expires_at' => $expiry->toIso8601String()]);
