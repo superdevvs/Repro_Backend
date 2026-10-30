@@ -1132,9 +1132,12 @@ Route::middleware('auth:sanctum')->group(function () {
                     Route::delete('/{upload}', [IguideOfflineChunkUploadController::class, 'destroy'])
                         ->whereUuid('upload');
                 });
-            Route::post('/cubicasa/sync', [IntegrationController::class, 'syncCubicasa']);
-            Route::post('/cubicasa/order', [IntegrationController::class, 'createCubicasa']);
-            Route::post('/cubicasa/identifiers', [IntegrationController::class, 'saveCubicasaIdentifiers']);
+            Route::post('/cubicasa/sync', [IntegrationController::class, 'syncCubicasa'])
+                ->middleware('role:admin,superadmin,editing_manager');
+            Route::post('/cubicasa/order', [IntegrationController::class, 'createCubicasa'])
+                ->middleware('role:admin,superadmin,editing_manager');
+            Route::post('/cubicasa/identifiers', [IntegrationController::class, 'saveCubicasaIdentifiers'])
+                ->middleware('role:admin,superadmin,editing_manager');
             Route::post('/bright-mls/publish', [IntegrationController::class, 'publishToBrightMls']);
             Route::post('/mmm/punchout', [IntegrationController::class, 'mmmPunchout']);
             Route::get('/mmm/sessions', [IntegrationController::class, 'mmmSessions']);

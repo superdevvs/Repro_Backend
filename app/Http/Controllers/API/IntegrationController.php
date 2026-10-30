@@ -15,6 +15,7 @@ use App\Services\IguideService;
 use App\Services\CubiCasaService;
 use App\Services\MmmService;
 use App\Services\ShootActivityLogger;
+use App\Services\Shoots\ShootAuthorizationSupport;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\DB;
@@ -496,9 +497,10 @@ class IntegrationController extends Controller
      */
     public function syncCubicasa(Request $request, $shootId)
     {
-        try {
-            $shoot = Shoot::findOrFail($shootId);
+        $shoot = Shoot::findOrFail($shootId);
+        $this->authorizeCubiCasaMutation($request, $shoot);
 
+        try {
             // If the shoot has neither order_id nor external_id, there's nothing
             // to sync against. Surface a 409 with guidance instead of 500.
             if (empty($shoot->cubicasa_order_id) && empty($shoot->cubicasa_external_id)) {
@@ -625,9 +627,10 @@ class IntegrationController extends Controller
      */
     public function createCubicasa(Request $request, $shootId)
     {
-        try {
-            $shoot = Shoot::findOrFail($shootId);
+        $shoot = Shoot::findOrFail($shootId);
+        $this->authorizeCubiCasaMutation($request, $shoot);
 
+        try {
             $parsed = $this->cubicasaService->createOrder($shoot, $request->user());
 
             if (!$parsed) {
@@ -703,13 +706,15 @@ class IntegrationController extends Controller
      */
     public function saveCubicasaIdentifiers(Request $request, $shootId)
     {
+        $shoot = Shoot::findOrFail($shootId);
+        $this->authorizeCubiCasaMutation($request, $shoot);
+
         $validated = $request->validate([
             'cubicasa_order_id' => 'nullable|string|max:255',
             'cubicasa_external_id' => 'nullable|string|max:255',
         ]);
 
         try {
-            $shoot = Shoot::findOrFail($shootId);
             if (array_key_exists('cubicasa_order_id', $validated)) {
                 $shoot->cubicasa_order_id = $validated['cubicasa_order_id'] ?: null;
             }
@@ -733,6 +738,13 @@ class IntegrationController extends Controller
                 'message' => 'Failed to save CubiCasa identifiers',
             ], 500);
         }
+    }
+
+    private function authorizeCubiCasaMutation(Request $request, Shoot $shoot): void
+    {
+        $access = app(ShootAuthorizationSupport::class);
+        abort_unless($access->canManageShootOperations($request->user()), 403, 'Forbidden');
+        $access->ensureShootAccess($shoot, $request->user());
     }
 
     /**
