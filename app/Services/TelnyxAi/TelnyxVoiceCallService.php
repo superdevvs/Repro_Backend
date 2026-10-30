@@ -314,7 +314,9 @@ class TelnyxVoiceCallService
         $voiceCall->refresh();
         $metadata = $voiceCall->metadata ?? [];
         $recording = ! empty($metadata['recording_started_at']) || ! empty($metadata['recording_start_pending']);
-        $transcribing = ! empty($metadata['browser_transcription_enabled']) || ! empty($metadata['browser_transcription_pending']);
+        $independent = data_get($metadata, 'human_transcription.managed', false)
+            && data_get($metadata, 'human_transcription.consented', false);
+        $transcribing = ! $independent && (! empty($metadata['browser_transcription_enabled']) || ! empty($metadata['browser_transcription_pending']));
         $pending = ! empty($metadata['recording_stop_pending']);
         $generation = (int) ($metadata['recording_generation'] ?? 0);
         if (! $recording && ! $transcribing && ! $pending) {

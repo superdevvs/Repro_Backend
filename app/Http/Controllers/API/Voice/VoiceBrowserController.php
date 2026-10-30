@@ -165,6 +165,18 @@ class VoiceBrowserController extends Controller
         });
     }
 
+    public function transcription(Request $request, VoiceCall $call): JsonResponse
+    {
+        $data = $request->validate(['action' => ['required', 'in:start,stop'], 'consented' => ['required_if:action,start', 'boolean'],
+            'idempotency_key' => ['required', 'uuid']]);
+
+        return $this->respond(function () use ($request, $call, $data): array {
+            app(\App\Services\Voice\VoiceHumanTranscriptionService::class)->control($call, $request->user(), $data['action'], (bool) ($data['consented'] ?? false), $data['idempotency_key']);
+
+            return $this->calls->state($call->fresh(), $request->user());
+        });
+    }
+
     private function authorizeSession(Request $request, VoiceBrowserSession $session): void
     {
         abort_unless($session->user_id === $request->user()->id && ($this->sessions->canOperate($request->user()) || $this->sessions->canSupervise($request->user())), 403);

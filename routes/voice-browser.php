@@ -38,5 +38,6 @@ Route::patch('calls/{call}/supervise', [VoiceBrowserController::class, 'changeSu
 Route::delete('calls/{call}/supervise', [VoiceBrowserController::class, 'leaveSupervision'])->middleware('permission:voice-calls,supervise');
 Route::post('calls/{call}/browser-actions', [VoiceBrowserController::class, 'action'])->middleware('permission:voice-calls,operate');
 Route::patch('calls/{call}/browser-consent', [VoiceBrowserController::class, 'consent'])->middleware('permission:voice-calls,operate');
+Route::post('calls/{call}/transcription', [VoiceBrowserController::class, 'transcription'])->middleware('permission:voice-calls,operate');
 Route::post('calls/{call}/transcript/reconcile', [\App\Http\Controllers\API\Voice\VoiceCallController::class, 'reconcileTranscript'])->middleware(['permission:voice-calls,operate', 'throttle:10,1']);
 Route::post('calls/{call}/transcript/retry', [\App\Http\Controllers\API\Voice\VoiceCallController::class, 'retryTranscript'])->middleware(['permission:voice-calls,operate', 'throttle:5,1']);

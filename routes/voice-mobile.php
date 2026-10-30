@@ -10,6 +10,7 @@ Route::prefix('mobile')->middleware('throttle:30,1')->group(function () {
     Route::post('sessions/{session}/outbound', [VoiceMobileController::class, 'outbound'])->whereUuid('session');
     Route::post('sessions/{session}/incoming/{sdk}/claim', [VoiceMobileController::class, 'claim'])->whereUuid(['session', 'sdk']);
     Route::get('sessions/{session}/calls/{sdk}/state', [VoiceMobileController::class, 'state'])->whereUuid(['session', 'sdk']);
+    Route::post('sessions/{session}/calls/{sdk}/transcription', [VoiceMobileController::class, 'transcription'])->whereUuid(['session', 'sdk']);
     Route::post('sessions/{session}/calls/{sdk}/end', [VoiceMobileController::class, 'end'])->whereUuid(['session', 'sdk']);
     Route::delete('sessions/{session}', [VoiceMobileController::class, 'revoke'])->whereUuid('session');
 });

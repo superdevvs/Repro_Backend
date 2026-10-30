@@ -88,6 +88,15 @@ class VoiceMobileController extends Controller
         return $this->respond(fn () => $this->calls->state($s, $sdk));
     }
 
+    public function transcription(Request $r, string $session, string $sdk): JsonResponse
+    {
+        $s = $this->owner($r, $session);
+        $d = $r->validate(['action' => ['required', 'in:start,stop'], 'consented' => ['required_if:action,start', 'boolean'],
+            'idempotency_key' => ['required', 'uuid']]);
+
+        return $this->respond(fn () => $this->calls->transcription($s, $sdk, $d['action'], (bool) ($d['consented'] ?? false), $d['idempotency_key']));
+    }
+
     public function end(Request $r, string $session, string $sdk): JsonResponse
     {
         $s = $this->owner($r, $session, true);

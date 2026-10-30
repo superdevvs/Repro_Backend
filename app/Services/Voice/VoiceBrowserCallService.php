@@ -60,6 +60,7 @@ class VoiceBrowserCallService
                 'stop_pending' => (bool) ($call->metadata['recording_stop_pending'] ?? false),
                 'transcription_active' => (bool) ($call->metadata['browser_transcription_enabled'] ?? false),
                 'transcription_pending' => (bool) ($call->metadata['browser_transcription_pending'] ?? false)],
+            'transcription' => app(VoiceHumanTranscriptionService::class)->state($call, $user),
             'capabilities' => [
                 'can_takeover' => $operate && ! $call->voicemail && $this->callIsLive($call) && $call->status !== 'human_handoff' && filled($call->call_control_id) && ! $this->active($call)
                     && ! VoiceIncomingOffer::where('voice_call_id', $call->id)->whereIn('status', ['waiting', 'robbie_pending'])->exists(),
@@ -419,6 +420,11 @@ class VoiceBrowserCallService
                 return;
             }
             $call->refresh();
+            // Dedicated transcription owns its own consent/start/stop. Starting
+            // audio recording must not undo an explicit transcript stop.
+            if (data_get($call->metadata, 'human_transcription.managed', false)) {
+                return;
+            }
             if (! empty($call->metadata['browser_transcription_enabled'])) {
                 return;
             }
@@ -972,7 +978,7 @@ class VoiceBrowserCallService
 
     private function transcription(VoiceCall $call, array $payload, string $eventId): void
     {
-        if (! $call->recording_consent_given || ! ($call->metadata['browser_transcription_enabled'] ?? false)) {
+        if (! app(VoiceHumanTranscriptionService::class)->allowsSegments($call)) {
             return;
         }
         $transcription = $payload['transcription_data'] ?? $payload;
@@ -989,7 +995,7 @@ class VoiceBrowserCallService
         // cannot append twice, or leave the row and flat transcript inconsistent.
         $stored = VoiceLocks::lock('voice-transcript:'.$call->id, 30)->block(3, fn () => LockedWrite::run(fn () => DB::transaction(function () use ($call, $eventId, $speaker, $text, $transcription): bool {
             $call->refresh();
-            if (! $call->recording_consent_given || ! ($call->metadata['browser_transcription_enabled'] ?? false)) {
+            if (! app(VoiceHumanTranscriptionService::class)->allowsSegments($call)) {
                 return false;
             }
             $providerId = 'telnyx:'.$eventId;

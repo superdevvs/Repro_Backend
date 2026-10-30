@@ -106,7 +106,22 @@ class VoiceMobileCallService
         $browser = $callID ? VoiceBrowserCall::where('voice_call_id', $callID)->where('owner_id', $s->user_id)
             ->whereHas('legs', fn ($q) => $q->where('mobile_session_id', $s->id))->first() : null;
 
-        return ['voice_call_id' => $browser?->voice_call_id, 'state' => $browser?->state ?? ($ticket?->state ?? 'connecting')];
+        $capture = app(VoiceHumanTranscriptionService::class);
+        $transcription = $capture->state($browser?->voiceCall, $s->user);
+        $transcription['available'] = $transcription['available'] && $browser && $capture->nativeBound($browser, $s, $sdkID);
+
+        return ['voice_call_id' => $browser?->voice_call_id, 'state' => $browser?->state ?? ($ticket?->state ?? 'connecting'),
+            'transcription' => $transcription];
+    }
+
+    public function transcription(VoiceMobileSession $s, string $sdkID, string $action, bool $consented, string $key): array
+    {
+        $state = $this->state($s, $sdkID);
+        abort_unless($state['voice_call_id'], 404, 'This call is unavailable.');
+        $call = \App\Models\VoiceCall::findOrFail($state['voice_call_id']);
+        app(VoiceHumanTranscriptionService::class)->control($call, $s->user, $action, $consented, $key, $s, $sdkID);
+
+        return $this->state($s->fresh(), $sdkID);
     }
 
     public function end(VoiceMobileSession $s, string $sdkID, ?string $token = null): void
