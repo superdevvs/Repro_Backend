@@ -40,7 +40,7 @@ class MobileNotificationTransport
 
     public function payload(MobileNotificationDelivery $delivery): array
     {
-        return ['aps' => ['alert' => ['title' => 'R/E Pro', 'body' => 'You have a new update.'], 'sound' => 'default'],
+        return ['aps' => ['alert' => app(MobileNotificationContent::class)->alert($delivery), 'sound' => 'default'],
             'repro' => ['version' => 1, 'event_id' => $delivery->id, 'user_id' => (string) $delivery->user_id,
                 'destination' => match ($delivery->kind) {
                     'voicemail' => 'calls',

@@ -117,14 +117,17 @@ class MobileNotificationTest extends TestCase
         $this->user->tokens()->delete();
         $this->assertNull($device->activeOwner());
     }
-    public function test_accepted_alert_uses_sandbox_and_contains_no_message_content_or_badge_guess(): void
+    public function test_accepted_alert_uses_sanitized_message_preview_without_metadata_or_badge_guess(): void
     {
         Http::fake(['api.sandbox.push.apple.com/*' => Http::response([], 200)]);
         $device = $this->register(); $delivery = $this->delivery($device);
+        Message::findOrFail($delivery->source_id)->update(['metadata' => ['provider_secret' => 'PROVIDER_METADATA_SENTINEL']]);
         $this->runDelivery($delivery);
         $this->assertSame('accepted', $delivery->fresh()->status);
         Http::assertSent(function ($request) use ($delivery) {
-            $this->assertFalse(str_contains(json_encode($request->data()), 'PRIVATE CONTENT'));
+            $this->assertSame('Message from Test', $request['aps']['alert']['title']);
+            $this->assertSame('PRIVATE CONTENT', $request['aps']['alert']['body']);
+            $this->assertStringNotContainsString('PROVIDER_METADATA_SENTINEL', json_encode($request->data()));
             $this->assertArrayNotHasKey('badge', $request['aps']);
             return $request->hasHeader('apns-push-type', 'alert') && $request->hasHeader('apns-id', $delivery->id)
                 && $request['repro']['user_id'] === (string) $this->user->id && $request['repro']['destination'] === 'messages';
