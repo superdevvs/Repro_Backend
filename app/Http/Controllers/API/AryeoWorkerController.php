@@ -247,7 +247,13 @@ class AryeoWorkerController extends Controller
             $row = $this->jobs->leased($this->connection($r), $job, $data['lease_token']);
             if ($row->status === 'reconciling' && isset($data['reconciliation']) && $data['reconciliation'] !== 'unknown') {
                 $order = AryeoRequest::findOrFail($row->request_record_id);
-                abort_unless($order->inventory_checked_at?->gt(now()->subMinutes(2)) && ($order->inventory['complete'] ?? false), 409, 'Refresh the complete remote inventory before reconciliation.');
+                if ($data['reconciliation'] === 'not_delivered' && ! $order->listing_id && empty($row->snapshot['listing_id'])) {
+                    // A still-pending request has no listing inventory. Verify
+                    // its live request state instead of inventing empty media.
+                    $this->jobs->authorizePendingRequestRecovery($row, $this->connection($r));
+                } else {
+                    abort_unless($order->inventory_checked_at?->gt(now()->subMinutes(2)) && ($order->inventory['complete'] ?? false), 409, 'Refresh the complete remote inventory before reconciliation.');
+                }
                 // A delivered result must be recorded with a receipt, not replayed.
                 if ($data['reconciliation'] === 'not_delivered') {
                     $row->status = 'running';

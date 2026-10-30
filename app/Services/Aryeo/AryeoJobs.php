@@ -96,7 +96,21 @@ class AryeoJobs
 
     public function authorizeRequestAcceptance(AryeoJob $job, AryeoConnection $connection): array
     {
-        abort_unless($job->status === 'running' && $connection->enabled && $connection->processing_enabled
+        abort_unless($job->status === 'running', 409, 'Reconcile the job before accepting a request.');
+
+        return $this->pendingRequestReadiness($job, $connection);
+    }
+
+    public function authorizePendingRequestRecovery(AryeoJob $job, AryeoConnection $connection): array
+    {
+        abort_unless($job->status === 'reconciling', 409, 'This job is not awaiting reconciliation.');
+
+        return $this->pendingRequestReadiness($job, $connection);
+    }
+
+    private function pendingRequestReadiness(AryeoJob $job, AryeoConnection $connection): array
+    {
+        abort_unless($connection->enabled && $connection->processing_enabled
             && data_get($connection->capabilities, 'processing_mode') === 'dashboard_jobs'
             && data_get($connection->capabilities, 'shoot_executor') === true
             && in_array((int) $job->snapshot['shoot_id'], $connection->delivery_shoot_ids ?? [], true),

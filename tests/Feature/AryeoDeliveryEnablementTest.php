@@ -208,4 +208,20 @@ class AryeoDeliveryEnablementTest extends TestCase
         $this->order->update(['listing_id' => null, 'request_id' => 'changed-request']);
         $this->postJson($url, ['lease_token' => $lease])->assertConflict();
     }
+
+    public function test_reconciling_pending_job_requires_live_request_evidence_without_inventing_inventory(): void
+    {
+        [$url, $lease, $observation, $id] = $this->acceptanceJob();
+        AryeoJob::findOrFail($id)->update(['status' => 'reconciling']);
+        $renew = '/api/integrations/aryeo/v1/jobs/'.$id.'/renew';
+        $this->postJson($url, ['lease_token' => $lease])->assertConflict();
+        $this->order->update(['inventory' => ['provider_status' => [...$observation, 'checked_at' => now()->subMinutes(3)->toIso8601String()]]]);
+        $this->postJson($renew, ['lease_token' => $lease, 'reconciliation' => 'not_delivered'])->assertConflict();
+        $this->assertSame('reconciling', AryeoJob::findOrFail($id)->status);
+        $this->order->update(['inventory' => ['provider_status' => $observation]]);
+        $this->postJson($renew, ['lease_token' => $lease, 'reconciliation' => 'not_delivered'])->assertOk()->assertJsonPath('status', 'running');
+        $this->postJson($url, ['lease_token' => $lease])->assertOk();
+        $this->assertNull($this->order->fresh()->inventory_checked_at);
+        $this->assertArrayNotHasKey('complete', $this->order->fresh()->inventory);
+    }
 }
