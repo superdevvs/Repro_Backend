@@ -8,6 +8,7 @@ use App\Models\VoiceIncomingOffer;
 use App\Models\VoiceMobileOffer;
 use App\Models\VoiceMobileSession;
 use App\Models\VoiceMobileTicket;
+use App\Services\TelnyxAi\VoiceNumberSettingsResolver;
 use App\Support\VoiceLocks;
 use Illuminate\Support\Str;
 
@@ -15,17 +16,21 @@ class VoiceMobileCallService
 {
     public function __construct(private VoiceMobileSessionService $sessions, private VoiceBrowserGateway $gateway, private VoiceMobileProof $proof) {}
 
-    public function outbound(VoiceMobileSession $s, string $to, string $key): array
+    public function outbound(VoiceMobileSession $s, string $to, string $key, ?string $requestedFrom = null): array
     {
-        return VoiceLocks::lock('voice-browser-user:'.$s->user_id, 60)->block(5, function () use ($s, $to, $key) {
+        return VoiceLocks::lock('voice-browser-user:'.$s->user_id, 60)->block(5, function () use ($s, $to, $key, $requestedFrom) {
             $s->refresh();
             abort_unless($this->sessions->authorized($s), 403);
-            $from = app(VoiceBrowserCallService::class)->mobileCallerNumber($s->user, $to);
             $ticket = VoiceMobileTicket::where('session_id', $s->id)->where('idempotency_key', strtolower($key))->first();
             if ($ticket) {
-                abort_unless($ticket->destination === $to, 409, 'This request key has different call details.');
+                abort_unless($ticket->destination === $to && ($requestedFrom === null
+                    || app(VoiceNumberSettingsResolver::class)->normalize($requestedFrom) === $ticket->caller_number), 409, 'This request key has different call details.');
                 abort_unless($ticket->expires_at->isFuture() && $ticket->state === 'pending', 409, 'This call attempt has expired or already started.');
+                // A retry keeps the original caller ID even if defaults change,
+                // but permission/source removal still invalidates that choice.
+                app(VoiceBrowserCallService::class)->mobileCallerNumber($s->user, $to, $ticket->caller_number);
             } else {
+                $from = app(VoiceBrowserCallService::class)->mobileCallerNumber($s->user, $to, $requestedFrom);
                 abort_unless(app(VoiceIncomingOfferService::class)->eligible($s->user), 409, 'You are already handling a call or are unavailable.');
                 abort_if(VoiceMobileTicket::whereHas('session', fn ($q) => $q->where('user_id', $s->user_id))->where('state', 'pending')->where('expires_at', '>', now())->exists(), 409, 'Another call is connecting.');
                 $ticket = VoiceMobileTicket::create(['session_id' => $s->id, 'idempotency_key' => strtolower($key), 'destination' => $to, 'caller_number' => $from, 'expires_at' => now()->addSeconds(45)]);

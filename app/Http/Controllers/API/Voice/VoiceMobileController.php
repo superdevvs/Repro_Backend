@@ -5,6 +5,7 @@ namespace App\Http\Controllers\API\Voice;
 use App\Http\Controllers\Controller;
 use App\Models\VoiceMobileSession;
 use App\Services\Voice\VoiceMobileCallService;
+use App\Services\Voice\VoiceMobileCallerIdService;
 use App\Services\Voice\VoiceMobileSessionService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -51,12 +52,24 @@ class VoiceMobileController extends Controller
         return $this->respond(fn () => $this->sessions->bootstrap($r->user(), $d));
     }
 
+    public function callerIds(Request $r, string $session): JsonResponse
+    {
+        $s = $this->owner($r, $session);
+
+        return $this->respond(function () use ($s) {
+            abort_unless($this->sessions->authorized($s), 403);
+
+            return app(VoiceMobileCallerIdService::class)->options($s->user);
+        });
+    }
+
     public function outbound(Request $r, string $session): JsonResponse
     {
         $s = $this->owner($r, $session);
-        $d = $r->validate(['to' => ['required', 'regex:/^\+[1-9][0-9]{6,14}$/'], 'idempotency_key' => ['required', 'uuid']]);
+        $d = $r->validate(['to' => ['required', 'regex:/^\+[1-9][0-9]{6,14}$/'],
+            'from' => ['nullable', 'string', 'regex:/^\+[1-9][0-9]{7,14}$/'], 'idempotency_key' => ['required', 'uuid']]);
 
-        return $this->respond(fn () => $this->calls->outbound($s, $d['to'], $d['idempotency_key']));
+        return $this->respond(fn () => $this->calls->outbound($s, $d['to'], $d['idempotency_key'], $d['from'] ?? null));
     }
 
     public function claim(Request $r, string $session, string $sdk): JsonResponse

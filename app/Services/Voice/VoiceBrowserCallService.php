@@ -164,16 +164,13 @@ class VoiceBrowserCallService
         return $browser->voiceCall->fresh();
     }
 
-    public function mobileCallerNumber(User $user, string $to): string
+    public function mobileCallerNumber(User $user, string $to, ?string $requestedFrom = null): string
     {
         abort_unless($this->sessions->canOperate($user), 403);
-        $from = $this->sourceNumber(null);
-        $line = app(VoiceLinePolicyService::class)->forNumber($from);
-        abort_if($line?->mode === 'sms_only', 422, 'This number is SMS-only.');
-        if ($line) {
-            abort_unless(app(VoiceLinePolicyService::class)->canAccess($user, new VoiceCall(['direction' => 'OUTBOUND', 'from_phone' => $from])), 403, 'You are not assigned to this caller ID.');
-        }
-        abort_unless(preg_match('/^\+[1-9]\d{7,14}$/', $to) && $to !== $from && ! $this->numbers->matching($to)->isNotEmpty(), 422, 'Dial an external customer number in international format.');
+        $from = app(VoiceMobileCallerIdService::class)->resolve($user, $requestedFrom);
+        abort_unless(preg_match('/^\+[1-9]\d{7,14}$/', $to) && $to !== $from
+            && $to !== $this->numbers->normalize((string) config('services.telnyx.from_number'))
+            && ! $this->numbers->matching($to)->isNotEmpty(), 422, 'Dial an external customer number in international format.');
         $this->assertOutboundAllowed($to);
 
         return $from;
@@ -193,7 +190,7 @@ class VoiceBrowserCallService
                 return VoiceBrowserCall::where('voice_call_id', $ticket->voice_call_id)->firstOrFail();
             }
             abort_unless($ticket->state === 'pending' && $ticket->expires_at->isFuture(), 409);
-            abort_unless($this->mobileCallerNumber($session->user, $ticket->destination) === $ticket->caller_number, 409);
+            abort_unless($this->mobileCallerNumber($session->user, $ticket->destination, $ticket->caller_number) === $ticket->caller_number, 409);
             abort_unless(app(VoiceIncomingOfferService::class)->eligible($session->user, null, $ticket->id), 409, 'You are already handling a call.');
 
             return LockedWrite::run(fn () => DB::transaction(function () use ($session, $ticket, $payload, $control) {

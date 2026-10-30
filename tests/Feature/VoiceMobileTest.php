@@ -49,6 +49,8 @@ class VoiceMobileTest extends TestCase
         Queue::fake();
         Http::preventStrayRequests();
         $this->staff = User::factory()->create(['role' => 'admin']);
+        \App\Models\VoiceLinePolicy::create(['phone_number' => '+12025550100', 'mode' => 'staff_voicemail',
+            'recipient_ids' => [$this->staff->id], 'recipient_roles' => [], 'timezone' => 'UTC', 'weekly_hours' => []]);
         $this->staff->withAccessToken($this->staff->createToken('isolated-native-voice-test')->accessToken);
         $this->actingAs($this->staff, 'sanctum');
         Http::fake(function ($r) {
