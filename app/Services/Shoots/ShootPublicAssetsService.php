@@ -200,11 +200,9 @@ class ShootPublicAssetsService
             $tourLinks['iguide_branded'] = $iguideUrl;
         }
 
-        // Do not return branded 3D destinations inside MLS/generic payloads.
-        // zillow_3d has no unbranded equivalent and neither the MLS tour pages
-        // nor the MLS 3D wrapper will open it, so leaving it here would make a
-        // preview advertise a walkthrough the page cannot show - and disclose to
-        // an MLS audience that a branded Zillow tour exists.
+        // MLS/generic pages may use Zillow's explicitly unbranded share link.
+        // A branded-only URL still fails closed rather than leaking attribution.
+        $zillowViewer = app(ZillowTourLinks::class)->viewer($tourLinks, $isBranded);
         if (! $isBranded) {
             unset(
                 $tourLinks['iguide_branded'],
@@ -248,6 +246,12 @@ class ShootPublicAssetsService
             $assets['shoot']['address'] = $shoot->address.' · '.$unit->label;
         }
         $assets['type'] = $type;
+        $assets['zillow_viewer'] = $zillowViewer;
+        if ($zillowViewer !== null) {
+            $tourLinks['zillow_3d'] = $zillowViewer['open_url'];
+        } else {
+            unset($tourLinks['zillow_3d']);
+        }
         $assets['property_details'] = $propertyDetails;
         $assets['iguide_tour_url'] = $iguideUrl;
         $assets['iguide_url'] = $iguideUrl;
