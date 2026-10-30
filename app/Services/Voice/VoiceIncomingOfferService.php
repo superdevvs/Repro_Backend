@@ -11,6 +11,9 @@ use App\Models\VoiceBrowserLeg;
 use App\Models\VoiceBrowserSession;
 use App\Models\VoiceCall;
 use App\Models\VoiceIncomingOffer;
+use App\Models\VoiceMobileOffer;
+use App\Models\VoiceMobileSession;
+use App\Models\VoiceMobileTicket;
 use App\Models\VoicePhoneOffer;
 use App\Models\VoicePushSubscription;
 use App\Models\VoiceStaffPhone;
@@ -49,6 +52,7 @@ class VoiceIncomingOfferService
         if ($push->configuration()['configured']) {
             $candidates = $candidates->merge(VoicePushSubscription::whereNull('revoked_at')->pluck('user_id'));
         }
+        $candidates = $candidates->merge(VoiceMobileSession::whereNull('revoked_at')->where('status', 'ready')->whereNotNull('push_token_hash')->where('registration_expires_at', '>', now())->pluck('user_id'));
         if ($policy) {
             // Keep the assigned group; reachability below also accepts an enrolled
             // browser that can be woken by push before connecting to answer.
@@ -65,6 +69,7 @@ class VoiceIncomingOfferService
         $call->update(['status' => 'ringing', 'metadata' => array_merge($call->metadata ?? [], ['incoming_offer_id' => $offer->id])]);
         $this->notify($offer);
         app(VoiceSipDeviceService::class)->offer($offer);
+        app(VoiceMobileCallService::class)->offer($offer);
         if (config('voice_calls.realtime_connection') !== 'sync') {
             ReconcileVoiceIncomingOffer::dispatch($offer->id)->delay(now()->addSeconds(8))->afterCommit();
             ReconcileVoiceIncomingOffer::dispatch($offer->id)->delay($offer->expires_at)->afterCommit();
@@ -73,14 +78,15 @@ class VoiceIncomingOfferService
         return true;
     }
 
-    public function eligible(User $user, ?int $exceptCall = null): bool
+    public function eligible(User $user, ?int $exceptCall = null, ?string $exceptMobileTicket = null): bool
     {
         if (! $this->sessions->canOperate($user) || ! ($this->phones->state($user)['available'])) {
             return false;
         }
 
-        return ! VoiceBrowserCall::where('owner_id', $user->id)->whereNotIn('state', ['failed', 'ended'])
-            ->when($exceptCall, fn ($q) => $q->where('voice_call_id', '!=', $exceptCall))->exists()
+        return ! VoiceMobileTicket::whereHas('session', fn ($q) => $q->where('user_id', $user->id))->where('state', 'pending')->where('expires_at', '>', now())->when($exceptMobileTicket, fn ($q) => $q->where('id', '!=', $exceptMobileTicket))->exists()
+            && ! VoiceBrowserCall::where('owner_id', $user->id)->whereNotIn('state', ['failed', 'ended'])
+                ->when($exceptCall, fn ($q) => $q->where('voice_call_id', '!=', $exceptCall))->exists()
             && ! VoiceBrowserLeg::where('user_id', $user->id)->whereNull('ended_at')
                 ->whereHas('browserCall', fn ($q) => $q->whereNotIn('state', ['failed', 'ended'])->when($exceptCall, fn ($q) => $q->where('voice_call_id', '!=', $exceptCall)))->exists();
     }
@@ -90,6 +96,9 @@ class VoiceIncomingOfferService
         $policies = app(VoiceLinePolicyService::class);
         $dashboardOnly = $policies->dashboardOnly($call);
         if ($dashboardOnly && $policies->registered($user)) {
+            return true;
+        }
+        if (app(VoiceMobileSessionService::class)->reachable($user)) {
             return true;
         }
         if (! $dashboardOnly && $this->phones->destination($user, $call)) {
@@ -175,6 +184,38 @@ class VoiceIncomingOfferService
         return array_merge(app(VoiceBrowserCallService::class)->state($offer->voiceCall->fresh(), $user), ['incoming_offer' => $this->present($offer->fresh(), $user)]);
     }
 
+    public function claimMobile(VoiceMobileOffer $mobile, string $sdkID): array
+    {
+        $offer = $mobile->incomingOffer;
+        $session = $mobile->session;
+        $user = $session->user;
+        $browser = VoiceLocks::lock('voice-incoming:'.$offer->id, 60)->block(5, fn () => VoiceLocks::lock('voice-browser-user:'.$user->id, 60)->block(5, function () use ($offer, $mobile, $session, $user, $sdkID) {
+            $offer->refresh();
+            $mobile->refresh();
+            $session->refresh();
+            abort_unless(app(VoiceMobileSessionService::class)->authorized($session), 403);
+            if ($mobile->state === 'accepted' && $mobile->sdk_call_id === $sdkID && $offer->status === 'claimed' && $offer->claim_key === 'mobile:'.$mobile->id) {
+                return VoiceBrowserCall::findOrFail($offer->browser_call_id);
+            }
+            $this->assertClaimable($offer, $user);
+            abort_unless($mobile->expires_at->isFuture() && $mobile->state === 'dialing' && $mobile->call_control_id && ! $mobile->sdk_call_id, 409, 'This mobile offer is no longer available.');
+            $browser = LockedWrite::run(fn () => DB::transaction(function () use ($offer, $user, $mobile, $sdkID) {
+                $won = VoiceMobileOffer::whereKey($mobile->id)->where('state', 'dialing')->whereNull('sdk_call_id')->where('expires_at', '>', now())
+                    ->update(['sdk_call_id' => $sdkID, 'state' => 'accepted', 'accepted_at' => now()]);
+                abort_unless($won === 1, 409, 'This mobile offer was cancelled.');
+                $mobile->refresh();
+                $browser = $this->commitClaim($offer, $user, null, 'mobile:'.$mobile->id, null, $mobile);
+
+                return $browser;
+            }));
+            $this->closeDevices($offer, 'claimed', true);
+
+            return $browser;
+        }));
+
+        return ['status' => 'claimed', 'voice_call_id' => $browser->voice_call_id, 'sdk_call_id' => $sdkID];
+    }
+
     public function cancel(VoiceIncomingOffer $offer, User $user, string $key): array
     {
         abort_unless($this->sessions->canOperate($user) && in_array($user->id, $offer->eligible_user_ids, true), 403);
@@ -221,13 +262,13 @@ class VoiceIncomingOfferService
         abort_unless($this->eligible($user), 409, 'You are unavailable or already handling a call.');
     }
 
-    private function commitClaim(VoiceIncomingOffer $offer, User $user, ?VoiceBrowserSession $session, string $key, ?VoicePhoneOffer $phone = null): VoiceBrowserCall
+    private function commitClaim(VoiceIncomingOffer $offer, User $user, ?VoiceBrowserSession $session, string $key, ?VoicePhoneOffer $phone = null, ?VoiceMobileOffer $mobile = null): VoiceBrowserCall
     {
-        return LockedWrite::run(fn () => DB::transaction(function () use ($offer, $user, $session, $key, $phone) {
+        return LockedWrite::run(fn () => DB::transaction(function () use ($offer, $user, $session, $key, $phone, $mobile) {
             $updated = VoiceIncomingOffer::whereKey($offer->id)->where('status', 'waiting')->where('expires_at', '>', now())
                 ->update(['status' => 'claimed', 'claimed_by_id' => $user->id, 'claimed_session_id' => $session?->id, 'claim_key' => $key, 'claimed_at' => now()]);
             abort_unless($updated === 1, 409, 'This call was answered elsewhere.');
-            $browser = app(VoiceBrowserCallService::class)->createClaimedIncoming($offer->voiceCall->fresh(), $user, $session, $offer->id, $phone);
+            $browser = app(VoiceBrowserCallService::class)->createClaimedIncoming($offer->voiceCall->fresh(), $user, $session, $offer->id, $phone, $mobile);
             $offer->refresh()->update(['browser_call_id' => $browser->id]);
             if ($phone) {
                 $phone->update(['state' => 'accepted', 'accepted_at' => now()]);
@@ -393,7 +434,8 @@ class VoiceIncomingOfferService
             ->where(function ($q): void {
                 $q->where('status', 'waiting')->orWhereNull('metadata->push_closed_at')
                     ->orWhere(fn ($expired) => $expired->where('status', 'expired')->whereNull('metadata->fallback_completed_at'))
-                    ->orWhereHas('phoneOffers', fn ($phones) => $phones->whereNotIn('state', ['accepted', 'cancelled', 'ended']));
+                    ->orWhereHas('phoneOffers', fn ($phones) => $phones->whereNotIn('state', ['accepted', 'cancelled', 'ended']))
+                    ->orWhereHas('mobileOffers', fn ($phones) => $phones->whereNotIn('state', ['accepted', 'cancelled', 'ended']));
             })->where('created_at', '>=', now()->subDay())->oldest()->limit(100)->get();
         foreach ($offers as $offer) {
             $phonesToDial = [];
@@ -473,6 +515,9 @@ class VoiceIncomingOfferService
 
     public function closeLosingPhones(VoiceIncomingOffer $offer): void
     {
+        if ($offer->status !== 'waiting') {
+            app(VoiceMobileCallService::class)->closeLosing($offer);
+        }
         foreach ($offer->phoneOffers()->whereNotIn('state', ['accepted', 'ended', 'cancelled'])
             ->when($offer->status === 'waiting', fn ($query) => $query->where('state', 'cancel_requested'))->get() as $phone) {
             $this->cancelPhone($phone);

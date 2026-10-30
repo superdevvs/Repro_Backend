@@ -31,13 +31,14 @@ class VoiceBrowserGateway
     }
 
     /** Durable provider command IDs make retries safe across ambiguous responses. */
-    public function command(string $key, string $path, array $payload = []): array
+    public function command(string $key, string $path, array $payload = [], bool $sensitive = false): array
     {
-        return VoiceLocks::lock('voice-browser-command:'.hash('sha256', $key), 40)->block(5, function () use ($key, $path, $payload): array {
+        return VoiceLocks::lock('voice-browser-command:'.hash('sha256', $key), 40)->block(5, function () use ($key, $path, $payload, $sensitive): array {
+            $stored = $sensitive ? ['sensitive_sha256' => hash('sha256', json_encode($payload, JSON_THROW_ON_ERROR))] : $payload;
             $command = LockedWrite::run(fn () => VoiceBrowserCommand::query()->firstOrCreate(
-                ['command_key' => $key], ['path' => $path, 'payload' => $payload],
+                ['command_key' => $key], ['path' => $path, 'payload' => $stored],
             ));
-            if ($command->path !== $path || $command->payload !== $payload) {
+            if ($command->path !== $path || $command->payload !== $stored) {
                 throw new RuntimeException('This phone operation was already used for different details.');
             }
             if ($command->state === 'succeeded') {

@@ -84,7 +84,8 @@ class VoiceLinePolicyService
         return VoiceBrowserSession::where('user_id', $user->id)->whereNull('revoked_at')->where('status', 'ready')->where('registered', true)
             ->where('heartbeat_at', '>=', now()->subSeconds(60))->where('expires_at', '>', now())->get()
             ->contains(fn ($session) => app(VoiceBrowserSessionService::class)->usable($session))
-            || app(VoiceSipDeviceService::class)->reachable($user);
+            || app(VoiceSipDeviceService::class)->reachable($user)
+            || app(VoiceMobileSessionService::class)->reachable($user);
     }
 
     public function canAccess(User $user, VoiceCall $call): bool

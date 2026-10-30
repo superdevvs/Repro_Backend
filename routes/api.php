@@ -191,6 +191,7 @@ Route::post('/webhooks/vapi', VapiWebhookController::class);
 Route::post('/voice/push/revoke', [App\Http\Controllers\API\Voice\VoicePushController::class, 'revoke'])->middleware('throttle:30,1');
 Route::middleware('auth:sanctum')->prefix('voice')->group(function () {
     require __DIR__.'/voice-push.php';
+    require __DIR__.'/voice-mobile.php';
 });
 
 Route::middleware(['auth:sanctum', 'permission:voice-calls', \App\Http\Middleware\VoiceLineAccess::class])->prefix('voice')->group(function () {
@@ -338,6 +339,9 @@ Route::post('public/payments/{token}/confirm', [StripePaymentController::class, 
 // Single canonical endpoint configured on the Messaging Profile; routes by data.event_type.
 Route::post('webhooks/telnyx/messaging', [TelnyxWebhookController::class, 'messaging'])
     ->name('webhooks.telnyx.messaging');
+
+Route::post('webhooks/telnyx/shared-mms/{message}', [TelnyxWebhookController::class, 'sharedStatus'])
+    ->whereUuid('message')->name('webhooks.telnyx.shared-mms');
 // Reserved for explicit per-message webhook_url overrides; not configured by default.
 Route::post('webhooks/telnyx/status', [TelnyxWebhookController::class, 'status'])
     ->name('webhooks.telnyx.status');
@@ -625,6 +629,8 @@ Route::middleware(['auth:sanctum', 'role:editor,admin,superadmin,editing_manager
     '/dashboard/schedule-summary',
     [DashboardController::class, 'scheduleSummary']
 );
+
+require __DIR__.'/mobile-notifications.php';
 
 // Role-based notifications endpoint - accessible to all authenticated users
 Route::middleware(['auth:sanctum'])->get(
@@ -1406,6 +1412,7 @@ Route::middleware(['auth:sanctum'])->prefix('messaging')->group(function () {
     });
 
     Route::middleware(['role:superadmin,admin,editing_manager,sales_rep,photographer', 'permission:messaging-sms,view'])->group(function () {
+        require __DIR__.'/shared-mms.php';
         Route::get('/sms/senders', [SmsMessagingController::class, 'senders']);
         Route::get('/sms/recipients', [SmsMessagingController::class, 'recipients']);
         Route::get('/sms/groups', [SmsMessagingController::class, 'groups']);

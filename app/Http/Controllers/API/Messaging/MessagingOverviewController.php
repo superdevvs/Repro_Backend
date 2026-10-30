@@ -34,7 +34,8 @@ class MessagingOverviewController extends Controller
             ->where('status', 'SCHEDULED')
             ->count();
 
-        $counts = $unreadCounts->forUser($userId, includeCalls: true);
+        $counts = $unreadCounts->forUser($userId, includeCalls: true,
+            notificationReadState: app(\App\Services\NotificationReadStateService::class)->get($request));
 
         $activeAutomations = AutomationRule::where('is_active', true)->count();
 
@@ -68,6 +69,7 @@ class MessagingOverviewController extends Controller
             'unread_sms_count' => $counts['sms'],
             'unread_email_count' => $counts['email'],
             'unread_call_count' => $counts['call'],
+            'unread_support_count' => $counts['support'],
             'unread_total' => $counts['total'],
             'unread_counts' => $counts,
             'active_automations' => $activeAutomations,

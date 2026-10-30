@@ -29,25 +29,30 @@ class MessagingBadgeCountsController extends Controller
         $canEmail = app(\App\Services\Messaging\DashboardMessagingPolicy::class)->canEmail($user);
         $canSms = $permissions->userCan($user, 'messaging-sms', 'view');
         $canCalls = $permissions->userCan($user, 'voice-calls', 'view');
+        $canSupport = $permissions->userCan($user, 'support', 'view');
 
-        if (! $canEmail && ! $canSms && ! $canCalls) {
+        if (! $canEmail && ! $canSms && ! $canCalls && ! $canSupport) {
             return response()->json([
                 'email' => 0,
                 'sms' => 0,
                 'call' => 0,
+                'support' => 0,
                 'total' => 0,
             ]);
         }
 
-        $counts = $unreadCounts->forUser($userId, includeCalls: $canCalls);
+        $counts = $unreadCounts->forUser($userId, includeCalls: $canCalls,
+            notificationReadState: app(\App\Services\NotificationReadStateService::class)->get($request));
 
         return response()->json([
             'email' => $canEmail ? $counts['email'] : 0,
             'sms' => $canSms ? $counts['sms'] : 0,
             'call' => $canCalls ? $counts['call'] : 0,
+            'support' => $canSupport ? $counts['support'] : 0,
             'total' => ($canEmail ? $counts['email'] : 0)
                 + ($canSms ? $counts['sms'] : 0)
-                + ($canCalls ? $counts['call'] : 0),
+                + ($canCalls ? $counts['call'] : 0)
+                + ($canSupport ? $counts['support'] : 0),
         ]);
     }
 }

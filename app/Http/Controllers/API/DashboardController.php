@@ -1091,8 +1091,9 @@ class DashboardController extends Controller
                 ->concat(app(\App\Services\Copilot\CopilotWatches::class)->notifications($user, self::NOTIFICATION_FEED_LIMIT))
                 ->sortByDesc(fn (array $item) => strtotime((string) ($item['timestamp'] ?? '')) ?: 0)->take(self::NOTIFICATION_FEED_LIMIT)->values();
 
-            $includeCalls = in_array($role, ['admin', 'superadmin', 'editing_manager', 'salesrep'], true);
-            $unreadCounts = app(UnreadCountService::class)->forUser($userId, includeCalls: $includeCalls);
+            $includeCalls = app(\App\Services\RolePermissionService::class)->userCan($user, 'voice-calls', 'view');
+            $unreadCounts = app(UnreadCountService::class)->forUser($userId, includeCalls: $includeCalls,
+                notificationReadState: app(\App\Services\NotificationReadStateService::class)->get($request));
 
             return response()->json([
                 'data' => [

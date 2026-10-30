@@ -24,7 +24,7 @@ class TelnyxWebhookHandler
                 'provider' => 'telnyx',
                 'event_type' => $eventType,
                 'normalized_type' => $this->normalizedType($eventType),
-                'raw_payload' => $payload,
+                'raw_payload' => VoiceMobileProof::redact($payload),
                 'received_at' => now(),
             ]
         );

@@ -23,6 +23,11 @@ class VoiceIncomingOffer extends Model
         return $this->belongsTo(User::class, 'claimed_by_id');
     }
 
+    public function mobileOffers()
+    {
+        return $this->hasMany(VoiceMobileOffer::class, 'incoming_offer_id');
+    }
+
     public function phoneOffers()
     {
         return $this->hasMany(VoicePhoneOffer::class, 'incoming_offer_id');

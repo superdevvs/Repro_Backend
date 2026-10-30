@@ -7,6 +7,7 @@ use App\Models\SupportTicketMessage;
 use App\Models\User;
 use App\Support\LockedWrite;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -132,15 +133,42 @@ class SupportTicketService
             return collect();
         }
 
-        return SupportTicketMessage::query()->with('ticket')
-            ->whereIn('support_ticket_id', $this->visible($user)->select('id'))
-            ->where('author_id', '!=', $user->id)
-            ->when(! $this->canManage($user), fn ($q) => $q->where('internal', false))
+        return $this->notificationMessages($user)->with('ticket')
             ->latest('id')->limit($limit)->get()->map(fn ($message) => [
                 'id' => 'support-'.$message->id, 'type' => 'system', 'action' => 'support_updated',
                 'message' => $message->ticket->reference().': '.($message->kind === 'opened' ? 'New support request' : 'Support request updated').'.',
                 'timestamp' => $message->created_at->toIso8601String(),
                 'actionUrl' => '/messaging/email/inbox?tab=support&ticket='.$message->support_ticket_id, 'actionLabel' => 'View request', 'shootId' => null,
             ]);
+    }
+
+    /** Count recent unread conversations within the notification receipt history. */
+    public function unreadCount(User $user, array $readState): int
+    {
+        if (! $user->isAccountEligibleForAuthentication() || ! Schema::hasTable('support_tickets')
+            || ! $this->permissions->userCan($user, 'support', 'view')) {
+            return 0;
+        }
+        $readMessageIds = [];
+        foreach (array_keys((array) ($readState['readIds'] ?? [])) as $id) {
+            if (preg_match('/\Asupport-([1-9][0-9]*)\z/', (string) $id, $match)) {
+                $readMessageIds[] = (int) $match[1];
+            }
+        }
+        $query = $this->notificationMessages($user)->whereNotIn('id', $readMessageIds)
+            ->where('created_at', '>', app(NotificationReadStateService::class)->unreadHistoryFloor($readState));
+        if (is_numeric($readState['lastSeenAt'] ?? null)) {
+            $query->where('created_at', '>', Carbon::createFromTimestampMs((int) $readState['lastSeenAt']));
+        }
+
+        return $query->distinct()->count('support_ticket_id');
+    }
+
+    private function notificationMessages(User $user): Builder
+    {
+        return SupportTicketMessage::query()
+            ->whereIn('support_ticket_id', $this->visible($user)->select('id'))
+            ->where('author_id', '!=', $user->id)
+            ->when(! $this->canManage($user), fn ($q) => $q->where('internal', false));
     }
 }

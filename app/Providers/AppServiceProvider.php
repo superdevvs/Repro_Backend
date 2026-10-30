@@ -52,6 +52,12 @@ class AppServiceProvider extends ServiceProvider
         Sanctum::usePersonalAccessTokenModel(PersonalAccessToken::class);
         \App\Models\User::observe(\App\Observers\UserEmailVerificationObserver::class);
 
+        \App\Models\Message::observe(\App\Observers\MobileNotificationMessageObserver::class);
+        \App\Models\VoiceVoicemail::observe(\App\Observers\MobileNotificationVoicemailObserver::class);
+        \App\Models\SupportTicketMessage::observe(\App\Observers\MobileNotificationSupportObserver::class);
+        \App\Models\ShootActivityLog::observe(\App\Observers\MobileNotificationActivityObserver::class);
+        \App\Models\UserActivityLog::observe(\App\Observers\MobileNotificationActivityObserver::class);
+
         // Explicit route model binding for ShootFile
         Route::model('file', ShootFile::class);
         Shoot::observe(ShootObserver::class);

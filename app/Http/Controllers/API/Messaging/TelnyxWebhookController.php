@@ -32,6 +32,10 @@ class TelnyxWebhookController extends Controller
         $payload = $request->json()->all();
         $eventType = (string) data_get($payload, 'data.event_type', '');
 
+        if ($group = app(\App\Services\Messaging\SharedMmsService::class)->webhook($payload)) {
+            return response()->json($group);
+        }
+
         return match ($eventType) {
             'message.received' => $this->handleInbound($payload),
             'message.sent', 'message.finalized', 'message.failed' => $this->handleStatus($payload, $eventType),
@@ -51,11 +55,23 @@ class TelnyxWebhookController extends Controller
         $payload = $request->json()->all();
         $eventType = (string) data_get($payload, 'data.event_type', '');
 
+        if ($group = app(\App\Services\Messaging\SharedMmsService::class)->webhook($payload)) {
+            return response()->json($group);
+        }
+
         if ($eventType === '') {
             return $this->ignored($eventType);
         }
 
         return $this->handleStatus($payload, $eventType);
+    }
+
+    public function sharedStatus(Request $request, string $message): JsonResponse
+    {
+        if (! $this->isValidTelnyxRequest($request)) {
+            return response()->json(['message' => 'Invalid Telnyx signature.'], 403);
+        }
+        return response()->json(app(\App\Services\Messaging\SharedMmsService::class)->webhook($request->json()->all(), $message) ?? ['status' => 'ignored']);
     }
 
     /**

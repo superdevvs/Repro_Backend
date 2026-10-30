@@ -47,6 +47,7 @@ class MessagingSafetyServiceProvider extends ServiceProvider
         // MessagingService type-hints the concrete provider classes, so the
         // fakes extend/implement them and are bound in their place.
         $this->app->bind(TelnyxSmsProvider::class, FakeSmsProvider::class);
+        $this->app->bind(\App\Services\Messaging\TelnyxSharedMmsGateway::class, \App\Services\Messaging\Providers\FakeSharedMmsGateway::class);
         $this->app->bind(CakemailProvider::class, FakeCakemailProvider::class);
         $this->app->bind(ResendProvider::class, FakeResendProvider::class);
         $this->app->bind(LocalSmtpProvider::class, FakeLocalSmtpProvider::class);
