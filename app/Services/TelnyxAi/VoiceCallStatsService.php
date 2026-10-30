@@ -2,12 +2,15 @@
 
 namespace App\Services\TelnyxAi;
 
+use App\Models\User;
 use App\Models\VoiceCall;
+use App\Services\Voice\VoiceLinePolicyService;
 use Carbon\CarbonImmutable;
+use Illuminate\Database\Eloquent\Builder;
 
 class VoiceCallStatsService
 {
-    public function stats(string $range = '7d'): array
+    public function stats(User $user, string $range = '7d'): array
     {
         $days = match ($range) {
             'today' => 1,
@@ -19,7 +22,8 @@ class VoiceCallStatsService
             ? now()->startOfDay()
             : now()->subDays($days - 1)->startOfDay();
 
-        $query = VoiceCall::query()->whereBetween('created_at', [$start, now()]);
+        $visibleCalls = $this->visibleCalls($user);
+        $query = (clone $visibleCalls)->whereBetween('created_at', [$start, now()]);
         $total = (clone $query)->count();
         $answered = (clone $query)->whereNotNull('answered_at')->count();
         $missed = (clone $query)
@@ -38,9 +42,9 @@ class VoiceCallStatsService
         return [
             'range' => $range,
             'cards' => [
-                ['key' => 'total_calls', 'label' => 'Total Calls', 'value' => $total, 'sparkline' => $this->sparkline($days)],
-                ['key' => 'answered', 'label' => 'Answered', 'value' => $answered, 'sparkline' => $this->sparkline($days, answered: true)],
-                ['key' => 'missed', 'label' => 'Missed', 'value' => $missed, 'sparkline' => $this->sparkline($days, missed: true)],
+                ['key' => 'total_calls', 'label' => 'Total Calls', 'value' => $total, 'sparkline' => $this->sparkline($visibleCalls, $days)],
+                ['key' => 'answered', 'label' => 'Answered', 'value' => $answered, 'sparkline' => $this->sparkline($visibleCalls, $days, answered: true)],
+                ['key' => 'missed', 'label' => 'Missed', 'value' => $missed, 'sparkline' => $this->sparkline($visibleCalls, $days, missed: true)],
                 ['key' => 'avg_duration', 'label' => 'Avg Duration', 'value' => $avgDuration, 'suffix' => 'sec', 'sparkline' => []],
                 ['key' => 'ai_handled', 'label' => 'AI Handled', 'value' => $aiHandled, 'sparkline' => []],
                 ['key' => 'needs_follow_up', 'label' => 'Needs Follow-up', 'value' => $needsFollowUp, 'sparkline' => []],
@@ -54,7 +58,7 @@ class VoiceCallStatsService
      *
      * @return array<string, mixed>
      */
-    public function insights(string $range = '7d'): array
+    public function insights(User $user, string $range = '7d'): array
     {
         $days = match ($range) {
             'today' => 1,
@@ -68,10 +72,11 @@ class VoiceCallStatsService
         $previousStart = $currentStart->copy()->subDays($days);
         $previousEnd = $currentStart->copy()->subSecond();
 
-        $current = $this->insightWindow($currentStart, now());
-        $previous = $this->insightWindow($previousStart, $previousEnd);
+        $visibleCalls = $this->visibleCalls($user);
+        $current = $this->insightWindow($visibleCalls, $currentStart, now());
+        $previous = $this->insightWindow($visibleCalls, $previousStart, $previousEnd);
 
-        $intents = VoiceCall::query()
+        $intents = (clone $visibleCalls)
             ->whereBetween('created_at', [$currentStart, now()])
             ->whereNotNull('intent')
             ->where('intent', '!=', '')
@@ -91,7 +96,7 @@ class VoiceCallStatsService
         $volume = [];
         for ($i = $days - 1; $i >= 0; $i--) {
             $day = CarbonImmutable::now()->subDays($i);
-            $dayQuery = VoiceCall::query()->whereDate('created_at', $day->toDateString())->where('created_at', '<=', now());
+            $dayQuery = (clone $visibleCalls)->whereDate('created_at', $day->toDateString())->where('created_at', '<=', now());
             $team = (clone $dayQuery)->where(function ($q): void {
                 $q->where('handled_by', 'human')->orWhere('handled_by', 'mixed');
             })->whereNotNull('answered_at')->count();
@@ -159,9 +164,9 @@ class VoiceCallStatsService
      *   handoffs_needing_callback: int
      * }
      */
-    private function insightWindow($start, $end): array
+    private function insightWindow(Builder $visibleCalls, $start, $end): array
     {
-        $query = VoiceCall::query()->whereBetween('created_at', [$start, $end]);
+        $query = (clone $visibleCalls)->whereBetween('created_at', [$start, $end]);
         $total = (clone $query)->count();
         $inboundQuery = (clone $query)->where('direction', 'INBOUND');
         $inbound = (clone $inboundQuery)->count();
@@ -188,9 +193,11 @@ class VoiceCallStatsService
                     });
             });
         })->count();
-        $recovered = (clone $missedQuery)->where(function ($callback): void {
-            $callback->whereHas('scheduledCallback.resultVoiceCall', fn ($result) => $result->whereNotNull('answered_at'))
-                ->orWhereHas('scheduledCalls.resultVoiceCall', fn ($result) => $result->whereNotNull('answered_at'));
+        $visibleAnsweredResult = fn (Builder $result) => $result->whereNotNull('answered_at')
+            ->whereIn($result->qualifyColumn('id'), (clone $visibleCalls)->select('voice_calls.id'));
+        $recovered = (clone $missedQuery)->where(function ($callback) use ($visibleAnsweredResult): void {
+            $callback->whereHas('scheduledCallback.resultVoiceCall', $visibleAnsweredResult)
+                ->orWhereHas('scheduledCalls.resultVoiceCall', $visibleAnsweredResult);
         })->count();
         $handoffQuery = (clone $query)->where(function ($q): void {
             $q->where('status', 'transferred')->orWhere('disposition', 'transferred')
@@ -250,12 +257,21 @@ class VoiceCallStatsService
         return $absolute ? (int) round($delta) : round($delta, 1);
     }
 
-    private function sparkline(int $days, ?array $statuses = null, bool $answered = false, bool $missed = false): array
+    private function visibleCalls(User $user): Builder
+    {
+        $query = VoiceCall::query();
+        // Every aggregate and comparison window must use the list's exact visibility rules.
+        app(VoiceLinePolicyService::class)->scope($query, $user);
+
+        return $query;
+    }
+
+    private function sparkline(Builder $visibleCalls, int $days, ?array $statuses = null, bool $answered = false, bool $missed = false): array
     {
         $points = [];
         for ($i = $days - 1; $i >= 0; $i--) {
             $day = CarbonImmutable::now()->subDays($i);
-            $query = VoiceCall::query()
+            $query = (clone $visibleCalls)
                 ->whereDate('created_at', $day->toDateString())->where('created_at', '<=', now());
 
             if ($statuses !== null) {

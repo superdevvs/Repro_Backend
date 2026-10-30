@@ -142,12 +142,12 @@ class VoiceCallController extends Controller
 
     public function stats(Request $request, VoiceCallStatsService $stats): JsonResponse
     {
-        return response()->json($stats->stats((string) $request->query('range', '7d')));
+        return response()->json($stats->stats($request->user(), (string) $request->query('range', '7d')));
     }
 
     public function insights(Request $request, VoiceCallStatsService $stats): JsonResponse
     {
-        return response()->json($stats->insights((string) $request->query('range', '7d')));
+        return response()->json($stats->insights($request->user(), (string) $request->query('range', '7d')));
     }
 
     public function wrapUp(Request $request, VoiceCall $call, VoiceWrapUpService $wrapUp): JsonResponse
