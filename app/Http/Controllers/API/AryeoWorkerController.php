@@ -34,6 +34,37 @@ class AryeoWorkerController extends Controller
             'discover_all_clients' => (bool) $c->discover_all_clients, 'lease_seconds' => 90, 'poll_seconds' => 15]);
     }
 
+    public function deliveryGrants(Request $r, AryeoDiscovery $discovery)
+    {
+        $connection = $this->connection($r);
+        $enabled = $connection->enabled && $connection->processing_enabled;
+        $grants = collect();
+        if ($enabled) {
+            $shoots = $this->catalog->query($connection)->whereIn('id', $connection->delivery_shoot_ids ?? [])
+                ->with(['client', 'units'])->get()->keyBy('id');
+            $grants = AryeoRequest::where('connection_id', $connection->id)->whereIn('shoot_id', $shoots->keys())
+                ->where('match_status', 'matched')->orderBy('id')->get()
+                ->filter(fn ($order) => $discovery->verifiedForDelivery($order, $shoots[$order->shoot_id]))
+                ->map(fn ($order) => ['record_id' => $order->id, 'source_id' => $order->source_id, 'request_id' => $order->request_id,
+                    'listing_id' => $order->listing_id, 'shoot_id' => $order->shoot_id, 'unit_id' => $order->unit_id,
+                    'client_id' => $shoots[$order->shoot_id]->client_id,
+                    'identity' => $this->catalog->identity($shoots[$order->shoot_id]), 'discovery' => $order->discovery,
+                    'match_confirmed' => $discovery->hasConfirmedMatch($order, $shoots[$order->shoot_id], $order->discovery)])->values();
+        }
+
+        return response()->json(['enabled' => $enabled, 'checked_at' => now()->utc()->toIso8601String(), 'grants' => $grants])
+            ->header('Cache-Control', 'private, no-store');
+    }
+
+    public function authorizeRequestAcceptance(Request $r, string $job)
+    {
+        $r->validate(['lease_token' => 'required|string']);
+        $connection = $this->connection($r);
+        $row = $this->jobs->leased($connection, $job, $r->string('lease_token')->toString());
+
+        return response()->json($this->jobs->authorizeRequestAcceptance($row, $connection))->header('Cache-Control', 'private, no-store');
+    }
+
     public function shoots(Request $r)
     {
         $data = $r->validate(['search' => 'nullable|string|max:200', 'after_id' => 'nullable|integer|min:0']);

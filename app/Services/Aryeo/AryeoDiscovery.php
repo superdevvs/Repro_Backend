@@ -100,6 +100,24 @@ class AryeoDiscovery
         return true;
     }
 
+    public function verifiedForDelivery(AryeoRequest $order, Shoot $shoot): bool
+    {
+        if ($order->match_status !== 'matched' || $order->shoot_id !== $shoot->id || ! $order->request_id
+            || ! filter_var($order->discovery['requester_email'] ?? null, FILTER_VALIDATE_EMAIL)
+            || $shoot->client?->role !== 'client'
+            || ($shoot->units()->count() > 1 && ! $order->unit_id)
+            || ($order->unit_id && ! $shoot->units()->whereKey($order->unit_id)->exists())
+            || ! $this->matchesStreet($shoot, $order->discovery)
+            || (! empty($order->discovery['scheduled_date']) && $order->discovery['scheduled_date'] !== $shoot->scheduled_date?->format('Y-m-d'))
+            || (! empty($order->discovery['unit_label']) && (! $order->unit_id
+                || strtolower(trim($order->discovery['unit_label'])) !== strtolower(trim((string) $shoot->units()->find($order->unit_id)?->label))))) {
+            return false;
+        }
+
+        return $this->hasConfirmedMatch($order, $shoot, $order->discovery)
+            || strtolower(trim($order->discovery['requester_email'])) === strtolower(trim((string) $shoot->client->email));
+    }
+
     public function matchesStreet(Shoot $shoot, array $data): bool
     {
         foreach (['city', 'state', 'zip'] as $key) {

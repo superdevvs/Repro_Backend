@@ -27,6 +27,47 @@ php artisan aryeo:connection 'Mac mini Aryeo' --enable-processing --allow-shoots
 
 This example is a command template, not approval to deliver shoot 115. Enabling requires selected shoot IDs belonging to allowed clients. The Mac must acknowledge `dashboard_jobs` mode. Disable both Gmail-triggered processing and watchdog processing outside a claimed dashboard job, while leaving discovery enabled.
 
+### Enabling a newly matched shoot in Tours
+
+Once the connection is provisioned and processing is enabled, Dashboard admins
+and superadmins can complete delivery setup directly in Tours. **Connect client
+& enable delivery** explains that it connects the booked client's released media
+to Aryeo and enables only this shoot for delivery. For an already connected
+client, the action is **Enable delivery**. The action calls
+`POST /api/shoots/{shoot}/aryeo/requests/{order}/enable-delivery` with
+`confirm_access:true` and the selected `unit_id` (or null).
+
+The server revalidates the current matched request, verified requester, exact
+property and selected unit. An alternate coordinator requires the existing
+staff-confirmed identity binding. It appends the one client and selected shoot
+to their existing allowlists without rotating credentials, replacing other
+grants, or unpausing globally disabled processing. The action is idempotent,
+records its staff actor in shoot activity, and never queues a delivery.
+**Process & deliver** remains a separate explicit action with all release,
+inventory, duplicate-delivery and execution-lease checks intact. A ready media
+manifest with missing delivery permissions is labelled **Delivery setup
+required**, rather than **Ready to process**.
+
+`GET /api/integrations/aryeo/v1/delivery-grants` is the authenticated worker's
+current authorization feed, with `Cache-Control: private, no-store`. It returns
+`{enabled,checked_at,grants}`. Each grant includes `record_id`, `source_id`,
+`request_id`, nullable `listing_id`, `shoot_id`, `unit_id`, `client_id`, the
+canonical `identity`, verified `discovery`, and current `match_confirmed` flag.
+Only a client-and-shoot allowlisted request with a still-valid identity appears;
+processing pause, revoked shoot access or reassignment removes the grant. This
+feed does not itself grant delivery or accept a pending request.
+
+New requests may be queued before Aryeo has created a listing. After claiming
+the job, the worker must verify the exact live pending request, publish its fresh
+provider observation, then call `POST /jobs/{job}/authorize-request-acceptance`
+under the worker API with its lease token. This checks the current running lease,
+shoot permission, unchanged identity, requirements and approved paid manifest,
+absent listing/receipt, and pending observation less than two minutes old. Only
+then may it accept the verified request. An uncertain acceptance must reconcile
+the destination before retrying. After obtaining the actual listing ID, refresh
+the full item inventory and use the existing delivery authorization gate. Never
+fabricate an empty complete inventory to make a new request executable.
+
 ## Request discovery before media is ready
 
 Request discovery is independent of upload and delivery eligibility. To allow an

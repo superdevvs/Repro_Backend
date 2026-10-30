@@ -122,7 +122,7 @@ class AryeoCatalog
             ? ($deliverableLines->isNotEmpty() && $deliverableLines->every($unlocked))
             : ($wholeReleased && ! $unit);
         if ($allLinksReleased) {
-            foreach (['zillow_3d', 'matterport_branded', 'matterport_mls', 'iguide_branded', 'iguide_mls', 'video_link', 'video_branded', 'video_mls'] as $key) {
+            foreach (['zillow_3d', 'matterport_branded', 'matterport_mls', 'iguide_branded', 'iguide_mls'] as $key) {
                 $url = $links[$key] ?? null;
                 if (is_string($url) && filter_var($url, FILTER_VALIDATE_URL) && str_starts_with($url, 'https://')) {
                     $tours[] = ['id' => $key, 'url' => $url];

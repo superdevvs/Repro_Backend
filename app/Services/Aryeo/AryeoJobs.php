@@ -94,6 +94,41 @@ class AryeoJobs
         return $job;
     }
 
+    public function authorizeRequestAcceptance(AryeoJob $job, AryeoConnection $connection): array
+    {
+        abort_unless($job->status === 'running' && $connection->enabled && $connection->processing_enabled
+            && data_get($connection->capabilities, 'processing_mode') === 'dashboard_jobs'
+            && data_get($connection->capabilities, 'shoot_executor') === true
+            && in_array((int) $job->snapshot['shoot_id'], $connection->delivery_shoot_ids ?? [], true),
+            409, 'Request acceptance is not enabled for this running job.');
+        $order = AryeoRequest::where('connection_id', $connection->id)->findOrFail($job->request_record_id);
+        $shoot = $this->catalog->shoot($connection, $job->snapshot['shoot_id']);
+        abort_unless(! $order->listing_id && empty($job->snapshot['listing_id']) && ! $job->receipt
+            && ($job->steps['delivery'] ?? '') !== 'success', 409, 'Reconcile the existing listing or receipt before accepting a request.');
+        abort_unless(app(AryeoDiscovery::class)->verifiedForDelivery($order, $shoot)
+            && $order->request_id === $job->snapshot['request_id'] && $order->source_id === $job->snapshot['source_id']
+            && $order->unit_id === $job->snapshot['unit_id']
+            && ($order->discovery['required'] ?? null) === $job->snapshot['required']
+            && $this->catalog->identity($shoot) === $job->snapshot['identity'], 409, 'Request identity or requirements changed.');
+        $status = $order->inventory['provider_status'] ?? [];
+        $recent = false;
+        try {
+            $checked = ! empty($status['checked_at']) ? \Illuminate\Support\Carbon::parse($status['checked_at']) : null;
+            $recent = $checked?->gt(now()->subMinutes(2)) && $checked->lte(now()->addMinute());
+        } catch (\Throwable) {
+            // Malformed observations never authorize an external action.
+        }
+        abort_unless($recent && ($status['origin'] ?? null) === 'aryeo_provider'
+            && ($status['delivery_status'] ?? null) === 'pending' && empty($status['listing_id'])
+            && ($status['request_id'] ?? null) === $order->request_id
+            && strtolower(trim($status['requester_email'] ?? '')) === strtolower(trim($order->discovery['requester_email'])),
+            409, 'Read the exact pending Aryeo request again before accepting it.');
+        $ready = $this->catalog->readiness($shoot, $order->unit_id, $order->discovery['required'] ?? null);
+        abort_unless($ready['eligible'] && $ready['media_version'] === $job->media_version, 409, 'Readiness or approved media changed.');
+
+        return $ready;
+    }
+
     public function authorizeDelivery(AryeoJob $job, AryeoConnection $connection): array
     {
         abort_unless($job->status === 'running' && $connection->processing_enabled

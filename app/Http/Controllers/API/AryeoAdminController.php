@@ -7,6 +7,7 @@ use App\Models\AryeoConnection;
 use App\Models\AryeoJob;
 use App\Models\AryeoRequest;
 use App\Models\Shoot;
+use App\Models\ShootActivityLog;
 use App\Services\Aryeo\AryeoCatalog;
 use App\Services\Aryeo\AryeoDiscovery;
 use App\Services\Aryeo\AryeoJobs;
@@ -84,7 +85,11 @@ class AryeoAdminController extends Controller
                 'discovery_only' => ! in_array((int) $shoot->client_id, $c->client_ids ?? [], true),
                 'shoot_enabled' => in_array((int) $shoot->client_id, $c->client_ids ?? [], true) && in_array((int) $shoot->id, $c->delivery_shoot_ids ?? [], true),
                 'executor_ready' => data_get($c->capabilities, 'processing_mode') === 'dashboard_jobs' && data_get($c->capabilities, 'shoot_executor') === true])->values(),
-            'orders' => $orders->map(fn ($o) => [...$o->toArray(), 'readiness' => $this->catalog->readiness($shoot, $unit, $o->discovery['required'] ?? null),
+            'orders' => $orders->map(fn ($o) => [...$o->toArray(),
+                'delivery_setup' => ['can_enable' => in_array($r->user()->role, ['admin', 'superadmin'], true) && app(AryeoDiscovery::class)->verifiedForDelivery($o, $shoot),
+                    'client_name' => $shoot->client?->name,
+                    'client_access_required' => ! in_array((int) $shoot->client_id, $connections->firstWhere('id', $o->connection_id)?->client_ids ?? [], true)],
+                'readiness' => $this->catalog->readiness($shoot, $unit, $o->discovery['required'] ?? null),
                 'jobs' => AryeoJob::where('request_record_id', $o->id)->latest()->limit(10)->get()]),
             'unmatched' => $unmatched->map(fn ($o) => ['id' => $o->id, 'source_id' => $o->source_id, 'address' => $o->discovery['address'],
                 'requester_email' => $o->discovery['requester_email'] ?? null, 'requester_name' => $o->discovery['requester_name'] ?? null,
@@ -116,6 +121,35 @@ class AryeoAdminController extends Controller
 
             return $record;
         }), 'aryeo.match'));
+    }
+
+    public function enableDelivery(Request $r, int $shoot, int $order)
+    {
+        abort_unless(in_array($r->user()->role, ['admin', 'superadmin'], true), 403);
+        $r->validate(['confirm_access' => 'required|accepted', 'unit_id' => 'nullable|integer']);
+        $shoot = $this->shoot($r, $shoot);
+        $unit = $r->filled('unit_id') ? $r->integer('unit_id') : null;
+        $actorId = $r->user()->id;
+
+        return response()->json(LockedWrite::run(fn () => DB::transaction(function () use ($shoot, $order, $unit, $actorId) {
+            $shoot->refresh()->load('client');
+            $record = AryeoRequest::whereIn('connection_id', $this->connections($shoot)->pluck('id'))
+                ->where('shoot_id', $shoot->id)->findOrFail($order);
+            abort_unless($record->unit_id === $unit && app(AryeoDiscovery::class)->verifiedForDelivery($record, $shoot),
+                409, 'Confirm the current request, client and selected unit before enabling delivery.');
+            $connection = AryeoConnection::findOrFail($record->connection_id);
+            abort_unless($connection->enabled && $connection->processing_enabled, 409, 'Delivery is paused for this connection.');
+            $clients = array_values(array_unique([...array_map('intval', $connection->client_ids ?? []), (int) $shoot->client_id]));
+            $shoots = array_values(array_unique([...array_map('intval', $connection->delivery_shoot_ids ?? []), (int) $shoot->id]));
+            if ($clients !== $connection->client_ids || $shoots !== $connection->delivery_shoot_ids) {
+                $connection->update(['client_ids' => $clients, 'delivery_shoot_ids' => $shoots]);
+                ShootActivityLog::create(['shoot_id' => $shoot->id, 'user_id' => $actorId, 'action' => 'aryeo_delivery_enabled',
+                    'description' => 'Aryeo client connection and delivery enabled for this shoot',
+                    'metadata' => ['connection_id' => $connection->id, 'request_record_id' => $record->id, 'client_id' => $shoot->client_id]]);
+            }
+
+            return ['connection_id' => $connection->id, 'client_id' => $shoot->client_id, 'shoot_id' => $shoot->id, 'shoot_enabled' => true];
+        }), 'aryeo.enable-delivery'));
     }
 
     public function process(Request $r, int $shoot, int $order)

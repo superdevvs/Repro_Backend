@@ -7,6 +7,7 @@ use Illuminate\Support\Facades\Route;
 
 Route::prefix('integrations/aryeo/v1')->middleware([AuthenticateAryeoWorker::class, 'throttle:120,1'])->group(function () {
     Route::post('heartbeat', [Worker::class, 'heartbeat']);
+    Route::get('delivery-grants', [Worker::class, 'deliveryGrants']);
     Route::get('shoots', [Worker::class, 'shoots']);
     Route::get('shoots/{shoot}', [Worker::class, 'show'])->whereNumber('shoot');
     Route::get('shoots/{shoot}/readiness', [Worker::class, 'readiness'])->whereNumber('shoot');
@@ -22,12 +23,14 @@ Route::prefix('integrations/aryeo/v1')->middleware([AuthenticateAryeoWorker::cla
     Route::get('jobs/{job}', [Worker::class, 'job'])->whereUuid('job');
     Route::post('jobs/{job}/renew', [Worker::class, 'renew'])->whereUuid('job');
     Route::post('jobs/{job}/authorize', [Worker::class, 'authorize'])->whereUuid('job');
+    Route::post('jobs/{job}/authorize-request-acceptance', [Worker::class, 'authorizeRequestAcceptance'])->whereUuid('job');
     Route::post('jobs/{job}/result', [Worker::class, 'result'])->whereUuid('job');
     Route::post('jobs/{job}/assets/{asset}/download', [Worker::class, 'download'])->whereUuid('job')->whereNumber('asset');
 });
 Route::prefix('shoots/{shoot}/aryeo')->whereNumber('shoot')->middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager', 'throttle:120,1'])->group(function () {
     Route::get('/', [Admin::class, 'panel']);
     Route::post('requests/{order}/match', [Admin::class, 'match'])->whereNumber('order');
+    Route::post('requests/{order}/enable-delivery', [Admin::class, 'enableDelivery'])->whereNumber('order');
     Route::post('requests/{order}/process', [Admin::class, 'process'])->whereNumber('order');
     Route::post('jobs/{job}/retry', [Admin::class, 'retry'])->whereUuid('job');
 });
