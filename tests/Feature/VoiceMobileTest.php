@@ -228,6 +228,60 @@ class VoiceMobileTest extends TestCase
         $this->claim($s, $o)->assertStatus(409);
     }
 
+    public function test_terminal_webhook_refetches_a_claim_that_wins_after_offer_lookup(): void
+    {
+        $s = $this->bootstrap();
+        $o = $this->incoming($s);
+        $sdk = (string) Str::uuid();
+        $claimed = false;
+
+        // Pause the webhook immediately after its offer lookup and commit a real
+        // claim. The webhook still holds the pre-claim model when it resumes.
+        $events = VoiceMobileOffer::getEventDispatcher();
+        VoiceMobileOffer::setEventDispatcher(clone $events);
+        VoiceMobileOffer::retrieved(function (VoiceMobileOffer $loaded) use ($s, $o, $sdk, &$claimed): void {
+            if ($claimed || $loaded->id !== $o->id) {
+                return;
+            }
+            $claimed = true;
+            $this->claim($s, $loaded, $sdk)->assertOk();
+            $this->assertSame('dialing', $loaded->state);
+        });
+        try {
+            $result = app(VoiceBrowserCallService::class)->handleWebhook(['data' => [
+                'id' => (string) Str::uuid(), 'event_type' => 'call.hangup',
+                'payload' => ['connection_id' => 'server', 'call_control_id' => $o->call_control_id],
+            ]]);
+        } finally {
+            VoiceMobileOffer::setEventDispatcher($events);
+        }
+
+        $this->assertTrue($claimed);
+        $this->assertSame('accepted', $o->fresh()->state);
+        $this->assertSame('processed', $result['status']);
+        $browser = \App\Models\VoiceBrowserCall::findOrFail($o->incomingOffer->fresh()->browser_call_id);
+        $this->assertSame('failed', $browser->state);
+        $this->assertSame('ended', $browser->legs()->where('role', 'agent')->firstOrFail()->state);
+    }
+
+    public function test_terminal_webhook_before_claim_prevents_a_bridge(): void
+    {
+        $s = $this->bootstrap();
+        foreach (['call.hangup', 'call.ended', 'call.failed'] as $type) {
+            $o = $this->incoming($s);
+            $result = app(VoiceBrowserCallService::class)->handleWebhook(['data' => [
+                'id' => (string) Str::uuid(), 'event_type' => $type,
+                'payload' => ['connection_id' => 'server', 'call_control_id' => $o->call_control_id],
+            ]]);
+
+            $this->assertSame('processed_mobile_offer', $result['status']);
+            $this->assertSame('ended', $o->fresh()->state);
+            $this->claim($s, $o)->assertStatus(409);
+            $this->assertSame('waiting', $o->incomingOffer->fresh()->status);
+        }
+        $this->assertSame(0, \App\Models\VoiceBrowserCall::count());
+    }
+
     public function test_revoke_denies_new_calls_before_provider_cleanup_and_retry_is_safe(): void
     {
         $s = $this->bootstrap();

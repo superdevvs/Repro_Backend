@@ -231,22 +231,34 @@ class VoiceMobileCallService
         if (! $o) {
             return null;
         }
-        if ($o->call_control_id && $o->call_control_id !== $control) {
-            return ['status' => 'ignored_mobile_offer_identity'];
-        }
-        if (! $o->call_control_id && $control !== '') {
-            $o->update(['call_control_id' => $control]);
-        }
-        if ($o->state === 'accepted') {
-            return null;
-        } // The shared human bridge now owns this exact control ID.
-        if (in_array($type, ['call.hangup', 'call.ended', 'call.failed'], true)) {
-            $o->update(['state' => 'ended']);
-        }
-        if ($type === 'call.answered') {
-            $this->cancelOffer($o);
-        } // No media before the atomic claim.
+        $cancel = false;
+        $result = VoiceLocks::lock('voice-incoming:'.$o->incoming_offer_id, 60)->block(5, function () use ($o, $control, $type, &$cancel): ?array {
+            // Claiming can win after the initial lookup. Its committed bridge must
+            // receive this event rather than having its accepted offer overwritten.
+            $o->refresh();
+            if ($o->call_control_id && $o->call_control_id !== $control) {
+                return ['status' => 'ignored_mobile_offer_identity'];
+            }
+            if (! $o->call_control_id && $control !== '') {
+                $o->update(['call_control_id' => $control]);
+            }
+            if ($o->state === 'accepted') {
+                return null;
+            } // The shared human bridge now owns this exact control ID.
+            if (in_array($type, ['call.hangup', 'call.ended', 'call.failed'], true)) {
+                $o->update(['state' => 'ended']);
+            } elseif ($type === 'call.answered' && ! in_array($o->state, ['cancelled', 'ended'], true)) {
+                // Prevent a new claim before releasing the lock for carrier I/O.
+                $o->update(['state' => 'cancel_requested']);
+                $cancel = true;
+            }
 
-        return ['status' => 'processed_mobile_offer', 'voice_call_id' => $o->incomingOffer->voice_call_id];
+            return ['status' => 'processed_mobile_offer', 'voice_call_id' => $o->incomingOffer->voice_call_id];
+        });
+        if ($cancel) {
+            $this->cancelOffer($o);
+        }
+
+        return $result;
     }
 }
