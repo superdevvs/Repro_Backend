@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\StudioProviderSetting;
 use App\Models\User;
+use App\Services\FalService;
 use App\Services\Studio\StudioProviderSettings;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Log\Events\MessageLogged;
@@ -88,6 +89,38 @@ class StudioProviderSettingsTest extends TestCase
         $this->assertSame($before, app(StudioProviderSettings::class)->route('revision'));
         $this->assertSame('saved-fixture', app(StudioProviderSettings::class)->credentials('fotello')['api_key']);
         $this->assertSame('team-fixture', app(StudioProviderSettings::class)->credentials('fotello')['team_id']);
+    }
+
+    public function test_kling_reel_choice_is_explicit_and_does_not_change_other_services_or_global_defaults(): void
+    {
+        config(['services.fal.model' => 'fal-ai/wan-pro/image-to-video',
+            'services.fal.walkthrough_model' => FalService::KLING_25_TURBO_IMAGE_TO_VIDEO]);
+        $settings = app(StudioProviderSettings::class);
+        $wan = ['provider' => 'fal', 'model' => 'fal-ai/wan-pro/image-to-video', 'fallback' => null];
+        $this->assertSame($wan, $settings->route('property-reel'));
+        $this->assertSame($wan, $settings->route('social-teaser'));
+        foreach (['property-reel', 'social-teaser'] as $service) {
+            $models = collect($settings->providers($service))->firstWhere('id', 'fal')['models'];
+            $this->assertContains(FalService::KLING_25_TURBO_IMAGE_TO_VIDEO, array_column($models, 'id'));
+        }
+        $beforeWalkthrough = $settings->route('walkthrough');
+        $this->actor('superadmin');
+        $this->putJson('/api/studio/provider-settings', ['services' => [
+            ['id' => 'property-reel', 'provider' => 'fal', 'model' => FalService::KLING_25_TURBO_IMAGE_TO_VIDEO],
+        ]])->assertOk();
+        $this->assertSame(FalService::KLING_25_TURBO_IMAGE_TO_VIDEO, $settings->route('property-reel')['model']);
+        $this->assertSame($wan, $settings->route('social-teaser'));
+        $this->assertSame($beforeWalkthrough, $settings->route('walkthrough'));
+        $this->assertSame('fal-ai/wan-pro/image-to-video', config('services.fal.model'));
+        // Re-reading capabilities/options must never replace an explicit older choice.
+        $this->putJson('/api/studio/provider-settings', ['services' => [
+            ['id' => 'property-reel', 'provider' => 'fal', 'model' => $wan['model']],
+            ['id' => 'social-teaser', 'provider' => 'fal', 'model' => FalService::KLING_25_TURBO_IMAGE_TO_VIDEO],
+        ]])->assertOk();
+        $settings->present();
+        $this->assertSame($wan, $settings->route('property-reel'));
+        $this->assertSame(FalService::KLING_25_TURBO_IMAGE_TO_VIDEO, $settings->route('social-teaser')['model']);
+        Http::assertNothingSent();
     }
 
     #[DataProvider('invalidRoutes')]

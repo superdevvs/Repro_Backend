@@ -3,6 +3,7 @@
 namespace App\Services\Studio;
 
 use App\Models\StudioProviderSetting;
+use App\Services\FalService;
 use App\Services\Studio\Providers\VirtualStagingAiClient;
 use App\Services\Studio\Providers\VirtualStagingAiException;
 use Illuminate\Support\Facades\DB;
@@ -88,7 +89,10 @@ class StudioProviderSettings
         $models = match ($service) {
             'outpaint' => ['fal' => ['fal-ai/flux-2-pro/outpaint' => 'FLUX.2 Pro Outpaint'], 'openai' => ['gpt-image-2' => 'GPT Image 2']],
             'walkthrough' => ['fal' => [(string) config('services.fal.walkthrough_model', 'fal-ai/kling-video/v2.5-turbo/pro/image-to-video') => 'Start/end-frame walkthrough']],
-            'property-reel', 'social-teaser' => ['fal' => [(string) config('services.fal.model', 'fal-ai/wan-pro/image-to-video') => 'Image to video']],
+            'property-reel', 'social-teaser' => ['fal' => [
+                (string) config('services.fal.model', 'fal-ai/wan-pro/image-to-video') => 'Image to video',
+                FalService::KLING_25_TURBO_IMAGE_TO_VIDEO => 'Kling 2.5 Turbo Pro · 5-second scenes',
+            ]],
             'upscale' => ['fal' => ['fal-ai/clarity-upscaler' => 'Clarity Upscaler'], 'fotello' => ['upscale' => 'Upscale']],
             default => ['fal' => $photoModels, 'openai' => ['gpt-image-2' => 'GPT Image 2'], 'fotello' => match ($service) {
                 'twilight' => ['twilight' => 'Twilight'],

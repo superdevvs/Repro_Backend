@@ -12,6 +12,8 @@ use RuntimeException;
 
 class FalService
 {
+    public const KLING_25_TURBO_IMAGE_TO_VIDEO = 'fal-ai/kling-video/v2.5-turbo/pro/image-to-video';
+
     private string $key;
 
     private string $model;
@@ -128,10 +130,16 @@ class FalService
     {
         $this->ensureConfigured();
 
-        $response = $this->postQueue($this->model, [
+        $payload = [
             'image_url' => $imageUrl,
             'prompt' => $prompt,
-        ]);
+        ];
+        if ($this->model === self::KLING_25_TURBO_IMAGE_TO_VIDEO) {
+            // Independent reel scenes use Kling's documented five-second input;
+            // only the separate walkthrough adapter supplies a following frame.
+            $payload += ['duration' => '5', 'negative_prompt' => 'cuts, jump cuts, distortion, morphing architecture, blur, text'];
+        }
+        $response = $this->postQueue($this->model, $payload);
 
         if (! $response->successful()) {
             $this->throwProviderFailure($response, 'submission');
