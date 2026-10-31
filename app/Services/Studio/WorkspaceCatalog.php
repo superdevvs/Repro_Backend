@@ -51,7 +51,7 @@ class WorkspaceCatalog
                 'frameDurationSeconds' => ['min' => 0.5, 'max' => 30], 'transitions' => ReelCompositionService::TRANSITIONS,
                 'audio' => $video !== null, 'selectableResolution' => $video !== null, 'video' => $video,
                 'outputDimensions' => ['9:16' => [1080, 1920], '16:9' => [1920, 1080], '1:1' => [1080, 1080], '4:5' => [1080, 1350]],
-                'templateScopes' => Schema::hasColumns('studio_templates', ['visibility', 'preset_id']) ? ($role === 'client' ? ['curated', 'mine'] : ['curated', 'mine', 'team']) : ['curated'],
+                'templateScopes' => Schema::hasColumns('templates', ['visibility', 'preset_id']) ? ($role === 'client' ? ['curated', 'mine'] : ['curated', 'mine', 'team']) : ['curated'],
                 'rooms' => VirtualStagingOptions::ROOMS, 'furnitureStyles' => VirtualStagingOptions::STYLES,
             ],
         ];

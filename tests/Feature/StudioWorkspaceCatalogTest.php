@@ -33,12 +33,16 @@ class StudioWorkspaceCatalogTest extends TestCase
 
     public function test_catalog_matches_executable_presets_and_honest_controls_without_secrets(): void
     {
+        // Use the real migrated template table. Do not derive the expected API
+        // response from the same schema lookup as production: that hid a typo.
+        $this->assertTrue(Schema::hasColumns('templates', ['visibility', 'preset_id']));
+        $this->assertFalse(Schema::hasTable('studio_templates'));
         Sanctum::actingAs(User::factory()->create(['role' => 'editing_manager']));
         $response = $this->getJson('/api/studio/workspaces/catalog')->assertOk()
             ->assertJsonPath('data.version', 1)->assertJsonCount(12, 'data.presets')
             ->assertJsonPath('data.controls.audio', class_exists(\App\Services\Studio\WorkspaceVideoOptions::class))
             ->assertJsonPath('data.controls.selectableResolution', class_exists(\App\Services\Studio\WorkspaceVideoOptions::class))
-            ->assertJsonPath('data.controls.templateScopes', Schema::hasColumns('studio_templates', ['visibility', 'preset_id']) ? ['curated', 'mine', 'team'] : ['curated']);
+            ->assertJsonPath('data.controls.templateScopes', ['curated', 'mine', 'team']);
         $this->assertSame(WorkspaceCatalog::PRESETS, array_column($response->json('data.presets'), 'id'));
         $this->assertStringContainsString('no-store', $response->headers->get('Cache-Control'));
         foreach (['fixture-autoenhance', 'fixture-fal', 'fixture-staging', 'fixture-fotello', 'fixture-team', 'provider', 'api_key'] as $secret) {
@@ -67,11 +71,13 @@ class StudioWorkspaceCatalogTest extends TestCase
             $this->postJson('/api/studio/workspaces/intent', ['mediaCount' => 1])->assertForbidden();
         }
         config(['studio.client_access_enabled' => true]);
-        $this->getJson('/api/studio/workspaces/catalog')->assertOk();
+        $this->getJson('/api/studio/workspaces/catalog')->assertOk()
+            ->assertJsonPath('data.controls.templateScopes', ['curated', 'mine']);
         $this->postJson('/api/studio/workspaces/intent', ['mediaCount' => 1, 'prompt' => 'Make this brighter'])->assertOk()->assertJsonPath('data.presetId', 'listing-ready');
         foreach (['admin', 'superadmin', 'editing_manager', 'editor'] as $role) {
             Sanctum::actingAs(User::factory()->create(['role' => $role]));
-            $this->getJson('/api/studio/workspaces/catalog')->assertOk();
+            $this->getJson('/api/studio/workspaces/catalog')->assertOk()
+                ->assertJsonPath('data.controls.templateScopes', ['curated', 'mine', 'team']);
         }
     }
 
