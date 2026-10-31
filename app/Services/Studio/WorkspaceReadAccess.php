@@ -8,6 +8,7 @@ use App\Models\StudioWorkspace;
 use App\Models\User;
 use App\Services\Shoots\ShootAuthorizationSupport;
 use App\Services\Shoots\ShootClientReleaseAccessService;
+use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Support\Collection;
 use Illuminate\Validation\ValidationException;
 
@@ -84,7 +85,9 @@ class WorkspaceReadAccess
 
     public function authorize(StudioWorkspace $workspace, User $user): void
     {
-        abort_unless(in_array($workspace->id, $this->visibleIds(collect([$workspace]), $user), true), 403, 'This edit is no longer within your media access.');
+        if (! in_array($workspace->id, $this->visibleIds(collect([$workspace]), $user), true)) {
+            throw new AuthorizationException('This edit is no longer within your media access.');
+        }
     }
 
     /** Source identities, not client IDs/URLs, survive selection changes. */

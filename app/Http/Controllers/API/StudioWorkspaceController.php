@@ -185,10 +185,13 @@ class StudioWorkspaceController extends StudioController
                 }
             }
             $config = $this->config($next, $media, $data['presetId'] ?? $record->preset_id, $record);
-            $preparationChanged = $record->media !== $media || ($record->config['ratio'] ?? null) !== $config['ratio']
-                || collect($record->config['frames'] ?? [])->mapWithKeys(fn ($f) => [$f['mediaId'] => $f['method']])->sortKeys()->all() !== collect($config['frames'])->mapWithKeys(fn ($f) => [$f['mediaId'] => $f['method']])->sortKeys()->all();
+            // Legacy/dispatch workspaces may omit newly introduced defaults.
+            // Compare semantic settings so a no-op PATCH never discards paid checkpoints.
+            $previousConfig = $this->normalizedConfig($record->config);
+            $preparationChanged = $record->media !== $media || $previousConfig['ratio'] !== $config['ratio']
+                || collect($previousConfig['frames'])->mapWithKeys(fn ($f) => [$f['mediaId'] => $f['method']])->sortKeys()->all() !== collect($config['frames'])->mapWithKeys(fn ($f) => [$f['mediaId'] => $f['method']])->sortKeys()->all();
             $reviewFields = ['reviewedOutputIds', 'reviewedFrameIds'];
-            $changed = $record->media !== $media || StudioWorkspace::canonicalConfig(\Illuminate\Support\Arr::except($record->config, $reviewFields)) !== StudioWorkspace::canonicalConfig(\Illuminate\Support\Arr::except($config, $reviewFields)) || (isset($data['presetId']) && $record->preset_id !== $data['presetId']);
+            $changed = $record->media !== $media || StudioWorkspace::canonicalConfig(\Illuminate\Support\Arr::except($previousConfig, $reviewFields)) !== StudioWorkspace::canonicalConfig(\Illuminate\Support\Arr::except($config, $reviewFields)) || (isset($data['presetId']) && $record->preset_id !== $data['presetId']);
             $record->fill(['name' => $data['name'] ?? $record->name, 'preset_id' => $data['presetId'] ?? $record->preset_id, 'media' => $media, 'config' => $config, 'version' => $record->version + 1]);
             if ($changed) {
                 $record->fill(['status' => $preparationChanged || ! $record->prepared_frames ? 'draft' : 'ready', 'prepared_frames' => $preparationChanged ? [] : $record->prepared_frames, 'operation' => null, 'error' => null, 'progress' => null]);
@@ -525,10 +528,7 @@ class StudioWorkspaceController extends StudioController
 
     private function config(array $config, array $media, string $preset, ?StudioWorkspace $workspace = null): array
     {
-        // Runtime state and file references are exclusively server-owned.
-        $config = \Illuminate\Support\Arr::only($config, ['prompt', 'ratio', 'duration', 'transition', 'transitionDuration', 'text', 'adjustments', 'frames', 'reviewedOutputIds', 'reviewedFrameIds', 'resolution', 'audio']);
-        $config = array_replace_recursive(['prompt' => '', 'ratio' => '9:16', 'duration' => 30, 'transition' => 'none', 'transitionDuration' => 0.4, 'text' => ['title' => '', 'subtitle' => '', 'style' => 'none', 'position' => 'bottom'], 'adjustments' => [], 'frames' => []], $config);
-        $config = WorkspaceVideoOptions::normalize($config);
+        $config = $this->normalizedConfig($config);
         if ($id = $config['audio']['musicId']) {
             abort_unless($workspace && in_array($preset, ['property-reel', 'walkthrough', 'social-teaser'], true), 422, 'Upload audio to this video workspace before selecting it.');
             app(WorkspaceVideoAudio::class)->path($workspace, $id);
@@ -541,6 +541,16 @@ class StudioWorkspaceController extends StudioController
             }
         }
 
-        return StudioWorkspace::normalizeConfigStrings($config);
+        return $config;
+    }
+
+    /** Pure normalization also permits comparing legacy config without revalidating old assets. */
+    private function normalizedConfig(array $config): array
+    {
+        // Runtime state and file references are exclusively server-owned.
+        $config = \Illuminate\Support\Arr::only($config, ['prompt', 'ratio', 'duration', 'transition', 'transitionDuration', 'text', 'adjustments', 'frames', 'reviewedOutputIds', 'reviewedFrameIds', 'resolution', 'audio']);
+        $config = array_replace_recursive(['prompt' => '', 'ratio' => '9:16', 'duration' => 30, 'transition' => 'none', 'transitionDuration' => 0.4, 'text' => ['title' => '', 'subtitle' => '', 'style' => 'none', 'position' => 'bottom'], 'adjustments' => [], 'frames' => []], $config);
+
+        return StudioWorkspace::normalizeConfigStrings(WorkspaceVideoOptions::normalize($config));
     }
 }

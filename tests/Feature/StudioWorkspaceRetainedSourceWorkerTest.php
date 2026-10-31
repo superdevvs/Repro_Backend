@@ -9,12 +9,12 @@ use App\Models\StudioWorkspace;
 use App\Models\User;
 use App\Services\Studio\WorkspaceImageOperations;
 use App\Services\Studio\WorkspaceProcessor;
+use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Storage;
 use Laravel\Sanctum\Sanctum;
-use Symfony\Component\HttpKernel\Exception\HttpException;
 use Tests\TestCase;
 
 class StudioWorkspaceRetainedSourceWorkerTest extends TestCase
@@ -39,8 +39,8 @@ class StudioWorkspaceRetainedSourceWorkerTest extends TestCase
         try {
             (new ProcessStudioWorkspace($workspace->id, $workspace->operation['id']))->handle(app(WorkspaceProcessor::class));
             $this->fail('The retained source must be authorized before provider work.');
-        } catch (HttpException $exception) {
-            $this->assertSame(403, $exception->getStatusCode());
+        } catch (AuthorizationException $exception) {
+            $this->assertSame('This edit is no longer within your media access.', $exception->getMessage());
         }
 
         $this->assertCount(1, $workspace->fresh()->outputs);

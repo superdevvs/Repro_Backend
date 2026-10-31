@@ -16,7 +16,7 @@ use Tests\TestCase;
  * **Validates: Requirements 10.9**
  *
  * A seeded generator drives 21 reproducible conflict cases (7 per mutation)
- * across the real Studio mutation endpoints that carry versions (template
+ * across the real Studio mutation endpoints that carry versions (legacy template
  * update, template delete, brand update). In every case two authorized writers
  * load the same record version, a second writer commits first (one or two
  * times), and then the first writer submits its now-stale version.
@@ -39,7 +39,7 @@ class StudioStaleUpdateRejectionPropertyTest extends TestCase
     private const TEMPLATES_URL = '/api/studio/templates';
     private const BRAND_URL = '/api/studio/brand';
 
-    /** Roles with team-wide scope, so two distinct writers can conflict on one record. */
+    /** Roles with team-wide scope for legacy templates and brand state. */
     private const TEAM_SCOPED_ROLES = ['admin', 'superadmin', 'editing_manager'];
 
     private const WORKFLOW_IDS = [
@@ -89,7 +89,7 @@ class StudioStaleUpdateRejectionPropertyTest extends TestCase
         [$writerA, $writerB] = $this->writers($teamId);
         $context = $this->context($iteration, "template.update, team={$teamId}");
 
-        $templateId = $this->createTemplate($writerA, $iteration);
+        $templateId = $this->createLegacyTemplate($writerA, $iteration);
         $staleVersion = (int) Template::query()->findOrFail($templateId)->version;
 
         $winning = $this->commitTemplateUpdates($writerB, $templateId, $iteration, $context);
@@ -127,7 +127,7 @@ class StudioStaleUpdateRejectionPropertyTest extends TestCase
         [$writerA, $writerB] = $this->writers($teamId);
         $context = $this->context($iteration, "template.delete, team={$teamId}");
 
-        $templateId = $this->createTemplate($writerA, $iteration);
+        $templateId = $this->createLegacyTemplate($writerA, $iteration);
         $staleVersion = (int) Template::query()->findOrFail($templateId)->version;
 
         $this->commitTemplateUpdates($writerB, $templateId, $iteration, $context);
@@ -289,15 +289,25 @@ class StudioStaleUpdateRejectionPropertyTest extends TestCase
         return $committed;
     }
 
-    private function createTemplate(User $owner, int $iteration): string
+    private function createLegacyTemplate(User $owner, int $iteration): string
     {
-        Sanctum::actingAs($owner);
-
-        return (string) $this->postJson(self::TEMPLATES_URL, [
+        // This property exercises the preserved two-user legacy contract. A
+        // POST now intentionally creates an owner-only private recipe; a peer
+        // must receive 403 for that recipe, even with an otherwise valid version.
+        // Seed the pre-migration shape rather than weakening the new ownership
+        // policy to manufacture two authorized writers.
+        $template = Template::query()->create([
+            'team_id' => $owner->metadata['team_id'],
+            'created_by' => $owner->id,
+            'visibility' => null,
+            'preset_id' => null,
             'name' => $this->generatedName('Template', $iteration),
-            'workflowId' => $this->pick(self::WORKFLOW_IDS),
+            'workflow_id' => $this->pick(self::WORKFLOW_IDS),
             'config' => $this->generatedConfig(),
-        ])->assertCreated()->json('data.id');
+        ]);
+        $this->assertNull($template->visibility);
+
+        return (string) $template->id;
     }
 
     /** @return array<string, mixed> */

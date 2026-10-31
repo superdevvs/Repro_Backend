@@ -46,6 +46,7 @@ class StudioAudioStorageDeploymentTest extends TestCase
         clearstatcache();
         $this->assertSame(02770, fileperms($this->audioPath) & 07777);
         $this->assertSame(posix_getgrnam('www-data')['gid'], filegroup($this->audioPath));
+        $this->assertSame(posix_geteuid(), fileowner($this->audioPath));
         $inode = fileinode($this->audioPath);
         file_put_contents($this->audioPath.'/preserved.json', '{"fixture":true}');
         $second = $this->runHelper();
@@ -118,11 +119,17 @@ PHP;
 
     private function runHelper(): Process
     {
-        $command = ['bash', dirname(__DIR__, 2).'/scripts/deploy/provision-studio-audio-storage.sh', $this->appPath];
+        // Switch the service group in a privileged child, not through sudo's
+        // Runas policy: CI permits sudo-to-root but may forbid sudo-to-runner.
+        // Drop back to the fixture owner and discard supplementary groups before
+        // the helper runs, so this still exercises an unprivileged deployment.
+        $command = [
+            'setpriv', '--reuid', (string) posix_geteuid(),
+            '--regid', (string) posix_getgrnam('www-data')['gid'], '--clear-groups', '--',
+            'bash', dirname(__DIR__, 2).'/scripts/deploy/provision-studio-audio-storage.sh', $this->appPath,
+        ];
         if (posix_geteuid() !== 0) {
-            // Ubuntu CI grants passwordless sudo. Preserve fixture ownership while
-            // using the same service group as the production deployment worker.
-            $command = array_merge(['sudo', '-n', '-u', '#'.posix_geteuid(), '-g', 'www-data', '--'], $command);
+            $command = array_merge(['sudo', '-n', '--'], $command);
         }
         $process = new Process($command);
         $process->setTimeout(10);

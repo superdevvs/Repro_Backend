@@ -220,10 +220,36 @@ class ShootEditingDispatchTest extends TestCase
         $workspace = StudioWorkspace::find($response->json('data.workspaces.0.id'));
         $operation = $workspace->operation;
         $operation['providerState'] = ['photo-listing-'.$shoot->id => ['id' => 'paid-listing']];
-        $workspace->update(['status' => 'failed', 'operation' => $operation]);
-        $this->patchJson("/api/studio/workspaces/{$workspace->id}", ['config' => $workspace->config, 'version' => $workspace->version])->assertOk()->assertJsonPath('data.status', 'failed');
+        $workspace->update(['status' => 'failed', 'operation' => $operation, 'error' => 'Saved provider checkpoint', 'progress' => 40]);
+        $this->assertArrayNotHasKey('audio', $workspace->config);
+        $this->patchJson("/api/studio/workspaces/{$workspace->id}", ['config' => $workspace->config, 'version' => $workspace->version])
+            ->assertOk()->assertJsonPath('data.status', 'failed')->assertJsonPath('data.error', 'Saved provider checkpoint')
+            ->assertJsonPath('data.config.resolution', '1080p')->assertJsonPath('data.config.audio.musicId', null);
+        $this->assertSame($operation, $workspace->fresh()->operation);
+        $normalized = $workspace->fresh();
+        $this->patchJson("/api/studio/workspaces/{$workspace->id}", ['config' => $normalized->config, 'version' => $normalized->version])
+            ->assertOk()->assertJsonPath('data.status', 'failed');
+        Queue::assertPushed(ProcessStudioWorkspace::class, 1);
         $this->postJson("/api/studio/workspaces/{$workspace->id}/generate")->assertAccepted();
         $this->assertSame($operation, $workspace->fresh()->operation);
+        Queue::assertPushed(ProcessStudioWorkspace::class, 2);
+    }
+
+    public function test_renaming_legacy_failed_project_preserves_checkpoint_but_real_recipe_change_invalidates_it(): void
+    {
+        [$shoot] = $this->shoot();
+        $response = $this->send($shoot)->assertAccepted();
+        $workspace = StudioWorkspace::findOrFail($response->json('data.workspaces.0.id'));
+        $operation = $workspace->operation;
+        $operation['providerState'] = ['photo-listing-'.$shoot->id => ['id' => 'paid-listing']];
+        $workspace->update(['status' => 'failed', 'operation' => $operation]);
+        $this->patchJson("/api/studio/workspaces/{$workspace->id}", ['name' => 'Renamed saved edit', 'version' => $workspace->version])
+            ->assertOk()->assertJsonPath('data.status', 'failed')->assertJsonPath('data.name', 'Renamed saved edit');
+        $this->assertSame($operation, $workspace->fresh()->operation);
+        $this->patchJson("/api/studio/workspaces/{$workspace->id}", ['config' => ['prompt' => 'Different editing instructions'], 'version' => $workspace->fresh()->version])
+            ->assertOk()->assertJsonPath('data.status', 'draft');
+        $this->assertNull($workspace->fresh()->operation);
+        Queue::assertPushed(ProcessStudioWorkspace::class, 1);
     }
 
     public function test_bundled_photo_video_service_routes_and_completes_the_two_lanes_independently(): void

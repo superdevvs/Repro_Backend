@@ -39,6 +39,7 @@ class StudioApiFoundationTest extends TestCase
             ['studio.templates.index', 'GET', 'api/studio/templates', 'StudioTemplateController@index'],
             ['studio.templates.store', 'POST', 'api/studio/templates', 'StudioTemplateController@store'],
             ['studio.templates.update', 'PUT', 'api/studio/templates/{template}', 'StudioTemplateController@update'],
+            ['studio.templates.duplicate', 'POST', 'api/studio/templates/{template}/duplicate', 'StudioTemplateController@duplicate'],
             ['studio.templates.destroy', 'DELETE', 'api/studio/templates/{template}', 'StudioTemplateController@destroy'],
             ['studio.brand.show', 'GET', 'api/studio/brand', 'StudioBrandController@show'],
             ['studio.brand.update', 'PUT', 'api/studio/brand', 'StudioBrandController@update'],
@@ -60,10 +61,14 @@ class StudioApiFoundationTest extends TestCase
         $this->assertContains($method, $route->methods());
         $this->assertStringEndsWith($controllerAction, $route->getActionName());
         $this->assertContains('auth:sanctum', $route->gatherMiddleware());
-        $this->assertContains(
-            'role:admin,superadmin,editing_manager,editor',
-            $route->gatherMiddleware()
-        );
+        if (str_starts_with($name, 'studio.templates.')) {
+            // Personal templates share the client workspace rollout gate; the
+            // other Studio administration routes remain staff-only.
+            $this->assertContains('role:admin,superadmin,editing_manager,editor,client', $route->gatherMiddleware());
+            $this->assertContains(\App\Http\Middleware\EnsureStudioClientAccess::class, $route->gatherMiddleware());
+        } else {
+            $this->assertContains('role:admin,superadmin,editing_manager,editor', $route->gatherMiddleware());
+        }
     }
 
     public function test_foundation_routes_reject_unauthenticated_and_disallowed_roles(): void
