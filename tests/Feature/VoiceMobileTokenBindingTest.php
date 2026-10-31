@@ -28,7 +28,7 @@ class VoiceMobileTokenBindingTest extends TestCase
     private array $connection = [];
     private array $credential = [];
     private bool $failCleanup = false;
-    private mixed $beforeMaterial = null;
+    private mixed $beforeToken = null;
 
     protected function setUp(): void
     {
@@ -60,10 +60,10 @@ class VoiceMobileTokenBindingTest extends TestCase
                     'user_id' => 'test-provider-user', 'resource_id' => 'connection:'.$this->connection['id'], 'expired' => false]);
                 return Http::response(['data' => $this->credential]);
             }
-            if ($path === '/v2/telephony_credentials/isolated-credential/token_material' && $request->method() === 'GET') {
-                if ($this->beforeMaterial) { ($this->beforeMaterial)(); }
-                return Http::response(['data' => ['kid' => 'test-v1', 'tel_token' => 'isolated-provider-token',
-                    'signing_secret' => rtrim(strtr(base64_encode(str_repeat('t', 32)), '+/', '-_'), '=')]]);
+            if ($path === '/v2/telephony_credentials/isolated-credential/token' && $request->method() === 'POST') {
+                if ($this->beforeToken) { ($this->beforeToken)(); }
+                $claims = ['sub'=>'isolated-credential','user_id'=>'test-provider-user','exp'=>now()->addDay()->timestamp];
+                return Http::response('eyJhbGciOiJIUzUxMiJ9.'.rtrim(strtr(base64_encode(json_encode($claims)), '+/', '-_'), '=').'.synthetic-provider-signature');
             }
             if ($path === '/v2/telephony_credentials/isolated-credential' && in_array($request->method(), ['GET', 'PATCH'], true)) {
                 if ($request->method() === 'PATCH') { $this->credential = array_merge($this->credential, $request->data()); }
@@ -112,12 +112,12 @@ class VoiceMobileTokenBindingTest extends TestCase
         $this->assertTrue($session->registration_expires_at->lte($this->token->expires_at));
         $this->assertTrue($this->service()->registered($session));
         $claims = json_decode(base64_decode(strtr(explode('.', $first['jwt'])[1], '-_', '+/')), true, flags: JSON_THROW_ON_ERROR);
-        $this->assertLessThanOrEqual($this->token->expires_at->timestamp, $claims['exp']);
+        $this->assertSame(now()->addDay()->timestamp, $claims['exp']); // Provider JWT is 24h; credential/login and API lease are separate bounds.
         $this->assertSame('test-provider-user', $claims['user_id']);
         $this->assertArrayNotHasKey('token_material', $first);
         $this->postJson('/api/voice/mobile/sessions', $data)->assertOk()->assertJsonPath('session_id', $session->id);
         $this->assertSame('browser-unchanged', config('services.telnyx.voice.credential_connection_id'));
-        Http::assertNotSent(fn ($request) => str_ends_with(parse_url($request->url(), PHP_URL_PATH), '/token'));
+        Http::assertNotSent(fn ($request) => str_ends_with(parse_url($request->url(), PHP_URL_PATH), '/token_material'));
     }
 
     public function test_cookie_only_or_expired_login_cannot_provision(): void
@@ -272,7 +272,7 @@ class VoiceMobileTokenBindingTest extends TestCase
 
     public function test_logout_during_provider_provision_never_returns_jwt(): void
     {
-        $this->beforeMaterial = fn () => $this->token->delete();
+        $this->beforeToken = fn () => $this->token->delete();
         $this->postJson('/api/voice/mobile/sessions', $this->data())->assertUnauthorized()->assertJsonMissingPath('jwt');
         $session = VoiceMobileSession::sole();
         $this->assertSame('revocation_pending', $session->status);
@@ -286,7 +286,7 @@ class VoiceMobileTokenBindingTest extends TestCase
         $first = $this->postJson('/api/voice/mobile/sessions', $data)->assertOk()->json();
         $session = VoiceMobileSession::findOrFail($first['session_id']);
         $prior = $session->only(['connection_id', 'sip_username', 'push_token_hash', 'personal_access_token_id', 'expires_at', 'registration_expires_at']);
-        $this->beforeMaterial = fn () => VoiceMobileSession::whereKey($session->id)
+        $this->beforeToken = fn () => VoiceMobileSession::whereKey($session->id)
             ->update(['credential_id' => 'concurrently-adopted-credential']);
 
         $this->postJson('/api/voice/mobile/sessions', $data)->assertStatus(409)->assertJsonMissingPath('jwt');
@@ -330,7 +330,7 @@ class VoiceMobileTokenBindingTest extends TestCase
         $session = VoiceMobileSession::findOrFail($first['session_id']);
         $this->assertTrue($this->service()->registered($session));
         unset($data['push_token']);
-        $this->beforeMaterial = function () use ($interruption, $session) {
+        $this->beforeToken = function () use ($interruption, $session) {
             if ($interruption === 'logout') {
                 $this->token->delete();
             } else {

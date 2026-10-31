@@ -145,7 +145,11 @@ class VoiceMobileSessionService
             abort_unless($freshToken, 401);
             $registrationExpiry = $this->boundedExpiry($freshToken, $registrationExpiry);
             $expiry = $this->boundedExpiry($freshToken, $expiry)->min($registrationExpiry);
-            $jwt = app(VoiceMobileJwt::class)->mint($credential, $expiry);
+            // Native SDK acceptance is verified for the provider-issued token.
+            // Its signed lifetime is up to 24 hours; the API refresh lease below
+            // stays one hour and provider credential/login revocation still wins.
+            $jwt = $this->gateway->request('POST', '/telephony_credentials/'.$credential['id'].'/token', [], true);
+            abort_unless(is_string($jwt) && strlen($jwt) <= 32768, 503, 'The provider returned an invalid mobile credential.');
             $parts = explode('.', $jwt);
             $claims = count($parts) === 3 ? json_decode(base64_decode(strtr($parts[1], '-_', '+/')), true) : null;
             abort_unless(is_array($claims) && is_numeric($claims['exp'] ?? null) && $claims['exp'] > now()->addSeconds(30)->timestamp, 503, 'The provider returned an invalid mobile credential.');

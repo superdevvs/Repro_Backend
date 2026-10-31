@@ -67,15 +67,13 @@ class VoiceMobileCredentialService
             abort_unless($confirmed && $confirmed->gt(now()->addSeconds(30)) && $confirmed->lte($freshCeiling)
                 && ! $this->expired($updated), 503, 'The phone provider did not confirm the mobile credential lifetime.');
         }
-        // Fetch server-only material transiently; never persist it or use the
-        // provider's /token endpoint, whose JWT can otherwise last 24 hours.
-        $material = $allowReplacement
-            ? $this->gateway->request('GET', '/telephony_credentials/'.$session->credential_id.'/token_material') : null;
+        // Return verified identity metadata only. SDK tokens are issued by Telnyx;
+        // credential signing material is neither fetched nor persisted.
         abort_unless($confirmed->lte($assertOwner()), 503, 'The mobile login lifetime changed. Reconnect calling.');
 
         return ['id' => $session->credential_id, 'user_id' => $updated['user_id'],
             'sip_username' => $session->sip_username, 'expires_at' => $updated['expires_at'],
-            'token_material' => $material];
+            'token_material' => null];
     }
 
     private function createOrReconcile(VoiceMobileSession $s, Carbon $expiry, ?string $oldId, Closure $assertOwner): array

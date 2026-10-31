@@ -44,7 +44,7 @@ class VoiceMobileTest extends TestCase
 
     private ?int $credentialReadFailure = null;
 
-    private bool $invalidMaterial = false;
+    private bool $invalidProviderToken = false;
 
     private mixed $afterCredentialCreate = null;
 
@@ -102,10 +102,10 @@ class VoiceMobileTest extends TestCase
 
                 return $this->ambiguousCredential ? Http::response([], 503) : Http::response(['data' => $this->credentials[$id]]);
             }
-            if (preg_match('#/telephony_credentials/([^/]+)/token_material$#', $p, $m)) {
-                if ($this->invalidMaterial) { return Http::response(['data' => []]); }
-                return Http::response(['data' => ['kid' => 'test-kid', 'tel_token' => 'test-provider-token',
-                    'signing_secret' => rtrim(strtr(base64_encode(str_repeat('s', 32)), '+/', '-_'), '=')]]);
+            if (preg_match('#/telephony_credentials/([^/]+)/token$#', $p, $m)) {
+                if ($this->invalidProviderToken) { return Http::response('invalid-token'); }
+                $claims = ['sub'=>$m[1], 'user_id'=>'provider-account', 'exp'=>now()->addDay()->timestamp];
+                return Http::response('eyJhbGciOiJIUzUxMiJ9.'.rtrim(strtr(base64_encode(json_encode($claims)), '+/', '-_'), '=').'.synthetic-provider-signature');
             }
             if (preg_match('#/telephony_credentials/([^/]+)$#', $p, $m)) {
                 if ($r->method() === 'GET' && $this->credentialReadFailure) { return Http::response([], $this->credentialReadFailure); }
@@ -583,7 +583,7 @@ class VoiceMobileTest extends TestCase
         $this->assertTrue($s['make_calls']);
     }
 
-    public function test_terminal_provider_expiry_rotates_only_credential_and_mints_a_short_token(): void
+    public function test_terminal_provider_expiry_rotates_only_credential_and_requests_a_short_token(): void
     {
         $this->freezeTime();
         $device = (string) Str::uuid();
@@ -608,9 +608,9 @@ class VoiceMobileTest extends TestCase
         $claims = json_decode(base64_decode(strtr(explode('.', $next['jwt'])[1], '-_', '+/')), true);
         $this->assertSame($session->credential_id, $claims['sub']);
         $this->assertSame('provider-account', $claims['user_id']);
-        $this->assertSame(now()->addHour()->timestamp, $claims['exp']);
-        $this->assertSame(now()->addDays(30)->toIso8601String(), $claims['cred_exp']);
-        Http::assertNotSent(fn ($r) => str_ends_with($r->url(), '/token')
+        $this->assertSame(now()->addDay()->timestamp, $claims['exp']);
+        $this->assertSame(now()->addDays(30)->toIso8601String(), $this->credentials[$session->credential_id]['expires_at']);
+        Http::assertNotSent(fn ($r) => str_ends_with($r->url(), '/token_material')
             || ($r->method() === 'PATCH' && str_contains($r->url(), '/credential_connections/')));
         $this->assertSame($priorPatches, Http::recorded(fn ($r) => $r->method() === 'PATCH' && str_ends_with($r->url(), '/telephony_credentials/'.$old))->count());
         Http::assertSent(fn ($r) => $r->method() === 'GET' && str_contains($r->url(), 'filter%5Bresource_id%5D=connection%3A'));
@@ -723,8 +723,7 @@ class VoiceMobileTest extends TestCase
         $next = $this->bootstrap($device);
         $session = VoiceMobileSession::findOrFail($first['session_id']);
         $claims = json_decode(base64_decode(strtr(explode('.', $next['jwt'])[1], '-_', '+/')), true);
-        $this->assertSame($deadline->timestamp, $claims['exp']);
-        $this->assertSame($deadline->toIso8601String(), $claims['cred_exp']);
+        $this->assertSame(now()->addDay()->timestamp, $claims['exp']);
         $this->assertSame($deadline->toIso8601String(), $this->credentials[$session->credential_id]['expires_at']);
         $this->assertTrue($session->registration_expires_at->equalTo($deadline));
         $this->assertCount(1, $this->credentials);
@@ -748,11 +747,11 @@ class VoiceMobileTest extends TestCase
         $this->assertNull($session->fresh()->credential_rotation_from);
     }
 
-    public function test_missing_signing_material_fails_closed_without_long_lived_token_fallback(): void
+    public function test_malformed_provider_token_fails_closed(): void
     {
-        $this->invalidMaterial = true;
+        $this->invalidProviderToken = true;
         $this->postJson('/api/voice/mobile/sessions', ['device_id' => (string) Str::uuid(), 'platform' => 'ios', 'apns_environment' => 'debug'])->assertStatus(503)->assertJsonMissingPath('jwt');
-        Http::assertNotSent(fn ($r) => str_ends_with($r->url(), '/token'));
+        Http::assertNotSent(fn ($r) => str_ends_with($r->url(), '/token_material'));
         $this->assertNotSame('ready', VoiceMobileSession::firstOrFail()->status);
     }
 

@@ -29,15 +29,16 @@ until this contract is deployed; intentional token removal must be explicit.
 The dedicated SIP connection remains bound to the same phone, account, and
 Sanctum login. Its Telnyx telephony credential lasts up to the receiving
 registration deadline (at most 30 days and never beyond the login deadline).
-The actual signed WebRTC JWT and API `expires_at` remain at most one hour,
-also capped by the provider credential and login deadlines.
+The API `expires_at` is a refresh lease of at most one hour, also bounded by
+login and provider credential deadlines. The SDK token itself is issued by
+Telnyx using `POST /telephony_credentials/{id}/token`, whose signed JWT lifetime
+is 24 hours. A one-hour refresh lease does not shorten that signed lifetime.
+Credential expiry/deletion still limits token use; logout/revocation cleans up
+the credential. The server does not fetch or persist signing material.
 
-The server fetches `/telephony_credentials/{id}/token_material` transiently and
-uses the official Telnyx Ruby SDK token protocol (HS256, decoded base64url
-signing secret, provider account `user_id`, and `telnyx-webrtc;v=1`). Signing
-material is never stored in the database, returned separately, or logged.
-Missing or malformed material fails closed; the provider's 24-hour `/token`
-endpoint is not a fallback.
+Native acceptance on SDK4.2.2 found that the provider-issued token reached Ready
+while the locally signed token was rejected with signaling error -32001 on the
+same isolated credential. Therefore local signing is not used for bootstrap.
 
 Telnyx terminal `expired` credentials cannot be revived with an expiry PATCH.
 Authenticated foreground bootstrap replaces only that expired credential on
@@ -66,7 +67,7 @@ of an SDK connection, hardware audio, or locked-screen incoming delivery.
    token to its existing device. Observe the same session and dedicated
    connection, a single replacement credential, and HTTP 200 instead of 503.
 3. Check only sanitized metadata: provider credential is active and registration
-   bounded; JWT signature/claims validate server-side and expire within one hour;
+   bounded; provider token is returned unchanged and the API refresh lease is at most one hour;
    no secret material in DTO/storage/logs; SDK reports ready and SIP registration
    belongs to the replacement identity.
 4. Perform authorized controlled audio and locked-screen PushKit acceptance
