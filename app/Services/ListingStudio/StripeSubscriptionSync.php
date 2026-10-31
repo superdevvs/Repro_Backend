@@ -22,6 +22,7 @@ class StripeSubscriptionSync
         'checkout.session.async_payment_failed', 'checkout.session.expired',
         'customer.subscription.created', 'customer.subscription.updated', 'customer.subscription.deleted',
         'customer.subscription.paused', 'customer.subscription.resumed',
+        'customer.subscription.pending_update_applied', 'customer.subscription.pending_update_expired',
         'invoice.paid', 'invoice.payment_failed', 'invoice.payment_action_required',
         'refund.created', 'refund.updated', 'refund.failed',
     ];
@@ -121,12 +122,13 @@ class StripeSubscriptionSync
             $credits = app(ListingStudioCreditService::class);
             $creditInvoices = $credits->prepareInvoices($event, $subscription);
 
-            $record = LockedWrite::run(fn () => DB::transaction(function () use ($key, $snapshot, $paidAt, $confirmedEnrollment, $email, $name, $reason, $eventIdentity, $event, $credits, $creditInvoices) {
+            $record = LockedWrite::run(fn () => DB::transaction(function () use ($key, $snapshot, $paidAt, $confirmedEnrollment, $email, $name, $reason, $eventIdentity, $event, $credits, $creditInvoices, $subscription) {
                 $record = ListingStudioSubscription::firstOrNew($key);
                 // A retry after another transaction won cannot create a second account or outbox.
                 if (DB::table('listing_studio_stripe_events')->where($eventIdentity)->exists()) {
                     return $record;
                 }
+                [$snapshot, $creditInvoices] = app(StudioSubscriptionProjection::class)->protect($record, $snapshot, $subscription, $creditInvoices);
                 $record->fill($snapshot);
                 if ($paidAt && (! $record->last_paid_at || $paidAt->greaterThan($record->last_paid_at))) {
                     $record->last_paid_at = $paidAt;

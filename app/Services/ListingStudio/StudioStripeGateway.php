@@ -67,6 +67,47 @@ class StudioStripeGateway
         return $this->client()->subscriptions->all(['customer' => $customer, 'status' => 'all', 'limit' => 100])->toArray();
     }
 
+    public function subscription(string $id): array
+    {
+        return $this->client()->subscriptions->retrieve($id, ['expand' => ['customer', 'latest_invoice']])->toArray();
+    }
+
+    public function previewSubscription(array $parameters): array
+    {
+        // Stripe's preview POST does not create an invoice or attempt payment.
+        return $this->client()->invoices->createPreview($parameters)->toArray();
+    }
+
+    public function updateSubscription(string $id, array $parameters, string $key): array
+    {
+        return $this->client()->subscriptions->update($id, $parameters, ['idempotency_key' => $key])->toArray();
+    }
+
+    public function invoice(string $id): array
+    {
+        return $this->client()->invoices->retrieve($id)->toArray();
+    }
+
+    public function schedule(string $id): array
+    {
+        return $this->client()->subscriptionSchedules->retrieve($id)->toArray();
+    }
+
+    public function createSchedule(string $subscription, string $key): array
+    {
+        return $this->client()->subscriptionSchedules->create(['from_subscription' => $subscription], ['idempotency_key' => $key])->toArray();
+    }
+
+    public function updateSchedule(string $id, array $parameters, string $key): array
+    {
+        return $this->client()->subscriptionSchedules->update($id, $parameters, ['idempotency_key' => $key])->toArray();
+    }
+
+    public function releaseSchedule(string $id, string $key): array
+    {
+        return $this->client()->subscriptionSchedules->release($id, ['preserve_cancel_date' => true], ['idempotency_key' => $key])->toArray();
+    }
+
     public function portal(string $customer, string $returnUrl): array
     {
         return $this->client()->billingPortal->sessions->create(['customer' => $customer, 'return_url' => $returnUrl])->toArray();
