@@ -22,7 +22,7 @@ class ListingStudioQuoteService
         private readonly ListingStudioSourceResolver $sources,
     ) {}
 
-    public function create(User $client, array $input): ListingStudioQuote
+    public function create(User $client, array $input, ?User $actor = null): ListingStudioQuote
     {
         ListingStudioClientAccess::assert($client);
         $data = Validator::make($input, [
@@ -51,6 +51,10 @@ class ListingStudioQuoteService
             $options = ['roomType' => $options['roomType'] ?? 'living', 'style' => $options['style'] ?? 'modern'];
         }
         $this->catalog->assertAvailable($kind, $service);
+        if ($actor) {
+            ListingStudioDelegatedAccess::assert($actor, $client, true);
+            ListingStudioDelegatedAccess::assertSource($actor, $client, $sourceKind, $data['source']['id']);
+        }
         $snapshot = $this->sources->resolve($client, $kind, $sourceKind, $data['source']['id']);
         if (($snapshot['kind'] ?? null) !== $sourceKind || ($snapshot['id'] ?? null) !== $data['source']['id']
             || (int) ($snapshot['clientId'] ?? 0) !== (int) $client->id
@@ -60,9 +64,13 @@ class ListingStudioQuoteService
         }
 
         // File inspection happens above, outside the short immutable quote write.
-        return LockedWrite::run(fn () => DB::transaction(function () use ($client, $kind, $service, $sourceKind, $snapshot, $options, $data) {
+        return LockedWrite::run(fn () => DB::transaction(function () use ($client, $kind, $service, $sourceKind, $snapshot, $options, $data, $actor) {
             $client = User::findOrFail($client->id);
             ListingStudioClientAccess::assert($client);
+            if ($actor) {
+                ListingStudioDelegatedAccess::assert(User::findOrFail($actor->id), $client, true);
+                ListingStudioDelegatedAccess::assertSource($actor, $client, $sourceKind, $snapshot['id']);
+            }
             $this->catalog->assertAvailable($kind, $service);
             $selection = $this->reservations->selection($client);
             $this->assertBillingReady($selection);
@@ -83,7 +91,7 @@ class ListingStudioQuoteService
             $pricing = $this->catalog->price($kind, $service, $subscription?->plan_code);
             $instructions = $kind === 'human_revision' ? trim($data['instructions']) : null;
 
-            return ListingStudioQuote::create(['client_id' => $client->id, 'kind' => $kind, 'service' => $service,
+            return ListingStudioQuote::create(['client_id' => $client->id, 'actor_id' => $actor?->id ?? $client->id, 'kind' => $kind, 'service' => $service,
                 'source_kind' => $sourceKind, 'source_id' => $snapshot['id'], 'source_snapshot' => $snapshot,
                 'options' => $options, 'instructions' => $instructions, 'pricing_snapshot' => $pricing,
                 'subscription_id' => $subscription?->id, 'catalog_version' => $this->catalog->version(),

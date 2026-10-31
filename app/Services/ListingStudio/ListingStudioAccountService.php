@@ -49,7 +49,20 @@ class ListingStudioAccountService
                 'canManageBilling' => $this->canManageBilling($client)],
             'notice' => $selection['billingAttention'] ? 'Your subscriptions need review before starting another purchase.'
                 : (! $enabled ? 'Paid editing is temporarily unavailable. Your order history is still available.' : null),
+            'pendingBilling' => app(ListingStudioBillingRequestService::class)->pending($client),
+            'subscriptionManagement' => $this->subscriptionManagement($client),
             'trialUsage' => ['allowancePerService' => 1, 'services' => $usage, 'startUrl' => 'https://reprophotos.com/listing-studio']];
+    }
+
+    private function subscriptionManagement(User $client): array
+    {
+        $summary = class_exists(StudioSubscriptionActionService::class) ? app(StudioSubscriptionActionService::class)->summary($client)
+            : ['pendingChange' => null];
+        // Visibility does not grant the client the superadmin renewal-control routes.
+        $summary['capabilities'] = ['canScheduleDowngrade' => false, 'canCancelRenewal' => false,
+            'canUndoCancel' => false, 'canUndoDowngrade' => false];
+
+        return $summary;
     }
 
     public function orders(User $client, array $filters): array

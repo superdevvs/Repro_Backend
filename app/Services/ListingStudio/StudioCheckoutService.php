@@ -122,7 +122,9 @@ class StudioCheckoutService
                 throw new StudioPaymentException('subscription_exists', 'Manage your existing subscription in billing settings.');
             }
 
-            return Attempt::create(['client_id' => $client->id, 'order_id' => $orderId, 'plan_code' => $plan, 'kind' => $kind,
+            $billingRequest = \App\Models\ListingStudioBillingRequest::where('client_id', $client->id)->where('checkout_key', $key)->first();
+
+            return Attempt::create(['client_id' => $client->id, 'actor_id' => $billingRequest?->actor_id ?? $client->id, 'order_id' => $orderId, 'plan_code' => $plan, 'kind' => $kind,
                 'idempotency_key' => $key, 'request_hash' => $hash, 'account_id' => $account, 'livemode' => $live,
                 'currency' => strtolower($currency), 'amount_cents' => $amount, 'status' => 'pending']);
         });
@@ -207,6 +209,10 @@ class StudioCheckoutService
     private function assertBillingCreateAllowed(User $client, Attempt $attempt): void
     {
         $this->eligible($client);
+        $request = \App\Models\ListingStudioBillingRequest::where('client_id', $client->id)->where('checkout_key', $attempt->idempotency_key)->first();
+        if ($request) {
+            app(ListingStudioBillingRequestService::class)->assertCheckoutSubmission($client, $request, $attempt);
+        }
         if (app(ListingStudioCreditReservationService::class)->selection($client)['billingAttention']) {
             $this->billingAttention($attempt->submission_started_at !== null);
         }

@@ -8,7 +8,7 @@ return new class extends Migration
 {
     public function up(): void
     {
-        foreach (['listing_studio_uploads', 'listing_studio_quotes', 'listing_studio_orders'] as $table) {
+        foreach (['listing_studio_uploads', 'listing_studio_quotes', 'listing_studio_orders', 'listing_studio_checkout_attempts'] as $table) {
             Schema::table($table, function (Blueprint $table): void {
                 $table->foreignId('actor_id')->nullable()->constrained('users')->restrictOnDelete();
             });
@@ -55,7 +55,7 @@ return new class extends Migration
     {
         Schema::dropIfExists('listing_studio_billing_emails');
         Schema::dropIfExists('listing_studio_billing_requests');
-        foreach (['listing_studio_orders', 'listing_studio_quotes', 'listing_studio_uploads'] as $table) {
+        foreach (['listing_studio_checkout_attempts', 'listing_studio_orders', 'listing_studio_quotes', 'listing_studio_uploads'] as $table) {
             Schema::table($table, fn (Blueprint $table) => $table->dropConstrainedForeignId('actor_id'));
         }
     }

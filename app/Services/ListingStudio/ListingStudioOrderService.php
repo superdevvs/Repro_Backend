@@ -25,18 +25,23 @@ class ListingStudioOrderService
         private readonly ListingStudioOutcomeGuard $outcomes,
     ) {}
 
-    public function acceptQuote(User $client, string $quoteId, string $fundingMethod, string $idempotencyKey): array
+    public function acceptQuote(User $client, string $quoteId, string $fundingMethod, string $idempotencyKey, ?User $actor = null): array
     {
         if (! Str::isUuid($quoteId) || ! Str::isUuid($idempotencyKey) || ! in_array($fundingMethod, ['credits', 'card'], true)) {
             throw new PublicApiException('A quote, payment choice and valid request identifier are required.', 'validation_failed', 422);
         }
         $hash = hash('sha256', json_encode([$quoteId, $fundingMethod], JSON_THROW_ON_ERROR));
 
-        return $this->write(function () use ($client, $quoteId, $fundingMethod, $idempotencyKey, $hash) {
+        return $this->write(function () use ($client, $quoteId, $fundingMethod, $idempotencyKey, $hash, $actor) {
             $client = User::findOrFail($client->id);
             ListingStudioClientAccess::assert($client);
+            if ($actor) {
+                $actor = User::findOrFail($actor->id);
+                ListingStudioDelegatedAccess::assert($actor, $client);
+            }
             $existing = ListingStudioOrder::where('client_id', $client->id)->where('idempotency_key', $idempotencyKey)->first();
             if ($existing) {
+                abort_if($actor && (int) $existing->actor_id !== (int) $actor->id, 404);
                 if (! hash_equals($existing->request_hash, $hash)) {
                     throw new PublicApiException('This request identifier was used for another order.', 'idempotency_conflict', 409);
                 }
@@ -44,6 +49,11 @@ class ListingStudioOrderService
                 return ['order' => $existing, 'created' => false];
             }
             $quote = ListingStudioQuote::where('client_id', $client->id)->findOrFail($quoteId);
+            if ($actor) {
+                ListingStudioDelegatedAccess::assert($actor, $client, true);
+                abort_unless((int) $quote->actor_id === (int) $actor->id, 404);
+                ListingStudioDelegatedAccess::assertSource($actor, $client, $quote->source_kind, $quote->source_id);
+            }
             if ($quote->consumed_at || ListingStudioOrder::where('quote_id', $quote->id)->exists()) {
                 throw new PublicApiException('This quote already has an order. Open your order history to continue.', 'idempotency_conflict', 409);
             }
@@ -62,7 +72,7 @@ class ListingStudioOrderService
                     ['quoteId' => $quote->id, 'shortfallCents' => $quote->pricing_snapshot['creditCostCents'],
                         'availableCreditCents' => 0, 'requiresNewQuote' => false]);
             }
-            $order = ListingStudioOrder::create(['client_id' => $client->id, 'quote_id' => $quote->id,
+            $order = ListingStudioOrder::create(['client_id' => $client->id, 'actor_id' => $actor?->id ?? $client->id, 'quote_id' => $quote->id,
                 'kind' => $quote->kind, 'service' => $quote->service, 'funding_method' => $fundingMethod,
                 'funding_status' => $fundingMethod === 'credits' ? 'reserved' : 'pending',
                 'currency' => 'usd', 'total_cents' => $quote->pricing_snapshot['totalPriceCents'],
@@ -77,6 +87,10 @@ class ListingStudioOrderService
                 $this->fundOrder($order);
             }
             $quote->update(['consumed_at' => now()]);
+            if ($actor) {
+                \App\Models\UserActivityLog::record($client, 'listing_studio.delegated_order', 'Listing Studio order created for client', null, $actor,
+                    ['orderId' => $order->id, 'fundingMethod' => $fundingMethod, 'amountCents' => $order->total_cents]);
+            }
 
             return ['order' => $order->fresh(), 'created' => true];
         });

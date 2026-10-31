@@ -19,7 +19,7 @@ class ListingStudioPaidAdmissionRaceTest extends TestCase
         $databaseHandle = new \PDO('sqlite:'.$database);
         $databaseHandle->exec('PRAGMA journal_mode=WAL');
         $databaseHandle->exec('CREATE TABLE cache_locks (key VARCHAR(255) PRIMARY KEY, owner VARCHAR(255), expiration INTEGER)');
-        $databaseHandle->exec('CREATE TABLE listing_studio_uploads (id VARCHAR(36) PRIMARY KEY, client_id INTEGER, status VARCHAR(24), request_key VARCHAR(64), request_hash VARCHAR(64), path TEXT, preview_path TEXT NULL, sha256 VARCHAR(64), mime VARCHAR(32), width INTEGER, height INTEGER, byte_size INTEGER, expires_at DATETIME, pinned_at DATETIME NULL, media_purged_at DATETIME NULL, created_at DATETIME, updated_at DATETIME, UNIQUE(client_id,request_key))');
+        $databaseHandle->exec('CREATE TABLE listing_studio_uploads (id VARCHAR(36) PRIMARY KEY, client_id INTEGER, actor_id INTEGER NULL, status VARCHAR(24), request_key VARCHAR(64), request_hash VARCHAR(64), path TEXT, preview_path TEXT NULL, sha256 VARCHAR(64), mime VARCHAR(32), width INTEGER, height INTEGER, byte_size INTEGER, expires_at DATETIME, pinned_at DATETIME NULL, media_purged_at DATETIME NULL, created_at DATETIME, updated_at DATETIME, UNIQUE(client_id,request_key))');
         $databaseHandle->exec('CREATE TABLE listing_studio_order_items (id VARCHAR(36) PRIMARY KEY, order_id VARCHAR(36), client_id INTEGER, source_kind VARCHAR(32), source_id VARCHAR(36), status VARCHAR(32))');
         $databaseHandle->exec('CREATE TABLE listing_studio_orders (id VARCHAR(36) PRIMARY KEY, funding_method VARCHAR(16), funding_status VARCHAR(32), paid_amount_cents INTEGER DEFAULT 0)');
         $photoPath = $root.'/photo.jpg';

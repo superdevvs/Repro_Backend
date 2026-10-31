@@ -21,3 +21,5 @@ Route::middleware(['auth:sanctum', EnsureListingStudioClient::class, 'throttle:6
         Route::post('orders/{orderId}/cancel', [ListingStudioClientController::class, 'cancel'])->whereUuid('orderId');
         require __DIR__.'/listing-studio-payments.php';
     });
+
+require __DIR__.'/listing-studio-delegated.php';

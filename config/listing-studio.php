@@ -1,6 +1,11 @@
 <?php
 
 return [
+    'delegated_enabled' => (bool) env('LISTING_STUDIO_DELEGATED_ENABLED', false),
+    'subscription_controls_enabled' => (bool) env('LISTING_STUDIO_SUBSCRIPTION_CONTROLS_ENABLED', false),
+    'billing_request_limit' => 20,
+    'billing_email_daily_limit' => 3,
+    'billing_email_cooldown_minutes' => 60,
     // Paid ordering is separate from both legacy requests and free trial admission.
     'paid_enabled' => (bool) env('LISTING_STUDIO_PAID_ENABLED', false),
     'paid_checkout_enabled' => (bool) env('LISTING_STUDIO_PAID_CHECKOUT_ENABLED', false),

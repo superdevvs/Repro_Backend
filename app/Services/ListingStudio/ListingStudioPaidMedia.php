@@ -30,9 +30,12 @@ class ListingStudioPaidMedia
         }
     }
 
-    public function upload(User $client, UploadedFile $photo, string $key): ListingStudioUpload
+    public function upload(User $client, UploadedFile $photo, string $key, ?User $actor = null): ListingStudioUpload
     {
         $this->authorizeClient($client);
+        if ($actor) {
+            ListingStudioDelegatedAccess::assert($actor, $client);
+        }
         $metadata = $this->inspectUpload($photo);
         $hash = $metadata['sha256'];
         $lock = Cache::store('database')->lock('listing-studio-paid-upload:'.$client->id.':'.$key, 120);
@@ -40,7 +43,7 @@ class ListingStudioPaidMedia
             throw new PublicApiException('This photo is still being uploaded. Retry the same upload shortly.', 'upload_in_progress', 409);
         }
         try {
-            $record = LockedWrite::run(fn () => DB::transaction(function () use ($client, $metadata, $hash, $key): ListingStudioUpload {
+            $record = LockedWrite::run(fn () => DB::transaction(function () use ($client, $metadata, $hash, $key, $actor): ListingStudioUpload {
                 // Acquire SQLite's writer before taking a replay/quota snapshot.
                 // A SELECT first can make the later INSERT fail immediately with
                 // SQLITE_BUSY_SNAPSHOT, bypassing busy_timeout on every retry.
@@ -50,6 +53,7 @@ class ListingStudioPaidMedia
                     ->update(['updated_at' => DB::raw('updated_at')]);
                 $existing = ListingStudioUpload::where('client_id', $client->id)->where('request_key', $key)->first();
                 if ($existing) {
+                    abort_if($actor && (int) $existing->actor_id !== (int) $actor->id, 404);
                     if (! hash_equals($existing->request_hash, $hash)) {
                         throw new PublicApiException('This upload key was already used for a different photo.', 'idempotency_conflict', 409);
                     }
@@ -59,11 +63,14 @@ class ListingStudioPaidMedia
 
                     return $existing;
                 }
+                if ($actor) {
+                    ListingStudioDelegatedAccess::assert(User::findOrFail($actor->id), User::findOrFail($client->id), true);
+                }
                 if (! config('listing-studio.paid_enabled', false)) {
                     throw new PublicApiException('Paid photo editing is temporarily unavailable.', 'service_unavailable', 503);
                 }
                 $id = (string) Str::uuid();
-                $record = ListingStudioUpload::create(['id' => $id, 'client_id' => $client->id, 'request_key' => $key, 'request_hash' => $hash,
+                $record = ListingStudioUpload::create(['id' => $id, 'client_id' => $client->id, 'actor_id' => $actor?->id ?? $client->id, 'request_key' => $key, 'request_hash' => $hash,
                     'path' => 'uploads/'.$id.'/original.'.$this->extension($metadata['mime']), 'sha256' => $hash,
                     'mime' => $metadata['mime'], 'width' => $metadata['width'], 'height' => $metadata['height'], 'byte_size' => $metadata['byteSize'],
                     'status' => 'preparing', 'expires_at' => now()->addDay()]);
