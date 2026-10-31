@@ -1,6 +1,16 @@
 <?php
 
 return [
+    // Paid ordering is separate from both legacy requests and free trial admission.
+    'paid_enabled' => (bool) env('LISTING_STUDIO_PAID_ENABLED', false),
+    'paid_checkout_enabled' => (bool) env('LISTING_STUDIO_PAID_CHECKOUT_ENABLED', false),
+    'human_revisions_enabled' => (bool) env('LISTING_STUDIO_HUMAN_REVISIONS_ENABLED', false),
+    'paid_services' => [
+        'staging' => (bool) env('LISTING_STUDIO_PAID_STAGING_ENABLED', false),
+        'decluttering' => (bool) env('LISTING_STUDIO_PAID_DECLUTTERING_ENABLED', false),
+        'grass' => (bool) env('LISTING_STUDIO_PAID_GRASS_ENABLED', false),
+        'twilight' => (bool) env('LISTING_STUDIO_PAID_TWILIGHT_ENABLED', false),
+    ],
     // Enable after the matching account, webhook subscriptions and queue are configured.
     'stripe_enabled' => (bool) env('LISTING_STUDIO_STRIPE_ENABLED', false),
     'stripe_secret_key' => env('LISTING_STUDIO_STRIPE_SECRET_KEY', env('STRIPE_SECRET_KEY')),
