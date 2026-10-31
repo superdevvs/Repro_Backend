@@ -13,7 +13,7 @@ class VoiceMobileSession extends Model
 
     protected $casts = ['push_token' => 'encrypted', 'expires_at' => 'datetime', 'registration_expires_at' => 'datetime', 'revoked_at' => 'datetime', 'provision_attempted_at' => 'datetime', 'credential_attempted_at' => 'datetime'];
 
-    protected $hidden = ['push_token', 'push_token_hash', 'credential_id', 'connection_id', 'connection_username', 'sip_username', 'personal_access_token_id'];
+    protected $hidden = ['push_token', 'push_token_hash', 'credential_id', 'credential_rotation_from', 'credential_cleanup_id', 'connection_id', 'connection_username', 'sip_username', 'personal_access_token_id'];
 
     public function personalAccessToken()
     {

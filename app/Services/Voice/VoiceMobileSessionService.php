@@ -5,7 +5,9 @@ namespace App\Services\Voice;
 use App\Models\User;
 use App\Models\PersonalAccessToken;
 use App\Models\VoiceMobileSession;
+use App\Support\LockedWrite;
 use App\Support\VoiceLocks;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
 class VoiceMobileSessionService
@@ -77,20 +79,23 @@ class VoiceMobileSessionService
         return $desired;
     }
 
-    /** Renew this same server credential before a background ring; never create a replacement identity. */
+    /** Renew an existing SDK identity before a background ring; replacement needs foreground registration. */
     public function prepareIncoming(VoiceMobileSession $s): void
     {
         VoiceLocks::lock('voice-mobile-device:'.$s->user_id.':'.$s->device_id, 60)->block(5, function () use ($s) {
             $s->refresh();
             abort_unless($this->registered($s), 403);
-            if ($s->expires_at->lt(now()->addMinute())) {
-                $owner = $this->activeOwner($s);
-                $token = $owner ? $this->tokenFor($owner, $s->personal_access_token_id) : null;
-                abort_unless($token, 403);
-                $expiry = $this->boundedExpiry($token, now()->addHour());
-                $this->gateway->request('PATCH', '/telephony_credentials/'.$s->credential_id, ['expires_at' => $expiry->toIso8601String()]);
-                $s->update(['expires_at' => $expiry]);
-            }
+            $owner = $this->activeOwner($s);
+            $token = $owner ? $this->tokenFor($owner, $s->personal_access_token_id) : null;
+            abort_unless($token, 403);
+            $credential = app(VoiceMobileCredentialService::class)->renew($s, $this->boundedExpiry($token, $s->registration_expires_at->copy()), false,
+                fn () => $this->assertCredentialOwner($s));
+            $token = $this->tokenFor($owner, $s->personal_access_token_id);
+            abort_unless($token, 403);
+            $expiry = $this->boundedExpiry($token, now()->addHour())->min($s->registration_expires_at)
+                ->min(\Illuminate\Support\Carbon::parse($credential['expires_at'], 'UTC'));
+            LockedWrite::run(fn () => VoiceMobileSession::whereKey($s->id)->whereNull('revoked_at')
+                ->where('personal_access_token_id', $token->id)->update(['expires_at' => $expiry]), 'mobile-incoming-lease');
             abort_unless($this->registered($s), 403);
         });
     }
@@ -132,26 +137,61 @@ class VoiceMobileSessionService
                 $s->update(['push_token' => $push ?: null, 'push_token_hash' => $hash]);
             }
             $this->provision($s);
-            $expiry = $this->boundedExpiry($token, now()->addHour());
-            $this->gateway->request('PATCH', '/telephony_credentials/'.$s->credential_id, ['expires_at' => $expiry->toIso8601String()]);
-            $jwt = $this->gateway->request('POST', '/telephony_credentials/'.$s->credential_id.'/token', [], true);
+            $registrationExpiry = $this->boundedExpiry($token, now()->addDays(30));
+            $expiry = $this->boundedExpiry($token, now()->addHour())->min($registrationExpiry);
+            $credential = app(VoiceMobileCredentialService::class)->renew($s, $registrationExpiry, true,
+                fn () => $this->assertCredentialOwner($s, $user));
+            $freshToken = $this->currentToken($user);
+            abort_unless($freshToken, 401);
+            $registrationExpiry = $this->boundedExpiry($freshToken, $registrationExpiry);
+            $expiry = $this->boundedExpiry($freshToken, $expiry)->min($registrationExpiry);
+            $jwt = app(VoiceMobileJwt::class)->mint($credential, $expiry);
             $parts = explode('.', $jwt);
             $claims = count($parts) === 3 ? json_decode(base64_decode(strtr($parts[1], '-_', '+/')), true) : null;
             abort_unless(is_array($claims) && is_numeric($claims['exp'] ?? null) && $claims['exp'] > now()->addSeconds(30)->timestamp, 503, 'The provider returned an invalid mobile credential.');
             $expires = $expiry->min(\Illuminate\Support\Carbon::createFromTimestampUTC((int) $claims['exp']));
             // Provider provisioning may outlast a login. Never return its JWT if
             // logout/expiry happened while those external requests were pending.
-            $current = $s->fresh();
-            $owner = $this->activeOwner($current);
-            if ($current->revoked_at || ! $this->matchesCurrentToken($current, $user) || ! $owner || ! $this->permissions->canOperate($owner)) {
-                $s->update(['revoked_at' => now(), 'status' => 'revocation_pending', 'push_token' => null, 'push_token_hash' => null]);
-                abort(401, 'Sign in again before connecting mobile calling.');
-            }
-            $s->update(['status' => 'ready', 'expires_at' => $expires, 'registration_expires_at' => $this->boundedExpiry($token, now()->addDays(30))]);
+            $valid = LockedWrite::run(fn () => DB::transaction(function () use ($s, $user, $expires, $registrationExpiry, $credential) {
+                $current = VoiceMobileSession::lockForUpdate()->findOrFail($s->id);
+                $owner = $this->activeOwner($current);
+                if ($current->revoked_at || ! $this->matchesCurrentToken($current, $user) || ! $owner || ! $this->permissions->canOperate($owner)) {
+                    $current->update(['revoked_at' => $current->revoked_at ?? now(), 'status' => 'revocation_pending', 'push_token' => null, 'push_token_hash' => null]);
+                    return false;
+                }
+                abort_unless($current->credential_id === $credential['id'] && $current->connection_id === $s->connection_id
+                    && $current->sip_username === $credential['sip_username'], 409, 'Mobile registration changed. Reconnect calling.');
+                $freshToken = $this->currentToken($user);
+                // A concurrently shortened login may never receive an overlong
+                // already-minted JWT. Reconnect can mint again using that bound.
+                if ($this->boundedExpiry($freshToken, $expires->copy())->lt($expires)) { return false; }
+                $current->update(['status' => 'ready', 'expires_at' => $expires,
+                    'registration_expires_at' => $this->boundedExpiry($freshToken, $registrationExpiry)]);
+                return true;
+            }), 'mobile-ready-lease');
+            abort_unless($valid, 401, 'Sign in again before connecting mobile calling.');
 
             return ['session_id' => $s->id, 'device_id' => $s->device_id, 'jwt' => $jwt, 'expires_at' => $expires->toIso8601String(),
                 'apns_environment' => $env, 'receive_calls' => $hash !== null, 'make_calls' => true, 'push_when_active' => false];
         });
+    }
+
+    private function assertCredentialOwner(VoiceMobileSession $session, ?User $requestUser = null): \Illuminate\Support\Carbon
+    {
+        $current = $session->fresh();
+        $owner = $current ? $this->activeOwner($current) : null;
+        $valid = $current && ! $current->revoked_at && $this->configured($current->apns_environment)
+            && $owner && $this->permissions->canOperate($owner)
+            && (string) $current->personal_access_token_id === (string) $session->personal_access_token_id
+            && (! $requestUser || $this->matchesCurrentToken($current, $requestUser));
+        if (! $valid && $current && ! $current->revoked_at) {
+            LockedWrite::run(fn () => VoiceMobileSession::whereKey($current->id)->whereNull('revoked_at')
+                ->update(['revoked_at' => now(), 'status' => 'revocation_pending', 'push_token' => null, 'push_token_hash' => null]), 'mobile-invalid-owner');
+        }
+        abort_unless($valid, 401, 'Sign in again before connecting mobile calling.');
+        $token = $this->tokenFor($owner, $current->personal_access_token_id);
+        abort_unless($token, 401, 'Sign in again before connecting mobile calling.');
+        return $this->boundedExpiry($token, $requestUser ? now()->addDays(30) : $current->registration_expires_at->copy());
     }
 
     private function provision(VoiceMobileSession $s): void
@@ -182,21 +222,6 @@ class VoiceMobileSessionService
             && ($v['webhook_api_version'] ?? '') === '2' && ($v['webhook_event_url'] ?? '') === config('services.telnyx.voice.webhook_url')
             && ($v['ios_push_credential_id'] ?? '') === config('mobile_voice.push_credentials.'.$s->apns_environment)
             && ($v['outbound']['call_parking_enabled'] ?? false) && empty($v['outbound']['outbound_voice_profile_id']), 503, 'Mobile provider settings require verification.');
-        if (! $s->credential_id) {
-            $name = 'repro-mobile-'.$s->id;
-            $matches = collect($this->gateway->request('GET', '/telephony_credentials', ['filter[name]' => $name, 'filter[resource_id]' => $s->connection_id]))
-                ->filter(fn ($v) => is_array($v) && ($v['name'] ?? '') === $name && ($v['resource_id'] ?? '') === $s->connection_id)->values();
-            abort_if($matches->count() > 1, 503, 'Mobile credential creation needs provider reconciliation.');
-            $v = $matches->first();
-            if (! $v) {
-                // Never create a second credential after an ambiguous provider response.
-                abort_if($s->credential_attempted_at, 503, 'The provider has not confirmed this mobile credential. Retry later.');
-                $s->update(['credential_attempted_at' => now()]);
-                $v = $this->gateway->request('POST', '/telephony_credentials', ['connection_id' => $s->connection_id, 'name' => $name, 'expires_at' => now()->addHour()->toIso8601String()]);
-            }
-            abort_unless(filled($v['id'] ?? null) && preg_match('/^gencred[A-Za-z0-9_-]+$/', $v['sip_username'] ?? ''), 503, 'Invalid mobile credential.');
-            $s->update(['credential_id' => $v['id'], 'sip_username' => $v['sip_username']]);
-        }
     }
 
     public function revoke(VoiceMobileSession $s): void
@@ -217,6 +242,7 @@ class VoiceMobileSessionService
             $failure ??= $e;
         }
         try {
+            app(VoiceMobileCredentialService::class)->cleanupPending($s);
             if ($s->credential_id) {
                 $this->gateway->request('DELETE', '/telephony_credentials/'.$s->credential_id);
             }

@@ -26,8 +26,9 @@ class VoiceMobileTokenBindingTest extends TestCase
     private User $staff;
     private PersonalAccessToken $token;
     private array $connection = [];
+    private array $credential = [];
     private bool $failCleanup = false;
-    private mixed $beforeJWT = null;
+    private mixed $beforeMaterial = null;
 
     protected function setUp(): void
     {
@@ -54,13 +55,21 @@ class VoiceMobileTokenBindingTest extends TestCase
                 return Http::response(['data' => $this->connection]);
             }
             if ($path === '/v2/telephony_credentials') {
-                return Http::response(['data' => $request->method() === 'GET' ? [] : ['id' => 'isolated-credential', 'sip_username' => 'gencredtestbinding']]);
+                if ($request->method() === 'GET') { return Http::response(['data' => []]); }
+                $this->credential = array_merge($request->data(), ['id' => 'isolated-credential', 'sip_username' => 'gencredtestbinding',
+                    'user_id' => 'test-provider-user', 'resource_id' => 'connection:'.$this->connection['id'], 'expired' => false]);
+                return Http::response(['data' => $this->credential]);
             }
-            if (str_ends_with($path, '/token')) {
-                if ($this->beforeJWT) { ($this->beforeJWT)(); }
-                return Http::response('header.'.rtrim(strtr(base64_encode(json_encode(['exp' => now()->addHour()->timestamp])), '+/', '-_'), '=').'.signature');
+            if ($path === '/v2/telephony_credentials/isolated-credential/token_material' && $request->method() === 'GET') {
+                if ($this->beforeMaterial) { ($this->beforeMaterial)(); }
+                return Http::response(['data' => ['kid' => 'test-v1', 'tel_token' => 'isolated-provider-token',
+                    'signing_secret' => rtrim(strtr(base64_encode(str_repeat('t', 32)), '+/', '-_'), '=')]]);
             }
-            if (str_starts_with($path, '/v2/telephony_credentials/') || str_contains($path, '/actions/hangup')) {
+            if ($path === '/v2/telephony_credentials/isolated-credential' && in_array($request->method(), ['GET', 'PATCH'], true)) {
+                if ($request->method() === 'PATCH') { $this->credential = array_merge($this->credential, $request->data()); }
+                return Http::response(['data' => $this->credential]);
+            }
+            if ((str_starts_with($path, '/v2/telephony_credentials/') && $request->method() === 'DELETE') || str_contains($path, '/actions/hangup')) {
                 return Http::response(['data' => []]);
             }
             throw new \RuntimeException('Unexpected isolated provider request.');
@@ -102,8 +111,13 @@ class VoiceMobileTokenBindingTest extends TestCase
         $this->assertTrue($session->expires_at->lte($this->token->expires_at));
         $this->assertTrue($session->registration_expires_at->lte($this->token->expires_at));
         $this->assertTrue($this->service()->registered($session));
+        $claims = json_decode(base64_decode(strtr(explode('.', $first['jwt'])[1], '-_', '+/')), true, flags: JSON_THROW_ON_ERROR);
+        $this->assertLessThanOrEqual($this->token->expires_at->timestamp, $claims['exp']);
+        $this->assertSame('test-provider-user', $claims['user_id']);
+        $this->assertArrayNotHasKey('token_material', $first);
         $this->postJson('/api/voice/mobile/sessions', $data)->assertOk()->assertJsonPath('session_id', $session->id);
         $this->assertSame('browser-unchanged', config('services.telnyx.voice.credential_connection_id'));
+        Http::assertNotSent(fn ($request) => str_ends_with(parse_url($request->url(), PHP_URL_PATH), '/token'));
     }
 
     public function test_cookie_only_or_expired_login_cannot_provision(): void
@@ -258,12 +272,33 @@ class VoiceMobileTokenBindingTest extends TestCase
 
     public function test_logout_during_provider_provision_never_returns_jwt(): void
     {
-        $this->beforeJWT = fn () => $this->token->delete();
+        $this->beforeMaterial = fn () => $this->token->delete();
         $this->postJson('/api/voice/mobile/sessions', $this->data())->assertUnauthorized()->assertJsonMissingPath('jwt');
         $session = VoiceMobileSession::sole();
         $this->assertSame('revocation_pending', $session->status);
         $this->assertNull($session->push_token_hash);
         $this->assertFalse($this->service()->registered($session));
+    }
+
+    public function test_identity_changed_during_material_fetch_never_returns_stale_jwt_or_revokes_current_registration(): void
+    {
+        $data = $this->data();
+        $first = $this->postJson('/api/voice/mobile/sessions', $data)->assertOk()->json();
+        $session = VoiceMobileSession::findOrFail($first['session_id']);
+        $prior = $session->only(['connection_id', 'sip_username', 'push_token_hash', 'personal_access_token_id', 'expires_at', 'registration_expires_at']);
+        $this->beforeMaterial = fn () => VoiceMobileSession::whereKey($session->id)
+            ->update(['credential_id' => 'concurrently-adopted-credential']);
+
+        $this->postJson('/api/voice/mobile/sessions', $data)->assertStatus(409)->assertJsonMissingPath('jwt');
+
+        $session->refresh();
+        $this->assertSame('concurrently-adopted-credential', $session->credential_id);
+        $this->assertSame('ready', $session->status);
+        $this->assertNull($session->revoked_at);
+        $this->assertEquals($prior, $session->only(array_keys($prior)), 'A stale bootstrap must not overwrite the current registration.');
+        $this->assertTrue($this->service()->registered($session));
+        $this->assertTrue($this->service()->authorized($session));
+        Http::assertNotSent(fn ($request) => $request->method() === 'DELETE');
     }
 
     public function test_omitted_push_refresh_cannot_rebind_a_previous_login_or_environment(): void
@@ -295,7 +330,7 @@ class VoiceMobileTokenBindingTest extends TestCase
         $session = VoiceMobileSession::findOrFail($first['session_id']);
         $this->assertTrue($this->service()->registered($session));
         unset($data['push_token']);
-        $this->beforeJWT = function () use ($interruption, $session) {
+        $this->beforeMaterial = function () use ($interruption, $session) {
             if ($interruption === 'logout') {
                 $this->token->delete();
             } else {

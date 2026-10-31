@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\User;
 use App\Models\VoiceBrowserCall;
+use App\Models\VoiceBrowserLeg;
 use App\Models\VoiceBrowserSession;
 use App\Models\VoiceCall;
 use App\Models\VoiceIncomingOffer;
@@ -40,6 +41,18 @@ class VoiceMobileTest extends TestCase
     private bool $failRevoke = false;
 
     private bool $failHangup = false;
+
+    private ?int $credentialReadFailure = null;
+
+    private bool $invalidMaterial = false;
+
+    private mixed $afterCredentialCreate = null;
+
+    private mixed $afterCredentialList = null;
+
+    private mixed $afterCredentialPatch = null;
+
+    private bool $unknownCredentialDeleteOnce = false;
 
     protected function setUp(): void
     {
@@ -78,19 +91,36 @@ class VoiceMobileTest extends TestCase
                 return Http::response(['data' => $this->connections[$m[1]] ?? []]);
             }
             if ($p === '/v2/telephony_credentials' && $r->method() === 'GET') {
+                if ($this->afterCredentialList) { ($this->afterCredentialList)(); }
                 return Http::response(['data' => array_values($this->credentials)]);
             }
             if ($p === '/v2/telephony_credentials' && $r->method() === 'POST') {
-                $id = 'credential-'.$r['connection_id'];
-                $this->credentials[$id] = ['id' => $id, 'name' => $r['name'], 'resource_id' => $r['connection_id'], 'sip_username' => 'gencred'.Str::random(12)];
+                $id = 'credential-'.$r['connection_id'].'-'.(count($this->credentials) + 1);
+                $this->credentials[$id] = ['id' => $id, 'name' => $r['name'], 'resource_id' => 'connection:'.$r['connection_id'],
+                    'sip_username' => 'gencred'.Str::random(12), 'user_id' => 'provider-account', 'expires_at' => $r['expires_at'], 'expired' => false];
+                if ($this->afterCredentialCreate) { ($this->afterCredentialCreate)(); }
 
                 return $this->ambiguousCredential ? Http::response([], 503) : Http::response(['data' => $this->credentials[$id]]);
             }
-            if (str_ends_with($p, '/token')) {
-                return Http::response('header.'.rtrim(strtr(base64_encode(json_encode(['exp' => now()->addHour()->timestamp])), '+/', '-_'), '=').'.signature');
+            if (preg_match('#/telephony_credentials/([^/]+)/token_material$#', $p, $m)) {
+                if ($this->invalidMaterial) { return Http::response(['data' => []]); }
+                return Http::response(['data' => ['kid' => 'test-kid', 'tel_token' => 'test-provider-token',
+                    'signing_secret' => rtrim(strtr(base64_encode(str_repeat('s', 32)), '+/', '-_'), '=')]]);
             }
-            if (str_starts_with($p, '/v2/telephony_credentials/')) {
-                return Http::response(['data' => []]);
+            if (preg_match('#/telephony_credentials/([^/]+)$#', $p, $m)) {
+                if ($r->method() === 'GET' && $this->credentialReadFailure) { return Http::response([], $this->credentialReadFailure); }
+                if ($r->method() === 'PATCH') {
+                    if ($this->credentials[$m[1]]['expired'] ?? false) { return Http::response([], 422); }
+                    $this->credentials[$m[1]] = array_merge($this->credentials[$m[1]], $r->data());
+                    if ($this->afterCredentialPatch) { ($this->afterCredentialPatch)(); }
+                }
+                if ($r->method() === 'DELETE') {
+                    $existed = isset($this->credentials[$m[1]]);
+                    unset($this->credentials[$m[1]]);
+                    if ($this->unknownCredentialDeleteOnce) { $this->unknownCredentialDeleteOnce = false; return Http::response([], 503); }
+                    return Http::response(['data' => []], $existed ? 200 : 404);
+                }
+                return Http::response(['data' => $this->credentials[$m[1]] ?? []]);
             }
             if ($p === '/v2/calls') {
                 return Http::response(['data' => ['call_control_id' => 'mobile-leg-'.++$this->dials, 'call_session_id' => 'session-'.$this->dials]]);
@@ -525,7 +555,7 @@ class VoiceMobileTest extends TestCase
         $this->deleteJson($path)->assertOk();
     }
 
-    public function test_expired_credential_is_renewed_for_background_push_without_replacing_identity(): void
+    public function test_expired_api_lease_renews_background_registration_without_replacing_active_identity(): void
     {
         $s = $this->bootstrap();
         $model = VoiceMobileSession::find($s['session_id']);
@@ -551,6 +581,220 @@ class VoiceMobileTest extends TestCase
         $this->assertCount(1, $this->credentials);
         $this->assertCount(1, $this->connections);
         $this->assertTrue($s['make_calls']);
+    }
+
+    public function test_terminal_provider_expiry_rotates_only_credential_and_mints_a_short_token(): void
+    {
+        $this->freezeTime();
+        $device = (string) Str::uuid();
+        $first = $this->bootstrap($device);
+        $session = VoiceMobileSession::findOrFail($first['session_id']);
+        $old = $session->credential_id;
+        $priorPatches = Http::recorded(fn ($r) => $r->method() === 'PATCH' && str_ends_with($r->url(), '/telephony_credentials/'.$old))->count();
+        $connection = $session->connection_id;
+        $push = $session->push_token_hash;
+        $this->credentials[$old]['expired'] = true;
+        $this->credentials[$old]['status'] = 'expired';
+        $this->credentials[$old]['expires_at'] = now()->subHour()->toIso8601String();
+        $next = $this->bootstrap($device);
+        $session->refresh();
+        $this->assertSame($first['session_id'], $next['session_id']);
+        $this->assertSame($connection, $session->connection_id);
+        $this->assertNotSame($old, $session->credential_id);
+        $this->assertNull($session->credential_rotation_from);
+        $this->assertSame($push, $session->push_token_hash);
+        $this->assertCount(1, $this->connections);
+        $this->assertCount(2, $this->credentials);
+        $claims = json_decode(base64_decode(strtr(explode('.', $next['jwt'])[1], '-_', '+/')), true);
+        $this->assertSame($session->credential_id, $claims['sub']);
+        $this->assertSame('provider-account', $claims['user_id']);
+        $this->assertSame(now()->addHour()->timestamp, $claims['exp']);
+        $this->assertSame(now()->addDays(30)->toIso8601String(), $claims['cred_exp']);
+        Http::assertNotSent(fn ($r) => str_ends_with($r->url(), '/token')
+            || ($r->method() === 'PATCH' && str_contains($r->url(), '/credential_connections/')));
+        $this->assertSame($priorPatches, Http::recorded(fn ($r) => $r->method() === 'PATCH' && str_ends_with($r->url(), '/telephony_credentials/'.$old))->count());
+        Http::assertSent(fn ($r) => $r->method() === 'GET' && str_contains($r->url(), 'filter%5Bresource_id%5D=connection%3A'));
+        $this->bootstrap($device);
+        $this->assertCount(2, $this->credentials);
+        $this->assertSame($session->credential_id, $session->fresh()->credential_id);
+        $this->assertStringNotContainsString('test-provider-token', json_encode($session->toArray()));
+    }
+
+    public function test_terminal_expired_background_identity_is_not_replaced_or_dialed(): void
+    {
+        $first = $this->bootstrap();
+        $session = VoiceMobileSession::findOrFail($first['session_id']);
+        $this->credentials[$session->credential_id]['expired'] = true;
+        try { app(VoiceMobileSessionService::class)->prepareIncoming($session); $this->fail('Expired identity needs foreground registration.'); }
+        catch (\Symfony\Component\HttpKernel\Exception\HttpException $e) {
+            $this->assertSame(503, $e->getStatusCode());
+            $this->assertStringContainsString('Open R/E Pro', $e->getMessage());
+        }
+        $this->assertCount(1, $this->credentials);
+        $this->assertSame(0, $this->dials);
+    }
+
+    public function test_unknown_expired_credential_replacement_reconciles_exact_reserved_identity(): void
+    {
+        $device = (string) Str::uuid();
+        $first = $this->bootstrap($device);
+        $session = VoiceMobileSession::findOrFail($first['session_id']);
+        $old = $session->credential_id;
+        $this->credentials[$old]['expired'] = true;
+        $this->ambiguousCredential = true;
+        $this->postJson('/api/voice/mobile/sessions', ['device_id' => $device, 'platform' => 'ios', 'apns_environment' => 'debug'])->assertStatus(503);
+        $this->assertSame($old, $session->fresh()->credential_id);
+        $this->assertSame($old, $session->fresh()->credential_rotation_from);
+        $this->assertCount(2, $this->credentials);
+        $this->ambiguousCredential = false;
+        $this->bootstrap($device);
+        $this->assertNotSame($old, $session->fresh()->credential_id);
+        $this->assertCount(2, $this->credentials);
+        $this->assertCount(1, $this->connections);
+    }
+
+    public function test_unknown_replacement_not_yet_listed_does_not_create_again(): void
+    {
+        $device = (string) Str::uuid();
+        $first = $this->bootstrap($device);
+        $session = VoiceMobileSession::findOrFail($first['session_id']);
+        $old = $session->credential_id;
+        $this->credentials[$old]['expired'] = true;
+        $this->ambiguousCredential = true;
+        $data = ['device_id' => $device, 'platform' => 'ios', 'apns_environment' => 'debug'];
+        $this->postJson('/api/voice/mobile/sessions', $data)->assertStatus(503);
+        $this->credentials = [$old => $this->credentials[$old]]; // Provider listing has not converged.
+        $this->ambiguousCredential = false;
+        $this->postJson('/api/voice/mobile/sessions', $data)->assertStatus(503);
+        $creates = Http::recorded(fn ($r) => $r->method() === 'POST' && str_ends_with($r->url(), '/telephony_credentials'));
+        $this->assertCount(2, $creates); // Initial registration plus the one reserved replacement.
+    }
+
+    public function test_expired_rotation_preserves_pending_call_reservation(): void
+    {
+        $device = (string) Str::uuid();
+        $first = $this->bootstrap($device);
+        $session = VoiceMobileSession::findOrFail($first['session_id']);
+        $this->credentials[$session->credential_id]['expired'] = true;
+        $ticket = VoiceMobileTicket::create(['session_id' => $session->id, 'idempotency_key' => (string) Str::uuid(),
+            'destination' => '+12025550199', 'caller_number' => '+12025550100', 'expires_at' => now()->addSeconds(45)]);
+        $this->postJson('/api/voice/mobile/sessions', ['device_id' => $device, 'platform' => 'ios', 'apns_environment' => 'debug'])->assertStatus(409);
+        $this->assertSame('pending', $ticket->fresh()->state);
+        $this->assertCount(1, $this->credentials);
+    }
+
+    public function test_expired_rotation_preserves_an_answered_call_after_offer_deadline(): void
+    {
+        $device = (string) Str::uuid();
+        $first = $this->bootstrap($device);
+        $offer = $this->incoming($first);
+        $this->claim($first, $offer)->assertOk();
+        $this->travel(1)->minutes();
+        $session = VoiceMobileSession::findOrFail($first['session_id']);
+        $this->credentials[$session->credential_id]['expired'] = true;
+        $this->postJson('/api/voice/mobile/sessions', ['device_id' => $device, 'platform' => 'ios', 'apns_environment' => 'debug'])->assertStatus(409);
+        $this->assertTrue(VoiceBrowserLeg::where('mobile_session_id', $session->id)->whereNull('ended_at')->exists());
+        $this->assertCount(1, $this->credentials);
+    }
+
+    public function test_expired_rotation_rechecks_durable_reservation_after_provider_list(): void
+    {
+        $device = (string) Str::uuid();
+        $first = $this->bootstrap($device);
+        $session = VoiceMobileSession::findOrFail($first['session_id']);
+        $old = $session->credential_id;
+        $this->credentials[$old]['expired'] = true;
+        $this->afterCredentialList = fn () => VoiceMobileSession::whereKey($session->id)->update(['credential_rotation_from' => $old]);
+        $this->postJson('/api/voice/mobile/sessions', ['device_id' => $device, 'platform' => 'ios', 'apns_environment' => 'debug'])->assertStatus(503);
+        $this->assertSame($old, $session->fresh()->credential_rotation_from);
+        $this->assertCount(1, $this->credentials);
+    }
+
+    public function test_login_shortened_during_provider_renewal_corrects_identity_and_signed_expiry(): void
+    {
+        $this->freezeTime();
+        $device = (string) Str::uuid();
+        $first = $this->bootstrap($device);
+        $deadline = now()->addMinutes(10)->startOfSecond();
+        $this->afterCredentialPatch = function () use ($deadline) {
+            $this->staff->currentAccessToken()->update(['expires_at' => $deadline]);
+            $this->afterCredentialPatch = null;
+        };
+        $next = $this->bootstrap($device);
+        $session = VoiceMobileSession::findOrFail($first['session_id']);
+        $claims = json_decode(base64_decode(strtr(explode('.', $next['jwt'])[1], '-_', '+/')), true);
+        $this->assertSame($deadline->timestamp, $claims['exp']);
+        $this->assertSame($deadline->toIso8601String(), $claims['cred_exp']);
+        $this->assertSame($deadline->toIso8601String(), $this->credentials[$session->credential_id]['expires_at']);
+        $this->assertTrue($session->registration_expires_at->equalTo($deadline));
+        $this->assertCount(1, $this->credentials);
+    }
+
+    public function test_provider_read_failures_and_wrong_resource_never_rotate_identity(): void
+    {
+        $device = (string) Str::uuid();
+        $first = $this->bootstrap($device);
+        $session = VoiceMobileSession::findOrFail($first['session_id']);
+        $data = ['device_id' => $device, 'platform' => 'ios', 'apns_environment' => 'debug'];
+        foreach ([404, 503] as $status) {
+            $this->credentialReadFailure = $status;
+            $this->postJson('/api/voice/mobile/sessions', $data)->assertStatus(503);
+        }
+        $this->credentialReadFailure = null;
+        $this->credentials[$session->credential_id]['expired'] = true;
+        $this->credentials[$session->credential_id]['resource_id'] = 'connection:another-device';
+        $this->postJson('/api/voice/mobile/sessions', $data)->assertStatus(503);
+        $this->assertCount(1, $this->credentials);
+        $this->assertNull($session->fresh()->credential_rotation_from);
+    }
+
+    public function test_missing_signing_material_fails_closed_without_long_lived_token_fallback(): void
+    {
+        $this->invalidMaterial = true;
+        $this->postJson('/api/voice/mobile/sessions', ['device_id' => (string) Str::uuid(), 'platform' => 'ios', 'apns_environment' => 'debug'])->assertStatus(503)->assertJsonMissingPath('jwt');
+        Http::assertNotSent(fn ($r) => str_ends_with($r->url(), '/token'));
+        $this->assertNotSame('ready', VoiceMobileSession::firstOrFail()->status);
+    }
+
+    public function test_logout_during_accepted_rotation_retains_cleanup_marker_and_never_returns_jwt(): void
+    {
+        $device = (string) Str::uuid();
+        $first = $this->bootstrap($device);
+        $session = VoiceMobileSession::findOrFail($first['session_id']);
+        $old = $session->credential_id;
+        $this->credentials[$old]['expired'] = true;
+        $this->afterCredentialCreate = fn () => $this->staff->currentAccessToken()->delete();
+        $this->postJson('/api/voice/mobile/sessions', ['device_id' => $device, 'platform' => 'ios', 'apns_environment' => 'debug'])->assertUnauthorized()->assertJsonMissingPath('jwt');
+        $session->refresh();
+        $this->assertSame($old, $session->credential_id);
+        $this->assertSame($old, $session->credential_rotation_from);
+        $this->assertSame('revocation_pending', $session->status);
+        app(VoiceMobileSessionService::class)->revoke($session);
+        $this->assertCount(0, $this->credentials);
+        $this->assertSame('revoked', $session->fresh()->status);
+        $this->assertNull($session->fresh()->credential_rotation_from);
+    }
+
+    public function test_unknown_orphan_cleanup_retries_exact_id_and_repeated_revoke_is_safe(): void
+    {
+        $this->ambiguousCredential = true;
+        $this->postJson('/api/voice/mobile/sessions', ['device_id' => (string) Str::uuid(), 'platform' => 'ios', 'apns_environment' => 'debug'])->assertStatus(503);
+        $session = VoiceMobileSession::firstOrFail();
+        $this->assertNull($session->credential_id);
+        $this->unknownCredentialDeleteOnce = true;
+        try { app(VoiceMobileSessionService::class)->revoke($session); $this->fail('Unknown cleanup must retain its target.'); }
+        catch (\RuntimeException $e) { $this->assertSame(503, $e->getCode()); }
+        $target = $session->fresh()->credential_cleanup_id;
+        $this->assertNotNull($target);
+        $this->assertCount(0, $this->credentials);
+        app(VoiceMobileSessionService::class)->revoke($session);
+        app(VoiceMobileSessionService::class)->revoke($session);
+        $session->refresh();
+        $this->assertSame('revoked', $session->status);
+        $this->assertNull($session->credential_cleanup_id);
+        $this->assertNull($session->credential_attempted_at);
+        $this->assertCount(2, Http::recorded(fn ($r) => $r->method() === 'DELETE' && str_ends_with($r->url(), '/telephony_credentials/'.$target)));
+        $this->assertCount(1, Http::recorded(fn ($r) => $r->method() === 'POST' && str_ends_with($r->url(), '/telephony_credentials')));
     }
 
     public function test_cancelled_offer_cannot_claim_and_cleanup_does_not_cancel_winner(): void
