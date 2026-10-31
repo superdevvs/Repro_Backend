@@ -231,18 +231,32 @@ class StudioWorkspaceController extends StudioController
     {
         $record = $this->find($request, $workspace);
         $this->mediaService->authorize($record->media, $request->user(), $record->team_id);
-        $data = $request->validate(['mediaId' => ['required', 'string'], 'outputId' => ['required', 'string'], 'edits' => ['required', 'array']]);
+        $data = $request->validate(['mediaId' => ['required', 'string'], 'outputId' => ['required_unless:original,true', 'prohibited_if:original,true', 'string'],
+            'original' => ['sometimes', 'boolean'], 'sourceVersion' => ['sometimes', 'string', 'regex:/^[a-f0-9]{64}$/'],
+            'version' => ['required_if:original,true', 'integer', 'min:1'], 'edits' => ['required', 'array']]);
         $recipe = \App\Services\Studio\CustomPhotoEdits::validate($data['edits']);
-        $output = collect($record->outputs ?? [])->firstWhere('id', $data['outputId']);
-        $path = $output['path'] ?? '';
-        abort_unless($output && collect($record->media)->contains('id', $data['mediaId']) && ($output['mediaId'] ?? '') === $data['mediaId'] && ($output['kind'] ?? '') === 'image' && ($output['status'] ?? '') === 'completed'
-            && str_starts_with($path, 'studio/workspaces/'.$record->id.'/') && ! str_contains($path, '..') && ! str_contains($path, '\\') && Storage::disk('public')->exists($path), 422, 'Choose an available completed photo.');
-        $bytes = Storage::disk('public')->get($path);
+        if (! empty($data['original'])) {
+            abort_if($record->isBusy() || $record->version !== $data['version'], 409, 'The workspace changed. Reload the original photo.');
+            $captured = app(\App\Services\Studio\WorkspaceOriginalPhoto::class)->capture($record, $data['mediaId']);
+            $sourceVersion = app(\App\Services\Studio\WorkspaceOriginalPhoto::class)->sourceVersion($captured['receipt']);
+            abort_if(isset($data['sourceVersion']) && ! hash_equals($sourceVersion, $data['sourceVersion']), 409, 'The original photo changed. Reopen photo tools.');
+            $bytes = $captured['bytes'];
+            $fresh = $this->find($request, $record->id);
+            abort_if($fresh->isBusy() || $fresh->version !== $data['version'], 409, 'The workspace changed. Reload the original photo.');
+            app(\App\Services\Studio\WorkspaceOriginalPhoto::class)->assertIdentity($fresh, $data['mediaId'], $captured['receipt']);
+        } else {
+            $output = collect($record->outputs ?? [])->firstWhere('id', $data['outputId']);
+            $path = $output['path'] ?? '';
+            abort_unless($output && collect($record->media)->contains('id', $data['mediaId']) && ($output['mediaId'] ?? '') === $data['mediaId'] && ($output['kind'] ?? '') === 'image' && ($output['status'] ?? '') === 'completed'
+                && str_starts_with($path, 'studio/workspaces/'.$record->id.'/') && ! str_contains($path, '..') && ! str_contains($path, '\\') && Storage::disk('public')->exists($path), 422, 'Choose an available completed photo.');
+            $bytes = Storage::disk('public')->get($path);
+        }
         $size = @getimagesizefromstring($bytes);
         abort_unless($size && $size[0] * $size[1] <= 40000000, 422, 'This photo exceeds the 40 megapixel editing limit.');
         $small = (string) \Intervention\Image\ImageManager::gd()->read($bytes)->orient()->scaleDown(width: 1000, height: 1000)->toJpeg(96);
 
-        return response(app(\App\Services\Studio\CustomPhotoEdits::class)->apply($small, $recipe, app(\App\Services\Studio\WorkspacePhotoLogo::class)->bytes($record, $recipe)), 200, ['Content-Type' => 'image/jpeg', 'Cache-Control' => 'private, no-store']);
+        return response(app(\App\Services\Studio\CustomPhotoEdits::class)->apply($small, $recipe, app(\App\Services\Studio\WorkspacePhotoLogo::class)->bytes($record, $recipe)), 200,
+            ['Content-Type' => 'image/jpeg', 'Cache-Control' => 'private, no-store'] + (isset($sourceVersion) ? ['X-Studio-Source-Version' => $sourceVersion] : []));
     }
 
     public function photoLogo(Request $request, string $workspace): JsonResponse
@@ -378,9 +392,14 @@ class StudioWorkspaceController extends StudioController
         $payload = $request->validate([
             'edits' => [$type === 'adjust' ? 'required' : 'prohibited', 'array'],
             'targets' => [$type === 'adjust' ? 'required' : 'prohibited', 'array', 'min:1', 'max:300'],
-            'targets.*' => ['array:mediaId,outputId'], 'targets.*.mediaId' => ['required', 'string', 'distinct'], 'targets.*.outputId' => ['required', 'string', 'max:200'],
+            'targets.*' => ['array:mediaId,outputId,original,sourceVersion'], 'targets.*.mediaId' => ['required', 'string', 'distinct'], 'targets.*.outputId' => ['sometimes', 'string', 'max:200'],
+            'targets.*.sourceVersion' => ['sometimes', 'string', 'regex:/^[a-f0-9]{64}$/'],
+            'targets.*.original' => ['sometimes', 'boolean'],
+            'original' => [$type === 'revision' ? 'sometimes' : 'prohibited', 'boolean'],
+            'sourceVersion' => [$type === 'revision' ? 'sometimes' : 'prohibited', 'string', 'regex:/^[a-f0-9]{64}$/'],
+            'version' => ['sometimes', 'integer', 'min:1'],
             'requestId' => ['sometimes', 'string', 'max:64'], 'mediaId' => [in_array($type, ['revision', 'upscale'], true) ? 'required' : 'sometimes', 'string'],
-            'outputId' => [$type === 'upscale' || ($type === 'revision' && $request->boolean('customEdit')) ? 'required' : 'sometimes', 'string', 'max:200'],
+            'outputId' => [$type === 'upscale' || ($type === 'revision' && $request->boolean('customEdit') && ! $request->boolean('original')) ? 'required' : 'sometimes', 'prohibited_if:original,true', 'string', 'max:200'],
             'referenceMediaIds' => ['sometimes', 'array', 'max:4'], 'referenceMediaIds.*' => ['string', 'distinct', 'max:100'],
             'customEdit' => [$type === 'revision' ? 'sometimes' : 'prohibited', 'boolean'],
             'prompt' => [$type === 'revision' ? 'required' : 'sometimes', 'string', 'max:4000'],
@@ -390,12 +409,30 @@ class StudioWorkspaceController extends StudioController
             'drawing' => ['nullable', 'array', 'max:20'], 'drawing.*' => ['array', 'max:200'], 'drawing.*.*' => ['array:x,y'],
             'drawing.*.*.x' => ['required', 'numeric', 'between:0,1'], 'drawing.*.*.y' => ['required', 'numeric', 'between:0,1'],
         ]);
+        $originalTargets = array_values(array_filter($type === 'adjust' ? ($payload['targets'] ?? []) : [$payload], fn ($target) => ! empty($target['original'])));
+        if ($originalTargets) {
+            abort_unless(isset($payload['version']) && ($type === 'adjust' || ($type === 'revision' && ! empty($payload['customEdit']))), 422, 'Original photo edits require a workspace version and an explicit custom edit.');
+            abort_if($record->isVideo(), 422, 'Original photo tools require a photo workspace.');
+            foreach ($originalTargets as $target) {
+                abort_unless(isset($target['sourceVersion']), 422, 'Preview this original photo before editing it.');
+            }
+        } else {
+            // Version was historically ignored by these operation endpoints. Do
+            // not change their fallback idempotency hash for output-only clients.
+            unset($payload['version'], $payload['original'], $payload['sourceVersion']);
+        }
         if ($type === 'adjust') {
             abort_if($record->isVideo(), 422, 'Custom edits are for photos.');
             $payload['edits'] = \App\Services\Studio\CustomPhotoEdits::validate($payload['edits']);
             app(\App\Services\Studio\WorkspacePhotoLogo::class)->bytes($record, $payload['edits']);
             abort_if(count($payload['targets']) > 1 && (! empty($payload['edits']['crop']) || ! empty($payload['edits']['blur']) || ! empty($payload['edits']['marks'])), 422, 'Area selections apply to one photo at a time.');
             foreach ($payload['targets'] as $target) {
+                if (! empty($target['original'])) {
+                    abort_if(array_key_exists('outputId', $target), 422, 'Choose an original or an output version, not both.');
+                    app(\App\Services\Studio\WorkspaceOriginalPhoto::class)->selected($record, $target['mediaId']);
+                    continue;
+                }
+                abort_unless(isset($target['outputId']), 422, 'Choose an explicit original or completed output version.');
                 $output = collect($record->outputs ?? [])->firstWhere('id', $target['outputId']);
                 abort_unless(collect($record->media)->contains('id', $target['mediaId']) && $output && ($output['mediaId'] ?? null) === $target['mediaId'] && ($output['kind'] ?? null) === 'image' && ($output['status'] ?? null) === 'completed', 422, 'Choose a completed version from this workspace.');
             }
@@ -409,7 +446,7 @@ class StudioWorkspaceController extends StudioController
         foreach ($payload['referenceMediaIds'] ?? [] as $id) {
             abort_unless(collect($record->media)->contains('id', $id), 422, 'Choose reference photos from this workspace.');
         }
-        if ($type === 'upscale' || ! empty($payload['customEdit'])) {
+        if ($type === 'upscale' || (! empty($payload['customEdit']) && empty($payload['original']))) {
             $output = collect($record->outputs ?? [])->firstWhere('id', $payload['outputId']);
             abort_unless($output && ($output['mediaId'] ?? null) === $payload['mediaId'] && ($output['kind'] ?? null) === 'image' && ($output['status'] ?? null) === 'completed', 422, 'Choose a completed image version.');
         }
@@ -421,13 +458,40 @@ class StudioWorkspaceController extends StudioController
             $key = $record->operation['key'];
         }
         $key ??= hash('sha256', json_encode([$type, \Illuminate\Support\Arr::except($record->config, ['reviewedOutputIds', 'reviewedFrameIds']), $record->media, $payload]));
+        $originalSources = [];
+        // A replay is reconciled inside the lock before checking its older version.
+        // A new request hashes decoded source bytes outside the write transaction.
+        if ($originalTargets && ($record->operation['key'] ?? null) !== $key) {
+            abort_if($record->version !== $payload['version'], 409, 'The workspace changed. Reload the original photo.');
+            foreach ($originalTargets as $target) {
+                $originalSources[$target['mediaId']] = app(\App\Services\Studio\WorkspaceOriginalPhoto::class)->capture($record, $target['mediaId'])['receipt'];
+                abort_unless(hash_equals($target['sourceVersion'], app(\App\Services\Studio\WorkspaceOriginalPhoto::class)->sourceVersion($originalSources[$target['mediaId']])), 409, 'The original photo changed. Reopen photo tools.');
+            }
+        }
         $dispatch = false;
-        $record = DB::transaction(function () use ($record, $type, $payload, $key, &$dispatch): StudioWorkspace {
+        $reserve = function () use ($request, $record, $type, $payload, $key, $originalTargets, $originalSources, &$dispatch): StudioWorkspace {
+            $dispatch = false;
             $record = StudioWorkspace::lockForUpdate()->findOrFail($record->id);
             $old = $record->operation ?? [];
             $same = ($old['key'] ?? null) === $key && ($old['type'] ?? null) === $type;
+            if (($old['key'] ?? null) === $key && ($originalTargets || ! empty($old['originalSources']))) {
+                abort_unless($same && StudioWorkspace::canonicalConfig(\Illuminate\Support\Arr::except($old['payload'] ?? [], ['requestId'])) === StudioWorkspace::canonicalConfig(\Illuminate\Support\Arr::except($payload, ['requestId'])), 409, 'This request key already belongs to a different edit.');
+            }
+            if ($same && $originalTargets && $record->status === 'cancelled') {
+                return $record;
+            }
             if ($same && in_array($record->status, ['preparing', 'generating', 'ready', 'completed'], true)) {
                 return $record;
+            }
+            if ($originalTargets) {
+                abort_unless(($same && $record->status === 'failed') || $record->version === $payload['version'], 409, 'The workspace changed. Reload the original photo.');
+                app(\App\Services\Studio\WorkspaceReadAccess::class)->authorize($record, $request->user());
+                // Full source authorization ran before capture. Recheck ACL and pinned
+                // identities here without RAW decoding, downloads or HDR cache migration.
+                $originalSources = $same ? ($old['originalSources'] ?? []) : $originalSources;
+                foreach ($originalTargets as $target) {
+                    app(\App\Services\Studio\WorkspaceOriginalPhoto::class)->assertIdentity($record, $target['mediaId'], $originalSources[$target['mediaId']] ?? []);
+                }
             }
             abort_if($record->isBusy(), 409, 'This workspace already has an operation in progress.');
             abort_if(count($record->media) === 0, 422, 'Add source photos before continuing.');
@@ -457,6 +521,9 @@ class StudioWorkspaceController extends StudioController
                 abort_unless($availability['ready'], 422, $availability['reason'] ?? 'AI refinement is not configured.');
             }
             $operation = $same && $record->status === 'failed' ? $old : ['id' => (string) Str::uuid(), 'key' => $key, 'type' => $type, 'payload' => $payload, 'completed' => [], 'requests' => []];
+            if ($originalTargets) {
+                $operation['originalSources'] = $originalSources;
+            }
             if (! isset($operation['routing']) && empty($operation['requests'])) {
                 $settings = app(\App\Services\Studio\StudioProviderSettings::class);
                 $stored = $settings->stored();
@@ -468,7 +535,8 @@ class StudioWorkspaceController extends StudioController
             $dispatch = true;
 
             return $record;
-        });
+        };
+        $record = \App\Support\LockedWrite::run(fn () => DB::transaction($reserve), 'studio.workspace.start');
         if ($dispatch) {
             try {
                 ProcessStudioWorkspace::dispatch($record->id, $record->operation['id']);

@@ -93,7 +93,7 @@ class WorkspaceProcessor
                 $result = $this->prepareImage($workspace, $operationId, $item, $bytes, $frame);
             } elseif ($type === 'upscale') {
                 $result = (string) $this->images->read(app(WorkspaceImageOperations::class)->upscale($workspace, $operationId, $item['id'], $bytes))->toJpeg(96);
-            } elseif ($workspace->preset_id === 'upscale') {
+            } elseif ($type === 'generate' && $workspace->preset_id === 'upscale') {
                 // Selected originals must reach upscaling at their original resolution.
                 $result = (string) $this->images->read(app(WorkspaceAutoenhance::class)->run($workspace, $operationId, $item, $bytes, 'upscale'))->toJpeg(96);
             } else {
@@ -485,6 +485,9 @@ class WorkspaceProcessor
     private function upscaleSource(StudioWorkspace $workspace, array $item): string
     {
         $target = collect($workspace->operation['payload']['targets'] ?? [])->firstWhere('mediaId', $item['id']);
+        if (! empty(($target ?? $workspace->operation['payload'])['original'])) {
+            return app(WorkspaceOriginalPhoto::class)->bytes($workspace, $item);
+        }
         $output = collect($workspace->outputs ?? [])->firstWhere('id', $target['outputId'] ?? $workspace->operation['payload']['outputId'] ?? '');
         $path = $output['path'] ?? '';
         $disk = Storage::disk($this->media->outputDisk($workspace));

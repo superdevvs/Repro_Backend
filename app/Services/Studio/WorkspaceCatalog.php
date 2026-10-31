@@ -47,6 +47,7 @@ class WorkspaceCatalog
         return [
             'version' => 1, 'presets' => $presets, 'templates' => $this->templates(), 'capabilities' => $capabilities,
             'controls' => [
+                'originalPhotoTools' => true,
                 'ratios' => ['9:16', '16:9', '1:1', '4:5'], 'durationSeconds' => ['min' => 5, 'max' => 120],
                 'frameDurationSeconds' => ['min' => 0.5, 'max' => 30], 'transitions' => ReelCompositionService::TRANSITIONS,
                 'audio' => $video !== null, 'selectableResolution' => $video !== null, 'video' => $video,

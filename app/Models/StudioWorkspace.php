@@ -88,7 +88,7 @@ class StudioWorkspace extends Model
             'history' => array_map(fn ($event) => \Illuminate\Support\Arr::except($event, ['reelJobId']), $this->history ?? []),
             'createdAt' => $this->created_at?->toIso8601String(),
             'updatedAt' => $this->updated_at?->toIso8601String(),
-            'capabilities' => ['framePreparation' => true, 'regionRevisions' => true,
+            'capabilities' => ['framePreparation' => true, 'regionRevisions' => true, 'originalPhotoTools' => true,
                 'video' => \App\Services\Studio\WorkspaceVideoOptions::capabilities(),
                 'objectDetection' => filled(config('services.openai.api_key')), 'pixelSegmentation' => false,
                 'crossFrameContinuity' => false, 'transitions' => \App\Services\Studio\ReelCompositionService::TRANSITIONS,
