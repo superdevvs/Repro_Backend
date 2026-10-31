@@ -71,9 +71,10 @@ class ShootServiceChangeGuard
 
         $byLineIdentity = $shoot->units()->exists();
         $targetLineIds = collect($targetServices)->pluck('shoot_service_id')->filter()->map(fn ($id) => (int) $id);
+        $replacementIds = collect($targetServices)->pluck('replaces_shoot_service_id')->filter()->map(fn ($id) => (int) $id);
         $removedItems = $shoot->serviceItems
-            ->filter(fn (ShootService $item) => $byLineIdentity
-                ? ! $targetLineIds->contains((int) $item->id) : ! $targetServiceIds->contains((int) $item->service_id))
+            ->filter(fn (ShootService $item) => ! $replacementIds->contains((int) $item->id) && ($byLineIdentity
+                ? ! $targetLineIds->contains((int) $item->id) : ! $targetServiceIds->contains((int) $item->service_id)))
             ->values();
 
         if ($removedItems->isEmpty()) {

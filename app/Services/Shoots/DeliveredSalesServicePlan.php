@@ -65,14 +65,16 @@ class DeliveredSalesServicePlan
             ];
         }
         app(ShootMutationSupportService::class)->ensureClientCanBookServices((int) ($data['client_id'] ?? $shoot->client_id), $services, $shoot, $actor);
-        return $services;
+        return app(CompletedPhotoPackageReplacement::class)->resolve($shoot, $services);
     }
 
     public function persist(Shoot $shoot, array $services): void
     {
         $kept = [];
         foreach ($services as $row) {
-            if ($row['shoot_service_id']) {
+            if (! empty($row['replaces_shoot_service_id'])) {
+                $item = app(CompletedPhotoPackageReplacement::class)->persist($shoot, $row);
+            } elseif ($row['shoot_service_id']) {
                 $item = $shoot->serviceItems()->findOrFail($row['shoot_service_id']);
                 $item->quantity = $row['quantity'];
                 if ($item->isDirty()) {

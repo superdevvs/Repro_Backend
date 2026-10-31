@@ -186,6 +186,171 @@ class DeliveredSalesServiceCorrectionsTest extends TestCase
         $this->assertSame([$item->id], $shoot->serviceItems()->pluck('id')->all());
     }
 
+    private function photoUpgradeFixture(): array
+    {
+        [$shoot, $item, $original, $rep] = $this->fixture();
+        $shoot->update(['property_details' => ['sqft' => 2500]]);
+        $original->update(['name' => '25 HDR Photos', 'photo_count' => 25, 'uses_hdr_brackets' => true, 'pricing_type' => 'variable']);
+        $item->update(['contracted_photo_count' => 25, 'bracket_mode' => 5,
+            'ready_at' => '2025-01-03 14:00:00', 'editing_completed_at' => '2025-01-03 14:00:00',
+            'editor_id' => User::factory()->create(['role' => 'editor'])->id]);
+        $upgrade = Service::factory()->bracketedPhoto(35)->create(['name' => '35 HDR Photos',
+            'category_id' => $original->category_id, 'price' => 199, 'photographer_pay' => 89.55, 'shoot_duration_minutes' => 90, 'pricing_type' => 'variable']);
+        $original->sqftRanges()->create(['sqft_from' => 1501, 'sqft_to' => 3000, 'price' => 175, 'photographer_pay' => 78.75, 'duration' => 60, 'photo_count' => 25]);
+        $upgrade->sqftRanges()->create(['sqft_from' => 1501, 'sqft_to' => 3000, 'price' => 199, 'photographer_pay' => 89.55, 'duration' => 90, 'photo_count' => 35]);
+        $shoot->photographer->update(['metadata' => ['specialties' => [(string) $original->id, (string) $upgrade->id]]]);
+        return [$shoot, $item->fresh(), $original, $rep, $upgrade];
+    }
+
+    public static function packageCorrectionRoles(): array
+    {
+        return [['salesRep'], ['admin'], ['superadmin'], ['editing_manager']];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('packageCorrectionRoles')]
+    public function test_photo_count_upgrade_keeps_execution_media_payment_links_and_photographer_visibility(string $role): void
+    {
+        [$shoot, $item, $original, $rep, $upgrade] = $this->photoUpgradeFixture();
+        if ($role !== 'salesRep') Sanctum::actingAs(User::factory()->create(['role' => $role]));
+        $executionFields = ['id','created_at','scheduled_at','duration_minutes','photographer_id','editor_id','editing_completed_at',
+            'bracket_mode','workflow_status','delivery_status','ready_at','delivered_at','is_deliverable'];
+        $before = $item->only($executionFields);
+        $invoice = app(InvoiceService::class)->generateForShoot($shoot);
+        $chargeId = $invoice->items()->where('type', InvoiceItem::TYPE_CHARGE)->sole()->id;
+        $payment = Payment::factory()->create(['shoot_id' => $shoot->id, 'invoice_id' => $invoice->id, 'amount' => 100, 'status' => Payment::STATUS_COMPLETED]);
+        $allocation = PaymentServiceAllocation::create(['payment_id' => $payment->id, 'shoot_service_id' => $item->id, 'amount' => 100]);
+        $paymentBefore = $payment->fresh()->getRawOriginal();
+        $file = ShootFile::create(['shoot_id' => $shoot->id, 'shoot_service_id' => $item->id, 'filename' => 'delivered.jpg',
+            'stored_filename' => 'delivered.jpg', 'path' => 'completed/delivered.jpg', 'file_size' => 11, 'file_type' => 'image/jpeg',
+            'media_type' => 'edited', 'workflow_stage' => 'verified', 'uploaded_by' => $shoot->photographer_id]);
+
+        $this->save($shoot, ['services' => [['id' => $upgrade->id]],
+            'service_items' => [['service_id' => $upgrade->id, 'quantity' => 1, 'scheduled_at' => null]]])->assertOk();
+        $updated = $item->fresh();
+        $this->assertNotNull($updated);
+        $this->assertEquals($before, $updated->only($executionFields));
+        $this->assertSame($upgrade->id, $updated->service_id);
+        $this->assertSame(35, $updated->contracted_photo_count);
+        $this->assertSame(199.0, (float) $updated->price);
+        $this->assertSame(89.55, (float) $updated->photographer_pay);
+        $this->assertSame($original->id, $updated->payout_snapshot['previous_basis']['service_id']);
+        $this->assertTrue($updated->payout_snapshot['review_required']);
+        $this->assertSame($item->id, $file->fresh()->shoot_service_id);
+        $this->assertSame($item->id, $allocation->fresh()->shoot_service_id);
+        $this->assertSame($paymentBefore, $payment->fresh()->getRawOriginal());
+        $this->assertSame($chargeId, $invoice->items()->where('type', InvoiceItem::TYPE_CHARGE)->sole()->id);
+        $this->assertSame('delivered', $shoot->fresh()->workflow_status);
+        $this->assertSame(1, $shoot->serviceItems()->count());
+        Sanctum::actingAs(User::findOrFail($shoot->photographer_id));
+        $this->getJson('/api/shoots/'.$shoot->id)->assertOk()->assertJsonFragment(['name' => '35 HDR Photos', 'photo_count' => 35]);
+        Mail::assertNothingSent(); Notification::assertNothingSent();
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('multiUnitCorrectionRoles')]
+    public function test_multi_unit_photo_upgrade_keeps_only_the_replaced_apartments_history(string $role): void
+    {
+        [$shoot, $item, $original, $rep, $upgrade] = $this->photoUpgradeFixture();
+        if ($role !== 'salesRep') Sanctum::actingAs(User::factory()->create(['role' => $role]));
+        $unitA = $shoot->units()->create(['client_key' => 'a', 'label' => 'A', 'kind' => 'unit', 'sqft' => 2500]);
+        $unitB = $shoot->units()->create(['client_key' => 'b', 'label' => 'B', 'kind' => 'unit', 'sqft' => 2500]);
+        $item->update(['shoot_unit_id' => $unitA->id, 'client_key' => 'original-a']);
+        $other = $shoot->serviceItems()->create(['service_id' => $original->id, 'shoot_unit_id' => $unitB->id,
+            'client_key' => 'original-b', 'price' => 100, 'quantity' => 1, 'scheduled_at' => $shoot->scheduled_at->copy()->addHours(2),
+            'duration_minutes' => 60, 'photographer_pay' => 20, 'contracted_photo_count' => 25, 'bracket_mode' => 5,
+            'photographer_id' => $shoot->photographer_id, 'workflow_status' => 'delivered', 'delivery_status' => 'delivered']);
+        $before = $other->fresh()->getRawOriginal();
+        $this->save($shoot, ['expected_units_revision' => $shoot->units_revision, 'service_lines' => [
+            ['client_key' => 'replacement-a', 'unit_client_key' => 'a', 'service_id' => $upgrade->id],
+            ['shoot_service_id' => $other->id, 'client_key' => 'original-b', 'unit_client_key' => 'b', 'service_id' => $original->id],
+        ]])->assertOk();
+        $this->assertSame($upgrade->id, $item->fresh()->service_id);
+        $this->assertSame('original-a', $item->fresh()->client_key);
+        $this->assertSame('delivered', $item->fresh()->workflow_status);
+        $this->assertSame($before, $other->fresh()->getRawOriginal());
+    }
+
+    public static function multiUnitCorrectionRoles(): array
+    {
+        return [['salesRep'], ['admin']];
+    }
+
+    public static function unfinishedProductionStates(): array
+    {
+        return [['uploaded'], ['editing'], ['review'], ['ready']];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('unfinishedProductionStates')]
+    public function test_upgrade_preserves_in_progress_production_without_marking_it_delivered(string $stage): void
+    {
+        [$shoot, $item, $original, $rep, $upgrade] = $this->photoUpgradeFixture();
+        $shoot->update(['status' => $stage, 'workflow_status' => $stage, 'delivery_status' => 'not_started', 'completed_at' => null, 'admin_verified_at' => null]);
+        $item->update(['workflow_status' => 'in_progress', 'delivery_status' => 'not_started', 'ready_at' => null, 'delivered_at' => null, 'editing_completed_at' => null]);
+        $this->save($shoot, ['services' => [['id' => $upgrade->id]]])->assertOk();
+        $this->assertSame($upgrade->id, $item->fresh()->service_id);
+        $this->assertSame('in_progress', $item->fresh()->workflow_status);
+        $this->assertSame('not_started', $item->fresh()->delivery_status);
+        $this->assertSame($stage, $shoot->fresh()->workflow_status);
+    }
+
+    public function test_adding_another_photo_package_does_not_inherit_completed_work(): void
+    {
+        [$shoot, $item, $original, $rep, $upgrade] = $this->photoUpgradeFixture();
+        $this->save($shoot, ['services' => [['id' => $original->id], ['id' => $upgrade->id]]])->assertOk();
+        $new = $shoot->serviceItems()->where('service_id', $upgrade->id)->sole();
+        $this->assertNotSame($item->id, $new->id);
+        $this->assertSame('pending', $new->workflow_status);
+        $this->assertNull($new->scheduled_at);
+        $this->assertSame('delivered', $item->fresh()->workflow_status);
+    }
+
+    public function test_ambiguous_photo_package_changes_still_require_service_removal_confirmation(): void
+    {
+        [$shoot, $item, $original, $rep, $upgrade] = $this->photoUpgradeFixture();
+        $second = Service::factory()->bracketedPhoto(45)->create(['category_id' => $original->category_id]);
+        $this->save($shoot, ['services' => [['id' => $upgrade->id], ['id' => $second->id]]])
+            ->assertConflict()->assertJsonPath('impact.removed_services.0.shoot_service_id', $item->id);
+        $this->assertSame($original->id, $item->fresh()->service_id);
+    }
+
+    public function test_different_capture_types_do_not_reuse_history_even_with_forged_replacement_metadata(): void
+    {
+        [$shoot, $item, $original, $rep, $upgrade] = $this->photoUpgradeFixture();
+        $upgrade->update(['uses_hdr_brackets' => false]);
+        $this->save($shoot, ['services' => [['id' => $upgrade->id, 'replaces_shoot_service_id' => $item->id]]])
+            ->assertConflict()->assertJsonPath('impact.removed_services.0.shoot_service_id', $item->id);
+    }
+
+    public function test_package_upgrade_preserves_existing_studio_access_and_does_not_generate_again(): void
+    {
+        [$shoot, $item, $original, $rep, $upgrade] = $this->photoUpgradeFixture();
+        $workspace = \App\Models\StudioWorkspace::create(['shoot_id' => $shoot->id, 'created_by' => $rep->id,
+            'name' => 'Existing editing work', 'preset_id' => 'listing-ready', 'status' => 'completed', 'media' => [], 'config' => [],
+            'shoot_service_ids' => [$original->id], 'shoot_service_item_ids' => null, 'outputs' => [['id' => 'saved-output']]]);
+        $this->save($shoot, ['services' => [['id' => $upgrade->id]]])->assertOk();
+        $this->assertSame([$item->id], \App\Services\Studio\WorkspaceServiceScope::lineIds($workspace->fresh()));
+        $this->assertSame([['id' => 'saved-output']], $workspace->fresh()->outputs);
+        $this->assertSame('completed', $workspace->fresh()->status);
+    }
+
+    public static function separateCaptureCases(): array
+    {
+        return [['future'], ['reassignment'], ['reschedule'], ['cancelled']];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('separateCaptureCases')]
+    public function test_other_visits_and_cancelled_work_cannot_inherit_delivery(string $case): void
+    {
+        [$shoot, $item, $original, $rep, $upgrade] = $this->photoUpgradeFixture();
+        $row = ['id' => $upgrade->id, 'quantity' => 1];
+        if ($case === 'future') $item->update(['scheduled_at' => now()->addWeek()]);
+        if ($case === 'reassignment') $row['photographer_id'] = User::factory()->photographer()->create()->id;
+        if ($case === 'reschedule') $row['scheduled_at'] = '2025-01-05 15:00:00';
+        if ($case === 'cancelled') $item->update(['workflow_status' => 'cancelled']);
+        $rows = app(\App\Services\Shoots\CompletedPhotoPackageReplacement::class)->resolve($shoot, [$row]);
+        $this->assertArrayNotHasKey('replaces_shoot_service_id', $rows[0]);
+        $this->assertSame($original->id, $item->fresh()->service_id);
+    }
+
     public static function deliveredStates(): array
     {
         return [['delivered', 'delivered'], ['delivered', 'ready_for_client'], ['delivered', 'admin_verified'],

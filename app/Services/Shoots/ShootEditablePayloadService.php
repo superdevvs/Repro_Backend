@@ -687,7 +687,8 @@ class ShootEditablePayloadService
         });
 
         if ($serviceChangeRequested) {
-            $this->serviceItemSupport->reconcileAllocationsAfterServiceChange($shoot->fresh(), $deliveredCorrection);
+            $this->serviceItemSupport->reconcileAllocationsAfterServiceChange($shoot->fresh(), $deliveredCorrection
+                || collect($targetServices)->contains(fn ($row) => ! empty($row['replaces_shoot_service_id'])));
         }
 
         if ($shouldRecalculatePricing || $paymentFieldsProvided) {
@@ -696,7 +697,8 @@ class ShootEditablePayloadService
         }
 
         if ($invoiceNeedsRefresh) {
-            $this->invoiceService->refreshClientInvoicesForShoot($shoot->fresh(), $deliveredCorrection);
+            $this->invoiceService->refreshClientInvoicesForShoot($shoot->fresh(), $deliveredCorrection
+                || collect($targetServices)->contains(fn ($row) => ! empty($row['replaces_shoot_service_id'])));
         }
 
         $editorChangeRequested = collect(['services', 'service_items', 'service_lines'])
@@ -867,7 +869,8 @@ class ShootEditablePayloadService
             return $service;
         })->values()->all();
 
-        return $this->support->resolveServicePhotographerAssignments($shoot, $rows, $validated);
+        return app(CompletedPhotoPackageReplacement::class)->resolve($shoot,
+            $this->support->resolveServicePhotographerAssignments($shoot, $rows, $validated));
     }
 
     private function assertComplimentaryReshootMutationAllowed(Shoot $shoot, array $validated): void

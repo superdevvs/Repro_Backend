@@ -509,6 +509,9 @@ class ShootMutationSupportService
         if ($shoot->units()->exists()) {
             throw ValidationException::withMessages(['service_lines' => ['Multi-unit bookings must be updated by service-line identity.']]);
         }
+        foreach ($services as $row) {
+            if (! empty($row['replaces_shoot_service_id'])) app(CompletedPhotoPackageReplacement::class)->persist($shoot, $row);
+        }
         $currentItems = $shoot->serviceItems()->get()->keyBy('service_id');
         $assignmentChanged = collect($services)->contains(function ($row) use ($currentItems) {
             $current = $currentItems->get($row['id'] ?? $row['service_id'] ?? null);

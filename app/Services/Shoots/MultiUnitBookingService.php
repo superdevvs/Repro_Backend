@@ -207,6 +207,10 @@ class MultiUnitBookingService
             $services[] = $row;
         }
         if ($shoot) $services = app(ShootMutationSupportService::class)->resolveServicePhotographerAssignments($shoot, $services, $data);
+        if ($shoot) {
+            $services = app(CompletedPhotoPackageReplacement::class)->resolve($shoot, $services);
+            foreach ($services as $row) if (! empty($row['replaces_shoot_service_id'])) $keptIds[$row['replaces_shoot_service_id']] = true;
+        }
         $removed = $existingLines->reject(fn ($line) => isset($keptIds[$line->id]));
         if (! $shoot || array_key_exists('service_lines', $data)
             || (array_key_exists('photographer_id', $data) && (int) $data['photographer_id'] !== (int) $shoot->photographer_id)) {
