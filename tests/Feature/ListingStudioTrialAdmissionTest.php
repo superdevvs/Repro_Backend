@@ -46,7 +46,9 @@ class ListingStudioTrialAdmissionTest extends TestCase
             'listing-studio-trials.services.twilight.enabled' => true,
             'listing-studio-trials.turnstile_secret' => 'test-secret', 'listing-studio-trials.turnstile_site_key' => 'test-site-key',
             'listing-studio-trials.turnstile_hosts' => ['reprophotos.com', 'www.reprophotos.com']]);
-        Storage::fake('listing_studio_trials');
+        $private = Storage::fake('listing_studio_trials', config('filesystems.disks.listing_studio_trials'));
+        $private->makeDirectory('');
+        $private->setVisibility('', 'private');
         Storage::fake('public');
         Queue::fake();
         Http::preventStrayRequests();

@@ -126,6 +126,7 @@ class ListingStudioGuestTrialService
             return $trial;
         }
         try {
+            app(ListingStudioPrivateStorage::class)->prepareTrialDirectory($trial->id);
             $stream = fopen($image->getRealPath(), 'rb');
             try {
                 if (! Storage::disk(self::DISK)->put($trial->source_path, $stream)) {
@@ -238,6 +239,7 @@ class ListingStudioGuestTrialService
                 if (! $fresh || $fresh->hasExpired()) {
                     throw new PublicApiException('This trial result has expired.', 'trial_expired', 410);
                 }
+                app(ListingStudioPrivateStorage::class)->prepareTrialDirectory($fresh->id);
                 if (! Storage::disk(self::DISK)->put($previewPath, $result)) {
                     throw new \RuntimeException('Trial preview could not be stored.');
                 }

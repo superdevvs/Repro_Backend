@@ -22,6 +22,7 @@ class WorkspaceMediaService
     {
         if ($workspace->listing_studio_trial_id) {
             app(\App\Services\ListingStudio\ListingStudioTrialPipeline::class)->authorize($workspace);
+
             return;
         }
 
@@ -263,6 +264,7 @@ class WorkspaceMediaService
             \App\Support\LockedWrite::run(fn () => \Illuminate\Support\Facades\DB::transaction(function () use ($workspace, $disk, $path, $bytes): void {
                 \App\Models\ListingStudioGuestTrial::whereKey($workspace->listing_studio_trial_id)->update(['updated_at' => now()]);
                 app(\App\Services\ListingStudio\ListingStudioTrialPipeline::class)->authorize($workspace);
+                app(\App\Services\ListingStudio\ListingStudioPrivateStorage::class)->prepareWorkspaceDirectory($workspace->id, str_starts_with($path, 'studio/workspaces/'.$workspace->id.'/provider-results/'));
                 if (! $disk->put($path, $bytes)) {
                     throw new RuntimeException('The edited image could not be saved. Retry to retrieve the existing result.');
                 }

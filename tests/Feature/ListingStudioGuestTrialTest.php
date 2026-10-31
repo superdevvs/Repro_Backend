@@ -41,7 +41,9 @@ class ListingStudioGuestTrialTest extends TestCase
             'listing-studio-trials.services.twilight.enabled' => true,
             'listing-studio-trials.turnstile_secret' => 'challenge-secret', 'listing-studio-trials.turnstile_site_key' => 'challenge-public-key',
             'listing-studio-trials.turnstile_hosts' => ['reprophotos.com']]);
-        Storage::fake('listing_studio_trials');
+        $private = Storage::fake('listing_studio_trials', config('filesystems.disks.listing_studio_trials'));
+        $private->makeDirectory('');
+        $private->setVisibility('', 'private');
         Storage::fake('public');
         Http::preventStrayRequests();
         Http::fake(['challenges.cloudflare.com/*' => fn () => Http::response($this->challengeReply)]);
@@ -122,6 +124,23 @@ class ListingStudioGuestTrialTest extends TestCase
         $this->start()->assertStatus(503)->assertJsonPath('code', 'trial_unavailable');
         $this->assertDatabaseCount('listing_studio_guest_trials', 0);
         Http::assertNothingSent();
+    }
+
+    public function test_http_upload_restores_group_write_for_the_separate_preview_worker(): void
+    {
+        $previous = umask(0022);
+        try {
+            $response = $this->start('grass')->assertStatus(202);
+            $id = $response->json('data.id');
+            $disk = Storage::disk('listing_studio_trials');
+            clearstatcache();
+            $this->assertSame(02770, fileperms($disk->path('trials/'.$id)) & 07777);
+            $this->assertSame(0660, fileperms($disk->path('trials/'.$id.'/original-preview.jpg')) & 07777);
+            $this->assertSame('completed', $this->complete($id)->status);
+            $disk->assertExists('trials/'.$id.'/preview.jpg');
+        } finally {
+            umask($previous);
+        }
     }
 
     public function test_unvalidated_services_are_unavailable_without_consuming_admission_or_allowance(): void

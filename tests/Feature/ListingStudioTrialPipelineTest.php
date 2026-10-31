@@ -30,7 +30,9 @@ class ListingStudioTrialPipelineTest extends TestCase
         Http::preventStrayRequests();
         Storage::fake('public');
         Storage::fake('local');
-        Storage::fake('listing_studio_trials');
+        $private = Storage::fake('listing_studio_trials', config('filesystems.disks.listing_studio_trials'));
+        $private->makeDirectory('');
+        $private->setVisibility('', 'private');
         config(['studio.client_access_enabled' => false, 'listing-studio-trials.enabled' => true, 'services.autoenhance.api_key' => 'test-key',
             'listing-studio-trials.services.staging.enabled' => true, 'listing-studio-trials.services.decluttering.enabled' => true,
             'listing-studio-trials.services.twilight.enabled' => true,
@@ -179,6 +181,7 @@ class ListingStudioTrialPipelineTest extends TestCase
                 $this->assertSame(1, $request['variation_count']);
                 $this->assertArrayNotHasKey('remove_furniture', $request['config']);
                 $this->assertSame('living', $request['config']['add_furniture']['room_type']);
+
                 return Http::response(['id' => 'render-one'], 201);
             }
             if (str_contains($request->url(), '/renders/')) {
