@@ -587,6 +587,41 @@ class StudioWorkspaceTest extends TestCase
         $this->postJson('/api/studio/workspaces', $payload)->assertUnprocessable();
     }
 
+    public function test_staff_edits_do_not_require_client_billing_while_source_provider_and_busy_guards_remain(): void
+    {
+        config(['studio.client_access_enabled' => false, 'listing-studio.paid_enabled' => false,
+            'listing-studio.paid_checkout_enabled' => false, 'listing-studio.human_revisions_enabled' => false,
+            'listing-studio.delegated_enabled' => false, 'listing-studio.subscription_controls_enabled' => false]);
+        foreach (['staging', 'decluttering', 'grass', 'twilight'] as $service) {
+            config(['listing-studio.paid_services.'.$service => false]);
+        }
+        foreach (['admin', 'superadmin', 'editing_manager'] as $role) {
+            $staff = $this->actor($role);
+            $record = $this->create($staff);
+            $url = '/api/studio/workspaces/'.$record->id.'/generate';
+            $this->postJson($url, [], ['Idempotency-Key' => 'staff-'.$role])->assertAccepted();
+            $this->postJson($url, [], ['Idempotency-Key' => 'staff-'.$role])->assertAccepted();
+            $this->postJson($url, [], ['Idempotency-Key' => 'different-'.$role])->assertConflict();
+            $invalid = $this->payload($staff);
+            $invalid['media'][0]['mediaRef'] = 'studio/uploads/100/999999/other-client.jpg';
+            $this->postJson('/api/studio/workspaces', $invalid)->assertForbidden();
+        }
+        Queue::assertPushed(ProcessStudioWorkspace::class, 3);
+        $settings = $this->mock(\App\Services\Studio\StudioProviderSettings::class);
+        $settings->shouldReceive('route')->andReturn(['provider' => 'virtual_staging_ai', 'model' => 'fixture']);
+        $settings->shouldReceive('readiness')->once()->andReturn(['ready' => false, 'reason' => 'Provider configuration unavailable.']);
+        $staff = $this->actor('admin');
+        $staging = $this->create($staff, 1, 'virtual-staging');
+        $this->postJson('/api/studio/workspaces/'.$staging->id.'/generate')->assertUnprocessable();
+        Queue::assertPushed(ProcessStudioWorkspace::class, 3);
+        $client = $this->actor('client');
+        $this->postJson('/api/studio/workspaces', $this->payload($client))->assertForbidden();
+        foreach (['listing_studio_subscriptions', 'listing_studio_credit_entries', 'listing_studio_credit_reservations',
+            'listing_studio_orders', 'listing_studio_order_items', 'listing_studio_checkout_attempts'] as $table) {
+            $this->assertDatabaseCount($table, 0);
+        }
+    }
+
     private function actor(string $role = 'admin', int $team = 100): User
     {
         $user = User::factory()->create(['role' => $role, 'metadata' => ['team_id' => $team]]);

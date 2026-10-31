@@ -20,7 +20,7 @@ class ListingStudioRequestController extends Controller
 
     public function catalog(): JsonResponse
     {
-        return response()->json(['data' => $this->catalog->legacy()]);
+        return response()->json(['data' => $this->catalog->legacy() + ['billing' => $this->catalog->present()]]);
     }
 
     public function clients(Request $request): JsonResponse
