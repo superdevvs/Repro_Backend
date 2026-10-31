@@ -121,6 +121,22 @@ class StripeSubscriptionSync
 
             $credits = app(ListingStudioCreditService::class);
             $creditInvoices = $credits->prepareInvoices($event, $subscription);
+            // A delayed update event can arrive after renewal replaced latest_invoice.
+            // Recover the already-known adjustment before the short projection transaction.
+            if ($existing) {
+                $known = \App\Models\ListingStudioSubscriptionAction::where('subscription_id', $existing->id)
+                    ->where('kind', 'upgrade')->whereNotNull('submitted_at')->whereNotNull('invoice_id')
+                    ->whereNotIn('status', ['completed', 'expired', 'cancelled'])->limit(2)->pluck('invoice_id');
+                foreach ($known as $invoiceId) {
+                    if (! collect($creditInvoices)->contains(fn ($invoice) => $this->id($invoice) === $invoiceId)) {
+                        $invoice = $this->gateway->invoice($invoiceId);
+                        if ($this->id($invoice) !== $invoiceId) {
+                            throw new \RuntimeException('Stripe returned a different pending upgrade invoice.');
+                        }
+                        $creditInvoices[] = $invoice;
+                    }
+                }
+            }
 
             $record = LockedWrite::run(fn () => DB::transaction(function () use ($key, $snapshot, $paidAt, $confirmedEnrollment, $email, $name, $reason, $eventIdentity, $event, $credits, $creditInvoices, $subscription) {
                 $record = ListingStudioSubscription::firstOrNew($key);

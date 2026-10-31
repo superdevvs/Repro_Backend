@@ -43,21 +43,31 @@ class StudioSubscriptionProjection
         }
         $bound = is_array($invoice) && StudioSubscriptionInvoice::matches($action, $invoice);
         $paid = $bound && ($invoice['status'] ?? '') === 'paid' && (int) ($invoice['amount_remaining'] ?? -1) === 0;
+        $periodStart = (int) data_get($canonical, 'items.data.0.current_period_start', $canonical['current_period_start'] ?? 0);
+        $periodEnd = (int) data_get($canonical, 'items.data.0.current_period_end', $canonical['current_period_end'] ?? 0);
+        $originalEnd = (int) data_get($action->snapshot, 'periodEnd');
+        $laterPeriod = $periodStart >= $originalEnd && $periodEnd > $periodStart;
         $applied = $snapshot['stripe_price_id'] === $action->target_price_id && empty($canonical['pending_update'])
-            && (int) data_get($canonical, 'items.data.0.current_period_end', $canonical['current_period_end'] ?? 0) === (int) data_get($action->snapshot, 'periodEnd');
+            && ($periodEnd === $originalEnd || $laterPeriod);
         if ($paid && $applied) {
             $action->fill(['status' => 'completed', 'completed_at' => now(), 'error_code' => null])->save();
 
             return [$snapshot, $invoices];
         }
         $oldPrice = $snapshot['stripe_price_id'] === $action->source_price_id;
-        if ($bound && in_array($invoice['status'] ?? '', ['void', 'uncollectible'], true) && $oldPrice && empty($canonical['pending_update'])) {
+        if ($bound && in_array($invoice['status'] ?? '', ['void', 'uncollectible'], true) && ($oldPrice || $laterPeriod) && empty($canonical['pending_update'])) {
             $action->fill(['status' => 'expired', 'error_code' => 'subscription_update_expired'])->save();
 
             return [$snapshot, $this->onlyAppliedInvoices($canonical, $invoices)];
         }
         $action->fill(['status' => $paid ? 'awaiting_application' : ($bound ? 'awaiting_payment' : 'needs_attention'),
             'error_code' => $bound ? null : 'subscription_reconciliation_required'])->save();
+        if ($laterPeriod && $this->paidCurrentRenewal($canonical)) {
+            // An unresolved old operation must not roll back a separately paid new billing period.
+            // The old invoice stays withheld; its credits cannot roll into the renewal.
+            return [$snapshot, array_values(array_filter($invoices, fn ($candidate) => StudioSubscriptionInvoice::id($candidate) !== $action->invoice_id
+                && ! StudioSubscriptionInvoice::matches($action, $candidate)))];
+        }
         // Retain the paid plan and billing period while either half of the update is unresolved.
         foreach (['stripe_price_id', 'plan_code', 'plan_name', 'amount_cents', 'currency', 'billing_interval',
             'billing_interval_count', 'current_period_start', 'current_period_end', 'status'] as $field) {
@@ -89,5 +99,22 @@ class StudioSubscriptionProjection
 
             return true;
         }));
+    }
+
+    private function paidCurrentRenewal(array $canonical): bool
+    {
+        $invoice = $canonical['latest_invoice'] ?? null;
+        $price = StudioSubscriptionInvoice::id(data_get($canonical, 'items.data.0.price'));
+        $start = (int) data_get($canonical, 'items.data.0.current_period_start', $canonical['current_period_start'] ?? 0);
+        $end = (int) data_get($canonical, 'items.data.0.current_period_end', $canonical['current_period_end'] ?? 0);
+        if (! is_array($invoice) || ($invoice['status'] ?? '') !== 'paid' || ($invoice['billing_reason'] ?? '') !== 'subscription_cycle'
+            || ($invoice['livemode'] ?? null) !== ($canonical['livemode'] ?? null)
+            || StudioSubscriptionInvoice::id($invoice['customer'] ?? null) !== StudioSubscriptionInvoice::id($canonical['customer'] ?? null)
+            || StudioSubscriptionInvoice::id(data_get($invoice, 'parent.subscription_details.subscription') ?? $invoice['subscription'] ?? null) !== $canonical['id']) {
+            return false;
+        }
+
+        return collect(data_get($invoice, 'lines.data', []))->contains(fn ($line) => StudioSubscriptionInvoice::id(data_get($line, 'pricing.price_details.price') ?? $line['price'] ?? null) === $price
+            && (int) data_get($line, 'period.start') === $start && (int) data_get($line, 'period.end') === $end && (int) ($line['amount'] ?? 0) >= 0);
     }
 }

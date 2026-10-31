@@ -186,6 +186,45 @@ class ListingStudioSubscriptionActionsTest extends TestCase
         $this->assertSame(3, DB::table('listing_studio_credit_entries')->where('source_type', 'invoice')->count());
     }
 
+    public function test_delayed_paid_upgrade_event_after_renewal_keeps_new_period_without_rollover(): void
+    {
+        $this->confirm($this->review());
+        $this->markPaid(true);
+        $this->advanceToPaidRenewal();
+        app(StripeSubscriptionSync::class)->handle(['id' => 'evt_delayed_upgrade', 'type' => 'invoice.paid', 'livemode' => false,
+            'data' => ['object' => $this->gateway->upgradeInvoice]]);
+        $this->assertSame('completed', Action::sole()->status);
+        $this->assertSame('pro', $this->subscription->fresh()->plan_code);
+        $this->assertSame('2027-01-01', $this->subscription->fresh()->current_period_end->toDateString());
+        $this->assertSame(13500, $this->balance());
+        $this->assertSame(3750, (int) DB::table('listing_studio_credit_entries')->where('stripe_invoice_id', 'in_upgrade')->sum('amount_cents'));
+    }
+
+    public function test_subscription_event_after_renewal_fetches_known_upgrade_invoice_outside_transaction(): void
+    {
+        $this->confirm($this->review());
+        $this->markPaid(true);
+        $this->advanceToPaidRenewal();
+        $this->sync('customer.subscription.updated', 'evt_renewal_after_upgrade');
+        $this->assertSame('completed', Action::sole()->status);
+        $this->assertSame(13500, $this->balance());
+        $this->assertSame('2027-01-01', $this->subscription->fresh()->current_period_end->toDateString());
+    }
+
+    public function test_unidentified_old_upgrade_never_rolls_back_separately_paid_renewal(): void
+    {
+        $this->confirm($this->review());
+        Action::sole()->update(['invoice_id' => null, 'status' => 'needs_attention']);
+        $this->markPaid(true);
+        $this->advanceToPaidRenewal();
+        $this->sync('customer.subscription.updated', 'evt_new_paid_period');
+        $this->assertSame('needs_attention', Action::sole()->status);
+        $this->assertSame('pro', $this->subscription->fresh()->plan_code);
+        $this->assertSame('2027-01-01', $this->subscription->fresh()->current_period_end->toDateString());
+        $this->assertSame(13500, $this->balance());
+        $this->assertSame(0, DB::table('listing_studio_credit_entries')->where('stripe_invoice_id', 'in_upgrade')->count());
+    }
+
     public function test_timeout_keeps_marker_and_get_only_recovery_after_request_expiry_and_kill_switch(): void
     {
         $review = $this->review();
@@ -348,6 +387,21 @@ class ListingStudioSubscriptionActionsTest extends TestCase
     {
         $this->subscription->update(['plan_code' => 'pro', 'stripe_price_id' => 'price_pro', 'amount_cents' => 9900]);
         $this->gateway->canonical['items']['data'][0]['price'] = $this->price('pro');
+    }
+
+    private function advanceToPaidRenewal(): void
+    {
+        $this->travelTo(CarbonImmutable::createFromTimestampUTC($this->end)->addDay());
+        $nextEnd = CarbonImmutable::parse('2027-01-01T00:00:00Z')->timestamp;
+        $this->gateway->canonical['items']['data'][0]['current_period_start'] = $this->end;
+        $this->gateway->canonical['items']['data'][0]['current_period_end'] = $nextEnd;
+        $line = $this->line('il_renewal', 'pro', 9900, false);
+        $line['period'] = ['start' => $this->end, 'end' => $nextEnd];
+        $invoice = $this->invoice('in_renewal', false);
+        $invoice['lines']['data'] = [$line];
+        $invoice['amount_due'] = $invoice['amount_paid'] = $invoice['total'] = 9900;
+        $invoice['billing_reason'] = 'subscription_cycle';
+        $this->gateway->canonical['latest_invoice'] = $invoice;
     }
 
     private function invoice(string $id, bool $proration, string $status = 'paid'): array
