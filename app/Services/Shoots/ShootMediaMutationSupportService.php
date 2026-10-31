@@ -6,7 +6,10 @@ use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Models\ShootMediaAlbum;
 use App\Models\User;
+use App\Support\LockedWrite;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
 
@@ -196,34 +199,78 @@ class ShootMediaMutationSupportService
         return $deletedFileCount;
     }
 
-    public function deleteStoredAssets(ShootFile $file): void
+    public function deleteStoredAssets(ShootFile $file): bool
     {
+        $deleted = true;
         foreach ($this->collectStoredAssetPaths($file) as $storedPath) {
             if ($storedPath) {
-                app(\App\Services\Media\MediaStorage::class)->delete($storedPath);
+                $deleted = app(\App\Services\Media\MediaStorage::class)->delete($storedPath) && $deleted;
             }
         }
+
+        return $deleted;
     }
 
     public function deleteFile(Shoot $shoot, ShootFile $file): Shoot
     {
-        $wasCover = (bool) ($file->is_cover ?? false);
+        // This historical import ledger is not present in every installation.
+        // Its nullable pointer has a restrictive FK; retain the provenance row
+        // while detaching it atomically from the gallery row being removed.
+        $hasImportLedger = Schema::hasTable('september_import_assets')
+            && Schema::hasColumn('september_import_assets', 'shoot_file_id');
 
-        $this->deleteStoredAssets($file);
+        $delete = fn () => DB::transaction(function () use ($shoot, $file, $hasImportLedger) {
+            // Use a fresh model on each retry: a rolled-back Eloquent deletion
+            // leaves the previous instance marked as no longer existing.
+            $currentFile = $shoot->files()->whereKey($file->id)->firstOrFail();
+            if ($hasImportLedger) {
+                DB::table('september_import_assets')
+                    ->where('shoot_id', $shoot->id)
+                    ->where('shoot_file_id', $currentFile->id)
+                    ->update(['shoot_file_id' => null]);
+            }
 
-        $file->delete();
+            if (! $currentFile->delete()) {
+                throw new \RuntimeException('The media deletion was cancelled.');
+            }
 
-        // Reassign the cover when the deleted file held it, so a shoot cannot keep
-        // advertising a thumbnail whose image no longer exists (meeting 26 Jul 2026
-        // [00:25:18], and the delivered-shoot-with-no-media case in A1.docx).
-        if ($wasCover) {
-            $this->reassignCoverImage($shoot);
-        }
+            $currentShoot = $shoot->fresh();
+            if ($currentFile->is_cover) {
+                $this->reassignCoverImage($currentShoot);
+            }
+            $currentShoot = $this->refreshMediaCounters($currentShoot);
 
-        $shoot = $this->refreshMediaCounters($shoot->fresh());
-        $this->clearShootFilesCache($shoot);
+            // A savepoint is not a commit. Never remove bytes until the outermost
+            // transaction succeeds; any FK/lock failure must leave them intact.
+            DB::afterCommit(function () use ($currentShoot, $currentFile) {
+                try {
+                    if (! $this->deleteStoredAssets($currentFile)) {
+                        throw new \RuntimeException('Stored asset cleanup failed.');
+                    }
+                } catch (\Throwable $exception) {
+                    Log::error('Media deletion committed but asset cleanup failed.', [
+                        'shoot_id' => $currentShoot->id,
+                        'shoot_file_id' => $currentFile->id,
+                        'exception' => $exception::class,
+                    ]);
+                }
+                try {
+                    $this->clearShootFilesCache($currentShoot);
+                } catch (\Throwable $exception) {
+                    Log::error('Media deletion committed but cache invalidation failed.', [
+                        'shoot_id' => $currentShoot->id,
+                        'shoot_file_id' => $currentFile->id,
+                        'exception' => $exception::class,
+                    ]);
+                }
+            });
 
-        return $shoot;
+            return $currentShoot;
+        });
+
+        // Laravel propagates nested concurrency failures without rolling back
+        // their savepoint. Only retry when we own the entire transaction.
+        return DB::transactionLevel() > 0 ? $delete() : LockedWrite::run($delete, 'shoot-media.delete');
     }
 
     /**

@@ -7,6 +7,7 @@ use App\Models\ShootFile;
 use App\Models\User;
 use App\Services\Shoots\Actions\DeleteShootMediaAction;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 class ShootMediaInteractionService
 {
@@ -214,11 +215,19 @@ class ShootMediaInteractionService
                 $deletedIds[] = (int) $file->id;
                 $shoot = $shoot->fresh() ?? $shoot;
                 if ($actor) {
-                    app(\App\Services\AuditLogService::class)->record('media.delete', $actor, $shoot, [
-                        'shoot_file_id' => (int) $file->id,
-                        'filename' => $file->filename ?? null,
-                        'bulk' => true,
-                    ]);
+                    try {
+                        app(\App\Services\AuditLogService::class)->record('media.delete', $actor, $shoot, [
+                            'shoot_file_id' => (int) $file->id,
+                            'filename' => $file->filename ?? null,
+                            'bulk' => true,
+                        ]);
+                    } catch (\Throwable $exception) {
+                        Log::error('Media deletion committed but audit recording failed.', [
+                            'shoot_id' => $shoot->id,
+                            'shoot_file_id' => $file->id,
+                            'exception' => $exception::class,
+                        ]);
+                    }
                 }
                 // Prefer counters from the action when present.
                 if (isset($result['raw_photo_count'])) {
@@ -227,11 +236,13 @@ class ShootMediaInteractionService
                 }
             } catch (\Exception $e) {
                 $errors[] = $file->id;
+                \App\Services\ApiErrorResponder::log($e, 'error');
             }
         }
 
-        $shoot = $this->shootMediaMutationSupportService->refreshMediaCounters($shoot->fresh());
-        $this->shootMediaMutationSupportService->clearShootFilesCache($shoot, $actor);
+        // Each successful action already committed its counters and invalidated
+        // caches. A second write here could fail after every deletion succeeded.
+        $shoot = $shoot->fresh();
 
         return [
             'payload' => [

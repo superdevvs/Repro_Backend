@@ -5,6 +5,8 @@ namespace App\Observers;
 use App\Jobs\GenerateShootMediaArchiveJob;
 use App\Models\Shoot;
 use App\Models\ShootFile;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 class ShootFileObserver
 {
@@ -77,6 +79,27 @@ class ShootFileObserver
     }
 
     public function deleted(ShootFile $shootFile): void
+    {
+        if (DB::transactionLevel() > 0) {
+            DB::afterCommit(function () use ($shootFile) {
+                try {
+                    $this->handleDeleted($shootFile);
+                } catch (\Throwable $exception) {
+                    Log::error('Media deletion committed but follow-up dispatch failed.', [
+                        'shoot_id' => $shootFile->shoot_id,
+                        'shoot_file_id' => $shootFile->id,
+                        'exception' => $exception::class,
+                    ]);
+                }
+            });
+
+            return;
+        }
+
+        $this->handleDeleted($shootFile);
+    }
+
+    protected function handleDeleted(ShootFile $shootFile): void
     {
         app(\App\Services\Messaging\ShootDeliveryUpdateNotifier::class)->fileDeleted($shootFile);
         if ($shootFile->isIguideOfflinePackage()) {

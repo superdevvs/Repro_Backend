@@ -592,11 +592,19 @@ class ShootMediaController extends Controller
             $fileId = (int) $file->id;
             $payload = $this->deleteShootMediaAction->execute($shoot, $file);
             if ($user) {
-                app(\App\Services\AuditLogService::class)->record('media.delete', $user, $shoot, [
-                    'shoot_file_id' => $fileId,
-                    'filename' => $filename,
-                    'bulk' => false,
-                ]);
+                try {
+                    app(\App\Services\AuditLogService::class)->record('media.delete', $user, $shoot, [
+                        'shoot_file_id' => $fileId,
+                        'filename' => $filename,
+                        'bulk' => false,
+                    ]);
+                } catch (\Throwable $exception) {
+                    \Illuminate\Support\Facades\Log::error('Media deletion committed but audit recording failed.', [
+                        'shoot_id' => $shoot->id,
+                        'shoot_file_id' => $fileId,
+                        'exception' => $exception::class,
+                    ]);
+                }
             }
 
             return response()->json($payload);
