@@ -16,17 +16,18 @@ class WorkspaceAutoenhance
     public function run(StudioWorkspace $workspace, string $operationId, array $item, string $source, string $service): string
     {
         $credentials = $this->settings->credentials('autoenhance');
-        if (! filled($credentials['api_key'] ?? null)) {
-            throw new StudioProviderException('An administrator needs to finish configuring photo enhancement.');
-        }
         $state = new WorkspaceProviderState($workspace, $operationId);
         $key = 'autoenhance-'.hash('sha256', $item['id']);
         $saved = $state->get($key);
+        if (! filled($credentials['api_key'] ?? null)) {
+            throw new StudioProviderException('An administrator needs to finish configuring photo enhancement.', ! empty($saved));
+        }
         $fingerprint = hash('sha256', $credentials['api_key']);
         if ($saved && ($saved['account'] ?? null) !== $fingerprint) {
-            throw new StudioProviderException('The editing account changed. Restore the original account to resume this photo.');
+            throw new StudioProviderException('The editing account changed. Restore the original account to resume this photo.', true);
         }
         if (! $saved) {
+            $state->assertSubmissionAllowed();
             $state->put($key, ['submitting' => true, 'account' => $fingerprint]);
             try {
                 $response = $this->api($credentials)->post($this->base().'/v3/images/', $this->payload($workspace, $item, $service));
@@ -56,7 +57,7 @@ class WorkspaceAutoenhance
             $apiUpload = $host === parse_url($this->base(), PHP_URL_HOST);
             $signedUpload = (bool) preg_match('/^[a-z0-9.-]+\.s3(?:-accelerate|[.-][a-z0-9-]+)?\.amazonaws\.com$/i', $host);
             if (parse_url($url, PHP_URL_SCHEME) !== 'https' || (! $apiUpload && ! $signedUpload) || parse_url($url, PHP_URL_USER) || parse_url($url, PHP_URL_PORT)) {
-                throw new StudioProviderException('The photo service returned an unsupported upload location.');
+                throw new StudioProviderException('The photo service returned an unsupported upload location.', true);
             }
             parse_str((string) parse_url($url, PHP_URL_QUERY), $query);
             $contentType = $apiUpload ? 'application/octet-stream' : ($query['content-type'] ?? 'application/octet-stream');

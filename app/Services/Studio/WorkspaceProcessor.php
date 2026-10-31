@@ -35,7 +35,7 @@ class WorkspaceProcessor
     {
         app(\App\Services\Shoots\ScopedEditingDispatch::class)->assertWorkspaceSources($workspace);
         // Queue time can outlive assignments/payment state. Recheck the persisted references before spending.
-        $this->media->authorize($workspace->media, \App\Models\User::findOrFail($workspace->created_by), $workspace->team_id);
+        $this->media->authorizeWorkspace($workspace);
         app(\App\Services\Shoots\ShootPhotoSet::class)->assertFullWorkspace($workspace);
         $type = $workspace->operation['type'];
         // Old paid single-image checkpoints must remain resumable without submitting a second batch.
@@ -322,7 +322,7 @@ class WorkspaceProcessor
             $output = collect($w->outputs ?? [])->where('mediaId', $item['id'])->where('kind', 'image')->sortByDesc('version')->first();
             $output ??= collect($w->prepared_frames ?? [])->firstWhere('mediaId', $item['id']);
             if ($output && ! empty($output['path'])) {
-                return Storage::disk('public')->get($output['path']);
+                return Storage::disk($this->media->outputDisk($w))->get($output['path']);
             }
         }
 
@@ -424,6 +424,9 @@ class WorkspaceProcessor
             $w->error = null;
         });
         app(WorkspaceShootPublisher::class)->completeServices($w);
+        if ($w->listing_studio_trial_id) {
+            app(\App\Services\ListingStudio\ListingStudioGuestTrialService::class)->syncWorkspace($w->fresh());
+        }
     }
 
     private function download(string $url): string
@@ -475,10 +478,11 @@ class WorkspaceProcessor
         $target = collect($workspace->operation['payload']['targets'] ?? [])->firstWhere('mediaId', $item['id']);
         $output = collect($workspace->outputs ?? [])->firstWhere('id', $target['outputId'] ?? $workspace->operation['payload']['outputId'] ?? '');
         $path = $output['path'] ?? '';
-        if (! $output || ($output['mediaId'] ?? '') !== $item['id'] || ($output['kind'] ?? '') !== 'image' || ! str_starts_with($path, 'studio/workspaces/'.$workspace->id.'/') || str_contains($path, '..') || ! Storage::disk('public')->exists($path)) {
+        $disk = Storage::disk($this->media->outputDisk($workspace));
+        if (! $output || ($output['mediaId'] ?? '') !== $item['id'] || ($output['kind'] ?? '') !== 'image' || ! str_starts_with($path, 'studio/workspaces/'.$workspace->id.'/') || str_contains($path, '..') || ! $disk->exists($path)) {
             throw new \App\Exceptions\StudioProviderException('The selected image version is no longer available.');
         }
 
-        return Storage::disk('public')->get($path);
+        return $disk->get($path);
     }
 }

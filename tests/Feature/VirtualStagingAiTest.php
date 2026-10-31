@@ -194,6 +194,64 @@ class VirtualStagingAiTest extends TestCase
         $this->assertSame([], $workspace->fresh()->outputs ?? []);
     }
 
+    public function test_a_lost_paid_submission_response_is_held_without_posting_again(): void
+    {
+        $workspace = $this->workspace();
+        $posts = 0;
+        Http::fake(function (Request $request) use (&$posts) {
+            if ($request->method() === 'POST') {
+                $posts++;
+                throw new \Illuminate\Http\Client\ConnectionException('The response was lost.');
+            }
+            return Http::response([], 500);
+        });
+
+        for ($attempt = 0; $attempt < 2; $attempt++) {
+            try {
+                app(VirtualStagingProcessor::class)->run($workspace->fresh(), 'operation-1', $workspace->media);
+                $this->fail('An ambiguous paid submission must stop.');
+            } catch (VirtualStagingAiException $exception) {
+                $this->assertTrue($exception->ambiguous);
+            }
+        }
+        $this->assertSame(1, $posts);
+        $this->assertNotEmpty($workspace->fresh()->operation['providerState']['vsai-'.hash('sha256', 'm1').'-submitting']);
+    }
+
+    public function test_an_explicit_submission_rejection_clears_only_the_submission_marker(): void
+    {
+        $workspace = $this->workspace();
+        Http::fake(['*' => Http::response([], 422)]);
+        try {
+            app(VirtualStagingProcessor::class)->run($workspace, 'operation-1', $workspace->media);
+            $this->fail('The provider rejected this request.');
+        } catch (VirtualStagingAiException $exception) {
+            $this->assertFalse($exception->ambiguous);
+        }
+        $this->assertArrayNotHasKey('vsai-'.hash('sha256', 'm1').'-submitting', $workspace->fresh()->operation['providerState'] ?? []);
+    }
+
+    public function test_accepted_staging_cannot_resume_against_a_different_provider_account(): void
+    {
+        $workspace = $this->workspace();
+        $this->fakeApi();
+        config(['studio_providers.virtualstagingai.poll_timeout' => 0]);
+        try {
+            app(VirtualStagingProcessor::class)->run($workspace, 'operation-1', $workspace->media);
+        } catch (RuntimeException) {
+            // The render ID is saved before waiting for a final result.
+        }
+        $requests = Http::recorded()->count();
+        config(['studio_providers.virtualstagingai.api_key' => 'different-account-key']);
+        try {
+            app(VirtualStagingProcessor::class)->run($workspace->fresh(), 'operation-1', $workspace->media);
+            $this->fail('The accepted render belongs to the original account.');
+        } catch (VirtualStagingAiException $exception) {
+            $this->assertTrue($exception->ambiguous);
+        }
+        $this->assertSame($requests, Http::recorded()->count());
+    }
+
     public function test_generate_requires_a_saved_key_and_supported_options_and_pins_the_provider(): void
     {
         config(['studio_providers.virtualstagingai.api_key' => null]);

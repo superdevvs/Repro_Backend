@@ -17,6 +17,22 @@ class WorkspaceMediaService
 {
     public function __construct(private ShootAuthorizationSupport $authorization, private ShootFileAccessService $files, private RawThumbnailService $raw) {}
 
+    /** Guest jobs have their own narrow grant; a missing user alone never authorizes work. */
+    public function authorizeWorkspace(StudioWorkspace $workspace): void
+    {
+        if ($workspace->listing_studio_trial_id) {
+            app(\App\Services\ListingStudio\ListingStudioTrialPipeline::class)->authorize($workspace);
+            return;
+        }
+
+        $this->authorize($workspace->media, User::findOrFail($workspace->created_by), $workspace->team_id);
+    }
+
+    public function outputDisk(StudioWorkspace $workspace): string
+    {
+        return $workspace->listing_studio_trial_id ? 'listing_studio_trials' : 'public';
+    }
+
     /** Client URLs are display hints only. Persist only server-resolved, authorized references. */
     public function authorize(array $media, User $user, int $teamId): array
     {
@@ -195,6 +211,11 @@ class WorkspaceMediaService
             } else {
                 $ref = $media['mediaRef'];
                 $disk = Storage::disk(config('studio_uploads.disk', 'public'));
+                if (! empty($media['trialId'])) {
+                    $trial = app(\App\Services\ListingStudio\ListingStudioTrialPipeline::class)->authorizeSource($media);
+                    $ref = $trial->source_path;
+                    $disk = Storage::disk('listing_studio_trials');
+                }
                 $path = tempnam(sys_get_temp_dir(), 'studio-source-');
                 $cleanup[] = $path;
                 file_put_contents($path, $disk->get($ref));
@@ -226,14 +247,30 @@ class WorkspaceMediaService
         }
     }
 
-    public function store(StudioWorkspace $workspace, string $bytes, string $suffix): array
+    public function store(StudioWorkspace $workspace, string $bytes, string $suffix, string $extension = 'jpg'): array
     {
         if (! @getimagesizefromstring($bytes)) {
             throw new RuntimeException('The provider returned an invalid image.');
         }
-        $path = "studio/workspaces/{$workspace->id}/{$suffix}.jpg";
-        Storage::disk('public')->put($path, $bytes);
+        if (! in_array($extension, ['jpg', 'png'], true)) {
+            throw new RuntimeException('The image storage format is unsupported.');
+        }
+        $path = "studio/workspaces/{$workspace->id}/{$suffix}.{$extension}";
+        $disk = Storage::disk($this->outputDisk($workspace));
+        if ($workspace->listing_studio_trial_id) {
+            // Serialize the short file write against expiry/purge. A result arriving after
+            // cleanup cannot recreate private files for an expired trial.
+            \App\Support\LockedWrite::run(fn () => \Illuminate\Support\Facades\DB::transaction(function () use ($workspace, $disk, $path, $bytes): void {
+                \App\Models\ListingStudioGuestTrial::whereKey($workspace->listing_studio_trial_id)->update(['updated_at' => now()]);
+                app(\App\Services\ListingStudio\ListingStudioTrialPipeline::class)->authorize($workspace);
+                if (! $disk->put($path, $bytes)) {
+                    throw new RuntimeException('The edited image could not be saved. Retry to retrieve the existing result.');
+                }
+            }), 'listing-studio.trial-output');
+        } elseif (! $disk->put($path, $bytes)) {
+            throw new RuntimeException('The edited image could not be saved. Retry to retrieve the existing result.');
+        }
 
-        return ['path' => $path, 'url' => Storage::disk('public')->url($path)];
+        return ['path' => $path, 'url' => $workspace->listing_studio_trial_id ? null : $disk->url($path)];
     }
 }

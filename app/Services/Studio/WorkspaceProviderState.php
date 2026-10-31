@@ -45,6 +45,14 @@ class WorkspaceProviderState
         }
     }
 
+    public function assertSubmissionAllowed(): void
+    {
+        $this->assertActive();
+        if ($this->workspace->listing_studio_trial_id) {
+            app(\App\Services\ListingStudio\ListingStudioTrialPipeline::class)->assertMaySubmit($this->workspace);
+        }
+    }
+
     public function route(string $service): array
     {
         $this->assertActive();

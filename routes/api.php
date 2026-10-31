@@ -131,6 +131,24 @@ Route::middleware('auth:sanctum')->group(function () {
 
 Route::middleware('auth:sanctum')->get('/me/permissions', [PermissionController::class, 'me']);
 
+// The website bridge has only guest trial authority, never the booking/staff API key.
+Route::middleware(\App\Http\Middleware\ValidateListingStudioBridge::class)->prefix('external/listing-studio')->group(function () {
+    $controller = \App\Http\Controllers\API\ListingStudioGuestTrialController::class;
+    Route::get('/capabilities', [$controller, 'capabilities']);
+    Route::get('/trials', [$controller, 'index']);
+    Route::post('/trials', [$controller, 'store']);
+    Route::get('/trials/{trial}', [$controller, 'show'])->whereUuid('trial');
+    Route::get('/trials/{trial}/preview', [$controller, 'preview'])->whereUuid('trial');
+    Route::get('/trials/{trial}/original-preview', [$controller, 'originalPreview'])->whereUuid('trial');
+    Route::post('/trials/{trial}/claim-token', [$controller, 'claimToken'])->whereUuid('trial');
+});
+Route::middleware(['auth:sanctum', 'throttle:60,1'])->prefix('listing-studio/trials')->group(function () {
+    $controller = \App\Http\Controllers\API\ListingStudioGuestTrialController::class;
+    Route::get('/', [$controller, 'clientIndex'])->name('listing-studio.trials.index');
+    Route::post('/claim', [$controller, 'claim'])->name('listing-studio.trials.claim');
+    Route::get('/{trial}/download', [$controller, 'download'])->whereUuid('trial')->name('listing-studio.trials.download');
+});
+
 // Team-fulfilled introductory offer uses private support delivery, not client Studio access.
 Route::middleware(['auth:sanctum', 'permission:support,view'])->prefix('listing-studio/free-edits')->group(function () {
     Route::get('/', [App\Http\Controllers\API\ListingStudioTrialController::class, 'show']);

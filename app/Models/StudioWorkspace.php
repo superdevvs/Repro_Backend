@@ -18,6 +18,11 @@ class StudioWorkspace extends Model
         'version' => 'integer', 'progress' => 'integer', 'team_id' => 'integer', 'created_by' => 'integer',
     ];
 
+    public function listingStudioTrial(): \Illuminate\Database\Eloquent\Relations\BelongsTo
+    {
+        return $this->belongsTo(ListingStudioGuestTrial::class, 'listing_studio_trial_id');
+    }
+
     public function isBusy(): bool
     {
         return in_array($this->status, ['preparing', 'generating'], true);

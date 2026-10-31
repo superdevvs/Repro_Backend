@@ -31,7 +31,7 @@ class VirtualStagingProcessor
     {
         $ready = $this->settings->readiness('virtual-staging', $this->settings->route('virtual-staging'));
         if (! $ready['ready']) {
-            throw new StudioProviderException($ready['reason']);
+            throw new StudioProviderException($ready['reason'], ! empty($workspace->operation['providerState']));
         }
         $options = VirtualStagingOptions::normalize($workspace->config['adjustments'] ?? []);
         if ($singleVariation) {
@@ -70,11 +70,11 @@ class VirtualStagingProcessor
         $bytes = $this->client()->download($resultUrl);
         $png = (string) $this->images->read($bytes)->toPng();
         $path = $this->maskPath($workspace, $item['id']);
-        Storage::disk('public')->put($path, $png);
+        Storage::disk($this->media->outputDisk($workspace))->put($path, $png);
 
         return [
             'percentageMasked' => round((float) $percentage, 1),
-            'previewUrl' => Storage::disk('public')->url($path),
+            'previewUrl' => $workspace->listing_studio_trial_id ? null : Storage::disk('public')->url($path),
         ];
     }
 
@@ -85,19 +85,34 @@ class VirtualStagingProcessor
         $bytes = $this->media->bytes($item);
         $sourceHash = hash('sha256', $bytes);
         $checkpoint = $state->get($key);
+        $account = $client->accountFingerprint();
+        if (is_array($checkpoint) && isset($checkpoint['account']) && $checkpoint['account'] !== $account) {
+            throw new VirtualStagingAiException('The staging account changed. Restore the original account to recover this photo.', true);
+        }
         if (! is_array($checkpoint) || empty($checkpoint['awaiting']) || empty($checkpoint['renderId'])) {
             $checkpoint = $this->submit($workspace, $state, $key, $item['id'], $options, $client, $bytes, $sourceHash);
             if ($checkpoint === null) {
                 return false;
             }
         }
-        $variations = $this->await($client, $state, $checkpoint);
+        try {
+            $variations = $this->await($client, $state, $checkpoint);
+        } catch (VirtualStagingAiException $exception) {
+            // Rejected status reads do not prove an accepted render failed or never existed.
+            throw new VirtualStagingAiException($exception->getMessage(), true);
+        }
         if ($variations === null) {
             return false;
         }
         $done = array_values(array_filter($variations, fn ($variation) => ($variation['status'] ?? '') === 'done'));
         $failed = array_values(array_filter($variations, fn ($variation) => in_array($variation['status'] ?? '', ['error', 'deleted'], true)));
         $stored = $this->storeVariations($workspace, $operationId, $item, $done, $sourceHash, $options, (string) $checkpoint['renderId']);
+        if ($workspace->listing_studio_trial_id && collect(array_merge($workspace->outputs ?? [], $stored))->contains(
+            fn ($output) => ($output['mediaId'] ?? null) === $item['id'] && ($output['status'] ?? null) === 'completed' && ($output['vsai']['type'] ?? null) === 'staging'
+        )) {
+            // The one requested staged photo succeeded even if an auxiliary removal result failed.
+            $failed = [];
+        }
         if ($failed) {
             $this->persist($workspace, $operationId, function (StudioWorkspace $record) use ($key, $checkpoint, $stored, $failed): void {
                 $this->appendOutputs($record, $stored);
@@ -128,10 +143,10 @@ class VirtualStagingProcessor
         $maskHash = null;
         if ($options['useDetectedMask']) {
             $maskPath = $this->maskPath($workspace, $mediaId);
-            if (! Storage::disk('public')->exists($maskPath)) {
+            if (! Storage::disk($this->media->outputDisk($workspace))->exists($maskPath)) {
                 throw new StudioProviderException('Detect furniture on this photo before using a custom removal mask.');
             }
-            $maskBytes = Storage::disk('public')->get($maskPath);
+            $maskBytes = Storage::disk($this->media->outputDisk($workspace))->get($maskPath);
             $maskHash = hash('sha256', $maskBytes);
             $maskUrl = 'data:image/png;base64,'.base64_encode($maskBytes);
         }
@@ -139,20 +154,34 @@ class VirtualStagingProcessor
         $reuse = $existing && $existing['count'] + $options['variationCount'] <= 20;
         $baseId = $reuse ? ($existing['removalId'] ?? null) : null;
         $config = VirtualStagingOptions::config($options, $baseId ? null : $maskUrl, $baseId);
-        if ($reuse) {
-            $created = $client->createVariations($existing['renderId'], $config, $options['variationCount']);
-            $renderId = $existing['renderId'];
-            $knownIds = $existing['knownIds'];
-        } else {
-            $created = $client->createRender($this->dataUrl($bytes), $config, $options['variationCount']);
-            $renderId = (string) ($created['id'] ?? '');
-            $knownIds = [];
+        $submittingKey = $key.'-submitting';
+        if ($state->get($submittingKey)) {
+            throw new VirtualStagingAiException('The previous staging submission could not be confirmed. An administrator must check it before another submission.', true);
+        }
+        $state->assertSubmissionAllowed();
+        $state->put($submittingKey, ['startedAt' => now()->toIso8601String(), 'renderId' => $reuse ? $existing['renderId'] : null]);
+        try {
+            if ($reuse) {
+                $created = $client->createVariations($existing['renderId'], $config, $options['variationCount']);
+                $renderId = $existing['renderId'];
+                $knownIds = $existing['knownIds'];
+            } else {
+                $created = $client->createRender($this->dataUrl($bytes), $config, $options['variationCount']);
+                $renderId = (string) ($created['id'] ?? '');
+                $knownIds = [];
+            }
+        } catch (VirtualStagingAiException $exception) {
+            if (! $exception->ambiguous) {
+                $state->put($submittingKey, null);
+            }
+            throw $exception;
         }
         if ($renderId === '') {
-            throw new RuntimeException('Virtual staging returned an unreadable response. Retry to resume this photo.');
+            throw new VirtualStagingAiException('The staging submission could not be confirmed. An administrator must check it before another submission.', true);
         }
         $checkpoint = [
             'renderId' => $renderId,
+            'account' => $client->accountFingerprint(),
             'sourceHash' => $sourceHash,
             'maskHash' => $maskHash,
             'knownIds' => $knownIds,
@@ -164,6 +193,7 @@ class VirtualStagingProcessor
             return null;
         }
         $state->put($key, $checkpoint);
+        $state->put($submittingKey, null);
 
         return $checkpoint;
     }
@@ -204,6 +234,10 @@ class VirtualStagingProcessor
         foreach ($variations as $variation) {
             $variationId = (string) ($variation['id'] ?? '');
             if ($variationId === '') {
+                continue;
+            }
+            // Removal is an intermediate provider artifact, not the promised staging trial result.
+            if ($workspace->listing_studio_trial_id && ($variation['type'] ?? 'staging') !== 'staging') {
                 continue;
             }
             foreach ($this->resultUrls($variation) as $index => $url) {

@@ -149,6 +149,7 @@ class WorkspaceImageOperations
             if ($state->get('fal-submitting-'.$mediaId)) {
                 throw new StudioProviderException('The previous image submission could not be confirmed. An administrator must check it before another submission.', true);
             }
+            $state->assertSubmissionAllowed();
             $state->put('fal-submitting-'.$mediaId, true);
             try {
                 $id = $legacy
@@ -190,12 +191,14 @@ class WorkspaceImageOperations
     {
         $key = 'openai-'.hash('sha256', $mediaId);
         $saved = $state->get($key);
-        if (isset($saved['path']) && Storage::disk('local')->exists($saved['path'])) {
-            return Storage::disk('local')->get($saved['path']);
+        $cacheDisk = $workspace->listing_studio_trial_id ? 'listing_studio_trials' : 'local';
+        if (isset($saved['path']) && Storage::disk($cacheDisk)->exists($saved['path'])) {
+            return Storage::disk($cacheDisk)->get($saved['path']);
         }
         if ($saved) {
             throw new StudioProviderException('The previous image submission could not be confirmed. An administrator must check it before another submission.', true);
         }
+        $state->assertSubmissionAllowed();
         $state->put($key, ['started' => true]);
         try {
             $options = ['model' => $route['model'], 'reference_images' => $references];
@@ -207,7 +210,11 @@ class WorkspaceImageOperations
             throw $exception;
         }
         $path = 'studio/workspaces/'.$workspace->id.'/provider-results/'.$workspace->operation['id'].'-'.$key.'.png';
-        if (! Storage::disk('local')->put($path, $bytes)) {
+        if ($workspace->listing_studio_trial_id) {
+            // Keep paid recovery bytes private and serialize against trial expiry just like final outputs.
+            $stored = app(WorkspaceMediaService::class)->store($workspace, $bytes, 'provider-results/'.$workspace->operation['id'].'-'.$key, 'png');
+            $path = $stored['path'];
+        } elseif (! Storage::disk('local')->put($path, $bytes)) {
             throw new StudioProviderException('The generated image could not be saved. Contact an administrator before retrying.', true);
         }
         $state->put($key, ['path' => $path]);

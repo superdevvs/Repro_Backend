@@ -73,6 +73,8 @@ return Application::configure(basePath: dirname(__DIR__))
             ->onOneServer();
         $schedule->command('listing-studio:recover-account-setups --limit=100')
             ->everyMinute()->withoutOverlapping()->onOneServer();
+        $schedule->command('listing-studio:prune-guest-trials --limit=100')
+            ->hourly()->withoutOverlapping()->onOneServer();
         $schedule->command('shoot-uploads:audit-pending --minutes=5')
             ->everyFiveMinutes()
             ->withoutOverlapping()

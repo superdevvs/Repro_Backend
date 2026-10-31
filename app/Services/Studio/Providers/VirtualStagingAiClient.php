@@ -25,6 +25,11 @@ class VirtualStagingAiClient
         return ['configured' => filled($this->configuration['api_key'] ?? null)];
     }
 
+    public function accountFingerprint(): string
+    {
+        return hash('sha256', (string) ($this->configuration['api_key'] ?? ''));
+    }
+
     public function account(): array
     {
         $data = $this->send('GET', 'user');
@@ -113,6 +118,7 @@ class VirtualStagingAiClient
 
     private function send(string $method, string $path, array $options = [], ?int $timeout = null): array
     {
+        $mutation = strtoupper($method) === 'POST';
         $key = trim((string) ($this->configuration['api_key'] ?? ''));
         if ($key === '') {
             throw new VirtualStagingAiException('An administrator needs to finish configuring this service.');
@@ -122,7 +128,7 @@ class VirtualStagingAiClient
             $pending = Http::withHeaders([
                 'Authorization' => 'Api-Key '.$key,
                 'Accept' => 'application/json',
-            ])->timeout($timeout ?? (int) ($this->configuration['timeout'] ?? 60))->connectTimeout(15);
+            ])->timeout($timeout ?? (int) ($this->configuration['timeout'] ?? 60))->connectTimeout(15)->withOptions(['allow_redirects' => false]);
             $response = match (strtoupper($method)) {
                 'GET' => $pending->get($url, $options['query'] ?? []),
                 'POST' => $pending->asJson()->post($url, $options['json'] ?? []),
@@ -131,17 +137,23 @@ class VirtualStagingAiClient
         } catch (VirtualStagingAiException $exception) {
             throw $exception;
         } catch (Throwable) {
+            if ($mutation) {
+                throw new VirtualStagingAiException('The staging submission could not be confirmed. An administrator must check it before another submission.', true);
+            }
             throw new \RuntimeException('Virtual staging could not be reached. Retry to resume this photo.');
         }
 
-        return $this->decode($response);
+        return $this->decode($response, $mutation);
     }
 
-    private function decode(Response $response): array
+    private function decode(Response $response, bool $mutation = false): array
     {
         if ($response->successful()) {
             $json = $response->json();
             if (! is_array($json)) {
+                if ($mutation) {
+                    throw new VirtualStagingAiException('The staging submission could not be confirmed. An administrator must check it before another submission.', true);
+                }
                 throw new \RuntimeException('Virtual staging returned an unreadable response. Retry to resume this photo.');
             }
 
@@ -156,6 +168,10 @@ class VirtualStagingAiClient
         }
         if (in_array($status, [400, 404, 422], true)) {
             throw new VirtualStagingAiException('Virtual staging rejected this photo or these options. Check the room, style, and removal settings.');
+        }
+
+        if ($mutation) {
+            throw new VirtualStagingAiException('Virtual staging could not accept this photo. Please try again later.', ! $response->clientError() || in_array($status, [408, 409], true));
         }
 
         throw new \RuntimeException('Virtual staging could not finish this photo. Retry to resume this photo.');
