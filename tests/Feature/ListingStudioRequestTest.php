@@ -84,7 +84,7 @@ class ListingStudioRequestTest extends TestCase
         $payload = $this->signup();
         $first = $this->postJson(self::URL, $payload)->assertCreated();
         $this->postJson(self::URL, $payload)->assertOk()->assertJsonPath('data.id', $first->json('data.id'));
-        $this->postJson(self::URL, array_replace($payload, ['plan_code' => 'plan_200']))->assertConflict();
+        $this->postJson(self::URL, array_replace($payload, ['plan_code' => 'pro']))->assertConflict();
         $this->postJson(self::URL, $this->signup())->assertConflict();
         $this->assertDatabaseCount('listing_studio_requests', 1);
     }
@@ -170,7 +170,7 @@ class ListingStudioRequestTest extends TestCase
     {
         foreach (['salesRep', 'sales_rep', 'rep', 'super_admin', 'client', 'admin'] as $role) {
             Sanctum::actingAs(User::factory()->create(['role' => $role]));
-            $this->getJson('/api/listing-studio/catalog')->assertOk()->assertJsonCount(4, 'data.plans')->assertJsonCount(6, 'data.services');
+            $this->getJson('/api/listing-studio/catalog')->assertOk()->assertJsonCount(4, 'data.plans')->assertJsonCount(4, 'data.services')->assertJsonCount(3, 'data.historical_plans')->assertJsonCount(6, 'data.historical_services');
         }
         Sanctum::actingAs(User::factory()->create(['role' => 'photographer', 'secondary_roles' => ['admin']]));
         $this->getJson('/api/listing-studio/catalog')->assertOk();
@@ -225,10 +225,27 @@ class ListingStudioRequestTest extends TestCase
         $this->postJson(self::URL, $this->signup())->assertUnauthorized();
     }
 
+    public function test_retired_choices_are_history_only_and_exact_historical_replay_is_preserved(): void
+    {
+        $client = User::factory()->create(['role' => 'client']);
+        Sanctum::actingAs($client);
+        $payload = $this->signup(['plan_code' => 'plan_100', 'services' => ['virtual_staging']]);
+        $this->postJson(self::URL, $payload)->assertUnprocessable();
+        $recordPayload = ['client_id' => $client->id, 'type' => 'signup', 'contact' => null,
+            'plan_code' => 'plan_100', 'services' => ['virtual_staging'], 'details' => $payload['details'],
+            'phone' => null, 'preferred_time' => null];
+        $record = ListingStudioRequest::create([...$recordPayload, 'contact' => ['name' => $client->name, 'email' => $client->email],
+            'submitted_by_id' => $client->id, 'status' => 'approved', 'idempotency_key' => $payload['idempotency_key'],
+            'request_hash' => hash('sha256', json_encode($recordPayload, JSON_THROW_ON_ERROR))]);
+        $this->postJson(self::URL, $payload)->assertOk()->assertJsonPath('data.id', $record->id)->assertJsonPath('data.plan_code', 'plan_100');
+        $this->getJson(self::URL)->assertOk()->assertJsonPath('data.0.services.0', 'virtual_staging');
+        $this->postJson(self::URL, $this->signup(['plan_code' => 'custom']))->assertCreated();
+    }
+
     private function signup(array $overrides = []): array
     {
-        return array_replace(['type' => 'signup', 'plan_code' => 'plan_100',
-            'services' => ['reel_generation', 'virtual_staging'], 'details' => 'Interested in these services.',
+        return array_replace(['type' => 'signup', 'plan_code' => 'starter',
+            'services' => ['grass', 'staging'], 'details' => 'Interested in these services.',
             'idempotency_key' => (string) Str::uuid()], $overrides);
     }
 }

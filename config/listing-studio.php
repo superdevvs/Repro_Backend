@@ -5,6 +5,8 @@ return [
     'paid_enabled' => (bool) env('LISTING_STUDIO_PAID_ENABLED', false),
     'paid_checkout_enabled' => (bool) env('LISTING_STUDIO_PAID_CHECKOUT_ENABLED', false),
     'human_revisions_enabled' => (bool) env('LISTING_STUDIO_HUMAN_REVISIONS_ENABLED', false),
+    'max_active_sources_per_client' => 20,
+    'max_unpaid_orders_per_client' => 20,
     'paid_services' => [
         'staging' => (bool) env('LISTING_STUDIO_PAID_STAGING_ENABLED', false),
         'decluttering' => (bool) env('LISTING_STUDIO_PAID_DECLUTTERING_ENABLED', false),

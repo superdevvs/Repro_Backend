@@ -55,7 +55,7 @@ class ListingStudioCatalogService
                 'unavailableReason' => $ai && $revision ? null : 'service_unavailable'];
         }
 
-        return ['version' => $this->version(), 'currency' => 'usd', 'creditScale' => 100,
+        return ['version' => 'catalog-v1', 'currency' => 'usd', 'creditScale' => 100,
             'services' => $services, 'plans' => $this->plans(),
             'rules' => ['creditRollover' => false, 'mixedFunding' => false, 'photosPerAiOrder' => 1],
             'checkoutAvailable' => $this->checkoutAvailable(), 'dashboardPath' => '/listing-studio',

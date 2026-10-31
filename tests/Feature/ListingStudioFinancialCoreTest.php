@@ -206,6 +206,10 @@ class ListingStudioFinancialCoreTest extends TestCase
         $this->assertSame(0, $order->fresh()->refunded_amount_cents);
         $this->orders()->confirmRefund($order->id, [...$refund, 'status' => 'failed']);
         $this->assertSame('settled', $order->fresh()->funding_status);
+        ListingStudioOutbox::where('type', 'refund_order')->update(['status' => 'dispatched']);
+        $this->orders()->confirmPayment($order->id, [...$evidence, 'eventId' => 'evt_after_failed_refund']);
+        $this->assertSame('settled', $order->fresh()->funding_status);
+        $this->assertSame('dispatched', ListingStudioOutbox::where('type', 'refund_order')->value('status'));
         $this->orders()->confirmRefund($order->id, [...$refund, 'status' => 'succeeded']);
         $this->orders()->confirmRefund($order->id, [...$refund, 'status' => 'succeeded', 'eventId' => 'evt_refund_repeat']);
         $this->orders()->confirmRefund($order->id, [...$refund, 'status' => 'pending']);
@@ -230,6 +234,250 @@ class ListingStudioFinancialCoreTest extends TestCase
             $this->assertSame(4, $payload['currentVersion']);
             $this->assertArrayNotHasKey('success', $payload);
             $this->assertArrayNotHasKey('data', $payload);
+        }
+    }
+
+    public function test_verified_payment_reconciles_all_refunds_atomically_before_dispatch_and_recovers_only_before_processing(): void
+    {
+        $order = $this->accepted('ai_edit', 'card');
+        $evidence = $this->paymentEvidence($order);
+        $this->expectCode('payment_evidence_invalid', fn () => $this->orders()->confirmPayment($order->id, array_diff_key($evidence, ['refundsVerified' => true])));
+        $refund = ['provider' => 'stripe', 'accountId' => $evidence['accountId'], 'liveMode' => true,
+            'refundAttemptId' => (string) Str::uuid(), 'refundOperationId' => (string) Str::uuid(), 'paymentIntentId' => $evidence['paymentIntentId'],
+            'refundId' => 're_pre_payment', 'currency' => 'usd', 'amountCents' => 700, 'status' => 'pending', 'occurredAt' => now()->toIso8601String()];
+        $this->orders()->confirmPayment($order->id, [...$evidence, 'refunds' => [$refund]]);
+        $this->assertSame('refund_pending', $order->fresh()->funding_status);
+        $this->assertSame('needs_attention', $order->item()->first()->status);
+        $this->assertDatabaseCount('listing_studio_outbox', 0);
+        $this->orders()->confirmRefund($order->id, [...$refund, 'status' => 'failed']);
+        $this->assertSame('settled', $order->fresh()->funding_status);
+        $this->assertSame('queued', $order->item()->first()->status);
+        $this->assertDatabaseCount('listing_studio_outbox', 1);
+        $this->orders()->confirmRefund($order->id, $refund);
+        $this->assertSame('settled', $order->fresh()->funding_status);
+        $event = ListingStudioOutbox::firstOrFail();
+        $event->update(['status' => 'dispatched']);
+        $this->travel(1)->seconds();
+        $pending = [...$refund, 'refundId' => 're_second_pending', 'refundAttemptId' => (string) Str::uuid(),
+            'refundOperationId' => (string) Str::uuid(), 'status' => 'pending', 'occurredAt' => now()->toIso8601String()];
+        $this->orders()->confirmRefund($order->id, $pending);
+        $this->orders()->confirmRefund($order->id, [...$pending, 'status' => 'failed']);
+        $this->assertSame('pending', $event->fresh()->status);
+        $this->assertDatabaseCount('listing_studio_outbox', 1);
+        $item = $order->item()->first();
+        $this->orders()->beginItem($item->id, $item->processing_attempt_id);
+        $startedState = $item->fresh()->getRawOriginal();
+        $pending = [...$pending, 'refundId' => 're_after_started', 'refundAttemptId' => (string) Str::uuid(), 'refundOperationId' => (string) Str::uuid()];
+        $this->orders()->confirmRefund($order->id, $pending);
+        $this->orders()->confirmRefund($order->id, [...$pending, 'status' => 'failed']);
+        $this->assertSame($startedState, $item->fresh()->getRawOriginal());
+        $this->orders()->confirmRefund($order->id, [...$pending, 'status' => 'succeeded']);
+        $this->orders()->confirmPayment($order->id, [...$evidence, 'eventId' => 'evt_late', 'refunds' => [[...$pending, 'status' => 'succeeded']]]);
+        $this->assertSame('refunded', $order->fresh()->funding_status);
+        $this->assertSame(700, $order->fresh()->refunded_amount_cents);
+        $this->assertSame($startedState, $item->fresh()->getRawOriginal());
+        Http::assertNothingSent();
+    }
+
+    public function test_unpaid_limit_preserves_replay_and_cancel_exit_but_refuses_unresolved_checkout(): void
+    {
+        config(['listing-studio.max_unpaid_orders_per_client' => 1]);
+        $quote = $this->quote();
+        $key = (string) Str::uuid();
+        $order = $this->orders()->acceptQuote($this->client, $quote->id, 'card', $key)['order'];
+        $next = $this->quote();
+        $this->expectCode('unpaid_order_limit', fn () => $this->orders()->acceptQuote($this->client, $next->id, 'card', (string) Str::uuid()));
+        $this->assertFalse($this->orders()->acceptQuote($this->client, $quote->id, 'card', $key)['created']);
+        $this->assertNull($next->fresh()->consumed_at);
+        $this->assertTrue($this->orders()->present($order)['actions']['canCancel']);
+        $attempt = \App\Models\ListingStudioCheckoutAttempt::create(['client_id' => $this->client->id, 'order_id' => $order->id,
+            'kind' => 'order', 'idempotency_key' => (string) Str::uuid(), 'request_hash' => str_repeat('a', 64),
+            'account_id' => config('listing-studio.stripe_account_id'), 'livemode' => true, 'currency' => 'usd', 'amount_cents' => 700, 'status' => 'pending']);
+        foreach (['pending', 'submitting', 'open', 'awaiting_reconciliation', 'awaiting_payment', 'awaiting_webhook', 'paid'] as $status) {
+            $attempt->update(['status' => $status]);
+            $this->assertFalse($this->orders()->present($order->fresh())['actions']['canCancel']);
+            $this->expectCode('order_cancellation_unavailable', fn () => $this->orders()->cancelUnpaidOrder($this->client, $order->id));
+        }
+        $attempt->update(['status' => 'expired']);
+        $cancelled = $this->orders()->cancelUnpaidOrder($this->client, $order->id);
+        $this->assertSame('cancelled', $cancelled->item->status);
+        $this->assertSame('released', $cancelled->funding_status);
+        $this->assertSame($order->id, $this->orders()->cancelUnpaidOrder($this->client, $order->id)->id);
+        $this->assertSame('none', $this->orders()->nextAction($cancelled)['type']);
+        $this->assertTrue($this->orders()->acceptQuote($this->client, $next->id, 'card', (string) Str::uuid())['created']);
+        $this->assertDatabaseCount('listing_studio_orders', 2);
+        Http::assertNothingSent();
+    }
+
+    public function test_account_and_history_are_private_paginated_and_billing_management_survives_purchase_shutdown(): void
+    {
+        $this->subscription(1500);
+        $order = $this->accepted('human_revision');
+        $this->orders()->beginItem($order->item->id, $order->item->processing_attempt_id);
+        $this->orders()->completeItem($order->item->id, $this->delivery($order->item));
+        $accounts = app(\App\Services\ListingStudio\ListingStudioAccountService::class);
+        config(['listing-studio.paid_enabled' => false, 'listing-studio.paid_checkout_enabled' => false]);
+        $account = $accounts->account($this->client);
+        $this->assertTrue($account['capabilities']['canManageBilling']);
+        $this->assertFalse($account['capabilities']['canSubscribe']);
+        $this->assertSame(0, $account['credits']['availableCents']);
+        $this->assertSame(1500, $account['credits']['usedCents']);
+        $page = $accounts->transactions($this->client, 1, 1);
+        $this->assertSame(2, $page['pagination']['total']);
+        $this->assertTrue($page['pagination']['hasMore']);
+        $this->assertSame('credit_usage', $page['transactions'][0]['kind']);
+        $this->assertSame($order->id, $page['transactions'][0]['orderId']);
+        $this->assertSame(-1500, $page['transactions'][0]['amountCents']);
+        $json = json_encode($accounts->orders($this->client, []));
+        $this->assertStringNotContainsString('sha256', $json);
+        $this->assertStringNotContainsString('revision-deliveries/', $json);
+        $other = User::factory()->create(['role' => 'client', 'account_status' => 'active']);
+        $this->assertSame([], $accounts->orders($other, [])['orders']);
+        $this->assertSame([], $accounts->transactions($other)['transactions']);
+        $this->assertFalse($accounts->account($other)['capabilities']['canManageBilling']);
+        \Laravel\Sanctum\Sanctum::actingAs($other);
+        $this->getJson('/api/listing-studio/client/orders/'.$order->id)->assertNotFound();
+        $this->postJson('/api/listing-studio/client/orders/'.$order->id.'/cancel')->assertNotFound();
+        $this->getJson('/api/listing-studio/client/account')->assertOk()->assertJsonPath('success', true);
+        Http::assertNothingSent();
+    }
+
+    public function test_paid_http_routes_keep_email_verification_and_reject_staff_and_impersonation(): void
+    {
+        \Laravel\Sanctum\Sanctum::actingAs(User::factory()->create(['role' => 'admin']));
+        $this->getJson('/api/listing-studio/client/account')->assertForbidden();
+        \Laravel\Sanctum\Sanctum::actingAs($this->client);
+        $this->withHeader('X-Impersonate-User-Id', (string) $this->client->id)->getJson('/api/listing-studio/client/account')->assertForbidden();
+        $this->flushHeaders();
+        DB::table('auth_security_rollouts')->updateOrInsert(['name' => 'email-verification'], ['started_at' => now()->subDays(15)]);
+        $this->client->forceFill(['email_verified_at' => null, 'email_verification_required_at' => now()->subDays(15)])->save();
+        \Laravel\Sanctum\Sanctum::actingAs($this->client->fresh());
+        $this->getJson('/api/listing-studio/client/account')->assertForbidden()->assertJsonPath('code', 'email_verification_required');
+        $this->getJson('/api/listing-studio/trials')->assertOk();
+    }
+
+    public function test_trial_usage_keeps_completed_expired_allowance_and_bridge_is_catalog_read_only(): void
+    {
+        $make = function (string $service, string $status, bool $completed, ?int $clientId) {
+            return \App\Models\ListingStudioGuestTrial::create(['client_id' => $clientId, 'session_hash' => str_repeat('a', 64),
+                'ip_hash' => str_repeat('b', 64), 'service' => $service, 'status' => $status, 'idempotency_key' => (string) Str::uuid(),
+                'request_hash' => str_repeat('c', 64), 'source_path' => 'private-test/source.jpg', 'source_mime' => 'image/jpeg',
+                'source_name' => 'source.jpg', 'started_at' => now()->subDays(8), 'expires_at' => now()->subDay(),
+                'completed_at' => $completed ? now()->subDays(7) : null]);
+        };
+        $make('grass', 'expired', true, $this->client->id);
+        $make('twilight', 'needs_attention', false, $this->client->id);
+        $make('staging', 'failed', false, $this->client->id);
+        $make('decluttering', 'completed', true, null);
+        $usage = collect(app(\App\Services\ListingStudio\ListingStudioAccountService::class)->account($this->client)['trialUsage']['services'])->keyBy('service');
+        $this->assertSame(['service' => 'grass', 'completed' => 1, 'reserved' => 0, 'remaining' => 0], $usage['grass']);
+        $this->assertSame(1, $usage['twilight']['reserved']);
+        $this->assertSame(1, $usage['staging']['remaining']);
+        $this->assertSame(1, $usage['decluttering']['remaining']);
+        config(['listing-studio-trials.bridge_key' => str_repeat('d', 40)]);
+        $this->getJson('/api/external/listing-studio/catalog')->assertUnauthorized();
+        $this->withHeaders(['X-Studio-Key' => str_repeat('d', 40)])
+            ->getJson('/api/external/listing-studio/catalog')->assertOk()->assertJsonPath('data.services.2.aiPriceCents', 700)->assertJsonPath('data.version', 'catalog-v1');
+        $this->getJson('/api/external/listing-studio/capabilities')->assertUnprocessable()->assertJsonPath('code', 'studio_session_invalid');
+        $this->postJson('/api/listing-studio/client/orders', [])->assertUnauthorized();
+        $this->getJson('/api/listing-studio/client/account')->assertUnauthorized();
+    }
+
+    public function test_independent_sqlite_processes_cannot_both_spend_last_credit_or_take_last_unpaid_order_slot(): void
+    {
+        $this->subscription(700);
+        $quotes = [$this->quote(), $this->quote()];
+        $script = <<<'PHP'
+require $argv[1].'/vendor/autoload.php';
+$app = require $argv[1].'/bootstrap/app.php';
+$app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap();
+Illuminate\Support\Carbon::setTestNow('2026-10-31 12:00:00');
+Carbon\CarbonImmutable::setTestNow('2026-10-31 12:00:00');
+config(['database.default'=>'sqlite','database.connections.sqlite.database'=>$argv[2],
+    'database.connections.sqlite.busy_timeout'=>5000,'logging.default'=>'null',
+    'listing-studio.paid_enabled'=>true,'listing-studio.paid_checkout_enabled'=>true,'listing-studio.stripe_enabled'=>true,
+    'listing-studio.paid_services.grass'=>true,'listing-studio.max_unpaid_orders_per_client'=>1]);
+Illuminate\Support\Facades\DB::purge('sqlite');
+$app->instance(App\Services\ListingStudio\ListingStudioCatalogService::class, new class extends App\Services\ListingStudio\ListingStudioCatalogService {
+    protected function aiReady(string $service): bool { return true; }
+});
+$app->instance(App\Contracts\ListingStudio\ListingStudioSourceResolver::class, new class implements App\Contracts\ListingStudio\ListingStudioSourceResolver {
+    public function resolve(App\Models\User $client,string $kind,string $sourceKind,string $sourceId): array { throw new LogicException('Only existing quotes.'); }
+    public function pin(array $snapshot,string $itemId): void {}
+});
+$app->instance(App\Contracts\ListingStudio\ListingStudioOutcomeGuard::class, new class implements App\Contracts\ListingStudio\ListingStudioOutcomeGuard {
+    public function assertDefinitiveStop(App\Models\ListingStudioOrderItem $item): void {}
+    public function assertDeliverableOutput(App\Models\ListingStudioOrderItem $item,array $descriptor): void {}
+});
+// Both independent readers reach the first real order insert before either proceeds.
+App\Models\ListingStudioOrder::creating(function () use ($argv) {
+    static $waited=false;
+    if ($waited) { return; }
+    $waited=true;
+    touch($argv[6].'/'.$argv[7]);
+    $deadline=microtime(true)+10;
+    while (count(glob($argv[6].'/*.ready'))<2) {
+        if (microtime(true)>$deadline) { throw new RuntimeException('Race barrier timed out.'); }
+        usleep(10000);
+    }
+});
+try {
+    app(App\Services\ListingStudio\ListingStudioOrderService::class)->acceptQuote(App\Models\User::findOrFail($argv[3]),$argv[4],$argv[5],(string)Illuminate\Support\Str::uuid());
+    echo 'created';
+} catch (App\Exceptions\PublicApiException $error) { echo $error->errorCode; }
+PHP;
+        foreach (['credits' => 'insufficient_credits', 'card' => 'unpaid_order_limit'] as $funding => $rejection) {
+            $root = sys_get_temp_dir().'/studio-financial-race-'.bin2hex(random_bytes(8));
+            mkdir($root, 0700);
+            $file = $root.'/database.sqlite';
+            $pdo = new \PDO('sqlite:'.$file);
+            $pdo->exec('PRAGMA journal_mode=WAL');
+            $tables = ['users', 'listing_studio_subscriptions', 'listing_studio_credit_entries', 'listing_studio_quotes',
+                'listing_studio_orders', 'listing_studio_order_items', 'listing_studio_credit_reservations', 'listing_studio_outbox', 'listing_studio_order_funding_effects'];
+            foreach ($tables as $table) {
+                $schema = DB::selectOne("SELECT sql FROM sqlite_master WHERE type='table' AND name=?", [$table]);
+                $pdo->exec($schema->sql);
+                foreach (DB::table($table)->get() as $row) {
+                    $values = (array) $row;
+                    $insert = $pdo->prepare('INSERT INTO "'.$table.'" ("'.implode('","', array_keys($values)).'") VALUES ('.implode(',', array_fill(0, count($values), '?')).')');
+                    $insert->execute(array_values($values));
+                }
+            }
+            foreach (DB::table('sqlite_master')->where('type', 'index')->whereIn('tbl_name', $tables)->whereNotNull('sql')->get() as $index) {
+                $pdo->exec($index->sql);
+            }
+            try {
+                $processes = [];
+                foreach ($quotes as $i => $quote) {
+                    $process = new \Symfony\Component\Process\Process([PHP_BINARY, '-r', $script, base_path(), $file, (string) $this->client->id, $quote->id, $funding, $root, $i.'.ready']);
+                    $process->setTimeout(90);
+                    $process->start();
+                    $processes[] = $process;
+                }
+                $outcomes = [];
+                foreach ($processes as $process) {
+                    $process->wait();
+                    $this->assertSame(0, $process->getExitCode(), $process->getErrorOutput().$process->getOutput());
+                    $outcomes[] = $process->getOutput();
+                }
+                sort($outcomes);
+                $this->assertSame(['created', $rejection], $outcomes);
+                $this->assertSame(1, (int) $pdo->query('SELECT COUNT(*) FROM listing_studio_orders')->fetchColumn());
+                $this->assertSame(1, (int) $pdo->query('SELECT COUNT(*) FROM listing_studio_order_items')->fetchColumn());
+                $this->assertSame($funding === 'credits' ? 1 : 0, (int) $pdo->query('SELECT COUNT(*) FROM listing_studio_credit_reservations')->fetchColumn());
+                $this->assertSame($funding === 'credits' ? 1 : 0, (int) $pdo->query('SELECT COUNT(*) FROM listing_studio_outbox')->fetchColumn());
+            } finally {
+                foreach ($processes ?? [] as $process) {
+                    if ($process->isRunning()) {
+                        $process->stop();
+                    }
+                }
+                $pdo = null;
+                foreach (glob($root.'/*') as $temporary) {
+                    unlink($temporary);
+                }
+                rmdir($root);
+            }
         }
     }
 
@@ -283,7 +531,7 @@ class ListingStudioFinancialCoreTest extends TestCase
     {
         return ['provider' => 'stripe', 'eventId' => 'evt_payment', 'accountId' => config('listing-studio.stripe_account_id'), 'liveMode' => true,
             'checkoutAttemptId' => (string) Str::uuid(), 'checkoutSessionId' => 'cs_test', 'paymentIntentId' => 'pi_test', 'customerId' => 'cus_client',
-            'currency' => 'usd', 'amountPaidCents' => $order->total_cents, 'paidAt' => now()->toIso8601String()];
+            'currency' => 'usd', 'amountPaidCents' => $order->total_cents, 'paidAt' => now()->toIso8601String(), 'refundsVerified' => true, 'refunds' => []];
     }
 
     private function expectCode(string $code, callable $operation): void

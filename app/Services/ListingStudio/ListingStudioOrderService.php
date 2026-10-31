@@ -51,6 +51,12 @@ class ListingStudioOrderService
             if ($fundingMethod === 'card' && ! $this->catalog->checkoutAvailable()) {
                 throw new PublicApiException('Card checkout is temporarily unavailable.', 'checkout_unavailable', 503);
             }
+            if ($fundingMethod === 'card' && ListingStudioOrder::where('client_id', $client->id)
+                ->where('funding_method', 'card')->where('funding_status', 'pending')->where('paid_amount_cents', 0)
+                ->whereHas('item', fn ($items) => $items->where('status', 'awaiting_funding'))
+                ->count() >= max(1, (int) config('listing-studio.max_unpaid_orders_per_client', 20))) {
+                throw new PublicApiException('Finish or cancel an unpaid order before starting another.', 'unpaid_order_limit', 409);
+            }
             if ($fundingMethod === 'credits' && ! $selection['creditSubscription']) {
                 throw new PublicApiException('No eligible editing credit is available for this account.', 'insufficient_credits', 409,
                     ['quoteId' => $quote->id, 'shortfallCents' => $quote->pricing_snapshot['creditCostCents'],
@@ -225,7 +231,7 @@ class ListingStudioOrderService
                 return $item;
             }
             $allowed = ['source_preparation_failed', 'output_unavailable', 'processing_needs_attention', 'processing_uncertain',
-                'delivery_finalization_failed', 'revision_needs_attention', 'worker_interrupted'];
+                'delivery_finalization_failed', 'revision_needs_attention', 'worker_interrupted', 'payment_review', 'payment_refunded'];
             $item->update(['status' => 'needs_attention', 'error_code' => in_array($recoveryCode, $allowed, true) ? $recoveryCode : 'processing_needs_attention']);
 
             return $item->fresh();
@@ -240,6 +246,31 @@ class ListingStudioOrderService
     public function cancelItem(string $itemId, string $definitiveCode): ListingStudioOrderItem
     {
         return $this->stopItem($itemId, 'cancelled', $definitiveCode);
+    }
+
+    public function cancelUnpaidOrder(User $client, string $orderId): ListingStudioOrder
+    {
+        return $this->write(function () use ($client, $orderId) {
+            ListingStudioClientAccess::assert(User::findOrFail($client->id));
+            $order = ListingStudioOrder::where('client_id', $client->id)->findOrFail($orderId);
+            if ($order->item->status === 'cancelled' && $order->paid_amount_cents === 0) {
+                return $order;
+            }
+            if (! $this->canCancelUnpaid($order)) {
+                throw new PublicApiException('This order cannot be cancelled while payment or editing needs confirmation.', 'order_cancellation_unavailable', 409);
+            }
+            $this->cancelItem($order->item->id, 'order_cancelled');
+            $order->update(['funding_status' => 'released']);
+
+            return $order->fresh();
+        });
+    }
+
+    private function canCancelUnpaid(ListingStudioOrder $order): bool
+    {
+        return $order->funding_method === 'card' && $order->funding_status === 'pending' && $order->paid_amount_cents === 0
+            && $order->item->status === 'awaiting_funding'
+            && ! \App\Models\ListingStudioCheckoutAttempt::where('order_id', $order->id)->whereNotIn('status', ['expired', 'failed'])->exists();
     }
 
     private function stopItem(string $itemId, string $state, string $code): ListingStudioOrderItem
@@ -275,8 +306,12 @@ class ListingStudioOrderService
         if ($order->funding_method !== 'card' || $order->paid_amount_cents <= $order->refunded_amount_cents) {
             return;
         }
-        $order->update(['funding_status' => 'refund_pending']);
         $item = $order->item()->firstOrFail();
+        // A later payment event must not reopen a terminal refund operation.
+        if (ListingStudioOutbox::where('idempotency_key', 'refund_order:'.$item->id)->exists()) {
+            return;
+        }
+        $order->update(['funding_status' => 'refund_pending']);
         $this->emit('refund_order', $order, $item, $item->processing_attempt_id ?? (string) Str::uuid());
     }
 
@@ -320,7 +355,7 @@ class ListingStudioOrderService
                 && $item->status === 'awaiting_funding' && ! $checkoutPending && $this->catalog->checkoutAvailable()
                 && $this->catalog->available($order->kind, $order->service),
                 'canDownload' => $completed, 'canRequestRevision' => $completed && $this->catalog->available('human_revision', $item->service),
-                'canCancel' => false]];
+                'canCancel' => $this->canCancelUnpaid($order)]];
     }
 
     public function nextAction(ListingStudioOrder $order): array

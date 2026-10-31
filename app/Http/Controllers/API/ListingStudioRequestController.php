@@ -5,6 +5,7 @@ namespace App\Http\Controllers\API;
 use App\Http\Controllers\Controller;
 use App\Models\ListingStudioRequest;
 use App\Models\User;
+use App\Services\ListingStudio\ListingStudioCatalogService;
 use App\Services\ListingStudioAccess;
 use App\Support\LockedWrite;
 use Illuminate\Http\JsonResponse;
@@ -15,27 +16,11 @@ use Illuminate\Validation\ValidationException;
 
 class ListingStudioRequestController extends Controller
 {
-    private const PLANS = [
-        ['code' => 'plan_100', 'name' => '$100 plan', 'reference_price_usd' => 100],
-        ['code' => 'plan_200', 'name' => '$200 plan', 'reference_price_usd' => 200],
-        ['code' => 'plan_275', 'name' => '$275 plan', 'reference_price_usd' => 275],
-        ['code' => 'custom', 'name' => 'Custom plan', 'reference_price_usd' => null],
-    ];
-
-    private const SERVICES = [
-        ['code' => 'reel_generation', 'name' => 'Social media reels'],
-        ['code' => 'virtual_staging', 'name' => 'Virtual staging'],
-        ['code' => 'listing_description', 'name' => 'Listing descriptions'],
-        ['code' => 'exclusive_listings', 'name' => 'Exclusive listings'],
-        ['code' => 'digital_enhancements', 'name' => 'Digital enhancements and decluttering'],
-        ['code' => 'rush_delivery', 'name' => 'Rush delivery'],
-    ];
-
-    public function __construct(private readonly ListingStudioAccess $access) {}
+    public function __construct(private readonly ListingStudioAccess $access, private readonly ListingStudioCatalogService $catalog) {}
 
     public function catalog(): JsonResponse
     {
-        return response()->json(['data' => ['plans' => self::PLANS, 'services' => self::SERVICES]]);
+        return response()->json(['data' => $this->catalog->legacy()]);
     }
 
     public function clients(Request $request): JsonResponse
@@ -80,6 +65,7 @@ class ListingStudioRequestController extends Controller
     public function store(Request $request): JsonResponse
     {
         $actor = $request->user();
+        $catalog = $this->catalog->legacy();
         $data = $request->validate([
             'type' => ['required', Rule::in(['signup', 'call', 'change'])],
             'client_id' => ['nullable', 'integer'],
@@ -88,9 +74,9 @@ class ListingStudioRequestController extends Controller
             'custom_client.email' => ['required_with:custom_client', 'email:rfc', 'max:255'],
             'custom_client.phone' => ['nullable', 'string', 'max:40'],
             'custom_client.company_name' => ['nullable', 'string', 'max:255'],
-            'plan_code' => ['required_if:type,signup', 'nullable', Rule::in(array_column(self::PLANS, 'code'))],
+            'plan_code' => ['required_if:type,signup', 'nullable', Rule::in(array_column([...$catalog['plans'], ...$catalog['historical_plans']], 'code'))],
             'services' => ['sometimes', 'array', 'max:6'],
-            'services.*' => ['string', 'distinct', Rule::in(array_column(self::SERVICES, 'code'))],
+            'services.*' => ['string', 'distinct', Rule::in(array_column([...$catalog['services'], ...$catalog['historical_services']], 'code'))],
             'details' => ['required_if:type,change', 'nullable', 'string', 'max:4000'],
             'phone' => ['required_if:type,call', 'nullable', 'string', 'max:40'],
             'preferred_time' => ['nullable', 'string', 'max:255'],
@@ -127,13 +113,17 @@ class ListingStudioRequestController extends Controller
         // A changed account profile must not turn a retry into a different submission.
         $hash = hash('sha256', json_encode(array_replace($payload, ['contact' => $client ? null : $contact]), JSON_THROW_ON_ERROR));
 
-        [$record, $created] = LockedWrite::run(fn () => DB::transaction(function () use ($actor, $data, $payload, $hash) {
+        [$record, $created] = LockedWrite::run(fn () => DB::transaction(function () use ($actor, $data, $payload, $hash, $catalog) {
             $existing = ListingStudioRequest::query()->where('submitted_by_id', $actor->id)
                 ->where('idempotency_key', $data['idempotency_key'])->first();
             if ($existing) {
                 abort_unless(hash_equals($existing->request_hash, $hash), 409, 'This submission key has already been used for a different request.');
 
                 return [$existing, false];
+            }
+            if (($payload['plan_code'] !== null && ! in_array($payload['plan_code'], array_column($catalog['plans'], 'code'), true))
+                || array_diff($payload['services'], array_column($catalog['services'], 'code'))) {
+                throw ValidationException::withMessages(['plan_code' => 'Choose a current plan and service. Historical choices remain available in request history.']);
             }
             if ($payload['type'] === 'signup') {
                 $pending = ListingStudioRequest::query()->where('type', 'signup')->where('status', 'pending');

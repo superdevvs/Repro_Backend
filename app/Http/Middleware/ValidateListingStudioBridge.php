@@ -17,6 +17,11 @@ class ValidateListingStudioBridge
         if (strlen($expected) < 32 || ! hash_equals($expected, $provided)) {
             throw new PublicApiException('This Studio connection is unavailable.', 'studio_bridge_unauthorized', 401);
         }
+        // This exact catalog route contains no guest/account data or paid mutation authority.
+        if ($request->isMethod('GET') && $request->routeIs('listing-studio.catalog.external')
+            && $request->is('api/external/listing-studio/catalog')) {
+            return $next($request);
+        }
         $session = (string) $request->header('X-Studio-Session');
         if (! preg_match('/\A[a-f0-9]{64}\z/', $session)) {
             throw new PublicApiException('The Studio session is invalid. Refresh the page.', 'studio_session_invalid', 422);

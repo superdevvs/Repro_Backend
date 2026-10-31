@@ -23,7 +23,9 @@ class ListingStudioSettlementService
             || ! preg_match('/\Acs_[A-Za-z0-9_]+\z/', $evidence['checkoutSessionId'] ?? '')
             || ! preg_match('/\Acus_[A-Za-z0-9_]+\z/', $evidence['customerId'] ?? '')
             || ! Str::isUuid($evidence['checkoutAttemptId'] ?? '')
-            || ! is_int($evidence['amountPaidCents'] ?? null)) {
+            || ! is_int($evidence['amountPaidCents'] ?? null)
+            || ($evidence['refundsVerified'] ?? null) !== true || ! is_array($evidence['refunds'] ?? null)
+            || ! array_is_list($evidence['refunds']) || count($evidence['refunds']) > 100) {
             $this->invalid();
         }
         $at = $this->date($evidence['paidAt'] ?? null);
@@ -31,7 +33,7 @@ class ListingStudioSettlementService
             'checkoutSessionId', 'paymentIntentId', 'customerId', 'currency', 'amountPaidCents']);
         $safe['paidAt'] = $at->toIso8601String();
 
-        return $this->write(function () use ($orderId, $safe, $at) {
+        return $this->write(function () use ($orderId, $safe, $at, $evidence) {
             $order = ListingStudioOrder::findOrFail($orderId);
             if ($order->funding_method !== 'card' || ($safe['accountId'] ?? null) !== config('listing-studio.stripe_account_id')
                 || ($safe['liveMode'] ?? null) !== (config('listing-studio.stripe_mode') === 'live')
@@ -54,13 +56,25 @@ class ListingStudioSettlementService
                 $order->update(['payment_reference' => $key, 'payment_evidence' => $safe,
                     'paid_amount_cents' => $safe['amountPaidCents'], 'funding_status' => 'settled']);
             }
-            $this->orders->fundOrder($order->fresh());
+            foreach ($evidence['refunds'] as $refund) {
+                if (! is_array($refund)) {
+                    $this->invalid();
+                }
+                $this->refundEffect($order->id, $refund, false);
+            }
+            $order = $this->updateRefundTotals($order->fresh());
+            $this->reconcileFulfillment($order);
 
             return $order->fresh();
         });
     }
 
     public function refund(string $orderId, array $evidence): ListingStudioOrder
+    {
+        return $this->refundEffect($orderId, $evidence, true);
+    }
+
+    private function refundEffect(string $orderId, array $evidence, bool $reconcile): ListingStudioOrder
     {
         if (($evidence['provider'] ?? null) !== 'stripe' || ! preg_match('/\Are_[A-Za-z0-9_]+\z/', $evidence['refundId'] ?? '')
             || ! preg_match('/\Api_[A-Za-z0-9_]+\z/', $evidence['paymentIntentId'] ?? '')
@@ -75,7 +89,7 @@ class ListingStudioSettlementService
             'refundOperationId', 'paymentIntentId', 'refundId', 'currency', 'amountCents', 'status']);
         $safe['occurredAt'] = $at->toIso8601String();
 
-        return $this->write(function () use ($orderId, $safe, $at) {
+        return $this->write(function () use ($orderId, $safe, $at, $reconcile) {
             $order = ListingStudioOrder::findOrFail($orderId);
             $payment = $order->payment_evidence ?? [];
             if ($order->funding_method !== 'card' || ! $order->payment_reference
@@ -94,20 +108,67 @@ class ListingStudioSettlementService
             if (! $effect) {
                 $effect = ListingStudioOrderFundingEffect::create(['order_id' => $order->id, 'kind' => 'refund', 'external_key' => $key,
                     'status' => $safe['status'], 'amount_cents' => $safe['amountCents'], 'evidence' => $safe, 'occurred_at' => $at]);
-            } elseif ($effect->status !== 'succeeded' && $at->gte($effect->occurred_at)) {
+            } elseif ($effect->status !== 'succeeded'
+                && ($safe['status'] === 'succeeded' || (! in_array($effect->status, ['failed', 'canceled'], true) && $at->gte($effect->occurred_at)))) {
                 $effect->update(['status' => $safe['status'], 'evidence' => $safe, 'occurred_at' => $at]);
             }
-            $refunds = ListingStudioOrderFundingEffect::where('order_id', $order->id)->where('kind', 'refund')->get();
-            $refunded = (int) $refunds->where('status', 'succeeded')->sum('amount_cents');
-            if ($refunded > $order->paid_amount_cents) {
-                $this->invalid();
+            if ($reconcile) {
+                $order = $this->updateRefundTotals($order);
+                $this->reconcileFulfillment($order);
             }
-            $status = $refunded === $order->paid_amount_cents ? 'refunded'
-                : ($refunds->contains('status', 'pending') ? 'refund_pending' : ($refunded > 0 ? 'partially_refunded' : 'settled'));
-            $order->update(['refunded_amount_cents' => $refunded, 'funding_status' => $status]);
 
             return $order->fresh();
         });
+    }
+
+    private function updateRefundTotals(ListingStudioOrder $order): ListingStudioOrder
+    {
+        $refunds = ListingStudioOrderFundingEffect::where('order_id', $order->id)->where('kind', 'refund')->get();
+        $refunded = (int) $refunds->where('status', 'succeeded')->sum('amount_cents');
+        if ($refunded > $order->paid_amount_cents) {
+            $this->invalid();
+        }
+        $status = $refunded === $order->paid_amount_cents ? 'refunded'
+            : ($refunds->contains('status', 'pending') ? 'refund_pending' : ($refunded > 0 ? 'partially_refunded' : 'settled'));
+        // A queued internal refund intent still awaits its first canonical response.
+        if ($refunds->isEmpty() && $order->funding_status === 'refund_pending') {
+            $status = 'refund_pending';
+        }
+        $order->update(['refunded_amount_cents' => $refunded, 'funding_status' => $status]);
+
+        return $order;
+    }
+
+    private function reconcileFulfillment(ListingStudioOrder $order): void
+    {
+        $item = $order->item()->firstOrFail();
+        if (in_array($item->status, ['completed', 'failed', 'cancelled'], true)) {
+            if ($order->funding_status === 'settled') {
+                $this->orders->fundOrder($order);
+            }
+
+            return;
+        }
+        // Financial events do not replace an accepted provider/human fulfillment outcome.
+        // The processor separately checks current funding before any further submission/delivery.
+        if ($item->workspace_id !== null || $item->started_at !== null || $item->output_descriptor !== null) {
+            return;
+        }
+        if ($order->funding_status !== 'settled') {
+            $item->update(['status' => 'needs_attention', 'error_code' => $order->funding_status === 'refunded' ? 'payment_refunded' : 'payment_review']);
+
+            return;
+        }
+        if ($item->status === 'needs_attention' && in_array($item->error_code, ['payment_review', 'payment_refunded'], true)
+            && $item->workspace_id === null && $item->started_at === null) {
+            $item->update(['status' => $item->processing_attempt_id ? 'queued' : 'awaiting_funding', 'error_code' => null]);
+            if ($item->processing_attempt_id) {
+                // The earlier queue job may have observed the payment hold. Replay the same durable intent.
+                \App\Models\ListingStudioOutbox::where('idempotency_key', ($item->kind === 'human_revision' ? 'create_revision_task:' : 'process_item:').$item->id)
+                    ->where('status', 'dispatched')->update(['status' => 'pending', 'available_at' => now(), 'dispatched_at' => null]);
+            }
+        }
+        $this->orders->fundOrder($order);
     }
 
     private function key(array $evidence, string $economicId): string

@@ -75,6 +75,10 @@ return Application::configure(basePath: dirname(__DIR__))
             ->everyMinute()->withoutOverlapping()->onOneServer();
         $schedule->command('listing-studio:prune-guest-trials --limit=100')
             ->hourly()->withoutOverlapping()->onOneServer();
+        $schedule->command('listing-studio:orders-dispatch --limit=100')
+            ->everyMinute()->withoutOverlapping()->onOneServer();
+        $schedule->command('listing-studio:paid-uploads-prune --limit=100')
+            ->hourly()->withoutOverlapping()->onOneServer();
         $schedule->command('shoot-uploads:audit-pending --minutes=5')
             ->everyFiveMinutes()
             ->withoutOverlapping()
