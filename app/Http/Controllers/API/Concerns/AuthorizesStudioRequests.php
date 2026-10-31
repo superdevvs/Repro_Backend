@@ -38,6 +38,9 @@ trait AuthorizesStudioRequests
         string $teamColumn = 'team_id',
         string $ownerColumn = 'created_by'
     ): Builder {
+        if ($query->getModel() instanceof \App\Models\Template) {
+            return \App\Services\Studio\StudioTemplateAccess::scope($query, $user);
+        }
         $query->where($teamColumn, $this->scopeTeamId($user));
 
         if (($userId = $this->scopeUserId($user)) !== null) {
@@ -62,6 +65,16 @@ trait AuthorizesStudioRequests
         }
 
         if ($record === null) {
+            return;
+        }
+
+        if ($record instanceof \App\Models\Template) {
+            $allowed = $action === 'view'
+                ? \App\Services\Studio\StudioTemplateAccess::canView($user, $record)
+                : \App\Services\Studio\StudioTemplateAccess::canEdit($user, $record);
+            if (!$allowed) {
+                throw new AuthorizationException('This action is not authorized.');
+            }
             return;
         }
 

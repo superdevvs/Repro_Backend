@@ -1070,6 +1070,19 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/{workspace}/cancel', [$controller, 'cancel']);
     });
 
+    // Saved recipes have personal client access behind the same rollout gate as
+    // workspaces. Other Studio administration endpoints stay staff-only.
+    Route::prefix('studio/templates')
+        ->middleware(['role:admin,superadmin,editing_manager,editor,client', \App\Http\Middleware\EnsureStudioClientAccess::class])
+        ->name('studio.templates.')
+        ->group(function () {
+            Route::get('/', [StudioTemplateController::class, 'index'])->name('index');
+            Route::post('/', [StudioTemplateController::class, 'store'])->name('store');
+            Route::put('/{template}', [StudioTemplateController::class, 'update'])->name('update');
+            Route::post('/{template}/duplicate', [StudioTemplateController::class, 'duplicate'])->name('duplicate');
+            Route::delete('/{template}', [StudioTemplateController::class, 'destroy'])->name('destroy');
+        });
+
     Route::prefix('studio')
         ->middleware('role:admin,superadmin,editing_manager,editor')
         ->name('studio.')
@@ -1092,11 +1105,6 @@ Route::middleware('auth:sanctum')->group(function () {
             Route::get('/shoots/search', [StudioSourceController::class, 'searchShoots'])->name('shoots.search');
             Route::get('/shoots/{shoot}/media', [StudioSourceController::class, 'shootMedia'])->name('shoots.media');
             Route::post('/uploads', [StudioSourceController::class, 'upload'])->name('uploads.store');
-
-            Route::get('/templates', [StudioTemplateController::class, 'index'])->name('templates.index');
-            Route::post('/templates', [StudioTemplateController::class, 'store'])->name('templates.store');
-            Route::put('/templates/{template}', [StudioTemplateController::class, 'update'])->name('templates.update');
-            Route::delete('/templates/{template}', [StudioTemplateController::class, 'destroy'])->name('templates.destroy');
 
             Route::get('/brand', [StudioBrandController::class, 'show'])->name('brand.show');
             Route::put('/brand', [StudioBrandController::class, 'update'])->name('brand.update');

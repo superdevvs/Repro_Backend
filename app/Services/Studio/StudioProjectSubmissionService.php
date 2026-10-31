@@ -85,7 +85,7 @@ class StudioProjectSubmissionService
             'bracket_size' => ['nullable', 'integer', Rule::in([3, 5])],
         ]);
 
-        $template = $this->template($validated['template_id'] ?? null, $user, $teamId, $privileged);
+        $template = $this->template($validated['template_id'] ?? null, $user);
         if ($template && $template->workflow_id !== $validated['workflow_id']) {
             throw \Illuminate\Validation\ValidationException::withMessages([
                 'template_id' => ['The template workflow does not match workflow_id.'],
@@ -200,7 +200,7 @@ class StudioProjectSubmissionService
             ->first();
     }
 
-    private function template(?string $id, User $user, int $teamId, bool $privileged): ?Template
+    private function template(?string $id, User $user): ?Template
     {
         if ($id === null) {
             return null;
@@ -209,7 +209,7 @@ class StudioProjectSubmissionService
         if (!$template) {
             abort(404, 'Template not found.');
         }
-        if ((int) $template->team_id !== $teamId || (!$privileged && (int) $template->created_by !== (int) $user->id)) {
+        if (!StudioTemplateAccess::canView($user, $template)) {
             throw new AuthorizationException('This action is not authorized.');
         }
 

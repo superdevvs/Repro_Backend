@@ -13,7 +13,7 @@ class Template extends Model
     use HasFactory, HasUuids, IncrementsVersionOnSave;
 
     protected $fillable = [
-        'team_id', 'created_by', 'name', 'workflow_id', 'config',
+        'team_id', 'created_by', 'name', 'workflow_id', 'config', 'visibility', 'preset_id',
     ];
 
     protected $casts = [
