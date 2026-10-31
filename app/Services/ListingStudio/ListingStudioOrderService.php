@@ -330,6 +330,9 @@ class ListingStudioOrderService
         $item = $order->item()->firstOrFail();
         $reservation = $order->reservation()->first();
         $completed = $item->status === 'completed' && is_array($item->output_descriptor);
+        $sourcePreviewAvailable = filled($item->source_snapshot['preview'] ?? null)
+            && ! ($item->source_kind === 'upload' && class_exists(\App\Models\ListingStudioUpload::class)
+                && \App\Models\ListingStudioUpload::whereKey($item->source_id)->whereNotNull('media_purged_at')->exists());
         $checkoutPending = class_exists(\App\Models\ListingStudioCheckoutAttempt::class)
             && \App\Models\ListingStudioCheckoutAttempt::where('order_id', $order->id)
                 ->whereIn('status', ['submitting', 'awaiting_reconciliation', 'awaiting_payment', 'awaiting_webhook', 'paid'])->exists();
@@ -344,7 +347,7 @@ class ListingStudioOrderService
                 'paidAmountCents' => $order->paid_amount_cents, 'refundedAmountCents' => $order->refunded_amount_cents],
             'item' => ['id' => $item->id, 'status' => $item->status, 'progress' => $item->progress,
                 'source' => ['kind' => $item->source_kind, 'id' => $item->source_id,
-                    'originalPreviewAvailable' => filled($item->source_snapshot['preview'] ?? null)],
+                    'originalPreviewAvailable' => $sourcePreviewAvailable],
                 'previewAvailable' => $completed && filled($item->output_descriptor['preview'] ?? null),
                 'downloadAvailable' => $completed, 'completedAt' => $item->completed_at?->toIso8601String(),
                 'error' => $item->error_code ? ['code' => $item->error_code, 'message' => $item->status === 'needs_attention'
@@ -353,7 +356,8 @@ class ListingStudioOrderService
                 'revisionFulfillment' => $task ? ['status' => $task->status, 'deliveredAt' => $task->delivered_at?->toIso8601String()] : null],
             'actions' => ['canCheckout' => $order->funding_method === 'card' && $order->funding_status === 'pending'
                 && $item->status === 'awaiting_funding' && ! $checkoutPending && $this->catalog->checkoutAvailable()
-                && $this->catalog->available($order->kind, $order->service),
+                && $this->catalog->available($order->kind, $order->service)
+                && ! $this->credits->selection($order->client)['billingAttention'],
                 'canDownload' => $completed, 'canRequestRevision' => $completed && $this->catalog->available('human_revision', $item->service),
                 'canCancel' => $this->canCancelUnpaid($order)]];
     }

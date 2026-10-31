@@ -43,11 +43,11 @@ class ListingStudioAccountService
                 'reservedCents' => $credit['reserved_cents'] ?? 0, 'availableCents' => $credit['available_cents'] ?? 0,
                 'expiresAt' => $credit['expires_at'] ?? null, 'rollover' => false],
             'revisionDiscountPercent' => $creditSubscription ? (int) config('listing-studio.plans.'.$creditSubscription->plan_code.'.revision_discount_percent', 0) : 0,
-            'capabilities' => ['canCreateOrder' => $enabled, 'canUseCredits' => $enabled && $creditSubscription !== null && ($credit['available_cents'] ?? 0) > 0,
-                'canPayByCard' => $this->catalog->checkoutAvailable(),
+            'capabilities' => ['canCreateOrder' => $enabled && ! $selection['billingAttention'], 'canUseCredits' => $enabled && $creditSubscription !== null && ($credit['available_cents'] ?? 0) > 0,
+                'canPayByCard' => ! $selection['billingAttention'] && $this->catalog->checkoutAvailable(),
                 'canSubscribe' => $this->catalog->checkoutAvailable() && ! $selection['billingAttention'] && ! $selection['hasOpenSubscription'],
                 'canManageBilling' => $this->canManageBilling($client)],
-            'notice' => $selection['billingAttention'] ? 'Your subscriptions need review before using editing credit or starting another plan.'
+            'notice' => $selection['billingAttention'] ? 'Your subscriptions need review before starting another purchase.'
                 : (! $enabled ? 'Paid editing is temporarily unavailable. Your order history is still available.' : null),
             'trialUsage' => ['allowancePerService' => 1, 'services' => $usage, 'startUrl' => 'https://reprophotos.com/listing-studio']];
     }

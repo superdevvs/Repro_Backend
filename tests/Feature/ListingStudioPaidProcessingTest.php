@@ -345,6 +345,7 @@ class ListingStudioPaidProcessingTest extends TestCase
         $item->update(['status' => 'cancelled']);
         $item->order->update(['funding_status' => 'pending', 'paid_amount_cents' => 0]);
         $upload->update(['pinned_at' => now()]);
+        $this->assertTrue(app(\App\Services\ListingStudio\ListingStudioOrderService::class)->present($item->order->fresh())['item']['source']['originalPreviewAvailable']);
         config(['listing-studio.max_active_sources_per_client' => 1]);
         $media = app(ListingStudioPaidMedia::class);
         $this->assertSame(0, $media->pruneUnusedUploads());
@@ -366,6 +367,7 @@ class ListingStudioPaidProcessingTest extends TestCase
         $this->assertSame(1, $media->pruneUnusedUploads());
         $this->assertNotNull($upload->fresh()->media_purged_at);
         Storage::disk('listing_studio_orders')->assertMissing($upload->path);
+        $this->assertFalse(app(\App\Services\ListingStudio\ListingStudioOrderService::class)->present($item->order->fresh())['item']['source']['originalPreviewAvailable']);
         $this->assertSame('cancelled', $item->fresh()->status);
         $this->assertSame(1, ListingStudioOrder::count());
         $this->assertSame(1, DB::table('listing_studio_checkout_attempts')->count());

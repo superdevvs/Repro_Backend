@@ -375,9 +375,11 @@ class ListingStudioFinancialCoreTest extends TestCase
         $this->assertSame(1, $usage['staging']['remaining']);
         $this->assertSame(1, $usage['decluttering']['remaining']);
         config(['listing-studio-trials.bridge_key' => str_repeat('d', 40)]);
+        config(['listing-studio.paid_enabled' => false, 'listing-studio.paid_checkout_enabled' => false]);
         $this->getJson('/api/external/listing-studio/catalog')->assertUnauthorized();
         $this->withHeaders(['X-Studio-Key' => str_repeat('d', 40)])
-            ->getJson('/api/external/listing-studio/catalog')->assertOk()->assertJsonPath('data.services.2.aiPriceCents', 700)->assertJsonPath('data.version', 'catalog-v1');
+            ->getJson('/api/external/listing-studio/catalog')->assertOk()->assertJsonPath('data.services.2.aiPriceCents', 700)
+            ->assertJsonPath('data.version', 'catalog-v1')->assertJsonPath('data.checkoutAvailable', false)->assertJsonPath('data.services.2.aiAvailable', false);
         $this->getJson('/api/external/listing-studio/capabilities')->assertUnprocessable()->assertJsonPath('code', 'studio_session_invalid');
         $this->postJson('/api/listing-studio/client/orders', [])->assertUnauthorized();
         $this->getJson('/api/listing-studio/client/account')->assertUnauthorized();
@@ -479,6 +481,77 @@ PHP;
                 rmdir($root);
             }
         }
+    }
+
+    public function test_mid_period_upgrade_and_downgrade_preserve_reserved_price_and_reprice_only_new_orders(): void
+    {
+        foreach ([['starter', 'pro', 6000, -2450, 4950, 1500, 1200], ['pro', 'starter', 13500, -4950, 2450, 1200, 1500]] as [$oldPlan, $newPlan, $grant, $oldLine, $newLine, $oldCost, $newCost]) {
+            $this->client = User::factory()->create(['role' => 'client', 'account_status' => 'active']);
+            $subscription = $this->subscription($grant, $oldPlan);
+            $order = $this->accepted('human_revision');
+            $stale = $this->quote('human_revision');
+            $reservation = $order->reservation()->first()->getRawOriginal();
+            $line = fn ($id, $plan, $amount) => ['id' => $id, 'type' => 'subscription', 'quantity' => 1, 'amount' => $amount,
+                'pricing' => ['price_details' => ['price' => config('listing-studio.plans.'.$plan.'.live_price')]],
+                'parent' => ['type' => 'subscription_item_details', 'subscription_item_details' => ['subscription' => $subscription->stripe_subscription_id, 'proration' => true]],
+                'period' => ['start' => $subscription->current_period_start->timestamp, 'end' => $subscription->current_period_end->timestamp]];
+            $invoice = ['id' => 'in_change_'.$subscription->id, 'livemode' => true, 'status' => 'paid', 'currency' => 'usd',
+                'amount_paid' => max(0, $oldLine + $newLine), 'customer' => $subscription->stripe_customer_id,
+                'parent' => ['subscription_details' => ['subscription' => $subscription->stripe_subscription_id]], 'billing_reason' => 'subscription_update',
+                'lines' => ['data' => [$line('il_old', $oldPlan, $oldLine), $line('il_new', $newPlan, $newLine)], 'has_more' => false]];
+            $subscription->update(['plan_code' => $newPlan]);
+            $credits = app(ListingStudioCreditService::class);
+            DB::transaction(fn () => $credits->reconcileInvoices($subscription, [$invoice]));
+            DB::transaction(fn () => $credits->reconcileInvoices($subscription, [$invoice]));
+            $this->assertSame($reservation, $order->reservation()->first()->getRawOriginal());
+            $this->assertSame($oldCost, $order->pricing_snapshot['totalPriceCents']);
+            $this->assertSame($oldCost, $credits->summary($subscription)['reserved_cents']);
+            $this->assertSame(9750 - $oldCost, $credits->summary($subscription)['available_cents']);
+            $this->expectCode('quote_stale', fn () => $this->orders()->acceptQuote($this->client, $stale->id, 'credits', (string) Str::uuid()));
+            $this->assertNull($stale->fresh()->consumed_at);
+            $this->assertSame($newCost, $this->quote('human_revision')->pricing_snapshot['totalPriceCents']);
+            $item = $order->item;
+            $this->orders()->beginItem($item->id, $item->processing_attempt_id);
+            $this->orders()->completeItem($item->id, $this->delivery($item));
+            $this->orders()->completeItem($item->id, $this->delivery($item));
+            $this->assertSame('captured', $order->reservation()->first()->status);
+            $this->assertSame(9750 - $oldCost, $credits->summary($subscription)['available_cents']);
+            $this->assertSame(-$oldCost, (int) DB::table('listing_studio_credit_entries')->where('subscription_id', $subscription->id)->where('source_type', 'usage')->sum('amount_cents'));
+        }
+        Http::assertNothingSent();
+    }
+
+    public function test_ambiguous_subscriptions_block_new_credit_and_card_spend_but_keep_exact_replay_and_billing_management(): void
+    {
+        $this->subscription(6000);
+        $existingQuote = $this->quote();
+        $key = (string) Str::uuid();
+        $order = $this->orders()->acceptQuote($this->client, $existingQuote->id, 'card', $key)['order'];
+        $unaccepted = $this->quote();
+        $this->subscription(13500, 'pro');
+        $this->expectCode('billing_attention', fn () => $this->quote());
+        foreach (['credits', 'card'] as $funding) {
+            $this->expectCode('billing_attention', fn () => $this->orders()->acceptQuote($this->client, $unaccepted->id, $funding, (string) Str::uuid()));
+        }
+        $quote = app(ListingStudioQuoteService::class)->present($unaccepted, $this->client);
+        $this->assertFalse($quote['fundingOptions']['credits']['available']);
+        $this->assertFalse($quote['fundingOptions']['card']['available']);
+        $this->assertSame('billing_attention', $quote['fundingOptions']['card']['reason']);
+        $replay = $this->orders()->acceptQuote($this->client, $existingQuote->id, 'card', $key);
+        $this->assertFalse($replay['created']);
+        $this->assertSame($order->id, $replay['order']->id);
+        $this->assertFalse($this->orders()->present($order)['actions']['canCheckout']);
+        $accounts = app(\App\Services\ListingStudio\ListingStudioAccountService::class);
+        $account = $accounts->account($this->client);
+        foreach (['canCreateOrder', 'canUseCredits', 'canPayByCard', 'canSubscribe'] as $capability) {
+            $this->assertFalse($account['capabilities'][$capability]);
+        }
+        $this->assertTrue($account['capabilities']['canManageBilling']);
+        $this->assertSame('billing_attention', $account['status']);
+        $this->assertSame(1, $accounts->orders($this->client, [])['pagination']['total']);
+        $this->assertNull($unaccepted->fresh()->consumed_at);
+        $this->assertDatabaseCount('listing_studio_orders', 1);
+        Http::assertNothingSent();
     }
 
     private function subscription(int $amount, string $plan = 'starter'): ListingStudioSubscription

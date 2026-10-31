@@ -65,6 +65,7 @@ class ListingStudioQuoteService
             ListingStudioClientAccess::assert($client);
             $this->catalog->assertAvailable($kind, $service);
             $selection = $this->reservations->selection($client);
+            $this->assertBillingReady($selection);
             $subscription = $selection['creditSubscription'];
             $expires = CarbonImmutable::now()->addMinutes(15);
             if ($subscription?->current_period_end && $subscription->current_period_end->lt($expires)) {
@@ -101,6 +102,7 @@ class ListingStudioQuoteService
         }
         $this->catalog->assertAvailable($quote->kind, $quote->service);
         $selection = $this->reservations->selection($client);
+        $this->assertBillingReady($selection);
         $subscription = $selection['creditSubscription'];
         $pricing = $this->catalog->price($quote->kind, $quote->service, $subscription?->plan_code);
         if ($quote->catalog_version !== $this->catalog->version() || $quote->pricing_snapshot !== $pricing
@@ -125,7 +127,15 @@ class ListingStudioQuoteService
             'source' => ['kind' => $quote->source_kind, 'id' => $quote->source_id],
             'options' => $quote->options, 'instructions' => $quote->instructions, 'pricing' => $quote->pricing_snapshot,
             'fundingOptions' => ['credits' => ['available' => $reason === null, 'shortfallCents' => max(0, $cost - $available), 'reason' => $reason],
-                'card' => ['available' => $this->catalog->checkoutAvailable(), 'reason' => $this->catalog->checkoutAvailable() ? null : 'checkout_unavailable']],
+                'card' => ['available' => ! $selection['billingAttention'] && $this->catalog->checkoutAvailable(),
+                    'reason' => $selection['billingAttention'] ? 'billing_attention' : ($this->catalog->checkoutAvailable() ? null : 'checkout_unavailable')]],
             'confirmationRequired' => true];
+    }
+
+    private function assertBillingReady(array $selection): void
+    {
+        if ($selection['billingAttention']) {
+            throw new PublicApiException('Your subscriptions need review before starting another purchase. Open billing management or contact the team.', 'billing_attention', 409);
+        }
     }
 }
