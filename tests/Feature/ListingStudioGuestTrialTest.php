@@ -7,6 +7,7 @@ use App\Models\StudioWorkspace;
 use App\Models\User;
 use App\Services\ListingStudio\ListingStudioGuestTrialService;
 use App\Services\ListingStudio\ListingStudioTrialPipeline;
+use App\Services\ListingStudio\ListingStudioVisitorIp;
 use App\Services\Studio\StudioProviderSettings;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
@@ -69,12 +70,19 @@ class ListingStudioGuestTrialTest extends TestCase
 
     private function payload(string $service = 'grass', ?UploadedFile $image = null): array
     {
-        return ['service' => $service, 'image' => $image ?? UploadedFile::fake()->image('property.jpg', 1600, 1000), 'challengeToken' => 'test-challenge'];
+        return ['service' => $service, 'image' => $image ?? UploadedFile::fake()->image('property.jpg', 1600, 1000), 'admissionToken' => str_repeat('e', 64)];
     }
 
     private function start(string $service = 'grass', ?string $key = null, ?UploadedFile $image = null)
     {
-        return $this->bridge(['Idempotency-Key' => $key ?? (string) Str::uuid()])->post(self::BASE.'/trials', $this->payload($service, $image));
+        $key ??= (string) Str::uuid();
+        $token = bin2hex(random_bytes(32));
+        DB::table('listing_studio_trial_admissions')->insert(['token_hash' => hash('sha256', $token),
+            'session_hash' => hash_hmac('sha256', 'session:'.$this->session, (string) config('app.key')),
+            'idempotency_key' => $key, 'ip_hash' => ListingStudioVisitorIp::hash('203.0.113.10'),
+            'verified_at' => now(), 'expires_at' => now()->addMinutes(5), 'created_at' => now(), 'updated_at' => now()]);
+
+        return $this->bridge(['Idempotency-Key' => $key])->post(self::BASE.'/trials', [...$this->payload($service, $image), 'admissionToken' => $token]);
     }
 
     private function complete(string $id): ListingStudioGuestTrial
@@ -100,7 +108,7 @@ class ListingStudioGuestTrialTest extends TestCase
         $this->getJson(self::BASE.'/capabilities')->assertUnauthorized();
         $this->bridge(['X-Studio-Key' => 'the-booking-key'])->getJson(self::BASE.'/capabilities')->assertUnauthorized();
         $this->bridge(['X-Studio-Session' => 'chosen-user-id'])->getJson(self::BASE.'/capabilities')->assertUnprocessable();
-        $this->bridge(['X-Studio-IP' => 'not-an-ip'])->getJson(self::BASE.'/capabilities')->assertUnprocessable();
+        $this->bridge(['X-Studio-IP' => 'not-an-ip'])->getJson(self::BASE.'/capabilities')->assertOk();
         $this->bridge()->getJson(self::BASE.'/capabilities')->assertOk()->assertJsonPath('data.enabled', true)
             ->assertJsonPath('data.limits.globalDaily', 100)->assertJsonPath('data.allowances.grass', true);
     }
@@ -114,17 +122,6 @@ class ListingStudioGuestTrialTest extends TestCase
         Http::assertNothingSent();
     }
 
-    public function test_bot_challenge_rejects_wrong_action_host_and_false_success_before_any_upload_or_job(): void
-    {
-        foreach ([['success' => false], ['success' => true, 'hostname' => 'attacker.test', 'action' => 'listing_studio_trial'],
-            ['success' => true, 'hostname' => 'reprophotos.com', 'action' => 'other']] as $reply) {
-            $this->challengeReply = $reply;
-            $this->start()->assertUnprocessable()->assertJsonPath('code', 'trial_challenge_failed');
-        }
-        $this->assertDatabaseCount('listing_studio_guest_trials', 0);
-        $this->assertCount(0, Storage::disk('listing_studio_trials')->allFiles());
-    }
-
     public function test_upload_is_private_and_exact_retry_is_idempotent_before_challenge_reuse(): void
     {
         $image = UploadedFile::fake()->image('property.png', 100, 100);
@@ -132,7 +129,7 @@ class ListingStudioGuestTrialTest extends TestCase
         $id = $this->start('grass', $key, $image)->assertStatus(202)->assertJsonPath('data.status', 'processing')->json('data.id');
         $this->start('grass', $key, $image)->assertStatus(202)->assertJsonPath('data.id', $id);
         $this->start('twilight', $key, $image)->assertConflict()->assertJsonPath('code', 'idempotency_conflict');
-        Http::assertSentCount(1);
+        Http::assertNothingSent();
         $this->assertDatabaseCount('listing_studio_guest_trials', 1);
         $this->assertDatabaseCount('studio_workspaces', 1);
         $this->assertCount(0, Storage::disk('public')->allFiles());
@@ -299,10 +296,10 @@ class ListingStudioGuestTrialTest extends TestCase
         $id = $this->start()->assertStatus(202)->json('data.id');
         $trial = ListingStudioGuestTrial::findOrFail($id);
         $trial->update(['workspace_id' => null, 'status' => 'queued', 'updated_at' => now()->subMinutes(11)]);
-        Http::assertSentCount(1);
+        Http::assertNothingSent();
         $this->assertSame(1, app(ListingStudioGuestTrialService::class)->reconcileStale());
         $this->assertSame('failed', $trial->fresh()->status);
-        Http::assertSentCount(1);
+        Http::assertNothingSent();
         $this->bridge()->getJson(self::BASE.'/capabilities')->assertJsonPath('data.allowances.grass', true);
     }
 

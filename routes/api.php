@@ -132,7 +132,9 @@ Route::middleware('auth:sanctum')->group(function () {
 Route::middleware('auth:sanctum')->get('/me/permissions', [PermissionController::class, 'me']);
 
 // The website bridge has only guest trial authority, never the booking/staff API key.
+Route::post('listing-studio/trial-admissions/verify', [\App\Http\Controllers\API\ListingStudioTrialAdmissionController::class, 'verify']);
 Route::middleware(\App\Http\Middleware\ValidateListingStudioBridge::class)->prefix('external/listing-studio')->group(function () {
+    Route::post('/admissions', [\App\Http\Controllers\API\ListingStudioTrialAdmissionController::class, 'mint']);
     $controller = \App\Http\Controllers\API\ListingStudioGuestTrialController::class;
     Route::get('/capabilities', [$controller, 'capabilities']);
     Route::get('/trials', [$controller, 'index']);

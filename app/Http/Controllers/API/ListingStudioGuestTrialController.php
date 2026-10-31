@@ -37,14 +37,13 @@ class ListingStudioGuestTrialController extends Controller
             'service' => ['required', Rule::in(array_keys(ListingStudioGuestTrialService::SERVICES))],
             'roomType' => ['sometimes', 'nullable', Rule::in(array_keys(VirtualStagingOptions::ROOMS))],
             'style' => ['sometimes', 'nullable', Rule::in(array_keys(VirtualStagingOptions::STYLES))],
-            'challengeToken' => ['required', 'string', 'max:2048'],
+            'admissionToken' => ['required', 'string', 'regex:/\A[a-f0-9]{64}\z/'],
         ]);
         $key = (string) $request->header('Idempotency-Key');
         if (! preg_match('/\A[a-zA-Z0-9_-]{8,64}\z/', $key)) {
             throw new PublicApiException('A valid edit request identifier is required.', 'idempotency_key_required', 422);
         }
-        $trial = $this->trials->start($request->attributes->get('studio_session_hash'), $request->attributes->get('studio_ip_hash'),
-            (string) $request->header('X-Studio-IP'), $key, $request->file('image'), $data);
+        $trial = $this->trials->start($request->attributes->get('studio_session_hash'), $key, $request->file('image'), $data);
 
         return $this->json($this->trials->present($trial), 202);
     }

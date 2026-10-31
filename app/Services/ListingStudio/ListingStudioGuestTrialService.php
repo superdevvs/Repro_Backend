@@ -11,7 +11,6 @@ use App\Services\Studio\VirtualStagingOptions;
 use App\Support\LockedWrite;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 
@@ -53,7 +52,7 @@ class ListingStudioGuestTrialService
             && count(config('listing-studio-trials.turnstile_hosts', [])) > 0;
     }
 
-    public function start(string $sessionHash, string $ipHash, string $ip, string $key, UploadedFile $image, array $input): ListingStudioGuestTrial
+    public function start(string $sessionHash, string $key, UploadedFile $image, array $input): ListingStudioGuestTrial
     {
         $this->validateImage($image);
         $options = $input['service'] === 'staging'
@@ -70,11 +69,15 @@ class ListingStudioGuestTrialService
         if (! ($providers->readiness($providerService, $providers->route($providerService))['ready'] ?? false)) {
             throw new PublicApiException('This editing service is temporarily unavailable.', 'trial_service_unavailable', 503);
         }
-        $this->verifyChallenge($input['challengeToken'], $ip);
-        [$trial, $created] = $this->write(function () use ($sessionHash, $ipHash, $key, $requestHash, $input, $options, $image) {
+        [$trial, $created] = $this->write(function () use ($sessionHash, $key, $requestHash, $input, $options, $image) {
             if ($existing = ListingStudioGuestTrial::where('session_hash', $sessionHash)->where('idempotency_key', $key)->first()) {
                 return [$this->replay($existing, $requestHash), false];
             }
+            if (! $this->enabled()) {
+                throw new PublicApiException('Live photo editing is temporarily unavailable. You can still watch the sample walkthrough.', 'trial_unavailable', 503);
+            }
+            $id = (string) Str::uuid();
+            $ipHash = app(ListingStudioTrialAdmission::class)->consume($input['admissionToken'], $sessionHash, $key, $id);
             $session = DB::table('listing_studio_guest_sessions')->where('session_hash', $sessionHash)->first();
             if ($session?->claimed_at && ! $session?->client_id) {
                 throw new PublicApiException('This trial session is no longer available.', 'trial_session_closed', 403);
@@ -100,7 +103,6 @@ class ListingStudioGuestTrialService
                 throw new PublicApiException('The free editing limit for this connection has been reached. Please try again later.', 'trial_ip_limit', 429);
             }
             DB::table('listing_studio_guest_sessions')->insertOrIgnore(['session_hash' => $sessionHash, 'created_at' => now(), 'updated_at' => now()]);
-            $id = (string) Str::uuid();
             $extension = match ($image->getMimeType()) {
                 'image/png' => 'png', 'image/webp' => 'webp', default => 'jpg'
             };
@@ -146,22 +148,6 @@ class ListingStudioGuestTrialService
         if (! $info || ! in_array($info['mime'] ?? '', ['image/jpeg', 'image/png', 'image/webp'], true)
             || $info[0] < 1 || $info[1] < 1 || (int) config('listing-studio-trials.max_pixels', 40000000) < $info[0] * $info[1]) {
             throw new PublicApiException('Upload a valid JPEG, PNG, or WebP image up to 40 megapixels.', 'trial_image_invalid', 422);
-        }
-    }
-
-    private function verifyChallenge(string $token, string $ip): void
-    {
-        try {
-            $response = Http::asForm()->timeout(15)->post('https://challenges.cloudflare.com/turnstile/v0/siteverify', [
-                'secret' => config('listing-studio-trials.turnstile_secret'), 'response' => $token, 'remoteip' => $ip,
-            ]);
-            $data = $response->successful() ? $response->json() : [];
-        } catch (\Throwable) {
-            throw new PublicApiException('The bot check is temporarily unavailable. Please try again.', 'trial_challenge_unavailable', 503);
-        }
-        if (! is_array($data) || ($data['success'] ?? false) !== true || ($data['action'] ?? null) !== 'listing_studio_trial'
-            || ! in_array($data['hostname'] ?? '', config('listing-studio-trials.turnstile_hosts', []), true)) {
-            throw new PublicApiException('Please complete the bot check and try again.', 'trial_challenge_failed', 422);
         }
     }
 
