@@ -24,4 +24,11 @@ return [
     'claim_minutes' => 30,
     'max_file_kb' => 10240,
     'max_pixels' => 40000000,
+    // Frozen, explicitly approved provider QA. Excluded from conversion only, never quotas or health.
+    'monitoring_qa_trial_ids' => [
+        '965b4683-a39c-4135-955a-5eab902190ca', 'c9ec3170-3f6d-4180-a6ed-0a3c755e641d',
+        'd17ece88-a00e-4920-9649-853b2872c5a8', 'a22af3bd-8c2c-4783-a7b2-59b4dc0508cf',
+        '475868f4-ae7a-4940-8e42-e6ae03626f80', 'aae47cae-010c-42e9-90c9-981ecb32af5a',
+        'b04a75d8-becf-4863-bf56-0082f2dd68c9',
+    ],
 ];

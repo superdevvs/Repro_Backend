@@ -14,6 +14,7 @@ class ListingStudioGuestTrial extends Model
     protected $casts = [
         'client_id' => 'integer', 'options' => 'array',
         'started_at' => 'datetime', 'completed_at' => 'datetime',
+        'worker_started_at' => 'datetime', 'first_download_requested_at' => 'datetime', 'download_request_count' => 'integer',
         'claimed_at' => 'datetime', 'expires_at' => 'datetime', 'media_purged_at' => 'datetime',
     ];
 

@@ -57,11 +57,29 @@ class ListingStudioGuestTrialService
 
     public function start(string $sessionHash, string $key, UploadedFile $image, array $input): ListingStudioGuestTrial
     {
+        $replayed = false;
+        try {
+            $trial = $this->startTrial($sessionHash, $key, $image, $input, $replayed);
+        } catch (PublicApiException $exception) {
+            // Record only a fixed business outcome, after its reservation transaction rolled back.
+            app(ListingStudioTrialMonitoring::class)->count($exception->errorCode, $input['service'] ?? null);
+            throw $exception;
+        }
+        if ($replayed) {
+            app(ListingStudioTrialMonitoring::class)->count('idempotency_replay', $trial->service);
+        }
+
+        return $trial;
+    }
+
+    private function startTrial(string $sessionHash, string $key, UploadedFile $image, array $input, bool &$replayed): ListingStudioGuestTrial
+    {
         $this->validateImage($image);
         $options = $input['service'] === 'staging'
             ? ['roomType' => $input['roomType'] ?? 'living', 'style' => $input['style'] ?? 'modern'] : [];
         $requestHash = hash('sha256', json_encode([$input['service'], $options, hash_file('sha256', $image->getRealPath())], JSON_THROW_ON_ERROR));
         if ($existing = ListingStudioGuestTrial::where('session_hash', $sessionHash)->where('idempotency_key', $key)->first()) {
+            $replayed = true;
             return $this->replay($existing, $requestHash);
         }
         if (! $this->enabled()) {
@@ -123,6 +141,7 @@ class ListingStudioGuestTrialService
             ]), true];
         });
         if (! $created) {
+            $replayed = true;
             return $trial;
         }
         try {

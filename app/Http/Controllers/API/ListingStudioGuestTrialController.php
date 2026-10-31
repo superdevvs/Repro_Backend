@@ -109,7 +109,10 @@ class ListingStudioGuestTrialController extends Controller
         $disk = Storage::disk(ListingStudioGuestTrialService::DISK);
         abort_unless($disk->exists($record->output_path), 404);
 
-        return $disk->download($record->output_path, 'repro-'.$record->service.'-'.$record->id.'.'.pathinfo($record->output_path, PATHINFO_EXTENSION),
+        $response = $disk->download($record->output_path, 'repro-'.$record->service.'-'.$record->id.'.'.pathinfo($record->output_path, PATHINFO_EXTENSION),
             ['Cache-Control' => 'private, no-store', 'X-Content-Type-Options' => 'nosniff']);
+        app(\App\Services\ListingStudio\ListingStudioTrialMonitoring::class)->downloadRequested($record->id);
+
+        return $response;
     }
 }

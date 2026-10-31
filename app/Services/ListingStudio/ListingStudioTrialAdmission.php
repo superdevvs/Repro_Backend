@@ -17,6 +17,16 @@ class ListingStudioTrialAdmission
 
     public function mint(string $sessionHash, string $key): array
     {
+        try {
+            return $this->mintAdmission($sessionHash, $key);
+        } catch (PublicApiException $exception) {
+            app(ListingStudioTrialMonitoring::class)->count($exception->errorCode);
+            throw $exception;
+        }
+    }
+
+    private function mintAdmission(string $sessionHash, string $key): array
+    {
         $this->assertEnabled();
 
         return $this->write(function () use ($sessionHash, $key) {
@@ -39,6 +49,16 @@ class ListingStudioTrialAdmission
     }
 
     public function verify(string $token, string $challenge, string $ip, string $origin): array
+    {
+        try {
+            return $this->verifyAdmission($token, $challenge, $ip, $origin);
+        } catch (PublicApiException $exception) {
+            app(ListingStudioTrialMonitoring::class)->count($exception->errorCode);
+            throw $exception;
+        }
+    }
+
+    private function verifyAdmission(string $token, string $challenge, string $ip, string $origin): array
     {
         $this->assertEnabled();
         $ipHash = ListingStudioVisitorIp::hash($ip);

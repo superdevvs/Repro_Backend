@@ -17,6 +17,7 @@ class PruneListingStudioGuestTrials extends Command
         $reconciled = $trials->reconcileStale($limit);
         $count = $trials->expireUnclaimed($limit);
         $admissions = app(\App\Services\ListingStudio\ListingStudioTrialAdmission::class)->prune(10000);
+        app(\App\Services\ListingStudio\ListingStudioTrialMonitoring::class)->prune();
         $this->info('Expired '.$count.' unclaimed Studio trial results.');
         $this->info('Reconciled '.$reconciled.' interrupted trial records.');
         $this->info('Removed '.$admissions.' expired upload admissions.');

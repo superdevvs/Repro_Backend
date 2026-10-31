@@ -54,6 +54,7 @@ class ProcessStudioWorkspace implements ShouldQueue
         }
         try {
             if ($workspace->listing_studio_trial_id) {
+                app(\App\Services\ListingStudio\ListingStudioTrialMonitoring::class)->workerStarted($workspace->listing_studio_trial_id);
                 $operation = $workspace->operation;
                 $operation['trialStartedAt'] ??= now()->toIso8601String();
                 $workspace->update(['operation' => $operation]);
