@@ -25,7 +25,8 @@ class ListingStudioStripeWebhookController extends Controller
         try {
             $eventData = $event->toArray();
 
-            return response()->json(app(\App\Services\ListingStudio\StripeSubscriptionRefundSync::class)->handle($eventData)
+            return response()->json(app(\App\Services\ListingStudio\StudioPaymentSync::class)->handle($eventData)
+                ?? app(\App\Services\ListingStudio\StripeSubscriptionRefundSync::class)->handle($eventData)
                 ?? $sync->handle($eventData) ?? ['status' => 'success', 'handled' => false, 'outcome' => 'ignored']);
         } catch (\Throwable $exception) {
             Log::error('Listing Studio Stripe synchronization failed.', [

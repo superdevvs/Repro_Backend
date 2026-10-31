@@ -136,6 +136,22 @@ class StripeSubscriptionSync
                     $reason ??= 'The linked dashboard account needs administrator review.';
                 }
                 if (! $client && $confirmedEnrollment) {
+                    $binding = \App\Models\ListingStudioStripeCustomer::where([
+                        'account_id' => $key['stripe_account_id'], 'livemode' => $key['livemode'],
+                        'customer_id' => $snapshot['stripe_customer_id'],
+                    ])->first();
+                    if ($binding) {
+                        $boundClient = User::withTrashed()->find($binding->client_id);
+                        if ($boundClient && $this->eligibleClient($boundClient)) {
+                            $client = $boundClient;
+                            $record->client_id = $client->id;
+                            $record->account_created = false;
+                        } else {
+                            $reason ??= 'The authenticated billing account needs administrator review.';
+                        }
+                    }
+                }
+                if (! $client && $confirmedEnrollment && ! isset($binding)) {
                     [$client, $created, $identityReason] = $this->resolveClient($email, $name);
                     $reason ??= $identityReason;
                     if ($client) {

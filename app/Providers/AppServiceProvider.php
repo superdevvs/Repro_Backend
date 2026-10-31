@@ -22,6 +22,7 @@ class AppServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
+        $this->app->bind(\App\Contracts\ListingStudio\ListingStudioRefundDispatcher::class, \App\Services\ListingStudio\StudioRefundService::class);
         foreach ([
             \App\Services\Scheduling\SchedulingBufferSettings::class,
             \App\Services\Scheduling\TravelLocationResolver::class,

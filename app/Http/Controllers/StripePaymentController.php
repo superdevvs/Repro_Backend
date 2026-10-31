@@ -537,7 +537,8 @@ class StripePaymentController extends Controller
             $listingStudio = null;
             if (config('listing-studio.stripe_enabled')) {
                 $eventData = method_exists($event, 'toArray') ? $event->toArray() : json_decode(json_encode($event), true);
-                $listingStudio = app(\App\Services\ListingStudio\StripeSubscriptionRefundSync::class)->handle($eventData)
+                $listingStudio = app(\App\Services\ListingStudio\StudioPaymentSync::class)->handle($eventData)
+                    ?? app(\App\Services\ListingStudio\StripeSubscriptionRefundSync::class)->handle($eventData)
                     ?? app(\App\Services\ListingStudio\StripeSubscriptionSync::class)->handle($eventData);
             }
             if ($listingStudio !== null) {

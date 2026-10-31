@@ -400,6 +400,28 @@ class ListingStudioStripeSyncTest extends TestCase
         ];
     }
 
+    public function test_authenticated_customer_binding_wins_over_changed_stripe_email(): void
+    {
+        $bound = User::factory()->create(['role' => 'client', 'secondary_roles' => []]);
+        $emailMatch = User::factory()->create(['role' => 'client', 'secondary_roles' => [], 'email' => 'buyer@example.test']);
+        \App\Models\ListingStudioStripeCustomer::create(['client_id' => $bound->id, 'account_id' => 'acct_15OuBBLsiebrQZS4',
+            'livemode' => true, 'customer_id' => $this->canonical['customer']['id'], 'create_parameters' => []]);
+        $this->event()->assertOk();
+        $this->assertSame($bound->id, ListingStudioSubscription::sole()->client_id);
+        $this->assertDatabaseCount('listing_studio_account_setups', 0);
+    }
+
+    public function test_unavailable_authenticated_binding_does_not_fall_back_to_email(): void
+    {
+        $bound = User::factory()->create(['role' => 'admin', 'secondary_roles' => []]);
+        User::factory()->create(['role' => 'client', 'secondary_roles' => [], 'email' => 'buyer@example.test']);
+        \App\Models\ListingStudioStripeCustomer::create(['client_id' => $bound->id, 'account_id' => 'acct_15OuBBLsiebrQZS4',
+            'livemode' => true, 'customer_id' => $this->canonical['customer']['id'], 'create_parameters' => []]);
+        $this->event()->assertOk();
+        $this->assertNull(ListingStudioSubscription::sole()->client_id);
+        $this->assertSame('needs_attention', ListingStudioSubscription::sole()->sync_status);
+    }
+
     private function event(string $type = 'checkout.session.completed', string $id = 'evt_listing_test', string $path = '/api/webhooks/stripe/listing-studio', string $secret = 'whsec_studio_test', bool $livemode = true, ?string $account = null)
     {
         $object = str_starts_with($type, 'customer.subscription.') ? ['id' => 'sub_listing_test']
