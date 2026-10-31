@@ -422,6 +422,20 @@ class ListingStudioStripeSyncTest extends TestCase
         $this->assertSame('needs_attention', ListingStudioSubscription::sole()->sync_status);
     }
 
+    public function test_authenticated_primary_client_with_secondary_role_keeps_bound_subscription_on_repeat_sync(): void
+    {
+        $bound = User::factory()->create(['role' => 'client', 'secondary_roles' => ['editor'], 'account_status' => 'active']);
+        User::factory()->create(['role' => 'client', 'secondary_roles' => [], 'email' => 'buyer@example.test']);
+        \App\Models\ListingStudioStripeCustomer::create(['client_id' => $bound->id, 'account_id' => 'acct_15OuBBLsiebrQZS4',
+            'livemode' => true, 'customer_id' => $this->canonical['customer']['id'], 'create_parameters' => []]);
+        $this->event()->assertOk();
+        $this->event('customer.subscription.updated', 'evt_bound_mixed_role_repeat')->assertOk();
+        $subscription = ListingStudioSubscription::sole();
+        $this->assertSame($bound->id, $subscription->client_id);
+        $this->assertSame('synced', $subscription->sync_status);
+        $this->assertDatabaseCount('listing_studio_account_setups', 0);
+    }
+
     private function event(string $type = 'checkout.session.completed', string $id = 'evt_listing_test', string $path = '/api/webhooks/stripe/listing-studio', string $secret = 'whsec_studio_test', bool $livemode = true, ?string $account = null)
     {
         $object = str_starts_with($type, 'customer.subscription.') ? ['id' => 'sub_listing_test']

@@ -11,10 +11,55 @@ use App\Support\LockedWrite;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 
 class StudioRefundService implements ListingStudioRefundDispatcher
 {
     public function __construct(private readonly StudioStripeGateway $gateway, private readonly StudioCheckoutService $checkout) {}
+
+    /** Canonical complete snapshot, prepared before the core's atomic payment/queue decision. */
+    public function preparePaymentRefunds(Checkout $payment, string $eventId): array
+    {
+        $this->checkout->assertIdentity($payment);
+        $all = [];
+        $after = null;
+        for ($page = 0; $page < 10; $page++) {
+            $list = $this->gateway->refunds($payment->payment_intent_id, $after);
+            if (! is_array($list['data'] ?? null) || ! is_bool($list['has_more'] ?? null)
+                || ($list['has_more'] && $list['data'] === [])) {
+                throw new StudioPaymentException('billing_attention', 'The complete refund state could not be confirmed.');
+            }
+            foreach ($list['data'] as $remote) {
+                $id = is_array($remote) ? $this->id($remote) : '';
+                if (! preg_match('/^re_[A-Za-z0-9_]+$/', $id) || isset($all[$id]) || count($all) >= 100) {
+                    throw new StudioPaymentException('billing_attention', 'The complete refund state requires review.');
+                }
+                $this->validate($payment, $remote, $id);
+                $all[$id] = $remote;
+                $after = $id;
+            }
+            if (! $list['has_more']) {
+                return array_map(function ($remote) use ($payment, $eventId) {
+                    $attempt = $this->bindRefund($payment, $remote, $this->id($remote));
+
+                    return $this->evidence($attempt, $remote, $eventId);
+                }, array_values($all));
+            }
+        }
+        throw new StudioPaymentException('billing_attention', 'The complete refund state requires review.');
+    }
+
+    public function recordPreparedRefunds(array $evidence): void
+    {
+        $this->write(function () use ($evidence) {
+            foreach ($evidence as $refund) {
+                Refund::whereKey($refund['refundAttemptId'])->where('refund_id', $refund['refundId'])
+                    ->where('status', '!=', 'succeeded')
+                    ->when($refund['status'] === 'pending', fn ($query) => $query->whereNotIn('status', ['failed', 'canceled']))
+                    ->update(['status' => $refund['status']]);
+            }
+        });
+    }
 
     public function dispatch(ListingStudioOutbox $event): void
     {
@@ -88,32 +133,42 @@ class StudioRefundService implements ListingStudioRefundDispatcher
         try {
             $remote = $this->gateway->refund($refundId);
             $this->validate($payment, $remote, $refundId);
-            $attempt = $this->write(function () use ($payment, $remote, $refundId) {
-                $prior = Refund::where(['account_id' => $payment->account_id, 'livemode' => $payment->livemode, 'refund_id' => $refundId])->first();
-                if ($prior) {
-                    return $prior;
-                }
-                $localId = data_get($remote, 'metadata.studio_refund_attempt');
-                if ($localId) {
-                    $prior = Refund::findOrFail($localId);
-                    if ($prior->order_id !== $payment->order_id || ($prior->refund_id && $prior->refund_id !== $refundId)
-                        || $prior->amount_cents !== $remote['amount'] || $prior->operation_id !== data_get($remote, 'metadata.studio_refund_operation')) {
-                        throw new StudioPaymentException('billing_attention', 'Refund ownership changed.');
-                    }
-                    $prior->update(['refund_id' => $refundId]);
-
-                    return $prior;
-                }
-
-                // An operator may refund in Stripe directly. Bind from the verified known payment, never email/metadata alone.
-                return Refund::create(['order_id' => $payment->order_id, 'checkout_attempt_id' => $payment->id, 'operation_id' => 'external:'.$refundId,
-                    'account_id' => $payment->account_id, 'livemode' => $payment->livemode, 'payment_intent_id' => $payment->payment_intent_id,
-                    'refund_id' => $refundId, 'currency' => $payment->currency, 'amount_cents' => $remote['amount'], 'status' => 'pending']);
-            });
+            $attempt = $this->bindRefund($payment, $remote, $refundId);
             $this->reconcile($attempt, $remote, $eventId);
         } finally {
             $lock->release();
         }
+    }
+
+    private function bindRefund(Checkout $payment, array $remote, string $refundId): Refund
+    {
+        return $this->write(function () use ($payment, $remote, $refundId) {
+            $prior = Refund::where(['account_id' => $payment->account_id, 'livemode' => $payment->livemode, 'refund_id' => $refundId])->first();
+            if ($prior) {
+                if ($prior->order_id !== $payment->order_id || $prior->checkout_attempt_id !== $payment->id
+                    || $prior->payment_intent_id !== $payment->payment_intent_id || $prior->amount_cents !== $remote['amount']) {
+                    throw new StudioPaymentException('billing_attention', 'Refund ownership changed.');
+                }
+
+                return $prior;
+            }
+            $localId = data_get($remote, 'metadata.studio_refund_attempt');
+            if ($localId) {
+                $prior = Refund::findOrFail($localId);
+                if ($prior->order_id !== $payment->order_id || ($prior->refund_id && $prior->refund_id !== $refundId)
+                    || $prior->amount_cents !== $remote['amount'] || $prior->operation_id !== data_get($remote, 'metadata.studio_refund_operation')) {
+                    throw new StudioPaymentException('billing_attention', 'Refund ownership changed.');
+                }
+                $prior->update(['refund_id' => $refundId]);
+
+                return $prior;
+            }
+
+            // An operator may refund in Stripe directly. Bind from the verified known payment, never email/metadata alone.
+            return Refund::create(['order_id' => $payment->order_id, 'checkout_attempt_id' => $payment->id, 'operation_id' => (string) Str::uuid(),
+                'account_id' => $payment->account_id, 'livemode' => $payment->livemode, 'payment_intent_id' => $payment->payment_intent_id,
+                'refund_id' => $refundId, 'currency' => $payment->currency, 'amount_cents' => $remote['amount'], 'status' => 'pending']);
+        });
     }
 
     private function reconcile(Refund $attempt, array $remote, ?string $eventId = null): void
@@ -124,14 +179,21 @@ class StudioRefundService implements ListingStudioRefundDispatcher
             throw new StudioPaymentException('billing_attention', 'Refund amount changed.');
         }
         $status = $remote['status'];
-        app(ListingStudioOrderService::class)->confirmRefund($attempt->order_id, [
+        app(ListingStudioOrderService::class)->confirmRefund($attempt->order_id, $this->evidence($attempt, $remote, $eventId));
+        $this->write(fn () => Refund::whereKey($attempt->id)->where('status', '!=', 'succeeded')
+            ->when(in_array($status, ['pending', 'requires_action'], true), fn ($query) => $query->whereNotIn('status', ['failed', 'canceled']))
+            ->update(['status' => $status]));
+    }
+
+    private function evidence(Refund $attempt, array $remote, ?string $eventId): array
+    {
+        return [
             'provider' => 'stripe', 'eventId' => $eventId, 'accountId' => $attempt->account_id, 'liveMode' => $attempt->livemode,
             'refundAttemptId' => $attempt->id, 'refundOperationId' => $attempt->operation_id, 'paymentIntentId' => $attempt->payment_intent_id,
             'refundId' => $attempt->refund_id, 'currency' => $attempt->currency, 'amountCents' => $attempt->amount_cents,
-            'status' => $status === 'requires_action' ? 'pending' : $status,
+            'status' => $remote['status'] === 'requires_action' ? 'pending' : $remote['status'],
             'occurredAt' => CarbonImmutable::createFromTimestampUTC($remote['created'])->toIso8601String(),
-        ]);
-        $this->write(fn () => $attempt->update(['status' => $status]));
+        ];
     }
 
     private function validate(Checkout $payment, array $refund, string $id): void

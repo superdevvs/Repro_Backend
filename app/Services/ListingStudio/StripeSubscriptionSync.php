@@ -131,18 +131,22 @@ class StripeSubscriptionSync
                 if ($paidAt && (! $record->last_paid_at || $paidAt->greaterThan($record->last_paid_at))) {
                     $record->last_paid_at = $paidAt;
                 }
+                $binding = \App\Models\ListingStudioStripeCustomer::where([
+                    'account_id' => $key['stripe_account_id'], 'livemode' => $key['livemode'],
+                    'customer_id' => $snapshot['stripe_customer_id'],
+                ])->first();
                 $client = $record->client_id ? User::withTrashed()->find($record->client_id) : null;
-                if ($record->client_id && (! $client || ! $this->eligibleClient($client))) {
+                $boundToClient = $binding && (int) $binding->client_id === (int) $record->client_id;
+                if ($record->client_id && $binding && ! $boundToClient) {
+                    $reason ??= 'The authenticated billing account conflicts with the linked account.';
+                }
+                if ($record->client_id && (! $client || ! $this->eligibleClient($client, $boundToClient))) {
                     $reason ??= 'The linked dashboard account needs administrator review.';
                 }
                 if (! $client && $confirmedEnrollment) {
-                    $binding = \App\Models\ListingStudioStripeCustomer::where([
-                        'account_id' => $key['stripe_account_id'], 'livemode' => $key['livemode'],
-                        'customer_id' => $snapshot['stripe_customer_id'],
-                    ])->first();
                     if ($binding) {
                         $boundClient = User::withTrashed()->find($binding->client_id);
-                        if ($boundClient && $this->eligibleClient($boundClient)) {
+                        if ($boundClient && $this->eligibleClient($boundClient, true)) {
                             $client = $boundClient;
                             $record->client_id = $client->id;
                             $record->account_created = false;
@@ -151,7 +155,7 @@ class StripeSubscriptionSync
                         }
                     }
                 }
-                if (! $client && $confirmedEnrollment && ! isset($binding)) {
+                if (! $client && $confirmedEnrollment && ! $binding) {
                     [$client, $created, $identityReason] = $this->resolveClient($email, $name);
                     $reason ??= $identityReason;
                     if ($client) {
@@ -209,10 +213,10 @@ class StripeSubscriptionSync
         return [$client, true, null];
     }
 
-    private function eligibleClient(User $user): bool
+    private function eligibleClient(User $user, bool $authenticatedBinding = false): bool
     {
         return strtolower(trim((string) $user->role)) === 'client'
-            && collect($user->secondary_roles ?? [])->every(fn ($role) => strtolower(trim((string) $role)) === 'client')
+            && ($authenticatedBinding || collect($user->secondary_roles ?? [])->every(fn ($role) => strtolower(trim((string) $role)) === 'client'))
             && $user->isAccountEligibleForAuthentication();
     }
 

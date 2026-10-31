@@ -55,9 +55,11 @@ class StudioStripeGateway
         return $this->client()->checkout->sessions->all(['customer' => $customer, 'created' => ['gte' => $since], 'limit' => 100])->toArray();
     }
 
-    public function refunds(string $intent): array
+    public function refunds(string $intent, ?string $after = null): array
     {
-        return $this->client()->refunds->all(['payment_intent' => $intent, 'limit' => 100])->toArray();
+        return $this->client()->refunds->all(['payment_intent' => $intent, 'limit' => 100,
+            'expand' => ['data.payment_intent', 'data.charge'],
+            ...($after === null ? [] : ['starting_after' => $after])])->toArray();
     }
 
     public function subscriptions(string $customer): array

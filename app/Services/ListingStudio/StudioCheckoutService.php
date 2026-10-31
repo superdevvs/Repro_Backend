@@ -86,6 +86,7 @@ class StudioCheckoutService
 
         return $this->write(function () use ($client, $key, $kind, $orderId, $plan, $amount, $currency, $account, $live, $hash) {
             $this->eligible($client);
+            $billingAttention = app(ListingStudioCreditReservationService::class)->selection($client)['billingAttention'];
             if ($kind === 'order') {
                 // Serialize allocation against cancellation; the earlier HTTP read may be stale.
                 $order = ListingStudioOrder::where('client_id', $client->id)->findOrFail($orderId);
@@ -102,8 +103,14 @@ class StudioCheckoutService
                     throw new StudioPaymentException('idempotency_conflict', 'This checkout key belongs to another request.');
                 }
                 $this->assertIdentity($prior);
+                if ($billingAttention && ! $prior->session_id) {
+                    $this->billingAttention($prior->submission_started_at !== null);
+                }
 
                 return $prior;
+            }
+            if ($billingAttention) {
+                $this->billingAttention(false);
             }
             $active = Attempt::where('client_id', $client->id)->where('kind', $kind)
                 ->when($orderId, fn ($query) => $query->where('order_id', $orderId))
@@ -175,7 +182,12 @@ class StudioCheckoutService
                 $parameters['line_items'] = [['quantity' => 1, 'price' => $price]];
                 $parameters['subscription_data'] = ['metadata' => $metadata];
             }
-            $this->write(fn () => $attempt->update(['customer_id' => $customer, 'parameters' => $parameters, 'submission_started_at' => now(), 'status' => 'submitting']));
+            $this->write(function () use ($client, $attempt, $customer, $parameters) {
+                $this->assertBillingCreateAllowed($client, $attempt);
+                $attempt->update(['customer_id' => $customer, 'parameters' => $parameters, 'submission_started_at' => now(), 'status' => 'submitting']);
+            });
+        } else {
+            $this->write(fn () => $this->assertBillingCreateAllowed($client, $attempt));
         }
         try {
             $session = $this->gateway->createCheckout($attempt->parameters, 'studio-checkout-'.$attempt->id);
@@ -190,6 +202,21 @@ class StudioCheckoutService
         }
 
         return $this->present($attempt->fresh());
+    }
+
+    private function assertBillingCreateAllowed(User $client, Attempt $attempt): void
+    {
+        $this->eligible($client);
+        if (app(ListingStudioCreditReservationService::class)->selection($client)['billingAttention']) {
+            $this->billingAttention($attempt->submission_started_at !== null);
+        }
+    }
+
+    private function billingAttention(bool $uncertain): never
+    {
+        throw new StudioPaymentException($uncertain ? 'awaiting_reconciliation' : 'billing_attention',
+            $uncertain ? 'This existing checkout is awaiting reconciliation. No new checkout was started.'
+                : 'Your subscriptions need review before starting another purchase.', 409);
     }
 
     private function customer(User $client, bool $create): string
@@ -336,7 +363,7 @@ class StudioCheckoutService
     private function eligible(User $client): void
     {
         $fresh = User::find($client->id);
-        if (! $fresh || $fresh->role !== 'client' || collect($fresh->secondary_roles ?? [])->contains(fn ($role) => $role !== 'client') || ! $fresh->isAccountEligibleForAuthentication()) {
+        if (! $fresh || $fresh->role !== 'client' || ! $fresh->isAccountEligibleForAuthentication()) {
             throw new StudioPaymentException('account_ineligible', 'Use an active client account.', 403);
         }
     }

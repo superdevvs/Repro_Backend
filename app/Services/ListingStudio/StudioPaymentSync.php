@@ -39,7 +39,8 @@ class StudioPaymentSync
         if (DB::table('listing_studio_payment_events')->where($eventKey)->exists()) {
             return $this->handled();
         }
-        $lock = Cache::store('database')->lock('studio-payment-sync:'.($attempt?->id ?? $refundPayment->id), 180);
+        // Covers the bounded complete refund pagination plus canonical checkout/account reads.
+        $lock = Cache::store('database')->lock('studio-payment-sync:'.($attempt?->id ?? $refundPayment->id), 300);
         if (! $lock->get()) {
             throw new StudioPaymentException('awaiting_reconciliation', 'Payment reconciliation is already running.');
         }
@@ -141,12 +142,17 @@ class StudioPaymentSync
                     });
                 }
                 if ($settle) {
+                    // Stripe may deliver an external refund before the checkout event. Reconcile
+                    // the complete canonical refund state atomically with funding, before queueing.
+                    $refunds = app(StudioRefundService::class)->preparePaymentRefunds($attempt->fresh(), $eventId);
                     app(ListingStudioOrderService::class)->confirmPayment($order->id, [
                         'provider' => 'stripe', 'eventId' => $eventId, 'accountId' => $attempt->account_id,
                         'liveMode' => $attempt->livemode, 'checkoutAttemptId' => $attempt->id, 'checkoutSessionId' => $sessionId,
                         'paymentIntentId' => $paymentId, 'customerId' => $attempt->customer_id, 'currency' => $attempt->currency,
                         'amountPaidCents' => $attempt->amount_cents, 'paidAt' => now()->toIso8601String(),
+                        'refundsVerified' => true, 'refunds' => $refunds,
                     ]);
+                    app(StudioRefundService::class)->recordPreparedRefunds($refunds);
                 }
             } else {
                 $subscription = $session['subscription'] ?? null;
