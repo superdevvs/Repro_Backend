@@ -86,6 +86,16 @@ class StudioCheckoutService
 
         return $this->write(function () use ($client, $key, $kind, $orderId, $plan, $amount, $currency, $account, $live, $hash) {
             $this->eligible($client);
+            if ($kind === 'order') {
+                // Serialize allocation against cancellation; the earlier HTTP read may be stale.
+                $order = ListingStudioOrder::where('client_id', $client->id)->findOrFail($orderId);
+                $item = $order->item()->first();
+                if ($order->funding_method !== 'card' || $order->funding_status !== 'pending'
+                    || $order->paid_amount_cents !== 0 || $order->total_cents !== $amount || $order->currency !== $currency
+                    || ! $item || $item->status !== 'awaiting_funding' || (int) $item->client_id !== (int) $client->id) {
+                    throw new StudioPaymentException('checkout_unavailable', 'This order is not awaiting payment.');
+                }
+            }
             $prior = Attempt::where('client_id', $client->id)->where('idempotency_key', $key)->first();
             if ($prior) {
                 if (! hash_equals($prior->request_hash, $hash)) {

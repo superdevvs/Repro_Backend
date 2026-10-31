@@ -81,6 +81,21 @@ class ListingStudioPaidPaymentsTest extends TestCase
         $this->assertStringNotContainsString('cus_', json_encode($first));
     }
 
+    public function test_cancellation_between_order_read_and_attempt_allocation_prevents_any_checkout(): void
+    {
+        $order = $this->order();
+        $catalog = Mockery::mock('App\\Services\\ListingStudio\\ListingStudioCatalogService');
+        $catalog->shouldReceive('available')->once()->andReturnUsing(function () use ($order) {
+            $order->item()->update(['status' => 'cancelled']);
+
+            return true;
+        });
+        $this->app->instance('App\\Services\\ListingStudio\\ListingStudioCatalogService', $catalog);
+        $this->error('checkout_unavailable', fn () => $this->checkout($order, (string) Str::uuid()));
+        $this->assertDatabaseCount('listing_studio_checkout_attempts', 0);
+        $this->assertSame([], $this->gateway->calls);
+    }
+
     public function test_lost_response_retries_exact_stripe_body_and_key_without_transaction(): void
     {
         $order = $this->order();
@@ -413,9 +428,14 @@ class ListingStudioPaidPaymentsTest extends TestCase
             'source_id' => Str::uuid(), 'source_snapshot' => [], 'options' => [], 'pricing_snapshot' => [], 'catalog_version' => 'v1',
             'request_hash' => str_repeat('a', 64), 'expires_at' => now()->addMinutes(15)]);
 
-        return ListingStudioOrder::create(['client_id' => $this->client->id, 'quote_id' => $quote->id, 'kind' => 'ai_edit', 'service' => 'grass',
+        $order = ListingStudioOrder::create(['client_id' => $this->client->id, 'quote_id' => $quote->id, 'kind' => 'ai_edit', 'service' => 'grass',
             'funding_method' => 'card', 'funding_status' => 'pending', 'currency' => 'usd', 'total_cents' => 700,
             'pricing_snapshot' => [], 'idempotency_key' => Str::uuid(), 'request_hash' => str_repeat('a', 64)]);
+        $order->item()->create(['client_id' => $this->client->id, 'kind' => 'ai_edit', 'service' => 'grass',
+            'status' => 'awaiting_funding', 'source_kind' => 'upload', 'source_id' => $quote->source_id,
+            'source_snapshot' => [], 'options' => []]);
+
+        return $order;
     }
 
     private function error(string $code, callable $call): StudioPaymentException
