@@ -45,7 +45,14 @@ class ReelCompositionService
             $path = $directory.'/normalized-'.$index.'.mp4';
             $native = $probes[$index]['durationSeconds'];
             $speed = $seconds / max(0.01, $native);
-            $filter = "scale={$width}:{$height}:force_original_aspect_ratio=increase,crop={$width}:{$height},setsar=1,setpts=".$this->n($speed).'*(PTS-STARTPTS),fps=30,tpad=stop_mode=clone:stop_duration=1,trim=duration='.$this->n($seconds).',settb=AVTB,format=yuv420p';
+            // A provider can return a different aspect ratio from the prepared
+            // photo. Only an explicit crop may discard that clip's edge content.
+            // Studio's implicit preparation is fit; legacy callers retain cover.
+            $method = $config['frames'][$index]['method'] ?? (! empty($config['studioWorkspace']) ? 'fit' : 'crop');
+            $framing = in_array($method, ['fit', 'extend'], true)
+                ? "scale={$width}:{$height}:force_original_aspect_ratio=decrease:force_divisible_by=2,pad={$width}:{$height}:(ow-iw)/2:(oh-ih)/2:color=0x101828"
+                : "scale={$width}:{$height}:force_original_aspect_ratio=increase,crop={$width}:{$height}";
+            $filter = $framing.',setsar=1,setpts='.$this->n($speed).'*(PTS-STARTPTS),fps=30,tpad=stop_mode=clone:stop_duration=1,trim=duration='.$this->n($seconds).',settb=AVTB,format=yuv420p';
             $args = ['-y', '-i', $clip];
             if ($original && ! $probes[$index]['hasAudio']) {
                 array_push($args, '-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo');
