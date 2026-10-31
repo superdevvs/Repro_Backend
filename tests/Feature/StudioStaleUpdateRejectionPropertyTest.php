@@ -291,23 +291,15 @@ class StudioStaleUpdateRejectionPropertyTest extends TestCase
 
     private function createLegacyTemplate(User $owner, int $iteration): string
     {
-        // This property exercises the preserved two-user legacy contract. A
-        // POST now intentionally creates an owner-only private recipe; a peer
-        // must receive 403 for that recipe, even with an otherwise valid version.
-        // Seed the pre-migration shape rather than weakening the new ownership
-        // policy to manufacture two authorized writers.
-        $template = Template::query()->create([
-            'team_id' => $owner->metadata['team_id'],
-            'created_by' => $owner->id,
-            'visibility' => null,
-            'preset_id' => null,
-            'name' => $this->generatedName('Template', $iteration),
-            'workflow_id' => $this->pick(self::WORKFLOW_IDS),
-            'config' => $this->generatedConfig(),
-        ]);
-        $this->assertNull($template->visibility);
+        // Exercise the real legacy web POST contract: workflowId with neither
+        // presetId nor visibility retains the staff team-management policy.
+        Sanctum::actingAs($owner);
 
-        return (string) $template->id;
+        return (string) $this->postJson(self::TEMPLATES_URL, [
+            'name' => $this->generatedName('Template', $iteration),
+            'workflowId' => $this->pick(self::WORKFLOW_IDS),
+            'config' => $this->generatedConfig(),
+        ])->assertCreated()->assertJsonPath('data.visibility', 'legacy')->json('data.id');
     }
 
     /** @return array<string, mixed> */

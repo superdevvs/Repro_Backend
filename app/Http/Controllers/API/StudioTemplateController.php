@@ -59,8 +59,15 @@ class StudioTemplateController extends StudioController
         $user = $request->user();
         $this->authorizeActor($user);
         $data = $request->validate($this->templateRules());
-        $visibility = $data['visibility'] ?? 'private';
-        $this->authorizeVisibility($user, $visibility);
+        // The existing web API sends only workflowId and has no sharing control.
+        // Preserve its staff-only legacy policy without making native recipes or
+        // newly enabled client templates visible to other users by default.
+        $legacyRequest = StudioTemplateAccess::staff($user)
+            && isset($data['workflowId'])
+            && !array_key_exists('presetId', $data)
+            && !array_key_exists('visibility', $data);
+        $visibility = $legacyRequest ? null : ($data['visibility'] ?? 'private');
+        $this->authorizeVisibility($user, $visibility ?? 'private');
         [$preset, $workflow] = $this->recipeIdentity($data);
         $config = $this->recipeConfig($data['config'], $preset);
         $template = LockedWrite::run(fn () => Template::query()->create([

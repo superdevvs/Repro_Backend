@@ -244,6 +244,69 @@ class StudioTemplateScopesTest extends TestCase
         $this->assertNull($record->fresh()->visibility);
     }
 
+    public function test_legacy_web_creation_preserves_existing_privileged_team_management_only(): void
+    {
+        $owner = $this->actor('editor');
+        Sanctum::actingAs($owner);
+        $created = $this->postJson(self::URL, [
+            'name' => 'Legacy web recipe', 'workflowId' => 'photo-enhancement',
+            'config' => ['strength' => 70],
+        ])->assertCreated()->assertJsonPath('data.visibility', 'legacy')->json('data');
+        $version = 1;
+        foreach (['admin', 'superadmin', 'editing_manager'] as $role) {
+            Sanctum::actingAs($this->actor($role));
+            $this->getJson(self::URL)->assertOk()->assertJsonPath('data.0.id', $created['id'])
+                ->assertJsonPath('data.0.canEdit', true)->assertJsonPath('data.0.canShare', false);
+            $this->putJson(self::URL.'/'.$created['id'], ['version' => $version, 'name' => 'Maintained by '.$role])
+                ->assertOk()->assertJsonPath('data.version', ++$version)
+                ->assertJsonPath('data.visibility', 'legacy')->assertJsonPath('data.createdBy', $owner->id);
+        }
+        foreach ([$this->actor('editor'), $this->actor('admin', 502)] as $denied) {
+            Sanctum::actingAs($denied);
+            $this->getJson(self::URL)->assertOk()->assertJsonPath('meta.total', 0);
+            $this->putJson(self::URL.'/'.$created['id'], ['version' => $version, 'name' => 'Not allowed'])->assertForbidden();
+            $this->deleteJson(self::URL.'/'.$created['id'], ['version' => $version])->assertForbidden();
+        }
+    }
+
+    public function test_explicit_private_and_any_native_preset_key_do_not_use_legacy_default(): void
+    {
+        $owner = $this->actor('editor');
+        $peer = $this->actor('admin');
+        foreach ([['visibility' => 'private'], ['presetId' => 'twilight'], ['presetId' => null]] as $scope) {
+            Sanctum::actingAs($owner);
+            $created = $this->postJson(self::URL, [
+                'name' => 'Personal direction', 'workflowId' => 'twilight',
+                'config' => ['prompt' => 'Private direction'], ...$scope,
+            ])->assertCreated()->assertJsonPath('data.visibility', 'private')->json('data');
+            Sanctum::actingAs($peer);
+            $this->getJson(self::URL)->assertOk()->assertJsonPath('meta.total', 0)->assertDontSee('Private direction');
+            $this->putJson(self::URL.'/'.$created['id'], ['version' => 1, 'name' => 'Not allowed'])->assertForbidden();
+            $this->deleteJson(self::URL.'/'.$created['id'], ['version' => 1])->assertForbidden();
+        }
+        Sanctum::actingAs($owner);
+        $this->postJson(self::URL, [
+            'name' => 'Explicitly shared', 'workflowId' => 'twilight', 'visibility' => 'team', 'config' => [],
+        ])->assertCreated()->assertJsonPath('data.visibility', 'team');
+    }
+
+    public function test_client_workflow_only_creation_stays_private_and_rollout_gated(): void
+    {
+        $client = $this->actor('client');
+        $payload = ['name' => 'Personal legacy-shaped recipe', 'workflowId' => 'twilight', 'config' => []];
+        Sanctum::actingAs($client);
+        config(['studio.client_access_enabled' => false]);
+        $this->postJson(self::URL, $payload)->assertForbidden();
+        config(['studio.client_access_enabled' => true]);
+        $created = $this->postJson(self::URL, $payload)->assertCreated()
+            ->assertJsonPath('data.visibility', 'private')->assertJsonPath('data.canShare', false)->json('data');
+        $this->postJson(self::URL, [...$payload, 'visibility' => 'team'])->assertForbidden();
+        Sanctum::actingAs($this->actor('admin'));
+        $this->getJson(self::URL)->assertOk()->assertJsonPath('meta.total', 0);
+        $this->putJson(self::URL.'/'.$created['id'], ['version' => 1, 'name' => 'Not allowed'])->assertForbidden();
+        $this->deleteJson(self::URL.'/'.$created['id'], ['version' => 1])->assertForbidden();
+    }
+
     public function test_native_presets_map_to_real_workflows_without_running_them_and_invalid_inputs_are_rejected(): void
     {
         Sanctum::actingAs($this->actor('editor'));
