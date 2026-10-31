@@ -39,7 +39,11 @@ class WorkspaceIntent
             $matches[] = $count > 1 ? 'property-reel' : 'walkthrough';
             $negated = $negated || $this->effectIsNegated($prompt, $videoPattern);
         }
-        $base = ['status' => 'needs_input', 'presetId' => null, 'mode' => null, 'config' => ['prompt' => $prompt], 'candidates' => [], 'requiresPreparation' => false, 'requiresConfirmation' => false];
+        // The legacy config includes defaults. Native saved recipes instead merge
+        // these sparse, prompt-derived fields recursively, preserving unmentioned
+        // settings (especially private music IDs). Preset/mode remain separate.
+        $overrides = $prompt !== '' ? ['prompt' => $prompt] : [];
+        $base = ['status' => 'needs_input', 'presetId' => null, 'mode' => null, 'config' => ['prompt' => $prompt], 'configOverrides' => (object) $overrides, 'candidates' => [], 'requiresPreparation' => false, 'requiresConfirmation' => false];
         if (preg_match('/^(?:what(?:[\x{0027}\x{2019}]s| is| are| does)|who|where|when|why|how (?:does|do|is|are)|does (?:this|it) need|explain|describe|tell me)\b/iu', $prompt)) {
             return $base + ['reason' => 'not_an_edit', 'question' => 'This looks like a chat message. Continue in Robbie chat, or describe the edit you want.'];
         }
@@ -86,6 +90,7 @@ class WorkspaceIntent
             }
             if ($selectedRooms) {
                 $config['adjustments']['roomType'] = $selectedRooms[0];
+                $overrides['adjustments']['roomType'] = $selectedRooms[0];
             }
             $styles = [];
             foreach (array_keys(VirtualStagingOptions::STYLES) as $style) {
@@ -101,9 +106,11 @@ class WorkspaceIntent
             }
             if ($styles) {
                 $config['adjustments']['furnitureStyle'] = $styles[0];
+                $overrides['adjustments']['furnitureStyle'] = $styles[0];
             }
             if (preg_match('/\b(?:remove|replace) (?:the |existing )?furniture\b/i', $prompt)) {
                 $config['adjustments']['removal'] = 'on';
+                $overrides['adjustments']['removal'] = 'on';
             }
         }
         if ($video && preg_match('/\b(\d{1,3})\s*(?:-\s*)?(?:seconds?|secs?|s)\b/i', $prompt, $duration)) {
@@ -111,12 +118,15 @@ class WorkspaceIntent
                 return $base + ['reason' => 'unsupported_duration', 'question' => 'Choose a video length between 5 and 120 seconds.'];
             }
             $config['duration'] = (int) $duration[1];
+            $overrides['duration'] = (int) $duration[1];
         }
         if ($video && preg_match('/\b(9:16|16:9|1:1|4:5)\b/', $prompt, $ratio)) {
             $config['ratio'] = $ratio[1];
+            $overrides['ratio'] = $ratio[1];
         }
         $plan = array_replace($base, [
             'status' => 'ready', 'presetId' => $preset, 'mode' => $video ? 'video' : 'photo', 'config' => $config,
+            'configOverrides' => (object) $overrides,
             'requiresPreparation' => $video, 'requiresConfirmation' => $preset === 'full-shoot',
         ]);
         if ($count === 0 || ($video && $count > 12)) {
@@ -131,14 +141,18 @@ class WorkspaceIntent
             if ($hasFinishingControls) {
                 if (preg_match('/\b(720p|1080p)\b/i', $prompt, $resolution)) {
                     $plan['config']['resolution'] = strtolower($resolution[1]);
+                    $plan['configOverrides']->resolution = strtolower($resolution[1]);
                 }
                 if (preg_match('/\b(?:no|without|mute|remove)\s+(?:the\s+)?(?:sound|audio|music)\b|\b(?:sound|audio)\s+off\b/i', $prompt)) {
                     $plan['config']['audio']['original'] = false;
                     $plan['config']['audio']['musicId'] = null;
+                    $muteAll = preg_match('/\b(?:no|without|mute|remove)\s+(?:the\s+)?(?:sound|audio)\b|\b(?:sound|audio)\s+off\b/i', $prompt);
+                    $plan['configOverrides']->audio = (object) ($muteAll ? ['original' => false, 'musicId' => null] : ['musicId' => null]);
                 } elseif (preg_match('/\bmusic\b/i', $prompt)) {
                     return array_replace($plan, ['status' => 'needs_input', 'reason' => 'music_selection', 'question' => 'Choose or upload a music track for this workspace.']);
                 } elseif (preg_match('/\b(sound|audio)\b/i', $prompt)) {
                     $plan['config']['audio']['original'] = true;
+                    $plan['configOverrides']->audio = (object) ['original' => true];
                     $plan['notice'] = 'Original sound is retained only when the generated clips contain audio.';
                 }
             }
