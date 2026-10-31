@@ -523,6 +523,164 @@ class ListingStudioDelegatedBillingTest extends TestCase
         $this->assertSame(1, $gateway->count('createCheckout'));
     }
 
+    public function test_independent_order_checkout_holds_request_and_blocks_duplicate_confirm_cancel_and_email(): void
+    {
+        $gateway = $this->checkoutGateway();
+        $order = $this->cardOrder();
+        $request = $this->orderBilling($order);
+        $billing = app(ListingStudioBillingRequestService::class);
+        $review = $billing->review($this->client, $request->id)['review'];
+        $emails = app(ListingStudioBillingEmailService::class);
+        $emails->request($this->rep, $this->client, $request, (string) Str::uuid());
+        app(StudioCheckoutService::class)->order($this->client, $order->id, (string) Str::uuid());
+        $attempt = ListingStudioCheckoutAttempt::sole();
+        $this->assertNotSame($request->checkout_key, $attempt->idempotency_key);
+        $this->assertSame($this->client->id, $attempt->actor_id);
+        $this->travel(25)->hours();
+        $calls = $gateway->calls;
+        $result = $billing->review($this->client, $request->id);
+        $this->assertSame('processing', $result['request']['status']);
+        $this->assertNull($result['review']);
+        $this->assertSame('await_payment', $result['nextAction']['type']);
+        $this->assertFalse($result['request']['actions']['canCancel']);
+        $this->assertFalse($result['request']['actions']['canConfirm']);
+        $this->assertFalse($billing->present($request->fresh())['actions']['canEmail']);
+        $this->expectCode('billing_request_conflict', fn () => $billing->cancel($request->fresh(), $this->client));
+        $this->expectCode('checkout_in_progress', fn () => $billing->confirm($this->client, $request->id, [...$review, 'acceptCharges' => true]));
+        $this->expectCode('billing_request_conflict', fn () => $emails->request($this->rep, $this->client, $request, (string) Str::uuid()));
+        $messaging = Mockery::mock(MessagingService::class);
+        $messaging->shouldNotReceive('sendEmail');
+        $this->app->instance(MessagingService::class, $messaging);
+        $emails->deliver(ListingStudioBillingEmail::sole()->id);
+        $this->assertSame('needs_attention', ListingStudioBillingEmail::sole()->status);
+        $this->assertSame($calls, $gateway->calls);
+        $this->assertNull($request->fresh()->confirmed_at);
+        $this->assertSame('open', $attempt->fresh()->status);
+        $this->assertDatabaseCount('listing_studio_outbox', 0);
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('terminalRequestStates')]
+    public function test_signed_independent_payment_completes_prior_terminal_request_without_inventing_consent(string $state): void
+    {
+        $gateway = $this->checkoutGateway();
+        $order = $this->cardOrder();
+        $request = $this->orderBilling($order);
+        $billing = app(ListingStudioBillingRequestService::class);
+        if ($state === 'cancelled') {
+            $billing->cancel($request, $this->client);
+        } else {
+            $this->travel(25)->hours();
+            $billing->refresh($request);
+        }
+        $this->assertSame($state, $request->fresh()->status);
+        app(StudioCheckoutService::class)->order($this->client, $order->id, (string) Str::uuid());
+        $attempt = ListingStudioCheckoutAttempt::sole();
+        $gateway->paid($attempt->session_id);
+        $this->signedPaidEvent($gateway, $attempt->session_id, 'evt_independent')->assertOk();
+        $this->signedPaidEvent($gateway, $attempt->session_id, 'evt_independent')->assertOk();
+        $this->assertSame(700, $order->fresh()->paid_amount_cents);
+        $this->assertSame('queued', $order->fresh()->item->status);
+        $this->assertSame($this->client->id, $order->client_id);
+        $this->assertSame($this->rep->id, $order->actor_id);
+        $this->assertSame($this->client->id, $attempt->fresh()->actor_id);
+        $result = $billing->review($this->client, $request->id);
+        $this->assertSame('completed', $result['request']['status']);
+        $this->assertNull($result['review']);
+        $this->assertNull($request->fresh()->confirmed_at);
+        $this->assertNotNull($request->fresh()->completed_at);
+        $this->assertSame(0, $billing->pending($this->client)['count']);
+        $this->assertDatabaseCount('listing_studio_checkout_attempts', 1);
+        $this->assertDatabaseCount('listing_studio_order_funding_effects', 1);
+        $this->assertDatabaseCount('listing_studio_outbox', 1);
+        $this->assertSame(1, $gateway->count('createCheckout'));
+    }
+
+    public static function terminalRequestStates(): array
+    {
+        return [['cancelled'], ['expired']];
+    }
+
+    public function test_pending_request_email_rechecks_independently_paid_order_before_enqueue_and_delivery(): void
+    {
+        $gateway = $this->checkoutGateway();
+        $order = $this->cardOrder();
+        $request = $this->orderBilling($order);
+        $emails = app(ListingStudioBillingEmailService::class);
+        $emails->request($this->rep, $this->client, $request, (string) Str::uuid());
+        app(StudioCheckoutService::class)->order($this->client, $order->id, (string) Str::uuid());
+        $attempt = ListingStudioCheckoutAttempt::sole();
+        $gateway->paid($attempt->session_id);
+        $this->signedPaidEvent($gateway, $attempt->session_id, 'evt_email_paid')->assertOk();
+        $this->assertSame('pending', $request->fresh()->status);
+        $this->expectCode('billing_request_conflict', fn () => $emails->request($this->rep, $this->client, $request, (string) Str::uuid()));
+        $messaging = Mockery::mock(MessagingService::class);
+        $messaging->shouldNotReceive('sendEmail');
+        $this->app->instance(MessagingService::class, $messaging);
+        $emails->deliver(ListingStudioBillingEmail::sole()->id);
+        $this->assertSame('needs_attention', ListingStudioBillingEmail::sole()->status);
+        $this->assertSame('completed', app(ListingStudioBillingRequestService::class)->refresh($request)->status);
+    }
+
+    public function test_inflight_independent_checkout_mutex_prevents_unsubmitted_request_cancel_and_expiry(): void
+    {
+        $request = $this->orderBilling($this->cardOrder());
+        $billing = app(ListingStudioBillingRequestService::class);
+        $lock = \Illuminate\Support\Facades\Cache::store('database')->lock('studio-client-checkout:'.$this->client->id, 180);
+        $this->assertTrue($lock->get());
+        try {
+            $this->expectCode('billing_request_in_progress', fn () => $billing->cancel($request, $this->client));
+            // Keep the real mutex live while making only the intent stale.
+            $request->update(['expires_at' => now()->subSecond()]);
+            $this->assertSame('pending', $billing->refresh($request->fresh())->status);
+        } finally {
+            $lock->release();
+        }
+        $this->assertSame('expired', $billing->refresh($request->fresh())->status);
+        $this->assertDatabaseCount('listing_studio_checkout_attempts', 0);
+    }
+
+    public function test_definitively_expired_independent_checkout_does_not_prevent_request_cancellation(): void
+    {
+        $gateway = $this->checkoutGateway();
+        $order = $this->cardOrder();
+        $request = $this->orderBilling($order);
+        app(StudioCheckoutService::class)->order($this->client, $order->id, (string) Str::uuid());
+        $attempt = ListingStudioCheckoutAttempt::sole();
+        $attempt->update(['status' => 'expired']);
+        $calls = $gateway->calls;
+        app(ListingStudioBillingRequestService::class)->cancel($request, $this->client);
+        $this->assertSame('cancelled', $request->fresh()->status);
+        $this->assertSame('expired', $attempt->fresh()->status);
+        $this->assertSame($calls, $gateway->calls);
+    }
+
+    private function checkoutGateway(): FakeStudioStripeGateway
+    {
+        require_once __DIR__.'/ListingStudioPaidPaymentsTest.php';
+        config(['listing-studio.stripe_mode' => 'test', 'listing-studio.webhook_secret' => 'whsec_fake']);
+        $gateway = new FakeStudioStripeGateway;
+        $gateway->transactionFloor = DB::transactionLevel();
+        $this->app->instance(\App\Services\ListingStudio\StudioStripeGateway::class, $gateway);
+
+        return $gateway;
+    }
+
+    private function orderBilling(ListingStudioOrder $order): ListingStudioBillingRequest
+    {
+        return app(ListingStudioBillingRequestService::class)->create($this->rep, $this->client,
+            ['kind' => 'order_payment', 'orderId' => $order->id], (string) Str::uuid())['request'];
+    }
+
+    private function signedPaidEvent(FakeStudioStripeGateway $gateway, string $sessionId, string $eventId)
+    {
+        $payload = json_encode(['id' => $eventId, 'object' => 'event', 'type' => 'checkout.session.completed', 'livemode' => false,
+            'data' => ['object' => $gateway->sessions[$sessionId]]]);
+        $time = time();
+
+        return $this->call('POST', '/api/webhooks/stripe/listing-studio', [], [], [], ['CONTENT_TYPE' => 'application/json', 'HTTP_ACCEPT' => 'application/json',
+            'HTTP_STRIPE_SIGNATURE' => 't='.$time.',v1='.hash_hmac('sha256', $time.'.'.$payload, 'whsec_fake')], $payload);
+    }
+
     private function billing(): ListingStudioBillingRequest
     {
         return app(ListingStudioBillingRequestService::class)->create($this->rep, $this->client, ['kind' => 'subscription_purchase', 'planCode' => 'starter'], (string) Str::uuid())['request'];

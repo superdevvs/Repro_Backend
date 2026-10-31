@@ -132,6 +132,9 @@ class ListingStudioBillingRequestService
         if (in_array($request->status, ['completed', 'expired', 'cancelled'], true)) {
             return ['request' => $this->present($request, true), 'review' => null];
         }
+        if ($this->otherOrderCheckout($request)) {
+            return ['request' => $this->present($request, true), 'review' => null, 'status' => 'processing', 'nextAction' => ['type' => 'await_payment']];
+        }
         if ($request->kind === 'subscription_upgrade') {
             $result = app(StudioSubscriptionActionService::class)->review($client, $request);
             $this->applyResult($request, $result);
@@ -181,6 +184,9 @@ class ListingStudioBillingRequestService
             }
             if (in_array($request->status, ['expired', 'cancelled'], true)) {
                 throw new PublicApiException('This payment request expired or was cancelled.', 'billing_request_expired', 410);
+            }
+            if ($this->otherOrderCheckout($request)) {
+                throw new PublicApiException('This order already has a checkout awaiting confirmation. Continue the existing order payment.', 'checkout_in_progress', 409);
             }
             if (($confirmation['acceptCharges'] ?? null) !== true) {
                 throw new PublicApiException('Review and explicitly accept the payment amount.', 'validation_failed', 422);
@@ -259,13 +265,33 @@ class ListingStudioBillingRequestService
         $action = $request->kind === 'subscription_upgrade' && class_exists(\App\Models\ListingStudioSubscriptionAction::class)
             ? \App\Models\ListingStudioSubscriptionAction::where('billing_request_id', $request->id)->first() : null;
 
-        return (bool) ($attempt?->submission_started_at || $attempt?->session_id || $attempt?->parameters
+        return $this->orderOutcome($request) !== null || (bool) ($attempt?->submission_started_at || $attempt?->session_id || $attempt?->parameters
             || in_array($attempt?->status, ['submitting', 'awaiting_reconciliation', 'awaiting_payment', 'awaiting_webhook', 'paid'], true)
             || $action?->submitted_at || $action?->steps);
     }
 
-    /** Caller owns the confirmation mutex. No provider or queue work may occur here. */
+    /** Also excludes the unchanged self-service Checkout flow for this client. */
     private function closeUnsubmitted(BillingRequest $request, string $status, ?User $actor = null): BillingRequest
+    {
+        if ($request->kind !== 'order_payment') {
+            return $this->closeUnsubmittedWrite($request, $status, $actor);
+        }
+        $lock = Cache::store('database')->lock('studio-client-checkout:'.$request->client_id, 180);
+        if (! $lock->get()) {
+            if ($status === 'expired') {
+                return $request->fresh();
+            }
+            throw new PublicApiException('This client has a checkout in progress. Refresh the request before cancelling.', 'billing_request_in_progress', 409);
+        }
+        try {
+            return $this->closeUnsubmittedWrite($request, $status, $actor);
+        } finally {
+            $lock->release();
+        }
+    }
+
+    /** Caller owns the relevant confirmation/Checkout mutexes. No external work here. */
+    private function closeUnsubmittedWrite(BillingRequest $request, string $status, ?User $actor = null): BillingRequest
     {
         return $this->write(function () use ($request, $status, $actor) {
             DB::table('listing_studio_billing_requests')->where('id', $request->id)->update(['updated_at' => DB::raw('updated_at')]);
@@ -279,6 +305,16 @@ class ListingStudioBillingRequestService
                     abort_unless((int) $actor->id === (int) $fresh->actor_id, 404);
                     ListingStudioDelegatedAccess::assert($actor, $client);
                 }
+            }
+            $orderState = $this->orderOutcome($fresh);
+            if (in_array($orderState, ['completed', 'cancelled'], true)) {
+                return $this->saveOrderOutcome($fresh, $orderState);
+            }
+            if ($orderState === 'processing' && $status === 'expired') {
+                return $this->saveOrderOutcome($fresh, $orderState);
+            }
+            if ($orderState === 'processing') {
+                throw new PublicApiException('This order has a checkout awaiting confirmation.', 'billing_request_conflict', 409);
             }
             if (in_array($fresh->status, ['cancelled', 'expired'], true)) {
                 return $fresh;
@@ -326,6 +362,15 @@ class ListingStudioBillingRequestService
 
     public function refresh(BillingRequest $request, bool $confirmationLockHeld = false): BillingRequest
     {
+        if ($this->orderOutcome($request) !== null) {
+            return $this->write(function () use ($request) {
+                DB::table('listing_studio_billing_requests')->where('id', $request->id)->update(['updated_at' => DB::raw('updated_at')]);
+                $fresh = BillingRequest::findOrFail($request->id);
+                $state = $this->orderOutcome($fresh);
+
+                return $state ? $this->saveOrderOutcome($fresh, $state) : $fresh;
+            });
+        }
         if (in_array($request->status, ['completed', 'cancelled', 'expired'], true)) {
             return $request;
         }
@@ -375,9 +420,69 @@ class ListingStudioBillingRequestService
             'planCode' => $request->plan_code, 'amountCents' => $request->amount_cents, 'currency' => $request->currency,
             'expiresAt' => $request->expires_at->toIso8601String(), 'createdAt' => $request->created_at->toIso8601String(),
             'completedAt' => $request->completed_at?->toIso8601String(), 'appUrl' => $this->appUrl($request),
-            'actions' => ['canShare' => ! $forClient && $pending, 'canEmail' => ! $forClient && $pending && $enabled,
-                'canCancel' => in_array($status, ['pending', 'processing', 'needs_attention'], true) && ! $this->hasSubmission($request), 'canConfirm' => $forClient && $initiatorAllowed && (($pending && $enabled) || in_array($status, ['processing', 'needs_attention'], true))],
+            'actions' => ['canShare' => ! $forClient && $pending, 'canEmail' => ! $forClient && $enabled && $this->emailAvailable($request),
+                'canCancel' => in_array($status, ['pending', 'processing', 'needs_attention'], true) && ! $this->hasSubmission($request), 'canConfirm' => $forClient && $initiatorAllowed && ! $this->otherOrderCheckout($request) && (($pending && $enabled) || in_array($status, ['processing', 'needs_attention'], true))],
             'email' => ['status' => $email?->status, 'lastSentAt' => $email?->sent_at?->toIso8601String()]];
+    }
+
+    /** Fresh local state only; safe to recheck within email admission and worker writes. */
+    public function emailAvailable(BillingRequest $request): bool
+    {
+        if ($request->status !== 'pending' || ! $request->expires_at->isFuture()) {
+            return false;
+        }
+        if ($request->kind !== 'order_payment') {
+            return true;
+        }
+        $order = $this->linkedOrder($request);
+
+        return $order && $order->funding_method === 'card' && $order->funding_status === 'pending'
+            && $order->paid_amount_cents === 0 && $order->item?->status === 'awaiting_funding' && ! $this->hasSubmission($request);
+    }
+
+    private function linkedOrder(BillingRequest $request): ?ListingStudioOrder
+    {
+        return $request->kind === 'order_payment'
+            ? ListingStudioOrder::where('client_id', $request->client_id)->with('item')->find($request->order_id) : null;
+    }
+
+    private function acceptedOrderCheckouts(BillingRequest $request)
+    {
+        return ListingStudioCheckoutAttempt::where('client_id', $request->client_id)->where('order_id', $request->order_id)
+            ->where('kind', 'order')->whereNotIn('status', ['failed', 'expired'])
+            ->where(fn ($q) => $q->whereNotNull('submission_started_at')->orWhereNotNull('session_id')->orWhereNotNull('parameters')
+                ->orWhereIn('status', ['submitting', 'awaiting_reconciliation', 'awaiting_payment', 'awaiting_webhook', 'paid']));
+    }
+
+    private function otherOrderCheckout(BillingRequest $request): bool
+    {
+        return $request->kind === 'order_payment' && $this->acceptedOrderCheckouts($request)->where('idempotency_key', '!=', $request->checkout_key)->exists();
+    }
+
+    private function orderOutcome(BillingRequest $request): ?string
+    {
+        $order = $this->linkedOrder($request);
+        if (! $order) {
+            return null;
+        }
+        if ($order->paid_amount_cents > 0) {
+            return 'completed';
+        }
+        if ($order->funding_status === 'released' && in_array($order->item?->status, ['cancelled', 'failed'], true)) {
+            return 'cancelled';
+        }
+
+        return $this->acceptedOrderCheckouts($request)->exists() ? 'processing' : null;
+    }
+
+    /** Reflect the order outcome without inventing consent to this particular request. */
+    private function saveOrderOutcome(BillingRequest $request, string $status): BillingRequest
+    {
+        if ($request->status !== $status) {
+            $request->update(['status' => $status, 'completed_at' => $status === 'completed' ? ($request->completed_at ?? now()) : $request->completed_at]);
+        }
+
+        return $request->fresh();
     }
 
     public function pending(User $client, ?User $actor = null): array

@@ -33,7 +33,7 @@ class ListingStudioBillingEmailService
             }
             ListingStudioDelegatedAccess::assert($actor, $client, true);
             $request = BillingRequest::findOrFail($request->id);
-            if ($request->status !== 'pending' || $request->expires_at->isPast()) {
+            if (! app(ListingStudioBillingRequestService::class)->emailAvailable($request)) {
                 throw new PublicApiException('Only a pending payment request can be emailed.', 'billing_request_conflict', 409);
             }
             if (! filter_var($client->email, FILTER_VALIDATE_EMAIL)) {
@@ -79,7 +79,7 @@ class ListingStudioBillingEmailService
             $actor = User::find($delivery->actor_id);
             $request = BillingRequest::find($delivery->billing_request_id);
             try {
-                if (! $client || ! $actor || ! $request || $request->status !== 'pending' || $request->expires_at->isPast()
+                if (! $client || ! $actor || ! $request || ! app(ListingStudioBillingRequestService::class)->emailAvailable($request)
                     || $client->email !== $delivery->recipient || ! config('listing-studio.delegated_enabled', false)) {
                     throw new \RuntimeException('Delivery unavailable.');
                 }
@@ -102,7 +102,7 @@ class ListingStudioBillingEmailService
             $html = view('emails.listing_studio_payment_request', ['clientName' => $client->name, 'reviewUrl' => $url,
                 'expiresAt' => $request->expires_at->format('M j, Y H:i').' UTC'])->render();
             $message = app(MessagingService::class)->sendEmail(['to' => $delivery->recipient, 'subject' => 'Review your Listing Studio purchase',
-                'body_html' => $html, 'body_text' => 'Review your Listing Studio purchase after signing in to your own account: '.$url.'. No payment has been taken. This request expires in 24 hours.',
+                'body_html' => $html, 'body_text' => 'Review your Listing Studio purchase after signing in to your own account: '.$url.'. This email does not charge your card. The review page shows the current purchase status. This request expires in 24 hours.',
                 'send_source' => 'LISTING_STUDIO_PAYMENT_REQUEST', 'sender_name' => 'R/E Pro Photos', 'related_account_id' => $client->id,
                 'metadata' => ['listing_studio_billing_request_id' => $request->id, 'billing_email_id' => $delivery->id]]);
             $sent = $message->status === 'SENT';
