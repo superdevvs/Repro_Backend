@@ -32,6 +32,8 @@ class ListingStudioTrialPipelineTest extends TestCase
         Storage::fake('local');
         Storage::fake('listing_studio_trials');
         config(['studio.client_access_enabled' => false, 'listing-studio-trials.enabled' => true, 'services.autoenhance.api_key' => 'test-key',
+            'listing-studio-trials.services.staging.enabled' => true, 'listing-studio-trials.services.decluttering.enabled' => true,
+            'listing-studio-trials.services.twilight.enabled' => true,
             'services.fal.key' => 'test-key', 'studio_providers.virtualstagingai.api_key' => 'test-key']);
     }
 
@@ -67,6 +69,8 @@ class ListingStudioTrialPipelineTest extends TestCase
         $this->mock(WorkspaceImageOperations::class)->shouldReceive('edit')->once()->withArgs(function ($record, $operationId, $item, $bytes, $prompt) {
             $this->assertStringContainsString('Preserve all furniture', $prompt);
             $this->assertStringContainsString('Do not empty the room', $prompt);
+            $this->assertStringContainsString('leave the photo unchanged', $prompt);
+            $this->assertStringContainsString('cushions, rugs, artwork, lamps', $prompt);
 
             return true;
         })->andReturn($this->jpeg());
@@ -75,12 +79,106 @@ class ListingStudioTrialPipelineTest extends TestCase
         $this->assertSame('completed', $workspace->fresh()->status);
     }
 
+    public function test_trial_specialist_route_uses_one_nano_banana_output_without_changing_staff_route(): void
+    {
+        $settings = app(\App\Services\Studio\StudioProviderSettings::class);
+        $staffRoute = $settings->route('revision');
+        $workspace = app(ListingStudioTrialPipeline::class)->start($this->trial('decluttering'));
+        $this->assertSame('fal-ai/nano-banana-pro/edit', $workspace->operation['routing']['revision']['model']);
+        $this->assertSame($staffRoute, $settings->route('revision'));
+        $this->mock(\App\Services\Studio\WorkspaceAutoenhance::class)->shouldReceive('run')->once()->andReturn($this->jpeg());
+        Http::fake(function ($request) {
+            if ($request->method() === 'POST') {
+                $this->assertSame('https://queue.fal.run/fal-ai/nano-banana-pro/edit', $request->url());
+                $this->assertSame(1, $request['num_images']);
+                $this->assertSame('2K', $request['resolution']);
+                $this->assertTrue($request['limit_generations']);
+                $this->assertCount(1, $request['image_urls']);
+                $this->assertStringContainsString('Preserve all furniture', $request['prompt']);
+
+                return Http::response(['request_id' => 'one-specialist-request']);
+            }
+            if (str_contains($request->url(), 'queue.fal.run/')) {
+                return Http::response(['status' => 'COMPLETED', 'images' => [['url' => 'https://results.example.test/edited.jpg']]]);
+            }
+
+            return Http::response($this->jpeg(), 200, ['Content-Type' => 'image/jpeg']);
+        });
+        $this->mock(ListingStudioGuestTrialService::class)->shouldReceive('syncWorkspace')->once();
+        app(WorkspaceProcessor::class)->process($workspace, $workspace->operation['id']);
+        $this->assertSame('completed', $workspace->fresh()->status);
+        $this->assertSame(1, Http::recorded(fn ($request) => $request->method() === 'POST')->count());
+    }
+
+    public function test_twilight_uses_fixed_bright_blue_hour_recipe_and_rejects_other_prompts(): void
+    {
+        $workspace = app(ListingStudioTrialPipeline::class)->start($this->trial('twilight'));
+        $this->assertSame('fal-ai/nano-banana-pro/edit', $workspace->operation['routing']['twilight']['model']);
+        $this->assertStringContainsString('bright early blue-hour', $workspace->config['prompt']);
+        $this->assertStringContainsString('clearly readable', $workspace->config['prompt']);
+        app(ListingStudioTrialPipeline::class)->authorize($workspace);
+        $config = $workspace->config;
+        $config['prompt'] = 'Replace this house';
+        $workspace->update(['config' => $config]);
+        $this->expectException(StudioProviderException::class);
+        app(WorkspaceProcessor::class)->process($workspace, $workspace->operation['id']);
+    }
+
+    public function test_accepted_legacy_route_is_not_rewritten_and_cannot_start_a_different_paid_step(): void
+    {
+        $trial = $this->trial('decluttering');
+        $workspace = app(ListingStudioTrialPipeline::class)->start($trial);
+        $operation = $workspace->operation;
+        $operation['routing']['revision'] = ['provider' => 'fal', 'model' => 'fal-ai/flux-kontext/dev', 'fallback' => null];
+        $operation['requests']['source'] = 'legacy-paid-request';
+        $workspace->update(['operation' => $operation]);
+        $same = app(ListingStudioTrialPipeline::class)->start($trial->fresh());
+        $this->assertSame($operation, $same->operation);
+        try {
+            app(ListingStudioTrialPipeline::class)->assertMaySubmit($same);
+            $this->fail('A legacy paid recipe must not start another step on a newly configured model.');
+        } catch (StudioProviderException $exception) {
+            $this->assertTrue($exception->ambiguous);
+        }
+        Queue::assertPushed(ProcessStudioWorkspace::class, 1);
+        Http::assertNothingSent();
+    }
+
+    public function test_closed_service_can_retrieve_accepted_legacy_prompt_and_model_without_new_submission(): void
+    {
+        $workspace = app(ListingStudioTrialPipeline::class)->start($this->trial('decluttering'));
+        $operation = $workspace->operation;
+        $operation['routing']['revision'] = ['provider' => 'fal', 'model' => 'fal-ai/flux-kontext/dev', 'fallback' => null];
+        $operation['payload']['prompt'] = 'Remove loose everyday clutter such as scattered clothing, papers, toys, trash and loose countertop items. Preserve all furniture, permanent fixtures, appliances, cabinetry, doors, windows, flooring, architectural details, room layout and camera perspective. Do not empty the room, add furniture or alter the property.';
+        $operation['requests']['source'] = 'accepted-legacy-request';
+        $workspace->update(['operation' => $operation]);
+        config(['listing-studio-trials.services.decluttering.enabled' => false]);
+        $this->mock(\App\Services\Studio\WorkspaceAutoenhance::class)->shouldReceive('run')->once()->andReturn($this->jpeg());
+        Http::fake(function ($request) {
+            if (str_contains($request->url(), 'queue.fal.run/')) {
+                $this->assertStringContainsString('/accepted-legacy-request', $request->url());
+                $this->assertStringNotContainsString('nano-banana', $request->url());
+
+                return Http::response(['status' => 'COMPLETED', 'images' => [['url' => 'https://results.example.test/legacy.jpg']]]);
+            }
+
+            return Http::response($this->jpeg(), 200, ['Content-Type' => 'image/jpeg']);
+        });
+        $this->mock(ListingStudioGuestTrialService::class)->shouldReceive('syncWorkspace')->once();
+        app(WorkspaceProcessor::class)->process($workspace, $workspace->operation['id']);
+        $this->assertSame('completed', $workspace->fresh()->status);
+        Http::assertNotSent(fn ($request) => $request->method() !== 'GET');
+    }
+
     public function test_staging_trial_saves_only_the_staged_photo_on_private_storage(): void
     {
         $workspace = app(ListingStudioTrialPipeline::class)->start($this->trial('staging'));
         config(['studio_providers.virtualstagingai.poll_interval' => 0]);
         Http::fake(function ($request) {
             if ($request->method() === 'POST') {
+                $this->assertSame(1, $request['variation_count']);
+                $this->assertArrayNotHasKey('remove_furniture', $request['config']);
+                $this->assertSame('living', $request['config']['add_furniture']['room_type']);
                 return Http::response(['id' => 'render-one'], 201);
             }
             if (str_contains($request->url(), '/renders/')) {
@@ -116,6 +214,51 @@ class ListingStudioTrialPipelineTest extends TestCase
         Http::assertNothingSent();
     }
 
+    public function test_service_gate_stops_a_queued_staging_submission_and_old_auto_removal_recipe(): void
+    {
+        $workspace = app(ListingStudioTrialPipeline::class)->start($this->trial('staging'));
+        config(['listing-studio-trials.services.staging.enabled' => false]);
+        try {
+            app(WorkspaceProcessor::class)->process($workspace, $workspace->operation['id']);
+            $this->fail('Closed staging gate must prevent a paid submission.');
+        } catch (StudioProviderException $exception) {
+            $this->assertFalse($exception->ambiguous);
+        }
+        config(['listing-studio-trials.services.staging.enabled' => true]);
+        $config = $workspace->config;
+        $config['adjustments']['removal'] = 'auto';
+        $workspace->update(['config' => $config]);
+        try {
+            app(WorkspaceProcessor::class)->process($workspace, $workspace->operation['id']);
+            $this->fail('Old automatic furniture removal must not start a paid trial submission.');
+        } catch (StudioProviderException $exception) {
+            $this->assertFalse($exception->ambiguous);
+        }
+        Http::assertNothingSent();
+    }
+
+    public function test_closed_staging_gate_still_retrieves_an_already_accepted_render(): void
+    {
+        $workspace = app(ListingStudioTrialPipeline::class)->start($this->trial('staging'));
+        $operation = $workspace->operation;
+        $operation['providerState']['vsai-'.hash('sha256', 'source')] = [
+            'renderId' => 'accepted-render', 'account' => hash('sha256', 'test-key'), 'awaiting' => true,
+            'expected' => 1, 'knownIds' => [],
+        ];
+        $workspace->update(['operation' => $operation]);
+        config(['listing-studio-trials.services.staging.enabled' => false, 'studio_providers.virtualstagingai.poll_interval' => 0]);
+        Http::fake([
+            'https://api.virtualstagingai.app/v2/renders/*' => Http::response(['id' => 'accepted-render', 'variations' => ['items' => [
+                ['id' => 'staged', 'type' => 'staging', 'status' => 'done', 'result' => ['url' => 'https://results.example.test/staged.jpg']],
+            ], 'next_cursor' => null]]),
+            'https://results.example.test/staged.jpg' => Http::response($this->jpeg(), 200, ['Content-Type' => 'image/jpeg']),
+        ]);
+        $this->mock(ListingStudioGuestTrialService::class)->shouldReceive('syncWorkspace')->once();
+        app(WorkspaceProcessor::class)->process($workspace, $workspace->operation['id']);
+        $this->assertSame('completed', $workspace->fresh()->status);
+        Http::assertNotSent(fn ($request) => $request->method() !== 'GET');
+    }
+
     public function test_disabled_trials_can_retrieve_an_already_accepted_photo(): void
     {
         $workspace = app(ListingStudioTrialPipeline::class)->start($this->trial('grass'));
@@ -143,6 +286,7 @@ class ListingStudioTrialPipelineTest extends TestCase
         $workspace = app(ListingStudioTrialPipeline::class)->start($trial);
         $operation = $workspace->operation;
         $operation['routing']['revision'] = ['provider' => 'openai', 'model' => 'gpt-image-2'];
+        config(['listing-studio-trials.services.decluttering.route' => $operation['routing']['revision']]);
         $workspace->update(['operation' => $operation]);
         $this->mock(\App\Services\Studio\WorkspaceAutoenhance::class)->shouldReceive('run')->twice()->andReturn($this->jpeg());
         $this->mock(\App\Services\Studio\Providers\OpenAiImageProvider::class)->shouldReceive('edit')->once()->andReturn($this->jpeg());
@@ -170,6 +314,7 @@ class ListingStudioTrialPipelineTest extends TestCase
         $workspace = app(ListingStudioTrialPipeline::class)->start($trial);
         $operation = $workspace->operation;
         $operation['routing']['revision'] = ['provider' => 'openai', 'model' => 'gpt-image-2'];
+        config(['listing-studio-trials.services.decluttering.route' => $operation['routing']['revision']]);
         $workspace->update(['operation' => $operation]);
         $this->mock(\App\Services\Studio\WorkspaceAutoenhance::class)->shouldReceive('run')->once()->andReturn($this->jpeg());
         $this->mock(\App\Services\Studio\Providers\OpenAiImageProvider::class)->shouldReceive('edit')->once()->andReturnUsing(function () use ($trial) {

@@ -30,7 +30,10 @@ class ListingStudioGuestTrialService
         $services = [];
         foreach (self::SERVICES as $id => $label) {
             $route = $this->providerService($id);
-            $ready = $providers->readiness($route, $providers->route($route));
+            $ready = $providers->readiness($route, config('listing-studio-trials.services.'.$id.'.route') ?? $providers->route($route));
+            if (! config('listing-studio-trials.services.'.$id.'.enabled', false)) {
+                $ready = ['ready' => false, 'reason' => 'This editing service is temporarily unavailable.'];
+            }
             $services[] = ['id' => $id, 'label' => $label, 'ready' => $ready['ready'], 'reason' => $ready['reason'] ?? null,
                 'available' => $enabled && $ready['ready'] && $allowances[$id]];
         }
@@ -66,7 +69,8 @@ class ListingStudioGuestTrialService
         }
         $providers = app(StudioProviderSettings::class);
         $providerService = $this->providerService($input['service']);
-        if (! ($providers->readiness($providerService, $providers->route($providerService))['ready'] ?? false)) {
+        if (! config('listing-studio-trials.services.'.$input['service'].'.enabled', false)
+            || ! ($providers->readiness($providerService, config('listing-studio-trials.services.'.$input['service'].'.route') ?? $providers->route($providerService))['ready'] ?? false)) {
             throw new PublicApiException('This editing service is temporarily unavailable.', 'trial_service_unavailable', 503);
         }
         [$trial, $created] = $this->write(function () use ($sessionHash, $key, $requestHash, $input, $options, $image) {
@@ -75,6 +79,9 @@ class ListingStudioGuestTrialService
             }
             if (! $this->enabled()) {
                 throw new PublicApiException('Live photo editing is temporarily unavailable. You can still watch the sample walkthrough.', 'trial_unavailable', 503);
+            }
+            if (! config('listing-studio-trials.services.'.$input['service'].'.enabled', false)) {
+                throw new PublicApiException('This editing service is temporarily unavailable.', 'trial_service_unavailable', 503);
             }
             $id = (string) Str::uuid();
             $ipHash = app(ListingStudioTrialAdmission::class)->consume($input['admissionToken'], $sessionHash, $key, $id);

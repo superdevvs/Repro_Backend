@@ -42,6 +42,8 @@ class ListingStudioTrialAdmissionTest extends TestCase
         $this->session = str_repeat('a', 64);
         config(['app.key' => 'base64:'.base64_encode(str_repeat('k', 32)),
             'listing-studio-trials.enabled' => true, 'listing-studio-trials.bridge_key' => self::KEY,
+            'listing-studio-trials.services.staging.enabled' => true, 'listing-studio-trials.services.decluttering.enabled' => true,
+            'listing-studio-trials.services.twilight.enabled' => true,
             'listing-studio-trials.turnstile_secret' => 'test-secret', 'listing-studio-trials.turnstile_site_key' => 'test-site-key',
             'listing-studio-trials.turnstile_hosts' => ['reprophotos.com', 'www.reprophotos.com']]);
         Storage::fake('listing_studio_trials');

@@ -19,7 +19,11 @@ class ListingStudioTrialPipeline
 {
     private const PRESETS = ['staging' => 'virtual-staging', 'decluttering' => 'listing-ready', 'grass' => 'green-grass', 'twilight' => 'twilight'];
 
-    private const DECLUTTER_PROMPT = 'Remove loose everyday clutter such as scattered clothing, papers, toys, trash and loose countertop items. Preserve all furniture, permanent fixtures, appliances, cabinetry, doors, windows, flooring, architectural details, room layout and camera perspective. Do not empty the room, add furniture or alter the property.';
+    private const LEGACY_DECLUTTER_PROMPT = 'Remove loose everyday clutter such as scattered clothing, papers, toys, trash and loose countertop items. Preserve all furniture, permanent fixtures, appliances, cabinetry, doors, windows, flooring, architectural details, room layout and camera perspective. Do not empty the room, add furniture or alter the property.';
+
+    private const DECLUTTER_PROMPT = self::LEGACY_DECLUTTER_PROMPT.' Preserve intentional cushions, rugs, artwork, lamps and decorative objects. If none of the defined loose clutter is present, leave the photo unchanged. Do not remove or replace furniture or decor to create a more minimal room.';
+
+    private const TWILIGHT_PROMPT = 'Create a bright early blue-hour real estate marketing photograph just after sunset. Keep the entire facade, roof, driveway, lawn and landscaping clearly readable with balanced natural exposure and detail in shadows. Use a soft natural blue-hour sky and warm light only in existing windows and existing light fixtures. Preserve every building, roofline, opening, door, window, material, tree, shrub, lawn boundary, object and camera perspective exactly. Do not add fixtures or change the property. Do not create a dark night scene, black silhouettes, crushed shadows or dramatic underexposure.';
 
     public function start(ListingStudioGuestTrial $trial): StudioWorkspace
     {
@@ -31,14 +35,14 @@ class ListingStudioTrialPipeline
                     return StudioWorkspace::where('listing_studio_trial_id', $trial->id)->findOrFail($trial->workspace_id);
                 }
                 $this->assertTrial($trial);
-                if (! config('listing-studio-trials.enabled', false)) {
+                if (! config('listing-studio-trials.enabled', false) || ! config('listing-studio-trials.services.'.$trial->service.'.enabled', false)) {
                     throw new StudioProviderException('Free photo editing is paused.');
                 }
                 $preset = self::PRESETS[$trial->service];
                 $type = $trial->service === 'decluttering' ? 'revision' : 'generate';
                 $settings = app(StudioProviderSettings::class);
                 $service = $type === 'revision' ? 'revision' : $preset;
-                $route = $settings->route($service);
+                $route = config('listing-studio-trials.services.'.$trial->service.'.route') ?? $settings->route($service);
                 $ready = $settings->readiness($service, $route);
                 if (! $ready['ready']) {
                     throw new StudioProviderException('This editing service is temporarily unavailable.');
@@ -47,7 +51,7 @@ class ListingStudioTrialPipeline
                 if ($trial->service === 'staging') {
                     $options = $trial->options ?? [];
                     $adjustments = ['roomType' => $options['roomType'] ?? 'living', 'furnitureStyle' => $options['style'] ?? 'modern',
-                        'removal' => 'auto', 'addFurniture' => true, 'variationCount' => 1, 'watermark' => false, 'useDetectedMask' => false];
+                        'removal' => 'off', 'addFurniture' => true, 'variationCount' => 1, 'watermark' => false, 'useDetectedMask' => false];
                     VirtualStagingOptions::assert($adjustments);
                 }
                 $operationId = (string) Str::uuid();
@@ -55,7 +59,7 @@ class ListingStudioTrialPipeline
                     'listing_studio_trial_id' => $trial->id, 'created_by' => null, 'team_id' => null,
                     'name' => 'Listing Studio trial', 'preset_id' => $preset, 'request_id' => $trial->id,
                     'media' => [['id' => 'source', 'mediaRef' => $trial->source_path, 'trialId' => $trial->id, 'kind' => 'image', 'name' => 'Original photo']],
-                    'config' => ['prompt' => '', 'ratio' => '16:9', 'frames' => [], 'text' => ['title' => '', 'subtitle' => ''], 'adjustments' => $adjustments],
+                    'config' => ['prompt' => $trial->service === 'twilight' ? self::TWILIGHT_PROMPT : '', 'ratio' => '16:9', 'frames' => [], 'text' => ['title' => '', 'subtitle' => ''], 'adjustments' => $adjustments],
                     'status' => 'generating', 'progress' => 0,
                     'operation' => ['id' => $operationId, 'key' => $trial->id, 'type' => $type,
                         'payload' => $type === 'revision' ? ['mediaId' => 'source', 'prompt' => self::DECLUTTER_PROMPT] : [],
@@ -93,9 +97,11 @@ class ListingStudioTrialPipeline
         $this->assertTrial($trial);
         $expectedType = $trial->service === 'decluttering' ? 'revision' : 'generate';
         $payload = $workspace->operation['payload'] ?? [];
+        $allowedRevisionPayloads = [['mediaId' => 'source', 'prompt' => self::DECLUTTER_PROMPT], ['mediaId' => 'source', 'prompt' => self::LEGACY_DECLUTTER_PROMPT]];
         if (($workspace->operation['type'] ?? '') !== $expectedType
-            || ($expectedType === 'revision' && $payload !== ['mediaId' => 'source', 'prompt' => self::DECLUTTER_PROMPT])
-            || ($expectedType === 'generate' && $payload !== []) || ($workspace->config['prompt'] ?? '') !== '') {
+            || ($expectedType === 'revision' && ! in_array($payload, $allowedRevisionPayloads, true))
+            || ($expectedType === 'generate' && $payload !== [])
+            || ! in_array($workspace->config['prompt'] ?? '', $trial->service === 'twilight' ? ['', self::TWILIGHT_PROMPT] : [''], true)) {
             throw new StudioProviderException('This trial editing request is not supported.');
         }
         if ($trial->service === 'staging') {
@@ -157,8 +163,23 @@ class ListingStudioTrialPipeline
 
     public function assertMaySubmit(StudioWorkspace $workspace): void
     {
-        if ($workspace->listing_studio_trial_id && ! config('listing-studio-trials.enabled', false)) {
+        if (! $workspace->listing_studio_trial_id) {
+            return;
+        }
+        $service = array_search($workspace->preset_id, self::PRESETS, true);
+        if (! config('listing-studio-trials.enabled', false) || ! config('listing-studio-trials.services.'.$service.'.enabled', false)) {
             throw new StudioProviderException('Free photo editing is paused. Existing submitted photos can still finish.', $this->hasProviderCheckpoint($workspace));
+        }
+        if ($service === 'staging' && VirtualStagingOptions::normalize($workspace->config['adjustments'] ?? [])['removal'] !== 'off') {
+            throw new StudioProviderException('This staging request needs review before processing.', $this->hasProviderCheckpoint($workspace));
+        }
+        $expectedRoute = config('listing-studio-trials.services.'.$service.'.route');
+        $routeKey = $service === 'decluttering' ? 'revision' : $workspace->preset_id;
+        if (($expectedRoute && ($workspace->operation['routing'][$routeKey] ?? null) !== $expectedRoute)
+            || ($service === 'decluttering' && ($workspace->operation['payload'] ?? []) !== ['mediaId' => 'source', 'prompt' => self::DECLUTTER_PROMPT])
+            || ($service === 'twilight' && ($workspace->config['prompt'] ?? '') !== self::TWILIGHT_PROMPT)) {
+            // Retrieve accepted legacy requests unchanged, but never start another paid step on an obsolete recipe.
+            throw new StudioProviderException('This editing recipe needs review before processing.', $this->hasProviderCheckpoint($workspace));
         }
     }
 

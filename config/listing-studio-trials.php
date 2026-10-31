@@ -2,6 +2,15 @@
 
 return [
     'enabled' => (bool) env('LISTING_STUDIO_TRIALS_ENABLED', false),
+    // Release each recipe only after a real output preserves the photographed property.
+    'services' => [
+        'staging' => ['enabled' => (bool) env('LISTING_STUDIO_STAGING_TRIALS_ENABLED', false)],
+        'decluttering' => ['enabled' => (bool) env('LISTING_STUDIO_DECLUTTERING_TRIALS_ENABLED', false),
+            'route' => ['provider' => 'fal', 'model' => 'fal-ai/nano-banana-pro/edit', 'fallback' => null]],
+        'grass' => ['enabled' => (bool) env('LISTING_STUDIO_GRASS_TRIALS_ENABLED', true)],
+        'twilight' => ['enabled' => (bool) env('LISTING_STUDIO_TWILIGHT_TRIALS_ENABLED', false),
+            'route' => ['provider' => 'fal', 'model' => 'fal-ai/nano-banana-pro/edit', 'fallback' => null]],
+    ],
     'bridge_key' => env('LISTING_STUDIO_TRIALS_BRIDGE_KEY'),
     'turnstile_secret' => env('LISTING_STUDIO_TURNSTILE_SECRET'),
     'turnstile_site_key' => env('LISTING_STUDIO_TURNSTILE_SITE_KEY'),

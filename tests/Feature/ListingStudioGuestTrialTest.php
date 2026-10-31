@@ -37,6 +37,8 @@ class ListingStudioGuestTrialTest extends TestCase
         $this->session = str_repeat('a', 64);
         config(['app.key' => 'base64:'.base64_encode(str_repeat('k', 32)), 'studio.client_access_enabled' => false,
             'listing-studio-trials.enabled' => true, 'listing-studio-trials.bridge_key' => self::BRIDGE_KEY,
+            'listing-studio-trials.services.staging.enabled' => true, 'listing-studio-trials.services.decluttering.enabled' => true,
+            'listing-studio-trials.services.twilight.enabled' => true,
             'listing-studio-trials.turnstile_secret' => 'challenge-secret', 'listing-studio-trials.turnstile_site_key' => 'challenge-public-key',
             'listing-studio-trials.turnstile_hosts' => ['reprophotos.com']]);
         Storage::fake('listing_studio_trials');
@@ -120,6 +122,22 @@ class ListingStudioGuestTrialTest extends TestCase
         $this->start()->assertStatus(503)->assertJsonPath('code', 'trial_unavailable');
         $this->assertDatabaseCount('listing_studio_guest_trials', 0);
         Http::assertNothingSent();
+    }
+
+    public function test_unvalidated_services_are_unavailable_without_consuming_admission_or_allowance(): void
+    {
+        foreach (['staging', 'decluttering', 'twilight'] as $service) {
+            config(['listing-studio-trials.services.'.$service.'.enabled' => false]);
+            $response = $this->bridge()->getJson(self::BASE.'/capabilities')->assertOk();
+            $entry = collect($response->json('data.services'))->firstWhere('id', $service);
+            $this->assertFalse($entry['ready']);
+            $this->assertFalse($entry['available']);
+            $this->start($service)->assertStatus(503)->assertJsonPath('code', 'trial_service_unavailable');
+            $this->assertDatabaseCount('listing_studio_guest_trials', 0);
+            $this->assertSame(0, DB::table('listing_studio_trial_admissions')->whereNotNull('consumed_at')->count());
+        }
+        $this->start('grass')->assertStatus(202);
+        Queue::assertNothingPushed(); // The mocked pipeline proves only the allowed service was accepted.
     }
 
     public function test_upload_is_private_and_exact_retry_is_idempotent_before_challenge_reuse(): void
