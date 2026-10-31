@@ -1045,6 +1045,8 @@ Route::middleware('auth:sanctum')->group(function () {
         $controller = \App\Http\Controllers\API\StudioWorkspaceController::class;
         $sources = \App\Http\Controllers\API\StudioWorkspaceSourceController::class;
         Route::get('/capabilities', [\App\Http\Controllers\API\StudioProviderSettingsController::class, 'capabilities']);
+        Route::get('/catalog', [\App\Http\Controllers\API\StudioWorkspaceCatalogController::class, 'index']);
+        Route::post('/intent', [\App\Http\Controllers\API\StudioWorkspaceCatalogController::class, 'intent'])->middleware('throttle:60,1');
         Route::get('/sources/shoots', [$sources, 'searchShoots']);
         Route::get('/sources/shoots/{shoot}/media', [$sources, 'shootMedia']);
         Route::match(['get', 'post'], '/sources/hdr', [$sources, 'hdr'])->middleware('throttle:120,1');

@@ -24,7 +24,7 @@ class StudioWorkspaceController extends StudioController
 {
     protected const STUDIO_ROLES = ['admin', 'superadmin', 'editing_manager', 'editor', 'client'];
 
-    private const PRESETS = ['listing-ready', 'color-correction', 'twilight', 'green-grass', 'virtual-staging', 'full-shoot', 'sky-replacement', 'perspective-correction', 'upscale', 'walkthrough', 'property-reel', 'social-teaser'];
+    private const PRESETS = \App\Services\Studio\WorkspaceCatalog::PRESETS;
 
     public function __construct(private WorkspaceMediaService $mediaService) {}
 
@@ -39,7 +39,29 @@ class StudioWorkspaceController extends StudioController
             $this->scopeStudioQuery($query, $request->user());
         }
 
-        $request->validate(['search' => 'nullable|string|max:200']);
+        $filterRules = [
+            'search' => 'nullable|string|max:200', 'mode' => ['nullable', Rule::in(['photo', 'video'])],
+            'shootId' => ['nullable', 'integer', 'min:1'],
+        ];
+        if (! $request->attributes->get('contextual_search_source')) {
+            $filterRules += ['page' => ['sometimes', 'integer', 'min:1'], 'per_page' => ['sometimes', 'integer', 'between:1,100']];
+        }
+        $filters = $request->validate($filterRules);
+        if ($mode = $filters['mode'] ?? null) {
+            $videoPresets = \App\Services\Studio\WorkspaceCatalog::VIDEO_PRESETS;
+            $mode === 'video' ? $query->whereIn('preset_id', $videoPresets) : $query->whereNotIn('preset_id', $videoPresets);
+        }
+        if ($shootId = $filters['shootId'] ?? null) {
+            $shoot = \App\Models\Shoot::findOrFail($shootId);
+            abort_unless(app(\App\Services\Shoots\ShootAuthorizationSupport::class)->canAccessShootMedia($shoot, $request->user()), 403);
+            // Standalone edits retain their source shoot in the media snapshot.
+            // json_each is SQLite's bounded array expansion (also used in production).
+            $query->where(fn ($scope) => $scope->where('shoot_id', $shootId)->orWhereRaw(
+                "EXISTS (SELECT 1 FROM json_each(studio_workspaces.media) AS selected_media WHERE CAST(json_extract(selected_media.value, '$.shootId') AS INTEGER) = ?)", [$shootId]
+            )->orWhereRaw(
+                "EXISTS (SELECT 1 FROM json_each(studio_workspaces.access_media) AS retained_media WHERE CAST(json_extract(retained_media.value, '$.shootId') AS INTEGER) = ?)", [$shootId]
+            ));
+        }
         if ($term = trim((string) $request->query('search', ''))) {
             $query->where(function ($scope) use ($term) {
                 $scope->where('name', 'like', '%'.$term.'%')->orWhere('id', $term)
@@ -48,11 +70,41 @@ class StudioWorkspaceController extends StudioController
             });
         }
 
-        if ($request->attributes->get('contextual_search_source')) {
-            $page = $query->latest('updated_at')->paginate(max(1, min(100, $request->integer('per_page', 8))));
-            return response()->json(['data' => $page->getCollection()->map->present(), 'meta' => ['current_page' => $page->currentPage(), 'per_page' => $page->perPage(), 'total' => $page->total()]]);
+        // Ownership is not a continuing grant to a shoot. Authorize bounded
+        // batches before counting pages; never materialize all media or bind an
+        // unbounded list of UUIDs merely to display one Library page.
+        $contextual = (bool) $request->attributes->get('contextual_search_source');
+        $paged = $contextual || $request->hasAny(['page', 'per_page']);
+        $perPage = $contextual ? max(1, min(100, $request->integer('per_page', 8))) : ($paged ? $request->integer('per_page', 30) : 100);
+        $currentPage = $paged ? max(1, $request->integer('page', 1)) : 1;
+        $offset = ($currentPage - 1) * $perPage;
+        $total = 0;
+        $pageIds = [];
+        $access = app(\App\Services\Studio\WorkspaceReadAccess::class);
+        (clone $query)->select(['id', 'shoot_id', 'media', 'access_media'])->latest('updated_at')->orderByDesc('id')->chunk(100,
+            function ($records) use ($request, $access, $offset, $perPage, $paged, &$total, &$pageIds): bool {
+                foreach ($access->visibleIds($records, $request->user()) as $id) {
+                    if ($total >= $offset && count($pageIds) < $perPage) {
+                        $pageIds[] = $id;
+                    }
+                    $total++;
+                    if (! $paged && count($pageIds) === $perPage) {
+                        return false;
+                    }
+                }
+
+                return true;
+            });
+        $data = $query->whereIn('id', $pageIds)->latest('updated_at')->orderByDesc('id')->get()->map->present();
+        $meta = ['current_page' => $currentPage, 'per_page' => $perPage, 'total' => $total];
+        if ($contextual) {
+            return response()->json(['data' => $data, 'meta' => $meta]);
         }
-        return response()->json(['success' => true, 'data' => $query->latest('updated_at')->limit(100)->get()->map->present()]);
+        if ($paged) {
+            return response()->json(['success' => true, 'data' => $data, 'meta' => $meta + ['last_page' => max(1, (int) ceil($total / $perPage)), 'has_more' => $currentPage * $perPage < $total]]);
+        }
+
+        return response()->json(['success' => true, 'data' => $data]);
     }
 
     public function store(Request $request): JsonResponse
@@ -63,7 +115,7 @@ class StudioWorkspaceController extends StudioController
             throw ValidationException::withMessages(['requestId' => 'Use an idempotency key of at most 64 characters.']);
         }
         if ($requestId && ($existing = StudioWorkspace::where('created_by', $request->user()->id)->where('request_id', $requestId)->first())) {
-            return $this->respond($existing);
+            return $this->respond($this->find($request, $existing->id));
         }
         $data = $this->validated($request);
         $media = $this->mediaService->authorize($data['media'], $request->user(), $this->scopeTeamId($request->user()));
@@ -76,7 +128,7 @@ class StudioWorkspaceController extends StudioController
         } catch (\Illuminate\Database\QueryException $exception) {
             $existing = $requestId ? StudioWorkspace::where('created_by', $request->user()->id)->where('request_id', $requestId)->first() : null;
             if ($existing) {
-                return $this->respond($existing);
+                return $this->respond($this->find($request, $existing->id));
             }
             throw $exception;
         }
@@ -123,12 +175,14 @@ class StudioWorkspaceController extends StudioController
             $record = StudioWorkspace::lockForUpdate()->findOrFail($record->id);
             abort_if($record->isBusy(), 409, 'Wait for this operation to finish or cancel it before editing the draft.');
             abort_if(isset($data['version']) && $data['version'] !== $record->version, 409, 'The workspace changed. Reload before saving.');
-            $next = array_replace_recursive($record->config, $data['config'] ?? []);
-            if (array_key_exists('frames', $data['config'] ?? [])) {
-                $next['frames'] = $data['config']['frames'];
+            if ($record->outputs || $record->prepared_frames || $record->history) {
+                $record->access_media = app(\App\Services\Studio\WorkspaceReadAccess::class)->retainedSources($record);
             }
-            if (array_key_exists('adjustments', $data['config'] ?? [])) {
-                $next['adjustments'] = $data['config']['adjustments'];
+            $next = array_replace_recursive($record->config, $data['config'] ?? []);
+            foreach (['frames', 'adjustments', 'reviewedOutputIds', 'reviewedFrameIds'] as $field) {
+                if (array_key_exists($field, $data['config'] ?? [])) {
+                    $next[$field] = $data['config'][$field];
+                }
             }
             $config = $this->config($next, $media, $data['presetId'] ?? $record->preset_id, $record);
             $preparationChanged = $record->media !== $media || ($record->config['ratio'] ?? null) !== $config['ratio']
@@ -311,6 +365,8 @@ class StudioWorkspaceController extends StudioController
     {
         $record = $this->find($request, $workspace);
         $this->mediaService->authorize($record->media, $request->user(), $record->team_id);
+        // Check the history budget before any provider work can be accepted.
+        app(\App\Services\Studio\WorkspaceReadAccess::class)->retainedSources($record);
         if ($type === 'generate') {
             $check = clone $record;
             $check->operation = ['type' => 'generate'];
@@ -430,6 +486,7 @@ class StudioWorkspaceController extends StudioController
         } else {
             $this->authorizeStudioAction($request->user(), 'view', $record);
         }
+        app(\App\Services\Studio\WorkspaceReadAccess::class)->authorize($record, $request->user());
 
         return $record;
     }

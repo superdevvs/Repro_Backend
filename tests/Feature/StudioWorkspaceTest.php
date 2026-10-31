@@ -372,6 +372,38 @@ class StudioWorkspaceTest extends TestCase
         $this->assertSame('existing', $record->fresh()->operation['id']);
     }
 
+    public function test_patch_can_clear_review_approvals_without_replacing_sources_or_frames(): void
+    {
+        $user = $this->actor();
+        $record = $this->create($user);
+        $config = $record->config;
+        $config['reviewedOutputIds'] = ['old-output'];
+        $config['reviewedFrameIds'] = ['m1'];
+        $config['frames'] = [['mediaId' => 'm1', 'method' => 'fit']];
+        $record->update(['config' => $config]);
+        $this->patchJson('/api/studio/workspaces/'.$record->id, ['version' => $record->version, 'config' => ['reviewedOutputIds' => [], 'reviewedFrameIds' => []]])
+            ->assertOk()->assertJsonPath('data.config.reviewedOutputIds', [])->assertJsonPath('data.config.reviewedFrameIds', [])
+            ->assertJsonPath('data.config.frames.0.mediaId', 'm1');
+        $this->assertSame($record->media, $record->fresh()->media);
+    }
+
+    public function test_source_history_limit_is_checked_before_queueing_any_provider_work(): void
+    {
+        \Illuminate\Support\Facades\Http::preventStrayRequests();
+        $user = $this->actor();
+        $record = $this->create($user);
+        $history = array_map(fn ($i) => ['mediaRef' => "studio/uploads/100/{$user->id}/previous-{$i}.jpg"], range(1, 3000));
+        $record->update(['access_media' => $history]);
+        $this->postJson('/api/studio/workspaces/'.$record->id.'/generate')->assertUnprocessable()->assertJsonValidationErrors('media');
+        $this->assertSame('draft', $record->fresh()->status);
+        Queue::assertNothingPushed();
+        \Illuminate\Support\Facades\Http::assertNothingSent();
+        $record->update(['access_media' => array_slice($history, 0, 2999)]);
+        $this->postJson('/api/studio/workspaces/'.$record->id.'/generate')->assertAccepted();
+        Queue::assertPushed(ProcessStudioWorkspace::class, 1);
+        \Illuminate\Support\Facades\Http::assertNothingSent();
+    }
+
     public function test_output_download_is_exact_and_scoped_and_config_cannot_seed_runtime(): void
     {
         config(['studio.client_access_enabled' => true]);
