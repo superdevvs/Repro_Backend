@@ -34,9 +34,27 @@ config(['database.default'=>'sqlite','database.connections.sqlite.database'=>$ar
     'database.connections.sqlite.busy_timeout'=>1000, 'listing-studio.paid_enabled'=>true,
     'listing-studio.max_active_sources_per_client'=>1,
     'cache.stores.database.lock_connection'=>'sqlite', 'cache.stores.database.connection'=>'sqlite',
+    'cache.stores.database.lock_lottery'=>[0,100],
     'filesystems.disks.listing_studio_orders.root'=>$argv[3]]);
 Illuminate\Support\Facades\DB::purge('sqlite');
 Illuminate\Support\Facades\Storage::forgetDisk('listing_studio_orders');
+// Warm model/query autoloading before the barrier so slow filesystem mounts do
+// not consume the writer-hold window before the admission transaction begins.
+App\Models\ListingStudioUpload::query()->whereRaw('0 = 1')->first();
+// Both requests acquire their real, different idempotency locks before a third
+// connection holds the writer. This forces admission to encounter contention.
+$waiting = false;
+Illuminate\Support\Facades\DB::listen(function ($query) use (&$waiting, $argv) {
+    if ($waiting || !str_starts_with($query->sql, 'insert into "cache_locks"')) { return; }
+    $waiting = true;
+    touch($argv[6]);
+    $deadline = microtime(true) + 30;
+    while (!file_exists($argv[7])) {
+        if (microtime(true) >= $deadline) { throw new RuntimeException('Writer barrier timed out.'); }
+        usleep(1000);
+        clearstatcache(true, $argv[7]);
+    }
+});
 // Keep the first actual insert transaction open long enough for its independent competitor.
 App\Models\ListingStudioUpload::created(function () { usleep(300000); });
 $client = (new App\Models\User)->forceFill(['id'=>1,'role'=>'client','account_status'=>'active']);
@@ -49,10 +67,29 @@ try {
 }
 PHP;
         try {
-            $first = new Process([PHP_BINARY, '-r', $script, base_path(), $database, $mediaRoot, $photoPath, 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa']);
-            $second = new Process([PHP_BINARY, '-r', $script, base_path(), $database, $mediaRoot, $photoPath, 'bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb']);
+            $release = $root.'/release';
+            $firstReady = $root.'/first-ready';
+            $secondReady = $root.'/second-ready';
+            $first = new Process([PHP_BINARY, '-r', $script, base_path(), $database, $mediaRoot, $photoPath, 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa', $firstReady, $release]);
+            $second = new Process([PHP_BINARY, '-r', $script, base_path(), $database, $mediaRoot, $photoPath, 'bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb', $secondReady, $release]);
             $first->start();
             $second->start();
+            $deadline = microtime(true) + 30;
+            while (! is_file($firstReady) || ! is_file($secondReady)) {
+                if (microtime(true) >= $deadline || ! $first->isRunning() || ! $second->isRunning()) {
+                    $this->fail('Upload processes did not reach the admission barrier: '.$first->getErrorOutput().$second->getErrorOutput());
+                }
+                usleep(1000);
+                clearstatcache();
+            }
+            $databaseHandle->beginTransaction();
+            $databaseHandle->exec('UPDATE cache_locks SET expiration = expiration');
+            touch($release);
+            // Longer than LockedWrite's maximum combined retry sleeps (280ms),
+            // shorter than busy_timeout. A read-first transaction fails here;
+            // a write-first transaction waits before it establishes a snapshot.
+            usleep(750000);
+            $databaseHandle->commit();
             $first->wait();
             $second->wait();
             $this->assertSame(0, $first->getExitCode(), $first->getErrorOutput());
@@ -63,6 +100,14 @@ PHP;
             $this->assertSame(1, (int) $databaseHandle->query('SELECT COUNT(*) FROM listing_studio_uploads')->fetchColumn());
             $this->assertSame('ready', $databaseHandle->query('SELECT status FROM listing_studio_uploads')->fetchColumn());
         } finally {
+            if ($databaseHandle?->inTransaction()) {
+                $databaseHandle->rollBack();
+            }
+            foreach ([$first ?? null, $second ?? null] as $process) {
+                if ($process?->isRunning()) {
+                    $process->stop(1);
+                }
+            }
             $databaseHandle = null;
             Storage::build(['driver' => 'local', 'root' => $root])->deleteDirectory('');
             @rmdir($root);

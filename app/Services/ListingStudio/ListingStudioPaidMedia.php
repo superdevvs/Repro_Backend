@@ -41,6 +41,13 @@ class ListingStudioPaidMedia
         }
         try {
             $record = LockedWrite::run(fn () => DB::transaction(function () use ($client, $metadata, $hash, $key): ListingStudioUpload {
+                // Acquire SQLite's writer before taking a replay/quota snapshot.
+                // A SELECT first can make the later INSERT fail immediately with
+                // SQLITE_BUSY_SNAPSHOT, bypassing busy_timeout on every retry.
+                // Query Builder preserves timestamps and avoids model events;
+                // even zero matching rows acquire the SQLite write lock.
+                DB::table('listing_studio_uploads')->where('client_id', $client->id)->where('request_key', $key)
+                    ->update(['updated_at' => DB::raw('updated_at')]);
                 $existing = ListingStudioUpload::where('client_id', $client->id)->where('request_key', $key)->first();
                 if ($existing) {
                     if (! hash_equals($existing->request_hash, $hash)) {
