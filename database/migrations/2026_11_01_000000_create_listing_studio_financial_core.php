@@ -64,6 +64,7 @@ return new class extends Migration
             $table->json('output_descriptor')->nullable();
             $table->unsignedTinyInteger('progress')->nullable();
             $table->uuid('processing_attempt_id')->nullable();
+            $table->uuid('processing_lease_token')->nullable();
             $table->timestamp('processing_lease_expires_at')->nullable();
             $table->timestamp('started_at')->nullable();
             $table->timestamp('completed_at')->nullable();

@@ -24,6 +24,7 @@ class ApiErrorResponder
     public function render(\Throwable $exception, Request $request): JsonResponse
     {
         $status = $this->status($exception);
+        $studioOrders = $request->is('api/listing-studio/client/*', 'api/listing-studio/team/*', 'api/external/listing-studio/catalog');
         $payload = [
             'message' => self::publicMessage($exception, self::defaultMessage($status)),
             'code' => $exception instanceof PublicApiException ? $exception->errorCode : self::defaultCode($status),
@@ -37,7 +38,11 @@ class ApiErrorResponder
         } elseif ($exception instanceof ValidationException) {
             $payload['errors'] = $exception->errors();
         } elseif ($exception instanceof PublicApiException) {
-            $payload = array_merge($exception->publicDetails, $payload);
+            if ($studioOrders) {
+                if ($exception->publicDetails !== []) { $payload['data'] = $exception->publicDetails; }
+            } else {
+                $payload = array_merge($exception->publicDetails, $payload);
+            }
         } elseif ($exception instanceof StudioClientAccessPaused
             || ($exception instanceof HttpExceptionInterface && $exception->getPrevious() instanceof StudioClientAccessPaused)) {
             $payload['code'] = 'studio_client_access_paused';
@@ -52,6 +57,8 @@ class ApiErrorResponder
                 $payload = array_merge(app(IguideOfflineChunkUploadService::class)->payload($exception->uploadSession), $payload);
             }
         }
+
+        if ($studioOrders) { $payload['success'] = false; }
 
         if ($status >= 500) {
             try {

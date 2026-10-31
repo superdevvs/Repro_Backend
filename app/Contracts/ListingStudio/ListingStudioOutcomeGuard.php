@@ -12,4 +12,7 @@ interface ListingStudioOutcomeGuard
      * Throw a safe PublicApiException; missing implementation must fail closed.
      */
     public function assertDefinitiveStop(ListingStudioOrderItem $item): void;
+
+    /** DB-only output ownership/readiness guard; processor already validated the private bytes. */
+    public function assertDeliverableOutput(ListingStudioOrderItem $item, array $descriptor): void;
 }

@@ -101,16 +101,20 @@ class ListingStudioCreditService
         $start = $subscription->current_period_start;
         $earned = 0;
         $used = 0;
+        $reserved = 0;
         // A billing-anchor reset must not carry unused credits into the new period.
         if ($end && $end->isFuture() && (! $start || $start->lte(now()))) {
             $entries = DB::table('listing_studio_credit_entries')->where('subscription_id', $subscription->id)
                 ->where('expires_at', $end)->where('period_start', '<=', now())->get(['source_type', 'amount_cents']);
             $earned = (int) $entries->where('source_type', '!=', 'usage')->sum('amount_cents');
             $used = -(int) $entries->where('source_type', 'usage')->sum('amount_cents');
+            $reserved = (int) DB::table('listing_studio_credit_reservations')->where('subscription_id', $subscription->id)
+                ->where('status', 'reserved')->where('expires_at', $end)->where('period_start', '<=', now())->sum('amount_cents');
         }
 
         return [
-            'currency' => 'usd', 'available_cents' => max(0, $earned - $used),
+            'currency' => 'usd', 'available_cents' => max(0, $earned - $used - $reserved),
+            'reserved_cents' => $reserved,
             'earned_cents' => max(0, $earned), 'used_cents' => $used,
             'expires_at' => $end?->toIso8601String(),
             'monthly_allowance_cents' => (int) config('listing-studio.plans.'.$subscription->plan_code.'.monthly_credit_cents', 0),

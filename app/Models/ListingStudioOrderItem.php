@@ -14,7 +14,7 @@ class ListingStudioOrderItem extends Model
 
     public const STATUSES = ['awaiting_funding', 'queued', 'processing', 'needs_attention', 'completed', 'failed', 'cancelled'];
 
-    protected $hidden = ['source_snapshot', 'output_descriptor', 'processing_attempt_id'];
+    protected $hidden = ['source_snapshot', 'output_descriptor', 'processing_attempt_id', 'processing_lease_token'];
 
     protected $casts = [
         'source_snapshot' => 'array', 'output_descriptor' => 'array', 'options' => 'array',
