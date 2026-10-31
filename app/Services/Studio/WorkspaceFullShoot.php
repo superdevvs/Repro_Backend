@@ -149,7 +149,9 @@ class WorkspaceFullShoot
                 }
                 $operation = $record->operation;
                 $operation['completed'] = array_values(array_unique(array_merge($operation['completed'] ?? [], [$group['mediaId']])));
-                $record->update(['outputs' => $outputs, 'operation' => $operation, 'version' => $record->version + 1]);
+                $record->update(['outputs' => $outputs, 'operation' => $operation,
+                    'access_media' => app(WorkspaceReadAccess::class)->retainedSources($record),
+                    'version' => $record->version + 1]);
             });
             $complete++;
         }

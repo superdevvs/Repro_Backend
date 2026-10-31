@@ -32,7 +32,11 @@ class WorkspaceMediaService
             return;
         }
 
-        $this->authorize($workspace->media, User::findOrFail($workspace->created_by), $workspace->team_id);
+        $owner = User::findOrFail($workspace->created_by);
+        // A revision/upscale can use an older output after its source was replaced.
+        // Queue time must not extend access to that retained source's shoot.
+        app(WorkspaceReadAccess::class)->authorize($workspace, $owner);
+        $this->authorize($workspace->media, $owner, $workspace->team_id);
     }
 
     public function outputDisk(StudioWorkspace $workspace): string

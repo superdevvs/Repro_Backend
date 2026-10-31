@@ -129,6 +129,9 @@ class WorkspaceProcessor
                     $w->prepared_frames = $prepared;
                 }
                 $w->{$field} = $records;
+                if ($type !== 'prepare') {
+                    $w->access_media = app(WorkspaceReadAccess::class)->retainedSources($w);
+                }
                 $operation = $w->operation;
                 $operation['completed'][] = $item['id'];
                 $w->operation = $operation;
@@ -288,6 +291,7 @@ class WorkspaceProcessor
                     + \Illuminate\Support\Arr::only($output, ['path', 'resolution', 'width', 'height', 'durationSeconds', 'hasAudio', 'originalAudio', 'musicAudio']);
             }
             $w->outputs = $outputs;
+            $w->access_media = app(WorkspaceReadAccess::class)->retainedSources($w);
         });
         $this->finish($w, $operationId, 'completed');
     }

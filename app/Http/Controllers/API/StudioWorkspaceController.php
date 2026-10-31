@@ -428,6 +428,8 @@ class StudioWorkspaceController extends StudioController
             }
             abort_if($record->isBusy(), 409, 'This workspace already has an operation in progress.');
             abort_if(count($record->media) === 0, 422, 'Add source photos before continuing.');
+            // Source replacement may have happened after the initial read.
+            app(\App\Services\Studio\WorkspaceReadAccess::class)->retainedSources($record);
             if ($record->preset_id === 'virtual-staging' && in_array($type, ['generate', 'revision'], true) && empty($payload['customEdit'])) {
                 $settings = app(\App\Services\Studio\StudioProviderSettings::class);
                 $availability = $settings->readiness('virtual-staging', $settings->route('virtual-staging'));

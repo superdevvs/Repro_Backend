@@ -182,6 +182,30 @@ class StudioWorkspaceTest extends TestCase
         $this->patchJson('/api/studio/workspaces/'.$record->id, ['config' => ['frames' => []]])->assertOk()->assertJsonCount(0, 'data.config.frames');
     }
 
+    public function test_operation_receipt_correlates_accepted_and_replayed_requests_without_provider_state(): void
+    {
+        $record = $this->create($this->actor(), 2, 'walkthrough');
+        $endpoint = '/api/studio/workspaces/'.$record->id;
+        $this->getJson($endpoint)->assertOk()->assertJsonPath('data.operationReceipt', null);
+        $requestId = 'native-prepare-exact-request';
+        $accepted = $this->postJson($endpoint.'/prepare', [], ['Idempotency-Key' => $requestId])->assertAccepted();
+        $operation = $record->fresh()->operation;
+        $receipt = ['id' => $operation['id'], 'type' => 'prepare', 'requestId' => $requestId];
+        $this->assertSame($receipt, $accepted->json('data.operationReceipt'));
+        $operation['providerState'] = ['private-checkpoint' => 'not-for-clients'];
+        $operation['requests'] = ['m1' => 'private-provider-request'];
+        $record->update(['operation' => $operation]);
+        $read = $this->getJson($endpoint)->assertOk();
+        $this->assertSame($receipt, $read->json('data.operationReceipt'));
+        $this->assertArrayNotHasKey('operation', $read->json('data'));
+        $this->assertStringNotContainsString('not-for-clients', $read->getContent());
+        $this->assertStringNotContainsString('private-provider-request', $read->getContent());
+        $replay = $this->postJson($endpoint.'/prepare', [], ['Idempotency-Key' => $requestId])->assertAccepted();
+        $this->assertSame($receipt, $replay->json('data.operationReceipt'));
+        $this->getJson('/api/studio/workspaces')->assertOk()->assertJsonPath('data.0.operationReceipt', $receipt);
+        Queue::assertPushed(ProcessStudioWorkspace::class, 1);
+    }
+
     public function test_generation_requires_all_video_frames_and_deduplicates_preparation(): void
     {
         $user = $this->actor();
@@ -327,7 +351,7 @@ class StudioWorkspaceTest extends TestCase
         $shoot->update(['payment_status' => 'paid']);
         $file->update(['workflow_stage' => ShootFile::STAGE_TODO]);
         $this->postJson('/api/studio/workspaces', $payload)->assertForbidden();
-        $this->getJson('/api/studio/templates')->assertForbidden();
+        $this->getJson('/api/studio/templates')->assertOk()->assertJsonCount(0, 'data');
     }
 
     public function test_client_source_aliases_resolve_only_own_released_images(): void

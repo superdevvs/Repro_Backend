@@ -48,10 +48,10 @@ jobs:
       - name: Audit locked dependencies
         run: composer audit --locked
 
-      - name: Install PDF rendering dependency
+      - name: Install media rendering dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y poppler-utils imagemagick
+          sudo apt-get install --no-install-recommends -y poppler-utils imagemagick ffmpeg fonts-dejavu-core
 
       - name: Wait for ClamAV
         shell: bash

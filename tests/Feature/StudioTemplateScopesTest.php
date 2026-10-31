@@ -7,8 +7,10 @@ use App\Models\StudioWorkspace;
 use App\Models\User;
 use App\Services\Studio\StudioTemplateRecipe;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Facades\Storage;
 use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
 
@@ -198,11 +200,15 @@ class StudioTemplateScopesTest extends TestCase
     {
         $owner = $this->actor('editor');
         Sanctum::actingAs($owner);
-        $media = [['id' => 'destination-photo', 'name' => 'Current property', 'fileId' => 123]];
+        Storage::fake('public');
+        config(['studio_uploads.disk' => 'public']);
+        $source = "studio/uploads/501/{$owner->id}/destination.jpg";
+        Storage::disk('public')->put($source, UploadedFile::fake()->image('destination.jpg')->get());
+        $media = [['id' => 'destination-photo', 'name' => 'Current property', 'mediaRef' => $source]];
         $frames = [['mediaId' => 'destination-photo', 'method' => 'crop', 'duration' => 5]];
         $workspace = StudioWorkspace::create([
             'team_id' => 501, 'created_by' => $owner->id, 'name' => 'Current property',
-            'preset_id' => 'listing-ready', 'status' => 'draft', 'media' => $media,
+            'preset_id' => 'listing-ready', 'status' => 'draft', 'version' => 1, 'media' => $media,
             'config' => ['prompt' => 'Original direction', 'frames' => $frames,
                 'reviewedOutputIds' => ['previous-output'], 'reviewedFrameIds' => ['previous-frame']],
         ]);

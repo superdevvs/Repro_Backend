@@ -366,6 +366,7 @@ class VirtualStagingProcessor
     {
         if ($stored) {
             $record->outputs = array_merge($record->outputs ?? [], $stored);
+            $record->access_media = app(WorkspaceReadAccess::class)->retainedSources($record);
         }
     }
 

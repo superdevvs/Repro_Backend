@@ -78,6 +78,12 @@ class StudioWorkspace extends Model
                 'completedMediaIds' => $this->operation['completed'] ?? [],
             ] : null,
             'error' => $this->error, 'version' => $this->version,
+            // Correlate uncertain client submissions without exposing provider checkpoints.
+            'operationReceipt' => ! empty($this->operation['id']) ? [
+                'id' => $this->operation['id'],
+                'type' => $this->operation['type'] ?? null,
+                'requestId' => $this->operation['key'] ?? null,
+            ] : null,
             'outputs' => array_map(fn ($output) => \Illuminate\Support\Arr::except($output, ['reelJobId', 'vsai']), $this->outputs ?? []), 'preparedFrames' => $this->prepared_frames ?? [],
             'history' => array_map(fn ($event) => \Illuminate\Support\Arr::except($event, ['reelJobId']), $this->history ?? []),
             'createdAt' => $this->created_at?->toIso8601String(),
