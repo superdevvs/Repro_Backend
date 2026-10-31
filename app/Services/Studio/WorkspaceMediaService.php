@@ -26,12 +26,17 @@ class WorkspaceMediaService
             return;
         }
 
+        if ($workspace->listing_studio_order_item_id) {
+            app(\App\Services\ListingStudio\ListingStudioPaidPipeline::class)->authorize($workspace);
+            return;
+        }
+
         $this->authorize($workspace->media, User::findOrFail($workspace->created_by), $workspace->team_id);
     }
 
     public function outputDisk(StudioWorkspace $workspace): string
     {
-        return $workspace->listing_studio_trial_id ? 'listing_studio_trials' : 'public';
+        return $workspace->listing_studio_trial_id ? 'listing_studio_trials' : ($workspace->listing_studio_order_item_id ? 'listing_studio_orders' : 'public');
     }
 
     /** Client URLs are display hints only. Persist only server-resolved, authorized references. */
@@ -217,6 +222,11 @@ class WorkspaceMediaService
                     $ref = $trial->source_path;
                     $disk = Storage::disk('listing_studio_trials');
                 }
+                if (! empty($media['orderItemId'])) {
+                    $item = app(\App\Services\ListingStudio\ListingStudioPaidPipeline::class)->authorizeSource($media);
+                    $ref = $item->source_snapshot['path'];
+                    $disk = Storage::disk('listing_studio_orders');
+                }
                 $path = tempnam(sys_get_temp_dir(), 'studio-source-');
                 $cleanup[] = $path;
                 file_put_contents($path, $disk->get($ref));
@@ -269,10 +279,14 @@ class WorkspaceMediaService
                     throw new RuntimeException('The edited image could not be saved. Retry to retrieve the existing result.');
                 }
             }), 'listing-studio.trial-output');
+        } elseif ($workspace->listing_studio_order_item_id) {
+            app(\App\Services\ListingStudio\ListingStudioPaidPipeline::class)->authorize($workspace->fresh());
+            app(\App\Services\ListingStudio\ListingStudioPaidStorage::class)->prepareWorkspaceDirectory($workspace->id, str_starts_with($suffix, 'provider-results/'));
+            if (! $disk->put($path, $bytes)) { throw new RuntimeException('The edited image could not be saved.'); }
         } elseif (! $disk->put($path, $bytes)) {
             throw new RuntimeException('The edited image could not be saved. Retry to retrieve the existing result.');
         }
 
-        return ['path' => $path, 'url' => $workspace->listing_studio_trial_id ? null : $disk->url($path)];
+        return ['path' => $path, 'url' => ($workspace->listing_studio_trial_id || $workspace->listing_studio_order_item_id) ? null : $disk->url($path)];
     }
 }

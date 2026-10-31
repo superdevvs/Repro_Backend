@@ -23,6 +23,11 @@ class StudioWorkspace extends Model
         return $this->belongsTo(ListingStudioGuestTrial::class, 'listing_studio_trial_id');
     }
 
+    public function listingStudioOrderItem(): \Illuminate\Database\Eloquent\Relations\BelongsTo
+    {
+        return $this->belongsTo(ListingStudioOrderItem::class, 'listing_studio_order_item_id');
+    }
+
     public function isBusy(): bool
     {
         return in_array($this->status, ['preparing', 'generating'], true);

@@ -74,7 +74,7 @@ class VirtualStagingProcessor
 
         return [
             'percentageMasked' => round((float) $percentage, 1),
-            'previewUrl' => $workspace->listing_studio_trial_id ? null : Storage::disk('public')->url($path),
+            'previewUrl' => ($workspace->listing_studio_trial_id || $workspace->listing_studio_order_item_id) ? null : Storage::disk('public')->url($path),
         ];
     }
 
@@ -107,7 +107,7 @@ class VirtualStagingProcessor
         $done = array_values(array_filter($variations, fn ($variation) => ($variation['status'] ?? '') === 'done'));
         $failed = array_values(array_filter($variations, fn ($variation) => in_array($variation['status'] ?? '', ['error', 'deleted'], true)));
         $stored = $this->storeVariations($workspace, $operationId, $item, $done, $sourceHash, $options, (string) $checkpoint['renderId']);
-        if ($workspace->listing_studio_trial_id && collect(array_merge($workspace->outputs ?? [], $stored))->contains(
+        if (($workspace->listing_studio_trial_id || $workspace->listing_studio_order_item_id) && collect(array_merge($workspace->outputs ?? [], $stored))->contains(
             fn ($output) => ($output['mediaId'] ?? null) === $item['id'] && ($output['status'] ?? null) === 'completed' && ($output['vsai']['type'] ?? null) === 'staging'
         )) {
             // The one requested staged photo succeeded even if an auxiliary removal result failed.
@@ -237,7 +237,7 @@ class VirtualStagingProcessor
                 continue;
             }
             // Removal is an intermediate provider artifact, not the promised staging trial result.
-            if ($workspace->listing_studio_trial_id && ($variation['type'] ?? 'staging') !== 'staging') {
+            if (($workspace->listing_studio_trial_id || $workspace->listing_studio_order_item_id) && ($variation['type'] ?? 'staging') !== 'staging') {
                 continue;
             }
             foreach ($this->resultUrls($variation) as $index => $url) {

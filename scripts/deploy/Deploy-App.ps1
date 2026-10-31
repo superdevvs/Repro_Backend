@@ -327,6 +327,9 @@ bash "$app/scripts/deploy/provision-public-storage.sh" ensure "$app"
 if [ -f "$app/scripts/deploy/provision-tax-document-storage.sh" ]; then
   bash "$app/scripts/deploy/provision-tax-document-storage.sh"
 fi
+if [ -f "$app/scripts/deploy/provision-listing-studio-order-storage.sh" ]; then
+  bash "$app/scripts/deploy/provision-listing-studio-order-storage.sh"
+fi
 composer install --no-dev --optimize-autoloader --no-interaction
 if [ "$run_migrations" = "1" ]; then
   php artisan migrate --force --no-interaction

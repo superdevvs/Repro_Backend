@@ -427,6 +427,9 @@ class WorkspaceProcessor
         if ($w->listing_studio_trial_id) {
             app(\App\Services\ListingStudio\ListingStudioGuestTrialService::class)->syncWorkspace($w->fresh());
         }
+        if ($w->listing_studio_order_item_id) {
+            app(\App\Services\ListingStudio\ListingStudioPaidPipeline::class)->syncWorkspace($w->fresh());
+        }
     }
 
     private function download(string $url): string

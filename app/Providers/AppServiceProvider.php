@@ -23,6 +23,9 @@ class AppServiceProvider extends ServiceProvider
     public function register(): void
     {
         $this->app->bind(\App\Contracts\ListingStudio\ListingStudioRefundDispatcher::class, \App\Services\ListingStudio\StudioRefundService::class);
+        $this->app->bind(\App\Contracts\ListingStudio\ListingStudioSourceResolver::class, \App\Services\ListingStudio\ListingStudioPaidSourceResolver::class);
+        $this->app->bind(\App\Contracts\ListingStudio\ListingStudioOutcomeGuard::class, \App\Services\ListingStudio\ListingStudioPaidOutcomeGuard::class);
+        $this->app->bind(\App\Contracts\ListingStudio\ListingStudioFulfillmentDispatcher::class, \App\Services\ListingStudio\ListingStudioPaidFulfillment::class);
         foreach ([
             \App\Services\Scheduling\SchedulingBufferSettings::class,
             \App\Services\Scheduling\TravelLocationResolver::class,

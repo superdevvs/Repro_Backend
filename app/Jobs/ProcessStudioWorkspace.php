@@ -47,6 +47,9 @@ class ProcessStudioWorkspace implements ShouldQueue
             if ($workspace->listing_studio_trial_id) {
                 app(\App\Services\ListingStudio\ListingStudioGuestTrialService::class)->syncWorkspace($workspace);
             }
+            if ($workspace->listing_studio_order_item_id) {
+                app(\App\Services\ListingStudio\ListingStudioPaidPipeline::class)->syncWorkspace($workspace);
+            }
             return;
         }
         if (! $workspace->isBusy()) {
@@ -96,9 +99,20 @@ class ProcessStudioWorkspace implements ShouldQueue
                 }
                 $changes['operation'] = $operation;
             }
+            if ($workspace->listing_studio_order_item_id) {
+                $operation = $workspace->operation;
+                // Only an explicit definitive provider rejection may release paid funding.
+                $operation['paidFailureDefinitive'] = ($exception instanceof FalTerminalException && $exception->canDiscardRequest())
+                    || (($exception instanceof \App\Exceptions\StudioProviderException || $exception instanceof \App\Exceptions\OpenAiImageException)
+                        && ! $exception->ambiguous && ! app(\App\Services\ListingStudio\ListingStudioPaidPipeline::class)->hasCheckpoint($workspace));
+                $changes['operation'] = $operation;
+            }
             $workspace->update($changes);
             if ($workspace->listing_studio_trial_id) {
                 app(\App\Services\ListingStudio\ListingStudioGuestTrialService::class)->syncWorkspace($workspace->fresh());
+            }
+            if ($workspace->listing_studio_order_item_id) {
+                app(\App\Services\ListingStudio\ListingStudioPaidPipeline::class)->syncWorkspace($workspace->fresh());
             }
             if ($workspace->editing_dispatch_id) {
                 \App\Models\ShootEditingDispatchItem::where('workspace_id', $workspace->id)->whereNull('primary_version_id')->update(['status' => 'failed', 'error' => $message]);

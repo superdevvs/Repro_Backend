@@ -51,6 +51,9 @@ class WorkspaceProviderState
         if ($this->workspace->listing_studio_trial_id) {
             app(\App\Services\ListingStudio\ListingStudioTrialPipeline::class)->assertMaySubmit($this->workspace);
         }
+        if ($this->workspace->listing_studio_order_item_id) {
+            app(\App\Services\ListingStudio\ListingStudioPaidPipeline::class)->assertMaySubmit($this->workspace);
+        }
     }
 
     public function route(string $service): array

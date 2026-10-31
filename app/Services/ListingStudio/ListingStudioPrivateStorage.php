@@ -21,16 +21,21 @@ class ListingStudioPrivateStorage
         $this->prepare($providerCache ? ['studio', 'workspaces', $workspaceId, 'provider-results'] : ['studio', 'workspaces', $workspaceId]);
     }
 
-    private function uuid(string $id): void
+    protected function uuid(string $id): void
     {
         if (! Str::isUuid($id)) {
             throw new RuntimeException('Invalid private Studio directory.');
         }
     }
 
-    private function prepare(array $segments): void
+    protected function disk(): \Illuminate\Filesystem\FilesystemAdapter
     {
-        $disk = Storage::disk(ListingStudioGuestTrialService::DISK);
+        return Storage::disk(ListingStudioGuestTrialService::DISK);
+    }
+
+    protected function prepare(array $segments): void
+    {
+        $disk = $this->disk();
         $configuredRoot = rtrim($disk->path(''), DIRECTORY_SEPARATOR);
         $root = realpath($configuredRoot);
         if (! $root || ! is_dir($root) || is_link($configuredRoot)) {

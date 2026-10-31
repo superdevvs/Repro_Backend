@@ -1568,3 +1568,5 @@ Route::middleware(['auth:sanctum', 'role:admin,superadmin', 'permission:accounti
     Route::patch('/admin/accounting-home/invoices/{invoice}', [\App\Http\Controllers\Admin\AccountingInvoiceComposerController::class,'update'])->middleware('permission:invoices,update');
     Route::post('/admin/accounting-home/invoices/{invoice}/send', [\App\Http\Controllers\Admin\AccountingInvoiceComposerController::class, 'send'])->middleware('permission:invoices,update');
 });
+
+require __DIR__.'/listing-studio-processing.php';

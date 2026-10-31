@@ -191,7 +191,7 @@ class WorkspaceImageOperations
     {
         $key = 'openai-'.hash('sha256', $mediaId);
         $saved = $state->get($key);
-        $cacheDisk = $workspace->listing_studio_trial_id ? 'listing_studio_trials' : 'local';
+        $cacheDisk = $workspace->listing_studio_trial_id ? 'listing_studio_trials' : ($workspace->listing_studio_order_item_id ? 'listing_studio_orders' : 'local');
         if (isset($saved['path']) && Storage::disk($cacheDisk)->exists($saved['path'])) {
             return Storage::disk($cacheDisk)->get($saved['path']);
         }
@@ -210,7 +210,7 @@ class WorkspaceImageOperations
             throw $exception;
         }
         $path = 'studio/workspaces/'.$workspace->id.'/provider-results/'.$workspace->operation['id'].'-'.$key.'.png';
-        if ($workspace->listing_studio_trial_id) {
+        if ($workspace->listing_studio_trial_id || $workspace->listing_studio_order_item_id) {
             // Keep paid recovery bytes private and serialize against trial expiry just like final outputs.
             $stored = app(WorkspaceMediaService::class)->store($workspace, $bytes, 'provider-results/'.$workspace->operation['id'].'-'.$key, 'png');
             $path = $stored['path'];

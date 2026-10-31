@@ -30,7 +30,7 @@ class StudioWorkspaceController extends StudioController
     {
         $this->authorizeStudioAction($request->user(), 'view');
 
-        $query = StudioWorkspace::whereNull('listing_studio_trial_id');
+        $query = StudioWorkspace::whereNull('listing_studio_trial_id')->whereNull('listing_studio_order_item_id');
         if (in_array($request->user()->role, self::STUDIO_PRIVILEGED_ROLES, true)) {
             $query->where(fn ($query) => $query->where('team_id', $this->scopeTeamId($request->user()))->orWhereNotNull('shoot_id'));
         } else {
@@ -365,7 +365,7 @@ class StudioWorkspaceController extends StudioController
 
     private function find(Request $request, string $id): StudioWorkspace
     {
-        $record = StudioWorkspace::whereNull('listing_studio_trial_id')->findOrFail($id);
+        $record = StudioWorkspace::whereNull('listing_studio_trial_id')->whereNull('listing_studio_order_item_id')->findOrFail($id);
         if ($record->shoot_id && in_array($request->user()->role, self::STUDIO_PRIVILEGED_ROLES, true)) {
             app(\App\Services\Shoots\ShootAuthorizationSupport::class)->ensureShootAccess(\App\Models\Shoot::findOrFail($record->shoot_id), $request->user());
         } else {
