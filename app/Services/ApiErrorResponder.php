@@ -39,7 +39,9 @@ class ApiErrorResponder
             $payload['errors'] = $exception->errors();
         } elseif ($exception instanceof PublicApiException) {
             if ($studioOrders) {
-                if ($exception->publicDetails !== []) { $payload['data'] = $exception->publicDetails; }
+                if ($exception->publicDetails !== []) {
+                    $payload['data'] = $exception->publicDetails;
+                }
             } else {
                 $payload = array_merge($exception->publicDetails, $payload);
             }
@@ -58,7 +60,9 @@ class ApiErrorResponder
             }
         }
 
-        if ($studioOrders) { $payload['success'] = false; }
+        if ($studioOrders) {
+            $payload['success'] = false;
+        }
 
         if ($status >= 500) {
             try {

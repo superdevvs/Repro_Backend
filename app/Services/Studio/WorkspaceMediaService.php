@@ -28,6 +28,7 @@ class WorkspaceMediaService
 
         if ($workspace->listing_studio_order_item_id) {
             app(\App\Services\ListingStudio\ListingStudioPaidPipeline::class)->authorize($workspace);
+
             return;
         }
 
@@ -282,7 +283,9 @@ class WorkspaceMediaService
         } elseif ($workspace->listing_studio_order_item_id) {
             app(\App\Services\ListingStudio\ListingStudioPaidPipeline::class)->authorize($workspace->fresh());
             app(\App\Services\ListingStudio\ListingStudioPaidStorage::class)->prepareWorkspaceDirectory($workspace->id, str_starts_with($suffix, 'provider-results/'));
-            if (! $disk->put($path, $bytes)) { throw new RuntimeException('The edited image could not be saved.'); }
+            if (! $disk->put($path, $bytes)) {
+                throw new RuntimeException('The edited image could not be saved.');
+            }
         } elseif (! $disk->put($path, $bytes)) {
             throw new RuntimeException('The edited image could not be saved. Retry to retrieve the existing result.');
         }
