@@ -1065,6 +1065,10 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/{workspace}/edits', [$controller, 'edits']);
         Route::post('/{workspace}/edit-preview', [$controller, 'editPreview'])->middleware('throttle:60,1');
         Route::post('/{workspace}/photo-logo', [$controller, 'photoLogo'])->middleware('throttle:20,1');
+        Route::post('/{workspace}/audio', [$controller, 'uploadAudio'])->middleware('throttle:10,1');
+        Route::get('/{workspace}/audio', [$controller, 'audioLibrary']);
+        Route::get('/{workspace}/audio/{audio}', [$controller, 'previewAudio'])->whereUuid('audio');
+        Route::delete('/{workspace}/audio/{audio}', [$controller, 'deleteAudio'])->whereUuid('audio');
         Route::post('/{workspace}/segments', [$controller, 'segments']);
         Route::post('/{workspace}/furniture-analysis', [$controller, 'furnitureAnalysis'])->middleware('throttle:30,1');
         Route::post('/{workspace}/cancel', [$controller, 'cancel']);

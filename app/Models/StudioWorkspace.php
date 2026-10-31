@@ -81,6 +81,7 @@ class StudioWorkspace extends Model
             'createdAt' => $this->created_at?->toIso8601String(),
             'updatedAt' => $this->updated_at?->toIso8601String(),
             'capabilities' => ['framePreparation' => true, 'regionRevisions' => true,
+                'video' => \App\Services\Studio\WorkspaceVideoOptions::capabilities(),
                 'objectDetection' => filled(config('services.openai.api_key')), 'pixelSegmentation' => false,
                 'crossFrameContinuity' => false, 'transitions' => \App\Services\Studio\ReelCompositionService::TRANSITIONS,
                 'startEndFrameConditioning' => filled(config('services.fal.walkthrough_model')),

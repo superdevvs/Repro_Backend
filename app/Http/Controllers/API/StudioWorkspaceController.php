@@ -10,6 +10,8 @@ use App\Services\Studio\VirtualStagingOptions;
 use App\Services\Studio\VirtualStagingProcessor;
 use App\Services\Studio\WorkspaceMediaService;
 use App\Services\Studio\WorkspaceProcessor;
+use App\Services\Studio\WorkspaceVideoAudio;
+use App\Services\Studio\WorkspaceVideoOptions;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -128,7 +130,7 @@ class StudioWorkspaceController extends StudioController
             if (array_key_exists('adjustments', $data['config'] ?? [])) {
                 $next['adjustments'] = $data['config']['adjustments'];
             }
-            $config = $this->config($next, $media, $data['presetId'] ?? $record->preset_id);
+            $config = $this->config($next, $media, $data['presetId'] ?? $record->preset_id, $record);
             $preparationChanged = $record->media !== $media || ($record->config['ratio'] ?? null) !== $config['ratio']
                 || collect($record->config['frames'] ?? [])->mapWithKeys(fn ($f) => [$f['mediaId'] => $f['method']])->sortKeys()->all() !== collect($config['frames'])->mapWithKeys(fn ($f) => [$f['mediaId'] => $f['method']])->sortKeys()->all();
             $reviewFields = ['reviewedOutputIds', 'reviewedFrameIds'];
@@ -193,6 +195,62 @@ class StudioWorkspaceController extends StudioController
         $data = $request->validate(['logo' => ['required', 'file', 'mimes:png,jpg,jpeg,webp', 'max:2048']]);
 
         return response()->json(['success' => true, 'data' => app(\App\Services\Studio\WorkspacePhotoLogo::class)->store($record, $data['logo']->get())], 201);
+    }
+
+    public function uploadAudio(Request $request, string $workspace, WorkspaceVideoAudio $audio): JsonResponse
+    {
+        $record = $this->find($request, $workspace);
+        $data = $request->validate(['version' => ['required', 'integer', 'min:1'], 'audio' => ['required', 'file', 'mimes:mp3,mpga,m4a,mp4,aac,wav,flac', 'max:20480']]);
+        abort_unless($record->isVideo(), 422, 'Audio is available for video projects.');
+        abort_if($record->isBusy() || $record->version !== (int) $data['version'], 409, 'The workspace changed. Refresh before adding audio.');
+        $asset = $audio->store($record, $data['audio']);
+        try {
+            // Transcoding is deliberately outside the write transaction. Recheck authorization and
+            // use a single conditional write so a concurrent generation cannot accept stale audio.
+            $this->find($request, $workspace);
+            $updated = StudioWorkspace::whereKey($record->id)->where('version', $data['version'])
+                ->whereNotIn('status', ['preparing', 'generating'])->increment('version');
+            abort_unless($updated === 1, 409, 'The workspace changed. Refresh before adding audio.');
+        } catch (\Throwable $exception) {
+            $audio->delete($record, $asset['id']);
+            throw $exception;
+        }
+        $asset['workspaceVersion'] = $record->version + 1;
+
+        return response()->json(['success' => true, 'data' => $asset], 201);
+    }
+
+    public function audioLibrary(Request $request, string $workspace, WorkspaceVideoAudio $assets): JsonResponse
+    {
+        $record = $this->find($request, $workspace);
+
+        return response()->json(['success' => true, 'data' => $assets->all($record), 'workspaceVersion' => $record->version]);
+    }
+
+    public function previewAudio(Request $request, string $workspace, string $audio, WorkspaceVideoAudio $assets)
+    {
+        $record = $this->find($request, $workspace);
+
+        return response()->file($assets->path($record, $audio), ['Content-Type' => 'audio/mp4', 'Cache-Control' => 'private, no-store', 'X-Content-Type-Options' => 'nosniff']);
+    }
+
+    public function deleteAudio(Request $request, string $workspace, string $audio, WorkspaceVideoAudio $assets): JsonResponse
+    {
+        $record = $this->find($request, $workspace);
+        $data = $request->validate(['version' => ['required', 'integer', 'min:1']]);
+
+        return DB::transaction(function () use ($record, $data, $audio, $assets): JsonResponse {
+            // Acquire the SQLite writer before reading config and removing the immutable asset.
+            $changed = StudioWorkspace::whereKey($record->id)->where('version', $data['version'])
+                ->whereNotIn('status', ['preparing', 'generating'])->increment('version');
+            abort_unless($changed === 1, 409, 'The workspace changed. Refresh before removing audio.');
+            $record = $record->fresh();
+            abort_if(data_get($record->config, 'audio.musicId') === $audio, 409, 'Remove this audio from Sound before deleting it.');
+            $assets->metadata($record, $audio);
+            $assets->delete($record, $audio);
+
+            return $this->respond($record);
+        });
     }
 
     public function cancel(Request $request, string $workspace): JsonResponse
@@ -321,6 +379,7 @@ class StudioWorkspaceController extends StudioController
                 VirtualStagingOptions::assert($record->config['adjustments'] ?? []);
             }
             if ($record->isVideo() && $type === 'generate') {
+                app(WorkspaceVideoAudio::class)->path($record, data_get($record->config, 'audio.musicId'));
                 abort_if($record->preset_id === 'walkthrough' && ! filled(config('services.fal.walkthrough_model')), 503, 'The start/end-frame walkthrough model is not configured.');
                 $frameIds = array_column($record->config['frames'] ?? [], 'mediaId');
                 if (! $frameIds) {
@@ -401,14 +460,20 @@ class StudioWorkspaceController extends StudioController
             'config.reviewedFrameIds' => ['sometimes', 'array', 'max:300'], 'config.reviewedFrameIds.*' => ['string', 'max:200'],
             'config.frames.*.mediaId' => ['required', 'string', 'distinct'], 'config.frames.*.method' => ['required', Rule::in(['extend', 'crop', 'fit'])],
             'config.frames.*.duration' => ['sometimes', 'numeric', 'between:0.5,30'], 'config.frames.*.prompt' => ['sometimes', 'nullable', 'string', 'max:2000'],
+            ...WorkspaceVideoOptions::rules(),
         ]);
     }
 
-    private function config(array $config, array $media, string $preset): array
+    private function config(array $config, array $media, string $preset, ?StudioWorkspace $workspace = null): array
     {
         // Runtime state and file references are exclusively server-owned.
-        $config = \Illuminate\Support\Arr::only($config, ['prompt', 'ratio', 'duration', 'transition', 'transitionDuration', 'text', 'adjustments', 'frames', 'reviewedOutputIds', 'reviewedFrameIds']);
+        $config = \Illuminate\Support\Arr::only($config, ['prompt', 'ratio', 'duration', 'transition', 'transitionDuration', 'text', 'adjustments', 'frames', 'reviewedOutputIds', 'reviewedFrameIds', 'resolution', 'audio']);
         $config = array_replace_recursive(['prompt' => '', 'ratio' => '9:16', 'duration' => 30, 'transition' => 'none', 'transitionDuration' => 0.4, 'text' => ['title' => '', 'subtitle' => '', 'style' => 'none', 'position' => 'bottom'], 'adjustments' => [], 'frames' => []], $config);
+        $config = WorkspaceVideoOptions::normalize($config);
+        if ($id = $config['audio']['musicId']) {
+            abort_unless($workspace && in_array($preset, ['property-reel', 'walkthrough', 'social-teaser'], true), 422, 'Upload audio to this video workspace before selecting it.');
+            app(WorkspaceVideoAudio::class)->path($workspace, $id);
+        }
         $config['adjustments'] = \App\Services\Studio\PhotoPresetOptions::normalize($preset, $config['adjustments']);
         $ids = array_column($media, 'id');
         foreach ($config['frames'] as $frame) {

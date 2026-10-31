@@ -61,6 +61,8 @@ class GenerateReel implements ShouldQueue
         $tempClips = [];
 
         try {
+            // Reject missing or unowned private audio before any paid provider submission.
+            app(\App\Services\Studio\WorkspaceVideoAudio::class)->forJob($job);
             $job->markAsProcessing();
             $this->sourceDisk = ($job->workflow_config['sourceDisk'] ?? null) === 'public' ? 'public' : (string) config('studio_uploads.disk', 'public');
             $reuse = app(WorkspaceClipReuse::class);
@@ -289,10 +291,11 @@ class GenerateReel implements ShouldQueue
             $outputDir = "reels/{$job->id}";
             $publicDisk->makeDirectory($outputDir);
             $relativePath = "{$outputDir}/reprophotos_reel.mp4";
-            app(\App\Services\Studio\ReelCompositionService::class)->compose($localClips, $publicDisk->path($relativePath), $workDir, $job->workflow_config);
+            $metadata = app(\App\Services\Studio\ReelCompositionService::class)->compose($localClips, $publicDisk->path($relativePath), $workDir, $job->workflow_config,
+                app(\App\Services\Studio\WorkspaceVideoAudio::class)->forJob($job));
             $this->removeDirectory($workDir);
 
-            return ['reel' => ['label' => ($job->workflow_config['ratio'] ?? '9:16').' reel', 'url' => $publicDisk->url($relativePath)]];
+            return ['reel' => ['label' => ($job->workflow_config['ratio'] ?? '9:16').' reel', 'url' => $publicDisk->url($relativePath), 'path' => $relativePath] + $metadata];
         }
         $clipSpeedFactor = $secondsPerClip > self::NATIVE_CLIP_SECONDS
             ? $secondsPerClip / self::NATIVE_CLIP_SECONDS
@@ -383,7 +386,7 @@ class GenerateReel implements ShouldQueue
 
     private function ffmpeg(array $args): void
     {
-        $process = new Process(array_merge(['ffmpeg'], $args));
+        $process = new Process(array_merge([config('studio.ffmpeg_path', 'ffmpeg')], $args));
         $process->setTimeout(600);
         $process->run();
 

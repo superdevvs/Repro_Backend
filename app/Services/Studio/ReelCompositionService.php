@@ -10,15 +10,26 @@ class ReelCompositionService
 {
     public const TRANSITIONS = ['none', 'fade', 'fadeblack', 'dissolve', 'slideleft', 'slideright', 'smoothleft', 'smoothright', 'wipeleft', 'wiperight'];
 
-    public function compose(array $clips, string $output, string $directory, array $config): void
+    public function compose(array $clips, string $output, string $directory, array $config, ?string $musicPath = null): array
     {
         $count = count($clips);
         if (! $count) {
             throw new RuntimeException('No clips were available for assembly.');
         }
-        [$width, $height] = match ($config['ratio'] ?? '9:16') {
-            '16:9' => [1920, 1080], '1:1' => [1080, 1080], '4:5' => [1080, 1350], default => [1080, 1920],
-        };
+        if ($count > 12) {
+            throw new RuntimeException('A reel supports at most 12 selected source photos.');
+        }
+        $config = WorkspaceVideoOptions::normalize($config);
+        if (! in_array($config['resolution'], WorkspaceVideoOptions::RESOLUTIONS, true)) {
+            throw new RuntimeException('Unsupported video resolution.');
+        }
+        if ($config['audio']['musicId'] && (! $musicPath || ! is_file($musicPath))) {
+            throw new RuntimeException('The selected workspace audio is unavailable.');
+        }
+        [$width, $height] = WorkspaceVideoOptions::dimensions($config);
+        $probes = array_map(fn ($clip) => $this->probe($clip), $clips);
+        $original = $config['audio']['original'] && collect($probes)->contains(fn ($info) => $info['hasAudio']);
+        $music = $config['audio']['musicId'] && $musicPath && $config['audio']['musicVolume'] > 0;
         $duration = max(5, min(120, (float) ($config['duration'] ?? 30)));
         $transition = $config['transition'] ?? 'none';
         if (! in_array($transition, self::TRANSITIONS, true)) {
@@ -32,10 +43,24 @@ class ReelCompositionService
             $handles = ($index > 0 ? $overlap / 2 : 0) + ($index < $count - 1 ? $overlap / 2 : 0);
             $seconds = $sceneDurations[$index] + $handles;
             $path = $directory.'/normalized-'.$index.'.mp4';
-            $native = $this->duration($clip);
+            $native = $probes[$index]['durationSeconds'];
             $speed = $seconds / max(0.01, $native);
             $filter = "scale={$width}:{$height}:force_original_aspect_ratio=increase,crop={$width}:{$height},setsar=1,setpts=".$this->n($speed).'*(PTS-STARTPTS),fps=30,tpad=stop_mode=clone:stop_duration=1,trim=duration='.$this->n($seconds).',settb=AVTB,format=yuv420p';
-            $this->run(['-y', '-i', $clip, '-vf', $filter, '-an', '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', $path]);
+            $args = ['-y', '-i', $clip];
+            if ($original && ! $probes[$index]['hasAudio']) {
+                array_push($args, '-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo');
+            }
+            array_push($args, '-map', '0:v:0', '-vf', $filter);
+            if ($original) {
+                $tempo = $probes[$index]['hasAudio'] ? ','.$this->tempo($native / $seconds) : '';
+                array_push($args, '-map', $probes[$index]['hasAudio'] ? '0:a:0' : '1:a:0', '-af',
+                    'aformat=sample_fmts=flt:sample_rates=48000:channel_layouts=stereo'.$tempo.',apad,atrim=duration='.$this->n($seconds).',asetpts=PTS-STARTPTS',
+                    '-c:a', 'aac', '-ac', '2', '-ar', '48000', '-b:a', '192k');
+            } else {
+                $args[] = '-an';
+            }
+            array_push($args, '-t', $this->n($seconds), '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', $path);
+            $this->run($args);
             $normalized[] = $path;
         }
         $assembled = $directory.'/assembled.mp4';
@@ -47,30 +72,69 @@ class ReelCompositionService
             $filters = [];
             foreach ($normalized as $index => $path) {
                 $filters[] = "[{$index}:v]settb=AVTB,setpts=PTS-STARTPTS,fps=30[v{$index}]";
+                if ($original) {
+                    $filters[] = "[{$index}:a]asetpts=PTS-STARTPTS[a{$index}]";
+                }
             }
             $previous = 'v0';
+            $previousAudio = 'a0';
             $elapsed = 0;
             for ($index = 1; $index < $count; $index++) {
                 $elapsed += $sceneDurations[$index - 1];
                 $next = 'join'.$index;
                 $filters[] = "[{$previous}][v{$index}]xfade=transition={$transition}:duration=".$this->n($overlap).':offset='.$this->n($elapsed - $overlap / 2)."[{$next}]";
                 $previous = $next;
+                if ($original) {
+                    $nextAudio = 'audiojoin'.$index;
+                    $filters[] = "[{$previousAudio}][a{$index}]acrossfade=d=".$this->n($overlap).":c1=tri:c2=tri[{$nextAudio}]";
+                    $previousAudio = $nextAudio;
+                }
             }
-            array_push($args, '-filter_complex', implode(';', $filters), '-map', '['.$previous.']', '-t', $this->n($duration), '-an', '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', $assembled);
+            array_push($args, '-filter_complex', implode(';', $filters), '-map', '['.$previous.']', '-t', $this->n($duration));
+            if ($original) {
+                array_push($args, '-map', '['.$previousAudio.']', '-c:a', 'aac', '-ac', '2', '-ar', '48000', '-b:a', '192k');
+            } else {
+                $args[] = '-an';
+            }
+            array_push($args, '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', $assembled);
             $this->run($args);
         } else {
             $list = $directory.'/assemble.txt';
             file_put_contents($list, implode("\n", array_map(fn ($path) => "file '".str_replace("'", "'\\''", str_replace('\\', '/', $path))."'", $normalized)));
             $this->run(['-y', '-f', 'concat', '-safe', '0', '-i', $list, '-c', 'copy', '-t', $this->n($duration), $assembled]);
         }
-        $filters = $this->textFilters($config['text'] ?? [], $width, $height, $sceneDurations, $directory);
-        if ($filters === []) {
-            if (! copy($assembled, $output)) {
-                throw new RuntimeException('The finished reel could not be saved.');
-            }
-        } else {
-            $this->run(['-y', '-i', $assembled, '-vf', implode(',', $filters), '-an', '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', $output]);
+        $text = $this->textFilters($config['text'] ?? [], $width, $height, $sceneDurations, $directory);
+        $args = ['-y', '-i', $assembled];
+        if ($music) {
+            array_push($args, '-stream_loop', '-1', '-i', $musicPath);
         }
+        array_push($args, '-map', '0:v:0');
+        if ($text === []) {
+            array_push($args, '-c:v', 'copy');
+        } else {
+            array_push($args, '-vf', implode(',', $text), '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p');
+        }
+        if ($original || $music) {
+            $filters = [];
+            if ($music) {
+                $filters[] = '[1:a:0]aresample=48000,volume='.$this->n($config['audio']['musicVolume']).',apad,atrim=duration='.$this->n($duration).',asetpts=PTS-STARTPTS[music]';
+            }
+            if ($original && $music) {
+                $filters[] = '[0:a:0][music]amix=inputs=2:duration=first:normalize=0,alimiter=limit=0.95[mixed]';
+                $source = 'mixed';
+            } else {
+                $source = $music ? 'music' : '0:a:0';
+            }
+            $fade = $config['audio']['fade'] ? ',afade=t=in:st=0:d=0.5,afade=t=out:st='.$this->n(max(0, $duration - 0.5)).':d=0.5' : '';
+            $filters[] = '['.$source.']apad,atrim=duration='.$this->n($duration).$fade.'[finished_audio]';
+            array_push($args, '-filter_complex', implode(';', $filters), '-map', '[finished_audio]', '-c:a', 'aac', '-ac', '2', '-ar', '48000', '-b:a', '192k');
+        } else {
+            $args[] = '-an';
+        }
+        array_push($args, '-t', $this->n($duration), '-movflags', '+faststart', $output);
+        $this->run($args);
+
+        return $this->probe($output) + ['resolution' => $config['resolution'], 'originalAudio' => (bool) $original, 'musicAudio' => (bool) $music];
     }
 
     public function durations(int $count, float $total, array $frames): array
@@ -156,13 +220,34 @@ class ReelCompositionService
         throw new RuntimeException('A render font is required. Configure FAL_REEL_FONT with an installed font path.');
     }
 
-    private function duration(string $path): float
+    private function probe(string $path): array
     {
-        $process = new Process(['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', $path]);
+        $process = new Process([config('studio.ffprobe_path', 'ffprobe'), '-v', 'error', '-show_entries', 'format=duration:stream=codec_type,width,height', '-of', 'json', $path]);
         $process->setTimeout(60);
         $process->mustRun();
 
-        return max(0.01, (float) trim($process->getOutput()));
+        $info = json_decode($process->getOutput(), true, 64, JSON_THROW_ON_ERROR);
+        $video = collect($info['streams'] ?? [])->firstWhere('codec_type', 'video');
+
+        return ['width' => (int) ($video['width'] ?? 0), 'height' => (int) ($video['height'] ?? 0),
+            'durationSeconds' => max(0.01, (float) ($info['format']['duration'] ?? 0)),
+            'hasAudio' => collect($info['streams'] ?? [])->contains('codec_type', 'audio')];
+    }
+
+    private function tempo(float $value): string
+    {
+        $parts = [];
+        while ($value < 0.5) {
+            $parts[] = 'atempo=0.5';
+            $value /= 0.5;
+        }
+        while ($value > 2) {
+            $parts[] = 'atempo=2';
+            $value /= 2;
+        }
+        $parts[] = 'atempo='.$this->n($value);
+
+        return implode(',', $parts);
     }
 
     private function filterPath(string $path): string
@@ -177,7 +262,9 @@ class ReelCompositionService
 
     private function run(array $args): void
     {
-        $process = new Process(array_merge(['ffmpeg', '-threads', '2'], $args));
+        // Input-side -threads does not constrain libx264's output encoder.
+        array_splice($args, count($args) - 1, 0, ['-threads:v', '2', '-threads:a', '2']);
+        $process = new Process(array_merge([config('studio.ffmpeg_path', 'ffmpeg'), '-nostdin', '-threads', '2', '-filter_threads', '1', '-filter_complex_threads', '1'], $args));
         $process->setTimeout(1200);
         $process->run();
         if (! $process->isSuccessful()) {

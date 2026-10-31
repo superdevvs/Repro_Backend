@@ -51,21 +51,31 @@ class WorkspaceClipReuseFeatureTest extends TestCase
         $this->mock(ReelCompositionService::class)->shouldReceive('compose')->times(3)->andReturnUsing(function ($clips, $output, $directory, $config) use (&$assemblies) {
             $assemblies[] = ['clips' => array_map('file_get_contents', $clips), 'config' => $config];
             file_put_contents($output, 'rendered-fixture');
+
+            return ['resolution' => $config['resolution'] ?? '1080p', 'width' => 1080, 'height' => 1920, 'hasAudio' => false];
         });
         try {
             $this->generate($workspace);
             $this->assertSame(6, $submitted);
+            $this->getJson('/api/studio/workspaces/'.$workspace->id)->assertOk()
+                ->assertJsonPath('data.outputs.0.resolution', '1080p')->assertJsonPath('data.outputs.0.hasAudio', false);
             $firstJob = AiReelJob::findOrFail($workspace->outputs[0]['reelJobId']);
             $this->assertCount(6, data_get($firstJob->workflow_config, '_studioRuntime.localClips'));
             foreach (data_get($firstJob->workflow_config, '_studioRuntime.localClips') as $path) {
                 Storage::disk('local')->assertExists($path);
             }
 
-            $this->patchJson('/api/studio/workspaces/'.$workspace->id, ['config' => ['duration' => 45, 'transition' => 'fade', 'text' => ['style' => 'graphic', 'title' => 'New property title']]])->assertOk();
+            $this->patchJson('/api/studio/workspaces/'.$workspace->id, ['config' => ['duration' => 45, 'resolution' => '720p', 'audio' => ['original' => true], 'transition' => 'fade', 'text' => ['style' => 'graphic', 'title' => 'New property title']]])->assertOk();
             $this->generate($workspace);
             $this->assertSame(6, $submitted, 'Finishing changes must not submit any motion generation.');
             $this->assertSame($assemblies[0]['clips'], $assemblies[1]['clips']);
             $this->assertSame(45, $assemblies[1]['config']['duration']);
+            $this->assertSame('720p', $assemblies[1]['config']['resolution']);
+            $this->assertTrue($assemblies[1]['config']['audio']['original']);
+            $this->getJson('/api/studio/workspaces/'.$workspace->id)->assertOk()
+                ->assertJsonPath('data.outputs.0.resolution', '1080p')->assertJsonPath('data.outputs.1.resolution', '720p')
+                ->assertJsonPath('data.outputs.1.hasAudio', false);
+            $this->get('/api/studio/workspaces/'.$workspace->id.'/outputs/'.$workspace->outputs[1]['id'].'/download')->assertOk();
 
             $prepared = $workspace->prepared_frames;
             $prepared[3]['path'] = "studio/workspaces/{$workspace->id}/scene4-v2.jpg";

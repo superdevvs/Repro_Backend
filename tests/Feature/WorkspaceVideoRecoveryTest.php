@@ -53,6 +53,8 @@ class WorkspaceVideoRecoveryTest extends TestCase
             $this->mock(ReelCompositionService::class)->shouldReceive('compose')->once()->andReturnUsing(function ($clips, $output) {
                 $this->assertCount(2, $clips);
                 file_put_contents($output, 'finished-reel');
+
+                return ['resolution' => '1080p', 'hasAudio' => false];
             });
             (new GenerateReel($job->id))->handle($retry, app(ShootFileAccessService::class));
             $this->assertSame('completed', $job->fresh()->status);

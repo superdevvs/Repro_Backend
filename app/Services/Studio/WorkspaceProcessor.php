@@ -255,6 +255,7 @@ class WorkspaceProcessor
             return;
         }
         $jobId = $w->operation['reelJobId'] ?? null;
+        app(WorkspaceVideoAudio::class)->path($w, data_get($w->config, 'audio.musicId'));
         if (! $jobId) {
             $frames = collect($w->prepared_frames)->keyBy('mediaId');
             $ordered = collect($w->config['frames'] ?? []);
@@ -283,7 +284,8 @@ class WorkspaceProcessor
             $outputs = $w->outputs ?? [];
             $version = (int) collect($outputs)->where('kind', 'video')->max('version') + 1;
             foreach ($job->outputs as $format => $output) {
-                $outputs[] = ['id' => $operationId.'-'.$format, 'mediaId' => 'reel', 'url' => $output['url'], 'thumbnailUrl' => $w->prepared_frames[0]['url'] ?? null, 'kind' => 'video', 'version' => $version, 'status' => 'completed', 'reelJobId' => $job->id];
+                $outputs[] = ['id' => $operationId.'-'.$format, 'mediaId' => 'reel', 'url' => $output['url'], 'thumbnailUrl' => $w->prepared_frames[0]['url'] ?? null, 'kind' => 'video', 'version' => $version, 'status' => 'completed', 'reelJobId' => $job->id]
+                    + \Illuminate\Support\Arr::only($output, ['path', 'resolution', 'width', 'height', 'durationSeconds', 'hasAudio', 'originalAudio', 'musicAudio']);
             }
             $w->outputs = $outputs;
         });
