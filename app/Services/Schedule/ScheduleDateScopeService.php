@@ -259,7 +259,12 @@ class ScheduleDateScopeService
 
         $query->where(function (Builder $scope) use ($start, $end, $startDate, $endDate) {
             $scope->whereBetween('scheduled_at', [$start, $end])
-                ->orWhereBetween('scheduled_date', [$startDate, $endDate]);
+                ->orWhere(function (Builder $legacy) use ($startDate, $endDate) {
+                    // Eloquent's date cast may persist midnight timestamps rather
+                    // than bare dates. Include the whole final calendar day.
+                    $legacy->whereDate('scheduled_date', '>=', $startDate)
+                        ->whereDate('scheduled_date', '<=', $endDate);
+                });
         });
 
         if ($queryMutator) {

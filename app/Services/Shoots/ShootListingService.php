@@ -6,6 +6,7 @@ use App\Models\Service;
 use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Models\User;
+use App\Services\Schedule\ScheduleDateScopeService;
 use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
@@ -55,6 +56,17 @@ class ShootListingService
             return $this->privateListingDiscovery($request);
         }
 
+        $request->validate(['scheduled_local_date' => ['sometimes', 'required',
+            ...($request->query('scheduled_local_date') === 'today' ? ['in:today'] : ['date_format:Y-m-d']),
+        ]]);
+        $calendarZone = \App\Support\Timezone::canonical((string) config('schedule.calendar_timezone', 'America/New_York'));
+        if (!in_array($calendarZone, timezone_identifiers_list(\DateTimeZone::ALL_WITH_BC), true)) {
+            $calendarZone = 'America/New_York';
+        }
+        $calendar = ['timezone' => $calendarZone, 'today' => now($calendarZone)->toDateString()];
+        $localDate = $request->query('scheduled_local_date') === 'today'
+            ? $calendar['today'] : $request->query('scheduled_local_date');
+
         try {
             $tab = strtolower($request->query('tab', 'scheduled'));
             $isPrivateListingRequest = $request->query('private_listing') !== null;
@@ -79,7 +91,8 @@ class ShootListingService
             $isImpersonating = $request->attributes->get('is_impersonating', false);
             $impersonationSuffix = $isImpersonating ? '_imp' : '';
 
-            $cacheKey = 'shoots_index_access_v2_' . $userId . '_' . $userRole . $impersonationSuffix . '_' . $tab . '_' . $page . '_' . $perPage;
+            $cacheKey = 'shoots_index_access_v2_' . $userId . '_' . $userRole . $impersonationSuffix . '_' . $tab . '_' . $page . '_' . $perPage
+                . '_calendar_' . $calendarZone . '_' . $calendar['today'];
 
             // Every param that changes the result set has to be in the cache key.
             // `bracket`, `missing` and `limit` were applied to the query but absent
@@ -88,7 +101,7 @@ class ShootListingService
             // the 5x list.
             $filterParams = $request->only([
                 'client_id', 'photographer_id', 'sales_rep_id', 'payment_status', 'services', 'search', 'address', 'shoot_id',
-                'date_range', 'scheduled_start', 'scheduled_end',
+                'date_range', 'scheduled_start', 'scheduled_end', 'scheduled_local_date',
                 'completed_start', 'completed_end', 'custom_start', 'custom_end',
                 'date_from', 'date_to', 'private_listing', 'listing_scope', 'include_hidden',
                 'bracket', 'missing', 'limit', 'scheduled_status', 'hold_status', 'sort', 'dashboard_open', 'view', 'include_filters',
@@ -96,6 +109,7 @@ class ShootListingService
             $filterParams = array_filter($filterParams, function ($value) {
                 return $value !== null && $value !== '';
             });
+            if ($localDate) { $filterParams['scheduled_local_date'] = $localDate; }
             ksort($filterParams);
             if (!empty($filterParams)) {
                 $cacheKey .= '_' . md5(json_encode($filterParams));
@@ -182,6 +196,9 @@ class ShootListingService
                 $query->where('status', $request->query('hold_status'));
             }
             $this->applyOperationalFilters($query, $request, $tab, $user);
+            if ($request->filled('scheduled_local_date')) {
+                $this->applyScheduledLocalDate($query, $localDate);
+            }
 
             $maxLimit = 1000;
             $requestLimit = (int) $request->query('limit', $maxLimit);
@@ -229,6 +246,8 @@ class ShootListingService
                     'current_page' => $shoots->currentPage(),
                     'per_page' => $shoots->perPage(),
                     'last_page' => $shoots->lastPage(),
+                    'calendar_context' => $calendar,
+                    ...($localDate ? ['scheduled_local_date' => $localDate] : []),
                     ...($request->boolean('include_filters', true) ? ['filters' => $this->buildOperationalFilterMeta($request, $user)] : []),
                 ],
             ];
@@ -470,6 +489,19 @@ class ShootListingService
             ->all();
 
         Cache::put(self::CACHE_REGISTRY_KEY, $keys, now()->addDay());
+    }
+
+    /** Filter before pagination using property-local dates, including scheduled_at-only rows. */
+    protected function applyScheduledLocalDate(Builder $query, string $date): void
+    {
+        $accessible = (clone $query)->reorder()->select('shoots.id');
+        $ids = app(ScheduleDateScopeService::class)->shootsForLocalDate($date, [],
+            fn (Builder $candidates) => $candidates
+                ->select(['shoots.id', 'scheduled_at', 'scheduled_date', 'time', 'timezone'])
+                ->whereIn('shoots.id', $accessible)
+        )->modelKeys();
+
+        $query->whereIn('shoots.id', $ids);
     }
 
     protected function applyTabScope(Builder $query, string $tab, ?User $user = null, bool $dashboardOpen = false): void
