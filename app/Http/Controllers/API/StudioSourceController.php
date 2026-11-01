@@ -6,6 +6,7 @@ use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Models\User;
 use App\Services\Shoots\ShootAuthorizationSupport;
+use App\Services\Schedule\ScheduleDateScopeService;
 use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
@@ -50,15 +51,27 @@ class StudioSourceController extends StudioController
 
         $validated = $request->validate([
             'q' => ['nullable', 'string', 'max:200'],
+            'page' => ['sometimes', 'integer', 'between:1,5000'],
+            'per_page' => ['sometimes', 'integer', 'between:1,50'],
+            'scheduled_local_date' => ['sometimes', 'nullable', 'date_format:Y-m-d'],
         ]);
         $search = trim((string) ($validated['q'] ?? ''));
+        $paged = $request->hasAny(['page', 'per_page']);
+        $page = (int) ($validated['page'] ?? 1);
+        $perPage = (int) ($validated['per_page'] ?? self::RESULT_LIMIT);
+        $localDate = $validated['scheduled_local_date'] ?? null;
 
         if ($search === '' && ! static::BROWSE_RECENT_SHOOTS) {
-            return $this->shootSearchResponse($search, collect());
+            return $this->shootSearchResponse($search, collect(), $paged
+                ? $this->shootSearchPageMeta($page, $perPage, false, 0, $localDate) : null);
         }
 
         $like = '%'.$search.'%';
-        $shoots = $this->scopeShootQuery(Shoot::query(), $request->user())
+        $query = $this->scopeShootQuery(Shoot::query(), $request->user())
+            ->select(array_map(fn (string $column): string => 'shoots.'.$column, [
+                'id', 'property_slug', 'mls_id', 'address', 'city', 'state', 'zip',
+                'hero_image', 'updated_at', 'scheduled_at', 'scheduled_date', 'time', 'timezone',
+            ]))
             ->when($search !== '', fn (Builder $query) => $query->where(function (Builder $query) use ($search, $like): void {
                 $query->where('property_slug', 'like', $like)
                     ->orWhere('mls_id', 'like', $like)
@@ -70,9 +83,32 @@ class StudioSourceController extends StudioController
                 if (ctype_digit($search)) {
                     $query->orWhere('id', (int) $search);
                 }
-            }))
-            ->latest('updated_at')
-            ->latest('id')
+            }));
+
+        if ($localDate !== null) {
+            // Resolve property-local dates in the existing bounded day window,
+            // after access/search scopes and before slicing a page.
+            $accessible = (clone $query)->reorder()->select('shoots.id');
+            $ids = app(ScheduleDateScopeService::class)->shootsForLocalDate($localDate, [],
+                fn (Builder $candidates) => $candidates
+                    ->select(['shoots.id', 'status', 'scheduled_at', 'scheduled_date', 'time', 'timezone'])
+                    ->whereIn('shoots.id', $accessible)
+            )->modelKeys();
+            $query->whereIn('shoots.id', $ids);
+        }
+
+        $query->latest('updated_at')->latest('id');
+        if ($paged) {
+            // Simple pagination fetches one look-ahead row, not a separate
+            // whole-library count or an unbounded collection of models.
+            $paginator = $query->simplePaginate($perPage, ['*'], 'page', $page);
+            $shoots = $paginator->getCollection()->map(fn (Shoot $shoot): array => $this->presentShoot($shoot, true));
+
+            return $this->shootSearchResponse($search, $shoots,
+                $this->shootSearchPageMeta($page, $perPage, $paginator->hasMorePages(), $shoots->count(), $localDate));
+        }
+
+        $shoots = $query
             ->limit(self::RESULT_LIMIT)
             ->get()
             ->map(fn (Shoot $shoot): array => $this->presentShoot($shoot));
@@ -309,7 +345,7 @@ class StudioSourceController extends StudioController
                 || $this->shootAuthorization->isRawCameraFile($file));
     }
 
-    private function presentShoot(Shoot $shoot): array
+    private function presentShoot(Shoot $shoot, bool $includeSchedule = false): array
     {
         $location = collect([$shoot->city, $shoot->state, $shoot->zip])
             ->filter(fn ($value): bool => trim((string) $value) !== '')
@@ -324,6 +360,10 @@ class StudioSourceController extends StudioController
             'label' => $shoot->address ?: $identifier,
             'thumbnailUrl' => $shoot->hero_image,
             'updatedAt' => $shoot->updated_at?->toIso8601String(),
+            ...($includeSchedule ? [
+                'scheduledDate' => app(ScheduleDateScopeService::class)->localDateForShoot($shoot),
+                'timezone' => $this->sourceTimezone($shoot->timezone),
+            ] : []),
         ];
     }
 
@@ -348,15 +388,38 @@ class StudioSourceController extends StudioController
         ];
     }
 
-    private function shootSearchResponse(string $query, Collection $shoots): JsonResponse
+    private function shootSearchResponse(string $query, Collection $shoots, ?array $pagination = null): JsonResponse
     {
         return response()->json([
             'success' => true,
             'data' => $shoots->values(),
             'meta' => [
                 'query' => $query,
-                'total' => $shoots->count(),
+                ...($pagination ?? ['total' => $shoots->count()]),
             ],
         ]);
+    }
+
+    private function shootSearchPageMeta(int $page, int $perPage, bool $hasMore, int $returned, ?string $localDate): array
+    {
+        $calendarZone = $this->sourceTimezone((string) config('schedule.calendar_timezone', 'America/New_York'));
+
+        return [
+            'current_page' => $page,
+            'per_page' => $perPage,
+            'has_more' => $hasMore,
+            'next_page' => $hasMore ? $page + 1 : null,
+            'returned_count' => $returned,
+            'scheduled_local_date' => $localDate,
+            'calendar_context' => ['timezone' => $calendarZone, 'today' => now($calendarZone)->toDateString()],
+        ];
+    }
+
+    private function sourceTimezone(?string $timezone): string
+    {
+        $zone = \App\Support\Timezone::canonical(trim((string) ($timezone ?: config('app.timezone'))));
+
+        return in_array($zone, timezone_identifiers_list(\DateTimeZone::ALL_WITH_BC), true)
+            ? $zone : (string) config('app.timezone');
     }
 }
