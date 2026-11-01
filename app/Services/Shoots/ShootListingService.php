@@ -15,6 +15,7 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Validation\Rule;
 
 class ShootListingService
 {
@@ -56,9 +57,23 @@ class ShootListingService
             return $this->privateListingDiscovery($request);
         }
 
-        $request->validate(['scheduled_local_date' => ['sometimes', 'required',
-            ...($request->query('scheduled_local_date') === 'today' ? ['in:today'] : ['date_format:Y-m-d']),
-        ]]);
+        $booleanFilter = static function ($attribute, $value, $fail) {
+            if (! in_array($value, [true, false, 0, 1, '0', '1', 'true', 'false'], true)) {
+                $fail("The {$attribute} field must be true or false.");
+            }
+        };
+        $request->validate([
+            'scheduled_local_date' => ['sometimes', 'required',
+                ...($request->query('scheduled_local_date') === 'today' ? ['in:today'] : ['date_format:Y-m-d']),
+            ],
+            'statuses' => ['sometimes', 'array', 'max:13'],
+            'statuses.*' => ['string', Rule::in(app(ShootStatusFilter::class)->values())],
+            'unassigned_only' => ['sometimes', $booleanFilter],
+            'flagged_only' => ['sometimes', $booleanFilter],
+        ]);
+        $filterCapabilities = $this->filterCapabilities($user);
+        abort_if($request->boolean('unassigned_only') && ! $filterCapabilities['assignments'], 403, 'Assignment filters are not available for this role.');
+        abort_if($request->boolean('flagged_only') && ! $filterCapabilities['priority'], 403, 'Priority filters are not available for this role.');
         $calendarZone = \App\Support\Timezone::canonical((string) config('schedule.calendar_timezone', 'America/New_York'));
         if (!in_array($calendarZone, timezone_identifiers_list(\DateTimeZone::ALL_WITH_BC), true)) {
             $calendarZone = 'America/New_York';
@@ -91,7 +106,7 @@ class ShootListingService
             $isImpersonating = $request->attributes->get('is_impersonating', false);
             $impersonationSuffix = $isImpersonating ? '_imp' : '';
 
-            $cacheKey = 'shoots_index_access_v2_' . $userId . '_' . $userRole . $impersonationSuffix . '_' . $tab . '_' . $page . '_' . $perPage
+            $cacheKey = 'shoots_index_access_v3_' . $userId . '_' . $userRole . $impersonationSuffix . '_' . $tab . '_' . $page . '_' . $perPage
                 . '_calendar_' . $calendarZone . '_' . $calendar['today'];
 
             // Every param that changes the result set has to be in the cache key.
@@ -105,6 +120,7 @@ class ShootListingService
                 'completed_start', 'completed_end', 'custom_start', 'custom_end',
                 'date_from', 'date_to', 'private_listing', 'listing_scope', 'include_hidden',
                 'bracket', 'missing', 'limit', 'scheduled_status', 'hold_status', 'sort', 'dashboard_open', 'view', 'include_filters',
+                'statuses', 'unassigned_only', 'flagged_only',
             ]);
             $filterParams = array_filter($filterParams, function ($value) {
                 return $value !== null && $value !== '';
@@ -619,6 +635,15 @@ class ShootListingService
 
     protected function applyOperationalFilters(Builder $query, Request $request, string $tab, ?User $user = null): void
     {
+        app(ShootStatusFilter::class)->apply($query, $request->query('statuses', []));
+        if ($request->boolean('unassigned_only')) {
+            // Match the web's main-photographer filter. This does not assert
+            // that every individual service has an assignment.
+            $query->whereNull('photographer_id');
+        }
+        if ($request->boolean('flagged_only')) {
+            $query->where('is_flagged', true);
+        }
         if ($request->filled('shoot_id')) $query->whereKey($request->integer('shoot_id'));
         $search = trim((string) $request->query('search', ''));
         if ($search !== '') {
@@ -776,6 +801,8 @@ class ShootListingService
                 'clients' => $clients,
                 'photographers' => $photographers,
                 'services' => $services,
+                'statuses' => app(ShootStatusFilter::class)->options(),
+                'filter_capabilities' => $this->filterCapabilities($user),
             ];
         };
 
@@ -785,8 +812,18 @@ class ShootListingService
             return $build();
         }
 
-        $cacheKey = 'shoots_filter_meta_access_v3_' . $user->id . '_' . $user->role;
+        $cacheKey = 'shoots_filter_meta_access_v4_' . $user->id . '_' . $user->role;
         return Cache::remember($cacheKey, now()->addMinutes(5), $build);
+    }
+
+    protected function filterCapabilities(?User $user): array
+    {
+        $authorization = app(ShootAuthorizationSupport::class);
+
+        return [
+            'assignments' => $authorization->hasRole($user, ['admin', 'superadmin', 'editing_manager', 'salesRep']),
+            'priority' => $authorization->hasRole($user, ['admin', 'superadmin', 'editing_manager', 'salesRep', 'editor', 'photographer']),
+        ];
     }
 
     protected function applySearchFilter(Builder $query, string $term): void
