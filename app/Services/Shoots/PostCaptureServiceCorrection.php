@@ -50,13 +50,15 @@ class PostCaptureServiceCorrection
             if (! $target) return false;
             if (! $target->requiresPhotographer()) continue;
             // Additional onsite work is a new booking obligation. Only a
-            // one-for-one correction within the same category/unit can reuse
-            // the completed visit; adding another capture still checks travel.
+            // one-for-one correction within the same unit can reuse the
+            // completed visit; adding another capture still checks travel.
             $unitId = $row['shoot_unit_id'] ?? $units->firstWhere('client_key', $row['unit_client_key'] ?? null)?->id;
-            $sources = $removed->filter(fn ($line) => ! isset($replaced[$line->id]) && $target->category_id
+            $sources = $removed->filter(fn ($line) => ! isset($replaced[$line->id])
                 && $line->service?->requiresPhotographer()
-                && (int) $line->service->category_id === (int) $target->category_id
                 && (int) $line->shoot_unit_id === (int) $unitId);
+            $sameCategory = $sources->filter(fn ($line) => $target->category_id
+                && (int) $line->service->category_id === (int) $target->category_id);
+            if ($sameCategory->count() === 1) $sources = $sameCategory;
             if ($sources->count() !== 1) return false;
             $replaced[$sources->sole()->id] = true;
         }

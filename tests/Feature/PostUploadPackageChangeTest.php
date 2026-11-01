@@ -148,4 +148,19 @@ class PostUploadPackageChangeTest extends TestCase
         $this->assertSame(2, $item->fresh()->quantity);
         $this->assertSame($before, $other->fresh()->getRawOriginal());
     }
+
+    public function test_cross_category_replacement_keeps_the_confirmation_and_never_creates_a_past_visit(): void
+    {
+        foreach (['admin', 'salesRep'] as $role) {
+            [$shoot] = $this->fixture($role, 'uploaded');
+            $target = Service::factory()->photoVideoIntake()->create(['price' => 500]);
+            $payload = ['services' => [['id' => $target->id]], 'notify_client' => false, 'notify_photographer' => false];
+            $confirmation = $this->patchJson('/api/shoots/'.$shoot->id, $payload)->assertConflict();
+            $this->patchJson('/api/shoots/'.$shoot->id, $payload + ['confirm_service_detach' => true,
+                'service_detach_confirmation_token' => $confirmation->json('confirmation_token')])->assertOk();
+            $this->assertSame(2, $shoot->files()->whereNull('shoot_service_id')->count());
+            $this->assertNull($shoot->serviceItems()->sole()->scheduled_at);
+            $this->assertNull($shoot->serviceItems()->sole()->photographer_id);
+        }
+    }
 }
