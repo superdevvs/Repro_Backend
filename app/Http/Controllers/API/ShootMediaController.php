@@ -1010,7 +1010,8 @@ class ShootMediaController extends Controller
             'file_ids.*' => 'integer',
         ]);
 
-        if (! $this->shootAuthorizationSupport->hasRole($user, ['admin', 'superadmin', 'editing_manager', 'photographer', 'editor', 'client'])) {
+        $customerCuration = $this->shootAuthorizationSupport->isCustomerMediaCurator($user);
+        if (! $this->shootAuthorizationSupport->hasRole($user, ['admin', 'superadmin', 'editing_manager', 'photographer', 'editor']) && ! $customerCuration) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
         if ($this->shootAuthorizationSupport->isClientUser($user) && (string) $shoot->client_id !== (string) $user->id) {
@@ -1018,18 +1019,21 @@ class ShootMediaController extends Controller
         }
 
         $fileIds = $request->input('file_ids');
-        if (! $this->shootAuthorizationSupport->isClientUser($user)) {
+        if (! $customerCuration) {
             $this->ensureManageableFileIds($shoot, $fileIds, $user);
         }
-        if ($this->shootAuthorizationSupport->isClientUser($user)) {
-            $manageableCount = $shoot->files()
-                ->whereIn('id', $fileIds)
-                ->get()
-                ->filter(fn (ShootFile $file) => $this->shootAuthorizationSupport->isClientManageableEditedFile($file))
-                ->count();
+        if ($customerCuration) {
+            $files = $shoot->files()->whereIn('id', $fileIds)->get();
+            $canCurate = $this->shootAuthorizationSupport->canManageCustomerMediaCuration($shoot, $user);
+            // A contractor with a secondary rep role retains their assigned production files.
+            $contractorAccess = fn (ShootFile $file) => $this->shootAuthorizationSupport->hasRole($user, ['photographer', 'editor'])
+                && $this->shootAuthorizationSupport->canInteractWithShootMediaFile($shoot, $file, $user);
+            abort_unless($canCurate || $files->contains($contractorAccess), 403);
+            $manageableCount = $files->filter(fn (ShootFile $file) => $contractorAccess($file)
+                || ($canCurate && ! $file->is_hidden && $this->shootAuthorizationSupport->isCustomerCuratableFile($file)))->count();
 
             if ($manageableCount !== count(array_unique($fileIds))) {
-                return response()->json(['message' => 'Clients can only reorder visible edited media from their own shoot.'], 422);
+                return response()->json(['message' => 'Only authorized media from this shoot can be reordered.'], 422);
             }
         }
 

@@ -44,6 +44,26 @@ class CustomerMediaCurationTest extends TestCase
             'workflow_stage' => 'verified', 'scan_status' => 'clean', 'is_hidden' => false, 'is_cover' => false], $extra));
     }
 
+    #[DataProvider('actorRoles')]
+    public function test_customer_order_persists_and_refreshes_the_delivery_snapshot(string $role): void
+    {
+        $one = $this->file(); $two = $this->file();
+        $this->shoot->forceFill(['delivery_media_order' => [$one->id, $two->id]])->save();
+        Sanctum::actingAs($this->actor($role));
+        $endpoint = '/api/shoots/'.$this->shoot->id.'/files/reorder';
+        $this->patchJson($endpoint, ['file_ids' => [$two->id, $one->id]])->assertOk();
+        $this->assertSame(1, (int) $two->fresh()->sort_order);
+        $this->assertSame([$two->id, $one->id], $this->shoot->fresh()->delivery_media_order);
+        $hidden = $this->file(['is_hidden' => true]);
+        $raw = $this->file(['workflow_stage' => 'todo', 'media_type' => 'raw']);
+        foreach ([$hidden, $raw] as $denied) {
+            $this->patchJson($endpoint, ['file_ids' => [$denied->id, $one->id]])->assertStatus(422);
+        }
+        $this->shoot->forceFill(['rep_id' => null, 'client_id' => User::factory()->create(['role' => 'client'])->id])->save();
+        $this->patchJson($endpoint, ['file_ids' => [$one->id, $two->id]])->assertForbidden();
+        $this->assertSame([$two->id, $one->id], $this->shoot->fresh()->delivery_media_order);
+    }
+
     public static function actorRoles(): array
     {
         return ['owner client' => ['client'], 'assigned salesRep' => ['salesRep'], 'assigned sales_rep' => ['sales_rep'],
@@ -145,6 +165,7 @@ class CustomerMediaCurationTest extends TestCase
         $raw = $this->file(['shoot_service_id' => $items[0]->id, 'workflow_stage' => 'todo', 'media_type' => 'raw']);
         Sanctum::actingAs($actor);
         $endpoint = '/api/shoots/'.$this->shoot->id;
+        $this->patchJson($endpoint.'/files/reorder', ['file_ids' => [$raw->id, $own->id]])->assertOk();
         $this->postJson($endpoint.'/media/'.$own->id.'/cover')->assertOk();
         $this->patchJson($endpoint.'/files/toggle-hidden', ['file_ids' => [$own->id], 'hidden' => true])->assertOk();
         $row = collect($this->getJson($endpoint.'/files?type=edited&include_hidden=1')->assertOk()->json('data'))->firstWhere('id', $own->id);
