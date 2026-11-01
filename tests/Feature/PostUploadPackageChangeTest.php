@@ -116,6 +116,7 @@ class PostUploadPackageChangeTest extends TestCase
         [$shoot, $item, $target, $actor] = $this->fixture('admin', 'uploaded');
         $base = ['services' => [['id' => $target->id]]];
         $guard = app(PostCaptureServiceCorrection::class);
+        $this->assertFalse($guard->applies($shoot, $actor, ['services' => [['id' => $item->service_id], ['id' => $target->id]]]));
         $this->assertFalse($guard->applies($shoot, $actor, $base + ['scheduled_at' => '2026-11-02T15:00:00Z']));
         $this->assertFalse($guard->applies($shoot, $actor, $base + ['photographer_id' => User::factory()->photographer()->create()->id]));
         $this->assertFalse($guard->applies($shoot, $actor, ['services' => [['id' => $item->service_id, 'duration_minutes' => 170]]]));

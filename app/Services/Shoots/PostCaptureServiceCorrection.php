@@ -2,7 +2,7 @@
 
 namespace App\Services\Shoots;
 
-use App\Models\{Shoot, User};
+use App\Models\{Service, Shoot, User};
 use Carbon\Carbon;
 
 /** A catalog correction after capture does not book another photographer visit. */
@@ -32,7 +32,34 @@ class PostCaptureServiceCorrection
             if (array_key_exists($key, $data) && ! $this->same($key, $data[$key], $shoot->{$key}, $shoot)) return false;
         }
 
-        $items = $shoot->serviceItems()->get();
+        $items = $shoot->serviceItems()->with('service')->get();
+        $byLine = array_key_exists('service_lines', $data);
+        $selection = $data['service_lines'] ?? $data['services'];
+        $existing = fn ($row) => $byLine
+            ? $items->first(fn ($line) => isset($row['shoot_service_id']) ? (int) $line->id === (int) $row['shoot_service_id']
+                : isset($row['client_key']) && $line->client_key === $row['client_key'])
+            : $items->firstWhere('service_id', $row['service_id'] ?? $row['id'] ?? null);
+        $kept = collect($selection)->map(fn ($row) => $existing($row)?->id)->filter();
+        $removed = $items->whereNotIn('id', $kept);
+        $catalog = Service::whereIn('id', collect($selection)->map(fn ($row) => $row['service_id'] ?? $row['id'] ?? 0))->get()->keyBy('id');
+        $units = $byLine ? $shoot->units()->get() : collect();
+        $replaced = [];
+        foreach ($selection as $row) {
+            if ($existing($row)) continue;
+            $target = $catalog->get($row['service_id'] ?? $row['id'] ?? 0);
+            if (! $target) return false;
+            if (! $target->requiresPhotographer()) continue;
+            // Additional onsite work is a new booking obligation. Only a
+            // one-for-one correction within the same category/unit can reuse
+            // the completed visit; adding another capture still checks travel.
+            $unitId = $row['shoot_unit_id'] ?? $units->firstWhere('client_key', $row['unit_client_key'] ?? null)?->id;
+            $sources = $removed->filter(fn ($line) => ! isset($replaced[$line->id]) && $target->category_id
+                && $line->service?->requiresPhotographer()
+                && (int) $line->service->category_id === (int) $target->category_id
+                && (int) $line->shoot_unit_id === (int) $unitId);
+            if ($sources->count() !== 1) return false;
+            $replaced[$sources->sole()->id] = true;
+        }
         foreach (['services' => 'id', 'service_items' => 'service_id', 'service_lines' => 'service_id'] as $field => $idKey) {
             if (! isset($data[$field])) continue;
             if (! is_array($data[$field])) return false;
