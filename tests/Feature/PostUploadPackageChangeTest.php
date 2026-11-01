@@ -126,4 +126,25 @@ class PostUploadPackageChangeTest extends TestCase
         $shoot->files()->delete(); $shoot->update(['photos_uploaded_at' => null]);
         $this->assertFalse($guard->applies($shoot->fresh(), $actor, $base));
     }
+
+    public static function partialEditRoles(): array { return [['admin', false], ['salesRep', false], ['admin', true], ['salesRep', true]]; }
+
+    #[DataProvider('partialEditRoles')]
+    public function test_partial_item_edit_keeps_other_booked_services(string $role, bool $withSelection): void
+    {
+        [$shoot, $item] = $this->fixture($role, 'uploaded');
+        $item->service->update(['allow_multiple' => true]);
+        $addon = Service::factory()->noIntake()->create(['price' => 45, 'photographer_required' => false]);
+        $other = $shoot->serviceItems()->create(['service_id' => $addon->id, 'price' => 45, 'quantity' => 1, 'duration_minutes' => 0])->fresh();
+        $before = $other->getRawOriginal();
+        $payload = [
+            'service_items' => [['service_id' => $item->service_id, 'quantity' => 2]],
+            'notify_client' => false, 'notify_photographer' => false,
+        ];
+        if ($withSelection) $payload['services'] = [['id' => $item->service_id], ['id' => $addon->id]];
+        $this->patchJson('/api/shoots/'.$shoot->id, $payload)->assertOk();
+        $this->assertSame(2, $shoot->serviceItems()->count());
+        $this->assertSame(2, $item->fresh()->quantity);
+        $this->assertSame($before, $other->fresh()->getRawOriginal());
+    }
 }

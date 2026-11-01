@@ -11,7 +11,9 @@ class PostCaptureServiceCorrection
     public function applies(Shoot $shoot, ?User $actor, array $data): bool
     {
         if (($data['action_mode'] ?? 'update') !== 'update'
-            || ! array_intersect(['services', 'service_items', 'service_lines'], array_keys($data))
+            // services/service_lines replace the selection; service_items alone
+            // patches existing rows and must retain every omitted service.
+            || ! array_intersect(['services', 'service_lines'], array_keys($data))
             || ! app(ShootManagementAccess::class)->canEdit($shoot, $actor)
             || $shoot->isComplimentaryReshoot()
             || data_get($shoot->external_booking_payload, 'legacy_migration.historical_payments_only')

@@ -29,7 +29,10 @@ class DeliveredSalesServicePlan
             || (int) $data['expected_units_revision'] !== (int) $shoot->units_revision)) {
             $this->fail('The units changed in another session. Reload the shoot before saving.');
         }
-        $rows = $data['service_lines'] ?? $data['service_items'] ?? $data['services'];
+        $rows = $data['service_lines'] ?? (array_key_exists('services', $data)
+            ? app(ShootMutationSupportService::class)->mergeServiceItemPayload($data['services'], $data['service_items'] ?? null,
+                $data['service_photographers'] ?? null, null, true)
+            : $data['service_items']);
         $catalog = Service::with('category')->whereIn('id', collect($rows)->map(fn ($row) => $row['service_id'] ?? $row['id'] ?? 0))->get()->keyBy('id');
         $seen = [];
         $services = [];
