@@ -1,0 +1,16 @@
+{
+  "body" : {
+    "assignments" : [
+      {
+        "photographer_id" : 14,
+        "service_id" : 7,
+        "shoot_service_id" : 301
+      }
+    ],
+    "expected_edit_version" : "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "expected_units_revision" : 8
+  },
+  "fixture_only" : true,
+  "method" : "POST",
+  "path" : "shoots\/91\/assign-service-photographers"
+}

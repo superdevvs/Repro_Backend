@@ -1,0 +1,8 @@
+{
+  "body" : {
+    "reason" : "TEST isolated decline reason"
+  },
+  "fixture_only" : true,
+  "method" : "POST",
+  "path" : "shoots\/91\/decline"
+}

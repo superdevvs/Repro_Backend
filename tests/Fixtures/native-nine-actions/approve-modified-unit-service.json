@@ -1,0 +1,26 @@
+{
+  "body" : {
+    "expected_edit_version" : "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "expected_units_revision" : 8,
+    "service_lines" : [
+      {
+        "client_key" : "line-301",
+        "duration_minutes" : 60,
+        "editor_id" : 13,
+        "is_deliverable" : true,
+        "photographer_id" : 14,
+        "price" : 200,
+        "quantity" : 1,
+        "scheduled_at" : "2026-11-12T15:00:00-05:00",
+        "service_id" : 7,
+        "shoot_service_id" : 301,
+        "shoot_unit_id" : 50,
+        "unit_client_key" : "unit-50"
+      }
+    ],
+    "skip_availability_check" : false
+  },
+  "fixture_only" : true,
+  "method" : "POST",
+  "path" : "shoots\/91\/approve"
+}

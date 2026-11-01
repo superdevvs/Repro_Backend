@@ -20,6 +20,7 @@ class AssignServicePhotographerAction
 
     public function execute(Shoot $shoot, array $payload, User $actor): Shoot
     {
+        app(\App\Services\Shoots\ShootManagementAccess::class)->assertVersion($shoot, $payload['expected_edit_version'] ?? null);
         $assignments = $this->normalizeAssignments($payload);
         if (! $shoot->units()->exists()) {
             app(\App\Services\Photographers\PhotographerServiceEligibility::class)->assertServices(
@@ -77,7 +78,7 @@ class AssignServicePhotographerAction
             $payload, $this->buildTargetServices($shoot, $assignments), $shoot->scheduled_at,
             $shoot->photographer_id, $shoot->timezone, 'assign'
         ), $shoot, $actor);
-        $travelGuard->commit($travelPrepared, fn () => DB::transaction(function () use (
+        $travelGuard->commit($travelPrepared, fn () => $this->versionedWrite($shoot, $payload, fn () => DB::transaction(function () use (
             $shoot,
             $assignments,
             $actor,
@@ -94,7 +95,7 @@ class AssignServicePhotographerAction
                     $actor
                 );
             }
-        }, 3));
+        }, 3)));
 
         app(\App\Services\GoogleCalendar\GoogleCalendarSyncDispatcher::class)->dispatchShootSync($shoot->id);
         $scope = app(\App\Services\Schedule\ScheduleDateScopeService::class);
@@ -173,7 +174,31 @@ class AssignServicePhotographerAction
         $travelPrepared = $travelGuard->prepare(app(\App\Services\Scheduling\WriteSchedulePlan::class)->services(
             $payload, $availabilityServices, $shoot->scheduled_at, $shoot->photographer_id, $shoot->timezone, 'assign'
         ), $shoot, $actor);
-        $travelGuard->commit($travelPrepared, fn () => app(\App\Services\Shoots\ShootEditablePayloadService::class)->apply($shoot, $changes, $actor));
+        $travelGuard->commit($travelPrepared, fn () => $this->versionedWrite($shoot, $payload,
+            fn () => app(\App\Services\Shoots\ShootEditablePayloadService::class)->apply($shoot, $changes, $actor)));
+    }
+
+    /** Recheck after planning, under the same writer lock as the assignment. */
+    private function versionedWrite(Shoot $shoot, array $payload, callable $write): mixed
+    {
+        $expected = $payload['expected_edit_version'] ?? null;
+        if (! $expected) {
+            return $write();
+        }
+        $transaction = fn () => DB::transaction(function () use ($shoot, $expected, $write) {
+            // SQLite ignores FOR UPDATE; reserve its writer before reading the
+            // version. The no-op leaves the content token unchanged.
+            if (DB::connection()->getDriverName() === 'sqlite') {
+                DB::table('shoots')->where('id', $shoot->id)->update(['units_revision' => DB::raw('units_revision')]);
+            }
+            $locked = Shoot::query()->lockForUpdate()->findOrFail($shoot->id);
+            app(\App\Services\Shoots\ShootManagementAccess::class)->assertVersion($locked, $expected);
+
+            return $write();
+        });
+
+        return DB::transactionLevel() > 0 ? $transaction()
+            : \App\Support\LockedWrite::run($transaction, 'service-photographer-assignment');
     }
 
     protected function buildTargetServices(Shoot $shoot, array $assignments): array

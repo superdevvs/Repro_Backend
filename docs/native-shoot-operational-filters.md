@@ -43,6 +43,14 @@ reason. Do not substitute the generic editing-workflow reject route. Scheduling,
 travel confirmations, qualifications, unit revision, and version checks still
 apply to approval and photographer changes.
 
+Both photographer-assignment endpoints accept optional `expected_edit_version`
+from fresh shoot details. It is checked again after schedule planning, under the
+same database writer lock as the assignment. A changed token returns 409 with
+`code=shoot_edit_conflict`, leaving all assignments unchanged. This supplements
+the multi-unit revision check; older callers omitting the token remain compatible.
+The batch route accepts `assignments`, `service_photographers`, or `services`.
+Keep both catalog `service_id` and booked `shoot_service_id` when available.
+
 Native dashboards can show Upcoming, Requested, and Completed/Delivered without
 removing other request categories or granting new approval permissions. Counts
 should represent pending items in accessible queues, never historical decisions

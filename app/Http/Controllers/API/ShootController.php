@@ -250,6 +250,7 @@ class ShootController extends Controller
         $validated = $request->validate([
             'service_id' => 'required_without:shoot_service_id|nullable|integer',
             'shoot_service_id' => 'nullable|integer',
+            'expected_edit_version' => 'nullable|string|size:64',
             'expected_units_revision' => 'nullable|integer|min:0',
             'travel_location_confirmed' => 'nullable|boolean',
             'travel_override' => 'nullable|boolean',
@@ -350,6 +351,7 @@ class ShootController extends Controller
                 'nullable',
                 Rule::exists('users', 'id')->where(fn ($query) => $query->where('role', 'photographer')),
             ],
+            'expected_edit_version' => 'nullable|string|size:64',
             'expected_units_revision' => 'nullable|integer|min:0',
             'travel_location_confirmed' => 'nullable|boolean',
             'travel_override' => 'nullable|boolean',
@@ -362,6 +364,7 @@ class ShootController extends Controller
 
         $shoot = $this->assignServicePhotographerAction->execute($shoot, [
             'service_photographers' => $assignments,
+            'expected_edit_version' => $request->input('expected_edit_version'),
             'expected_units_revision' => $request->input('expected_units_revision'),
             'override' => $request->input('override'),
             'override_reason' => $request->input('override_reason'),

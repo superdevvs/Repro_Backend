@@ -1,0 +1,23 @@
+{
+  "fixture_only" : true,
+  "method" : "GET",
+  "path" : "shoots",
+  "query" : {
+    "client_id" : "42",
+    "flagged_only" : "1",
+    "include_files" : "false",
+    "include_filters" : "false",
+    "no_cache" : "true",
+    "page" : "1",
+    "per_page" : "25",
+    "photographer_id[0]" : "7",
+    "scheduled_end" : "2026-11-30",
+    "scheduled_start" : "2026-11-01",
+    "search" : "",
+    "services[0]" : "TEST Photography, drone + 2D floor plans",
+    "statuses[0]" : "review",
+    "statuses[1]" : "scheduled",
+    "tab" : "all",
+    "view" : "card"
+  }
+}
