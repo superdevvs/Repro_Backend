@@ -12,6 +12,7 @@ class PhotographerServiceEligibility
 {
     public function assertPayload(array $payload, ?Shoot $shoot = null, ?User $actor = null): void
     {
+        if ($shoot && app(\App\Services\Shoots\PostCaptureServiceCorrection::class)->applies($shoot, $actor, $payload)) return;
         $fallback = $payload['photographer_id'] ?? $shoot?->photographer_id;
         if (array_key_exists('_schedule_services', $payload)) {
             $rows = $payload['_schedule_services'];

@@ -4,7 +4,7 @@ namespace App\Services\Shoots;
 
 use App\Models\{Service, Shoot, ShootService};
 
-/** A count correction to captured photos keeps the booked execution and its foreign keys. */
+/** A catalog correction to captured media keeps its execution and foreign keys. */
 class CompletedPhotoPackageReplacement
 {
     public function resolve(Shoot $shoot, array $rows): array
@@ -63,7 +63,7 @@ class CompletedPhotoPackageReplacement
             || (int) $original->category_id !== (int) $target->category_id
             || (int) $source->shoot_unit_id !== (int) ($row['shoot_unit_id'] ?? 0)
             || (int) $source->quantity !== (int) ($row['quantity'] ?? 1)
-            || $original->upload_intake_type !== Service::INTAKE_PHOTO || $target->upload_intake_type !== Service::INTAKE_PHOTO
+            || $original->uploadIntakeType() === Service::INTAKE_NONE || $original->uploadIntakeType() !== $target->uploadIntakeType()
             || ! $original->requiresPhotographer() || ! $target->requiresPhotographer()
             || (bool) $original->uses_hdr_brackets !== (bool) $target->uses_hdr_brackets
             || $source->cancelled_at || $source->workflow_status === 'cancelled' || $source->delivery_status === 'cancelled') return false;
@@ -71,7 +71,9 @@ class CompletedPhotoPackageReplacement
         $sqft = $source->unit?->sqft ?? $shoot->propertySqft();
         $oldCount = $source->contracted_photo_count ?? $this->photoCount($original, $sqft);
         $newCount = $this->photoCount($target, $sqft);
-        if (! $oldCount || ! $newCount || $oldCount === $newCount) return false;
+        $photoCountCorrection = $original->uploadIntakeType() === Service::INTAKE_PHOTO && $oldCount && $newCount && $oldCount !== $newCount;
+        $hasMedia = \App\Models\ShootFile::where('shoot_service_id', $source->id)->exists();
+        if (! $photoCountCorrection && ! $hasMedia) return false;
 
         $captured = $source->ready_at || $source->delivered_at || $source->editing_completed_at
             || in_array($source->workflow_status, ['in_progress', 'ready', 'delivered'], true)

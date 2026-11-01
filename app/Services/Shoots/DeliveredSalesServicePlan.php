@@ -7,13 +7,14 @@ use Illuminate\Support\Arr;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 
-/** Billing corrections never reserve another visit or reopen completed production. */
+/** Service corrections after capture never reserve a visit or reopen production. */
 class DeliveredSalesServicePlan
 {
     public function applies(Shoot $shoot, ?User $actor, array $data): bool
     {
-        return app(ShootManagementAccess::class)->canCorrectDeliveredServices($shoot, $actor)
-            && array_intersect(['services', 'service_items', 'service_lines'], array_keys($data)) !== [];
+        return (app(ShootManagementAccess::class)->canCorrectDeliveredServices($shoot, $actor)
+            && array_intersect(['services', 'service_items', 'service_lines'], array_keys($data)) !== [])
+            || app(PostCaptureServiceCorrection::class)->applies($shoot, $actor, $data);
     }
 
     public function services(Shoot $shoot, array $data, User $actor): array
@@ -32,6 +33,7 @@ class DeliveredSalesServicePlan
         $catalog = Service::with('category')->whereIn('id', collect($rows)->map(fn ($row) => $row['service_id'] ?? $row['id'] ?? 0))->get()->keyBy('id');
         $seen = [];
         $services = [];
+        $canOverridePrice = in_array(strtolower((string) $actor->role), ['admin', 'superadmin', 'super_admin'], true);
         foreach ($rows as $index => $row) {
             $serviceId = (int) ($row['service_id'] ?? $row['id'] ?? 0);
             $service = $catalog->get($serviceId);
@@ -55,8 +57,8 @@ class DeliveredSalesServicePlan
                 'id' => $serviceId, 'shoot_service_id' => $current?->id,
                 'client_key' => $current?->client_key ?? ($multiUnit ? ($row['client_key'] ?? (string) Str::uuid()) : null),
                 'unit_client_key' => $unit?->client_key, 'shoot_unit_id' => $unit?->id,
-                'quantity' => $quantity, 'price' => $current?->price ?? $service->getPriceForSqft($sqft),
-                'photographer_pay' => $current ? $current->photographer_pay : $service->getPhotographerPayForSqft($sqft),
+                'quantity' => $quantity, 'price' => $canOverridePrice && isset($row['price']) ? $row['price'] : ($current?->price ?? $service->getPriceForSqft($sqft)),
+                'photographer_pay' => $canOverridePrice && isset($row['photographer_pay']) ? $row['photographer_pay'] : ($current ? $current->photographer_pay : $service->getPhotographerPayForSqft($sqft)),
                 'duration_minutes' => $current ? $current->duration_minutes : app(ShootDurationResolver::class)->forService($service, $sqft),
                 'contracted_photo_count' => $current ? $current->contracted_photo_count : $service->contractedPhotoCount(),
                 'scheduled_at' => $current?->scheduled_at?->format('Y-m-d H:i:s'),
@@ -77,11 +79,19 @@ class DeliveredSalesServicePlan
             } elseif ($row['shoot_service_id']) {
                 $item = $shoot->serviceItems()->findOrFail($row['shoot_service_id']);
                 $item->quantity = $row['quantity'];
+                $item->price = $row['price'];
+                $item->photographer_pay = $row['photographer_pay'];
                 if ($item->isDirty()) {
                     if (is_array($item->payout_snapshot)) {
                         $basis = $item->payout_snapshot;
                         $basis['previous_basis'] = Arr::except($basis, ['previous_basis']);
                         $basis['quantity'] = $row['quantity'];
+                        $basis['booked_price'] = (float) $row['price'];
+                        if ($item->isDirty('photographer_pay') && $row['photographer_pay'] !== null) {
+                            $basis['unit_pay'] = (float) $row['photographer_pay'];
+                            $basis['override'] = (float) $row['photographer_pay'];
+                            $basis['pay_type'] = 'override';
+                        }
                         $basis['review_required'] = true;
                         $item->payout_snapshot = $basis;
                     }

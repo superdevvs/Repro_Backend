@@ -17,6 +17,7 @@ class WriteSchedulePlan
         if (($payload['action_mode'] ?? 'update') !== 'update') {
             return true;
         }
+        if (app(\App\Services\Shoots\PostCaptureServiceCorrection::class)->applies($shoot, $actor, $payload)) return false;
         if (array_key_exists('scheduled_at', $payload)
             && (empty($payload['scheduled_at']) || ! $shoot->scheduled_at
                 || ! Carbon::parse($payload['scheduled_at'])->equalTo($shoot->scheduled_at))) return true;
