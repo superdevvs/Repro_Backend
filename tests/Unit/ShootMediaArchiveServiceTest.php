@@ -391,11 +391,31 @@ class ShootMediaArchiveServiceTest extends TestCase
         $this->assertNotSame($original, $scoped->descriptor($shoot, $this->editor, $files)['storage_path']);
     }
 
+    public function test_shared_archive_lock_avoids_file_cache_and_deduplicates_across_instances(): void
+    {
+        $shoot = $this->createShoot();
+        config(['cache.default' => 'file']);
+        $fileStore = Mockery::mock(\Illuminate\Contracts\Cache\Repository::class);
+        $fileStore->shouldNotReceive('add');
+        $fileStore->shouldNotReceive('forget');
+        app('cache')->extend('unwritable-test-file', fn () => $fileStore);
+        config(['cache.stores.file.driver' => 'unwritable-test-file']);
+        app('cache')->forgetDriver('file');
+        $first = new class(app(ShootMediaStorageService::class), app(\App\Services\Shoots\ShootFileAccessService::class), app(\App\Services\Shoots\ShootAuthorizationSupport::class), app(\App\Services\Shoots\DeliveryMediaOrderService::class), app(\App\Services\Shoots\DeliveryFilenameFormatter::class), app(\App\Services\Shoots\ShootArchiveFilenameFormatter::class)) extends ShootMediaArchiveService {
+            public function acquireForTest(Shoot $shoot): bool { return $this->acquireGenerationLock($shoot, 'raw', 'original'); }
+        };
+        $second = clone $first;
+        $this->assertTrue($first->acquireForTest($shoot));
+        $this->assertFalse($second->acquireForTest($shoot));
+        $second->releaseGenerationLock($shoot, 'raw', 'original');
+        $this->assertTrue($first->acquireForTest($shoot));
+        $first->releaseGenerationLock($shoot, 'raw', 'original');
+    }
     public function test_archive_jobs_release_locks_when_sources_are_missing_and_use_canary_queue(): void
     {
         $shoot = $this->createShoot();
         $key = 'shoot-media-archive:'.$shoot->id.':raw:original';
-        \Illuminate\Support\Facades\Cache::put($key, 1, 600);
+        \Illuminate\Support\Facades\Cache::store('database')->put($key, 1, 600);
         config()->set('media.archive_dedicated_queue', true);
         config()->set('media.performance_shoot_ids', [(int) $shoot->id]);
         $job = new GenerateShootMediaArchiveJob((int) $shoot->id, 'raw', 'original');
@@ -403,7 +423,7 @@ class ShootMediaArchiveServiceTest extends TestCase
         $this->assertSame('default', (new GenerateShootMediaArchiveJob((int) $shoot->id + 999, 'raw', 'original'))->queue);
         $this->assertSame(600, $job->timeout);
         $job->handle(app(ShootMediaArchiveService::class));
-        $this->assertFalse(\Illuminate\Support\Facades\Cache::has($key));
+        $this->assertFalse(\Illuminate\Support\Facades\Cache::store('database')->has($key));
         $editorKey = 'test-editor-zip-lock';
         \Illuminate\Support\Facades\Cache::put($editorKey, 1, 600);
         $editorJob = new \App\Jobs\GenerateEditorRawZipJob((int) $shoot->id, 999999999, [], 'missing.zip', $editorKey);
