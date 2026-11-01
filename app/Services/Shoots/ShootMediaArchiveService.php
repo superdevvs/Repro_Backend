@@ -688,7 +688,9 @@ class ShootMediaArchiveService
 
     protected function acquireGenerationLock(Shoot $shoot, string $type, string $size, ?int $shootServiceId = null, ?int $shootUnitId = null): bool
     {
-        return Cache::add(
+        // FPM and Studio workers run under different users. File-cache leaf
+        // directories created by FPM can be unwritable to the Studio worker.
+        return Cache::store('database')->add(
             $this->getGenerationLockKey($shoot, $type, $size, $shootServiceId, $shootUnitId),
             now()->toIso8601String(),
             now()->addSeconds(\App\Services\Media\ArchiveQueue::lockSeconds())
@@ -697,7 +699,7 @@ class ShootMediaArchiveService
 
     public function releaseGenerationLock(Shoot $shoot, string $type, string $size, ?int $shootServiceId = null, ?int $shootUnitId = null): void
     {
-        Cache::forget($this->getGenerationLockKey($shoot, $type, $size, $shootServiceId, $shootUnitId));
+        Cache::store('database')->forget($this->getGenerationLockKey($shoot, $type, $size, $shootServiceId, $shootUnitId));
     }
 
     protected function getGenerationLockKey(Shoot $shoot, string $type, string $size, ?int $shootServiceId = null, ?int $shootUnitId = null): string
