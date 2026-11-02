@@ -1361,10 +1361,22 @@ class ManageBookingFlow implements FlowHandlerInterface
                 ]],
             ], $data);
         }
+        $user = User::find($session->user_id);
+        $access = app(\App\Services\Shoots\ShootAuthorizationSupport::class);
+        if (! $access->canApproveReschedule($shoot, $user)) {
+            $requestOnly = $access->canRequestReschedule($shoot, $user);
+
+            return FlowTransition::clear([
+                'assistant_messages' => [[
+                    'content' => $requestOnly ? ShootService::RESCHEDULE_REQUEST_GUIDANCE : ShootService::RESCHEDULE_DENIED,
+                    'metadata' => ['code' => $requestOnly ? 'reschedule_request_required' : 'forbidden', 'shoot_id' => $shoot->id],
+                ]],
+                'suggestions' => ['View details', 'Go back'],
+            ], []);
+        }
 
         // If we have both date and time, update the shoot
         if (!empty($data['new_date']) && !empty($data['new_time'])) {
-            $user = User::find($session->user_id);
             $updateData = [
                 'date' => $data['new_date'],
                 'time_window' => $data['new_time'],

@@ -127,8 +127,13 @@ class ShootManagementTools
 
             $actor = $this->access->actor($context);
             $shoot = $this->access->find($shootId, $actor);
-            if ($shoot && ! $this->access->canChangeBooking($shoot, $actor)) {
-                return ['success' => false, 'error' => 'You do not have permission to change this shoot.'];
+            $authorization = app(\App\Services\Shoots\ShootAuthorizationSupport::class);
+            if ($shoot && ! $authorization->canApproveReschedule($shoot, $actor)) {
+                $requestOnly = $authorization->canRequestReschedule($shoot, $actor);
+                return ['success' => false, 'status_code' => 403,
+                    'code' => $requestOnly ? 'reschedule_request_required' : 'forbidden',
+                    'error' => $requestOnly ? \App\Services\ReproAi\ShootService::RESCHEDULE_REQUEST_GUIDANCE
+                        : \App\Services\ReproAi\ShootService::RESCHEDULE_DENIED];
             }
             
             if (!$shoot) {
@@ -169,7 +174,12 @@ class ShootManagementTools
                 $updates['time'] = $newTime;
             }
 
-            $shoot->update($updates);
+            $local = app(\App\Services\Schedule\ScheduleInstantResolver::class)->forShoot($shoot);
+            $date = $updates['scheduled_date'] ?? $local?->toDateString() ?? $shoot->scheduled_date?->toDateString();
+            if (! $date) return ['success' => false, 'error' => 'Choose a date before changing this appointment time.'];
+            $shoot = app(\App\Services\ReproAi\ShootService::class)->updateFromAiConversation($shoot, [
+                'date' => $date, 'time_window' => $updates['time'] ?? $local?->format('H:i') ?? $shoot->time,
+            ], $actor);
 
             return [
                 'success' => true,

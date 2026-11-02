@@ -82,7 +82,11 @@ class RobbiePrivateRecordAccessTest extends TestCase
         $this->assertTrue($this->tool('update_listing_copy', ['listing_id' => $own->id, 'description' => 'Updated client note'])['success']);
         $this->assertSame('Staff-only note', $own->fresh()->notes);
         $this->assertSame('Updated client note', $own->fresh()->shoot_notes);
-        $this->assertTrue($this->tool('reschedule_shoot', ['shoot_id' => $own->id, 'new_time' => '16:00'])['success']);
+        $originalTime = $own->fresh()->time;
+        $reschedule = $this->tool('reschedule_shoot', ['shoot_id' => $own->id, 'new_time' => '16:00']);
+        $this->assertFalse($reschedule['success']);
+        $this->assertSame('reschedule_request_required', $reschedule['code']);
+        $this->assertSame($originalTime, $own->fresh()->time);
         $this->assertTrue($this->tool('cancel_shoot', ['shoot_id' => $own->id])['success']);
     }
 

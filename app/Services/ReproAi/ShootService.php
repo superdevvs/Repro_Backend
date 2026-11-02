@@ -16,6 +16,10 @@ use Illuminate\Validation\ValidationException;
 
 class ShootService
 {
+    public const RESCHEDULE_REQUEST_GUIDANCE = 'Open this shoot and choose Request to reschedule to send your preferred date and time to the team.';
+
+    public const RESCHEDULE_DENIED = 'You do not have permission to reschedule this shoot.';
+
     private ShootMediaStorageService $mediaStorageService;
 
     private ShootWorkflowService $workflowService;
@@ -211,6 +215,16 @@ class ShootService
      */
     public function updateFromAiConversation(Shoot $shoot, array $data, User $user): Shoot
     {
+        // The explicit conversation actor is authoritative; the booked client is not the actor.
+        $access = app(\App\Services\Shoots\ShootAuthorizationSupport::class);
+        if (! empty($data['date']) || ! empty($data['time_window'])) {
+            abort_unless($access->canApproveReschedule($shoot, $user), 403,
+                $access->canRequestReschedule($shoot, $user) ? self::RESCHEDULE_REQUEST_GUIDANCE : self::RESCHEDULE_DENIED);
+        }
+        if (! empty($data['service_ids'])) {
+            abort_unless($access->canEditShootAppointment($shoot, $user), 403,
+                'You do not have permission to change services on this shoot.');
+        }
         $guard = app(\App\Services\Scheduling\ScheduleCommitGuard::class);
         $prepared = ['enabled' => false];
         $scheduleChanges = [];

@@ -180,6 +180,15 @@ class DashboardTools
                 ];
             }
 
+            $bookingTargets = array_intersect($updates, ['scheduled', 'on_hold', 'cancelled']);
+            if ($bookingTargets !== []) {
+                $management = app(\App\Services\Shoots\ShootManagementAccess::class);
+                $allowed = $management->can($actor, 'manage')
+                    && (! in_array('scheduled', $bookingTargets, true) || $management->canEditAppointment($shoot, $actor));
+                if (! $allowed) return ['success' => false, 'status_code' => 403,
+                    'error' => 'You do not have permission to change this booking status.'];
+            }
+
             $shoot->update($updates);
 
             return [
