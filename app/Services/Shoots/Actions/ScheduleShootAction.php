@@ -28,11 +28,12 @@ class ScheduleShootAction
 
     public function execute(UpdateShootStatusRequest $request, Shoot $shoot, User $user): Shoot
     {
+        $access = app(\App\Services\Shoots\ShootAuthorizationSupport::class);
+        abort_unless($access->canScheduleShoot($shoot, $user), 403);
         $validated = $request->validated();
         if (array_key_exists('photographer_id', $validated)
             && (int) $validated['photographer_id'] !== (int) $shoot->photographer_id) {
-            $access = app(\App\Services\Shoots\ShootAuthorizationSupport::class);
-            abort_unless($access->canManageShootOperations($user) || $access->canEditShootAppointment($shoot, $user),
+            abort_unless($access->canEditShootAppointment($shoot, $user),
                 403, 'You do not have permission to reassign this shoot.');
         }
         $originalPhotographerId = $shoot->photographer_id;

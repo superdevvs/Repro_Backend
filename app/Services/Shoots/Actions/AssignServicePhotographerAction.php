@@ -20,6 +20,7 @@ class AssignServicePhotographerAction
 
     public function execute(Shoot $shoot, array $payload, User $actor): Shoot
     {
+        abort_unless(app(\App\Services\Shoots\ShootAuthorizationSupport::class)->canEditShootAppointment($shoot, $actor), 403);
         app(\App\Services\Shoots\ShootManagementAccess::class)->assertVersion($shoot, $payload['expected_edit_version'] ?? null);
         $assignments = $this->normalizeAssignments($payload);
         if (! $shoot->units()->exists()) {
@@ -255,7 +256,7 @@ class AssignServicePhotographerAction
         }
 
         $photographers = User::whereIn('id', $photographerIds)
-            ->where('role', 'photographer')
+            ->photographers()
             ->get()
             ->keyBy('id');
 

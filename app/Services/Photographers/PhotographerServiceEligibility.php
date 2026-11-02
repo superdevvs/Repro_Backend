@@ -48,7 +48,7 @@ class PhotographerServiceEligibility
             return true;
         }
 
-        return $photographer && $photographer->role === 'photographer'
+        return $photographer && $photographer->hasPhotographerRole()
             && $photographer->isAccountEligibleForAuthentication()
             && $photographer->getServiceCapabilities() !== []
             && $photographer->canPerformService($service->id);

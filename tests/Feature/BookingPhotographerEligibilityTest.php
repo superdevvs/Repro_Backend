@@ -110,6 +110,33 @@ class BookingPhotographerEligibilityTest extends TestCase
         $this->postJson('/api/photographer/availability/for-booking', $this->bookingPayload() + ['include_location_exceptions' => true])->assertForbidden();
     }
 
+    #[\PHPUnit\Framework\Attributes\TestWith([false])]
+    #[\PHPUnit\Framework\Attributes\TestWith([true])]
+    public function test_verified_secondary_photographer_is_available_to_the_same_booking_and_assignment_paths(bool $multiUnit): void
+    {
+        $this->photographer->update(['role' => 'editor', 'secondary_roles' => ['photographer'],
+            'metadata' => array_merge($this->photographer->metadata, ['travel_range' => 40])]);
+        $this->postJson('/api/photographer/availability/for-booking', $this->bookingPayload())
+            ->assertOk()->assertJsonPath('data.0.id', $this->photographer->id);
+        $shoot = $this->existingShoot();
+        $line = $shoot->serviceItems()->sole();
+        if ($multiUnit) {
+            $unit = $shoot->units()->create(['client_key' => 'unit-1', 'label' => 'Unit 1', 'kind' => 'unit']);
+            $line->update(['shoot_unit_id' => $unit->id, 'client_key' => 'line-'.$line->id]);
+        }
+        $replacement = $this->qualifiedPhotographer($this->service);
+        $replacement->update(['role' => 'editor', 'secondary_roles' => ['photographer']]);
+        $this->postJson("/api/shoots/{$shoot->id}/assign-service-photographer", [
+            ...($multiUnit ? ['shoot_service_id' => $line->id] : ['service_id' => $this->service->id]),
+            'photographer_id' => $replacement->id,
+        ])->assertOk();
+        $this->assertSame($replacement->id, (int) $shoot->serviceItems()->where('service_id', $this->service->id)->firstOrFail()->photographer_id);
+
+        $replacement->update(['metadata' => []]);
+        $this->postJson('/api/photographer/availability/for-booking', array_replace($this->bookingPayload(),
+            ['photographer_ids' => [$replacement->id]]))->assertOk()->assertJsonCount(0, 'data');
+    }
+
     public function test_radius_requires_signed_staff_confirmation_and_is_recorded(): void
     {
         $preview = $this->postJson('/api/photographer/availability/feasibility', $this->payload() + ['action_mode' => 'create'])
@@ -363,11 +390,13 @@ class BookingPhotographerEligibilityTest extends TestCase
     #[\PHPUnit\Framework\Attributes\TestWith(['admin'])]
     #[\PHPUnit\Framework\Attributes\TestWith(['editing_manager'])]
     #[\PHPUnit\Framework\Attributes\TestWith(['salesRep'])]
-    public function test_authorized_booking_staff_can_reassign_inherited_services_through_schedule(string $role): void
+    #[\PHPUnit\Framework\Attributes\TestWith(['admin', ['sales_rep']])]
+    #[\PHPUnit\Framework\Attributes\TestWith(['editor', ['admin', 'sales-rep']])]
+    public function test_authorized_booking_staff_can_reassign_inherited_services_through_schedule(string $role, array $secondary = []): void
     {
         $shoot = $this->existingShoot();
         $newMain = $this->qualifiedPhotographer($this->service);
-        $this->admin->update(['role' => $role]);
+        $this->admin->update(['role' => $role, 'secondary_roles' => $secondary]);
 
         $this->postJson("/api/shoots/{$shoot->id}/schedule", [
             'scheduled_at' => '2031-10-09T10:00:00Z', 'photographer_id' => $newMain->id,

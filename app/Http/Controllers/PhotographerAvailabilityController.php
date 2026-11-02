@@ -787,9 +787,9 @@ class PhotographerAvailabilityController extends Controller
         $requireAllServices = $validated['require_all_services'] ?? true;
 
         // Get photographers
-        $query = \App\Models\User::where('role', 'photographer')
+        $query = \App\Models\User::photographers()
             ->with(['serviceAreas:id,kind,value,label'])
-            ->select('id', 'role', 'name', 'email', 'metadata', 'address', 'city', 'state', 'zip', 'locked_at', 'account_status');
+            ->select('id', 'role', 'secondary_roles', 'name', 'email', 'metadata', 'address', 'city', 'state', 'zip', 'locked_at', 'account_status');
         
         if ($photographerIds) {
             $query->whereIn('id', $photographerIds);

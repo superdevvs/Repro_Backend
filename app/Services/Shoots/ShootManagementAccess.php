@@ -20,15 +20,19 @@ class ShootManagementAccess
     public function isRestrictedSalesRep(?User $user): bool
     {
         // A secondary rep role must not demote an existing privileged staff role.
-        $primary = preg_replace('/[_\s-]/', '', strtolower((string) $user?->role));
-        return $user && ! in_array($primary, ['admin', 'superadmin', 'editingmanager'], true)
+        return $user && $this->permissions->normalizedUserRoles($user)->intersect(['admin', 'superadmin', 'editing_manager'])->isEmpty()
             && $this->isSalesRep($user);
+    }
+
+    public function hasBookingRole(?User $user): bool
+    {
+        return $user && $this->permissions->normalizedUserRoles($user)
+            ->intersect(['admin', 'superadmin', 'editing_manager', 'salesRep'])->isNotEmpty();
     }
 
     public function can(?User $user, string $action = 'update'): bool
     {
-        return $user
-            && $this->permissions->normalizedUserRoles($user)->intersect(['admin', 'superadmin', 'editing_manager', 'salesRep'])->isNotEmpty()
+        return $this->hasBookingRole($user)
             && $this->permissions->userCan($user, 'shoots', $action);
     }
 
@@ -43,10 +47,32 @@ class ShootManagementAccess
     {
         if (! $this->can($user) || $shoot->isImportDraft()) return false;
         if (! $this->isRestrictedSalesRep($user)) return true;
+        return $this->isEditableSalesState($shoot);
+    }
+
+    private function isEditableSalesState(Shoot $shoot): bool
+    {
         if (data_get($shoot->external_booking_payload, 'legacy_migration.historical_payments_only')) return false;
         $editable = ['requested', 'on_hold', 'hold_on', 'scheduled', 'booked', 'uploaded', 'completed', 'editing', 'review', 'ready', 'delivered', 'ready_for_client', 'admin_verified'];
         return in_array(strtolower((string) $shoot->status), $editable, true)
             && in_array(strtolower((string) ($shoot->workflow_status ?: $shoot->status)), $editable, true);
+    }
+
+    /** Resolve the role map once when projecting several capabilities for a shoot. */
+    public function capabilitiesForShoot(Shoot $shoot, ?User $user): array
+    {
+        $ids = $user && $this->hasBookingRole($user)
+            ? $this->permissions->effectivePayloadForUser($user)['permissionIds'] : [];
+        $restricted = $this->isRestrictedSalesRep($user);
+        $canEdit = in_array('shoots-update', $ids, true) && ! $shoot->isImportDraft()
+            && (! $restricted || $this->isEditableSalesState($shoot));
+
+        return [
+            'canManageBooking' => $canEdit,
+            'canManageShootActions' => in_array('shoots-manage', $ids, true),
+            'canAdjustShootPricing' => in_array('shoot-pricing-update', $ids, true),
+            'canEditAppointment' => $canEdit && (! $restricted || ! $this->isDeliveredForSalesEdits($shoot)),
+        ];
     }
 
     /** Delivered corrections do not grant appointment or workflow actions. */
@@ -73,7 +99,8 @@ class ShootManagementAccess
     public function normalizeSalesEdit(Shoot $shoot, User $user, array $payload): array
     {
         abort_unless($this->canEdit($shoot, $user), 403, 'This shoot is locked or you do not have permission to edit it.');
-        if (! $this->isRestrictedSalesRep($user)) return $payload;
+        // Secondary office roles grant booking rights, not the primary role's production powers.
+        if (in_array($this->permissions->normalizedUserRoles($user)->first(), ['admin', 'superadmin', 'editing_manager'], true)) return $payload;
         $marketing = ['is_featured', 'featured_homepage_title', 'featured_homepage_location', 'featured_homepage_subtitle', 'featured_homepage_cta_label', 'featured_homepage_cta_href', 'featured_homepage_images', 'ghost_user_ids', 'tour_links'];
         if (array_intersect(array_keys($payload), $marketing)
             && $this->permissions->normalizedUserRoles($user)->intersect(['admin', 'superadmin', 'editing_manager'])->isEmpty()) {
@@ -106,7 +133,7 @@ class ShootManagementAccess
             }
             unset($line);
         }
-        if ($this->isDeliveredForSalesEdits($shoot)) {
+        if ($this->isRestrictedSalesRep($user) && $this->isDeliveredForSalesEdits($shoot)) {
             $payload = app(DeliveredSalesEditPayload::class)->normalize($shoot, $payload);
         }
         foreach (['admin_adjusted_total_quote', 'discount_type', 'discount_value'] as $field) {

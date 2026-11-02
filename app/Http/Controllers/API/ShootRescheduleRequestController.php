@@ -86,7 +86,7 @@ class ShootRescheduleRequestController extends Controller
         $eager = [
             'requester:id,name,avatar',
             'approver:id,name,avatar',
-            'shoot:id,address,city,state,zip,client_id,scheduled_date,time,timezone,status',
+            'shoot:id,address,city,state,zip,client_id,scheduled_date,time,timezone,status,workflow_status,external_booking_payload',
             'shoot.client:id,name',
         ];
 
@@ -162,9 +162,12 @@ class ShootRescheduleRequestController extends Controller
             ]);
             $fullAddress = $parts ? implode(', ', $parts) : null;
         }
+        $capabilities = $shoot ? $this->authorization->schedulingCapabilities($shoot, request()->user()) : [];
 
         return [
             'id' => $row->id,
+            'canReviewRequests' => $capabilities['canReviewRequests'] ?? false,
+            'canApproveReschedule' => $capabilities['canApproveReschedule'] ?? false,
             'shoot_id' => $row->shoot_id,
             'status' => $row->status,
             'original_date' => $row->original_date?->toDateString(),
@@ -237,7 +240,9 @@ class ShootRescheduleRequestController extends Controller
         ]);
 
         $user = $request->user();
-        $canApplyDirectly = $this->userCanReviewRequests($user);
+        $canApplyDirectly = $this->authorization->canApproveReschedule($shoot, $user);
+        abort_unless($canApplyDirectly || $this->authorization->canRequestReschedule($shoot, $user), 403,
+            'You do not have permission to reschedule this shoot.');
         if (filter_var($validated['working_hours_override'] ?? false, FILTER_VALIDATE_BOOLEAN)) {
             abort_unless($canApplyDirectly && app(\App\Services\Scheduling\ScheduleCommitGuard::class)->enabled(), 403);
         }
@@ -313,6 +318,10 @@ class ShootRescheduleRequestController extends Controller
             'status' => 'required|in:approved,rejected',
             'review_notes' => 'nullable|string|max:2000',
         ]);
+        if ($validated['status'] === 'approved') {
+            abort_unless($this->authorization->canApproveReschedule($rescheduleRequest->shoot, $request->user()), 403,
+                'You do not have permission to move this appointment.');
+        }
 
         // Idempotency: an already-applied request is a no-op rather than an
         // error, so a double-click or a retried request cannot move the shoot

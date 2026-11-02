@@ -16,6 +16,17 @@ class User extends Authenticatable
     /** @use HasFactory<\Database\Factories\UserFactory> */
     use HasFactory, Notifiable, HasApiTokens, SoftDeletes;
 
+    public function scopePhotographers(\Illuminate\Database\Eloquent\Builder $query): \Illuminate\Database\Eloquent\Builder
+    {
+        return $query->where(fn ($roles) => $roles->where('role', 'photographer')
+            ->orWhereJsonContains('secondary_roles', 'photographer'));
+    }
+
+    public function hasPhotographerRole(): bool
+    {
+        return $this->role === 'photographer' || in_array('photographer', $this->secondary_roles ?? [], true);
+    }
+
     private const CATEGORY_SPECIALTY_PREFIX = 'category:';
     private const CATEGORY_NAME_SPECIALTY_PREFIX = 'category-name:';
 

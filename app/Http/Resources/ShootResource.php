@@ -75,7 +75,8 @@ class ShootResource extends JsonResource
 
         $this->services->loadMissing('sqftRanges');
         $requestingUser = $request->user();
-        $canReviewRequests = app(\App\Services\Shoots\ShootAuthorizationSupport::class)->canReviewShootRequests($requestingUser);
+        $schedulingCapabilities = app(\App\Services\Shoots\ShootAuthorizationSupport::class)->schedulingCapabilities($this->resource, $requestingUser);
+        $canReviewRequests = $schedulingCapabilities['canReviewRequests'];
         $requestingRole = strtolower((string) ($requestingUser?->role ?? ''));
         $canManageReshoots = in_array($requestingRole, ['admin', 'superadmin'], true);
         $iguideVisibility = app(IguideDataVisibilityService::class);
@@ -524,9 +525,7 @@ class ShootResource extends JsonResource
             'can_finalize_no_media' => $canFinalizeNoMedia,
             'canRemoveAllServices' => $canRemoveAllServices,
             'can_remove_all_services' => $canRemoveAllServices,
-            'canManageBooking' => app(\App\Services\Shoots\ShootManagementAccess::class)->canEdit($this->resource, $requestingUser),
-            'canManageShootActions' => app(\App\Services\Shoots\ShootManagementAccess::class)->can($requestingUser, 'manage'),
-            'canAdjustShootPricing' => app(\App\Services\Shoots\ShootManagementAccess::class)->canAdjustPricing($requestingUser),
+            ...$schedulingCapabilities,
             'editVersion' => $this->when($request->route('shoot') !== null || $request->isMethod('PATCH'), fn () => app(\App\Services\Shoots\ShootManagementAccess::class)->editVersion($this->resource)),
             'overpaymentAmount' => $isEditor ? 0.0 : $overpaymentAmount,
             'overpayment_amount' => $isEditor ? 0.0 : $overpaymentAmount,

@@ -491,7 +491,7 @@ class ShootMutationSupportService
             ], $changes), $actor);
         } else {
             foreach ($changes as $change) {
-                if ($change['photographer_id'] && ! User::whereKey($change['photographer_id'])->where('role', 'photographer')->exists()) {
+                if ($change['photographer_id'] && ! User::whereKey($change['photographer_id'])->photographers()->exists()) {
                     throw ValidationException::withMessages(['photographer_id' => ['Choose a user with the photographer role.']]);
                 }
                 $change['item']->photographer_id = $change['photographer_id'];
@@ -584,7 +584,7 @@ class ShootMutationSupportService
             // legacy assignments intact when the recipient was not changed.
             if ($photographerId && $serviceModel && ! $serviceModel->allowsArtistAssignment()
                 && (int) $photographerId !== (int) $currentItem?->photographer_id
-                && ! User::query()->whereKey($photographerId)->where('role', 'photographer')->exists()) {
+                && ! User::query()->whereKey($photographerId)->photographers()->exists()) {
                 throw ValidationException::withMessages([
                     'services' => ['The selected travel fee recipient must be a photographer.'],
                 ]);
@@ -813,12 +813,12 @@ class ShootMutationSupportService
 
                 if ($assignedPhotographerId) {
                     $assignedPhotographer = User::query()
-                        ->select(['id', 'role'])
+                        ->select(['id', 'role', 'secondary_roles'])
                         ->whereKey($assignedPhotographerId)
                         ->lockForUpdate()
                         ->first();
 
-                    if (! $assignedPhotographer || strtolower((string) $assignedPhotographer->role) !== 'photographer') {
+                    if (! $assignedPhotographer || ! $assignedPhotographer->hasPhotographerRole()) {
                         throw ValidationException::withMessages([
                             'service_photographers' => [
                                 'The selected user must be a photographer before they can receive a service assignment or photographer compensation.',

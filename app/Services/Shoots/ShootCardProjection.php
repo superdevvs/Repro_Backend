@@ -25,6 +25,8 @@ final class ShootCardProjection
             'can_view_invoice', 'canViewInvoice', 'can_finalize_no_media', 'canFinalizeNoMedia',
             'can_remove_all_services', 'canRemoveAllServices',
             'canManageBooking', 'canManageShootActions', 'canAdjustShootPricing', 'editVersion',
+            'canEditAppointment', 'canReassignPhotographer', 'canScheduleShoot',
+            'canReviewRequests', 'canApproveReschedule', 'canRequestReschedule',
             'base_quote', 'tax_amount', 'total_quote', 'payment_status', 'payment_type', 'payment_summary', 'financials', 'payment',
             'service_subtotal', 'discount_type', 'discount_value', 'discount_amount', 'discounted_subtotal',
             'overpayment_amount', 'last_payment_date', 'last_payment_type',

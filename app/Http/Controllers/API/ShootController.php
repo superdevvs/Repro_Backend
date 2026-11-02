@@ -168,9 +168,7 @@ class ShootController extends Controller
     {
         $user = $request->user();
 
-        if ((! $this->shootAuthorizationSupport->hasRole($user, ['admin', 'superadmin', 'editing_manager'])
-                && ! app(ShootManagementAccess::class)->can($user, 'manage'))
-            || ! $this->shootAuthorizationSupport->canViewShootDetails($shoot, $user)) {
+        if (! $this->shootAuthorizationSupport->canApproveReschedule($shoot, $user)) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
@@ -243,7 +241,7 @@ class ShootController extends Controller
     {
         $user = $request->user();
         $access = app(\App\Services\Shoots\ShootAuthorizationSupport::class);
-        if (! $access->canManageShootOperations($user) && ! $access->canEditShootAppointment($shoot, $user)) {
+        if (! $access->canEditShootAppointment($shoot, $user)) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
@@ -259,7 +257,7 @@ class ShootController extends Controller
             'travel_override_reason' => 'nullable|string|max:500',
             'photographer_id' => [
                 'nullable',
-                Rule::exists('users', 'id')->where(fn ($query) => $query->where('role', 'photographer')),
+                Rule::exists('users', 'id')->where(fn ($query) => $query->where(fn ($roles) => $roles->where('role', 'photographer')->orWhereJsonContains('secondary_roles', 'photographer'))),
             ],
             'override' => 'nullable|boolean',
             'override_reason' => 'nullable|string|max:500',
@@ -311,7 +309,7 @@ class ShootController extends Controller
     {
         $user = $request->user();
         $access = app(\App\Services\Shoots\ShootAuthorizationSupport::class);
-        if (! $access->canManageShootOperations($user) && ! $access->canEditShootAppointment($shoot, $user)) {
+        if (! $access->canEditShootAppointment($shoot, $user)) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
@@ -335,21 +333,21 @@ class ShootController extends Controller
             'service_photographers.*.shoot_service_id' => 'nullable|integer',
             'service_photographers.*.photographer_id' => [
                 'nullable',
-                Rule::exists('users', 'id')->where(fn ($query) => $query->where('role', 'photographer')),
+                Rule::exists('users', 'id')->where(fn ($query) => $query->where(fn ($roles) => $roles->where('role', 'photographer')->orWhereJsonContains('secondary_roles', 'photographer'))),
             ],
             'assignments' => 'nullable|array',
             'assignments.*.service_id' => $shoot->units()->exists() ? 'nullable|integer' : 'required|integer',
             'assignments.*.shoot_service_id' => 'nullable|integer',
             'assignments.*.photographer_id' => [
                 'nullable',
-                Rule::exists('users', 'id')->where(fn ($query) => $query->where('role', 'photographer')),
+                Rule::exists('users', 'id')->where(fn ($query) => $query->where(fn ($roles) => $roles->where('role', 'photographer')->orWhereJsonContains('secondary_roles', 'photographer'))),
             ],
             'services' => 'nullable|array',
             'services.*.service_id' => $shoot->units()->exists() ? 'nullable|integer' : 'required|integer',
             'services.*.shoot_service_id' => 'nullable|integer',
             'services.*.photographer_id' => [
                 'nullable',
-                Rule::exists('users', 'id')->where(fn ($query) => $query->where('role', 'photographer')),
+                Rule::exists('users', 'id')->where(fn ($query) => $query->where(fn ($roles) => $roles->where('role', 'photographer')->orWhereJsonContains('secondary_roles', 'photographer'))),
             ],
             'expected_edit_version' => 'nullable|string|size:64',
             'expected_units_revision' => 'nullable|integer|min:0',

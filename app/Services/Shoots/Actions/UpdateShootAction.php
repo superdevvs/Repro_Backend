@@ -69,9 +69,29 @@ class UpdateShootAction
         $isAdmin = in_array($normalizedRole, ['admin', 'superadmin', 'super_admin', 'editing_manager'], true);
         $canApproveFeaturedShoot = in_array($normalizedRole, ['admin', 'superadmin', 'super_admin'], true);
         $isClient = $user->role === 'client';
-        $isRep = $this->authorizationSupport->hasRole($user, ['salesRep']);
         $management = app(\App\Services\Shoots\ShootManagementAccess::class);
-        $isRep = ! $isAdmin && ($isRep || $management->isSalesRep($user));
+        if ($management->hasBookingRole($user) && $request->hasAny([
+            'client_id', 'address', 'city', 'state', 'zip', 'timezone',
+            'scheduled_at', 'scheduled_date', 'time', 'photographer_id',
+            'alternate_scheduled_at', 'alternate_scheduled_date', 'alternate_time', 'units',
+            'schedule_adjustments', 'shoot_type', 'product_status', 'complimentary_service_options',
+            'services', 'service_items', 'service_lines', 'service_photographers',
+            'property_details', 'bedrooms', 'bathrooms', 'sqft', 'listing_type', 'property_status',
+            'shoot_notes', 'company_notes', 'discount_type', 'discount_value', 'admin_adjusted_total_quote',
+            'base_quote', 'total_quote', 'tax_amount', 'discount_amount',
+        ])) {
+            abort_unless($management->canEdit($shoot, $user), 403, 'You do not have permission to edit this booking.');
+        }
+        foreach (['status', 'workflow_status'] as $statusField) {
+            $targetStatus = $request->input($statusField);
+            if ($management->hasBookingRole($user) && $targetStatus !== $shoot->{$statusField}
+                && in_array($targetStatus, ['scheduled', 'on_hold', 'cancelled'], true)) {
+                abort_unless($management->can($user, 'manage'), 403);
+                if ($targetStatus === 'scheduled') abort_unless($management->canEditAppointment($shoot, $user), 403);
+            }
+        }
+        // Secondary office roles grant booking edits through the same restricted payload.
+        $isRep = ! $isAdmin && $management->hasBookingRole($user);
         $canManageBooking = $management->can($user);
         $legacyMarketingOnly = $isRep && ! $management->canEdit($shoot, $user)
             && count(array_diff(array_keys($request->all()), ['tour_links', 'is_private_listing', 'is_featured', 'featured_homepage_title', 'featured_homepage_location', 'featured_homepage_subtitle', 'featured_homepage_cta_label', 'featured_homepage_cta_href', 'featured_homepage_images', 'ghost_user_ids'])) === 0;

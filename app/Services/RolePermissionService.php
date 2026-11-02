@@ -44,6 +44,13 @@ class RolePermissionService
         );
     }
 
+    /** Explicit denials also apply to narrow assignment-scoped legacy actions. */
+    public function userIsDenied(User $user, string $resource, string $action): bool
+    {
+        return ! $this->normalizedUserRoles($user)->contains('superadmin')
+            && in_array($this->permissionId($resource, $action), $this->normalizedOverridesForUser($user)['deny'], true);
+    }
+
     /**
      * Lightweight list of accounts for the per-user override picker.
      */

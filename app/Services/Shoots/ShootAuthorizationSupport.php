@@ -103,7 +103,7 @@ class ShootAuthorizationSupport
     public function canManageRequestedShoot(Shoot $shoot, ?User $user): bool
     {
         return strtolower((string) ($shoot->workflow_status ?: $shoot->status)) === Shoot::STATUS_REQUESTED
-            && ($this->hasRole($user, ['admin', 'superadmin', 'editing_manager']) || app(ShootManagementAccess::class)->can($user, 'manage'));
+            && app(ShootManagementAccess::class)->can($user, 'manage');
     }
 
     public function isClientUser(?User $user): bool
@@ -351,36 +351,29 @@ class ShootAuthorizationSupport
         return false;
     }
 
-    /**
-     * Sales can bring a hold shoot back onto the schedule. They cannot use the
-     * same action to move a shoot that is already active.
-     */
+    /** Staff need both booking capabilities; assigned contractors retain time-only scheduling. */
     public function canScheduleShoot(Shoot $shoot, ?User $user): bool
     {
-        if (app(ShootManagementAccess::class)->isSalesRep($user)) {
-            return app(ShootManagementAccess::class)->canEditAppointment($shoot, $user)
-                && app(ShootManagementAccess::class)->can($user, 'manage');
+        $management = app(ShootManagementAccess::class);
+        if ($management->hasBookingRole($user)) {
+            return $management->canEditAppointment($shoot, $user) && $management->can($user, 'manage');
         }
-        if ($this->hasRole($user, ['editor'])
-            && ! app(ShootEditingAssignmentService::class)->editorHasAssignment($shoot, $user)) {
+        if (! $user || $shoot->isImportDraft()) {
             return false;
         }
-        if (! $user || ! $this->canViewShootDetails($shoot, $user)) {
+        $permissions = app(\App\Services\RolePermissionService::class);
+        if ($permissions->userIsDenied($user, 'shoots', 'update') || $permissions->userIsDenied($user, 'shoots', 'manage')) {
             return false;
         }
-
-        if ($this->hasRole($user, ['admin', 'superadmin', 'editing_manager', 'photographer', 'editor'])) {
-            return true;
-        }
-
-        return app(ShootManagementAccess::class)->canEditAppointment($shoot, $user)
-            && app(ShootManagementAccess::class)->can($user, 'manage');
+        return ($this->hasRole($user, ['photographer']) && $this->isPhotographerAssignedToShoot($shoot, $user))
+            || ($this->hasRole($user, ['editor']) && app(ShootEditingAssignmentService::class)->editorHasAssignment($shoot, $user));
     }
 
     /** Hold shoots are still being arranged, so sales can set the appointment. */
     public function canManageHoldShoot(Shoot $shoot, ?User $user): bool
     {
         return app(ShootManagementAccess::class)->can($user)
+            && app(ShootManagementAccess::class)->can($user, 'manage')
             && $this->isOnHold($shoot)
             && $this->canViewShootDetails($shoot, $user);
     }
@@ -403,28 +396,45 @@ class ShootAuthorizationSupport
     /** Request review is an office/sales duty, independent of media workflow writes. */
     public function canReviewShootRequests(?User $user): bool
     {
-        if (app(ShootManagementAccess::class)->isSalesRep($user)) {
-            return app(ShootManagementAccess::class)->can($user, 'manage');
-        }
-        if (! $user) {
-            return false;
-        }
+        return app(ShootManagementAccess::class)->can($user, 'manage');
+    }
 
-        $roles = [$user->role, ...(is_array($user->secondary_roles) ? $user->secondary_roles : [])];
+    public function canApproveReschedule(Shoot $shoot, ?User $user): bool
+    {
+        return $this->canTriageShootRequests($shoot, $user)
+            && $this->canEditShootAppointment($shoot, $user);
+    }
 
-        foreach ($roles as $role) {
-            if (in_array($this->normalizeRole((string) $role), ['admin', 'superadmin', 'editing_manager', 'sales_rep'], true)) {
-                return true;
-            }
-        }
+    public function canRequestReschedule(Shoot $shoot, ?User $user): bool
+    {
+        return ! app(ShootManagementAccess::class)->hasBookingRole($user)
+            && $this->canSubmitShootRequest($shoot, $user);
+    }
 
-        return false;
+    /** Shared by detail, card, and request-queue payloads. */
+    public function schedulingCapabilities(Shoot $shoot, ?User $user): array
+    {
+        $management = app(ShootManagementAccess::class);
+        $capabilities = $management->capabilitiesForShoot($shoot, $user);
+        $canEdit = $capabilities['canEditAppointment'];
+        $canReview = $capabilities['canManageShootActions'] && (! $shoot->isImportDraft()
+            || ($this->canManageShootOperations($user) && $this->canViewShootDetails($shoot, $user)));
+        $staff = $management->hasBookingRole($user);
+
+        return $capabilities + [
+            'canReassignPhotographer' => $canEdit,
+            'canScheduleShoot' => $staff ? $canEdit && $capabilities['canManageShootActions'] : $this->canScheduleShoot($shoot, $user),
+            'canReviewRequests' => $canReview,
+            'canApproveReschedule' => $canEdit && $canReview,
+            'canRequestReschedule' => ! $staff && $this->canSubmitShootRequest($shoot, $user),
+        ];
     }
 
     public function canTriageShootRequests(Shoot $shoot, ?User $user): bool
     {
         if ($shoot->isImportDraft()) {
-            return $this->canManageShootOperations($user) && $this->canViewShootDetails($shoot, $user);
+            return $this->canReviewShootRequests($user)
+                && $this->canManageShootOperations($user) && $this->canViewShootDetails($shoot, $user);
         }
 
         return $this->canReviewShootRequests($user);
@@ -451,6 +461,9 @@ class ShootAuthorizationSupport
     /** Viewing a linked/shared delivery never grants the recipient workflow writes. */
     public function canSubmitShootRequest(Shoot $shoot, ?User $user): bool
     {
+        if (app(ShootManagementAccess::class)->hasBookingRole($user)) {
+            return $this->canTriageShootRequests($shoot, $user);
+        }
         if (! $user || ! $this->canViewShootDetails($shoot, $user)) {
             return false;
         }
@@ -459,12 +472,8 @@ class ShootAuthorizationSupport
             return (string) $shoot->client_id === (string) $user->id;
         }
 
-        if (app(ShootManagementAccess::class)->isSalesRep($user)) {
-            return app(ShootManagementAccess::class)->can($user, 'manage');
-        }
-
         return $this->hasRole($user, [
-            'admin', 'superadmin', 'editing_manager', 'photographer', 'editor',
+            'photographer', 'editor',
         ]);
     }
 

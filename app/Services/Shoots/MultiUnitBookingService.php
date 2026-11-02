@@ -114,10 +114,10 @@ class MultiUnitBookingService
             $this->fail('service_lines', 'At least one booked service line is required.');
         }
         $catalog = Service::with('category')->whereIn('id', collect($rawLines)->pluck('service_id'))->get()->keyBy('id');
-        $assignmentRoles = User::query()->whereIn('id', collect($rawLines)
+        $assignmentPeople = User::query()->whereIn('id', collect($rawLines)
             ->flatMap(fn ($line) => [$line['photographer_id'] ?? null, $line['editor_id'] ?? null])
             ->push($data['photographer_id'] ?? $shoot?->photographer_id)->filter()->unique())
-            ->pluck('role', 'id');
+            ->get(['id', 'role', 'secondary_roles'])->keyBy('id');
         $services = [];
         $scopes = [];
         $lineKeys = [];
@@ -196,8 +196,11 @@ class MultiUnitBookingService
                 'is_deliverable' => $line['is_deliverable'] ?? $current?->is_deliverable ?? true,
             ];
             foreach (['photographer_id' => 'photographer', 'editor_id' => 'editor'] as $field => $role) {
+                $person = $assignmentPeople->get($row[$field]);
+                $hasRole = $role === 'photographer' ? $person?->hasPhotographerRole()
+                    : strtolower((string) $person?->role) === $role;
                 if ($row[$field] && (! $current || (int) $current->{$field} !== (int) $row[$field])
-                    && strtolower((string) $assignmentRoles->get($row[$field])) !== $role) {
+                    && ! $hasRole) {
                     $this->fail("service_lines.$index.$field", "Choose a user with the {$role} role for this assignment.");
                 }
             }

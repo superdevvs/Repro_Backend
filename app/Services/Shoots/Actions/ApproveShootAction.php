@@ -54,6 +54,7 @@ class ApproveShootAction
 
     public function execute(Request $request, Shoot $shoot, User $user): Shoot
     {
+        abort_unless(app(\App\Services\Shoots\ShootAuthorizationSupport::class)->canApproveReschedule($shoot, $user), 403);
         $management = app(\App\Services\Shoots\ShootManagementAccess::class);
         if ($management->isRestrictedSalesRep($user)) {
             $request->replace($management->normalizeSalesEdit($shoot, $user, $request->all()));

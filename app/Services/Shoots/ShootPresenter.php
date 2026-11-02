@@ -997,9 +997,9 @@ class ShootPresenter
         $shoot->setAttribute('can_remove_all_services', $canRemoveAllServices);
         $shoot->setAttribute('canRemoveAllServices', $canRemoveAllServices);
         $management = app(ShootManagementAccess::class);
-        $shoot->setAttribute('canManageBooking', $management->canEdit($shoot, $requestingUser));
-        $shoot->setAttribute('canManageShootActions', $management->can($requestingUser, 'manage'));
-        $shoot->setAttribute('canAdjustShootPricing', $management->canAdjustPricing($requestingUser));
+        foreach (app(ShootAuthorizationSupport::class)->schedulingCapabilities($shoot, $requestingUser) as $capability => $allowed) {
+            $shoot->setAttribute($capability, $allowed);
+        }
         if (request()->route('shoot') !== null) {
             $shoot->setAttribute('editVersion', $management->editVersion($shoot->fresh()));
         }

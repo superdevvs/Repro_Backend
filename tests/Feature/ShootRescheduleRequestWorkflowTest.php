@@ -50,6 +50,7 @@ class ShootRescheduleRequestWorkflowTest extends TestCase
             'scheduled_date' => self::ORIGINAL_DATE,
             'time' => self::ORIGINAL_TIME,
             'status' => Shoot::STATUS_SCHEDULED,
+            'workflow_status' => Shoot::STATUS_SCHEDULED,
         ]);
     }
 
