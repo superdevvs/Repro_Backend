@@ -33,7 +33,7 @@ final class ShootCardProjection
             'overpayment_amount', 'last_payment_date', 'last_payment_type',
             'total_photographer_pay', 'photographer_pay', 'photographer_paid_at', 'paid_at_photographer',
             'bypass_paywall', 'client_release_access', 'can_download', 'can_view_originals', 'permissions',
-            'hero_image', 'preview_images', 'media_summary', 'package_name', 'package_details',
+            'hero_image', 'preview_images', 'delivery_card_media', 'media_summary', 'package_name', 'package_details',
             'expected_final_count', 'bracket_mode', 'expected_raw_count', 'raw_photo_count', 'edited_photo_count', 'extra_photo_count',
             'raw_missing_count', 'edited_missing_count', 'missing_raw', 'missing_final',
             'notes', 'shoot_notes', 'editor_notes', 'photographer_notes', 'admin_issue_notes',

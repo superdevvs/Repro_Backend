@@ -334,6 +334,10 @@ class ShootListingService
             'grid_path',
             'web_path',
             'placeholder_path',
+            'watermarked_web_path',
+            'watermarked_thumbnail_path',
+            'watermarked_placeholder_path',
+            'scan_status',
             'sort_order',
         ];
 
@@ -397,6 +401,7 @@ class ShootListingService
             }
         }
 
+        $cardMedia = app(DeliveredCardMedia::class);
         foreach ($shoots as $shoot) {
             $group = $preferred->get($shoot->id) ?? $fallback->get($shoot->id) ?? collect();
             if (isset($dispatchOnly[(int) $shoot->id])) {
@@ -404,6 +409,7 @@ class ShootListingService
                 $group = $group->filter(fn (ShootFile $file) => isset($allowed[(int) $file->id]))->values();
             }
             $shoot->setRelation('list_preview_files', $group->take(6)->values());
+            $shoot->setAttribute('delivery_card_media', $cardMedia->forShoot($shoot, $group, $viewer));
         }
     }
 

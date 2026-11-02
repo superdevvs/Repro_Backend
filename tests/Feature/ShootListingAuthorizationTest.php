@@ -102,6 +102,44 @@ class ShootListingAuthorizationTest extends TestCase
         );
     }
 
+    public function test_card_projection_has_explicit_safe_client_preview_contract(): void
+    {
+        $client = User::factory()->create(['role' => 'client']);
+        $shoot = $this->shoot([
+            'client_id' => $client->id,
+            'status' => Shoot::STATUS_DELIVERED,
+            'workflow_status' => Shoot::STATUS_DELIVERED,
+            'payment_status' => 'unpaid', 'total_quote' => 200,
+            'bypass_paywall' => false,
+        ]);
+        ShootFile::withoutEvents(fn () => ShootFile::query()->create([
+            'shoot_id' => $shoot->id, 'filename' => 'delivered-hero.jpg',
+            'stored_filename' => 'delivered-hero.jpg', 'path' => 'shoots/original.jpg',
+            'grid_path' => 'shoots/original-grid.jpg', 'web_path' => 'shoots/original-web.jpg',
+            'watermarked_web_path' => 'watermarked/delivered-hero.jpg',
+            'scan_status' => ShootFile::SCAN_STATUS_CLEAN,
+            'file_type' => 'image/jpeg', 'mime_type' => 'image/jpeg', 'media_type' => 'edited',
+            'file_size' => 4096, 'uploaded_by' => $client->id,
+            'workflow_stage' => ShootFile::STAGE_VERIFIED, 'is_cover' => true, 'is_hidden' => false,
+        ]));
+        // Fixture creation can broadcast; this assertion covers only the read.
+        Bus::fake();
+        $response = $this->actingAs($client)->getJson('/api/shoots?tab=delivered&view=card&include_files=false&include_filters=false&no_cache=true');
+        $response->assertOk()->assertJsonPath('data.0.delivery_card_media.version', 1)
+            ->assertJsonPath('data.0.delivery_card_media.uses_watermark', true)
+            ->assertJsonPath('data.0.delivery_card_media.count', null);
+        $media = $response->json('data.0.delivery_card_media');
+        $this->assertCount(1, $media['preview_images']);
+        $this->assertStringContainsString('watermarked/delivered-hero.jpg', $media['hero_image']);
+        $this->assertStringNotContainsString('original', json_encode($media));
+        $this->assertArrayNotHasKey('files', $response->json('data.0'));
+        // Authentication may broadcast presence; reading a card must not start
+        // media generation or an archive build.
+        Bus::assertNotDispatched(\App\Jobs\GenerateWatermarkedImageJob::class);
+        Bus::assertNotDispatched(\App\Jobs\GenerateShootMediaArchiveJob::class);
+        Http::assertNothingSent();
+    }
+
     public function test_sales_queries_counts_and_filter_metadata_include_every_shoot(): void
     {
         $sales = User::factory()->create(['role' => 'salesRep']);

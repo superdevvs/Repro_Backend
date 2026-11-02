@@ -235,7 +235,7 @@ class ShootListingHistoryTest extends TestCase
             'photographer_id' => $this->photographer->id,
         ]);
 
-        ShootFile::query()->create([
+        ShootFile::withoutEvents(fn () => ShootFile::query()->create([
             'shoot_id' => $shoot->id,
             'filename' => 'living-room.jpg',
             'stored_filename' => 'living-room.jpg',
@@ -243,6 +243,7 @@ class ShootListingHistoryTest extends TestCase
             'grid_path' => 'shoots/living-room-grid.jpg',
             'web_path' => 'shoots/living-room-web.jpg',
             'thumbnail_path' => 'shoots/living-room-thumb.jpg',
+            'scan_status' => ShootFile::SCAN_STATUS_CLEAN,
             'file_type' => 'image/jpeg',
             'mime_type' => 'image/jpeg',
             'media_type' => 'edited',
@@ -251,7 +252,7 @@ class ShootListingHistoryTest extends TestCase
             'workflow_stage' => ShootFile::STAGE_VERIFIED,
             'is_cover' => true,
             'is_hidden' => false,
-        ]);
+        ]));
 
         $response = $this->getJson('/api/shoots/history?per_page=25');
 
@@ -265,6 +266,9 @@ class ShootListingHistoryTest extends TestCase
         $this->assertNotEmpty($row['preview_images']);
         $this->assertSame($row['preview_images'], $row['previewImages'] ?? null);
         $this->assertStringContainsString('living-room', (string) $row['hero_image']);
+        $this->assertSame(1, $row['delivery_card_media']['version']);
+        $this->assertNotEmpty($row['delivery_card_media']['preview_images']);
+        $this->assertNull($row['delivery_card_media']['count']);
         $this->assertArrayNotHasKey('files', $row);
         $this->assertArrayNotHasKey('list_preview_files', $row);
     }

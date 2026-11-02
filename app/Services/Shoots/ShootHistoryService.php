@@ -455,6 +455,7 @@ class ShootHistoryService
             'hero_image' => $shoot->hero_image,
             'preview_images' => $shoot->getAttribute('preview_images') ?? [],
             'previewImages' => $shoot->getAttribute('preview_images') ?? [],
+            'delivery_card_media' => $shoot->getAttribute('delivery_card_media'),
         ];
     }
 
