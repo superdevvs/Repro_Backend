@@ -38,7 +38,7 @@ class SalesSchedulingAvailabilityTest extends TestCase
             'date' => '2026-09-28', 'start_time' => '09:00', 'end_time' => '17:00',
         ])->assertOk()->assertJsonPath('data.0.photographer_id', $photographer->id);
 
-        $this->deleteJson("/api/photographer/availability/{$slot->id}")->assertForbidden();
-        $this->assertModelExists($slot);
+        $this->deleteJson("/api/photographer/availability/{$slot->id}")->assertOk();
+        $this->assertModelMissing($slot);
     }
 }

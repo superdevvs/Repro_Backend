@@ -651,7 +651,10 @@ class PhotographerAvailabilityController extends Controller
             $slots = $this->availabilityService->getBookedSlotsForRange((int) $photographerId, $rangeStart, $rangeEnd);
             return [$photographerId => collect($grouped[$photographerId] ?? [])->concat($this->enrichBookedSlots($slots))->values()];
         });
-        return response()->json(['data' => $grouped]);
+        return response()->json([
+            'data' => $grouped,
+            'meta' => $this->availabilityMetadata($request->user(), $photographerIds),
+        ]);
     }
 
     /**
@@ -1460,7 +1463,8 @@ class PhotographerAvailabilityController extends Controller
             return response()->json(['message' => 'Unauthenticated'], 401);
         }
 
-        if ($this->isStaffAvailabilityManager($user)) {
+        if ($this->isStaffAvailabilityManager($user)
+            || $this->canRepresentativeManagePhotographers($user, [$photographerId])) {
             return null;
         }
 
@@ -1494,7 +1498,8 @@ class PhotographerAvailabilityController extends Controller
             return response()->json(['message' => 'Unauthenticated'], 401);
         }
 
-        if ($this->isStaffAvailabilityManager($user)) {
+        if ($this->isStaffAvailabilityManager($user)
+            || $this->canRepresentativeManagePhotographers($user, $photographerIds)) {
             return null;
         }
 
@@ -1539,6 +1544,42 @@ class PhotographerAvailabilityController extends Controller
     protected function isStaffAvailabilityManager(User $user): bool
     {
         return in_array($user->role, ['admin', 'superadmin', 'editing_manager'], true);
+    }
+
+    /** Representatives manage photographer calendars, not arbitrary account calendars. */
+    protected function canRepresentativeManagePhotographers(User $user, array $photographerIds): bool
+    {
+        if (!app(\App\Services\Shoots\ShootAuthorizationSupport::class)->hasRole($user, ['salesRep'])) {
+            return false;
+        }
+
+        $ids = collect($photographerIds)->map(fn ($id) => (int) $id)->unique()->values();
+
+        return $ids->isNotEmpty()
+            && User::query()->whereKey($ids->all())
+                ->where(fn ($query) => $query->where('role', 'photographer')
+                    ->orWhereJsonContains('secondary_roles', 'photographer'))
+                ->count() === $ids->count();
+    }
+
+    /** Return only metadata for the calendars authorized by bulkIndex. */
+    protected function availabilityMetadata(User $viewer, array $photographerIds): array
+    {
+        $staff = $this->isStaffAvailabilityManager($viewer);
+        $rep = app(\App\Services\Shoots\ShootAuthorizationSupport::class)->hasRole($viewer, ['salesRep']);
+        $timezones = [];
+        $canManage = [];
+        foreach (User::query()->whereKey($photographerIds)->get(['id', 'role', 'secondary_roles', 'timezone']) as $person) {
+            $timezone = \App\Support\Timezone::canonical((string) $person->timezone);
+            $timezones[(string) $person->id] = in_array($timezone, timezone_identifiers_list(\DateTimeZone::ALL_WITH_BC), true)
+                ? $timezone : config('app.timezone', 'UTC');
+            $photographer = $person->role === 'photographer'
+                || in_array('photographer', $person->secondary_roles ?? [], true);
+            $canManage[(string) $person->id] = $staff || ($rep && $photographer)
+                || ($viewer->role === 'photographer' && (int) $viewer->id === (int) $person->id);
+        }
+
+        return ['timezones' => (object) $timezones, 'can_manage' => (object) $canManage];
     }
 
     protected function isStaffAvailabilityViewer(User $user): bool

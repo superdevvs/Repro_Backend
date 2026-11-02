@@ -83,6 +83,12 @@ class AvailabilityResponsiveWorkspaceTest extends TestCase
         $this->postJson('/api/photographer/availability/replace-weekly', $payload)->assertForbidden();
         $this->postJson('/api/photographer/availability/bulk-index', ['photographer_ids' => [$person->id]])->assertForbidden();
         Sanctum::actingAs(User::factory()->create(['role' => 'salesRep']));
-        $this->postJson('/api/photographer/availability/bulk', $payload)->assertForbidden();
+        $this->postJson('/api/photographer/availability/bulk', [
+            'photographer_id' => $person->id,
+            'availabilities' => [[
+                'day_of_week' => 'tuesday', 'start_time' => '09:00', 'end_time' => '17:00',
+                'status' => 'available', 'note' => 'Representative-managed hours',
+            ]],
+        ])->assertCreated()->assertJsonPath('data.0.note', 'Representative-managed hours');
     }
 }
