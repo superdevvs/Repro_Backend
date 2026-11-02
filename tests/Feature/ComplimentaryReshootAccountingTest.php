@@ -459,9 +459,10 @@ class ComplimentaryReshootAccountingTest extends TestCase
                 ['service_ids' => [$otherService->id]],
                 $shoot->client
             );
-            $this->fail('Expected Robbie complimentary-reshoot service guard to reject the mutation.');
-        } catch (\Illuminate\Validation\ValidationException $exception) {
-            $this->assertArrayHasKey('services', $exception->errors());
+            $this->fail('Expected Robbie to reject the client actor before changing booked services.');
+        } catch (\Symfony\Component\HttpKernel\Exception\HttpExceptionInterface $exception) {
+            $this->assertSame(403, $exception->getStatusCode());
+            $this->assertSame('You do not have permission to change services on this shoot.', $exception->getMessage());
         }
 
         $shoot->refresh();
@@ -469,6 +470,44 @@ class ComplimentaryReshootAccountingTest extends TestCase
         $this->assertSame(0.0, (float) $shoot->total_quote);
         $this->assertSame([$serviceItem->service_id], $shoot->serviceItems()->pluck('service_id')->all());
         $this->assertSame(0.0, (float) $shoot->serviceItems()->firstOrFail()->price);
+    }
+
+    public function test_robbie_authorized_admin_still_cannot_replace_comp_services_or_restore_positive_pricing(): void
+    {
+        config(['availability.hybrid_travel_enabled' => false]);
+        \Illuminate\Support\Facades\Http::preventStrayRequests();
+        \Illuminate\Support\Facades\Mail::fake();
+        \Illuminate\Support\Facades\Notification::fake();
+        \Illuminate\Support\Facades\Queue::fake();
+        [$shoot, $serviceItem, $photographerCompensation, $repCompensation] = $this->makeCompReshoot();
+        $admin = User::factory()->admin()->create();
+        $otherService = Service::factory()->create(['price' => 999]);
+        $before = $shoot->getRawOriginal();
+        $lineBefore = $serviceItem->getRawOriginal();
+        $photographerBefore = $photographerCompensation->getRawOriginal();
+        $repBefore = $repCompensation->getRawOriginal();
+
+        try {
+            app(\App\Services\ReproAi\ShootService::class)->updateFromAiConversation(
+                $shoot,
+                ['service_ids' => [$otherService->id]],
+                $admin
+            );
+            $this->fail('An authorized actor must still obey the complimentary-reshoot accounting restriction.');
+        } catch (\Illuminate\Validation\ValidationException $exception) {
+            $this->assertArrayHasKey('services', $exception->errors());
+            $this->assertStringContainsString('booked complimentary reshoot', $exception->errors()['services'][0]);
+        }
+
+        $this->assertSame($before, $shoot->fresh()->getRawOriginal());
+        $this->assertSame($lineBefore, $serviceItem->fresh()->getRawOriginal());
+        $this->assertSame($photographerBefore, $photographerCompensation->fresh()->getRawOriginal());
+        $this->assertSame($repBefore, $repCompensation->fresh()->getRawOriginal());
+        $this->assertSame([$serviceItem->service_id], $shoot->serviceItems()->pluck('service_id')->all());
+        \Illuminate\Support\Facades\Http::assertNothingSent();
+        \Illuminate\Support\Facades\Mail::assertNothingSent();
+        \Illuminate\Support\Facades\Notification::assertNothingSent();
+        \Illuminate\Support\Facades\Queue::assertNothingPushed();
     }
 
     public function test_robbie_billing_flow_preserves_the_direct_zero_receipt_and_blocks_repricing(): void
