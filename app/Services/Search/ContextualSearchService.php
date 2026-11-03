@@ -134,6 +134,11 @@ class ContextualSearchService
         [$label, $path, , $queryKey, $defaults] = self::SOURCES[$scope];
         $allowed = ['tab', 'status', 'filter', 'scope', 'role', 'start', 'end', 'sort', 'client_id', 'photographer_id', 'sales_rep_id', 'channel_id', 'send_source', 'direction', 'disposition', 'category', 'shoot_id'];
         $parameters = array_merge($defaults, array_intersect_key($filters, array_flip($allowed)), [$queryKey => $term, 'page' => $page, 'per_page' => $limit, 'no_cache' => '1']);
+        if (in_array($scope, ['shoots', 'listings'], true)) {
+            // These are only result suggestions; the current page owns its
+            // filter options and does not need the full directory rebuilt.
+            $parameters['include_filters'] = 'false';
+        }
         $data = $this->source->get($request, $path, $parameters);
         $rows = $data['data'] ?? $data['requests'] ?? $data['services'] ?? $data['templates'] ?? $data['workspaces'] ?? $data;
         if (isset($rows['data'])) $rows = $rows['data'];

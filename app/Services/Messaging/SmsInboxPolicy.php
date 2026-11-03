@@ -232,21 +232,30 @@ class SmsInboxPolicy
     /** Search the same legacy reminder context that history() is allowed to display. */
     public function searchContext(Builder $query, string $pattern): Builder
     {
-        return $query->whereNull('sms_group_id')->whereHas('messages', function ($messages) use ($pattern) {
-            $this->visibleMessages($messages)->whereExists(function ($context) use ($pattern) {
-                $business = "(CASE WHEN messages.direction = 'INBOUND' THEN messages.to_address ELSE messages.from_address END)";
-                $person = "(CASE WHEN messages.direction = 'INBOUND' THEN messages.from_address ELSE messages.to_address END)";
-                $context->selectRaw('1')->from('messages as sms_context')
-                    ->join('message_threads as context_threads', 'context_threads.id', '=', 'sms_context.thread_id')
-                    ->whereColumn('sms_context.thread_id', '!=', 'messages.thread_id')
-                    ->where('context_threads.channel', 'SMS')->where('context_threads.sms_inbox_active', false)->whereNull('context_threads.sms_group_id')
-                    ->where('sms_context.channel', 'SMS')->where('sms_context.direction', 'OUTBOUND')
-                    ->where(fn ($visible) => $visible->where('sms_context.hidden_from_inbox', false)->orWhereNull('sms_context.hidden_from_inbox'))
-                    ->whereRaw("LOWER(COALESCE(sms_context.body_text, '')) LIKE LOWER(?) ESCAPE '\\'", [$pattern])
-                    ->whereRaw($this->phoneSql('sms_context.from_address').' = '.$this->phoneSql($business))
-                    ->whereRaw($this->phoneSql('sms_context.to_address').' = '.$this->phoneSql($person));
-            });
-        });
+        // Find matching reminder pairs once. A correlated EXISTS here used to
+        // rescan all reminders for every message in every candidate thread.
+        // DISTINCT keeps this a materialized relation in SQLite, allowing a
+        // lookup by its normalized pair instead of repeatedly scanning bodies.
+        $context = DB::table('messages as sms_context')
+            ->join('message_threads as context_threads', 'context_threads.id', '=', 'sms_context.thread_id')
+            ->where('context_threads.channel', 'SMS')->where('context_threads.sms_inbox_active', false)->whereNull('context_threads.sms_group_id')
+            ->where('sms_context.channel', 'SMS')->where('sms_context.direction', 'OUTBOUND')
+            ->where(fn ($visible) => $visible->where('sms_context.hidden_from_inbox', false)->orWhereNull('sms_context.hidden_from_inbox'))
+            ->whereRaw("LOWER(COALESCE(sms_context.body_text, '')) LIKE LOWER(?) ESCAPE '\\'", [$pattern])
+            ->select('sms_context.thread_id as context_thread_id')
+            ->selectRaw($this->phoneSql('sms_context.from_address').' as business')
+            ->selectRaw($this->phoneSql('sms_context.to_address').' as person')
+            ->distinct();
+        $business = "(CASE WHEN messages.direction = 'INBOUND' THEN messages.to_address ELSE messages.from_address END)";
+        $person = "(CASE WHEN messages.direction = 'INBOUND' THEN messages.from_address ELSE messages.to_address END)";
+        $threads = $this->visibleMessages(Message::query())
+            ->joinSub($context, 'context_matches', function ($join) use ($business, $person) {
+                $join->on('context_matches.context_thread_id', '!=', 'messages.thread_id')
+                    ->whereRaw('context_matches.business = '.$this->phoneSql($business))
+                    ->whereRaw('context_matches.person = '.$this->phoneSql($person));
+            })->select('messages.thread_id');
+
+        return $query->whereNull('sms_group_id')->whereIn('message_threads.id', $threads);
     }
 
     private function pair(Builder $query, string $person, string $business): void

@@ -165,6 +165,17 @@ class InvoiceController extends Controller
         }
         $sort = $filters['sort'] ?? 'date_desc';
         $query->orderBy(str_starts_with($sort, 'amount') ? 'total_amount' : DB::raw('COALESCE(billing_period_start, issue_date, period_start, created_at)'), str_ends_with($sort, 'asc') ? 'asc' : 'desc')->orderByDesc('id');
+        if ($request->attributes->get('contextual_search_source')) {
+            // Search uses the same authorized, filtered query, but does not need
+            // invoice editing contracts, pricing breakdowns or entire related
+            // shoot/payment graphs just to display a title and a few fields.
+            $invoices = $query->withoutEagerLoads()
+                ->select(['id', 'invoice_number', 'client_id', 'photographer_id', 'sales_rep_id', 'status', 'total_amount', 'balance_due', 'created_at'])
+                ->with(['client:id,name', 'photographer:id,name', 'salesRep:id,name'])
+                ->paginate($filters['per_page'] ?? 15);
+            $invoices->through(fn (Invoice $invoice) => $invoice->setAppends([])->toArray());
+            return response()->json($invoices)->header('Cache-Control', 'private, no-store');
+        }
         if ($request->attributes->get('invoice_summary')) {
             $rows = $query->withoutEagerLoads()->with(['client:id,name', 'photographer:id,name', 'salesRep:id,name'])->get();
             Invoice::primePaymentRecords($rows);
