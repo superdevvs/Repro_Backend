@@ -11,10 +11,11 @@ class AvailabilityMapLocation
     public function __construct(private PhotographerAddressPolicy $addresses) {}
 
     /**
-     * Null coordinates mean unavailable. No stored, explicitly safe region source
-     * currently exists, so region/hidden visibility never falls back to home pins.
+     * Null coordinates mean unavailable. An exact-address owner can resolve the
+     * canonical profile address when stored coordinates are absent. Region/hidden
+     * visibility never falls back to private home coordinates or address fields.
      *
-     * @return array{photographer_id:int,latitude:?float,longitude:?float,precision:?string,label:?string}
+     * @return array{photographer_id:int,latitude:?float,longitude:?float,precision:?string,label:?string,geocoding_address:?array{address:string,city:string,state:string,zip:string}}
      */
     public function present(User $viewer, User $photographer): array
     {
@@ -24,12 +25,15 @@ class AvailabilityMapLocation
             'longitude' => null,
             'precision' => null,
             'label' => null,
+            'geocoding_address' => null,
         ];
 
         if (! $this->addresses->isPhotographer($photographer)
             || ! $this->addresses->canViewFullAddress($viewer, $photographer)) {
             return $location;
         }
+
+        $location['geocoding_address'] = $this->canonicalGeocodingAddress($photographer);
 
         $metadata = $photographer->metadata;
         if (is_string($metadata)) {
@@ -57,6 +61,26 @@ class AvailabilityMapLocation
             'longitude' => $longitude,
             'precision' => 'base',
             'label' => 'Base',
+            // Existing valid coordinates need no additional private address data.
+            'geocoding_address' => null,
         ]);
+    }
+
+    /** @return array{address:string,city:string,state:string,zip:string}|null */
+    private function canonicalGeocodingAddress(User $photographer): ?array
+    {
+        $address = [];
+        foreach (['address' => 255, 'city' => 100, 'state' => 100, 'zip' => 20] as $field => $limit) {
+            $value = $photographer->getAttribute($field);
+            if ($value !== null && (! is_string($value) || mb_strlen($value) > $limit)) {
+                return null;
+            }
+            $address[$field] = is_string($value) ? trim($value) : '';
+        }
+
+        // A street-only legacy value is too ambiguous to locate confidently.
+        // Never substitute metadata/homeAddress aliases or pending changes.
+        return $address['address'] !== '' && $address['city'] !== '' && $address['state'] !== ''
+            ? $address : null;
     }
 }
