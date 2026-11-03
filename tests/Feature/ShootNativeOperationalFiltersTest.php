@@ -138,6 +138,24 @@ class ShootNativeOperationalFiltersTest extends TestCase
         }
     }
 
+    public function test_every_advertised_status_can_be_submitted_together_without_relaxing_validation(): void
+    {
+        $this->actingAs(User::factory()->create(['role' => 'admin']));
+        $scheduled = $this->shoot();
+        $active = $this->shoot(['status' => 'active', 'workflow_status' => 'active']);
+        $delivered = $this->shoot(['status' => 'delivered', 'workflow_status' => 'delivered']);
+        $values = array_column($this->getJson('/api/shoots/filters')->assertOk()->json('data.statuses'), 'value');
+
+        $this->assertContains('active', $values);
+        $response = $this->listing(['tab' => 'all', 'statuses' => $values])->assertOk()->assertJsonPath('meta.count', 3);
+        $this->assertEqualsCanonicalizing([$scheduled->id, $active->id, $delivered->id], array_column($response->json('data'), 'id'));
+
+        $unknown = $values;
+        $unknown[0] = 'not-a-real-status';
+        $this->listing(['tab' => 'all', 'statuses' => $unknown])->assertUnprocessable()->assertJsonValidationErrors('statuses.0');
+        $this->listing(['tab' => 'all', 'statuses' => [...$values, $values[0]]])->assertUnprocessable()->assertJsonValidationErrors('statuses');
+    }
+
     private function shoot(array $attributes = []): Shoot
     {
         return Shoot::factory()->create(array_replace([

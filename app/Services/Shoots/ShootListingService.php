@@ -69,12 +69,13 @@ class ShootListingService
                 $fail("The {$attribute} field must be true or false.");
             }
         };
+        $statusValues = app(ShootStatusFilter::class)->values();
         $request->validate([
             'scheduled_local_date' => ['sometimes', 'required',
                 ...($request->query('scheduled_local_date') === 'today' ? ['in:today'] : ['date_format:Y-m-d']),
             ],
-            'statuses' => ['sometimes', 'array', 'max:13'],
-            'statuses.*' => ['string', Rule::in(app(ShootStatusFilter::class)->values())],
+            'statuses' => ['sometimes', 'array', 'max:'.count($statusValues)],
+            'statuses.*' => ['string', Rule::in($statusValues)],
             'unassigned_only' => ['sometimes', $booleanFilter],
             'flagged_only' => ['sometimes', $booleanFilter],
         ]);
