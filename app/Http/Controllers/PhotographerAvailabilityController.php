@@ -657,6 +657,26 @@ class PhotographerAvailabilityController extends Controller
         ]);
     }
 
+    /** Stored base locations for the same authorized calendars as bulkIndex. */
+    public function mapLocations(Request $request, \App\Services\Photographers\AvailabilityMapLocation $locations)
+    {
+        $validated = $request->validate([
+            'photographer_ids' => 'required|array|min:1|max:100',
+            'photographer_ids.*' => 'integer|exists:users,id',
+        ]);
+
+        if ($response = $this->denyUnlessCanViewAllPhotographers($request->user(), $validated['photographer_ids'])) {
+            return $response;
+        }
+
+        $ids = collect($validated['photographer_ids'])->map(fn ($id) => (int) $id)->unique()->values();
+        $people = User::whereKey($ids)->get(['id', 'role', 'secondary_roles', 'metadata'])->keyBy('id');
+
+        return response()->json(['data' => $ids->map(
+            fn ($id) => $locations->present($request->user(), $people->get($id) ?? abort(404))
+        )->all()]);
+    }
+
     /**
      * Get booked slots with shoot details for a photographer within a date range
      * Returns shoot information for calendar display

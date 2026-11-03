@@ -1340,6 +1340,7 @@ Route::middleware('auth:sanctum')->prefix('photographer/availability')->group(fu
     Route::post('/bulk', [PhotographerAvailabilityController::class, 'bulkStore']);
     Route::post('/replace-weekly', [PhotographerAvailabilityController::class, 'replaceWeekly']);
     Route::post('/bulk-index', [PhotographerAvailabilityController::class, 'bulkIndex']);
+    Route::post('/map-locations', [PhotographerAvailabilityController::class, 'mapLocations']);
     Route::post('/booked-slots', [PhotographerAvailabilityController::class, 'getBookedSlotsWithDetails']);
     Route::post('/check', [PhotographerAvailabilityController::class, 'checkAvailability']);
     Route::get('/{photographerId}', [PhotographerAvailabilityController::class, 'index']);
