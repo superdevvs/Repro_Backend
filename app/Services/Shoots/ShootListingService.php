@@ -356,6 +356,8 @@ class ShootListingService
             'watermarked_thumbnail_path',
             'watermarked_placeholder_path',
             'scan_status',
+            'created_at',
+            'verified_at',
             'sort_order',
         ];
 
@@ -424,7 +426,8 @@ class ShootListingService
         // Batch assignment checks without attaching unsanitized serviceItems
         // to the original page models consumed by ShootPresenter.
         $policyShoots = new \Illuminate\Database\Eloquent\Collection($shoots->map(fn (Shoot $shoot) => clone $shoot)->all());
-        if ($viewer && $authorization->hasRole($viewer, ['editor', 'photographer'])) {
+        if ($viewer && ($authorization->hasRole($viewer, ['editor', 'photographer'])
+            || ($authorization->isClientUser($viewer) && $shoots->contains(fn (Shoot $shoot) => app(ShootActiveWorkLifecycle::class)->hasActiveWork($shoot))))) {
             $policyShoots->loadMissing('serviceItems.service');
         }
         $policyShoots = $policyShoots->keyBy('id');

@@ -146,6 +146,94 @@ class DeliveredCardMediaAuthorizationTest extends TestCase
         Http::assertNothingSent(); Mail::assertNothingSent(); Notification::assertNothingSent();
     }
 
+    public function test_active_client_previews_retain_only_released_lines_before_the_six_image_limit(): void
+    {
+        $shoot = $this->shoot([
+            'status' => 'active', 'workflow_status' => 'active',
+            'active_work_started_at' => '2026-11-03 13:00:00', 'active_work_completed_at' => null,
+            'admin_verified_at' => '2026-11-02 12:00:00',
+        ]);
+        $old = $this->item($shoot, ['is_deliverable' => true, 'workflow_status' => 'delivered',
+            'delivery_status' => 'delivered', 'delivered_at' => '2026-11-02 12:00:00']);
+        $pending = $this->item($shoot, ['is_deliverable' => true, 'workflow_status' => 'pending', 'delivery_status' => 'not_started']);
+        $this->photo($shoot, 'released-old', ['shoot_service_id' => $old->id]);
+        $this->photo($shoot, 'legacy-old', ['created_at' => '2026-11-02 10:00:00', 'verified_at' => '2026-11-02 11:00:00']);
+        $this->photo($shoot, 'legacy-new-secret', ['created_at' => '2026-11-03 14:00:00']);
+        foreach (range(1, 7) as $index) {
+            $this->photo($shoot, 'pending-secret-'.$index, ['shoot_service_id' => $pending->id, 'is_cover' => true]);
+        }
+        $this->activateFixture($shoot);
+        Sanctum::actingAs($shoot->client);
+        $this->assertSame('client', auth()->user()->role);
+        $this->assertTrue(app(\App\Services\Shoots\ShootAuthorizationSupport::class)->isClientUser(auth()->user()));
+        $before = $this->listing()->assertOk()->json('data.0.delivery_card_media');
+        $this->assertCount(2, $before['preview_images']);
+        $this->assertStringContainsString('/released-old-grid.jpg', json_encode($before));
+        $this->assertStringContainsString('/legacy-old-grid.jpg', json_encode($before));
+        $this->assertStringNotContainsString('secret', json_encode($before));
+
+        // A newly finalized service is safe while another service keeps the order Active.
+        $this->item($shoot, ['is_deliverable' => true, 'workflow_status' => 'pending', 'delivery_status' => 'not_started']);
+        $pending->forceFill(['workflow_status' => 'delivered', 'delivery_status' => 'delivered',
+            'delivered_at' => '2026-11-03 15:00:00'])->saveQuietly();
+        $after = $this->listing()->assertOk()->json('data.0.delivery_card_media');
+        $this->assertCount(6, $after['preview_images']);
+        $this->assertStringContainsString('/pending-secret-', json_encode($after));
+        $this->assertStringNotContainsString('legacy-new-secret', json_encode($after));
+    }
+
+    public function test_active_client_retention_fails_closed_for_locked_or_suspended_orders(): void
+    {
+        $shoot = $this->shoot(['status' => 'active', 'workflow_status' => 'active',
+            'active_work_started_at' => '2026-11-03 13:00:00', 'active_work_completed_at' => null]);
+        $item = $this->item($shoot, ['is_deliverable' => true, 'workflow_status' => 'delivered',
+            'delivery_status' => 'delivered', 'delivered_at' => '2026-11-02 12:00:00']);
+        $this->photo($shoot, 'retained', ['shoot_service_id' => $item->id, 'watermarked_web_path' => 'watermarked/retained.jpg']);
+        $this->activateFixture($shoot);
+        Sanctum::actingAs($shoot->client);
+        $page = Shoot::whereKey($shoot->id)->get();
+        app(ShootListingService::class)->eagerLoadListCardPreviewFiles($page);
+        $this->assertCount(1, $page->first()->getAttribute('delivery_card_media')['preview_images']);
+        foreach ([['payment_status' => 'unpaid'], ['workflow_status' => 'on_hold', 'payment_status' => 'paid']] as $change) {
+            $shoot->forceFill($change)->saveQuietly();
+            $page = Shoot::whereKey($shoot->id)->get();
+            app(ShootListingService::class)->eagerLoadListCardPreviewFiles($page);
+            $this->assertSame([], $page->first()->getAttribute('delivery_card_media')['preview_images']);
+        }
+    }
+
+    public function test_active_client_retention_batches_service_identity_without_serializing_policy_relations(): void
+    {
+        $shoot = $this->shoot(['status' => 'active', 'workflow_status' => 'active',
+            'active_work_started_at' => '2026-11-03 13:00:00', 'active_work_completed_at' => null]);
+        $item = $this->item($shoot, ['is_deliverable' => true, 'workflow_status' => 'delivered',
+            'delivery_status' => 'delivered', 'delivered_at' => '2026-11-02 12:00:00']);
+        foreach (range(1, 12) as $index) { $this->photo($shoot, 'active-batch-'.$index, ['shoot_service_id' => $item->id]); }
+        $this->activateFixture($shoot);
+        Sanctum::actingAs($shoot->client);
+        $page = Shoot::whereKey($shoot->id)->get();
+        DB::enableQueryLog();
+        try {
+            app(ShootListingService::class)->eagerLoadListCardPreviewFiles($page);
+            $queries = collect(DB::getQueryLog())->filter(fn ($entry) => str_contains($entry['query'], 'from "shoot_service"'));
+            $this->assertCount(1, $queries);
+        } finally {
+            DB::disableQueryLog();
+        }
+        $this->assertFalse($page->first()->relationLoaded('serviceItems'));
+        $this->assertFalse($page->first()->list_preview_files->first()->relationLoaded('serviceItem'));
+        $this->assertCount(6, $page->first()->getAttribute('delivery_card_media')['preview_images']);
+    }
+
+    private function activateFixture(Shoot $shoot): void
+    {
+        // Build service rows first: creating a delivered line with no remaining
+        // work legitimately closes an existing cycle through its observer.
+        $shoot->refresh()->forceFill(['status' => 'active', 'workflow_status' => 'active',
+            'active_work_started_at' => '2026-11-03 13:00:00', 'active_work_completed_at' => null])->saveQuietly();
+        $this->assertTrue(app(\App\Services\Shoots\ShootActiveWorkLifecycle::class)->hasActiveWork($shoot->fresh()));
+    }
+
     private function listing()
     {
         return $this->getJson('/api/shoots?tab=delivered&view=card&include_files=false&no_cache=true&include_filters=false');
@@ -169,13 +257,15 @@ class DeliveredCardMediaAuthorizationTest extends TestCase
 
     private function photo(Shoot $shoot, string $name, array $attributes = []): ShootFile
     {
-        return ShootFile::withoutEvents(fn () => ShootFile::create(array_replace([
+        $file = new ShootFile;
+        $file->forceFill(array_replace([
             'shoot_id' => $shoot->id, 'filename' => $name.'.jpg', 'stored_filename' => $name.'.jpg',
             'path' => 'photos/'.$name.'.jpg', 'grid_path' => 'photos/'.$name.'-grid.jpg',
             'web_path' => 'photos/'.$name.'-web.jpg', 'file_type' => 'image/jpeg', 'mime_type' => 'image/jpeg',
             'media_type' => 'edited', 'workflow_stage' => ShootFile::STAGE_VERIFIED, 'file_size' => 100,
             'is_hidden' => false, 'is_extra' => false, 'uploaded_by' => $shoot->client_id,
             'scan_status' => ShootFile::SCAN_STATUS_CLEAN,
-        ], $attributes)));
+        ], $attributes))->saveQuietly();
+        return $file;
     }
 }

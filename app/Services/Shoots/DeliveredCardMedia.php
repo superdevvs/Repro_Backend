@@ -29,8 +29,11 @@ final class DeliveredCardMedia
         // Some read-policy checks load raw service assignments. Keep those
         // relations off the source model that the list presenter will serialize.
         $policyShoot = clone $shoot;
+        $activeClient = $this->authorization->isClientUser($viewer)
+            && app(ShootActiveWorkLifecycle::class)->hasActiveWork($policyShoot);
         $viewable = $viewer ? $candidates->filter(fn (ShootFile $file) => $this->eligible($file)
-            && $this->authorization->canViewShootMediaFile($policyShoot, $file, $viewer))->take(6) : [];
+            && $this->authorization->canViewShootMediaFile($policyShoot, $file, $viewer)
+            && (! $activeClient || $this->retainedClientPreview($policyShoot, $file)))->take(6) : [];
         foreach ($viewable as $file) {
             $paths = $watermarked
                 ? [$file->watermarked_web_path, $file->watermarked_thumbnail_path, $file->watermarked_placeholder_path]
@@ -74,6 +77,18 @@ final class DeliveredCardMedia
     private function pathKey(?string $url): ?string
     {
         return $url ? rawurldecode((string) (parse_url($url, PHP_URL_PATH) ?: $url)) : null;
+    }
+
+    private function retainedClientPreview(Shoot $shoot, ShootFile $file): bool
+    {
+        // Active orders can contain both historical deliveries and new work.
+        // Reuse the existing publication gate; readiness alone is not release.
+        $policyFile = clone $file;
+        if ($file->shoot_service_id && $shoot->relationLoaded('serviceItems')) {
+            $item = $shoot->serviceItems->find($file->shoot_service_id);
+            $policyFile->setRelation('serviceItem', $item ? clone $item : null);
+        }
+        return app(PublicTourImage::class)->canRetainPublishedFile($policyFile, $shoot);
     }
 
     private function eligible(ShootFile $file): bool

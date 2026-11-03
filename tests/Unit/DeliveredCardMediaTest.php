@@ -142,6 +142,23 @@ class DeliveredCardMediaTest extends TestCase
         $this->assertNull($value['hero_image']);
     }
 
+    public function test_active_retention_does_not_attach_policy_relations_to_preloaded_source_items(): void
+    {
+        $shoot = $this->shoot(['payment_status' => 'unpaid']);
+        $shoot->forceFill(['id' => 1, 'active_work_started_at' => '2026-11-03 13:00:00', 'active_work_completed_at' => null]);
+        $item = new \App\Models\ShootService;
+        $item->forceFill(['id' => 10, 'shoot_id' => 1, 'is_deliverable' => true,
+            'workflow_status' => 'delivered', 'delivery_status' => 'delivered',
+            'delivered_at' => '2026-11-02 12:00:00', 'force_unlock_delivery' => true]);
+        $shoot->setRelation('serviceItems', new \Illuminate\Database\Eloquent\Collection([$item]));
+        $photo = $this->photo('released', ['shoot_id' => 1, 'shoot_service_id' => 10,
+            'scan_status' => 'clean', 'watermarked_web_path' => 'watermarked/released.jpg']);
+        $value = $this->media()->forShoot($shoot, collect([$photo]), new User(['role' => 'client']));
+        $this->assertCount(1, $value['preview_images']);
+        $this->assertFalse($item->relationLoaded('shoot'));
+        $this->assertFalse($photo->relationLoaded('serviceItem'));
+    }
+
     public function test_pending_payment_status_does_not_lazy_load_payment_records(): void
     {
         $shoot = Mockery::mock(Shoot::class)->makePartial();
