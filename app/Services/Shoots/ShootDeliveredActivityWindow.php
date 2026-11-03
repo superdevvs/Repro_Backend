@@ -2,10 +2,12 @@
 
 namespace App\Services\Shoots;
 
+use App\Models\ShootService;
 use DateTimeImmutable;
 use DateTimeZone;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
 /** Opt-in delivery instants, independent of booked dates and unrelated updates. */
@@ -43,18 +45,38 @@ final class ShootDeliveredActivityWindow
         // date functions round fractions to milliseconds. Like ShootListOrdering,
         // project only authorized scalar keys and compare exact instants in PHP.
         $projection = (clone $query)->withoutEagerLoads()->reorder()
-            ->select(['shoots.id', 'shoots.admin_verified_at', 'shoots.completed_at'])->toBase();
+            ->select(['shoots.id', 'shoots.active_work_completed_at', 'shoots.admin_verified_at', 'shoots.completed_at'])->toBase();
         $projection->limit = null;
         $projection->offset = null;
-        $ids = [];
+        $latestByShoot = [];
         foreach ($projection->cursor() as $row) {
+            // A closed additional-work cycle is a new delivery activity while
+            // the first delivery timestamps intentionally remain immutable.
+            $cycle = is_string($row->active_work_completed_at) ? trim($row->active_work_completed_at) : '';
             $primary = is_string($row->admin_verified_at) ? trim($row->admin_verified_at) : '';
-            $raw = $primary !== '' ? $primary : $row->completed_at;
-            $instant = self::parseStored($raw);
-            if ($instant !== null && $instant >= $this->from && $instant <= $this->to) {
-                $ids[] = (int) $row->id;
+            $raw = $cycle !== '' ? $cycle : ($primary !== '' ? $primary : $row->completed_at);
+            $latestByShoot[(int) $row->id] = self::parseStored($raw);
+        }
+        if ($latestByShoot !== []) {
+            // Reopening another cycle clears the root completion field. Fully
+            // delivered service rows retain the actual intervening deliveries.
+            // Read scalar instants in one batch: SQL MAX would misorder mixed
+            // offsets and SQLite date functions discard microsecond precision.
+            $services = DB::table('shoot_service')->whereIntegerInRaw('shoot_id', array_keys($latestByShoot))
+                ->where('is_deliverable', true)->whereNull('cancelled_at')
+                ->where('workflow_status', ShootService::WORKFLOW_DELIVERED)
+                ->where('delivery_status', ShootService::DELIVERY_DELIVERED)
+                ->whereNotNull('delivered_at')->select(['shoot_id', 'delivered_at']);
+            foreach ($services->cursor() as $service) {
+                $instant = self::parseStored($service->delivered_at);
+                $id = (int) $service->shoot_id;
+                if ($instant !== null && ($latestByShoot[$id] === null || $instant > $latestByShoot[$id])) {
+                    $latestByShoot[$id] = $instant;
+                }
             }
         }
+        $ids = array_keys(array_filter($latestByShoot,
+            fn ($instant) => $instant !== null && $instant >= $this->from && $instant <= $this->to));
         // Integer literals avoid SQLite's bound-parameter limit for large teams.
         // All existing role, status and operational scopes remain on the query.
         $query->whereIntegerInRaw('shoots.id', $ids);

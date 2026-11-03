@@ -152,9 +152,11 @@ class DeliveredCardMediaTest extends TestCase
             'delivered_at' => '2026-11-02 12:00:00', 'force_unlock_delivery' => true]);
         $shoot->setRelation('serviceItems', new \Illuminate\Database\Eloquent\Collection([$item]));
         $photo = $this->photo('released', ['shoot_id' => 1, 'shoot_service_id' => 10,
-            'scan_status' => 'clean', 'watermarked_web_path' => 'watermarked/released.jpg']);
+            'scan_status' => 'clean']);
         $value = $this->media()->forShoot($shoot, collect([$photo]), new User(['role' => 'client']));
         $this->assertCount(1, $value['preview_images']);
+        $this->assertSame('https://reprodashboard.test/storage/photos/released-grid.jpg', $value['hero_image']);
+        $this->assertFalse($value['uses_watermark']);
         $this->assertFalse($item->relationLoaded('shoot'));
         $this->assertFalse($photo->relationLoaded('serviceItem'));
     }

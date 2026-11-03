@@ -3,8 +3,14 @@
 namespace Tests\Feature;
 
 use App\Models\Service;
+use App\Models\Payment;
+use App\Models\PaymentServiceAllocation;
 use App\Models\Shoot;
+use App\Models\ShootFile;
+use App\Models\ShootService;
 use App\Models\User;
+use App\Services\Shoots\ShootActiveWorkLifecycle;
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Cache;
@@ -28,6 +34,12 @@ class ShootDeliveredActivityWindowTest extends TestCase
         Notification::fake();
         Http::preventStrayRequests();
         Cache::flush();
+    }
+
+    protected function tearDown(): void
+    {
+        $this->travelBack();
+        parent::tearDown();
     }
 
     public function test_boundaries_are_inclusive_exact_microseconds_across_dst_and_mixed_storage(): void
@@ -72,7 +84,11 @@ class ShootDeliveredActivityWindowTest extends TestCase
     public function test_filter_and_acknowledgement_apply_before_count_pagination_and_combine_with_status(): void
     {
         $this->actingAs(User::factory()->admin()->create());
-        $expected = collect(range(1, 13))->map(fn () => $this->shoot('2026-11-01 12:00:00')->id)->all();
+        $expected = collect(range(1, 13))->map(function ($index) {
+            $shoot = $this->shoot($index <= 6 ? '2026-08-01 12:00:00' : '2026-11-01 12:00:00');
+            if ($index <= 6) $this->serviceRow($shoot, '2026-11-01 12:00:00');
+            return $shoot->id;
+        })->all();
         $this->shoot('2026-08-01 12:00:00');
         $this->shoot('2026-11-01 12:00:00', null, ['status' => 'ready', 'workflow_status' => 'ready']);
         $params = $this->bounds() + ['per_page' => 9, 'statuses' => ['delivered']];
@@ -85,6 +101,115 @@ class ShootDeliveredActivityWindowTest extends TestCase
         $this->listing($this->bounds() + ['search' => 'no-such-property'])->assertOk()
             ->assertJsonPath('meta.count', 0)->assertJsonPath('meta.delivered_activity_window', $first->json('meta.delivered_activity_window'));
         $this->listing($this->bounds() + ['tab' => 'scheduled'])->assertOk()->assertJsonPath('meta.count', 0);
+    }
+
+    public function test_closed_work_cycle_is_recent_delivery_activity_without_rewriting_the_first_delivery(): void
+    {
+        $this->actingAs(User::factory()->admin()->create());
+        $closed = $this->shoot('2026-11-01 12:00:00', '2026-11-01 11:00:00');
+        DB::table('shoots')->where('id', $closed->id)->update([
+            'active_work_started_at' => '2026-11-10 12:00:00',
+            'active_work_completed_at' => '2026-11-11T10:00:00.123456-05:00',
+        ]);
+        $bounds = ['delivered_activity_from' => '2026-11-11T15:00:00.123456Z',
+            'delivered_activity_to' => '2026-11-11T15:00:00.123456Z'];
+        $this->listing($bounds)->assertOk()->assertJsonPath('meta.count', 1)
+            ->assertJsonPath('data.0.id', $closed->id)->assertJsonPath('meta.delivered_activity_window', [
+                'from' => '2026-11-11T15:00:00.123456Z', 'to' => '2026-11-11T15:00:00.123456Z',
+            ]);
+        $this->listing($this->bounds())->assertOk()->assertJsonPath('meta.count', 0);
+        $this->assertDatabaseHas('shoots', ['id' => $closed->id,
+            'admin_verified_at' => '2026-11-01 12:00:00', 'completed_at' => '2026-11-01 11:00:00']);
+    }
+
+    public function test_preferred_closed_cycle_timestamp_does_not_fall_back_when_old_or_malformed(): void
+    {
+        $this->actingAs(User::factory()->admin()->create());
+        foreach (['2026-08-01 12:00:00', 'malformed', '2026-02-30 12:00:00'] as $cycle) {
+            $shoot = $this->shoot('2026-11-01 12:00:00', '2026-11-01 11:00:00');
+            DB::table('shoots')->where('id', $shoot->id)->update([
+                'active_work_started_at' => '2026-07-01 12:00:00', 'active_work_completed_at' => $cycle,
+            ]);
+        }
+        $this->listing($this->bounds())->assertOk()->assertJsonPath('meta.count', 0)
+            ->assertJsonPath('meta.delivered_activity_window.from', '2026-11-01T00:00:00.000000Z');
+    }
+
+    public function test_latest_service_delivery_compares_exact_offsets_and_excludes_unfinished_or_cancelled_rows(): void
+    {
+        $this->actingAs(User::factory()->admin()->create());
+        $shoot = $this->shoot('2026-08-01 12:00:00');
+        // Lexical MAX would choose the second string, which is an earlier instant.
+        $this->serviceRow($shoot, '2026-11-01T23:30:00.123456-05:00');
+        $this->serviceRow($shoot, '2026-11-02T05:00:00.123456+02:00');
+        $this->serviceRow($shoot, '2026-11-03 12:00:00', ['is_deliverable' => false]);
+        $this->serviceRow($shoot, '2026-11-04 12:00:00', ['cancelled_at' => '2026-11-04 13:00:00']);
+        $this->serviceRow($shoot, '2026-11-05 12:00:00', ['workflow_status' => 'pending']);
+        $this->serviceRow($shoot, '2026-11-06 12:00:00', ['delivery_status' => 'ready']);
+        $invalid = $this->shoot(null);
+        $this->serviceRow($invalid, 'malformed');
+        $bounds = ['delivered_activity_from' => '2026-11-02T04:30:00.123456Z',
+            'delivered_activity_to' => '2026-11-02T04:30:00.123456Z'];
+        $this->listing($bounds)->assertOk()->assertJsonPath('meta.count', 1)->assertJsonPath('data.0.id', $shoot->id);
+        $this->listing(['delivered_activity_from' => '2026-11-02T03:00:00.123456Z',
+            'delivered_activity_to' => '2026-11-02T04:30:00.123455Z'])->assertOk()->assertJsonPath('meta.count', 0);
+    }
+
+    public function test_reopening_repeated_cycles_retains_recent_deliveries_and_only_released_unlocked_client_images(): void
+    {
+        $this->travelTo(\Carbon\Carbon::parse('2026-11-04T12:00:00Z'));
+        $shoot = $this->shoot('2026-11-01 12:00:00', '2026-11-01 11:00:00',
+            ['payment_status' => 'partial', 'total_quote' => 300]);
+        $first = $this->serviceRow($shoot, '2026-11-01 12:00:00');
+        $second = $this->serviceRow($shoot, '2026-11-03 12:00:00');
+        $third = $this->serviceRow($shoot, null, ['workflow_status' => 'pending', 'delivery_status' => 'not_started',
+            'scheduled_at' => '2026-11-05 12:00:00']);
+        Model::withoutEvents(function () use ($shoot, $first, $second) {
+            $payment = Payment::factory()->create(['shoot_id' => $shoot->id, 'invoice_id' => null,
+                'amount' => 200, 'status' => Payment::STATUS_COMPLETED]);
+            foreach ([$first, $second] as $item) {
+                PaymentServiceAllocation::create(['payment_id' => $payment->id, 'shoot_service_id' => $item->id, 'amount' => 100]);
+            }
+        });
+        $this->previewFile($shoot, $first, 'first-paid');
+        $this->previewFile($shoot, $second, 'second-paid');
+        $this->previewFile($shoot, $third, 'third-unpaid-secret');
+        DB::table('shoots')->where('id', $shoot->id)->update([
+            'active_work_started_at' => '2026-11-02 12:00:00', 'active_work_completed_at' => '2026-11-03 12:00:00',
+        ]);
+        Shoot::withoutEvents(fn () => app(ShootActiveWorkLifecycle::class)->begin($shoot->fresh()));
+        $this->assertNull($shoot->fresh()->active_work_completed_at);
+        $this->assertSame('active', $shoot->fresh()->status);
+        $this->actingAs($shoot->client);
+        $novemberThird = ['delivered_activity_from' => '2026-11-03T00:00:00Z',
+            'delivered_activity_to' => '2026-11-04T00:00:00Z'];
+        $response = $this->listing($novemberThird)->assertOk()->assertJsonPath('meta.count', 1)->assertJsonPath('data.0.id', $shoot->id);
+        $media = $response->json('data.0.delivery_card_media');
+        $this->assertCount(2, $media['preview_images']);
+        $this->assertFalse($media['uses_watermark']);
+        $this->assertStringContainsString('second-paid-grid.jpg', json_encode($media));
+        $this->assertStringNotContainsString('third-unpaid-secret', json_encode($media));
+
+        // Complete a third delivery, then reopen again. Its durable timestamp
+        // still counts, while its unpaid images and the new pending work stay hidden.
+        DB::table('shoot_service')->where('id', $third->id)->update(['workflow_status' => 'delivered',
+            'delivery_status' => 'delivered', 'delivered_at' => '2026-11-05 12:00:00']);
+        $fourth = $this->serviceRow($shoot, null, ['workflow_status' => 'pending', 'delivery_status' => 'not_started',
+            'scheduled_at' => '2026-11-07 12:00:00']);
+        $this->previewFile($shoot, $fourth, 'fourth-pending-secret');
+        DB::table('shoots')->where('id', $shoot->id)->update(['status' => 'delivered', 'workflow_status' => 'delivered',
+            'active_work_completed_at' => '2026-11-05 12:00:00']);
+        $this->travelTo(\Carbon\Carbon::parse('2026-11-06T12:00:00Z'));
+        Shoot::withoutEvents(fn () => app(ShootActiveWorkLifecycle::class)->begin($shoot->fresh()));
+        $this->assertNull($shoot->fresh()->active_work_completed_at);
+        $latest = $this->listing(['delivered_activity_from' => '2026-11-05T00:00:00Z',
+            'delivered_activity_to' => '2026-11-06T00:00:00Z', 'no_cache' => 'true'])->assertOk()->assertJsonPath('meta.count', 1);
+        $this->assertCount(2, $latest->json('data.0.delivery_card_media.preview_images'));
+        $this->assertStringNotContainsString('secret', json_encode($latest->json('data.0.delivery_card_media')));
+        $this->listing($novemberThird + ['no_cache' => 'true'])->assertOk()->assertJsonPath('meta.count', 0);
+        $this->assertDatabaseHas('shoots', ['id' => $shoot->id,
+            'admin_verified_at' => '2026-11-01 12:00:00', 'completed_at' => '2026-11-01 11:00:00']);
+        Http::assertNothingSent(); Mail::assertNothingSent(); Notification::assertNothingSent();
     }
 
     public function test_windowed_plain_and_different_windows_have_separate_cached_counts_and_acknowledgements(): void
@@ -189,5 +314,27 @@ class ShootDeliveredActivityWindowTest extends TestCase
         // Preserve mixed raw SQL/ISO strings and microseconds, without model casts.
         DB::table('shoots')->where('id', $shoot->id)->update(['admin_verified_at' => $primary, 'completed_at' => $completion]);
         return $shoot;
+    }
+
+    private function serviceRow(Shoot $shoot, ?string $deliveredAt, array $attributes = []): ShootService
+    {
+        $item = Model::withoutEvents(fn () => ShootService::create(array_replace([
+            'shoot_id' => $shoot->id, 'service_id' => Service::factory()->unbracketedPhoto()->create()->id,
+            'price' => 100, 'quantity' => 1, 'is_deliverable' => true,
+            'workflow_status' => 'delivered', 'delivery_status' => 'delivered',
+        ], $attributes)));
+        DB::table('shoot_service')->where('id', $item->id)->update(['delivered_at' => $deliveredAt]);
+        return $item;
+    }
+
+    private function previewFile(Shoot $shoot, ShootService $item, string $name): void
+    {
+        $file = new ShootFile;
+        $file->forceFill(['shoot_id' => $shoot->id, 'shoot_service_id' => $item->id,
+            'filename' => $name.'.jpg', 'stored_filename' => $name.'.jpg', 'path' => 'photos/'.$name.'.jpg',
+            'grid_path' => 'photos/'.$name.'-grid.jpg', 'web_path' => 'photos/'.$name.'-web.jpg',
+            'file_type' => 'image/jpeg', 'mime_type' => 'image/jpeg', 'media_type' => 'edited', 'file_size' => 100,
+            'workflow_stage' => 'verified', 'verified_at' => now(), 'scan_status' => 'clean',
+            'is_hidden' => false, 'is_cover' => true, 'uploaded_by' => $shoot->client_id])->saveQuietly();
     }
 }

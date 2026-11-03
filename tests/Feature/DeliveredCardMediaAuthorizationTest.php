@@ -234,6 +234,39 @@ class DeliveredCardMediaAuthorizationTest extends TestCase
         $this->assertTrue(app(\App\Services\Shoots\ShootActiveWorkLifecycle::class)->hasActiveWork($shoot->fresh()));
     }
 
+    public static function retainedClientAccess(): array { return [['paid'], ['force_unlocked']]; }
+
+    #[DataProvider('retainedClientAccess')]
+    public function test_new_unpaid_active_work_cannot_relock_released_paid_or_unlocked_service_previews(string $access): void
+    {
+        $shoot = $this->shoot(['payment_status' => 'partial', 'total_quote' => 200]);
+        $released = $this->item($shoot, ['is_deliverable' => true, 'workflow_status' => 'delivered',
+            'delivery_status' => 'delivered', 'delivered_at' => '2026-11-02 12:00:00',
+            'force_unlock_delivery' => $access === 'force_unlocked']);
+        $pending = $this->item($shoot, ['is_deliverable' => true, 'workflow_status' => 'pending', 'delivery_status' => 'not_started']);
+        if ($access === 'paid') {
+            \Illuminate\Database\Eloquent\Model::withoutEvents(function () use ($shoot, $released) {
+                $payment = \App\Models\Payment::factory()->create(['shoot_id' => $shoot->id, 'invoice_id' => null,
+                    'amount' => 100, 'status' => \App\Models\Payment::STATUS_COMPLETED]);
+                \App\Models\PaymentServiceAllocation::create(['payment_id' => $payment->id,
+                    'shoot_service_id' => $released->id, 'amount' => 100]);
+            });
+        }
+        // No watermarked derivatives exist: this must use the released line's
+        // normal optimized rendition, not silently return an empty mosaic.
+        $this->photo($shoot, 'old-paid', ['shoot_service_id' => $released->id]);
+        foreach (range(1, 7) as $index) {
+            $this->photo($shoot, 'new-unpaid-secret-'.$index, ['shoot_service_id' => $pending->id, 'is_cover' => true]);
+        }
+        $this->activateFixture($shoot);
+        Sanctum::actingAs($shoot->client);
+        $value = $this->listing()->assertOk()->json('data.0.delivery_card_media');
+        $this->assertCount(1, $value['preview_images']);
+        $this->assertStringContainsString('/photos/old-paid-grid.jpg', $value['hero_image']);
+        $this->assertFalse($value['uses_watermark']);
+        $this->assertStringNotContainsString('new-unpaid-secret', json_encode($value));
+    }
+
     private function listing()
     {
         return $this->getJson('/api/shoots?tab=delivered&view=card&include_files=false&no_cache=true&include_filters=false');

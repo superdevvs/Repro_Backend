@@ -34,11 +34,14 @@ final class DeliveredCardMedia
         $viewable = $viewer ? $candidates->filter(fn (ShootFile $file) => $this->eligible($file)
             && $this->authorization->canViewShootMediaFile($policyShoot, $file, $viewer)
             && (! $activeClient || $this->retainedClientPreview($policyShoot, $file)))->take(6) : [];
+        // Every retained Active-client file has passed the existing per-file
+        // released + unlocked gate. A new unpaid service cannot relock it.
+        $previewWatermarked = $watermarked && ! $activeClient;
         foreach ($viewable as $file) {
-            $paths = $watermarked
+            $paths = $previewWatermarked
                 ? [$file->watermarked_web_path, $file->watermarked_thumbnail_path, $file->watermarked_placeholder_path]
                 : [$file->grid_path, $file->web_path, $file->thumbnail_path];
-            $originalKeys = $watermarked ? collect([$file->grid_path, $file->web_path, $file->thumbnail_path, $file->path, $file->url])
+            $originalKeys = $previewWatermarked ? collect([$file->grid_path, $file->web_path, $file->thumbnail_path, $file->path, $file->url])
                 ->filter(fn ($path) => is_string($path) && trim($path) !== '')
                 ->map(fn ($path) => $this->pathKey($this->files->resolvePublicStorageUrl($path)))
                 ->filter()->all() : [];
@@ -46,7 +49,7 @@ final class DeliveredCardMedia
             foreach ($paths as $path) {
                 if (is_string($path) && trim($path) !== '') {
                     $url = $this->files->resolvePublicStorageUrl($path);
-                    if ($watermarked && in_array($this->pathKey($url), $originalKeys, true)) {
+                    if ($previewWatermarked && in_array($this->pathKey($url), $originalKeys, true)) {
                         $url = null;
                     }
                     if ($url) {
@@ -69,7 +72,7 @@ final class DeliveredCardMedia
             'preview_images' => $previews,
             // Six preview candidates do not establish the total photo count.
             'count' => null,
-            'uses_watermark' => $watermarked,
+            'uses_watermark' => $previewWatermarked,
             'delivered_at' => $shoot->admin_verified_at?->toIso8601String(),
         ];
     }
