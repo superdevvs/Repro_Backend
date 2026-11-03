@@ -1,9 +1,13 @@
 <?php
 
 use App\Http\Controllers\API\AryeoAdminController as Admin;
+use App\Http\Controllers\API\AryeoRequestsController;
 use App\Http\Controllers\API\AryeoWorkerController as Worker;
 use App\Http\Middleware\AuthenticateAryeoWorker;
 use Illuminate\Support\Facades\Route;
+
+Route::get('dashboard/aryeo-requests', AryeoRequestsController::class)
+    ->middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager,salesRep', 'throttle:120,1']);
 
 Route::prefix('integrations/aryeo/v1')->middleware([AuthenticateAryeoWorker::class, 'throttle:120,1'])->group(function () {
     Route::post('heartbeat', [Worker::class, 'heartbeat']);

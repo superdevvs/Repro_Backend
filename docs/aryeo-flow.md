@@ -70,6 +70,24 @@ fabricate an empty complete inventory to make a new request executable.
 
 ## Request discovery before media is ready
 
+### Dashboard Requests inbox
+
+`GET /api/dashboard/aryeo-requests` exposes a read-only metadata inbox inside
+Dashboard's existing Requests card and Request Manager. Admins and editing
+managers see enabled connections' matched and unmatched requests. Sales reps
+see only matched shoots assigned to them, using the effective shoot/client rep
+filter; explicit shoot reassignment takes precedence over the client fallback.
+Other roles are denied. The response excludes credentials, media URLs, receipts,
+and identity proofs. This view grants no processing or media access.
+
+The default is pending requests; `history=1` shows verified deliveries separately.
+Pagination uses `page`, with a pending-only category count. The Dashboard polls
+every 30 seconds and refreshes on window focus and Dashboard refresh events.
+Request discovery on the Mac remains independent of media readiness, so scheduled
+shoots and unmatched requests appear before their media can be delivered. Staff
+open the existing Tours workflow for verified matching and processing. Connection
+heartbeat and delivery executor availability are displayed separately.
+
 Request discovery is independent of upload and delivery eligibility. To allow an
 existing connection to discover request metadata for new Dashboard clients:
 
