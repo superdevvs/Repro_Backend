@@ -21,6 +21,7 @@ class AssignServicePhotographerAction
     public function execute(Shoot $shoot, array $payload, User $actor): Shoot
     {
         abort_unless(app(\App\Services\Shoots\ShootAuthorizationSupport::class)->canEditShootAppointment($shoot, $actor), 403);
+        $payload = app(\App\Services\Shoots\ActiveServiceEditGuard::class)->normalize($shoot, $payload);
         app(\App\Services\Shoots\ShootManagementAccess::class)->assertVersion($shoot, $payload['expected_edit_version'] ?? null);
         $assignments = $this->normalizeAssignments($payload);
         if (! $shoot->units()->exists()) {

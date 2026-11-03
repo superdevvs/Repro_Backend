@@ -171,6 +171,8 @@ class ShootAuthorizationSupport
 
     public function isShootDeliveredForClientAccess(Shoot $shoot): bool
     {
+        if (app(ShootActiveWorkLifecycle::class)->hasActiveWork($shoot)
+            && $shoot->serviceItems()->where('delivery_status', 'delivered')->exists()) return true;
         $normalizedStatus = strtolower((string) ($shoot->workflow_status ?: $shoot->status ?: ''));
 
         return in_array($normalizedStatus, self::CLIENT_DELIVERED_STATUSES, true);
@@ -199,7 +201,9 @@ class ShootAuthorizationSupport
             return $query->where(fn (Builder $scope) => $scope->whereIn('client_id', $clientIds)
                 ->orWhere(fn (Builder $ghost) => $ghost->whereHas('ghostUsers', fn (Builder $recipient) => $recipient->where('users.id', $user->id))
                     // Match the policy's workflow-status precedence, including the empty fallback.
-                    ->whereIn(\Illuminate\Support\Facades\DB::raw("LOWER(COALESCE(NULLIF(workflow_status, ''), status, ''))"), self::CLIENT_DELIVERED_STATUSES)));
+                    ->where(fn (Builder $delivered) => $delivered->whereIn(\Illuminate\Support\Facades\DB::raw("LOWER(COALESCE(NULLIF(workflow_status, ''), status, ''))"), self::CLIENT_DELIVERED_STATUSES)
+                        ->orWhere(fn (Builder $active) => $active->whereNotNull('active_work_started_at')->whereNull('active_work_completed_at')
+                            ->whereHas('serviceItems', fn (Builder $item) => $item->where('delivery_status', 'delivered'))))));
         }
 
         return $query->whereRaw('1 = 0');

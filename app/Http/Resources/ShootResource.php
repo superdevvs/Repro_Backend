@@ -211,6 +211,7 @@ class ShootResource extends JsonResource
         $cancellationFeeWindow = $scheduleResolver->isWithinCancellationFeeWindow($this->resource);
 
         return [
+            ...app(\App\Services\Shoots\ShootActiveWorkLifecycle::class)->presentation($this->resource),
             'id' => (string) $this->id,
             'client' => $isEditor ? ($canViewVideoEditorContext ? [
                 'id' => (string) $this->client_id,

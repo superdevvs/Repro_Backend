@@ -99,6 +99,7 @@ class UpdateShootAction
         if ($isRep && ! $legacyMarketingOnly) {
             $request->replace($management->normalizeSalesEdit($shoot, $user, $request->all()));
         }
+        $request->replace(app(\App\Services\Shoots\ActiveServiceEditGuard::class)->normalize($shoot, $request->all()));
         $canManageRequested = $this->authorizationSupport->canManageRequestedShoot($shoot, $user);
         $canManageHold = $this->authorizationSupport->canManageHoldShoot($shoot, $user);
         $isPhotographer = $user->role === 'photographer';
@@ -126,6 +127,7 @@ class UpdateShootAction
             'property_details',
         ];
         $repEditableKeys = [
+            'service_change_intent',
             'is_private_listing',
             'is_featured',
             'featured_homepage_title',
@@ -358,8 +360,8 @@ class UpdateShootAction
         $validated = $request->validate(array_merge(
             $this->editablePayloadService->validationRules(),
             [
-                'status' => 'nullable|string|in:scheduled,completed,uploaded,editing,delivered,on_hold,cancelled',
-                'workflow_status' => 'nullable|string|in:scheduled,completed,uploaded,editing,delivered,on_hold,cancelled',
+                'status' => 'nullable|string|in:active,scheduled,completed,uploaded,editing,delivered,on_hold,cancelled',
+                'workflow_status' => 'nullable|string|in:active,scheduled,completed,uploaded,editing,delivered,on_hold,cancelled',
                 'skip_availability_check' => 'nullable|boolean',
                 'is_private_listing' => 'nullable|boolean',
                 'is_listing_hidden' => 'nullable|boolean',
@@ -505,6 +507,8 @@ class UpdateShootAction
         $needsAvailabilityCheck = count(array_intersect(array_keys($validated), $availabilityRelevantKeys)) > 0;
         // This edits the completed work order's billing plan, never its past visit.
         if ($deliveredCorrection) $needsAvailabilityCheck = false;
+        if (app(\App\Services\Shoots\ShootActiveWorkLifecycle::class)->hasActiveWork($shoot)
+            && ! app(\App\Services\Shoots\ActiveServiceEditGuard::class)->changesCapture($shoot, $validated)) $needsAvailabilityCheck = false;
         if (filter_var($validated['force_save'] ?? false, FILTER_VALIDATE_BOOLEAN) && ! $travelGuard->enabled()) {
             $this->abortJson('Temporary force save is unavailable while scheduling checks are disabled.', 403);
         }

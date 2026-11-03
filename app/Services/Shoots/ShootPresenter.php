@@ -249,6 +249,9 @@ class ShootPresenter
 
     public function transformShoot(Shoot $shoot, bool $includeFiles = true): Shoot
     {
+        foreach (app(ShootActiveWorkLifecycle::class)->presentation($shoot) as $key => $value) {
+            $shoot->setAttribute($key, $value);
+        }
         $sourceDate = data_get($shoot->external_booking_payload, 'source_dates.completed_date');
         if (is_string($sourceDate)) {
             $shoot->setAttribute('completed_date', $sourceDate);

@@ -31,6 +31,9 @@ class ScheduleShootAction
         $access = app(\App\Services\Shoots\ShootAuthorizationSupport::class);
         abort_unless($access->canScheduleShoot($shoot, $user), 403);
         $validated = $request->validated();
+        if (app(\App\Services\Shoots\ShootActiveWorkLifecycle::class)->hasActiveWork($shoot)) {
+            return $this->resumeActiveWork($shoot, $validated, $user);
+        }
         if (array_key_exists('photographer_id', $validated)
             && (int) $validated['photographer_id'] !== (int) $shoot->photographer_id) {
             abort_unless($access->canEditShootAppointment($shoot, $user),
@@ -250,6 +253,31 @@ class ScheduleShootAction
         $this->googleCalendarSyncDispatcher->dispatchShootSync($shoot->id);
 
         return $shoot;
+    }
+
+    private function resumeActiveWork(Shoot $shoot, array $validated, User $user): Shoot
+    {
+        app(\App\Services\Shoots\ActiveServiceEditGuard::class)->normalize($shoot, $validated);
+        if (! in_array($shoot->workflow_status ?: $shoot->status, ['on_hold', 'hold_on'], true)) {
+            throw ValidationException::withMessages(['scheduled_at' => 'Keep the original appointment. Update the unfinished service or book a linked Additional Work visit.']);
+        }
+        \App\Support\LockedWrite::run(fn () => \Illuminate\Support\Facades\DB::transaction(function () use ($shoot, $user) {
+            if (\Illuminate\Support\Facades\DB::connection()->getDriverName() === 'sqlite') {
+                \Illuminate\Support\Facades\DB::table('shoots')->where('id', $shoot->id)->update(['units_revision' => \Illuminate\Support\Facades\DB::raw('units_revision')]);
+            }
+            $current = Shoot::query()->lockForUpdate()->findOrFail($shoot->id);
+            if (! app(\App\Services\Shoots\ShootActiveWorkLifecycle::class)->hasActiveWork($current)
+                || ! in_array($current->workflow_status ?: $current->status, ['on_hold', 'hold_on'], true)) {
+                throw ValidationException::withMessages(['status' => 'This order changed. Reload it before resuming additional work.']);
+            }
+            $current->forceFill(['status' => Shoot::STATUS_ACTIVE, 'workflow_status' => Shoot::STATUS_ACTIVE])->save();
+            app(\App\Services\Shoots\ShootActiveWorkLifecycle::class)->reconcile($current);
+            app(\App\Services\ShootActivityLogger::class)->log($current, 'shoot_active_work_resumed', [
+                'by' => $user->name, 'preserved_original_appointment' => true,
+            ], $user);
+        }), 'resume-active-shoot');
+        $this->googleCalendarSyncDispatcher->dispatchShootSync($shoot->id);
+        return $shoot->fresh(['client', 'photographer', 'services.category']);
     }
 
     private function resumeUnitPlan(Shoot $shoot, \DateTime $scheduledAt, array $validated, User $user, array $plannedServices): void

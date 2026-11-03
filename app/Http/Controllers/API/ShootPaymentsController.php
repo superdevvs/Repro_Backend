@@ -84,16 +84,20 @@ class ShootPaymentsController extends Controller
         $allowNoMediaDelivery = $request->boolean('allow_no_media_delivery')
             && ! $shootServiceId
             && $this->noMediaDeliveryEligibility->allows($shoot, $user);
-        $allowedStatuses = [Shoot::STATUS_EDITING, Shoot::STATUS_READY, Shoot::STATUS_UPLOADED];
+        $reviewedServiceOutput = $shootServiceId
+            && app(\App\Services\Shoots\ShootActiveWorkLifecycle::class)->hasActiveWork($shoot)
+            && in_array($shootServiceId, app(\App\Services\Shoots\ServiceDeliveryEligibility::class)
+                ->resolve($shoot, collect(), false, $shootServiceId)['service_ids'], true);
+        $allowedStatuses = [Shoot::STATUS_ACTIVE, Shoot::STATUS_EDITING, Shoot::STATUS_READY, Shoot::STATUS_UPLOADED];
 
-        if (! in_array($shoot->workflow_status, $allowedStatuses, true) && ! $hasEditedWithoutRaw && ! $allowNoMediaDelivery) {
+        if (! in_array($shoot->workflow_status, $allowedStatuses, true) && ! $hasEditedWithoutRaw && ! $allowNoMediaDelivery && ! $reviewedServiceOutput) {
             return response()->json([
                 'message' => 'Shoot can only be finalized from editing/ready/uploaded status, when edited files exist without raw files, or with explicit no-media (fast-forward) delivery',
                 'current_status' => $shoot->workflow_status,
             ], 400);
         }
 
-        if ($completedFiles->isEmpty() && ! $allowNoMediaDelivery) {
+        if ($completedFiles->isEmpty() && ! $allowNoMediaDelivery && ! $reviewedServiceOutput) {
             return response()->json([
                 'message' => 'No edited files to finalize',
                 'data' => $shoot->only(['id', 'workflow_status']),

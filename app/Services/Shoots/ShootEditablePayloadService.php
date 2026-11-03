@@ -37,6 +37,7 @@ class ShootEditablePayloadService
             'alternate_scheduled_at' => 'nullable|date',
             'timezone' => 'nullable|string|timezone:all_with_bc',
             'services' => 'nullable|array',
+            'service_change_intent' => ['nullable', Rule::in(['new_work', 'billing_correction'])],
             'services.*.id' => 'required_with:services|integer|distinct|exists:services,id',
             'services.*.price' => 'nullable|numeric|min:0',
             'services.*.quantity' => 'nullable|integer|min:1',
@@ -170,6 +171,7 @@ class ShootEditablePayloadService
 
     public function apply(Shoot $shoot, array $validated, ?User $actor = null): void
     {
+        $validated = app(ActiveServiceEditGuard::class)->normalize($shoot, $validated);
         // UpdateShootAction stages a small set of workflow/listing attributes on
         // the caller model before handing off here. Carry those values onto the
         // locked row so a mixed details + service save is one atomic write and a
@@ -264,6 +266,7 @@ class ShootEditablePayloadService
 
     protected function applyWithinTransaction(Shoot $shoot, array $validated, ?User $actor = null): void
     {
+        app(ActiveVideoLinkOutput::class)->ensureBaseline($shoot);
         $shoot->loadMissing('services');
 
         if (($validated['shoot_type'] ?? null) === Shoot::SHOOT_TYPE_COMPLIMENTARY_RESHOOT
@@ -379,6 +382,7 @@ class ShootEditablePayloadService
         } elseif ($mainPhotographerChanged) {
             $this->support->persistResolvedPhotographerAssignments($shoot, $targetServices, $actor);
         }
+        if ($serviceChangeRequested) app(ActiveVideoLinkOutput::class)->ensureBaseline($shoot);
 
         if (array_key_exists('address', $validated)) {
             $shoot->address = $validated['address'] ?? '';
@@ -687,7 +691,7 @@ class ShootEditablePayloadService
         });
 
         if ($serviceChangeRequested) {
-            $this->serviceItemSupport->reconcileAllocationsAfterServiceChange($shoot->fresh(), $deliveredCorrection
+            $this->serviceItemSupport->reconcileAllocationsAfterServiceChange($shoot->fresh(), $deliveredCorrection || $shoot->active_work_started_at !== null
                 || collect($targetServices)->contains(fn ($row) => ! empty($row['replaces_shoot_service_id'])));
         }
 
@@ -697,7 +701,7 @@ class ShootEditablePayloadService
         }
 
         if ($invoiceNeedsRefresh) {
-            $this->invoiceService->refreshClientInvoicesForShoot($shoot->fresh(), $deliveredCorrection
+            $this->invoiceService->refreshClientInvoicesForShoot($shoot->fresh(), $deliveredCorrection || $shoot->active_work_started_at !== null
                 || collect($targetServices)->contains(fn ($row) => ! empty($row['replaces_shoot_service_id'])));
         }
 
@@ -708,6 +712,8 @@ class ShootEditablePayloadService
         }
 
         $shoot->refresh();
+        app(ActiveVideoLinkOutput::class)->recordChangedLinks($shoot);
+        app(ShootActiveWorkLifecycle::class)->reconcile($shoot);
     }
 
     protected function syncFeaturedHomepageImages(Shoot $shoot, array $images): void

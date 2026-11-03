@@ -4,6 +4,7 @@ namespace App\Services\Shoots;
 
 use App\Models\Shoot;
 use App\Models\ShootFile;
+use App\Models\ShootService;
 use App\Services\Media\MediaStorage;
 
 /** Revocable, revalidated browser copies of published image derivatives only. */
@@ -15,18 +16,80 @@ class PublicTourImage
     {
         // Unit publication has a separate per-service gate. Keep its existing
         // signed delivery until this path can represent that gate explicitly.
-        return ! $shoot->isImportDraft()
-            && ! $shoot->relationLoaded('tourUnit')
-            && ($shoot->workflow_status ?: $shoot->status) === Shoot::STATUS_DELIVERED
+        if ($shoot->isImportDraft() || $shoot->relationLoaded('tourUnit')) return false;
+        if (app(ShootActiveWorkLifecycle::class)->hasActiveWork($shoot)) {
+            if ($this->isSuspended($shoot)) return false;
+            return $this->canRetainUnscopedHistory($shoot) || $this->retainedServiceIds($shoot) !== [];
+        }
+        return ($shoot->workflow_status ?: $shoot->status) === Shoot::STATUS_DELIVERED
             && ! $this->releaseAccess->isPublicReleaseLocked($shoot);
     }
 
-    public function canPublishFile(ShootFile $file): bool
+    public function canPublishFile(ShootFile $file, ?Shoot $shoot = null): bool
     {
-        return ! $file->is_hidden && ! $file->isBlockedFromDelivery()
+        $safe = ! $file->is_hidden && ! $file->isBlockedFromDelivery()
             && ! $file->isIguideOfflinePackage()
             && ! in_array(strtolower((string) $file->media_type), ['floorplan', 'video'], true)
             && in_array($file->workflow_stage, [ShootFile::STAGE_COMPLETED, ShootFile::STAGE_VERIFIED], true);
+        if (! $safe) return false;
+        $shoot ??= $file->relationLoaded('shoot') ? $file->shoot : $file->shoot()->first();
+        if (! $shoot || ! app(ShootActiveWorkLifecycle::class)->hasActiveWork($shoot)) return $safe;
+        return $this->canRetainPublishedFile($file, $shoot);
+    }
+
+    /** Shared retained-output gate; video originals do not become photo-rendition URLs. */
+    public function canRetainPublishedFile(ShootFile $file, Shoot $shoot): bool
+    {
+        if (! app(ShootActiveWorkLifecycle::class)->hasActiveWork($shoot) || $this->isSuspended($shoot)
+            || (int) $file->shoot_id !== (int) $shoot->id
+            || $file->is_hidden || $file->isBlockedFromDelivery() || $file->isIguideOfflinePackage()
+            || $file->workflow_stage !== ShootFile::STAGE_VERIFIED
+            || strtolower((string) $file->media_type) === 'raw') return false;
+        if (! $file->shoot_service_id) {
+            return $file->created_at && $file->created_at->lte($shoot->active_work_started_at)
+                && (! $file->verified_at || $file->verified_at->lte($shoot->active_work_started_at))
+                && $this->canRetainUnscopedHistory($shoot);
+        }
+        $item = $file->relationLoaded('serviceItem') ? $file->serviceItem : $file->serviceItem()->first();
+        return $item && (int) $item->shoot_id === (int) $shoot->id
+            && $this->isRetainedDeliveredItem($shoot, $item) && $this->isItemUnlocked($shoot, $item);
+    }
+
+    /** Only explicitly delivered, unlocked lines may contribute to an Active public preview. */
+    public function retainedServiceIds(Shoot $shoot): array
+    {
+        if (! app(ShootActiveWorkLifecycle::class)->hasActiveWork($shoot) || $this->isSuspended($shoot)) return [];
+        return $shoot->serviceItems()->get()->filter(fn (ShootService $item) =>
+            $this->isRetainedDeliveredItem($shoot, $item) && $this->isItemUnlocked($shoot, $item))->modelKeys();
+    }
+
+    /** An unscoped historical image has no per-line payment identity; retain the whole-order gate. */
+    public function canRetainUnscopedHistory(Shoot $shoot): bool
+    {
+        return app(ShootActiveWorkLifecycle::class)->hasActiveWork($shoot) && ! $this->isSuspended($shoot)
+            && $shoot->admin_verified_at && $shoot->admin_verified_at->lte($shoot->active_work_started_at)
+            && ! $this->releaseAccess->isPublicReleaseLocked($shoot);
+    }
+
+    private function isRetainedDeliveredItem(Shoot $shoot, ShootService $item): bool
+    {
+        return $item->is_deliverable && ! $item->cancelled_at
+            && $item->workflow_status === ShootService::WORKFLOW_DELIVERED
+            && $item->delivery_status === ShootService::DELIVERY_DELIVERED
+            && $item->delivered_at;
+    }
+
+    private function isItemUnlocked(Shoot $shoot, ShootService $item): bool
+    {
+        if (! $this->releaseAccess->isPublicReleaseLocked($shoot)) return true;
+        $item->setRelation('shoot', $shoot);
+        return $item->is_unlocked_for_delivery;
+    }
+
+    private function isSuspended(Shoot $shoot): bool
+    {
+        return in_array(strtolower((string) ($shoot->workflow_status ?: $shoot->status)),
+            ['on_hold', 'hold_on', 'cancelled', 'canceled', 'declined'], true);
     }
 
     public function key(ShootFile $file, string $rendition): ?string
@@ -77,7 +140,7 @@ class PublicTourImage
         $shoot = Shoot::find($shootId);
         if (! $shoot || ! $this->canPublish($shoot) || $shoot->units()->exists()) return null;
         $file = ShootFile::where('shoot_id', $shootId)->find($fileId);
-        if (! $file || ! $this->canPublishFile($file)) return null;
+        if (! $file || ! $this->canPublishFile($file, $shoot)) return null;
         $key = $this->key($file, $rendition);
         return $key && hash_equals($this->revision($file, $rendition, $key), $revision) ? $key : null;
     }

@@ -24,6 +24,9 @@ class ShootSubmissionCapabilityService
     {
         $files = $shoot->files()->whereIn('workflow_stage', [ShootFile::STAGE_COMPLETED, ShootFile::STAGE_VERIFIED])
             ->where(fn ($query) => $query->whereNull('flag_reason')->orWhere('flag_reason', ''))->get();
+        if (app(ShootActiveWorkLifecycle::class)->hasActiveWork($shoot)) {
+            $files = app(ServiceDeliveryEligibility::class)->currentCycleFiles($shoot, $files);
+        }
         return $user?->role === 'editor'
             ? app(ShootEditingAssignmentService::class)->filterFilesForEditor($files, $shoot, $user)
             : $files;
@@ -40,6 +43,10 @@ class ShootSubmissionCapabilityService
     public function assignmentHasVideoLink(Shoot $shoot, array $assignment): bool
     {
             if ($assignment['lane'] !== ShootEditingAssignmentService::LANE_VIDEO) return false;
+            if (app(ShootActiveWorkLifecycle::class)->hasActiveWork($shoot)) {
+                $item = $shoot->serviceItems()->with('unit')->find($assignment['shoot_service_id'] ?? null);
+                return $item && app(ActiveVideoLinkOutput::class)->hasReviewedOutput($shoot, $item);
+            }
             $links = $assignment['shoot_unit_id'] ? $shoot->units()->find($assignment['shoot_unit_id'])?->tour_links : $shoot->tour_links;
             foreach (['video_link', 'video_branded', 'video_mls', 'video_generic'] as $key) {
                 $url = $links[$key] ?? null;
@@ -55,12 +62,16 @@ class ShootSubmissionCapabilityService
         if ($user->role === 'editor' && !$assignments->editorHasAssignment($shoot, $user) && !$assignments->hasOpenDispatchAssignment($shoot, $user)) return false;
         // The page snapshot contains only aggregate facts; editors still use
         // the assignment-aware file filter and never inherit global counts.
-        $prepared = $user->role !== 'editor' ? ShootListReadContext::current()?->edited($shoot) : null;
+        $activeWork = app(ShootActiveWorkLifecycle::class)->hasActiveWork($shoot);
+        $prepared = $user->role !== 'editor' && ! $activeWork ? ShootListReadContext::current()?->edited($shoot) : null;
         $files = $prepared === null ? $this->editedFiles($shoot, $user) : collect();
         $hasFiles = $prepared !== null ? ($prepared['exists'] ?? false) : $files->isNotEmpty();
         if (!$hasFiles && !$this->hasVideoLinkOutput($shoot, $user)) return false;
         $status = strtolower((string) ($shoot->workflow_status ?: $shoot->status));
-        if (in_array($status, ['uploaded', 'editing'], true)) {
+        if ($activeWork && ! in_array($status, ['on_hold', 'hold_on', 'cancelled', 'canceled', 'declined'], true)) {
+            return $user->role !== 'editor' || $this->pendingEditorAssignments($shoot, $user);
+        }
+        if (in_array($status, ['active', 'uploaded', 'editing'], true)) {
             return $user->role !== 'editor' || $assignments->getTrackedServiceAssignments($shoot)->isEmpty() || $this->pendingEditorAssignments($shoot, $user);
         }
         if ($user->role === 'editor' && in_array($status, array_merge(['review', 'ready'], self::DELIVERED_STATUSES), true)
@@ -75,6 +86,7 @@ class ShootSubmissionCapabilityService
     }
 
     private const SUBMIT_RAW_ALLOWED_STATUSES = [
+        'active',
         'scheduled',
         'booked',
         'raw_upload_pending',
@@ -89,6 +101,9 @@ class ShootSubmissionCapabilityService
         $role = strtolower((string) ($user->role ?? ''));
         if (! in_array($role, ['admin', 'superadmin', 'editing_manager', 'photographer'], true)) {
             return false;
+        }
+        if (app(ShootActiveWorkLifecycle::class)->hasActiveWork($shoot)) {
+            return \App\Services\Shoots\Actions\FinalizeRawUploadAction::pendingActiveRawFiles($shoot, $user)->isNotEmpty();
         }
 
         if ($role === 'photographer') {

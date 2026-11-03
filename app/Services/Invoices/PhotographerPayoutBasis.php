@@ -40,6 +40,7 @@ final class PhotographerPayoutBasis
             'captured_at' => now()->toIso8601String(),
         ];
         if ($before['billing_correction_only'] ?? false) $basis['billing_correction_only'] = true;
+        if ($before['additional_work'] ?? false) $basis['additional_work'] = true;
         if ($before && $line->exists) {
             $basis['previous_basis'] = collect($before)->except(['previous_basis'])->all();
             $basis['review_required'] = true;
@@ -86,6 +87,16 @@ final class PhotographerPayoutBasis
         // A service added to a delivered work order has not inherited the
         // original capture. An explicit later line completion can qualify it.
         if (data_get($line->payout_snapshot, 'billing_correction_only', false)) return null;
+        if (data_get($line->payout_snapshot, 'additional_work', false)
+            || app(\App\Services\Shoots\ShootActiveWorkLifecycle::class)->hasActiveWork($shoot)) {
+            // Historical whole-order completion does not establish capture of
+            // the newly outstanding line. A fresh line-owned RAW submission can.
+            if (! $shoot->photos_uploaded_at || ! $shoot->active_work_started_at
+                || $shoot->photos_uploaded_at->lt($shoot->active_work_started_at)) return null;
+            return $shoot->files()->where('shoot_service_id', $line->id)->where('media_type', 'raw')
+                ->where('created_at', '>=', $shoot->active_work_started_at)->exists()
+                    ? (string) $shoot->photos_uploaded_at : null;
+        }
         foreach ([$shoot->completed_at, $shoot->admin_verified_at] as $date) {
             if ($date) return (string) $date;
         }

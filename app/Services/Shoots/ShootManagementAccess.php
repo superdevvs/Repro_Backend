@@ -53,7 +53,7 @@ class ShootManagementAccess
     private function isEditableSalesState(Shoot $shoot): bool
     {
         if (data_get($shoot->external_booking_payload, 'legacy_migration.historical_payments_only')) return false;
-        $editable = ['requested', 'on_hold', 'hold_on', 'scheduled', 'booked', 'uploaded', 'completed', 'editing', 'review', 'ready', 'delivered', 'ready_for_client', 'admin_verified'];
+        $editable = ['active', 'requested', 'on_hold', 'hold_on', 'scheduled', 'booked', 'uploaded', 'completed', 'editing', 'review', 'ready', 'delivered', 'ready_for_client', 'admin_verified'];
         return in_array(strtolower((string) $shoot->status), $editable, true)
             && in_array(strtolower((string) ($shoot->workflow_status ?: $shoot->status)), $editable, true);
     }
@@ -84,6 +84,7 @@ class ShootManagementAccess
 
     public function isDeliveredForSalesEdits(Shoot $shoot): bool
     {
+        if (app(ShootActiveWorkLifecycle::class)->hasActiveWork($shoot)) return false;
         return collect([$shoot->status, $shoot->workflow_status])->contains(
             fn ($status) => in_array(strtolower((string) $status), ['delivered', 'ready_for_client', 'admin_verified'], true)
         );

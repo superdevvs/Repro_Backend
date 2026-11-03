@@ -391,6 +391,7 @@ class ShootHistoryService
 
         return [
             'id' => (int) $shoot->id,
+            ...app(ShootActiveWorkLifecycle::class)->presentation($shoot),
             'scheduledDate' => optional($shoot->scheduled_date)->toDateString(),
             'time' => $shoot->time,
             'timezone' => $shoot->timezone,

@@ -11,7 +11,7 @@ use Illuminate\Support\Collection;
 /** Order the authorized schedule before selecting a page, without loading its media. */
 class ShootListOrdering
 {
-    public const DELIVERED_NEWEST = "COALESCE(NULLIF(shoots.admin_verified_at, ''), NULLIF(shoots.completed_at, ''), NULLIF(shoots.editing_completed_at, ''), NULLIF(shoots.scheduled_date, ''), shoots.created_at) DESC";
+    public const DELIVERED_NEWEST = "COALESCE(NULLIF(shoots.active_work_completed_at, ''), NULLIF(shoots.admin_verified_at, ''), NULLIF(shoots.completed_at, ''), NULLIF(shoots.editing_completed_at, ''), NULLIF(shoots.scheduled_date, ''), shoots.created_at) DESC";
 
     public function mode(mixed $value): ?string
     {
@@ -64,6 +64,7 @@ class ShootListOrdering
         // resolving legacy local clocks and zoned bookings like the UI does.
         $projection = (clone $query)->withoutEagerLoads()->reorder()->select([
             'shoots.id', 'shoots.scheduled_date', 'shoots.scheduled_at', 'shoots.time', 'shoots.timezone',
+            'shoots.active_work_started_at', 'shoots.active_work_completed_at', 'shoots.active_work_at', 'shoots.active_work_date', 'shoots.active_work_time',
         ])->selectSub(User::query()->select('timezone')->whereColumn('users.id', 'shoots.photographer_id'), 'photographer_timezone')->toBase();
         $projection->limit = null;
         $projection->offset = null;
@@ -134,6 +135,12 @@ class ShootListOrdering
         // Legacy unzoned bookings follow ScheduleInstantResolver's photographer/app zone.
         $timezone = $shootZone ?? $this->validTimezone($row->photographer_timezone)
             ?? $this->validTimezone(config('app.timezone')) ?? 'UTC';
+        if ($row->active_work_started_at && ! $row->active_work_completed_at && $row->active_work_at) {
+            $activeAt = Carbon::parse($row->active_work_at, 'UTC')->setTimezone($timezone);
+            return ['id' => (int) $row->id, 'date' => $row->active_work_date ?: $activeAt->toDateString(),
+                'time' => $row->active_work_time, 'past' => $row->active_work_time ? $activeAt->lt($now) : $activeAt->toDateString() < $now->copy()->setTimezone($timezone)->toDateString(),
+                'instant' => $row->active_work_time ? $activeAt->getTimestamp() : $activeAt->copy()->endOfDay()->getTimestamp()];
+        }
         $fallback = null;
         if ($row->scheduled_at) {
             try {

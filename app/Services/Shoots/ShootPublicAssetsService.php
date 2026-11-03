@@ -695,6 +695,7 @@ class ShootPublicAssetsService
         $photoRenditions = [];
         $videos = [];
         $publicImages = app(PublicTourImage::class);
+        $activeWork = app(ShootActiveWorkLifecycle::class)->hasActiveWork($shoot);
         $revalidateImages = ! $this->mediaStorage->readFromR2Enabled() && ! $this->mediaStorage->r2Only()
             && $publicImages->canPublish($shoot) && ! $shoot->units()->exists();
         foreach ($chosen as $file) {
@@ -704,6 +705,8 @@ class ShootPublicAssetsService
             if ($file->is_hidden || $file->isBlockedFromDelivery() || $file->isIguideOfflinePackage()) {
                 continue;
             }
+            // Reopening work preserves released history, never a fallback URL for unfinished output.
+            if ($activeWork && ! $publicImages->canRetainPublishedFile($file, $shoot)) continue;
 
             // Floorplans have their own "Floor Plans" section and must never appear in
             // the property photo gallery or hero. (They now carry a generated preview
@@ -731,7 +734,7 @@ class ShootPublicAssetsService
             }
 
             if ($isImage) {
-                $renditions = $this->publicPhotoRenditions($file, $url, $revalidateImages && $publicImages->canPublishFile($file));
+                $renditions = $this->publicPhotoRenditions($file, $url, $revalidateImages && $publicImages->canPublishFile($file, $shoot));
                 $url = $renditions['url'];
                 $photoRenditions[$url] = $renditions;
                 $photos[] = $url;

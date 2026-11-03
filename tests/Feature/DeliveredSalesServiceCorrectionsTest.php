@@ -49,7 +49,7 @@ class DeliveredSalesServiceCorrectionsTest extends TestCase
         $before = $item->getRawOriginal();
         $rootBefore = $shoot->only(['status', 'workflow_status', 'delivery_status', 'scheduled_at', 'scheduled_date', 'time', 'photographer_id']);
         $addon = Service::factory()->videoIntake()->create(['price' => 35, 'photographer_pay' => 12]);
-        $this->save($shoot, ['services' => [['id' => $item->service_id, 'price' => 1], ['id' => $addon->id, 'price' => 1, 'photographer_pay' => 1]]])->assertOk();
+        $this->save($shoot, ['service_change_intent' => 'billing_correction', 'services' => [['id' => $item->service_id, 'price' => 1], ['id' => $addon->id, 'price' => 1, 'photographer_pay' => 1]]])->assertOk();
         $this->assertSame($before, $item->fresh()->getRawOriginal());
         $this->assertEquals($rootBefore, $shoot->fresh()->only(array_keys($rootBefore)));
         $new = $shoot->serviceItems()->where('service_id', $addon->id)->sole();
@@ -121,7 +121,7 @@ class DeliveredSalesServiceCorrectionsTest extends TestCase
         $unitsBefore = $shoot->units()->get()->map->getRawOriginal()->all();
         $secondBefore = $second->fresh()->getRawOriginal();
         $addon = Service::factory()->noIntake()->create(['price' => 35, 'photographer_required' => false]);
-        $this->save($shoot, ['expected_units_revision' => $shoot->units_revision, 'service_lines' => [
+        $this->save($shoot, ['service_change_intent' => 'billing_correction', 'expected_units_revision' => $shoot->units_revision, 'service_lines' => [
             ['shoot_service_id' => $first->id, 'client_key' => 'line-a', 'unit_client_key' => 'a', 'service_id' => $service->id, 'quantity' => 2],
             ['shoot_service_id' => $second->id, 'client_key' => 'line-b', 'unit_client_key' => 'b', 'service_id' => $service->id],
             ['client_key' => 'new-fee', 'unit_client_key' => 'b', 'service_id' => $addon->id],
@@ -130,9 +130,10 @@ class DeliveredSalesServiceCorrectionsTest extends TestCase
         $this->assertSame($secondBefore, $second->fresh()->getRawOriginal());
         $this->assertSame(2, $first->fresh()->quantity);
         $this->assertSame('2025-01-02', $shoot->fresh()->scheduled_date->toDateString());
+        $this->assertSame('delivered', $shoot->fresh()->workflow_status);
         $this->assertNull($shoot->serviceItems()->where('service_id', $addon->id)->sole()->scheduled_at);
         $new = $shoot->serviceItems()->where('service_id', $addon->id)->sole();
-        $remove = ['expected_units_revision' => $shoot->fresh()->units_revision, 'service_lines' => [
+        $remove = ['service_change_intent' => 'billing_correction', 'expected_units_revision' => $shoot->fresh()->units_revision, 'service_lines' => [
             ['shoot_service_id' => $second->id, 'client_key' => 'line-b', 'unit_client_key' => 'b', 'service_id' => $service->id],
             ['shoot_service_id' => $new->id, 'client_key' => 'new-fee', 'unit_client_key' => 'b', 'service_id' => $addon->id],
         ]];
@@ -365,7 +366,7 @@ class DeliveredSalesServiceCorrectionsTest extends TestCase
         $this->save($shoot, ['services' => [['id' => $service->id, 'duration_minutes' => 90]]])->assertForbidden();
         $this->assertSame(60, $item->fresh()->duration_minutes);
         $other = Service::factory()->noIntake()->create(['price' => 25, 'photographer_required' => false]);
-        $payload = ['services' => [['id' => $other->id]]];
+        $payload = ['service_change_intent' => 'billing_correction', 'services' => [['id' => $other->id]]];
         $confirmation = $this->save($shoot, $payload)->assertConflict()->assertJsonPath('code', 'service_detach_confirmation_required');
         $this->save($shoot, $payload + ['confirm_service_detach' => true, 'service_detach_confirmation_token' => $confirmation->json('confirmation_token')])->assertOk();
         $this->assertSame($status, $shoot->fresh()->status);

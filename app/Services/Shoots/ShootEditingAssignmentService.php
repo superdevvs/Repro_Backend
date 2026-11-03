@@ -300,7 +300,8 @@ class ShootEditingAssignmentService
     /** Finalization completes only lanes with verified output; undelivered video remains open. */
     public function markVerifiedLanesComplete(Shoot $shoot, ?int $serviceItemId = null): void
     {
-        $files = $shoot->files()->where('workflow_stage', ShootFile::STAGE_VERIFIED)->get();
+        $files = app(ServiceDeliveryEligibility::class)->currentCycleFiles($shoot,
+            $shoot->files()->where('workflow_stage', ShootFile::STAGE_VERIFIED)->get());
         $assignments = $this->getTrackedServiceAssignments($shoot);
         foreach ($assignments as $assignment) {
             if ($serviceItemId && $assignment['shoot_service_id'] !== $serviceItemId) continue;

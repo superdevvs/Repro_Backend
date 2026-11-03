@@ -7,12 +7,22 @@ use Illuminate\Support\Arr;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 
-/** Service corrections after capture never reserve a visit or reopen production. */
+/** Preserve completed visits while separating new work from billing-only corrections. */
 class DeliveredSalesServicePlan
 {
     public function applies(Shoot $shoot, ?User $actor, array $data): bool
     {
-        return (app(ShootManagementAccess::class)->canCorrectDeliveredServices($shoot, $actor)
+        if (app(ShootActiveWorkLifecycle::class)->hasActiveWork($shoot)
+            && ($data['service_change_intent'] ?? 'new_work') !== 'billing_correction') {
+            $existing = $shoot->serviceItems()->pluck('service_id')->map(fn ($id) => (int) $id)->all();
+            $rows = $data['services'] ?? $data['service_lines'] ?? $data['service_items'] ?? [];
+            $hasNew = collect($rows)->contains(fn ($row) => ! in_array((int) ($row['service_id'] ?? $row['id'] ?? 0), $existing, true));
+            if (! $hasNew || app(ActiveServiceEditGuard::class)->changesCapture($shoot, $data)) return false;
+        }
+        return ((app(ShootManagementAccess::class)->canCorrectDeliveredServices($shoot, $actor)
+                || (app(ShootManagementAccess::class)->canEdit($shoot, $actor)
+                    && ($shoot->admin_verified_at || app(ShootManagementAccess::class)->isDeliveredForSalesEdits($shoot)
+                        || app(ShootActiveWorkLifecycle::class)->hasActiveWork($shoot))))
             && array_intersect(['services', 'service_items', 'service_lines'], array_keys($data)) !== [])
             || app(PostCaptureServiceCorrection::class)->applies($shoot, $actor, $data);
     }
@@ -33,6 +43,11 @@ class DeliveredSalesServicePlan
             ? app(ShootMutationSupportService::class)->mergeServiceItemPayload($data['services'], $data['service_items'] ?? null,
                 $data['service_photographers'] ?? null, null, true)
             : $data['service_items']);
+        if (! array_key_exists('services', $data) && ! array_key_exists('service_lines', $data)) {
+            $submitted = collect($rows)->keyBy(fn ($row) => (int) ($row['service_id'] ?? 0));
+            $rows = $items->map(fn ($item) => $submitted->get((int) $item->service_id) ?? ['service_id' => $item->service_id])
+                ->merge($submitted->except($items->pluck('service_id')->all())->values())->all();
+        }
         $catalog = Service::with('category')->whereIn('id', collect($rows)->map(fn ($row) => $row['service_id'] ?? $row['id'] ?? 0))->get()->keyBy('id');
         $seen = [];
         $services = [];
@@ -67,6 +82,7 @@ class DeliveredSalesServicePlan
                 'scheduled_at' => $current?->scheduled_at?->format('Y-m-d H:i:s'),
                 'photographer_id' => $current?->photographer_id, 'editor_id' => $current?->editor_id,
                 'created_at' => $current?->created_at,
+                'billing_correction_only' => ($data['service_change_intent'] ?? 'new_work') === 'billing_correction',
             ];
         }
         app(ShootMutationSupportService::class)->ensureClientCanBookServices((int) ($data['client_id'] ?? $shoot->client_id), $services, $shoot, $actor);
@@ -76,6 +92,7 @@ class DeliveredSalesServicePlan
     public function persist(Shoot $shoot, array $services): void
     {
         $kept = [];
+        $newWork = false;
         foreach ($services as $row) {
             if (! empty($row['replaces_shoot_service_id'])) {
                 $item = app(CompletedPhotoPackageReplacement::class)->persist($shoot, $row);
@@ -111,7 +128,9 @@ class DeliveredSalesServicePlan
                 $item->workflow_status = 'pending';
                 $item->delivery_status = 'not_started';
                 $item->is_deliverable = true;
-                $item->payout_snapshot = ['billing_correction_only' => true];
+                $item->payout_snapshot = ['billing_correction_only' => (bool) ($row['billing_correction_only'] ?? true),
+                    'additional_work' => ! (bool) ($row['billing_correction_only'] ?? true)];
+                $newWork = $newWork || ! $item->payout_snapshot['billing_correction_only'];
                 $item->save();
             }
             $kept[] = $item->id;
@@ -120,6 +139,9 @@ class DeliveredSalesServicePlan
         if ($shoot->units()->exists()) $shoot->units_revision = ((int) $shoot->units_revision) + 1;
         $shoot->service_id = $services[0]['id'] ?? null;
         $shoot->load(['services', 'serviceItems']);
+        if ($newWork && ($shoot->admin_verified_at || app(ShootManagementAccess::class)->isDeliveredForSalesEdits($shoot))) {
+            app(ShootActiveWorkLifecycle::class)->begin($shoot);
+        }
     }
 
     private function fail(string $message): never

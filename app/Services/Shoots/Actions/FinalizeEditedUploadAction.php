@@ -168,6 +168,11 @@ class FinalizeEditedUploadAction
                 $allowedFromStatuses = $canSkipReview
                     ? array_map('strtolower', self::READY_ALLOWED_FROM_STATUSES)
                     : array_map('strtolower', self::ALLOWED_FROM_STATUSES);
+                $allowedFromStatuses[] = Shoot::STATUS_ACTIVE;
+                if (app(\App\Services\Shoots\ShootActiveWorkLifecycle::class)->hasActiveWork($shoot)
+                    && $capabilities->canSubmitEdits($shoot, $user)) {
+                    $allowedFromStatuses[] = $currentStatus;
+                }
                 $idempotent = array_map('strtolower', self::IDEMPOTENT_STATUSES);
 
                 $canResubmitReady = in_array($currentStatus, [Shoot::STATUS_READY, 'ready'], true)

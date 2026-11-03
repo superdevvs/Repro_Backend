@@ -10,6 +10,9 @@ use App\Models\User;
 use App\Services\ShootActivityLogger;
 use App\Services\Shoots\FinalizeProgressTracker;
 use App\Services\Shoots\NoMediaDeliveryEligibility;
+use App\Services\Shoots\ServiceDeliveryEligibility;
+use App\Services\Shoots\ShootActiveWorkLifecycle;
+use App\Support\LockedWrite;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -217,7 +220,7 @@ class FinalizeShootJob implements ShouldQueue
      */
     protected function commit(FinalizeProgressTracker $progress): ?array
     {
-        return DB::transaction(function () use ($progress) {
+        return LockedWrite::run(fn () => DB::transaction(function () use ($progress) {
             /** @var Shoot|null $shoot */
             $shoot = Shoot::query()->whereKey($this->shootId)->lockForUpdate()->first();
             if (!$shoot) {
@@ -283,7 +286,20 @@ class FinalizeShootJob implements ShouldQueue
                 && !$this->shootServiceId
                 && app(NoMediaDeliveryEligibility::class)->allows($shoot, $actor);
 
-            $allowedStatuses = [Shoot::STATUS_EDITING, Shoot::STATUS_READY, Shoot::STATUS_UPLOADED];
+            $eligible = app(ServiceDeliveryEligibility::class)->resolve(
+                $shoot,
+                (clone $fileQuery)->get(),
+                $allowNoMediaDelivery,
+                $this->shootServiceId
+            );
+            $completedIds = $eligible['file_ids'];
+            $serviceIds = $eligible['service_ids'];
+            $reviewedServiceOutput = $this->shootServiceId
+                && in_array($this->shootServiceId, $serviceIds, true)
+                && app(ShootActiveWorkLifecycle::class)->hasActiveWork($shoot)
+                && in_array(strtolower((string) $actor?->role), ['admin', 'superadmin', 'super_admin', 'editing_manager'], true);
+
+            $allowedStatuses = [Shoot::STATUS_ACTIVE, Shoot::STATUS_EDITING, Shoot::STATUS_READY, Shoot::STATUS_UPLOADED];
             if (!in_array($shoot->workflow_status, $allowedStatuses, true) && !$hasEditedWithoutRaw && !$allowNoMediaDelivery) {
                 $shoot->workflowLogs()->create([
                     'user_id' => $this->userId,
@@ -303,12 +319,14 @@ class FinalizeShootJob implements ShouldQueue
                 return null;
             }
 
-            if (empty($completedIds) && !$allowNoMediaDelivery) {
+            if (empty($completedIds) && ! $reviewedServiceOutput && (! $allowNoMediaDelivery
+                || (empty($serviceIds) && $shoot->serviceItems()->where('is_deliverable', true)->exists()))) {
                 $shoot->workflowLogs()->create([
                     'user_id' => $this->userId,
                     'action' => 'finalize_failed',
                     'details' => 'Finalize aborted: no edited files found',
                     'metadata' => [
+                        'eligibility' => 'Service appointment and owned output must be complete.',
                         'current_status' => $shoot->workflow_status,
                         'final_status' => $this->finalStatus,
                         'failed_at' => now()->toISOString(),
@@ -349,46 +367,32 @@ class FinalizeShootJob implements ShouldQueue
             }
 
             // ---- Service-item rollups.
-            app(\App\Services\Shoots\ShootEditingAssignmentService::class)->markVerifiedLanesComplete($shoot, $this->shootServiceId);
+            foreach ($serviceIds as $serviceId) {
+                app(\App\Services\Shoots\ShootEditingAssignmentService::class)->markVerifiedLanesComplete($shoot, $serviceId);
+            }
             $isFullOrderDelivery = true;
-            if ($this->shootServiceId) {
-                $serviceItem = $shoot->serviceItems()->whereKey($this->shootServiceId)->first();
-                if ($serviceItem) {
-                    $serviceItem->forceFill([
-                        'workflow_status' => ShootService::WORKFLOW_DELIVERED,
-                        'delivery_status' => ShootService::DELIVERY_DELIVERED,
-                        'delivered_at' => now(),
-                        'ready_at' => $serviceItem->ready_at ?? now(),
-                    ])->save();
-                }
-
+            $deliverableItems = $shoot->serviceItems()->get();
+            foreach ($deliverableItems->whereIn('id', $serviceIds) as $item) {
+                $item->forceFill([
+                    'workflow_status' => ShootService::WORKFLOW_DELIVERED,
+                    'delivery_status' => ShootService::DELIVERY_DELIVERED,
+                    'delivered_at' => $item->delivered_at ?? now(),
+                    'ready_at' => $item->ready_at ?? now(),
+                ])->save();
+            }
+            if ($deliverableItems->isNotEmpty()) {
                 $rollups = $shoot->fresh()->syncServiceItemRollups();
                 $isFullOrderDelivery = ($rollups['delivery_status'] ?? null) === 'delivered';
                 $shoot->refresh();
-            } else {
-                $deliverableItems = $shoot->serviceItems()
-                    ->where('is_deliverable', true)
-                    ->where('workflow_status', '!=', ShootService::WORKFLOW_CANCELLED)
-                    ->where('delivery_status', '!=', ShootService::DELIVERY_CANCELLED)
-                    ->get();
-
-                if ($deliverableItems->isNotEmpty()) {
-                    foreach ($deliverableItems as $item) {
-                        $item->forceFill([
-                            'workflow_status' => ShootService::WORKFLOW_DELIVERED,
-                            'delivery_status' => ShootService::DELIVERY_DELIVERED,
-                            'delivered_at' => $item->delivered_at ?? now(),
-                            'ready_at' => $item->ready_at ?? now(),
-                        ])->save();
-                    }
-
-                    $shoot->fresh()->syncServiceItemRollups();
-                    $shoot->refresh();
-                }
+            }
+            if (! $isFullOrderDelivery && $deliverableItems->contains(fn ($item) => $item->delivery_status === ShootService::DELIVERY_DELIVERED)) {
+                app(ShootActiveWorkLifecycle::class)->begin($shoot);
+                app(ShootActiveWorkLifecycle::class)->reconcile($shoot);
             }
 
             if ($isFullOrderDelivery) {
                 $shoot->updateWorkflowStatus(Shoot::STATUS_DELIVERED, $this->userId);
+                app(ShootActiveWorkLifecycle::class)->reconcile($shoot);
 
                 // Staff finalize is the explicit release for legacy-imported bookings
                 // that were muted on import. Clear the mute inside the same commit so
@@ -439,7 +443,7 @@ class FinalizeShootJob implements ShouldQueue
                 'processed_file_ids' => $completedIds,
                 'previous_status' => $previousStatus,
             ];
-        });
+        }), 'shoot-finalize');
     }
 
     /**

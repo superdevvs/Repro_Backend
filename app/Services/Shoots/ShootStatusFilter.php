@@ -8,6 +8,7 @@ use Illuminate\Support\Facades\DB;
 class ShootStatusFilter
 {
     private const STATUSES = [
+        'active' => ['Active', ['active']],
         'requested' => ['Requested', ['requested']],
         'scheduled' => ['Scheduled', ['scheduled', 'booked', 'raw_upload_pending']],
         'confirmed' => ['Confirmed', ['confirmed']],
@@ -51,6 +52,12 @@ class ShootStatusFilter
 
         // The active workflow takes precedence over legacy status. Filtering
         // the SQL query keeps pagination and counts consistent with the cards.
-        $query->whereIn(DB::raw("LOWER(COALESCE(NULLIF(TRIM(workflow_status), ''), status, ''))"), array_unique($aliases));
+        $query->where(function (Builder $scope) use ($aliases, $statuses) {
+            $scope->whereIn(DB::raw("LOWER(COALESCE(NULLIF(TRIM(workflow_status), ''), status, ''))"), array_unique($aliases));
+            if (in_array('active', $statuses, true)) {
+                $scope->orWhere(fn (Builder $active) => $active->whereNotNull('active_work_started_at')->whereNull('active_work_completed_at')
+                    ->whereNotIn(DB::raw("LOWER(COALESCE(NULLIF(workflow_status, ''), status, ''))"), ['on_hold', 'hold_on', 'cancelled', 'canceled', 'declined']));
+            }
+        });
     }
 }

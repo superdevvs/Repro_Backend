@@ -27,6 +27,7 @@ class ShootListingService
             Shoot::STATUS_REQUESTED,
         ],
         'completed' => [
+            Shoot::STATUS_ACTIVE,
             Shoot::STATUS_UPLOADED,
             Shoot::STATUS_EDITING,
         ],
@@ -413,11 +414,20 @@ class ShootListingService
             'listing_type', 'property_details',
             // Used only to enforce the existing public-image release gate.
             'status', 'workflow_status', 'payment_status', 'total_quote', 'total_paid', 'bypass_paywall',
+            'active_work_started_at', 'active_work_completed_at', 'admin_verified_at',
         ])->withExists('units')->where('is_private_listing', true)
             ->where(fn (Builder $scope) => $scope->where('is_listing_hidden', false)->orWhereNull('is_listing_hidden'))
-            ->whereIn(DB::raw("LOWER(COALESCE(NULLIF(workflow_status, ''), status, ''))"), [
-                Shoot::STATUS_DELIVERED, 'ready_for_client', 'admin_verified', 'ready', 'workflow_completed', 'client_delivered',
-            ]);
+            ->where(function (Builder $visible) {
+                $visible->where(function (Builder $completed) {
+                    $completed->whereIn(DB::raw("LOWER(COALESCE(NULLIF(workflow_status, ''), status, ''))"), [
+                        Shoot::STATUS_DELIVERED, 'ready_for_client', 'admin_verified', 'ready', 'workflow_completed', 'client_delivered',
+                    ])->where(fn (Builder $closed) => $closed->whereNull('active_work_started_at')->orWhereNotNull('active_work_completed_at'));
+                })->orWhere(function (Builder $active) {
+                    $active->whereNotNull('active_work_started_at')->whereNull('active_work_completed_at')
+                        ->whereHas('serviceItems', fn (Builder $items) => $items->where('is_deliverable', true)
+                            ->whereNull('cancelled_at')->where('workflow_status', 'delivered')->where('delivery_status', 'delivered'));
+                });
+            });
 
         // Operational filters can become an oracle for private contacts and
         // assignments. Discovery searches only fields actually returned below.
@@ -510,14 +520,17 @@ class ShootListingService
     /** Filter before pagination using property-local dates, including scheduled_at-only rows. */
     protected function applyScheduledLocalDate(Builder $query, string $date): void
     {
-        $accessible = (clone $query)->reorder()->select('shoots.id');
+        $activeIds = (clone $query)->whereNotNull('active_work_started_at')->whereNull('active_work_completed_at')
+            ->where('active_work_date', $date)->pluck('shoots.id')->all();
+        $accessible = (clone $query)->reorder()->select('shoots.id')
+            ->where(fn (Builder $closed) => $closed->whereNull('active_work_started_at')->orWhereNotNull('active_work_completed_at'));
         $ids = app(ScheduleDateScopeService::class)->shootsForLocalDate($date, [],
             fn (Builder $candidates) => $candidates
                 ->select(['shoots.id', 'scheduled_at', 'scheduled_date', 'time', 'timezone'])
                 ->whereIn('shoots.id', $accessible)
         )->modelKeys();
 
-        $query->whereIn('shoots.id', $ids);
+        $query->whereIn('shoots.id', array_unique([...$ids, ...$activeIds]));
     }
 
     protected function applyTabScope(Builder $query, string $tab, ?User $user = null, bool $dashboardOpen = false): void
@@ -547,10 +560,17 @@ class ShootListingService
                 'client_delivered',
             ]));
 
-            $query->where(function (Builder $scope) use ($statuses, $workflowStatuses) {
+            $query->where(function (Builder $scope) use ($statuses, $workflowStatuses, $user) {
                 $scope->whereIn('status', $statuses)
                     ->orWhereIn('workflow_status', $workflowStatuses);
+                if ($user && $user->role === 'client') {
+                    $scope->orWhere(fn (Builder $active) => $active->whereNotNull('active_work_started_at')
+                        ->whereNull('active_work_completed_at')->whereHas('serviceItems', fn (Builder $item) => $item->where('delivery_status', 'delivered')));
+                }
             });
+            if (! $user || $user->role !== 'client') {
+                $query->where(fn (Builder $closed) => $closed->whereNull('active_work_started_at')->orWhereNotNull('active_work_completed_at'));
+            }
 
             return;
         }
@@ -578,7 +598,8 @@ class ShootListingService
                 $workflowStatuses[] = Shoot::STATUS_READY;
             }
             $query->where(function (Builder $scope) use ($statuses, $workflowStatuses, $user, $dashboardOpen) {
-                $scope->where(function (Builder $active) use ($statuses, $workflowStatuses, $dashboardOpen) {
+                $scope->where(fn (Builder $cycle) => $cycle->whereNotNull('active_work_started_at')->whereNull('active_work_completed_at'));
+                $scope->orWhere(function (Builder $active) use ($statuses, $workflowStatuses, $dashboardOpen) {
                     if ($dashboardOpen) {
                         $active->whereIn(DB::raw("LOWER(COALESCE(NULLIF(workflow_status, ''), status, ''))"), $workflowStatuses);
                     } else {
@@ -627,10 +648,43 @@ class ShootListingService
                 }
             });
 
+            $query->where(function (Builder $open) {
+                $open->whereNull('active_work_started_at')->orWhereNotNull('active_work_completed_at')
+                    ->orWhereNotIn(DB::raw("LOWER(COALESCE(NULLIF(workflow_status, ''), status, ''))"), ['on_hold', 'hold_on', 'cancelled', 'canceled', 'declined']);
+            });
+            if ($user && in_array($user->role, ['photographer', 'editor'], true)) {
+                $query->where(function (Builder $visible) use ($user) {
+                    $visible->whereNull('active_work_started_at')->orWhereNotNull('active_work_completed_at')
+                        ->orWhere(function (Builder $active) use ($user) {
+                            $active->whereHas('serviceItems', function (Builder $items) use ($user) {
+                                $items->where('is_deliverable', true)->whereNull('cancelled_at')
+                                    ->where(fn (Builder $state) => $state->whereNull('delivery_status')->orWhere('delivery_status', '!=', 'cancelled'))
+                                    ->where(fn (Builder $pending) => $pending->whereNull('delivery_status')->orWhere('delivery_status', '!=', 'delivered')
+                                        ->orWhereNull('workflow_status')->orWhere('workflow_status', '!=', 'delivered'))
+                                    ->where(fn (Builder $state) => $state->whereNull('workflow_status')->orWhere('workflow_status', '!=', 'cancelled'))
+                                    ->where(fn (Builder $billing) => $billing->whereNull('payout_snapshot->billing_correction_only')
+                                        ->orWhere('payout_snapshot->billing_correction_only', false))
+                                    ->where(function (Builder $assignment) use ($user) {
+                                        if ($user->role === 'photographer') $assignment->where('photographer_id', $user->id);
+                                        else $assignment->where('editor_id', $user->id)->orWhere('video_editor_id', $user->id);
+                                    });
+                            });
+                            if ($user->role === 'editor') {
+                                $active->orWhereExists(function ($exists) use ($user) {
+                                    app(ShootEditingAssignmentService::class)->constrainOpenDispatchItems($exists, $user->id);
+                                    $exists->whereColumn('shoot_editing_dispatch_items.created_at', '>=', 'shoots.active_work_started_at');
+                                });
+                            }
+                        });
+                });
+            }
             return;
         }
 
         $query->whereIn('status', $statuses);
+        if ($tabKey === 'scheduled') {
+            $query->where(fn (Builder $closed) => $closed->whereNull('active_work_started_at')->orWhereNotNull('active_work_completed_at'));
+        }
     }
 
     protected function applyOperationalFilters(Builder $query, Request $request, string $tab, ?User $user = null): void
@@ -702,13 +756,13 @@ class ShootListingService
         $scheduledStart = $request->query('scheduled_start');
         $scheduledEnd = $request->query('scheduled_end');
         if ($scheduledStart || $scheduledEnd) {
-            $this->applyDateRangeFilter($query, 'scheduled_date', $scheduledStart, $scheduledEnd);
+            $this->applyDateRangeFilter($query, 'work_date', $scheduledStart, $scheduledEnd);
         }
 
         $dateFrom = $request->query('date_from');
         $dateTo = $request->query('date_to');
         if ($dateFrom || $dateTo) {
-            $column = $tab === 'delivered' ? 'admin_verified_at' : 'scheduled_date';
+            $column = $tab === 'delivered' ? 'admin_verified_at' : 'work_date';
             $this->applyDateRangeFilter($query, $column, $dateFrom, $dateTo);
         }
 
@@ -745,6 +799,10 @@ class ShootListingService
                     ['column' => 'id', 'direction' => 'desc'],
                 ];
             case 'completed':
+                return [
+                    ['raw' => 'COALESCE(active_work_at, created_at) DESC'],
+                    ['column' => 'id', 'direction' => 'desc'],
+                ];
             case 'hold':
             case 'scheduled':
             default:
@@ -965,6 +1023,9 @@ class ShootListingService
 
     protected function applyDateRangeFilter(Builder $query, string $column, ?string $start, ?string $end): void
     {
+        if ($column === 'work_date') {
+            $column = DB::raw('CASE WHEN active_work_started_at IS NOT NULL AND active_work_completed_at IS NULL THEN active_work_date ELSE scheduled_date END');
+        }
         if ($start) {
             try {
                 $query->whereDate($column, '>=', Carbon::parse($start)->toDateString());

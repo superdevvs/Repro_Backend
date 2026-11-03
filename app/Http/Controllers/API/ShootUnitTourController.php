@@ -67,6 +67,7 @@ class ShootUnitTourController extends Controller
         }
         $line = $request->hasAny(['iguide_property_id', 'iguide_work_order_id']) ? $this->scope->resolveLine($unit, $request->input('shoot_service_id'), 'iguide') : null;
         LockedWrite::run(fn () => DB::transaction(function () use ($shoot, $unit, $data, $line) {
+            app(\App\Services\Shoots\ActiveVideoLinkOutput::class)->ensureBaseline($shoot);
             $unit->refresh();
             $incomingLinks = $data['tour_links'] ?? [];
             foreach (ShootUnitTourScope::INHERITED_SETTINGS as $key) {
@@ -88,6 +89,7 @@ class ShootUnitTourController extends Controller
             }
             $dimensionsChanged = $unit->isDirty(['beds', 'baths', 'sqft']);
             $unit->save();
+            app(\App\Services\Shoots\ActiveVideoLinkOutput::class)->recordChangedLinks($shoot->fresh());
             if ($dimensionsChanged) Shoot::whereKey($shoot->id)->increment('units_revision');
         }), 'shoot-unit.tour-update');
         $unit->refresh();

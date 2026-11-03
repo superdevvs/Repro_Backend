@@ -7,7 +7,7 @@ use Illuminate\Database\Eloquent\Model;
 
 class ShootService extends Model
 {
-    protected $hidden = ['payout_snapshot'];
+    protected $hidden = ['payout_snapshot', 'active_work_link_output'];
     use HasFactory;
 
     protected $table = 'shoot_service';
@@ -58,6 +58,7 @@ class ShootService extends Model
     ];
 
     protected $casts = [
+        'active_work_link_output' => 'array',
         'price' => 'decimal:2',
         'nominal_value_snapshot' => 'decimal:2',
         'quantity' => 'integer',
@@ -79,6 +80,15 @@ class ShootService extends Model
 
     protected static function booted(): void
     {
+        $reconcile = function (ShootService $item) {
+            $shoot = $item->shoot()->first();
+            if ($shoot && app(\App\Services\Shoots\ShootActiveWorkLifecycle::class)->hasActiveWork($shoot)) {
+                app(\App\Services\Shoots\ShootActiveWorkLifecycle::class)->reconcile($shoot);
+            }
+        };
+        static::saved($reconcile);
+        static::deleted($reconcile);
+
         static::saving(function (ShootService $serviceItem) {
             $shoot = $serviceItem->relationLoaded('shoot')
                 ? $serviceItem->shoot

@@ -21,6 +21,7 @@ class FinalizeRawUploadAction
      * Statuses from which a raw-submit is valid (moves shoot to UPLOADED).
      */
     private const ALLOWED_FROM_STATUSES = [
+        Shoot::STATUS_ACTIVE,
         Shoot::STATUS_SCHEDULED,
         'scheduled',
         'booked',
@@ -106,6 +107,25 @@ class FinalizeRawUploadAction
 
                     $currentStatus = strtolower((string) ($shoot->workflow_status ?? $shoot->status ?? ''));
                     $previousStatus = $currentStatus;
+                    $activeCycle = app(\App\Services\Shoots\ShootActiveWorkLifecycle::class)->hasActiveWork($shoot);
+                    $activeFiles = collect();
+                    if ($activeCycle) {
+                        if (in_array($currentStatus, ['on_hold', 'hold_on', 'cancelled', 'canceled', 'declined'], true)) {
+                            return ['status' => 409, 'payload' => ['error_type' => 'invalid_workflow_state',
+                                'message' => 'Resume the additional work before submitting RAW files.', 'workflow_status_changed' => false]];
+                        }
+                        if (! $user || ! in_array($user->role, ['admin', 'superadmin', 'editing_manager', 'photographer'], true)
+                            || ($user->role === 'photographer' && ! app(\App\Services\Shoots\ShootActiveWorkLifecycle::class)->outstandingItems($shoot)
+                                ->contains(fn ($item) => (int) $item->photographer_id === (int) $user->id))) {
+                            return ['status' => 403, 'payload' => ['error_type' => 'forbidden',
+                                'message' => 'Only the outstanding service photographer or production staff may submit this work.', 'workflow_status_changed' => false]];
+                        }
+                        $activeFiles = self::pendingActiveRawFiles($shoot, $user);
+                        if ($activeFiles->isEmpty()) {
+                            return ['status' => 422, 'payload' => ['error_type' => 'no_new_files',
+                                'message' => 'No new RAW files are awaiting submission for your outstanding services.', 'workflow_status_changed' => false]];
+                        }
+                    }
 
                     // Strict state validation.
                     $allowed = array_map('strtolower', self::ALLOWED_FROM_STATUSES);
@@ -114,7 +134,7 @@ class FinalizeRawUploadAction
                     $canResubmitUploaded = in_array($currentStatus, [Shoot::STATUS_UPLOADED, 'uploaded'], true)
                         && $this->hasNewRawFilesSinceSubmit($shoot);
 
-                    if (!in_array($currentStatus, $allowed, true) && !$canResubmitUploaded) {
+                    if (! $activeCycle && !in_array($currentStatus, $allowed, true) && !$canResubmitUploaded) {
 
                         if (in_array($currentStatus, $idempotent, true)) {
                             // Already submitted / past this stage — idempotent success.
@@ -145,7 +165,7 @@ class FinalizeRawUploadAction
                         ];
                     }
 
-                    if ((int) $shoot->raw_photo_count <= 0) {
+                    if (! $activeCycle && (int) $shoot->raw_photo_count <= 0) {
                         return [
                             'status' => 422,
                             'payload' => [
@@ -158,6 +178,7 @@ class FinalizeRawUploadAction
                         ];
                     }
 
+                    if ($activeCycle) $this->recordActiveRawSubmission($shoot, $activeFiles);
                     $shoot->updateWorkflowStatus(Shoot::STATUS_UPLOADED, $user?->id ?? auth()->id());
                     $workflowStatusChanged = true;
                     $shouldQueueIguideSync = true;
@@ -276,5 +297,57 @@ class FinalizeRawUploadAction
             ->where('workflow_stage', ShootFile::STAGE_TODO)
             ->where('created_at', '>', $shoot->photos_uploaded_at)
             ->exists();
+    }
+
+    /** The capability and mutation share the same service-owned, cycle-owned input evidence. */
+    public static function pendingActiveRawFiles(Shoot $shoot, ?User $user): \Illuminate\Support\Collection
+    {
+        $lifecycle = app(\App\Services\Shoots\ShootActiveWorkLifecycle::class);
+        if (! $lifecycle->hasActiveWork($shoot) || ! $user
+            || ! in_array($user->role, ['admin', 'superadmin', 'editing_manager', 'photographer'], true)
+            || in_array(strtolower((string) ($shoot->workflow_status ?: $shoot->status)), ['on_hold', 'hold_on', 'cancelled', 'canceled', 'declined'], true)) return collect();
+        $items = $lifecycle->outstandingItems($shoot);
+        if ($user->role === 'photographer') $items = $items->where('photographer_id', $user->id);
+        if ($items->isEmpty()) return collect();
+        $files = $shoot->files()->where('workflow_stage', ShootFile::STAGE_TODO)
+            ->whereIn('shoot_service_id', $items->modelKeys())
+            ->where(fn ($query) => $query->whereNull('flag_reason')->orWhere('flag_reason', ''))
+            ->where(fn ($query) => $query->whereNull('is_extra')->orWhere('is_extra', false)->orWhere('required_for_editing', true))
+            ->get();
+        $cycle = $shoot->active_work_started_at->toIso8601String();
+        return app(\App\Services\Shoots\ServiceDeliveryEligibility::class)->currentCycleFiles($shoot, $files)
+            ->filter(function (ShootFile $file) use ($cycle) {
+                if ($file->isBlockedFromDelivery()) return false;
+                $receipt = data_get($file->metadata, 'active_work_raw_submission', []);
+                return ($receipt['cycle'] ?? null) !== $cycle
+                    || (int) ($receipt['content_version'] ?? 0) !== (int) ($file->content_version ?: 1);
+            })->values();
+    }
+
+    private function recordActiveRawSubmission(Shoot $shoot, \Illuminate\Support\Collection $files): void
+    {
+        $cycle = $shoot->active_work_started_at->toIso8601String();
+        $submittedAt = now()->toIso8601String();
+        foreach ($files as $file) {
+            $metadata = is_array($file->metadata) ? $file->metadata : [];
+            $metadata['active_work_raw_submission'] = ['cycle' => $cycle, 'submitted_at' => $submittedAt,
+                'content_version' => (int) ($file->content_version ?: 1)];
+            DB::table('shoot_files')->where('shoot_id', $shoot->id)->where('id', $file->id)
+                ->update(['metadata' => json_encode($metadata, JSON_THROW_ON_ERROR)]);
+        }
+        $editing = app(\App\Services\Shoots\ShootEditingAssignmentService::class);
+        foreach ($files->groupBy('shoot_service_id') as $serviceId => $inputs) {
+            $item = $shoot->serviceItems()->whereKey($serviceId)->first();
+            if (! $item) continue;
+            $updates = ['ready_at' => null, 'updated_at' => now()];
+            if ($item->workflow_status === 'ready') $updates['workflow_status'] = $item->scheduled_at ? 'scheduled' : 'pending';
+            if ($item->delivery_status === 'ready') $updates['delivery_status'] = 'not_started';
+            $lanes = $inputs->map(fn ($file) => $editing->getFileLane($file))->unique();
+            if ($lanes->contains('photo')) $updates['editing_completed_at'] = null;
+            if ($lanes->contains('video')) {
+                $updates[count($editing->serviceEditingLanes($item)) > 1 ? 'video_editing_completed_at' : 'editing_completed_at'] = null;
+            }
+            DB::table('shoot_service')->where('shoot_id', $shoot->id)->where('id', $serviceId)->update($updates);
+        }
     }
 }

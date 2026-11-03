@@ -20,6 +20,7 @@ class ShootWorkflowService
     const STATUS_REQUESTED = Shoot::STATUS_REQUESTED;   // client-submitted, awaiting approval
 
     const STATUS_SCHEDULED = Shoot::STATUS_SCHEDULED;
+    const STATUS_ACTIVE = Shoot::STATUS_ACTIVE;
 
     const STATUS_IN_PROGRESS = Shoot::STATUS_SCHEDULED;
 
@@ -56,6 +57,7 @@ class ShootWorkflowService
     // Valid transitions for the simplified pipeline
     // requested → scheduled → uploaded → editing → ready → delivered
     private const VALID_TRANSITIONS = [
+        self::STATUS_ACTIVE => [self::STATUS_UPLOADED, self::STATUS_EDITING, self::STATUS_REVIEW, self::STATUS_READY, self::STATUS_ON_HOLD, self::STATUS_CANCELLED],
         self::STATUS_REQUESTED => [self::STATUS_SCHEDULED, self::STATUS_DECLINED, self::STATUS_CANCELLED, self::STATUS_ON_HOLD],
         self::STATUS_SCHEDULED => [self::STATUS_UPLOADED, self::STATUS_ON_HOLD, self::STATUS_CANCELLED],
         self::STATUS_UPLOADED => [self::STATUS_EDITING, self::STATUS_ON_HOLD, self::STATUS_CANCELLED],

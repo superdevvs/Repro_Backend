@@ -221,6 +221,9 @@ class Shoot extends Model
     ];
 
     protected $casts = [
+        'active_work_started_at' => 'datetime',
+        'active_work_completed_at' => 'datetime',
+        'active_work_at' => 'datetime',
         'scheduled_date' => 'date',
         'scheduled_at' => 'datetime',
         'timezone' => 'string',
@@ -303,6 +306,7 @@ class Shoot extends Model
     const STATUS_REVIEW = 'review';       // editor submitted edits, awaiting editing manager review
     const STATUS_READY = 'ready';         // edited files uploaded, awaiting admin finalize
     const STATUS_DELIVERED = 'delivered'; // finalized and delivered to client
+    const STATUS_ACTIVE = 'active';       // delivered work with outstanding additional services
     const STATUS_ON_HOLD = 'on_hold';
     const STATUS_CANCELLED = 'cancelled';
     const STATUS_DECLINED = 'declined';   // admin/rep declined the shoot request
@@ -1479,14 +1483,17 @@ class Shoot extends Model
         $deliverableItems = $items->filter(function (ShootService $item) {
             return $item->is_deliverable
                 && $item->workflow_status !== ShootService::WORKFLOW_CANCELLED
-                && $item->delivery_status !== ShootService::DELIVERY_CANCELLED;
+                && $item->delivery_status !== ShootService::DELIVERY_CANCELLED
+                && ! data_get($item->payout_snapshot, 'billing_correction_only', false);
         });
 
+        $isDelivered = fn (ShootService $item) => $item->delivery_status === ShootService::DELIVERY_DELIVERED
+            && (! $this->active_work_started_at || $item->workflow_status === ShootService::WORKFLOW_DELIVERED);
         if ($deliverableItems->isEmpty()) {
             $deliveryStatus = 'delivered';
-        } elseif ($deliverableItems->every(fn (ShootService $item) => $item->delivery_status === ShootService::DELIVERY_DELIVERED)) {
+        } elseif ($deliverableItems->every($isDelivered)) {
             $deliveryStatus = 'delivered';
-        } elseif ($deliverableItems->contains(fn (ShootService $item) => $item->delivery_status === ShootService::DELIVERY_DELIVERED)) {
+        } elseif ($deliverableItems->contains($isDelivered)) {
             $deliveryStatus = 'partially_delivered';
         } else {
             $deliveryStatus = 'not_started';
@@ -1702,6 +1709,7 @@ class Shoot extends Model
     {
         // Allow raw uploads until admin moves the shoot past raw review
         return in_array($this->workflow_status, [
+            self::STATUS_ACTIVE,
             self::STATUS_SCHEDULED,
             self::STATUS_COMPLETED,
             self::STATUS_UPLOADED,
@@ -1737,9 +1745,10 @@ class Shoot extends Model
                 $this->editing_completed_at = now();
                 break;
             case self::STATUS_DELIVERED:
-                $this->admin_verified_at = now();
+                $additionalCycle = $this->active_work_started_at !== null;
+                $this->admin_verified_at = $additionalCycle ? ($this->admin_verified_at ?? now()) : now();
                 $this->verified_by = $userId;
-                $this->completed_at = now();
+                $this->completed_at = $additionalCycle ? ($this->completed_at ?? now()) : now();
                 $this->delivery_status = 'delivered';
                 if (!$this->editing_completed_at) {
                     $this->editing_completed_at = now();
@@ -1748,6 +1757,8 @@ class Shoot extends Model
         }
 
         $this->save();
+
+        app(\App\Services\Shoots\ShootActiveWorkLifecycle::class)->reconcile($this);
 
         // Log the workflow change
         $this->workflowLogs()->create([
@@ -1775,6 +1786,23 @@ class Shoot extends Model
             }
         });
         static::saving(function (self $shoot) {
+            if ($shoot->active_work_started_at && ! $shoot->active_work_completed_at) {
+                if ($shoot->isDirty('status') && ! $shoot->isDirty('workflow_status')
+                    && in_array($shoot->status, ['on_hold', 'hold_on', 'cancelled', 'canceled', 'declined'], true)) {
+                    $shoot->workflow_status = $shoot->status;
+                }
+                if (in_array($shoot->workflow_status, ['on_hold', 'hold_on', 'cancelled', 'canceled', 'declined'], true)) {
+                    $shoot->status = $shoot->workflow_status;
+                }
+                foreach (['admin_verified_at', 'completed_at'] as $historyField) {
+                    if ($shoot->getRawOriginal($historyField)) $shoot->{$historyField} = $shoot->getRawOriginal($historyField);
+                }
+                if (($shoot->status === self::STATUS_DELIVERED || $shoot->workflow_status === self::STATUS_DELIVERED)
+                    && app(\App\Services\Shoots\ShootActiveWorkLifecycle::class)->outstandingItems($shoot)->isNotEmpty()) {
+                    $shoot->status = self::STATUS_ACTIVE;
+                    $shoot->workflow_status = self::STATUS_ACTIVE;
+                }
+            }
             if ($shoot->exists && $shoot->getRawOriginal('status') === self::STATUS_IMPORT_DRAFT
                 && $shoot->isDirty()) {
                 throw ValidationException::withMessages(['status' => 'This historical import is a private review draft. Release requires the reviewed import workflow.']);

@@ -360,6 +360,7 @@ class DashboardController extends Controller
             $dateTime = $this->combineDateAndTime($localDate, $localTime);
 
             $summary = [
+                ...app(\App\Services\Shoots\ShootActiveWorkLifecycle::class)->presentation($shoot),
                 'id' => $shoot->id,
                 'day_label' => $this->getDayLabel($date, $today),
                 'time_label' => $dateTime ? $dateTime->format('h:i A') : null,
@@ -373,7 +374,7 @@ class DashboardController extends Controller
                 'status' => $shoot->status,
                 'workflow_status' => $shoot->workflow_status,
                 'completed_at' => optional($shoot->completed_at)->toIso8601String(),
-                'delivered_at' => optional($shoot->admin_verified_at ?? $shoot->completed_at)->toIso8601String(),
+                'delivered_at' => optional($shoot->active_work_completed_at ?? $shoot->admin_verified_at ?? $shoot->completed_at)->toIso8601String(),
                 // Same payment truth as shoot detail header (ShootPresenter / payment_status).
                 // Required for Delivered cards — overview was omitting this so pills defaulted to Unpaid,
                 // including historical imports that are paid in the old dashboard ($ paid on record).
@@ -754,6 +755,7 @@ class DashboardController extends Controller
                 'label' => 'Photos Uploaded',
                 'statuses' => [
                     Shoot::STATUS_UPLOADED,
+                    Shoot::STATUS_ACTIVE,
                 ],
                 'accent' => '#0ea5e9',
             ],
@@ -781,6 +783,7 @@ class DashboardController extends Controller
                 'editing_completed_at', 'submitted_for_review_at', 'shoot_notes', 'company_notes',
                 'photographer_notes', 'editor_notes', 'property_details', 'created_by', 'hero_image',
                 'scheduled_at', 'timezone', 'completed_at', 'admin_verified_at',
+                'active_work_started_at', 'active_work_completed_at', 'active_work_at', 'active_work_date', 'active_work_time',
                 'cancellation_requested_at', 'cancellation_reason', 'hold_requested_at', 'hold_requested_by', 'hold_reason',
                 // Required for Delivered Paid/Unpaid pills — same fields as shoot detail header.
                 'payment_status', 'total_paid', 'total_quote'];
