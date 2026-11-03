@@ -15,12 +15,13 @@ use Tests\TestCase;
 
 class DeliveredCardMediaTest extends TestCase
 {
-    private function media(): DeliveredCardMedia
+    private function media(?callable $canView = null): DeliveredCardMedia
     {
         $files = Mockery::mock(ShootFileAccessService::class);
         $files->shouldReceive('resolvePublicStorageUrl')->andReturnUsing(fn ($path) => 'https://reprodashboard.test/storage/'.$path);
         $authorization = Mockery::mock(ShootAuthorizationSupport::class);
         $authorization->shouldReceive('isClientUser')->andReturnUsing(fn ($user) => $user?->role === 'client');
+        $authorization->shouldReceive('canViewShootMediaFile')->andReturnUsing($canView ?? fn () => true);
 
         return new DeliveredCardMedia($files, $authorization);
     }
@@ -111,6 +112,27 @@ class DeliveredCardMediaTest extends TestCase
         $value = $this->media()->forShoot($this->shoot(), collect(range(1, 9))->map(fn ($id) => $this->photo('photo-'.$id)), new User(['role' => 'salesRep']));
         $this->assertCount(6, $value['preview_images']);
         $this->assertNull($value['count']);
+    }
+
+    public function test_authorization_and_eligibility_run_before_the_six_preview_limit(): void
+    {
+        $candidates = collect(range(1, 7))->map(fn ($id) => $this->photo('denied-'.$id));
+        $candidates->push($this->photo('allowed'));
+        $value = $this->media(fn ($shoot, $file) => $file->filename === 'allowed.jpg')
+            ->forShoot($this->shoot(), $candidates, new User(['role' => 'photographer']));
+        $this->assertSame(['https://reprodashboard.test/storage/photos/allowed-grid.jpg'], $value['preview_images']);
+        $this->assertNull($value['count']);
+    }
+
+    public function test_read_policy_cannot_attach_raw_service_relations_to_the_source_shoot(): void
+    {
+        $shoot = $this->shoot();
+        $value = $this->media(function ($policyShoot) {
+            $policyShoot->setRelation('serviceItems', collect());
+            return true;
+        })->forShoot($shoot, collect([$this->photo('allowed')]), new User(['role' => 'editor']));
+        $this->assertCount(1, $value['preview_images']);
+        $this->assertFalse($shoot->relationLoaded('serviceItems'));
     }
 
     public function test_unauthenticated_viewer_has_no_previews(): void

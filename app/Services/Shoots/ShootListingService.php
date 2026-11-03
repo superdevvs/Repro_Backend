@@ -333,11 +333,15 @@ class ShootListingService
         $columns = [
             'id',
             'shoot_id',
+            'shoot_service_id',
             'filename',
             'stored_filename',
             'workflow_stage',
             'is_cover',
             'is_hidden',
+            'is_extra',
+            'required_for_editing',
+            'metadata',
             'url',
             'path',
             'dropbox_path',
@@ -416,14 +420,24 @@ class ShootListingService
         }
 
         $cardMedia = app(DeliveredCardMedia::class);
+        $authorization = app(ShootAuthorizationSupport::class);
+        // Batch assignment checks without attaching unsanitized serviceItems
+        // to the original page models consumed by ShootPresenter.
+        $policyShoots = new \Illuminate\Database\Eloquent\Collection($shoots->map(fn (Shoot $shoot) => clone $shoot)->all());
+        if ($viewer && $authorization->hasRole($viewer, ['editor', 'photographer'])) {
+            $policyShoots->loadMissing('serviceItems.service');
+        }
+        $policyShoots = $policyShoots->keyBy('id');
         foreach ($shoots as $shoot) {
+            $policyShoot = $policyShoots->get($shoot->id);
             $group = $preferred->get($shoot->id) ?? $fallback->get($shoot->id) ?? collect();
             if (isset($dispatchOnly[(int) $shoot->id])) {
                 $allowed = array_flip($dispatchFiles[(int) $shoot->id] ?? []);
                 $group = $group->filter(fn (ShootFile $file) => isset($allowed[(int) $file->id]))->values();
             }
+            $group = $viewer ? $group->filter(fn (ShootFile $file) => $authorization->canViewShootMediaFile($policyShoot, $file, $viewer))->values() : collect();
             $shoot->setRelation('list_preview_files', $group->take(6)->values());
-            $shoot->setAttribute('delivery_card_media', $cardMedia->forShoot($shoot, $group, $viewer));
+            $shoot->setAttribute('delivery_card_media', $cardMedia->forShoot($policyShoot, $group, $viewer));
         }
     }
 

@@ -15,7 +15,7 @@ final class DeliveredCardMedia
         private ShootAuthorizationSupport $authorization,
     ) {}
 
-    /** @param Collection<int, ShootFile> $candidates Already scoped to the viewer. */
+    /** @param Collection<int, ShootFile> $candidates Preview candidates; authorize before limiting. */
     public function forShoot(Shoot $shoot, Collection $candidates, ?User $viewer): array
     {
         $status = strtolower(trim((string) $shoot->payment_status));
@@ -26,10 +26,12 @@ final class DeliveredCardMedia
         $previews = [];
         $hero = null;
 
-        foreach ($viewer ? $candidates->take(6) : [] as $file) {
-            if (! $this->eligible($file)) {
-                continue;
-            }
+        // Some read-policy checks load raw service assignments. Keep those
+        // relations off the source model that the list presenter will serialize.
+        $policyShoot = clone $shoot;
+        $viewable = $viewer ? $candidates->filter(fn (ShootFile $file) => $this->eligible($file)
+            && $this->authorization->canViewShootMediaFile($policyShoot, $file, $viewer))->take(6) : [];
+        foreach ($viewable as $file) {
             $paths = $watermarked
                 ? [$file->watermarked_web_path, $file->watermarked_thumbnail_path, $file->watermarked_placeholder_path]
                 : [$file->grid_path, $file->web_path, $file->thumbnail_path];
