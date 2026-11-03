@@ -38,7 +38,8 @@ class MultiUnitBookingTest extends TestCase
         $this->admin = User::factory()->create(['role' => 'admin']);
         $this->client = User::factory()->create(['role' => 'client']);
         $this->service = Service::factory()->create(['price' => 100, 'pricing_type' => 'fixed', 'photographer_pay' => 50]);
-        $this->shoot = Shoot::factory()->create(['client_id' => $this->client->id, 'photographer_id' => null, 'scheduled_at' => null, 'scheduled_date' => null, 'time' => null, 'base_quote' => 200, 'total_quote' => 200]);
+        $this->shoot = Shoot::factory()->create(['client_id' => $this->client->id, 'photographer_id' => null, 'scheduled_at' => null, 'scheduled_date' => null, 'time' => null,
+            'status' => 'scheduled', 'workflow_status' => 'scheduled', 'base_quote' => 200, 'total_quote' => 200]);
         Sanctum::actingAs($this->admin);
     }
 
@@ -296,6 +297,28 @@ class MultiUnitBookingTest extends TestCase
         $payload = $this->existingPayload();
         $payload['service_lines'][0]['shoot_service_id'] = $line->id;
         $this->patchJson('/api/shoots/'.$this->shoot->id, $payload)->assertUnprocessable()->assertJsonValidationErrors('service_lines.0.shoot_service_id');
+        $this->assertSame(2, $this->shoot->serviceItems()->count());
+    }
+
+    public function test_delivered_billing_correction_validates_unit_ownership_and_keeps_unit_context(): void
+    {
+        $this->persist($this->payload());
+        foreach ($this->shoot->serviceItems as $line) $line->update(['workflow_status' => 'delivered', 'delivery_status' => 'delivered']);
+        $this->shoot->update(['status' => 'delivered', 'workflow_status' => 'delivered',
+            'admin_verified_at' => '2026-10-07 12:00:00', 'completed_at' => '2026-10-07 12:00:00']);
+        $before = $this->shoot->units()->get()->map->getRawOriginal()->all();
+        $endpoint = '/api/shoots/'.$this->shoot->id;
+        $this->patchJson($endpoint, $this->existingPayload() + ['service_change_intent' => 'billing_correction'])->assertOk();
+        $this->shoot->refresh();
+        $foreign = Shoot::factory()->create()->units()->create(['client_key' => 'foreign', 'label' => 'Private', 'kind' => 'unit']);
+        $invalidId = $this->existingPayload();
+        $invalidId['units'][0]['id'] = $foreign->id;
+        $this->patchJson($endpoint, $invalidId)->assertUnprocessable()->assertJsonValidationErrors('units.0.id');
+        $changedContext = $this->existingPayload();
+        $changedContext['units'][0]['label'] = 'Silently changed completed unit';
+        $this->patchJson($endpoint, $changedContext)->assertUnprocessable()->assertJsonValidationErrors('units.0.label');
+        $this->assertSame($before, $this->shoot->units()->get()->map->getRawOriginal()->all());
+        $this->assertSame('delivered', $this->shoot->fresh()->workflow_status);
         $this->assertSame(2, $this->shoot->serviceItems()->count());
     }
 

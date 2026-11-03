@@ -80,7 +80,9 @@ class PostUploadPackageChangeTest extends TestCase
         $target->update(['upload_intake_type' => Service::INTAKE_PHOTO]);
         $invoice = app(InvoiceService::class)->generateForShoot($shoot);
         $visitBefore = $shoot->only(['status', 'workflow_status', 'scheduled_at', 'scheduled_date', 'time', 'photographer_id']);
-        $payload = ['services' => [['id' => $target->id]], 'notify_client' => false, 'notify_photographer' => false];
+        // This fixture corrects the package billed for the existing captured visit.
+        $payload = ['services' => [['id' => $target->id]], 'service_change_intent' => 'billing_correction',
+            'notify_client' => false, 'notify_photographer' => false];
         $confirmation = $this->patchJson('/api/shoots/'.$shoot->id, $payload)->assertConflict()
             ->assertJsonPath('code', 'service_detach_confirmation_required')->assertJsonPath('impact.files_detached', 2);
         $this->patchJson('/api/shoots/'.$shoot->id, $payload + [
@@ -93,6 +95,7 @@ class PostUploadPackageChangeTest extends TestCase
         $this->assertSame($target->id, $new->service_id);
         $this->assertNull($new->scheduled_at); $this->assertNull($new->photographer_id);
         $this->assertSame('pending', $new->workflow_status);
+        $this->assertTrue(data_get($new->payout_snapshot, 'billing_correction_only'));
         $this->assertSame(500.0, (float) $invoice->fresh()->subtotal);
         Mail::assertNothingSent(); Notification::assertNothingSent();
     }

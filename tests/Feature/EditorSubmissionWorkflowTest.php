@@ -95,14 +95,56 @@ class EditorSubmissionWorkflowTest extends TestCase
         $this->actingAs(User::factory()->create(['role' => 'editor']))->postJson("/api/shoots/{$shoot->id}/upload/finalize-edited")->assertForbidden();
     }
 
-    public function test_staff_finalization_completes_verified_photos_but_leaves_video_assignment_open(): void
+    public function test_staff_finalization_delivers_photo_service_and_keeps_separate_video_work_active(): void
     {
         [$shoot, $item, $photo, $video] = $this->assignment();
-        $this->editedFile($shoot, $item, $photo);
+        $item->service->update(['name' => 'HDR Photos', 'upload_intake_type' => 'photo']);
+        $item->update(['video_editor_id' => null]);
+        $videoItem = ShootService::create([
+            'shoot_id' => $shoot->id,
+            'service_id' => Service::factory()->videoIntake()->create(['name' => 'Video', 'requires_editing' => true])->id,
+            'editor_id' => $video->id, 'quantity' => 1, 'price' => 100,
+            'workflow_status' => 'in_progress', 'delivery_status' => 'not_started', 'is_deliverable' => true,
+        ]);
+        $file = $this->editedFile($shoot, $item, $photo);
         $admin = User::factory()->create(['role' => 'admin']);
         (new FinalizeShootJob($shoot->id, $admin->id))->handle(app(ShootActivityLogger::class));
         $this->assertNotNull($item->fresh()->editing_completed_at);
+        $this->assertSame('delivered', $item->fresh()->delivery_status);
+        $this->assertSame('verified', $file->fresh()->workflow_stage);
+        $this->assertNull($videoItem->fresh()->editing_completed_at);
+        $this->assertSame($video->id, (int) $videoItem->fresh()->editor_id);
+        $this->assertSame('not_started', $videoItem->fresh()->delivery_status);
+        $this->assertSame('active', $shoot->fresh()->workflow_status);
+        $this->assertSame('partially_delivered', $shoot->fresh()->delivery_status);
+    }
+
+    public function test_staff_cannot_deliver_a_photo_video_bundle_with_only_fresh_photos(): void
+    {
+        [$shoot, $item, $photo] = $this->assignment();
+        $file = $this->editedFile($shoot, $item, $photo);
+        $admin = User::factory()->create(['role' => 'admin']);
+        (new FinalizeShootJob($shoot->id, $admin->id))->handle(app(ShootActivityLogger::class));
+        $this->assertNull($item->fresh()->editing_completed_at);
         $this->assertNull($item->fresh()->video_editing_completed_at);
+        $this->assertSame('not_started', $item->fresh()->delivery_status);
+        $this->assertSame('completed', $file->fresh()->workflow_stage);
+        $this->assertSame('editing', $shoot->fresh()->workflow_status);
+        $this->assertDatabaseHas('workflow_logs', ['shoot_id' => $shoot->id, 'action' => 'finalize_failed']);
+    }
+
+    public function test_staff_can_deliver_a_bundle_when_both_photo_and_video_output_are_fresh(): void
+    {
+        [$shoot, $item, $photo, $video] = $this->assignment();
+        $photoFile = $this->editedFile($shoot, $item, $photo);
+        $videoFile = $this->editedFile($shoot, $item, $video, 'video');
+        $admin = User::factory()->create(['role' => 'admin']);
+        (new FinalizeShootJob($shoot->id, $admin->id))->handle(app(ShootActivityLogger::class));
+        $this->assertNotNull($item->fresh()->editing_completed_at);
+        $this->assertNotNull($item->fresh()->video_editing_completed_at);
+        $this->assertSame('delivered', $item->fresh()->delivery_status);
+        $this->assertSame('verified', $photoFile->fresh()->workflow_stage);
+        $this->assertSame('verified', $videoFile->fresh()->workflow_stage);
         $this->assertSame('delivered', $shoot->fresh()->workflow_status);
     }
 

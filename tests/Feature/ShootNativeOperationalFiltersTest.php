@@ -119,7 +119,8 @@ class ShootNativeOperationalFiltersTest extends TestCase
             $user = User::factory()->create(['role' => $role]);
             $response = $this->actingAs($user)->getJson('/api/shoots/filters')->assertOk();
             $values = array_column($response->json('data.statuses'), 'value');
-            $this->assertCount(13, $values);
+            $this->assertCount(14, $values);
+            $this->assertContains('active', $values);
             $this->assertContains('review', $values);
             $this->assertNotContains('pending_review', $values);
             $this->assertSame(! in_array($role, ['editor', 'photographer', 'client'], true), $response->json('data.filter_capabilities.assignments'));

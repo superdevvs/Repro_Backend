@@ -39,6 +39,7 @@ class DeliveredSalesServicePlan
             || (int) $data['expected_units_revision'] !== (int) $shoot->units_revision)) {
             $this->fail('The units changed in another session. Reload the shoot before saving.');
         }
+        if ($multiUnit && array_key_exists('units', $data)) $this->assertUnitContext($units, $data['units']);
         $rows = $data['service_lines'] ?? (array_key_exists('services', $data)
             ? app(ShootMutationSupportService::class)->mergeServiceItemPayload($data['services'], $data['service_items'] ?? null,
                 $data['service_photographers'] ?? null, null, true)
@@ -147,5 +148,37 @@ class DeliveredSalesServicePlan
     private function fail(string $message): never
     {
         throw ValidationException::withMessages(['services' => [$message]]);
+    }
+
+    /** A completed-order billing save may echo units, never replace their identity or execution context. */
+    private function assertUnitContext(\Illuminate\Support\Collection $units, mixed $rows): void
+    {
+        if (! is_array($rows) || count($rows) !== $units->count()) {
+            throw ValidationException::withMessages(['units' => ['Keep the existing units when correcting completed services.']]);
+        }
+        $seen = [];
+        foreach ($rows as $index => $row) {
+            $unit = is_array($row) ? (! empty($row['id'])
+                ? $units->firstWhere('id', (int) $row['id']) : $units->firstWhere('client_key', $row['client_key'] ?? null)) : null;
+            if (! $unit) {
+                throw ValidationException::withMessages(["units.$index.id" => ['Choose a unit belonging to this work order.']]);
+            }
+            if (isset($seen[$unit->id]) || ($row['client_key'] ?? null) !== $unit->client_key) {
+                throw ValidationException::withMessages(["units.$index.client_key" => ['Keep the existing unit identity.']]);
+            }
+            $seen[$unit->id] = true;
+            foreach (['id', 'label', 'kind', 'sqft', 'beds', 'baths', 'access_notes', 'sort_order'] as $field) {
+                if (! array_key_exists($field, $row)) continue;
+                $incoming = $row[$field];
+                $stored = $unit->{$field};
+                $same = (($incoming === null || $incoming === '') && ($stored === null || $stored === ''))
+                    || ((is_scalar($incoming) || $incoming === null) && (is_scalar($stored) || $stored === null)
+                        && ((string) $incoming === (string) $stored
+                            || (is_numeric($incoming) && is_numeric($stored) && (float) $incoming === (float) $stored)));
+                if (! $same) {
+                    throw ValidationException::withMessages(["units.$index.$field" => ['Completed-service corrections must preserve the existing unit context.']]);
+                }
+            }
+        }
     }
 }
