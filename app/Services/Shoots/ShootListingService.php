@@ -49,12 +49,18 @@ class ShootListingService
         if (! $authorization->hasRole($user, ['admin', 'superadmin', 'editing_manager', 'editor', 'photographer', 'client', 'salesRep'])) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
+        $deliveredActivityWindow = ShootDeliveredActivityWindow::fromRequest($request);
 
         // Discovery is a separate property-only projection, never permission to
         // request another client's operational shoot, media, or payment data.
         if ($authorization->isClientUser($user)
             && filter_var($request->query('private_listing'), FILTER_VALIDATE_BOOLEAN)
             && strtolower((string) $request->query('listing_scope')) === 'all') {
+            if ($deliveredActivityWindow !== null) {
+                throw \Illuminate\Validation\ValidationException::withMessages([
+                    'delivered_activity_from' => 'Delivery activity windows are only available for operational shoot listings.',
+                ]);
+            }
             return $this->privateListingDiscovery($request);
         }
 
@@ -119,6 +125,7 @@ class ShootListingService
                 'client_id', 'photographer_id', 'sales_rep_id', 'payment_status', 'services', 'search', 'address', 'shoot_id',
                 'date_range', 'scheduled_start', 'scheduled_end', 'scheduled_local_date',
                 'completed_start', 'completed_end', 'custom_start', 'custom_end',
+                'delivered_activity_from', 'delivered_activity_to',
                 'date_from', 'date_to', 'private_listing', 'listing_scope', 'include_hidden',
                 'bracket', 'missing', 'limit', 'scheduled_status', 'hold_status', 'sort', 'dashboard_open', 'view', 'include_filters',
                 'statuses', 'unassigned_only', 'flagged_only',
@@ -127,6 +134,11 @@ class ShootListingService
                 return $value !== null && $value !== '';
             });
             if ($localDate) { $filterParams['scheduled_local_date'] = $localDate; }
+            if ($deliveredActivityWindow) {
+                $window = $deliveredActivityWindow->metadata();
+                $filterParams['delivered_activity_from'] = $window['from'];
+                $filterParams['delivered_activity_to'] = $window['to'];
+            }
             ksort($filterParams);
             if (!empty($filterParams)) {
                 $cacheKey .= '_' . md5(json_encode($filterParams));
@@ -216,6 +228,7 @@ class ShootListingService
             if ($request->filled('scheduled_local_date')) {
                 $this->applyScheduledLocalDate($query, $localDate);
             }
+            $deliveredActivityWindow?->apply($query);
 
             $maxLimit = 1000;
             $requestLimit = (int) $request->query('limit', $maxLimit);
@@ -264,6 +277,7 @@ class ShootListingService
                     'per_page' => $shoots->perPage(),
                     'last_page' => $shoots->lastPage(),
                     'calendar_context' => $calendar,
+                    ...($deliveredActivityWindow ? ['delivered_activity_window' => $deliveredActivityWindow->metadata()] : []),
                     ...($localDate ? ['scheduled_local_date' => $localDate] : []),
                     ...($request->boolean('include_filters', true) ? ['filters' => $this->buildOperationalFilterMeta($request, $user)] : []),
                 ],
