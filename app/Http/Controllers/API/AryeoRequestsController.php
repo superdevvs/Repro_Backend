@@ -7,8 +7,10 @@ use App\Models\AryeoConnection;
 use App\Models\AryeoJob;
 use App\Models\AryeoRequest;
 use App\Models\Shoot;
+use App\Services\Aryeo\AryeoCatalog;
 use App\Services\RolePermissionService;
 use App\Services\Shoots\ShootSalesRepFilter;
+use App\Services\Shoots\ShootServiceProgress;
 use Illuminate\Http\Request;
 
 /** Read-only inbox. Delivery continues through the verified, shoot-specific Tours workflow. */
@@ -40,6 +42,13 @@ class AryeoRequestsController extends Controller
             $shoot = $shoots->get($order->shoot_id);
             $job = $jobs->get($order->id);
             $delivered = $order->hasVerifiedProviderDelivery() || $job?->status === 'completed';
+            $manualDelivered = false;
+            if (! $delivered && $shoot && isset($order->inventory['manual_delivery_receipt'])
+                && (! $order->unit_id || $shoot->units()->whereKey($order->unit_id)->exists())) {
+                $ready = app(AryeoCatalog::class)->readiness($shoot, $order->unit_id, $order->discovery['required'] ?? null);
+                $manualDelivered = app(ShootServiceProgress::class)->verifiedManualDelivery($order, $ready);
+                $delivered = $manualDelivered;
+            }
 
             return [
                 'id' => $order->id,
@@ -49,7 +58,8 @@ class AryeoRequestsController extends Controller
                 'receivedAt' => $order->created_at,
                 'required' => $order->discovery['required'] ?? null,
                 'status' => $delivered ? 'delivered' : ($job?->status ?? ($shoot ? 'matched' : 'unmatched')),
-                'providerCheckedAt' => $order->inventory['provider_status']['checked_at'] ?? null,
+                'providerCheckedAt' => $order->inventory['provider_status']['checked_at']
+                    ?? ($manualDelivered ? $order->inventory['manual_delivery_receipt']['verified_at'] : null),
                 'shoot' => $shoot ? ['id' => $shoot->id, 'address' => $shoot->address,
                     'clientName' => $shoot->client?->name, 'scheduledDate' => $shoot->scheduled_date?->format('Y-m-d'),
                     'workflowStatus' => $shoot->workflow_status ?: $shoot->status] : null,

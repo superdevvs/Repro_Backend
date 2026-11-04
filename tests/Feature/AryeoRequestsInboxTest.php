@@ -5,7 +5,9 @@ namespace Tests\Feature;
 use App\Models\AryeoConnection;
 use App\Models\AryeoRequest;
 use App\Models\Shoot;
+use App\Models\ShootFile;
 use App\Models\User;
+use App\Services\Aryeo\AryeoCatalog;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Queue;
@@ -108,5 +110,64 @@ class AryeoRequestsInboxTest extends TestCase
         $this->actingAs(User::factory()->create(['role' => 'admin']))->getJson('/api/dashboard/aryeo-requests?page=2')
             ->assertOk()->assertJsonCount(1, 'data')->assertJsonPath('meta.pendingCount', 21)->assertJsonPath('meta.lastPage', 2);
         $this->getJson('/api/dashboard/aryeo-requests?page=0')->assertUnprocessable();
+    }
+
+    public function test_verified_supervised_delivery_moves_to_history_without_an_aryeo_request_uuid_or_job(): void
+    {
+        $admin = User::factory()->create(['role' => 'admin']);
+        $shoot = Shoot::factory()->create(['client_id' => User::factory()->create(['role' => 'client'])->id,
+            'status' => 'delivered', 'workflow_status' => 'delivered', 'payment_status' => 'paid', 'admin_verified_at' => now()]);
+        $file = ShootFile::create(['shoot_id' => $shoot->id, 'filename' => 'approved.jpg', 'stored_filename' => 'approved.jpg',
+            'path' => 'shoots/test/approved.jpg', 'file_type' => 'image/jpeg', 'mime_type' => 'image/jpeg', 'file_size' => 100,
+            'uploaded_by' => $admin->id, 'workflow_stage' => 'verified', 'scan_status' => 'clean']);
+        $required = ['photos' => 1, 'floorplans' => 0, 'videos' => 0, 'tours' => 0];
+        $ready = app(AryeoCatalog::class)->readiness($shoot, null, $required);
+        $verifiedAt = now()->subDay()->toIso8601String();
+        $inventory = ['complete' => true, 'assets' => [['id' => 'provider-photo', 'type' => 'photos', 'delivered' => true, 'dashboard_asset_id' => $file->id]],
+            'manual_delivery_receipt' => ['mode' => 'supervised', 'operation_id' => 'verified-legacy-operation', 'listing_id' => 'legacy-listing',
+                'media_version' => $ready['media_version'], 'verified_at' => $verifiedAt, 'asset_ids' => [$file->id], 'tour_ids' => []]];
+        $order = $this->order($shoot, ['request_id' => null, 'listing_id' => 'legacy-listing',
+            'discovery' => ['source_kind' => 'supervised_existing_listing', 'address' => $shoot->address, 'required' => $required],
+            'inventory_checked_at' => now()->subDay(), 'inventory' => $inventory]);
+
+        $this->actingAs($admin)->getJson('/api/dashboard/aryeo-requests')->assertOk()
+            ->assertJsonPath('meta.pendingCount', 0)->assertJsonCount(0, 'data');
+        $this->getJson('/api/dashboard/aryeo-requests?history=1')->assertOk()->assertJsonCount(1, 'data')
+            ->assertJsonPath('data.0.id', $order->id)->assertJsonPath('data.0.status', 'delivered')
+            ->assertJsonPath('data.0.providerCheckedAt', $verifiedAt);
+
+        foreach (['listing', 'version', 'future', 'incomplete', 'undelivered', 'unmapped', 'duplicate', 'missing'] as $invalid) {
+            $broken = $inventory;
+            if ($invalid === 'listing') {
+                $broken['manual_delivery_receipt']['listing_id'] = 'wrong-listing';
+            }
+            if ($invalid === 'version') {
+                $broken['manual_delivery_receipt']['media_version'] = 'outdated';
+            }
+            if ($invalid === 'future') {
+                $broken['manual_delivery_receipt']['verified_at'] = now()->addMinutes(2)->toIso8601String();
+            }
+            if ($invalid === 'incomplete') {
+                $broken['complete'] = false;
+            }
+            if ($invalid === 'undelivered') {
+                $broken['assets'][0]['delivered'] = false;
+            }
+            if ($invalid === 'unmapped') {
+                $broken['assets'][0]['dashboard_asset_id'] = $file->id + 1;
+            }
+            if ($invalid === 'duplicate') {
+                $broken['assets'][] = $broken['assets'][0];
+            }
+            if ($invalid === 'missing') {
+                $broken['manual_delivery_receipt']['asset_ids'] = [];
+            }
+            $order->update(['inventory' => $broken]);
+            $this->getJson('/api/dashboard/aryeo-requests')->assertOk()->assertJsonPath('meta.pendingCount', 1)
+                ->assertJsonPath('data.0.id', $order->id)->assertJsonPath('data.0.providerCheckedAt', null);
+            $this->getJson('/api/dashboard/aryeo-requests?history=1')->assertOk()->assertJsonCount(0, 'data');
+        }
+        $this->assertDatabaseCount('aryeo_jobs', 0);
+        $this->assertNull($order->fresh()->request_id);
     }
 }

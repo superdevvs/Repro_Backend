@@ -130,7 +130,8 @@ class ShootServiceProgress
             && ! array_diff(array_column($ready['tours'], 'id'), $receipt['tour_ids'] ?? []);
     }
 
-    private function verifiedManualDelivery(AryeoRequest $order, array $ready): bool
+    /** Shared read-only evidence check for service progress and the Aryeo inbox. */
+    public function verifiedManualDelivery(AryeoRequest $order, array $ready): bool
     {
         $inventory = $order->inventory ?? [];
         $receipt = $inventory['manual_delivery_receipt'] ?? [];

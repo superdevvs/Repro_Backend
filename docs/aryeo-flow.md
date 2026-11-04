@@ -81,6 +81,9 @@ Other roles are denied. The response excludes credentials, media URLs, receipts,
 and identity proofs. This view grants no processing or media access.
 
 The default is pending requests; `history=1` shows verified deliveries separately.
+This includes older supervised deliveries whose receipt, current media version,
+and complete delivered inventory pass the same evidence check used in Tours.
+They do not require an invented request UUID or a new delivery job.
 Pagination uses `page`, with a pending-only category count. The Dashboard polls
 every 30 seconds and refreshes on window focus and Dashboard refresh events.
 Request discovery on the Mac remains independent of media readiness, so scheduled
