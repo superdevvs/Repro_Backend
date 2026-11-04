@@ -103,15 +103,15 @@ class WorkspaceImagePreparationTest extends TestCase
         $workspace = $this->workspace(5, 800, '1:1');
         $submitted = '';
         $fal = $this->mock(FalService::class);
-        $fal->shouldReceive('submitImageEditFromBuffer')->once()->andReturnUsing(function ($bytes) use (&$submitted) {
-            $submitted = $bytes;
-            $this->assertSame([256, 2048], array_slice(getimagesizefromstring($bytes), 0, 2));
+        $fal->shouldReceive('submitModel')->once()->with('fal-ai/nano-banana-pro/edit', \Mockery::type('array'))->andReturnUsing(function ($model, $payload) use (&$submitted) {
+            $submitted = base64_decode(explode(',', $payload['image_urls'][0], 2)[1]);
+            $this->assertSame([256, 2048], array_slice(getimagesizefromstring($submitted), 0, 2));
 
-            return ['request_id' => 'thin'];
+            return 'thin';
         });
-        $fal->shouldReceive('imageEditStatus')->once()->andReturn(['status' => 'completed']);
-        $fal->shouldReceive('imageEditResult')->once()->andReturnUsing(function () use (&$submitted) {
-            return ['edited_image_url' => 'data:image/jpeg;base64,'.base64_encode($submitted)];
+        $fal->shouldReceive('modelStatus')->once()->andReturn('COMPLETED');
+        $fal->shouldReceive('modelImageResult')->once()->andReturnUsing(function () use (&$submitted) {
+            return 'data:image/jpeg;base64,'.base64_encode($submitted);
         });
         $this->postJson('/api/studio/workspaces/'.$workspace->id.'/generate')->assertAccepted();
         $this->process($workspace);
