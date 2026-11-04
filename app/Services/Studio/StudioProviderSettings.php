@@ -116,7 +116,7 @@ class StudioProviderSettings
                 : ['ready' => false, 'reason' => 'An administrator needs to finish configuring this service.'];
         }
         $credentials = $this->credentials($route['provider'], $stored);
-        if (in_array($service, ['revision', 'twilight'], true) && ! filled($this->credentials('autoenhance', $stored)['api_key'] ?? null)) {
+        if (in_array($service, ['revision', 'twilight', 'green-grass'], true) && ! filled($this->credentials('autoenhance', $stored)['api_key'] ?? null)) {
             return ['ready' => false, 'reason' => 'An administrator needs to finish configuring photo enhancement.'];
         }
         if ($service === 'outpaint' && $route['provider'] === 'fal' && ! filled($credentials['api_key'] ?? null)

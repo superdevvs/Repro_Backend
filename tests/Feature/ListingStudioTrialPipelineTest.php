@@ -7,6 +7,7 @@ use App\Jobs\ProcessStudioWorkspace;
 use App\Models\ListingStudioGuestTrial;
 use App\Models\User;
 use App\Services\ListingStudio\ListingStudioGuestTrialService;
+use App\Services\ListingStudio\ListingStudioPaidRecipe;
 use App\Services\ListingStudio\ListingStudioTrialPipeline;
 use App\Services\Studio\WorkspaceImageOperations;
 use App\Services\Studio\WorkspaceMediaService;
@@ -69,10 +70,10 @@ class ListingStudioTrialPipelineTest extends TestCase
         $this->assertSame('listing-ready', $workspace->preset_id);
         $this->assertArrayNotHasKey('outputId', $workspace->operation['payload']);
         $this->mock(WorkspaceImageOperations::class)->shouldReceive('edit')->once()->withArgs(function ($record, $operationId, $item, $bytes, $prompt) {
-            $this->assertStringContainsString('Preserve all furniture', $prompt);
-            $this->assertStringContainsString('Do not empty the room', $prompt);
-            $this->assertStringContainsString('leave the photo unchanged', $prompt);
-            $this->assertStringContainsString('cushions, rugs, artwork, lamps', $prompt);
+            $this->assertStringContainsString('minimal localized removals', $prompt);
+            $this->assertStringContainsString('keyboards, mice', $prompt);
+            $this->assertStringContainsString('return the original photo unchanged', $prompt);
+            $this->assertStringContainsString('decorative bowls and vases', $prompt);
 
             return true;
         })->andReturn($this->jpeg());
@@ -88,7 +89,7 @@ class ListingStudioTrialPipelineTest extends TestCase
         $workspace = app(ListingStudioTrialPipeline::class)->start($this->trial('decluttering'));
         $this->assertSame('fal-ai/nano-banana-pro/edit', $workspace->operation['routing']['revision']['model']);
         $this->assertSame($staffRoute, $settings->route('revision'));
-        $this->mock(\App\Services\Studio\WorkspaceAutoenhance::class)->shouldReceive('run')->once()->andReturn($this->jpeg());
+        $this->mock(\App\Services\Studio\WorkspaceAutoenhance::class)->shouldNotReceive('run');
         Http::fake(function ($request) {
             if ($request->method() === 'POST') {
                 $this->assertSame('https://queue.fal.run/fal-ai/nano-banana-pro/edit', $request->url());
@@ -96,7 +97,7 @@ class ListingStudioTrialPipelineTest extends TestCase
                 $this->assertSame('2K', $request['resolution']);
                 $this->assertTrue($request['limit_generations']);
                 $this->assertCount(1, $request['image_urls']);
-                $this->assertStringContainsString('Preserve all furniture', $request['prompt']);
+                $this->assertStringContainsString('keyboards, mice', $request['prompt']);
 
                 return Http::response(['request_id' => 'one-specialist-request']);
             }
@@ -112,18 +113,66 @@ class ListingStudioTrialPipelineTest extends TestCase
         $this->assertSame(1, Http::recorded(fn ($request) => $request->method() === 'POST')->count());
     }
 
-    public function test_twilight_uses_fixed_bright_blue_hour_recipe_and_rejects_other_prompts(): void
+    public function test_twilight_uses_fixed_colorful_sunset_recipe_and_rejects_other_prompts(): void
     {
         $workspace = app(ListingStudioTrialPipeline::class)->start($this->trial('twilight'));
         $this->assertSame('fal-ai/nano-banana-pro/edit', $workspace->operation['routing']['twilight']['model']);
-        $this->assertStringContainsString('bright early blue-hour', $workspace->config['prompt']);
-        $this->assertStringContainsString('clearly readable', $workspace->config['prompt']);
+        $this->assertStringContainsString('rosy pink and magenta', $workspace->config['prompt']);
+        $this->assertStringContainsString('ONLY existing exterior light fixtures', $workspace->config['prompt']);
+        $this->assertSame(ListingStudioPaidRecipe::TWILIGHT_PROMPT, $workspace->config['prompt']);
         app(ListingStudioTrialPipeline::class)->authorize($workspace);
         $config = $workspace->config;
         $config['prompt'] = 'Replace this house';
         $workspace->update(['config' => $config]);
         $this->expectException(StudioProviderException::class);
         app(WorkspaceProcessor::class)->process($workspace, $workspace->operation['id']);
+    }
+
+    public function test_grass_uses_grass_enhancement_then_one_lawn_replacement_render(): void
+    {
+        $workspace = app(ListingStudioTrialPipeline::class)->start($this->trial('grass'));
+        $this->assertSame(ListingStudioPaidRecipe::VERSION, $workspace->operation['recipeVersion']);
+        $this->assertSame('fal-ai/nano-banana-pro/edit', $workspace->operation['routing']['green-grass']['model']);
+        $this->assertSame(ListingStudioPaidRecipe::GRASS_PROMPT, $workspace->config['prompt']);
+        $this->mock(\App\Services\Studio\WorkspaceAutoenhance::class)->shouldReceive('run')->once()
+            ->withArgs(fn ($w, $op, $item, $bytes, $service) => $service === 'green-grass')->andReturn($this->jpeg());
+        Http::fake(function ($request) {
+            if ($request->method() === 'POST') {
+                $this->assertSame('https://queue.fal.run/fal-ai/nano-banana-pro/edit', $request->url());
+                $this->assertSame(1, $request['num_images']);
+                $this->assertStringContainsString('dry yellow, straw-brown', $request['prompt']);
+
+                return Http::response(['request_id' => 'grass-replacement']);
+            }
+
+            return str_contains($request->url(), 'queue.fal.run/')
+                ? Http::response(['status' => 'COMPLETED', 'images' => [['url' => 'https://results.example.test/lawn.jpg']]])
+                : Http::response($this->jpeg(), 200, ['Content-Type' => 'image/jpeg']);
+        });
+        $this->mock(ListingStudioGuestTrialService::class)->shouldReceive('syncWorkspace')->once();
+        app(WorkspaceProcessor::class)->process($workspace, $workspace->operation['id']);
+        $this->assertSame('completed', $workspace->fresh()->status);
+        $this->assertCount(1, $workspace->fresh()->outputs);
+        $this->assertSame(1, Http::recorded(fn ($r) => $r->method() === 'POST')->count());
+    }
+
+    public function test_paused_grass_keeps_its_accepted_enhancement_without_starting_new_replacement(): void
+    {
+        $workspace = app(ListingStudioTrialPipeline::class)->start($this->trial('grass'));
+        $operation = $workspace->operation;
+        $operation['providerState']['autoenhance-'.hash('sha256', 'source')] = ['imageId' => 'accepted-grass', 'account' => hash('sha256', 'test-key'), 'uploaded' => true];
+        $workspace->update(['operation' => $operation]);
+        config(['listing-studio-trials.enabled' => false]);
+        Http::fake(fn ($r) => str_contains($r->url(), '/enhanced')
+            ? Http::response($this->jpeg(), 200, ['Content-Type' => 'image/jpeg']) : Http::response(['status' => 'processed']));
+        try {
+            app(WorkspaceProcessor::class)->process($workspace, $workspace->operation['id']);
+            $this->fail('A paused trial cannot pay for a second processing stage.');
+        } catch (StudioProviderException $e) {
+            $this->assertTrue($e->ambiguous);
+            $this->assertSame('accepted-grass', $workspace->fresh()->operation['providerState']['autoenhance-'.hash('sha256', 'source')]['imageId']);
+        }
+        Http::assertNotSent(fn ($r) => $r->method() !== 'GET');
     }
 
     public function test_accepted_legacy_route_is_not_rewritten_and_cannot_start_a_different_paid_step(): void
@@ -152,6 +201,7 @@ class ListingStudioTrialPipelineTest extends TestCase
         $operation = $workspace->operation;
         $operation['routing']['revision'] = ['provider' => 'fal', 'model' => 'fal-ai/flux-kontext/dev', 'fallback' => null];
         $operation['payload']['prompt'] = 'Remove loose everyday clutter such as scattered clothing, papers, toys, trash and loose countertop items. Preserve all furniture, permanent fixtures, appliances, cabinetry, doors, windows, flooring, architectural details, room layout and camera perspective. Do not empty the room, add furniture or alter the property.';
+        unset($operation['recipeVersion']);
         $operation['requests']['source'] = 'accepted-legacy-request';
         $workspace->update(['operation' => $operation]);
         config(['listing-studio-trials.services.decluttering.enabled' => false]);
@@ -266,10 +316,14 @@ class ListingStudioTrialPipelineTest extends TestCase
     {
         $workspace = app(ListingStudioTrialPipeline::class)->start($this->trial('grass'));
         $operation = $workspace->operation;
+        unset($operation['recipeVersion']);
+        $operation['routing']['green-grass'] = ListingStudioPaidRecipe::definition('grass', [], 'preserve-v1')['route'];
         $operation['providerState']['autoenhance-'.hash('sha256', 'source')] = [
             'imageId' => 'accepted-image', 'account' => hash('sha256', 'test-key'), 'uploaded' => true,
         ];
-        $workspace->update(['operation' => $operation]);
+        $config = $workspace->config;
+        $config['prompt'] = '';
+        $workspace->update(['operation' => $operation, 'config' => $config]);
         config(['listing-studio-trials.enabled' => false]);
         Http::fake(function ($request) {
             $this->assertSame('GET', $request->method());
@@ -291,7 +345,7 @@ class ListingStudioTrialPipelineTest extends TestCase
         $operation['routing']['revision'] = ['provider' => 'openai', 'model' => 'gpt-image-2'];
         config(['listing-studio-trials.services.decluttering.route' => $operation['routing']['revision']]);
         $workspace->update(['operation' => $operation]);
-        $this->mock(\App\Services\Studio\WorkspaceAutoenhance::class)->shouldReceive('run')->twice()->andReturn($this->jpeg());
+        $this->mock(\App\Services\Studio\WorkspaceAutoenhance::class)->shouldNotReceive('run');
         $this->mock(\App\Services\Studio\Providers\OpenAiImageProvider::class)->shouldReceive('edit')->once()->andReturn($this->jpeg());
         $this->mock(ListingStudioGuestTrialService::class)->shouldReceive('syncWorkspace')->twice();
         app(WorkspaceProcessor::class)->process($workspace, $workspace->operation['id']);
@@ -319,7 +373,7 @@ class ListingStudioTrialPipelineTest extends TestCase
         $operation['routing']['revision'] = ['provider' => 'openai', 'model' => 'gpt-image-2'];
         config(['listing-studio-trials.services.decluttering.route' => $operation['routing']['revision']]);
         $workspace->update(['operation' => $operation]);
-        $this->mock(\App\Services\Studio\WorkspaceAutoenhance::class)->shouldReceive('run')->once()->andReturn($this->jpeg());
+        $this->mock(\App\Services\Studio\WorkspaceAutoenhance::class)->shouldNotReceive('run');
         $this->mock(\App\Services\Studio\Providers\OpenAiImageProvider::class)->shouldReceive('edit')->once()->andReturnUsing(function () use ($trial) {
             $trial->update(['status' => 'expired']);
 

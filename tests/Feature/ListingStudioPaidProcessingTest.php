@@ -50,6 +50,41 @@ class ListingStudioPaidProcessingTest extends TestCase
         Http::preventStrayRequests();
     }
 
+    public function test_old_paid_grass_recipe_remains_authorized_without_becoming_a_new_render(): void
+    {
+        [$item] = $this->item();
+        $workspace = $this->workspace($item);
+        $recipe = ListingStudioPaidRecipe::definition('grass', [], 'preserve-v1');
+        $operation = $workspace->operation;
+        $operation['recipeVersion'] = $recipe['version'];
+        $operation['routing']['green-grass'] = $recipe['route'];
+        $operation['requests']['source'] = 'accepted-legacy-result';
+        $config = $workspace->config;
+        $config['prompt'] = $recipe['prompt'];
+        $workspace->update(['operation' => $operation, 'config' => $config]);
+        $this->assertSame($item->id, app(ListingStudioPaidPipeline::class)->authorize($workspace)->id);
+        $this->assertSame('autoenhance', $workspace->fresh()->operation['routing']['green-grass']['provider']);
+        $this->assertSame('', $workspace->fresh()->config['prompt']);
+        $this->assertSame('accepted-legacy-result', $workspace->fresh()->operation['requests']['source']);
+        Http::assertNothingSent();
+        Queue::assertNothingPushed();
+        $config['prompt'] = ListingStudioPaidRecipe::GRASS_PROMPT;
+        $workspace->update(['config' => $config]);
+        $this->expectException(\App\Exceptions\StudioProviderException::class);
+        app(ListingStudioPaidPipeline::class)->authorize($workspace);
+    }
+
+    public function test_recipe_upgrade_keeps_original_staging_and_frozen_previous_prompts(): void
+    {
+        $this->assertSame('preserve-v1', ListingStudioPaidRecipe::definition('staging')['version']);
+        $this->assertSame(ListingStudioPaidRecipe::definition('staging', [], 'preserve-v1'), ListingStudioPaidRecipe::definition('staging'));
+        $this->assertSame(ListingStudioPaidRecipe::PREVIOUS_TWILIGHT_PROMPT, ListingStudioPaidRecipe::definition('twilight', [], 'preserve-v1')['prompt']);
+        $this->assertSame(ListingStudioPaidRecipe::PREVIOUS_DECLUTTER_PROMPT, ListingStudioPaidRecipe::definition('decluttering', [], 'preserve-v1')['payload']['prompt']);
+        foreach (['grass', 'decluttering', 'twilight'] as $service) {
+            $this->assertSame(ListingStudioPaidRecipe::VERSION, ListingStudioPaidRecipe::definition($service)['version']);
+        }
+    }
+
     public function test_upload_is_private_idempotent_and_changed_bytes_cannot_reuse_key(): void
     {
         $client = User::factory()->create(['role' => 'client']);

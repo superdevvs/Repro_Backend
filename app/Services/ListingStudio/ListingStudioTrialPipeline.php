@@ -21,9 +21,9 @@ class ListingStudioTrialPipeline
 
     private const LEGACY_DECLUTTER_PROMPT = 'Remove loose everyday clutter such as scattered clothing, papers, toys, trash and loose countertop items. Preserve all furniture, permanent fixtures, appliances, cabinetry, doors, windows, flooring, architectural details, room layout and camera perspective. Do not empty the room, add furniture or alter the property.';
 
-    private const DECLUTTER_PROMPT = self::LEGACY_DECLUTTER_PROMPT.' Preserve intentional cushions, rugs, artwork, lamps and decorative objects. If none of the defined loose clutter is present, leave the photo unchanged. Do not remove or replace furniture or decor to create a more minimal room.';
+    private const DECLUTTER_PROMPT = ListingStudioPaidRecipe::DECLUTTER_PROMPT;
 
-    private const TWILIGHT_PROMPT = 'Create a bright early blue-hour real estate marketing photograph just after sunset. Keep the entire facade, roof, driveway, lawn and landscaping clearly readable with balanced natural exposure and detail in shadows. Use a soft natural blue-hour sky and warm light only in existing windows and existing light fixtures. Preserve every building, roofline, opening, door, window, material, tree, shrub, lawn boundary, object and camera perspective exactly. Do not add fixtures or change the property. Do not create a dark night scene, black silhouettes, crushed shadows or dramatic underexposure.';
+    private const TWILIGHT_PROMPT = ListingStudioPaidRecipe::TWILIGHT_PROMPT;
 
     public function start(ListingStudioGuestTrial $trial): StudioWorkspace
     {
@@ -39,6 +39,7 @@ class ListingStudioTrialPipeline
                     throw new StudioProviderException('Free photo editing is paused.');
                 }
                 $preset = self::PRESETS[$trial->service];
+                $recipe = ListingStudioPaidRecipe::definition($trial->service, $trial->options ?? []);
                 $type = $trial->service === 'decluttering' ? 'revision' : 'generate';
                 $settings = app(StudioProviderSettings::class);
                 $service = $type === 'revision' ? 'revision' : $preset;
@@ -59,9 +60,9 @@ class ListingStudioTrialPipeline
                     'listing_studio_trial_id' => $trial->id, 'created_by' => null, 'team_id' => null,
                     'name' => 'Listing Studio trial', 'preset_id' => $preset, 'request_id' => $trial->id,
                     'media' => [['id' => 'source', 'mediaRef' => $trial->source_path, 'trialId' => $trial->id, 'kind' => 'image', 'name' => 'Original photo']],
-                    'config' => ['prompt' => $trial->service === 'twilight' ? self::TWILIGHT_PROMPT : '', 'ratio' => '16:9', 'frames' => [], 'text' => ['title' => '', 'subtitle' => ''], 'adjustments' => $adjustments],
+                    'config' => ['prompt' => $recipe['prompt'], 'ratio' => '16:9', 'frames' => [], 'text' => ['title' => '', 'subtitle' => ''], 'adjustments' => $adjustments],
                     'status' => 'generating', 'progress' => 0,
-                    'operation' => ['id' => $operationId, 'key' => $trial->id, 'type' => $type,
+                    'operation' => ['id' => $operationId, 'key' => $trial->id, 'type' => $type, 'recipeVersion' => $recipe['version'],
                         'payload' => $type === 'revision' ? ['mediaId' => 'source', 'prompt' => self::DECLUTTER_PROMPT] : [],
                         'completed' => [], 'requests' => [], 'routing' => [$service => $route]],
                 ]);
@@ -95,13 +96,21 @@ class ListingStudioTrialPipeline
             throw new StudioProviderException('This trial is not available for processing.');
         }
         $this->assertTrial($trial);
+        $version = $workspace->operation['recipeVersion'] ?? 'preserve-v1';
+        if (! in_array($version, ['preserve-v1', ListingStudioPaidRecipe::VERSION], true)) {
+            throw new StudioProviderException('This trial editing recipe is not supported.');
+        }
+        $recipe = ListingStudioPaidRecipe::definition($trial->service, $trial->options ?? [], $version);
         $expectedType = $trial->service === 'decluttering' ? 'revision' : 'generate';
         $payload = $workspace->operation['payload'] ?? [];
-        $allowedRevisionPayloads = [['mediaId' => 'source', 'prompt' => self::DECLUTTER_PROMPT], ['mediaId' => 'source', 'prompt' => self::LEGACY_DECLUTTER_PROMPT]];
+        $allowedRevisionPayloads = $version === ListingStudioPaidRecipe::VERSION ? [$recipe['payload']]
+            : [['mediaId' => 'source', 'prompt' => ListingStudioPaidRecipe::PREVIOUS_DECLUTTER_PROMPT], ['mediaId' => 'source', 'prompt' => self::LEGACY_DECLUTTER_PROMPT]];
+        $allowedPrompts = $version === ListingStudioPaidRecipe::VERSION ? [$recipe['prompt']]
+            : ($trial->service === 'twilight' ? ['', ListingStudioPaidRecipe::PREVIOUS_TWILIGHT_PROMPT] : ['']);
         if (($workspace->operation['type'] ?? '') !== $expectedType
             || ($expectedType === 'revision' && ! in_array($payload, $allowedRevisionPayloads, true))
             || ($expectedType === 'generate' && $payload !== [])
-            || ! in_array($workspace->config['prompt'] ?? '', $trial->service === 'twilight' ? ['', self::TWILIGHT_PROMPT] : [''], true)) {
+            || ! in_array($workspace->config['prompt'] ?? '', $allowedPrompts, true)) {
             throw new StudioProviderException('This trial editing request is not supported.');
         }
         if ($trial->service === 'staging') {
@@ -173,11 +182,14 @@ class ListingStudioTrialPipeline
         if ($service === 'staging' && VirtualStagingOptions::normalize($workspace->config['adjustments'] ?? [])['removal'] !== 'off') {
             throw new StudioProviderException('This staging request needs review before processing.', $this->hasProviderCheckpoint($workspace));
         }
-        $expectedRoute = config('listing-studio-trials.services.'.$service.'.route');
+        $trial = ListingStudioGuestTrial::findOrFail($workspace->listing_studio_trial_id);
+        $version = $workspace->operation['recipeVersion'] ?? 'preserve-v1';
+        $recipe = ListingStudioPaidRecipe::definition($service, $trial->options ?? [], $version);
+        $expectedRoute = $service === 'grass' && $version === 'preserve-v1' ? $recipe['route'] : config('listing-studio-trials.services.'.$service.'.route');
         $routeKey = $service === 'decluttering' ? 'revision' : $workspace->preset_id;
         if (($expectedRoute && ($workspace->operation['routing'][$routeKey] ?? null) !== $expectedRoute)
-            || ($service === 'decluttering' && ($workspace->operation['payload'] ?? []) !== ['mediaId' => 'source', 'prompt' => self::DECLUTTER_PROMPT])
-            || ($service === 'twilight' && ($workspace->config['prompt'] ?? '') !== self::TWILIGHT_PROMPT)) {
+            || ($service === 'decluttering' && ($workspace->operation['payload'] ?? []) !== $recipe['payload'])
+            || (in_array($service, ['twilight', 'grass'], true) && ($workspace->config['prompt'] ?? '') !== $recipe['prompt'])) {
             // Retrieve accepted legacy requests unchanged, but never start another paid step on an obsolete recipe.
             throw new StudioProviderException('This editing recipe needs review before processing.', $this->hasProviderCheckpoint($workspace));
         }

@@ -85,7 +85,11 @@ class ListingStudioPaidPipeline
             || count($workspace->media ?? []) !== 1) {
             throw new StudioProviderException('This paid editing request is no longer active.', true);
         }
-        $recipe = ListingStudioPaidRecipe::definition($item->service, $item->options ?? []);
+        $version = $workspace->operation['recipeVersion'] ?? '';
+        if (! in_array($version, ['preserve-v1', ListingStudioPaidRecipe::VERSION], true)) {
+            throw new StudioProviderException('This paid editing recipe needs review.', true);
+        }
+        $recipe = ListingStudioPaidRecipe::definition($item->service, $item->options ?? [], $version);
         if ($workspace->preset_id !== $recipe['preset'] || ($workspace->operation['recipeVersion'] ?? '') !== $recipe['version']
             || ($workspace->operation['type'] ?? '') !== $recipe['type'] || ($workspace->operation['payload'] ?? []) !== $recipe['payload']
             || ($workspace->config['prompt'] ?? '') !== $recipe['prompt'] || ($workspace->config['adjustments'] ?? []) !== $recipe['adjustments']
@@ -121,7 +125,7 @@ class ListingStudioPaidPipeline
     public function assertMaySubmit(StudioWorkspace $workspace): void
     {
         $item = $this->authorize($workspace);
-        $recipe = ListingStudioPaidRecipe::definition($item->service, $item->options ?? []);
+        $recipe = ListingStudioPaidRecipe::definition($item->service, $item->options ?? [], $workspace->operation['recipeVersion']);
         $order = $item->order;
         $client = $item->client;
         if (! config('listing-studio.paid_enabled', false) || ! config('listing-studio.paid_services.'.$item->service, false)
