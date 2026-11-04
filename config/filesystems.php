@@ -30,6 +30,14 @@ return [
 
     'disks' => [
 
+        // Accepted provider receipts must survive a failed SQLite checkpoint write.
+        'studio_receipts' => [
+            'driver' => 'local', 'root' => storage_path('app/private/studio/provider-receipts'),
+            'visibility' => 'private', 'directory_visibility' => 'private',
+            'permissions' => ['file' => ['public' => 0660, 'private' => 0660], 'dir' => ['public' => 02770, 'private' => 02770]],
+            'serve' => false, 'throw' => true, 'report' => false,
+        ],
+
         // User-owned soundtracks are workspace-scoped and never publicly served.
         'studio_audio' => [
             'driver' => 'local',

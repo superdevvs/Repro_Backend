@@ -75,6 +75,7 @@ class WorkspaceProcessor
 
             return;
         }
+        $processed = 0;
         foreach ($items as $index => $item) {
             if (! $this->active($workspace, $operationId)) {
                 return;
@@ -121,7 +122,7 @@ class WorkspaceProcessor
                 if ($type === 'prepare') {
                     $records = array_values(array_filter($records, fn ($r) => $r['mediaId'] !== $item['id']));
                 }
-                $records[] = array_merge($stored, ['id' => $operationId.'-'.$item['id'], 'mediaId' => $item['id'], 'url' => $stored['url'], 'thumbnailUrl' => $stored['url'], 'path' => $stored['path'], 'kind' => 'image', 'method' => $frame['method'], 'ratio' => $w->config['ratio'], 'status' => 'completed', 'version' => $version]);
+                $records[] = array_merge($stored, ['id' => $operationId.'-'.$item['id'], 'mediaId' => $item['id'], 'url' => $stored['url'], 'thumbnailUrl' => $stored['thumbnailUrl'] ?? $stored['url'], 'path' => $stored['path'], 'kind' => 'image', 'method' => $frame['method'], 'ratio' => $w->config['ratio'], 'status' => 'completed', 'version' => $version]);
                 // A frame revision is also the current prepared frame for the next reel render.
                 if ($type === 'revision' && $w->isVideo()) {
                     $prepared = array_values(array_filter($w->prepared_frames ?? [], fn ($r) => $r['mediaId'] !== $item['id']));
@@ -137,6 +138,11 @@ class WorkspaceProcessor
                 $w->operation = $operation;
                 $w->progress = (int) round(95 * ($index + 1) / count($items));
             });
+            if ($legacyFotello && $type === 'generate' && $workspace->preset_id === 'full-shoot' && ++$processed >= 3 && $index < count($items) - 1) {
+                \App\Jobs\ProcessStudioWorkspace::dispatch($workspace->id, $operationId)->delay(now()->addSeconds(10));
+
+                return;
+            }
         }
         $this->finish($workspace, $operationId, $type === 'prepare' ? 'ready' : ($workspace->isVideo() && $type === 'revision' ? 'ready' : 'completed'));
     }

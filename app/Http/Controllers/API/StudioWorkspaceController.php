@@ -121,10 +121,25 @@ class StudioWorkspaceController extends StudioController
         }
         $data = $this->validated($request);
         $media = $this->mediaService->authorize($data['media'], $request->user(), $this->scopeTeamId($request->user()));
+        $shootIds = collect($media)->pluck('shootId')->filter()->unique();
+        // Whole-shoot selections retain original exposures for the resumable HDR
+        // batch processor. Existing merged-photo projects keep their paid route.
+        $shootId = $data['presetId'] === 'full-shoot' && $shootIds->count() === 1
+            && collect($media)->every(fn ($item) => ! empty($item['fileId']) || ! empty($item['stackFileIds'])) ? $shootIds->first() : null;
+        if ($shootId) {
+            // A preset change can arrive with an earlier individual selection.
+            // Full Shoot always resolves the authoritative complete source set.
+            $sources = app(\App\Services\Shoots\ShootPhotoSet::class)->files(\App\Models\Shoot::findOrFail($shootId))
+                ->map(fn ($file) => ['id' => 'file:'.$file->id, 'fileId' => $file->id])->all();
+            abort_if($sources === [], 422, 'This shoot has no original photos available for editing.');
+            $media = $this->mediaService->authorize($sources, $request->user(), $this->scopeTeamId($request->user()));
+            $data['config']['frames'] = [];
+        }
         try {
             $workspace = StudioWorkspace::create([
                 'team_id' => $this->scopeTeamId($request->user()), 'created_by' => $request->user()->id,
                 'request_id' => $requestId, 'name' => $data['name'], 'preset_id' => $data['presetId'],
+                'shoot_id' => $shootId,
                 'media' => $media, 'config' => $this->config($data['config'] ?? [], $media, $data['presetId']), 'status' => 'draft',
             ]);
         } catch (\Illuminate\Database\QueryException $exception) {

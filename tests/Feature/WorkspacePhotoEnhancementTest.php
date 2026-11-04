@@ -38,6 +38,7 @@ class WorkspacePhotoEnhancementTest extends TestCase
         Queue::fake();
         Storage::fake('public');
         Storage::fake('local');
+        Storage::fake('studio_receipts', config('filesystems.disks.studio_receipts'));
         Http::preventStrayRequests();
         config([
             'studio_providers.fotello.api_key' => 'test-only-credential', 'studio_providers.fotello.team_id' => 'provider-team',
@@ -85,6 +86,33 @@ class WorkspacePhotoEnhancementTest extends TestCase
         $this->client->shouldReceive('getEnhance')->once()->andReturn($this->completed());
         $this->client->shouldReceive('downloadBytes')->once()->andReturn($this->source);
         $this->assertSame($this->source, $this->runPhoto($workspace->fresh()));
+    }
+
+    public function test_accepted_job_survives_a_failed_database_checkpoint_without_a_second_paid_submission(): void
+    {
+        $workspace = $this->workspace();
+        $this->creates();
+        $key = $this->key().'-enhance';
+        $blockCheckpoint = true;
+        StudioWorkspace::updating(function (StudioWorkspace $record) use (&$blockCheckpoint, $key): void {
+            if ($blockCheckpoint && ($record->operation['providerState'][$key]['id'] ?? '') === 'enhance-1') {
+                throw new RuntimeException('Simulated database checkpoint failure.');
+            }
+        });
+        try {
+            $this->runPhoto($workspace);
+            $this->fail('The checkpoint write should fail after provider acceptance.');
+        } catch (RuntimeException $exception) {
+            $this->assertSame('Simulated database checkpoint failure.', $exception->getMessage());
+        }
+        $saved = $workspace->fresh()->operation['providerState'][$key];
+        $this->assertTrue($saved['submitting']);
+        $this->assertNotEmpty($saved['receiptId']);
+        $blockCheckpoint = false;
+        $this->client->shouldReceive('getEnhance')->once()->with('enhance-1')->andReturn($this->completed());
+        $this->client->shouldReceive('downloadBytes')->once()->andReturn($this->source);
+        $this->assertSame($this->source, $this->runPhoto($workspace->fresh()));
+        $this->assertSame(['id' => 'enhance-1'], $workspace->fresh()->operation['providerState'][$key]);
     }
 
     public function test_pending_timeout_retains_enhance_id_and_retries_poll_only(): void
@@ -157,7 +185,7 @@ class WorkspacePhotoEnhancementTest extends TestCase
             $this->assertSame($exception, $caught);
         }
         $key = $stage === 'listing' ? 'photo-listing-uploads' : $this->key().'-'.$stage;
-        $this->assertSame(['submitting' => true], $workspace->fresh()->operation['providerState'][$key]);
+        $this->assertTrue($workspace->fresh()->operation['providerState'][$key]['submitting']);
         try {
             $this->runPhoto($workspace->fresh());
             $this->fail('A duplicate submission was permitted.');
@@ -184,7 +212,7 @@ class WorkspacePhotoEnhancementTest extends TestCase
         } catch (FotelloException $exception) {
             $this->assertTrue($exception->ambiguousOutcome);
         }
-        $this->assertSame(['submitting' => true], $workspace->fresh()->operation['providerState'][$this->key().'-upload']);
+        $this->assertTrue($workspace->fresh()->operation['providerState'][$this->key().'-upload']['submitting']);
         $this->client->shouldReceive('createUpload')->once()->andReturn($this->upload());
         $this->client->shouldReceive('uploadBytes')->once()->with($this->upload(), $this->source);
         $this->client->shouldReceive('createEnhance')->once()->andReturn(['id' => 'enhance-1']);

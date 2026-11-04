@@ -27,6 +27,7 @@ class WorkspaceFullShootTest extends TestCase
         Queue::fake();
         Storage::fake('public');
         Storage::fake('local');
+        Storage::fake('studio_receipts', config('filesystems.disks.studio_receipts'));
         Http::preventStrayRequests();
         config(['studio_providers.fotello.api_key' => 'test-key', 'studio_providers.fotello.team_id' => 'test-team']);
         $image = imagecreatetruecolor(32, 24);

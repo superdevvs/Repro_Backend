@@ -101,7 +101,8 @@ class WorkspacePhotoEnhancement
             }
             throw new StudioProviderException('The previous photo submission could not be confirmed. An administrator must check it before another submission.', true);
         }
-        $state->put($key, ['submitting' => true]);
+        $receiptId = (string) \Illuminate\Support\Str::uuid();
+        $state->put($key, ['submitting' => true, 'receiptId' => $receiptId]);
         try {
             $result = $submit();
         } catch (FotelloException $exception) {
@@ -110,6 +111,9 @@ class WorkspacePhotoEnhancement
             }
             throw $exception;
         }
+        // The provider may already have charged for this ID. A database lock
+        // must not turn a successful response into an unrecoverable submission.
+        $state->saveReceipt($key, $receiptId, $result);
         $state->put($key, $result);
 
         return $result;

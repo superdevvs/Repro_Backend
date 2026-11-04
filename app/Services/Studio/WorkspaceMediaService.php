@@ -294,6 +294,16 @@ class WorkspaceMediaService
             throw new RuntimeException('The edited image could not be saved. Retry to retrieve the existing result.');
         }
 
-        return ['path' => $path, 'url' => ($workspace->listing_studio_trial_id || $workspace->listing_studio_order_item_id) ? null : $disk->url($path)];
+        $result = ['path' => $path, 'url' => ($workspace->listing_studio_trial_id || $workspace->listing_studio_order_item_id) ? null : $disk->url($path)];
+        if (! $workspace->listing_studio_trial_id && ! $workspace->listing_studio_order_item_id) {
+            $thumbnailPath = "studio/workspaces/{$workspace->id}/{$suffix}-thumb.jpg";
+            $thumbnail = (string) \Intervention\Image\ImageManager::gd()->read($bytes)->orient()->scaleDown(width: 480, height: 480)->toJpeg(78);
+            if (! $disk->put($thumbnailPath, $thumbnail)) {
+                throw new RuntimeException('The edited photo thumbnail could not be saved. Retry to retrieve the existing result.');
+            }
+            $result['thumbnailUrl'] = $disk->url($thumbnailPath);
+        }
+
+        return $result;
     }
 }

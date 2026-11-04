@@ -144,7 +144,7 @@ class WorkspaceFullShoot
                 $outputs = $record->outputs ?? [];
                 if (! collect($outputs)->contains('id', $outputKey)) {
                     $outputs[] = array_merge($stored, ['id' => $outputKey, 'mediaId' => $group['mediaId'],
-                        'thumbnailUrl' => $stored['url'], 'kind' => 'image', 'status' => 'completed',
+                        'thumbnailUrl' => $stored['thumbnailUrl'] ?? $stored['url'], 'kind' => 'image', 'status' => 'completed',
                         'version' => (int) collect($outputs)->where('mediaId', $group['mediaId'])->max('version') + 1]);
                 }
                 $operation = $record->operation;

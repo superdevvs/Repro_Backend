@@ -356,6 +356,31 @@ class StudioWorkspaceShootAccessTest extends TestCase
         return $this->postJson(self::SOURCES.'/resolve', ['destination' => 'studio', 'recordType' => 'shoot', 'recordId' => (string) $shoot->id]);
     }
 
+    public function test_full_shoot_selected_as_originals_uses_the_grouped_processor_without_a_picker_merge(): void
+    {
+        $admin = User::factory()->create(['role' => 'superadmin']);
+        $shoot = Shoot::factory()->create();
+        $files = collect([1, 2, 3])->map(fn ($sequence) => $this->file($shoot, $admin, [
+            'filename' => "exposure-{$sequence}.CR3", 'file_type' => 'image/x-canon-cr3',
+            'bracket_group' => 1, 'sequence' => $sequence,
+        ]));
+        Sanctum::actingAs($admin);
+        $created = $this->postJson('/api/studio/workspaces', [
+            'name' => 'Complete shoot', 'presetId' => 'full-shoot',
+            'media' => [['id' => 'file:'.$files->first()->id, 'fileId' => $files->first()->id]],
+        ])->assertCreated()->assertJsonPath('data.shootId', $shoot->id)->assertJsonPath('data.requiresReview', false);
+        $this->assertCount(3, $created->json('data.media'));
+        $this->assertCount(1, $created->json('data.photoGroups'));
+        $this->assertCount(3, $created->json('data.photoGroups.0.sourceFileIds'));
+        $this->mock(\App\Services\Studio\HdrExposureFusion::class)->shouldNotReceive('merge');
+        $this->mock(\App\Services\Studio\WorkspaceFullShoot::class)->shouldReceive('run')->once()->andReturn(false);
+        $id = $created->json('data.id');
+        $this->postJson('/api/studio/workspaces/'.$id.'/generate')->assertAccepted();
+        $workspace = StudioWorkspace::findOrFail($id);
+        (new ProcessStudioWorkspace($id, $workspace->operation['id']))->handle(app(WorkspaceProcessor::class));
+        $this->assertSame('generating', $workspace->fresh()->status);
+    }
+
     private function payload(ShootFile $file): array
     {
         return ['name' => 'Authorized shoot edit', 'presetId' => 'listing-ready', 'media' => [['id' => 'photo', 'shootId' => $file->shoot_id, 'fileId' => $file->id]]];

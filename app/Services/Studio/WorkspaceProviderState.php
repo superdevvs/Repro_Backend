@@ -16,7 +16,17 @@ class WorkspaceProviderState
     {
         $this->assertActive();
 
-        return $this->workspace->operation['providerState'][$key] ?? null;
+        $saved = $this->workspace->operation['providerState'][$key] ?? null;
+        if (is_array($saved) && ! empty($saved['submitting']) && ! empty($saved['receiptId'])) {
+            $result = app(WorkspaceProviderReceipt::class)->read($this->workspace->id, $this->operationId, $key, $saved['receiptId']);
+            if ($result) {
+                $this->put($key, $result);
+
+                return $result;
+            }
+        }
+
+        return $saved;
     }
 
     public function put(string $key, mixed $value): void
@@ -43,6 +53,11 @@ class WorkspaceProviderState
         if (! $this->workspace->isBusy() || ($this->workspace->operation['id'] ?? null) !== $this->operationId) {
             throw new StudioProviderException('This operation is no longer active.');
         }
+    }
+
+    public function saveReceipt(string $key, string $receiptId, array $result): void
+    {
+        app(WorkspaceProviderReceipt::class)->save($this->workspace->id, $this->operationId, $key, $receiptId, $result);
     }
 
     public function assertSubmissionAllowed(): void
