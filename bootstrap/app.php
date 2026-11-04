@@ -77,6 +77,8 @@ return Application::configure(basePath: dirname(__DIR__))
             ->hourly()->withoutOverlapping()->onOneServer();
         $schedule->command('listing-studio:billing-emails-dispatch --limit=100')
             ->everyFiveMinutes()->withoutOverlapping()->onOneServer();
+        $schedule->command('listing-studio:subscription-receipts-dispatch --limit=100')
+            ->everyMinute()->withoutOverlapping()->onOneServer();
         $schedule->command('listing-studio:orders-dispatch --limit=100')
             ->everyMinute()->withoutOverlapping()->onOneServer();
         $schedule->command('listing-studio:paid-uploads-prune --limit=100')

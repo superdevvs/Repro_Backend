@@ -2,7 +2,23 @@
 
 Paid creation is disabled unless `listing-studio.paid_enabled`, `paid_checkout_enabled`, and existing `stripe_enabled` are all true. Existing subscription synchronization, refunds, private history, and billing management remain separate from new-purchase availability. No new real charge/refund is needed to run the tests.
 
-`routes/listing-studio-payments.php` belongs inside the normal authenticated, email-verification-enforced `listing-studio/client` group. It additionally requires `EnsureListingStudioClient`, including rejection of staff impersonation. No phase-one verification exemption is extended.
+`routes/listing-studio-payments.php` belongs inside the normal authenticated, email-verification-enforced `listing-studio/client` group. It additionally requires `EnsureListingStudioClient`, including rejection of staff impersonation. These normal client endpoints retain their verification enforcement. The narrow photo-handoff billing routes below are separately exempt.
+
+## Claim-page subscriptions
+
+The authenticated `/listing-studio/claim` page displays the same three catalog plans alongside owned free downloads. Active primary clients may use these exact endpoints without verifying their email; staff, inactive accounts and impersonation remain forbidden:
+
+- `GET /api/listing-studio/trials/billing`: the existing account/catalog DTOs, an owned pending-checkout recovery key, and current-period confirmation-email status. Never exposes Stripe customer or session identifiers.
+- `POST /api/listing-studio/trials/billing/subscription-checkout`: `{planCode}`, UUID `Idempotency-Key`. Reuses `StudioCheckoutService`; only the fixed success/cancel paths differ. Stripe returns to `/listing-studio/claim?checkout=returned|cancelled`.
+- `POST /api/listing-studio/trials/billing/portal`: the existing own-customer portal with fixed `/listing-studio/claim` return.
+
+The browser scrubs return parameters and treats them only as display hints. Account, credit and confirmation state refresh from the server; navigation cannot grant benefits. A pending checkout reuses its exact request key, including after timeout or refresh. Downloads remain independent of catalog/billing availability.
+
+A new initial invoice grant and a durable `listing_studio_subscription_receipts` row commit together after canonical paid/applied-plan evidence. Existing invoice grants are not backfilled. `SendListingStudioSubscriptionReceipt` uses the database/default queue outside the financial transaction and sends the existing branded email layout to the registered account email. The receipt records the actual billed amount, monthly plan price, credit added and period expiry. It never changes ownership from a Stripe email.
+
+`listing-studio:subscription-receipts-dispatch --limit=100` runs every minute. Queue-dispatch failures retain a queued intent. Atomic `queued -> submitting` prevents duplicate sends; uncertain transport results require review. Deferred emails track their existing `Message` record without resending. Delivery revalidates account identity, plan, Stripe mode, expiry and refunds. `LISTING_STUDIO_SUBSCRIPTION_RECEIPTS_ENABLED=false` pauses dispatch/delivery while retaining records. The claim DTO reports queued, awaiting-delivery, sent or needs-attention state; sent means accepted by the configured mail transport, not inbox delivery.
+
+`ListingStudioClaimSubscriptionTest` covers the verification boundary, three plan grants to the same client, signed/forged and duplicate events, timeout replay, registered-email ownership, deferred-message recovery, and uncertain sends. Browser coverage uses loopback HTTP/Stripe fixtures only; no live purchase or customer email is needed.
 
 ## Client contract
 

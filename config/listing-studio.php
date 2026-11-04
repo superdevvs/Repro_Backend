@@ -1,6 +1,7 @@
 <?php
 
 return [
+    'subscription_receipts_enabled' => (bool) env('LISTING_STUDIO_SUBSCRIPTION_RECEIPTS_ENABLED', true),
     'delegated_enabled' => (bool) env('LISTING_STUDIO_DELEGATED_ENABLED', false),
     'subscription_controls_enabled' => (bool) env('LISTING_STUDIO_SUBSCRIPTION_CONTROLS_ENABLED', false),
     'billing_request_limit' => 20,

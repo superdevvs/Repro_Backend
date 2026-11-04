@@ -151,6 +151,12 @@ Route::middleware(['auth:sanctum', 'throttle:60,1'])->prefix('listing-studio/tri
     Route::get('/', [$controller, 'clientIndex'])->name('listing-studio.trials.index');
     Route::post('/claim', [$controller, 'claim'])->name('listing-studio.trials.claim');
     Route::get('/{trial}/download', [$controller, 'download'])->whereUuid('trial')->name('listing-studio.trials.download');
+    Route::middleware(\App\Http\Middleware\EnsureListingStudioClient::class)->group(function () {
+        $billing = \App\Http\Controllers\API\ListingStudioClaimBillingController::class;
+        Route::get('/billing', [$billing, 'show'])->name('listing-studio.trials.billing');
+        Route::post('/billing/subscription-checkout', [$billing, 'subscription'])->middleware('throttle:20,1')->name('listing-studio.trials.subscribe');
+        Route::post('/billing/portal', [$billing, 'portal'])->middleware('throttle:20,1')->name('listing-studio.trials.portal');
+    });
 });
 
 // Team-fulfilled introductory offer uses private support delivery, not client Studio access.

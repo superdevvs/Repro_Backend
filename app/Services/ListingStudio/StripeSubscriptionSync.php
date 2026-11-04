@@ -53,6 +53,7 @@ class StripeSubscriptionSync
         $prior = DB::table('listing_studio_stripe_events')->where($eventIdentity)->first();
         if ($prior) {
             $this->queueAccountSetup(ListingStudioSubscription::find($prior->subscription_id)?->client_id);
+            app(ListingStudioSubscriptionReceiptService::class)->dispatchForSubscription($prior->subscription_id);
 
             return ['status' => 'success', 'handled' => true, 'outcome' => 'listing_studio_already_synced'];
         }
@@ -184,7 +185,10 @@ class StripeSubscriptionSync
                 $record->sync_status = $reason ? 'needs_attention' : ($client ? 'synced' : 'awaiting_payment');
                 $record->attention_reason = $reason;
                 $record->save();
+                $knownInvoices = DB::table('listing_studio_credit_entries')->where('subscription_id', $record->id)
+                    ->where('source_type', 'invoice')->pluck('stripe_invoice_id')->all();
                 $credits->reconcileInvoices($record, $creditInvoices);
+                app(ListingStudioSubscriptionReceiptService::class)->reserve($record, $creditInvoices, $knownInvoices);
                 DB::table('listing_studio_stripe_events')->insert($eventIdentity + [
                     'event_type' => $event['type'], 'subscription_id' => $record->id, 'processed_at' => now(),
                 ]);
@@ -193,6 +197,7 @@ class StripeSubscriptionSync
             }), 'listing-studio-stripe-sync');
 
             $this->queueAccountSetup($record->client_id);
+            app(ListingStudioSubscriptionReceiptService::class)->dispatchForSubscription($record->id);
 
             return ['status' => 'success', 'handled' => true, 'outcome' => 'listing_studio_synced'];
         } finally {

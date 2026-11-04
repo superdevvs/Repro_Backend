@@ -27,7 +27,8 @@ class EnforceEmailVerificationPilot
         }
         $status = app(EmailVerificationPilot::class)->status($user);
         $allowed = $request->is('api/user', 'api/logout', 'api/profile/email-verification/*', 'api/profile/security', 'api/profile/security/*', 'api/password/*', 'api/email/verify/*')
-            || $request->routeIs('listing-studio.trials.claim', 'listing-studio.trials.index', 'listing-studio.trials.download');
+            || $request->routeIs('listing-studio.trials.claim', 'listing-studio.trials.index', 'listing-studio.trials.download',
+                'listing-studio.trials.billing', 'listing-studio.trials.subscribe', 'listing-studio.trials.portal');
         if ($status['required'] && !$allowed) {
             return response()->json([
                 'message' => 'Verify your current email address to continue.',

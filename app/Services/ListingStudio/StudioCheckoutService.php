@@ -44,9 +44,9 @@ class StudioCheckoutService
         });
     }
 
-    public function subscription(User $client, string $plan, string $key): array
+    public function subscription(User $client, string $plan, string $key, bool $claimReturn = false): array
     {
-        return $this->locked($client->id, function () use ($client, $plan, $key) {
+        return $this->locked($client->id, function () use ($client, $plan, $key, $claimReturn) {
             $this->eligible($client);
             $this->enabled();
             $definition = config('listing-studio.plans.'.$plan);
@@ -55,18 +55,18 @@ class StudioCheckoutService
             }
             $attempt = $this->reserve($client, $key, 'subscription', null, $plan, $definition['price_cents'], $definition['currency']);
 
-            return $this->checkout($client, $attempt);
+            return $this->checkout($client, $attempt, $claimReturn);
         });
     }
 
-    public function portal(User $client): array
+    public function portal(User $client, bool $claimReturn = false): array
     {
-        return $this->locked($client->id, function () use ($client) {
+        return $this->locked($client->id, function () use ($client, $claimReturn) {
             $this->eligible($client);
             $this->verifyAccount();
             // Managing existing billing remains available when new purchases are disabled.
             $customer = $this->customer($client, false);
-            $result = $this->gateway->portal($customer, $this->returnUrl('billing'));
+            $result = $this->gateway->portal($customer, $claimReturn ? $this->claimReturnUrl() : $this->returnUrl('billing'));
             if (($result['customer'] ?? null) !== $customer || ($result['livemode'] ?? null) !== $this->identity()[1]) {
                 throw new StudioPaymentException('billing_attention', 'Billing navigation could not be confirmed.');
             }
@@ -130,7 +130,7 @@ class StudioCheckoutService
         });
     }
 
-    private function checkout(User $client, Attempt $attempt): array
+    private function checkout(User $client, Attempt $attempt, bool $claimReturn = false): array
     {
         $this->assertIdentity($attempt);
         if ($attempt->status === 'expired') {
@@ -162,8 +162,8 @@ class StudioCheckoutService
             }
             $parameters = ['mode' => $attempt->kind === 'order' ? 'payment' : 'subscription', 'customer' => $customer,
                 'client_reference_id' => $attempt->id, 'metadata' => $metadata,
-                'success_url' => $this->returnUrl($attempt->kind === 'order' ? 'photos' : 'billing', $attempt->order_id, 'returned'),
-                'cancel_url' => $this->returnUrl($attempt->kind === 'order' ? 'photos' : 'billing', $attempt->order_id, 'cancelled'),
+                'success_url' => $claimReturn ? $this->claimReturnUrl('returned') : $this->returnUrl($attempt->kind === 'order' ? 'photos' : 'billing', $attempt->order_id, 'returned'),
+                'cancel_url' => $claimReturn ? $this->claimReturnUrl('cancelled') : $this->returnUrl($attempt->kind === 'order' ? 'photos' : 'billing', $attempt->order_id, 'cancelled'),
                 'expires_at' => now()->addHour()->timestamp, 'payment_method_types' => ['card']];
             if ($attempt->kind === 'order') {
                 $parameters['payment_intent_data'] = ['metadata' => $metadata];
@@ -352,6 +352,11 @@ class StudioCheckoutService
         }
 
         return rtrim((string) config('app.url'), '/').'/listing-studio?'.http_build_query($query, '', '&', PHP_QUERY_RFC3986);
+    }
+
+    private function claimReturnUrl(?string $status = null): string
+    {
+        return rtrim((string) config('app.url'), '/').'/listing-studio/claim'.($status ? '?checkout='.$status : '');
     }
 
     private function expired(): never
