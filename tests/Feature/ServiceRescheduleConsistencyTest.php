@@ -64,15 +64,15 @@ class ServiceRescheduleConsistencyTest extends TestCase
             ->assertJsonPath('data.upcoming_shoots.0.scheduled_instant', '2026-09-29T16:30:00+00:00');
         $payload = ['services' => $items, 'service_items' => $items, 'notify_client' => false];
         if ($includeBooking) {
-            // Echo of the prior booking — services remain source of truth.
+            // Echo of the prior booking â€” services remain source of truth.
             $payload += ['scheduled_date' => '2026-09-29', 'time' => '12:30:00'];
         }
         $this->patchJson('/api/shoots/'.$shoot->id, $payload)->assertOk();
         $shoot->refresh();
-        $this->assertSame($stored, $shoot->getRawOriginal('scheduled_at'));
+        $this->assertSame($stored, $this->storedTimestamp($shoot->getRawOriginal('scheduled_at')));
         $this->assertSame('2026-09-30', $shoot->scheduled_date->toDateString());
         $this->assertSame('11:00:00', $shoot->time);
-        $this->assertSame([$stored, $stored], $shoot->serviceItems()->orderBy('id')->get()->map(fn ($item) => $item->getRawOriginal('scheduled_at'))->all());
+        $this->assertSame([$stored, $stored], $shoot->serviceItems()->orderBy('id')->get()->map(fn ($item) => $this->storedTimestamp($item->getRawOriginal('scheduled_at')))->all());
         $this->assertSame(['100.00', '100.00'], $shoot->serviceItems()->orderBy('id')->pluck('price')->all());
         $this->assertTrue(data_get($shoot->external_booking_payload, 'legacy_migration.notifications_suppressed'));
         $this->getJson('/api/shoots/'.$shoot->id)->assertOk()
@@ -100,12 +100,12 @@ class ServiceRescheduleConsistencyTest extends TestCase
             'notify_client' => false,
         ])->assertOk();
         $shoot->refresh();
-        $this->assertSame('2026-11-16 16:00:00', $shoot->getRawOriginal('scheduled_at'));
+        $this->assertSame('2026-11-16 16:00:00', $this->storedTimestamp($shoot->getRawOriginal('scheduled_at')));
         $this->assertSame('2026-11-16', $shoot->scheduled_date->toDateString());
         $this->assertSame('11:00:00', $shoot->time);
         $this->assertSame(
             ['2026-11-16 16:00:00', '2026-11-16 16:00:00'],
-            $shoot->serviceItems()->orderBy('id')->get()->map(fn ($item) => $item->getRawOriginal('scheduled_at'))->all()
+            $shoot->serviceItems()->orderBy('id')->get()->map(fn ($item) => $this->storedTimestamp($item->getRawOriginal('scheduled_at')))->all()
         );
     }
 
@@ -122,12 +122,12 @@ class ServiceRescheduleConsistencyTest extends TestCase
         ];
         $this->patchJson('/api/shoots/'.$shoot->id, $payload)->assertOk();
         $shoot->refresh();
-        $this->assertSame('2026-11-16 16:00:00', $shoot->getRawOriginal('scheduled_at'));
+        $this->assertSame('2026-11-16 16:00:00', $this->storedTimestamp($shoot->getRawOriginal('scheduled_at')));
         $this->assertSame('2026-11-16', $shoot->scheduled_date->toDateString());
         $this->assertSame('11:00:00', $shoot->time);
         $this->assertSame(
             ['2026-11-16 16:00:00', '2026-11-17 18:00:00'],
-            $shoot->serviceItems()->orderBy('id')->get()->map(fn ($item) => $item->getRawOriginal('scheduled_at'))->all()
+            $shoot->serviceItems()->orderBy('id')->get()->map(fn ($item) => $this->storedTimestamp($item->getRawOriginal('scheduled_at')))->all()
         );
     }
 
@@ -163,7 +163,7 @@ class ServiceRescheduleConsistencyTest extends TestCase
         $this->assertSame(
             ['2026-11-16 16:00:00', '2026-11-16 16:00:00'],
             $shoot->serviceItems()->where('is_deliverable', true)->orderBy('id')->get()
-                ->map(fn ($item) => $item->getRawOriginal('scheduled_at'))->all()
+                ->map(fn ($item) => $this->storedTimestamp($item->getRawOriginal('scheduled_at')))->all()
         );
     }
 
@@ -191,7 +191,7 @@ class ServiceRescheduleConsistencyTest extends TestCase
 
         $this->patchJson('/api/shoots/'.$shoot->id, ['notes' => 'Access confirmed', 'notify_client' => false])->assertOk();
 
-        $this->assertSame('2026-09-29 15:30:00', $shoot->fresh()->getRawOriginal('scheduled_at'));
+        $this->assertSame('2026-09-29 15:30:00', $this->storedTimestamp($shoot->fresh()->getRawOriginal('scheduled_at')));
         $this->assertSame('11:30:00', $shoot->fresh()->time);
         $this->assertSame($before, $shoot->serviceItems()->orderBy('id')->get()->map->getRawOriginal()->all());
         Mail::assertNothingSent();
@@ -212,9 +212,14 @@ class ServiceRescheduleConsistencyTest extends TestCase
         $this->patchJson('/api/shoots/'.$shoot->id, [
             'scheduled_at' => '2026-09-30T14:00:00Z', 'notify_client' => false,
         ])->assertOk();
-        $this->assertSame('2026-09-30 14:00:00', $shoot->fresh()->getRawOriginal('scheduled_at'));
+        $this->assertSame('2026-09-30 14:00:00', $this->storedTimestamp($shoot->fresh()->getRawOriginal('scheduled_at')));
         $this->assertSame(['2026-09-30 14:00:00', '2026-09-30 16:00:00'],
-            $shoot->serviceItems()->orderBy('id')->get()->map(fn ($item) => $item->getRawOriginal('scheduled_at'))->all());
+            $shoot->serviceItems()->orderBy('id')->get()->map(fn ($item) => $this->storedTimestamp($item->getRawOriginal('scheduled_at')))->all());
+    }
+
+    private function storedTimestamp(?string $value): ?string
+    {
+        return $value === null ? null : Carbon::parse($value, 'UTC')->format('Y-m-d H:i:s');
     }
 
     private function shoot(?string $zone = 'America/New_York'): Shoot

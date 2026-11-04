@@ -85,7 +85,7 @@ class ListingStudioCreditReservationService
     public function capture(ListingStudioOrder $order): void
     {
         $this->assertTransaction();
-        $reservation = ListingStudioCreditReservation::where('order_id', $order->id)->firstOrFail();
+        $reservation = ListingStudioCreditReservation::where('order_id', $order->id)->lockForUpdate()->firstOrFail();
         if ($reservation->status === 'captured') {
             return;
         }
@@ -108,7 +108,7 @@ class ListingStudioCreditReservationService
     public function release(ListingStudioOrder $order): void
     {
         $this->assertTransaction();
-        $reservation = ListingStudioCreditReservation::where('order_id', $order->id)->firstOrFail();
+        $reservation = ListingStudioCreditReservation::where('order_id', $order->id)->lockForUpdate()->firstOrFail();
         if ($reservation->status === 'released') {
             return;
         }

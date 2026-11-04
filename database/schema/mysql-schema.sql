@@ -820,7 +820,7 @@ CREATE TABLE `contacts` (
   `sms_ai_enabled` bigint NOT NULL DEFAULT '0',
   `phones_json` json DEFAULT NULL,
   `tags_json` json DEFAULT NULL,
-  `comment` text COLLATE utf8mb4_0900_bin,
+  `comment` text CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin,
   PRIMARY KEY (`id`),
   KEY `contacts_phone_index` (`phone`),
   KEY `contacts_email_index` (`email`),
@@ -1590,7 +1590,7 @@ DROP TABLE IF EXISTS `invoices`;
 CREATE TABLE `invoices` (
   `id` bigint NOT NULL AUTO_INCREMENT,
   `user_id` bigint NOT NULL,
-  `role` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin NOT NULL,
+  `role` varchar(255) COLLATE utf8mb4_0900_bin DEFAULT NULL,
   `period_start` date NOT NULL,
   `period_end` date NOT NULL,
   `charges_total` decimal(65,30) NOT NULL DEFAULT '0.000000000000000000000000000000',
@@ -1652,6 +1652,7 @@ CREATE TABLE `invoices` (
   KEY `fk_invoices_6_8b1163902fab` (`approved_by`),
   KEY `fk_invoices_7_805008f4a017` (`modified_by`),
   KEY `fk_invoices_8_8db20b480ebb` (`sales_rep_id`),
+  KEY `invoices_effective_period_sort` ((cast(coalesce(`billing_period_start`,`issue_date`,`period_start`,`created_at`) as datetime(6))) DESC,`id` DESC),
   CONSTRAINT `fk_invoices_0_a4ed94af4e61` FOREIGN KEY (`warning_override_by`) REFERENCES `users` (`id`) ON DELETE SET NULL,
   CONSTRAINT `fk_invoices_1_17ef98f2404c` FOREIGN KEY (`photographer_id`) REFERENCES `users` (`id`) ON DELETE SET NULL,
   CONSTRAINT `fk_invoices_2_bd76e246a72b` FOREIGN KEY (`client_id`) REFERENCES `users` (`id`) ON DELETE SET NULL,
@@ -2610,16 +2611,16 @@ CREATE TABLE `message_threads` (
   `sms_inbox_active` bigint NOT NULL DEFAULT '0',
   `sms_needs_reply` bigint NOT NULL DEFAULT '0',
   `assigned_to_user_id` bigint DEFAULT NULL,
-  `status` varchar(255) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `status` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin DEFAULT NULL,
   `tags_json` json DEFAULT NULL,
   PRIMARY KEY (`id`),
-  KEY `message_threads_sms_group_sender_lookup` (`sms_group_id`,`last_message_at`),
   KEY `message_threads_sms_inbox_index` (`channel`,`sms_inbox_active`,`last_message_at`),
   KEY `message_threads_channel_last_message_at_index` (`channel`,`last_message_at`),
   KEY `message_threads_channel_contact_shoot_index` (`channel`,`contact_id`,`related_shoot_id`),
   KEY `message_threads_ai_session_id_index` (`ai_session_id`),
   KEY `fk_message_threads_1_f7da5dcd9d50` (`contact_id`),
   KEY `message_threads_assigned_to_user_id_foreign` (`assigned_to_user_id`),
+  KEY `message_threads_sms_group_sender_lookup` (`sms_group_id`,`last_message_at`),
   CONSTRAINT `fk_message_threads_0_1f698c684b70` FOREIGN KEY (`sms_group_id`) REFERENCES `sms_groups` (`id`) ON DELETE SET NULL,
   CONSTRAINT `fk_message_threads_1_f7da5dcd9d50` FOREIGN KEY (`contact_id`) REFERENCES `contacts` (`id`) ON DELETE CASCADE,
   CONSTRAINT `message_threads_assigned_to_user_id_foreign` FOREIGN KEY (`assigned_to_user_id`) REFERENCES `users` (`id`) ON DELETE SET NULL
@@ -3214,7 +3215,7 @@ DROP TABLE IF EXISTS `photographer_equipments`;
 /*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `photographer_equipments` (
   `id` bigint NOT NULL AUTO_INCREMENT,
-  `photographer_id` bigint NOT NULL,
+  `photographer_id` bigint DEFAULT NULL,
   `name` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin NOT NULL,
   `serial_number` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin,
   `issue_date` date DEFAULT NULL,
@@ -6929,4 +6930,7 @@ INSERT INTO `migrations` (`id`,`migration`,`batch`) VALUES
 (366,'2026_11_03_160000_add_active_work_cycle_to_shoots',190),
 (367,'2026_11_03_180000_add_search_relation_lookup_indexes',191),
 (368,'2026_11_04_180000_restore_optional_messaging_columns',192),
-(369,'2026_11_04_180100_preserve_aryeo_cascade_change_feed',192);
+(369,'2026_11_04_180100_preserve_aryeo_cascade_change_feed',192),
+(370,'2026_11_04_190000_index_mysql_invoice_effective_period',193),
+(371,'2026_11_04_200000_restore_optional_equipment_assignment',194),
+(372,'2026_11_04_210000_restore_mysql_nullable_invoice_role',195);

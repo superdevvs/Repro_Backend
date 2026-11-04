@@ -11,9 +11,8 @@ use App\Services\ListingStudio\ListingStudioTrialAdmission;
 use App\Services\ListingStudio\ListingStudioTrialMonitoring;
 use App\Services\Studio\StudioProviderSettings;
 use App\Services\Studio\WorkspaceProcessor;
-use Illuminate\Foundation\Testing\RefreshDatabase;
-use Illuminate\Http\UploadedFile;
 use Illuminate\Http\Request;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
@@ -21,11 +20,12 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
+use Tests\Concerns\FreshDatabaseOutsideTransaction;
 use Tests\TestCase;
 
 class ListingStudioTrialMonitoringTest extends TestCase
 {
-    use RefreshDatabase;
+    use FreshDatabaseOutsideTransaction;
 
     protected function setUp(): void
     {
@@ -100,7 +100,9 @@ class ListingStudioTrialMonitoringTest extends TestCase
         try {
             $service->start($trial->session_hash, $trial->idempotency_key, $image, ['service' => 'twilight']);
             $this->fail('Expected idempotency conflict.');
-        } catch (\App\Exceptions\PublicApiException $exception) { $this->assertSame('idempotency_conflict', $exception->errorCode); }
+        } catch (\App\Exceptions\PublicApiException $exception) {
+            $this->assertSame('idempotency_conflict', $exception->errorCode);
+        }
         config(['listing-studio-trials.enabled' => true, 'listing-studio-trials.bridge_key' => str_repeat('k', 40),
             'listing-studio-trials.turnstile_secret' => 'secret', 'listing-studio-trials.turnstile_site_key' => 'site',
             'listing-studio-trials.turnstile_hosts' => ['reprophotos.com'], 'listing-studio-trials.global_daily_limit' => 1]);
@@ -116,18 +118,26 @@ class ListingStudioTrialMonitoringTest extends TestCase
         try {
             $service->start($session, 'new-request', $image, ['service' => 'grass', 'admissionToken' => $token]);
             $this->fail('Expected daily limit.');
-        } catch (\App\Exceptions\PublicApiException $exception) { $this->assertSame('trial_daily_limit', $exception->errorCode); }
+        } catch (\App\Exceptions\PublicApiException $exception) {
+            $this->assertSame('trial_daily_limit', $exception->errorCode);
+        }
         $this->assertNull(DB::table('listing_studio_trial_admissions')->value('consumed_at'));
         foreach (['idempotency_replay', 'idempotency_conflict', 'trial_daily_limit'] as $event) {
             $this->assertDatabaseHas('listing_studio_trial_counters', ['day' => '2026-10-31', 'event' => $event, 'count' => 1]);
         }
         $this->assertDatabaseCount('listing_studio_guest_trials', 1);
-        Schema::drop('listing_studio_trial_counters');
-        $this->assertSame($trial->id, $service->start($trial->session_hash, $trial->idempotency_key, $image, ['service' => 'grass'])->id);
+        Schema::rename('listing_studio_trial_counters', 'unavailable_trial_counters');
         try {
-            $service->start($trial->session_hash, $trial->idempotency_key, $image, ['service' => 'twilight']);
-            $this->fail('A telemetry outage must not replace the original conflict.');
-        } catch (\App\Exceptions\PublicApiException $exception) { $this->assertSame('idempotency_conflict', $exception->errorCode); }
+            $this->assertSame($trial->id, $service->start($trial->session_hash, $trial->idempotency_key, $image, ['service' => 'grass'])->id);
+            try {
+                $service->start($trial->session_hash, $trial->idempotency_key, $image, ['service' => 'twilight']);
+                $this->fail('A telemetry outage must not replace the original conflict.');
+            } catch (\App\Exceptions\PublicApiException $exception) {
+                $this->assertSame('idempotency_conflict', $exception->errorCode);
+            }
+        } finally {
+            Schema::rename('unavailable_trial_counters', 'listing_studio_trial_counters');
+        }
         Http::assertNothingSent();
     }
 
@@ -139,7 +149,9 @@ class ListingStudioTrialMonitoringTest extends TestCase
         try {
             app(ListingStudioTrialAdmission::class)->mint(str_repeat('a', 64), 'private-request-id');
             $this->fail('Expected admission limit.');
-        } catch (\App\Exceptions\PublicApiException $exception) { $this->assertSame('trial_admission_limit', $exception->errorCode); }
+        } catch (\App\Exceptions\PublicApiException $exception) {
+            $this->assertSame('trial_admission_limit', $exception->errorCode);
+        }
         $this->assertSame(['day', 'event', 'service', 'count'], Schema::getColumnListing('listing_studio_trial_counters'));
         $this->assertDatabaseHas('listing_studio_trial_counters', ['event' => 'trial_admission_limit', 'service' => 'all', 'count' => 1]);
         $this->assertDatabaseCount('listing_studio_trial_admissions', 0);
@@ -167,13 +179,19 @@ class ListingStudioTrialMonitoringTest extends TestCase
         $this->actingAs(User::factory()->create(['role' => 'client']), 'sanctum')->get($url)->assertNotFound();
         $this->assertSame(2, $trial->fresh()->download_request_count);
         // A counter write failure must never replace the successful business response.
-        Schema::table('listing_studio_guest_trials', fn ($table) => $table->dropColumn('download_request_count'));
-        $this->actingAs($client, 'sanctum')->get($url)->assertOk();
+        Schema::table('listing_studio_guest_trials', fn ($table) => $table->renameColumn('download_request_count', 'unavailable_download_count'));
+        try {
+            $this->actingAs($client, 'sanctum')->get($url)->assertOk();
+        } finally {
+            Schema::table('listing_studio_guest_trials', fn ($table) => $table->renameColumn('unavailable_download_count', 'download_request_count'));
+        }
     }
 
     public function test_counter_vocabulary_is_bounded_and_hourly_pruning_keeps_90_utc_days(): void
     {
-        $originalTimeout = (int) DB::connection()->getPdo()->query('PRAGMA busy_timeout')->fetchColumn();
+        $originalTimeout = DB::getDriverName() === 'sqlite'
+            ? (int) DB::connection()->getPdo()->query('PRAGMA busy_timeout')->fetchColumn()
+            : null;
         $monitor = app(ListingStudioTrialMonitoring::class);
         $monitor->count('private-arbitrary-event', 'private-service');
         $this->assertDatabaseCount('listing_studio_trial_counters', 0);
@@ -186,9 +204,15 @@ class ListingStudioTrialMonitoringTest extends TestCase
         ]);
         $monitor->prune();
         $this->assertDatabaseCount('listing_studio_trial_counters', 2);
-        Schema::drop('listing_studio_trial_counters');
-        $monitor->count('trial_ip_limit', 'grass'); // Must not throw when telemetry is unavailable.
-        $this->assertSame($originalTimeout, (int) DB::connection()->getPdo()->query('PRAGMA busy_timeout')->fetchColumn());
+        Schema::rename('listing_studio_trial_counters', 'unavailable_trial_counters');
+        try {
+            $monitor->count('trial_ip_limit', 'grass'); // Must not throw when telemetry is unavailable.
+        } finally {
+            Schema::rename('unavailable_trial_counters', 'listing_studio_trial_counters');
+        }
+        if ($originalTimeout !== null) {
+            $this->assertSame($originalTimeout, (int) DB::connection()->getPdo()->query('PRAGMA busy_timeout')->fetchColumn());
+        }
         Http::assertNothingSent();
     }
 
@@ -248,11 +272,20 @@ class ListingStudioTrialMonitoringTest extends TestCase
             $this->assertFileDoesNotExist($file);
             Log::shouldHaveReceived('error')->twice()->with('Listing Studio operational telemetry could not be stored.');
         } finally {
-            if ($writer) { try { $writer->exec('ROLLBACK'); } catch (\Throwable) {} }
+            if ($writer) {
+                try {
+                    $writer->exec('ROLLBACK');
+                } catch (\Throwable) {
+                }
+            }
             $writer = null;
             DB::setDefaultConnection($previousDefault);
             DB::purge($connectionName);
-            foreach ([$file, $file.'-wal', $file.'-shm'] as $path) { if (is_file($path)) { unlink($path); } }
+            foreach ([$file, $file.'-wal', $file.'-shm'] as $path) {
+                if (is_file($path)) {
+                    unlink($path);
+                }
+            }
         }
     }
 

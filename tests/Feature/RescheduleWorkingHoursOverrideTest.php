@@ -62,7 +62,7 @@ class RescheduleWorkingHoursOverrideTest extends TestCase
             'start_time' => '17:00', 'end_time' => '18:00', 'status' => 'available']);
         $this->assertTrue($this->preview()['available']);
         $this->postJson('/api/shoots/'.$this->shoot->id.'/reschedule', ['requested_date' => '2026-10-20', 'requested_time' => '16:30'])->assertCreated();
-        $this->assertSame('2026-10-20 20:30:00', $this->shoot->fresh()->getRawOriginal('scheduled_at'));
+        $this->assertSame('2026-10-20 20:30:00', \Carbon\CarbonImmutable::parse($this->shoot->fresh()->getRawOriginal('scheduled_at'), 'UTC')->format('Y-m-d H:i:s'));
         $this->assertSame(35, $this->shoot->serviceItems()->sole()->duration_minutes);
     }
     #[\PHPUnit\Framework\Attributes\TestWith(['superadmin'])]
@@ -88,7 +88,7 @@ class RescheduleWorkingHoursOverrideTest extends TestCase
         $body = ['scheduled_at' => '2026-10-20T20:30:00Z'];
         $preview = $this->postJson('/api/photographer/availability/feasibility', $body + ['shoot_id' => $this->shoot->id, 'action_mode' => 'update'])->assertOk()->json('data');
         $this->patchJson('/api/shoots/'.$this->shoot->id, $body + $this->flags($preview))->assertOk();
-        $this->assertSame('2026-10-20 20:30:00', $this->shoot->fresh()->getRawOriginal('scheduled_at'));
+        $this->assertSame('2026-10-20 20:30:00', \Carbon\CarbonImmutable::parse($this->shoot->fresh()->getRawOriginal('scheduled_at'), 'UTC')->format('Y-m-d H:i:s'));
     }
     public function test_changed_time_missing_reason_and_non_superadmin_cannot_reuse_exception(): void
     {
@@ -137,7 +137,7 @@ class RescheduleWorkingHoursOverrideTest extends TestCase
         $this->shoot->forceFill(['units_revision' => 1])->save();
         $flags = $this->flags($this->preview());
         $this->postJson('/api/shoots/'.$this->shoot->id.'/reschedule', ['requested_date' => '2026-10-20', 'requested_time' => '16:30', 'expected_units_revision' => 1] + $flags)->assertCreated();
-        $this->assertSame('2026-10-20 20:30:00', $this->shoot->serviceItems()->sole()->getRawOriginal('scheduled_at'));
+        $this->assertSame('2026-10-20 20:30:00', \Carbon\CarbonImmutable::parse($this->shoot->serviceItems()->sole()->getRawOriginal('scheduled_at'), 'UTC')->format('Y-m-d H:i:s'));
     }
 
     public function test_sales_rep_cannot_confirm_after_booking_permission_is_revoked(): void

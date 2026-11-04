@@ -12,6 +12,24 @@ class InvoiceStatusFilteringTest extends TestCase
 {
     use RefreshDatabase;
 
+    public function test_date_sort_preserves_fallback_priority_ties_and_page_boundaries(): void
+    {
+        Sanctum::actingAs(User::factory()->admin()->create());
+        $period = $this->invoice(['billing_period_start' => null, 'issue_date' => null, 'period_start' => '2025-09-01']);
+        $issued = $this->invoice(['billing_period_start' => null, 'issue_date' => '2025-10-01', 'period_start' => '2026-12-01']);
+        $billing = $this->invoice(['billing_period_start' => '2025-11-01', 'issue_date' => '2026-12-01', 'period_start' => '2026-12-01']);
+        $tie = $this->invoice(['billing_period_start' => '2025-11-01', 'issue_date' => '2026-12-01', 'period_start' => '2026-12-01']);
+
+        foreach (['date_desc' => [$tie->id, $billing->id, $issued->id, $period->id], 'date_asc' => [$period->id, $issued->id, $tie->id, $billing->id]] as $sort => $expected) {
+            $actual = [];
+            foreach ([1, 2] as $page) {
+                $response = $this->getJson('/api/invoices?per_page=2&sort='.$sort.'&page='.$page)->assertOk();
+                $actual = array_merge($actual, array_column($response->json('data'), 'id'));
+            }
+            $this->assertSame($expected, $actual);
+        }
+    }
+
     public function test_overdue_filters_keep_issued_balances_and_exclude_terminal_or_no_payment_documents(): void
     {
         Sanctum::actingAs(User::factory()->admin()->create());
@@ -28,7 +46,7 @@ class InvoiceStatusFilteringTest extends TestCase
         $this->invoice(['status' => 'paid', 'amount_paid' => 100, 'is_paid' => true]);
         $this->invoice(['due_date' => '2099-01-01']);
 
-        foreach (['/api/admin/invoices', '/api/invoices/summary'] as $endpoint) {
+        foreach (['/api/admin/invoices', '/api/invoices', '/api/invoices/summary'] as $endpoint) {
             $response = $this->getJson($endpoint.'?role=client&status=overdue&start=2020-01-01&end=2020-01-31&per_page=100')
                 ->assertOk();
             $this->assertEqualsCanonicalizing([$overdue->id, $partial->id, $alreadyOverdue->id], collect($response->json('data'))->pluck('id')->all());

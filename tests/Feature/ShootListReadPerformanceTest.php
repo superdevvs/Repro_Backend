@@ -103,6 +103,9 @@ class ShootListReadPerformanceTest extends TestCase
 
     public function test_sqlite_media_lookups_use_indexes_instead_of_full_table_scans(): void
     {
+        if (DB::getDriverName() !== 'sqlite') {
+            $this->markTestSkipped('SQLite EXPLAIN QUERY PLAN format; native MySQL plans are measured in the migration lab.');
+        }
         foreach ([
             'select * from shoot_files where shoot_id = 1 and workflow_stage = "todo"',
             'select * from shoot_files where shoot_service_id = 1 and required_for_editing = 1',

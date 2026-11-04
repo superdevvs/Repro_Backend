@@ -111,7 +111,7 @@ class SchedulingPermissionConsistencyTest extends TestCase
     {
         $shoot = $this->shoot();
         $shoot->update(['status' => 'requested', 'workflow_status' => 'requested']);
-        $before = $shoot->getRawOriginal();
+        $before = $shoot->refresh()->getRawOriginal();
         foreach (['shoots-update', 'shoots-manage'] as $denied) {
             Sanctum::actingAs($this->actor($role, $secondary, [$denied]));
             $this->postJson("/api/shoots/{$shoot->id}/approve", ['notify_client' => false, 'notify_photographer' => false])->assertForbidden();

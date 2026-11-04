@@ -30,6 +30,14 @@ abstract class TestCase extends BaseTestCase
 
         $app->make(Kernel::class)->bootstrap();
 
+        if (filter_var(getenv('MYSQL_TEST_FACTORY_DEFAULTS'), FILTER_VALIDATE_BOOLEAN)) {
+            $connection = $app['db']->connection();
+            if ($connection->getDriverName() !== 'mysql' || $connection->getDatabaseName() !== 'repro_mysql_test'
+                || $connection->getConfig('username') !== 'repro_test') {
+                throw new \RuntimeException('MySQL regression tests require the actual application connection to use the isolated test database and account.');
+            }
+        }
+
         return $app;
     }
 }

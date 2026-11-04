@@ -10,15 +10,13 @@ use App\Models\SmsNumber;
 use App\Models\User;
 use App\Services\Messaging\OutboundDeliveryGuard;
 use App\Services\Messaging\Providers\TelnyxSmsProvider;
-use Illuminate\Foundation\Testing\RefreshDatabase;
-use Illuminate\Support\Facades\DB;
 use Laravel\Sanctum\Sanctum;
 use Mockery;
 use Tests\TestCase;
 
 class SmsSenderSelectionTest extends TestCase
 {
-    use RefreshDatabase;
+    use \Tests\Concerns\FreshDatabaseOutsideTransaction;
 
     private const PERSON = '+12025550112';
 
@@ -195,12 +193,12 @@ class SmsSenderSelectionTest extends TestCase
         $original = $this->thread($number, $actor);
         $original->update(['sms_group_id' => $group->id]);
         $before = Message::get(['id', 'thread_id', 'body_text'])->toArray();
-        $foreignKeys = DB::select('PRAGMA foreign_key_list(message_threads)');
+        $foreignKeys = \Illuminate\Support\Facades\Schema::getForeignKeys('message_threads');
         $migration = require base_path('database/migrations/2026_10_17_130000_allow_sms_group_threads_per_sender.php');
         $migration->down();
         $migration->up();
         $this->assertSame($before, Message::get(['id', 'thread_id', 'body_text'])->toArray());
-        $this->assertEquals($foreignKeys, DB::select('PRAGMA foreign_key_list(message_threads)'));
+        $this->assertEquals($foreignKeys, \Illuminate\Support\Facades\Schema::getForeignKeys('message_threads'));
         $second = MessageThread::create(['contact_id' => $original->contact_id, 'channel' => 'SMS', 'sms_group_id' => $group->id]);
         try {
             $migration->down();

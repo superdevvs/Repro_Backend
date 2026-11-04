@@ -7,6 +7,9 @@ final class MySqlConnector extends \Illuminate\Database\Connectors\MySqlConnecto
 {
     public function connect(array $config)
     {
+        // SQLite reports matched rows for a no-op UPDATE. Heartbeats and guarded
+        // writes rely on that contract, including repeated writes in one second.
+        $config['options'] = [\PDO::MYSQL_ATTR_FOUND_ROWS => true] + ($config['options'] ?? []);
         $pdo = parent::connect($config);
         if (($config['charset'] ?? 'utf8mb4') === 'utf8mb4') {
             // Table/column collations retain NO PAD binary identifier semantics.

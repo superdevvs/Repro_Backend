@@ -829,6 +829,7 @@ class ShootListingService
                 return [
                     ['raw' => 'CASE WHEN is_featured = 0 AND featured_requested_at IS NOT NULL THEN 0 ELSE 1 END ASC'],
                     ['raw' => 'COALESCE(featured_requested_at, featured_approved_at, admin_verified_at, editing_completed_at, scheduled_date, created_at) DESC'],
+                    ['column' => 'id', 'direction' => 'desc'],
                 ];
             case 'delivered':
                 return [
@@ -846,6 +847,7 @@ class ShootListingService
             default:
                 return [
                     ['column' => 'created_at', 'direction' => 'desc'],
+                    ['column' => 'id', 'direction' => 'desc'],
                 ];
         }
     }

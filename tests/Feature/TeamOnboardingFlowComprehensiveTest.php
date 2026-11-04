@@ -28,6 +28,18 @@ class TeamOnboardingFlowComprehensiveTest extends TestCase
 {
     use RefreshDatabase;
 
+    protected function setUp(): void
+    {
+        parent::setUp();
+        $this->app->instance(\App\Services\Users\EmailHealthService::class, new class extends \App\Services\Users\EmailHealthService
+        {
+            protected function domainCanReceiveMail(string $domain): bool
+            {
+                return $domain === 'example.com';
+            }
+        });
+    }
+
     private function adminUser(): User
     {
         return User::factory()->create(['role' => 'admin', 'account_status' => 'active']);

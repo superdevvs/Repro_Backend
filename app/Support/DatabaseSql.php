@@ -17,9 +17,14 @@ final class DatabaseSql
 
     public static function textCast(string $expression, ?ConnectionInterface $connection = null): string
     {
-        $driver = ($connection ?? DB::connection())->getDriverName();
+        $connection ??= DB::connection();
+        if ($connection->getDriverName() !== 'mysql') {
+            return 'CAST('.$expression.' AS TEXT)';
+        }
 
-        return 'CAST('.$expression.' AS '.($driver === 'mysql' ? 'CHAR' : 'TEXT').')';
+        // A numeric cast inherits the connection's JSON-compatible collation.
+        // Explicitly match stored identifiers when composing UNION/comparisons.
+        return '(CAST('.$expression.' AS CHAR CHARACTER SET utf8mb4) COLLATE '.self::mysqlCollation($connection).')';
     }
 
     public static function jsonScalar(string $column, string $path, ?ConnectionInterface $connection = null): string
@@ -34,10 +39,7 @@ final class DatabaseSql
             return $extract;
         }
 
-        $collation = $connection->getConfig('collation') ?: 'utf8mb4_bin';
-        if (! preg_match('/\Autf8mb4_[a-zA-Z0-9_]+\z/', $collation)) {
-            throw new \InvalidArgumentException('A supported utf8mb4 collation is required.');
-        }
+        $collation = self::mysqlCollation($connection);
 
         // JSON null and the literal string "null" must remain distinct.
         return "(CASE WHEN JSON_TYPE({$extract}) COLLATE {$collation} = 'NULL' COLLATE {$collation} THEN NULL ELSE JSON_UNQUOTE({$extract}) END) COLLATE {$collation}";
@@ -64,5 +66,15 @@ final class DatabaseSql
         }
 
         return $text;
+    }
+
+    private static function mysqlCollation(ConnectionInterface $connection): string
+    {
+        $collation = $connection->getConfig('collation') ?: 'utf8mb4_bin';
+        if (! preg_match('/\Autf8mb4_[a-zA-Z0-9_]+\z/', $collation)) {
+            throw new \InvalidArgumentException('A supported utf8mb4 collation is required.');
+        }
+
+        return $collation;
     }
 }

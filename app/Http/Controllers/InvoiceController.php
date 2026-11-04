@@ -5,13 +5,11 @@ namespace App\Http\Controllers;
 use App\Models\Invoice;
 use App\Models\Payment;
 use App\Services\Invoices\InvoiceAdjustmentService;
-use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
 use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
@@ -31,6 +29,7 @@ class InvoiceController extends Controller
     public function summary(Request $request)
     {
         $request->attributes->set('invoice_summary', true);
+
         return $this->index($request);
     }
 
@@ -132,12 +131,16 @@ class InvoiceController extends Controller
             return response()->json(['data' => [], 'message' => 'No access to invoices'], 403);
         }
 
-        if ($request->query('role') === 'client' && in_array($user->role,['admin','superadmin'],true)) $query->where(fn($q)=>$q->where('role','client')->orWhereNull('role'));
+        if ($request->query('role') === 'client' && in_array($user->role, ['admin', 'superadmin'], true)) {
+            $query->where(fn ($q) => $q->where('role', 'client')->orWhereNull('role'));
+        }
 
-        if ($request->filled('invoice_id')) $query->whereKey($request->integer('invoice_id'));
-        if($request->filled('search')) {
-            $search='%'.mb_substr((string)$request->query('search'),0,200).'%';
-            $query->where(fn($q)=>$q->where('invoice_number','like',$search)->orWhereHas('client',fn($q)=>$q->where('name','like',$search))->orWhereHas('shoot',fn($q)=>$q->where('address','like',$search))->orWhereHas('shoots',fn($q)=>$q->where('address','like',$search))->orWhereHas('items',fn($q)=>$q->where('meta->property_address','like',$search)));
+        if ($request->filled('invoice_id')) {
+            $query->whereKey($request->integer('invoice_id'));
+        }
+        if ($request->filled('search')) {
+            $search = '%'.mb_substr((string) $request->query('search'), 0, 200).'%';
+            $query->where(fn ($q) => $q->where('invoice_number', 'like', $search)->orWhereHas('client', fn ($q) => $q->where('name', 'like', $search))->orWhereHas('shoot', fn ($q) => $q->where('address', 'like', $search))->orWhereHas('shoots', fn ($q) => $q->where('address', 'like', $search))->orWhereHas('items', fn ($q) => $q->where('meta->property_address', 'like', $search)));
         }
         // Additional filters (applied after role filtering)
         if ($request->filled('photographer_id')) {
@@ -153,18 +156,23 @@ class InvoiceController extends Controller
         $this->applyInvoiceDateRange($query, $start, $end);
 
         // Preserve document lifecycle states before inferring payment/aging status.
-        $normalizedStatus = "CASE "
+        $mysql = $query->getConnection()->getDriverName() === 'mysql';
+        $todaySql = $mysql ? 'UTC_DATE()' : "DATE('now')";
+        $maximum = $mysql ? 'GREATEST' : 'MAX';
+        $normalizedStatus = 'CASE '
             ."WHEN LOWER(COALESCE(status, '')) IN ('draft', 'void', 'cancelled', 'canceled', 'refunded') THEN LOWER(status) "
             ."WHEN COALESCE(payment_required, 1) = 0 OR document_type = 'complimentary_receipt' OR LOWER(COALESCE(status, '')) = 'no_payment_required' THEN 'no_payment_required' "
             ."WHEN status = 'paid' OR is_paid = 1 OR total_amount <= 0.01 OR (total_amount > 0.01 AND COALESCE(amount_paid, 0) + 0.005 >= total_amount) THEN 'paid' "
-            ."WHEN due_date IS NOT NULL AND DATE(due_date) < DATE('now') AND MAX(COALESCE(balance_due, 0), total_amount - COALESCE(amount_paid, 0)) > 0.01 THEN 'overdue' "
+            ."WHEN due_date IS NOT NULL AND DATE(due_date) < {$todaySql} AND {$maximum}(COALESCE(balance_due, 0), total_amount - COALESCE(amount_paid, 0)) > 0.01 THEN 'overdue' "
             ."ELSE COALESCE(NULLIF(status, ''), 'pending') END";
         if (($filters['status'] ?? 'all') !== 'all') {
             $statuses = $filters['status'] === 'pending' ? ['pending', 'sent', 'partial', 'unpaid'] : [$filters['status']];
             $query->whereIn(DB::raw($normalizedStatus), $statuses);
         }
         $sort = $filters['sort'] ?? 'date_desc';
-        $query->orderBy(str_starts_with($sort, 'amount') ? 'total_amount' : DB::raw('COALESCE(billing_period_start, issue_date, period_start, created_at)'), str_ends_with($sort, 'asc') ? 'asc' : 'desc')->orderByDesc('id');
+        $period = 'COALESCE(billing_period_start, issue_date, period_start, created_at)';
+        $period = $mysql ? 'CAST('.$period.' AS DATETIME(6))' : $period;
+        $query->orderBy(str_starts_with($sort, 'amount') ? 'total_amount' : DB::raw($period), str_ends_with($sort, 'asc') ? 'asc' : 'desc')->orderByDesc('id');
         if ($request->attributes->get('contextual_search_source')) {
             // Search uses the same authorized, filtered query, but does not need
             // invoice editing contracts, pricing breakdowns or entire related
@@ -174,6 +182,7 @@ class InvoiceController extends Controller
                 ->with(['client:id,name', 'photographer:id,name', 'salesRep:id,name'])
                 ->paginate($filters['per_page'] ?? 15);
             $invoices->through(fn (Invoice $invoice) => $invoice->setAppends([])->toArray());
+
             return response()->json($invoices)->header('Cache-Control', 'private, no-store');
         }
         if ($request->attributes->get('invoice_summary')) {
@@ -181,6 +190,7 @@ class InvoiceController extends Controller
             Invoice::primePaymentRecords($rows);
             $data = $rows->map(function (Invoice $invoice) {
                 $invoice->applyResolvedPaymentMetadata();
+
                 return \Illuminate\Support\Arr::only($invoice->attributesToArray(), [
                     'id', 'invoice_number', 'role', 'status', 'is_paid', 'payment_required', 'document_type', 'issue_date', 'due_date', 'created_at', 'billing_period_start', 'billing_period_end',
                     'period_start', 'period_end', 'total_amount', 'amount_paid', 'balance_due', 'paid_at', 'payment_method', 'payment_details',
@@ -196,6 +206,7 @@ class InvoiceController extends Controller
             $response = response()->json($invoices);
         }
         $request->attributes->set('serialization_ms', (hrtime(true) - $serializeStart) / 1e6);
+
         return $response;
     }
 
@@ -541,18 +552,20 @@ class InvoiceController extends Controller
         $clientPayment = $this->syncShootPaymentFromInvoice($invoice, $paymentAmount, $paymentMethod, $paymentDetails, $paidAt);
 
         $invoice->loadMissing(['client', 'photographer', 'shoot', 'shoot.client']);
-        if (!$isPaid && $paymentAmount > 0) $invoice->recordAuditEvent('payment_recorded',$request->user(),'Partial payment recorded.',['payment_amount'=>$paymentAmount,'amount_paid'=>$amountPaid,'payment_method'=>$paymentMethod,'paid_at'=>$paidAt->toISOString()]);
+        if (! $isPaid && $paymentAmount > 0) {
+            $invoice->recordAuditEvent('payment_recorded', $request->user(), 'Partial payment recorded.', ['payment_amount' => $paymentAmount, 'amount_paid' => $amountPaid, 'payment_method' => $paymentMethod, 'paid_at' => $paidAt->toISOString()]);
+        }
         if ($isPaid) {
             $this->markPayoutShootsPaid($invoice, $paidAt);
             $invoice->recordAuditEvent('paid', $request->user(), $isNonPositivePayoutSettlement
                 ? 'Non-positive payout adjustment settled with no cash payment.'
                 : 'Invoice payment marked as sent.', [
-                'amount_paid' => $amountPaid,
-                'payment_amount' => $paymentAmount,
-                'payment_method' => $paymentMethod,
-                'paid_at' => $paidAt->toISOString(),
-                'settlement_type' => $isNonPositivePayoutSettlement ? 'non_positive_adjustment' : 'payment',
-            ]);
+                    'amount_paid' => $amountPaid,
+                    'payment_amount' => $paymentAmount,
+                    'payment_method' => $paymentMethod,
+                    'paid_at' => $paidAt->toISOString(),
+                    'settlement_type' => $isNonPositivePayoutSettlement ? 'non_positive_adjustment' : 'payment',
+                ]);
 
             $context = [
                 'invoice' => $invoice,
@@ -613,8 +626,8 @@ class InvoiceController extends Controller
 
         $invoiceAdjustments = app(InvoiceAdjustmentService::class);
         $relatedShoots = $invoiceAdjustments->relatedShoots($invoice);
-        if ($relatedShoots->isEmpty() && $invoice->items()->where('meta->source','manual_invoice')->exists()) {
-            return Payment::create(['invoice_id'=>$invoice->id,'amount'=>$paymentAmount,'currency'=>'USD','payment_method'=>$paymentMethod,'payment_details'=>is_array($paymentDetails)?$paymentDetails:null,'status'=>Payment::STATUS_COMPLETED,'processed_at'=>$paidAt]);
+        if ($relatedShoots->isEmpty() && $invoice->items()->where('meta->source', 'manual_invoice')->exists()) {
+            return Payment::create(['invoice_id' => $invoice->id, 'amount' => $paymentAmount, 'currency' => 'USD', 'payment_method' => $paymentMethod, 'payment_details' => is_array($paymentDetails) ? $paymentDetails : null, 'status' => Payment::STATUS_COMPLETED, 'processed_at' => $paidAt]);
         }
         if ($relatedShoots->count() !== 1) {
             return null;

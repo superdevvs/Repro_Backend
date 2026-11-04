@@ -121,7 +121,7 @@ class PublicTourImage
     {
         return hash_hmac('sha256', implode('|', [
             $file->shoot_id, $file->id, $rendition, $key,
-            $file->content_version ?: 1, (string) $file->getRawOriginal('updated_at'),
+            $file->content_version ?: 1, (string) \App\Support\DatabaseSql::timestampString($file->getRawOriginal('updated_at'), $file->getConnection()),
         ]), (string) config('app.key'));
     }
 
