@@ -126,6 +126,7 @@ class ListingStudioSubscriptionReceiptService
             ->where('submission_started_at', '<', now()->subMinutes(10)))->limit($limit)->get();
         foreach ($pending as $receipt) {
             $messages = Message::where('metadata->listing_studio_subscription_receipt_id', $receipt->id)
+                ->when($receipt->message_id, fn ($query) => $query->whereKey($receipt->message_id))
                 ->where('related_account_id', $receipt->client_id)->where('to_address', $receipt->recipient)->limit(2)->get();
             if ($messages->count() === 1) {
                 $this->recordMessage($receipt, $messages->first());
@@ -143,9 +144,9 @@ class ListingStudioSubscriptionReceiptService
 
     private function recordMessage(Receipt $receipt, Message $message): void
     {
-        $status = $message->status === 'SENT' ? 'sent' : (in_array($message->status, ['QUEUED', 'SCHEDULED'], true) ? 'awaiting_delivery' : 'needs_attention');
+        $status = in_array($message->status, ['SENT', 'DELIVERED'], true) ? 'sent' : (in_array($message->status, ['QUEUED', 'SCHEDULED'], true) ? 'awaiting_delivery' : 'needs_attention');
         $this->write(fn () => Receipt::whereKey($receipt->id)->whereIn('status', ['submitting', 'awaiting_delivery'])
-            ->update(['message_id' => $message->id, 'status' => $status, 'sent_at' => $status === 'sent' ? ($message->sent_at ?? now()) : null,
+            ->update(['message_id' => $message->id, 'status' => $status, 'sent_at' => $status === 'sent' ? ($message->sent_at ?? $message->delivered_at ?? now()) : null,
                 'error_code' => $status === 'needs_attention' ? 'receipt_delivery_unavailable' : null]));
     }
 

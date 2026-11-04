@@ -199,7 +199,8 @@ class ListingStudioClaimSubscriptionTest extends TestCase
         $emails = app(ListingStudioSubscriptionReceiptService::class); $emails->deliver($receipt->id);
         $this->assertSame('awaiting_delivery', $receipt->fresh()->status);
         $emails->recover(); $this->assertSame('awaiting_delivery', $receipt->fresh()->status);
-        $message->update(['status' => 'SENT', 'sent_at' => now()]);
+        // A provider delivery webhook may arrive before the receipt recovery tick.
+        $message->update(['status' => 'DELIVERED', 'delivered_at' => now()]);
         $emails->recover(); $emails->deliver($receipt->id);
         $this->assertSame('sent', $receipt->fresh()->status);
         $this->assertSame($message->id, $receipt->fresh()->message_id);
