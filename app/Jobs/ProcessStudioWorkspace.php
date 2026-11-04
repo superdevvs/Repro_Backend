@@ -56,6 +56,9 @@ class ProcessStudioWorkspace implements ShouldQueue
             return;
         }
         try {
+            if ($workspace->listing_studio_order_item_id && ! empty($workspace->operation['aiRevisionId'])) {
+                app(\App\Services\ListingStudio\ListingStudioAiRevisionService::class)->started($workspace);
+            }
             if ($workspace->listing_studio_trial_id) {
                 app(\App\Services\ListingStudio\ListingStudioTrialMonitoring::class)->workerStarted($workspace->listing_studio_trial_id);
                 $operation = $workspace->operation;

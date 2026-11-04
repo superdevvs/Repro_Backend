@@ -77,6 +77,9 @@ class ListingStudioPaidPipeline
 
     public function authorize(StudioWorkspace $workspace): ListingStudioOrderItem
     {
+        if (! empty($workspace->operation['aiRevisionId'])) {
+            return app(ListingStudioAiRevisionService::class)->authorize($workspace);
+        }
         $item = ListingStudioOrderItem::find($workspace->listing_studio_order_item_id);
         if (! $item || $item->kind !== 'ai_edit' || $item->workspace_id !== $workspace->id
             || (int) $workspace->created_by !== (int) $item->client_id || $workspace->team_id !== null
@@ -124,6 +127,10 @@ class ListingStudioPaidPipeline
 
     public function assertMaySubmit(StudioWorkspace $workspace): void
     {
+        if (! empty($workspace->operation['aiRevisionId'])) {
+            app(ListingStudioAiRevisionService::class)->assertMaySubmit($workspace);
+            return;
+        }
         $item = $this->authorize($workspace);
         $recipe = ListingStudioPaidRecipe::definition($item->service, $item->options ?? [], $workspace->operation['recipeVersion']);
         $order = $item->order;
@@ -138,6 +145,10 @@ class ListingStudioPaidPipeline
 
     public function syncWorkspace(StudioWorkspace $workspace): void
     {
+        if (! empty($workspace->operation['aiRevisionId'])) {
+            app(ListingStudioAiRevisionService::class)->sync($workspace);
+            return;
+        }
         $item = ListingStudioOrderItem::where('workspace_id', $workspace->id)->whereKey($workspace->listing_studio_order_item_id)->first();
         if (! $item || in_array($item->status, ['completed', 'failed', 'cancelled'], true)) {
             return;
@@ -174,14 +185,24 @@ class ListingStudioPaidPipeline
 
     public function hasCheckpoint(StudioWorkspace $workspace): bool
     {
+        $outputs = ! empty($workspace->operation['aiRevisionId'])
+            ? collect($workspace->outputs ?? [])->contains(fn ($output) => ($output['id'] ?? '') === ($workspace->operation['id'] ?? '').'-source')
+            : ! empty($workspace->outputs);
         return ! empty($workspace->operation['requests']) || ! empty($workspace->operation['providerState'])
-            || ! empty($workspace->operation['completed']) || ! empty($workspace->outputs);
+            || ! empty($workspace->operation['completed']) || $outputs;
     }
 
     /** Operator recovery reuses the accepted workspace, operation and checkpoint. */
     public function resume(string $itemId): void
     {
         $item = ListingStudioOrderItem::findOrFail($itemId);
+        if ($item->workspace_id) {
+            $workspace = StudioWorkspace::findOrFail($item->workspace_id);
+            if (! empty($workspace->operation['aiRevisionId'])) {
+                app(ListingStudioAiRevisionService::class)->resume($workspace);
+                return;
+            }
+        }
         if (! $item->workspace_id || ! in_array($item->status, ['needs_attention', 'processing'], true)) {
             throw new StudioProviderException('This item has no held workspace to recover.');
         }
@@ -249,7 +270,7 @@ class ListingStudioPaidPipeline
                 || ($workspace->isBusy() && $workspace->updated_at->lt(now()->subMinutes(150)))));
     }
 
-    private function unconfirmed(StudioWorkspace $workspace): bool
+    public function hasUnconfirmedSubmission(StudioWorkspace $workspace): bool
     {
         $state = $workspace->operation['providerState'] ?? [];
         foreach ($state as $key => $value) {
@@ -271,5 +292,10 @@ class ListingStudioPaidPipeline
         }
 
         return false;
+    }
+
+    private function unconfirmed(StudioWorkspace $workspace): bool
+    {
+        return $this->hasUnconfirmedSubmission($workspace);
     }
 }

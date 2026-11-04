@@ -71,6 +71,14 @@ class ListingStudioClientController extends Controller
         return $this->json(['order' => $orders->present($order), 'nextAction' => $orders->nextAction($order)]);
     }
 
+    public function aiRevision(Request $request, string $orderId, \App\Services\ListingStudio\ListingStudioAiRevisionService $revisions, ListingStudioOrderService $orders)
+    {
+        $data = $request->validate(['instructions' => ['required', 'string', 'min:3', 'max:1500']]);
+        $revision = $revisions->request($request->user(), $orderId, $data['instructions'], (string) $request->header('Idempotency-Key'));
+        return $this->json(['order' => $orders->present(ListingStudioOrder::where('client_id', $request->user()->id)->findOrFail($orderId)),
+            'revisionId' => $revision->id], 202);
+    }
+
     private function json(array $data, int $status = 200)
     {
         return response()->json(['success' => true, 'data' => $data], $status)->header('Cache-Control', 'no-store');

@@ -38,7 +38,7 @@ class ListingStudioOutboxService
             try {
                 if ($event->type === 'refund_order') {
                     app(ListingStudioRefundDispatcher::class)->dispatch($event);
-                } elseif (in_array($event->type, ['process_item', 'create_revision_task', 'finalize_revision_delivery'], true)) {
+                } elseif (in_array($event->type, ['process_item', 'process_ai_revision', 'create_revision_task', 'finalize_revision_delivery'], true)) {
                     app(ListingStudioFulfillmentDispatcher::class)->dispatch($event);
                 } else {
                     $this->finish($event, ['status' => 'needs_attention', 'error_code' => 'unsupported_event_type']);

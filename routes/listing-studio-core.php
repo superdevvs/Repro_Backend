@@ -19,6 +19,7 @@ Route::middleware(['auth:sanctum', EnsureListingStudioClient::class, 'throttle:6
         Route::post('quotes', [ListingStudioClientController::class, 'quote'])->middleware('throttle:30,1');
         Route::post('orders', [ListingStudioClientController::class, 'store'])->middleware('throttle:20,1');
         Route::post('orders/{orderId}/cancel', [ListingStudioClientController::class, 'cancel'])->whereUuid('orderId');
+        Route::post('orders/{orderId}/ai-revisions', [ListingStudioClientController::class, 'aiRevision'])->whereUuid('orderId')->middleware('throttle:10,1');
         require __DIR__.'/listing-studio-payments.php';
     });
 

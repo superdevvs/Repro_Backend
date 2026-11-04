@@ -355,6 +355,7 @@ class ListingStudioOrderService
 
         return ['id' => $order->id, 'createdAt' => $order->created_at->toIso8601String(), 'kind' => $order->kind,
             'service' => $order->service, 'pricing' => $order->pricing_snapshot,
+            'aiRevisions' => app(ListingStudioAiRevisionService::class)->present($item),
             'funding' => ['method' => $order->funding_method, 'status' => $order->funding_status,
                 'reservedCreditCents' => $reservation?->status === 'reserved' ? $reservation->amount_cents : 0,
                 'capturedCreditCents' => $reservation?->status === 'captured' ? $reservation->amount_cents : 0,

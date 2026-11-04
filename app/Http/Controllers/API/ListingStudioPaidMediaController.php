@@ -29,10 +29,11 @@ class ListingStudioPaidMediaController extends Controller
 
     public function preview(Request $request, string $order, ListingStudioPaidMedia $media)
     {
-        $input = $request->validate(['variant' => ['sometimes', 'in:original,result']]);
+        $input = $request->validate(['variant' => ['sometimes', 'in:original,result'], 'version' => ['sometimes', 'string', 'max:40', 'regex:/\A(?:initial|[a-f0-9-]{36})\z/i']]);
         $record = ListingStudioOrder::where('client_id', $request->user()->id)->with('item')->findOrFail($order);
         $item = $record->item;
-        $descriptor = ($input['variant'] ?? 'result') === 'original' ? $item->source_snapshot : ($item->status === 'completed' ? $item->output_descriptor : null);
+        $descriptor = ($input['variant'] ?? 'result') === 'original' ? $item->source_snapshot
+            : ($item->status === 'completed' ? app(\App\Services\ListingStudio\ListingStudioAiRevisionService::class)->version($item, $input['version'] ?? null) : null);
         abort_unless($descriptor, 404);
 
         // The immutable snapshot is already authorized by the order; it can still point to the
@@ -42,9 +43,10 @@ class ListingStudioPaidMediaController extends Controller
 
     public function download(Request $request, string $order, ListingStudioPaidMedia $media)
     {
+        $input = $request->validate(['version' => ['sometimes', 'string', 'max:40', 'regex:/\A(?:initial|[a-f0-9-]{36})\z/i']]);
         $record = ListingStudioOrder::where('client_id', $request->user()->id)->with('item')->findOrFail($order);
         abort_unless($record->item?->status === 'completed' && $record->item->output_descriptor, 404);
-        $descriptor = $record->item->output_descriptor;
+        $descriptor = app(\App\Services\ListingStudio\ListingStudioAiRevisionService::class)->version($record->item, $input['version'] ?? null);
         $bytes = $media->read($descriptor);
 
         return response($bytes)->withHeaders(['Content-Type' => $descriptor['mime'],

@@ -13,6 +13,7 @@ class ListingStudioPaidFulfillment implements ListingStudioFulfillmentDispatcher
         $payload = $event->payload;
         match ($event->type) {
             'process_item' => app(ListingStudioPaidPipeline::class)->start($payload['itemId'], $payload['attemptId']),
+            'process_ai_revision' => app(ListingStudioAiRevisionService::class)->start($payload['revisionId']),
             'create_revision_task' => app(ListingStudioRevisionService::class)->create($payload['itemId']),
             'finalize_revision_delivery' => FinalizeListingStudioRevision::dispatch($payload['deliveryId']),
             default => throw new \RuntimeException('Unsupported Listing Studio fulfillment event.'),
