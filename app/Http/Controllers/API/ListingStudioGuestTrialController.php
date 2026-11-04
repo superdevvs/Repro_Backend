@@ -56,18 +56,15 @@ class ListingStudioGuestTrialController extends Controller
     public function preview(Request $request, string $trial)
     {
         $record = $this->trials->ownedGuestTrial($trial, $request->attributes->get('studio_session_hash'));
-        if ($record->status !== 'completed' || $record->preview_path !== 'trials/'.$record->id.'/preview.jpg') {
-            throw new PublicApiException('The edited preview is not ready yet.', 'trial_not_ready', 409);
-        }
 
-        return $this->privateImage($record->preview_path);
+        return $this->privateImage($this->trials->previewPath($record));
     }
 
     public function originalPreview(Request $request, string $trial)
     {
         $record = $this->trials->ownedGuestTrial($trial, $request->attributes->get('studio_session_hash'));
 
-        return $this->privateImage('trials/'.$record->id.'/original-preview.jpg');
+        return $this->privateImage($this->trials->previewPath($record, true));
     }
 
     private function privateImage(string $path)

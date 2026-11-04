@@ -80,6 +80,7 @@ class ListingStudioGuestTrialService
         $requestHash = hash('sha256', json_encode([$input['service'], $options, hash_file('sha256', $image->getRealPath())], JSON_THROW_ON_ERROR));
         if ($existing = ListingStudioGuestTrial::where('session_hash', $sessionHash)->where('idempotency_key', $key)->first()) {
             $replayed = true;
+
             return $this->replay($existing, $requestHash);
         }
         if (! $this->enabled()) {
@@ -142,6 +143,7 @@ class ListingStudioGuestTrialService
         });
         if (! $created) {
             $replayed = true;
+
             return $trial;
         }
         try {
@@ -156,7 +158,7 @@ class ListingStudioGuestTrialService
                     fclose($stream);
                 }
             }
-            $this->createPreview($trial, $trial->source_path, 'original-preview.jpg');
+            $this->createPreview($trial, $trial->source_path, true);
             app(ListingStudioTrialPipeline::class)->start($trial);
         } catch (\Throwable $exception) {
             $trial->refresh();
@@ -217,7 +219,33 @@ class ListingStudioGuestTrialService
         }
     }
 
-    private function createPreview(ListingStudioGuestTrial $trial, string $path, string $filename = 'preview.jpg'): string
+    /** Upgrade only the derivative when an older completed edit is opened again. */
+    public function previewPath(ListingStudioGuestTrial $trial, bool $original = false): string
+    {
+        if ($trial->hasExpired()) {
+            throw new PublicApiException('This trial result has expired.', 'trial_expired', 410);
+        }
+        $previewPath = 'trials/'.$trial->id.'/'.($original ? 'original-preview-' : 'preview-').ListingStudioPreviewWatermark::VERSION.'.jpg';
+        $source = $original ? $trial->source_path : $trial->output_path;
+        if ($original) {
+            if (! in_array($source, array_map(fn ($ext) => 'trials/'.$trial->id.'/source.'.$ext, ['jpg', 'png', 'webp']), true)) {
+                throw new PublicApiException('The original preview is not available.', 'trial_not_ready', 409);
+            }
+        } elseif ($trial->status !== 'completed' || ! in_array($trial->preview_path, ['trials/'.$trial->id.'/preview.jpg', $previewPath], true)
+            || ! $source || ! $this->outputPathValid($trial, $source)) {
+            throw new PublicApiException('The edited preview is not ready yet.', 'trial_not_ready', 409);
+        }
+        if (Storage::disk(self::DISK)->exists($previewPath)) {
+            return $previewPath;
+        }
+        if (! Storage::disk(self::DISK)->exists($source)) {
+            throw new PublicApiException('The preview is not available.', 'trial_not_ready', 409);
+        }
+
+        return $this->createPreview($trial, $source, $original);
+    }
+
+    private function createPreview(ListingStudioGuestTrial $trial, string $path, bool $original = false): string
     {
         $bytes = Storage::disk(self::DISK)->get($path);
         $info = @getimagesizefromstring($bytes);
@@ -235,13 +263,7 @@ class ListingStudioGuestTrialService
         try {
             imagefill($preview, 0, 0, imagecolorallocate($preview, 255, 255, 255));
             imagecopyresampled($preview, $source, 0, 0, 0, 0, $width, $height, $info[0], $info[1]);
-            $label = 'REPRO - PREVIEW';
-            $labelWidth = imagefontwidth(5) * strlen($label);
-            for ($y = max(8, (int) ($height / 4)); $y < $height; $y += max(60, (int) ($height / 3))) {
-                $x = max(0, (int) (($width - $labelWidth) / 2));
-                imagefilledrectangle($preview, $x - 6, $y - 5, min($width, $x + $labelWidth + 6), $y + 20, imagecolorallocatealpha($preview, 0, 0, 0, 48));
-                imagestring($preview, 5, $x, $y, $label, imagecolorallocatealpha($preview, 255, 255, 255, 14));
-            }
+            app(ListingStudioPreviewWatermark::class)->apply($preview);
             ob_start();
             try {
                 imagejpeg($preview, null, 80);
@@ -249,7 +271,7 @@ class ListingStudioGuestTrialService
             } finally {
                 ob_end_clean();
             }
-            $previewPath = 'trials/'.$trial->id.'/'.$filename;
+            $previewPath = 'trials/'.$trial->id.'/'.($original ? 'original-preview-' : 'preview-').ListingStudioPreviewWatermark::VERSION.'.jpg';
             if (! is_string($result)) {
                 throw new \RuntimeException('Trial preview could not be stored.');
             }
@@ -259,8 +281,14 @@ class ListingStudioGuestTrialService
                     throw new PublicApiException('This trial result has expired.', 'trial_expired', 410);
                 }
                 app(ListingStudioPrivateStorage::class)->prepareTrialDirectory($fresh->id);
-                if (! Storage::disk(self::DISK)->put($previewPath, $result)) {
-                    throw new \RuntimeException('Trial preview could not be stored.');
+                $disk = Storage::disk(self::DISK);
+                $temporary = $previewPath.'.'.Str::random(16).'.tmp';
+                try {
+                    if (! $disk->put($temporary, $result) || ! $disk->move($temporary, $previewPath)) {
+                        throw new \RuntimeException('Trial preview could not be stored.');
+                    }
+                } finally {
+                    $disk->delete($temporary);
                 }
             });
 
@@ -324,7 +352,7 @@ class ListingStudioGuestTrialService
         return ['id' => $trial->id, 'service' => $trial->service, 'status' => $expired ? 'expired' : $trial->status,
             'progress' => $trial->status === 'processing' ? $trial->workspace?->progress : null,
             'previewAvailable' => $completed && filled($trial->preview_path), 'downloadAvailable' => $owner && $completed,
-            'originalPreviewAvailable' => ! $expired && Storage::disk(self::DISK)->exists('trials/'.$trial->id.'/original-preview.jpg'),
+            'originalPreviewAvailable' => ! $expired && Storage::disk(self::DISK)->exists($trial->source_path),
             'createdAt' => $trial->created_at?->toIso8601String(), 'completedAt' => $trial->completed_at?->toIso8601String(),
             'expiresAt' => $trial->client_id ? null : $trial->expires_at?->toIso8601String(),
             'errorCode' => $trial->error_code, 'error' => match ($trial->error_code) {

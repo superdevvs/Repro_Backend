@@ -135,9 +135,9 @@ class ListingStudioGuestTrialTest extends TestCase
             $disk = Storage::disk('listing_studio_trials');
             clearstatcache();
             $this->assertSame(02770, fileperms($disk->path('trials/'.$id)) & 07777);
-            $this->assertSame(0660, fileperms($disk->path('trials/'.$id.'/original-preview.jpg')) & 07777);
+            $this->assertSame(0660, fileperms($disk->path('trials/'.$id.'/original-preview-logo-v1.jpg')) & 07777);
             $this->assertSame('completed', $this->complete($id)->status);
-            $disk->assertExists('trials/'.$id.'/preview.jpg');
+            $disk->assertExists('trials/'.$id.'/preview-logo-v1.jpg');
         } finally {
             umask($previous);
         }
@@ -238,6 +238,36 @@ class ListingStudioGuestTrialTest extends TestCase
         $this->bridge()->get(self::BASE.'/trials/'.$id.'/preview')->assertNotFound();
     }
 
+    public function test_old_previews_upgrade_without_processing_or_modifying_full_resolution_files(): void
+    {
+        $id = $this->start()->assertStatus(202)->json('data.id');
+        $trial = $this->complete($id);
+        $disk = Storage::disk('listing_studio_trials');
+        $current = $trial->preview_path;
+        $currentOriginal = 'trials/'.$id.'/original-preview-logo-v1.jpg';
+        $legacy = 'trials/'.$id.'/preview.jpg';
+        $disk->copy($current, $legacy);
+        $disk->copy($currentOriginal, 'trials/'.$id.'/original-preview.jpg');
+        $disk->delete([$current, $currentOriginal]);
+        $trial->update(['preview_path' => $legacy]);
+        $fullResult = $disk->get($trial->output_path);
+        $original = $disk->get($trial->source_path);
+        $requests = Http::recorded()->count();
+        $this->session = str_repeat('b', 64);
+        $this->bridge()->get(self::BASE.'/trials/'.$id.'/preview')->assertNotFound();
+        $disk->assertMissing($current);
+        $this->session = str_repeat('a', 64);
+        $preview = $this->bridge()->get(self::BASE.'/trials/'.$id.'/preview')->assertOk();
+        $this->bridge()->get(self::BASE.'/trials/'.$id.'/preview')->assertOk()->assertContent($preview->getContent());
+        $this->bridge()->get(self::BASE.'/trials/'.$id.'/original-preview')->assertOk();
+        $disk->assertExists([$current, $currentOriginal]);
+        $this->assertSame($legacy, $trial->fresh()->preview_path);
+        $this->assertSame($fullResult, $disk->get($trial->output_path));
+        $this->assertSame($original, $disk->get($trial->source_path));
+        $this->assertSame($requests, Http::recorded()->count());
+        Queue::assertNothingPushed();
+    }
+
     public function test_unverified_active_client_claims_session_and_downloads_but_other_account_cannot(): void
     {
         $id = $this->start()->assertStatus(202)->json('data.id');
@@ -250,7 +280,8 @@ class ListingStudioGuestTrialTest extends TestCase
             ->assertJsonPath('data.trials.0.downloadAvailable', true);
         $this->postJson('/api/listing-studio/trials/claim', ['token' => $token])->assertOk();
         $this->getJson('/api/listing-studio/trials')->assertOk()->assertJsonCount(1, 'data.trials');
-        $this->get('/api/listing-studio/trials/'.$id.'/download')->assertOk();
+        $download = $this->get('/api/listing-studio/trials/'.$id.'/download')->assertOk();
+        $this->assertSame(hash('sha256', Storage::disk('listing_studio_trials')->get($trial->output_path)), hash('sha256', $download->streamedContent()));
         $this->assertSame($client->id, $trial->fresh()->client_id);
         $this->assertNull($trial->workspace->fresh()->created_by);
         $this->assertNull($client->fresh()->email_verified_at);
