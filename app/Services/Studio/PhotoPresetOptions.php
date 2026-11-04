@@ -31,7 +31,7 @@ class PhotoPresetOptions
                 'windowPull' => Rule::in(['NONE', 'ONLY_WINDOWS', 'WINDOWS_WITH_SKIES']), 'privacy' => 'boolean',
                 'fireplace' => Rule::in(['AS_SHOT', 'ALIGHT']), 'tv' => Rule::in(['AS_SHOT', 'BLACK_OUT']),
                 'perspectiveMode' => Rule::in(['DEFAULT_ENABLED', 'PRESERVE_CONTENT', 'PRIORITIZE_PERSPECTIVE'])],
-            'upscale', 'twilight' => [],
+            'upscale', 'twilight', 'decluttering' => [],
             default => null,
         };
         if ($rules === null) {

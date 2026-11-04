@@ -12,7 +12,7 @@ use Illuminate\Support\Collection;
 class ScopedEditingPlan
 {
     public const WORKFLOWS = ['full-shoot' => 'Full shoot enhancement', 'listing-ready' => 'Enhancement', 'green-grass' => 'Grass greening',
-        'twilight' => 'Twilight', 'sky-replacement' => 'Sky replacement', 'color-correction' => 'Colour correction',
+        'twilight' => 'Twilight', 'decluttering' => 'Decluttering', 'sky-replacement' => 'Sky replacement', 'color-correction' => 'Colour correction',
         'perspective-correction' => 'Perspective correction', 'virtual-staging' => 'Virtual staging', 'upscale' => 'Upscale', 'revision' => 'Custom revision'];
 
     public function catalog(Shoot $shoot, User $user): array
@@ -175,10 +175,15 @@ class ScopedEditingPlan
                 $routes += $extra['routes'];
             }
         }
+        $photoRecipes = [];
+        foreach (array_keys($routes) as $preset) {
+            $fields = \App\Services\Studio\StaffPhotoPresetRecipe::operationFields($preset);
+            if ($fields) $photoRecipes[$preset] = $fields;
+        }
         return ['scope' => $scope, 'destination' => $destination, 'workflow' => $workflow, 'instructions' => $data['instructions'] ?? '',
             'items' => array_values($items), 'inputCount' => count($items), 'sourceCount' => collect($items)->sum(fn ($item) => count($item['sources'])),
             'photoCount' => collect($items)->where('lane', 'photo')->count(), 'videoCount' => collect($items)->where('lane', 'video')->count(),
-            'provider' => $route, 'routes' => $routes, 'staging' => $data['staging'] ?? [], 'targets' => $data['targets'] ?? [],
+            'provider' => $route, 'routes' => $routes, 'photoRecipes' => $photoRecipes, 'staging' => $data['staging'] ?? [], 'targets' => $data['targets'] ?? [],
             'eligible' => true, 'videoAiEnabled' => false];
     }
 

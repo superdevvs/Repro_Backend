@@ -310,11 +310,11 @@ class StudioWorkspaceTest extends TestCase
         $record = $this->create($user, 12, 'twilight');
         $this->patchJson('/api/studio/workspaces/'.$record->id, ['config' => ['frames' => [['mediaId' => 'm2', 'method' => 'fit'], ['mediaId' => 'm3', 'method' => 'fit']]]])->assertOk();
         $fal = $this->mock(FalService::class);
-        $fal->shouldReceive('submitImageEditFromBuffer')->times(3)->andReturn(['request_id' => 'done'], ['request_id' => 'failed'], ['request_id' => 'replacement']);
-        $fal->shouldReceive('imageEditStatus')->with('done')->once()->andReturn(['status' => 'completed']);
-        $fal->shouldReceive('imageEditStatus')->with('failed')->once()->andReturn(['status' => 'failed']);
-        $fal->shouldReceive('imageEditStatus')->with('replacement')->once()->andReturn(['status' => 'completed']);
-        $fal->shouldReceive('imageEditResult')->twice()->andReturn(['edited_image_url' => 'data:image/jpeg;base64,'.base64_encode($this->image(0, 255, 0))]);
+        $fal->shouldReceive('submitModel')->with('fal-ai/nano-banana-pro/edit', \Mockery::type('array'))->times(3)->andReturn('done', 'failed', 'replacement');
+        $fal->shouldReceive('modelStatus')->with('fal-ai/nano-banana-pro/edit', 'done')->once()->andReturn('COMPLETED');
+        $fal->shouldReceive('modelStatus')->with('fal-ai/nano-banana-pro/edit', 'failed')->once()->andReturn('FAILED');
+        $fal->shouldReceive('modelStatus')->with('fal-ai/nano-banana-pro/edit', 'replacement')->once()->andReturn('COMPLETED');
+        $fal->shouldReceive('modelImageResult')->twice()->andReturn('data:image/jpeg;base64,'.base64_encode($this->image(0, 255, 0)));
         $this->postJson('/api/studio/workspaces/'.$record->id.'/generate')->assertAccepted();
         $record->refresh();
         $job = (new ProcessStudioWorkspace($record->id, $record->operation['id']))->withFakeQueueInteractions();
@@ -620,6 +620,75 @@ class StudioWorkspaceTest extends TestCase
             'listing_studio_orders', 'listing_studio_order_items', 'listing_studio_checkout_attempts'] as $table) {
             $this->assertDatabaseCount($table, 0);
         }
+    }
+
+    public function test_admin_and_editing_manager_presets_share_listing_studio_recipes_without_credit_spending(): void
+    {
+        foreach (['admin', 'editing_manager'] as $role) {
+            $user = $this->actor($role);
+            foreach (['decluttering' => 'decluttering', 'green-grass' => 'grass', 'twilight' => 'twilight'] as $preset => $service) {
+                $record = $this->create($user, 1, $preset);
+                $key = $role.'-'.$preset;
+                $endpoint = '/api/studio/workspaces/'.$record->id.'/generate';
+                $this->postJson($endpoint, ['requestId' => $key])->assertAccepted();
+                $operation = $record->fresh()->operation;
+                $recipe = \App\Services\ListingStudio\ListingStudioPaidRecipe::definition($service);
+                $this->assertSame($recipe['version'], $operation['recipeVersion']);
+                $this->assertSame($service === 'decluttering' ? $recipe['payload']['prompt'] : $recipe['prompt'], $operation['presetPrompt']);
+                $this->assertSame($recipe['route'], $operation['routing'][$preset]);
+                $this->postJson($endpoint, ['requestId' => $key])->assertAccepted();
+                $this->assertSame($operation, $record->fresh()->operation);
+            }
+        }
+        Queue::assertPushed(ProcessStudioWorkspace::class, 6);
+        foreach (['listing_studio_orders', 'listing_studio_credit_entries', 'listing_studio_credit_reservations'] as $table) {
+            $this->assertDatabaseCount($table, 0);
+        }
+        $client = $this->actor('client');
+        $payload = $this->payload($client);
+        $payload['presetId'] = 'decluttering';
+        $this->postJson('/api/studio/workspaces', $payload)->assertForbidden();
+    }
+
+    public function test_new_decluttering_preset_uses_the_original_and_one_specialist_request(): void
+    {
+        $record = $this->create($this->actor('editing_manager'), 1, 'decluttering');
+        $this->postJson('/api/studio/workspaces/'.$record->id.'/generate')->assertAccepted();
+        $record->refresh();
+        $this->mock(\App\Services\Studio\WorkspaceAutoenhance::class)->shouldNotReceive('run');
+        $fal = $this->mock(FalService::class);
+        $fal->shouldReceive('submitModel')->once()->withArgs(function ($model, $payload) {
+            $this->assertSame('fal-ai/nano-banana-pro/edit', $model);
+            $this->assertStringStartsWith(\App\Services\ListingStudio\ListingStudioPaidRecipe::DECLUTTER_PROMPT, $payload['prompt']);
+            $this->assertSame(1, $payload['num_images']);
+
+            return true;
+        })->andReturn('declutter-request');
+        $fal->shouldReceive('modelStatus')->once()->andReturn('COMPLETED');
+        $fal->shouldReceive('modelImageResult')->once()->andReturn('data:image/jpeg;base64,'.base64_encode($this->image(255, 0, 0)));
+        app(WorkspaceProcessor::class)->process($record, $record->operation['id']);
+        $this->assertSame('completed', $record->fresh()->status);
+        $this->assertCount(1, $record->fresh()->outputs);
+    }
+
+    public function test_retry_preserves_legacy_grass_route_and_accepted_checkpoint(): void
+    {
+        $record = $this->create($this->actor(), 1, 'green-grass');
+        $old = ['id' => 'legacy-operation', 'key' => 'legacy-request', 'type' => 'generate', 'payload' => [], 'completed' => [], 'requests' => [],
+            'providerState' => ['autoenhance-checkpoint' => ['imageId' => 'already-paid']]];
+        $record->update(['status' => 'failed', 'operation' => $old]);
+        $this->postJson('/api/studio/workspaces/'.$record->id.'/generate', ['requestId' => 'legacy-request'])->assertAccepted();
+        $operation = $record->fresh()->operation;
+        $this->assertSame('legacy-operation', $operation['id']);
+        $this->assertSame($old['providerState'], $operation['providerState']);
+        $this->assertArrayNotHasKey('presetPrompt', $operation);
+        $this->assertArrayNotHasKey('recipeVersion', $operation);
+        $this->assertSame('autoenhance', $operation['routing']['green-grass']['provider']);
+        $legacy = $old;
+        $record->update(['operation' => $legacy]);
+        $state = new \App\Services\Studio\WorkspaceProviderState($record, 'legacy-operation');
+        $this->assertSame('autoenhance', $state->route('green-grass')['provider']);
+        $this->assertSame(config('services.fal.image_model', 'fal-ai/flux-kontext/dev'), $state->route('twilight')['model']);
     }
 
     private function actor(string $role = 'admin', int $team = 100): User

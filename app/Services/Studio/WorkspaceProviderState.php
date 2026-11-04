@@ -65,7 +65,7 @@ class WorkspaceProviderState
         }
 
         // Existing, pre-routing jobs must resume their original fal model.
-        return app(StudioProviderSettings::class)->route($service, []);
+        return app(StudioProviderSettings::class)->legacyRoute($service, []);
     }
 
     public function requestId(string $mediaId): ?string

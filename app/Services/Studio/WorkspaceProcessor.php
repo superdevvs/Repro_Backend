@@ -195,7 +195,7 @@ class WorkspaceProcessor
             $bounds = [$x, $y, $width, $height];
             $source->crop($width, $height, $x, $y);
         }
-        $prompt = $type === 'revision' ? $payload['prompt'] : $this->presetPrompt($w->preset_id).' '.($w->config['prompt'] ?? '');
+        $prompt = $type === 'revision' ? $payload['prompt'] : ($w->operation['presetPrompt'] ?? $this->presetPrompt($w->preset_id)).' '.($w->config['prompt'] ?? '');
         $prompt .= ' Preserve the actual property structure, perspective, materials, and photorealism. Only make the requested changes.';
         $route = (new WorkspaceProviderState($w, $operationId))->route($type === 'revision' ? 'revision' : $w->preset_id);
         $padding = null;

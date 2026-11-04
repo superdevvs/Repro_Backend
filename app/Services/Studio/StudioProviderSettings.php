@@ -12,14 +12,14 @@ use Illuminate\Validation\ValidationException;
 
 class StudioProviderSettings
 {
-    public const AUTOENHANCE_SERVICES = ['listing-ready', 'color-correction', 'sky-replacement', 'perspective-correction', 'green-grass', 'upscale'];
+    public const AUTOENHANCE_SERVICES = ['listing-ready', 'color-correction', 'sky-replacement', 'perspective-correction', 'upscale'];
 
-    public const PHOTO_SERVICES = ['listing-ready', 'color-correction', 'full-shoot', 'sky-replacement', 'perspective-correction', 'twilight', 'virtual-staging', 'green-grass', 'upscale'];
+    public const PHOTO_SERVICES = ['listing-ready', 'color-correction', 'full-shoot', 'sky-replacement', 'perspective-correction', 'twilight', 'virtual-staging', 'decluttering', 'green-grass', 'upscale'];
 
     private const LABELS = [
         'listing-ready' => 'Listing ready', 'color-correction' => 'Color correction', 'full-shoot' => 'Full shoot',
         'sky-replacement' => 'Sky replacement', 'perspective-correction' => 'Perspective correction',
-        'twilight' => 'Twilight', 'virtual-staging' => 'Virtual staging', 'green-grass' => 'Green grass',
+        'twilight' => 'Twilight', 'virtual-staging' => 'Virtual staging', 'decluttering' => 'Decluttering', 'green-grass' => 'Green grass',
         'revision' => 'Photo revisions', 'upscale' => 'Upscale', 'outpaint' => 'AI Extend',
         'walkthrough' => 'Walkthrough', 'property-reel' => 'Property reel', 'social-teaser' => 'Social teaser',
     ];
@@ -49,6 +49,9 @@ class StudioProviderSettings
 
     public function route(string $service, ?array $stored = null): array
     {
+        if ($recipe = StaffPhotoPresetRecipe::definition($service)) {
+            return $recipe['route'];
+        }
         if (in_array($service, self::AUTOENHANCE_SERVICES, true)) {
             return ['provider' => 'autoenhance', 'model' => 'enhance', 'fallback' => null];
         }
@@ -74,8 +77,29 @@ class StudioProviderSettings
         return ['provider' => 'fal', 'model' => (string) $model, 'fallback' => $service === 'outpaint' ? ['provider' => 'openai', 'model' => 'gpt-image-2'] : null];
     }
 
+    /** Pre-alignment operations without a route snapshot retain their original provider. */
+    public function legacyRoute(string $service, ?array $stored = null): array
+    {
+        if ($service === 'green-grass') {
+            return ['provider' => 'autoenhance', 'model' => 'enhance', 'fallback' => null];
+        }
+        if ($service === 'twilight') {
+            $stored ??= $this->stored();
+            if (isset($stored['routes'][$service]) && ($stored['routes'][$service]['provider'] ?? '') !== 'fotello') {
+                return $stored['routes'][$service];
+            }
+
+            return ['provider' => 'fal', 'model' => (string) config('services.fal.image_model', 'fal-ai/flux-kontext/dev'), 'fallback' => null];
+        }
+
+        return $this->route($service, $stored);
+    }
+
     public function providers(string $service): array
     {
+        if ($recipe = StaffPhotoPresetRecipe::definition($service)) {
+            return [['id' => $recipe['route']['provider'], 'label' => 'fal.ai', 'models' => [['id' => $recipe['route']['model'], 'label' => 'Nano Banana Pro']]]];
+        }
         if (in_array($service, self::AUTOENHANCE_SERVICES, true)) {
             return [['id' => 'autoenhance', 'label' => 'Autoenhance', 'models' => [['id' => 'enhance', 'label' => 'Photo enhancement']]]];
         }

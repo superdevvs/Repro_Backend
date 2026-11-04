@@ -40,7 +40,8 @@ class WorkspaceImageOperations
         }
         // Free-text and twilight effects retain their specialist editor after photo enhancement.
         $preciseDeclutter = ($workspace->operation['recipeVersion'] ?? null) === \App\Services\ListingStudio\ListingStudioPaidRecipe::VERSION
-            && $service === 'revision' && ($workspace->operation['payload']['prompt'] ?? null) === \App\Services\ListingStudio\ListingStudioPaidRecipe::DECLUTTER_PROMPT;
+            && (($service === 'revision' && ($workspace->operation['payload']['prompt'] ?? null) === \App\Services\ListingStudio\ListingStudioPaidRecipe::DECLUTTER_PROMPT)
+                || ($service === 'decluttering' && ($workspace->operation['presetPrompt'] ?? null) === \App\Services\ListingStudio\ListingStudioPaidRecipe::DECLUTTER_PROMPT));
         if ($routeOverride === null && $route['provider'] !== 'fotello' && ! $workspace->isVideo() && empty($workspace->operation['payload']['customEdit']) && ! $preciseDeclutter) {
             $enhanceService = ($workspace->operation['recipeVersion'] ?? null) === \App\Services\ListingStudio\ListingStudioPaidRecipe::VERSION && $workspace->preset_id === 'green-grass' ? 'green-grass' : 'listing-ready';
             $source = app(WorkspaceAutoenhance::class)->run($workspace, $operationId, $item, $source, $enhanceService);

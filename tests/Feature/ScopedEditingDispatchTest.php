@@ -335,6 +335,8 @@ class ScopedEditingDispatchTest extends TestCase
         $id = $this->send($data)->assertAccepted()->json('data.dispatchId');
         app()->call([new PrepareEditingDispatch($id), 'handle']);
         $workspace = StudioWorkspace::firstOrFail();
+        $this->assertSame(ShootEditingDispatch::findOrFail($id)->plan['photoRecipes']['green-grass'], \Illuminate\Support\Arr::only($workspace->operation, ['recipeVersion', 'presetPrompt']));
+        $this->assertSame(\App\Services\ListingStudio\ListingStudioPaidRecipe::GRASS_PROMPT, $workspace->operation['presetPrompt']);
         $image = UploadedFile::fake()->image('result.jpg', 48, 32);
         Storage::disk('public')->put('studio/result.jpg', file_get_contents($image->getRealPath()));
         $publisher = app(\App\Services\Studio\ScopedWorkspacePublisher::class);
@@ -353,5 +355,22 @@ class ScopedEditingDispatchTest extends TestCase
         $this->assertSame(2, $output->fresh()->content_version);
         $this->assertSame('todo', $this->photo->fresh()->workflow_stage);
         $this->assertNull(DB::table('shoot_service')->first()->editing_completed_at);
+    }
+    public function test_pre_alignment_dispatch_retains_its_saved_recipe_when_prepared_after_release(): void
+    {
+        $data = $this->payload(['file_ids' => [$this->photo->id], 'source_versions' => [$this->photo->id => 1], 'preset' => 'green-grass']);
+        $id = $this->send($data)->assertAccepted()->json('data.dispatchId');
+        $dispatch = ShootEditingDispatch::findOrFail($id);
+        $plan = $dispatch->plan;
+        unset($plan['photoRecipes']);
+        $plan['routes']['green-grass'] = ['provider' => 'autoenhance', 'model' => 'enhance', 'fallback' => null];
+        $dispatch->update(['plan' => $plan]);
+        app()->call([new PrepareEditingDispatch($id), 'handle']);
+        $workspace = StudioWorkspace::firstOrFail();
+        $this->assertArrayNotHasKey('recipeVersion', $workspace->operation);
+        $this->assertArrayNotHasKey('presetPrompt', $workspace->operation);
+        $this->assertSame($plan['routes']['green-grass'], $workspace->operation['routing']['green-grass']);
+        app()->call([new PrepareEditingDispatch($id), 'handle']);
+        $this->assertSame(1, StudioWorkspace::count());
     }
 }

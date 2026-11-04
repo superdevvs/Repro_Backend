@@ -42,11 +42,11 @@ class WorkspaceImageOperationsTest extends TestCase
     public function test_enqueued_fal_route_is_frozen_despite_later_provider_settings_changes(): void
     {
         $settings = app(StudioProviderSettings::class);
-        $settings->save(['services' => [['id' => 'twilight', 'provider' => 'fal', 'model' => 'fal-ai/nano-banana-pro/edit']]]);
+        $settings->save(['services' => [['id' => 'revision', 'provider' => 'fal', 'model' => 'fal-ai/nano-banana-pro/edit']]]);
         $workspace = $this->draft();
-        $this->postJson('/api/studio/workspaces/'.$workspace->id.'/generate')->assertAccepted();
+        $this->postJson('/api/studio/workspaces/'.$workspace->id.'/revisions', ['mediaId' => 'm1', 'prompt' => 'Correct colors'])->assertAccepted();
         $workspace->refresh();
-        $settings->save(['services' => [['id' => 'twilight', 'provider' => 'openai', 'model' => 'gpt-image-2']]]);
+        $settings->save(['services' => [['id' => 'revision', 'provider' => 'openai', 'model' => 'gpt-image-2']]]);
         $fal = $this->mock(FalService::class);
         $fal->shouldReceive('submitModel')->with('fal-ai/nano-banana-pro/edit', \Mockery::type('array'))->once()->andReturn('saved-fal');
         $fal->shouldReceive('modelStatus')->with('fal-ai/nano-banana-pro/edit', 'saved-fal')->once()->andReturn('COMPLETED');
@@ -54,7 +54,7 @@ class WorkspaceImageOperationsTest extends TestCase
         $this->mock(OpenAiImageProvider::class)->shouldNotReceive('edit');
         $result = app(WorkspaceImageOperations::class)->edit($workspace, $workspace->operation['id'], ['id' => 'm1'], $this->image(), 'Correct colors');
         $this->assertNotFalse(getimagesizefromstring($result));
-        $this->assertSame('fal-ai/nano-banana-pro/edit', $workspace->fresh()->operation['routing']['twilight']['model']);
+        $this->assertSame('fal-ai/nano-banana-pro/edit', $workspace->fresh()->operation['routing']['revision']['model']);
         $this->assertSame('saved-fal', $workspace->fresh()->operation['requests']['m1']);
         $body = $this->getJson('/api/studio/workspaces/'.$workspace->id)->assertOk()->getContent();
         $this->assertStringNotContainsString('saved-fal', $body);
@@ -79,11 +79,11 @@ class WorkspaceImageOperationsTest extends TestCase
     public function test_openai_route_snapshot_forwards_references_and_reuses_the_saved_bytes_once(): void
     {
         $settings = app(StudioProviderSettings::class);
-        $settings->save(['services' => [['id' => 'twilight', 'provider' => 'openai', 'model' => 'gpt-image-2']]]);
+        $settings->save(['services' => [['id' => 'revision', 'provider' => 'openai', 'model' => 'gpt-image-2']]]);
         $workspace = $this->draft();
-        $this->postJson('/api/studio/workspaces/'.$workspace->id.'/generate')->assertAccepted();
+        $this->postJson('/api/studio/workspaces/'.$workspace->id.'/revisions', ['mediaId' => 'm1', 'prompt' => 'Match the reference'])->assertAccepted();
         $workspace->refresh();
-        $settings->save(['services' => [['id' => 'twilight', 'provider' => 'fal', 'model' => 'fal-ai/nano-banana-pro/edit']]]);
+        $settings->save(['services' => [['id' => 'revision', 'provider' => 'fal', 'model' => 'fal-ai/nano-banana-pro/edit']]]);
         $source = $this->image();
         $references = [$this->image(320, 240, [0, 0, 200])];
         $expected = $this->image(480, 320, [0, 200, 0]);

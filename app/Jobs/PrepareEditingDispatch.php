@@ -68,7 +68,7 @@ class PrepareEditingDispatch implements ShouldQueue
                     'preset_id' => $workflow, 'media' => $media, 'status' => 'generating', 'progress' => 0,
                     'config' => ['prompt' => $dispatch->instructions ?? '', 'ratio' => '16:9', 'frames' => array_map(fn ($item) => ['mediaId' => $item['id'], 'method' => 'fit', 'duration' => 5], $media),
                         'adjustments' => $workflow === 'virtual-staging' ? ($dispatch->plan['staging'] ?? []) : []],
-                    'operation' => ['id' => $operation, 'key' => $dispatch->id, 'type' => 'generate', 'payload' => [], 'completed' => [], 'requests' => [], 'routing' => [$workflow => $dispatch->plan['routes'][$workflow]]],
+                    'operation' => array_merge(['id' => $operation, 'key' => $dispatch->id, 'type' => 'generate', 'payload' => [], 'completed' => [], 'requests' => [], 'routing' => [$workflow => $dispatch->plan['routes'][$workflow]]], $dispatch->plan['photoRecipes'][$workflow] ?? []),
                 ]);
                 $dispatch->items()->whereIn('id', $project['items']->modelKeys())->update(['workspace_id' => $workspace->id, 'status' => 'processing']);
                 $dispatch->update(['status' => 'in_progress', 'error' => null]);

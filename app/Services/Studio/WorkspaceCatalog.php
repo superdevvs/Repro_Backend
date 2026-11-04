@@ -7,15 +7,16 @@ use Illuminate\Support\Facades\Schema;
 /** Public, provider-independent recipes for the native and web Studio clients. */
 class WorkspaceCatalog
 {
-    public const PRESETS = ['listing-ready', 'color-correction', 'twilight', 'green-grass', 'virtual-staging', 'full-shoot', 'sky-replacement', 'perspective-correction', 'upscale', 'walkthrough', 'property-reel', 'social-teaser'];
+    public const PRESETS = ['listing-ready', 'color-correction', 'twilight', 'green-grass', 'decluttering', 'virtual-staging', 'full-shoot', 'sky-replacement', 'perspective-correction', 'upscale', 'walkthrough', 'property-reel', 'social-teaser'];
 
     public const VIDEO_PRESETS = ['walkthrough', 'property-reel', 'social-teaser'];
 
     private const DETAILS = [
         'listing-ready' => ['Listing ready', 'Enhance a property photo or describe a custom photo edit.'],
         'color-correction' => ['Color correction', 'Balance light, white balance, and natural color.'],
-        'twilight' => ['Twilight', 'Create a photorealistic dusk exterior.'],
-        'green-grass' => ['Green grass', 'Refresh the lawn while preserving the property.'],
+        'twilight' => ['Twilight', 'Create a pink-orange sunset with natural dusk lighting.'],
+        'green-grass' => ['Green grass', 'Restore a lush green lawn within the existing boundaries.'],
+        'decluttering' => ['Decluttering', 'Remove loose clutter while preserving furniture and decor.'],
         'virtual-staging' => ['Virtual staging', 'Furnish a room with a selected style.'],
         'full-shoot' => ['Full shoot', 'Process a complete shoot using its editing workflow.'],
         'sky-replacement' => ['Sky replacement', 'Replace the sky with clear or cloudy daylight.'],

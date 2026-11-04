@@ -144,7 +144,7 @@ class ShootEditingDispatchService
                     'name' => 'Shoot #'.$shoot->id.' · '.$project['label'], 'preset_id' => $project['preset'],
                     'media' => $project['media'], 'config' => ['prompt' => '', 'ratio' => '16:9', 'duration' => 30, 'transition' => 'none', 'transitionDuration' => 0.4, 'text' => ['title' => '', 'subtitle' => '', 'style' => 'none', 'position' => 'bottom'], 'frames' => array_map(fn ($item) => ['mediaId' => $item['id'], 'method' => 'fit', 'duration' => 5], $project['media']), 'adjustments' => $project['preset'] === 'virtual-staging' ? $staging : []],
                     'status' => 'generating', 'progress' => 0,
-                    'operation' => ['id' => $operationId, 'key' => $key, 'type' => 'generate', 'payload' => [], 'completed' => [], 'requests' => [], 'routing' => [$project['preset'] => $project['route']]],
+                    'operation' => array_merge(['id' => $operationId, 'key' => $key, 'type' => 'generate', 'payload' => [], 'completed' => [], 'requests' => [], 'routing' => [$project['preset'] => $project['route']]], \App\Services\Studio\StaffPhotoPresetRecipe::operationFields($project['preset'])),
                 ]);
                 $parent ??= $workspace->id;
                 // The database queue insert participates in this short transaction: no lost enqueue window.

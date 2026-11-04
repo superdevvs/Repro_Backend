@@ -39,7 +39,7 @@ class StudioWorkspaceCatalogTest extends TestCase
         $this->assertFalse(Schema::hasTable('studio_templates'));
         Sanctum::actingAs(User::factory()->create(['role' => 'editing_manager']));
         $response = $this->getJson('/api/studio/workspaces/catalog')->assertOk()
-            ->assertJsonPath('data.version', 1)->assertJsonCount(12, 'data.presets')
+            ->assertJsonPath('data.version', 1)->assertJsonCount(13, 'data.presets')
             ->assertJsonPath('data.controls.audio', class_exists(\App\Services\Studio\WorkspaceVideoOptions::class))
             ->assertJsonPath('data.controls.selectableResolution', class_exists(\App\Services\Studio\WorkspaceVideoOptions::class))
             ->assertJsonPath('data.controls.templateScopes', ['curated', 'mine', 'team']);

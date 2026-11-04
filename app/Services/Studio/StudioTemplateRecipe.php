@@ -6,7 +6,7 @@ namespace App\Services\Studio;
 final class StudioTemplateRecipe
 {
     public const PRESETS = [
-        'listing-ready', 'color-correction', 'twilight', 'green-grass', 'virtual-staging',
+        'listing-ready', 'color-correction', 'twilight', 'green-grass', 'decluttering', 'virtual-staging',
         'full-shoot', 'sky-replacement', 'perspective-correction', 'upscale',
         'walkthrough', 'property-reel', 'social-teaser',
     ];

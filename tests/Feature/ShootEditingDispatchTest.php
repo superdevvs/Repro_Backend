@@ -32,7 +32,9 @@ class ShootEditingDispatchTest extends TestCase
         $this->admin = User::factory()->create(['role' => 'admin', 'metadata' => ['team_id' => 100]]);
         Sanctum::actingAs($this->admin);
         $this->mock(StudioProviderSettings::class, function ($mock) {
-            $mock->shouldReceive('route')->andReturnUsing(fn ($preset) => ['provider' => match ($preset) { 'full-shoot' => 'fotello', 'virtual-staging' => 'virtualstagingai', default => 'autoenhance' }, 'model' => 'test']);
+            $mock->shouldReceive('route')->andReturnUsing(fn ($preset) => ['provider' => match ($preset) {
+                'full-shoot' => 'fotello', 'virtual-staging' => 'virtualstagingai', default => 'autoenhance'
+            }, 'model' => 'test']);
             $mock->shouldReceive('readiness')->andReturn(['ready' => true]);
         });
     }
@@ -77,6 +79,9 @@ class ShootEditingDispatchTest extends TestCase
         $this->assertSame($projects[0]['id'], $projects[2]['parentWorkspaceId']);
         $this->assertSame($shoot->id, $projects[2]['shootId']);
         $this->assertSame($files[1]->id, $projects[2]['media'][0]['fileId']);
+        $grassOperation = StudioWorkspace::findOrFail($projects[2]['id'])->operation;
+        $this->assertSame(\App\Services\ListingStudio\ListingStudioPaidRecipe::VERSION, $grassOperation['recipeVersion']);
+        $this->assertSame(\App\Services\ListingStudio\ListingStudioPaidRecipe::GRASS_PROMPT, $grassOperation['presetPrompt']);
         // A retry (even another manager) cannot create another paid intake batch.
         Sanctum::actingAs(User::factory()->create(['role' => 'editing_manager']));
         $this->send($shoot, $data)->assertAccepted()->assertJsonCount(3, 'data.workspaces');
@@ -277,7 +282,7 @@ class ShootEditingDispatchTest extends TestCase
         $video->update(['workflow_stage' => ShootFile::STAGE_COMPLETED]);
         $assignments->markAssignedServicesReadyForUser($shoot->fresh(), $videoEditor);
         $this->assertTrue($assignments->allTrackedLanesReady($shoot->fresh()));
-        app(\App\Services\Shoots\Actions\SubmitForReviewAction::class)->execute(new \Illuminate\Http\Request(), $shoot->fresh(), $videoEditor);
+        app(\App\Services\Shoots\Actions\SubmitForReviewAction::class)->execute(new \Illuminate\Http\Request, $shoot->fresh(), $videoEditor);
         $this->assertSame('review', $shoot->fresh()->status);
         app(WorkspaceShootPublisher::class)->completeServices($project);
         $this->assertSame('review', $shoot->fresh()->status);
@@ -354,6 +359,7 @@ class ShootEditingDispatchTest extends TestCase
                 'path' => "shoots/{$shoot->id}/{$name}", 'file_type' => 'image/jpeg', 'mime_type' => 'image/jpeg',
                 'media_type' => 'photo', 'workflow_stage' => 'todo', 'scan_status' => 'clean', 'uploaded_by' => $this->admin->id]);
         }
+
         return [$shoot, $files];
     }
 }

@@ -66,7 +66,9 @@ class StudioWorkspaceController extends StudioController
             $query->where(function ($scope) use ($term) {
                 $scope->where('name', 'like', '%'.$term.'%')->orWhere('id', $term)
                     ->orWhere('preset_id', 'like', '%'.str_replace(' ', '-', $term).'%');
-                if (ctype_digit($term)) $scope->orWhere('shoot_id', (int) $term);
+                if (ctype_digit($term)) {
+                    $scope->orWhere('shoot_id', (int) $term);
+                }
             });
         }
 
@@ -430,6 +432,7 @@ class StudioWorkspaceController extends StudioController
                 if (! empty($target['original'])) {
                     abort_if(array_key_exists('outputId', $target), 422, 'Choose an original or an output version, not both.');
                     app(\App\Services\Studio\WorkspaceOriginalPhoto::class)->selected($record, $target['mediaId']);
+
                     continue;
                 }
                 abort_unless(isset($target['outputId']), 422, 'Choose an explicit original or completed output version.');
@@ -520,7 +523,12 @@ class StudioWorkspaceController extends StudioController
                 $availability = $settings->readiness('custom-revision', $settings->route('revision'));
                 abort_unless($availability['ready'], 422, $availability['reason'] ?? 'AI refinement is not configured.');
             }
-            $operation = $same && $record->status === 'failed' ? $old : ['id' => (string) Str::uuid(), 'key' => $key, 'type' => $type, 'payload' => $payload, 'completed' => [], 'requests' => []];
+            $resuming = $same && $record->status === 'failed';
+            $operation = $resuming ? $old : ['id' => (string) Str::uuid(), 'key' => $key, 'type' => $type, 'payload' => $payload, 'completed' => [], 'requests' => []];
+            if (! $resuming && $type === 'generate' && ($recipe = \App\Services\Studio\StaffPhotoPresetRecipe::definition($record->preset_id))) {
+                $operation['recipeVersion'] = $recipe['version'];
+                $operation['presetPrompt'] = $recipe['prompt'];
+            }
             if ($originalTargets) {
                 $operation['originalSources'] = $originalSources;
             }
@@ -528,7 +536,8 @@ class StudioWorkspaceController extends StudioController
                 $settings = app(\App\Services\Studio\StudioProviderSettings::class);
                 $stored = $settings->stored();
                 foreach (array_unique([$record->preset_id, 'revision', 'upscale', 'outpaint']) as $service) {
-                    $operation['routing'][$service] = $settings->route($service, $stored);
+                    $operation['routing'][$service] = $resuming && ! isset($operation['recipeVersion'])
+                        ? $settings->legacyRoute($service, $stored) : $settings->route($service, $stored);
                 }
             }
             $record->update(['operation' => $operation, 'status' => $type === 'prepare' ? 'preparing' : 'generating', 'progress' => 0, 'error' => null, 'version' => $record->version + 1]);

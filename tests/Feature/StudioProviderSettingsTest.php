@@ -47,8 +47,26 @@ class StudioProviderSettingsTest extends TestCase
         }
         $this->assertSame(0, StudioProviderSetting::count());
         $this->actor('superadmin');
-        $this->getJson('/api/studio/provider-settings')->assertOk()->assertJsonCount(14, 'data.services');
+        $this->getJson('/api/studio/provider-settings')->assertOk()->assertJsonCount(15, 'data.services');
         $this->putJson('/api/studio/provider-settings', [])->assertOk();
+        Http::assertNothingSent();
+    }
+
+    public function test_standard_photo_presets_ignore_old_routes_while_custom_revisions_remain_configurable(): void
+    {
+        StudioProviderSetting::create(['id' => 1, 'payload' => ['routes' => [
+            'twilight' => ['provider' => 'fal', 'model' => 'fal-ai/flux-kontext/dev', 'fallback' => null],
+            'green-grass' => ['provider' => 'autoenhance', 'model' => 'enhance', 'fallback' => null],
+        ]]]);
+        $settings = app(StudioProviderSettings::class);
+        foreach (['twilight' => 'twilight', 'green-grass' => 'grass', 'decluttering' => 'decluttering'] as $preset => $service) {
+            $this->assertSame(\App\Services\ListingStudio\ListingStudioPaidRecipe::definition($service)['route'], $settings->route($preset));
+            $this->assertTrue($settings->capabilities()['presets'][$preset]['ready']);
+        }
+        $this->actor('superadmin');
+        $this->putJson('/api/studio/provider-settings', ['services' => [['id' => 'twilight', 'provider' => 'openai', 'model' => 'gpt-image-2']]])->assertUnprocessable();
+        $this->putJson('/api/studio/provider-settings', ['services' => [['id' => 'revision', 'provider' => 'openai', 'model' => 'gpt-image-2']]])->assertOk();
+        $this->assertSame('openai', $settings->route('revision')['provider']);
         Http::assertNothingSent();
     }
 
