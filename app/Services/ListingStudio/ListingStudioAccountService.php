@@ -100,8 +100,9 @@ class ListingStudioAccountService
     public function transactions(User $client, int $pageNumber = 1, int $perPage = 20): array
     {
         ListingStudioClientAccess::assert($client);
+        $creditId = \App\Support\DatabaseSql::textCast('c.id');
         $credit = DB::table('listing_studio_credit_entries as c')->join('listing_studio_subscriptions as s', 's.id', '=', 'c.subscription_id')
-            ->where('s.client_id', $client->id)->selectRaw("'credit' AS record_type, CAST(c.id AS TEXT) AS record_id, c.source_type AS kind, 'succeeded' AS status,
+            ->where('s.client_id', $client->id)->selectRaw("'credit' AS record_type, {$creditId} AS record_id, c.source_type AS kind, 'succeeded' AS status,
                 c.amount_cents, c.plan_code, c.source_key, c.subscription_id, NULL AS order_id, c.created_at AS occurred_at, c.expires_at");
         $card = DB::table('listing_studio_order_funding_effects as e')->join('listing_studio_orders as o', 'o.id', '=', 'e.order_id')
             ->where('o.client_id', $client->id)->selectRaw("'card' AS record_type, e.id AS record_id, e.kind, e.status,

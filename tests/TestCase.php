@@ -7,6 +7,14 @@ use Illuminate\Foundation\Testing\TestCase as BaseTestCase;
 
 abstract class TestCase extends BaseTestCase
 {
+    protected function setUp(): void
+    {
+        parent::setUp();
+        if (filter_var(getenv('MYSQL_TEST_FACTORY_DEFAULTS'), FILTER_VALIDATE_BOOLEAN)) {
+            \Tests\Support\MySqlFactoryDefaults::seed();
+        }
+    }
+
     /**
      * Pin the application base path to this checkout.
      *

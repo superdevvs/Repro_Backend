@@ -1900,7 +1900,7 @@ class UserController extends Controller
         }
 
         if (count($invoiceAccountIds) > 1) {
-            $sharedData['totalSpent'] = \App\Models\Shoot::whereIn('client_id', $invoiceAccountIds)->sum('total_quote') ?? 0;
+            $sharedData['totalSpent'] = (float) (\App\Models\Shoot::whereIn('client_id', $invoiceAccountIds)->sum('total_quote') ?? 0);
 
             $sharedData['paymentHistory'] = \App\Models\Payment::whereHas('shoot', function ($query) use ($invoiceAccountIds) {
                     $query->whereIn('client_id', $invoiceAccountIds);

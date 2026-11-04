@@ -92,8 +92,8 @@ class DayScheduleAdjustmentTest extends TestCase
         $this->postJson('/api/photographer/availability/feasibility', $payload)->assertOk()->assertJsonPath('data.available', true);
         $id = $this->postJson('/api/shoots', $payload)->assertCreated()->json('data.id');
         $this->assertSame('09:00', substr($neighbor->fresh()->time, 0, 5));
-        $this->assertSame('2026-10-09 13:00:00', $neighbor->fresh()->getRawOriginal('scheduled_at'));
-        $this->assertSame('2026-10-09 13:00:00', $neighbor->serviceItems()->sole()->getRawOriginal('scheduled_at'));
+        $this->assertSame('2026-10-09 13:00:00', \Carbon\CarbonImmutable::parse($neighbor->fresh()->getRawOriginal('scheduled_at'), 'UTC')->format('Y-m-d H:i:s'));
+        $this->assertSame('2026-10-09 13:00:00', \Carbon\CarbonImmutable::parse($neighbor->serviceItems()->sole()->getRawOriginal('scheduled_at'), 'UTC')->format('Y-m-d H:i:s'));
         Queue::assertPushed(ProcessUpdatedShootSideEffectsJob::class, fn ($job) => $job->shootId === $neighbor->id && $job->notifyClient === false && $job->notifyPhotographer === true);
         Queue::assertPushed(ProcessCreatedShootSideEffectsJob::class, fn ($job) => $job->shootId === (int) $id && $job->notifyClient === false && $job->notifyPhotographer === true);
         Queue::assertPushed(SyncShootToGoogleCalendarJob::class, fn ($job) => $job->shootId === $neighbor->id);
@@ -148,8 +148,8 @@ class DayScheduleAdjustmentTest extends TestCase
         $neighbor = $this->booked(legacy: true);
         $this->postJson('/api/shoots', $this->payload($neighbor))->assertCreated();
         $this->assertNull($neighbor->fresh()->timezone);
-        $this->assertSame('2026-10-09 09:00:00', $neighbor->fresh()->getRawOriginal('scheduled_at'));
-        $this->assertSame('2026-10-09 09:00:00', $neighbor->serviceItems()->sole()->getRawOriginal('scheduled_at'));
+        $this->assertSame('2026-10-09 09:00:00', \Carbon\CarbonImmutable::parse($neighbor->fresh()->getRawOriginal('scheduled_at'), 'UTC')->format('Y-m-d H:i:s'));
+        $this->assertSame('2026-10-09 09:00:00', \Carbon\CarbonImmutable::parse($neighbor->serviceItems()->sole()->getRawOriginal('scheduled_at'), 'UTC')->format('Y-m-d H:i:s'));
     }
 
     #[\PHPUnit\Framework\Attributes\TestWith(['admin'])]
@@ -245,7 +245,7 @@ class DayScheduleAdjustmentTest extends TestCase
         $this->postJson('/api/shoots', $payload)->assertCreated();
         $this->assertSame(90, $first->fresh()->duration_minutes);
         $this->assertSame(30, $second->fresh()->duration_minutes);
-        $this->assertSame('2026-10-09 19:30:00', $second->fresh()->getRawOriginal('scheduled_at'));
+        $this->assertSame('2026-10-09 19:30:00', \Carbon\CarbonImmutable::parse($second->fresh()->getRawOriginal('scheduled_at'), 'UTC')->format('Y-m-d H:i:s'));
         $this->assertSame(200.0, (float) $second->fresh()->price);
         $this->assertSame(4, $neighbor->fresh()->units_revision);
         $this->assertSame('15:30', substr($neighbor->fresh()->time, 0, 5), 'The earliest remaining visit owns the shoot summary.');
@@ -320,7 +320,7 @@ class DayScheduleAdjustmentTest extends TestCase
             $this->postJson('/api/shoots/'.$target->id.'/approve', $payload)->assertOk();
             $this->assertSame('scheduled', $target->fresh()->status, $role);
             $this->assertSame('07:00', substr($neighbor->fresh()->time, 0, 5), $role);
-            $this->assertSame(['2026-10-09 14:30:00', '2026-10-09 15:45:00'], $target->serviceItems()->orderBy('id')->get()->map(fn ($row) => $row->getRawOriginal('scheduled_at'))->all());
+            $this->assertSame(['2026-10-09 14:30:00', '2026-10-09 15:45:00'], $target->serviceItems()->orderBy('id')->get()->map(fn ($row) => \Carbon\CarbonImmutable::parse($row->getRawOriginal('scheduled_at'), 'UTC')->format('Y-m-d H:i:s'))->all());
             $this->assertSame([75, 5], $target->serviceItems()->orderBy('id')->pluck('duration_minutes')->all());
             $this->assertSame([100.0, 175.0], $target->serviceItems()->orderBy('id')->pluck('price')->map(fn ($price) => (float) $price)->all());
             Queue::assertPushed(ProcessUpdatedShootSideEffectsJob::class, fn ($job) => $job->shootId === $neighbor->id && $job->notifyClient === false && $job->notifyPhotographer === false);

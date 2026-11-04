@@ -180,7 +180,7 @@ class ShootListingService
                         'is_cover',
                         'is_hidden',
                         'flag_reason',
-                        'url',
+                        'storage_path',
                         'path',
                         'dropbox_path',
                         'file_type',
@@ -343,7 +343,7 @@ class ShootListingService
             'is_extra',
             'required_for_editing',
             'metadata',
-            'url',
+            'storage_path',
             'path',
             'dropbox_path',
             'file_type',
@@ -376,7 +376,7 @@ class ShootListingService
                     $query->whereNotNull('grid_path')
                         ->orWhereNotNull('web_path')
                         ->orWhereNotNull('thumbnail_path')
-                        ->orWhereNotNull('url')
+                        ->orWhereNotNull('storage_path')
                         ->orWhereNotNull('path');
                 })
                 ->select($columns)
@@ -451,7 +451,7 @@ class ShootListingService
             'id', 'address', 'city', 'state', 'zip', 'latitude', 'longitude',
             'listing_type', 'property_details',
             // Used only to enforce the existing public-image release gate.
-            'status', 'workflow_status', 'payment_status', 'total_quote', 'total_paid', 'bypass_paywall',
+            'status', 'workflow_status', 'payment_status', 'total_quote', 'bypass_paywall',
             'active_work_started_at', 'active_work_completed_at', 'admin_verified_at',
         ])->withExists('units')->where('is_private_listing', true)
             ->where(fn (Builder $scope) => $scope->where('is_listing_hidden', false)->orWhereNull('is_listing_hidden'))
@@ -832,7 +832,7 @@ class ShootListingService
                 ];
             case 'delivered':
                 return [
-                    ['raw' => ShootListOrdering::DELIVERED_NEWEST],
+                    ['raw' => ShootListOrdering::deliveredExpression()],
                     ['column' => 'scheduled_date', 'direction' => 'desc'],
                     ['column' => 'id', 'direction' => 'desc'],
                 ];
@@ -860,6 +860,7 @@ class ShootListingService
                 ->whereIn('id', (clone $accessible)->select('client_id'))
                 ->select('id', 'name')
                 ->orderBy('name')
+                ->orderBy('id')
                 ->get()
                 ->map(function (User $client) {
                     return [
@@ -874,6 +875,7 @@ class ShootListingService
                     ->orWhereIn('id', DB::table('shoot_service')->select('photographer_id')->whereIn('shoot_id', $shootIds())))
                 ->select('id', 'name')
                 ->orderBy('name')
+                ->orderBy('id')
                 ->get()
                 ->map(function (User $photographer) {
                     return [

@@ -143,7 +143,7 @@ class DigitalEnhancementAssignmentTest extends TestCase
         $this->postJson('/api/shoots/'.$shoot->id.'/schedule', ['photographer_id' => $this->photographer->id, 'scheduled_at' => '2026-10-13T17:00:00-04:00'])->assertOk();
         $this->assertNull($shoot->fresh()->photographer_id);
         $this->assertNull($shoot->serviceItems()->sole()->photographer_id);
-        $this->assertSame('2026-10-13 21:00:00', $shoot->fresh()->getRawOriginal('scheduled_at'));
+        $this->assertSame('2026-10-13 21:00:00', \Carbon\CarbonImmutable::parse($shoot->fresh()->getRawOriginal('scheduled_at'), 'UTC')->format('Y-m-d H:i:s'));
         Mail::assertNothingSent();
         Notification::assertNothingSent();
     }

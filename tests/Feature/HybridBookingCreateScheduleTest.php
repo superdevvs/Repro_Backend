@@ -141,7 +141,7 @@ class HybridBookingCreateScheduleTest extends TestCase
         $this->assertFalse($preview['can_override']);
         $this->postJson('/api/shoots', $payload)->assertUnprocessable();
         $saved = $this->save($payload + $this->hoursConfirmation($preview));
-        $this->assertSame('2026-10-02 20:55:00', $saved->getRawOriginal('scheduled_at'));
+        $this->assertSame('2026-10-02 20:55:00', \Carbon\CarbonImmutable::parse($saved->getRawOriginal('scheduled_at'), 'UTC')->format('Y-m-d H:i:s'));
         $this->assertSame(15, $saved->serviceItems()->sole()->duration_minutes);
         $audit = UserActivityLog::where('event_type', 'schedule.working_hours_override')->sole();
         $this->assertSame($this->admin->id, $audit->actor_user_id);
@@ -292,10 +292,10 @@ class HybridBookingCreateScheduleTest extends TestCase
         $payload = $this->payload('2026-10-02T11:15:00-04:00');
         $payload['services'][0]['scheduled_at'] = '2026-10-02T11:30:00-04:00';
         $shoot = $this->save($payload);
-        $this->assertSame('2026-10-02 15:30:00', $shoot->getRawOriginal('scheduled_at'));
+        $this->assertSame('2026-10-02 15:30:00', \Carbon\CarbonImmutable::parse($shoot->getRawOriginal('scheduled_at'), 'UTC')->format('Y-m-d H:i:s'));
         $this->assertSame('2026-10-02', $shoot->scheduled_date->toDateString());
         $this->assertSame('11:30', substr($shoot->time, 0, 5));
-        $this->assertSame('2026-10-02 15:30:00', $shoot->serviceItems()->sole()->getRawOriginal('scheduled_at'));
+        $this->assertSame('2026-10-02 15:30:00', \Carbon\CarbonImmutable::parse($shoot->serviceItems()->sole()->getRawOriginal('scheduled_at'), 'UTC')->format('Y-m-d H:i:s'));
     }
 
     public function test_michael_short_exteriors_keep_existing_duration_and_use_one_fifteen_minute_gap(): void
@@ -312,9 +312,9 @@ class HybridBookingCreateScheduleTest extends TestCase
         $secondPayload = $this->payload('2026-10-02T09:15:00-04:00');
         $this->assertSame('available', $this->preview($secondPayload)['status']);
         $second = $this->save($secondPayload);
-        $this->assertSame('2026-10-02 13:15:00', $second->serviceItems()->sole()->getRawOriginal('scheduled_at'));
+        $this->assertSame('2026-10-02 13:15:00', \Carbon\CarbonImmutable::parse($second->serviceItems()->sole()->getRawOriginal('scheduled_at'), 'UTC')->format('Y-m-d H:i:s'));
         $this->assertSame(30, $original->serviceItems()->sole()->duration_minutes);
-        $this->assertSame('2026-10-02 12:00:00', $original->fresh()->getRawOriginal('scheduled_at'));
+        $this->assertSame('2026-10-02 12:00:00', \Carbon\CarbonImmutable::parse($original->fresh()->getRawOriginal('scheduled_at'), 'UTC')->format('Y-m-d H:i:s'));
     }
 
     #[\PHPUnit\Framework\Attributes\TestWith(['admin'])]
@@ -360,7 +360,7 @@ class HybridBookingCreateScheduleTest extends TestCase
         $this->assertSame('same_building', $preview['transitions'][0]['source']);
         $this->assertSame(0, $preview['transitions'][0]['required_minutes']);
         $saved = $this->save($payload);
-        $this->assertSame('2026-10-02 23:15:00', $saved->serviceItems()->sole()->getRawOriginal('scheduled_at'));
+        $this->assertSame('2026-10-02 23:15:00', \Carbon\CarbonImmutable::parse($saved->serviceItems()->sole()->getRawOriginal('scheduled_at'), 'UTC')->format('Y-m-d H:i:s'));
         $this->assertSame([], $this->routeCalls);
         $payload['scheduled_at'] = '2026-10-02T19:05:00-04:00';
         $conflict = $this->preview($payload);
@@ -394,7 +394,7 @@ class HybridBookingCreateScheduleTest extends TestCase
         $this->assertSame(2, $saved->units()->count());
         $this->assertSame([15, 15], $saved->serviceItems()->orderBy('id')->pluck('duration_minutes')->all());
         $this->assertSame(['2026-10-02 23:00:00', $staggered ? '2026-10-02 23:15:00' : '2026-10-02 23:00:00'],
-            $saved->serviceItems()->orderBy('id')->get()->map(fn ($item) => $item->getRawOriginal('scheduled_at'))->all());
+            $saved->serviceItems()->orderBy('id')->get()->map(fn ($item) => \Carbon\CarbonImmutable::parse($item->getRawOriginal('scheduled_at'), 'UTC')->format('Y-m-d H:i:s'))->all());
     }
 
     public function test_secondary_service_assignment_is_checked_without_reserving_an_unassigned_primary(): void
@@ -437,8 +437,8 @@ class HybridBookingCreateScheduleTest extends TestCase
         $this->assertSame('available', $preview['status']);
         $this->assertSame(17, $preview['visits'][0]['duration_minutes']);
         $saved = $this->save($payload);
-        $this->assertSame($stored, $saved->getRawOriginal('scheduled_at'));
-        $this->assertSame($stored, $saved->serviceItems()->sole()->getRawOriginal('scheduled_at'));
+        $this->assertSame($stored, \Carbon\CarbonImmutable::parse($saved->getRawOriginal('scheduled_at'), 'UTC')->format('Y-m-d H:i:s'));
+        $this->assertSame($stored, \Carbon\CarbonImmutable::parse($saved->serviceItems()->sole()->getRawOriginal('scheduled_at'), 'UTC')->format('Y-m-d H:i:s'));
         $expectedInstant = Carbon::parse($stored, $zone ? 'UTC' : 'America/New_York')->utc()->toIso8601String();
         $this->assertSame($expectedInstant, $preview['visits'][0]['start']);
     }
@@ -541,8 +541,8 @@ class HybridBookingCreateScheduleTest extends TestCase
                 }
                 $saved = $this->save($payload);
                 $this->assertSame($canonical, $saved->timezone);
-                $this->assertSame('2026-10-03 12:45:00', $saved->getRawOriginal('scheduled_at'));
-                $this->assertSame('2026-10-03 12:45:00', $saved->serviceItems()->sole()->getRawOriginal('scheduled_at'));
+                $this->assertSame('2026-10-03 12:45:00', \Carbon\CarbonImmutable::parse($saved->getRawOriginal('scheduled_at'), 'UTC')->format('Y-m-d H:i:s'));
+                $this->assertSame('2026-10-03 12:45:00', \Carbon\CarbonImmutable::parse($saved->serviceItems()->sole()->getRawOriginal('scheduled_at'), 'UTC')->format('Y-m-d H:i:s'));
                 $this->assertSame(60, $saved->serviceItems()->sole()->duration_minutes);
             }
         }

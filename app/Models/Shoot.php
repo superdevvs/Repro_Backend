@@ -242,6 +242,7 @@ class Shoot extends Model
         'discount_value' => 'decimal:2',
         'discount_amount' => 'decimal:2',
         'tax_amount' => 'decimal:2',
+        'tax_percent' => 'float',
         'total_quote' => 'decimal:2',
         'expected_final_count' => 'integer',
         'bracket_mode' => 'integer',

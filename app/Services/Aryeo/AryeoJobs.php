@@ -202,7 +202,12 @@ class AryeoJobs
             abort_if(! empty($job->snapshot['listing_id']) && $receipt['listing_id'] !== $job->snapshot['listing_id'], 422, 'Receipt is for another listing.');
             $order = AryeoRequest::findOrFail($job->request_record_id);
             abort_if($order->listing_id && $order->listing_id !== $receipt['listing_id'], 422, 'Receipt conflicts with existing listing.');
-            abort_if(\Carbon\Carbon::parse($receipt['verified_at'])->lt($job->created_at), 422, 'Receipt verification predates this operation.');
+            $createdAt = $job->created_at->copy();
+            // Workers may report ISO timestamps at whole-second precision.
+            if (! preg_match('/\.\d+/', $receipt['verified_at'])) {
+                $createdAt->startOfSecond();
+            }
+            abort_if(\Carbon\Carbon::parse($receipt['verified_at'])->lt($createdAt), 422, 'Receipt verification predates this operation.');
             abort_unless(($receipt['request_id'] ?? null) === $job->snapshot['request_id']
                 && ($receipt['media_version'] ?? null) === $job->media_version, 422, 'Receipt identity mismatch.');
             $expected = array_map('strval', array_column($job->snapshot['assets'], 'id'));

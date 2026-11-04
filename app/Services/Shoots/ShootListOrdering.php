@@ -13,6 +13,13 @@ class ShootListOrdering
 {
     public const DELIVERED_NEWEST = "COALESCE(NULLIF(shoots.active_work_completed_at, ''), NULLIF(shoots.admin_verified_at, ''), NULLIF(shoots.completed_at, ''), NULLIF(shoots.editing_completed_at, ''), NULLIF(shoots.scheduled_date, ''), shoots.created_at) DESC";
 
+    public static function deliveredExpression(?\Illuminate\Database\ConnectionInterface $connection = null): string
+    {
+        return ($connection ?? \Illuminate\Support\Facades\DB::connection())->getDriverName() === 'mysql'
+            ? 'COALESCE(shoots.active_work_completed_at, shoots.admin_verified_at, shoots.completed_at, shoots.editing_completed_at, shoots.scheduled_date, shoots.created_at) DESC'
+            : self::DELIVERED_NEWEST;
+    }
+
     public function mode(mixed $value): ?string
     {
         return is_string($value) && in_array($value, ['next_up', 'date_asc', 'date_desc', 'delivered_desc'], true) ? $value : null;
@@ -20,7 +27,7 @@ class ShootListOrdering
 
     public function deliveredNewest(Builder $query): Builder
     {
-        return $query->reorder()->orderByRaw(self::DELIVERED_NEWEST)
+        return $query->reorder()->orderByRaw(self::deliveredExpression($query->getConnection()))
             ->orderByDesc('shoots.scheduled_date')->orderByDesc('shoots.id');
     }
 

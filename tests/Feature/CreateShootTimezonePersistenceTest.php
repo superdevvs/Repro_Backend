@@ -56,13 +56,13 @@ class CreateShootTimezonePersistenceTest extends TestCase
         $shoot = Shoot::query()->latest('id')->first();
         $this->assertNotNull($shoot);
         $this->assertSame('America/New_York', $shoot->timezone);
-        $this->assertSame('2026-10-02 17:00:00', $shoot->getRawOriginal('scheduled_at'));
+        $this->assertSame('2026-10-02 17:00:00', \Carbon\CarbonImmutable::parse($shoot->getRawOriginal('scheduled_at'), 'UTC')->format('Y-m-d H:i:s'));
         $this->assertSame('13:00', $shoot->time);
         $this->assertSame('2026-10-02', $shoot->scheduled_date?->format('Y-m-d') ?? (string) $shoot->scheduled_date);
 
         $item = $shoot->serviceItems()->where('service_id', $service->id)->first();
         $this->assertNotNull($item);
-        $this->assertSame('2026-10-02 17:00:00', $item->getRawOriginal('scheduled_at'));
+        $this->assertSame('2026-10-02 17:00:00', \Carbon\CarbonImmutable::parse($item->getRawOriginal('scheduled_at'), 'UTC')->format('Y-m-d H:i:s'));
     }
 
     public function test_create_jaz_1pm_et_does_not_need_skip_against_existing_10am_et(): void
@@ -133,7 +133,7 @@ class CreateShootTimezonePersistenceTest extends TestCase
         $created = Shoot::query()->where('address', '200 After Existing Ave')->first();
         $this->assertNotNull($created);
         $this->assertSame('America/New_York', $created->timezone);
-        $this->assertSame('2026-10-02 17:00:00', $created->getRawOriginal('scheduled_at'));
+        $this->assertSame('2026-10-02 17:00:00', \Carbon\CarbonImmutable::parse($created->getRawOriginal('scheduled_at'), 'UTC')->format('Y-m-d H:i:s'));
     }
 
     public function test_create_without_timezone_still_treats_naive_as_utc(): void
@@ -172,6 +172,6 @@ class CreateShootTimezonePersistenceTest extends TestCase
         $shoot = Shoot::query()->where('address', '300 Legacy Naive Rd')->first();
         $this->assertNotNull($shoot);
         $this->assertTrue($shoot->timezone === null || $shoot->timezone === '');
-        $this->assertSame('2026-11-10 11:00:00', $shoot->getRawOriginal('scheduled_at'));
+        $this->assertSame('2026-11-10 11:00:00', \Carbon\CarbonImmutable::parse($shoot->getRawOriginal('scheduled_at'), 'UTC')->format('Y-m-d H:i:s'));
     }
 }

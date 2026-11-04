@@ -16,6 +16,7 @@ use Tests\TestCase;
 class AdminUserSecurityAndPreferencesTest extends TestCase
 {
     use RefreshDatabase;
+    use \Tests\Concerns\InjectsDatabaseWriteFailures;
 
     public function test_admin_user_detail_returns_persisted_activity_and_last_login(): void
     {
@@ -151,13 +152,7 @@ class AdminUserSecurityAndPreferencesTest extends TestCase
         $target->createToken('phone');
         $adminToken = $admin->createToken('admin-security')->plainTextToken;
 
-        DB::statement(<<<'SQL'
-            CREATE TRIGGER fail_admin_reset_token_delete
-            BEFORE DELETE ON personal_access_tokens
-            BEGIN
-                SELECT RAISE(ABORT, 'forced token deletion failure');
-            END
-        SQL);
+        $restoreDatabaseDeletes = $this->failDatabaseDeletesTo('personal_access_tokens');
 
         try {
             $this->withToken($adminToken)
@@ -166,7 +161,7 @@ class AdminUserSecurityAndPreferencesTest extends TestCase
                 ])
                 ->assertStatus(500);
         } finally {
-            DB::statement('DROP TRIGGER IF EXISTS fail_admin_reset_token_delete');
+            $restoreDatabaseDeletes();
         }
 
         $target->refresh();
@@ -196,13 +191,7 @@ class AdminUserSecurityAndPreferencesTest extends TestCase
             'created_at' => now(),
         ]);
 
-        DB::statement(<<<'SQL'
-            CREATE TRIGGER fail_admin_reset_link_delete
-            BEFORE DELETE ON password_reset_tokens
-            BEGIN
-                SELECT RAISE(ABORT, 'forced reset link deletion failure');
-            END
-        SQL);
+        $restoreDatabaseDeletes = $this->failDatabaseDeletesTo('password_reset_tokens');
 
         try {
             $this->withToken($adminToken)
@@ -211,7 +200,7 @@ class AdminUserSecurityAndPreferencesTest extends TestCase
                 ])
                 ->assertStatus(500);
         } finally {
-            DB::statement('DROP TRIGGER IF EXISTS fail_admin_reset_link_delete');
+            $restoreDatabaseDeletes();
         }
 
         $target->refresh();

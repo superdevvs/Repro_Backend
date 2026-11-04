@@ -62,9 +62,14 @@ class SmsContextSearchTest extends TestCase
         $query = $this->query('%\\%\\_%');
 
         $this->assertSame([$thread], $query->pluck('id')->all());
-        $plan = collect(DB::select('EXPLAIN QUERY PLAN '.$query->toSql(), $query->getBindings()))->pluck('detail')->implode('\n');
-        $this->assertStringNotContainsString('CORRELATED', strtoupper($plan));
-        $this->assertStringContainsString('LIST SUBQUERY', strtoupper($plan));
+        if (DB::getDriverName() === 'sqlite') {
+            $plan = collect(DB::select('EXPLAIN QUERY PLAN '.$query->toSql(), $query->getBindings()))->pluck('detail')->implode('\n');
+            $this->assertStringNotContainsString('CORRELATED', strtoupper($plan));
+            $this->assertStringContainsString('LIST SUBQUERY', strtoupper($plan));
+        } else {
+            $plan = json_encode(DB::select('EXPLAIN FORMAT=JSON '.$query->toSql(), $query->getBindings()), JSON_THROW_ON_ERROR);
+            $this->assertStringNotContainsString('DEPENDENT SUBQUERY', strtoupper($plan));
+        }
     }
 
     private function query(string $pattern): \Illuminate\Database\Eloquent\Builder

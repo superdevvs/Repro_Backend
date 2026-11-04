@@ -83,7 +83,7 @@ class DeliveredCardMediaAuthorizationTest extends TestCase
         DB::enableQueryLog();
         try {
             app(ShootListingService::class)->eagerLoadListCardPreviewFiles($page);
-            $queries = collect(DB::getQueryLog())->filter(fn ($entry) => str_contains($entry['query'], 'from "shoot_service"'));
+            $queries = collect(DB::getQueryLog())->filter(fn ($entry) => str_contains(str_replace('`', '"', $entry['query']), 'from "shoot_service"'));
             $this->assertCount(1, $queries, 'Assignment reads must be batched, not repeated for each candidate.');
         } finally {
             DB::disableQueryLog();
@@ -215,7 +215,7 @@ class DeliveredCardMediaAuthorizationTest extends TestCase
         DB::enableQueryLog();
         try {
             app(ShootListingService::class)->eagerLoadListCardPreviewFiles($page);
-            $queries = collect(DB::getQueryLog())->filter(fn ($entry) => str_contains($entry['query'], 'from "shoot_service"'));
+            $queries = collect(DB::getQueryLog())->filter(fn ($entry) => str_contains(str_replace('`', '"', $entry['query']), 'from "shoot_service"'));
             $this->assertCount(1, $queries);
         } finally {
             DB::disableQueryLog();
