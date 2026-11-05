@@ -94,9 +94,9 @@ class ListingStudioPaidPipeline
         }
         $recipe = ListingStudioPaidRecipe::definition($item->service, $item->options ?? [], $version);
         if ($workspace->preset_id !== $recipe['preset'] || ($workspace->operation['recipeVersion'] ?? '') !== $recipe['version']
-            || ($workspace->operation['type'] ?? '') !== $recipe['type'] || ($workspace->operation['payload'] ?? []) !== $recipe['payload']
-            || ($workspace->config['prompt'] ?? '') !== $recipe['prompt'] || ($workspace->config['adjustments'] ?? []) !== $recipe['adjustments']
-            || ($workspace->operation['routing'][$recipe['routeKey']] ?? null) !== $recipe['route']) {
+            || ($workspace->operation['type'] ?? '') !== $recipe['type'] || ! StudioWorkspace::sameConfig($workspace->operation['payload'] ?? [], $recipe['payload'])
+            || ($workspace->config['prompt'] ?? '') !== $recipe['prompt'] || ! StudioWorkspace::sameConfig($workspace->config['adjustments'] ?? [], $recipe['adjustments'])
+            || ! StudioWorkspace::sameConfig($workspace->operation['routing'][$recipe['routeKey']] ?? null, $recipe['route'])) {
             throw new StudioProviderException('This paid editing recipe needs review.', true);
         }
         if (($workspace->media[0]['orderItemId'] ?? null) !== $item->id) {

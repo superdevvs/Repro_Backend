@@ -185,4 +185,53 @@ final class ListingStudioLifecycleConcurrencyTest extends TestCase
             rmdir($directory);
         }
     }
+
+    public static function revisionRaces(): array
+    {
+        return ['distinct requests' => ['distinct', 0], 'exact replay' => ['replay', 0],
+            'changed replay' => ['conflict', 0], 'last included revision' => ['distinct', 2]];
+    }
+
+    #[DataProvider('revisionRaces')]
+    public function test_simultaneous_included_revisions_share_one_allowance_and_one_outbox(string $scenario, int $used): void
+    {
+        Support\configureStudioRevisionRace();
+        $client = User::withoutEvents(fn () => User::factory()->create(['role' => 'client', 'account_status' => 'active']));
+        $quote = \App\Models\ListingStudioQuote::create(['client_id' => $client->id, 'kind' => 'ai_edit', 'service' => 'grass',
+            'source_kind' => 'upload', 'source_id' => (string) Str::uuid(), 'source_snapshot' => [], 'options' => [], 'pricing_snapshot' => [],
+            'catalog_version' => 'test', 'request_hash' => str_repeat('a', 64), 'expires_at' => now()->addMinutes(10)]);
+        $order = ListingStudioOrder::create(['client_id' => $client->id, 'quote_id' => $quote->id, 'kind' => 'ai_edit', 'service' => 'grass',
+            'funding_method' => 'card', 'funding_status' => 'settled', 'total_cents' => 100, 'paid_amount_cents' => 100,
+            'pricing_snapshot' => [], 'idempotency_key' => (string) Str::uuid(), 'request_hash' => str_repeat('b', 64)]);
+        $item = \App\Models\ListingStudioOrderItem::create(['order_id' => $order->id, 'client_id' => $client->id,
+            'kind' => 'ai_edit', 'service' => 'grass', 'status' => 'completed', 'source_kind' => 'upload',
+            'source_id' => $quote->source_id, 'source_snapshot' => [], 'options' => [], 'completed_at' => now()]);
+        $workspace = \App\Models\StudioWorkspace::create(['listing_studio_order_item_id' => $item->id, 'created_by' => $client->id,
+            'team_id' => null, 'name' => 'Revision race', 'preset_id' => 'green-grass', 'status' => 'completed',
+            'config' => [], 'media' => [], 'outputs' => [['id' => 'initial-source', 'mediaId' => 'source',
+                'path' => 'fixture/initial.jpg', 'kind' => 'image', 'status' => 'completed']], 'operation' => []]);
+        $item->update(['workspace_id' => $workspace->id, 'output_descriptor' => ['path' => 'fixture/initial.jpg']]);
+        for ($sequence = 1; $sequence <= $used; $sequence++) {
+            \App\Models\ListingStudioAiRevision::create(['client_id' => $client->id, 'order_item_id' => $item->id,
+                'sequence' => $sequence, 'request_key' => (string) Str::uuid(), 'request_hash' => str_repeat('c', 64),
+                'instructions' => 'Earlier revision', 'base_output_id' => 'initial-source', 'base_descriptor' => [],
+                'route' => [], 'status' => 'completed']);
+        }
+        $key = (string) Str::uuid();
+        $outcomes = $this->runWorkers(['actions' => ['revision', 'revision'], 'client' => $client->id, 'order' => $order->id,
+            'keys' => [$key, $scenario === 'distinct' ? (string) Str::uuid() : $key],
+            'instructions' => ['Lighten the rug.', $scenario === 'conflict' ? 'Change the wall.' : 'Lighten the rug.']]);
+        $accepted = array_values(array_filter($outcomes, fn ($outcome) => str_starts_with($outcome, 'revision:')));
+        $this->assertCount($scenario === 'replay' ? 2 : 1, $accepted);
+        if ($scenario === 'replay') {
+            $this->assertSame($accepted[0], $accepted[1]);
+        } else {
+            $this->assertContains($scenario === 'conflict' ? 'idempotency_conflict' : 'ai_revision_active', $outcomes);
+        }
+        $this->assertSame($used + 1, \App\Models\ListingStudioAiRevision::where('order_item_id', $item->id)->count());
+        $this->assertSame(1, ListingStudioOutbox::where('aggregate_id', $order->id)->where('type', 'process_ai_revision')->count());
+        $this->assertSame(100, $order->fresh()->paid_amount_cents);
+        $this->assertSame('settled', $order->fresh()->funding_status);
+        $this->assertSame(1, ListingStudioOrder::where('client_id', $client->id)->count());
+    }
 }

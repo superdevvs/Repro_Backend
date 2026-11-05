@@ -1590,7 +1590,7 @@ DROP TABLE IF EXISTS `invoices`;
 CREATE TABLE `invoices` (
   `id` bigint NOT NULL AUTO_INCREMENT,
   `user_id` bigint NOT NULL,
-  `role` varchar(255) COLLATE utf8mb4_0900_bin DEFAULT NULL,
+  `role` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin DEFAULT NULL,
   `period_start` date NOT NULL,
   `period_end` date NOT NULL,
   `charges_total` decimal(65,30) NOT NULL DEFAULT '0.000000000000000000000000000000',
@@ -1788,6 +1788,36 @@ CREATE TABLE `listing_studio_account_setups` (
   PRIMARY KEY (`id`),
   UNIQUE KEY `listing_studio_account_setups_client_id_unique` (`client_id`),
   CONSTRAINT `fk_listing_studio_account_setups_0_80e6ec4878d6` FOREIGN KEY (`client_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin ROW_FORMAT=DYNAMIC;
+/*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `listing_studio_ai_revisions`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `listing_studio_ai_revisions` (
+  `id` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin NOT NULL,
+  `order_item_id` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin NOT NULL,
+  `client_id` bigint NOT NULL,
+  `sequence` bigint NOT NULL,
+  `request_key` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin NOT NULL,
+  `request_hash` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin NOT NULL,
+  `instructions` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin NOT NULL,
+  `base_output_id` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin NOT NULL,
+  `base_descriptor` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin NOT NULL,
+  `output_descriptor` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin,
+  `route` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin NOT NULL,
+  `status` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'queued',
+  `error_code` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin,
+  `started_at` datetime(6) DEFAULT NULL,
+  `completed_at` datetime(6) DEFAULT NULL,
+  `created_at` datetime(6) DEFAULT NULL,
+  `updated_at` datetime(6) DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `listing_studio_ai_revisions_order_item_id_request_key_unique` (`order_item_id`,`request_key`),
+  UNIQUE KEY `listing_studio_ai_revisions_order_item_id_sequence_unique` (`order_item_id`,`sequence`),
+  KEY `listing_studio_ai_revisions_order_item_id_status_index` (`order_item_id`,`status`),
+  KEY `fk_listing_studio_ai_revisions_0_5700e80b23e4` (`client_id`),
+  CONSTRAINT `fk_listing_studio_ai_revisions_0_5700e80b23e4` FOREIGN KEY (`client_id`) REFERENCES `users` (`id`),
+  CONSTRAINT `fk_listing_studio_ai_revisions_1_704cd5d4a189` FOREIGN KEY (`order_item_id`) REFERENCES `listing_studio_order_items` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin ROW_FORMAT=DYNAMIC;
 /*!40101 SET character_set_client = @saved_cs_client */;
 DROP TABLE IF EXISTS `listing_studio_billing_emails`;
@@ -2378,6 +2408,33 @@ CREATE TABLE `listing_studio_subscription_actions` (
   CONSTRAINT `fk_listing_studio_subscription_actions_2_1129c506b8b9` FOREIGN KEY (`client_id`) REFERENCES `users` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin ROW_FORMAT=DYNAMIC;
 /*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `listing_studio_subscription_receipts`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `listing_studio_subscription_receipts` (
+  `id` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin NOT NULL,
+  `subscription_id` bigint NOT NULL,
+  `client_id` bigint NOT NULL,
+  `message_id` bigint DEFAULT NULL,
+  `invoice_id` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin NOT NULL,
+  `recipient` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin NOT NULL,
+  `snapshot` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin NOT NULL,
+  `status` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin NOT NULL DEFAULT 'queued',
+  `submission_started_at` datetime(6) DEFAULT NULL,
+  `sent_at` datetime(6) DEFAULT NULL,
+  `error_code` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin,
+  `created_at` datetime(6) DEFAULT NULL,
+  `updated_at` datetime(6) DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `idx_listing_studio_subscription_receipts_subscrip_ce28a6600a6a` (`subscription_id`,`invoice_id`),
+  KEY `listing_studio_subscription_receipts_status_index` (`status`),
+  KEY `fk_listing_studio_subscription_receipts_0_5a56986e3a66` (`message_id`),
+  KEY `fk_listing_studio_subscription_receipts_1_82e2a93a8ae9` (`client_id`),
+  CONSTRAINT `fk_listing_studio_subscription_receipts_0_5a56986e3a66` FOREIGN KEY (`message_id`) REFERENCES `messages` (`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_listing_studio_subscription_receipts_1_82e2a93a8ae9` FOREIGN KEY (`client_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_listing_studio_subscription_receipts_2_2cde6341a3de` FOREIGN KEY (`subscription_id`) REFERENCES `listing_studio_subscriptions` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin ROW_FORMAT=DYNAMIC;
+/*!40101 SET character_set_client = @saved_cs_client */;
 DROP TABLE IF EXISTS `listing_studio_subscription_refunds`;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;
 /*!50503 SET character_set_client = utf8mb4 */;
@@ -2614,13 +2671,13 @@ CREATE TABLE `message_threads` (
   `status` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin DEFAULT NULL,
   `tags_json` json DEFAULT NULL,
   PRIMARY KEY (`id`),
+  KEY `message_threads_sms_group_sender_lookup` (`sms_group_id`,`last_message_at`),
   KEY `message_threads_sms_inbox_index` (`channel`,`sms_inbox_active`,`last_message_at`),
   KEY `message_threads_channel_last_message_at_index` (`channel`,`last_message_at`),
   KEY `message_threads_channel_contact_shoot_index` (`channel`,`contact_id`,`related_shoot_id`),
   KEY `message_threads_ai_session_id_index` (`ai_session_id`),
   KEY `fk_message_threads_1_f7da5dcd9d50` (`contact_id`),
   KEY `message_threads_assigned_to_user_id_foreign` (`assigned_to_user_id`),
-  KEY `message_threads_sms_group_sender_lookup` (`sms_group_id`,`last_message_at`),
   CONSTRAINT `fk_message_threads_0_1f698c684b70` FOREIGN KEY (`sms_group_id`) REFERENCES `sms_groups` (`id`) ON DELETE SET NULL,
   CONSTRAINT `fk_message_threads_1_f7da5dcd9d50` FOREIGN KEY (`contact_id`) REFERENCES `contacts` (`id`) ON DELETE CASCADE,
   CONSTRAINT `message_threads_assigned_to_user_id_foreign` FOREIGN KEY (`assigned_to_user_id`) REFERENCES `users` (`id`) ON DELETE SET NULL
@@ -6429,8 +6486,8 @@ CREATE TABLE `voice_transcript_recoveries` (
   `updated_at` datetime(6) DEFAULT NULL,
   PRIMARY KEY (`id`),
   UNIQUE KEY `voice_transcript_recoveries_voice_call_id_idempotency_key_unique` (`voice_call_id`,`idempotency_key`),
-  KEY `fk_voice_transcript_recoveries_0_fe133e5c984b` (`requested_by_id`),
   KEY `idx_voice_transcript_recoveries_voice_call_id_rec_d73775287b04` (`voice_call_id`,`recording_id`,`status`),
+  KEY `fk_voice_transcript_recoveries_0_fe133e5c984b` (`requested_by_id`),
   CONSTRAINT `fk_voice_transcript_recoveries_0_fe133e5c984b` FOREIGN KEY (`requested_by_id`) REFERENCES `users` (`id`) ON DELETE SET NULL,
   CONSTRAINT `fk_voice_transcript_recoveries_1_2cf7d03cfe7b` FOREIGN KEY (`voice_call_id`) REFERENCES `voice_calls` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin ROW_FORMAT=DYNAMIC;
@@ -6929,8 +6986,10 @@ INSERT INTO `migrations` (`id`,`migration`,`batch`) VALUES
 (365,'2026_10_31_150000_track_mobile_credential_rotation',189),
 (366,'2026_11_03_160000_add_active_work_cycle_to_shoots',190),
 (367,'2026_11_03_180000_add_search_relation_lookup_indexes',191),
-(368,'2026_11_04_180000_restore_optional_messaging_columns',192),
-(369,'2026_11_04_180100_preserve_aryeo_cascade_change_feed',192),
-(370,'2026_11_04_190000_index_mysql_invoice_effective_period',193),
-(371,'2026_11_04_200000_restore_optional_equipment_assignment',194),
-(372,'2026_11_04_210000_restore_mysql_nullable_invoice_role',195);
+(368,'2026_11_04_210000_create_listing_studio_ai_revisions',192),
+(369,'2026_11_05_010000_create_listing_studio_subscription_receipts',193),
+(370,'2026_11_04_180000_restore_optional_messaging_columns',194),
+(371,'2026_11_04_180100_preserve_aryeo_cascade_change_feed',194),
+(372,'2026_11_04_190000_index_mysql_invoice_effective_period',194),
+(373,'2026_11_04_200000_restore_optional_equipment_assignment',194),
+(374,'2026_11_04_210000_restore_mysql_nullable_invoice_role',194);

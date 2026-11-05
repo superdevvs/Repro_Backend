@@ -57,3 +57,28 @@ function configureStudioFinancialRace(): void
         public function assertDeliverableOutput(ListingStudioOrderItem $item, array $descriptor): void {}
     });
 }
+
+function configureStudioRevisionRace(): void
+{
+    configureStudioFinancialRace();
+    config(['listing-studio.ai_revisions_enabled' => true]);
+    app()->instance(\App\Services\Studio\StudioProviderSettings::class, new class extends \App\Services\Studio\StudioProviderSettings
+    {
+        public function route(string $capability, ?array $stored = null): array
+        {
+            return ['provider' => 'fal', 'model' => 'fal-ai/nano-banana-pro/edit'];
+        }
+
+        public function readiness(string $capability, array $route, ?array $stored = null): array
+        {
+            return ['ready' => true];
+        }
+    });
+    app()->instance(\App\Services\ListingStudio\ListingStudioPaidMedia::class, new class extends \App\Services\ListingStudio\ListingStudioPaidMedia
+    {
+        public function read(array $descriptor): string
+        {
+            return 'media-boundary-fixture';
+        }
+    });
+}

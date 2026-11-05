@@ -11,6 +11,9 @@ Tests\MySql\Support\configureStudioFinancialRace();
 [$directory, $id] = array_slice($argv, 1);
 $fixture = json_decode(file_get_contents($directory.'/fixture.json'), true, 512, JSON_THROW_ON_ERROR);
 $action = $fixture['actions'][(int) $id - 1];
+if ($action === 'revision') {
+    Tests\MySql\Support\configureStudioRevisionRace();
+}
 App\Models\ListingStudioOrderItem::updating(fn () => usleep(150_000));
 App\Models\ListingStudioCreditReservation::updating(fn () => usleep(150_000));
 App\Models\ListingStudioOrderFundingEffect::creating(fn () => usleep(150_000));
@@ -41,6 +44,11 @@ try {
     } elseif ($action === 'refund') {
         $service->confirmRefund($fixture['order'], $fixture['refunds'][(int) $id - 1]);
         echo 'refunded';
+    } elseif ($action === 'revision') {
+        $revision = app(App\Services\ListingStudio\ListingStudioAiRevisionService::class)->request(
+            App\Models\User::findOrFail($fixture['client']), $fixture['order'],
+            $fixture['instructions'][(int) $id - 1], $fixture['keys'][(int) $id - 1]);
+        echo 'revision:'.$revision->id;
     } else {
         throw new RuntimeException('Unknown lifecycle action.');
     }

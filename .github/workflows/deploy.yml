@@ -12,6 +12,9 @@ permissions:
   contents: read
 
 jobs:
+  mysql:
+    uses: ./.github/workflows/mysql.yml
+
   quality:
     runs-on: ubuntu-latest
 
