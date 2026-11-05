@@ -19,6 +19,10 @@ confirmed before cutover. Local success does not substitute for that acceptance.
 2. Require the complete `deploy.yml` workflow, including its reusable MySQL
    profile, to pass for the exact reviewed commit. The new MySQL job uses empty,
    separately permissioned test databases and no production credentials/data.
+   Once separately authorized, the compatibility code can be deployed and
+   verified while the live database remains SQLite, before the migration window.
+   This marks conditional MySQL migrations as applied even when they did no
+   MySQL DDL; the completion step below is required regardless of ledger state.
 3. Have the administrator provision the separate target. Verify the pinned
    image/version, server UUID, durable commit/binlog settings, strict mode,
    Unix-socket access as both `www-data` and `maverick`, account isolation,
@@ -126,9 +130,26 @@ automatically erase it or retry against a database that has received traffic.
 Import success is deliberately **not** cutover approval. It verifies every
 original row/field, restores the approved legacy constraints with enforcement
 enabled, and installs the 25 direct change-feed triggers. Apply the reviewed
-application migrations in an isolated maintenance configuration to add the
-repairs, effective-period index and ten MySQL cascade triggers. Do not reuse the
-active SQLite configuration cache or boot a scheduler/worker while doing this.
+application migrations in an isolated maintenance configuration, then always run
+the guarded schema-completion tool to add the repairs, effective-period index
+and ten MySQL cascade triggers. SQLite can have already recorded these migration
+names while skipping their MySQL-specific work. The tool reapplies only the five
+reviewed idempotent repairs and does not delete or rewrite migration-ledger rows.
+
+With explicit MySQL process configuration and a separate staging cache:
+
+```bash
+DB_CONNECTION=mysql DB_DATABASE=repro_dashboard \
+  APP_CONFIG_CACHE=/protected/staging-cache/config.php \
+  php scripts/mysql/complete-schema.php --app=/protected/staged-backend \
+  --expected-server-uuid=<independently-observed-new-server-uuid> \
+  --writers-stopped
+```
+
+The staged application's protected environment supplies its target socket and
+credentials. Require the `verified` result, validate the final schema, and restore
+any temporary trigger-installation privilege setting after all DDL completes.
+Do not reuse the active SQLite configuration cache or boot a scheduler/worker while doing this.
 Verify the final schema, supporting indexes, next IDs and migration ledger.
 New migrations referencing converted legacy IDs should use
 `App\Support\MigrationForeignId::matching`; the CI baseline catches type drift.

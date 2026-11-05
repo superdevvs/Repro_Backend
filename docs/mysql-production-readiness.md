@@ -57,8 +57,10 @@ names**. This includes MySQL's supporting FK indexes and the reviewed repairs.
 | Proposed server configuration | Pinned 8.4.13, Unix-socket-only operation, strict SQL, durable commits/binlogs, 5 GB buffer pool and 96 connections passed locally. PHP 8.3.6 as UID 33 connected and wrote only its own DB. Automatic restart preserved 100 committed rows and rejected an interrupted transaction. |
 | Copied-server crash after HTTP load | All 164 newly committed notification receipts survived; their hashes and server UUID matched, and the existing FPM application reconnected with HTTP 200. |
 | Packaged forward/reverse tools | Wrong UUID/nonempty destination refusal, exact historical exceptions, binary/date/decimal fields, next IDs and new-write constraints passed. Reverse export refused unrepresentable numeric precision instead of silently losing it. |
+| Driver-specific migration ledger | A guarded completion tool reapplies the five idempotent MySQL repairs even when SQLite already marked them applied. It preserves the original ledger IDs/batches and data, validates the expected target UUID, and requires writer-freeze attestation. |
 | Full post-write reverse recovery | Packaged reverse tool verified 231 tables / 1,187,699 current lab rows with zero field mismatches, 25 SQLite triggers, exact exceptions and FK enforcement. The same application booted on the read-only recovery artifact and retained all 164 load receipts, the earlier queued-job fixture and invoice queries. |
 | Deployment guards | 23 storage safeguard fixtures and the public-storage deployment tests passed. The deployment wrapper now makes a driver-aware private database backup and the MySQL profile is included in the required `deploy.yml` quality workflow. |
+| Real HDR tools | The complete local runtime includes both alignment and Enfuse; actual fusion passed on PHP 8.3.6 with five assertions. CI explicitly installs/checks both binaries and runs this real-tool case. |
 
 Local runtime is Ubuntu 24.04, **PHP 8.3.6 FPM with OPcache** and MySQL
 **8.4.13**, pinned to image digest
