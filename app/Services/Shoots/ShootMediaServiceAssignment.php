@@ -97,6 +97,16 @@ final class ShootMediaServiceAssignment
         $items = $shoot->serviceItems()->with(['service.category', 'unit', 'photographer', 'editor'])->get();
         $ids = $data['file_ids'] ?? [];
         $files = $shoot->files()->with(['serviceItem', 'album'])->whereIn('id', $ids)->get();
+        $receiptedFileIds = [];
+        if ($files->isNotEmpty()) {
+            foreach (DB::table('shoot_delivery_receipts')->where('shoot_id', $shoot->id)->pluck('evidence') as $evidence) {
+                $decoded = json_decode($evidence, true);
+                // Even a superseded/revoked approval is historical evidence.
+                // Malformed history cannot prove these files were unapproved.
+                if (! is_array($decoded)) { $receiptedFileIds += array_fill_keys($files->modelKeys(), true); continue; }
+                foreach ($decoded['files'] ?? [] as $entry) if (isset($entry['id'])) $receiptedFileIds[(int) $entry['id']] = true;
+            }
+        }
         $target = $items->firstWhere('id', $data['shoot_service_id'] ?? null);
         $blockers = [];
         $add = function (string $code, string $message, ?int $id = null) use (&$blockers) { $blockers[] = ['code' => $code, 'message' => $message, 'file_id' => $id]; };
@@ -107,7 +117,7 @@ final class ShootMediaServiceAssignment
         if ($target) foreach ($files as $file) {
             if ((int) $file->shoot_service_id === (int) $target->id) continue;
             if ($file->isIguideOfflinePackage() || $file->isInvalidProviderFloorplan()) $add('integration_attachment', 'Use the dedicated provider recovery workflow for this attachment.', $file->id);
-            if ($file->workflow_stage === ShootFile::STAGE_VERIFIED || ($file->serviceItem && $file->serviceItem->workflow_status === 'delivered' && $file->serviceItem->delivery_status === 'delivered')) {
+            if ($this->requiresHistoricalReview($file, $receiptedFileIds)) {
                 if (! $historical) $add('historical_confirmation_required', 'Review and explicitly confirm this historical ownership correction.', $file->id);
                 elseif (! $this->safeHistoricalMove($shoot, $file, $target)) $add('needs_guarded_repair', 'This move affects current work, approval receipts, unit scope, or client entitlement. A guarded reviewed repair is required.', $file->id);
             }
@@ -135,11 +145,23 @@ final class ShootMediaServiceAssignment
                 'assignable' => $policy->isOutstanding($item) || ($historical && $this->historicalTarget($shoot, $item)),
                 'blockers' => $policy->isOutstanding($item) || ($historical && $this->historicalTarget($shoot, $item)) ? [] : ['Service is completed, cancelled, or financial-only.']])->all(),
             'files' => $files->map(fn ($file) => app(ShootMediaMutationSupportService::class)->transformFile($file))->all(),
-            'requires_historical_confirmation' => $files->contains(fn ($file) => $file->workflow_stage === ShootFile::STAGE_VERIFIED),
+            'requires_historical_confirmation' => $files->contains(fn ($file) => $this->requiresHistoricalReview($file, $receiptedFileIds)),
             'receipt_revision' => $this->receiptRevision($shoot),
             'blockers' => $blockers, 'can_apply' => $target && $ids !== [] && $blockers === [], 'updated_count' => 0,
             'unassigned_count' => $shoot->files()->whereNull('shoot_service_id')->count(),
             'media_revision' => app(ShootMediaMutationSupportService::class)->currentMediaRevision($shoot)];
+    }
+
+    private function requiresHistoricalReview(ShootFile $file, array $receiptedFileIds): bool
+    {
+        if ($file->workflow_stage === ShootFile::STAGE_VERIFIED || isset($receiptedFileIds[$file->id])) return true;
+        $source = $file->serviceItem;
+        if (! $source || $source->workflow_status !== 'delivered' || $source->delivery_status !== 'delivered') return false;
+        // A line's aggregate Delivered state does not approve every later upload.
+        // Only managed, never-approved unfinished media has this narrow escape.
+        $kinds = app(DeliveryComponentRequirements::class)->kinds($source);
+        return ! in_array($file->workflow_stage, [ShootFile::STAGE_TODO, ShootFile::STAGE_COMPLETED], true)
+            || $kinds === [] || in_array('legacy', $kinds, true);
     }
 
     private function historicalTarget(Shoot $shoot, ShootService $item): bool

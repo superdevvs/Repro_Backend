@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Jobs\FinalizeShootJob;
+use App\Jobs\GenerateShootMediaArchiveJob;
 use App\Jobs\SendShootReadyEmailJob;
 use App\Models\Invoice;
 use App\Models\Message;
@@ -72,14 +73,17 @@ class FinalizeReleasesLegacyNotificationSuppressTest extends TestCase
 
         ShootFile::create([
             'shoot_id' => $shoot->id,
+            'shoot_service_id' => $shoot->serviceItems()->sole()->id,
             'filename' => '6003-calla-edited.jpg',
             'stored_filename' => '6003-calla-edited.jpg',
             'path' => "shoots/{$shoot->id}/completed/6003-calla-edited.jpg",
             'file_type' => 'image/jpeg',
+            'mime_type' => 'image/jpeg',
             'file_size' => 1024,
             'media_type' => 'edited',
             'uploaded_by' => $client->id,
             'workflow_stage' => ShootFile::STAGE_COMPLETED,
+            'scan_status' => ShootFile::SCAN_STATUS_CLEAN,
         ]);
 
         return $shoot->fresh();
@@ -136,6 +140,8 @@ class FinalizeReleasesLegacyNotificationSuppressTest extends TestCase
     public function test_delivery_email_job_releases_legacy_mute_instead_of_skipping(): void
     {
         Mail::fake();
+        // This test runs the real delivery email path, without fetching fixture bytes for an archive.
+        Queue::fake([GenerateShootMediaArchiveJob::class]);
         OutboundDeliveryGuard::allowFakeProviderPipelineForTesting();
         MessageChannel::create([
             'type' => 'EMAIL',

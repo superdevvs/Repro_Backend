@@ -98,14 +98,17 @@ class DeliveryEmailFixTest extends TestCase
     {
         ShootFile::create([
             'shoot_id' => $shoot->id,
+            'shoot_service_id' => $shoot->serviceItems()->sole()->id,
             'filename' => 'final.jpg',
             'stored_filename' => 'final.jpg',
             'path' => "shoots/{$shoot->id}/completed/final.jpg",
             'file_type' => 'image/jpeg',
+            'mime_type' => 'image/jpeg',
             'file_size' => 1024,
             'media_type' => 'edited',
             'uploaded_by' => $uploadedBy->id,
             'workflow_stage' => ShootFile::STAGE_COMPLETED,
+            'scan_status' => ShootFile::SCAN_STATUS_CLEAN,
         ]);
     }
 

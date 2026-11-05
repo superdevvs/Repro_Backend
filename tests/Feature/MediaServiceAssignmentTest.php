@@ -2,7 +2,10 @@
 
 namespace Tests\Feature;
 
+use App\Jobs\FinalizeShootJob;
 use App\Models\{Service, Shoot, ShootFile, ShootFileVersion, ShootService, User};
+use App\Services\ShootActivityLogger;
+use App\Services\Shoots\{DeliveryPlanService, ShootActiveWorkLifecycle};
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\{DB, Queue};
 use Laravel\Sanctum\Sanctum;
@@ -23,6 +26,8 @@ class MediaServiceAssignmentTest extends TestCase
             'total_quote' => 100, 'payment_status' => 'paid']);
         Sanctum::actingAs($this->admin);
     }
+
+    protected function tearDown(): void { $this->travelBack(); parent::tearDown(); }
 
     private function url(): string { return '/api/shoots/'.$this->shoot->id.'/media/assign-service'; }
 
@@ -145,5 +150,73 @@ class MediaServiceAssignmentTest extends TestCase
         $this->assertSame($target->id, $file->fresh()->shoot_service_id);
         $this->assertEquals($before, $file->fresh()->only(array_keys($before)));
         $this->assertDatabaseCount('shoot_delivery_receipts', 0);
+    }
+
+    public function test_unapproved_completed_upload_can_leave_a_managed_delivered_line_without_freshening_new_work(): void
+    {
+        $source = $this->item(['workflow_status' => 'ready', 'delivery_status' => 'ready', 'scheduled_at' => now()->subDay()]);
+        $approved = $this->file($source);
+        $planner = app(DeliveryPlanService::class);
+        $delivery = $planner->validateSelection($this->shoot->fresh(), $this->admin, []);
+        (new FinalizeShootJob($this->shoot->id, $this->admin->id, null, null, false, $delivery['idempotency_key'], $delivery))
+            ->handle(app(ShootActivityLogger::class));
+        $this->assertSame('delivered', $source->fresh()->delivery_status);
+        $this->assertTrue($planner->releasedFile($approved->fresh()));
+        $firstDeliveredAt = $this->shoot->fresh()->admin_verified_at;
+        $receipts = DB::table('shoot_delivery_receipts')->get()->toJson();
+        $this->travel(1)->minutes();
+        $unapproved = $this->file($source, ['filename' => 'unapproved.jpg']);
+        $this->travel(1)->minutes();
+        $target = $this->item(['scheduled_at' => now()->subDay(), 'editing_completed_at' => $firstDeliveredAt, 'delivered_at' => $firstDeliveredAt]);
+        app(ShootActiveWorkLifecycle::class)->begin($this->shoot->fresh());
+        $before = $unapproved->only(['path', 'filename', 'stored_filename', 'file_size', 'created_at', 'updated_at',
+            'workflow_stage', 'scan_status', 'verified_at', 'content_version']);
+        $this->assertSame('active', $this->shoot->fresh()->status);
+        $intent = $this->intent($unapproved, $target, ['reason' => 'This unreviewed upload belongs to the new photo service']);
+        $this->postJson($this->url(), ['dry_run' => true] + $intent)->assertOk()
+            ->assertJsonPath('can_apply', true)->assertJsonPath('requires_historical_confirmation', false);
+        Queue::fake();
+        $this->postJson($this->url(), $intent)->assertOk()->assertJsonPath('updated_count', 1);
+        $this->assertSame($target->id, $unapproved->fresh()->shoot_service_id);
+        $this->assertEquals($before, $unapproved->fresh()->only(array_keys($before)));
+        $this->assertSame($receipts, DB::table('shoot_delivery_receipts')->get()->toJson());
+        $this->assertTrue($planner->releasedFile($approved->fresh()));
+        $this->assertFalse($planner->releasedFile($unapproved->fresh()));
+        $this->assertSame('not_started', $target->fresh()->delivery_status);
+        $this->assertFalse($planner->itemResolved($this->shoot->fresh(), $target->fresh()));
+        $this->assertSame([], $planner->plan($this->shoot->fresh(), $this->admin)['ready_component_ids']);
+        $this->postJson('/api/shoots/'.$this->shoot->id.'/finalize', ['component_ids' => [$target->id.':photo'], 'mode' => 'media'])->assertUnprocessable();
+        $this->assertSame('active', $this->shoot->fresh()->status);
+        $this->assertEquals($firstDeliveredAt, $this->shoot->fresh()->admin_verified_at);
+        Queue::assertNothingPushed();
+    }
+
+    public function test_legacy_aggregate_completed_upload_still_requires_guarded_historical_review(): void
+    {
+        $source = $this->item(['workflow_status' => 'delivered', 'delivery_status' => 'delivered']);
+        $target = $this->item();
+        $file = $this->file($source);
+        $intent = $this->intent($file, $target, ['dry_run' => true, 'reason' => 'Review legacy ownership']);
+        $this->postJson($this->url(), $intent)->assertOk()->assertJsonPath('can_apply', false)
+            ->assertJsonPath('requires_historical_confirmation', true)->assertJsonFragment(['code' => 'historical_confirmation_required']);
+        $this->postJson($this->url(), ['confirm_historical' => true] + $intent)->assertOk()
+            ->assertJsonPath('can_apply', false)->assertJsonFragment(['code' => 'needs_guarded_repair']);
+        $this->assertSame($source->id, $file->fresh()->shoot_service_id);
+    }
+
+    public function test_receipt_referenced_completed_file_is_still_historical_even_when_not_currently_verified(): void
+    {
+        $source = $this->item(['workflow_status' => 'ready', 'delivery_status' => 'ready']);
+        $file = $this->file($source);
+        $planner = app(DeliveryPlanService::class);
+        $delivery = $planner->validateSelection($this->shoot->fresh(), $this->admin, []);
+        (new FinalizeShootJob($this->shoot->id, $this->admin->id, null, null, false, $delivery['idempotency_key'], $delivery))
+            ->handle(app(ShootActivityLogger::class));
+        DB::table('shoot_files')->where('id', $file->id)->update(['workflow_stage' => 'completed']);
+        $target = $this->item();
+        $this->postJson($this->url(), $this->intent($file->fresh(), $target, ['dry_run' => true, 'reason' => 'Review approved ownership']))
+            ->assertOk()->assertJsonPath('can_apply', false)->assertJsonPath('requires_historical_confirmation', true)
+            ->assertJsonFragment(['code' => 'historical_confirmation_required']);
+        $this->assertSame($source->id, $file->fresh()->shoot_service_id);
     }
 }

@@ -75,7 +75,7 @@ class InternalTestShootIsolationTest extends TestCase
             'shoot_id' => $shoot->id, 'filename' => 'edited.jpg', 'stored_filename' => 'edited.jpg',
             'path' => 'shoots/'.$shoot->id.'/completed/edited.jpg', 'file_type' => 'image/jpeg',
             'file_size' => 10, 'media_type' => 'edited', 'uploaded_by' => $actor->id,
-            'workflow_stage' => ShootFile::STAGE_COMPLETED,
+            'workflow_stage' => ShootFile::STAGE_COMPLETED, 'scan_status' => 'clean',
         ]);
         $progress = app(FinalizeProgressTracker::class);
         $progress->start($shoot->id);
@@ -98,7 +98,7 @@ class InternalTestShootIsolationTest extends TestCase
             'shoot_id' => $shoot->id, 'filename' => 'edited.jpg', 'stored_filename' => 'edited.jpg',
             'path' => 'shoots/'.$shoot->id.'/completed/edited.jpg', 'file_type' => 'image/jpeg',
             'file_size' => 10, 'media_type' => 'edited', 'uploaded_by' => $actor->id,
-            'workflow_stage' => ShootFile::STAGE_COMPLETED,
+            'workflow_stage' => ShootFile::STAGE_COMPLETED, 'scan_status' => 'clean',
         ]);
         (new FinalizeShootJob($shoot->id, $actor->id))->handle(app(ShootActivityLogger::class));
         $this->assertSame(Shoot::STATUS_DELIVERED, $shoot->fresh()->workflow_status);
