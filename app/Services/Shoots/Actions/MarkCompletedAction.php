@@ -19,7 +19,8 @@ class MarkCompletedAction
     public function execute(Request $request, Shoot $shoot, User $user): Shoot
     {
         $this->workflowService->markCompleted($shoot, $user);
-        $this->support->sendCompletionSideEffects($shoot, $user);
+        // The canonical job emits completion effects after its actual scoped
+        // commit. Queuing a legacy command is not a delivery notification.
 
         return $shoot;
     }

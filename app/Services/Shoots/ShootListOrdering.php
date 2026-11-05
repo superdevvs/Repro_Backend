@@ -65,6 +65,7 @@ class ShootListOrdering
         $projection = (clone $query)->withoutEagerLoads()->reorder()->select([
             'shoots.id', 'shoots.scheduled_date', 'shoots.scheduled_at', 'shoots.time', 'shoots.timezone',
             'shoots.active_work_started_at', 'shoots.active_work_completed_at', 'shoots.active_work_at', 'shoots.active_work_date', 'shoots.active_work_time',
+            'shoots.active_work_is_reopened', 'shoots.admin_verified_at', 'shoots.completed_at',
         ])->selectSub(User::query()->select('timezone')->whereColumn('users.id', 'shoots.photographer_id'), 'photographer_timezone')->toBase();
         $projection->limit = null;
         $projection->offset = null;
@@ -135,7 +136,7 @@ class ShootListOrdering
         // Legacy unzoned bookings follow ScheduleInstantResolver's photographer/app zone.
         $timezone = $shootZone ?? $this->validTimezone($row->photographer_timezone)
             ?? $this->validTimezone(config('app.timezone')) ?? 'UTC';
-        if ($row->active_work_started_at && ! $row->active_work_completed_at && $row->active_work_at) {
+        if (ActiveWorkQuery::matches($row) && $row->active_work_at) {
             $activeAt = Carbon::parse($row->active_work_at, 'UTC')->setTimezone($timezone);
             return ['id' => (int) $row->id, 'date' => $row->active_work_date ?: $activeAt->toDateString(),
                 'time' => $row->active_work_time, 'past' => $row->active_work_time ? $activeAt->lt($now) : $activeAt->toDateString() < $now->copy()->setTimezone($timezone)->toDateString(),

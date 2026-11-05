@@ -46,6 +46,14 @@ class ShootPaymentsController extends Controller
         protected NoMediaDeliveryEligibility $noMediaDeliveryEligibility
     ) {}
 
+    public function deliveryPlan(Shoot $shoot)
+    {
+        $actor = auth()->user();
+        abort_unless($actor && in_array($actor->role, self::FINALIZE_ROLES, true)
+            && $this->authorizationSupport->canViewShootDetails($shoot, $actor), 403);
+        return response()->json(['data' => app(\App\Services\Shoots\DeliveryPlanService::class)->plan($shoot, $actor)]);
+    }
+
     public function finalize(Request $request, $shootId)
     {
         $user = auth()->user();
@@ -57,6 +65,13 @@ class ShootPaymentsController extends Controller
             'final_status' => 'nullable|string|in:admin_verified,completed',
             'shoot_service_id' => 'nullable|integer|exists:shoot_service,id',
             'allow_no_media_delivery' => 'nullable|boolean',
+            'component_ids' => 'sometimes|array|min:1|max:100',
+            'component_ids.*' => 'string|distinct|max:100',
+            'mode' => 'sometimes|in:media,external,manual_no_content',
+            'reason' => 'nullable|string|max:2000',
+            'confirmed' => 'sometimes|boolean',
+            'plan_revision' => 'sometimes|string|size:64',
+            'idempotency_key' => 'sometimes|uuid',
         ]);
 
         $shoot = Shoot::with(['files'])->findOrFail($shootId);
@@ -68,6 +83,19 @@ class ShootPaymentsController extends Controller
         $review = app(\App\Services\Studio\WorkspaceShootReview::class);
         if ($review->isPending($shoot) || $review->isProcessing($shoot)) {
             return response()->json(['message' => 'Full-shoot AI edits must finish review and approval before finalization.'], 409);
+        }
+        if ($shoot->serviceItems()->exists()) {
+            $planner = app(\App\Services\Shoots\DeliveryPlanService::class);
+            abort_unless($planner->canFinalize($user), 403);
+            if ($planner->isReplay($shoot, $user, $request->only(['idempotency_key', 'component_ids', 'mode', 'reason', 'confirmed', 'plan_revision']))) {
+                return response()->json(['message' => 'This delivery was already applied.', 'data' => ['id' => $shoot->id, 'queued' => false, 'already_applied' => true], 'delivery_plan' => $planner->plan($shoot, $user)]);
+            }
+            $intent = $planner->validateSelection($shoot, $user, $request->only(['component_ids', 'mode', 'reason', 'confirmed', 'plan_revision', 'idempotency_key', 'shoot_service_id']));
+            $this->finalizeProgress->start((int) $shoot->id, ['queued_by' => $user->id, 'component_ids' => $intent['component_ids'], 'mode' => $intent['mode']]);
+            $shoot->workflowLogs()->create(['user_id' => $user->id, 'action' => 'finalize_queued', 'details' => 'Selected delivery components queued for review commit', 'metadata' => $intent]);
+            FinalizeShootJob::dispatch((int) $shoot->id, (int) $user->id, $request->input('final_status'), $shootServiceId, false, $intent['idempotency_key'], $intent);
+            return response()->json(['message' => 'Selected delivery queued.', 'data' => ['id' => $shoot->id, 'queued' => true,
+                'selected_component_ids' => $intent['component_ids']], 'progress' => $this->finalizeProgress->get((int) $shoot->id)], 202);
         }
         $completedFiles = $shoot->files()
             ->where(fn ($query) => $query->where('workflow_stage', ShootFile::STAGE_COMPLETED)

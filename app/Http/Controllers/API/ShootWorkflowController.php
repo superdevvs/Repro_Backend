@@ -251,9 +251,10 @@ class ShootWorkflowController extends Controller
             $this->markCompletedAction->execute($request, $shoot, $user);
 
             return response()->json([
-                'message' => 'Shoot has been completed and delivered.',
+                'message' => $shoot->workflow_status === Shoot::STATUS_DELIVERED
+                    ? 'All required work is delivered.' : 'Ready content is queued for delivery; other work may remain.',
                 'data' => new ShootResource($shoot->load(['client', 'rep', 'photographer', 'services'])),
-            ]);
+            ], $shoot->workflow_status === Shoot::STATUS_DELIVERED ? 200 : 202);
         } catch (\InvalidArgumentException $e) {
             return response()->json(['message' => \App\Services\ApiErrorResponder::publicMessage($e)], 422);
         }

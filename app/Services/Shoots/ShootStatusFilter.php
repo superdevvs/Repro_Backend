@@ -53,9 +53,12 @@ class ShootStatusFilter
         // The active workflow takes precedence over legacy status. Filtering
         // the SQL query keeps pagination and counts consistent with the cards.
         $query->where(function (Builder $scope) use ($aliases, $statuses) {
-            $scope->whereIn(DB::raw("LOWER(COALESCE(NULLIF(TRIM(workflow_status), ''), status, ''))"), array_unique($aliases));
+            $effective = "LOWER(COALESCE(NULLIF(TRIM(shoots.workflow_status), ''), shoots.status, ''))";
+            $canonical = 'CASE WHEN '.$effective." = 'active' AND ".ActiveWorkQuery::closedSql()
+                ." THEN 'editing' ELSE ".$effective.' END';
+            $scope->whereIn(DB::raw($canonical), array_values(array_diff(array_unique($aliases), ['active'])));
             if (in_array('active', $statuses, true)) {
-                $scope->orWhere(fn (Builder $active) => $active->whereNotNull('active_work_started_at')->whereNull('active_work_completed_at')
+                $scope->orWhere(fn (Builder $active) => $active->whereRaw(ActiveWorkQuery::openSql())
                     ->whereNotIn(DB::raw("LOWER(COALESCE(NULLIF(workflow_status, ''), status, ''))"), ['on_hold', 'hold_on', 'cancelled', 'canceled', 'declined']));
             }
         });

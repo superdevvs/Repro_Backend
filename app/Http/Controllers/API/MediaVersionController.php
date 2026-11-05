@@ -57,7 +57,7 @@ class MediaVersionController extends Controller
     {
         $this->authorizeStaff($request, $shoot, $version);
         $data = $request->validate(['choice' => ['required', Rule::in(['replace_latest', 'save_copy'])], 'expected_latest_version' => 'required|integer|min:1']);
-        return response()->json(['data' => $publisher->resolve($version, $data['choice'], $data['expected_latest_version'])->present()]);
+        return response()->json(['data' => $publisher->resolve($version, $data['choice'], $data['expected_latest_version'], $request->user())->present()]);
     }
 
     public function restore(Request $request, Shoot $shoot, ShootFileVersion $version, MediaStorage $storage, MediaVersionPublisher $publisher)

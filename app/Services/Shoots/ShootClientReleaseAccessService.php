@@ -35,6 +35,28 @@ class ShootClientReleaseAccessService
         return $paymentStatus;
     }
 
+    /** Approved component files plus unchanged, grandfathered delivery history. */
+    public function isApprovedFile(Shoot $shoot, ShootFile $file): bool
+    {
+        if ((int) $file->shoot_id !== (int) $shoot->id || $file->workflow_stage !== ShootFile::STAGE_VERIFIED
+            || $file->is_hidden || $file->isBlockedFromDelivery() || $file->is_extra || $file->isIguideOfflinePackage()
+            || in_array(strtolower((string) $file->media_type), ['raw', 'extra', 'reference', 'additional'], true)
+            || data_get($file->metadata, 'reference_only')) return false;
+        if (app(DeliveryPlanService::class)->releasedFile($file)) return true;
+        if (! $file->shoot_service_id) {
+            if ($shoot->active_work_started_at && $shoot->admin_verified_at && $shoot->admin_verified_at->lte($shoot->active_work_started_at)) {
+                return $shoot->admin_verified_at && $shoot->admin_verified_at->lte($shoot->active_work_started_at)
+                    && $file->created_at && $file->created_at->lte($shoot->active_work_started_at)
+                    && (! $file->verified_at || $file->verified_at->lte($shoot->active_work_started_at));
+            }
+            return ! app(DeliveryPlanService::class)->usesComponents($shoot);
+        }
+        $item = $file->relationLoaded('serviceItem') ? $file->serviceItem : $file->serviceItem()->first();
+        return $item && $item->is_deliverable && (int) $item->shoot_id === (int) $shoot->id && ! $item->cancelled_at
+            && $item->workflow_status === ShootService::WORKFLOW_DELIVERED && $item->delivery_status === ShootService::DELIVERY_DELIVERED
+            && ! collect($item->delivery_requirements ?? [])->contains(fn ($component) => ($component['kind'] ?? '') !== 'legacy');
+    }
+
     public function isClientReleaseLocked(Shoot $shoot, ?User $user): bool
     {
         if (($user?->role ?? null) !== 'client') {
@@ -62,6 +84,10 @@ class ShootClientReleaseAccessService
             ? $file->serviceItem
             : $file->serviceItem()->with('shoot')->first();
 
+        if ($serviceItem && app(DeliveryPlanService::class)->releasedFile($file)) {
+            $serviceItem->setRelation('shoot', $shoot);
+            return ! $serviceItem->is_unlocked_for_delivery;
+        }
         return !$serviceItem || !$this->isServiceItemUnlockedForClientDelivery($serviceItem);
     }
 
@@ -81,6 +107,10 @@ class ShootClientReleaseAccessService
 
         $serviceItem = $shoot->serviceItems()->whereKey($shootServiceId)->first();
 
+        if ($serviceItem && in_array((int) $serviceItem->id, app(DeliveryPlanService::class)->releasedServiceIds($shoot), true)) {
+            $serviceItem->setRelation('shoot', $shoot);
+            return ! $serviceItem->is_unlocked_for_delivery;
+        }
         return !$serviceItem || !$this->isServiceItemUnlockedForClientDelivery($serviceItem);
     }
 

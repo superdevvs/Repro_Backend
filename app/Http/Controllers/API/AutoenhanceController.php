@@ -769,6 +769,11 @@ class AutoenhanceController extends Controller
                     }
 
                     $stored = $this->persistEnhancedImageForJob($job, $editedImageUrl);
+                    if (! $stored && $job->shoot_id) {
+                        $job->markAsFailed('The AI result needs service ownership review before publication.');
+                        $updated[] = $job->id;
+                        continue;
+                    }
                     $job->markAsCompleted($stored ?: $editedImageUrl);
                     $updated[] = $job->id;
                 } elseif (in_array($normalized, ['failed', 'error', 'cancelled', 'rejected'], true)) {
@@ -799,6 +804,8 @@ class AutoenhanceController extends Controller
     private function persistEnhancedImageForJob(AiEditingJob $job, string $editedImageUrl): ?string
     {
         try {
+            $existing = $job->shoot_id ? ShootFile::where('shoot_id', $job->shoot_id)->where('ai_editing_job_id', $job->id)->first() : null;
+            if ($existing) return $existing->path;
             $binary = null;
             $mimeType = 'image/jpeg';
             if (str_starts_with($editedImageUrl, 'data:')) {
@@ -828,7 +835,7 @@ class AutoenhanceController extends Controller
                 ? ('shoots/' . $job->shoot_id . '/' . $provider)
                 : ('ai-editing-uploads/' . $job->user_id . '/edited');
             $filename = Str::slug($provider . '-' . $job->id) . '.' . $extension;
-            $path = $baseName . '/' . $filename;
+            $path = $baseName . '/' . ($job->shoot_id ? Str::uuid().'/' : '') . $filename;
             if ($job->shoot_id) {
                 if (!app(\App\Services\Media\MediaStorage::class)->put($path, $binary)) {
                     throw new \RuntimeException('The edited image could not be stored.');
@@ -841,7 +848,7 @@ class AutoenhanceController extends Controller
 
             // Tie back as a ShootFile only when the job belongs to a shoot.
             if ($job->shoot_id) {
-                ShootFile::create([
+                $published = app(\App\Services\Shoots\LegacyAiOutputPublisher::class)->publish($job, [
                     'shoot_id' => $job->shoot_id,
                     'filename' => $filename,
                     'stored_filename' => $filename,
@@ -862,6 +869,7 @@ class AutoenhanceController extends Controller
                         'completed_at' => now()->toIso8601String(),
                     ],
                 ]);
+                $publicPath = app(\App\Services\Shoots\LegacyAiOutputPublisher::class)->finishPath($published, $publicPath);
             }
 
             return $publicPath;

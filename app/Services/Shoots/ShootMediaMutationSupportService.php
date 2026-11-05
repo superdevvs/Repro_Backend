@@ -324,6 +324,7 @@ class ShootMediaMutationSupportService
             'id' => $file->id,
             'shoot_service_id' => $file->shoot_service_id,
             'shootServiceId' => $file->shoot_service_id,
+            'content_version' => (int) ($file->content_version ?: 1),
             'filename' => $file->filename,
             'stored_filename' => $file->stored_filename,
             'path' => $file->path,

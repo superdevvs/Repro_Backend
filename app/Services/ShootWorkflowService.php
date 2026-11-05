@@ -306,64 +306,33 @@ class ShootWorkflowService
     }
 
     /**
-     * Mark as completed (admin/super admin finalizes)
+     * Legacy completion entry point delegates to the same reviewed delivery job.
      */
     public function markCompleted(Shoot $shoot, ?User $user = null): void
     {
-        $this->validateTransition($shoot, self::STATUS_DELIVERED);
-
-        $this->writeTransaction(function () use ($shoot, $user) {
-            $shoot->status = self::STATUS_DELIVERED;
-            $shoot->workflow_status = self::STATUS_DELIVERED;
-            $shoot->completed_at = now();
-            $shoot->admin_verified_at = now();
-            $shoot->verified_by = $user?->id ?? auth()->id();
-            $shoot->updated_by = $user?->id ?? auth()->id();
-            $shoot->save();
-
-            $this->activityLogger->log(
-                $shoot,
-                'shoot_completed',
-                ['by' => $user?->name ?? auth()->user()?->name],
-                $user
-            );
-
-            // Log delivery notification for client
-            $this->activityLogger->log(
-                $shoot,
-                'shoot_delivered',
-                [
-                    'by' => $user?->name ?? auth()->user()?->name,
-                    'message' => 'Your photos are ready for download!',
-                ],
-                $user
-            );
-
-            // Trigger any completion jobs (archiving, notifications, etc.)
-            // This can be dispatched as a job if needed
-        }, "shoot.{$shoot->id}.workflow.complete");
-
-        // Clear dashboard cache so changes reflect immediately
-        $this->clearDashboardCache();
-
-        // Auto-publish to Bright MLS when shoot is delivered
-        try {
-            $brightMlsService = app(BrightMlsService::class);
-            if ($brightMlsService->isAutoPublishAvailable()) {
-                $mlsResult = $brightMlsService->autoPublishForShoot($shoot->fresh());
-                if ($mlsResult && $mlsResult['success']) {
-                    Log::info('Bright MLS auto-published on markCompleted', [
-                        'shoot_id' => $shoot->id,
-                        'manifest_id' => $mlsResult['manifest_id'] ?? null,
-                    ]);
-                }
-            }
-        } catch (\Exception $e) {
-            Log::warning('Bright MLS auto-publish failed in markCompleted (non-blocking)', [
-                'shoot_id' => $shoot->id,
-                'error' => $e->getMessage(),
+        $user ??= auth()->user();
+        abort_unless($user instanceof User, 403);
+        $delivery = app(\App\Services\Shoots\DeliveryPlanService::class);
+        abort_unless($delivery->canFinalize($user), 403);
+        $intent = null;
+        if ($shoot->serviceItems()->exists()) {
+            $plan = $delivery->plan($shoot, $user);
+            if ($plan['remaining_component_ids'] === [] && $shoot->workflow_status === Shoot::STATUS_DELIVERED) return;
+            $intent = $delivery->validateSelection($shoot, $user, ['mode' => 'media', 'plan_revision' => $plan['revision']]);
+        } else {
+            // Service-less imports retain their existing file-based path, but
+            // cannot manufacture delivery from a parent timestamp or RAW input.
+            $eligible = $shoot->files()->where('workflow_stage', \App\Models\ShootFile::STAGE_COMPLETED)->get()
+                ->contains(fn ($file) => $delivery->usableOutput($file));
+            if (! $eligible) throw \Illuminate\Validation\ValidationException::withMessages([
+                'component_ids' => 'No reviewed output is ready. Open Delivery to review the remaining work.',
             ]);
         }
+        app(\App\Services\Shoots\FinalizeProgressTracker::class)->start((int) $shoot->id, [
+            'queued_by' => $user->id, 'component_ids' => $intent['component_ids'] ?? [],
+        ]);
+        \App\Jobs\FinalizeShootJob::dispatch((int) $shoot->id, (int) $user->id, null, null, false, null, $intent);
+        $shoot->refresh();
     }
 
     /**

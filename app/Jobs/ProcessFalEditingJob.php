@@ -143,6 +143,10 @@ class ProcessFalEditingJob implements ShouldQueue
                 $this->editingJob->provider_result = array_merge($this->editingJob->provider_result ?? [], [
                     'result' => $result,
                 ]);
+                if (! $stored && $this->editingJob->shoot_id) {
+                    $this->editingJob->markAsFailed('The AI result needs service ownership review before publication.');
+                    return;
+                }
                 $this->editingJob->markAsCompleted($stored ?: $editedImageUrl);
                 return;
             }
@@ -231,6 +235,8 @@ class ProcessFalEditingJob implements ShouldQueue
 
     private function storeEditedImage(string $editedImageUrl): ?string
     {
+        $existing = ShootFile::where('shoot_id', $this->editingJob->shoot_id)->where('ai_editing_job_id', $this->editingJob->id)->first();
+        if ($existing) return $existing->path;
         $shoot = $this->editingJob->shoot;
         if (!$shoot) {
             return null;
@@ -265,13 +271,13 @@ class ProcessFalEditingJob implements ShouldQueue
         $sourceFile = $this->editingJob->shootFile;
         $baseName = pathinfo($sourceFile?->filename ?: 'fal-image', PATHINFO_FILENAME);
         $filename = Str::slug($baseName) . '-fal-' . $this->editingJob->id . '.' . $extension;
-        $path = 'shoots/' . $shoot->id . '/fal-ai/' . $filename;
+        $path = 'shoots/' . $shoot->id . '/fal-ai/' . \Illuminate\Support\Str::uuid() . '/' . $filename;
         if (!app(\App\Services\Media\MediaStorage::class)->put($path, $binary)) {
             throw new \RuntimeException('The edited image could not be stored.');
         }
         $publicPath = $path;
 
-        ShootFile::create([
+        $published = app(\App\Services\Shoots\LegacyAiOutputPublisher::class)->publish($this->editingJob, [
             'shoot_id' => $shoot->id,
             'filename' => $filename,
             'stored_filename' => $filename,
@@ -293,6 +299,7 @@ class ProcessFalEditingJob implements ShouldQueue
                 'completed_at' => now()->toIso8601String(),
             ],
         ]);
+            $publicPath = app(\App\Services\Shoots\LegacyAiOutputPublisher::class)->finishPath($published, $publicPath);
 
         $shoot->workflowLogs()->create([
             'user_id' => $this->editingJob->user_id,

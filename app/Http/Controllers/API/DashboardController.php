@@ -784,6 +784,7 @@ class DashboardController extends Controller
                 'photographer_notes', 'editor_notes', 'property_details', 'created_by', 'hero_image',
                 'scheduled_at', 'timezone', 'completed_at', 'admin_verified_at',
                 'active_work_started_at', 'active_work_completed_at', 'active_work_at', 'active_work_date', 'active_work_time',
+                'active_work_is_reopened',
                 'cancellation_requested_at', 'cancellation_reason', 'hold_requested_at', 'hold_requested_by', 'hold_reason',
                 // Required for Delivered Paid/Unpaid pills — same fields as shoot detail header.
                 'payment_status', 'total_paid', 'total_quote'];

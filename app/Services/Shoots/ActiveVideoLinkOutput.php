@@ -113,7 +113,7 @@ class ActiveVideoLinkOutput
                 && $item->delivery_status !== ShootService::DELIVERY_CANCELLED
                 && ($item->delivery_status !== ShootService::DELIVERY_DELIVERED || $item->workflow_status !== ShootService::WORKFLOW_DELIVERED)
                 && ! data_get($item->payout_snapshot, 'billing_correction_only', false)
-                && in_array(ShootEditingAssignmentService::LANE_VIDEO, $editing->serviceEditingLanes($item), true));
+                && in_array(ShootEditingAssignmentService::LANE_VIDEO, app(DeliveryComponentRequirements::class)->kinds($item), true));
     }
 
     private function persistedLinks(Shoot $shoot): array

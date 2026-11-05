@@ -239,6 +239,12 @@ class ShootEditingAssignmentService
         }
 
         $item = $service instanceof ShootService ? $service : null;
+        $booked = $item ?? ($service->pivot ?? null);
+        $basis = data_get($booked, 'payout_snapshot');
+        if (is_string($basis)) $basis = json_decode($basis, true);
+        if ($booked && (! data_get($booked, 'is_deliverable', true) || data_get($basis, 'billing_correction_only')
+            || data_get($basis, 'delivery_requirement') === 'financial_only')) return false;
+        if (! $booked && ($service->financial_only ?? false)) return false;
         $catalog = $item ? $item->service : $service;
         if (!$catalog) {
             return false;

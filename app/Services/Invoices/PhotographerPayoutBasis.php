@@ -39,6 +39,7 @@ final class PhotographerPayoutBasis
             'sqft' => $sqft, 'source' => $legacy ? 'legacy_booking_freeze' : 'booking',
             'captured_at' => now()->toIso8601String(),
         ];
+        if (isset($before['delivery_requirement'])) $basis['delivery_requirement'] = $before['delivery_requirement'];
         if ($before['billing_correction_only'] ?? false) $basis['billing_correction_only'] = true;
         if ($before['additional_work'] ?? false) $basis['additional_work'] = true;
         if ($before && $line->exists) {

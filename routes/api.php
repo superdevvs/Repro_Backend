@@ -944,6 +944,8 @@ Route::middleware('auth:sanctum')->group(function () {
         ->whereIn('provider', \App\Services\UploadSourceService::PROVIDERS);
 
     // Finalize a shoot (admin toggle triggers this)
+    Route::get('/shoots/{shoot}/delivery-plan', [ShootPaymentsController::class, 'deliveryPlan']);
+    Route::post('/shoots/{shoot}/media/assign-service', [\App\Http\Controllers\API\ShootMediaServiceAssignmentController::class, '__invoke']);
     Route::post('/shoots/{shoot}/finalize', [ShootPaymentsController::class, 'finalize']);
     // Live progress of the queued finalize pipeline (polled by the finalize toast)
     Route::get('/shoots/{shoot}/finalize-progress', [ShootPaymentsController::class, 'finalizeProgress']);

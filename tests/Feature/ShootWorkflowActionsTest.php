@@ -890,9 +890,10 @@ class ShootWorkflowActionsTest extends TestCase
     }
 
     #[\PHPUnit\Framework\Attributes\Test]
-    public function editing_manager_can_complete_a_ready_shoot_after_refactor(): void
+    public function editing_manager_queues_reviewed_output_without_prestamping_completion(): void
     {
         Event::fake([ShootActivityBroadcast::class]);
+        Bus::fake([GenerateShootMediaArchiveJob::class, \App\Jobs\FinalizeShootJob::class]);
         Sanctum::actingAs($this->editingManager);
 
         $shoot = $this->makeShoot([
@@ -901,24 +902,30 @@ class ShootWorkflowActionsTest extends TestCase
             'editor_id' => $this->editor->id,
         ]);
 
+        \App\Models\ShootFile::create(['shoot_id' => $shoot->id, 'shoot_service_id' => $shoot->serviceItems()->firstOrFail()->id,
+            'filename' => 'reviewed.jpg', 'stored_filename' => 'reviewed.jpg', 'path' => 'shoots/'.$shoot->id.'/completed/reviewed.jpg',
+            'file_type' => 'image/jpeg', 'mime_type' => 'image/jpeg', 'file_size' => 100, 'media_type' => 'edited',
+            'workflow_stage' => 'completed', 'scan_status' => 'clean', 'uploaded_by' => $this->editingManager->id]);
+
         $response = $this->postJson("/api/shoots/{$shoot->id}/complete");
 
-        $response->assertOk()
-            ->assertJsonPath('message', 'Shoot has been completed and delivered.');
+        $response->assertAccepted()
+            ->assertJsonPath('message', 'Ready content is queued for delivery; other work may remain.');
 
         $shoot->refresh();
 
-        $this->assertSame(Shoot::STATUS_DELIVERED, $shoot->status);
-        $this->assertSame(Shoot::STATUS_DELIVERED, $shoot->workflow_status);
-        $this->assertNotNull($shoot->completed_at);
+        $this->assertSame(Shoot::STATUS_READY, $shoot->status);
+        $this->assertSame(Shoot::STATUS_READY, $shoot->workflow_status);
+        $this->assertNull($shoot->completed_at);
+        Bus::assertDispatched(\App\Jobs\FinalizeShootJob::class, fn ($job) => $job->shootId === $shoot->id && $job->userId === $this->editingManager->id);
 
-        $this->assertDatabaseHas('shoot_activity_logs', [
+        $this->assertDatabaseMissing('shoot_activity_logs', [
             'shoot_id' => $shoot->id,
             'action' => 'shoot_completed',
             'user_id' => $this->editingManager->id,
         ]);
 
-        Event::assertDispatched(ShootActivityBroadcast::class, function (ShootActivityBroadcast $event) use ($shoot) {
+        Event::assertNotDispatched(ShootActivityBroadcast::class, function (ShootActivityBroadcast $event) use ($shoot) {
             return $event->shoot->id === $shoot->id
                 && in_array($event->activityType, ['shoot_completed', 'shoot_delivered'], true);
         });

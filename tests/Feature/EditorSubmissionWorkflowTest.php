@@ -36,7 +36,7 @@ class EditorSubmissionWorkflowTest extends TestCase
         $name = $lane === 'video' ? 'edited.mp4' : 'edited.jpg';
         return ShootFile::create(['shoot_id' => $shoot->id, 'shoot_service_id' => $item->id, 'filename' => $name, 'stored_filename' => $name,
             'path' => "shoots/{$shoot->id}/completed/{$name}", 'file_type' => $lane === 'video' ? 'video/mp4' : 'image/jpeg', 'file_size' => 100,
-            'media_type' => $lane === 'video' ? 'video' : 'edited', 'workflow_stage' => 'completed', 'uploaded_by' => $user->id]);
+            'media_type' => $lane === 'video' ? 'video' : 'edited', 'workflow_stage' => 'completed', 'scan_status' => 'clean', 'uploaded_by' => $user->id]);
     }
 
     public function test_photo_and_video_submit_their_own_lanes_before_the_shoot_enters_review(): void
@@ -99,7 +99,7 @@ class EditorSubmissionWorkflowTest extends TestCase
     {
         [$shoot, $item, $photo, $video] = $this->assignment();
         $item->service->update(['name' => 'HDR Photos', 'upload_intake_type' => 'photo']);
-        $item->update(['video_editor_id' => null]);
+        $item->forceFill(['video_editor_id' => null, 'delivery_requirements' => null])->save();
         $videoItem = ShootService::create([
             'shoot_id' => $shoot->id,
             'service_id' => Service::factory()->videoIntake()->create(['name' => 'Video', 'requires_editing' => true])->id,
@@ -115,7 +115,7 @@ class EditorSubmissionWorkflowTest extends TestCase
         $this->assertNull($videoItem->fresh()->editing_completed_at);
         $this->assertSame($video->id, (int) $videoItem->fresh()->editor_id);
         $this->assertSame('not_started', $videoItem->fresh()->delivery_status);
-        $this->assertSame('active', $shoot->fresh()->workflow_status);
+        $this->assertSame('editing', $shoot->fresh()->workflow_status);
         $this->assertSame('partially_delivered', $shoot->fresh()->delivery_status);
     }
 
@@ -125,12 +125,12 @@ class EditorSubmissionWorkflowTest extends TestCase
         $file = $this->editedFile($shoot, $item, $photo);
         $admin = User::factory()->create(['role' => 'admin']);
         (new FinalizeShootJob($shoot->id, $admin->id))->handle(app(ShootActivityLogger::class));
-        $this->assertNull($item->fresh()->editing_completed_at);
+        $this->assertNotNull($item->fresh()->editing_completed_at);
         $this->assertNull($item->fresh()->video_editing_completed_at);
         $this->assertSame('not_started', $item->fresh()->delivery_status);
-        $this->assertSame('completed', $file->fresh()->workflow_stage);
+        $this->assertSame('verified', $file->fresh()->workflow_stage);
         $this->assertSame('editing', $shoot->fresh()->workflow_status);
-        $this->assertDatabaseHas('workflow_logs', ['shoot_id' => $shoot->id, 'action' => 'finalize_failed']);
+        $this->assertDatabaseHas('shoot_delivery_receipts', ['shoot_id' => $shoot->id, 'shoot_service_id' => $item->id, 'component_key' => 'photo']);
     }
 
     public function test_staff_can_deliver_a_bundle_when_both_photo_and_video_output_are_fresh(): void

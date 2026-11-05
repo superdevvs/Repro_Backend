@@ -624,7 +624,7 @@ class ShootMediaStorageService
             'filename' => $file->getClientOriginalName(),
             'stored_filename' => $filename,
             'path' => $serverPath,
-            'file_type' => $file->getMimeType(),
+            'file_type' => app(\App\Services\Shoots\UploadIntakeResolver::class)->detectedMimeType($file),
             'file_size' => $file->getSize(),
             'media_type' => $mediaType,
             'uploaded_by' => $userId,
@@ -700,6 +700,26 @@ class ShootMediaStorageService
     {
         $shoot = $staged->shoot;
         $serverPath = $staged->storedPath;
+        if (! $staged->isOpaqueIguidePackage) {
+            $freshShoot = $shoot->fresh();
+            $actor = \App\Models\User::find($staged->attributes['uploaded_by'] ?? null);
+            $scope = $staged->identity['shoot_service_id'] ?? $staged->attributes['shoot_service_id'] ?? null;
+            $type = $staged->stage === ShootFile::STAGE_TODO ? 'raw' : 'edited';
+            abort_if($type === 'edited' && app(\App\Services\RawThumbnailService::class)->isRawFile($staged->originalFilename), 422, 'Camera RAW files cannot be saved as edited output.');
+            if ($scope || $freshShoot->serviceItems()->exists()) {
+                abort_unless($actor && app(\App\Services\Shoots\ShootAuthorizationSupport::class)->canUploadShootMedia($freshShoot, $actor, $type, $scope),
+                    403, 'Your upload assignment changed before the file was saved.');
+            }
+            if ($scope) {
+                $target = $freshShoot->serviceItems()->with('service.category')->find($scope);
+                $policy = app(\App\Services\Shoots\ShootUploadTargetPolicy::class);
+                $family = $policy->family($staged->attributes['file_type'] ?? null, $staged->attributes['media_type'] ?? null);
+                abort_unless($target && $policy->accepts($target, $family, $type), 422, 'The upload target no longer accepts this content.');
+                abort_unless($type !== 'edited' || $policy->canUploadFamilies($freshShoot, $actor, $target, [$family]), 403, 'Your editing lane assignment changed before the file was saved.');
+            } else {
+                abort_if($freshShoot->serviceItems()->exists(), 422, 'Select a booked service before saving this media.');
+            }
+        }
 
         // Read a fresh model on every retry; a rolled-back model retains dirty
         // in-memory attributes. Refuse a concurrent replacement instead of silently
@@ -709,6 +729,9 @@ class ShootMediaStorageService
             : new ShootFile($staged->identity);
         if (! $shootFile || ($staged->isReplacement() && ($shootFile->path ?: $shootFile->storage_path) !== $staged->previousStoredPath)) {
             throw new \App\Exceptions\MediaReplacementUnavailable('This file changed while the replacement was uploading. Refresh the media and retry.');
+        }
+        if ($staged->isReplacement() && (int) $shootFile->shoot_service_id !== (int) ($staged->identity['shoot_service_id'] ?? null)) {
+            throw new \App\Exceptions\MediaReplacementUnavailable('Service ownership changed while this replacement was uploading.');
         }
         $shootFile->fill($staged->attributes);
         if ($staged->isReplacement()) {

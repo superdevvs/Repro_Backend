@@ -169,7 +169,8 @@ class FinalizeEditedUploadAction
                     ? array_map('strtolower', self::READY_ALLOWED_FROM_STATUSES)
                     : array_map('strtolower', self::ALLOWED_FROM_STATUSES);
                 $allowedFromStatuses[] = Shoot::STATUS_ACTIVE;
-                if (app(\App\Services\Shoots\ShootActiveWorkLifecycle::class)->hasActiveWork($shoot)
+                if ((app(\App\Services\Shoots\ShootActiveWorkLifecycle::class)->hasActiveWork($shoot)
+                    || app(\App\Services\Shoots\ShootActiveWorkLifecycle::class)->isInitialPartial($shoot))
                     && $capabilities->canSubmitEdits($shoot, $user)) {
                     $allowedFromStatuses[] = $currentStatus;
                 }

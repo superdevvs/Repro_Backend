@@ -58,7 +58,7 @@ class ShootMediaChunkUploadTest extends TestCase
         // through the service after binding a test subclass is heavy; instead post two 1-byte parts by temporarily
         // writing meta — prefer calling initiate then storing with real service chunk size on a small file (1 chunk).
 
-        $payload = str_repeat('V', 4096);
+        $payload = pack('N', 24).'ftypXAVC'.pack('N', 0).'XAVCmp42'.str_repeat("\0", 4096);
         $init = $this->postJson("/api/shoots/{$shoot->id}/upload-sessions", [
             'filename' => 'walkthrough.mp4',
             'size_bytes' => strlen($payload),
@@ -158,7 +158,7 @@ class ShootMediaChunkUploadTest extends TestCase
         );
         app()->instance(ShootMediaStorageService::class, $dropbox);
 
-        $payload = str_repeat('V', 4096);
+        $payload = pack('N', 24).'ftypXAVC'.pack('N', 0).'XAVCmp42'.str_repeat("\0", 4096);
         $init = $this->postJson("/api/shoots/{$shoot->id}/upload-sessions", [
             'filename' => 'edited-walkthrough.mp4',
             'size_bytes' => strlen($payload),

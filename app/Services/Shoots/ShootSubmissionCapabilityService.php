@@ -24,7 +24,7 @@ class ShootSubmissionCapabilityService
     {
         $files = $shoot->files()->whereIn('workflow_stage', [ShootFile::STAGE_COMPLETED, ShootFile::STAGE_VERIFIED])
             ->where(fn ($query) => $query->whereNull('flag_reason')->orWhere('flag_reason', ''))->get();
-        if (app(ShootActiveWorkLifecycle::class)->hasActiveWork($shoot)) {
+        if (app(ShootActiveWorkLifecycle::class)->hasActiveWork($shoot) || app(ShootActiveWorkLifecycle::class)->isInitialPartial($shoot)) {
             $files = app(ServiceDeliveryEligibility::class)->currentCycleFiles($shoot, $files);
         }
         return $user?->role === 'editor'
@@ -62,7 +62,7 @@ class ShootSubmissionCapabilityService
         if ($user->role === 'editor' && !$assignments->editorHasAssignment($shoot, $user) && !$assignments->hasOpenDispatchAssignment($shoot, $user)) return false;
         // The page snapshot contains only aggregate facts; editors still use
         // the assignment-aware file filter and never inherit global counts.
-        $activeWork = app(ShootActiveWorkLifecycle::class)->hasActiveWork($shoot);
+        $activeWork = app(ShootActiveWorkLifecycle::class)->hasActiveWork($shoot) || app(ShootActiveWorkLifecycle::class)->isInitialPartial($shoot);
         $prepared = $user->role !== 'editor' && ! $activeWork ? ShootListReadContext::current()?->edited($shoot) : null;
         $files = $prepared === null ? $this->editedFiles($shoot, $user) : collect();
         $hasFiles = $prepared !== null ? ($prepared['exists'] ?? false) : $files->isNotEmpty();
@@ -102,7 +102,7 @@ class ShootSubmissionCapabilityService
         if (! in_array($role, ['admin', 'superadmin', 'editing_manager', 'photographer'], true)) {
             return false;
         }
-        if (app(ShootActiveWorkLifecycle::class)->hasActiveWork($shoot)) {
+        if (app(ShootActiveWorkLifecycle::class)->hasActiveWork($shoot) || app(ShootActiveWorkLifecycle::class)->isInitialPartial($shoot)) {
             return \App\Services\Shoots\Actions\FinalizeRawUploadAction::pendingActiveRawFiles($shoot, $user)->isNotEmpty();
         }
 

@@ -9,6 +9,7 @@ use App\Models\ShootUnit;
 use App\Models\Service;
 use App\Models\User;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
 class ShootAuthorizationSupport
@@ -171,6 +172,8 @@ class ShootAuthorizationSupport
 
     public function isShootDeliveredForClientAccess(Shoot $shoot): bool
     {
+        if (collect([$shoot->workflow_status, $shoot->status])->contains(fn ($status) => in_array(strtolower((string) $status), ['on_hold', 'hold_on', 'cancelled', 'canceled', 'declined'], true))) return false;
+        if (app(DeliveryPlanService::class)->hasReleasedComponents($shoot)) return true;
         if (app(ShootActiveWorkLifecycle::class)->hasActiveWork($shoot)
             && $shoot->serviceItems()->where('delivery_status', 'delivered')->exists()) return true;
         $normalizedStatus = strtolower((string) ($shoot->workflow_status ?: $shoot->status ?: ''));
@@ -200,10 +203,18 @@ class ShootAuthorizationSupport
 
             return $query->where(fn (Builder $scope) => $scope->whereIn('client_id', $clientIds)
                 ->orWhere(fn (Builder $ghost) => $ghost->whereHas('ghostUsers', fn (Builder $recipient) => $recipient->where('users.id', $user->id))
-                    // Match the policy's workflow-status precedence, including the empty fallback.
+                    ->whereNotIn(DB::raw("LOWER(COALESCE(shoots.status, ''))"), ['on_hold', 'hold_on', 'cancelled', 'canceled', 'declined'])
+                    ->whereNotIn(DB::raw("LOWER(COALESCE(shoots.workflow_status, ''))"), ['on_hold', 'hold_on', 'cancelled', 'canceled', 'declined'])
+                    // A suspended flag cannot be bypassed by an older Delivered flag.
                     ->where(fn (Builder $delivered) => $delivered->whereIn(\Illuminate\Support\Facades\DB::raw("LOWER(COALESCE(NULLIF(workflow_status, ''), status, ''))"), self::CLIENT_DELIVERED_STATUSES)
-                        ->orWhere(fn (Builder $active) => $active->whereNotNull('active_work_started_at')->whereNull('active_work_completed_at')
-                            ->whereHas('serviceItems', fn (Builder $item) => $item->where('delivery_status', 'delivered'))))));
+                        ->orWhere(fn (Builder $active) => $active->whereRaw(ActiveWorkQuery::openSql())
+                            ->whereHas('serviceItems', fn (Builder $item) => $item->where('delivery_status', 'delivered')))
+                        ->orWhereExists(fn ($receipts) => $receipts->selectRaw('1')->from('shoot_delivery_receipts')
+                            ->join('shoot_service as released_line', 'released_line.id', '=', 'shoot_delivery_receipts.shoot_service_id')
+                            ->whereColumn('shoot_delivery_receipts.shoot_id', 'shoots.id')->whereNull('revoked_at')
+                            ->whereNull('released_line.cancelled_at')->where('released_line.workflow_status', '!=', 'cancelled')
+                            ->where('released_line.delivery_status', '!=', 'cancelled')
+                            ->whereNotIn(DB::raw("LOWER(COALESCE(NULLIF(shoots.workflow_status, ''), shoots.status, ''))"), ['on_hold', 'hold_on', 'cancelled', 'canceled', 'declined'])))));
         }
 
         return $query->whereRaw('1 = 0');
@@ -274,6 +285,7 @@ class ShootAuthorizationSupport
         }
 
         $normalizedUploadType = strtolower(trim($uploadType));
+        if (! app(\App\Services\RolePermissionService::class)->userCan($user, 'media', 'upload')) return false;
         if (! in_array($normalizedUploadType, ['raw', 'edited', 'additional'], true)) {
             return false;
         }
@@ -719,6 +731,10 @@ class ShootAuthorizationSupport
         }
         $user = $user ?? auth()->user();
         if (! $this->canDownloadShootMedia($shoot, $user)) {
+            return false;
+        }
+        if ($this->isClientUser($user) && app(DeliveryPlanService::class)->usesComponents($shoot)
+            && ! app(ShootClientReleaseAccessService::class)->isApprovedFile($shoot, $file)) {
             return false;
         }
         if ($this->canVideoEditorReadFinalImage($shoot, $file, $user)) {

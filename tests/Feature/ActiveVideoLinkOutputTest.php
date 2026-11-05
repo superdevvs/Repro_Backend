@@ -58,7 +58,9 @@ class ActiveVideoLinkOutputTest extends TestCase
         $this->assertTrue(app(ActiveVideoLinkOutput::class)->hasReviewedOutput($shoot->fresh(), $video->fresh()));
         $this->postJson('/api/shoots/'.$shoot->id.'/upload/finalize-edited')->assertOk();
         $this->assertNotNull($video->fresh()->editing_completed_at);
-        (new FinalizeShootJob($shoot->id, $admin->id, null, $video->id))->handle(app(ShootActivityLogger::class));
+        $intent = app(\App\Services\Shoots\DeliveryPlanService::class)->validateSelection($shoot->fresh(), $admin,
+            ['component_ids' => [$video->id.':video'], 'mode' => 'external', 'confirmed' => true]);
+        (new FinalizeShootJob($shoot->id, $admin->id, null, $video->id, false, $intent['idempotency_key'], $intent))->handle(app(ShootActivityLogger::class));
         $this->assertSame('delivered', $video->fresh()->delivery_status);
         $this->assertSame('not_started', $photo->fresh()->delivery_status);
         $this->assertSame('active', $shoot->fresh()->status);

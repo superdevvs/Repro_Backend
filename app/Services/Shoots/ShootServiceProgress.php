@@ -31,17 +31,25 @@ class ShootServiceProgress
         $workflow = strtolower((string) $item->workflow_status);
         $delivery = strtolower((string) $item->delivery_status);
         $shootState = strtolower((string) ($shoot->workflow_status ?: $shoot->status));
+        if (! $item->is_deliverable || data_get($item->payout_snapshot, 'billing_correction_only')
+            || data_get($item->payout_snapshot, 'delivery_requirement') === 'financial_only') return 'not_applicable';
         if ($workflow === 'cancelled' || $delivery === 'cancelled' || $item->cancelled_at) return 'cancelled';
 
         // A verified external delivery has its own identity and receipt. The
         // Dashboard shoot's Delivered flag is not proof of delivery to Aryeo.
         $kind = $this->kind($item);
         if ($kind === 'showcase' && $order) return $this->showcase($shoot, $order, $job);
-        if ($delivery === 'delivered' || $workflow === 'delivered' || $item->delivered_at) return 'delivered';
+        if (app(DeliveryPlanService::class)->itemResolved($shoot, $item)) return 'delivered';
         if ($shootState === 'cancelled') return 'cancelled';
         if (in_array($shootState, ['on_hold', 'hold_on', 'declined'], true)) return 'on_hold';
         if ($kind === 'showcase') return 'received';
-        if ($delivery === 'ready' || $workflow === 'ready' || $item->ready_at) return 'ready';
+        $managed = $shoot->id && $item->id && collect($item->delivery_requirements ?? [])->contains(fn ($component) => ($component['kind'] ?? '') !== 'legacy');
+        if ($managed) {
+            $components = collect(app(DeliveryPlanService::class)->plan($shoot, null)['components'])->where('shoot_service_id', $item->id);
+            if ($components->contains(fn ($component) => $component['status'] === 'ready')) return 'ready';
+            if ($components->contains(fn ($component) => in_array('provider_not_ready', $component['reason_codes'], true))) return 'processing';
+            if ($components->contains(fn ($component) => in_array('external_review_required', $component['reason_codes'], true))) return 'pending';
+        } elseif ($delivery === 'ready' || $workflow === 'ready' || $item->ready_at) return 'ready';
 
         if (in_array($kind, ['floorplan', 'tour'], true)) {
             $provider = $this->providerData($shoot, $item);
@@ -55,7 +63,7 @@ class ShootServiceProgress
             $hasTour = $hasTour || $this->isUrl($provider['iguide_tour_url'] ?? null)
                 || $this->isUrl($provider['cubicasa_tour_url'] ?? null);
             // Provider output can be ready before it is released to the client.
-            if (($kind === 'floorplan' && ! empty($plans)) || ($kind === 'tour' && $hasTour)) return 'ready';
+            if (! $managed && (($kind === 'floorplan' && ! empty($plans)) || ($kind === 'tour' && $hasTour))) return 'ready';
             if ($state !== '' || ! empty($provider['cubicasa_order_id']) || ! empty($provider['iguide_work_order_id'])
                 || $workflow === 'in_progress') return $kind === 'floorplan' ? 'drafting' : 'processing';
             return 'pending';
@@ -66,7 +74,7 @@ class ShootServiceProgress
         $photoPending = in_array('photo', $lanes, true) && ! $item->editing_completed_at;
         $videoCompleted = count($lanes) > 1 ? $item->video_editing_completed_at : $item->editing_completed_at;
         $videoPending = in_array('video', $lanes, true) && ! $videoCompleted;
-        if ($lanes !== [] && ! $photoPending && ! $videoPending) return 'ready';
+        if (! $managed && $lanes !== [] && ! $photoPending && ! $videoPending) return 'ready';
         if ($workflow === 'in_progress' || ($shootState === 'editing'
             && (($photoPending && $item->editor_id) || ($videoPending && ($item->video_editor_id ?: $item->editor_id))))) return 'in_editing';
         return 'pending';

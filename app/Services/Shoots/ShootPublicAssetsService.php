@@ -451,6 +451,10 @@ class ShootPublicAssetsService
 
         $shootItems = $shoots->map(function (Shoot $shoot) use ($shoots) {
             $files = $shoot->files ?: collect();
+            if (app(DeliveryPlanService::class)->usesComponents($shoot)) {
+                $files->loadMissing('serviceItem');
+                $files = $files->filter(fn (ShootFile $file) => $this->shootClientReleaseAccessService->isApprovedFile($shoot, $file));
+            }
             $previewCandidates = $files->filter(fn (ShootFile $file) => app(ShootAuthorizationSupport::class)->isClientHeroEligibleFile($file));
             $heroKey = $this->normalizedProfileMediaKey($shoot->hero_image);
             $heroBlocked = $heroKey && $files->contains(fn (ShootFile $file) => ! $previewCandidates->contains('id', $file->id)

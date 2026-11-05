@@ -11,6 +11,8 @@ class ShootService extends Model
     use HasFactory;
 
     protected $table = 'shoot_service';
+    protected $attributes = ['is_deliverable' => true];
+    public bool $deliveryExecutionReopened = false;
 
     public const WORKFLOW_PENDING = 'pending';
     public const WORKFLOW_SCHEDULED = 'scheduled';
@@ -58,6 +60,7 @@ class ShootService extends Model
     ];
 
     protected $casts = [
+        'delivery_requirements' => 'array',
         'active_work_link_output' => 'array',
         'price' => 'decimal:2',
         'nominal_value_snapshot' => 'decimal:2',
@@ -82,7 +85,12 @@ class ShootService extends Model
     {
         $reconcile = function (ShootService $item) {
             $shoot = $item->shoot()->first();
-            if ($shoot && app(\App\Services\Shoots\ShootActiveWorkLifecycle::class)->hasActiveWork($shoot)) {
+            if ($shoot) app(\App\Services\Shoots\DeliveryPlanService::class)->forgetReleasedFiles($shoot);
+            if ($shoot && $item->deliveryExecutionReopened) {
+                $item->deliveryExecutionReopened = false;
+                app(\App\Services\Shoots\ShootActiveWorkLifecycle::class)->begin($shoot);
+            }
+            if ($shoot) {
                 app(\App\Services\Shoots\ShootActiveWorkLifecycle::class)->reconcile($shoot);
             }
         };
@@ -90,6 +98,7 @@ class ShootService extends Model
         static::deleted($reconcile);
 
         static::saving(function (ShootService $serviceItem) {
+            if ($serviceItem->isDirty('service_id')) $serviceItem->unsetRelation('service');
             $shoot = $serviceItem->relationLoaded('shoot')
                 ? $serviceItem->shoot
                 : $serviceItem->shoot()->first();
@@ -99,6 +108,13 @@ class ShootService extends Model
             } elseif ($shoot && \Illuminate\Support\Facades\Schema::hasColumn('shoot_service', 'payout_snapshot') && (! $serviceItem->payout_snapshot || $serviceItem->isDirty(['service_id', 'price', 'photographer_pay', 'quantity', 'contracted_photo_count']))) {
                 $service = $serviceItem->service()->first();
                 if ($service) app(\App\Services\Invoices\PhotographerPayoutBasis::class)->capture($serviceItem, $shoot, $service);
+            }
+            if (\Illuminate\Support\Facades\Schema::hasColumn('services', 'financial_only')) {
+                app(\App\Services\Shoots\FinancialServiceClassification::class)->snapshot($serviceItem);
+            }
+            if (\Illuminate\Support\Facades\Schema::hasColumn('shoot_service', 'delivery_requirements')) {
+                $serviceItem->deliveryExecutionReopened = app(\App\Services\Shoots\DeliveryComponentRequirements::class)->reopenIfRequested($serviceItem, $shoot);
+                app(\App\Services\Shoots\DeliveryComponentRequirements::class)->ensure($serviceItem);
             }
         });
     }

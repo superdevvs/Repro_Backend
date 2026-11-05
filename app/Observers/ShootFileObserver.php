@@ -42,6 +42,7 @@ class ShootFileObserver
 
     public function saved(ShootFile $shootFile): void
     {
+        app(\App\Services\Shoots\DeliveryPlanService::class)->forgetReleasedFiles();
         app(\App\Services\Messaging\ShootDeliveryUpdateNotifier::class)->fileSaved($shootFile);
         // The offline iGUIDE ZIP is an integration attachment, not an edited
         // photo. It must not invalidate or regenerate the shoot delivery ZIP.
@@ -80,6 +81,7 @@ class ShootFileObserver
 
     public function deleted(ShootFile $shootFile): void
     {
+        app(\App\Services\Shoots\DeliveryPlanService::class)->forgetReleasedFiles();
         if (DB::transactionLevel() > 0) {
             DB::afterCommit(function () use ($shootFile) {
                 try {

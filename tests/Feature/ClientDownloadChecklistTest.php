@@ -129,6 +129,13 @@ class ClientDownloadChecklistTest extends TestCase
         $line = $this->line('Floor Plan');
         $line->update(['force_unlock_delivery' => true]);
         $file->update(['shoot_service_id' => $line->id]);
+        // Payment unlock alone cannot approve new, component-tracked output.
+        $this->getJson($url)->assertForbidden();
+        $line->forceFill(['delivery_requirements' => [['key' => 'floorplan', 'kind' => 'floorplan', 'label' => 'Floorplans']]])->save();
+        $admin = User::factory()->create(['role' => 'superadmin']);
+        \Illuminate\Support\Facades\DB::transaction(fn () => app(\App\Services\Shoots\DeliveryPlanService::class)
+            ->commitSelection($this->shoot->fresh(), $admin, ['mode' => 'media', 'component_ids' => [$line->id.':floorplan']]));
+        $file->update(['workflow_stage' => ShootFile::STAGE_VERIFIED, 'verified_at' => now(), 'verified_by' => $admin->id]);
         $this->get($url)->assertOk();
         foreach ([['workflow_stage' => ShootFile::STAGE_TODO], ['is_hidden' => true], ['scan_status' => ShootFile::SCAN_STATUS_INFECTED], ['scan_status' => ShootFile::SCAN_STATUS_QUARANTINED]] as $blocked) {
             $file->update(array_merge(['workflow_stage' => ShootFile::STAGE_COMPLETED, 'is_hidden' => false, 'scan_status' => ShootFile::SCAN_STATUS_CLEAN], $blocked));

@@ -108,6 +108,14 @@ class ShootActiveWorkLifecycleTest extends TestCase
         $new->forceFill(['workflow_status' => 'ready', 'delivery_status' => 'ready', 'ready_at' => now()])->save();
         $this->assertSame('active', $shoot->fresh()->status);
         $new->forceFill(['workflow_status' => 'delivered', 'delivery_status' => 'delivered', 'delivered_at' => now()])->save();
+        $this->assertSame('active', $shoot->fresh()->status); // Flags alone cannot approve new work.
+        $this->travel(1)->minutes();
+        $admin = User::factory()->create(['role' => 'superadmin']);
+        $file = new ShootFile;
+        $file->forceFill(['shoot_id' => $shoot->id, 'shoot_service_id' => $new->id, 'filename' => 'finished.mp4', 'stored_filename' => 'finished.mp4',
+            'path' => 'shoots/'.$shoot->id.'/finished.mp4', 'file_type' => 'video/mp4', 'mime_type' => 'video/mp4', 'file_size' => 1024,
+            'media_type' => 'video', 'workflow_stage' => 'completed', 'scan_status' => 'clean', 'uploaded_by' => $admin->id])->save();
+        (new \App\Jobs\FinalizeShootJob($shoot->id, $admin->id))->handle(app(\App\Services\ShootActivityLogger::class));
         $shoot->refresh();
         $this->assertSame('delivered', $shoot->workflow_status);
         $this->assertNotNull($shoot->active_work_completed_at);
@@ -162,7 +170,7 @@ class ShootActiveWorkLifecycleTest extends TestCase
             $this->assertStringContainsString('previously-delivered.jpg', $oldDownload->headers->get('Location'));
         } else $oldDownload->assertOk();
         $this->getJson("/api/shoots/{$shoot->id}/media/{$newFile->id}/download")->assertForbidden()
-            ->assertJsonPath('code', 'payment_required');
+            ->assertJsonPath('code', 'forbidden'); // New work must first be approved, even before its payment gate.
         $this->getJson("/api/shoots/{$shoot->id}/media/{$raw->id}/download")->assertForbidden();
         $visible = collect($this->getJson("/api/shoots/{$shoot->id}/files?type=edited")->assertOk()->json('data'))->pluck('id');
         $this->assertTrue($visible->contains($oldFile->id));

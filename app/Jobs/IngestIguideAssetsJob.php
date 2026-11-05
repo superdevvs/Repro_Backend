@@ -40,6 +40,20 @@ class IngestIguideAssetsJob implements ShouldQueue
     public function handle(ShootActivityLogger $activityLogger): void
     {
         $shoot = Shoot::find($this->shootId);
+        if (! $shoot) return;
+        if (! $this->shootServiceId) {
+            $owner = app(\App\Services\Shoots\IguideServiceOwnership::class)->resolve($shoot);
+            if ($owner) $this->shootServiceId = (int) $owner->id;
+            elseif ($shoot->serviceItems()->exists() || $shoot->units()->exists()) return;
+        }
+        $lock = \Illuminate\Support\Facades\Cache::lock('iguide:ingest:'.$this->shootId, 660);
+        if (! $lock->get()) { $this->release(30); return; }
+        try { $this->ingest($activityLogger); } finally { $lock->release(); }
+    }
+
+    private function ingest(ShootActivityLogger $activityLogger): void
+    {
+        $shoot = Shoot::find($this->shootId);
         if (!$shoot || $shoot->isInternalTestShoot()) {
             return;
         }
@@ -50,6 +64,16 @@ class IngestIguideAssetsJob implements ShouldQueue
         if (empty($this->floorplans)) {
             return;
         }
+
+        if ($this->shootServiceId) {
+            $item = $shoot->serviceItems()->find($this->shootServiceId);
+            if (! $item || ! app(\App\Services\Shoots\IguideServiceOwnership::class)->isProviderLine($shoot, $item)) return;
+        }
+        $shoot = app(\App\Services\Shoots\ShootUnitTourScope::class)->forLine($shoot, $this->shootServiceId);
+        if (! $this->shootServiceId && $shoot->units()->exists()) return;
+        $adopted = $this->shootServiceId && ! $shoot->relationLoaded('tourUnit')
+            ? app(\App\Services\Shoots\IguideServiceOwnership::class)->adoptUnscoped($shoot, $this->shootServiceId,
+                array_values(array_filter(array_column($this->floorplans, 'asset_key')))) : [];
 
         $existingByKey = ShootFile::query()
             ->where('shoot_id', $shoot->id)
@@ -181,7 +205,16 @@ class IngestIguideAssetsJob implements ShouldQueue
                         return $file;
                     }, 'provider-floorplan.recover-payload');
                 } else {
-                    $shootFile = ShootFile::create($attributes);
+                    $shootFile = \App\Support\LockedWrite::run(fn () => \Illuminate\Support\Facades\DB::transaction(function () use ($attributes) {
+                        \App\Support\EditingDispatchWriteLock::acquire($this->shootId);
+                        if ($this->shootServiceId) {
+                            $target = \App\Models\ShootService::where('shoot_id', $this->shootId)->find($this->shootServiceId);
+                            abort_unless($target && app(\App\Services\Shoots\ShootUploadTargetPolicy::class)->isWorkItem($target), 409, 'Provider target changed during import.');
+                        }
+                        return ShootFile::where('shoot_id', $this->shootId)->where('shoot_service_id', $this->shootServiceId)
+                            ->where('metadata->source', 'iguide')->where('metadata->iguide_asset_key', $attributes['metadata']['iguide_asset_key'])->first()
+                            ?? ShootFile::create($attributes);
+                    }), 'iguide.asset.publish');
                 }
 
                 $ingestedFileIds[] = $shootFile->id;
@@ -213,6 +246,11 @@ class IngestIguideAssetsJob implements ShouldQueue
         if ($retryPending) {
             if ($this->attempts() >= $this->tries) throw new \RuntimeException('Provider floorplan document is not ready; no HTML payload was published.');
             $this->release($this->backoff[min(max(0, $this->attempts() - 1), count($this->backoff) - 1)]);
+        }
+
+        if ($adopted || $ingestedFileIds) {
+            app(\App\Services\Shoots\ShootMediaMutationSupportService::class)->clearShootFilesCache($shoot);
+            \App\Services\Shoots\ShootListingService::flushCachedListings();
         }
 
         if (!empty($ingestedFileIds)) {

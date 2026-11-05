@@ -24,7 +24,7 @@ class ShootRawUploadBatchService
         abort_unless($this->authorization->canUploadShootMedia($shoot, $actor, 'raw', $scope ?: null), 403);
         $items = $shoot->serviceItems()->with(['service', 'shoot'])->get();
         if (!$scope && $items->isNotEmpty()) {
-            $eligible = $items->filter(fn ($item) => $this->intake->supportsLane($item, $lane)
+            $eligible = $items->filter(fn ($item) => app(ShootUploadTargetPolicy::class)->isOutstanding($item) && $this->intake->supportsLane($item, $lane)
                 && $this->authorization->canUploadShootMedia($shoot, $actor, 'raw', $item->id));
             if ($eligible->isEmpty()) {
                 throw new PublicApiException(
@@ -41,7 +41,7 @@ class ShootRawUploadBatchService
         if ($scope && !$item) {
             throw new PublicApiException('The selected service does not belong to this shoot.', 'upload_service_invalid');
         }
-        if ($item && !$this->intake->supportsLane($item, $lane)) {
+        if ($item && (! app(ShootUploadTargetPolicy::class)->isWorkItem($item) || !$this->intake->supportsLane($item, $lane))) {
             throw new PublicApiException("The selected service does not accept {$lane} uploads. Choose a compatible service.", 'upload_service_unavailable');
         }
         $mode = $lane === 'photo' ? (int) ($item ? $this->brackets->effectiveBracketMode($item) : $this->brackets->normalize($shoot->bracket_mode)) : 0;

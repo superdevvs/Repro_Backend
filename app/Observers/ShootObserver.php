@@ -16,6 +16,16 @@ use Illuminate\Validation\ValidationException;
 
 class ShootObserver
 {
+    public function saved(Shoot $shoot): void
+    {
+        app(\App\Services\Shoots\DeliveryPlanService::class)->forgetReleasedFiles($shoot);
+    }
+
+    public function deleted(Shoot $shoot): void
+    {
+        app(\App\Services\Shoots\DeliveryPlanService::class)->forgetReleasedFiles($shoot);
+    }
+
     public function deleting(Shoot $shoot): void
     {
         if ($shoot->isComplimentaryReshoot()
@@ -47,6 +57,7 @@ class ShootObserver
 
     public function updated(Shoot $shoot): void
     {
+        app(\App\Services\Shoots\DeliveryPlanService::class)->forgetReleasedFiles($shoot);
         app(\App\Services\Messaging\ShootDeliveryUpdateNotifier::class)->linksChanged($shoot);
         $this->ensureCubiCasaOrder($shoot);
         $this->ensureIguideDiscovery($shoot);
