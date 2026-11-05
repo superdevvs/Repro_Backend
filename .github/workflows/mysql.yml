@@ -46,7 +46,7 @@ jobs:
           composer audit --locked
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y libaio1t64 libncurses6 libtinfo6 poppler-utils imagemagick ffmpeg fonts-dejavu-core hugin-tools libraw-bin libimage-exiftool-perl
-          command -v convert pdftoppm ffmpeg align_image_stack enfuse
+          for binary in convert pdftoppm ffmpeg align_image_stack enfuse; do command -v "$binary"; done
           mkdir -p "$RUNNER_TEMP/mysql84"
           docker cp "$MYSQL_CONTAINER:/usr/bin/mysql" "$RUNNER_TEMP/mysql84/mysql"
           docker cp "$MYSQL_CONTAINER:/usr/bin/mysqldump" "$RUNNER_TEMP/mysql84/mysqldump"

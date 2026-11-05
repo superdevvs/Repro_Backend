@@ -1,9 +1,11 @@
 # SQLite to MySQL migration rehearsal
 
-This branch is an isolated migration candidate. The November 5 continuation
-made no production connections or changes. Production was last verified on
-SQLite during the earlier rehearsal. Deployment remains outside the current
-authorization, and the outstanding gates below still apply.
+This is the historical report for the initial isolated migration checkpoint.
+See [the November 5 readiness report](mysql-production-readiness.md) and
+[the cutover runbook](mysql-production-cutover.md) for the current candidate.
+The later readiness work used read-only production inventory and a fresh online
+backup. No production application, service, configuration or business-data
+change was made. Deployment remains outside the current authorization.
 
 ## Copy and isolation
 
