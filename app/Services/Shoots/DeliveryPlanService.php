@@ -324,6 +324,7 @@ class DeliveryPlanService
     }
     public function releasedFile(ShootFile $file): bool
     {
+        if (! $file->id || ! $file->shoot_id) return false;
         $shoot = $file->relationLoaded('shoot') ? $file->shoot : $file->shoot()->first();
         if (! $shoot || ! in_array($file->id, $this->releasedFileIds($shoot), true)) return false;
         $proof = $this->releasedEvidence[$shoot->id][$file->id] ?? null;

@@ -84,7 +84,12 @@ class ReconcilePartialServiceDelivery extends Command
                     'delivered_at' => null,
                     'editing_completed_at' => null,
                     'video_editing_completed_at' => null,
-                ])->saveQuietly();
+                ]);
+                // A migrated aggregate snapshot cannot represent the new photo
+                // execution. Promote only this reviewed reset after its wrongly
+                // owned historical files have moved to the delivered target.
+                app(\App\Services\Shoots\DeliveryComponentRequirements::class)->reopenIfRequested($source, $shoot);
+                $source->saveQuietly();
 
                 // An operational repair must not invoke provider, payout, archive, or notification observers.
                 $began = Shoot::withoutEvents(fn () => $lifecycle->begin($shoot->fresh()));
@@ -233,9 +238,10 @@ class ReconcilePartialServiceDelivery extends Command
 
     private function assertPreserved(array $before, array $after, array $input): void
     {
-        $allowedRoot = ['status', 'workflow_status', 'delivery_status', 'active_work_started_at', 'active_work_completed_at', 'active_work_at', 'active_work_date', 'active_work_time', 'updated_at'];
+        $allowedRoot = ['status', 'workflow_status', 'delivery_status', 'active_work_is_reopened', 'active_work_started_at', 'active_work_completed_at', 'active_work_at', 'active_work_date', 'active_work_time', 'updated_at'];
         $this->require(array_diff_key($before['shoot'], array_flip($allowedRoot)) === array_diff_key($after['shoot'], array_flip($allowedRoot)), 'The repair changed historical or financial shoot fields.');
         $this->require($after['shoot']['status'] === 'active' && $after['shoot']['workflow_status'] === 'active' && $after['shoot']['delivery_status'] === 'partially_delivered', 'The repaired shoot did not become Active with a retained delivery.');
+        $this->require((bool) $after['shoot']['active_work_is_reopened'], 'The repaired cycle did not retain its prior delivery classification.');
         foreach ($before['files'] as $index => $file) {
             $expected = $file;
             $expected['shoot_service_id'] = $input['target'];
@@ -243,9 +249,16 @@ class ReconcilePartialServiceDelivery extends Command
         }
         foreach ($before['services'] as $index => $service) {
             $allowed = (int) $service['id'] === $input['source']
-                ? ['workflow_status', 'delivery_status', 'ready_at', 'delivered_at', 'editing_completed_at', 'video_editing_completed_at', 'updated_at']
+                ? ['workflow_status', 'delivery_status', 'ready_at', 'delivered_at', 'editing_completed_at', 'video_editing_completed_at', 'delivery_requirements', 'updated_at']
                 : ['editor_id', 'video_editor_id', 'editing_completed_at', 'video_editing_completed_at', 'updated_at'];
             $this->require(array_diff_key($service, array_flip($allowed)) === array_diff_key($after['services'][$index], array_flip($allowed)), 'A service changed beyond the reviewed completion and editing fields.');
+            if ((int) $service['id'] === $input['source']) {
+                $requirements = json_decode($after['services'][$index]['delivery_requirements'] ?? 'null', true);
+                $this->require(is_array($requirements) && count($requirements) === 1 && ($requirements[0]['key'] ?? null) === 'photo'
+                    && ($requirements[0]['kind'] ?? null) === 'photo'
+                    && str_starts_with($requirements[0]['execution_key'] ?? '', 'line:'.$input['source'].':')
+                    && ! empty($requirements[0]['execution_started_at']), 'The reviewed photo service did not receive a separate execution requirement.');
+            }
         }
         $this->require($before['invoices'] === $after['invoices'] && $before['invoice_items'] === $after['invoice_items'], 'Invoice records changed during reconciliation.');
     }

@@ -59,6 +59,7 @@ class ReconcilePartialServiceDeliveryTest extends TestCase
         $this->assertSame('active', $shoot->fresh()->status);
         $this->assertSame('active', $shoot->fresh()->workflow_status);
         $this->assertSame('partially_delivered', $shoot->fresh()->delivery_status);
+        $this->assertTrue($shoot->fresh()->active_work_is_reopened);
         $this->assertSame('2026-11-04', $shoot->fresh()->active_work_date);
         foreach (['scheduled_at', 'scheduled_date', 'time', 'admin_verified_at', 'completed_at', 'editing_completed_at', 'total_quote', 'payment_status', 'bypass_paywall'] as $field) {
             $this->assertSame($before['shoots'][0][$field], $shoot->fresh()->getRawOriginal($field), $field);
@@ -67,6 +68,15 @@ class ReconcilePartialServiceDeliveryTest extends TestCase
         $this->assertSame('scheduled', $source->workflow_status);
         $this->assertSame('not_started', $source->delivery_status);
         $this->assertNull($source->ready_at); $this->assertNull($source->delivered_at); $this->assertNull($source->editing_completed_at);
+        $this->assertSame(['photo'], array_column($source->delivery_requirements, 'kind'));
+        $this->assertStringStartsWith('line:'.$source->id.':', $source->delivery_requirements[0]['execution_key']);
+        $this->assertNotEmpty($source->delivery_requirements[0]['execution_started_at']);
+        $this->assertSame(['legacy'], array_column($target->delivery_requirements, 'kind'));
+        $delivery = app(\App\Services\Shoots\DeliveryPlanService::class)->plan($shoot->fresh(), $fixture[5]);
+        $pending = collect($delivery['components'])->firstWhere('shoot_service_id', $source->id);
+        $this->assertSame('photo', $pending['kind']);
+        $this->assertSame('pending', $pending['status']);
+        $this->assertContains('future_appointment', $pending['reason_codes']);
         $this->assertSame('2026-11-04 20:45:00', $source->scheduled_at->format('Y-m-d H:i:s'));
         $this->assertSame('delivered', $target->delivery_status);
         $this->assertSame('2026-11-03 08:20:32', $target->delivered_at->format('Y-m-d H:i:s'));
@@ -190,8 +200,10 @@ class ReconcilePartialServiceDeliveryTest extends TestCase
                 'workflow_status' => 'delivered', 'delivery_status' => 'delivered', 'ready_at' => '2026-11-03 06:51:47', 'delivered_at' => '2026-11-03 08:20:32'];
             $source = ShootService::create($common + ['service_id' => $photo->id, 'price' => 175, 'editor_id' => $editor->id, 'scheduled_at' => '2026-11-04 20:45:00', 'editing_completed_at' => '2026-11-03 06:52:01']);
             $target = ShootService::create($common + ['service_id' => $drone->id, 'price' => 150, 'scheduled_at' => '2026-11-02 18:30:00']);
-            $source->forceFill(['payout_snapshot' => ['original' => 'private payout basis']])->saveQuietly();
-            $target->forceFill(['payout_snapshot' => ['original' => 'private payout basis']])->saveQuietly();
+            foreach ([$source, $target] as $line) $line->forceFill([
+                'payout_snapshot' => ['original' => 'private payout basis'],
+                'delivery_requirements' => [['key' => 'legacy', 'kind' => 'legacy', 'label' => 'Historical delivery']],
+            ])->saveQuietly();
             $files = [];
             for ($index = 0; $index < 2; $index++) {
                 $path = "shoots/{$shoot->id}/completed/drone-$index.jpg";

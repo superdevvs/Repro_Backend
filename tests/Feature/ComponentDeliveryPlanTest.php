@@ -50,7 +50,7 @@ class ComponentDeliveryPlanTest extends TestCase
     {
         [$shoot, $item, $actor] = $this->fixture();
         $photo = $this->file($shoot, $item, $actor);
-        $raw = $this->file($shoot, $item, $actor, ['workflow_stage' => 'todo', 'media_type' => 'video', 'file_type' => 'video/mp4', 'mime_type' => 'video/mp4']);
+        $raw = $this->file($shoot, $item, $actor, ['workflow_stage' => 'todo', 'media_type' => 'video', 'file_type' => 'video/mp4', 'mime_type' => 'video/mp4', 'created_at' => now()->subDay()]);
         $plan = app(DeliveryPlanService::class)->plan($shoot, $actor);
         $this->assertSame([$item->id.':photo'], $plan['ready_component_ids']);
         $this->deliver($shoot, $actor);
@@ -58,6 +58,8 @@ class ComponentDeliveryPlanTest extends TestCase
         $this->assertSame('todo', $raw->fresh()->workflow_stage);
         $this->assertSame('editing', $shoot->fresh()->workflow_status);
         $this->assertFalse(app(ShootActiveWorkLifecycle::class)->hasActiveWork($shoot->fresh()));
+        $this->assertSame([$item->id], app(ShootActiveWorkLifecycle::class)->initialDeliveryItemIds($shoot->fresh()));
+        $this->assertContains($raw->id, app(\App\Services\Shoots\ServiceDeliveryEligibility::class)->currentCycleFiles($shoot->fresh(), $shoot->files()->get())->modelKeys());
         $this->assertNull($shoot->fresh()->admin_verified_at);
         $this->assertNotSame('delivered', $item->fresh()->workflow_status);
         $this->assertTrue(app(DeliveryPlanService::class)->releasedFile($photo->fresh()));

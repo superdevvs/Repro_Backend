@@ -83,9 +83,13 @@ final class ShootUploadTargetPolicy
             if (! $compatible($item)) $this->reject('The selected service does not accept this content. Choose a compatible service.');
             return $item;
         }
-        $eligible = $items->filter(fn ($item) => $this->isOutstanding($item) && $compatible($item)
-            && $authorization->canUploadShootMedia($shoot, $actor, $type, $item->id)
+        $compatibleItems = $items->filter(fn ($item) => $this->isOutstanding($item) && $compatible($item));
+        $eligible = $compatibleItems->filter(fn ($item) => $authorization->canUploadShootMedia($shoot, $actor, $type, $item->id)
             && ($type !== 'edited' || $this->canUploadFamilies($shoot, $actor, $item, $families)));
+        // Assignment corrections may retry a saved permission rejection using
+        // the same upload identity. Keep authorization failures distinct from
+        // a genuinely missing/incompatible work target.
+        abort_if($eligible->isEmpty() && $compatibleItems->isNotEmpty(), 403, 'You can only upload to assigned service items and content lanes.');
         if ($eligible->count() !== 1) $this->reject($eligible->isEmpty()
             ? 'No outstanding assigned service accepts this content. Add or select the correct work service.'
             : 'Select one service for this upload batch.', $eligible->isEmpty() ? 'service_item_not_uploadable' : 'missing_service_item');

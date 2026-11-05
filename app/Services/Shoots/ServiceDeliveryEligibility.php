@@ -77,6 +77,13 @@ final class ServiceDeliveryEligibility
             $item = $items->get($file->shoot_service_id);
             $execution = $item ? app(DeliveryPlanService::class)->itemExecutionKey($shoot, $item) : $cycle;
             $matches = isset($receipt['execution_key']) ? $receipt['execution_key'] === $execution : $execution === $cycle && ($receipt['cycle'] ?? null) === $cycle;
+            // Older initial-partial uploads used the temporary Active marker as
+            // their submission identity. Retain that exact handoff cutoff when
+            // normalizing them to the initial execution; it grants no approval.
+            if (! isset($receipt['execution_key']) && $execution === 'initial' && $cycle === 'initial'
+                && app(ShootActiveWorkLifecycle::class)->isInitialPartial($shoot)
+                && $shoot->active_work_started_at
+                && ($receipt['cycle'] ?? null) === $shoot->active_work_started_at->toIso8601String()) $matches = true;
             if (! $file->shoot_service_id || ! $matches
                 || (int) ($receipt['content_version'] ?? 0) !== (int) ($file->content_version ?: 1)) continue;
             $id = (int) $file->shoot_service_id;

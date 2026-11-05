@@ -700,6 +700,7 @@ class ShootPublicAssetsService
         $videos = [];
         $publicImages = app(PublicTourImage::class);
         $activeWork = app(ShootActiveWorkLifecycle::class)->hasActiveWork($shoot);
+        $initialPartial = app(ShootActiveWorkLifecycle::class)->isInitialPartial($shoot);
         $initialItems = app(ShootActiveWorkLifecycle::class)->initialDeliveryItemIds($shoot);
         $initialPhotos = $chosen->filter(fn (ShootFile $file) => in_array((int) $file->shoot_service_id, $initialItems, true)
             && $file->workflow_stage === ShootFile::STAGE_COMPLETED && ! $file->verified_at
@@ -712,7 +713,8 @@ class ShootPublicAssetsService
             // Hidden / delivery-blocked media must never appear on the public tour.
             // Archive and share-link builders already reject these; the tour used to
             // ignore is_hidden, so a client hide still left the image in the embed.
-            if ($file->is_hidden || $file->isBlockedFromDelivery() || $file->isIguideOfflinePackage()) {
+            if ($file->is_hidden || $file->isBlockedFromDelivery() || $file->isIguideOfflinePackage()
+                || strtolower((string) $file->media_type) === 'raw') {
                 continue;
             }
             // Shared photo previews are independent of paid original downloads.
@@ -720,7 +722,7 @@ class ShootPublicAssetsService
             // pending; genuine additional work retains its publication boundary.
             $photoPreview = ! in_array(strtolower((string) $file->media_type), ['raw', 'video', 'floorplan'], true)
                 && str_starts_with(strtolower((string) $file->file_type), 'image/');
-            if ($activeWork && ! in_array($file->id, $initialPreviewIds, true)
+            if (($activeWork || $initialPartial) && ! in_array($file->id, $initialPreviewIds, true)
                 && ! $publicImages->canRetainPublishedFile($file, $shoot, ! $photoPreview)) continue;
 
             // Floorplans have their own "Floor Plans" section and must never appear in

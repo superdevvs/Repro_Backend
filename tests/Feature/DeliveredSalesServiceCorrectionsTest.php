@@ -20,20 +20,21 @@ class DeliveredSalesServiceCorrectionsTest extends TestCase
         Http::preventStrayRequests(); Mail::fake(); Notification::fake(); Queue::fake(); Storage::fake('public');
     }
 
-    private function fixture(): array
+    private function fixture(string $productionStage = 'delivered'): array
     {
+        $delivered = $productionStage === 'delivered';
         $rep = User::factory()->create(['role' => 'salesRep']);
         $photographer = User::factory()->photographer()->create();
-        $shoot = Shoot::factory()->create(['status' => 'delivered', 'workflow_status' => 'delivered', 'delivery_status' => 'delivered',
+        $shoot = Shoot::factory()->create(['status' => $productionStage, 'workflow_status' => $productionStage, 'delivery_status' => $delivered ? 'delivered' : 'not_started',
             'rep_id' => $rep->id, 'photographer_id' => $photographer->id, 'scheduled_at' => '2025-01-02 15:00:00',
             'scheduled_date' => '2025-01-02', 'time' => '10:00', 'timezone' => 'America/New_York',
-            'completed_at' => '2025-01-03 15:00:00', 'admin_verified_at' => '2025-01-03 15:00:00', 'photos_uploaded_at' => '2025-01-03 12:00:00',
+            'completed_at' => $delivered ? '2025-01-03 15:00:00' : null, 'admin_verified_at' => $delivered ? '2025-01-03 15:00:00' : null, 'photos_uploaded_at' => '2025-01-03 12:00:00',
             'state' => 'VA', 'base_quote' => 100, 'tax_percent' => 0, 'tax_amount' => 0, 'total_quote' => 100]);
         $service = Service::factory()->unbracketedPhoto()->create(['price' => 999, 'allow_multiple' => true, 'photographer_pay' => 30]);
         $item = ShootService::create(['shoot_id' => $shoot->id, 'service_id' => $service->id, 'price' => 100, 'quantity' => 1,
             'photographer_pay' => 20, 'duration_minutes' => 60, 'photographer_id' => $photographer->id,
-            'scheduled_at' => $shoot->scheduled_at, 'workflow_status' => 'delivered', 'delivery_status' => 'delivered',
-            'delivered_at' => '2025-01-03 15:00:00', 'is_deliverable' => true]);
+            'scheduled_at' => $shoot->scheduled_at, 'workflow_status' => $delivered ? 'delivered' : 'in_progress', 'delivery_status' => $delivered ? 'delivered' : 'not_started',
+            'delivered_at' => $delivered ? '2025-01-03 15:00:00' : null, 'is_deliverable' => true]);
         Sanctum::actingAs($rep);
         return [$shoot->fresh(), $item->fresh(), $service->fresh(), $rep];
     }
@@ -187,13 +188,14 @@ class DeliveredSalesServiceCorrectionsTest extends TestCase
         $this->assertSame([$item->id], $shoot->serviceItems()->pluck('id')->all());
     }
 
-    private function photoUpgradeFixture(): array
+    private function photoUpgradeFixture(string $productionStage = 'delivered'): array
     {
-        [$shoot, $item, $original, $rep] = $this->fixture();
+        [$shoot, $item, $original, $rep] = $this->fixture($productionStage);
         $shoot->update(['property_details' => ['sqft' => 2500]]);
         $original->update(['name' => '25 HDR Photos', 'photo_count' => 25, 'uses_hdr_brackets' => true, 'pricing_type' => 'variable']);
         $item->update(['contracted_photo_count' => 25, 'bracket_mode' => 5,
-            'ready_at' => '2025-01-03 14:00:00', 'editing_completed_at' => '2025-01-03 14:00:00',
+            'ready_at' => $productionStage === 'delivered' ? '2025-01-03 14:00:00' : null,
+            'editing_completed_at' => $productionStage === 'delivered' ? '2025-01-03 14:00:00' : null,
             'editor_id' => User::factory()->create(['role' => 'editor'])->id]);
         $upgrade = Service::factory()->bracketedPhoto(35)->create(['name' => '35 HDR Photos',
             'category_id' => $original->category_id, 'price' => 199, 'photographer_pay' => 89.55, 'shoot_duration_minutes' => 90, 'pricing_type' => 'variable']);
@@ -283,14 +285,15 @@ class DeliveredSalesServiceCorrectionsTest extends TestCase
     #[\PHPUnit\Framework\Attributes\DataProvider('unfinishedProductionStates')]
     public function test_upgrade_preserves_in_progress_production_without_marking_it_delivered(string $stage): void
     {
-        [$shoot, $item, $original, $rep, $upgrade] = $this->photoUpgradeFixture();
-        $shoot->update(['status' => $stage, 'workflow_status' => $stage, 'delivery_status' => 'not_started', 'completed_at' => null, 'admin_verified_at' => null]);
-        $item->update(['workflow_status' => 'in_progress', 'delivery_status' => 'not_started', 'ready_at' => null, 'delivered_at' => null, 'editing_completed_at' => null]);
+        [$shoot, $item, $original, $rep, $upgrade] = $this->photoUpgradeFixture($stage);
+        $this->assertSame($stage, $shoot->fresh()->workflow_status);
         $this->save($shoot, ['services' => [['id' => $upgrade->id]]])->assertOk();
         $this->assertSame($upgrade->id, $item->fresh()->service_id);
         $this->assertSame('in_progress', $item->fresh()->workflow_status);
         $this->assertSame('not_started', $item->fresh()->delivery_status);
         $this->assertSame($stage, $shoot->fresh()->workflow_status);
+        $this->assertNull($shoot->fresh()->admin_verified_at);
+        $this->assertNull($shoot->fresh()->active_work_started_at);
     }
 
     public function test_adding_another_photo_package_does_not_inherit_completed_work(): void
