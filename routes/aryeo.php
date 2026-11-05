@@ -1,10 +1,18 @@
 <?php
 
 use App\Http\Controllers\API\AryeoAdminController as Admin;
+use App\Http\Controllers\API\AryeoPartnerSetupController;
 use App\Http\Controllers\API\AryeoRequestsController;
 use App\Http\Controllers\API\AryeoWorkerController as Worker;
 use App\Http\Middleware\AuthenticateAryeoWorker;
 use Illuminate\Support\Facades\Route;
+
+// Public partner-registration handoff. No credentials, authorization, or account linking.
+Route::prefix('integrations/aryeo')->middleware('throttle:60,1')->group(function () {
+    Route::get('setup', [AryeoPartnerSetupController::class, 'show'])->name('aryeo.partner.setup');
+    Route::get('setup.json', [AryeoPartnerSetupController::class, 'registration'])->name('aryeo.partner.registration');
+    Route::get('oauth/callback', [AryeoPartnerSetupController::class, 'callback'])->name('aryeo.oauth.callback');
+});
 
 Route::get('dashboard/aryeo-requests', AryeoRequestsController::class)
     ->middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager,salesRep', 'throttle:120,1']);
