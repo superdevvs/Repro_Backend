@@ -47,6 +47,15 @@ class IngestCubiCasaAssetsJob implements ShouldQueue
 
     public function handle(ShootActivityLogger $activityLogger): void
     {
+        if (! $this->shootServiceId) {
+            $source = Shoot::find($this->shootId);
+            if ($source && ! $source->units()->exists()) {
+                $owner = app(\App\Services\Shoots\CubiCasaServiceOwnership::class)->resolve($source);
+                if ($owner) $this->shootServiceId = (int) $owner->id;
+                // Multiple booked provider lines need an explicit execution identity.
+                elseif ($source->serviceItems()->exists()) return;
+            }
+        }
         $lock = Cache::lock('cubicasa:ingest:'.$this->shootId.':'.($this->shootServiceId ?? 0), 660);
         if (!$lock->get()) { $this->release(30); return; }
         try {
@@ -92,6 +101,11 @@ class IngestCubiCasaAssetsJob implements ShouldQueue
         }
         if (empty($this->floorplans)) return;
 
+        $adoptedIds = $this->shootServiceId && ! $shoot->relationLoaded('tourUnit')
+            ? app(\App\Services\Shoots\CubiCasaServiceOwnership::class)->adoptUnscoped(
+                $shoot, $this->shootServiceId, array_values(array_filter(array_column($this->floorplans, 'asset_key')))
+            ) : [];
+
         $existingByKey = ShootFile::query()
             ->where('shoot_id', $shoot->id)
             ->where('media_type', 'floorplan')
@@ -105,7 +119,7 @@ class IngestCubiCasaAssetsJob implements ShouldQueue
 
         $uploadedByUserId = $this->resolveSystemUploaderId($shoot);
 
-        $ingestedFileIds = [];
+        $ingestedFileIds = $adoptedIds;
         $retryPending = false;
         $failedKeys = [];
         $firstFailure = null;
