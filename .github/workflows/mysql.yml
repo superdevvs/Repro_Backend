@@ -45,7 +45,7 @@ jobs:
           composer install --no-interaction --prefer-dist --no-progress
           composer audit --locked
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y libaio1t64 libncurses6 libtinfo6 poppler-utils imagemagick ffmpeg fonts-dejavu-core hugin-tools libraw-bin libimage-exiftool-perl
+          sudo apt-get install --no-install-recommends -y libaio1t64 libncurses6 libtinfo6 poppler-utils imagemagick ffmpeg fonts-dejavu-core hugin-tools enfuse libraw-bin libimage-exiftool-perl
           for binary in convert pdftoppm ffmpeg align_image_stack enfuse; do command -v "$binary"; done
           mkdir -p "$RUNNER_TEMP/mysql84"
           docker cp "$MYSQL_CONTAINER:/usr/bin/mysql" "$RUNNER_TEMP/mysql84/mysql"
@@ -96,6 +96,7 @@ jobs:
         run: |
           set -euo pipefail
           php -d memory_limit=2G artisan migrate:fresh --force
+          php -d memory_limit=2G vendor/bin/phpunit -c phpunit.mysql.xml --fail-on-warning --fail-on-risky tests/Unit/HdrExposureFusionTest.php
           python3 - <<'PY'
           import os,pathlib,xml.etree.ElementTree as ET
           config=ET.parse('phpunit.mysql.xml').getroot()
