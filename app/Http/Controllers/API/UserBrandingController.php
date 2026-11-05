@@ -4,6 +4,7 @@ namespace App\Http\Controllers\API;
 
 use App\Http\Controllers\Controller;
 use App\Models\User;
+use App\Services\Users\ClientBrandingAccess;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -21,8 +22,12 @@ class UserBrandingController extends Controller
      * Get user branding settings
      * GET /api/users/{user}/branding
      */
-    public function show(User $user)
+    public function show(Request $request, User $user)
     {
+        if ($user->role === 'client' && !app(ClientBrandingAccess::class)->canView($request->user(), $user)) {
+            return response()->json(['error' => 'Forbidden'], 403);
+        }
+
         try {
             $branding = DB::table('user_branding')
                 ->where('user_id', $user->id)
@@ -52,6 +57,13 @@ class UserBrandingController extends Controller
      */
     public function update(Request $request, User $user)
     {
+        // The existing Branding tab writes the same logo. Enforce the same account
+        // boundary here so hiding upload controls cannot be bypassed through it.
+        if ($user->role === 'client' && array_key_exists('logo', (array) $request->input('branding', []))
+            && !app(ClientBrandingAccess::class)->canManage($request->user(), $user)) {
+            return response()->json(['error' => 'Forbidden'], 403);
+        }
+
         if (!$this->canUpdateBranding($request->user(), $user)) {
             return response()->json(['error' => 'Forbidden'], 403);
         }

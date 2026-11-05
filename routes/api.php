@@ -773,6 +773,9 @@ Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager'])->pr
 
 Route::middleware('auth:sanctum')->group(function () {
     // User branding routes
+    Route::get('/users/{user}/brokerage-logo', [App\Http\Controllers\API\BrokerageLogoController::class, 'show']);
+    Route::post('/users/{user}/brokerage-logo', [App\Http\Controllers\API\BrokerageLogoController::class, 'store']);
+    Route::delete('/users/{user}/brokerage-logo', [App\Http\Controllers\API\BrokerageLogoController::class, 'destroy']);
     Route::get('/users/{user}/branding', [App\Http\Controllers\API\UserBrandingController::class, 'show']);
     Route::put('/users/{user}/branding', [App\Http\Controllers\API\UserBrandingController::class, 'update']);
 
