@@ -13,10 +13,10 @@ explicit authorization. No real payment, message or customer job was executed.
 
 ## Candidate and evidence
 
-The backend candidate is based on upstream `8082cddd`, preserving the newer rep
-impersonation release, Aryeo handoff and Symfony security updates. The frontend
-reference is `ea3b4ae2`. Backend runtime changes were reconciled and retested;
-the frontend has no migration-specific edits. Dirty primary checkouts were
+The backend candidate is based on upstream `bb4271b8`, preserving brokerage-logo
+uploads, the newer rep impersonation release, Aryeo handoff and Symfony security
+updates. The frontend reference is `98af9062`. Backend runtime changes were
+reconciled and retested; the frontend has no migration-specific edits. Dirty primary checkouts were
 preserved in separate worktrees. The final release commit, source hashes, image
 identities and report checksums belong in the protected final manifest.
 
@@ -46,6 +46,7 @@ names**. This includes MySQL's supporting FK indexes and the reviewed repairs.
 | --- | --- |
 | MySQL regression inventory | 6,024 cases in two independent server shards. One missing local TIFF tool and five PDF tool skips were resolved with a complete Ubuntu runtime and focused reruns; 12 SQLite-specific cases remain intentionally outside MySQL execution. |
 | Current-release backend checks | 105 tests / 988 assertions passed on MySQL, including the newer permission release, TIFF/PDF/HDR, backups, native revision races and queue contracts. Zero skips/failures in this focused run. |
+| Brokerage release reconciliation | The later brokerage-logo release is retained. Logo permissions, persistence, tours and failed-upload cleanup passed within 45 MySQL tests / 323 assertions and 43 SQLite tests / 303 assertions, including the shared failure-injection callers. The new frontend paths passed 31 focused cases. |
 | SQLite fallback | 830 affected cases / 6,882 assertions passed, plus 74 current-release/media/deployment tests / 680 assertions. Counts overlap and are not summed as unique coverage. |
 | Frontend | 5,862 of 5,863 cases passed in the full run; one registration case hit its 5-second timeout. Its unchanged file then passed all 18 cases. After upstream reconciliation, 54 affected cases, type check, lint baseline and production build passed. |
 | Copied business APIs | 39 admin/role comparisons matched status and business values, apart from independently checked signed-URL expiry and numeric roundoff below 0.00000001. |

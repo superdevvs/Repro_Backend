@@ -13,11 +13,13 @@ use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Storage;
 use PHPUnit\Framework\Attributes\DataProvider;
+use Tests\Concerns\InjectsDatabaseWriteFailures;
 use Tests\TestCase;
 
 class BrokerageLogoTest extends TestCase
 {
     use RefreshDatabase;
+    use InjectsDatabaseWriteFailures;
 
     protected function setUp(): void
     {
@@ -188,8 +190,12 @@ class BrokerageLogoTest extends TestCase
     {
         $client = User::factory()->create(['role' => 'client']);
         DB::table('user_branding')->insert(['user_id' => $client->id, 'logo' => '/previous.png']);
-        DB::unprepared("CREATE TRIGGER reject_test_logo BEFORE UPDATE OF logo ON user_branding BEGIN SELECT RAISE(ABORT, 'test save failure'); END;");
-        $this->actingAs($client)->postJson($this->url($client), ['logo' => $this->logo()])->assertServerError();
+        $restore = $this->failDatabaseUpdatesTo('user_branding');
+        try {
+            $this->actingAs($client)->postJson($this->url($client), ['logo' => $this->logo()])->assertServerError();
+        } finally {
+            $restore();
+        }
         $this->assertDatabaseHas('user_branding', ['user_id' => $client->id, 'logo' => '/previous.png']);
         $this->assertCount(0, Storage::disk('public')->allFiles());
     }
