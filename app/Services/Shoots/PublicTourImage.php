@@ -38,7 +38,7 @@ class PublicTourImage
     }
 
     /** Shared retained-output gate; video originals do not become photo-rendition URLs. */
-    public function canRetainPublishedFile(ShootFile $file, Shoot $shoot): bool
+    public function canRetainPublishedFile(ShootFile $file, Shoot $shoot, bool $requirePayment = true): bool
     {
         if (! app(ShootActiveWorkLifecycle::class)->hasActiveWork($shoot) || $this->isSuspended($shoot)
             || (int) $file->shoot_id !== (int) $shoot->id
@@ -48,11 +48,12 @@ class PublicTourImage
         if (! $file->shoot_service_id) {
             return $file->created_at && $file->created_at->lte($shoot->active_work_started_at)
                 && (! $file->verified_at || $file->verified_at->lte($shoot->active_work_started_at))
-                && $this->canRetainUnscopedHistory($shoot);
+                && $this->canRetainUnscopedHistory($shoot, $requirePayment);
         }
         $item = $file->relationLoaded('serviceItem') ? $file->serviceItem : $file->serviceItem()->first();
         return $item && (int) $item->shoot_id === (int) $shoot->id
-            && $this->isRetainedDeliveredItem($shoot, $item) && $this->isItemUnlocked($shoot, $item);
+            && $this->isRetainedDeliveredItem($shoot, $item)
+            && (! $requirePayment || $this->isItemUnlocked($shoot, $item));
     }
 
     /** Only explicitly delivered, unlocked lines may contribute to an Active public preview. */
@@ -64,11 +65,11 @@ class PublicTourImage
     }
 
     /** An unscoped historical image has no per-line payment identity; retain the whole-order gate. */
-    public function canRetainUnscopedHistory(Shoot $shoot): bool
+    public function canRetainUnscopedHistory(Shoot $shoot, bool $requirePayment = true): bool
     {
         return app(ShootActiveWorkLifecycle::class)->hasActiveWork($shoot) && ! $this->isSuspended($shoot)
             && $shoot->admin_verified_at && $shoot->admin_verified_at->lte($shoot->active_work_started_at)
-            && ! $this->releaseAccess->isPublicReleaseLocked($shoot);
+            && (! $requirePayment || ! $this->releaseAccess->isPublicReleaseLocked($shoot));
     }
 
     private function isRetainedDeliveredItem(Shoot $shoot, ShootService $item): bool

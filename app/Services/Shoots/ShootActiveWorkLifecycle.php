@@ -15,6 +15,15 @@ class ShootActiveWorkLifecycle
         return $shoot->active_work_started_at !== null && $shoot->active_work_completed_at === null;
     }
 
+    /** Original services still being edited when the order is first partially delivered. */
+    public function initialDeliveryItemIds(Shoot $shoot): array
+    {
+        if (! $this->hasActiveWork($shoot) || $this->isSuspended($shoot)
+            || $shoot->admin_verified_at || $shoot->completed_at) return [];
+        return $this->outstandingItems($shoot)->filter(fn (ShootService $item) => ! $item->delivered_at
+            && ! data_get($item->payout_snapshot, 'additional_work', false))->modelKeys();
+    }
+
     public function outstandingItems(Shoot $shoot): Collection
     {
         return $shoot->serviceItems()->with(['service', 'photographer'])->get()

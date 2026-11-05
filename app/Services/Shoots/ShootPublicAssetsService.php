@@ -696,6 +696,12 @@ class ShootPublicAssetsService
         $videos = [];
         $publicImages = app(PublicTourImage::class);
         $activeWork = app(ShootActiveWorkLifecycle::class)->hasActiveWork($shoot);
+        $initialItems = app(ShootActiveWorkLifecycle::class)->initialDeliveryItemIds($shoot);
+        $initialPhotos = $chosen->filter(fn (ShootFile $file) => in_array((int) $file->shoot_service_id, $initialItems, true)
+            && $file->workflow_stage === ShootFile::STAGE_COMPLETED && ! $file->verified_at
+            && ! in_array(strtolower((string) $file->media_type), ['raw', 'video', 'floorplan'], true)
+            && str_starts_with(strtolower((string) $file->file_type), 'image/'));
+        $initialPreviewIds = app(ServiceDeliveryEligibility::class)->currentCycleFiles($shoot, $initialPhotos)->pluck('id')->all();
         $revalidateImages = ! $this->mediaStorage->readFromR2Enabled() && ! $this->mediaStorage->r2Only()
             && $publicImages->canPublish($shoot) && ! $shoot->units()->exists();
         foreach ($chosen as $file) {
@@ -705,8 +711,13 @@ class ShootPublicAssetsService
             if ($file->is_hidden || $file->isBlockedFromDelivery() || $file->isIguideOfflinePackage()) {
                 continue;
             }
-            // Reopening work preserves released history, never a fallback URL for unfinished output.
-            if ($activeWork && ! $publicImages->canRetainPublishedFile($file, $shoot)) continue;
+            // Shared photo previews are independent of paid original downloads.
+            // Keep initial edited photos visible while a bundled video is still
+            // pending; genuine additional work retains its publication boundary.
+            $photoPreview = ! in_array(strtolower((string) $file->media_type), ['raw', 'video', 'floorplan'], true)
+                && str_starts_with(strtolower((string) $file->file_type), 'image/');
+            if ($activeWork && ! in_array($file->id, $initialPreviewIds, true)
+                && ! $publicImages->canRetainPublishedFile($file, $shoot, ! $photoPreview)) continue;
 
             // Floorplans have their own "Floor Plans" section and must never appear in
             // the property photo gallery or hero. (They now carry a generated preview

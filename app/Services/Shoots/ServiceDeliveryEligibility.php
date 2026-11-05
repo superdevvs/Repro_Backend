@@ -80,13 +80,24 @@ final class ServiceDeliveryEligibility
             ->where('updated_at', '>=', $shoot->active_work_started_at)
             ->whereIn('published_file_id', $files->pluck('id')->all())->get()->keyBy('published_file_id');
         $cutoffs = $this->submittedRawCutoffs($shoot);
-        $singleItem = $shoot->serviceItems()->count() === 1 ? $shoot->serviceItems()->value('id') : null;
-        return $files->filter(function (ShootFile $file) use ($shoot, $published, $cutoffs, $singleItem) {
+        $items = $shoot->serviceItems()->get();
+        $singleItem = $items->count() === 1 ? $items->first()->id : null;
+        // A first partial delivery starts Active while another original service
+        // is still being edited. Its never-verified output is still current work.
+        // A previously delivered line or a genuine additional-work cycle must
+        // continue to require fresh evidence after the cycle's cutoff.
+        $initialItems = app(ShootActiveWorkLifecycle::class)->initialDeliveryItemIds($shoot);
+        return $files->filter(function (ShootFile $file) use ($shoot, $published, $cutoffs, $singleItem, $initialItems) {
             $cutoff = $shoot->active_work_started_at;
+            $lineId = $file->shoot_service_id ?: $singleItem;
+            if ($file->workflow_stage === ShootFile::STAGE_COMPLETED && ! $file->verified_at
+                && in_array((int) $lineId, $initialItems, true)) {
+                $cutoff = $shoot->created_at;
+            }
             // A later handoff invalidates older edits for that line, without
             // hiding an unsubmitted RAW batch belonging to another artist.
             if ($file->workflow_stage !== ShootFile::STAGE_TODO && $file->media_type !== 'raw') {
-                $rawAt = $cutoffs[$file->shoot_service_id ?: $singleItem] ?? null;
+                $rawAt = $cutoffs[$lineId] ?? null;
                 if ($rawAt && $rawAt->gt($cutoff)) $cutoff = $rawAt;
             }
             return $file->created_at?->gte($cutoff)

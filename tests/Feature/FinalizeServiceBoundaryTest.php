@@ -100,6 +100,29 @@ class FinalizeServiceBoundaryTest extends TestCase
         $this->assertDatabaseHas('workflow_logs', ['shoot_id' => $shoot->id, 'action' => 'finalize_failed']);
     }
 
+    public function test_first_partial_delivery_preserves_uploaded_photos_until_the_bundle_video_is_finished(): void
+    {
+        [$shoot, $drone, $bundle, $admin] = $this->fixture();
+        $catalog = Service::factory()->photoVideoIntake()->create(['requires_editing' => true]);
+        $bundle->forceFill(['service_id' => $catalog->id, 'scheduled_at' => now()->subHour()])->save();
+        $this->file($shoot, $drone, $admin);
+        $photo = $this->file($shoot, $bundle, $admin);
+        $this->travel(1)->minutes();
+        (new FinalizeShootJob($shoot->id, $admin->id))->handle(app(ShootActivityLogger::class));
+        $this->assertSame('delivered', $drone->fresh()->delivery_status);
+        $this->assertSame('not_started', $bundle->fresh()->delivery_status);
+        $this->assertSame('completed', $photo->fresh()->workflow_stage);
+
+        $this->travel(1)->minutes();
+        $video = $this->file($shoot, $bundle, $admin, ['filename' => 'finished-video.mp4',
+            'file_type' => 'video/mp4', 'media_type' => 'video']);
+        (new FinalizeShootJob($shoot->id, $admin->id, null, $bundle->id))->handle(app(ShootActivityLogger::class));
+        $this->assertSame('verified', $photo->fresh()->workflow_stage);
+        $this->assertSame('verified', $video->fresh()->workflow_stage);
+        $this->assertSame('delivered', $bundle->fresh()->delivery_status);
+        $this->assertSame('delivered', $shoot->fresh()->status);
+    }
+
     public function test_other_service_files_and_old_completion_timestamps_do_not_deliver_an_unfinished_line(): void
     {
         [$shoot, $drone, $hdr, $admin] = $this->fixture();
