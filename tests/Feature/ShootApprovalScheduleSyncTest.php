@@ -304,7 +304,7 @@ class ShootApprovalScheduleSyncTest extends TestCase
         $this->approve($shoot, $echoShootTime ? ['scheduled_at' => '2026-10-06T15:15:00Z'] : []);
 
         $shoot->refresh();
-        $this->assertSame('2026-10-06 15:30:00', $shoot->getRawOriginal('scheduled_at'));
+        $this->assertSame('2026-10-06 15:30:00', \Carbon\CarbonImmutable::parse($shoot->getRawOriginal('scheduled_at'), 'UTC')->format('Y-m-d H:i:s'));
         $this->assertSame('2026-10-06', $shoot->scheduled_date->toDateString());
         $this->assertSame('11:30', $shoot->time);
         $this->assertSame($before, $shoot->serviceItems()->orderBy('id')->get()->map->getRawOriginal()->all());

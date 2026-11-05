@@ -363,7 +363,7 @@ class ShootResource extends JsonResource
                         'photographer' => $isEditor ? null : $resolvedPhotographer,
                         'editor_id' => $pivotEditorId ? (string) $pivotEditorId : null,
                         'video_editor_id' => $service->pivot->video_editor_id ? (string) $service->pivot->video_editor_id : null,
-                        'video_editing_completed_at' => $service->pivot->video_editing_completed_at,
+                        'video_editing_completed_at' => \App\Support\DatabaseSql::timestampString($service->pivot->video_editing_completed_at),
                         'editor' => $resolvedEditor,
                         'scheduled_at' => $serviceItemSummary['scheduled_at'] ?? null,
                         'scheduledAt' => $serviceItemSummary['scheduledAt'] ?? null,
@@ -391,9 +391,7 @@ class ShootResource extends JsonResource
                         'isUnlockedForDelivery' => $serviceItemSummary['isUnlockedForDelivery'] ?? false,
                         'unlock_state' => $serviceItemSummary['unlock_state'] ?? 'locked',
                         'unlockState' => $serviceItemSummary['unlockState'] ?? 'locked',
-                        'editing_completed_at' => $editingCompletedAt instanceof \DateTimeInterface
-                            ? $editingCompletedAt->format(\DateTimeInterface::ATOM)
-                            : ($editingCompletedAt ? (string) $editingCompletedAt : null),
+                        'editing_completed_at' => \App\Support\DatabaseSql::timestampString($editingCompletedAt),
                         'lane' => $assignmentService->normalizeLane($categoryName),
                         'category_key' => $assignmentService->normalizeLane($categoryName),
                         // Category info for per-category grouping

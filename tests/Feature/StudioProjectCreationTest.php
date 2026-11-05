@@ -62,14 +62,14 @@ class StudioProjectCreationTest extends TestCase
             'workflowConfig' => ['target_seconds' => 30, 'client_demo' => true],
         ])->assertCreated()
             ->assertJsonPath('success', true)
-            ->assertJsonPath('data.aiJobId', '1')
-            ->assertJsonPath('data.aiJobIds.0', '1')
             ->assertJsonPath('data.deepLink.destination', 'projects')
             ->assertJsonPath('data.deepLink.workflowId', 'listing-video')
             ->assertJsonPath('data.version', 1);
 
         $project = Project::findOrFail($response->json('data.projectId'));
         $job = AiListingVideoJob::firstOrFail();
+        $response->assertJsonPath('data.aiJobId', (string) $job->id)
+            ->assertJsonPath('data.aiJobIds', [(string) $job->id]);
         $this->assertSame($template->config, $project->workflow_config);
         $this->assertSame($template->config, $job->workflow_config);
         $this->assertSame(['include_logo' => true, 'logo' => '/brand/logo.png'], $project->brand_state);

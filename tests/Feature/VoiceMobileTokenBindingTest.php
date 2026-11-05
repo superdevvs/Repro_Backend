@@ -29,6 +29,7 @@ class VoiceMobileTokenBindingTest extends TestCase
     private array $credential = [];
     private bool $failCleanup = false;
     private mixed $beforeToken = null;
+    private ?int $issuedTokenExpiresAt = null;
 
     protected function setUp(): void
     {
@@ -62,7 +63,8 @@ class VoiceMobileTokenBindingTest extends TestCase
             }
             if ($path === '/v2/telephony_credentials/isolated-credential/token' && $request->method() === 'POST') {
                 if ($this->beforeToken) { ($this->beforeToken)(); }
-                $claims = ['sub'=>'isolated-credential','user_id'=>'test-provider-user','exp'=>now()->addDay()->timestamp];
+                $this->issuedTokenExpiresAt = now()->addDay()->timestamp;
+                $claims = ['sub'=>'isolated-credential','user_id'=>'test-provider-user','exp'=>$this->issuedTokenExpiresAt];
                 return Http::response('eyJhbGciOiJIUzUxMiJ9.'.rtrim(strtr(base64_encode(json_encode($claims)), '+/', '-_'), '=').'.synthetic-provider-signature');
             }
             if ($path === '/v2/telephony_credentials/isolated-credential' && in_array($request->method(), ['GET', 'PATCH'], true)) {
@@ -112,7 +114,7 @@ class VoiceMobileTokenBindingTest extends TestCase
         $this->assertTrue($session->registration_expires_at->lte($this->token->expires_at));
         $this->assertTrue($this->service()->registered($session));
         $claims = json_decode(base64_decode(strtr(explode('.', $first['jwt'])[1], '-_', '+/')), true, flags: JSON_THROW_ON_ERROR);
-        $this->assertSame(now()->addDay()->timestamp, $claims['exp']); // Provider JWT is 24h; credential/login and API lease are separate bounds.
+        $this->assertSame($this->issuedTokenExpiresAt, $claims['exp']); // Preserve the provider's exact expiry; credential/login and API lease have separate bounds.
         $this->assertSame('test-provider-user', $claims['user_id']);
         $this->assertArrayNotHasKey('token_material', $first);
         $this->postJson('/api/voice/mobile/sessions', $data)->assertOk()->assertJsonPath('session_id', $session->id);

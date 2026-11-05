@@ -33,7 +33,9 @@ class ListingStudioOrderService
         $hash = hash('sha256', json_encode([$quoteId, $fundingMethod], JSON_THROW_ON_ERROR));
 
         return $this->write(function () use ($client, $quoteId, $fundingMethod, $idempotencyKey, $hash, $actor) {
-            $client = User::findOrFail($client->id);
+            // Serialize one account's credit/quota checks before taking a read
+            // snapshot. Different clients retain independent InnoDB row locks.
+            $client = User::whereKey($client->id)->lockForUpdate()->firstOrFail();
             ListingStudioClientAccess::assert($client);
             if ($actor) {
                 $actor = User::findOrFail($actor->id);
@@ -100,7 +102,7 @@ class ListingStudioOrderService
     public function fundOrder(ListingStudioOrder $order): void
     {
         $this->assertTransaction();
-        $item = $order->item()->firstOrFail();
+        $item = $order->item()->lockForUpdate()->firstOrFail();
         if (in_array($item->status, ['failed', 'cancelled'], true)) {
             if ($order->funding_method === 'card' && $order->paid_amount_cents > $order->refunded_amount_cents) {
                 $this->requestRefund($order);
@@ -122,9 +124,7 @@ class ListingStudioOrderService
             throw new PublicApiException('The processing attempt is invalid.', 'revision_state_conflict', 409);
         }
 
-        return $this->write(function () use ($itemId, $attemptId) {
-            $item = ListingStudioOrderItem::findOrFail($itemId);
-            $order = $item->order()->firstOrFail();
+        return $this->writeItem($itemId, function (ListingStudioOrderItem $item, ListingStudioOrder $order) use ($attemptId) {
             if (in_array($item->status, ['completed', 'failed', 'cancelled'], true)) {
                 return null;
             }
@@ -155,8 +155,7 @@ class ListingStudioOrderService
     /** Callback creates/finds a workspace using DB work only; never dispatch from it. */
     public function attachWorkspace(string $itemId, callable $createOrFindWorkspace): StudioWorkspace
     {
-        return $this->write(function () use ($itemId, $createOrFindWorkspace) {
-            $item = ListingStudioOrderItem::findOrFail($itemId);
+        return $this->writeItem($itemId, function (ListingStudioOrderItem $item) use ($createOrFindWorkspace) {
             if ($item->kind !== 'ai_edit' || ! in_array($item->status, ['processing', 'needs_attention'], true)) {
                 throw new PublicApiException('This order is not ready for AI processing.', 'revision_state_conflict', 409);
             }
@@ -173,8 +172,7 @@ class ListingStudioOrderService
 
     public function replaceSourceSnapshot(string $itemId, string $expectedSha256, array $descriptor): ListingStudioOrderItem
     {
-        return $this->write(function () use ($itemId, $expectedSha256, $descriptor) {
-            $item = ListingStudioOrderItem::findOrFail($itemId);
+        return $this->writeItem($itemId, function (ListingStudioOrderItem $item) use ($expectedSha256, $descriptor) {
             $old = $item->source_snapshot;
             foreach (['kind', 'id', 'clientId', 'service'] as $field) {
                 if (($descriptor[$field] ?? null) !== ($old[$field] ?? null)) {
@@ -200,8 +198,7 @@ class ListingStudioOrderService
 
     public function completeItem(string $itemId, array $descriptor): ListingStudioOrderItem
     {
-        return $this->write(function () use ($itemId, $descriptor) {
-            $item = ListingStudioOrderItem::findOrFail($itemId);
+        return $this->writeItem($itemId, function (ListingStudioOrderItem $item, ListingStudioOrder $order) use ($descriptor) {
             if ($item->status === 'completed') {
                 if (($item->output_descriptor['sha256'] ?? null) !== ($descriptor['sha256'] ?? null)) {
                     throw new PublicApiException('This completed delivery cannot be replaced.', 'revision_state_conflict', 409);
@@ -220,7 +217,6 @@ class ListingStudioOrderService
             $this->assertMedia($descriptor, $prefix);
             $this->assertMedia($descriptor['preview'] ?? [], 'items/'.$item->id.'/result-preview.jpg', true);
             $this->outcomes->assertDeliverableOutput($item, $descriptor);
-            $order = $item->order()->firstOrFail();
             if ($order->funding_method === 'credits') {
                 if ($order->funding_status !== 'reserved') {
                     throw new PublicApiException('The credit reservation is unavailable.', 'payment_required', 409);
@@ -239,8 +235,7 @@ class ListingStudioOrderService
 
     public function holdItem(string $itemId, string $recoveryCode): ListingStudioOrderItem
     {
-        return $this->write(function () use ($itemId, $recoveryCode) {
-            $item = ListingStudioOrderItem::findOrFail($itemId);
+        return $this->writeItem($itemId, function (ListingStudioOrderItem $item) use ($recoveryCode) {
             if (in_array($item->status, ['completed', 'failed', 'cancelled'], true)) {
                 return $item;
             }
@@ -266,7 +261,8 @@ class ListingStudioOrderService
     {
         return $this->write(function () use ($client, $orderId) {
             ListingStudioClientAccess::assert(User::findOrFail($client->id));
-            $order = ListingStudioOrder::where('client_id', $client->id)->findOrFail($orderId);
+            $order = ListingStudioOrder::where('client_id', $client->id)->lockForUpdate()->findOrFail($orderId);
+            $order->setRelation('item', $order->item()->lockForUpdate()->firstOrFail());
             if ($order->item->status === 'cancelled' && $order->paid_amount_cents === 0) {
                 return $order;
             }
@@ -289,8 +285,7 @@ class ListingStudioOrderService
 
     private function stopItem(string $itemId, string $state, string $code): ListingStudioOrderItem
     {
-        return $this->write(function () use ($itemId, $state, $code) {
-            $item = ListingStudioOrderItem::findOrFail($itemId);
+        return $this->writeItem($itemId, function (ListingStudioOrderItem $item, ListingStudioOrder $order) use ($state, $code) {
             if (in_array($item->status, ['failed', 'cancelled'], true)) {
                 return $item;
             }
@@ -298,7 +293,6 @@ class ListingStudioOrderService
                 throw new PublicApiException('A completed delivery cannot be cancelled or failed.', 'revision_state_conflict', 409);
             }
             $this->outcomes->assertDefinitiveStop($item);
-            $order = $item->order()->firstOrFail();
             if ($order->funding_method === 'credits' && $order->funding_status === 'reserved') {
                 $this->credits->release($order);
                 $order->update(['funding_status' => 'released']);
@@ -420,5 +414,19 @@ class ListingStudioOrderService
     private function write(callable $callback): mixed
     {
         return LockedWrite::run(fn () => DB::transaction($callback), 'listing-studio-order');
+    }
+
+    private function writeItem(string $itemId, callable $callback): mixed
+    {
+        // Resolve only the immutable parent identity before opening this write.
+        // All lifecycle and settlement paths lock order, then item, in that order.
+        $orderId = ListingStudioOrderItem::whereKey($itemId)->firstOrFail(['id', 'order_id'])->order_id;
+
+        return $this->write(function () use ($orderId, $itemId, $callback) {
+            $order = ListingStudioOrder::whereKey($orderId)->lockForUpdate()->firstOrFail();
+            $item = ListingStudioOrderItem::whereKey($itemId)->lockForUpdate()->firstOrFail();
+
+            return $callback($item, $order);
+        });
     }
 }

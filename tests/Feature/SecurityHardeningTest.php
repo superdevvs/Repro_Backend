@@ -18,11 +18,15 @@ class SecurityHardeningTest extends TestCase
 
     public function test_public_registration_forces_client_role(): void
     {
-        // Email-health hardening (production-qa-fixes-2 / EmailHealthService) now gates
-        // registration: a domain that cannot receive mail (e.g. test.com -> domain_no_mail)
-        // is rejected with 422 before the account is created. Use a deliverable domain so this
-        // test continues to exercise its real intent: a public signup that requests an elevated
-        // role is forced down to "client".
+        // Keep public DNS deterministic while exercising the real registration
+        // and role enforcement path in an isolated, offline test environment.
+        $this->app->instance(\App\Services\Users\EmailHealthService::class, new class extends \App\Services\Users\EmailHealthService
+        {
+            protected function domainCanReceiveMail(string $domain): bool
+            {
+                return $domain === 'gmail.com';
+            }
+        });
         $response = $this->postJson('/api/register', [
             'name' => 'Public Signup',
             'email' => 'public-signup@gmail.com',

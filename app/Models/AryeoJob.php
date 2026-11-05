@@ -6,6 +6,8 @@ use Illuminate\Database\Eloquent\Model;
 
 class AryeoJob extends Model
 {
+    // Claims order by creation time; subsecond jobs must retain enqueue order.
+    protected $dateFormat = 'Y-m-d H:i:s.u';
     public $incrementing = false;
 
     protected $keyType = 'string';

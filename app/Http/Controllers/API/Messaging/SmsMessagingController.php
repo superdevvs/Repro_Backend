@@ -1050,8 +1050,8 @@ class SmsMessagingController extends Controller
         $digits = preg_match('/^[+0-9 ().\/-]+$/', $search) ? (preg_replace('/\D/', '', $search) ?? '') : '';
         $query->where(function ($inner) use ($pattern, $digits) {
             $inner->whereHas('contact', function ($contact) use ($pattern, $digits) {
-                $contact->whereRaw("LOWER(COALESCE(name, '')) LIKE LOWER(?) ESCAPE '\\'", [$pattern])
-                    ->orWhereRaw("LOWER(COALESCE(phone, '')) LIKE LOWER(?) ESCAPE '\\'", [$pattern]);
+                $contact->whereRaw("LOWER(COALESCE(name, '')) LIKE LOWER(?) ESCAPE CHAR(92)", [$pattern])
+                    ->orWhereRaw("LOWER(COALESCE(phone, '')) LIKE LOWER(?) ESCAPE CHAR(92)", [$pattern]);
                 if (strlen($digits) >= 3) {
                     $phone = "COALESCE(phone, '')";
                     foreach ([' ', '+', '-', '(', ')', '.', '/'] as $separator) {
@@ -1059,9 +1059,9 @@ class SmsMessagingController extends Controller
                     }
                     $contact->orWhereRaw("{$phone} LIKE ?", ['%'.$digits.'%']);
                 }
-            })->orWhereHas('smsGroup', fn ($group) => $group->whereRaw("LOWER(COALESCE(name, '')) LIKE LOWER(?) ESCAPE '\\'", [$pattern]))
+            })->orWhereHas('smsGroup', fn ($group) => $group->whereRaw("LOWER(COALESCE(name, '')) LIKE LOWER(?) ESCAPE CHAR(92)", [$pattern]))
                 ->orWhereHas('messages', fn ($messages) => app(SmsInboxPolicy::class)->visibleMessages($messages)
-                    ->whereRaw("LOWER(COALESCE(body_text, '')) LIKE LOWER(?) ESCAPE '\\'", [$pattern]))
+                    ->whereRaw("LOWER(COALESCE(body_text, '')) LIKE LOWER(?) ESCAPE CHAR(92)", [$pattern]))
                 ->orWhere(fn ($context) => app(SmsInboxPolicy::class)->searchContext($context, $pattern));
         });
     }

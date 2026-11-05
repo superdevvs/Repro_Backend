@@ -282,7 +282,7 @@ class ShootPresenter
                     'is_cover',
                     'is_hidden',
                     'flag_reason',
-                    'url',
+                    'storage_path',
                     'path',
                     'dropbox_path',
                     'file_type',
@@ -903,9 +903,7 @@ class ShootPresenter
                         'isUnlockedForDelivery' => $serviceItemSummary['isUnlockedForDelivery'] ?? false,
                         'unlock_state' => $serviceItemSummary['unlock_state'] ?? 'locked',
                         'unlockState' => $serviceItemSummary['unlockState'] ?? 'locked',
-                        'editing_completed_at' => $editingCompletedAt instanceof \DateTimeInterface
-                            ? $editingCompletedAt->format(\DateTimeInterface::ATOM)
-                            : ($editingCompletedAt ? (string) $editingCompletedAt : null),
+                        'editing_completed_at' => \App\Support\DatabaseSql::timestampString($editingCompletedAt),
                         'lane' => $lane,
                         'category_key' => $lane,
                         'category' => $categoryObj ? [

@@ -161,7 +161,7 @@ class StudioWorkspaceLibraryTest extends TestCase
         try {
             $this->getJson('/api/studio/workspaces?page=103&per_page=2')->assertOk()->assertJsonCount(1, 'data')
                 ->assertJsonPath('meta.total', 205)->assertJsonPath('meta.last_page', 103)->assertJsonPath('meta.has_more', false);
-            $snapshots = collect(DB::getQueryLog())->filter(fn ($entry) => str_contains($entry['query'], 'select "id", "shoot_id", "media", "access_media"'));
+            $snapshots = collect(DB::getQueryLog())->filter(fn ($entry) => str_contains(str_replace('`', '"', $entry['query']), 'select "id", "shoot_id", "media", "access_media"'));
             $this->assertCount(3, $snapshots);
             $this->assertTrue($snapshots->every(fn ($entry) => str_contains($entry['query'], 'limit 100')));
         } finally {

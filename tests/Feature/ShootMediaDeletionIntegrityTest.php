@@ -19,17 +19,19 @@ use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
 use Laravel\Sanctum\Sanctum;
 use Mockery;
+use Tests\Concerns\FreshDatabaseOutsideTransaction;
 use Tests\TestCase;
 
 class ShootMediaDeletionIntegrityTest extends TestCase
 {
+    use FreshDatabaseOutsideTransaction;
+
     protected function setUp(): void
     {
         parent::setUp();
 
         // Real commits are essential here: RefreshDatabase's surrounding test
         // transaction would hide the distinction between savepoint and commit.
-        $this->artisan('migrate:fresh')->run();
         $this->app[Kernel::class]->setArtisan(null);
         Storage::fake('public');
         Storage::fake('local');
@@ -58,16 +60,21 @@ class ShootMediaDeletionIntegrityTest extends TestCase
         $history = $this->createImportHistory($file);
         Schema::create('media_delete_blockers', function (Blueprint $table) {
             $table->id();
-            $table->foreignId('shoot_file_id')->constrained('shoot_files');
+            $table->bigInteger('shoot_file_id');
+            $table->foreign('shoot_file_id')->references('id')->on('shoot_files');
         });
-        DB::table('media_delete_blockers')->insert(['shoot_file_id' => $file->id]);
+        try {
+            DB::table('media_delete_blockers')->insert(['shoot_file_id' => $file->id]);
 
-        $this->postJson('/api/shoots/'.$shoot->id.'/media/bulk-delete', ['ids' => [$file->id]])
-            ->assertStatus(207)->assertJsonPath('deleted_ids', [])->assertJsonPath('failed_ids', [$file->id]);
+            $this->postJson('/api/shoots/'.$shoot->id.'/media/bulk-delete', ['ids' => [$file->id]])
+                ->assertStatus(207)->assertJsonPath('deleted_ids', [])->assertJsonPath('failed_ids', [$file->id]);
 
-        $this->assertDatabaseHas('shoot_files', ['id' => $file->id]);
-        $this->assertEquals($history + ['shoot_file_id' => $file->id], (array) DB::table('september_import_assets')->first());
-        Storage::disk('local')->assertExists([$file->storage_path, $file->web_path]);
+            $this->assertDatabaseHas('shoot_files', ['id' => $file->id]);
+            $this->assertEquals($history + ['shoot_file_id' => $file->id], (array) DB::table('september_import_assets')->first());
+            Storage::disk('local')->assertExists([$file->storage_path, $file->web_path]);
+        } finally {
+            Schema::dropIfExists('media_delete_blockers');
+        }
     }
 
     public function test_outer_rollback_preserves_bytes_and_does_not_dispatch_deleted_file_jobs(): void
@@ -113,6 +120,9 @@ class ShootMediaDeletionIntegrityTest extends TestCase
 
     public function test_a_locked_delete_is_retried_with_its_import_detach_rolled_back(): void
     {
+        if (DB::getDriverName() !== 'sqlite') {
+            $this->markTestSkipped('SQLite writer-retry fixture; native MySQL transaction races are covered separately.');
+        }
         [$shoot, $file] = $this->createMedia();
         $this->createImportHistory($file);
         $attempts = 0;
@@ -232,19 +242,21 @@ class ShootMediaDeletionIntegrityTest extends TestCase
     private function createImportHistory(ShootFile $file): array
     {
         // Match the production import ledger's nullable, restrictive file FK.
-        Schema::create('september_import_assets', function (Blueprint $table) {
-            $table->string('external_key');
-            $table->string('snapshot_at');
-            $table->string('source_asset_key');
-            $table->foreignId('shoot_id')->constrained('shoots');
-            $table->foreignId('shoot_file_id')->nullable()->constrained('shoot_files');
-            $table->string('kind');
-            $table->string('path');
-            $table->string('sha256');
-            $table->integer('bytes');
-            $table->text('metadata');
-            $table->primary(['external_key', 'snapshot_at', 'source_asset_key']);
-        });
+        if (! Schema::hasTable('september_import_assets')) {
+            Schema::create('september_import_assets', function (Blueprint $table) {
+                $table->string('external_key');
+                $table->string('snapshot_at');
+                $table->string('source_asset_key');
+                $table->foreignId('shoot_id')->constrained('shoots');
+                $table->foreignId('shoot_file_id')->nullable()->constrained('shoot_files');
+                $table->string('kind');
+                $table->string('path');
+                $table->string('sha256');
+                $table->integer('bytes');
+                $table->text('metadata');
+                $table->primary(['external_key', 'snapshot_at', 'source_asset_key']);
+            });
+        }
         $history = [
             'external_key' => 'legacy-listing', 'snapshot_at' => '2026-09-01', 'source_asset_key' => 'photo-1',
             'shoot_id' => $file->shoot_id, 'kind' => 'edited', 'path' => $file->storage_path,

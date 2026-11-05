@@ -7,6 +7,7 @@ use App\Models\ShootRescheduleRequest;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Laravel\Sanctum\Sanctum;
+use Tests\Support\StoredTimestamp;
 use Tests\TestCase;
 
 /**
@@ -83,7 +84,7 @@ class ShootRescheduleRequestWorkflowTest extends TestCase
         $this->assertNull($record->approved_by);
         $this->assertNull($record->reviewed_at);
 
-        // The confirmed schedule is untouched — this is the bug being fixed.
+        // The confirmed schedule is untouched â€” this is the bug being fixed.
         $shoot->refresh();
         $this->assertSame(self::ORIGINAL_DATE, $shoot->scheduled_date->toDateString());
         $this->assertSame(self::ORIGINAL_TIME, $shoot->time);
@@ -273,7 +274,7 @@ class ShootRescheduleRequestWorkflowTest extends TestCase
 
     public function test_single_unit_approval_stores_wall_clock_as_utc_instant_in_shoot_timezone(): void
     {
-        // Regression: Ajay #156 / Tracy Grubb — single-unit applyScheduleChanges
+        // Regression: Ajay #156 / Tracy Grubb â€” single-unit applyScheduleChanges
         // previously stored ET 10:00 as 10:00Z (Google showed 6am ET).
         config(['app.timezone' => 'UTC']);
 
@@ -305,8 +306,8 @@ class ShootRescheduleRequestWorkflowTest extends TestCase
         $shoot->refresh();
         $this->assertSame('2026-10-08', $shoot->scheduled_date->toDateString());
         $this->assertSame('10:00', $shoot->time);
-        $this->assertSame('2026-10-08 14:00:00', $shoot->getRawOriginal('scheduled_at'));
-        $this->assertNotSame('2026-10-08 10:00:00', $shoot->getRawOriginal('scheduled_at'));
+        $this->assertSame('2026-10-08 14:00:00', StoredTimestamp::seconds($shoot->getRawOriginal('scheduled_at')));
+        $this->assertNotSame('2026-10-08 10:00:00', StoredTimestamp::seconds($shoot->getRawOriginal('scheduled_at')));
     }
 
     public function test_an_editing_manager_may_also_review(): void
@@ -329,7 +330,7 @@ class ShootRescheduleRequestWorkflowTest extends TestCase
 
     public function test_a_sales_rep_may_also_review(): void
     {
-        // Dashboard Requests → Reschedule must work for salesRep the same way
+        // Dashboard Requests â†’ Reschedule must work for salesRep the same way
         // as Hold (pending-holds already admits salesRep).
         $client = $this->verifiedUser(['role' => 'client']);
         $rep = $this->verifiedUser(['role' => 'salesRep']);
@@ -390,7 +391,7 @@ class ShootRescheduleRequestWorkflowTest extends TestCase
 
         $this->patchJson($url, ['status' => 'approved'])->assertOk();
         // Rejecting after the change is live would leave the shoot on the new
-        // date with a "rejected" record — a lie either way.
+        // date with a "rejected" record â€” a lie either way.
         $this->patchJson($url, ['status' => 'rejected'])->assertStatus(409);
 
         $this->assertTrue($record->refresh()->isApproved());

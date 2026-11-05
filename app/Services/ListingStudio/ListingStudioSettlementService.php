@@ -34,7 +34,7 @@ class ListingStudioSettlementService
         $safe['paidAt'] = $at->toIso8601String();
 
         return $this->write(function () use ($orderId, $safe, $at, $evidence) {
-            $order = ListingStudioOrder::findOrFail($orderId);
+            $order = ListingStudioOrder::whereKey($orderId)->lockForUpdate()->firstOrFail();
             if ($order->funding_method !== 'card' || ($safe['accountId'] ?? null) !== config('listing-studio.stripe_account_id')
                 || ($safe['liveMode'] ?? null) !== (config('listing-studio.stripe_mode') === 'live')
                 || ($safe['currency'] ?? null) !== $order->currency || $safe['amountPaidCents'] !== $order->total_cents) {
@@ -90,7 +90,7 @@ class ListingStudioSettlementService
         $safe['occurredAt'] = $at->toIso8601String();
 
         return $this->write(function () use ($orderId, $safe, $at, $reconcile) {
-            $order = ListingStudioOrder::findOrFail($orderId);
+            $order = ListingStudioOrder::whereKey($orderId)->lockForUpdate()->firstOrFail();
             $payment = $order->payment_evidence ?? [];
             if ($order->funding_method !== 'card' || ! $order->payment_reference
                 || ($safe['accountId'] ?? null) !== ($payment['accountId'] ?? null)
@@ -141,7 +141,7 @@ class ListingStudioSettlementService
 
     private function reconcileFulfillment(ListingStudioOrder $order): void
     {
-        $item = $order->item()->firstOrFail();
+        $item = $order->item()->lockForUpdate()->firstOrFail();
         if (in_array($item->status, ['completed', 'failed', 'cancelled'], true)) {
             if ($order->funding_status === 'settled') {
                 $this->orders->fundOrder($order);

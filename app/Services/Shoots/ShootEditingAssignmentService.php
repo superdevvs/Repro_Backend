@@ -587,7 +587,7 @@ class ShootEditingAssignmentService
                     'service_names' => $services->pluck('service_name')->filter()->values()->all(),
                     'ready' => $ready,
                     'ready_at' => $ready
-                        ? collect($services->pluck('editing_completed_at')->filter())->max()
+                        ? \App\Support\DatabaseSql::timestampString(collect($services->pluck('editing_completed_at')->filter())->max())
                         : null,
                 ];
             })

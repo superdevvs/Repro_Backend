@@ -111,6 +111,12 @@ class StudioWorkspace extends Model
         return $value;
     }
 
+    public static function sameConfig(mixed $left, mixed $right): bool
+    {
+        return is_array($left) && is_array($right)
+            && self::canonicalConfig($left) === self::canonicalConfig($right);
+    }
+
     private function generationProgress(): ?array
     {
         if ($this->status === 'generating' && $this->preset_id === 'full-shoot') {

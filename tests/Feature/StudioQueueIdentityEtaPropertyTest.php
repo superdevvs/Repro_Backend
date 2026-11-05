@@ -60,9 +60,10 @@ class StudioQueueIdentityEtaPropertyTest extends TestCase
         $videoKeys = [];
         $expected = [];
 
-        // Photo jobs are created first, then video jobs, so both tables issue the
-        // same primary keys and any collision-prone identifier scheme is exercised.
+        // Use deliberate cross-table collisions. InnoDB auto-increment counters
+        // keep gaps after rollback and must not be assumed to start at one.
         foreach (['photo', 'video'] as $jobType) {
+            $fixtureId = 1_000_000;
             foreach ($cases as $index => $case) {
                 if ($case['jobType'] !== $jobType) {
                     continue;
@@ -74,10 +75,12 @@ class StudioQueueIdentityEtaPropertyTest extends TestCase
 
                 $job = $jobType === 'photo'
                     ? $this->photoJob($editor, $shoot, $case['attributes'] + [
+                        'id' => ++$fixtureId,
                         'status' => $case['status'],
                         'started_at' => $startedAt,
                     ])
                     : $this->videoJob($editor, $shoot, $case['attributes'] + [
+                        'id' => ++$fixtureId,
                         'status' => $case['status'],
                         'started_at' => $startedAt,
                     ]);
@@ -308,18 +311,18 @@ class StudioQueueIdentityEtaPropertyTest extends TestCase
 
     private function photoJob(User $owner, Shoot $shoot, array $overrides): AiEditingJob
     {
-        return AiEditingJob::create(array_merge([
+        return AiEditingJob::unguarded(fn () => AiEditingJob::create(array_merge([
             'shoot_id' => $shoot->id,
             'user_id' => $owner->id,
             'status' => AiEditingJob::STATUS_PENDING,
             'editing_type' => AiEditingJob::TYPE_ENHANCE,
             'original_image_url' => '/media/property-42-source.jpg',
-        ], $overrides));
+        ], $overrides)));
     }
 
     private function videoJob(User $owner, Shoot $shoot, array $overrides): AiListingVideoJob
     {
-        return AiListingVideoJob::create(array_merge([
+        return AiListingVideoJob::unguarded(fn () => AiListingVideoJob::create(array_merge([
             'shoot_id' => $shoot->id,
             'user_id' => $owner->id,
             'provider' => 'fal',
@@ -328,6 +331,6 @@ class StudioQueueIdentityEtaPropertyTest extends TestCase
             'status' => AiListingVideoJob::STATUS_QUEUED,
             'total_clips' => 4,
             'completed_clips' => 0,
-        ], $overrides));
+        ], $overrides)));
     }
 }

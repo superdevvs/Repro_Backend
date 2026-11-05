@@ -397,7 +397,7 @@ class AccountLinkController extends Controller
         }
 
         if (count($invoiceAccountIds) > 1) {
-            $sharedData['totalSpent'] = Shoot::whereIn('client_id', $invoiceAccountIds)->sum('total_quote') ?? 0;
+            $sharedData['totalSpent'] = (float) (Shoot::whereIn('client_id', $invoiceAccountIds)->sum('total_quote') ?? 0);
             $sharedData['paymentHistory'] = Payment::whereHas('shoot', function ($query) use ($invoiceAccountIds) {
                     $query->whereIn('client_id', $invoiceAccountIds);
                 })

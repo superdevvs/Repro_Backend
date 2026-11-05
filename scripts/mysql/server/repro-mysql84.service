@@ -1,0 +1,17 @@
+[Unit]
+Description=Isolated RePro MySQL 8.4 instance
+Requires=docker.service
+After=docker.service systemd-tmpfiles-setup.service
+ConditionPathExists=/etc/repro-mysql84/compose.yaml
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/etc/repro-mysql84
+ExecStart=/usr/bin/docker compose up -d --wait --wait-timeout 300
+ExecStop=/usr/bin/docker compose stop --timeout 180
+TimeoutStartSec=360
+TimeoutStopSec=210
+
+[Install]
+WantedBy=multi-user.target

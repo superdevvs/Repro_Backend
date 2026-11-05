@@ -161,7 +161,7 @@ class RobbieSchedulingPermissionsTest extends TestCase
         $result = app(ToolDispatcher::class)->dispatch('reschedule_shoot', ['shoot_id' => $shoot->id, 'new_time' => '19:00']);
         $this->assertTrue($result['success'], json_encode($result));
         $this->assertSame('2031-10-09', $shoot->fresh()->scheduled_date->toDateString());
-        $this->assertSame('2031-10-10 02:00:00', $shoot->fresh()->getRawOriginal('scheduled_at'));
+        $this->assertSame('2031-10-10 02:00:00', \Carbon\CarbonImmutable::parse($shoot->fresh()->getRawOriginal('scheduled_at'), 'UTC')->format('Y-m-d H:i:s'));
     }
 
     public function test_denied_service_edit_and_booking_status_tools_cannot_mutate_rows(): void

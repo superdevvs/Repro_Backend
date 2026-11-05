@@ -11,6 +11,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Queue;
 use Laravel\Sanctum\Sanctum;
 use PHPUnit\Framework\Attributes\DataProvider;
+use Tests\Support\StoredTimestamp;
 use Tests\TestCase;
 
 class ShootScheduleUpdateTimezoneTest extends TestCase
@@ -46,7 +47,7 @@ class ShootScheduleUpdateTimezoneTest extends TestCase
             'city' => null, 'zip' => null, 'notify_client' => false,
         ])->assertOk();
         $shoot->refresh();
-        $this->assertSame($stored, $shoot->getRawOriginal('scheduled_at'));
+        $this->assertSame($stored, StoredTimestamp::seconds($shoot->getRawOriginal('scheduled_at')));
         $this->assertSame($date, $shoot->scheduled_date->toDateString());
         $this->assertSame($time, $shoot->time);
         $this->assertSame($timezone, $shoot->timezone);
@@ -69,7 +70,7 @@ class ShootScheduleUpdateTimezoneTest extends TestCase
         $shoot = $this->shoot();
         $this->patchJson('/api/shoots/'.$shoot->id, ['scheduled_at' => $input, 'notify_client' => false])->assertOk();
         $shoot->refresh();
-        $this->assertSame($stored, $shoot->getRawOriginal('scheduled_at'));
+        $this->assertSame($stored, StoredTimestamp::seconds($shoot->getRawOriginal('scheduled_at')));
         $this->assertSame($localTime, $shoot->time);
         $this->assertSame('America/New_York', $shoot->timezone);
     }
@@ -78,7 +79,7 @@ class ShootScheduleUpdateTimezoneTest extends TestCase
     {
         $shoot = $this->shoot();
         $this->patchJson('/api/shoots/'.$shoot->id, ['scheduled_date' => '2026-09-24'])->assertOk();
-        $this->assertSame('2026-09-24 14:00:00', $shoot->fresh()->getRawOriginal('scheduled_at'));
+        $this->assertSame('2026-09-24 14:00:00', StoredTimestamp::seconds($shoot->fresh()->getRawOriginal('scheduled_at')));
     }
 
     public function test_client_timezone_only_edit_preserves_instant_and_displays_the_new_local_time(): void
@@ -86,7 +87,7 @@ class ShootScheduleUpdateTimezoneTest extends TestCase
         $shoot = $this->shoot();
         Sanctum::actingAs($shoot->client);
         $this->patchJson('/api/shoots/'.$shoot->id, ['timezone' => 'America/Los_Angeles'])->assertOk();
-        $this->assertSame('2026-09-23 14:00:00', $shoot->fresh()->getRawOriginal('scheduled_at'));
+        $this->assertSame('2026-09-23 14:00:00', StoredTimestamp::seconds($shoot->fresh()->getRawOriginal('scheduled_at')));
         $this->assertSame('America/Los_Angeles', $shoot->fresh()->timezone);
         $this->assertSame('07:00', app(ScheduleDateScopeService::class)->localTimeForScheduledAt(
             $shoot->fresh()->scheduled_at, $shoot->fresh()->timezone
@@ -99,7 +100,7 @@ class ShootScheduleUpdateTimezoneTest extends TestCase
         foreach (['2027-03-14T02:30:00', '2026-11-01T01:30:00'] as $time) {
             $this->patchJson('/api/shoots/'.$shoot->id, ['scheduled_at' => $time])->assertUnprocessable()
                 ->assertJsonValidationErrors('scheduled_at');
-            $this->assertSame('2026-09-23 14:00:00', $shoot->fresh()->getRawOriginal('scheduled_at'));
+            $this->assertSame('2026-09-23 14:00:00', StoredTimestamp::seconds($shoot->fresh()->getRawOriginal('scheduled_at')));
         }
     }
 
@@ -109,7 +110,7 @@ class ShootScheduleUpdateTimezoneTest extends TestCase
         $this->patchJson('/api/shoots/'.$shoot->id, [
             'scheduled_date' => '2026-11-01', 'time' => '01:30:00', 'city' => 'Updated City',
         ])->assertOk();
-        $this->assertSame('2026-11-01 06:30:00', $shoot->fresh()->getRawOriginal('scheduled_at'));
+        $this->assertSame('2026-11-01 06:30:00', StoredTimestamp::seconds($shoot->fresh()->getRawOriginal('scheduled_at')));
     }
 
     public function test_availability_bounds_use_local_clock_instead_of_stored_utc_hour(): void
@@ -124,10 +125,10 @@ class ShootScheduleUpdateTimezoneTest extends TestCase
         $this->patchJson('/api/shoots/'.$shoot->id, [
             'scheduled_date' => '2026-09-23', 'time' => '10:00:00', 'notify_client' => false,
         ])->assertOk();
-        $this->assertSame('2026-09-23 14:00:00', $shoot->fresh()->getRawOriginal('scheduled_at'));
+        $this->assertSame('2026-09-23 14:00:00', StoredTimestamp::seconds($shoot->fresh()->getRawOriginal('scheduled_at')));
         $this->patchJson('/api/shoots/'.$shoot->id, ['scheduled_date' => '2026-09-23', 'time' => '14:00:00'])
             ->assertUnprocessable()->assertJsonValidationErrors('start_time');
-        $this->assertSame('2026-09-23 14:00:00', $shoot->fresh()->getRawOriginal('scheduled_at'));
+        $this->assertSame('2026-09-23 14:00:00', StoredTimestamp::seconds($shoot->fresh()->getRawOriginal('scheduled_at')));
     }
 
     public static function serviceInstants(): array
@@ -157,8 +158,8 @@ class ShootScheduleUpdateTimezoneTest extends TestCase
             'services' => [array_merge($item, ['id' => $service->id])],
             'service_items' => [$item], 'skip_availability_check' => false, 'notify_client' => false,
         ])->assertOk();
-        $this->assertSame('2026-09-23 14:00:00', $shoot->fresh()->getRawOriginal('scheduled_at'));
-        $this->assertSame('2026-09-23 14:00:00', $shoot->serviceItems()->where('service_id', $service->id)->firstOrFail()->getRawOriginal('scheduled_at'));
+        $this->assertSame('2026-09-23 14:00:00', StoredTimestamp::seconds($shoot->fresh()->getRawOriginal('scheduled_at')));
+        $this->assertSame('2026-09-23 14:00:00', StoredTimestamp::seconds($shoot->serviceItems()->where('service_id', $service->id)->firstOrFail()->getRawOriginal('scheduled_at')));
     }
 
     private function shoot(string $stored = '2026-09-23 14:00:00', ?string $timezone = 'America/New_York'): Shoot

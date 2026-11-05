@@ -16,11 +16,18 @@ use Tests\TestCase;
 
 class SmsGroupAtomicRecordingTest extends TestCase
 {
+    use \Tests\Concerns\FreshDatabaseOutsideTransaction;
+
     private string $databaseFile;
 
     protected function setUp(): void
     {
         parent::setUp();
+        if (DB::getDriverName() === 'mysql') {
+            config(['broadcasting.default' => 'log', 'database.connections.sms_group_observer' => DB::connection()->getConfig()]);
+
+            return;
+        }
         $this->databaseFile = tempnam(sys_get_temp_dir(), 'repro-sms-group-race-');
         config(['database.connections.sqlite.database' => $this->databaseFile,
             'database.connections.sqlite.foreign_key_constraints' => true, 'broadcasting.default' => 'log']);

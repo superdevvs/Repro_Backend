@@ -58,7 +58,7 @@ class DashboardController extends Controller
                         'scheduled_date', 'time', 'status', 'workflow_status', 'is_flagged', 'admin_issue_notes',
                         'editing_completed_at', 'submitted_for_review_at', 'shoot_notes', 'company_notes',
                         'photographer_notes', 'editor_notes', 'property_details', 'created_by', 'hero_image',
-                        'scheduled_at', 'timezone', 'payment_status', 'total_paid', 'total_quote',
+                        'scheduled_at', 'timezone', 'payment_status', 'total_quote',
                         'cancellation_requested_at', 'cancellation_reason', 'hold_requested_at', 'hold_requested_by', 'hold_reason'],
                     [
                         'client:id,name,company_name,phonenumber',
@@ -80,6 +80,7 @@ class DashboardController extends Controller
             // Merge activities from both WorkflowLog and ShootActivityLog
             $workflowActivities = WorkflowLog::with(['user:id,name'])
                 ->latest()
+                ->orderBy('id')
                 ->limit(15)
                 ->get()
                 ->map(function (WorkflowLog $log) {
@@ -99,6 +100,7 @@ class DashboardController extends Controller
 
             $shootActivities = ShootActivityLog::with(['user:id,name', 'shoot:id,address'])
                 ->latest()
+                ->orderBy('id')
                 ->limit(15)
                 ->get()
                 ->map(function (ShootActivityLog $log) {
@@ -144,7 +146,7 @@ class DashboardController extends Controller
                     'scheduled_date', 'time', 'status', 'workflow_status', 'is_flagged', 'admin_issue_notes',
                     'cancellation_requested_at', 'cancellation_requested_by', 'cancellation_reason',
                     'shoot_notes', 'company_notes', 'photographer_notes', 'editor_notes', 'property_details', 'created_by', 'hero_image',
-                    'scheduled_at', 'timezone', 'payment_status', 'total_paid', 'total_quote')
+                    'scheduled_at', 'timezone', 'payment_status', 'total_quote')
                     ->with([
                         'client:id,name,company_name,phonenumber',
                         'photographer:id,name,avatar,timezone',
@@ -321,7 +323,7 @@ class DashboardController extends Controller
                     'is_cover',
                     'is_hidden',
                     'media_type',
-                    'url',
+                    'storage_path',
                     'path',
                     'dropbox_path',
                     'thumbnail_path',
@@ -712,6 +714,7 @@ class DashboardController extends Controller
                     });
             })
             ->orderByDesc('updated_at')
+            ->orderBy('id')
             ->limit(10)
             ->get()
             ->map(function (Shoot $shoot) {
@@ -786,7 +789,7 @@ class DashboardController extends Controller
                 'active_work_started_at', 'active_work_completed_at', 'active_work_at', 'active_work_date', 'active_work_time',
                 'cancellation_requested_at', 'cancellation_reason', 'hold_requested_at', 'hold_requested_by', 'hold_reason',
                 // Required for Delivered Paid/Unpaid pills — same fields as shoot detail header.
-                'payment_status', 'total_paid', 'total_quote'];
+                'payment_status', 'total_quote'];
 
             $query = Shoot::select($columns)
                 ->with([

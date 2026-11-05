@@ -68,9 +68,12 @@ class SalesClientInvoiceScopeTest extends TestCase
     {
         // The legacy migration makes role nullable outside SQLite. Reproduce that
         // supported schema here because its SQLite branch skips ALTER COLUMN.
-        Schema::table('invoices', function (Blueprint $table) {
-            $table->string('role')->nullable()->change();
-        });
+        $role = collect(Schema::getColumns('invoices'))->firstWhere('name', 'role');
+        if (! $role['nullable']) {
+            Schema::table('invoices', function (Blueprint $table) {
+                $table->string('role')->nullable()->change();
+            });
+        }
 
         [$rep, $client, $shoot] = $this->createSalesAccount();
         $receivable = $this->createInvoice($rep, $client, $shoot, null, 20);

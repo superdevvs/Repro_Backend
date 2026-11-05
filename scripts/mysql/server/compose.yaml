@@ -1,0 +1,38 @@
+name: repro-mysql84
+services:
+  mysql:
+    image: mysql:8.4@sha256:a81d043930e51745522bd5c430961cf8286f0a23f0a9a2a6e0108f7ea71b0902
+    user: '999:33'
+    command: [mysqld, --defaults-file=/etc/mysql/conf.d/zz-repro.cnf]
+    network_mode: none
+    environment:
+      MYSQL_DATABASE: repro_dashboard
+      MYSQL_USER: repro_dashboard
+      MYSQL_ROOT_PASSWORD_FILE: /run/secrets/root-password
+      MYSQL_PASSWORD_FILE: /run/secrets/app-password
+    volumes:
+      - /etc/repro-mysql84/mysql.cnf:/etc/mysql/conf.d/zz-repro.cnf:ro
+      - /etc/repro-mysql84/secrets/root-password:/run/secrets/root-password:ro
+      - /etc/repro-mysql84/secrets/app-password:/run/secrets/app-password:ro
+      - /etc/repro-mysql84/secrets/root-client.cnf:/run/secrets/root-client.cnf:ro
+      - /var/lib/repro-mysql84:/var/lib/mysql
+      - /run/repro-mysql84:/var/run/mysqld
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=256m,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    init: true
+    mem_limit: 8g
+    cpus: 6
+    pids_limit: 512
+    ulimits:
+      nofile: {soft: 65536, hard: 65536}
+    restart: unless-stopped
+    stop_grace_period: 180s
+    healthcheck:
+      test: [CMD, mysql, --defaults-file=/run/secrets/root-client.cnf, --no-login-paths, --batch, --skip-column-names, '--execute=SELECT 1']
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s

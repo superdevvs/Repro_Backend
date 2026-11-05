@@ -63,7 +63,7 @@ class ShootScheduleInstantConsumersTest extends TestCase
             $this->attachService($shoot, $storedAt, $operator);
         }
         AutomationRule::query()->update(['is_active' => false]);
-        $before = $shoot->getRawOriginal('scheduled_at');
+        $before = $shoot->refresh()->getRawOriginal('scheduled_at');
         AutomationRule::create(['name' => 'Configured reminder', 'scope' => 'SYSTEM',
             'trigger_type' => 'SHOOT_REMINDER', 'is_active' => true, 'schedule_json' => ['offset' => '-24h']]);
         $executor = Mockery::mock(\App\Services\Messaging\AutomationWorkflowExecutor::class);

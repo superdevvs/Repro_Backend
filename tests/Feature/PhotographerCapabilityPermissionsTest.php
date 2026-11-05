@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\User;
+use App\Services\Users\EmailHealthService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
@@ -61,6 +62,14 @@ class PhotographerCapabilityPermissionsTest extends TestCase
     #[DataProvider('privilegedRoles')]
     public function test_admin_can_assign_both_capabilities_when_creating_a_photographer(string $role): void
     {
+        // Keep this permissions fixture independent of public DNS in offline QA.
+        $this->app->instance(EmailHealthService::class, new class extends EmailHealthService
+        {
+            protected function domainCanReceiveMail(string $domain): bool
+            {
+                return $domain === 'example.com';
+            }
+        });
         $admin = User::factory()->create(['role' => $role]);
         $this->mock(\App\Services\Users\AccountCreatedNotificationService::class)
             ->shouldReceive('dispatch')->once()->andReturn([

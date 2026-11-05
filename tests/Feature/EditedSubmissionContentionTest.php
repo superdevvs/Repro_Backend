@@ -19,6 +19,10 @@ class EditedSubmissionContentionTest extends TestCase
 {
     public function test_submission_reserves_real_sqlite_writer_before_reads_and_commits_effects_once(): void
     {
+        if (DB::getDriverName() !== 'sqlite') {
+            $this->markTestSkipped('SQLite WAL/schema-specific fixture; MySQL has separate parallel-write coverage.');
+        }
+
         $path = tempnam(sys_get_temp_dir(), 'edited-submit-');
         DB::purge('sqlite');
         config(['database.connections.sqlite.database' => $path]);

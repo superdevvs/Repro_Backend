@@ -11,6 +11,20 @@ class UpdateProfileTest extends TestCase
 {
     use RefreshDatabase;
 
+    protected function setUp(): void
+    {
+        parent::setUp();
+        // Profile-security tests use deterministic fixture domains offline.
+        $this->app->instance(\App\Services\Users\EmailHealthService::class,
+            new class extends \App\Services\Users\EmailHealthService {
+                protected function domainCanReceiveMail(string $domain): bool
+                {
+                    return in_array($domain, ['example.com', 'gmail.com'], true);
+                }
+            });
+    }
+
+
     public function test_user_can_update_self_service_profile_fields_and_metadata_preferences(): void
     {
         $user = User::factory()->photographer()->create([

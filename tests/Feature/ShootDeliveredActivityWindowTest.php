@@ -69,14 +69,19 @@ class ShootDeliveredActivityWindowTest extends TestCase
         $this->actingAs(User::factory()->admin()->create());
         $primary = $this->shoot('2026-11-01 12:00:00', '2026-08-01 12:00:00');
         $legacy = $this->shoot(null, '2026-11-01T08:00:00-04:00');
-        $blank = $this->shoot('', '2026-11-01 12:00:00.123456');
+        $sqlite = DB::getDriverName() === 'sqlite';
+        $blank = $this->shoot($sqlite ? '' : null, '2026-11-01 12:00:00.123456');
         $this->shoot('2026-08-01 12:00:00', '2026-11-01 12:00:00');
-        $this->shoot('malformed', '2026-11-01 12:00:00');
-        $this->shoot('2026-02-30 12:00:00', '2026-11-01 12:00:00');
+        if ($sqlite) {
+            // Invalid legacy storage is possible only with SQLite's text dates.
+            // MySQL strict-storage rejection is covered in tests/MySql.
+            $this->shoot('malformed', '2026-11-01 12:00:00');
+            $this->shoot('2026-02-30 12:00:00', '2026-11-01 12:00:00');
+            $this->shoot(null, '2026-11-01');
+        }
         $this->shoot(null, null, ['editing_completed_at' => '2026-11-01 12:00:00',
             'photos_uploaded_at' => '2026-11-01 12:00:00', 'scheduled_date' => '2026-11-01',
             'created_at' => '2026-11-01 12:00:00', 'updated_at' => '2026-11-01 12:00:00']);
-        $this->shoot(null, '2026-11-01');
         $response = $this->listing($this->bounds())->assertOk()->assertJsonPath('meta.count', 3);
         $this->assertEqualsCanonicalizing([$primary->id, $legacy->id, $blank->id], array_column($response->json('data'), 'id'));
     }
@@ -125,7 +130,8 @@ class ShootDeliveredActivityWindowTest extends TestCase
     public function test_preferred_closed_cycle_timestamp_does_not_fall_back_when_old_or_malformed(): void
     {
         $this->actingAs(User::factory()->admin()->create());
-        foreach (['2026-08-01 12:00:00', 'malformed', '2026-02-30 12:00:00'] as $cycle) {
+        $cycles = DB::getDriverName() === 'mysql' ? ['2026-08-01 12:00:00'] : ['2026-08-01 12:00:00', 'malformed', '2026-02-30 12:00:00'];
+        foreach ($cycles as $cycle) {
             $shoot = $this->shoot('2026-11-01 12:00:00', '2026-11-01 11:00:00');
             DB::table('shoots')->where('id', $shoot->id)->update([
                 'active_work_started_at' => '2026-07-01 12:00:00', 'active_work_completed_at' => $cycle,
@@ -147,7 +153,9 @@ class ShootDeliveredActivityWindowTest extends TestCase
         $this->serviceRow($shoot, '2026-11-05 12:00:00', ['workflow_status' => 'pending']);
         $this->serviceRow($shoot, '2026-11-06 12:00:00', ['delivery_status' => 'ready']);
         $invalid = $this->shoot(null);
-        $this->serviceRow($invalid, 'malformed');
+        if (DB::getDriverName() === 'sqlite') {
+            $this->serviceRow($invalid, 'malformed');
+        }
         $bounds = ['delivered_activity_from' => '2026-11-02T04:30:00.123456Z',
             'delivered_activity_to' => '2026-11-02T04:30:00.123456Z'];
         $this->listing($bounds)->assertOk()->assertJsonPath('meta.count', 1)->assertJsonPath('data.0.id', $shoot->id);
@@ -311,7 +319,12 @@ class ShootDeliveredActivityWindowTest extends TestCase
             'status' => 'delivered', 'workflow_status' => 'delivered', 'scheduled_date' => '2026-01-01',
             'payment_status' => 'paid', 'total_quote' => 200, 'admin_verified_at' => null, 'completed_at' => null,
         ], $attributes)));
-        // Preserve mixed raw SQL/ISO strings and microseconds, without model casts.
+        // SQLite preserves mixed raw text. MySQL stores the same instants in
+        // typed UTC DATETIME(6), including the exact microsecond boundaries.
+        if (DB::getDriverName() === 'mysql') {
+            $primary = $this->mysqlTimestamp($primary);
+            $completion = $this->mysqlTimestamp($completion);
+        }
         DB::table('shoots')->where('id', $shoot->id)->update(['admin_verified_at' => $primary, 'completed_at' => $completion]);
         return $shoot;
     }
@@ -323,8 +336,13 @@ class ShootDeliveredActivityWindowTest extends TestCase
             'price' => 100, 'quantity' => 1, 'is_deliverable' => true,
             'workflow_status' => 'delivered', 'delivery_status' => 'delivered',
         ], $attributes)));
-        DB::table('shoot_service')->where('id', $item->id)->update(['delivered_at' => $deliveredAt]);
+        DB::table('shoot_service')->where('id', $item->id)->update(['delivered_at' => DB::getDriverName() === 'mysql' ? $this->mysqlTimestamp($deliveredAt) : $deliveredAt]);
         return $item;
+    }
+
+    private function mysqlTimestamp(?string $value): ?string
+    {
+        return $value === null ? null : \Carbon\CarbonImmutable::parse($value, 'UTC')->utc()->format('Y-m-d H:i:s.u');
     }
 
     private function previewFile(Shoot $shoot, ShootService $item, string $name): void
