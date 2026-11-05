@@ -15,6 +15,7 @@ use App\Services\MailService;
 use App\Services\Users\ClientEmailVerificationLinkService;
 use App\Services\Users\DashboardOnboardingService;
 use App\Services\Users\EmailHealthService;
+use App\Services\Users\ImpersonationAccess;
 use App\Services\Users\AccountCreatedNotificationService;
 use App\Services\Users\PhoneNumberChangedNotificationService;
 use App\Services\Users\PhotographerAddressPolicy;
@@ -1618,6 +1619,9 @@ class UserController extends Controller
     protected function presentUserForViewer(User $user, User $viewer): array
     {
         $payload = $user->attributesToArray();
+        $payload['can_impersonate'] = $viewer->isAccountEligibleForAuthentication()
+            && $user->isAccountEligibleForAuthentication()
+            && app(ImpersonationAccess::class)->canImpersonate($viewer, $user);
         $payload['service_groups'] = $this->serializeServiceGroups($user);
         $payload['service_group_ids'] = array_map(
             fn ($group) => (string) $group['id'],
@@ -1707,6 +1711,17 @@ class UserController extends Controller
         }
         if ($this->viewerIsSuperAdmin($viewer)) {
             return $metadata;
+        }
+
+        if ($subject && $viewer->role !== 'admin' && $this->isSalesRepUser($viewer)) {
+            // Account editing must not let a rep assign themselves another client.
+            $existingMetadata = is_array($subject->metadata) ? $subject->metadata : [];
+            foreach (ImpersonationAccess::REP_METADATA_KEYS as $key) {
+                unset($metadata[$key]);
+                if (array_key_exists($key, $existingMetadata)) {
+                    $metadata[$key] = $existingMetadata[$key];
+                }
+            }
         }
 
         Arr::forget($metadata, 'repDetails.homeAddress');
@@ -1922,6 +1937,9 @@ class UserController extends Controller
         $totalSpent
     ): array {
         $payload = $user->attributesToArray();
+        $payload['can_impersonate'] = $viewer->isAccountEligibleForAuthentication()
+            && $user->isAccountEligibleForAuthentication()
+            && app(ImpersonationAccess::class)->canImpersonate($viewer, $user);
         $payload['service_groups'] = $this->serializeServiceGroups($user);
         $payload['service_group_ids'] = array_map(
             fn ($group) => (string) $group['id'],

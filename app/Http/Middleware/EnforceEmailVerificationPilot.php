@@ -2,7 +2,9 @@
 
 namespace App\Http\Middleware;
 
+use App\Models\User;
 use App\Services\Users\EmailVerificationPilot;
+use App\Services\Users\ImpersonationAccess;
 use Closure;
 use Illuminate\Http\Request;
 
@@ -19,10 +21,12 @@ class EnforceEmailVerificationPilot
         if (!$user) {
             return $next($request);
         }
-        // ImpersonationMiddleware checks the original admin before switching users.
+        // ImpersonationMiddleware checks the original actor before switching users.
         // Inspecting an unverified account must not require verifying its email.
+        $actor = $request->attributes->get('original_admin_user');
         if ($request->attributes->get('is_impersonating')
-            && in_array($request->attributes->get('original_admin_user')?->role, ['admin', 'superadmin'], true)) {
+            && $actor instanceof User
+            && app(ImpersonationAccess::class)->canImpersonate($actor, $user)) {
             return $next($request);
         }
         $status = app(EmailVerificationPilot::class)->status($user);

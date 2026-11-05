@@ -6,14 +6,15 @@ use Closure;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\Response;
 use App\Models\User;
+use App\Services\RolePermissionService;
+use App\Services\Users\ImpersonationAccess;
 
 class ImpersonationMiddleware
 {
     /**
      * Handle an incoming request.
      * 
-     * When an admin sends the X-Impersonate-User-Id header, swap the authenticated
-     * user to the impersonated user so all downstream code uses the client's context.
+     * Authorized admins and assigned sales reps can use the target's context.
      *
      * @param  \Closure(\Illuminate\Http\Request): (\Symfony\Component\HttpFoundation\Response)  $next
      */
@@ -45,7 +46,8 @@ class ImpersonationMiddleware
             'request_path' => $request->path(),
         ]);
 
-        if ($authUser && in_array($authUser->role, ['admin', 'superadmin'])) {
+        if ($authUser && (in_array($authUser->role, ['admin', 'superadmin'], true)
+            || app(RolePermissionService::class)->normalizedUserRoles($authUser)->contains('salesRep'))) {
             $request->setUserResolver(fn ($guard = null) => $authUser);
             // Apply the same gates to the original actor before the swap. The
             // downstream active-account gate still checks the target account.
@@ -61,25 +63,31 @@ class ImpersonationMiddleware
 
     private function continueAsTarget(Request $request, User $authUser, string $impersonateUserId, Closure $next): Response
     {
-        $impersonatedUser = User::find($impersonateUserId);
+        $impersonatedUser = ctype_digit($impersonateUserId) ? User::find($impersonateUserId) : null;
 
-        if ($impersonatedUser) {
-            $request->attributes->set('original_admin_user', $authUser);
-            $request->attributes->set('is_impersonating', true);
-
-            // Both guards and the request resolver use the target downstream.
-            auth('sanctum')->setUser($impersonatedUser);
-            auth()->setUser($impersonatedUser);
-            $request->setUserResolver(fn ($guard = null) => $impersonatedUser);
-
-            \Log::debug('Impersonation active', [
-                'admin_id' => $authUser->id,
-                'admin_name' => $authUser->name,
-                'impersonated_id' => $impersonatedUser->id,
-                'impersonated_name' => $impersonatedUser->name,
-                'impersonated_role' => $impersonatedUser->role,
-            ]);
+        if (!$impersonatedUser || !app(ImpersonationAccess::class)->canImpersonate($authUser, $impersonatedUser)) {
+            return response()->json([
+                'message' => 'You can only impersonate client accounts assigned to you.',
+                'code' => 'impersonation_forbidden',
+            ], 403);
         }
+
+        // Keep the existing attribute for actor-scoped notifications and gates.
+        $request->attributes->set('original_admin_user', $authUser);
+        $request->attributes->set('is_impersonating', true);
+
+        // Both guards and the request resolver use the target downstream.
+        auth('sanctum')->setUser($impersonatedUser);
+        auth()->setUser($impersonatedUser);
+        $request->setUserResolver(fn ($guard = null) => $impersonatedUser);
+
+        \Log::debug('Impersonation active', [
+            'actor_id' => $authUser->id,
+            'actor_name' => $authUser->name,
+            'impersonated_id' => $impersonatedUser->id,
+            'impersonated_name' => $impersonatedUser->name,
+            'impersonated_role' => $impersonatedUser->role,
+        ]);
 
         return $next($request);
     }
