@@ -1036,6 +1036,7 @@ class AutomationWorkflowExecutor
                 'trigger' => $automation->trigger_type,
                 'appointment_at' => $context['notification_appointment_at'] ?? null,
                 'full_order_delivery' => ($context['delivery_notification_full_order'] ?? false) === true,
+                'delivery_cycle_key' => $context['delivery_notification_cycle_key'] ?? null,
             ],
         ]);
     }
@@ -1406,6 +1407,14 @@ class AutomationWorkflowExecutor
 
     private function isStaleReminder(AutomationRule $automation, array $context): bool
     {
+        if ($automation->trigger_type === 'SHOOT_COMPLETED' && ($context['delivery_notification_full_order'] ?? false)
+            && isset($context['delivery_notification_cycle_key'])) {
+            $shoot = Shoot::find($context['shoot_id'] ?? data_get($context, 'shoot.id'));
+            $cycle = app(ShootDeliveryCycle::class);
+            if (! $shoot || $cycle->key($shoot) !== $context['delivery_notification_cycle_key'] || ! $cycle->isFullDelivery($shoot)) {
+                return true;
+            }
+        }
         if (in_array($automation->trigger_type, ['INVOICE_SUMMARY', 'WEEKLY_REP_INVOICE'], true)) {
             foreach ($context['summary_invoices'] ?? [] as $row) {
                 $invoice = \App\Models\Invoice::find($row['id'] ?? null);

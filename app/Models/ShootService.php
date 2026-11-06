@@ -86,6 +86,7 @@ class ShootService extends Model
         $reconcile = function (ShootService $item) {
             $shoot = $item->shoot()->first();
             if ($shoot) app(\App\Services\Shoots\DeliveryPlanService::class)->forgetReleasedFiles($shoot);
+            if ($shoot) app(\App\Services\Shoots\ProviderAutoDeliverySettings::class)->forget($shoot->id);
             if ($shoot && $item->deliveryExecutionReopened) {
                 $item->deliveryExecutionReopened = false;
                 app(\App\Services\Shoots\ShootActiveWorkLifecycle::class)->begin($shoot);

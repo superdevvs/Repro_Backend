@@ -8,6 +8,7 @@ use App\Models\User;
 use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
 use App\Services\Messaging\ShootDeliveryNotificationRecorder;
+use App\Services\Messaging\ShootDeliveryCycle;
 use App\Services\Messaging\ShootSummaryEligibility;
 use App\Services\Shoots\FinalizeProgressTracker;
 use Illuminate\Bus\Queueable;
@@ -33,12 +34,25 @@ class SendShootReadyEmailJob implements ShouldQueue
 
     public int $timeout = 120;
 
+    public ?string $deliveryCycleKey = null;
+
+    public array $serviceItemIds = [];
+
+    public ?int $outboxId = null;
+
     public function __construct(
         public int $shootId,
         public ?int $shootServiceId = null,
         public bool $isFullOrderDelivery = true,
-        public bool $fireAutomation = true
+        public bool $fireAutomation = true,
+        ?string $deliveryCycleKey = null,
+        array $serviceItemIds = [],
+        ?int $outboxId = null
     ) {
+        $this->outboxId = $outboxId;
+        $this->deliveryCycleKey = $deliveryCycleKey
+            ?? (($shoot = Shoot::find($shootId)) ? app(ShootDeliveryCycle::class)->key($shoot) : null);
+        $this->serviceItemIds = array_values(array_unique(array_map('intval', $serviceItemIds)));
         // Use the default queue so it lines up with the running workers.
         // The dedicated 'mail' queue is not consumed in production, which
         // previously left the delivered/ready email permanently unsent while
@@ -51,6 +65,11 @@ class SendShootReadyEmailJob implements ShouldQueue
         AutomationService $automation,
         ?FinalizeProgressTracker $progress = null
     ): void {
+        if ($this->outboxId !== null) {
+            app(\App\Services\Messaging\ShootDeliveryNotificationOutbox::class)->process($this->outboxId);
+
+            return;
+        }
         $progress ??= app(FinalizeProgressTracker::class);
         $recorder = app(ShootDeliveryNotificationRecorder::class);
 
@@ -58,6 +77,14 @@ class SendShootReadyEmailJob implements ShouldQueue
         $shoot = Shoot::query()->find($this->shootId);
         if (! $shoot) {
             $progress->stageSkipped($this->shootId, FinalizeProgressTracker::STAGE_DELIVERY_EMAIL, 'Shoot not found');
+
+            return;
+        }
+
+        $cycle = app(ShootDeliveryCycle::class);
+        if (($this->deliveryCycleKey !== null && $this->deliveryCycleKey !== $cycle->key($shoot))
+            || ($this->isFullOrderDelivery && ! $cycle->isFullDelivery($shoot))) {
+            $progress->stageSkipped($this->shootId, FinalizeProgressTracker::STAGE_DELIVERY_EMAIL, 'This delivery notification no longer matches the current completed work.');
 
             return;
         }
@@ -121,6 +148,7 @@ class SendShootReadyEmailJob implements ShouldQueue
             // Recheck both current states before formatting copy or its revision.
             $serviceItemIds = $shoot->serviceItems()
                 ->when($this->shootServiceId !== null, fn ($query) => $query->whereKey($this->shootServiceId))
+                ->when($this->serviceItemIds !== [], fn ($query) => $query->whereIn('id', $this->serviceItemIds))
                 ->where('workflow_status', 'delivered')->where('delivery_status', 'delivered')
                 ->orderBy('id')->pluck('id')->map(fn ($id) => (int) $id)->all();
             if ($serviceItemIds === []) {
@@ -153,9 +181,10 @@ class SendShootReadyEmailJob implements ShouldQueue
                 }
                 $context['system_email_already_sent'] = $systemEmailAlreadySent;
                 $context['delivery_notification_full_order'] = true;
+                $context['delivery_notification_cycle_key'] = $cycle->key($shoot);
                 // Updating the successful-notification anchor must not change a
                 // replay's identity and duplicate its already accepted channels.
-                $context['event_id'] = 'shoot-delivered:'.$shoot->id.':'.($shoot->completed_at?->toIso8601String() ?? 'full');
+                $context['event_id'] = $cycle->eventId($shoot);
                 $dispatch = $automation->handleEvent('SHOOT_COMPLETED', $context);
                 $accepted = $accepted->merge($recorder->acceptedMessages($dispatch['message_ids'] ?? []));
                 if ((int) ($dispatch['failed_run_count'] ?? 0) > 0) {

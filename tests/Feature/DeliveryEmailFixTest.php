@@ -380,7 +380,17 @@ class DeliveryEmailFixTest extends TestCase
             'email' => 'fix-dedupe@example.com',
             'email_status' => 'verified',
         ]);
-        $shoot = $this->createDeliverableShoot($client);
+        // Run the sender after the canonical full-delivery transition.
+        $shoot = $this->createDeliverableShoot($client, [
+            'status' => Shoot::STATUS_DELIVERED,
+            'workflow_status' => Shoot::STATUS_DELIVERED,
+            'delivery_status' => 'delivered',
+            'admin_verified_at' => now(),
+            'completed_at' => now(),
+        ]);
+        $shoot->serviceItems()->update([
+            'workflow_status' => 'delivered', 'delivery_status' => 'delivered', 'delivered_at' => now(),
+        ]);
         AutomationRule::where('trigger_type', 'SHOOT_COMPLETED')->delete();
 
         $template = MessageTemplate::create([

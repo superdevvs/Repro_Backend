@@ -27,13 +27,16 @@ class IngestIguideAssetsJob implements ShouldQueue
     public int $tries = 3;
     public int $timeout = 600;
     public array $backoff = [30, 120, 300];
+    public bool $refreshExisting = false;
 
     public function __construct(
         public int $shootId,
         /** @var array<int, array<string, mixed>> Floorplan items as produced by IguideService::extractFloorplans */
         public array $floorplans,
         public ?int $shootServiceId = null,
+        bool $refreshExisting = false,
     ) {
+        $this->refreshExisting = $refreshExisting;
         $this->onQueue('default');
     }
 
@@ -104,11 +107,12 @@ class IngestIguideAssetsJob implements ShouldQueue
 
             try {
                 $existing = $existingByKey->get($assetKey);
-                if ($existing && (!$existing->isInvalidProviderFloorplan() || $existing->scan_status === ShootFile::SCAN_STATUS_INFECTED)) {
+                if ($existing && ((!$this->refreshExisting && !$existing->isInvalidProviderFloorplan()) || $existing->scan_status === ShootFile::SCAN_STATUS_INFECTED)) {
                     $existing = $existingByKey->get($assetKey);
                     if (in_array($existing->scan_status, [ShootFile::SCAN_STATUS_QUARANTINED, ShootFile::SCAN_STATUS_FAILED], true)) {
                         ScanShootFileJob::dispatch($existing->id)->afterCommit();
                     }
+                    if ($existing->scan_status === ShootFile::SCAN_STATUS_CLEAN && ! $existing->web_path) ProcessImageJob::dispatch($existing)->afterCommit();
                     continue;
                 }
 
@@ -142,12 +146,12 @@ class IngestIguideAssetsJob implements ShouldQueue
                         'status' => $response->status(),
                         'url' => $url,
                     ]);
-                    continue;
+                    throw new \RuntimeException('The iGuide floorplan download failed with HTTP '.$response->status().'.');
                 }
 
                 $binary = $response->body();
                 if ($binary === '' || $binary === null) {
-                    continue;
+                    throw new \RuntimeException('The iGuide floorplan download was empty.');
                 }
 
                 $mimeType = $response->header('Content-Type') ?: $this->guessMimeType($extension);
@@ -155,6 +159,15 @@ class IngestIguideAssetsJob implements ShouldQueue
                 // It is not a floorplan and must never be persisted or scanned as one.
                 if (str_starts_with(strtolower($mimeType), 'text/html') || preg_match('/^\s*(<!doctype\s+html|<html)/i', $binary)) {
                     $retryPending = true;
+                    continue;
+                }
+
+                if ($existing && ! $existing->isInvalidProviderFloorplan()) {
+                    if ($existing->scan_status !== ShootFile::SCAN_STATUS_CLEAN || ! $existing->web_path) {
+                        ScanShootFileJob::dispatch($existing->id)->afterCommit(); $retryPending = true; continue;
+                    }
+                    $item['_provider_identity'] = $shoot->iguide_property_id;
+                    app(\App\Services\Shoots\CubiCasaAssetRevision::class)->replace($existing, $binary, $item, 'iguide');
                     continue;
                 }
 
@@ -180,6 +193,8 @@ class IngestIguideAssetsJob implements ShouldQueue
                     'scan_status' => ShootFile::SCAN_STATUS_QUARANTINED,
                     'metadata' => [
                         'source' => 'iguide',
+                        'provider_identity' => $shoot->iguide_property_id,
+                        'provider_content_sha256' => hash('sha256', $binary),
                         'iguide_asset_key' => $assetKey,
                         'units' => $item['units'] ?? null,
                         'asset_type' => $item['type'] ?? null,
@@ -239,6 +254,7 @@ class IngestIguideAssetsJob implements ShouldQueue
                     'url' => $url,
                     'error' => $e->getMessage(),
                 ]);
+                $retryPending = true;
                 continue;
             }
         }
@@ -252,6 +268,8 @@ class IngestIguideAssetsJob implements ShouldQueue
             app(\App\Services\Shoots\ShootMediaMutationSupportService::class)->clearShootFilesCache($shoot);
             \App\Services\Shoots\ShootListingService::flushCachedListings();
         }
+        if (app(\App\Services\Shoots\ProviderAutoDeliverySettings::class)->supportedItems($shoot)->contains('id', $this->shootServiceId))
+            ProcessProviderAutoDelivery::dispatch($shoot->id)->afterCommit();
 
         if (!empty($ingestedFileIds)) {
             try {

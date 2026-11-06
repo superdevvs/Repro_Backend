@@ -118,6 +118,8 @@ class IguideService
         }
 
         $this->applyShootData($shoot, $iguideData);
+        $autoDelivery = app(\App\Services\Shoots\ProviderAutoDeliveryService::class);
+        $autoDelivery->observe($shoot, 'iguide', $iguideData, 'provider_api', $autoDelivery->canonicalFingerprint('iguide', $iguideData));
 
         return $iguideData;
     }

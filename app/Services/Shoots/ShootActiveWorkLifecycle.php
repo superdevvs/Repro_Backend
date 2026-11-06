@@ -57,6 +57,7 @@ class ShootActiveWorkLifecycle
         }
         if (! $this->hasActiveWork($shoot)) {
             $shoot->active_work_is_reopened = true;
+            $shoot->active_work_cycle_key = (string) \Illuminate\Support\Str::uuid();
             $shoot->active_work_started_at = now();
             $shoot->active_work_completed_at = null;
             $shoot->status = Shoot::STATUS_ACTIVE;

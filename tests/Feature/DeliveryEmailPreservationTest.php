@@ -452,6 +452,13 @@ class DeliveryEmailPreservationTest extends TestCase
         $shoot = $this->createShootForClient($client, [
             'status' => Shoot::STATUS_DELIVERED,
             'workflow_status' => Shoot::STATUS_DELIVERED,
+            'delivery_status' => 'delivered',
+            'admin_verified_at' => now(),
+            'completed_at' => now(),
+        ]);
+
+        $shoot->serviceItems()->update([
+            'workflow_status' => 'delivered', 'delivery_status' => 'delivered', 'delivered_at' => now(),
         ]);
 
         // The protected delivery path owns the client email; saved automation

@@ -663,6 +663,51 @@ class ClientNotificationDeliveryWindowTest extends TestCase
         $this->assertGreaterThan(0, \App\Models\PaymentReminder::where('shoot_id', $shoot->id)->count());
     }
 
+    #[DataProvider('deliveryCycleChannels')]
+    public function test_scheduled_delivery_cycle_is_rechecked_immediately_before_provider_send(string $channel): void
+    {
+        [$shoot, $client] = $this->shoot('2026-10-16 15:00');
+        $this->clock('2026-10-17 05:00');
+        \Illuminate\Support\Facades\DB::table('shoots')->where('id', $shoot->id)->update([
+            'status' => 'delivered', 'workflow_status' => 'delivered', 'delivery_status' => 'delivered',
+        ]);
+        $payload = $this->payload($shoot, $client, 'SHOOT_DELIVERED');
+        $payload['metadata']['notification'] += ['delivery_cycle_key' => 'initial', 'full_order_delivery' => true];
+        $message = $this->sendPayload($channel, $client, $payload);
+        $this->assertSame('SCHEDULED', $message->status);
+        \Illuminate\Support\Facades\DB::table('shoots')->where('id', $shoot->id)->update([
+            'active_work_is_reopened' => true, 'active_work_started_at' => now(), 'active_work_completed_at' => now(),
+            'active_work_cycle_key' => '22222222-2222-4222-8222-222222222222',
+        ]);
+        $this->clock('2026-10-17 09:00');
+        $this->dispatch();
+        $this->assertSame('CANCELLED', $message->fresh()->status);
+        $this->assertProviderSends($channel, 0);
+    }
+
+    #[DataProvider('deliveryCycleChannels')]
+    public function test_current_delivery_cycle_releases_its_scheduled_notice_normally(string $channel): void
+    {
+        [$shoot, $client] = $this->shoot('2026-10-16 15:00');
+        $this->clock('2026-10-17 05:00');
+        \Illuminate\Support\Facades\DB::table('shoots')->where('id', $shoot->id)->update([
+            'status' => 'delivered', 'workflow_status' => 'delivered', 'delivery_status' => 'delivered',
+        ]);
+        $payload = $this->payload($shoot, $client, 'SHOOT_DELIVERED');
+        $payload['metadata']['notification'] += ['delivery_cycle_key' => 'initial', 'full_order_delivery' => true];
+        $message = $this->sendPayload($channel, $client, $payload);
+        $this->assertSame('SCHEDULED', $message->status);
+        $this->clock('2026-10-17 09:00');
+        $this->dispatch();
+        $this->assertSame('SENT', $message->fresh()->status);
+        $this->assertProviderSends($channel, 1);
+    }
+
+    public static function deliveryCycleChannels(): array
+    {
+        return [['email'], ['sms']];
+    }
+
     private function shoot(string $local): array
     {
         $client = User::factory()->create(['role' => 'client', 'timezone' => 'America/New_York', 'phonenumber' => '+12025550123']);

@@ -981,6 +981,7 @@ class ShootPresenter
         $shoot->setAttribute('orderTotal', (float) ($shoot->total_quote ?? 0));
 
         // Shared workflow capability block. Keep additive snake/camel aliases here;
+        $shoot->setAttribute('auto_delivery', app(ProviderAutoDeliverySettings::class)->payload($shoot, $requestingUser));
         // additional server-owned capabilities (for example invoice access) belong
         // beside this block so list/detail payloads remain easy to audit.
         $canSubmitRaw = app(ShootSubmissionCapabilityService::class)

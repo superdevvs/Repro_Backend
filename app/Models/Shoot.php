@@ -221,6 +221,7 @@ class Shoot extends Model
     ];
 
     protected $casts = [
+        'auto_delivery_enabled' => 'boolean',
         'active_work_started_at' => 'datetime',
         'active_work_is_reopened' => 'boolean',
         'active_work_completed_at' => 'datetime',
@@ -1725,7 +1726,7 @@ class Shoot extends Model
         ]);
     }
 
-    public function updateWorkflowStatus($status, $userId = null)
+    public function updateWorkflowStatus($status, $userId = null, bool $systemActor = false)
     {
         $oldStatus = $this->workflow_status;
         $this->workflow_status = $status;
@@ -1748,7 +1749,7 @@ class Shoot extends Model
             case self::STATUS_DELIVERED:
                 $additionalCycle = $this->active_work_started_at !== null;
                 $this->admin_verified_at = $this->admin_verified_at ?? now();
-                $this->verified_by = $userId;
+                if (! $systemActor) $this->verified_by = $userId;
                 $this->completed_at = $this->completed_at ?? now();
                 $this->delivery_status = 'delivered';
                 if (!$this->editing_completed_at) {
@@ -1763,12 +1764,13 @@ class Shoot extends Model
 
         // Log the workflow change
         $this->workflowLogs()->create([
-            'user_id' => $userId ?? auth()->id(),
+            'user_id' => $systemActor ? null : ($userId ?? auth()->id()),
             'action' => "status_changed_to_{$status}",
             'details' => "Workflow status changed from {$oldStatus} to {$status}",
             'metadata' => [
                 'old_status' => $oldStatus,
                 'new_status' => $status,
+                'source' => $systemActor ? 'provider_auto_delivery' : 'staff_workflow',
                 'timestamp' => now()->toISOString()
             ]
         ]);

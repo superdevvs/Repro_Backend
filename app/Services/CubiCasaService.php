@@ -931,6 +931,7 @@ class CubiCasaService
             if (!is_string($url) || $url === '') continue;
             $items[] = [
                 'asset_key' => 'pdf_listing_dim_' . $i,
+                'component_kind' => 'floorplan',
                 'type' => 'pdf',
                 'units' => 'imperial', // CubiCasa default; metric/imperial not split here.
                 'url' => $url,
@@ -943,6 +944,7 @@ class CubiCasaService
             if (!is_string($url) || $url === '') continue;
             $items[] = [
                 'asset_key' => 'pdf_listing_' . $i,
+                'component_kind' => 'floorplan',
                 'type' => 'pdf',
                 'units' => 'imperial',
                 'url' => $url,
@@ -955,6 +957,7 @@ class CubiCasaService
             if (!is_string($url) || $url === '') continue;
             $items[] = [
                 'asset_key' => 'jpg_listing_dim_' . $i,
+                'component_kind' => 'floorplan',
                 'type' => 'jpg',
                 'units' => 'imperial',
                 'url' => $url,
@@ -968,6 +971,7 @@ class CubiCasaService
             if (!is_string($url) || $url === '') continue;
             $items[] = [
                 'asset_key' => 'pdf_home_report_' . $i,
+                'component_kind' => 'report',
                 'type' => 'pdf',
                 'units' => 'imperial',
                 'url' => $url,
@@ -1042,7 +1046,10 @@ class CubiCasaService
             }
         }
 
-        return $this->persist($shoot, 'cubicasa.applyShootData');
+        $saved = $this->persist($shoot, 'cubicasa.applyShootData');
+        $autoDelivery = app(\App\Services\Shoots\ProviderAutoDeliveryService::class);
+        $autoDelivery->observe($shoot, 'cubicasa', $parsed, 'provider_api', $autoDelivery->canonicalFingerprint('cubicasa', $parsed));
+        return $saved;
     }
 
     /**

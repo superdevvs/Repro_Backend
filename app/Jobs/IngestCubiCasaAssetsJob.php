@@ -116,6 +116,8 @@ class IngestCubiCasaAssetsJob implements ShouldQueue
                 return $metadata['cubicasa_asset_key'] ?? null;
             })
             ->filter(static fn ($_, $key) => is_string($key) && $key !== '');
+        if (app(\App\Services\Shoots\ProviderAutoDeliverySettings::class)->supportedItems(Shoot::findOrFail($shoot->id))->contains('id', $this->shootServiceId))
+            ProcessProviderAutoDelivery::dispatch($shoot->id)->afterCommit();
 
         $uploadedByUserId = $this->resolveSystemUploaderId($shoot);
 
@@ -190,6 +192,7 @@ class IngestCubiCasaAssetsJob implements ShouldQueue
                         continue;
                     }
                     if (!$existing->web_path) ProcessImageJob::dispatch($existing)->afterCommit();
+                    $item['_provider_identity'] = $shoot->cubicasa_order_id;
                     if (app(\App\Services\Shoots\CubiCasaAssetRevision::class)->replace($existing, $binary, $item)) {
                         $ingestedFileIds[] = $existing->id;
                         $existingByKey->put($assetKey, $existing->fresh());
@@ -220,6 +223,8 @@ class IngestCubiCasaAssetsJob implements ShouldQueue
                     'scan_status' => ShootFile::SCAN_STATUS_QUARANTINED,
                     'metadata' => [
                         'source' => 'cubicasa',
+                        'provider_identity' => $shoot->cubicasa_order_id,
+                        'provider_content_sha256' => hash('sha256', $binary),
                         'cubicasa_asset_key' => $assetKey,
                         'units' => $item['units'] ?? null,
                         'asset_type' => $item['type'] ?? null,

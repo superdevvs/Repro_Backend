@@ -193,6 +193,99 @@ class DeliveryPlanService
         return ['file_ids' => array_values(array_unique($ids)), 'service_ids' => array_values(array_unique($services)), 'components' => $approvedComponents, 'already_applied' => false];
     }
 
+    /** Trusted provider job only; the outer finalizer owns the short writer transaction. */
+    public function commitProviderSelection(Shoot $shoot, array $selections, string $operationKey): array
+    {
+        // Roll back the entire provider batch before the finalizer catches a
+        // stale evidence exception inside its owning transaction.
+        return DB::transaction(fn () => $this->commitProviderSelectionAtomically($shoot, $selections, $operationKey));
+    }
+
+    private function commitProviderSelectionAtomically(Shoot $shoot, array $selections, string $operationKey): array
+    {
+        $provider = app(ProviderAutoDeliveryService::class);
+        abort_if($provider->blocked($shoot), 409, 'Provider auto delivery is disabled or suspended.');
+        $existing = DB::table('shoot_delivery_receipts')->where('shoot_id', $shoot->id)->where('operation_key', $operationKey)->exists();
+        if ($existing) return ['already_applied' => true, 'file_ids' => [], 'service_ids' => [], 'components' => []];
+        $ids = []; $serviceIds = []; $approved = [];
+        $bytes = 0;
+        foreach ($selections as $selection) foreach ($selection['files'] as $entry) {
+            abort_unless(($entry['local_bytes'] ?? 0) > 0 && ($entry['local_preview_bytes'] ?? 0) > 0, 409, 'Local provider output verification is unavailable.');
+            $bytes += $entry['local_bytes'] + $entry['local_preview_bytes'];
+            abort_if($bytes > ProviderAutoDeliveryService::MAX_LOCAL_VERIFICATION_BYTES, 409, 'Provider output requires a smaller reviewed delivery batch.');
+        }
+        $this->forgetReleasedFiles($shoot);
+        $plan = $this->plan($shoot, null);
+        foreach ($selections as $selection) {
+            [$lineId, $key] = explode(':', $selection['component_id'], 2);
+            $item = $shoot->serviceItems()->with(['service.category', 'unit'])->findOrFail($lineId);
+            abort_unless(app(ProviderAutoDeliverySettings::class)->supportedItems($shoot)->contains('id', $item->id), 409, 'The service is no longer eligible provider work.');
+            abort_if($provider->blocked($shoot, $item), 409, 'The provider service is suspended or has a future appointment.');
+            $requirement = collect($provider->parts($item, $selection['provider']))->firstWhere('key', $key);
+            abort_unless($requirement && $this->itemExecutionKey($shoot, $item) === $selection['execution_key'], 409, 'The booked provider execution changed.');
+            $component = collect($plan['components'])->firstWhere('id', $selection['component_id']);
+            if ($component && $component['resolved']) continue;
+            $proof = DB::table('shoot_provider_delivery_verifications')->find($selection['verification_id']);
+            $latest = DB::table('shoot_provider_delivery_verifications')->where('shoot_service_id', $item->id)->where('provider', $selection['provider'])
+                ->where('execution_key', $selection['execution_key'])->orderByDesc('id')->first();
+            $view = $provider->scope($shoot, $item, $selection['provider']);
+            $identity = $view?->getAttribute($selection['provider'] === 'iguide' ? 'iguide_property_id' : 'cubicasa_order_id');
+            abort_unless($proof && $latest && $latest->id === $proof->id && $proof->state === 'ready' && (int) $proof->shoot_id === (int) $shoot->id
+                && (int) $proof->shoot_service_id === (int) $item->id && $proof->execution_key === $selection['execution_key']
+                && (int) data_get(json_decode($proof->evidence, true), 'unit_id') === (int) $item->shoot_unit_id
+                && $identity === $proof->identity_key && $identity === $selection['identity_key'], 409, 'Verified provider evidence changed.');
+            $cutoff = data_get($item->delivery_requirements, '0.execution_started_at') ?: (app(ShootActiveWorkLifecycle::class)->hasActiveWork($shoot) ? $shoot->active_work_started_at : $shoot->created_at);
+            abort_if(\Carbon\Carbon::parse($proof->verified_at)->lt($cutoff), 409, 'Provider evidence predates this execution.');
+            $files = app(ServiceDeliveryEligibility::class)->currentCycleFiles($shoot, $shoot->files()->where('shoot_service_id', $item->id)->get())->keyBy('id');
+            if ($key === 'floorplan') {
+                $manifest = $provider->assetManifest(json_decode($proof->evidence, true)['floorplans'] ?? []);
+                $selectedAssets = array_map(fn ($entry) => ['key' => $entry['asset_key'], 'url' => $entry['original_url']], $selection['files']);
+                usort($selectedAssets, fn ($a, $b) => [$a['key'], $a['url']] <=> [$b['key'], $b['url']]);
+                abort_unless($manifest !== [] && $manifest === ($selection['expected_assets'] ?? []) && $manifest === $selectedAssets
+                    && count(array_unique(array_column($selection['files'], 'id'))) === count($manifest), 409, 'The complete provider asset set changed.');
+            }
+            foreach ($selection['files'] as $entry) {
+                $file = $files->get($entry['id']);
+                abort_unless($file && $file->scan_status === ShootFile::SCAN_STATUS_CLEAN && $this->usableOutput($file)
+                    && $this->contentKind($file) === $key && (int) ($file->content_version ?: 1) === $entry['version']
+                    && $file->path === $entry['path'] && $file->web_path === $entry['web_path'] && $file->storage_path === $entry['storage_path']
+                    && $file->getRawOriginal('updated_at') === $entry['updated_at'] && hash_equals(hash('sha256', json_encode($file->metadata)), $entry['metadata_hash'])
+                    && data_get($file->metadata, 'source') === $selection['provider'] && data_get($file->metadata, $selection['provider'].'_asset_key') === $entry['asset_key']
+                    && ProviderDeliveryUrl::canonical((string) data_get($file->metadata, 'original_url')) === $entry['original_url'], 409, 'Provider output changed or has not cleared scanning and previews.');
+                $snapshot = $provider->localOutputSnapshot($file);
+                abort_unless($snapshot && collect($snapshot)->every(fn ($value, $key) => ($entry[$key] ?? null) === $value), 409, 'Provider output bytes or previews changed during verification.');
+            }
+            $external = null;
+            if ($key === 'tour') {
+                $viewer = $selection['public_viewer'] ?? null;
+                abort_unless($viewer && ($viewer['property_id'] ?? null) === $identity
+                    && \Carbon\Carbon::parse($viewer['checked_at'])->betweenIncluded(now()->subMinutes(5), now())
+                    && \Carbon\Carbon::parse($viewer['updated_at'])->gte($cutoff), 409, 'The current published provider viewer could not be verified.');
+                $external = $this->externalEvidence($shoot, $item, $key, $shoot->serviceItems()->with('unit')->get());
+                abort_unless($external && ($external['property_id'] ?? null) === $identity
+                    && ProviderDeliveryUrl::canonical($external['url']) === ($viewer['checked_url'] ?? null), 409, 'The provider viewer identity or checked URL changed.');
+            } else abort_unless($key === 'floorplan' && $selection['files'] !== [], 409, 'No usable provider output was selected.');
+            $method = $key === 'tour' ? 'external' : 'media';
+            $evidence = ['files' => array_map(fn ($entry) => ['id' => $entry['id'], 'version' => $entry['version']], $selection['files']), 'external' => $external,
+                'provider_verified' => ['provider' => $selection['provider'], 'identity_key' => $identity, 'verification_id' => $proof->id,
+                    'execution_key' => $selection['execution_key'], 'source' => $proof->source, 'public_viewer' => $selection['public_viewer'] ?? null,
+                    'canonical_url' => $external ? $this->canonicalProviderUrl($external['url']) : null,
+                    'file_proofs' => $selection['files']]];
+            DB::table('shoot_delivery_receipts')->insert(['shoot_id' => $shoot->id, 'shoot_service_id' => $item->id, 'component_key' => $key,
+                'execution_key' => $selection['execution_key'], 'method' => $method, 'evidence' => json_encode($evidence, JSON_THROW_ON_ERROR), 'actor_id' => null,
+                'reason' => 'Automatically delivered verified '.$selection['provider'].' output.', 'plan_revision' => $plan['revision'], 'operation_key' => $operationKey, 'delivered_at' => now()]);
+            $ids = array_merge($ids, array_column($selection['files'], 'id')); $serviceIds[] = $item->id;
+            $approved[] = ['shoot_service_id' => $item->id, 'kind' => $key, 'method' => $method];
+        }
+        $this->forgetReleasedFiles($shoot);
+        return ['already_applied' => $approved === [], 'file_ids' => array_values(array_unique($ids)), 'service_ids' => array_values(array_unique($serviceIds)), 'components' => $approved];
+    }
+
+    private function canonicalProviderUrl(string $url): string
+    {
+        return ProviderDeliveryUrl::canonical($url);
+    }
+
     public function itemResolved(Shoot $shoot, ShootService $item): bool
     {
         if (! $this->ledgerExists()) return $item->workflow_status === 'delivered' && $item->delivery_status === 'delivered';
@@ -284,6 +377,12 @@ class DeliveryPlanService
         if ($receipt->method === 'external') {
             $stored = $evidence['external'] ?? null;
             if (! $external || ! is_array($stored)) return false;
+            if (isset($evidence['provider_verified'])) {
+                $proof = $evidence['provider_verified'];
+                return ($proof['provider'] ?? null) === ($external['provider'] ?? null)
+                    && ($proof['identity_key'] ?? null) === ($external['property_id'] ?? null)
+                    && ($proof['canonical_url'] ?? null) === $this->canonicalProviderUrl($external['url']);
+            }
             // Availability metadata is not a new provider output revision.
             unset($external['readiness'], $stored['readiness']);
             return hash_equals(hash('sha256', json_encode($external)), hash('sha256', json_encode($stored)));

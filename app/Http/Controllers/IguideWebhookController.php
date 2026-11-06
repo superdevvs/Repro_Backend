@@ -42,6 +42,8 @@ class IguideWebhookController extends Controller
                 ?? config('services.iguide.webhook_secret', '')
             ));
 
+            $autoDeliveryAuthenticated = false;
+
             if ($token !== '') {
                 if (!$this->verifyUrlToken($request, $token)) {
                     Log::warning('iGUIDE webhook: invalid URL token');
@@ -50,6 +52,7 @@ class IguideWebhookController extends Controller
                         'message' => 'Invalid token',
                     ], 401);
                 }
+                $autoDeliveryAuthenticated = true;
             } elseif ($secret !== '') {
                 $signature = (string) ($request->header('X-Iguide-Signature') ?: $request->header('X-Signature') ?: '');
                 if (!$this->verifySignature($rawBody, $signature, $secret)) {
@@ -59,6 +62,7 @@ class IguideWebhookController extends Controller
                         'message' => 'Invalid signature',
                     ], 401);
                 }
+                $autoDeliveryAuthenticated = true;
             } elseif ($this->isOfficialIguideDispatcher($request)) {
                 // LAST RESORT: iGUIDE's portal has no signing secret and signed
                 // apps cannot update the account webhook URL. Official deliveries
@@ -131,6 +135,8 @@ class IguideWebhookController extends Controller
             }
 
             $this->iguideService->applyShootData($shoot, $iguideData);
+            if ($autoDeliveryAuthenticated) app(\App\Services\Shoots\ProviderAutoDeliveryService::class)
+                ->observe($shoot, 'iguide', $iguideData, 'authenticated_webhook', app(\App\Services\Shoots\ProviderAutoDeliveryService::class)->webhookFingerprint($data));
 
             $floorplans = is_array($iguideData['floorplans'] ?? null) ? $iguideData['floorplans'] : [];
             // Only ingest deliverables (PDFs / JPG floors) when this shoot

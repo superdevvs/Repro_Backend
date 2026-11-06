@@ -404,6 +404,11 @@ class MessagingService
             return true;
         }
         $window = app(ClientNotificationDeliveryWindow::class);
+        if ($window->staleDelivery($message)) {
+            $message->update(['status' => 'CANCELLED', 'error_message' => 'Delivery notification no longer matches the current completed work.']);
+
+            return true;
+        }
         if ($window->staleAppointment($message)) {
             $message->update(['status' => 'CANCELLED', 'error_message' => 'Appointment reminder is no longer current.']);
 

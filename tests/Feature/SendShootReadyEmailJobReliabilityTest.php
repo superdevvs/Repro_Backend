@@ -18,6 +18,8 @@ use App\Services\Messaging\OutboundDeliveryGuard;
 use App\Services\Shoots\FinalizeProgressTracker;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Facades\{Bus, DB, Http, Queue};
+use App\Services\Messaging\{ShootDeliveryCycle, ShootDeliveryNotificationOutbox, ShootDeliveryRevision};
 use Mockery;
 use Tests\TestCase;
 
@@ -30,6 +32,7 @@ class SendShootReadyEmailJobReliabilityTest extends TestCase
     {
         parent::setUp();
         Mail::fake();
+        Http::preventStrayRequests();
         OutboundDeliveryGuard::allowFakeProviderPipelineForTesting();
         MessageChannel::create([
             'type' => 'EMAIL', 'provider' => 'LOCAL_SMTP', 'display_name' => 'Test delivery',
@@ -194,6 +197,223 @@ class SendShootReadyEmailJobReliabilityTest extends TestCase
         $this->assertSame(0, AutomationRun::where('trigger_type', 'SHOOT_COMPLETED')->count());
     }
 
+    public function test_same_content_in_two_same_clock_reopened_cycles_notifies_once_per_cycle(): void
+    {
+        Queue::fake();
+        $this->travelTo(now()->startOfMinute());
+        $shoot = $this->shoot();
+        $this->notificationLine($shoot, 'Delivered plans');
+        $this->rule('sms');
+        $originalCompleted = now()->subDay();
+        DB::table('shoots')->where('id', $shoot->id)->update(['completed_at' => $originalCompleted, 'admin_verified_at' => $originalCompleted]);
+        $shoot->refresh();
+        $revision = app(ShootDeliveryRevision::class)->forShoot($shoot);
+        $messaging = Mockery::mock(MessagingService::class);
+        $messaging->shouldReceive('sendEmail')->times(3)->andReturnUsing(fn (array $payload) => $this->accepted($payload, 'EMAIL'));
+        $messaging->shouldReceive('sendSms')->times(3)->andReturnUsing(fn (array $payload) => $this->accepted($payload, 'SMS'));
+        $this->app->instance(MessagingService::class, $messaging);
+        $this->runJob($shoot);
+        $initialAnchor = $shoot->fresh()->shoot_ready_notified_at;
+        $this->assertSame('initial', data_get(Message::where('channel', 'EMAIL')->sole()->metadata, 'notification.delivery_cycle_key'));
+        $initialEmailKey = \App\Models\SystemEmailDispatch::where('related_shoot_id', $shoot->id)->sole()->idempotency_key;
+        $this->assertStringEndsWith($revision, $initialEmailKey);
+
+        $events = [];
+        foreach (['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222'] as $uuid) {
+            $stale = new SendShootReadyEmailJob($shoot->id);
+            DB::table('shoots')->where('id', $shoot->id)->update([
+                'active_work_started_at' => now(), 'active_work_completed_at' => now(),
+                'active_work_is_reopened' => true, 'active_work_cycle_key' => $uuid,
+            ]);
+            $shoot->refresh();
+            $events[] = app(ShootDeliveryCycle::class)->eventId($shoot);
+            $stale->handle(app(MailService::class), app(AutomationService::class));
+            $this->runJob($shoot);
+            $this->runJob($shoot);
+            $this->assertSame($revision, app(ShootDeliveryRevision::class)->forShoot($shoot->fresh()));
+        }
+        $this->assertNotSame($events[0], $events[1]);
+        $this->assertSame(3, Message::where('channel', 'EMAIL')->count());
+        $this->assertSame(3, Message::where('channel', 'SMS')->count());
+        $this->assertTrue($originalCompleted->equalTo($shoot->fresh()->completed_at));
+        $this->assertTrue($initialAnchor->equalTo($shoot->fresh()->shoot_ready_notified_at));
+    }
+
+    public function test_same_content_paid_reopened_cycle_sends_a_new_summary_once(): void
+    {
+        Queue::fake();
+        $shoot = $this->shoot();
+        $this->notificationLine($shoot, 'Delivered plans');
+        \App\Models\Payment::factory()->create(['shoot_id' => $shoot->id, 'amount' => 500, 'status' => \App\Models\Payment::STATUS_COMPLETED]);
+        $this->rule('email');
+        $revision = app(ShootDeliveryRevision::class)->forShoot($shoot->fresh());
+        $messaging = Mockery::mock(MessagingService::class);
+        $messaging->shouldReceive('sendEmail')->twice()->andReturnUsing(fn (array $payload) => $this->accepted($payload, 'EMAIL'));
+        $this->app->instance(MessagingService::class, $messaging);
+        $this->runJob($shoot);
+        $key = \App\Models\SystemEmailDispatch::where('related_shoot_id', $shoot->id)->sole()->idempotency_key;
+        $this->assertSame('SHOOT_SUMMARY:'.$shoot->id.':'.$shoot->client_id.':'.$revision, $key);
+        DB::table('shoots')->where('id', $shoot->id)->update([
+            'active_work_started_at' => now(), 'active_work_completed_at' => now(), 'active_work_is_reopened' => true,
+            'active_work_cycle_key' => '33333333-3333-4333-8333-333333333333',
+        ]);
+        $this->runJob($shoot); $this->runJob($shoot);
+        $this->assertSame($revision, app(ShootDeliveryRevision::class)->forShoot($shoot->fresh()));
+        $this->assertSame(2, Message::where('send_source', 'SHOOT_SUMMARY')->count());
+        $this->assertSame('reopened:33333333-3333-4333-8333-333333333333',
+            data_get(Message::where('send_source', 'SHOOT_SUMMARY')->latest('id')->first()->metadata, 'notification.delivery_cycle_key'));
+    }
+
+    public function test_queued_full_notice_is_skipped_when_work_has_reopened(): void
+    {
+        $shoot = $this->shoot();
+        $job = new SendShootReadyEmailJob($shoot->id);
+        DB::table('shoots')->where('id', $shoot->id)->update([
+            'status' => 'active', 'workflow_status' => 'active', 'delivery_status' => 'partially_delivered',
+            'active_work_started_at' => now(), 'active_work_is_reopened' => true, 'active_work_completed_at' => null,
+        ]);
+        $mail = Mockery::mock(MailService::class);
+        $mail->shouldNotReceive('sendShootReadyEmail'); $mail->shouldNotReceive('sendShootSummaryEmail');
+        $job->handle($mail, app(AutomationService::class));
+        $this->assertSame(0, Message::count());
+        $this->assertSame('skipped', $this->stage($shoot)['status']);
+    }
+
+    public function test_deferred_completion_sms_is_cancelled_if_another_cycle_starts(): void
+    {
+        Queue::fake();
+        $this->travelTo(now()->startOfMinute());
+        $shoot = $this->shoot();
+        $this->delayedRule('sms');
+        $messaging = Mockery::mock(MessagingService::class);
+        $messaging->shouldReceive('sendEmail')->once()->andReturnUsing(fn (array $payload) => $this->accepted($payload, 'EMAIL'));
+        $messaging->shouldNotReceive('sendSms');
+        $this->app->instance(MessagingService::class, $messaging);
+        $this->runJob($shoot);
+        DB::table('shoots')->where('id', $shoot->id)->update([
+            'status' => 'active', 'workflow_status' => 'active', 'delivery_status' => 'partially_delivered',
+            'active_work_started_at' => now(), 'active_work_completed_at' => null, 'active_work_is_reopened' => true,
+        ]);
+        $this->travel(2)->minutes();
+        app(AutomationWorkflowExecutor::class)->resumeDueSteps();
+        $this->assertSame(0, Message::where('channel', 'SMS')->count());
+        $this->assertSame('cancelled', AutomationRun::where('trigger_type', 'SHOOT_COMPLETED')->sole()->status);
+    }
+
+    public function test_partial_outbox_notifies_only_its_exact_finalized_service_scope(): void
+    {
+        Queue::fake();
+        $shoot = $this->shoot();
+        $first = $this->notificationLine($shoot, 'New provider plans');
+        $this->notificationLine($shoot, 'Previously delivered photography');
+        DB::table('shoots')->where('id', $shoot->id)->update(['status' => 'editing', 'workflow_status' => 'editing', 'delivery_status' => 'partially_delivered']);
+        $shoot->refresh();
+        $messaging = Mockery::mock(MessagingService::class);
+        $messaging->shouldReceive('sendEmail')->once()->andReturnUsing(fn (array $payload) => $this->accepted($payload, 'EMAIL'));
+        $this->app->instance(MessagingService::class, $messaging);
+        $outbox = app(ShootDeliveryNotificationOutbox::class);
+        $id = $outbox->record($shoot, 'provider:partial:one', false, [$first]);
+        $this->assertSame($id, $outbox->record($shoot, 'provider:partial:one', false, [$first]));
+        $outbox->process($id); $outbox->process($id);
+        $message = Message::where('channel', 'EMAIL')->sole();
+        $this->assertStringContainsString('New provider plans', $message->body_html);
+        $this->assertStringNotContainsString('Previously delivered photography', $message->body_html);
+        $this->assertStringContainsString('Part of Your Shoot Is Ready', $message->subject);
+        $this->assertSame('completed', DB::table('shoot_delivery_notification_outbox')->where('id', $id)->value('status'));
+        $this->assertSame(0, AutomationRun::where('trigger_type', 'SHOOT_COMPLETED')->count());
+    }
+
+    public function test_failed_queue_handoff_is_persisted_and_recovered_with_the_ordinary_sender(): void
+    {
+        Queue::fake();
+        $shoot = $this->shoot();
+        $outbox = app(ShootDeliveryNotificationOutbox::class);
+        $id = $outbox->record($shoot, 'provider:queue-retry', true);
+        $attempt = 0;
+        Bus::shouldReceive('dispatch')->twice()->andReturnUsing(function ($job) use (&$attempt, $id) {
+            $this->assertInstanceOf(SendShootReadyEmailJob::class, $job);
+            $this->assertSame($id, $job->outboxId);
+            if (++$attempt === 1) throw new \RuntimeException('Queue is temporarily unavailable');
+            return $job;
+        });
+        $this->assertFalse($outbox->dispatch($id));
+        $this->assertSame('pending', DB::table('shoot_delivery_notification_outbox')->where('id', $id)->value('status'));
+        $this->travel(2)->minutes();
+        $this->assertSame(1, $outbox->dispatchPending());
+        $this->assertSame(0, Message::count());
+    }
+
+    public function test_delivery_rollback_cannot_leave_a_notification_intent(): void
+    {
+        Queue::fake();
+        $shoot = $this->shoot();
+        try {
+            DB::transaction(function () use ($shoot) {
+                app(ShootDeliveryNotificationOutbox::class)->record($shoot, 'provider:rolled-back', true);
+                throw new \RuntimeException('Delivery rolled back');
+            });
+        } catch (\RuntimeException $error) {
+            $this->assertSame('Delivery rolled back', $error->getMessage());
+        }
+        $this->assertSame(0, DB::table('shoot_delivery_notification_outbox')->count());
+    }
+
+    public function test_outbox_retry_resumes_failed_workflow_without_resending_an_accepted_email(): void
+    {
+        Queue::fake();
+        $shoot = $this->shoot();
+        $this->rule('sms');
+        $attempt = 0;
+        $messaging = Mockery::mock(MessagingService::class);
+        $messaging->shouldReceive('sendEmail')->once()->andReturnUsing(fn (array $payload) => $this->accepted($payload, 'EMAIL'));
+        $messaging->shouldReceive('sendSms')->twice()->andReturnUsing(function (array $payload) use (&$attempt) {
+            if (++$attempt === 1) throw new \RuntimeException('Temporary SMS failure');
+            return $this->accepted($payload, 'SMS');
+        });
+        $this->app->instance(MessagingService::class, $messaging);
+        $outbox = app(ShootDeliveryNotificationOutbox::class);
+        $id = $outbox->record($shoot, 'provider:retry-notice', true);
+        try {
+            $outbox->process($id);
+            $this->fail('The failed workflow must remain recoverable.');
+        } catch (\RuntimeException $error) {
+            $this->assertStringContainsString('workflow failed', $error->getMessage());
+        }
+        $this->assertSame('pending', DB::table('shoot_delivery_notification_outbox')->where('id', $id)->value('status'));
+        $outbox->process($id); $outbox->process($id);
+        $this->assertSame('completed', DB::table('shoot_delivery_notification_outbox')->where('id', $id)->value('status'));
+        $this->assertSame(1, Message::where('channel', 'EMAIL')->count());
+        $this->assertSame(1, Message::where('channel', 'SMS')->count());
+    }
+
+    public function test_old_outbox_cycle_cannot_notify_a_newer_delivery(): void
+    {
+        Queue::fake();
+        $shoot = $this->shoot();
+        $outbox = app(ShootDeliveryNotificationOutbox::class);
+        $id = $outbox->record($shoot, 'provider:old-cycle', true);
+        DB::table('shoots')->where('id', $shoot->id)->update([
+            'active_work_started_at' => now(), 'active_work_completed_at' => now(),
+            'active_work_is_reopened' => true, 'active_work_cycle_key' => '22222222-2222-4222-8222-222222222222',
+        ]);
+        $outbox->process($id);
+        $this->assertSame('obsolete', DB::table('shoot_delivery_notification_outbox')->where('id', $id)->value('status'));
+        $this->assertSame(0, Message::count());
+    }
+
+    public function test_partial_outbox_requires_a_nonempty_service_scope(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        app(ShootDeliveryNotificationOutbox::class)->record($this->shoot(), 'provider:bad-scope', false);
+    }
+
+    private function notificationLine(Shoot $shoot, string $name): int
+    {
+        $service = \App\Models\Service::factory()->noIntake()->create(['name' => $name, 'photographer_required' => false]);
+        return (int) $shoot->serviceItems()->create(['service_id' => $service->id, 'price' => 35, 'quantity' => 1,
+            'workflow_status' => 'delivered', 'delivery_status' => 'delivered', 'is_deliverable' => true])->id;
+    }
+
     private function shoot(): Shoot
     {
         $client = User::factory()->create([
@@ -260,6 +480,7 @@ class SendShootReadyEmailJobReliabilityTest extends TestCase
             'related_shoot_id' => $payload['related_shoot_id'],
             'related_account_id' => $payload['related_account_id'] ?? null,
             'tags_json' => $payload['tags_json'] ?? null,
+            'metadata' => $payload['metadata'] ?? null,
             'sent_at' => now(),
         ]);
     }

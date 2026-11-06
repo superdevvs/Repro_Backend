@@ -116,7 +116,14 @@ class CubiCasaRevisionTest extends TestCase
         $this->asset['url'] = 'https://assets.test/plan.jpg?new-signature=yes';
         $this->provider($this->old);
         $this->runRefresh();
-        $this->assertSame($this->file->getAttributes(), $this->file->fresh()->getAttributes());
+        $fresh = $this->file->fresh();
+        $this->assertSame(\Illuminate\Support\Arr::except($this->file->getAttributes(), ['metadata', 'updated_at']),
+            \Illuminate\Support\Arr::except($fresh->getAttributes(), ['metadata', 'updated_at']));
+        $this->assertSame('keep', $fresh->metadata['curation_note']);
+        $this->assertSame(['old-preview.jpg'], $fresh->metadata['preview_images']);
+        $this->assertSame($this->asset['url'], $fresh->metadata['original_url']);
+        $this->assertSame('revision-order', $fresh->metadata['provider_identity']);
+        $this->assertSame(hash('sha256', $this->old), $fresh->metadata['provider_content_sha256']);
         $this->assertSame(0, ShootFileVersion::count());
     }
 

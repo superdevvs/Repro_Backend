@@ -16,11 +16,20 @@ class CubiCasaAssetRevision
 {
     public function __construct(private MediaStorage $storage, private ClamAvClient $scanner, private FloorplanPreviewService $previews) {}
 
-    public function replace(ShootFile $current, string $binary, array $item): bool
+    public function replace(ShootFile $current, string $binary, array $item, string $provider = 'cubicasa'): bool
     {
+        if (! in_array($provider, ['iguide', 'cubicasa'], true)) throw new \InvalidArgumentException('Unsupported floorplan revision provider.');
         $hash = hash('sha256', $binary);
         $old = $this->storage->get($current->path);
         if ($old !== null && hash_equals(hash('sha256', $old), $hash)) {
+            $provenance = ['provider_identity' => $item['_provider_identity'] ?? data_get($current->metadata, 'provider_identity'),
+                'provider_content_sha256' => $hash, 'original_url' => $item['url'] ?? data_get($current->metadata, 'original_url')];
+            if (array_merge($current->metadata ?? [], $provenance) !== $current->metadata) LockedWrite::run(function () use ($current, $provenance) {
+                $fresh = ShootFile::findOrFail($current->id);
+                if ($fresh->path !== $current->path || (int) $fresh->content_version !== (int) $current->content_version
+                    || (int) $fresh->shoot_service_id !== (int) $current->shoot_service_id) throw new \RuntimeException('The current provider file changed.');
+                $fresh->metadata = array_merge($fresh->metadata ?? [], $provenance); $fresh->save();
+            }, 'provider.refresh-provenance');
             return false;
         }
 
@@ -54,7 +63,7 @@ class CubiCasaAssetRevision
             }
         }
 
-        $stored = 'cubicasa-'.$current->id.'-'.Str::uuid().'.'.$extension;
+        $stored = $provider.'-'.$current->id.'-'.Str::uuid().'.'.$extension;
         $directory = $current->shoot_service_id
             ? "shoots/{$current->shoot_id}/services/{$current->shoot_service_id}/floorplans"
             : "shoots/{$current->shoot_id}/floorplans";
@@ -71,8 +80,8 @@ class CubiCasaAssetRevision
         $candidate->fill(['stored_filename' => $stored, 'path' => $path, 'storage_path' => $path,
             'mime_type' => $mime, 'file_type' => $mime, 'file_size' => strlen($binary),
             'scan_status' => ShootFile::SCAN_STATUS_CLEAN, 'scan_result' => 'clean (provider revision scan)', 'scanned_at' => now(),
-            'metadata' => array_merge($metadata, ['original_url' => $item['url'], 'cubicasa_sha256' => $hash,
-                'cubicasa_revised_at' => now()->toIso8601String()])]);
+            'metadata' => array_merge($metadata, ['original_url' => $item['url'], $provider.'_sha256' => $hash,
+                $provider.'_revised_at' => now()->toIso8601String()])]);
         $preview = $this->previews->ensurePreview($candidate, true, false);
         if (! in_array($preview['status'], ['pdf_rendered', 'generated'], true)) {
             throw new \RuntimeException('The revised floorplan preview is not ready.');
@@ -83,7 +92,9 @@ class CubiCasaAssetRevision
             }
         }
         $candidate->processed_at = now();
-        $published = LockedWrite::run(fn () => DB::transaction(function () use ($current, $candidate, $hash) {
+        $candidate->metadata = array_merge($candidate->metadata ?? [], ['source' => $provider, 'provider_identity' => $item['_provider_identity'] ?? data_get($current->metadata, 'provider_identity'),
+            'provider_content_sha256' => $hash, 'original_url' => $item['url'] ?? data_get($current->metadata, 'original_url')]);
+        $published = LockedWrite::run(fn () => DB::transaction(function () use ($current, $candidate, $hash, $provider) {
             $fresh = ShootFile::find($current->id);
             if (! $fresh || $fresh->path !== $current->path || (int) $fresh->content_version !== (int) $current->content_version
                 || $fresh->scan_status === ShootFile::SCAN_STATUS_INFECTED
@@ -94,13 +105,13 @@ class CubiCasaAssetRevision
             $fresh->fill(Arr::only($candidate->attributesToArray(), MediaVersionPublisher::CONTENT_FIELDS));
             // Preserve concurrent curation and all non-provider metadata.
             $fresh->metadata = array_merge(Arr::except($fresh->metadata ?? [], ['preview_images', 'preview_generated_at', 'preview_page_count']),
-                Arr::only($candidate->metadata, ['original_url', 'cubicasa_sha256', 'cubicasa_revised_at', 'preview_images', 'preview_generated_at', 'preview_page_count']));
+                Arr::only($candidate->metadata, ['source', 'provider_identity', 'provider_content_sha256', 'original_url', $provider.'_sha256', $provider.'_revised_at', 'preview_images', 'preview_generated_at', 'preview_page_count']));
             $fresh->content_version = (int) $fresh->content_version + 1;
             $fresh->save();
             ShootFileVersion::create(['shoot_id' => $fresh->shoot_id, 'source_file_id' => $fresh->id, 'target_file_id' => $fresh->id,
                 'published_file_id' => $fresh->id, 'expected_version' => $current->content_version, 'version' => $fresh->content_version,
-                'request_key' => 'cubicasa:'.$fresh->id.':'.$fresh->content_version.':'.$hash, 'sha256' => $hash,
-                'status' => 'published', 'created_by' => $fresh->uploaded_by, 'metadata' => ['origin' => 'cubicasa'],
+                'request_key' => $provider.':'.$fresh->id.':'.$fresh->content_version.':'.$hash, 'sha256' => $hash,
+                'status' => 'published', 'created_by' => $fresh->uploaded_by, 'metadata' => ['origin' => $provider],
                 'snapshot' => Arr::only($fresh->attributesToArray(), MediaVersionPublisher::CONTENT_FIELDS)]);
 
             return $fresh;

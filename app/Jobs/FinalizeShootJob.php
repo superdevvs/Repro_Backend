@@ -52,10 +52,12 @@ class FinalizeShootJob implements ShouldQueue
     public ?array $deliveryIntent = null;
     /** Internal guarded repairs only; never populated from an HTTP request. */
     public bool $suppressSideEffects = false;
+    /** Internal verified provider selections; the HTTP finalizer never sets this. */
+    public ?array $providerSelections = null;
 
     public function __construct(
         public int $shootId,
-        public int $userId,
+        public ?int $userId,
         public ?string $finalStatus = null,
         public ?int $shootServiceId = null,
         public bool $allowNoMediaDelivery = false,
@@ -67,12 +69,20 @@ class FinalizeShootJob implements ShouldQueue
         $this->onQueue('default');
     }
 
+    public static function forProvider(int $shootId, array $selections): self
+    {
+        $job = new self($shootId, null, deliveryEventKey: 'provider:'.hash('sha256', json_encode($selections, JSON_THROW_ON_ERROR)));
+        $job->providerSelections = $selections;
+        return $job;
+    }
+
     public function handle(ShootActivityLogger $activityLogger, ?FinalizeProgressTracker $progress = null): void
     {
         $progress ??= app(FinalizeProgressTracker::class);
 
         $lock = Cache::lock("shoot:finalize:{$this->shootId}", 120);
         if (!$lock->get()) {
+            if ($this->providerSelections !== null) throw new \RuntimeException('Provider finalization is already running; retry the current work.');
             Log::info('Finalize skipped: another finalize is already running', [
                 'shoot_id' => $this->shootId,
             ]);
@@ -139,9 +149,7 @@ class FinalizeShootJob implements ShouldQueue
             // is intentionally NOT gated on $processedFileIds.
             if ($shoot->isInternalTestShoot()) {
                 $progress->stageSkipped($this->shootId, FinalizeProgressTracker::STAGE_DELIVERY_EMAIL, 'Internal test: customer notifications suppressed');
-            } elseif ($isFullOrderDelivery || $this->shootServiceId) {
-                $this->dispatchReadyEmail($isFullOrderDelivery, $progress);
-            } else {
+            } elseif (! $isFullOrderDelivery && empty($result['service_ids'])) {
                 $progress->stageSkipped(
                     $this->shootId,
                     FinalizeProgressTracker::STAGE_DELIVERY_EMAIL,
@@ -152,7 +160,11 @@ class FinalizeShootJob implements ShouldQueue
             // Activity log parity with the previous implementation.
             try {
                 $actor = User::find($this->userId);
-                $activityLogger->log(
+                if ($this->providerSelections !== null) {
+                    \App\Models\ShootActivityLog::create(['shoot_id' => $shoot->id, 'user_id' => null, 'action' => 'shoot_finalized_delivered',
+                        'description' => 'Verified provider work delivered automatically.', 'metadata' => ['source' => 'provider_auto_delivery', 'provider_selections' => $this->providerSelections,
+                            'full_order_delivery' => $isFullOrderDelivery, 'previous_status' => $previousStatus]]);
+                } else $activityLogger->log(
                     $shoot,
                     'shoot_finalized_delivered',
                     [
@@ -281,15 +293,17 @@ class FinalizeShootJob implements ShouldQueue
             $reviewedComponents = [];
             if ($shoot->serviceItems()->exists()) {
                 $actor = User::find($this->userId);
-                if (! $actor) { $progress->fail($shoot->id, 'The delivery actor is unavailable.', FinalizeProgressTracker::STAGE_COMMIT); return null; }
+                if (! $actor && $this->providerSelections === null) { $progress->fail($shoot->id, 'The delivery actor is unavailable.', FinalizeProgressTracker::STAGE_COMMIT); return null; }
                 try {
-                    $outcome = app(\App\Services\Shoots\DeliveryPlanService::class)->commitSelection($shoot, $actor,
-                        $this->deliveryIntent ?? ['shoot_service_id' => $this->shootServiceId, 'idempotency_key' => $this->deliveryEventKey]);
+                    $outcome = $this->providerSelections !== null
+                        ? app(\App\Services\Shoots\DeliveryPlanService::class)->commitProviderSelection($shoot, $this->providerSelections, $this->deliveryEventKey)
+                        : app(\App\Services\Shoots\DeliveryPlanService::class)->commitSelection($shoot, $actor,
+                            $this->deliveryIntent ?? ['shoot_service_id' => $this->shootServiceId, 'idempotency_key' => $this->deliveryEventKey]);
                 } catch (\Illuminate\Validation\ValidationException | \Illuminate\Http\Exceptions\HttpResponseException | \Symfony\Component\HttpKernel\Exception\HttpException $error) {
                     $message = $error instanceof \Illuminate\Validation\ValidationException ? collect($error->errors())->flatten()->first()
                         : ($error instanceof \Illuminate\Http\Exceptions\HttpResponseException ? ($error->getResponse()->getData(true)['message'] ?? 'Delivery is no longer allowed.') : $error->getMessage());
                     $progress->fail($shoot->id, $message, FinalizeProgressTracker::STAGE_COMMIT);
-                    $shoot->workflowLogs()->create(['user_id' => $actor->id, 'action' => 'finalize_failed', 'details' => $message]);
+                    $shoot->workflowLogs()->create(['user_id' => $actor?->id, 'action' => 'finalize_failed', 'details' => $message]);
                     return null;
                 }
                 if ($outcome['already_applied']) return ['shoot' => $shoot, 'is_full_order_delivery' => $shoot->workflow_status === 'delivered', 'processed_file_ids' => [], 'previous_status' => $previousStatus, 'already_applied' => true];
@@ -428,7 +442,9 @@ class FinalizeShootJob implements ShouldQueue
                     'delivery_status' => ShootService::DELIVERY_DELIVERED,
                     'delivered_at' => $item->delivered_at ?? now(),
                     'ready_at' => $item->ready_at ?? now(),
-                ])->save();
+                ]);
+                if ($this->providerSelections !== null) $item->saveQuietly();
+                else $item->save();
             }
             if ($deliverableItems->isNotEmpty()) {
                 $rollups = $shoot->fresh()->syncServiceItemRollups();
@@ -441,7 +457,7 @@ class FinalizeShootJob implements ShouldQueue
             }
 
             if ($isFullOrderDelivery) {
-                $shoot->updateWorkflowStatus(Shoot::STATUS_DELIVERED, $this->userId);
+                $shoot->updateWorkflowStatus(Shoot::STATUS_DELIVERED, $this->userId, $this->providerSelections !== null);
                 app(ShootActiveWorkLifecycle::class)->reconcile($shoot);
 
                 // Staff finalize is the explicit release for legacy-imported bookings
@@ -487,11 +503,19 @@ class FinalizeShootJob implements ShouldQueue
                 ]);
             }
 
+            if (! $this->suppressSideEffects && ! $shoot->isInternalTestShoot() && ($isFullOrderDelivery || $serviceIds !== [])) {
+                // Publish pending progress before afterCommit can expose the
+                // outbox to a fast worker. Never regress its terminal result.
+                $progress->stageRunning($this->shootId, FinalizeProgressTracker::STAGE_DELIVERY_EMAIL, 'Delivery notification queued.');
+                app(\App\Services\Messaging\ShootDeliveryNotificationOutbox::class)->record($shoot, $this->deliveryEventKey, $isFullOrderDelivery, $serviceIds);
+            }
+
             return [
                 'shoot' => $shoot,
                 'is_full_order_delivery' => $isFullOrderDelivery,
                 'processed_file_ids' => $completedIds,
                 'previous_status' => $previousStatus,
+                'service_ids' => $serviceIds,
             ];
         }), 'shoot-finalize');
     }

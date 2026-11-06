@@ -83,6 +83,7 @@ class ShootHistoryService
                 : $ordering->deliveredNewest($query)->paginate($perPage);
 
             $pageCollection = $paginator->getCollection();
+            app(ProviderAutoDeliverySettings::class)->primeAvailability($pageCollection);
             $clientCounts = $this->loadClientShootCounts($pageCollection, $user);
 
             if ($pageCollection->isNotEmpty()) {
@@ -391,6 +392,7 @@ class ShootHistoryService
 
         return [
             'id' => (int) $shoot->id,
+            'auto_delivery' => app(ProviderAutoDeliverySettings::class)->payload($shoot, auth()->user()),
             ...app(ShootActiveWorkLifecycle::class)->presentation($shoot),
             'scheduledDate' => optional($shoot->scheduled_date)->toDateString(),
             'time' => $shoot->time,

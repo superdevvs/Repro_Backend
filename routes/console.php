@@ -112,3 +112,6 @@ Artisan::command('groundwire-sms:recover', function () {
     app(\App\Services\MobileNotifications\MobileNotificationService::class)->reconcile();
 })->purpose('Repair and enqueue pending native notification alerts');
 \Illuminate\Support\Facades\Schedule::command('mobile-notifications:dispatch')->everyMinute()->withoutOverlapping();
+
+\Illuminate\Support\Facades\Schedule::command('provider:auto-deliver --limit=100')->everyFiveMinutes()->withoutOverlapping();
+\Illuminate\Support\Facades\Schedule::command('delivery-notifications:recover --limit=100')->everyMinute()->withoutOverlapping();
