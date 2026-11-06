@@ -8,6 +8,7 @@ use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\{Cache, DB, Http, Mail, Notification, Queue, Storage};
+use Illuminate\Support\Str;
 use PDO;
 use Tests\TestCase;
 
@@ -51,6 +52,8 @@ class ReconcilePartialServiceDeliveryTest extends TestCase
     {
         $fixture = $this->fixture();
         [$shoot, $source, $target, $files] = $fixture;
+        $previousCycleKey = (string) Str::uuid();
+        $shoot->forceFill(['active_work_cycle_key' => $previousCycleKey])->saveQuietly();
         $before = $this->databaseState();
         $backup = $this->backup();
         $arguments = $this->arguments($fixture) + ['--apply' => true, '--backup-path' => $backup];
@@ -60,6 +63,9 @@ class ReconcilePartialServiceDeliveryTest extends TestCase
         $this->assertSame('active', $shoot->fresh()->workflow_status);
         $this->assertSame('partially_delivered', $shoot->fresh()->delivery_status);
         $this->assertTrue($shoot->fresh()->active_work_is_reopened);
+        $cycleKey = $shoot->fresh()->active_work_cycle_key;
+        $this->assertTrue(Str::isUuid($cycleKey));
+        $this->assertNotSame($previousCycleKey, $cycleKey);
         $this->assertSame('2026-11-04', $shoot->fresh()->active_work_date);
         foreach (['scheduled_at', 'scheduled_date', 'time', 'admin_verified_at', 'completed_at', 'editing_completed_at', 'total_quote', 'payment_status', 'bypass_paywall'] as $field) {
             $this->assertSame($before['shoots'][0][$field], $shoot->fresh()->getRawOriginal($field), $field);
@@ -93,6 +99,7 @@ class ReconcilePartialServiceDeliveryTest extends TestCase
         $audit = ShootActivityLog::where('action', 'partial_service_delivery_reconciled')->sole();
         $this->assertSame('delivered', $audit->metadata['before']['shoot']['status']);
         $this->assertSame('active', $audit->metadata['after']['shoot']['status']);
+        $this->assertSame($cycleKey, $audit->metadata['after']['shoot']['active_work_cycle_key']);
         $this->assertSame($audit->metadata['before']['billing_hash'], $audit->metadata['after']['billing_hash']);
         $this->assertStringNotContainsString('private payout basis', json_encode($audit->metadata));
         $after = $this->databaseState();

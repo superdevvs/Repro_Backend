@@ -10,6 +10,7 @@ use App\Support\LockedWrite;
 use Carbon\Carbon;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\{Cache, DB};
+use Illuminate\Support\Str;
 use PDO;
 use RuntimeException;
 use Throwable;
@@ -238,10 +239,12 @@ class ReconcilePartialServiceDelivery extends Command
 
     private function assertPreserved(array $before, array $after, array $input): void
     {
-        $allowedRoot = ['status', 'workflow_status', 'delivery_status', 'active_work_is_reopened', 'active_work_started_at', 'active_work_completed_at', 'active_work_at', 'active_work_date', 'active_work_time', 'updated_at'];
+        $allowedRoot = ['status', 'workflow_status', 'delivery_status', 'active_work_is_reopened', 'active_work_cycle_key', 'active_work_started_at', 'active_work_completed_at', 'active_work_at', 'active_work_date', 'active_work_time', 'updated_at'];
         $this->require(array_diff_key($before['shoot'], array_flip($allowedRoot)) === array_diff_key($after['shoot'], array_flip($allowedRoot)), 'The repair changed historical or financial shoot fields.');
         $this->require($after['shoot']['status'] === 'active' && $after['shoot']['workflow_status'] === 'active' && $after['shoot']['delivery_status'] === 'partially_delivered', 'The repaired shoot did not become Active with a retained delivery.');
         $this->require((bool) $after['shoot']['active_work_is_reopened'], 'The repaired cycle did not retain its prior delivery classification.');
+        $this->require(Str::isUuid((string) ($after['shoot']['active_work_cycle_key'] ?? ''))
+            && $after['shoot']['active_work_cycle_key'] !== ($before['shoot']['active_work_cycle_key'] ?? null), 'The repaired cycle did not receive a fresh delivery identity.');
         foreach ($before['files'] as $index => $file) {
             $expected = $file;
             $expected['shoot_service_id'] = $input['target'];
@@ -266,7 +269,7 @@ class ReconcilePartialServiceDelivery extends Command
     /** Activity metadata can reach clients; never embed private payout snapshots or raw invoice records. */
     private function auditSnapshot(array $snapshot): array
     {
-        $shootFields = ['id', 'status', 'workflow_status', 'delivery_status', 'scheduled_at', 'scheduled_date', 'admin_verified_at', 'completed_at', 'active_work_started_at', 'active_work_at', 'active_work_date', 'active_work_time'];
+        $shootFields = ['id', 'status', 'workflow_status', 'delivery_status', 'scheduled_at', 'scheduled_date', 'admin_verified_at', 'completed_at', 'active_work_cycle_key', 'active_work_started_at', 'active_work_at', 'active_work_date', 'active_work_time'];
         $serviceFields = ['id', 'service_id', 'workflow_status', 'delivery_status', 'scheduled_at', 'ready_at', 'delivered_at', 'editing_completed_at', 'video_editing_completed_at', 'editor_id', 'video_editor_id'];
         return [
             'shoot' => array_intersect_key($snapshot['shoot'], array_flip($shootFields)),
