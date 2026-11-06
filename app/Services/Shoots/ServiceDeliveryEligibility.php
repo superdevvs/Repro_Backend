@@ -38,6 +38,8 @@ final class ServiceDeliveryEligibility
         $published = ShootFileVersion::where('shoot_id', $shoot->id)->where('status', 'published')
             ->where('updated_at', '>=', $baseCutoff)
             ->whereIn('published_file_id', $files->pluck('id')->all())->get()->keyBy('published_file_id');
+        $delivery = app(DeliveryPlanService::class);
+        $editing = app(ShootEditingAssignmentService::class);
         $cutoffs = $this->submittedRawCutoffs($shoot);
         $items = $shoot->serviceItems()->get();
         $itemsById = $items->keyBy('id');
@@ -46,15 +48,20 @@ final class ServiceDeliveryEligibility
         // is still being edited. Its never-verified output is still current work.
         // A previously delivered line or a genuine additional-work cycle must
         // continue to require fresh evidence after the cycle's cutoff.
-        return $files->filter(function (ShootFile $file) use ($shoot, $published, $cutoffs, $singleItem, $baseCutoff, $itemsById) {
+        return $files->filter(function (ShootFile $file) use ($shoot, $published, $cutoffs, $singleItem, $baseCutoff, $itemsById, $delivery, $editing) {
             $cutoff = $baseCutoff;
             $lineId = $file->shoot_service_id ?: $singleItem;
             $lineStart = data_get($itemsById->get($lineId)?->delivery_requirements, '0.execution_started_at');
             if ($lineStart && \Carbon\Carbon::parse($lineStart)->gt($cutoff)) $cutoff = \Carbon\Carbon::parse($lineStart);
-            // A later handoff invalidates older edits for that line, without
-            // hiding an unsubmitted RAW batch belonging to another artist.
-            if ($file->workflow_stage !== ShootFile::STAGE_TODO && $file->media_type !== 'raw') {
-                $rawAt = $cutoffs[$lineId] ?? null;
+            // A RAW handoff restarts only its matching capture component.
+            // Provider floorplans/tours keep their independent execution boundary.
+            $kind = $delivery->contentKind($file);
+            // Legacy unsupported outputs still need their editing-lane freshness
+            // check, while a floorplan must not become photo capture by fallback.
+            if ($kind === null && strtolower((string) $file->media_type) !== 'floorplan') $kind = $editing->getFileLane($file);
+            if ($file->workflow_stage !== ShootFile::STAGE_TODO && $file->media_type !== 'raw'
+                && in_array($kind, ['photo', 'video'], true)) {
+                $rawAt = $cutoffs[$lineId][$kind] ?? null;
                 if ($rawAt && $rawAt->gt($cutoff)) $cutoff = $rawAt;
             }
             return $file->created_at?->gte($cutoff)
@@ -68,11 +75,15 @@ final class ServiceDeliveryEligibility
     {
         $cycle = app(DeliveryPlanService::class)->executionKey($shoot);
         $cutoffs = [];
+        $editing = app(ShootEditingAssignmentService::class);
         $items = $shoot->serviceItems()->get()->keyBy('id');
         $raw = $shoot->files()->where('created_at', '>=', $cycle === 'initial' ? $shoot->created_at : $shoot->active_work_started_at)
             ->where(fn ($query) => $query->where('workflow_stage', ShootFile::STAGE_TODO)->orWhere('media_type', 'raw'))
-            ->get(['shoot_service_id', 'metadata', 'content_version', 'created_at']);
+            ->get(['shoot_service_id', 'metadata', 'content_version', 'created_at',
+                'media_type', 'filename', 'stored_filename', 'file_type', 'mime_type']);
         foreach ($raw as $file) {
+            // Floorplans share photo-editor access, but are not photo capture.
+            if (strtolower((string) $file->media_type) === 'floorplan') continue;
             $receipt = data_get($file->metadata, 'active_work_raw_submission', []);
             $item = $items->get($file->shoot_service_id);
             $execution = $item ? app(DeliveryPlanService::class)->itemExecutionKey($shoot, $item) : $cycle;
@@ -87,7 +98,9 @@ final class ServiceDeliveryEligibility
             if (! $file->shoot_service_id || ! $matches
                 || (int) ($receipt['content_version'] ?? 0) !== (int) ($file->content_version ?: 1)) continue;
             $id = (int) $file->shoot_service_id;
-            if (! isset($cutoffs[$id]) || $file->created_at->gt($cutoffs[$id])) $cutoffs[$id] = $file->created_at;
+            $lane = $editing->getFileLane($file);
+            if (! in_array($lane, [ShootEditingAssignmentService::LANE_PHOTO, ShootEditingAssignmentService::LANE_VIDEO], true)) continue;
+            if (! isset($cutoffs[$id][$lane]) || $file->created_at->gt($cutoffs[$id][$lane])) $cutoffs[$id][$lane] = $file->created_at;
         }
         return $cutoffs;
     }
