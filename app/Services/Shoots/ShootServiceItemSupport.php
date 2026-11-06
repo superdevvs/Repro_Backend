@@ -82,11 +82,12 @@ class ShootServiceItemSupport
 
         $serviceSummaries = $items->map(function (ShootService $item) use ($shoot, $paidByItem, $hasAllocations, $brackets, $intake, $progress) {
             $item->setRelation('shoot', $shoot);
+            $financialOnly = app(FinancialServiceClassification::class)->isFinancialOnly($item);
             $canAssignPhotographer = $item->service?->allowsPhotographerAssignment() ?? true;
             $photographerId = $canAssignPhotographer ? $item->photographer_id : null;
             $photographer = $canAssignPhotographer ? $item->photographer : null;
-            $resolvedPhotographerId = $canAssignPhotographer ? ($photographerId ?? $shoot->photographer_id) : null;
-            $resolvedPhotographer = $canAssignPhotographer ? ($photographer ?: $shoot->photographer) : null;
+            $resolvedPhotographerId = $canAssignPhotographer ? ($financialOnly ? $photographerId : ($photographerId ?? $shoot->photographer_id)) : null;
+            $resolvedPhotographer = $canAssignPhotographer ? ($financialOnly ? $photographer : ($photographer ?: $shoot->photographer)) : null;
             $subtotal = $this->subtotal($item);
             $paidAmount = (float) ($paidByItem[$item->id] ?? 0);
 
@@ -119,7 +120,10 @@ class ShootServiceItemSupport
                 'unit_sqft' => $item->unit?->sqft,
                 'duration_minutes' => app(ShootDurationResolver::class)->forServiceItem($item),
                 'shoot_duration_minutes' => $item->service?->shoot_duration_minutes,
-                'photographer_required' => $item->service?->requiresPhotographer() ?? false,
+                'photographer_required' => ! $financialOnly
+                    && ($item->service?->requiresPhotographerForBooking($item->created_at) ?? false),
+                'financial_only' => $financialOnly,
+                'allows_photographer_assignment' => $canAssignPhotographer,
                 'requires_editing' => app(ShootEditingAssignmentService::class)->serviceRequiresEditing($item),
                 'editing_lanes' => app(ShootEditingAssignmentService::class)->serviceEditingLanes($item),
                 'shoot_service_id' => $item->id,

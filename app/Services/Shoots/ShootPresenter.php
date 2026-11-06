@@ -769,9 +769,11 @@ class ShootPresenter
                         return $service;
                     }
 
+                    $serviceItemSummary = $serviceItemByServiceId->get($service->pivot?->id, []);
+                    $financialOnly = (bool) ($serviceItemSummary['financial_only'] ?? false);
                     $canAssignPhotographer = $service->allowsPhotographerAssignment();
                     $pivotPhotographerId = $canAssignPhotographer ? ($service->pivot?->photographer_id ?? null) : null;
-                    $resolvedPhotographerId = $canAssignPhotographer ? ($pivotPhotographerId ?? $shootPhotographerId) : null;
+                    $resolvedPhotographerId = $canAssignPhotographer ? ($financialOnly ? $pivotPhotographerId : ($pivotPhotographerId ?? $shootPhotographerId)) : null;
 
                     $resolvedPhotographer = null;
                     if (! $isEditorRole && $resolvedPhotographerId) {
@@ -807,7 +809,6 @@ class ShootPresenter
                         }
                     }
                     $editingCompletedAt = $service->pivot?->editing_completed_at;
-                    $serviceItemSummary = $serviceItemByServiceId->get($service->pivot?->id, []);
 
                     return [
                         'id' => (string) $service->id,
@@ -828,7 +829,9 @@ class ShootPresenter
                         'quantity' => (int) ($service->pivot?->quantity ?? 1),
                         'allow_multiple' => (bool) $service->allow_multiple,
                         'pricing_type' => $service->pricing_type,
-                        'photographer_required' => $service->requiresPhotographer(),
+                        'photographer_required' => (bool) ($serviceItemSummary['photographer_required'] ?? $service->requiresPhotographer()),
+                        'financial_only' => $financialOnly,
+                        'allows_photographer_assignment' => $canAssignPhotographer,
                         'editing_lanes' => $this->editingAssignmentService->serviceEditingLanes($service),
                         // Canonical contracted photo count. Null means unspecified, and
                         // booking quantity is never substituted for it.

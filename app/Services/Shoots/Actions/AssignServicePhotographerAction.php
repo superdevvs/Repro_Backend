@@ -224,6 +224,7 @@ class AssignServicePhotographerAction
                 'is_deliverable' => $item->is_deliverable,
                 'workflow_status' => $item->workflow_status,
                 'created_at' => $item->created_at,
+                '_booked_financial_only' => app(\App\Services\Shoots\FinancialServiceClassification::class)->isFinancialOnly($item),
             ];
         })->values()->all();
     }

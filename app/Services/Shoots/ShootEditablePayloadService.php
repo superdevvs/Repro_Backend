@@ -851,6 +851,9 @@ class ShootEditablePayloadService
                     : app(ShootDurationResolver::class)->forService($serviceModel, $sqft));
             if ($currentItem) {
                 $service['created_at'] = $currentItem->created_at;
+                $service['_booked_financial_only'] = app(FinancialServiceClassification::class)->isFinancialOnly($currentItem);
+            } else {
+                unset($service['_booked_financial_only']);
             }
 
             if (! $canOverrideLinePrice || $submittedPrice === null) {

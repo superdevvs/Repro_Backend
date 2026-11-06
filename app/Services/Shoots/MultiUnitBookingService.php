@@ -184,12 +184,13 @@ class MultiUnitBookingService
                 'shoot_unit_id' => $unit['id'], 'quantity' => $quantity,
                 'price' => $canOverride && isset($line['price']) ? (float) $line['price'] : ($current?->price ?? $pricing[$priceKey]['price']),
                 'photographer_pay' => $current?->photographer_pay ?? $pricing[$priceKey]['photographer_pay'],
-                'duration_minutes' => $service->isDigitalEnhancement() ? 0 : ($line['duration_minutes'] ?? ($current
+                'duration_minutes' => ($service->isDigitalEnhancement() || (! $current && $service->financial_only)) ? 0 : ($line['duration_minutes'] ?? ($current
                     ? app(ShootDurationResolver::class)->forServiceItem($current)
                     : $pricing[$priceKey]['duration_minutes'])),
                 'contracted_photo_count' => $current ? $current->contracted_photo_count : $pricing[$priceKey]['contracted_photo_count'],
                 'photographer_required' => $current ? $service->requiresPhotographerForBooking($current->created_at) : $service->requiresPhotographer(),
                 'created_at' => $current?->created_at,
+                '_booked_financial_only' => $current ? app(FinancialServiceClassification::class)->isFinancialOnly($current) : null,
                 'scheduled_at' => array_key_exists('scheduled_at', $line) ? $line['scheduled_at'] : ($current ? $current->scheduled_at?->format('Y-m-d H:i:s') : ($data['scheduled_at'] ?? $shoot?->scheduled_at?->format('Y-m-d H:i:s'))),
                 'photographer_id' => ($service->allowsPhotographerAssignment() || ($current && $service->requiresPhotographerForBooking($current->created_at))) ? (array_key_exists('photographer_id', $line) ? $line['photographer_id'] : ($current ? $current->photographer_id : ($data['photographer_id'] ?? $shoot?->photographer_id))) : null,
                 'editor_id' => array_key_exists('editor_id', $line) ? $line['editor_id'] : $current?->editor_id,

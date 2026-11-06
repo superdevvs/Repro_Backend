@@ -175,7 +175,7 @@ final class PayoutInvoiceWorkflow
         $rows = [];
         foreach ($shoots as $shoot) {
             foreach ($shoot->services as $service) {
-                if ((int) ($service->pivot->photographer_id ?? $shoot->photographer_id) !== (int) $recipient) {
+                if ((int) app(PhotographerPayoutBasis::class)->recipientForLine($service->pivot, $shoot) !== (int) $recipient) {
                     continue;
                 }
                 $amount = $this->servicePay($shoot, $service);
@@ -207,7 +207,7 @@ final class PayoutInvoiceWorkflow
     {
         $shoot = Shoot::with(['services', 'units'])->excludeHistoricalImportsFromNewBilling()->find($data['shoot_id']);
         $service = $shoot?->services->first(fn ($s) => (int) $s->pivot->id === (int) $data['shoot_service_id']);
-        if (! $shoot || ! $service || (int) ($service->pivot->photographer_id ?? $shoot->photographer_id) !== (int) $invoice->photographer_id
+        if (! $shoot || ! $service || (int) app(PhotographerPayoutBasis::class)->recipientForLine($service->pivot, $shoot) !== (int) $invoice->photographer_id
             || $shoot->isComplimentaryReshoot() || $shoot->shoot_type === Shoot::SHOOT_TYPE_INTERNAL_TEST || $shoot->photographer_paid_at
             || ! app(PhotographerPayoutBasis::class)->completion($shoot, $service->pivot)) {
             throw ValidationException::withMessages(['shoot_id' => 'Choose submitted / uploaded or delivered, unpaid work assigned to this photographer.']);

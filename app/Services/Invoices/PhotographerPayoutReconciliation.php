@@ -55,7 +55,7 @@ final class PhotographerPayoutReconciliation
                 // An unassigned editing extra cannot inherit the onsite photographer's pay.
                 // Explicit historical recipients and their booked payout evidence stay intact.
                 if ($line->photographer_id === null && $service->isDigitalEnhancement()) continue;
-                $recipient = $line->photographer_id ?? $shoot->photographer_id;
+                $recipient = $basis->recipientForLine($line, $shoot);
                 if (! $recipient || ($recipientId && (int) $recipient !== $recipientId) || $line->cancelled_at || in_array($line->workflow_status, ['cancelled', 'declined'], true)) continue;
                 $snapshot = $basis->forLine($line, $shoot, $service);
                 $amount = $basis->amount($line, $shoot, $service);
