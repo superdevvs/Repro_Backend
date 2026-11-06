@@ -13,9 +13,9 @@ class DeliveryComponentRequirements
     /** @return array<int,array{key:string,kind:string,label:string}> */
     public function forItem(ShootService $item): array
     {
-        if (is_array($item->delivery_requirements)) return $item->delivery_requirements;
         if (! $item->is_deliverable || data_get($item->payout_snapshot, 'billing_correction_only')
             || data_get($item->payout_snapshot, 'delivery_requirement') === 'financial_only') return [];
+        if (is_array($item->delivery_requirements)) return $item->delivery_requirements;
         // Preserve reviewed historical aggregate delivery without inferring that
         // today's catalog video/floorplan promises existed at the old booking.
         if ($item->workflow_status === 'delivered' && $item->delivery_status === 'delivered') {

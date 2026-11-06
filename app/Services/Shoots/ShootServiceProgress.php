@@ -31,9 +31,10 @@ class ShootServiceProgress
         $workflow = strtolower((string) $item->workflow_status);
         $delivery = strtolower((string) $item->delivery_status);
         $shootState = strtolower((string) ($shoot->workflow_status ?: $shoot->status));
+        if ($item->cancelled_at || collect([$workflow, $delivery])
+            ->contains(fn ($state) => in_array(strtolower((string) $state), ['cancelled', 'canceled'], true))) return 'cancelled';
         if (! $item->is_deliverable || data_get($item->payout_snapshot, 'billing_correction_only')
             || data_get($item->payout_snapshot, 'delivery_requirement') === 'financial_only') return 'not_applicable';
-        if ($workflow === 'cancelled' || $delivery === 'cancelled' || $item->cancelled_at) return 'cancelled';
 
         // A verified external delivery has its own identity and receipt. The
         // Dashboard shoot's Delivered flag is not proof of delivery to Aryeo.
