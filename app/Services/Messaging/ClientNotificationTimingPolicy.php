@@ -6,7 +6,7 @@ use App\Models\Message;
 use App\Services\Schedule\ScheduleInstantResolver;
 use Carbon\CarbonImmutable;
 
-/** Classify client SMS timing by purpose, independently of the automation engine. */
+/** Classify notification timing by purpose, while keeping email immediate. */
 class ClientNotificationTimingPolicy
 {
     private const IMMEDIATE = [
@@ -37,8 +37,8 @@ class ClientNotificationTimingPolicy
 
     public function requiresQuietHours(Message $message, string $timezone): bool
     {
-        // Email can be delivered at any hour; only SMS uses the quiet-hours window.
-        if ($message->channel !== 'SMS' || $message->direction !== 'OUTBOUND' || $message->provider === 'INTERNAL') {
+        // Email is immediate. Other notification transports retain their timing policy.
+        if ($message->channel === 'EMAIL' || $message->direction !== 'OUTBOUND' || $message->provider === 'INTERNAL') {
             return false;
         }
 
