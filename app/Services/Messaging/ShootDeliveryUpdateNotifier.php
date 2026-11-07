@@ -6,6 +6,8 @@ use App\Jobs\NotifyShootDeliveryUpdate;
 use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Models\ShootUnit;
+use App\Services\Shoots\ZillowTourLinks;
+use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -46,7 +48,10 @@ class ShootDeliveryUpdateNotifier
         $packagePublished = $shoot->wasChanged('iguide_data')
             && data_get($shoot->iguide_data, 'manual_offline_package.status') === 'ready'
             && data_get($shoot->iguide_data, 'manual_offline_package.file_id') !== data_get($shoot->getOriginal('iguide_data'), 'manual_offline_package.file_id');
-        if ($shoot->wasChanged(['tour_links', 'iguide_tour_url']) || $packagePublished) {
+        $deliveryLinksChanged = $shoot->wasChanged('tour_links')
+            && Arr::except((array) $shoot->getOriginal('tour_links'), ZillowTourLinks::VISIBILITY_KEYS)
+                !== Arr::except((array) $shoot->tour_links, ZillowTourLinks::VISIBILITY_KEYS);
+        if ($deliveryLinksChanged || $shoot->wasChanged('iguide_tour_url') || $packagePublished) {
             $this->queue($shoot);
         }
     }

@@ -946,6 +946,7 @@ Route::middleware('auth:sanctum')->group(function () {
     // Finalize a shoot (admin toggle triggers this)
     Route::get('/shoots/{shoot}/delivery-plan', [ShootPaymentsController::class, 'deliveryPlan']);
     Route::patch('/shoots/{shoot}/auto-delivery', \App\Http\Controllers\API\ShootAutoDeliveryController::class);
+    Route::patch('/shoots/{shoot}/zillow-visibility', \App\Http\Controllers\API\ShootZillowVisibilityController::class);
     Route::post('/shoots/{shoot}/media/assign-service', [\App\Http\Controllers\API\ShootMediaServiceAssignmentController::class, '__invoke']);
     Route::post('/shoots/{shoot}/finalize', [ShootPaymentsController::class, 'finalize']);
     // Live progress of the queued finalize pipeline (polled by the finalize toast)

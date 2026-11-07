@@ -409,6 +409,13 @@ class ShootAuthorizationSupport
         return $this->hasRole($user, ['admin', 'superadmin', 'editing_manager']);
     }
 
+    public function canManageZillowVisibility(Shoot $shoot, ?User $user): bool
+    {
+        return $user && ($this->canManageShootOperations($user)
+            || ($this->hasRole($user, ['client']) && (int) $shoot->client_id === (int) $user->id))
+            && $this->canViewShootDetails($shoot, $user);
+    }
+
     /** Request review is an office/sales duty, independent of media workflow writes. */
     public function canReviewShootRequests(?User $user): bool
     {

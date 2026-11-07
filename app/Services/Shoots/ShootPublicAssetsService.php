@@ -202,7 +202,9 @@ class ShootPublicAssetsService
 
         // MLS/generic pages may use Zillow's explicitly unbranded share link.
         // A branded-only URL still fails closed rather than leaking attribution.
-        $zillowViewer = app(ZillowTourLinks::class)->viewer($tourLinks, $isBranded);
+        $zillow = app(ZillowTourLinks::class);
+        $zillowViewer = $zillow->viewer($tourLinks, $isBranded);
+        $tourLinks = $zillow->publicLinks($tourLinks, $isBranded);
         if (! $isBranded) {
             unset(
                 $tourLinks['iguide_branded'],
@@ -493,7 +495,7 @@ class ShootPublicAssetsService
                 ->values()
                 ->toArray();
 
-            $tourLinks = $this->normalizeTourLinks($shoot->tour_links ?? []);
+            $tourLinks = app(ZillowTourLinks::class)->publicLinks($this->normalizeTourLinks($shoot->tour_links ?? []), true);
             $propDetails = $this->buildPublicTourPropertyDetails($shoot, $tourLinks);
             $deliveredStatuses = [
                 Shoot::STATUS_DELIVERED,

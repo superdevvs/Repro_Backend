@@ -2,11 +2,67 @@
 
 namespace App\Services\Shoots;
 
+use Illuminate\Support\Arr;
+
 /** Zillow-hosted viewers are separate from downloadable, scanned floorplan files. */
 class ZillowTourLinks
 {
+    public const VISIBILITY_KEYS = ['show_zillow_on_branded', 'show_zillow_on_mls'];
+
+    public function visibility(array $links): array
+    {
+        return [
+            'show_zillow_on_branded' => $this->isVisible($links, true),
+            'show_zillow_on_mls' => $this->isVisible($links, false),
+        ];
+    }
+
+    public function isVisible(array $links, bool $branded): bool
+    {
+        $key = $branded ? 'show_zillow_on_branded' : 'show_zillow_on_mls';
+
+        return ($links[$key] ?? true) !== false;
+    }
+
+    public function publicLinks(array $links, bool $branded): array
+    {
+        if (! $this->isVisible($links, $branded)) {
+            unset($links['zillow_3d']);
+
+            // A Zillow walkthrough can also be pasted into a custom embed.
+            // Remove its sources while retaining unrelated embed destinations.
+            if (is_array($links['embeds'] ?? null)) {
+                $sourceKeys = ['url', 'branded', 'branded_embed', 'mls', 'mls_embed'];
+                $embeds = [];
+                foreach ($links['embeds'] as $embed) {
+                    if (! is_array($embed)) {
+                        continue;
+                    }
+                    foreach (Arr::only($embed, $sourceKeys) as $key => $source) {
+                        if (is_string($source) && preg_match(
+                            '~https://(?:www\.)?zillow\.com/view-(?:imx|3d-home)/[a-z0-9-]+(?:[/?#]|["\'<>\s]|$)~i',
+                            html_entity_decode($source, ENT_QUOTES | ENT_HTML5),
+                        )) {
+                            unset($embed[$key]);
+                        }
+                    }
+                    if (array_filter(Arr::only($embed, $sourceKeys))) {
+                        $embeds[] = $embed;
+                    }
+                }
+                $links['embeds'] = $embeds;
+            }
+        }
+
+        return Arr::except($links, self::VISIBILITY_KEYS);
+    }
+
     public function viewer(array $links, bool $branded): ?array
     {
+        if (! $this->isVisible($links, $branded)) {
+            return null;
+        }
+
         $url = $this->normalize($links['zillow_3d'] ?? null, ! $branded);
         if ($url === null) {
             return null;

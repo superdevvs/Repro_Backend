@@ -687,6 +687,7 @@ class ShootPresenter
         $shoot->mmm_last_order_at = $shoot->mmm_last_order_at;
         $shoot->mmm_last_error = \App\Services\ApiErrorResponder::storedFailure($shoot->mmm_last_error);
         $shoot->tour_links = $tourLinks;
+        $shoot->setAttribute('can_manage_zillow_visibility', app(ShootAuthorizationSupport::class)->canManageZillowVisibility($shoot, $requestingUser));
         $shoot->setAttribute('editor_assignments', $editorAssignments);
         $shoot->setAttribute('editorAssignments', $editorAssignments);
         $canSubmitEdits = app(ShootSubmissionCapabilityService::class)->canSubmitEdits($shoot, $requestingUser);
