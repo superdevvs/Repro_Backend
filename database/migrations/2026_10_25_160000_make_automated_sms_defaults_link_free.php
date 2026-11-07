@@ -29,14 +29,17 @@ return new class extends Migration
                     ['', 'Details: {{dashboard_link}}'],
                     $body,
                 );
-            $replacements[$previous] = $body;
+            $previousBodies = array_unique([$previous, preg_replace('/\nReply STOP to opt out\.$/', '', $previous)]);
+            foreach ($previousBodies as $previousBody) {
+                $replacements[$previousBody] = $body;
 
-            // Exact, atomic match: preserve authored copy, disabled state and
-            // concurrent edits. Email/manual templates are outside this scope.
-            LockedWrite::run(fn () => MessageTemplate::where('channel', 'SMS')->where('scope', 'SYSTEM')
-                ->where('slug', $slug)->where('body_text', $previous)
-                ->where(fn ($q) => $q->whereNull('body_html')->orWhere('body_html', '')->orWhere('body_html', $previous))
-                ->update(['body_text' => $body, 'body_html' => '', 'variables_json' => json_encode(SmsTemplateContent::variables($body), JSON_THROW_ON_ERROR)]));
+                // Exact, atomic match: preserve authored copy, disabled state and
+                // concurrent edits. Email/manual templates are outside this scope.
+                LockedWrite::run(fn () => MessageTemplate::where('channel', 'SMS')->where('scope', 'SYSTEM')
+                    ->where('slug', $slug)->where('body_text', $previousBody)
+                    ->where(fn ($q) => $q->whereNull('body_html')->orWhere('body_html', '')->orWhere('body_html', $previousBody))
+                    ->update(['body_text' => $body, 'body_html' => '', 'variables_json' => json_encode(SmsTemplateContent::variables($body), JSON_THROW_ON_ERROR)]));
+            }
         }
 
         if (! Schema::hasTable('automation_rules') || ! Schema::hasColumn('automation_rules', 'workflow_definition_json')) {

@@ -8,6 +8,7 @@ use App\Services\Messaging\SmsTemplateContent;
 use App\Services\Messaging\SystemAutomationDefaults;
 use Database\Seeders\MessagingSystemSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 class LinkFreeAutomatedSmsTemplatesTest extends TestCase
@@ -16,11 +17,12 @@ class LinkFreeAutomatedSmsTemplatesTest extends TestCase
 
     private const PREVIOUS = "Shoot reminder\n{{shoot_address}}\n{{shoot_date}} {{shoot_time}}\nContact: {{sms_contact}}\nDetails: {{dashboard_link}}";
 
-    public function test_upgrade_preserves_email_manual_custom_and_disabled_settings(): void
+    #[DataProvider('previousStockBodies')]
+    public function test_upgrade_preserves_email_manual_custom_and_disabled_settings(string $previousBody): void
     {
         $this->seed(MessagingSystemSeeder::class);
         $template = MessageTemplate::where('slug', 'automation-photographer-shoot-reminder-sms')->firstOrFail();
-        $template->update(['body_text' => self::PREVIOUS, 'body_html' => self::PREVIOUS, 'is_active' => false]);
+        $template->update(['body_text' => $previousBody, 'body_html' => $previousBody, 'is_active' => false]);
         $custom = MessageTemplate::where('slug', 'automation-shoot-updated-sms')->firstOrFail();
         $custom->update(['body_text' => 'Operator wording: {{dashboard_link}}']);
         $emailBefore = MessageTemplate::where('channel', 'EMAIL')->get()->map->getAttributes()->all();
@@ -43,6 +45,11 @@ class LinkFreeAutomatedSmsTemplatesTest extends TestCase
         app(SystemAutomationDefaults::class)->ensure();
         $this->assertSame('Later operator edit', $template->fresh()->body_text);
         $this->assertFalse($template->fresh()->is_active);
+    }
+
+    public static function previousStockBodies(): array
+    {
+        return [[self::PREVIOUS], [self::PREVIOUS."\nReply STOP to opt out."]];
     }
 
     public function test_inline_upgrade_only_changes_stock_sms_and_preserves_email_links_and_routing(): void
