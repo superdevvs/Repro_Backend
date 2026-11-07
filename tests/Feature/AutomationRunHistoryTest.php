@@ -22,7 +22,7 @@ class AutomationRunHistoryTest extends IsolatedSecurityTestCase
     {
         Http::fake();
         Queue::fake();
-        Sanctum::actingAs(User::factory()->admin()->create());
+        Sanctum::actingAs(User::factory()->superAdmin()->create());
 
         $this->travelTo(Carbon::parse('2026-09-01 10:00:00', 'UTC'));
         $rule = AutomationRule::create([
@@ -88,6 +88,41 @@ class AutomationRunHistoryTest extends IsolatedSecurityTestCase
         $second = AutomationRun::create(['automation_rule_id' => $rule->id, 'status' => 'failed']);
 
         $this->assertSame([$second->id, $first->id], $rule->recentRuns()->pluck('id')->all());
+    }
+
+    public function test_completed_workflow_exposes_live_sms_failures_without_replaying_or_rewriting_history(): void
+    {
+        Http::fake();
+        Queue::fake();
+        Sanctum::actingAs(User::factory()->superAdmin()->create());
+        $rule = AutomationRule::create(['name' => 'SMS history', 'trigger_type' => 'CUSTOM_EVENT', 'scope' => 'SYSTEM', 'is_active' => true]);
+        $run = AutomationRun::create(['automation_rule_id' => $rule->id, 'status' => 'completed', 'completed_at' => now()]);
+        $failed = \App\Models\Message::create(['channel' => 'SMS', 'direction' => 'OUTBOUND', 'status' => 'FAILED',
+            'to_address' => '+12025550123', 'body_text' => 'Fixture',
+            'error_message' => \App\Services\Messaging\SmsDeliveryFailure::message(['40010'])]);
+        $pending = \App\Models\Message::create(['channel' => 'SMS', 'direction' => 'OUTBOUND', 'status' => 'SENT',
+            'to_address' => '+12025550456', 'body_text' => 'Fixture']);
+        AutomationRunStep::create(['automation_run_id' => $run->id, 'automation_rule_id' => $rule->id,
+            'node_id' => 'sms', 'node_type' => 'action.sms', 'status' => 'completed',
+            'output_json' => ['channel' => 'sms', 'message_ids' => [$failed->id, $pending->id, $failed->id, 999999]]]);
+        $before = $this->historySnapshot($rule);
+        foreach ([['/api/messaging/automations?trigger_type=CUSTOM_EVENT', '0.recent_runs.0'],
+            ['/api/messaging/automations/'.$rule->id, 'recent_runs.0'],
+            ['/api/messaging/automations/'.$rule->id.'/runs', 'data.0']] as [$url, $path]) {
+            $this->getJson($url)->assertOk()->assertJsonPath($path.'.status', 'completed')
+                ->assertJsonPath($path.'.sms_delivery.status', 'failed')
+                ->assertJsonPath($path.'.sms_delivery.total', 3)
+                ->assertJsonPath($path.'.sms_delivery.failed', 1)
+                ->assertJsonPath($path.'.sms_delivery.pending', 1)
+                ->assertJsonPath($path.'.sms_delivery.unknown', 1)
+                ->assertJsonPath($path.'.sms_delivery.errors.0', $failed->error_message);
+        }
+        $failed->update(['error_message' => 'private-delivery-canary']);
+        $response = $this->getJson('/api/messaging/automations/'.$rule->id.'/runs')->assertOk();
+        $this->assertStringNotContainsString('private-delivery-canary', $response->getContent());
+        $this->assertSame($before, $this->historySnapshot($rule));
+        Http::assertNothingSent();
+        Queue::assertNothingPushed();
     }
 
     private function historySnapshot(AutomationRule $rule): array

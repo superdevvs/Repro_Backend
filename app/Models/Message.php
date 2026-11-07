@@ -83,6 +83,9 @@ class Message extends Model
 
     private function publicDeliveryFailure(mixed $value): ?string
     {
+        if (\App\Services\Messaging\SmsDeliveryFailure::isReviewed($value)) {
+            return $value;
+        }
         // Keep reviewed recipient guidance; old provider text stays private.
         if (in_array($value, [
             'Recipient email notification permission is disabled.',

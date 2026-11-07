@@ -10,6 +10,7 @@ use App\Models\Contact;
 use App\Models\Message;
 use App\Models\MessageThread;
 use App\Models\SmsNumber;
+use App\Services\Messaging\SmsDeliveryFailure;
 use App\Support\LockedWrite;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -183,7 +184,8 @@ class TelnyxWebhookController extends Controller
             return response()->json(['status' => 'ignored']);
         }
 
-        $message = Message::where('provider_message_id', $messageId)->first();
+        $message = Message::where('provider_message_id', $messageId)
+            ->where('channel', 'SMS')->where('direction', 'OUTBOUND')->where('provider', 'TELNYX')->first();
         if (!$message) {
             Log::warning('Telnyx status webhook for unknown message', [
                 'provider_message_id' => $messageId,
@@ -196,6 +198,12 @@ class TelnyxWebhookController extends Controller
         $updates = $this->mapStatusUpdate($eventType, $payload);
         \App\Support\LockedWrite::run(fn () => DB::transaction(function () use ($message, $updates, $eventType, $payload): void {
             $message->refresh();
+            if ($updates === [] && in_array($message->status, ['DELIVERED', 'FAILED'], true)) {
+                return;
+            }
+            if (data_get($payload, 'data.id') && data_get($message->metadata, 'telnyx_event_id') === data_get($payload, 'data.id')) {
+                return;
+            }
             // Webhooks may arrive out of order. A late carrier-accepted event
             // must never erase a terminal delivery/failure result.
             if (($updates['status'] ?? null) === 'SENT' && in_array($message->status, ['DELIVERED', 'FAILED'], true)) {
@@ -215,11 +223,29 @@ class TelnyxWebhookController extends Controller
             $metadata = (array) ($message->metadata ?? []);
             $metadata['telnyx_event_id'] = data_get($payload, 'data.id');
             $metadata['telnyx_event_type'] = $eventType;
-            $metadata['telnyx_delivery_status'] = data_get($payload, 'data.payload.to.0.status');
+            $metadata['telnyx_delivery_status'] = data_get($payload, 'data.payload.to.0.status') ?: null;
             if ($occurredAt) {
                 $metadata['telnyx_status_occurred_at'] = $occurredAt;
             }
+            $codes = ($updates['status'] ?? null) === 'FAILED' ? SmsDeliveryFailure::codes($payload) : [];
+            // Deferred messages previously retained delivery.status=SENT after a failure.
+            if (isset($updates['status'])) {
+                $metadata['telnyx_error_codes'] = $codes;
+                $metadata['delivery'] = array_merge((array) ($metadata['delivery'] ?? []), [
+                    'status' => $updates['status'],
+                    'error' => $updates['error_message'] ?? null,
+                ]);
+            }
+            $changedFailure = ($updates['status'] ?? null) === 'FAILED'
+                && ($message->status !== 'FAILED' || data_get($message->metadata, 'telnyx_error_codes') !== $codes);
             $message->update($updates + ['metadata' => $metadata]);
+            if ($changedFailure) {
+                // LOG_LEVEL=error in production. Never log message bodies or provider text.
+                Log::error('SMS delivery failed after provider acceptance', [
+                    'message_id' => $message->id, 'provider_message_id' => $message->provider_message_id,
+                    'error_codes' => $codes, 'shoot_id' => $message->related_shoot_id,
+                ]);
+            }
         }), 'sms.delivery_status');
 
         return response()->json(['status' => 'updated']);
@@ -309,7 +335,7 @@ class TelnyxWebhookController extends Controller
                     'status' => 'FAILED',
                     'failed_at' => now(),
                     'delivered_at' => null,
-                    'error_message' => 'Telnyx final state: ' . $finalState,
+                    'error_message' => SmsDeliveryFailure::message(SmsDeliveryFailure::codes($payload)),
                 ],
                 // Telnyx explicitly distinguishes delivery_unconfirmed from
                 // delivered. Preserve the last known state for unknown results.
@@ -319,7 +345,7 @@ class TelnyxWebhookController extends Controller
                 'status' => 'FAILED',
                 'failed_at' => now(),
                 'delivered_at' => null,
-                'error_message' => 'Telnyx reported message.failed',
+                'error_message' => SmsDeliveryFailure::message(SmsDeliveryFailure::codes($payload)),
             ],
             default => [],
         };

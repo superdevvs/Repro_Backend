@@ -285,6 +285,39 @@ class ShootAppointmentRemindersTest extends TestCase
         $this->assertSame(['offset' => '-3h'], $custom->fresh()->schedule_json);
     }
 
+    public function test_configured_client_sms_follows_local_schedule_without_legacy_offset_or_photographer_duplicates(): void
+    {
+        [$shoot, $client, $photographer] = $this->appointment('2026-10-03 10:00');
+        $client->update(['phonenumber' => '+12025550123']);
+        $photographer->update(['phonenumber' => '+12025550456']);
+        $rule = AutomationRule::active()->where('trigger_type', 'SHOOT_REMINDER')->firstOrFail();
+        $workflow = $rule->workflow_definition_json;
+        $workflow['nodes'][] = ['id' => 'sms', 'type' => 'action.sms', 'config' => ['bodyText' => 'Reminder {{shoot_address}}',
+            'recipientMode' => 'roles', 'recipientRoles' => ['client'], 'clientAppointmentSchedule' => true]];
+        $workflow['edges'] = [['source' => 'trigger', 'target' => 'email'], ['source' => 'email', 'target' => 'sms'], ['source' => 'sms', 'target' => 'end']];
+        $rule->update(['workflow_definition_json' => $workflow]);
+        $payloads = [];
+        app(MessagingService::class)->shouldReceive('sendSms')->andReturnUsing(function (array $payload) use (&$payloads) {
+            $payloads[] = $payload;
+
+            return Message::create(['channel' => 'SMS', 'direction' => 'OUTBOUND', 'status' => 'SENT',
+                'send_source' => 'AUTOMATION', 'to_address' => $payload['to'], 'body_text' => $payload['body_text'],
+                'tags_json' => $payload['tags_json'], 'related_shoot_id' => $payload['related_shoot_id']]);
+        });
+        foreach (['2026-10-02 08:59', '2026-10-02 09:00', '2026-10-02 10:00', '2026-10-02 19:00', '2026-10-03 07:00', '2026-10-03 08:00', '2026-10-03 09:00'] as $at) {
+            $this->tick($at);
+        }
+        $this->assertCount(3, $payloads);
+        $this->assertSame(['+12025550123'], array_values(array_unique(array_column($payloads, 'to'))));
+        $this->assertSame(['2026-10-02 13:00:00', '2026-10-02 23:00:00', '2026-10-03 12:00:00'],
+            Message::where('channel', 'SMS')->orderBy('id')->pluck('created_at')->map(fn ($at) => $at->format('Y-m-d H:i:s'))->all());
+        $this->assertSame('SHOOT_REMINDER', $payloads[2]['automation_trigger']);
+        $this->assertSame('2026-10-03T14:00:00+00:00', data_get($payloads[2], 'metadata.notification.appointment_at'));
+        $this->assertSame(3, Message::where('channel', 'EMAIL')->where('to_address', $client->email)->count());
+        $this->assertSame(1, Message::where('channel', 'EMAIL')->where('to_address', $photographer->email)->count());
+        $this->assertSame([$shoot->id], Message::where('channel', 'SMS')->pluck('related_shoot_id')->unique()->all());
+    }
+
     private function appointment(string $local): array
     {
         $client = User::factory()->create(['role' => 'client']);

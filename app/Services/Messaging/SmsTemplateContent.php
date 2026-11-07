@@ -73,9 +73,9 @@ class SmsTemplateContent
         // Temporary mitigation while Telnyx investigates 40002 filtering. Keep
         // manual templates separate and preserve the full links in email.
         if ($linkFree) {
-            return 'R/E Pro Photos: '.$label."\n{{shoot_address}}\n{{shoot_date}} {{shoot_time}}\nContact: {{sms_contact}}\nCheck your email or Dashboard for details and links.";
+            return 'R/E Pro Photos: '.$label."\n{{shoot_address}}\n{{shoot_date}} {{shoot_time}}\nContact: {{sms_contact}}\nCheck your email or Dashboard for details and links.\nReply STOP to opt out.";
         }
 
-        return $label."\n{{shoot_address}}\n{{shoot_date}} {{shoot_time}}\nContact: {{sms_contact}}\nDetails: {{dashboard_link}}";
+        return 'R/E Pro Photos: '.$label."\n{{shoot_address}}\n{{shoot_date}} {{shoot_time}}\nContact: {{sms_contact}}\nDetails: {{dashboard_link}}\nReply STOP to opt out.";
     }
 }

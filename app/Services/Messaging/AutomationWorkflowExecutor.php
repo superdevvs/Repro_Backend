@@ -344,6 +344,7 @@ class AutomationWorkflowExecutor
 
                     case 'action.sms':
                         $output = ($context['appointment_reminder_audience'] ?? null) === 'client_email'
+                            && data_get($node, 'config.clientAppointmentSchedule') !== true
                             ? ['skipped' => true, 'reason' => 'This appointment stage sends client email only.']
                             : $this->executeSmsAction($automation, $node, $context);
                         $nextNodeIds = $this->nextNodeIds($workflow, $nodeId);
@@ -1113,14 +1114,17 @@ class AutomationWorkflowExecutor
         if ($automation->trigger_type === 'SHOOT_REMINDER' && isset($context['appointment_reminder_audience'])) {
             $audience = $context['appointment_reminder_audience'];
             unset($context['appointment_reminder_audience']);
-            if ($audience === 'client_email' && $mode !== 'email') {
+            // The historical audience key is kept for saved runs. Both client
+            // channels follow the local schedule only when explicitly enabled.
+            $clientSmsSchedule = $mode === 'sms' && ($config['clientAppointmentSchedule'] ?? false) === true;
+            if ($audience === 'client_email' && $mode !== 'email' && ! $clientSmsSchedule) {
                 return [];
             }
             $recipients = $this->resolveActionRecipients($automation, $config, $context, $mode);
 
             return array_values(array_filter($recipients, fn ($recipient) => $audience === 'client_email'
                 ? ($recipient['type'] ?? null) === 'client'
-                : ($mode !== 'email' || ($recipient['type'] ?? null) !== 'client')));
+                : (($mode !== 'email' && ! $clientSmsSchedule) || ($recipient['type'] ?? null) !== 'client')));
         }
         $context = ShootRequestRecipientRouting::context($automation->trigger_type, $context);
         if ($automation->trigger_type === 'PROPERTY_CONTACT_REMINDER' && $mode === 'email') {
