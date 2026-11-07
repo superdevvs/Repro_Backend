@@ -286,8 +286,8 @@ class LinkPreviewComplianceTest extends TestCase
 
         foreach (['branded', 'mls', 'g-mls'] as $type) {
             $payload = $this->makeAssets()->buildTypedPublicAssets($shoot, $type);
-            $this->assertSame($base.'?setAttribution=mls&wl=true&initialViewType=pano', $payload['zillow_viewer']['inline_url']);
-            $this->assertSame($base.'?setAttribution=mls&wl=true&initialViewType=floorplan', $payload['zillow_viewer']['floorplan_url']);
+            $this->assertSame($base.'?setAttribution=mls&wl=true&initialViewType=pano&utm_source=dashboard', $payload['zillow_viewer']['inline_url']);
+            $this->assertSame($base.'?setAttribution=mls&wl=true&initialViewType=floorplan&utm_source=dashboard', $payload['zillow_viewer']['floorplan_url']);
             $this->assertSame($payload['zillow_viewer']['open_url'], $payload['tour_links']['zillow_3d']);
         }
     }

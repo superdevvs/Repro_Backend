@@ -12,13 +12,18 @@ class ZillowTourLinks
             return null;
         }
 
+        $parts = parse_url($url);
+        parse_str($parts['query'] ?? '', $query);
+        $query['initialViewType'] = 'floorplan';
+        $floorplan = 'https://'.$parts['host'].$parts['path'].'?'.http_build_query($query);
+
         return [
             'inline_url' => $url,
             'open_url' => $url,
             // view-imx is Zillow's interactive floor-plan viewer. Older 3D-only
             // URLs are not evidence that a floor plan is available.
             'floorplan_url' => str_contains($url, '/view-imx/')
-                ? str_replace('initialViewType=pano', 'initialViewType=floorplan', $url)
+                ? $floorplan
                 : null,
         ];
     }
@@ -32,22 +37,25 @@ class ZillowTourLinks
         if (! is_array($parts) || strtolower($parts['scheme'] ?? '') !== 'https'
             || ! in_array(strtolower($parts['host'] ?? ''), ['zillow.com', 'www.zillow.com'], true)
             || isset($parts['user']) || isset($parts['pass']) || isset($parts['port'])
-            || ! preg_match('~^/(view-imx|view-3d-home)/([a-zA-Z0-9-]{6,80})/?$~D', $parts['path'] ?? '', $match)) {
+            || ! preg_match('~^/(view-imx|view-3d-home)/([a-zA-Z0-9-]+)/?$~D', $parts['path'] ?? '', $match)) {
             return null;
         }
 
         parse_str($parts['query'] ?? '', $query);
+        $names = array_map(
+            fn ($parameter) => rawurldecode(explode('=', $parameter, 2)[0]),
+            explode('&', $parts['query'] ?? '')
+        );
         $unbranded = ($query['setAttribution'] ?? null) === 'mls'
             && in_array($query['wl'] ?? null, ['true', '1'], true);
-        if ($requireUnbranded && ! $unbranded) {
+        if ($requireUnbranded && (! $unbranded
+            || count(array_keys($names, 'setAttribution', true)) !== 1
+            || count(array_keys($names, 'wl', true)) !== 1
+            || preg_grep('/^(setAttribution|wl)\[/', $names))) {
             return null;
         }
 
-        // Only retain the provider's presentation flags, never arbitrary
-        // redirects, user identifiers, or tracking parameters.
-        $params = $unbranded ? ['setAttribution' => 'mls', 'wl' => 'true'] : [];
-        $params['initialViewType'] = 'pano';
-
-        return 'https://www.zillow.com/'.$match[1].'/'.$match[2].'?'.http_build_query($params);
+        // Preserve the published presentation options used by existing embeds.
+        return trim($value);
     }
 }
