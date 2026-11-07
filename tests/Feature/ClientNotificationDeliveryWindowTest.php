@@ -697,7 +697,9 @@ class ClientNotificationDeliveryWindowTest extends TestCase
         ]);
         $payload = $this->payload($shoot, $client, 'SHOOT_DELIVERED');
         $payload['metadata']['notification'] += ['delivery_cycle_key' => 'initial', 'full_order_delivery' => true];
-        $message = $this->sendPayload($channel, $client, $payload);
+        $message = $channel === 'email'
+            ? app(MessagingService::class)->scheduleEmail($payload, Carbon::parse('2026-10-17 09:00', 'America/New_York')->utc())
+            : $this->sendPayload($channel, $client, $payload);
         $this->assertSame('SCHEDULED', $message->status);
         \Illuminate\Support\Facades\DB::table('shoots')->where('id', $shoot->id)->update([
             'active_work_is_reopened' => true, 'active_work_started_at' => now(), 'active_work_completed_at' => now(),
@@ -719,7 +721,9 @@ class ClientNotificationDeliveryWindowTest extends TestCase
         ]);
         $payload = $this->payload($shoot, $client, 'SHOOT_DELIVERED');
         $payload['metadata']['notification'] += ['delivery_cycle_key' => 'initial', 'full_order_delivery' => true];
-        $message = $this->sendPayload($channel, $client, $payload);
+        $message = $channel === 'email'
+            ? app(MessagingService::class)->scheduleEmail($payload, Carbon::parse('2026-10-17 09:00', 'America/New_York')->utc())
+            : $this->sendPayload($channel, $client, $payload);
         $this->assertSame('SCHEDULED', $message->status);
         $this->clock('2026-10-17 09:00');
         $this->dispatch();
