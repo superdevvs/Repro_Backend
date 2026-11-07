@@ -66,6 +66,30 @@ class ClientAppointmentSmsConfigurationTest extends TestCase
         $this->assertSame($before, $rule->fresh()->getRawOriginal());
     }
 
+    public function test_adding_a_step_preserves_an_existing_disabled_custom_template(): void
+    {
+        Http::fake();
+        Queue::fake();
+        [$rule, $sender] = $this->fixture();
+        $template = MessageTemplate::create([
+            'slug' => 'client-appointment-reminder-sms', 'name' => 'Saved client reminder',
+            'channel' => 'SMS', 'scope' => 'SYSTEM', 'is_system' => true, 'is_active' => false,
+            'body_text' => 'Saved operator copy {{dashboard_link}}', 'variables_json' => ['dashboard_link'],
+        ]);
+        $before = $template->fresh()->getRawOriginal();
+
+        $this->artisan('messaging:configure-client-reminder-sms', [
+            'rule' => $rule->id, '--sender' => $sender->id, '--apply' => true,
+        ])->assertSuccessful();
+
+        $sms = collect($rule->fresh()->workflow_definition_json['nodes'])->firstWhere('type', 'action.sms');
+        $this->assertSame($template->id, $sms['config']['templateId']);
+        $this->assertSame($before, $template->fresh()->getRawOriginal());
+        $this->assertSame(0, Message::count());
+        Http::assertNothingSent();
+        Queue::assertNothingPushed();
+    }
+
     private function fixture(): array
     {
         $template = MessageTemplate::create(['name' => 'Appointment', 'slug' => 'test-client-appointment', 'channel' => 'EMAIL',
