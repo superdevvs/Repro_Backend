@@ -13,6 +13,9 @@ use App\Models\Message;
 use App\Models\MessageThread;
 use App\Models\User;
 use App\Services\Messaging\SmsDeliveryFailure;
+use App\Services\Messaging\MessagingService;
+use App\Services\Messaging\Providers\TelnyxSmsProvider;
+use App\Exceptions\Messaging\SmsSendException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Request;
 use Laravel\Sanctum\Sanctum;
@@ -167,5 +170,55 @@ class NotificationDiagnosticsVisibilityTest extends IsolatedSecurityTestCase
             $this->assertStringContainsString('Status: FAILED', $email);
             $this->assertStringNotContainsString('40002', $sms);
         }
+    }
+
+    public function test_immediate_sms_failures_keep_operational_errors_but_gate_provider_diagnostics(): void
+    {
+        $diagnostic = SmsDeliveryFailure::message(['40329']);
+        $sender = \Mockery::mock(MessagingService::class);
+        $sender->shouldReceive('sendSms')->times(6)->andThrow(new SmsSendException($diagnostic));
+        $this->app->instance(MessagingService::class, $sender);
+        $contact = Contact::create(['name' => 'Fixture', 'phone' => '+12025550123']);
+        $thread = MessageThread::create(['channel' => 'SMS', 'contact_id' => $contact->id, 'status' => 'OPEN']);
+        $admin = User::factory()->admin()->create();
+        $superadmin = User::factory()->superAdmin()->create();
+        foreach ([[$admin, [], false], [$superadmin, [], true],
+            [$superadmin, ['X-Impersonate-User-Id' => (string) $admin->id], false]] as [$viewer, $headers, $canView]) {
+            Sanctum::actingAs($viewer);
+            foreach ([['/api/messaging/sms/send', ['to' => $contact->phone, 'body_text' => 'Fixture']],
+                ['/api/messaging/sms/threads/'.$thread->id.'/messages', ['body' => 'Fixture']]] as [$url, $payload]) {
+                $this->postJson($url, $payload, $headers)->assertStatus(422)
+                    ->assertJsonPath('success', false)->assertJsonPath('error', 'sms_send_failed')
+                    ->assertJsonPath('message', $canView ? $diagnostic : 'SMS could not be sent. Please try again.');
+            }
+        }
+        $this->assertDatabaseCount('messages', 0);
+    }
+
+    public function test_sms_connection_checks_preserve_outcomes_without_raw_provider_details(): void
+    {
+        $provider = \Mockery::mock(TelnyxSmsProvider::class);
+        $provider->shouldReceive('testConnection')->times(3)->andReturn([
+            'success' => false, 'error' => 'provider-secret-canary', 'body' => 'provider-secret-canary',
+        ]);
+        $this->app->instance(TelnyxSmsProvider::class, $provider);
+        $admin = User::factory()->admin()->create();
+        $superadmin = User::factory()->superAdmin()->create();
+        foreach ([[$admin, []], [$superadmin, []], [$superadmin, ['X-Impersonate-User-Id' => (string) $admin->id]]] as [$viewer, $headers]) {
+            Sanctum::actingAs($viewer);
+            $response = $this->postJson('/api/messaging/settings/sms/test-connection', [], $headers)->assertStatus(400)
+                ->assertJsonPath('success', false)->assertJsonPath('error', TelnyxSmsProvider::CONNECTION_FAILURE_MESSAGE);
+            $this->assertStringNotContainsString('provider-secret-canary', $response->getContent());
+        }
+    }
+
+    public function test_successful_sms_connection_check_preserves_its_response_contract(): void
+    {
+        $result = ['success' => true, 'message' => 'Telnyx connection successful', 'messaging_profile_id' => 'fixture-profile'];
+        $provider = \Mockery::mock(TelnyxSmsProvider::class);
+        $provider->shouldReceive('testConnection')->once()->andReturn($result);
+        $this->app->instance(TelnyxSmsProvider::class, $provider);
+        Sanctum::actingAs(User::factory()->admin()->create());
+        $this->postJson('/api/messaging/settings/sms/test-connection')->assertOk()->assertExactJson($result);
     }
 }

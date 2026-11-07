@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Services\BrightMlsService;
 use App\Services\HiggsFieldService;
 use App\Services\Messaging\Providers\CakemailProvider;
+use App\Services\Messaging\Providers\TelnyxSmsProvider;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
@@ -46,6 +47,15 @@ class ProviderErrorDisclosureTest extends TestCase
         $result = app(HiggsFieldService::class)->testConnection();
         $this->assertFalse($result['success']);
         $this->assertNotEmpty($result['message']);
+        $this->assertStringNotContainsString('sensitive-provider-echo', json_encode($result));
+    }
+
+    public function test_telnyx_connection_failure_does_not_return_raw_provider_content(): void
+    {
+        config(['services.telnyx.api_key' => 'fake-key']);
+        Http::fake(['*' => Http::response('sensitive-provider-echo', 401)]);
+        $result = (new TelnyxSmsProvider)->testConnection();
+        $this->assertSame(['success' => false, 'error' => TelnyxSmsProvider::CONNECTION_FAILURE_MESSAGE], $result);
         $this->assertStringNotContainsString('sensitive-provider-echo', json_encode($result));
     }
 

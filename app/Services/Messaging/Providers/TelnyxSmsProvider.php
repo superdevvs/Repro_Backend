@@ -12,6 +12,8 @@ use RuntimeException;
 
 class TelnyxSmsProvider implements SmsProviderInterface
 {
+    public const CONNECTION_FAILURE_MESSAGE = 'Telnyx connection could not be verified. Review SMS settings and try again.';
+
     /**
      * Send an outbound SMS via the Telnyx Messaging API.
      *
@@ -126,7 +128,7 @@ class TelnyxSmsProvider implements SmsProviderInterface
         } catch (\Throwable $exception) {
             return [
                 'success' => false,
-                'error' => $exception->getMessage(),
+                'error' => self::CONNECTION_FAILURE_MESSAGE,
             ];
         }
     }

@@ -303,6 +303,14 @@ class MessagingSettingsController extends Controller
 
         $provider = app(TelnyxSmsProvider::class);
         $result = $provider->testConnection($smsNumber);
+        if (! $result['success']) {
+            $error = $result['error'] ?? null;
+            $result = [
+                'success' => false,
+                'error' => $request->user()?->role === 'superadmin' && \App\Services\Messaging\SmsDeliveryFailure::isReviewed($error)
+                    ? $error : TelnyxSmsProvider::CONNECTION_FAILURE_MESSAGE,
+            ];
+        }
 
         return response()->json($result, $result['success'] ? 200 : 400);
     }

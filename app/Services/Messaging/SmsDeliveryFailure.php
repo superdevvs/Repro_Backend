@@ -13,7 +13,8 @@ class SmsDeliveryFailure
         '40012' => 'SMS was not delivered: the recipient number is invalid (Telnyx 40012).',
         '40013' => 'SMS was not delivered: the sending number was rejected (Telnyx 40013).',
         '40015' => 'SMS was blocked by Telnyx spam filtering (Telnyx 40015). Contact Telnyx before retrying.',
-        '40300' => 'SMS could not be sent: the Telnyx sending number is not verified.',
+        '40300' => 'SMS was not delivered: the recipient opted out (Telnyx 40300). Send again only after the recipient opts back in.',
+        '40329' => 'SMS could not be sent: the Telnyx sending number is not verified.',
     ];
 
     public static function codes(array $payload): array

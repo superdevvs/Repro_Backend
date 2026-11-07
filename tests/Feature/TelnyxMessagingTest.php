@@ -102,15 +102,15 @@ class TelnyxMessagingTest extends TestCase
         $this->assertSame('+12025550100', $message->to_address);
     }
 
-    public function test_sms_send_against_unverified_number_returns_handled_422_and_records_failure(): void
+    public function test_superadmin_sms_send_against_unverified_number_returns_handled_422_and_records_failure(): void
     {
         // Provider rejects the send the way Telnyx does for an unverified toll-free sender.
         $this->bindThrowingTelnyxProviderMock(
-            new RuntimeException('Toll-free number is unverified (code 40300): traffic blocked until verification completes.')
+            new RuntimeException('Toll-free number is unverified (code 40329): traffic blocked until verification completes.')
         );
         $this->createDefaultSmsNumber();
 
-        $admin = User::factory()->create(['role' => 'admin']);
+        $admin = User::factory()->create(['role' => 'superadmin']);
         Sanctum::actingAs($admin);
 
         $response = $this->postJson('/api/messaging/sms/send', [
@@ -495,7 +495,7 @@ class TelnyxMessagingTest extends TestCase
         $this->skipIfNoSodium();
         $request = \Illuminate\Http\Request::create('/');
         $request->setUserResolver(fn () => new User(['role' => 'superadmin']));
-        foreach (['40002', '40010', '40001', '49999'] as $code) {
+        foreach (['40002', '40010', '40001', '40300', '40329', '49999'] as $code) {
             $message = Message::create([
                 'channel' => 'SMS', 'direction' => 'OUTBOUND', 'provider' => 'TELNYX',
                 'provider_message_id' => 'failure-'.$code, 'status' => 'SENT',
@@ -532,6 +532,16 @@ class TelnyxMessagingTest extends TestCase
         $message = new Message(['channel' => 'SMS', 'direction' => 'OUTBOUND', 'error_message' => 'private-provider-canary']);
         $resource = (new \App\Http\Resources\Messaging\SmsMessageResource($message))->resolve($request);
         $this->assertStringNotContainsString('private-provider-canary', json_encode($resource));
+    }
+
+    public function test_opt_out_and_toll_free_verification_failures_have_distinct_guidance(): void
+    {
+        $optOut = \App\Services\Messaging\SmsDeliveryFailure::message(['40300']);
+        $this->assertStringContainsString('recipient opted out', $optOut);
+        $this->assertStringContainsString('only after the recipient opts back in', $optOut);
+        $this->assertStringNotContainsString('not verified', $optOut);
+        $this->assertSame('SMS could not be sent: the Telnyx sending number is not verified.',
+            \App\Services\Messaging\SmsDeliveryFailure::message(['40329']));
     }
 
     public function test_stale_failure_does_not_replace_delivery_and_fresh_delivery_clears_failure_codes(): void

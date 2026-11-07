@@ -392,7 +392,7 @@ class SmsMessagingController extends Controller
             return response()->json([
                 'success' => false,
                 'error' => 'sms_send_failed',
-                'message' => \App\Services\ApiErrorResponder::publicMessage($e),
+                'message' => $this->smsSendError($request, $e),
             ], 422);
         } catch (\Throwable $e) {
             report($e);
@@ -489,7 +489,7 @@ class SmsMessagingController extends Controller
                 $primaryMessage ??= $message;
                 $results[] = ['to' => $destination['phone'], 'status' => 'sent'];
             } catch (SmsSendException $e) {
-                $results[] = ['to' => $destination['phone'], 'status' => 'failed', 'error' => \App\Services\ApiErrorResponder::publicMessage($e)];
+                $results[] = ['to' => $destination['phone'], 'status' => 'failed', 'error' => $this->smsSendError($request, $e)];
             } catch (\RuntimeException $e) {
                 $results[] = [
                     'to' => $destination['phone'],
@@ -576,7 +576,7 @@ class SmsMessagingController extends Controller
                 $sent++;
                 $results[] = ['to' => $normalized, 'status' => 'sent'];
             } catch (SmsSendException $e) {
-                $results[] = ['to' => $normalized, 'status' => 'failed', 'error' => \App\Services\ApiErrorResponder::publicMessage($e)];
+                $results[] = ['to' => $normalized, 'status' => 'failed', 'error' => $this->smsSendError($request, $e)];
             } catch (\RuntimeException $e) {
                 $results[] = [
                     'to' => $normalized,
@@ -662,7 +662,7 @@ class SmsMessagingController extends Controller
             return response()->json([
                 'success' => false,
                 'error' => 'sms_send_failed',
-                'message' => \App\Services\ApiErrorResponder::publicMessage($e),
+                'message' => $this->smsSendError($request, $e),
             ], 422);
         } catch (ValidationException $e) {
             return response()->json([
@@ -755,7 +755,7 @@ class SmsMessagingController extends Controller
                 $results[] = [
                     'to' => $destination['phone'],
                     'status' => 'failed',
-                    'error' => \App\Services\ApiErrorResponder::publicMessage($e),
+                    'error' => $this->smsSendError($request, $e),
                 ];
             } catch (ValidationException $e) {
                 $results[] = [
@@ -803,6 +803,17 @@ class SmsMessagingController extends Controller
             'message' => $firstMessage ? SmsMessageResource::make($firstMessage) : null,
             'thread' => $firstThread ? SmsThreadResource::make($firstThread) : null,
         ]);
+    }
+
+    private function smsSendError(Request $request, SmsSendException $exception): string
+    {
+        if ($request->user()?->role !== 'superadmin') {
+            return 'SMS could not be sent. Please try again.';
+        }
+
+        return \App\Services\Messaging\SmsDeliveryFailure::isReviewed($exception->getMessage())
+            ? $exception->getMessage()
+            : \App\Services\ApiErrorResponder::publicMessage($exception);
     }
 
     private function blockedSmsError(Message $message): string

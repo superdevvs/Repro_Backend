@@ -14,6 +14,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\URL;
 use Illuminate\Support\Str;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 class SharedMmsTest extends TestCase
@@ -228,6 +229,74 @@ class SharedMmsTest extends TestCase
         $this->postJson(self::BASE, $body)->assertCreated()->assertJsonPath('message.status', 'failed');
         $this->postJson(self::BASE, $body)->assertCreated()->assertJsonPath('message.status', 'failed');
         $this->assertCount(1, $this->sent);
+    }
+
+    #[DataProvider('sharedStaffRoles')]
+    public function test_non_superadmin_envelopes_hide_failures_and_preserve_terminal_replay(string $role): void
+    {
+        $staff = User::factory()->create(['role' => $role]);
+        $this->actingAs($staff, 'sanctum');
+        $this->sendStatus = 422;
+        $body = $this->body(['member_user_ids' => [$this->actor->id]]);
+        $response = $this->postJson(self::BASE, $body)->assertCreated()
+            ->assertJsonPath('message.status', 'completed')->assertJsonPath('message.operation_status', 'completed')
+            ->assertJsonMissingPath('message.recipients.0.status');
+        $group = $response->json('data.id');
+        $message = $response->json('message.id');
+        $this->postJson(self::BASE, $body)->assertCreated()->assertJsonPath('message.id', $message);
+        $this->getJson(self::BASE.'/requests/'.$body['request_key'])->assertOk()
+            ->assertJsonPath('message.status', 'completed')->assertJsonPath('message.operation_status', 'completed')
+            ->assertJsonMissingPath('message.recipients.0.status');
+        $reply = ['request_key' => (string) Str::uuid(), 'body_text' => 'Explicit next message'];
+        $this->postJson(self::BASE.'/'.$group.'/messages', $reply)->assertOk()
+            ->assertJsonPath('message.status', 'completed')->assertJsonPath('message.operation_status', 'completed')
+            ->assertJsonMissingPath('message.recipients.0.status');
+        $this->postJson(self::BASE.'/'.$group.'/messages', $reply)->assertOk();
+        $this->getJson(self::BASE.'/'.$group)->assertOk()->assertJsonCount(2, 'messages')
+            ->assertJsonPath('messages.0.status', 'completed')->assertJsonMissingPath('messages.0.recipients.0.status');
+        $this->assertCount(2, $this->sent);
+        $this->assertSame('failed', SmsSharedMessage::findOrFail($message)->status);
+        $this->actingAs($this->actor, 'sanctum');
+        $this->getJson(self::BASE.'/'.$group)->assertOk()->assertJsonPath('messages.0.status', 'failed')
+            ->assertJsonPath('messages.0.recipients.0.status', 'unconfirmed');
+        $this->getJson(self::BASE.'/'.$group, ['X-Impersonate-User-Id' => (string) $staff->id])->assertForbidden();
+        $this->getJson(self::BASE.'/requests/'.$body['request_key'], ['X-Impersonate-User-Id' => (string) $staff->id])->assertForbidden();
+    }
+
+    public static function sharedStaffRoles(): array
+    {
+        return [['admin'], ['editing_manager'], ['salesRep']];
+    }
+
+    public function test_non_superadmin_pending_operation_reconciles_without_replay_or_carrier_details(): void
+    {
+        $staff = User::factory()->create(['role' => 'admin']);
+        $this->actingAs($staff, 'sanctum');
+        $this->timeout = true;
+        $body = $this->body();
+        $created = $this->postJson(self::BASE, $body)->assertAccepted()
+            ->assertJsonPath('message.status', 'uncertain')->assertJsonPath('message.operation_status', 'pending')
+            ->assertJsonMissingPath('message.recipients.0.status')->json();
+        $this->getJson(self::BASE.'/requests/'.$body['request_key'])->assertOk()->assertJsonPath('message.operation_status', 'pending');
+        $this->postJson(self::BASE, $body)->assertAccepted();
+        $this->signedWebhook('/api/webhooks/telnyx/shared-mms/'.$created['message']['id'],
+            $this->delivery('private-failure', 'failed', self::PEOPLE[0]))->assertOk();
+        $this->getJson(self::BASE.'/requests/'.$body['request_key'])->assertOk()
+            ->assertJsonPath('message.status', 'accepted')->assertJsonPath('message.operation_status', 'completed')
+            ->assertJsonMissingPath('message.recipients.0.status');
+        $this->assertSame('failed', SmsSharedMessage::findOrFail($created['message']['id'])->recipient_statuses[0]['status']);
+        $this->assertCount(1, $this->sent);
+    }
+
+    public function test_shared_presentation_without_an_explicit_viewer_hides_diagnostics(): void
+    {
+        $this->sendStatus = 422;
+        $created = $this->create();
+        $message = SmsSharedMessage::findOrFail($created['message']['id']);
+        $presented = app(\App\Services\Messaging\SharedMmsService::class)->presentMessage($message);
+        $this->assertSame('completed', $presented['status']);
+        $this->assertSame('completed', $presented['operation_status']);
+        $this->assertArrayNotHasKey('status', $presented['recipients'][0]);
     }
     public function test_membership_and_account_loss_deny_read_send_and_request_reconciliation(): void
     {
