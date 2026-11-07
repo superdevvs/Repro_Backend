@@ -2510,6 +2510,7 @@ class UserController extends Controller
     {
         $email = strtolower(trim((string) $user->email));
         $phone = preg_replace('/\D+/', '', (string) ($user->phone ?? $user->phonenumber ?? ''));
+        $canViewSmsDiagnostics = request()->user()?->role === 'superadmin';
 
         $query = \App\Models\Message::query()
             ->where(function ($builder) use ($user, $email, $phone) {
@@ -2531,7 +2532,7 @@ class UserController extends Controller
             ->limit(25);
 
         return $query->get()
-            ->map(function (\App\Models\Message $message) {
+            ->map(function (\App\Models\Message $message) use ($canViewSmsDiagnostics) {
                 $isOutbound = strtoupper((string) $message->direction) === 'OUTBOUND';
                 $channel = strtoupper((string) $message->channel) === 'SMS' ? 'Text message' : 'Email';
                 $title = $channel . ' ' . ($isOutbound ? 'sent' : 'received');
@@ -2539,7 +2540,7 @@ class UserController extends Controller
                 $description = collect([
                     $counterparty ? 'With ' . $counterparty : null,
                     $message->subject ? 'Subject: ' . $message->subject : null,
-                    $message->status ? 'Status: ' . $message->status : null,
+                    $message->status && ($channel !== 'Text message' || $canViewSmsDiagnostics) ? 'Status: ' . $message->status : null,
                 ])->filter()->implode(' · ');
 
                 return $this->buildActivityEntry(

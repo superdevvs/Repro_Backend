@@ -141,4 +141,31 @@ class NotificationDiagnosticsVisibilityTest extends IsolatedSecurityTestCase
             ->assertJsonMissingPath('sms_failed_today')->assertJsonMissingPath('recent_activity.0.metadata');
         $this->assertSame($before, $message->fresh()->getRawOriginal());
     }
+
+    public function test_account_timeline_gates_sms_status_by_effective_role_and_preserves_email_status(): void
+    {
+        $client = User::factory()->create(['role' => 'client']);
+        $admin = User::factory()->admin()->create();
+        $superadmin = User::factory()->superAdmin()->create();
+        $messages = [];
+        foreach (['SMS', 'EMAIL'] as $channel) {
+            $messages[$channel] = Message::create([
+                'channel' => $channel, 'direction' => 'OUTBOUND', 'status' => 'FAILED',
+                'related_account_id' => $client->id, 'to_address' => $client->email,
+                'body_text' => 'Timeline fixture', 'error_message' => SmsDeliveryFailure::message(['40002']),
+            ]);
+        }
+        foreach ([[$admin, [], false], [$superadmin, [], true],
+            [$superadmin, ['X-Impersonate-User-Id' => (string) $admin->id], false]] as [$viewer, $headers, $canViewSms]) {
+            Sanctum::actingAs($viewer);
+            $response = $this->getJson('/api/admin/users/'.$client->id, $headers)->assertOk();
+            $entries = collect($response->json('user.activityLog'))->keyBy('id');
+            $sms = $entries['message-'.$messages['SMS']->id]['description'];
+            $email = $entries['message-'.$messages['EMAIL']->id]['description'];
+            $this->assertStringContainsString('With '.$client->email, $sms);
+            $this->assertSame($canViewSms, str_contains($sms, 'Status: FAILED'));
+            $this->assertStringContainsString('Status: FAILED', $email);
+            $this->assertStringNotContainsString('40002', $sms);
+        }
+    }
 }
