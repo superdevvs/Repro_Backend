@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Jobs\FinalizeShootJob;
+use App\Jobs\GenerateShootMediaArchiveJob;
 use App\Jobs\SendShootReadyEmailJob;
 use App\Models\Invoice;
 use App\Models\Message;
@@ -72,14 +73,17 @@ class FinalizeReleasesLegacyNotificationSuppressTest extends TestCase
 
         ShootFile::create([
             'shoot_id' => $shoot->id,
+            'shoot_service_id' => $shoot->serviceItems()->sole()->id,
             'filename' => '6003-calla-edited.jpg',
             'stored_filename' => '6003-calla-edited.jpg',
             'path' => "shoots/{$shoot->id}/completed/6003-calla-edited.jpg",
             'file_type' => 'image/jpeg',
+            'mime_type' => 'image/jpeg',
             'file_size' => 1024,
             'media_type' => 'edited',
             'uploaded_by' => $client->id,
             'workflow_stage' => ShootFile::STAGE_COMPLETED,
+            'scan_status' => ShootFile::SCAN_STATUS_CLEAN,
         ]);
 
         return $shoot->fresh();
@@ -136,6 +140,8 @@ class FinalizeReleasesLegacyNotificationSuppressTest extends TestCase
     public function test_delivery_email_job_releases_legacy_mute_instead_of_skipping(): void
     {
         Mail::fake();
+        // This test runs the real delivery email path, without fetching fixture bytes for an archive.
+        Queue::fake([GenerateShootMediaArchiveJob::class]);
         OutboundDeliveryGuard::allowFakeProviderPipelineForTesting();
         MessageChannel::create([
             'type' => 'EMAIL',
@@ -147,7 +153,17 @@ class FinalizeReleasesLegacyNotificationSuppressTest extends TestCase
         ]);
 
         $client = User::factory()->create(['role' => 'client', 'email' => 'client@example.com']);
-        $shoot = $this->createLegacyMutedDeliverableShoot($client);
+        // Simulate a committed delivery whose queued sender still owns mute release.
+        $shoot = $this->createLegacyMutedDeliverableShoot($client, [
+            'status' => Shoot::STATUS_DELIVERED,
+            'workflow_status' => Shoot::STATUS_DELIVERED,
+            'delivery_status' => 'delivered',
+            'admin_verified_at' => now(),
+            'completed_at' => now(),
+        ]);
+        $shoot->serviceItems()->update([
+            'workflow_status' => 'delivered', 'delivery_status' => 'delivered', 'delivered_at' => now(),
+        ]);
 
         $progressTracker = app(FinalizeProgressTracker::class);
         $progressTracker->start($shoot->id);
@@ -171,6 +187,32 @@ class FinalizeReleasesLegacyNotificationSuppressTest extends TestCase
             $emailStage['message'] ?? null
         );
         $this->assertStringNotContainsString('Internal test', (string) ($emailStage['message'] ?? ''));
+    }
+
+    public function test_full_delivery_email_does_not_release_legacy_mute_for_unfinished_work(): void
+    {
+        // The fixture's edited-file observer must not build an archive from synthetic bytes.
+        Queue::fake([GenerateShootMediaArchiveJob::class]);
+        $client = User::factory()->create(['role' => 'client', 'email' => 'unfinished@example.com']);
+        $shoot = $this->createLegacyMutedDeliverableShoot($client);
+        $progressTracker = app(FinalizeProgressTracker::class);
+        $progressTracker->start($shoot->id);
+        $mail = \Mockery::mock(\App\Services\MailService::class);
+        $mail->shouldNotReceive('sendShootReadyEmail');
+        $mail->shouldNotReceive('sendShootSummaryEmail');
+        $automation = \Mockery::mock(\App\Services\Messaging\AutomationService::class);
+        $automation->shouldNotReceive('hasActiveTrigger');
+
+        (new SendShootReadyEmailJob($shoot->id, null, true, true))->handle($mail, $automation);
+
+        $shoot->refresh();
+        $this->assertTrue($shoot->suppressesExternalNotifications());
+        $this->assertNull(data_get($shoot->external_booking_payload, 'legacy_migration.notifications_released_reason'));
+        $this->assertSame(0, Message::where('related_shoot_id', $shoot->id)->count());
+        $emailStage = collect($progressTracker->get($shoot->id)['stages'] ?? [])
+            ->firstWhere('key', FinalizeProgressTracker::STAGE_DELIVERY_EMAIL);
+        $this->assertSame('skipped', $emailStage['status']);
+        $this->assertStringContainsString('current completed work', $emailStage['message']);
     }
 
     public function test_staff_update_side_effects_release_legacy_mute(): void

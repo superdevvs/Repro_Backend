@@ -114,6 +114,7 @@ class WriteSchedulePlan
             'scheduled_at' => $line->scheduled_at?->toIso8601String(),
             'duration_minutes' => app(ShootDurationResolver::class)->forServiceItem($line),
             'created_at' => $line->created_at,
+            '_booked_financial_only' => app(\App\Services\Shoots\FinancialServiceClassification::class)->isFinancialOnly($line),
             'is_deliverable' => $line->is_deliverable,
             'workflow_status' => $line->workflow_status,
             'delivery_status' => $line->delivery_status,

@@ -102,15 +102,15 @@ class TelnyxMessagingTest extends TestCase
         $this->assertSame('+12025550100', $message->to_address);
     }
 
-    public function test_sms_send_against_unverified_number_returns_handled_422_and_records_failure(): void
+    public function test_superadmin_sms_send_against_unverified_number_returns_handled_422_and_records_failure(): void
     {
         // Provider rejects the send the way Telnyx does for an unverified toll-free sender.
         $this->bindThrowingTelnyxProviderMock(
-            new RuntimeException('Toll-free number is unverified (code 40300): traffic blocked until verification completes.')
+            new RuntimeException('Toll-free number is unverified (code 40329): traffic blocked until verification completes.')
         );
         $this->createDefaultSmsNumber();
 
-        $admin = User::factory()->create(['role' => 'admin']);
+        $admin = User::factory()->create(['role' => 'superadmin']);
         Sanctum::actingAs($admin);
 
         $response = $this->postJson('/api/messaging/sms/send', [
@@ -488,6 +488,83 @@ class TelnyxMessagingTest extends TestCase
         $this->assertNotNull($message);
         $this->assertSame('INBOUND', $message->direction);
         $this->assertNotNull($message->delivered_at);
+    }
+
+    public function test_delivery_failures_keep_safe_codes_and_guidance_without_raw_provider_details(): void
+    {
+        $this->skipIfNoSodium();
+        $request = \Illuminate\Http\Request::create('/');
+        $request->setUserResolver(fn () => new User(['role' => 'superadmin']));
+        foreach (['40002', '40010', '40001', '40300', '40329', '49999'] as $code) {
+            $message = Message::create([
+                'channel' => 'SMS', 'direction' => 'OUTBOUND', 'provider' => 'TELNYX',
+                'provider_message_id' => 'failure-'.$code, 'status' => 'SENT',
+                'to_address' => '+12025550123', 'body_text' => 'Fixture',
+                'metadata' => ['delivery' => ['status' => 'SENT', 'deferred_reason' => 'client_notification_quiet_hours']],
+            ]);
+            $payload = ['data' => ['id' => 'evt-'.$code, 'event_type' => 'message.finalized', 'occurred_at' => '2026-10-25T13:30:03Z',
+                'payload' => ['id' => $message->provider_message_id, 'to' => [['status' => 'delivery_failed']],
+                    'errors' => [['code' => $code, 'title' => 'private-provider-canary', 'detail' => 'secret-token-canary'], ['code' => 'not-a-code']]]]];
+            $this->postSignedTelnyx('/api/webhooks/telnyx/messaging', $payload)->assertOk();
+            $message->refresh();
+            $this->assertSame('FAILED', $message->status);
+            $this->assertSame([$code], $message->metadata['telnyx_error_codes']);
+            $this->assertSame('FAILED', $message->metadata['delivery']['status']);
+            $this->assertSame('client_notification_quiet_hours', $message->metadata['delivery']['deferred_reason']);
+            $this->assertSame(\App\Services\Messaging\SmsDeliveryFailure::message([$code]), $message->error_message);
+            $resource = (new \App\Http\Resources\Messaging\SmsMessageResource($message))->resolve($request);
+            $this->assertSame($message->error_message, $resource['errorMessage']);
+            $this->assertStringNotContainsString('canary', $message->toJson());
+            $snapshot = $message->getRawOriginal();
+            $this->postSignedTelnyx('/api/webhooks/telnyx/messaging', $payload)->assertOk();
+            $payload['data']['id'] = 'late-sent-'.$code;
+            $payload['data']['event_type'] = 'message.sent';
+            $payload['data']['occurred_at'] = '2026-10-25T13:31:03Z';
+            $this->postSignedTelnyx('/api/webhooks/telnyx/messaging', $payload)->assertOk();
+            $this->assertSame($snapshot, $message->fresh()->getRawOriginal());
+        }
+    }
+
+    public function test_sms_resource_redacts_old_raw_provider_errors(): void
+    {
+        $request = \Illuminate\Http\Request::create('/');
+        $request->setUserResolver(fn () => new User(['role' => 'superadmin']));
+        $message = new Message(['channel' => 'SMS', 'direction' => 'OUTBOUND', 'error_message' => 'private-provider-canary']);
+        $resource = (new \App\Http\Resources\Messaging\SmsMessageResource($message))->resolve($request);
+        $this->assertStringNotContainsString('private-provider-canary', json_encode($resource));
+    }
+
+    public function test_opt_out_and_toll_free_verification_failures_have_distinct_guidance(): void
+    {
+        $optOut = \App\Services\Messaging\SmsDeliveryFailure::message(['40300']);
+        $this->assertStringContainsString('recipient opted out', $optOut);
+        $this->assertStringContainsString('only after the recipient opts back in', $optOut);
+        $this->assertStringNotContainsString('not verified', $optOut);
+        $this->assertSame('SMS could not be sent: the Telnyx sending number is not verified.',
+            \App\Services\Messaging\SmsDeliveryFailure::message(['40329']));
+    }
+
+    public function test_stale_failure_does_not_replace_delivery_and_fresh_delivery_clears_failure_codes(): void
+    {
+        $this->skipIfNoSodium();
+        $message = Message::create(['channel' => 'SMS', 'direction' => 'OUTBOUND', 'provider' => 'TELNYX',
+            'provider_message_id' => 'failure-order', 'status' => 'SENT', 'to_address' => '+12025550123', 'body_text' => 'Fixture']);
+        $payload = ['data' => ['id' => 'failed-order', 'event_type' => 'message.failed', 'occurred_at' => '2026-10-25T13:00:00Z',
+            'payload' => ['id' => 'failure-order', 'to' => [['status' => 'failed', 'errors' => [['code' => '40010']]]]]]];
+        $this->postSignedTelnyx('/api/webhooks/telnyx/messaging', $payload)->assertOk();
+        $this->assertSame(['40010'], $message->fresh()->metadata['telnyx_error_codes']);
+        $delivered = $payload;
+        $delivered['data']['id'] = 'delivered-order';
+        $delivered['data']['event_type'] = 'message.finalized';
+        $delivered['data']['occurred_at'] = '2026-10-25T13:01:00Z';
+        $delivered['data']['payload']['to'][0]['status'] = 'delivered';
+        $this->postSignedTelnyx('/api/webhooks/telnyx/messaging', $delivered)->assertOk();
+        $this->postSignedTelnyx('/api/webhooks/telnyx/messaging', $payload)->assertOk();
+        $message->refresh();
+        $this->assertSame('DELIVERED', $message->status);
+        $this->assertSame([], $message->metadata['telnyx_error_codes']);
+        $this->assertNull($message->metadata['delivery']['error']);
+        $this->assertNull($message->failed_at);
     }
 
     private function bindThrowingTelnyxProviderMock(\Throwable $error): void

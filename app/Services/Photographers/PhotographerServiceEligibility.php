@@ -42,9 +42,9 @@ class PhotographerServiceEligibility
         ])->all());
     }
 
-    public function canPerform(?User $photographer, Service $service): bool
+    public function canPerform(?User $photographer, Service $service, ?bool $requiresPhotographer = null): bool
     {
-        if (! $service->requiresPhotographer()) {
+        if (! ($requiresPhotographer ?? $service->requiresPhotographer())) {
             return true;
         }
 
@@ -63,12 +63,20 @@ class PhotographerServiceEligibility
         foreach ($rows as $index => $row) {
             $service = $catalog->get($row['service_id'] ?? $row['id'] ?? null);
             $photographerId = $row['photographer_id'] ?? $fallbackPhotographerId;
-            if (! $service || ! $service->requiresPhotographer() || ! $photographerId
+            // A later financial catalog classification cannot waive the skill
+            // requirement of a line booked as actual work. New fee lines and
+            // booked financial snapshots remain exempt.
+            $requiresPhotographer = $service?->requiresPhotographer() ?? false;
+            if ($service?->financial_only && ! empty($row['created_at'])
+                && ! ($row['_booked_financial_only'] ?? false)) {
+                $requiresPhotographer = $service->requiresPhotographerForBooking($row['created_at']);
+            }
+            if (! $service || ! $requiresPhotographer || ! $photographerId
                 || ($row['workflow_status'] ?? '') === 'cancelled') {
                 continue;
             }
             $photographer = $photographers->get($photographerId);
-            if (! $this->canPerform($photographer, $service)) {
+            if (! $this->canPerform($photographer, $service, $requiresPhotographer)) {
                 $name = $photographer?->name ?? 'The selected photographer';
                 $category = $service->category?->name ?: $service->name;
                 throw ValidationException::withMessages([

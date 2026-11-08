@@ -35,6 +35,8 @@ class IguideDataVisibilityService
             'unbranded_url' => $this->safeHttpUrl($data['unbranded_url'] ?? null),
             'embedded_url' => $this->safeHttpUrl($data['embedded_url'] ?? null),
             'embed_image_url' => $this->safeHttpUrl($data['embed_image_url'] ?? null),
+            'delivery_readiness' => in_array(data_get($data, 'delivery_readiness.state'), ['ready', 'not_ready'], true)
+                ? array_intersect_key($data['delivery_readiness'], array_flip(['state', 'verified_at'])) : null,
             'manual_offline_package' => $package,
         ], static fn (mixed $value): bool => $value !== null);
 

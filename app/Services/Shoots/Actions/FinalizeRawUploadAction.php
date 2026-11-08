@@ -107,7 +107,8 @@ class FinalizeRawUploadAction
 
                     $currentStatus = strtolower((string) ($shoot->workflow_status ?? $shoot->status ?? ''));
                     $previousStatus = $currentStatus;
-                    $activeCycle = app(\App\Services\Shoots\ShootActiveWorkLifecycle::class)->hasActiveWork($shoot);
+                    $activeCycle = app(\App\Services\Shoots\ShootActiveWorkLifecycle::class)->hasActiveWork($shoot)
+                        || app(\App\Services\Shoots\ShootActiveWorkLifecycle::class)->isInitialPartial($shoot);
                     $activeFiles = collect();
                     if ($activeCycle) {
                         if (in_array($currentStatus, ['on_hold', 'hold_on', 'cancelled', 'canceled', 'declined'], true)) {
@@ -303,7 +304,7 @@ class FinalizeRawUploadAction
     public static function pendingActiveRawFiles(Shoot $shoot, ?User $user): \Illuminate\Support\Collection
     {
         $lifecycle = app(\App\Services\Shoots\ShootActiveWorkLifecycle::class);
-        if (! $lifecycle->hasActiveWork($shoot) || ! $user
+        if ((! $lifecycle->hasActiveWork($shoot) && ! $lifecycle->isInitialPartial($shoot)) || ! $user
             || ! in_array($user->role, ['admin', 'superadmin', 'editing_manager', 'photographer'], true)
             || in_array(strtolower((string) ($shoot->workflow_status ?: $shoot->status)), ['on_hold', 'hold_on', 'cancelled', 'canceled', 'declined'], true)) return collect();
         $items = $lifecycle->outstandingItems($shoot);
@@ -314,23 +315,28 @@ class FinalizeRawUploadAction
             ->where(fn ($query) => $query->whereNull('flag_reason')->orWhere('flag_reason', ''))
             ->where(fn ($query) => $query->whereNull('is_extra')->orWhere('is_extra', false)->orWhere('required_for_editing', true))
             ->get();
-        $cycle = $shoot->active_work_started_at->toIso8601String();
+        $cycle = app(\App\Services\Shoots\DeliveryPlanService::class)->executionKey($shoot);
         return app(\App\Services\Shoots\ServiceDeliveryEligibility::class)->currentCycleFiles($shoot, $files)
-            ->filter(function (ShootFile $file) use ($cycle) {
+            ->filter(function (ShootFile $file) use ($cycle, $items, $shoot) {
                 if ($file->isBlockedFromDelivery()) return false;
                 $receipt = data_get($file->metadata, 'active_work_raw_submission', []);
-                return ($receipt['cycle'] ?? null) !== $cycle
+                $item = $items->firstWhere('id', $file->shoot_service_id);
+                $execution = $item ? app(\App\Services\Shoots\DeliveryPlanService::class)->itemExecutionKey($shoot, $item) : $cycle;
+                $matches = isset($receipt['execution_key']) ? $receipt['execution_key'] === $execution : $execution === $cycle && ($receipt['cycle'] ?? null) === $cycle;
+                return ! $matches
                     || (int) ($receipt['content_version'] ?? 0) !== (int) ($file->content_version ?: 1);
             })->values();
     }
 
     private function recordActiveRawSubmission(Shoot $shoot, \Illuminate\Support\Collection $files): void
     {
-        $cycle = $shoot->active_work_started_at->toIso8601String();
+        $cycle = app(\App\Services\Shoots\DeliveryPlanService::class)->executionKey($shoot);
         $submittedAt = now()->toIso8601String();
+        $items = $shoot->serviceItems()->get()->keyBy('id');
         foreach ($files as $file) {
             $metadata = is_array($file->metadata) ? $file->metadata : [];
             $metadata['active_work_raw_submission'] = ['cycle' => $cycle, 'submitted_at' => $submittedAt,
+                'execution_key' => $items->has($file->shoot_service_id) ? app(\App\Services\Shoots\DeliveryPlanService::class)->itemExecutionKey($shoot, $items->get($file->shoot_service_id)) : $cycle,
                 'content_version' => (int) ($file->content_version ?: 1)];
             DB::table('shoot_files')->where('shoot_id', $shoot->id)->where('id', $file->id)
                 ->update(['metadata' => json_encode($metadata, JSON_THROW_ON_ERROR)]);

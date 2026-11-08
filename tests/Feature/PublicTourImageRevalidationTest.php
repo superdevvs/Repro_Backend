@@ -36,7 +36,7 @@ class PublicTourImageRevalidationTest extends TestCase
             'shoot_id' => $shoot->id, 'filename' => 'front.jpg', 'stored_filename' => 'front.jpg',
             'path' => "shoots/{$shoot->id}/completed/front.jpg", 'file_type' => 'image/jpeg',
             'file_size' => 100, 'uploaded_by' => $shoot->client_id,
-            'workflow_stage' => ShootFile::STAGE_VERIFIED, 'scan_status' => ShootFile::SCAN_STATUS_CLEAN,
+            'workflow_stage' => ShootFile::STAGE_VERIFIED, 'media_type' => 'edited', 'scan_status' => ShootFile::SCAN_STATUS_CLEAN,
             'web_path' => "shoots/{$shoot->id}/web/front.jpg",
             'grid_path' => "shoots/{$shoot->id}/grid/front.jpg",
             'thumbnail_path' => "shoots/{$shoot->id}/thumbnails/front.jpg",

@@ -300,14 +300,17 @@ class ShootDeliveryContentUpdatesTest extends TestCase
         $this->assertSame(2, $this->messages($shoot)->count());
     }
 
-    public function test_delivery_updates_observe_recipient_local_quiet_hours(): void
+    public function test_delivery_update_emails_send_immediately_before_9am(): void
     {
         $this->travelTo(now('America/New_York')->setTime(2, 0));
         $shoot = $this->shoot();
         $this->notify($shoot);
         $message = $this->messages($shoot)->sole();
-        $this->assertSame('SCHEDULED', $message->status);
-        $this->assertSame('09:00', $message->scheduled_at->setTimezone('America/New_York')->format('H:i'));
+        $this->assertSame('SENT', $message->status);
+        $this->assertNull($message->scheduled_at);
+        $this->assertSame(now()->toDateTimeString(), $message->sent_at->toDateTimeString());
+        $this->notify($shoot);
+        $this->assertSame(1, $this->messages($shoot)->count());
     }
 
     public function test_a_batch_of_multiple_finalized_services_and_links_coalesces_to_one_email(): void

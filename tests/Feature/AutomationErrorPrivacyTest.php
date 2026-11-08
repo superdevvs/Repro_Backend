@@ -39,7 +39,7 @@ class AutomationErrorPrivacyTest extends IsolatedSecurityTestCase
         $this->assertSame('secret-canary', $run->getAttribute('context_json')['password_reset_link']);
         $this->assertSame('secret-canary', $step->getAttribute('output_json')['output']);
 
-        Sanctum::actingAs(User::factory()->admin()->create());
+        Sanctum::actingAs(User::factory()->superAdmin()->create());
         $response = $this->getJson('/api/messaging/automations/'.$rule->id.'/runs')->assertOk();
         $response->assertJsonPath('data.0.status', 'failed');
         $this->assertStringNotContainsString('secret-canary', $response->getContent());

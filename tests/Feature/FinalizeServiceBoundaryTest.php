@@ -65,9 +65,17 @@ class FinalizeServiceBoundaryTest extends TestCase
             'path' => 'shoots/'.$shoot->id.'/completed/delivered.jpg',
             'file_type' => 'image/jpeg', 'file_size' => 1024,
             'media_type' => 'edited', 'uploaded_by' => $admin->id,
+            'scan_status' => 'clean',
             'workflow_stage' => ShootFile::STAGE_COMPLETED,
         ])->save();
         return $file;
+    }
+
+    private function historical(Shoot $shoot, ShootService $item): void
+    {
+        $item->forceFill(['workflow_status' => 'delivered', 'delivery_status' => 'delivered', 'delivered_at' => now()->subDay(),
+            'delivery_requirements' => [['key' => 'legacy', 'kind' => 'legacy', 'label' => 'Historical delivery']]])->save();
+        $shoot->forceFill(['status' => 'delivered', 'workflow_status' => 'delivered', 'admin_verified_at' => now()->subDay(), 'completed_at' => now()->subDay()])->save();
     }
 
     public function test_whole_order_delivery_finishes_only_the_service_with_output_and_keeps_future_visit_active(): void
@@ -80,9 +88,10 @@ class FinalizeServiceBoundaryTest extends TestCase
         $this->assertSame('delivered', $drone->fresh()->delivery_status);
         $this->assertSame('not_started', $hdr->fresh()->delivery_status);
         $this->assertNull($hdr->fresh()->delivered_at);
-        $this->assertSame('active', $shoot->fresh()->status);
+        $this->assertSame('editing', $shoot->fresh()->status);
         $this->assertSame('partially_delivered', $shoot->fresh()->delivery_status);
-        $this->assertSame('2026-11-04', $shoot->fresh()->active_work_date);
+        $this->assertFalse(app(ShootActiveWorkLifecycle::class)->hasActiveWork($shoot->fresh()));
+        $this->assertNull($shoot->fresh()->admin_verified_at);
         $this->assertSame($originalDate, $shoot->fresh()->scheduled_date->toDateString());
         $this->assertSame(ShootFile::STAGE_VERIFIED, $file->fresh()->workflow_stage);
         Queue::assertNotPushed(PublishShootToBrightMlsJob::class);
@@ -100,6 +109,32 @@ class FinalizeServiceBoundaryTest extends TestCase
         $this->assertDatabaseHas('workflow_logs', ['shoot_id' => $shoot->id, 'action' => 'finalize_failed']);
     }
 
+    public function test_first_partial_delivery_preserves_uploaded_photos_until_the_bundle_video_is_finished(): void
+    {
+        [$shoot, $drone, $bundle, $admin] = $this->fixture();
+        $catalog = Service::factory()->photoVideoIntake()->create(['requires_editing' => true]);
+        $bundle->forceFill(['service_id' => $catalog->id, 'delivery_requirements' => null, 'scheduled_at' => now()->subHour()])->save();
+        $this->file($shoot, $drone, $admin);
+        $photo = $this->file($shoot, $bundle, $admin);
+        $this->travel(1)->minutes();
+        (new FinalizeShootJob($shoot->id, $admin->id))->handle(app(ShootActivityLogger::class));
+        $this->assertSame('delivered', $drone->fresh()->delivery_status);
+        $this->assertSame('not_started', $bundle->fresh()->delivery_status);
+        $this->assertSame('verified', $photo->fresh()->workflow_stage);
+        $firstPhotoDelivery = $photo->fresh()->verified_at;
+        $this->assertSame('editing', $shoot->fresh()->status);
+
+        $this->travel(1)->minutes();
+        $video = $this->file($shoot, $bundle, $admin, ['filename' => 'finished-video.mp4',
+            'file_type' => 'video/mp4', 'media_type' => 'video']);
+        (new FinalizeShootJob($shoot->id, $admin->id, null, $bundle->id))->handle(app(ShootActivityLogger::class));
+        $this->assertSame('verified', $photo->fresh()->workflow_stage);
+        $this->assertSame('verified', $video->fresh()->workflow_stage);
+        $this->assertEquals($firstPhotoDelivery, $photo->fresh()->verified_at);
+        $this->assertSame('delivered', $bundle->fresh()->delivery_status);
+        $this->assertSame('delivered', $shoot->fresh()->status);
+    }
+
     public function test_other_service_files_and_old_completion_timestamps_do_not_deliver_an_unfinished_line(): void
     {
         [$shoot, $drone, $hdr, $admin] = $this->fixture();
@@ -108,14 +143,15 @@ class FinalizeServiceBoundaryTest extends TestCase
         $this->file($shoot, $drone, $admin);
         (new FinalizeShootJob($shoot->id, $admin->id))->handle(app(ShootActivityLogger::class));
         $this->assertSame('not_started', $hdr->fresh()->delivery_status);
-        $this->assertSame('active', $shoot->fresh()->status);
+        $this->assertSame('editing', $shoot->fresh()->status);
     }
 
     public function test_final_additional_service_closes_cycle_without_rewriting_original_delivery_history(): void
     {
         [$shoot, $drone, $hdr, $admin] = $this->fixture();
         $originalDelivery = now()->subDays(2);
-        $drone->forceFill(['workflow_status' => 'delivered', 'delivery_status' => 'delivered', 'delivered_at' => $originalDelivery])->save();
+        $drone->forceFill(['workflow_status' => 'delivered', 'delivery_status' => 'delivered', 'delivered_at' => $originalDelivery,
+            'delivery_requirements' => [['key' => 'legacy', 'kind' => 'legacy', 'label' => 'Historical delivery']]])->save();
         $hdr->forceFill(['scheduled_at' => now()->subHour()])->save();
         $shoot->forceFill(['status' => 'delivered', 'workflow_status' => 'delivered',
             'admin_verified_at' => $originalDelivery, 'completed_at' => $originalDelivery])->save();
@@ -155,7 +191,7 @@ class FinalizeServiceBoundaryTest extends TestCase
     public function test_verified_output_from_an_old_cycle_does_not_complete_current_work(): void
     {
         [$shoot, $drone, $hdr, $admin] = $this->fixture();
-        $drone->forceFill(['workflow_status' => 'delivered', 'delivery_status' => 'delivered'])->save();
+        $this->historical($shoot, $drone);
         $hdr->forceFill(['scheduled_at' => now()->subHour()])->save();
         $file = $this->file($shoot, $hdr, $admin, ['created_at' => now()->subDay(),
             'workflow_stage' => ShootFile::STAGE_VERIFIED, 'verified_at' => now()->subDay(), 'is_ai_edited' => true]);
@@ -169,7 +205,7 @@ class FinalizeServiceBoundaryTest extends TestCase
     public function test_a_current_published_replacement_is_fresh_evidence_even_if_the_file_id_is_older(): void
     {
         [$shoot, $drone, $hdr, $admin] = $this->fixture();
-        $drone->forceFill(['workflow_status' => 'delivered', 'delivery_status' => 'delivered'])->save();
+        $this->historical($shoot, $drone);
         $hdr->forceFill(['scheduled_at' => now()->subHour()])->save();
         $file = $this->file($shoot, $hdr, $admin, ['created_at' => now()->subDay(), 'content_version' => 2]);
         app(ShootActiveWorkLifecycle::class)->begin($shoot);
@@ -185,16 +221,18 @@ class FinalizeServiceBoundaryTest extends TestCase
     {
         [$shoot, $drone, $video, $admin] = $this->fixture();
         $catalog = Service::factory()->videoIntake()->create(['requires_editing' => true]);
-        $drone->forceFill(['workflow_status' => 'delivered', 'delivery_status' => 'delivered'])->save();
-        $video->forceFill(['service_id' => $catalog->id, 'scheduled_at' => now()->subHour()])->save();
+        $this->historical($shoot, $drone);
+        $video->forceFill(['service_id' => $catalog->id, 'delivery_requirements' => null, 'scheduled_at' => now()->subHour()])->save();
         $old = $this->file($shoot, $drone, $admin, ['workflow_stage' => 'verified', 'verified_at' => now()->subDay(), 'created_at' => now()->subDay()]);
         app(ShootActiveWorkLifecycle::class)->begin($shoot);
         Sanctum::actingAs($admin);
         $this->patchJson('/api/shoots/'.$shoot->id, ['tour_links' => ['video_link' => 'https://video.example.test/current-edit'],
             'notify_client' => false, 'notify_photographer' => false])->assertOk();
         $video->forceFill(['editing_completed_at' => now(), 'workflow_status' => 'ready'])->save();
-        $this->postJson('/api/shoots/'.$shoot->id.'/finalize', ['shoot_service_id' => $video->id])->assertAccepted();
-        (new FinalizeShootJob($shoot->id, $admin->id, null, $video->id))->handle(app(ShootActivityLogger::class));
+        $selection = ['shoot_service_id' => $video->id, 'component_ids' => [$video->id.':video'], 'mode' => 'external', 'confirmed' => true];
+        $this->postJson('/api/shoots/'.$shoot->id.'/finalize', $selection)->assertAccepted();
+        $intent = app(\App\Services\Shoots\DeliveryPlanService::class)->validateSelection($shoot->fresh(), $admin, $selection);
+        (new FinalizeShootJob($shoot->id, $admin->id, null, $video->id, false, $intent['idempotency_key'], $intent))->handle(app(ShootActivityLogger::class));
         $this->assertSame('delivered', $video->fresh()->delivery_status);
         $this->assertSame('delivered', $shoot->fresh()->status);
         $this->assertEquals(now()->subDay(), $old->fresh()->verified_at);
@@ -204,8 +242,8 @@ class FinalizeServiceBoundaryTest extends TestCase
     {
         [$shoot, $drone, $video, $admin] = $this->fixture();
         $catalog = Service::factory()->videoIntake()->create(['requires_editing' => true]);
-        $drone->forceFill(['workflow_status' => 'delivered', 'delivery_status' => 'delivered'])->save();
-        $video->forceFill(['service_id' => $catalog->id, 'scheduled_at' => now()->subHour(),
+        $this->historical($shoot, $drone);
+        $video->forceFill(['service_id' => $catalog->id, 'delivery_requirements' => null, 'scheduled_at' => now()->subHour(),
             'editing_completed_at' => now()->subDay()])->save();
         $shoot->forceFill(['tour_links' => ['video_link' => 'https://video.example.test/previous-edit']])->save();
         app(ShootActiveWorkLifecycle::class)->begin($shoot);
@@ -217,8 +255,9 @@ class FinalizeServiceBoundaryTest extends TestCase
     public function test_old_verified_media_cannot_be_restamped_as_current_bundle_editing_completion(): void
     {
         [$shoot, $drone, $bundle, $admin] = $this->fixture();
+        $this->historical($shoot, $drone);
         $catalog = Service::factory()->photoVideoIntake()->create(['requires_editing' => true]);
-        $bundle->forceFill(['service_id' => $catalog->id, 'scheduled_at' => now()->subHour()])->save();
+        $bundle->forceFill(['service_id' => $catalog->id, 'delivery_requirements' => null, 'scheduled_at' => now()->subHour()])->save();
         $this->file($shoot, $bundle, $admin, ['created_at' => now()->subDay(),
             'workflow_stage' => 'verified', 'verified_at' => now()->subDay()]);
         $this->file($shoot, $bundle, $admin, ['created_at' => now()->subDay(), 'filename' => 'old-video.mp4',
@@ -235,7 +274,7 @@ class FinalizeServiceBoundaryTest extends TestCase
     public function test_original_delivered_images_do_not_enable_or_submit_additional_edits(): void
     {
         [$shoot, $drone, $hdr, $admin] = $this->fixture();
-        $drone->forceFill(['workflow_status' => 'delivered', 'delivery_status' => 'delivered'])->save();
+        $this->historical($shoot, $drone);
         $this->file($shoot, $drone, $admin, ['created_at' => now()->subDay(),
             'workflow_stage' => 'verified', 'verified_at' => now()->subDay()]);
         app(ShootActiveWorkLifecycle::class)->begin($shoot);
@@ -249,7 +288,7 @@ class FinalizeServiceBoundaryTest extends TestCase
     public function test_current_additional_edits_can_be_submitted_while_another_service_has_moved_the_parent_to_ready(): void
     {
         [$shoot, $drone, $hdr, $admin] = $this->fixture();
-        $drone->forceFill(['workflow_status' => 'delivered', 'delivery_status' => 'delivered'])->save();
+        $this->historical($shoot, $drone);
         $hdr->forceFill(['scheduled_at' => now()->subHour()])->save();
         $hdr->service->forceFill(['requires_editing' => true])->save();
         app(ShootActiveWorkLifecycle::class)->begin($shoot);
@@ -269,7 +308,7 @@ class FinalizeServiceBoundaryTest extends TestCase
         [$shoot, $drone, $hdr] = $this->fixture();
         $photographer = User::factory()->photographer()->create(['timezone' => 'America/New_York']);
         $shoot->forceFill(['timezone' => null, 'photographer_id' => $photographer->id])->save();
-        $drone->forceFill(['workflow_status' => 'delivered', 'delivery_status' => 'delivered'])->save();
+        $this->historical($shoot, $drone);
         $hdr->forceFill(['scheduled_at' => '2026-11-04 23:30:00', 'photographer_id' => $photographer->id])->save();
         $lifecycle = app(ShootActiveWorkLifecycle::class);
         $lifecycle->begin($shoot);
@@ -282,7 +321,7 @@ class FinalizeServiceBoundaryTest extends TestCase
     public function test_new_submitted_raw_invalidates_older_same_cycle_edits_but_allows_a_current_replacement(): void
     {
         [$shoot, $drone, $hdr, $admin] = $this->fixture();
-        $drone->forceFill(['workflow_status' => 'delivered', 'delivery_status' => 'delivered'])->save();
+        $this->historical($shoot, $drone);
         $hdr->forceFill(['scheduled_at' => now()->subHour()])->save();
         app(ShootActiveWorkLifecycle::class)->begin($shoot);
         $this->travel(1)->minutes();

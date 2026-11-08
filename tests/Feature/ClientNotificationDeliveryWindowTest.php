@@ -49,7 +49,7 @@ class ClientNotificationDeliveryWindowTest extends TestCase
     }
 
     #[DataProvider('notificationMornings')]
-    public function test_client_notifications_wait_until_the_allowed_local_time(string $channel, string $at, string $appointment, string $trigger, ?string $release): void
+    public function test_email_is_immediate_while_sms_waits_until_the_allowed_local_time(string $channel, string $at, string $appointment, string $trigger, ?string $release): void
     {
         [$shoot, $client] = $this->shoot($appointment);
         $this->clock($at);
@@ -90,6 +90,7 @@ class ClientNotificationDeliveryWindowTest extends TestCase
         $out = [];
         foreach (['email', 'sms'] as $channel) {
             foreach ($cases as $index => $case) {
+                $case[3] = $channel === 'sms' ? $case[3] : null;
                 $out[$channel.'-'.$index] = [$channel, ...$case];
             }
         }
@@ -138,11 +139,20 @@ class ClientNotificationDeliveryWindowTest extends TestCase
     }
 
     #[DataProvider('routineNotifications')]
-    public function test_routine_automation_notices_still_wait_for_9am(string $channel, string $trigger): void
+    public function test_routine_automation_notices_only_defer_sms_until_9am(string $channel, string $trigger): void
     {
         [$shoot, $client] = $this->shoot('2026-10-17 10:00');
         $this->clock('2026-10-17 05:00');
         $message = $this->send($channel, $shoot, $client, $trigger);
+        if ($channel === 'email') {
+            $this->assertSame('SENT', $message->status);
+            $this->assertNull($message->scheduled_at);
+            $this->assertProviderSends($channel, 1);
+            $this->dispatch();
+            $this->assertProviderSends($channel, 1);
+
+            return;
+        }
         $this->assertSame('SCHEDULED', $message->status);
         $this->assertSame('2026-10-17 09:00', $message->scheduled_at->setTimezone('America/New_York')->format('Y-m-d H:i'));
         $this->assertProviderSends($channel, 0);
@@ -217,18 +227,18 @@ class ClientNotificationDeliveryWindowTest extends TestCase
             'receipt-email' => ['email', 'payment_receipt', true],
             'receipt-sms' => ['sms', 'payment_receipt', true],
             'refund-email' => ['email', 'refund_submitted', true],
-            'reminder-email' => ['email', 'shoot_reminder', false],
+            'reminder-email' => ['email', 'shoot_reminder', true],
             'reminder-sms' => ['sms', 'shoot_reminder', false],
-            'payment-reminder-email' => ['email', 'payment_due_reminder', false],
-            'payment-due-email' => ['email', 'payment_due', false],
+            'payment-reminder-email' => ['email', 'payment_due_reminder', true],
+            'payment-due-email' => ['email', 'payment_due', true],
             'payment-due-sms' => ['sms', 'payment_due', false],
             'ready-sms' => ['sms', 'shoot_ready', false],
-            'summary-email' => ['email', 'shoot_summary', false],
+            'summary-email' => ['email', 'shoot_summary', true],
         ];
     }
 
     #[DataProvider('channels')]
-    public function test_a_manual_10am_shoot_reminder_uses_the_same_8am_release_as_automation(string $channel): void
+    public function test_a_manual_10am_shoot_reminder_only_defers_sms_until_8am(string $channel): void
     {
         [$shoot] = $this->shoot('2026-10-17 10:00');
         $this->clock('2026-10-17 05:00');
@@ -240,6 +250,13 @@ class ClientNotificationDeliveryWindowTest extends TestCase
         ]);
         $sender = User::factory()->create(['role' => 'admin']);
         $message = app(ManualNotificationService::class)->send($shoot, 'shoot_reminder', 'client', $channel, $sender);
+        if ($channel === 'email') {
+            $this->assertSame('SENT', $message->status);
+            $this->assertNull($message->scheduled_at);
+            $this->assertProviderSends($channel, 1);
+
+            return;
+        }
         $this->assertSame('SCHEDULED', $message->status);
         $this->assertSame('2026-10-17 08:00', $message->scheduled_at->setTimezone('America/New_York')->format('Y-m-d H:i'));
         $this->assertProviderSends($channel, 0);
@@ -258,9 +275,9 @@ class ClientNotificationDeliveryWindowTest extends TestCase
     }
 
     #[DataProvider('channels')]
-    public function test_a_queued_manual_reminder_is_cancelled_after_its_appointment_is_rescheduled(string $channel): void
+    public function test_a_queued_reminder_is_cancelled_after_its_appointment_is_rescheduled(string $channel): void
     {
-        [$shoot] = $this->shoot('2026-10-17 10:00');
+        [$shoot, $client] = $this->shoot('2026-10-17 10:00');
         $this->clock('2026-10-17 05:00');
         MessageTemplate::updateOrCreate(['slug' => 'shoot-reminder'.($channel === 'sms' ? '-sms' : '')], [
             'channel' => strtoupper($channel), 'name' => 'Shoot reminder', 'category' => 'REMINDER',
@@ -268,7 +285,9 @@ class ClientNotificationDeliveryWindowTest extends TestCase
             'subject' => 'Shoot reminder', 'body_text' => 'Your shoot is at 10am.', 'body_html' => '<p>Your shoot is at 10am.</p>',
         ]);
         $sender = User::factory()->create(['role' => 'admin']);
-        $message = app(ManualNotificationService::class)->send($shoot, 'shoot_reminder', 'client', $channel, $sender);
+        $message = $channel === 'email'
+            ? app(MessagingService::class)->scheduleEmail($this->payload($shoot, $client, 'SHOOT_REMINDER'), now()->addHours(3))
+            : app(ManualNotificationService::class)->send($shoot, 'shoot_reminder', 'client', $channel, $sender);
         $this->assertSame('SCHEDULED', $message->status);
         $this->assertSame('08:00', $message->scheduled_at->setTimezone('America/New_York')->format('H:i'));
         $shoot->update(['scheduled_at' => Carbon::parse('2026-10-17 15:00', 'America/New_York')->utc()]);
@@ -303,7 +322,7 @@ class ClientNotificationDeliveryWindowTest extends TestCase
     }
 
     #[DataProvider('routineManualMarkers')]
-    public function test_explicit_reminder_identity_is_not_bypassed_by_a_manual_send_source(string $channel, string $identity): void
+    public function test_explicit_reminder_identity_only_defers_manual_sms(string $channel, string $identity): void
     {
         [$shoot, $client] = $this->shoot('2026-10-18 15:00');
         $this->clock('2026-10-17 05:00');
@@ -318,6 +337,13 @@ class ClientNotificationDeliveryWindowTest extends TestCase
             $payload['template_id'] = $template->id;
         }
         $message = $this->sendPayload($channel, $client, $payload);
+        if ($channel === 'email') {
+            $this->assertSame('SENT', $message->status);
+            $this->assertNull($message->scheduled_at);
+            $this->assertProviderSends($channel, 1);
+
+            return;
+        }
         $this->assertSame('SCHEDULED', $message->status);
         $this->assertSame('09:00', $message->scheduled_at->setTimezone('America/New_York')->format('H:i'));
         $this->assertProviderSends($channel, 0);
@@ -329,7 +355,7 @@ class ClientNotificationDeliveryWindowTest extends TestCase
     }
 
     #[DataProvider('sameDayUpdates')]
-    public function test_only_future_same_day_operational_updates_bypass_quiet_hours(string $channel, string $trigger, string $appointment, bool $immediate): void
+    public function test_email_updates_are_immediate_and_sms_keeps_the_same_day_exception(string $channel, string $trigger, string $appointment, bool $immediate): void
     {
         [$shoot, $client] = $this->shoot($appointment);
         $this->clock('2026-10-17 05:00');
@@ -351,7 +377,7 @@ class ClientNotificationDeliveryWindowTest extends TestCase
         foreach (['email', 'sms'] as $channel) {
             foreach (['SHOOT_UPDATED', 'PHOTOGRAPHER_CHANGED'] as $trigger) {
                 foreach (['2026-10-17 10:00' => true, '2026-10-18 10:00' => false, '2026-10-17 04:00' => false] as $appointment => $immediate) {
-                    $cases[$channel.'-'.$trigger.'-'.$appointment] = [$channel, $trigger, $appointment, $immediate];
+                    $cases[$channel.'-'.$trigger.'-'.$appointment] = [$channel, $trigger, $appointment, $channel === 'email' || $immediate];
                 }
             }
         }
@@ -360,11 +386,18 @@ class ClientNotificationDeliveryWindowTest extends TestCase
     }
 
     #[DataProvider('channels')]
-    public function test_a_routine_update_about_todays_shoot_still_waits_until_9am(string $channel): void
+    public function test_a_routine_update_about_todays_shoot_only_defers_sms_until_9am(string $channel): void
     {
         [$shoot, $client] = $this->shoot('2026-10-17 10:00');
         $this->clock('2026-10-17 05:00');
         $message = $this->send($channel, $shoot, $client, 'SHOOT_UPDATED');
+        if ($channel === 'email') {
+            $this->assertSame('SENT', $message->status);
+            $this->assertNull($message->scheduled_at);
+            $this->assertProviderSends($channel, 1);
+
+            return;
+        }
         $this->assertSame('SCHEDULED', $message->status);
         $this->assertSame('09:00', $message->scheduled_at->setTimezone('America/New_York')->format('H:i'));
         $this->assertProviderSends($channel, 0);
@@ -381,10 +414,10 @@ class ClientNotificationDeliveryWindowTest extends TestCase
         $this->clock('2026-10-17 05:00');
         $payload = $this->payload($shoot, $client, 'SHOOT_UPDATED');
         $payload['metadata']['notification']['urgent'] = true;
-        $message = $this->sendPayload('email', $client, $payload);
+        $message = $this->sendPayload('sms', $client, $payload);
         $this->assertSame('SCHEDULED', $message->status);
         $this->assertSame('09:00', $message->scheduled_at->setTimezone('America/New_York')->format('H:i'));
-        $this->assertProviderSends('email', 0);
+        $this->assertProviderSends('sms', 0);
     }
 
     public function test_an_urgent_update_uses_the_recipients_local_day_for_the_appointment(): void
@@ -394,13 +427,13 @@ class ClientNotificationDeliveryWindowTest extends TestCase
         $this->clock('2026-10-17 05:00'); // 2am October 17 for the client.
         $payload = $this->payload($shoot, $client, 'SHOOT_UPDATED');
         $payload['metadata']['notification']['urgent'] = true;
-        $message = $this->sendPayload('email', $client, $payload);
+        $message = $this->sendPayload('sms', $client, $payload);
         $this->assertSame('SENT', $message->status);
-        $this->assertProviderSends('email', 1);
+        $this->assertProviderSends('sms', 1);
     }
 
     #[DataProvider('paymentFailureOrigins')]
-    public function test_payment_failures_bypass_quiet_hours_only_for_an_active_client_action(string $channel, ?string $origin): void
+    public function test_payment_failure_sms_only_bypasses_quiet_hours_for_an_active_client_action(string $channel, ?string $origin): void
     {
         [$shoot, $client] = $this->shoot('2026-10-18 15:00');
         $this->clock('2026-10-17 05:00');
@@ -409,7 +442,7 @@ class ClientNotificationDeliveryWindowTest extends TestCase
             $payload['metadata']['notification']['origin'] = $origin;
         }
         $message = $this->sendPayload($channel, $client, $payload);
-        $immediate = $origin === 'client_action';
+        $immediate = $channel === 'email' || $origin === 'client_action';
         $this->assertSame($immediate ? 'SENT' : 'SCHEDULED', $message->status);
         $this->assertProviderSends($channel, $immediate ? 1 : 0);
         if (! $immediate) {
@@ -444,11 +477,11 @@ class ClientNotificationDeliveryWindowTest extends TestCase
         ];
     }
 
-    public function test_existing_scheduled_messages_are_checked_again_and_rescheduled_reminders_are_cancelled(): void
+    public function test_explicitly_scheduled_email_reminders_are_cancelled_after_rescheduling(): void
     {
         [$shoot, $client] = $this->shoot('2026-10-17 10:00');
         $this->clock('2026-10-17 05:00');
-        $message = app(MessagingService::class)->scheduleEmail($this->payload($shoot, $client, 'SHOOT_REMINDER'), now());
+        $message = app(MessagingService::class)->scheduleEmail($this->payload($shoot, $client, 'SHOOT_REMINDER'), now()->addHours(3));
         $this->dispatch();
         $this->assertSame('08:00', $message->fresh()->scheduled_at->setTimezone('America/New_York')->format('H:i'));
         $shoot->update(['scheduled_at' => Carbon::parse('2026-10-17 15:00', 'America/New_York')->utc()]);
@@ -467,7 +500,7 @@ class ClientNotificationDeliveryWindowTest extends TestCase
         $payload = $this->payload($shoot, $client, 'SHOOT_REMINDER');
         unset($payload['metadata']);
         $payload['tags_json'] = ['SHOOT_REMINDER:rule:3:service:'.$service->id.':2026-10-17T14:00:00+00:00'];
-        $message = app(MessagingService::class)->scheduleEmail($payload, now());
+        $message = app(MessagingService::class)->scheduleEmail($payload, now()->addHours(3));
         $this->dispatch();
         $this->assertSame('08:00', $message->fresh()->scheduled_at->setTimezone('America/New_York')->format('H:i'));
         $service->update(['workflow_status' => 'cancelled']);
@@ -481,12 +514,12 @@ class ClientNotificationDeliveryWindowTest extends TestCase
         [$shoot, $client] = $this->shoot('2026-11-01 15:00');
         $client->update(['timezone' => 'America/Los_Angeles']);
         $this->clock('2026-11-01 10:00'); // 7am Pacific, after the DST transition.
-        $message = $this->send('email', $shoot, $client, 'SHOOT_SUMMARY');
+        $message = $this->send('sms', $shoot, $client, 'SHOOT_SUMMARY');
         $this->assertSame('SCHEDULED', $message->status);
         $this->assertSame('2026-11-01 17:00', $message->scheduled_at->utc()->format('Y-m-d H:i'));
     }
 
-    public function test_client_cc_cannot_receive_an_early_staff_email_and_raw_attachments_survive_deferral(): void
+    public function test_early_staff_email_with_client_cc_and_raw_attachments_sends_immediately(): void
     {
         [$shoot, $client] = $this->shoot('2026-10-17 15:00');
         $staff = User::factory()->create(['role' => 'admin']);
@@ -494,22 +527,15 @@ class ClientNotificationDeliveryWindowTest extends TestCase
         $payload = $this->payload($shoot, $staff, 'SHOOT_SUMMARY');
         $payload['cc'] = [$client->email];
         $payload['attachments'] = [['filename' => 'invoice.pdf', 'content' => '%PDF-test', 'content_type' => 'application/pdf']];
-        $message = app(MessagingService::class)->sendEmail($payload);
-        $this->assertSame('SCHEDULED', $message->status);
-        $attachment = $message->attachments_json[0];
-        $this->assertSame('media_local', $attachment['disk']);
-        // Read final permissions rather than Flysystem's cached pre-chmod stat.
-        clearstatcache();
-        $this->assertSame(0660, fileperms(Storage::disk('media_local')->path($attachment['storage_path'])) & 0777);
-        $this->assertSame(02770, fileperms(dirname(Storage::disk('media_local')->path($attachment['storage_path']))) & 07777);
-        $this->assertSame(posix_getgrnam(config('filesystems.disks.media_local.shared_group'))['gid'], filegroup(Storage::disk('media_local')->path($attachment['storage_path'])));
-        $this->clock('2026-10-17 09:00');
         $provider = \Mockery::mock(CakemailProvider::class);
         $provider->shouldReceive('send')->once()->withArgs(function ($channel, $payload) use ($client) {
             return $payload['attachments'][0]['content'] === '%PDF-test' && $payload['cc'] === [$client->email];
         })->andReturn('attachment-test');
         $this->app->instance(CakemailProvider::class, $provider);
         $this->app->forgetInstance(MessagingService::class);
+        $message = app(MessagingService::class)->sendEmail($payload);
+        $this->assertSame('SENT', $message->status);
+        $this->assertNull($message->scheduled_at);
         $this->dispatch();
         $this->assertSame('SENT', $message->fresh()->status);
     }
@@ -557,7 +583,7 @@ class ClientNotificationDeliveryWindowTest extends TestCase
         $this->clock('2026-10-17 04:00');
         $payload = $this->payload($shoot, $client, 'SHOOT_REMINDER');
         $payload['metadata']['notification']['appointment_at'] = '2026-10-17T13:00:00+00:00';
-        $message = app(MessagingService::class)->sendEmail($payload);
+        $message = $this->sendPayload('sms', $client, $payload);
         $this->assertSame('SCHEDULED', $message->status);
         $this->assertSame('07:00', $message->scheduled_at->setTimezone('America/New_York')->format('H:i'));
     }
@@ -603,7 +629,7 @@ class ClientNotificationDeliveryWindowTest extends TestCase
     }
 
     #[DataProvider('deliveryBalances')]
-    public function test_overnight_full_delivery_waits_without_retrying_and_starts_follow_up_only_after_sending(bool $settled): void
+    public function test_overnight_full_delivery_sends_once_and_anchors_follow_up_to_the_actual_send(bool $settled): void
     {
         $this->clock('2026-10-17 05:00');
         [$shoot] = $this->shoot('2026-10-17 15:00');
@@ -617,21 +643,21 @@ class ClientNotificationDeliveryWindowTest extends TestCase
         $job->handle(app(\App\Services\MailService::class), app(AutomationService::class));
         $messages = Message::where('related_shoot_id', $shoot->id)->where('to_address', $shoot->client->email)->get();
         $this->assertCount(1, $messages);
-        $this->assertSame('SCHEDULED', $messages->first()->status);
-        $this->assertNull($shoot->fresh()->shoot_ready_notified_at);
-        $this->assertSame(0, \App\Models\PaymentReminder::where('shoot_id', $shoot->id)->count());
+        $this->assertSame('SENT', $messages->first()->status);
+        $this->assertNull($messages->first()->scheduled_at);
+        $sentAt = now()->toDateTimeString();
+        $this->assertSame($sentAt, $messages->first()->sent_at->toDateTimeString());
         $ledger = \App\Models\SystemEmailDispatch::where('message_id', $messages->first()->id)->sole();
-        $this->assertSame('scheduled', $ledger->status);
-        $this->assertCount(0, FakeCakemailProvider::sent());
-        $this->clock('2026-10-17 09:00');
-        $this->dispatch();
-        $this->assertSame('SENT', $messages->first()->fresh()->status);
-        $this->assertSame('sent', $ledger->fresh()->status);
-        $this->assertSame(now()->toDateTimeString(), $shoot->fresh()->shoot_ready_notified_at->toDateTimeString());
+        $this->assertSame('sent', $ledger->status);
+        $this->assertCount(1, FakeCakemailProvider::sent());
+        $this->assertSame($sentAt, $shoot->fresh()->shoot_ready_notified_at->toDateTimeString());
         $count = \App\Models\PaymentReminder::where('shoot_id', $shoot->id)->count();
         $settled ? $this->assertSame(0, $count) : $this->assertGreaterThan(0, $count);
+        $this->clock('2026-10-17 09:00');
+        $this->dispatch();
         $this->dispatch();
         $this->assertCount(1, FakeCakemailProvider::sent());
+        $this->assertSame($sentAt, $shoot->fresh()->shoot_ready_notified_at->toDateTimeString());
     }
 
     public static function deliveryBalances(): array
@@ -639,7 +665,7 @@ class ClientNotificationDeliveryWindowTest extends TestCase
         return [[false], [true]];
     }
 
-    public function test_manual_ready_notice_anchors_payment_follow_up_after_the_morning_send(): void
+    public function test_manual_ready_email_sends_immediately_and_anchors_payment_follow_up(): void
     {
         $this->clock('2026-10-17 05:00');
         [$shoot] = $this->shoot('2026-10-17 15:00');
@@ -653,14 +679,61 @@ class ClientNotificationDeliveryWindowTest extends TestCase
         ]);
         $sender = User::factory()->create(['role' => 'admin']);
         $message = app(\App\Services\Messaging\ManualNotificationService::class)->send($shoot, 'shoot_ready', 'client', 'email', $sender);
+        $this->assertSame('SENT', $message->status);
+        $this->assertNull($message->scheduled_at);
+        $this->assertSame(now()->toDateTimeString(), $shoot->fresh()->shoot_ready_notified_at->toDateTimeString());
+        $this->assertGreaterThan(0, \App\Models\PaymentReminder::where('shoot_id', $shoot->id)->count());
+        $this->dispatch();
+        $this->assertProviderSends('email', 1);
+    }
+
+    #[DataProvider('deliveryCycleChannels')]
+    public function test_scheduled_delivery_cycle_is_rechecked_immediately_before_provider_send(string $channel): void
+    {
+        [$shoot, $client] = $this->shoot('2026-10-16 15:00');
+        $this->clock('2026-10-17 05:00');
+        \Illuminate\Support\Facades\DB::table('shoots')->where('id', $shoot->id)->update([
+            'status' => 'delivered', 'workflow_status' => 'delivered', 'delivery_status' => 'delivered',
+        ]);
+        $payload = $this->payload($shoot, $client, 'SHOOT_DELIVERED');
+        $payload['metadata']['notification'] += ['delivery_cycle_key' => 'initial', 'full_order_delivery' => true];
+        $message = $channel === 'email'
+            ? app(MessagingService::class)->scheduleEmail($payload, Carbon::parse('2026-10-17 09:00', 'America/New_York')->utc())
+            : $this->sendPayload($channel, $client, $payload);
         $this->assertSame('SCHEDULED', $message->status);
-        $this->assertNull($shoot->fresh()->shoot_ready_notified_at);
-        $this->assertSame(0, \App\Models\PaymentReminder::where('shoot_id', $shoot->id)->count());
+        \Illuminate\Support\Facades\DB::table('shoots')->where('id', $shoot->id)->update([
+            'active_work_is_reopened' => true, 'active_work_started_at' => now(), 'active_work_completed_at' => now(),
+            'active_work_cycle_key' => '22222222-2222-4222-8222-222222222222',
+        ]);
+        $this->clock('2026-10-17 09:00');
+        $this->dispatch();
+        $this->assertSame('CANCELLED', $message->fresh()->status);
+        $this->assertProviderSends($channel, 0);
+    }
+
+    #[DataProvider('deliveryCycleChannels')]
+    public function test_current_delivery_cycle_releases_its_scheduled_notice_normally(string $channel): void
+    {
+        [$shoot, $client] = $this->shoot('2026-10-16 15:00');
+        $this->clock('2026-10-17 05:00');
+        \Illuminate\Support\Facades\DB::table('shoots')->where('id', $shoot->id)->update([
+            'status' => 'delivered', 'workflow_status' => 'delivered', 'delivery_status' => 'delivered',
+        ]);
+        $payload = $this->payload($shoot, $client, 'SHOOT_DELIVERED');
+        $payload['metadata']['notification'] += ['delivery_cycle_key' => 'initial', 'full_order_delivery' => true];
+        $message = $channel === 'email'
+            ? app(MessagingService::class)->scheduleEmail($payload, Carbon::parse('2026-10-17 09:00', 'America/New_York')->utc())
+            : $this->sendPayload($channel, $client, $payload);
+        $this->assertSame('SCHEDULED', $message->status);
         $this->clock('2026-10-17 09:00');
         $this->dispatch();
         $this->assertSame('SENT', $message->fresh()->status);
-        $this->assertSame(now()->toDateTimeString(), $shoot->fresh()->shoot_ready_notified_at->toDateTimeString());
-        $this->assertGreaterThan(0, \App\Models\PaymentReminder::where('shoot_id', $shoot->id)->count());
+        $this->assertProviderSends($channel, 1);
+    }
+
+    public static function deliveryCycleChannels(): array
+    {
+        return [['email'], ['sms']];
     }
 
     private function shoot(string $local): array

@@ -258,11 +258,52 @@ class ShootFile extends Model
         return $query->where('shoot_files.workflow_stage', self::STAGE_VERIFIED)
             ->where(function ($files) {
                 // Older deliveries have no service ownership and retain their existing release policy.
-                $files->whereNull('shoot_files.shoot_service_id')
+                $files->where(function ($unscoped) {
+                    $unscoped->whereNull('shoot_files.shoot_service_id')
+                        ->where(fn ($history) => $history->whereDoesntHave('shoot.serviceItems', fn ($line) => $line
+                            ->whereNotNull('delivery_requirements')
+                            ->whereJsonLength('delivery_requirements', '>', 0)
+                            ->where('delivery_requirements->[0]->kind', '!=', 'legacy'))
+                            ->orWhereHas('shoot', fn ($shoot) => $shoot->whereNotNull('active_work_started_at')
+                                ->whereNotNull('admin_verified_at')->whereColumn('shoots.admin_verified_at', '<=', 'shoots.active_work_started_at')
+                                ->whereColumn('shoot_files.created_at', '<=', 'shoots.active_work_started_at')
+                                ->where(fn ($verified) => $verified->whereNull('shoot_files.verified_at')
+                                    ->orWhereColumn('shoot_files.verified_at', '<=', 'shoots.active_work_started_at'))));
+                })
                     ->orWhereHas('serviceItem', fn ($line) => $line
                         ->whereColumn('shoot_service.shoot_id', 'shoot_files.shoot_id')
+                        ->whereNull('cancelled_at')
                         ->where('workflow_status', ShootService::WORKFLOW_DELIVERED)
-                        ->where('delivery_status', ShootService::DELIVERY_DELIVERED));
+                        ->where('delivery_status', ShootService::DELIVERY_DELIVERED)
+                        ->where(fn ($legacy) => $legacy->whereNull('delivery_requirements')
+                            ->orWhere(fn ($snapshot) => $snapshot->whereJsonLength('delivery_requirements', 1)
+                                ->where('delivery_requirements->[0]->kind', 'legacy'))))
+                    ->orWhereExists(function ($receipts) {
+                        $receipts->selectRaw('1')->from('shoot_delivery_receipts as delivery_receipt')
+                            ->join('shoot_service as delivery_line', 'delivery_line.id', '=', 'delivery_receipt.shoot_service_id')
+                            ->whereColumn('delivery_receipt.shoot_id', 'shoot_files.shoot_id')
+                            ->whereColumn('delivery_receipt.shoot_service_id', 'shoot_files.shoot_service_id')
+                            ->whereColumn('delivery_line.shoot_id', 'shoot_files.shoot_id')
+                            ->where('delivery_receipt.method', 'media')
+                            ->whereNull('delivery_receipt.revoked_at')->whereNull('delivery_line.cancelled_at')
+                            ->where('delivery_line.workflow_status', '!=', ShootService::WORKFLOW_CANCELLED)
+                            ->where('delivery_line.delivery_status', '!=', ShootService::DELIVERY_CANCELLED)
+                            ->where(function ($kind) {
+                                $mime = "LOWER(COALESCE(NULLIF(shoot_files.mime_type, ''), shoot_files.file_type, ''))";
+                                $kind->where(fn ($photo) => $photo->where('delivery_receipt.component_key', 'photo')
+                                    ->whereRaw("$mime LIKE 'image/%'")
+                                    ->whereNotIn('shoot_files.media_type', ['floorplan', 'raw', 'extra', 'reference', 'additional']))
+                                    ->orWhere(fn ($video) => $video->where('delivery_receipt.component_key', 'video')->whereRaw("$mime LIKE 'video/%'"))
+                                    ->orWhere(fn ($plan) => $plan->where('delivery_receipt.component_key', 'floorplan')
+                                        ->where('shoot_files.media_type', 'floorplan')->where(fn ($type) => $type
+                                            ->whereRaw("$mime LIKE 'image/%'")->orWhereRaw("$mime = 'application/pdf'")));
+                            });
+                        if ($receipts->getConnection()->getDriverName() === 'mysql') {
+                            $receipts->whereRaw("JSON_CONTAINS(delivery_receipt.evidence, JSON_OBJECT('id', shoot_files.id, 'version', COALESCE(shoot_files.content_version, 1)), '$.files')");
+                        } else {
+                            $receipts->whereRaw("EXISTS (SELECT 1 FROM json_each(delivery_receipt.evidence, '$.files') AS delivered_file WHERE CAST(json_extract(delivered_file.value, '$.id') AS INTEGER) = shoot_files.id AND CAST(json_extract(delivered_file.value, '$.version') AS INTEGER) = COALESCE(shoot_files.content_version, 1))");
+                        }
+                    });
             });
     }
 

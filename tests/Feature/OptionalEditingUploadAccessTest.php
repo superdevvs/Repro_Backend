@@ -76,7 +76,8 @@ class OptionalEditingUploadAccessTest extends TestCase
         $this->assertTrue(app(ShootEditingAssignmentService::class)->filterServicesForEditor($shoot, $editor)->isEmpty());
         $this->actingAs($editor)->post("/api/shoots/{$shoot->id}/upload", [
             'files' => [UploadedFile::fake()->image('edited.jpg', 8, 8)], 'upload_type' => 'edited',
-        ], ['Accept' => 'application/json'])->assertForbidden();
+        ], ['Accept' => 'application/json'])->assertForbidden()->assertJsonPath('error_type', 'forbidden');
+        $this->assertSame(0, $shoot->files()->where('workflow_stage', 'completed')->count());
     }
 
     public function test_legacy_unscoped_intake_is_not_guessed_between_two_photo_services(): void
@@ -103,8 +104,10 @@ class OptionalEditingUploadAccessTest extends TestCase
         $file = UploadedFile::fake()->image('retry.jpg', 8, 8);
         $payload = ['files' => [$file], 'upload_type' => 'edited', 'idempotency_key' => 'same-editor-retry'];
         $this->storage();
-        $this->actingAs($editor)->post("/api/shoots/{$shoot->id}/upload", $payload, ['Accept' => 'application/json'])->assertForbidden();
+        $this->actingAs($editor)->post("/api/shoots/{$shoot->id}/upload", $payload, ['Accept' => 'application/json'])
+            ->assertForbidden()->assertJsonPath('error_type', 'forbidden');
         $attemptId = ShootUploadAttempt::sole()->id;
+        $this->assertSame(403, ShootUploadAttempt::sole()->http_status);
         ShootFile::where('shoot_id', $shoot->id)->update(['required_for_editing' => true]);
         $success = $this->post("/api/shoots/{$shoot->id}/upload", $payload, ['Accept' => 'application/json'])->assertOk();
         $this->post("/api/shoots/{$shoot->id}/upload", $payload, ['Accept' => 'application/json'])->assertOk()

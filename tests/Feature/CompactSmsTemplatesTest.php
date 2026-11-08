@@ -45,10 +45,44 @@ class CompactSmsTemplatesTest extends TestCase
             $this->assertStringNotContainsString('{{', $body, $template->slug);
             $this->assertDoesNotMatchRegularExpression('/Map:|Access:|Services:|Private access|Detailed change|Long service/', $body);
             if ($template->slug !== 'automation-account-created-sms') {
+                $this->assertStringStartsWith('R/E Pro Photos: ', $body, $template->slug);
+                $this->assertStringEndsWith('Reply STOP to opt out.', $body, $template->slug);
                 $this->assertStringContainsString("108 James Street Ext, Woodsboro, MD, 21798\nSep 28, 2026 10:00 AM EDT\nContact: Lauren 4435045965", $body, $template->slug);
                 $this->assertStringContainsString($automated ? 'Check your email or Dashboard for details and links.' : 'Details: https://reprodashboard.com/shoots/104', $body, $template->slug);
             }
         }
+    }
+
+    public function test_sender_identity_upgrade_changes_only_exact_stock_sms_and_preserves_disabled_templates(): void
+    {
+        $this->seed(MessagingSystemSeeder::class);
+        $stock = MessageTemplate::where('slug', 'automation-photographer-shoot-reminder-sms')->firstOrFail();
+        $newBody = SmsTemplateContent::forSlug($stock->slug);
+        $oldBody = substr($newBody, strlen('R/E Pro Photos: '), -strlen("\nReply STOP to opt out."));
+        $stock->update(['body_text' => $oldBody, 'is_active' => false]);
+        $variables = $stock->variables_json;
+        $prefixedStock = MessageTemplate::where('slug', 'automation-shoot-scheduled-sms')->firstOrFail();
+        $prefixedBody = SmsTemplateContent::forSlug($prefixedStock->slug);
+        $prefixedStock->update(['body_text' => substr($prefixedBody, 0, -strlen("\nReply STOP to opt out.")), 'is_active' => false]);
+        $custom = MessageTemplate::where('slug', 'automation-shoot-updated-sms')->firstOrFail();
+        $custom->update(['body_text' => 'Custom operator copy', 'is_active' => false]);
+        $customHtml = MessageTemplate::where('slug', 'shoot-scheduled-sms')->firstOrFail();
+        $customHtmlBody = substr(SmsTemplateContent::forSlug($customHtml->slug), strlen('R/E Pro Photos: '), -strlen("\nReply STOP to opt out."));
+        $customHtml->update(['body_text' => $customHtmlBody, 'body_html' => 'Custom operator HTML']);
+        $emails = MessageTemplate::where('channel', 'EMAIL')->orderBy('id')->get()->toJson();
+        $migration = require database_path('migrations/2026_10_25_143000_brand_stock_operational_sms.php');
+        $migration->up();
+        $migration->up();
+        $this->assertSame($newBody, $stock->fresh()->body_text);
+        $this->assertSame($variables, $stock->fresh()->variables_json);
+        $this->assertFalse($stock->fresh()->is_active);
+        $this->assertSame($prefixedBody, $prefixedStock->fresh()->body_text);
+        $this->assertFalse($prefixedStock->fresh()->is_active);
+        $this->assertSame('Custom operator copy', $custom->fresh()->body_text);
+        $this->assertFalse($custom->fresh()->is_active);
+        $this->assertSame($customHtmlBody, $customHtml->fresh()->body_text);
+        $this->assertSame('Custom operator HTML', $customHtml->fresh()->body_html);
+        $this->assertSame($emails, MessageTemplate::where('channel', 'EMAIL')->orderBy('id')->get()->toJson());
     }
 
     public function test_contact_falls_back_to_client_when_access_fields_are_empty(): void

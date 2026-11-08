@@ -20,6 +20,7 @@ max-binlog-size=268435456
 max-connections=96
 max-allowed-packet=67108864
 slow-query-log=ON
+log-output=FILE
 slow-query-log-file=/var/lib/mysql/slow.log
 long-query-time=1
 log-error-verbosity=2

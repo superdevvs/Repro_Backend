@@ -1,5 +1,57 @@
 # MySQL production readiness: November 5, 2026
 
+## November 8 refresh
+
+The candidate now includes production release `46284c95`, retaining the newer
+component/provider delivery, notification timing/privacy, travel-fee and Zillow
+changes. The November 5 results below remain historical evidence; they do not
+establish acceptance of this refreshed source or current production data.
+
+Separate MySQL 8.4 host provisioning has been authorized. It is still **not
+installed**: both SSH and the Maverick server chat require interactive
+administrator authentication. The live application remains on SQLite, and no
+application deployment or database switch is authorized. The server-side
+administrator preflight is at
+`/home/maverick/repro-mysql84-provisioning-20261107/admin-preflight.py`.
+
+The service templates now use dedicated UID 64084 instead of the host's
+dnsmasq UID 999, bounded container logs, and an isolated slow-log rotation
+timer. An authenticated unit preflight runs before logrotate; its in-config
+precheck alone cannot prevent older archives moving when the database is down.
+Local synthetic validation passed fresh initialization, PHP UID 33 socket
+access and account isolation, durable recovery of 100 committed rows with one
+uncommitted row rolled back, nine log rotations, ownership, compression,
+seven-file retention, and refusal to touch logs while the database was offline.
+That smoke test used a 256 MiB buffer and 1 GiB cap to limit workstation memory;
+it is not a host-capacity test. Rotation hooks used matching direct clients in
+the fixture; actual host Compose/systemd execution remains to be accepted.
+
+The three new delivery migrations now match signed imported or unsigned native
+parent IDs and use a MySQL-compatible provider index name. Provider observation
+locks its shoot before the duplicate check, preserving one event under
+concurrent identical observations. External receipt identity comparisons sort
+JSON object keys while retaining strict key, value and type checks, because
+native MySQL JSON does not preserve insertion order. New native tests cover the
+real migrations and two independent worker processes; cross-engine receipt
+tests cover reordering, changed identity and revocation. The travel-fee test builds a portable
+SQLite safety-backup fixture without weakening the repair command's checks.
+Focused runs passed: 16 MySQL migration/concurrency tests with 224 assertions,
+72 MySQL delivery/fixture checks with 766 assertions, and 49 affected SQLite
+tests with 645 assertions. These runs overlap and are not summed. Removing the
+provider row lock in a disposable source copy reproduced the duplicate-key
+race; restoring it passed both native cases with 40 assertions. Broader refreshed application checks and CI
+are recorded in the draft PR and protected refresh evidence against the final
+candidate commit; this document does not turn historical results into current
+production acceptance.
+
+Protected refresh evidence is under
+`C:\Users\shubh\.codex\repro-mysql-lab\20261105\host-refresh-20261108`.
+Do not reuse the older customer snapshot for a production cutover. Actual-host
+installation, fresh-copy parity, host load, off-host restore, provider/device
+acceptance and a separately approved cutover window remain outstanding.
+
+## November 5 rehearsal record
+
 The isolated migration candidate is prepared and tested. Production activation
 is **not approved or complete**. This migration work made no production
 application/configuration/service or business-data changes. Read-only SSH inventory and an online

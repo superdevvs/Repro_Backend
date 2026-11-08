@@ -1345,14 +1345,19 @@ class MailService
                 // suppressed. The idempotency key below still prevents duplicates.
                 'enforce_email_health_gate' => false,
             ]), [
-                'idempotency_key' => sprintf(
+                'notification_metadata' => [
+                    'delivery_cycle_key' => app(\App\Services\Messaging\ShootDeliveryCycle::class)->key($shoot),
+                    'full_order_delivery' => $isFullOrderDelivery,
+                    'delivery_service_item_ids' => $serviceItemIds,
+                ],
+                'idempotency_key' => app(\App\Services\Messaging\ShootDeliveryCycle::class)->emailKey(sprintf(
                     'SHOOT_DELIVERED:%d:%d:%s:%s:%s',
                     $shoot->id,
                     $user->id,
                     $isFullOrderDelivery ? 'full' : 'partial',
                     $this->serviceScopeHash($shootData),
                     $revision
-                ),
+                ), $shoot),
                 'require_confirmed_duplicate' => true,
                 'retry_failed' => true,
                 'canonical_metadata' => ['is_full_order_delivery' => $isFullOrderDelivery, 'delivery_revision' => $revision],
@@ -1423,7 +1428,12 @@ class MailService
                     'enforce_email_health_gate' => false,
                 ]),
                 [
-                    'idempotency_key' => sprintf('SHOOT_SUMMARY:%d:%d:%s', $shoot->id, $user->id, $revision),
+                    'notification_metadata' => [
+                        'delivery_cycle_key' => app(\App\Services\Messaging\ShootDeliveryCycle::class)->key($shoot),
+                        'full_order_delivery' => true,
+                    ],
+                    'idempotency_key' => app(\App\Services\Messaging\ShootDeliveryCycle::class)->emailKey(
+                        sprintf('SHOOT_SUMMARY:%d:%d:%s', $shoot->id, $user->id, $revision), $shoot),
                     'require_confirmed_duplicate' => true,
                     'retry_failed' => true,
                     'canonical_metadata' => ['is_full_order_delivery' => true, 'delivery_revision' => $revision],

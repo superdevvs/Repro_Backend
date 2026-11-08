@@ -145,7 +145,9 @@ class DeliveredCardMediaTest extends TestCase
     public function test_active_retention_does_not_attach_policy_relations_to_preloaded_source_items(): void
     {
         $shoot = $this->shoot(['payment_status' => 'unpaid']);
-        $shoot->forceFill(['id' => 1, 'active_work_started_at' => '2026-11-03 13:00:00', 'active_work_completed_at' => null]);
+        $shoot->forceFill(['id' => 1, 'status' => 'active', 'workflow_status' => 'active',
+            'admin_verified_at' => '2026-11-02 12:00:00', 'completed_at' => '2026-11-02 12:00:00',
+            'active_work_is_reopened' => true, 'active_work_started_at' => '2026-11-03 13:00:00', 'active_work_completed_at' => null]);
         $item = new \App\Models\ShootService;
         $item->forceFill(['id' => 10, 'shoot_id' => 1, 'is_deliverable' => true,
             'workflow_status' => 'delivered', 'delivery_status' => 'delivered',

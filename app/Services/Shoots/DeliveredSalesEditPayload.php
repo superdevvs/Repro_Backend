@@ -2,7 +2,7 @@
 
 namespace App\Services\Shoots;
 
-use App\Models\Shoot;
+use App\Models\{Service, Shoot};
 use App\Services\Schedule\ShootScheduleUpdateInput;
 use Carbon\Carbon;
 
@@ -43,9 +43,14 @@ class DeliveredSalesEditPayload
                 } else {
                     abort_if(! empty($row['shoot_service_id']), 403, self::LOCKED_MESSAGE);
                 }
+                $newFinancialFee = ! $item && (bool) Service::find($row[$idKey] ?? null)?->financial_only;
                 foreach (['duration_minutes', 'scheduled_at', 'photographer_id'] as $key) {
                     if (! array_key_exists($key, $row)) continue;
-                    $expected = $item ? ($key === 'duration_minutes' ? app(ShootDurationResolver::class)->forServiceItem($item) : $item->{$key}) : null;
+                    // A new financial line can pay a photographer without changing
+                    // the completed appointment or any existing service assignment.
+                    if ($newFinancialFee && $key === 'photographer_id') continue;
+                    $expected = $item ? ($key === 'duration_minutes' ? app(ShootDurationResolver::class)->forServiceItem($item) : $item->{$key})
+                        : ($newFinancialFee && $key === 'duration_minutes' ? 0 : null);
                     abort_unless($this->same($key, $row[$key], $expected), 403, self::LOCKED_MESSAGE);
                 }
                 foreach (['shoot_unit_id', 'client_key'] as $key) {
@@ -69,12 +74,23 @@ class DeliveredSalesEditPayload
 
         if (array_key_exists('service_photographers', $payload)) {
             abort_unless(is_array($payload['service_photographers']), 403, self::LOCKED_MESSAGE);
+            $newFeeAssignments = [];
             foreach ($payload['service_photographers'] as $row) {
                 $matches = is_array($row) ? $items->where('service_id', $row['service_id'] ?? null) : collect();
+                $newFinancialFee = $matches->isEmpty() && is_array($row)
+                    && (bool) Service::find($row['service_id'] ?? null)?->financial_only
+                    && collect($payload['services'] ?? $payload['service_items'] ?? $payload['service_lines'] ?? [])
+                        ->contains(fn ($selection) => (int) ($selection['service_id'] ?? $selection['id'] ?? 0) === (int) ($row['service_id'] ?? 0));
+                if ($newFinancialFee) {
+                    abort_unless(array_key_exists('photographer_id', $row), 403, self::LOCKED_MESSAGE);
+                    $newFeeAssignments[] = $row;
+                    continue;
+                }
                 abort_unless($matches->isNotEmpty() && array_key_exists('photographer_id', $row)
                     && $matches->every(fn ($item) => $this->same('photographer_id', $row['photographer_id'], $item->photographer_id)), 403, self::LOCKED_MESSAGE);
             }
-            unset($payload['service_photographers']);
+            if ($newFeeAssignments) $payload['service_photographers'] = $newFeeAssignments;
+            else unset($payload['service_photographers']);
         }
 
         if (array_key_exists('units', $payload)) {

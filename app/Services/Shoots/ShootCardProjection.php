@@ -12,8 +12,8 @@ final class ShootCardProjection
         // Accounts and Calendar. Keep operational facts and server capabilities;
         // only detail-only provider payloads and duplicate collections are omitted.
         $card = Arr::only($shoot, [
-            'display_status', 'has_active_work', 'active_work_started_at', 'active_work_completed_at', 'active_work_at', 'active_work_date', 'active_work_time',
-            'id', 'client_id', 'photographer_id', 'editor_id', 'rep_id', 'status', 'workflow_status',
+            'display_status', 'has_active_work', 'active_work_is_reopened', 'active_work_started_at', 'active_work_completed_at', 'active_work_at', 'active_work_date', 'active_work_time',
+            'id', 'client_id', 'photographer_id', 'editor_id', 'rep_id', 'status', 'workflow_status', 'auto_delivery',
             'address', 'address2', 'city', 'state', 'zip', 'latitude', 'longitude', 'location', 'property_details',
             'scheduled_date', 'scheduled_at', 'time', 'timezone', 'scheduled_timezone', 'completed_at', 'completed_date',
             'scheduled_instant', 'schedule_timezone', 'cancellation_fee_window', 'duration_minutes',

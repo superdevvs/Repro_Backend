@@ -32,6 +32,21 @@ class UploadAlbumMediaAction
             'photographer_note' => 'nullable|string|max:1000',
         ]);
         $shootServiceId = isset($validated['shoot_service_id']) ? (int) $validated['shoot_service_id'] : null;
+        $user = $user->fresh();
+        $shoot = $shoot->fresh();
+        $selectedAlbum = ! empty($validated['album_id']) ? ShootMediaAlbum::findOrFail($validated['album_id']) : null;
+        abort_if($selectedAlbum && (int) $selectedAlbum->shoot_id !== (int) $shoot->id, 422, 'Selected album does not belong to this shoot.');
+        abort_if($selectedAlbum?->shoot_service_id && $shootServiceId && (int) $selectedAlbum->shoot_service_id !== $shootServiceId,
+            422, 'The selected album and service must have the same owner.');
+        $shootServiceId ??= $selectedAlbum?->shoot_service_id;
+        $target = app(\App\Services\Shoots\ShootUploadTargetPolicy::class)->resolve(
+            $shoot, $user, $validated['type'] === 'edited' ? 'edited' : 'raw', $shootServiceId,
+            $request->file('files'), $validated['type']
+        );
+        $shootServiceId = $target?->id;
+        abort_if($selectedAlbum && ! $selectedAlbum->shoot_service_id && $shootServiceId && $selectedAlbum->files()->exists(),
+            422, 'Choose a service-specific album. Existing album media must be assigned explicitly.');
+
 
         if ($shootServiceId && !$shoot->serviceItems()->whereKey($shootServiceId)->exists()) {
             return [
@@ -57,8 +72,8 @@ class UploadAlbumMediaAction
             ];
         }
 
-        $album = $validated['album_id']
-            ? ShootMediaAlbum::findOrFail($validated['album_id'])
+        $album = $selectedAlbum
+            ? $selectedAlbum
             : $this->support->getOrCreateAlbumForType($shoot, $validated['type'], $user, $shootServiceId);
 
         if ((int) $album->shoot_id !== (int) $shoot->id) {

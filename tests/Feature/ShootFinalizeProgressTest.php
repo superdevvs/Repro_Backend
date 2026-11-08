@@ -42,6 +42,7 @@ class ShootFinalizeProgressTest extends TestCase
             'media_type' => 'edited',
             'uploaded_by' => $admin->id,
             'workflow_stage' => ShootFile::STAGE_COMPLETED,
+            'scan_status' => ShootFile::SCAN_STATUS_CLEAN,
         ]);
 
         return $shoot;

@@ -124,11 +124,13 @@ class AutomationController extends Controller
 
     public function runs(AutomationRule $automation): JsonResponse
     {
+        abort_unless(request()->user()?->role === 'superadmin', 403);
+
         return response()->json([
-            'data' => $automation->recentRuns()
+            'data' => app(\App\Services\Messaging\AutomationSmsDeliverySummary::class)->annotate($automation->recentRuns()
                 ->with('steps')
                 ->limit(20)
-                ->get()
+                ->get())
                 ->toArray(),
         ]);
     }
@@ -213,7 +215,7 @@ class AutomationController extends Controller
 
         return response()->json([
             'status' => 'queued',
-            'output' => trim(Artisan::output()),
+            'output' => request()->user()?->role === 'superadmin' ? trim(Artisan::output()) : null,
             'automation' => $this->serializeAutomation($automation->fresh()->load(['template', 'channel', 'latestDispatch']), true),
         ]);
     }
@@ -381,13 +383,25 @@ class AutomationController extends Controller
     {
         $workflow = $this->workflowConverter->getWorkflowDefinition($automation);
         $validation = $this->workflowValidator->validate($workflow);
-        $recentRuns = $automation->recentRuns()
-            ->when($includeRuns, fn ($query) => $query->with('steps'))
+        $canViewDiagnostics = request()->user()?->role === 'superadmin';
+        $recentRuns = $canViewDiagnostics ? $automation->recentRuns()
+            ->with('steps')
             ->limit($includeRuns ? 20 : 3)
-            ->get();
+            ->get() : new \Illuminate\Database\Eloquent\Collection;
+        if ($canViewDiagnostics) {
+            app(\App\Services\Messaging\AutomationSmsDeliverySummary::class)->annotate($recentRuns);
+        }
+        if (! $includeRuns) {
+            $recentRuns->each->unsetRelation('steps');
+        }
         $templateSourceOfTruth = 'database';
 
-        return array_merge($automation->toArray(), [
+        $attributes = $automation->toArray();
+        if (! $canViewDiagnostics) {
+            unset($attributes['latest_dispatch']);
+        }
+
+        return array_merge($attributes, [
             'editor_mode' => $automation->editor_mode ?: 'visual',
             'engine_version' => $automation->engine_version ?: 2,
             'workflow_definition_json' => $workflow,

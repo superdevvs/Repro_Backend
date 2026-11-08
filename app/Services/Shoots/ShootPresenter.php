@@ -687,6 +687,7 @@ class ShootPresenter
         $shoot->mmm_last_order_at = $shoot->mmm_last_order_at;
         $shoot->mmm_last_error = \App\Services\ApiErrorResponder::storedFailure($shoot->mmm_last_error);
         $shoot->tour_links = $tourLinks;
+        $shoot->setAttribute('can_manage_zillow_visibility', app(ShootAuthorizationSupport::class)->canManageZillowVisibility($shoot, $requestingUser));
         $shoot->setAttribute('editor_assignments', $editorAssignments);
         $shoot->setAttribute('editorAssignments', $editorAssignments);
         $canSubmitEdits = app(ShootSubmissionCapabilityService::class)->canSubmitEdits($shoot, $requestingUser);
@@ -769,9 +770,11 @@ class ShootPresenter
                         return $service;
                     }
 
+                    $serviceItemSummary = $serviceItemByServiceId->get($service->pivot?->id, []);
+                    $financialOnly = (bool) ($serviceItemSummary['financial_only'] ?? false);
                     $canAssignPhotographer = $service->allowsPhotographerAssignment();
                     $pivotPhotographerId = $canAssignPhotographer ? ($service->pivot?->photographer_id ?? null) : null;
-                    $resolvedPhotographerId = $canAssignPhotographer ? ($pivotPhotographerId ?? $shootPhotographerId) : null;
+                    $resolvedPhotographerId = $canAssignPhotographer ? ($financialOnly ? $pivotPhotographerId : ($pivotPhotographerId ?? $shootPhotographerId)) : null;
 
                     $resolvedPhotographer = null;
                     if (! $isEditorRole && $resolvedPhotographerId) {
@@ -807,7 +810,6 @@ class ShootPresenter
                         }
                     }
                     $editingCompletedAt = $service->pivot?->editing_completed_at;
-                    $serviceItemSummary = $serviceItemByServiceId->get($service->pivot?->id, []);
 
                     return [
                         'id' => (string) $service->id,
@@ -828,7 +830,9 @@ class ShootPresenter
                         'quantity' => (int) ($service->pivot?->quantity ?? 1),
                         'allow_multiple' => (bool) $service->allow_multiple,
                         'pricing_type' => $service->pricing_type,
-                        'photographer_required' => $service->requiresPhotographer(),
+                        'photographer_required' => (bool) ($serviceItemSummary['photographer_required'] ?? $service->requiresPhotographer()),
+                        'financial_only' => $financialOnly,
+                        'allows_photographer_assignment' => $canAssignPhotographer,
                         'editing_lanes' => $this->editingAssignmentService->serviceEditingLanes($service),
                         // Canonical contracted photo count. Null means unspecified, and
                         // booking quantity is never substituted for it.
@@ -979,6 +983,7 @@ class ShootPresenter
         $shoot->setAttribute('orderTotal', (float) ($shoot->total_quote ?? 0));
 
         // Shared workflow capability block. Keep additive snake/camel aliases here;
+        $shoot->setAttribute('auto_delivery', app(ProviderAutoDeliverySettings::class)->payload($shoot, $requestingUser));
         // additional server-owned capabilities (for example invoice access) belong
         // beside this block so list/detail payloads remain easy to audit.
         $canSubmitRaw = app(ShootSubmissionCapabilityService::class)

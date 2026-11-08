@@ -200,11 +200,11 @@ class ShootPublicAssetsService
             $tourLinks['iguide_branded'] = $iguideUrl;
         }
 
-        // Do not return branded 3D destinations inside MLS/generic payloads.
-        // zillow_3d has no unbranded equivalent and neither the MLS tour pages
-        // nor the MLS 3D wrapper will open it, so leaving it here would make a
-        // preview advertise a walkthrough the page cannot show - and disclose to
-        // an MLS audience that a branded Zillow tour exists.
+        // MLS/generic pages may use Zillow's explicitly unbranded share link.
+        // A branded-only URL still fails closed rather than leaking attribution.
+        $zillow = app(ZillowTourLinks::class);
+        $zillowViewer = $zillow->viewer($tourLinks, $isBranded);
+        $tourLinks = $zillow->publicLinks($tourLinks, $isBranded);
         if (! $isBranded) {
             unset(
                 $tourLinks['iguide_branded'],
@@ -248,6 +248,12 @@ class ShootPublicAssetsService
             $assets['shoot']['address'] = $shoot->address.' · '.$unit->label;
         }
         $assets['type'] = $type;
+        $assets['zillow_viewer'] = $zillowViewer;
+        if ($zillowViewer !== null) {
+            $tourLinks['zillow_3d'] = $zillowViewer['open_url'];
+        } else {
+            unset($tourLinks['zillow_3d']);
+        }
         $assets['property_details'] = $propertyDetails;
         $assets['iguide_tour_url'] = $iguideUrl;
         $assets['iguide_url'] = $iguideUrl;
@@ -451,6 +457,10 @@ class ShootPublicAssetsService
 
         $shootItems = $shoots->map(function (Shoot $shoot) use ($shoots) {
             $files = $shoot->files ?: collect();
+            if (app(DeliveryPlanService::class)->usesComponents($shoot)) {
+                $files->loadMissing('serviceItem');
+                $files = $files->filter(fn (ShootFile $file) => $this->shootClientReleaseAccessService->isApprovedFile($shoot, $file));
+            }
             $previewCandidates = $files->filter(fn (ShootFile $file) => app(ShootAuthorizationSupport::class)->isClientHeroEligibleFile($file));
             $heroKey = $this->normalizedProfileMediaKey($shoot->hero_image);
             $heroBlocked = $heroKey && $files->contains(fn (ShootFile $file) => ! $previewCandidates->contains('id', $file->id)
@@ -485,7 +495,7 @@ class ShootPublicAssetsService
                 ->values()
                 ->toArray();
 
-            $tourLinks = $this->normalizeTourLinks($shoot->tour_links ?? []);
+            $tourLinks = app(ZillowTourLinks::class)->publicLinks($this->normalizeTourLinks($shoot->tour_links ?? []), true);
             $propDetails = $this->buildPublicTourPropertyDetails($shoot, $tourLinks);
             $deliveredStatuses = [
                 Shoot::STATUS_DELIVERED,
@@ -696,17 +706,30 @@ class ShootPublicAssetsService
         $videos = [];
         $publicImages = app(PublicTourImage::class);
         $activeWork = app(ShootActiveWorkLifecycle::class)->hasActiveWork($shoot);
+        $initialPartial = app(ShootActiveWorkLifecycle::class)->isInitialPartial($shoot);
+        $initialItems = app(ShootActiveWorkLifecycle::class)->initialDeliveryItemIds($shoot);
+        $initialPhotos = $chosen->filter(fn (ShootFile $file) => in_array((int) $file->shoot_service_id, $initialItems, true)
+            && $file->workflow_stage === ShootFile::STAGE_COMPLETED && ! $file->verified_at
+            && ! in_array(strtolower((string) $file->media_type), ['raw', 'video', 'floorplan'], true)
+            && str_starts_with(strtolower((string) $file->file_type), 'image/'));
+        $initialPreviewIds = app(ServiceDeliveryEligibility::class)->currentCycleFiles($shoot, $initialPhotos)->pluck('id')->all();
         $revalidateImages = ! $this->mediaStorage->readFromR2Enabled() && ! $this->mediaStorage->r2Only()
             && $publicImages->canPublish($shoot) && ! $shoot->units()->exists();
         foreach ($chosen as $file) {
             // Hidden / delivery-blocked media must never appear on the public tour.
             // Archive and share-link builders already reject these; the tour used to
             // ignore is_hidden, so a client hide still left the image in the embed.
-            if ($file->is_hidden || $file->isBlockedFromDelivery() || $file->isIguideOfflinePackage()) {
+            if ($file->is_hidden || $file->isBlockedFromDelivery() || $file->isIguideOfflinePackage()
+                || strtolower((string) $file->media_type) === 'raw') {
                 continue;
             }
-            // Reopening work preserves released history, never a fallback URL for unfinished output.
-            if ($activeWork && ! $publicImages->canRetainPublishedFile($file, $shoot)) continue;
+            // Shared photo previews are independent of paid original downloads.
+            // Keep initial edited photos visible while a bundled video is still
+            // pending; genuine additional work retains its publication boundary.
+            $photoPreview = ! in_array(strtolower((string) $file->media_type), ['raw', 'video', 'floorplan'], true)
+                && str_starts_with(strtolower((string) $file->file_type), 'image/');
+            if (($activeWork || $initialPartial) && ! in_array($file->id, $initialPreviewIds, true)
+                && ! $publicImages->canRetainPublishedFile($file, $shoot, ! $photoPreview)) continue;
 
             // Floorplans have their own "Floor Plans" section and must never appear in
             // the property photo gallery or hero. (They now carry a generated preview

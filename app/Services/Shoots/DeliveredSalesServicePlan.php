@@ -72,6 +72,12 @@ class DeliveredSalesServicePlan
             app(ShootMutationSupportService::class)->assertServiceQuantityAllowed($service, $quantity, $current?->quantity, "services.$index.quantity");
             $sqft = $multiUnit ? $unit->sqft : $shoot->propertySqft();
             if (! $current && $service->pricing_type === 'variable' && ! $sqft) $this->fail('Square footage is required to price this service.');
+            $financialOnly = $current ? app(FinancialServiceClassification::class)->isFinancialOnly($current) : (bool) $service->financial_only;
+            $feeRecipient = ! $current && $financialOnly && array_key_exists('photographer_id', $row)
+                && $row['photographer_id'] !== null && $row['photographer_id'] !== '' ? (int) $row['photographer_id'] : null;
+            if ($feeRecipient && ! User::query()->whereKey($feeRecipient)->photographers()->exists()) {
+                throw ValidationException::withMessages([($multiUnit ? 'service_lines' : 'services').".$index.photographer_id" => ['Choose a user with the photographer role for this fee recipient.']]);
+            }
             $services[] = [
                 'id' => $serviceId, 'shoot_service_id' => $current?->id,
                 'client_key' => $current?->client_key ?? ($multiUnit ? ($row['client_key'] ?? (string) Str::uuid()) : null),
@@ -81,8 +87,10 @@ class DeliveredSalesServicePlan
                 'duration_minutes' => $current ? $current->duration_minutes : app(ShootDurationResolver::class)->forService($service, $sqft),
                 'contracted_photo_count' => $current ? $current->contracted_photo_count : $service->contractedPhotoCount(),
                 'scheduled_at' => $current?->scheduled_at?->format('Y-m-d H:i:s'),
-                'photographer_id' => $current?->photographer_id, 'editor_id' => $current?->editor_id,
+                'photographer_id' => $current ? $current->photographer_id : $feeRecipient, 'editor_id' => $current?->editor_id,
                 'created_at' => $current?->created_at,
+                '_booked_financial_only' => $current ? $financialOnly : null,
+                '_financial_only' => $financialOnly,
                 'billing_correction_only' => ($data['service_change_intent'] ?? 'new_work') === 'billing_correction',
             ];
         }
@@ -125,13 +133,14 @@ class DeliveredSalesServicePlan
                 $item->shoot_id = $shoot->id;
                 $item->service_id = $row['id'];
                 $item->scheduled_at = null;
-                $item->photographer_id = $item->editor_id = $item->video_editor_id = null;
+                $item->photographer_id = ($row['_financial_only'] ?? false) ? $row['photographer_id'] : null;
+                $item->editor_id = $item->video_editor_id = null;
                 $item->workflow_status = 'pending';
                 $item->delivery_status = 'not_started';
                 $item->is_deliverable = true;
                 $item->payout_snapshot = ['billing_correction_only' => (bool) ($row['billing_correction_only'] ?? true),
-                    'additional_work' => ! (bool) ($row['billing_correction_only'] ?? true)];
-                $newWork = $newWork || ! $item->payout_snapshot['billing_correction_only'];
+                    'additional_work' => ! ($row['_financial_only'] ?? false) && ! (bool) ($row['billing_correction_only'] ?? true)];
+                $newWork = $newWork || $item->payout_snapshot['additional_work'];
                 $item->save();
             }
             $kept[] = $item->id;

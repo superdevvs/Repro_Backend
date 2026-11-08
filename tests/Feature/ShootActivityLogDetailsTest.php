@@ -220,6 +220,7 @@ class ShootActivityLogDetailsTest extends TestCase
             'media_type' => 'edited',
             'uploaded_by' => $admin->id,
             'workflow_stage' => ShootFile::STAGE_COMPLETED,
+            'scan_status' => 'clean',
         ]);
 
         (new FinalizeShootJob($shoot->id, $admin->id, 'completed'))->handle(

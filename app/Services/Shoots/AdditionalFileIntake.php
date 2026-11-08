@@ -28,6 +28,7 @@ class AdditionalFileIntake
         $scope = $request->filled('shoot_service_id') ? (int) $request->input('shoot_service_id') : null;
         abort_if($scope && ! $shoot->serviceItems()->whereKey($scope)->exists(), 422, 'The selected service does not belong to this shoot.');
         abort_unless($this->authorization->canUploadShootMedia($shoot, $actor, 'additional', $scope), 403);
+        if ($scope) abort_unless(app(ShootUploadTargetPolicy::class)->isWorkItem($shoot->serviceItems()->findOrFail($scope)), 422, 'Cancelled and financial-only rows cannot own new media.');
         $files = $request->file('files'); $files = is_array($files) ? $files : [$files];
         if (count($files) !== 1) throw ValidationException::withMessages(['files' => 'Choose one file or ZIP per upload request.']);
         $original = $files[0];
@@ -50,7 +51,7 @@ class AdditionalFileIntake
             foreach ($entries as $index => $entry) {
                 $lane = $this->intake->laneForMimeType($this->intake->detectedMimeType($entry['file']));
                 $targets = $request->boolean('route_media', true) ? $items->filter(fn ($item) =>
-                    (! $scope || (int) $item->id === $scope) && $this->intake->supportsLane($item, $lane)
+                    (! $scope || (int) $item->id === $scope) && app(ShootUploadTargetPolicy::class)->isOutstanding($item) && $this->intake->supportsLane($item, $lane)
                     && $this->authorization->canUploadShootMedia($shoot, $actor, 'raw', $item->id)) : collect();
                 $target = $targets->count() === 1 ? $targets->first() : null;
                 $group = $target ? $target->id.':'.$lane : null;

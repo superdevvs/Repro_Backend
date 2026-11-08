@@ -118,6 +118,8 @@ class IguideService
         }
 
         $this->applyShootData($shoot, $iguideData);
+        $autoDelivery = app(\App\Services\Shoots\ProviderAutoDeliveryService::class);
+        $autoDelivery->observe($shoot, 'iguide', $iguideData, 'provider_api', $autoDelivery->canonicalFingerprint('iguide', $iguideData));
 
         return $iguideData;
     }
@@ -285,11 +287,23 @@ class IguideService
                 $sameProperty ? $this->buildIguideDataPayload($existingIguideData) : [],
                 $this->buildIguideDataPayload($iguideData),
             );
+            if ($sameProperty) {
+                $providerPayload = array_replace($providerPayload, array_intersect_key($existingIguideData,
+                    array_flip(['service_line_id', 'ownership_property_id', 'ownership_tour_url'])));
+            }
             // Provider sync/webhook data and a manually uploaded offline export
             // have independent lifecycles. A late provider event must never erase
             // the current private package pointer or its publication attestation.
             if (is_array($existingIguideData['manual_offline_package'] ?? null)) {
                 $providerPayload['manual_offline_package'] = $existingIguideData['manual_offline_package'];
+            }
+            if (! $shoot->relationLoaded('tourUnit')) {
+                $owner = app(\App\Services\Shoots\IguideServiceOwnership::class)->resolve($shoot);
+                if ($owner) {
+                    $providerPayload['service_line_id'] = (int) $owner->id;
+                    $providerPayload['ownership_property_id'] = $shoot->iguide_property_id;
+                    $providerPayload['ownership_tour_url'] = $shoot->iguide_tour_url;
+                }
             }
             $shoot->iguide_data = $providerPayload;
         }
@@ -371,6 +385,7 @@ class IguideService
                 ?? Arr::get($data, 'measurements'),
             'address' => $this->extractAddress($data),
             'raw_data' => $data,
+            'delivery_readiness' => $this->deliveryReadiness($data, $authToken),
 
             // Richer fields documented at https://docs.youriguide.com/docs/integrations/webhooks
             'work_order_id' => $this->extractWorkOrderId($data),
@@ -415,14 +430,25 @@ class IguideService
         ];
     }
 
-    /**
-     * Build the slim payload that we store on shoots.iguide_data.
-     * We intentionally drop heavy blobs (raw event, full summary/banner) to keep the column small.
-     */
+    /** Availability requires an explicit provider signal; a generated URL proves nothing. */
+    private function deliveryReadiness(array $data, ?string $authToken): ?array
+    {
+        $status = strtolower(trim((string) (Arr::get($data, 'status') ?? Arr::get($data, 'property.status') ?? Arr::get($data, 'state') ?? '')));
+        $event = strtolower(trim((string) ($data['type'] ?? '')));
+        $state = in_array($status, ['not_ready', 'not ready', 'pending', 'processing', 'draft', 'unpublished'], true) ? 'not_ready'
+            : (($status === 'ready' || $event === 'ready') ? 'ready' : null);
+        if (! $state) return null;
+        return ['state' => $state, 'verified_at' => now()->toIso8601String(),
+            'property_id' => $this->extractPropertyId($data),
+            'tour_url' => $this->withAccessToken($this->extractTourUrl($data), $authToken),
+            'source' => $event === 'ready' ? 'provider_ready_event' : 'provider_status'];
+    }
+
     private function buildIguideDataPayload(array $iguideData): array
     {
         return array_filter([
             'property_id' => $iguideData['property_id'] ?? null,
+            'delivery_readiness' => $iguideData['delivery_readiness'] ?? null,
             'work_order_id' => $iguideData['work_order_id'] ?? null,
             'iguide_alias' => $iguideData['iguide_alias'] ?? null,
             'default_view_id' => $iguideData['default_view_id'] ?? null,

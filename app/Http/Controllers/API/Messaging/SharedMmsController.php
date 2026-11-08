@@ -36,7 +36,7 @@ class SharedMmsController extends Controller
         $user = $this->user($r); $this->groups->authorize($user, $sharedGroup);
         $rows = $sharedGroup->messages()->orderByDesc('sequence')->paginate($this->pagination($r));
         return $this->json(['data' => $this->groups->presentGroup($sharedGroup, $user),
-            'messages' => $rows->map(fn ($m) => $this->groups->presentMessage($m))->all(),
+            'messages' => $rows->map(fn ($m) => $this->groups->presentMessage($m, $user))->all(),
             'current_page' => $rows->currentPage(), 'last_page' => $rows->lastPage(), 'total' => $rows->total(),
             'read_cursor_message_id' => $rows->currentPage() === 1 ? $rows->first()?->id : null]);
     }

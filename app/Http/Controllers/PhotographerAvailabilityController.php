@@ -670,7 +670,8 @@ class PhotographerAvailabilityController extends Controller
         }
 
         $ids = collect($validated['photographer_ids'])->map(fn ($id) => (int) $id)->unique()->values();
-        $people = User::whereKey($ids)->get(['id', 'role', 'secondary_roles', 'metadata'])->keyBy('id');
+        $people = User::whereKey($ids)
+            ->get(['id', 'role', 'secondary_roles', 'metadata', 'address', 'city', 'state', 'zip'])->keyBy('id');
 
         return response()->json(['data' => $ids->map(
             fn ($id) => $locations->present($request->user(), $people->get($id) ?? abort(404))
@@ -711,6 +712,9 @@ class PhotographerAvailabilityController extends Controller
                 'id' => $shoot->id,
                 'title' => $shoot->title ?? 'Shoot #'.$shoot->id,
                 'address' => $shoot->property_address ?? $shoot->address,
+                'city' => $shoot->city,
+                'state' => $shoot->state,
+                'zip' => $shoot->zip,
                 'latitude' => $shoot->latitude,
                 'longitude' => $shoot->longitude,
                 'shoot_status' => $shoot->status,

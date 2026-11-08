@@ -63,6 +63,7 @@ class Service extends Model
         'icon',
         'photographer_required',
         'requires_editing',
+        'financial_only',
         'photographer_pay',
         'photographer_pay_type',
         'photographer_pay_percent',
@@ -81,6 +82,7 @@ class Service extends Model
         'category_id' => 'integer',
         'photographer_required' => 'boolean',
         'requires_editing' => 'boolean',
+        'financial_only' => 'boolean',
         'photographer_pay' => 'decimal:2',
         'photographer_pay_percent' => 'decimal:2',
         'exclude_from_sales_commission' => 'boolean',
@@ -203,7 +205,8 @@ class Service extends Model
 
     public function requiresPhotographer(): bool
     {
-        return ! $this->isDigitalEnhancement() && (bool) $this->getAttribute('photographer_required');
+        return ! $this->financial_only && ! $this->isDigitalEnhancement()
+            && (bool) $this->getAttribute('photographer_required');
     }
 
     /** Digital work belongs to the editor lane, never a photographer visit. */
@@ -228,10 +231,11 @@ class Service extends Model
         return $this->requiresPhotographer();
     }
 
-    /** Travel fees need a payout recipient without creating another onsite visit. */
+    /** Financial charges may have a payout recipient without booking another visit. */
     public function allowsPhotographerAssignment(): bool
     {
         return ! $this->isDigitalEnhancement() && ($this->allowsArtistAssignment()
+            || $this->financial_only
             || str_contains(strtolower((string) $this->name), 'travel fee'));
     }
 
@@ -239,6 +243,10 @@ class Service extends Model
     {
         // A prior bad catalogue flag cannot turn digital editing into an onsite visit.
         if ($this->isDigitalEnhancement()) return false;
+        // Catalog classification changes new bookings, never a prior work snapshot.
+        // Financial booked rows already carry is_deliverable=false; older work
+        // rows retain the photographer obligation recorded by their catalog flag.
+        if ($this->financial_only && $createdAt && (bool) $this->getAttribute('photographer_required')) return true;
         if ($this->requiresPhotographer() || ! $createdAt) {
             return $this->requiresPhotographer();
         }
@@ -449,7 +457,7 @@ class Service extends Model
      */
     public function getShootDurationMinutes(?int $sqft = null, bool $useCatalogDefault = true): int
     {
-        if ($this->isDigitalEnhancement()) {
+        if ($this->isDigitalEnhancement() || ($useCatalogDefault && $this->financial_only)) {
             return 0;
         }
         // Editing, enhancements and fees consume no photographer time, even when
@@ -457,7 +465,9 @@ class Service extends Model
         $legacyService = ! $useCatalogDefault
             ? $this->durationPolicySnapshot('services', (int) $this->id)
             : null;
-        $requiresPhotographer = $legacyService['before']['photographer_required'] ?? $this->requiresPhotographer();
+        $requiresPhotographer = $legacyService['before']['photographer_required']
+            ?? (! $useCatalogDefault && $this->financial_only
+                ? (bool) $this->getAttribute('photographer_required') : $this->requiresPhotographer());
         if (! $requiresPhotographer) {
             return 0;
         }

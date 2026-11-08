@@ -8,6 +8,7 @@ use App\Models\User;
 use App\Services\Invoices\InvoiceAdjustmentService;
 use App\Services\InvoiceService;
 use App\Services\ShootActivityLogger;
+use Illuminate\Support\Arr;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
@@ -646,7 +647,7 @@ class ShootEditablePayloadService
             if (is_string($currentTourLinks)) {
                 $currentTourLinks = json_decode($currentTourLinks, true) ?? [];
             }
-            $submittedTourLinks = $validated['tour_links'];
+            $submittedTourLinks = Arr::except($validated['tour_links'], ZillowTourLinks::VISIBILITY_KEYS);
             // Provenance is server-owned. Entering a URL in the dedicated MLS
             // slot is an explicit admin attestation that it is the unbranded
             // destination; callers cannot forge provider provenance separately.
@@ -851,6 +852,9 @@ class ShootEditablePayloadService
                     : app(ShootDurationResolver::class)->forService($serviceModel, $sqft));
             if ($currentItem) {
                 $service['created_at'] = $currentItem->created_at;
+                $service['_booked_financial_only'] = app(FinancialServiceClassification::class)->isFinancialOnly($currentItem);
+            } else {
+                unset($service['_booked_financial_only']);
             }
 
             if (! $canOverrideLinePrice || $submittedPrice === null) {

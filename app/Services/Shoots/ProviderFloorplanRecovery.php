@@ -24,7 +24,10 @@ class ProviderFloorplanRecovery
             $shoot = Shoot::with('services.category')->find($id);
             if (!$shoot || $shoot->isInternalTestShoot()) continue;
             $scopes = [];
-            if (!$shoot->units()->exists()) $scopes[0] = $shoot->getAttribute($provider.'_floorplans') ?? [];
+            if (!$shoot->units()->exists()) {
+                $lineId = $provider === 'cubicasa' ? app(CubiCasaServiceOwnership::class)->resolve($shoot)?->id : null;
+                $scopes[$lineId ?? 0] = $shoot->getAttribute($provider.'_floorplans') ?? [];
+            }
             foreach ($shoot->units()->get() as $unit) {
                 $flat = $unit->provider_data ?? [];
                 $flatLine = $flat[$provider.'_service_line_id'] ?? null;

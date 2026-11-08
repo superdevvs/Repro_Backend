@@ -344,6 +344,7 @@ class AutomationWorkflowExecutor
 
                     case 'action.sms':
                         $output = ($context['appointment_reminder_audience'] ?? null) === 'client_email'
+                            && data_get($node, 'config.clientAppointmentSchedule') !== true
                             ? ['skipped' => true, 'reason' => 'This appointment stage sends client email only.']
                             : $this->executeSmsAction($automation, $node, $context);
                         $nextNodeIds = $this->nextNodeIds($workflow, $nodeId);
@@ -1036,6 +1037,7 @@ class AutomationWorkflowExecutor
                 'trigger' => $automation->trigger_type,
                 'appointment_at' => $context['notification_appointment_at'] ?? null,
                 'full_order_delivery' => ($context['delivery_notification_full_order'] ?? false) === true,
+                'delivery_cycle_key' => $context['delivery_notification_cycle_key'] ?? null,
             ],
         ]);
     }
@@ -1112,14 +1114,17 @@ class AutomationWorkflowExecutor
         if ($automation->trigger_type === 'SHOOT_REMINDER' && isset($context['appointment_reminder_audience'])) {
             $audience = $context['appointment_reminder_audience'];
             unset($context['appointment_reminder_audience']);
-            if ($audience === 'client_email' && $mode !== 'email') {
+            // The historical audience key is kept for saved runs. Both client
+            // channels follow the local schedule only when explicitly enabled.
+            $clientSmsSchedule = $mode === 'sms' && ($config['clientAppointmentSchedule'] ?? false) === true;
+            if ($audience === 'client_email' && $mode !== 'email' && ! $clientSmsSchedule) {
                 return [];
             }
             $recipients = $this->resolveActionRecipients($automation, $config, $context, $mode);
 
             return array_values(array_filter($recipients, fn ($recipient) => $audience === 'client_email'
                 ? ($recipient['type'] ?? null) === 'client'
-                : ($mode !== 'email' || ($recipient['type'] ?? null) !== 'client')));
+                : (($mode !== 'email' && ! $clientSmsSchedule) || ($recipient['type'] ?? null) !== 'client')));
         }
         $context = ShootRequestRecipientRouting::context($automation->trigger_type, $context);
         if ($automation->trigger_type === 'PROPERTY_CONTACT_REMINDER' && $mode === 'email') {
@@ -1406,6 +1411,14 @@ class AutomationWorkflowExecutor
 
     private function isStaleReminder(AutomationRule $automation, array $context): bool
     {
+        if ($automation->trigger_type === 'SHOOT_COMPLETED' && ($context['delivery_notification_full_order'] ?? false)
+            && isset($context['delivery_notification_cycle_key'])) {
+            $shoot = Shoot::find($context['shoot_id'] ?? data_get($context, 'shoot.id'));
+            $cycle = app(ShootDeliveryCycle::class);
+            if (! $shoot || $cycle->key($shoot) !== $context['delivery_notification_cycle_key'] || ! $cycle->isFullDelivery($shoot)) {
+                return true;
+            }
+        }
         if (in_array($automation->trigger_type, ['INVOICE_SUMMARY', 'WEEKLY_REP_INVOICE'], true)) {
             foreach ($context['summary_invoices'] ?? [] as $row) {
                 $invoice = \App\Models\Invoice::find($row['id'] ?? null);

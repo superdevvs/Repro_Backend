@@ -221,7 +221,9 @@ class Shoot extends Model
     ];
 
     protected $casts = [
+        'auto_delivery_enabled' => 'boolean',
         'active_work_started_at' => 'datetime',
+        'active_work_is_reopened' => 'boolean',
         'active_work_completed_at' => 'datetime',
         'active_work_at' => 'datetime',
         'scheduled_date' => 'date',
@@ -1483,18 +1485,18 @@ class Shoot extends Model
 
         $deliverableItems = $items->filter(function (ShootService $item) {
             return $item->is_deliverable
+                && ! $item->cancelled_at
                 && $item->workflow_status !== ShootService::WORKFLOW_CANCELLED
                 && $item->delivery_status !== ShootService::DELIVERY_CANCELLED
                 && ! data_get($item->payout_snapshot, 'billing_correction_only', false);
         });
 
-        $isDelivered = fn (ShootService $item) => $item->delivery_status === ShootService::DELIVERY_DELIVERED
-            && (! $this->active_work_started_at || $item->workflow_status === ShootService::WORKFLOW_DELIVERED);
+        $isDelivered = fn (ShootService $item) => app(\App\Services\Shoots\DeliveryPlanService::class)->itemResolved($this, $item);
         if ($deliverableItems->isEmpty()) {
             $deliveryStatus = 'delivered';
         } elseif ($deliverableItems->every($isDelivered)) {
             $deliveryStatus = 'delivered';
-        } elseif ($deliverableItems->contains($isDelivered)) {
+        } elseif ($deliverableItems->contains($isDelivered) || app(\App\Services\Shoots\DeliveryPlanService::class)->hasReleasedComponents($this)) {
             $deliveryStatus = 'partially_delivered';
         } else {
             $deliveryStatus = 'not_started';
@@ -1725,7 +1727,7 @@ class Shoot extends Model
         ]);
     }
 
-    public function updateWorkflowStatus($status, $userId = null)
+    public function updateWorkflowStatus($status, $userId = null, bool $systemActor = false)
     {
         $oldStatus = $this->workflow_status;
         $this->workflow_status = $status;
@@ -1747,9 +1749,9 @@ class Shoot extends Model
                 break;
             case self::STATUS_DELIVERED:
                 $additionalCycle = $this->active_work_started_at !== null;
-                $this->admin_verified_at = $additionalCycle ? ($this->admin_verified_at ?? now()) : now();
-                $this->verified_by = $userId;
-                $this->completed_at = $additionalCycle ? ($this->completed_at ?? now()) : now();
+                $this->admin_verified_at = $this->admin_verified_at ?? now();
+                if (! $systemActor) $this->verified_by = $userId;
+                $this->completed_at = $this->completed_at ?? now();
                 $this->delivery_status = 'delivered';
                 if (!$this->editing_completed_at) {
                     $this->editing_completed_at = now();
@@ -1763,12 +1765,13 @@ class Shoot extends Model
 
         // Log the workflow change
         $this->workflowLogs()->create([
-            'user_id' => $userId ?? auth()->id(),
+            'user_id' => $systemActor ? null : ($userId ?? auth()->id()),
             'action' => "status_changed_to_{$status}",
             'details' => "Workflow status changed from {$oldStatus} to {$status}",
             'metadata' => [
                 'old_status' => $oldStatus,
                 'new_status' => $status,
+                'source' => $systemActor ? 'provider_auto_delivery' : 'staff_workflow',
                 'timestamp' => now()->toISOString()
             ]
         ]);
@@ -1787,7 +1790,7 @@ class Shoot extends Model
             }
         });
         static::saving(function (self $shoot) {
-            if ($shoot->active_work_started_at && ! $shoot->active_work_completed_at) {
+            if (app(\App\Services\Shoots\ShootActiveWorkLifecycle::class)->hasActiveWork($shoot)) {
                 if ($shoot->isDirty('status') && ! $shoot->isDirty('workflow_status')
                     && in_array($shoot->status, ['on_hold', 'hold_on', 'cancelled', 'canceled', 'declined'], true)) {
                     $shoot->workflow_status = $shoot->status;

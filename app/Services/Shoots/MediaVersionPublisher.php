@@ -7,7 +7,7 @@ use App\Models\ShootFile;
 use App\Models\ShootFileVersion;
 use App\Models\User;
 use App\Services\Media\MediaStorage;
-use App\Support\LockedWrite;
+use App\Support\{EditingDispatchWriteLock, LockedWrite};
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -54,6 +54,15 @@ class MediaVersionPublisher
                 return $existing;
             }
             $fresh = ShootFile::findOrFail($source->id);
+            abort_unless((int) $fresh->shoot_service_id === (int) $source->shoot_service_id, 409, 'Source ownership changed. Review the save target again.');
+            if (($metadata['origin'] ?? '') === 'intake') {
+                $actor = $user->fresh();
+                $shoot = $fresh->shoot()->firstOrFail();
+                $target = $fresh->serviceItem;
+                abort_unless($actor && app(ShootAuthorizationSupport::class)->canUploadShootMedia($shoot, $actor, 'edited', $fresh->shoot_service_id)
+                    && (! $target || (app(ShootUploadTargetPolicy::class)->accepts($target, 'photo', 'edited')
+                        && app(ShootUploadTargetPolicy::class)->canUploadFamilies($shoot, $actor, $target, ['photo']))), 403, 'Your editing assignment changed before this replacement was saved.');
+            }
             $raw = $fresh->workflow_stage === ShootFile::STAGE_TODO;
             $version = ShootFileVersion::create(['id' => $id, 'shoot_id' => $source->shoot_id, 'source_file_id' => $source->id,
                 'target_file_id' => $raw ? null : $source->id, 'expected_version' => $expectedVersion, 'request_key' => $requestKey,
@@ -78,6 +87,7 @@ class MediaVersionPublisher
     public function publish(ShootFileVersion $version): ShootFileVersion
     {
         $result = LockedWrite::run(fn () => DB::transaction(function () use ($version) {
+            EditingDispatchWriteLock::acquire((int) $version->shoot_id);
             $version = ShootFileVersion::lockForUpdate()->findOrFail($version->id);
             if ($version->status !== 'ready') return $version;
             $source = ShootFile::find($version->source_file_id);
@@ -106,22 +116,49 @@ class MediaVersionPublisher
             $snapshot = $version->snapshot;
             abort_unless(($snapshot['scan_status'] ?? '') === 'clean' && !empty($snapshot['processed_at'])
                 && collect(['thumbnail_path', 'grid_path', 'web_path', 'placeholder_path'])->every(fn ($key) => !empty($snapshot[$key])), 409, 'The returned image is not ready to publish.');
-            if ($target) {
-                $this->archiveCurrent($target, $version->created_by);
-                $snapshot['filename'] = pathinfo($target->filename, PATHINFO_FILENAME).'.'.pathinfo($snapshot['stored_filename'], PATHINFO_EXTENSION);
-                $target->fill(Arr::only($snapshot, self::CONTENT_FIELDS));
-                $target->content_version++;
-                $target->save();
-            } else {
-                if (($version->metadata['origin'] ?? '') === 'ai') $snapshot['filename'] = app(\App\Services\Studio\AiEditedFilename::class)->next($source->shoot_id)['filename'];
-                $treatment = ($version->metadata['origin'] ?? '') === 'ai'
-                    ? ShootFile::normalizeTreatment(str_replace('-', '_', $version->metadata['ai_editing_metadata']['workflow'] ?? '')) : $source->treatment;
-                $target = ShootFile::create(Arr::only($snapshot, self::CONTENT_FIELDS) + [
-                    'shoot_id' => $source->shoot_id, 'shoot_service_id' => $source->shoot_service_id, 'source_file_id' => $source->id,
-                    'media_type' => $treatment ?? ($source->media_type === 'drone' ? 'drone' : 'edited'), 'treatment' => $treatment,
-                    'workflow_stage' => ShootFile::STAGE_VERIFIED, 'verified_at' => now(), 'moved_to_completed_at' => now(),
-                    'uploaded_by' => $version->created_by, 'uploaded_at' => now(), 'required_for_editing' => false, 'content_version' => 1,
-                ]);
+            $planner = app(DeliveryPlanService::class);
+            $shoot = $source->shoot()->firstOrFail();
+            $planner->forgetReleasedFiles($shoot);
+            $reviewedId = data_get($version->metadata, 'delivery_review.file_id');
+            $approvalCandidate = $target ?? ($reviewedId ? ShootFile::find($reviewedId) : $source);
+            if ($reviewedId && (! $approvalCandidate || (int) $approvalCandidate->shoot_id !== (int) $shoot->id
+                || ! $planner->releasedFile($approvalCandidate))) return $this->holdForDeliveryReview($version);
+            $approvedBefore = $approvalCandidate && $planner->releasedFile($approvalCandidate) ? clone $approvalCandidate : null;
+            $reviewer = $approvedBefore ? $this->deliveryReviewer($version, $approvedBefore) : null;
+            if ($approvedBefore && ! $reviewer) return $this->holdForDeliveryReview($version);
+
+            // A staff replacement and its exact component approval commit together.
+            // Ineligible historical/execution evidence rolls back the publication,
+            // while preserving the staged export for an explicit staff decision.
+            $reviewRequired = new \RuntimeException('This replacement requires delivery review.');
+            try {
+                $target = DB::transaction(function () use ($version, $source, $target, $snapshot, $approvedBefore, $reviewer, $planner, $shoot, $reviewRequired) {
+                    if ($target) {
+                        $this->archiveCurrent($target, $version->created_by);
+                        $snapshot['filename'] = pathinfo($target->filename, PATHINFO_FILENAME).'.'.pathinfo($snapshot['stored_filename'], PATHINFO_EXTENSION);
+                        $target->fill(Arr::only($snapshot, self::CONTENT_FIELDS));
+                        $target->content_version++;
+                        $target->save();
+                    } else {
+                        if (($version->metadata['origin'] ?? '') === 'ai') $snapshot['filename'] = app(\App\Services\Studio\AiEditedFilename::class)->next($source->shoot_id)['filename'];
+                        $treatment = ($version->metadata['origin'] ?? '') === 'ai'
+                            ? ShootFile::normalizeTreatment(str_replace('-', '_', $version->metadata['ai_editing_metadata']['workflow'] ?? '')) : $source->treatment;
+                        $target = ShootFile::create(Arr::only($snapshot, self::CONTENT_FIELDS) + [
+                            'shoot_id' => $source->shoot_id, 'shoot_service_id' => $source->shoot_service_id, 'source_file_id' => $source->id,
+                            'media_type' => $treatment ?? ($source->media_type === 'drone' ? 'drone' : 'edited'), 'treatment' => $treatment,
+                            'workflow_stage' => ShootFile::STAGE_VERIFIED, 'verified_at' => now(), 'moved_to_completed_at' => now(),
+                            'uploaded_by' => $version->created_by, 'uploaded_at' => now(), 'required_for_editing' => false, 'content_version' => 1,
+                        ]);
+                    }
+                    if ($approvedBefore && ! $planner->recordReviewedVersion($shoot, $reviewer, $target, 'media-version:'.$version->id, $approvedBefore)) {
+                        throw $reviewRequired;
+                    }
+                    return $target;
+                });
+            } catch (\RuntimeException $exception) {
+                if ($exception !== $reviewRequired) throw $exception;
+                $planner->forgetReleasedFiles($shoot);
+                return $this->holdForDeliveryReview($version);
             }
             $version->update(['status' => 'published', 'published_file_id' => $target->id, 'version' => $target->content_version,
                 'snapshot' => Arr::only($target->attributesToArray(), self::CONTENT_FIELDS), 'error_code' => null, 'error' => null]);
@@ -166,22 +203,36 @@ class MediaVersionPublisher
             'snapshot' => Arr::only($file->attributesToArray(), self::CONTENT_FIELDS)]);
     }
 
-    public function resolve(ShootFileVersion $version, string $choice, int $expectedLatest): ShootFileVersion
+    public function resolve(ShootFileVersion $version, string $choice, int $expectedLatest, ?User $actor = null): ShootFileVersion
     {
-        LockedWrite::run(fn () => DB::transaction(function () use ($version, $choice, $expectedLatest) {
+        LockedWrite::run(fn () => DB::transaction(function () use ($version, $choice, $expectedLatest, $actor) {
+            EditingDispatchWriteLock::acquire((int) $version->shoot_id);
             $locked = ShootFileVersion::lockForUpdate()->findOrFail($version->id);
             abort_unless(in_array($locked->status, ['conflict', 'alternative'], true), 409, 'This returned edit is no longer waiting for a decision.');
+            $targetId = $locked->target_file_id;
+            if (!$targetId && $locked->dispatch_item_id) {
+                $primaryId = \App\Models\ShootEditingDispatchItem::find($locked->dispatch_item_id)?->primary_version_id;
+                $targetId = $primaryId ? ShootFileVersion::find($primaryId)?->published_file_id : null;
+            }
+            $reviewed = ShootFile::findOrFail($targetId ?: $locked->source_file_id);
+            abort_unless((int) $reviewed->shoot_id === (int) $locked->shoot_id, 409, 'The current image no longer belongs to this shoot.');
+            $planner = app(DeliveryPlanService::class);
+            $planner->forgetReleasedFiles($reviewed->shoot);
+            if ($planner->releasedFile($reviewed) || $locked->error_code === 'delivery_review_required') {
+                $actor = $actor?->fresh();
+                abort_unless($actor && $planner->canFinalize($actor), 403, 'You do not have permission to approve changes to delivered content.');
+                abort_unless((int) $reviewed->content_version === $expectedLatest, 409, 'The current image changed again. Refresh before reviewing it.');
+                $locked->metadata = array_merge($locked->metadata ?? [], ['delivery_review' => [
+                    'actor_id' => $actor->id, 'file_id' => $reviewed->id, 'content_version' => $expectedLatest,
+                    'shoot_service_id' => $reviewed->shoot_service_id, 'reviewed_at' => now()->toIso8601String(),
+                ]]);
+            }
             if ($choice === 'save_copy') {
                 $locked->target_file_id = null;
                 $locked->metadata = array_merge($locked->metadata ?? [], ['save_as_copy' => true]);
             } else {
                 abort_unless($choice === 'replace_latest', 422, 'Choose Replace latest or Save as copy.');
-                $targetId = $locked->target_file_id;
-                if (!$targetId && $locked->dispatch_item_id) {
-                    $primaryId = \App\Models\ShootEditingDispatchItem::find($locked->dispatch_item_id)?->primary_version_id;
-                    $targetId = $primaryId ? ShootFileVersion::find($primaryId)?->published_file_id : null;
-                }
-                $target = ShootFile::findOrFail($targetId ?: $locked->source_file_id);
+                $target = $reviewed;
                 abort_unless($target->workflow_stage !== ShootFile::STAGE_TODO, 422, 'Raw originals cannot be replaced by an edit.');
                 abort_unless((int) $target->content_version === $expectedLatest, 409, 'The current image changed again. Refresh before replacing it.');
                 $locked->target_file_id = $target->id;
@@ -191,5 +242,26 @@ class MediaVersionPublisher
             $locked->save();
         }), 'media-version.resolve');
         return $this->publish($version->fresh());
+    }
+
+    private function deliveryReviewer(ShootFileVersion $version, ShootFile $approved): ?User
+    {
+        $review = $version->metadata['delivery_review'] ?? null;
+        if (is_array($review)) {
+            if ((int) ($review['file_id'] ?? 0) !== (int) $approved->id
+                || (int) ($review['content_version'] ?? 0) !== (int) $approved->content_version
+                || (int) ($review['shoot_service_id'] ?? 0) !== (int) $approved->shoot_service_id) return null;
+            $actor = User::find($review['actor_id'] ?? null);
+        } elseif (in_array($version->metadata['origin'] ?? '', ['manual', 'restore', 'photoshop'], true)) {
+            $actor = User::find($version->created_by);
+        } else return null;
+        return app(DeliveryPlanService::class)->canFinalize($actor) ? $actor : null;
+    }
+
+    private function holdForDeliveryReview(ShootFileVersion $version): ShootFileVersion
+    {
+        $version->update(['status' => 'conflict', 'error_code' => 'delivery_review_required',
+            'error' => 'This changes delivered content. Review returned edit and choose Replace latest or Save as copy.']);
+        return $version;
     }
 }

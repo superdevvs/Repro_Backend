@@ -41,6 +41,10 @@ class WorkspaceShootPublisher
         }
 
         return LockedWrite::run(fn () => DB::transaction(function () use ($workspace, $source, $key, $category, $treatment, $storedFilename, $path, $bytes, $output, $sourceFileIds, $requiresReview) {
+            $freshSource = ShootFile::find($source->id);
+            abort_unless($freshSource && (int) $freshSource->shoot_service_id === (int) $source->shoot_service_id
+                && (int) $freshSource->content_version === (int) $source->content_version, 409, 'Source ownership or content changed. Review the AI output before publishing.');
+            $source = $freshSource;
             $existing = ShootFile::where('shoot_id', $source->shoot_id)->where('ai_editing_metadata->output_key', $key)->first();
             if ($existing) {
                 return $existing;

@@ -42,6 +42,23 @@ class ClientNotificationDeliveryWindow
         return $next;
     }
 
+    /** Check again at transport time: a quiet-hours message can outlive its delivery cycle. */
+    public function staleDelivery(Message $message): bool
+    {
+        $key = data_get($message->metadata, 'notification.delivery_cycle_key');
+        if (! is_string($key) || $key === '' || ! $message->related_shoot_id) return false;
+        $shoot = Shoot::find($message->related_shoot_id);
+        $cycle = app(ShootDeliveryCycle::class);
+        if (! $shoot || $cycle->key($shoot) !== $key) return true;
+        if (data_get($message->metadata, 'notification.full_order_delivery') === true) {
+            return ! $cycle->isFullDelivery($shoot);
+        }
+        $ids = array_values(array_unique(array_map('intval', (array) data_get($message->metadata, 'notification.delivery_service_item_ids', []))));
+
+        return $ids !== [] && $shoot->serviceItems()->whereIn('id', $ids)->where('workflow_status', 'delivered')
+            ->where('delivery_status', 'delivered')->count() !== count($ids);
+    }
+
     public function staleAppointment(Message $message): bool
     {
         if (! $this->isReminder($message) || ! $message->related_shoot_id || $this->clientTimezones($message) === []) {

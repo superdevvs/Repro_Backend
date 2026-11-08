@@ -191,9 +191,13 @@ class NotificationProducerTimingMetadataTest extends TestCase
 
             $this->assertSame('CRM_FOLLOW_UP', $payload['send_source']);
             $this->assertSame(['type' => 'CRM_FOLLOW_UP'], $payload['metadata']['notification']);
-            $this->assertTrue(app(ClientNotificationTimingPolicy::class)->requiresQuietHours(Message::make([
+            $message = Message::make([
+                'channel' => 'SMS',
                 'direction' => 'OUTBOUND', 'send_source' => $payload['send_source'], 'metadata' => $payload['metadata'],
-            ]), 'America/New_York'));
+            ]);
+            $this->assertTrue(app(ClientNotificationTimingPolicy::class)->requiresQuietHours($message, 'America/New_York'));
+            $message->channel = 'EMAIL';
+            $this->assertFalse(app(ClientNotificationTimingPolicy::class)->requiresQuietHours($message, 'America/New_York'));
             $this->assertStringContainsString('Follow-up queued', $result['assistant_messages'][0]['content']);
             $this->assertFalse($result['assistant_messages'][0]['metadata']['email_sent']);
             $this->assertTrue($result['assistant_messages'][0]['metadata']['email_queued']);

@@ -1,0 +1,224 @@
+<?php
+
+namespace Tests\Feature;
+
+use App\Events\SmsMessageReceived;
+use App\Events\SmsMessageSent;
+use App\Http\Resources\Messaging\SmsMessageResource;
+use App\Models\AutomationDispatch;
+use App\Models\AutomationRule;
+use App\Models\AutomationRun;
+use App\Models\Contact;
+use App\Models\Message;
+use App\Models\MessageThread;
+use App\Models\User;
+use App\Services\Messaging\SmsDeliveryFailure;
+use App\Services\Messaging\MessagingService;
+use App\Services\Messaging\Providers\TelnyxSmsProvider;
+use App\Exceptions\Messaging\SmsSendException;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\Request;
+use Laravel\Sanctum\Sanctum;
+use Tests\Support\IsolatedSecurityTestCase;
+
+class NotificationDiagnosticsVisibilityTest extends IsolatedSecurityTestCase
+{
+    use RefreshDatabase;
+
+    public function test_sms_diagnostics_require_the_effective_superadmin_and_are_absent_from_shared_broadcasts(): void
+    {
+        $message = Message::create([
+            'channel' => 'SMS', 'direction' => 'OUTBOUND', 'status' => 'FAILED',
+            'to_address' => '+12025550123', 'body_text' => 'Reminder fixture',
+            'provider_message_id' => 'provider-fixture', 'failed_at' => now(),
+            'error_message' => SmsDeliveryFailure::message(['40002']),
+            'metadata' => ['telnyx_error_codes' => ['40002'], 'delivery' => ['status' => 'FAILED']],
+        ]);
+        $before = $message->refresh()->getRawOriginal();
+        foreach ([null, 'client', 'photographer', 'sales_rep', 'editing_manager', 'admin', 'superadmin'] as $role) {
+            $request = Request::create('/');
+            $request->setUserResolver(fn () => $role ? new User(['role' => $role]) : null);
+            // An original admin identity must not override an impersonated role.
+            $request->attributes->set('original_admin_user', new User(['role' => 'superadmin']));
+            $resource = SmsMessageResource::make($message)->resolve($request);
+            $this->assertSame('Reminder fixture', $resource['body']);
+            if ($role === 'superadmin') {
+                $this->assertSame('FAILED', $resource['status']);
+                $this->assertSame($message->error_message, $resource['errorMessage']);
+                $this->assertNotNull($resource['failedAt']);
+                $this->assertSame('provider-fixture', $resource['providerMessageId']);
+            } else {
+                foreach (['status', 'failedAt', 'errorMessage', 'providerMessageId'] as $field) {
+                    $this->assertArrayNotHasKey($field, $resource);
+                }
+                $this->assertStringNotContainsString('40002', json_encode($resource));
+            }
+        }
+        Sanctum::actingAs(User::factory()->superAdmin()->create());
+        request()->setUserResolver(fn () => auth()->user());
+        foreach ([new SmsMessageReceived($message), new SmsMessageSent($message)] as $event) {
+            $broadcast = $event->broadcastWith()['message'];
+            foreach (['status', 'failedAt', 'errorMessage', 'providerMessageId'] as $field) {
+                $this->assertArrayNotHasKey($field, $broadcast);
+            }
+        }
+        $this->assertSame($before, $message->fresh()->getRawOriginal());
+    }
+
+    public function test_sms_thread_api_omits_delivery_diagnostics_for_an_admin(): void
+    {
+        $contact = Contact::create(['name' => 'Fixture', 'phone' => '+12025550123']);
+        $thread = MessageThread::create(['channel' => 'SMS', 'contact_id' => $contact->id, 'status' => 'OPEN']);
+        Message::create(['channel' => 'SMS', 'direction' => 'OUTBOUND', 'status' => 'FAILED',
+            'thread_id' => $thread->id, 'to_address' => $contact->phone, 'body_text' => 'Reminder fixture',
+            'error_message' => SmsDeliveryFailure::message(['40002']), 'failed_at' => now()]);
+        Sanctum::actingAs(User::factory()->admin()->create());
+        $response = $this->getJson('/api/messaging/sms/threads/'.$thread->id)->assertOk();
+        $response->assertJsonPath('messages.0.body', 'Reminder fixture');
+        foreach (['status', 'failedAt', 'errorMessage', 'providerMessageId'] as $field) {
+            $response->assertJsonMissingPath('messages.0.'.$field);
+        }
+        Sanctum::actingAs(User::factory()->superAdmin()->create());
+        $this->getJson('/api/messaging/sms/threads/'.$thread->id)->assertOk()->assertJsonPath('messages.0.status', 'FAILED');
+    }
+
+    public function test_admin_can_edit_workflows_but_cannot_read_operational_failures(): void
+    {
+        $rule = AutomationRule::create(['name' => 'Visibility fixture', 'trigger_type' => 'CUSTOM_EVENT', 'scope' => 'SYSTEM', 'is_active' => true]);
+        AutomationRun::create(['automation_rule_id' => $rule->id, 'status' => 'failed', 'error_message' => 'private-canary']);
+        AutomationDispatch::create(['automation_rule_id' => $rule->id, 'trigger_type' => 'CUSTOM_EVENT', 'period_key' => 'visibility',
+            'scheduled_for' => now(), 'command' => 'fixture', 'status' => 'failed', 'error_message' => 'private-canary']);
+        Sanctum::actingAs(User::factory()->admin()->create());
+        $list = $this->getJson('/api/messaging/automations?trigger_type=CUSTOM_EVENT')->assertOk();
+        $detail = $this->getJson('/api/messaging/automations/'.$rule->id)->assertOk();
+        $toggle = $this->postJson('/api/messaging/automations/'.$rule->id.'/toggle')->assertOk();
+        foreach ([$list->json('0'), $detail->json(), $toggle->json()] as $data) {
+            $this->assertSame([], $data['recent_runs']);
+            $this->assertArrayNotHasKey('latest_dispatch', $data);
+            $this->assertStringNotContainsString('private-canary', json_encode($data));
+        }
+        $this->getJson('/api/messaging/automations/'.$rule->id.'/runs')->assertForbidden();
+
+        $admin = auth()->user();
+        $superadmin = User::factory()->superAdmin()->create();
+        Sanctum::actingAs($superadmin);
+        $this->getJson('/api/messaging/automations/'.$rule->id, ['X-Impersonate-User-Id' => (string) $admin->id])
+            ->assertOk()->assertJsonPath('recent_runs', [])->assertJsonMissingPath('latest_dispatch');
+        Sanctum::actingAs($superadmin);
+        $this->getJson('/api/messaging/automations/'.$rule->id.'/runs', ['X-Impersonate-User-Id' => (string) $admin->id])
+            ->assertForbidden();
+        Sanctum::actingAs(User::factory()->superAdmin()->create());
+        $this->getJson('/api/messaging/automations/'.$rule->id)->assertOk()
+            ->assertJsonPath('recent_runs.0.status', 'failed')->assertJsonPath('latest_dispatch.status', 'failed');
+        $this->getJson('/api/messaging/automations/'.$rule->id.'/runs')->assertOk()->assertJsonPath('data.0.status', 'failed');
+    }
+
+    public function test_overview_hides_sms_diagnostics_and_failure_counts_from_the_effective_admin(): void
+    {
+        $message = Message::create([
+            'channel' => 'SMS', 'direction' => 'OUTBOUND', 'status' => 'FAILED',
+            'to_address' => '+12025550123', 'body_text' => 'Overview fixture',
+            'provider_message_id' => 'provider-overview-fixture', 'failed_at' => now(),
+            'error_message' => SmsDeliveryFailure::message(['40002']),
+            'metadata' => ['telnyx_error_codes' => ['40002'], 'delivery' => ['status' => 'FAILED']],
+        ]);
+        $before = $message->fresh()->getRawOriginal();
+        $admin = User::factory()->admin()->create();
+        $superadmin = User::factory()->superAdmin()->create();
+        Sanctum::actingAs($admin);
+        $response = $this->getJson('/api/messaging/overview')->assertOk();
+        $response->assertJsonPath('recent_activity.0.body_text', 'Overview fixture');
+        foreach (['total_failed_today', 'sms_failed_today'] as $field) {
+            $response->assertJsonMissingPath($field);
+        }
+        foreach (['status', 'failed_at', 'error_message', 'provider_message_id', 'metadata'] as $field) {
+            $response->assertJsonMissingPath('recent_activity.0.'.$field);
+        }
+        Sanctum::actingAs($superadmin);
+        $this->getJson('/api/messaging/overview')->assertOk()
+            ->assertJsonPath('sms_failed_today', 1)
+            ->assertJsonPath('recent_activity.0.status', 'FAILED')
+            ->assertJsonPath('recent_activity.0.metadata.telnyx_error_codes.0', '40002');
+        Sanctum::actingAs($superadmin);
+        $this->getJson('/api/messaging/overview', ['X-Impersonate-User-Id' => (string) $admin->id])->assertOk()
+            ->assertJsonMissingPath('sms_failed_today')->assertJsonMissingPath('recent_activity.0.metadata');
+        $this->assertSame($before, $message->fresh()->getRawOriginal());
+    }
+
+    public function test_account_timeline_gates_sms_status_by_effective_role_and_preserves_email_status(): void
+    {
+        $client = User::factory()->create(['role' => 'client']);
+        $admin = User::factory()->admin()->create();
+        $superadmin = User::factory()->superAdmin()->create();
+        $messages = [];
+        foreach (['SMS', 'EMAIL'] as $channel) {
+            $messages[$channel] = Message::create([
+                'channel' => $channel, 'direction' => 'OUTBOUND', 'status' => 'FAILED',
+                'related_account_id' => $client->id, 'to_address' => $client->email,
+                'body_text' => 'Timeline fixture', 'error_message' => SmsDeliveryFailure::message(['40002']),
+            ]);
+        }
+        foreach ([[$admin, [], false], [$superadmin, [], true],
+            [$superadmin, ['X-Impersonate-User-Id' => (string) $admin->id], false]] as [$viewer, $headers, $canViewSms]) {
+            Sanctum::actingAs($viewer);
+            $response = $this->getJson('/api/admin/users/'.$client->id, $headers)->assertOk();
+            $entries = collect($response->json('user.activityLog'))->keyBy('id');
+            $sms = $entries['message-'.$messages['SMS']->id]['description'];
+            $email = $entries['message-'.$messages['EMAIL']->id]['description'];
+            $this->assertStringContainsString('With '.$client->email, $sms);
+            $this->assertSame($canViewSms, str_contains($sms, 'Status: FAILED'));
+            $this->assertStringContainsString('Status: FAILED', $email);
+            $this->assertStringNotContainsString('40002', $sms);
+        }
+    }
+
+    public function test_immediate_sms_failures_keep_operational_errors_but_gate_provider_diagnostics(): void
+    {
+        $diagnostic = SmsDeliveryFailure::message(['40329']);
+        $sender = \Mockery::mock(MessagingService::class);
+        $sender->shouldReceive('sendSms')->times(6)->andThrow(new SmsSendException($diagnostic));
+        $this->app->instance(MessagingService::class, $sender);
+        $contact = Contact::create(['name' => 'Fixture', 'phone' => '+12025550123']);
+        $thread = MessageThread::create(['channel' => 'SMS', 'contact_id' => $contact->id, 'status' => 'OPEN']);
+        $admin = User::factory()->admin()->create();
+        $superadmin = User::factory()->superAdmin()->create();
+        foreach ([[$admin, [], false], [$superadmin, [], true],
+            [$superadmin, ['X-Impersonate-User-Id' => (string) $admin->id], false]] as [$viewer, $headers, $canView]) {
+            Sanctum::actingAs($viewer);
+            foreach ([['/api/messaging/sms/send', ['to' => $contact->phone, 'body_text' => 'Fixture']],
+                ['/api/messaging/sms/threads/'.$thread->id.'/messages', ['body' => 'Fixture']]] as [$url, $payload]) {
+                $this->postJson($url, $payload, $headers)->assertStatus(422)
+                    ->assertJsonPath('success', false)->assertJsonPath('error', 'sms_send_failed')
+                    ->assertJsonPath('message', $canView ? $diagnostic : 'SMS could not be sent. Please try again.');
+            }
+        }
+        $this->assertDatabaseCount('messages', 0);
+    }
+
+    public function test_sms_connection_checks_preserve_outcomes_without_raw_provider_details(): void
+    {
+        $provider = \Mockery::mock(TelnyxSmsProvider::class);
+        $provider->shouldReceive('testConnection')->times(3)->andReturn([
+            'success' => false, 'error' => 'provider-secret-canary', 'body' => 'provider-secret-canary',
+        ]);
+        $this->app->instance(TelnyxSmsProvider::class, $provider);
+        $admin = User::factory()->admin()->create();
+        $superadmin = User::factory()->superAdmin()->create();
+        foreach ([[$admin, []], [$superadmin, []], [$superadmin, ['X-Impersonate-User-Id' => (string) $admin->id]]] as [$viewer, $headers]) {
+            Sanctum::actingAs($viewer);
+            $response = $this->postJson('/api/messaging/settings/sms/test-connection', [], $headers)->assertStatus(400)
+                ->assertJsonPath('success', false)->assertJsonPath('error', TelnyxSmsProvider::CONNECTION_FAILURE_MESSAGE);
+            $this->assertStringNotContainsString('provider-secret-canary', $response->getContent());
+        }
+    }
+
+    public function test_successful_sms_connection_check_preserves_its_response_contract(): void
+    {
+        $result = ['success' => true, 'message' => 'Telnyx connection successful', 'messaging_profile_id' => 'fixture-profile'];
+        $provider = \Mockery::mock(TelnyxSmsProvider::class);
+        $provider->shouldReceive('testConnection')->once()->andReturn($result);
+        $this->app->instance(TelnyxSmsProvider::class, $provider);
+        Sanctum::actingAs(User::factory()->admin()->create());
+        $this->postJson('/api/messaging/settings/sms/test-connection')->assertOk()->assertExactJson($result);
+    }
+}

@@ -105,6 +105,7 @@ class VoiceMobileTokenBindingTest extends TestCase
 
     public function test_bootstrap_binds_real_token_and_bounds_both_leases_to_its_expiry(): void
     {
+        $this->freezeTime();
         $this->token->update(['expires_at' => now()->addMinutes(20)]);
         $data = $this->data();
         $first = $this->postJson('/api/voice/mobile/sessions', $data)->assertOk()->assertJsonMissingPath('personal_access_token_id')->json();

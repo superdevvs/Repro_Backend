@@ -47,8 +47,8 @@ class NotifyShootDeliveryUpdate implements ShouldBeUniqueUntilProcessing, Should
             return;
         }
 
-        // The same protected sender enforces notification preferences, quiet hours,
-        // payment gates and content-revision idempotency. An update is not a new
+        // The same protected sender enforces notification preferences, payment
+        // gates and content-revision idempotency. An update is not a new
         // completion automation or a new payment-reminder cadence anchor.
         (new SendShootReadyEmailJob($this->shootId, $full ? null : $this->shootServiceId, $full, false))
             ->handle($mail, $automation);

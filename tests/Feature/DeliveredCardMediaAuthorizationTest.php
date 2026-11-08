@@ -174,6 +174,9 @@ class DeliveredCardMediaAuthorizationTest extends TestCase
 
         // A newly finalized service is safe while another service keeps the order Active.
         $this->item($shoot, ['is_deliverable' => true, 'workflow_status' => 'pending', 'delivery_status' => 'not_started']);
+        $admin = User::factory()->create(['role' => 'superadmin']);
+        DB::transaction(fn () => app(\App\Services\Shoots\DeliveryPlanService::class)->commitSelection($shoot->fresh(), $admin,
+            ['mode' => 'media', 'component_ids' => [$pending->id.':photo']]));
         $pending->forceFill(['workflow_status' => 'delivered', 'delivery_status' => 'delivered',
             'delivered_at' => '2026-11-03 15:00:00'])->saveQuietly();
         $after = $this->listing()->assertOk()->json('data.0.delivery_card_media');

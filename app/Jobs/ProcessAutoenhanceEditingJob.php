@@ -298,6 +298,10 @@ class ProcessAutoenhanceEditingJob implements ShouldQueue
         }
 
         $storedPath = $this->storeEnhancedImage($editedImageUrl);
+        if (! $storedPath && $this->editingJob->shoot_id) {
+            $this->editingJob->markAsFailed('The AI result needs service ownership review before publication.');
+            return;
+        }
         $this->editingJob->markAsCompleted($storedPath ?: $editedImageUrl);
 
         Log::info('ProcessAutoenhanceEditingJob: Job completed successfully', [
@@ -311,6 +315,8 @@ class ProcessAutoenhanceEditingJob implements ShouldQueue
     private function storeEnhancedImage(string $editedImageUrl): ?string
     {
         try {
+            $existing = ShootFile::where('shoot_id', $this->editingJob->shoot_id)->where('ai_editing_job_id', $this->editingJob->id)->first();
+            if ($existing) return $existing->path;
             $sourceFile = $this->editingJob->shootFile;
             $shoot = $this->editingJob->shoot;
             if (!$shoot) {
@@ -345,13 +351,13 @@ class ProcessAutoenhanceEditingJob implements ShouldQueue
             };
             $baseName = pathinfo($sourceFile?->filename ?: 'autoenhance-image', PATHINFO_FILENAME);
             $filename = Str::slug($baseName) . '-autoenhance-' . $this->editingJob->id . '.' . $extension;
-            $path = 'shoots/' . $shoot->id . '/autoenhance/' . $filename;
+            $path = 'shoots/' . $shoot->id . '/autoenhance/' . \Illuminate\Support\Str::uuid() . '/' . $filename;
             if (!app(\App\Services\Media\MediaStorage::class)->put($path, $binary)) {
                 throw new \RuntimeException('The edited image could not be stored.');
             }
             $publicPath = $path;
 
-            ShootFile::create([
+            $published = app(\App\Services\Shoots\LegacyAiOutputPublisher::class)->publish($this->editingJob, [
                 'shoot_id' => $shoot->id,
                 'filename' => $filename,
                 'stored_filename' => $filename,
@@ -373,6 +379,7 @@ class ProcessAutoenhanceEditingJob implements ShouldQueue
                     'completed_at' => now()->toIso8601String(),
                 ],
             ]);
+            $publicPath = app(\App\Services\Shoots\LegacyAiOutputPublisher::class)->finishPath($published, $publicPath);
 
             $shoot->workflowLogs()->create([
                 'user_id' => $this->editingJob->user_id,

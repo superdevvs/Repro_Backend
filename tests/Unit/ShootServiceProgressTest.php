@@ -37,7 +37,7 @@ class ShootServiceProgressTest extends TestCase
             'editing' => ['in_progress', 'not_started', 'in_editing'],
             'ready is not delivered' => ['ready', 'ready', 'ready'],
             'delivered' => ['delivered', 'delivered', 'delivered'],
-            'delivery source' => ['in_progress', 'delivered', 'delivered'],
+            'mixed delivery flags do not finish work' => ['in_progress', 'delivered', 'in_editing'],
             'cancelled is not delivered' => ['cancelled', 'cancelled', 'cancelled'],
         ];
     }
@@ -73,6 +73,7 @@ class ShootServiceProgressTest extends TestCase
         $this->assertSame('drafting', $this->progress($line, ['cubicasa_status' => 'processing']));
         $this->assertSame('ready', $this->progress($line, ['iguide_floorplans' => [['url' => 'https://example.test/plan.pdf']]]));
         $line->delivery_status = 'delivered';
+        $line->workflow_status = 'delivered';
         $this->assertSame('delivered', $this->progress($line));
     }
 
@@ -100,6 +101,7 @@ class ShootServiceProgressTest extends TestCase
         $line = $this->line();
         $this->assertSame('on_hold', $this->progress($line, ['workflow_status' => 'on_hold']));
         $line->delivery_status = 'delivered';
+        $line->workflow_status = 'delivered';
         $this->assertSame('delivered', $this->progress($line, ['workflow_status' => 'on_hold']));
     }
 

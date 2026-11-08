@@ -404,6 +404,11 @@ class MessagingService
             return true;
         }
         $window = app(ClientNotificationDeliveryWindow::class);
+        if ($window->staleDelivery($message)) {
+            $message->update(['status' => 'CANCELLED', 'error_message' => 'Delivery notification no longer matches the current completed work.']);
+
+            return true;
+        }
         if ($window->staleAppointment($message)) {
             $message->update(['status' => 'CANCELLED', 'error_message' => 'Appointment reminder is no longer current.']);
 
@@ -490,8 +495,11 @@ class MessagingService
     protected function clientSafeSmsError(\Throwable $e): string
     {
         $raw = strtolower($e->getMessage());
+        if (preg_match('/\b40300\b/', $raw)) {
+            return SmsDeliveryFailure::message(['40300']);
+        }
         if (str_contains($raw, 'unverified') || str_contains($raw, 'not verified')
-            || str_contains($raw, 'toll-free') || str_contains($raw, '40300')) {
+            || str_contains($raw, 'toll-free') || str_contains($raw, '40329')) {
             return 'SMS could not be sent: the Telnyx sending number is not verified.';
         }
 
@@ -515,8 +523,12 @@ class MessagingService
             return 'Telnyx rejected destination region (HTTP 409 / 40309). Fix number/region coverage; this attempt will not auto-retry.';
         }
 
+        if (preg_match('/\b40300\b/', $lower)) {
+            return SmsDeliveryFailure::message(['40300']);
+        }
+
         if (str_contains($lower, 'unverified') || str_contains($lower, 'not verified')
-            || str_contains($lower, 'toll-free') || str_contains($lower, '40300')) {
+            || str_contains($lower, 'toll-free') || str_contains($lower, '40329')) {
             return 'Telnyx sending number is not verified. Verify the from-number; this attempt will not auto-retry.';
         }
 

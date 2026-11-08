@@ -65,7 +65,10 @@ class DownloadShootMediaZipAction
             (array) ($validated['media_types'] ?? []),
             fn ($value) => is_string($value) && $value !== ''
         ));
-        $type = $this->shootMediaArchiveService->buildArchiveTypeToken($baseType, $includeExtras, $mediaTypes, $validated['asset_type'] ?? null, $request->boolean('verified_only'));
+        $verifiedOnly = $request->boolean('verified_only') || ($baseType === 'edited'
+            && (! $authorizeFiles || $this->shootAuthorizationSupport->isClientUser($request->user()))
+            && app(\App\Services\Shoots\DeliveryPlanService::class)->usesComponents($shoot));
+        $type = $this->shootMediaArchiveService->buildArchiveTypeToken($baseType, $includeExtras, $mediaTypes, $validated['asset_type'] ?? null, $verifiedOnly);
         $requestedSize = $validated['size'] ?? 'original';
         $resolvedSize = $this->shootMediaArchiveService->normalizeSize($requestedSize);
         $shootServiceId = isset($validated['shoot_service_id']) ? (int) $validated['shoot_service_id'] : null;
@@ -81,9 +84,10 @@ class DownloadShootMediaZipAction
         if ($shootUnitId !== null && $shootServiceId !== null && ! $shoot->serviceItems()->whereKey($shootServiceId)->where('shoot_unit_id', $shootUnitId)->exists()) {
             return response()->json(['message' => 'Selected service item does not belong to this unit'], 422);
         }
-        if (! $authorizeFiles && $request->boolean('verified_only') && $shootServiceId !== null
+        if (! $authorizeFiles && $verifiedOnly && $shootServiceId !== null
             && ! $shoot->serviceItems()->whereKey($shootServiceId)
-                ->where('workflow_status', 'delivered')->where('delivery_status', 'delivered')->exists()) {
+                ->where('workflow_status', 'delivered')->where('delivery_status', 'delivered')->exists()
+            && ! in_array($shootServiceId, app(\App\Services\Shoots\DeliveryPlanService::class)->releasedServiceIds($shoot), true)) {
             return response()->json(['message' => 'This service is not finalized for delivery.', 'code' => 'content_not_finalized'], 403);
         }
 

@@ -61,11 +61,11 @@ class UploadShootFilesAction
 
     public function execute(Request $request, Shoot $shoot, ?User $user): array
     {
-        if ($request->input('upload_type') === 'additional') {
-            abort_unless(app(\App\Services\Shoots\ShootAuthorizationSupport::class)->canUploadShootMedia(
-                $shoot, $user, 'additional', $request->filled('shoot_service_id') ? (int) $request->input('shoot_service_id') : null
-            ), 403);
-        }
+        $user = $user?->fresh();
+        $shoot = $shoot->fresh() ?? $shoot;
+        abort_unless(app(\App\Services\Shoots\ShootAuthorizationSupport::class)->canUploadShootMedia(
+            $shoot, $user, (string) $request->input('upload_type', 'raw'), $request->filled('shoot_service_id') ? (int) $request->input('shoot_service_id') : null
+        ), 403);
         $files = $request->file('files');
         $normalizedFiles = $files ? (is_array($files) ? $files : [$files]) : [];
 
@@ -98,6 +98,12 @@ class UploadShootFilesAction
 
             return $result;
         } catch (ValidationException $exception) {
+            if ($exception instanceof \App\Exceptions\UploadTargetValidationException) {
+                $payload = $this->typedUploadError($exception->errorType, $exception->targetMessage, $this->buildUploadLimits());
+                $payload['validation_errors'] = $exception->errors();
+                if ($attempt) $this->uploadIdempotency->fail($attempt, $payload, 422);
+                return ['status' => 422, 'payload' => $payload];
+            }
             // Preserve Laravel's established field-keyed validation response for
             // legacy callers. Idempotent callers receive (and subsequently replay)
             // the same typed terminal validation result as other upload failures.
@@ -119,6 +125,10 @@ class UploadShootFilesAction
             $this->uploadIdempotency->fail($attempt, $payload, 422);
 
             return ['status' => 422, 'payload' => $payload];
+        } catch (\Symfony\Component\HttpKernel\Exception\HttpException $exception) {
+            $denied = ['message' => $exception->getMessage(), 'error_type' => 'forbidden', 'errors' => [['error_type' => 'forbidden', 'message' => $exception->getMessage(), 'retryable' => false]], 'uploaded_files' => [], 'success_count' => 0, 'error_count' => 1, 'partial_success' => false];
+            if ($attempt) $this->uploadIdempotency->fail($attempt, $denied, $exception->getStatusCode());
+            return ['status' => $exception->getStatusCode(), 'payload' => $denied];
         } catch (\Throwable $exception) {
             $payload = [
                 'error_type' => 'server_error',
@@ -265,7 +275,12 @@ class UploadShootFilesAction
         $replaceFileId = $request->input('replace_file_id');
         $replaceFileId = $replaceFileId !== null && $replaceFileId !== '' ? (int) $replaceFileId : null;
 
-        $allServiceItems = $shoot->serviceItems()->with('service')->get();
+        $resolvedTarget = app(\App\Services\Shoots\ShootUploadTargetPolicy::class)->resolve(
+            $shoot, $user, $uploadType, $shootServiceId, $files, $request->input('media_type')
+        );
+        $shootServiceId = $resolvedTarget?->id;
+        $allServiceItems = $shoot->serviceItems()->with('service')->get()
+            ->filter(fn ($item) => app(\App\Services\Shoots\ShootUploadTargetPolicy::class)->isWorkItem($item));
 
         // Which raw lane(s) this batch actually needs. Derived from the files' mime
         // types, unioned with any lane the client declared, so a video file in a batch
@@ -726,8 +741,8 @@ class UploadShootFilesAction
                     // duplicate check is scoped to that row. Without it, two services on
                     // one shoot receiving the same filename collapsed into one file.
                     $shootFile = $uploadType === 'raw'
-                        ? $this->mediaStorageService->uploadToTodo($shoot, $file, auth()->id(), $serviceCategory, $resolvedMediaType, $shootServiceId, null, $replaceFileId)
-                        : $this->mediaStorageService->uploadToCompleted($shoot, $file, auth()->id(), $serviceCategory, $resolvedMediaType, $shootServiceId, null, $replaceFileId);
+                        ? $this->mediaStorageService->uploadToTodo($shoot, $file, $user?->id, $serviceCategory, $resolvedMediaType, $shootServiceId, null, $replaceFileId)
+                        : $this->mediaStorageService->uploadToCompleted($shoot, $file, $user?->id, $serviceCategory, $resolvedMediaType, $shootServiceId, null, $replaceFileId);
 
                     // The writes that belong with the record: committed together and
                     // retried as a unit if another writer wins the race. Every statement
@@ -806,7 +821,8 @@ class UploadShootFilesAction
                                     ])->save();
                                 }
 
-                                if ($uploadType === 'edited' && $serviceItem->workflow_status !== ShootService::WORKFLOW_DELIVERED) {
+                                if ($uploadType === 'edited' && app(\App\Services\Shoots\ShootUploadTargetPolicy::class)->isWorkItem($serviceItem)
+                                    && $serviceItem->workflow_status !== ShootService::WORKFLOW_DELIVERED) {
                                     $serviceItem->forceFill([
                                         'workflow_status' => ShootService::WORKFLOW_READY,
                                         'delivery_status' => ShootService::DELIVERY_READY,
@@ -1231,6 +1247,12 @@ class UploadShootFilesAction
         $extension = strtolower((string) pathinfo($fileName, PATHINFO_EXTENSION));
         $isRawFile = in_array($extension, ['nef', 'cr2', 'cr3', 'arw', 'dng', 'raf', 'rw2', 'orf', 'pef', 'srw'], true);
 
+        if ($exception instanceof \Symfony\Component\HttpKernel\Exception\HttpException && $exception->getStatusCode() === 403) {
+            return $this->buildUploadError($fileName, 'forbidden', 'Your upload assignment or permission changed before this file was saved.', false, 'Review the current assignment before retrying.');
+        }
+        if ($exception instanceof \Symfony\Component\HttpKernel\Exception\HttpException && $exception->getStatusCode() === 422) {
+            return $this->buildUploadError($fileName, 'invalid_service_item', 'The selected service no longer accepts this content.', false, 'Choose a compatible unfinished service.');
+        }
         if ($exception instanceof \App\Exceptions\MediaReplacementUnavailable) {
             return $this->buildUploadError($fileName, 'replacement_unavailable', $message, true, 'Refresh the media and retry this file. The previous file has been preserved.');
         }

@@ -204,44 +204,29 @@ class ShootFinalizeControllerTest extends TestCase
         }
     }
 
-    public function test_link_only_delivery_accepts_test_or_free_service_alongside_paid_services(): void
+    public function test_test_or_free_addon_never_finishes_an_unselected_paid_service(): void
     {
         Queue::fake();
         $admin = User::factory()->create(['role' => 'admin']);
         Sanctum::actingAs($admin);
-
-        $testShoot = $this->createLinkOnlyShoot();
-        $this->attachService($testShoot, 'Premium Test Video Tour', 150);
-        $this->attachService($testShoot, 'Regular Photography', 400);
-
-        $this->postJson('/api/shoots/'.$testShoot->id.'/finalize', [
-            'allow_no_media_delivery' => true,
-        ])->assertAccepted();
-
-        $freeShoot = $this->createLinkOnlyShoot();
-        $this->attachService($freeShoot, 'Complimentary Add-on', 0.01);
-        $this->attachService($freeShoot, 'Regular Paid Video', 350);
-
-        $this->postJson('/api/shoots/'.$freeShoot->id.'/finalize', [
-            'allow_no_media_delivery' => true,
-        ])->assertAccepted();
-
-        $bookedFreeShoot = $this->createLinkOnlyShoot();
-        $cataloguePaidService = Service::factory()->create([
-            'name' => 'Catalogue-priced Add-on',
-            'price' => 500,
-        ]);
-        $bookedFreeShoot->services()->attach($cataloguePaidService->id, [
-            'price' => 0.01,
-            'quantity' => 1,
-            'workflow_status' => 'scheduled',
-            'delivery_status' => 'not_started',
-            'is_deliverable' => true,
-        ]);
-
-        $this->postJson('/api/shoots/'.$bookedFreeShoot->id.'/finalize', [
-            'allow_no_media_delivery' => true,
-        ])->assertAccepted();
+        foreach ([['Premium Test Video Tour', 150], ['Complimentary Add-on', 0.01], ['Catalog-priced Add-on', 0.01]] as [$name, $price]) {
+            $shoot = $this->createLinkOnlyShoot();
+            $selected = $this->attachService($shoot, $name, $price);
+            $paid = $this->attachService($shoot, 'Regular Paid Photography', 400);
+            $selectedId = (int) $shoot->serviceItems()->where('service_id', $selected->id)->value('id');
+            $paidId = (int) $shoot->serviceItems()->where('service_id', $paid->id)->value('id');
+            $this->postJson('/api/shoots/'.$shoot->id.'/finalize', ['allow_no_media_delivery' => true])->assertUnprocessable();
+            $intent = $this->manualIntent($shoot, $admin, [$selectedId]);
+            $this->postJson('/api/shoots/'.$shoot->id.'/finalize', $intent)->assertAccepted();
+            $queued = Queue::pushed(FinalizeShootJob::class)->first(fn ($job) => $job->shootId === $shoot->id);
+            $this->assertNotNull($queued);
+            $queued->handle(app(ShootActivityLogger::class));
+            $this->assertSame('delivered', $shoot->serviceItems()->findOrFail($selectedId)->delivery_status);
+            $this->assertSame('not_started', $shoot->serviceItems()->findOrFail($paidId)->delivery_status);
+            $this->assertNotSame('delivered', $shoot->fresh()->workflow_status);
+            $this->assertSame('200.00', $shoot->fresh()->total_quote);
+            $this->assertDatabaseHas('shoot_delivery_receipts', ['shoot_id' => $shoot->id, 'shoot_service_id' => $selectedId, 'method' => 'manual_no_content']);
+        }
     }
 
     public function test_link_only_delivery_requires_explicit_whole_shoot_opt_in(): void
@@ -261,7 +246,7 @@ class ShootFinalizeControllerTest extends TestCase
         $this->postJson('/api/shoots/'.$serviceScopedShoot->id.'/finalize', [
             'shoot_service_id' => $shootServiceId,
             'allow_no_media_delivery' => true,
-        ])->assertBadRequest();
+        ])->assertUnprocessable();
 
         Queue::assertNothingPushed();
     }
@@ -309,7 +294,7 @@ class ShootFinalizeControllerTest extends TestCase
         $this->attachService($paidOnlyShoot, 'Regular Video Tour', 125);
         $this->postJson('/api/shoots/'.$paidOnlyShoot->id.'/finalize', [
             'allow_no_media_delivery' => true,
-        ])->assertBadRequest();
+        ])->assertUnprocessable();
 
         $legacyPaidService = Service::factory()->create([
             'name' => 'Legacy Regular Photography',
@@ -444,38 +429,60 @@ class ShootFinalizeControllerTest extends TestCase
         ]);
     }
 
-    public function test_link_only_job_delivers_all_service_rows_and_queues_client_notification(): void
+    public function test_manual_component_jobs_deliver_only_selected_work_and_notify_after_actual_completion(): void
     {
         Queue::fake();
-
         $admin = User::factory()->create(['role' => 'admin']);
         $shoot = $this->createLinkOnlyShoot();
-        $this->attachService($shoot, 'Test Video Tour', 100);
-        $this->attachService($shoot, 'Regular Paid Photography', 450);
+        $first = $this->attachService($shoot, 'Test Service', 100);
+        $second = $this->attachService($shoot, 'Regular Paid Photography', 450);
+        $items = $shoot->serviceItems()->orderBy('id')->get();
         $videoUrl = $shoot->tour_links['video_link'];
+        foreach ($items as $index => $item) {
+            $intent = $this->manualIntent($shoot->fresh(), $admin, [$item->id]);
+            (new FinalizeShootJob($shoot->id, $admin->id, 'completed', null, false, $intent['idempotency_key'], $intent))
+                ->handle(app(ShootActivityLogger::class));
+            $this->assertSame('delivered', $item->fresh()->delivery_status);
+            $this->assertNull($item->fresh()->editing_completed_at);
+            if ($index === 0) {
+                $this->assertNotSame('delivered', $shoot->fresh()->workflow_status);
+                $this->assertSame('not_started', $items[1]->fresh()->delivery_status);
+            }
+        }
+        $this->assertSame('delivered', $shoot->fresh()->workflow_status);
+        $this->assertSame($videoUrl, $shoot->fresh()->tour_links['video_link']);
+        $this->assertSame(2, \Illuminate\Support\Facades\DB::table('shoot_delivery_receipts')->where('shoot_id', $shoot->id)->where('method', 'manual_no_content')->count());
+        $this->assertDatabaseHas('client_delivery_notifications', ['shoot_id' => $shoot->id, 'user_id' => $shoot->client_id]);
+        Queue::assertPushed(SendShootReadyEmailJob::class, fn ($job) => $job->shootId === $shoot->id);
+    }
 
-        $job = new FinalizeShootJob($shoot->id, $admin->id, 'completed', null, true);
-        $job->handle(app(ShootActivityLogger::class));
+    public function test_manager_manual_completion_requires_reason_confirmation_and_current_scope(): void
+    {
+        Queue::fake();
+        $manager = User::factory()->create(['role' => 'editing_manager']);
+        $shoot = $this->createLinkOnlyShoot(['tour_links' => []]);
+        $this->attachService($shoot, 'Paid Photography', 300);
+        $lineId = (int) $shoot->serviceItems()->value('id');
+        Sanctum::actingAs($manager);
+        $intent = $this->manualIntent($shoot, $manager, [$lineId]);
+        $missingReason = $intent; $missingReason['reason'] = '';
+        $this->postJson('/api/shoots/'.$shoot->id.'/finalize', $missingReason)->assertUnprocessable()->assertJsonValidationErrors('reason');
+        $unconfirmed = $intent; $unconfirmed['confirmed'] = false;
+        $this->postJson('/api/shoots/'.$shoot->id.'/finalize', $unconfirmed)->assertUnprocessable();
+        Sanctum::actingAs(User::factory()->create(['role' => 'editor']));
+        $this->postJson('/api/shoots/'.$shoot->id.'/finalize', $intent)->assertForbidden();
+        Sanctum::actingAs($manager);
+        $this->postJson('/api/shoots/'.$shoot->id.'/finalize', $intent)->assertAccepted();
+        Queue::assertPushed(FinalizeShootJob::class, fn ($job) => $job->shootId === $shoot->id && ! $job->allowNoMediaDelivery);
+    }
 
-        $deliveredShoot = $shoot->fresh();
-        $this->assertSame(Shoot::STATUS_DELIVERED, $deliveredShoot->workflow_status);
-        $this->assertSame($videoUrl, $deliveredShoot->tour_links['video_link']);
-        $this->assertSame(
-            0,
-            $deliveredShoot->serviceItems()
-                ->where(function ($query) {
-                    $query->where('workflow_status', '!=', 'delivered')
-                        ->orWhere('delivery_status', '!=', 'delivered');
-                })
-                ->count()
-        );
-        $this->assertDatabaseHas('client_delivery_notifications', [
-            'shoot_id' => $shoot->id,
-            'user_id' => $shoot->client_id,
-        ]);
-        Queue::assertPushed(SendShootReadyEmailJob::class, fn (SendShootReadyEmailJob $queuedJob) =>
-            $queuedJob->shootId === $shoot->id
-        );
+    private function manualIntent(Shoot $shoot, User $actor, array $serviceIds): array
+    {
+        $plan = app(\App\Services\Shoots\DeliveryPlanService::class)->plan($shoot->fresh(), $actor);
+        $ids = collect($plan['components'])->filter(fn ($component) => in_array((int) $component['shoot_service_id'], $serviceIds, true))->pluck('id')->all();
+        $this->assertNotEmpty($ids);
+        return ['component_ids' => $ids, 'mode' => 'manual_no_content', 'reason' => 'Reviewed completion without app-hosted content',
+            'confirmed' => true, 'plan_revision' => $plan['revision'], 'idempotency_key' => (string) \Illuminate\Support\Str::uuid()];
     }
 
     public function test_finalize_job_revalidates_each_link_only_input_before_committing(): void

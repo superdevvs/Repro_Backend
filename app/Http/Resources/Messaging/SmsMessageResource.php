@@ -15,6 +15,7 @@ class SmsMessageResource extends JsonResource
      */
     public function toArray(Request $request): array
     {
+        $canViewDiagnostics = $request->user()?->role === 'superadmin';
         $metadata = $this->metadata ?? [];
         $reaction = $this->resource->getAttribute('_sms_reaction');
         if ($reaction === null && $this->channel === 'SMS' && $this->direction === 'INBOUND') {
@@ -29,12 +30,12 @@ class SmsMessageResource extends JsonResource
             'to' => $this->to_address,
             'body' => $this->body_text,
             'reaction' => $reaction,
-            'status' => $this->status,
+            'status' => $this->when($canViewDiagnostics, $this->status),
             'sentAt' => optional($this->created_at)->toIso8601String(),
-            'failedAt' => optional($this->failed_at)->toIso8601String(),
-            'errorMessage' => $this->error_message,
+            'failedAt' => $this->when($canViewDiagnostics, fn () => optional($this->failed_at)->toIso8601String()),
+            'errorMessage' => $this->when($canViewDiagnostics, fn () => $this->resource->attributesToArray()['error_message'] ?? null),
             'sendSource' => $this->send_source,
-            'providerMessageId' => $this->provider_message_id,
+            'providerMessageId' => $this->when($canViewDiagnostics, $this->provider_message_id),
             'aiGenerated' => (bool) ($metadata['ai_generated'] ?? false),
             'complianceKeyword' => $metadata['compliance_keyword'] ?? null,
         ];

@@ -201,7 +201,8 @@ class ShootEditingDispatchTest extends TestCase
         $this->postJson("/api/shoots/{$shoot->id}/finalize")->assertAccepted();
         (new \App\Jobs\FinalizeShootJob($shoot->id, $this->admin->id))->handle(app(\App\Services\ShootActivityLogger::class));
         $this->assertSame('delivered', $shoot->fresh()->status);
-        $this->postJson("/api/shoots/{$shoot->id}/finalize")->assertStatus(400);
+        $this->postJson("/api/shoots/{$shoot->id}/finalize")->assertUnprocessable()
+            ->assertJsonPath('errors.component_ids.0', 'All required work is resolved.');
     }
 
     public function test_selecting_all_on_a_ready_shoot_does_not_reopen_the_shoot_or_dispatch_addons(): void

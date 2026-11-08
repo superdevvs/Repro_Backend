@@ -32,6 +32,9 @@ class ShootDurationResolver
         if ((int) $item->duration_minutes > 0) {
             return (int) $item->duration_minutes;
         }
+        if (app(FinancialServiceClassification::class)->isFinancialOnly($item)) {
+            return 0;
+        }
 
         $item->loadMissing(['service', 'unit']);
         if ($item->service && ! $item->service->requiresPhotographerForBooking($item->created_at)) {
@@ -54,7 +57,8 @@ class ShootDurationResolver
             ->get()->keyBy('id');
 
         return array_map(function (array $row) use ($models, $sqft) {
-            if ($models->get($row['service_id'] ?? $row['id'] ?? null)?->isDigitalEnhancement()) {
+            $service = $models->get($row['service_id'] ?? $row['id'] ?? null);
+            if ($service?->isDigitalEnhancement() || ($service?->financial_only && empty($row['created_at']))) {
                 $row['duration_minutes'] = 0;
 
                 return $row;

@@ -128,7 +128,7 @@ class ShootMediaReadService
         $cacheStoreKey = ($this->authorizationSupport->canManageShootOperations($user) ? 'authorized_v2_' : 'client_v1_').$cacheKey;
         $cached = $canCache ? Cache::get($cacheStoreKey) : null;
         if ($cached !== null) {
-            return ['data' => $cached, 'media_revision' => $mediaRevision];
+            return ['data' => $cached, 'media_revision' => $mediaRevision, 'unassigned_count' => app(ShootMediaServiceAssignment::class)->canAssign($shoot, $user) ? $shoot->files()->whereNull('shoot_service_id')->count() : 0];
         }
 
         Log::debug('getFiles called', [
@@ -196,6 +196,7 @@ class ShootMediaReadService
 
         return [
             'data' => $formattedFiles,
+            'unassigned_count' => app(ShootMediaServiceAssignment::class)->canAssign($shoot, $user) ? $shoot->files()->whereNull('shoot_service_id')->count() : 0,
             'count' => count($formattedFiles),
             'media_revision' => $mediaRevision,
         ];
@@ -426,6 +427,7 @@ class ShootMediaReadService
             ];
         }
 
+        $data['content_version'] = (int) ($file->content_version ?: 1);
         $actor = auth()->user();
         if ($file->shoot) {
             $data['has_open_request'] = app(ShootEditorRequestAccess::class)->hasOpenRequest($file->shoot, $file);

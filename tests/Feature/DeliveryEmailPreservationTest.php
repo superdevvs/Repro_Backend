@@ -104,14 +104,17 @@ class DeliveryEmailPreservationTest extends TestCase
 
         ShootFile::create([
             'shoot_id' => $shoot->id,
+            'shoot_service_id' => $shoot->serviceItems()->sole()->id,
             'filename' => 'final.jpg',
             'stored_filename' => 'final.jpg',
             'path' => "shoots/{$shoot->id}/completed/final.jpg",
             'file_type' => 'image/jpeg',
+            'mime_type' => 'image/jpeg',
             'file_size' => 1024,
             'media_type' => 'edited',
             'uploaded_by' => $admin->id,
             'workflow_stage' => ShootFile::STAGE_COMPLETED,
+            'scan_status' => ShootFile::SCAN_STATUS_CLEAN,
         ]);
 
         (new FinalizeShootJob($shoot->id, $admin->id, 'completed'))
@@ -449,6 +452,13 @@ class DeliveryEmailPreservationTest extends TestCase
         $shoot = $this->createShootForClient($client, [
             'status' => Shoot::STATUS_DELIVERED,
             'workflow_status' => Shoot::STATUS_DELIVERED,
+            'delivery_status' => 'delivered',
+            'admin_verified_at' => now(),
+            'completed_at' => now(),
+        ]);
+
+        $shoot->serviceItems()->update([
+            'workflow_status' => 'delivered', 'delivery_status' => 'delivered', 'delivered_at' => now(),
         ]);
 
         // The protected delivery path owns the client email; saved automation

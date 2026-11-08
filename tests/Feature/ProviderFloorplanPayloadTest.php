@@ -25,7 +25,10 @@ class ProviderFloorplanPayloadTest extends TestCase
         $user = User::factory()->create(['role' => 'admin']);
         $assets = [['asset_key' => 'pdf_metric', 'url' => 'https://assets.test/plan.pdf', 'filename' => 'plan.pdf', 'type' => 'pdf']];
         $shoot = Shoot::withoutEvents(fn () => Shoot::factory()->create(['shoot_type' => 'standard', 'status' => 'delivered', 'created_by' => $user->id, $provider.'_floorplans' => $assets]));
-        $service = Service::factory()->create(['name' => 'CubiCasa Floor Plan']);
+        $label = $provider === 'iguide' ? 'iGuide Tour and Floorplan' : 'CubiCasa Floor Plan';
+        $service = Service::factory()->noIntake()->create(['name' => $label, 'included_components' => [
+            ['name' => $label, 'upload_intake_type' => 'none', 'uses_hdr_brackets' => false],
+        ]]);
         $shoot->services()->attach($service->id, ['price' => 100, 'quantity' => 1]);
         return [$shoot, $assets, $user];
     }
@@ -42,6 +45,7 @@ class ProviderFloorplanPayloadTest extends TestCase
             $this->assertSame(0, $shoot->files()->count());
             (new $class($shoot->id, $assets))->handle(app(\App\Services\ShootActivityLogger::class));
             $file = $shoot->files()->sole();
+            $this->assertSame($shoot->serviceItems()->sole()->id, $file->shoot_service_id);
             $this->assertSame('application/pdf', $file->file_type);
             $this->assertSame('quarantined', $file->scan_status);
             Queue::assertPushed(ScanShootFileJob::class, fn ($job) => $job->shootFileId === $file->id);

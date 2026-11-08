@@ -9,6 +9,16 @@ use Illuminate\Database\Eloquent\Model;
 /** The booked price/rate is evidence; catalog changes must not rewrite it. */
 final class PhotographerPayoutBasis
 {
+    /** Explicitly unassigned financial charges never inherit the header payee. */
+    public function recipientForLine(Model $line, Shoot $shoot): ?int
+    {
+        if ($line->photographer_id !== null) return (int) $line->photographer_id;
+        $snapshot = $line->payout_snapshot;
+        if (is_string($snapshot)) $snapshot = json_decode($snapshot, true);
+        if (data_get($snapshot, 'delivery_requirement') === 'financial_only') return null;
+        return $shoot->photographer_id ? (int) $shoot->photographer_id : null;
+    }
+
     public function capture(Model $line, Shoot $shoot, Service $service, bool $legacy = false): array
     {
         $before = $line->payout_snapshot;
@@ -39,6 +49,7 @@ final class PhotographerPayoutBasis
             'sqft' => $sqft, 'source' => $legacy ? 'legacy_booking_freeze' : 'booking',
             'captured_at' => now()->toIso8601String(),
         ];
+        if (isset($before['delivery_requirement'])) $basis['delivery_requirement'] = $before['delivery_requirement'];
         if ($before['billing_correction_only'] ?? false) $basis['billing_correction_only'] = true;
         if ($before['additional_work'] ?? false) $basis['additional_work'] = true;
         if ($before && $line->exists) {
@@ -87,6 +98,25 @@ final class PhotographerPayoutBasis
         // A service added to a delivered work order has not inherited the
         // original capture. An explicit later line completion can qualify it.
         if (data_get($line->payout_snapshot, 'billing_correction_only', false)) return null;
+        if (data_get($line->payout_snapshot, 'delivery_requirement') === 'financial_only') {
+            $recipient = $this->recipientForLine($line, $shoot);
+            if (! $recipient) return null;
+            $shoot->loadMissing('services');
+            $completed = [];
+            foreach ($shoot->services as $service) {
+                $source = $service->pivot;
+                if ((int) $source->id === (int) $line->id
+                    || data_get($source->payout_snapshot, 'delivery_requirement') === 'financial_only'
+                    || ! $service->requiresPhotographerForBooking($source->created_at)
+                    || $this->recipientForLine($source, $shoot) !== $recipient
+                    || ($line->shoot_unit_id && (int) $source->shoot_unit_id !== (int) $line->shoot_unit_id)) continue;
+                // Reuse this recipient's existing capture evidence, including a
+                // completed original line on a reopened order. A fee has no RAWs.
+                $date = $this->completion($shoot, $source);
+                if ($date !== null) $completed[] = $date;
+            }
+            return $completed ? max($completed) : null;
+        }
         if (data_get($line->payout_snapshot, 'additional_work', false)
             || app(\App\Services\Shoots\ShootActiveWorkLifecycle::class)->hasActiveWork($shoot)) {
             // Historical whole-order completion does not establish capture of

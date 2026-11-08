@@ -81,7 +81,11 @@ class PhotographerAvailabilityBookedTimeTest extends TestCase
             ->assertJsonPath('data.0.day_of_week', strtolower(Carbon::parse($localDate)->format('l')))
             ->assertJsonPath('data.0.start_time', $start)
             ->assertJsonPath('data.0.end_time', $end)
-            ->assertJsonPath('data.0.shoot_details.duration_minutes', 60);
+            ->assertJsonPath('data.0.shoot_details.duration_minutes', 60)
+            ->assertJsonPath('data.0.shoot_details.address', $shoot->address)
+            ->assertJsonPath('data.0.shoot_details.city', 'Burke')
+            ->assertJsonPath('data.0.shoot_details.state', 'VA')
+            ->assertJsonPath('data.0.shoot_details.zip', '22015');
 
         // The adjacent days must not inherit a booking from its raw UTC date.
         foreach ([-1, 1] as $offset) {
@@ -245,7 +249,10 @@ class PhotographerAvailabilityBookedTimeTest extends TestCase
         $this->postJson('/api/photographer/availability/bulk-index', [
             'photographer_ids' => [$photographer->id], 'from_date' => '2026-09-28', 'to_date' => '2026-09-28',
         ])->assertOk()->assertJsonPath('data.'.$photographer->id.'.0.shoot_id', $shoot->id)
-            ->assertJsonPath('data.'.$photographer->id.'.0.shoot_details.address', $shoot->address);
+            ->assertJsonPath('data.'.$photographer->id.'.0.shoot_details.address', $shoot->address)
+            ->assertJsonPath('data.'.$photographer->id.'.0.shoot_details.city', 'Burke')
+            ->assertJsonPath('data.'.$photographer->id.'.0.shoot_details.state', 'VA')
+            ->assertJsonPath('data.'.$photographer->id.'.0.shoot_details.zip', '22015');
     }
 
 }

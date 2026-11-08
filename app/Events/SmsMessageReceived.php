@@ -36,8 +36,8 @@ class SmsMessageReceived implements ShouldBroadcast
     {
         return [
             'threadId' => (string) $this->message->thread_id,
-            'message' => SmsMessageResource::make($this->message)->resolve(),
+            // Shared channels must never inherit the initiating superadmin's access.
+            'message' => SmsMessageResource::make($this->message)->resolve(\Illuminate\Http\Request::create('/')),
         ];
     }
 }
-

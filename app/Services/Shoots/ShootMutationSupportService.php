@@ -586,7 +586,7 @@ class ShootMutationSupportService
                 && (int) $photographerId !== (int) $currentItem?->photographer_id
                 && ! User::query()->whereKey($photographerId)->photographers()->exists()) {
                 throw ValidationException::withMessages([
-                    'services' => ['The selected travel fee recipient must be a photographer.'],
+                    'services' => ['The selected fee recipient must be a photographer.'],
                 ]);
             }
             $editorId = array_key_exists('editor_id', $service)
@@ -612,7 +612,7 @@ class ShootMutationSupportService
                             ?? 0)
                         : ($currentItem?->nominal_value_snapshot),
                     'quantity' => $service['quantity'] ?? $currentItem?->quantity ?? 1,
-                    'duration_minutes' => $serviceModel?->isDigitalEnhancement() ? 0 : ($service['duration_minutes'] ?? ($currentItem
+                    'duration_minutes' => ($serviceModel?->isDigitalEnhancement() || (! $currentItem && $serviceModel?->financial_only)) ? 0 : ($service['duration_minutes'] ?? ($currentItem
                         ? app(ShootDurationResolver::class)->forServiceItem($currentItem)
                         : app(ShootDurationResolver::class)->forService($serviceModel, $shoot->propertySqft()))),
                     'photographer_pay' => $service['photographer_pay'] ?? $currentItem?->photographer_pay,

@@ -40,6 +40,10 @@ class UploadShootAlbumMediaJob implements ShouldQueue
     {
         $disk = Storage::disk('local');
         if (! $disk->exists($this->tempFilePath)) {
+            $attempt = \App\Models\ShootUploadAttempt::where('shoot_id', $this->shoot->id)->where('actor_id', $this->uploadedBy)
+                ->where('idempotency_key', 'album-'.hash('sha256', $this->tempFilePath))->where('status', 'completed')->first();
+            if ($attempt && \App\Models\ShootFile::where('shoot_id', $this->shoot->id)->where('album_id', $this->album->id)
+                ->whereIn('id', $attempt->result_file_ids ?? [])->exists()) return;
             throw new \RuntimeException('The queued upload source is unavailable.');
         }
 
@@ -50,9 +54,25 @@ class UploadShootAlbumMediaJob implements ShouldQueue
             null,
             true
         );
-        $serviceId = $this->shootServiceId ?? $this->album->shoot_service_id;
-        $method = $this->mediaType === 'edited' ? 'uploadToCompleted' : 'uploadToTodo';
-        $file = $media->{$method}($this->shoot, $upload, $this->uploadedBy, null, $this->mediaType, $serviceId);
+        $shoot = $this->shoot->fresh();
+        $album = $this->album->fresh();
+        $uploader = $this->uploadedBy ? User::find($this->uploadedBy) : null;
+        abort_unless($shoot && $album && $uploader && (int) $album->shoot_id === (int) $shoot->id, 403, 'Upload ownership is no longer available.');
+        $serviceId = $this->shootServiceId ?? $album->shoot_service_id;
+        abort_if($album->shoot_service_id && (int) $album->shoot_service_id !== (int) $serviceId,
+            409, 'Album service ownership changed while this upload was queued.');
+        // Reuse the same authorization, content validation, cancellation checks,
+        // quarantine and idempotency boundary as multipart/chunk/cloud intake.
+        $request = \Illuminate\Http\Request::create('/api/shoots/'.$shoot->id.'/upload', 'POST', [
+            'upload_type' => $this->mediaType === 'edited' ? 'edited' : 'raw',
+            'media_type' => $this->mediaType, 'shoot_service_id' => $serviceId,
+            'idempotency_key' => 'album-'.hash('sha256', $this->tempFilePath),
+        ], [], ['files' => [$upload]]);
+        $request->setUserResolver(fn () => $uploader);
+        $result = app(\App\Services\Shoots\Actions\UploadShootFilesAction::class)->execute($request, $shoot, $uploader);
+        $fileId = data_get($result, 'payload.uploaded_files.0.id');
+        if (! $fileId) throw new \RuntimeException('Album upload was not accepted: '.data_get($result, 'payload.message', 'Review the target service and permissions.'));
+        $file = $shoot->files()->findOrFail($fileId);
         $file->forceFill(['album_id' => $this->album->id, 'uploaded_at' => now()])->save();
 
         $this->album->source = 'local';

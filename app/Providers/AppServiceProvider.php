@@ -25,6 +25,8 @@ class AppServiceProvider extends ServiceProvider
         \Illuminate\Database\Connection::resolverFor('mysql', fn ($pdo, $database, $prefix, $config) => new \App\Database\MySqlConnection($pdo, $database, $prefix, $config));
         $this->app->bind('db.connector.mysql', \App\Database\MySqlConnector::class);
 
+        $this->app->scoped(\App\Services\Shoots\DeliveryPlanService::class);
+        $this->app->scoped(\App\Services\Shoots\ProviderAutoDeliverySettings::class);
         $this->app->bind(\App\Contracts\ListingStudio\ListingStudioRefundDispatcher::class, \App\Services\ListingStudio\StudioRefundService::class);
         $this->app->bind(\App\Contracts\ListingStudio\ListingStudioSourceResolver::class, \App\Services\ListingStudio\ListingStudioPaidSourceResolver::class);
         $this->app->bind(\App\Contracts\ListingStudio\ListingStudioOutcomeGuard::class, \App\Services\ListingStudio\ListingStudioPaidOutcomeGuard::class);
@@ -71,6 +73,7 @@ class AppServiceProvider extends ServiceProvider
         ShootService::observe(ShootServiceObserver::class);
         ShootCompensation::observe(ShootCompensationObserver::class);
         ShootFile::observe(ShootFileObserver::class);
+        ShootFile::observe(\App\Observers\ProviderAutoDeliveryObserver::class);
         \App\Models\ShootUnit::observe(\App\Observers\ShootUnitObserver::class);
 
         // Deployment provisions and verifies public/storage as the deploy user.

@@ -17,6 +17,7 @@ class MessagingOverviewController extends Controller
         // Stats for today
         $today = now()->startOfDay();
         $userId = (int) $request->user()->id;
+        $canViewDiagnostics = $request->user()->role === 'superadmin';
 
         $totalSentToday = Message::whereIn('channel', ['EMAIL', 'SMS'])
             ->whereIn('status', ['SENT', 'DELIVERED'])
@@ -54,16 +55,19 @@ class MessagingOverviewController extends Controller
             ->orderByDesc('created_at')
             ->limit(10)
             ->get();
+        if (! $canViewDiagnostics) {
+            $recentActivity->where('channel', 'SMS')->each(fn (Message $message) => $message->makeHidden([
+                'status', 'failed_at', 'error_message', 'provider_message_id', 'metadata',
+            ]));
+        }
 
         $smsFailedToday = Message::where('channel', 'SMS')
             ->where('status', 'FAILED')
             ->whereDate('created_at', $today)
             ->count();
 
-        return response()->json([
+        $overview = [
             'total_sent_today' => $totalSentToday,
-            'total_failed_today' => $totalFailedToday,
-            'sms_failed_today' => $smsFailedToday,
             'total_scheduled' => $totalScheduled,
             // Legacy key kept for existing FE cards.
             'unread_sms_count' => $counts['sms'],
@@ -74,7 +78,13 @@ class MessagingOverviewController extends Controller
             'unread_counts' => $counts,
             'active_automations' => $activeAutomations,
             'recent_activity' => $recentActivity,
-        ]);
+        ];
+        if ($canViewDiagnostics) {
+            $overview['total_failed_today'] = $totalFailedToday;
+            $overview['sms_failed_today'] = $smsFailedToday;
+        }
+
+        return response()->json($overview);
     }
 
     /**

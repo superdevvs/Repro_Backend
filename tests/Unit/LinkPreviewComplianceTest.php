@@ -277,6 +277,33 @@ class LinkPreviewComplianceTest extends TestCase
     }
 
     #[Test]
+    public function zillow_unbranded_share_links_have_an_inline_tour_and_floor_plan_on_every_public_variant(): void
+    {
+        $shoot = Shoot::factory()->create();
+        $base = 'https://www.zillow.com/view-imx/f2b5a984-31f1-4eb5-8db4-32c85a5f994d';
+        $shoot->tour_links = ['zillow_3d' => $base.'?setAttribution=mls&wl=true&initialViewType=pano&utm_source=dashboard'];
+        $shoot->save();
+
+        foreach (['branded', 'mls', 'g-mls'] as $type) {
+            $payload = $this->makeAssets()->buildTypedPublicAssets($shoot, $type);
+            $this->assertSame($base.'?setAttribution=mls&wl=true&initialViewType=pano&utm_source=dashboard', $payload['zillow_viewer']['inline_url']);
+            $this->assertSame($base.'?setAttribution=mls&wl=true&initialViewType=floorplan&utm_source=dashboard', $payload['zillow_viewer']['floorplan_url']);
+            $this->assertSame($payload['zillow_viewer']['open_url'], $payload['tour_links']['zillow_3d']);
+        }
+    }
+
+    #[Test]
+    public function branded_zillow_links_still_have_no_mls_viewer_or_floor_plan(): void
+    {
+        $shoot = Shoot::factory()->create();
+        $shoot->tour_links = ['zillow_3d' => 'https://www.zillow.com/view-imx/f2b5a984-31f1-4eb5-8db4-32c85a5f994d'];
+        $shoot->save();
+        $payload = $this->makeAssets()->buildTypedPublicAssets($shoot, 'mls');
+        $this->assertNull($payload['zillow_viewer']);
+        $this->assertArrayNotHasKey('zillow_3d', $payload['tour_links']);
+    }
+
+    #[Test]
     public function remote_image_loading_is_limited_to_allowlisted_hosts(): void
     {
         Http::preventStrayRequests();

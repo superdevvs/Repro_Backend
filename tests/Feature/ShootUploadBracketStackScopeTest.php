@@ -344,7 +344,7 @@ class ShootUploadBracketStackScopeTest extends TestCase
         $this->assertSame(5, (int) $this->shoot->fresh()->bracket_mode);
     }
 
-    public function test_unassigned_uploads_are_numbered_against_each_other_not_against_a_service(): void
+    public function test_omitting_scope_selects_the_unique_compatible_service_and_continues_its_stack(): void
     {
         $exterior = $this->serviceItem('Exterior HDR');
 
@@ -354,11 +354,19 @@ class ShootUploadBracketStackScopeTest extends TestCase
             'loose-2.jpg' => self::NEW_STACK_GAP + 4,
         ], null, 5, 'batch-unassigned');
 
-        $this->assertSame($this->exteriorSevenFrameStacks(), $this->stacksFor($exterior->id));
-        $this->assertSame([
-            'loose-1.jpg' => '1/1',
-            'loose-2.jpg' => '1/2',
-        ], $this->stacksFor(null));
+        $this->assertSame($this->exteriorSevenFrameStacks() + [
+            'loose-1.jpg' => '2/3',
+            'loose-2.jpg' => '2/4',
+        ], $this->stacksFor($exterior->id));
+        $this->assertSame([], $this->stacksFor(null));
+        $this->assertSame([$exterior->id], \App\Models\ShootUploadAttempt::where('upload_batch_id', 'batch-unassigned')->pluck('shoot_service_id')->unique()->all());
+    }
+
+    public function test_unbooked_legacy_uploads_keep_their_unassigned_stack(): void
+    {
+        $this->uploadGroup(['legacy-1.jpg' => 0, 'legacy-2.jpg' => 1], null, 5, 'batch-legacy');
+        $this->assertSame(['legacy-1.jpg' => '1/1', 'legacy-2.jpg' => '1/2'], $this->stacksFor(null));
+        $this->assertSame(0, $this->shoot->serviceItems()->count());
     }
 
     public function test_each_group_is_recorded_under_its_own_upload_batch_and_service(): void

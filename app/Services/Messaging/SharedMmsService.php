@@ -200,17 +200,27 @@ class SharedMmsService
             'last_message_at' => $g->last_message_at?->toIso8601String(), 'last_snippet' => $g->last_snippet, 'unread_count' => $this->unreadCount($user, $g->id),
             'can_send' => $this->enabled() && $this->eligible($user) && $g->number && $this->numberAllowed($g->number)];
     }
-    public function presentMessage(SmsSharedMessage $m): array
+    public function presentMessage(SmsSharedMessage $m, ?User $viewer = null): array
     {
+        $canViewDiagnostics = $viewer?->role === 'superadmin';
+        $status = $m->status === 'sending' && $m->created_at->lt(now()->subMinute()) ? 'uncertain' : $m->status;
         return ['id' => $m->id, 'group_id' => $m->group_id, 'request_key' => $m->request_key, 'direction' => $m->direction,
             'from' => $m->from_number, 'body_text' => $m->body_text, 'created_at' => $m->created_at->toIso8601String(),
-            'status' => $m->status === 'sending' && $m->created_at->lt(now()->subMinute()) ? 'uncertain' : $m->status,
-            'recipients' => array_map(fn ($v) => ['phone_number' => $v['phone_number'], 'status' => $v['status']], $m->recipient_statuses),
+            // Operation completion does not assert carrier acceptance or delivery.
+            'status' => ! $canViewDiagnostics && $status === 'failed' ? 'completed' : $status,
+            'operation_status' => in_array($status, ['sending', 'uncertain'], true) ? 'pending' : 'completed',
+            'recipients' => array_map(function ($recipient) use ($canViewDiagnostics) {
+                $result = ['phone_number' => $recipient['phone_number']];
+                if ($canViewDiagnostics) {
+                    $result['status'] = $recipient['status'];
+                }
+                return $result;
+            }, $m->recipient_statuses),
             'media_count' => $m->media_count];
     }
     public function envelope(SmsSharedMessage $m, User $user): array
     {
-        return ['data' => $this->presentGroup($m->group, $user), 'message' => $this->presentMessage($m)];
+        return ['data' => $this->presentGroup($m->group, $user), 'message' => $this->presentMessage($m, $user)];
     }
     public function unreadCount(User $user, string $groupID): int
     {
