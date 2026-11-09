@@ -102,6 +102,30 @@ class WorkspaceShootThumbnailsTest extends TestCase
         Http::assertNothingSent();
     }
 
+    public function test_floorplan_only_shoot_can_preview_its_existing_image_without_changing_the_cover(): void
+    {
+        $actor = $this->actor();
+        $shoot = $this->shoot($actor);
+        $this->photo($shoot, $actor, ['filename' => 'plan.pdf', 'file_type' => 'application/pdf', 'mime_type' => 'application/pdf', 'media_type' => 'floorplan']);
+        $floorplan = $this->photo($shoot, $actor, ['filename' => 'plan.jpg', 'media_type' => 'floorplan']);
+        $url = $this->getJson(self::URL.'?page=1')->assertOk()->json('data.0.thumbnailUrl');
+        $this->assertSame($this->previewURL($floorplan), $url);
+        $preview = $this->get($url)->assertOk()->assertHeader('Content-Type', 'image/jpeg');
+        $dimensions = getimagesizefromstring($preview->getContent());
+        $this->assertSame([480, 360], [$dimensions[0], $dimensions[1]]);
+        $this->assertNull($shoot->fresh()->hero_image);
+        $this->assertFalse($floorplan->fresh()->is_cover);
+    }
+
+    public function test_property_photo_takes_precedence_over_a_floorplan_image_for_the_card(): void
+    {
+        $actor = $this->actor();
+        $shoot = $this->shoot($actor);
+        $this->photo($shoot, $actor, ['filename' => 'plan.jpg', 'media_type' => 'floorplan', 'is_cover' => true]);
+        $photo = $this->photo($shoot, $actor);
+        $this->getJson(self::URL.'?page=1')->assertOk()->assertJsonPath('data.0.thumbnailUrl', $this->previewURL($photo));
+    }
+
     public function test_editor_cover_selection_continues_past_another_editors_files_and_revocation_is_immediate(): void
     {
         $editor = $this->actor('editor');

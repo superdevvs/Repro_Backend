@@ -40,7 +40,8 @@ final class WorkspaceShootThumbnails
                 ->where('is_hidden', false)
                 ->where(fn ($query) => $query->whereNull('scan_status')->orWhere('scan_status', ShootFile::SCAN_STATUS_CLEAN))
                 ->select(['id', 'shoot_id'])
-                ->selectRaw('ROW_NUMBER() OVER (PARTITION BY shoot_id ORDER BY is_cover DESC, '
+                ->selectRaw('ROW_NUMBER() OVER (PARTITION BY shoot_id ORDER BY '
+                    ."CASE WHEN LOWER(COALESCE(media_type, '')) = 'floorplan' THEN 1 ELSE 0 END, is_cover DESC, "
                     ."CASE WHEN workflow_stage IN ('completed', 'verified') THEN 0 ELSE 1 END, "
                     .'CASE WHEN sort_order IS NULL OR sort_order <= 0 THEN 1 ELSE 0 END, sort_order, id) AS source_rank');
             $candidates = DB::query()->fromSub($ranked, 'source_candidates')
@@ -56,7 +57,7 @@ final class WorkspaceShootThumbnails
                 $shoot = $shoots->get($candidate->shoot_id);
                 if (! $file || ! $shoot || ! $file->isClearedForProcessing()
                     || $file->is_hidden || $file->is_extra
-                    || in_array(strtolower((string) $file->media_type), ['floorplan', 'video', 'extra', 'reference', 'additional'], true)
+                    || in_array(strtolower((string) $file->media_type), ['video', 'extra', 'reference', 'additional'], true)
                     || (! $this->authorization->isImageMediaFile($file) && ! $this->authorization->isRawCameraFile($file))) {
                     continue;
                 }
