@@ -21,6 +21,21 @@ class StudioWorkspaceSourceController extends StudioSourceController
         return app(ShootAuthorizationSupport::class)->scopeAccessibleShootMedia($query, $user);
     }
 
+    public function searchShoots(Request $request): JsonResponse
+    {
+        $response = parent::searchShoots($request);
+        $data = $response->getData(true);
+        $thumbnails = app(\App\Services\Studio\WorkspaceShootThumbnails::class)
+            ->forShoots(array_column($data['data'], 'id'), $request->user());
+        foreach ($data['data'] as &$shoot) {
+            $shoot['thumbnailUrl'] = $thumbnails[$shoot['id']] ?? null;
+        }
+        unset($shoot);
+        $response->setData($data);
+
+        return $response;
+    }
+
     public function upload(Request $request): JsonResponse
     {
         $response = parent::upload($request);
