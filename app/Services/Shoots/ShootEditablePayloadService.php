@@ -674,6 +674,10 @@ class ShootEditablePayloadService
         }
 
         DB::transaction(function () use ($shoot, $validated, $actor, $previousNotes) {
+            if (collect(['photographer_id', 'services', 'service_items', 'service_lines', 'service_photographers'])
+                ->contains(fn (string $field) => array_key_exists($field, $validated))) {
+                app(ShootPhotographerAssignmentService::class)->reconcileHeader($shoot);
+            }
             $shoot->save();
 
             foreach ($previousNotes as $field => $previousContent) {

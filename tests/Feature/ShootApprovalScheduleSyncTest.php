@@ -103,6 +103,47 @@ class ShootApprovalScheduleSyncTest extends TestCase
         ]);
     }
 
+    #[\PHPUnit\Framework\Attributes\TestWith([false])]
+    #[\PHPUnit\Framework\Attributes\TestWith([true])]
+    public function test_approval_reconciles_an_echoed_header_with_service_reassignments(bool $partialReassignment): void
+    {
+        $original = User::factory()->photographer()->create();
+        $replacement = User::factory()->photographer()->create();
+        $shoot = $this->requestedShoot(['photographer_id' => $original->id]);
+        $first = $this->attachService($shoot, '2026-10-06 10:30:00', $original->id);
+        $second = $this->attachService($shoot, '2026-10-06 10:30:00', $original->id);
+        $replacement->setServiceCapabilities([(string) $first->id, (string) $second->id]);
+        $replacement->save();
+        foreach ([$first->id => 75, $second->id => 15] as $serviceId => $pay) {
+            $shoot->services()->updateExistingPivot($serviceId, ['photographer_pay' => $pay, 'duration_minutes' => 17]);
+        }
+        $preservedFields = ['id', 'service_id', 'price', 'quantity', 'photographer_pay', 'duration_minutes', 'scheduled_at'];
+        $snapshot = fn () => $shoot->serviceItems()->orderBy('id')->get()
+            ->map(fn ($item) => \Illuminate\Support\Arr::only($item->getRawOriginal(), $preservedFields))->all();
+        $before = $snapshot();
+
+        // Approval forms echo the old header while editing the per-service owner.
+        $this->approve($shoot, [
+            'photographer_id' => $original->id,
+            'service_photographers' => [
+                ['service_id' => $first->id, 'photographer_id' => $replacement->id],
+                ['service_id' => $second->id, 'photographer_id' => $partialReassignment ? $original->id : $replacement->id],
+            ],
+            'service_items' => [
+                ['service_id' => $first->id, 'photographer_id' => $replacement->id],
+                ['service_id' => $second->id, 'photographer_id' => $partialReassignment ? $original->id : $replacement->id],
+            ],
+        ]);
+
+        $this->assertSame($partialReassignment ? $original->id : $replacement->id, $shoot->fresh()->photographer_id);
+        $this->assertSame($before, $snapshot());
+        $this->assertSame([
+            $replacement->id,
+            $partialReassignment ? $original->id : $replacement->id,
+        ], $shoot->serviceItems()->orderBy('id')->pluck('photographer_id')->all());
+        $this->assertSame('2026-10-06 10:30:00', $shoot->fresh()->scheduled_at->format('Y-m-d H:i:s'));
+    }
+
     public function test_approval_uses_local_date_and_time_for_a_zoned_schedule(): void
     {
         $shoot = $this->requestedShoot([

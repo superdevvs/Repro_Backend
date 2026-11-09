@@ -756,12 +756,7 @@ class ShootListingService
 
         $photographerIds = $this->normalizeArrayQuery($request, 'photographer_id');
         if (!empty($photographerIds)) {
-            $query->where(function (Builder $scope) use ($photographerIds) {
-                $scope->whereIn('photographer_id', $photographerIds)
-                    ->orWhereHas('services', function (Builder $serviceQuery) use ($photographerIds) {
-                        $serviceQuery->whereIn('shoot_service.photographer_id', $photographerIds);
-                    });
-            });
+            app(ShootPhotographerAssignmentService::class)->scopeAssignedTo($query, $photographerIds);
         }
 
         $address = trim((string) $request->query('address', ''));

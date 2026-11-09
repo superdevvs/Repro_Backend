@@ -888,6 +888,12 @@ class ShootMutationSupportService
                     $assignedPhotographerId
                 );
             }
+            app(ShootPhotographerAssignmentService::class)->reconcileHeader($lockedShoot);
+            if ($lockedShoot->isDirty('photographer_id')) {
+                $lockedShoot->save();
+                $shoot->photographer_id = $lockedShoot->photographer_id;
+                $shoot->unsetRelation('photographer');
+            }
         }, 3);
     }
 

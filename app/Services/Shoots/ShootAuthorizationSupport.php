@@ -194,9 +194,10 @@ class ShootAuthorizationSupport
             });
         }
         if ($this->hasRole($user, ['photographer'])) {
-            return $query->where(fn (Builder $scope) => $scope->where('photographer_id', $user->id)
-                ->orWhereHas('services', fn (Builder $service) => $service->where('shoot_service.photographer_id', $user->id))
-                ->when(app(ShootManagementAccess::class)->isRestrictedSalesRep($user), fn (Builder $rep) => $rep->orWhere('rep_id', $user->id)));
+            return $query->where(function (Builder $scope) use ($user) {
+                app(ShootPhotographerAssignmentService::class)->scopeAssignedTo($scope, $user->id);
+                if (app(ShootManagementAccess::class)->isRestrictedSalesRep($user)) $scope->orWhere('rep_id', $user->id);
+            });
         }
         if ($this->isClientUser($user)) {
             $clientIds = [$user->id, ...AccountLink::getLinkedClientIdsForOwner((int) $user->id, 'shoots')];
@@ -805,19 +806,20 @@ class ShootAuthorizationSupport
 
     public function isPhotographerAssignedToShoot(Shoot $shoot, User $photographer): bool
     {
-        if ((string) $shoot->photographer_id === (string) $photographer->id) {
-            return true;
+        // Fetch current ownership instead of trusting a stale/filtered relation.
+        // A gallery checks this for every file; share the result only within the
+        // current HTTP read. Writes and the next request always recheck storage.
+        $request = request();
+        $readRequest = $request->isMethod('GET') && $request->route() !== null;
+        $key = $shoot->id.':'.$photographer->id;
+        $assignments = $readRequest ? $request->attributes->get('photographer_shoot_assignments', []) : [];
+        if (! array_key_exists($key, $assignments)) {
+            $assignments[$key] = app(ShootPhotographerAssignmentService::class)
+                ->scopeAssignedTo(Shoot::query()->whereKey($shoot->id), $photographer->id)->exists();
+            if ($readRequest) $request->attributes->set('photographer_shoot_assignments', $assignments);
         }
 
-        if ($shoot->relationLoaded('services')) {
-            return collect($shoot->getRelation('services'))->contains(function ($service) use ($photographer) {
-                return (string) ($service->pivot?->photographer_id ?? '') === (string) $photographer->id;
-            });
-        }
-
-        return $shoot->services()
-            ->wherePivot('photographer_id', $photographer->id)
-            ->exists();
+        return $assignments[$key];
     }
 
     public function canPhotographerAccessServiceItem(Shoot $shoot, ?int $shootServiceId, User $photographer): bool
