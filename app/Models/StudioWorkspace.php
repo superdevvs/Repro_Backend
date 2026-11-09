@@ -72,7 +72,7 @@ class StudioWorkspace extends Model
             'media' => array_map([\App\Services\Studio\WorkspaceMediaService::class, 'withUploadPreview'], $this->media ?? []), 'config' => self::normalizeConfigStrings($this->config ?? []), 'status' => $this->status,
             'progress' => $generation['progress'] ?? $this->progress, 'generation' => $generation ? \Illuminate\Support\Arr::except($generation, ['progress']) : null,
             'generationScope' => $this->isBusy() && ! $this->isVideo() ? [
-                'mediaIds' => in_array($this->operation['type'] ?? '', ['revision', 'upscale'], true)
+                'mediaIds' => in_array($this->operation['type'] ?? '', ['revision', 'upscale', 'extend'], true)
                     ? [$this->operation['payload']['mediaId']]
                     : (($this->operation['type'] ?? '') === 'adjust' ? array_column($this->operation['payload']['targets'], 'mediaId') : null),
                 'completedMediaIds' => $this->operation['completed'] ?? [],
@@ -88,7 +88,7 @@ class StudioWorkspace extends Model
             'history' => array_map(fn ($event) => \Illuminate\Support\Arr::except($event, ['reelJobId']), $this->history ?? []),
             'createdAt' => $this->created_at?->toIso8601String(),
             'updatedAt' => $this->updated_at?->toIso8601String(),
-            'capabilities' => ['framePreparation' => true, 'regionRevisions' => true, 'originalPhotoTools' => true,
+            'capabilities' => ['framePreparation' => true, 'regionRevisions' => true, 'originalPhotoTools' => true, 'photoExtend' => true,
                 'video' => \App\Services\Studio\WorkspaceVideoOptions::capabilities(),
                 'objectDetection' => filled(config('services.openai.api_key')), 'pixelSegmentation' => false,
                 'crossFrameContinuity' => false, 'transitions' => \App\Services\Studio\ReelCompositionService::TRANSITIONS,
@@ -108,6 +108,7 @@ class StudioWorkspace extends Model
                 $value[$key] = self::canonicalConfig($item);
             }
         }
+
         return $value;
     }
 

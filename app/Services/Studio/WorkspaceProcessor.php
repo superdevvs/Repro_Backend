@@ -54,7 +54,7 @@ class WorkspaceProcessor
             $ids = array_column($workspace->operation['payload']['targets'], 'mediaId');
             $items = array_values(array_filter($items, fn ($item) => in_array($item['id'], $ids, true)));
         }
-        if (in_array($type, ['revision', 'upscale'], true)) {
+        if (in_array($type, ['revision', 'upscale', 'extend'], true)) {
             $items = array_values(array_filter($items, fn ($m) => $m['id'] === $workspace->operation['payload']['mediaId']));
         } elseif ($type !== 'adjust' && count($workspace->config['frames'] ?? [])) {
             $selected = array_column($workspace->config['frames'], 'mediaId');
@@ -83,7 +83,7 @@ class WorkspaceProcessor
             if (in_array($item['id'], $workspace->operation['completed'] ?? [], true)) {
                 continue;
             }
-            $bytes = (in_array($type, ['upscale', 'adjust'], true) || ($type === 'revision' && ! empty($workspace->operation['payload']['customEdit'])))
+            $bytes = (in_array($type, ['upscale', 'adjust', 'extend'], true) || ($type === 'revision' && ! empty($workspace->operation['payload']['customEdit'])))
                 ? $this->upscaleSource($workspace, $item)
                 : $this->sourceBytes($workspace, $item, $type === 'revision');
             $frame = collect($workspace->config['frames'] ?? [])->firstWhere('mediaId', $item['id']) ?? ['mediaId' => $item['id'], 'method' => 'fit'];
@@ -92,6 +92,9 @@ class WorkspaceProcessor
                 $result = app(CustomPhotoEdits::class)->apply($bytes, $recipe, app(WorkspacePhotoLogo::class)->bytes($workspace, $recipe));
             } elseif ($type === 'prepare') {
                 $result = $this->prepareImage($workspace, $operationId, $item, $bytes, $frame);
+            } elseif ($type === 'extend') {
+                $frame = ['mediaId' => $item['id'], 'method' => 'extend'];
+                $result = $this->prepareImage($workspace, $operationId, $item, $bytes, $frame, $workspace->operation['payload']['ratio']);
             } elseif ($type === 'upscale') {
                 $result = (string) $this->images->read(app(WorkspaceImageOperations::class)->upscale($workspace, $operationId, $item['id'], $bytes))->toJpeg(96);
             } elseif ($type === 'generate' && $workspace->preset_id === 'upscale') {
@@ -122,7 +125,8 @@ class WorkspaceProcessor
                 if ($type === 'prepare') {
                     $records = array_values(array_filter($records, fn ($r) => $r['mediaId'] !== $item['id']));
                 }
-                $records[] = array_merge($stored, ['id' => $operationId.'-'.$item['id'], 'mediaId' => $item['id'], 'url' => $stored['url'], 'thumbnailUrl' => $stored['thumbnailUrl'] ?? $stored['url'], 'path' => $stored['path'], 'kind' => 'image', 'method' => $frame['method'], 'ratio' => $w->config['ratio'], 'status' => 'completed', 'version' => $version]);
+                $ratio = $type === 'extend' ? $w->operation['payload']['ratio'] : $w->config['ratio'];
+                $records[] = array_merge($stored, ['id' => $operationId.'-'.$item['id'], 'mediaId' => $item['id'], 'url' => $stored['url'], 'thumbnailUrl' => $stored['thumbnailUrl'] ?? $stored['url'], 'path' => $stored['path'], 'kind' => 'image', 'method' => $frame['method'], 'ratio' => $ratio, 'status' => 'completed', 'version' => $version]);
                 // A frame revision is also the current prepared frame for the next reel render.
                 if ($type === 'revision' && $w->isVideo()) {
                     $prepared = array_values(array_filter($w->prepared_frames ?? [], fn ($r) => $r['mediaId'] !== $item['id']));
@@ -147,11 +151,13 @@ class WorkspaceProcessor
         $this->finish($workspace, $operationId, $type === 'prepare' ? 'ready' : ($workspace->isVideo() && $type === 'revision' ? 'ready' : 'completed'));
     }
 
-    private function prepareImage(StudioWorkspace $w, string $operationId, array $item, string $bytes, array $frame): string
+    private function prepareImage(StudioWorkspace $w, string $operationId, array $item, string $bytes, array $frame, ?string $photoRatio = null): string
     {
-        [$rw, $rh] = array_map('intval', explode(':', $w->config['ratio']));
+        $ratio = $photoRatio ?? $w->config['ratio'];
+        [$rw, $rh] = array_map('intval', explode(':', $ratio));
         $targetRatio = $rw / $rh;
-        $image = $this->images->read($bytes)->orient()->scaleDown(width: 1600, height: 1600);
+        $sourceLimit = $photoRatio !== null ? self::OUTPAINT_MAX_EDGE : 1600;
+        $image = $this->images->read($bytes)->orient()->scaleDown(width: $sourceLimit, height: $sourceLimit);
         $width = $targetRatio >= 1 ? 1600 : (int) round(1600 * $targetRatio);
         $height = $targetRatio >= 1 ? (int) round(1600 / $targetRatio) : 1600;
         if ($frame['method'] === 'crop') {
@@ -175,9 +181,15 @@ class WorkspaceProcessor
         if ($dx <= 1 && $dy <= 1) {
             return (string) $image->toJpeg(92);
         }
-        $bytes = app(WorkspaceImageOperations::class)->outpaint($w, $operationId, $item['id'], (string) $image->toJpeg(92), $w->config['ratio'], [
+        $bytes = app(WorkspaceImageOperations::class)->outpaint($w, $operationId, $item['id'], (string) $image->toJpeg(92), $ratio, [
             'expand_left' => (int) floor($dx / 2), 'expand_right' => (int) ceil($dx / 2), 'expand_top' => (int) floor($dy / 2), 'expand_bottom' => (int) ceil($dy / 2),
         ]);
+        if ($photoRatio !== null) {
+            // Photo outputs keep the bounded source resolution rather than adopting
+            // video frame dimensions or needlessly enlarging a small source.
+            $width = $expandedWidth;
+            $height = $expandedHeight;
+        }
         $extended = $this->images->read($bytes)->cover($width, $height);
         // Restore the source and blend color only in the generated padding at its boundary.
         $image->scale(width: $width, height: $height);

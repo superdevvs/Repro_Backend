@@ -244,6 +244,11 @@ class StudioWorkspaceController extends StudioController
         return $this->start($request, $workspace, 'adjust');
     }
 
+    public function extensions(Request $request, string $workspace): JsonResponse
+    {
+        return $this->start($request, $workspace, 'extend');
+    }
+
     public function editPreview(Request $request, string $workspace): \Illuminate\Http\Response
     {
         $record = $this->find($request, $workspace);
@@ -412,23 +417,29 @@ class StudioWorkspaceController extends StudioController
             'targets.*' => ['array:mediaId,outputId,original,sourceVersion'], 'targets.*.mediaId' => ['required', 'string', 'distinct'], 'targets.*.outputId' => ['sometimes', 'string', 'max:200'],
             'targets.*.sourceVersion' => ['sometimes', 'string', 'regex:/^[a-f0-9]{64}$/'],
             'targets.*.original' => ['sometimes', 'boolean'],
-            'original' => [$type === 'revision' ? 'sometimes' : 'prohibited', 'boolean'],
-            'sourceVersion' => [$type === 'revision' ? 'sometimes' : 'prohibited', 'string', 'regex:/^[a-f0-9]{64}$/'],
-            'version' => ['sometimes', 'integer', 'min:1'],
-            'requestId' => ['sometimes', 'string', 'max:64'], 'mediaId' => [in_array($type, ['revision', 'upscale'], true) ? 'required' : 'sometimes', 'string'],
-            'outputId' => [$type === 'upscale' || ($type === 'revision' && $request->boolean('customEdit') && ! $request->boolean('original')) ? 'required' : 'sometimes', 'prohibited_if:original,true', 'string', 'max:200'],
-            'referenceMediaIds' => ['sometimes', 'array', 'max:4'], 'referenceMediaIds.*' => ['string', 'distinct', 'max:100'],
+            'original' => [in_array($type, ['revision', 'extend'], true) ? 'sometimes' : 'prohibited', 'boolean'],
+            'sourceVersion' => [in_array($type, ['revision', 'extend'], true) ? 'sometimes' : 'prohibited', 'string', 'regex:/^[a-f0-9]{64}$/'],
+            'version' => [$type === 'extend' ? 'required' : 'sometimes', 'integer', 'min:1'],
+            'ratio' => [$type === 'extend' ? 'required' : 'exclude', Rule::in(['9:16', '16:9', '1:1', '4:5'])],
+            'requestId' => ['sometimes', 'string', 'max:64'], 'mediaId' => [in_array($type, ['revision', 'upscale', 'extend'], true) ? 'required' : 'sometimes', 'string'],
+            'outputId' => [$type === 'upscale' || (($type === 'extend' || ($type === 'revision' && $request->boolean('customEdit'))) && ! $request->boolean('original')) ? 'required' : 'sometimes', 'prohibited_if:original,true', 'string', 'max:200'],
+            'referenceMediaIds' => [$type === 'extend' ? 'prohibited' : 'sometimes', 'array', 'max:4'], 'referenceMediaIds.*' => ['string', 'distinct', 'max:100'],
             'customEdit' => [$type === 'revision' ? 'sometimes' : 'prohibited', 'boolean'],
-            'prompt' => [$type === 'revision' ? 'required' : 'sometimes', 'string', 'max:4000'],
-            'region' => ['nullable', 'array:x,y,width,height'],
+            'prompt' => [$type === 'extend' ? 'prohibited' : ($type === 'revision' ? 'required' : 'sometimes'), 'string', 'max:4000'],
+            'region' => [$type === 'extend' ? 'prohibited' : 'nullable', 'array:x,y,width,height'],
             'region.x' => ['required_with:region', 'numeric', 'between:0,1'], 'region.y' => ['required_with:region', 'numeric', 'between:0,1'],
             'region.width' => ['required_with:region', 'numeric', 'gt:0', 'max:1'], 'region.height' => ['required_with:region', 'numeric', 'gt:0', 'max:1'],
-            'drawing' => ['nullable', 'array', 'max:20'], 'drawing.*' => ['array', 'max:200'], 'drawing.*.*' => ['array:x,y'],
+            'drawing' => [$type === 'extend' ? 'prohibited' : 'nullable', 'array', 'max:20'], 'drawing.*' => ['array', 'max:200'], 'drawing.*.*' => ['array:x,y'],
             'drawing.*.*.x' => ['required', 'numeric', 'between:0,1'], 'drawing.*.*.y' => ['required', 'numeric', 'between:0,1'],
         ]);
+        if ($type === 'extend') {
+            abort_if($record->isVideo(), 422, 'Extend image requires a photo workspace.');
+            abort_if(empty($payload['original']) && isset($payload['sourceVersion']), 422, 'Choose an original or a completed version, not both.');
+            $payload['version'] = (int) $payload['version'];
+        }
         $originalTargets = array_values(array_filter($type === 'adjust' ? ($payload['targets'] ?? []) : [$payload], fn ($target) => ! empty($target['original'])));
         if ($originalTargets) {
-            abort_unless(isset($payload['version']) && ($type === 'adjust' || ($type === 'revision' && ! empty($payload['customEdit']))), 422, 'Original photo edits require a workspace version and an explicit custom edit.');
+            abort_unless(isset($payload['version']) && (in_array($type, ['adjust', 'extend'], true) || ($type === 'revision' && ! empty($payload['customEdit']))), 422, 'Original photo edits require a workspace version and an explicit custom edit.');
             abort_if($record->isVideo(), 422, 'Original photo tools require a photo workspace.');
             foreach ($originalTargets as $target) {
                 abort_unless(isset($target['sourceVersion']), 422, 'Preview this original photo before editing it.');
@@ -436,7 +447,10 @@ class StudioWorkspaceController extends StudioController
         } else {
             // Version was historically ignored by these operation endpoints. Do
             // not change their fallback idempotency hash for output-only clients.
-            unset($payload['version'], $payload['original'], $payload['sourceVersion']);
+            if ($type !== 'extend') {
+                unset($payload['version']);
+            }
+            unset($payload['original'], $payload['sourceVersion']);
         }
         if ($type === 'adjust') {
             abort_if($record->isVideo(), 422, 'Custom edits are for photos.');
@@ -458,13 +472,13 @@ class StudioWorkspaceController extends StudioController
         if (isset($payload['region']) && ($payload['region']['x'] + $payload['region']['width'] > 1.00001 || $payload['region']['y'] + $payload['region']['height'] > 1.00001)) {
             throw ValidationException::withMessages(['region' => 'The selected region must fit inside the image.']);
         }
-        if (in_array($type, ['revision', 'upscale'], true) && ! collect($record->media)->contains('id', $payload['mediaId'])) {
+        if (in_array($type, ['revision', 'upscale', 'extend'], true) && ! collect($record->media)->contains('id', $payload['mediaId'])) {
             throw ValidationException::withMessages(['mediaId' => 'Select an image from this workspace.']);
         }
         foreach ($payload['referenceMediaIds'] ?? [] as $id) {
             abort_unless(collect($record->media)->contains('id', $id), 422, 'Choose reference photos from this workspace.');
         }
-        if ($type === 'upscale' || (! empty($payload['customEdit']) && empty($payload['original']))) {
+        if ($type === 'upscale' || (($type === 'extend' || ! empty($payload['customEdit'])) && empty($payload['original']))) {
             $output = collect($record->outputs ?? [])->firstWhere('id', $payload['outputId']);
             abort_unless($output && ($output['mediaId'] ?? null) === $payload['mediaId'] && ($output['kind'] ?? null) === 'image' && ($output['status'] ?? null) === 'completed', 422, 'Choose a completed image version.');
         }
@@ -492,14 +506,28 @@ class StudioWorkspaceController extends StudioController
             $record = StudioWorkspace::lockForUpdate()->findOrFail($record->id);
             $old = $record->operation ?? [];
             $same = ($old['key'] ?? null) === $key && ($old['type'] ?? null) === $type;
-            if (($old['key'] ?? null) === $key && ($originalTargets || ! empty($old['originalSources']))) {
+            if (($old['key'] ?? null) === $key && ($type === 'extend' || ($old['type'] ?? '') === 'extend' || $originalTargets || ! empty($old['originalSources']))) {
                 abort_unless($same && StudioWorkspace::canonicalConfig(\Illuminate\Support\Arr::except($old['payload'] ?? [], ['requestId'])) === StudioWorkspace::canonicalConfig(\Illuminate\Support\Arr::except($payload, ['requestId'])), 409, 'This request key already belongs to a different edit.');
             }
-            if ($same && $originalTargets && $record->status === 'cancelled') {
+            if ($same && ($type === 'extend' || $originalTargets) && $record->status === 'cancelled') {
                 return $record;
             }
             if ($same && in_array($record->status, ['preparing', 'generating', 'ready', 'completed'], true)) {
                 return $record;
+            }
+            if ($type === 'extend') {
+                abort_unless(($same && $record->status === 'failed') || $record->version === $payload['version'], 409, 'The workspace changed. Reopen Extend image.');
+                abort_if($record->isVideo(), 422, 'Extend image requires a photo workspace.');
+                app(\App\Services\Studio\WorkspaceReadAccess::class)->authorize($record, $request->user());
+                abort_unless(collect($record->media)->contains('id', $payload['mediaId']), 409, 'The selected photo changed. Reopen Extend image.');
+                if (! $originalTargets) {
+                    $output = collect($record->outputs ?? [])->firstWhere('id', $payload['outputId']);
+                    abort_unless($output && ($output['mediaId'] ?? '') === $payload['mediaId'] && ($output['kind'] ?? '') === 'image' && ($output['status'] ?? '') === 'completed', 409, 'The selected image version is no longer available.');
+                }
+                $settings = app(\App\Services\Studio\StudioProviderSettings::class);
+                $route = $same ? ($old['routing']['outpaint'] ?? $settings->route('outpaint')) : $settings->route('outpaint');
+                $availability = $settings->readiness('outpaint', $route);
+                abort_unless($availability['ready'], 422, $availability['reason'] ?? 'Image extension is not configured.');
             }
             if ($originalTargets) {
                 abort_unless(($same && $record->status === 'failed') || $record->version === $payload['version'], 409, 'The workspace changed. Reload the original photo.');

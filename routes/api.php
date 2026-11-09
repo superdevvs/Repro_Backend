@@ -1078,6 +1078,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/{workspace}/revisions', [$controller, 'revisions']);
         Route::post('/{workspace}/upscale', [$controller, 'upscale']);
         Route::post('/{workspace}/edits', [$controller, 'edits']);
+        Route::post('/{workspace}/extensions', [$controller, 'extensions']);
         Route::post('/{workspace}/edit-preview', [$controller, 'editPreview'])->middleware('throttle:60,1');
         Route::post('/{workspace}/photo-logo', [$controller, 'photoLogo'])->middleware('throttle:20,1');
         Route::post('/{workspace}/audio', [$controller, 'uploadAudio'])->middleware('throttle:10,1');
