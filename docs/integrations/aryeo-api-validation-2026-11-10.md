@@ -4,7 +4,7 @@ This is implementation evidence, not partner or production qualification. Provid
 
 ## Results
 
-- Linux PHP 8.3.6: **169 tests, 1,231 assertions, no failures or skips** across the API workflow, complete legacy connector, delivery enablement, request inbox, partner setup, telemetry, component delivery, mixed finalization, service payment allocation, SQLite write helper and public-storage deployment safeguards.
+- Linux PHP 8.3.6: **170 tests, 1,240 assertions, no failures or skips** across the API workflow, complete legacy connector, delivery enablement, request inbox, partner setup, telemetry, component delivery, mixed finalization, service payment allocation, SQLite write helper and public-storage deployment safeguards.
 - Frontend: **52 focused tests passed**, covering the new approval/evidence/superseded-binding behavior, legacy Aryeo panel and Integrations regressions. TypeScript and changed-file ESLint passed.
 - Repository lint baseline, production frontend build, source-file limits and bundle-size gates passed. Existing Rollup manual-chunk and dependency-comment warnings remain.
 - Mocked desktop (1280 px) and mobile (390 px) visual review of settings and delivery screens: no browser errors or horizontal overflow. This was an isolated preview of the real components, not a live authenticated production test.
@@ -14,7 +14,7 @@ Linux tests ran in `/tmp/repro-aryeo-qa.XVwyNc` with an isolated checkout, throw
 
 ## Important exercised boundaries
 
-Lost responses after provider acceptance; restart without duplicate sends or bridge takeover; durable unknown-outcome escalation; cancellation during an in-flight write; changed permission after ingestion or accepted delivery; expired original grants; frozen original bytes; exact inventory and ordering; partial staging; scoped release overrides; original component approval; delegated authorization and callback replay; uncertain refresh and reconnect generation; signed/deduplicated webhooks; explicit handoff; pause and critical incident resolution; superseded destination bindings that cannot resume old approvals.
+Lost responses after provider acceptance; restart without duplicate sends or bridge takeover; durable unknown-outcome escalation; cancellation during an in-flight write; changed permission after ingestion or accepted delivery; expired original grants; frozen original bytes; exact inventory and ordering; partial staging; scoped release overrides; original component approval; delegated authorization and callback replay; uncertain refresh and reconnect generation; signed/deduplicated webhooks; explicit handoff; pause and critical incident resolution; superseded destination bindings that cannot resume old approvals; corrections of an older revision that cannot steal or release ownership from a newer export.
 
 ## Still required before launch
 

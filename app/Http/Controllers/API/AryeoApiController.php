@@ -76,13 +76,16 @@ class AryeoApiController extends Controller
         if (isset($data['capabilities'])) {
             $data['capabilities']['enforced_package'] = false;
         }
-        $unpausing = (array_key_exists('paused', $data) && ! $data['paused'])
-            || (isset($data['paused_workflows']) && array_diff($installation->paused_workflows ?? [], $data['paused_workflows']));
-        if ($unpausing) {
-            abort_if(AryeoApiCase::whereIn('export_id', AryeoApiExport::whereHas('destination', fn ($q) => $q->where('installation_id', $installation->id))->select('id'))
-                ->whereIn('kind', ['wrong_destination', 'unauthorized_release', 'duplicate_delivery'])->where('status', 'open')->exists(), 409, 'integrity_incident_acceptance_required');
-        }
-        $installation->update($data + ['updated_by' => $actor]);
+        LockedWrite::run(fn () => DB::transaction(function () use ($installation, $data, $actor) {
+            $installation->refresh();
+            $unpausing = (array_key_exists('paused', $data) && ! $data['paused'])
+                || (isset($data['paused_workflows']) && array_diff($installation->paused_workflows ?? [], $data['paused_workflows']));
+            if ($unpausing) {
+                abort_if(AryeoApiCase::whereIn('export_id', AryeoApiExport::whereHas('destination', fn ($q) => $q->where('installation_id', $installation->id))->select('id'))
+                    ->whereIn('kind', ['wrong_destination', 'unauthorized_release', 'duplicate_delivery'])->where('status', 'open')->exists(), 409, 'integrity_incident_acceptance_required');
+            }
+            $installation->update($data + ['updated_by' => $actor]);
+        }), 'aryeo-api.configure-installation');
 
         return response()->json(['installation' => $installation]);
     }
@@ -246,16 +249,21 @@ class AryeoApiController extends Controller
             app(Exports::class)->cancel($export, $actor, $data['reason']);
         } elseif ($action === 'release-executor') {
             $r->validate(['previous_executor_stopped' => 'required|accepted', 'evidence_url' => 'required|url:https|max:2048']);
-            abort_if($export->operations()->whereIn('status', ['sent', 'unknown'])->exists(), 409, 'outcome_unknown');
-            abort_if($export->destination->executor_expires_at?->isFuture(), 409, 'executor_still_active');
-            // Operator attests the old process stopped; expiry alone is insufficient.
-            $export->destination->update(['executor_token' => null, 'executor_expires_at' => null]);
-            if (in_array($export->status, ['running', 'queued'], true)) {
-                $export->update(['status' => 'blocked', 'blocker' => 'stopped_executor_requires_resume']);
-                DB::table('aryeo_api_attempts')->where('export_id', $export->id)->whereNull('finished_at')->update(['result' => 'stopped', 'finished_at' => now()]);
-            }
-            AryeoApiCase::create(['export_id' => $export->id, 'kind' => 'executor_handoff', 'status' => 'resolved', 'reason' => 'Previous executor stopped by operator',
-                'resolution_url' => $r->input('evidence_url'), 'created_by' => $actor, 'escalate_at' => now(), 'resolved_at' => now()]);
+            LockedWrite::run(fn () => DB::transaction(function () use ($export, $r, $actor) {
+                $export->refresh();
+                $destination = $export->destination()->firstOrFail();
+                abort_unless($destination->active_export_id === $export->id, 409, 'another_export_owns_destination');
+                abort_if($export->operations()->whereIn('status', ['sent', 'unknown'])->exists(), 409, 'outcome_unknown');
+                abort_if($destination->executor_expires_at?->isFuture(), 409, 'executor_still_active');
+                // Operator attests this revision's process stopped; expiry alone is insufficient.
+                $destination->update(['executor_token' => null, 'executor_expires_at' => null]);
+                if (in_array($export->status, ['running', 'queued'], true)) {
+                    $export->update(['status' => 'blocked', 'blocker' => 'stopped_executor_requires_resume']);
+                    DB::table('aryeo_api_attempts')->where('export_id', $export->id)->whereNull('finished_at')->update(['result' => 'stopped', 'finished_at' => now()]);
+                }
+                AryeoApiCase::create(['export_id' => $export->id, 'kind' => 'executor_handoff', 'status' => 'resolved', 'reason' => 'Previous executor stopped by operator',
+                    'resolution_url' => $r->input('evidence_url'), 'created_by' => $actor, 'escalate_at' => now(), 'resolved_at' => now()]);
+            }), 'aryeo-api.release-executor');
         } else {
             abort(404);
         }
@@ -288,13 +296,20 @@ class AryeoApiController extends Controller
         $this->access($r, $export->destination->shoot);
         $data = $r->validate(['kind' => 'required|in:correction,removal,wrong_destination,unauthorized_release,duplicate_delivery', 'reason' => 'required|string|max:1000',
             'owner' => 'required|string|max:120', 'next_action' => 'required|string|max:255']);
-        $case = AryeoApiCase::create($data + ['export_id' => $export->id, 'created_by' => $actor, 'escalate_at' => now()->addMinutes(30)]);
-        $export->destination->update(['on_hold' => true, 'active_export_id' => $export->id]);
-        $export->assets()->update(['grant_revoked_at' => now()]);
-        if (in_array($data['kind'], ['wrong_destination', 'unauthorized_release', 'duplicate_delivery'], true)) {
-            $i = $export->destination->installation;
-            $i->update(['paused_workflows' => array_values(array_unique([...($i->paused_workflows ?? []), $export->destination->workflow]))]);
-        }
+        $case = LockedWrite::run(fn () => DB::transaction(function () use ($data, $export, $actor) {
+            $destination = $export->destination()->firstOrFail();
+            $case = AryeoApiCase::create($data + ['export_id' => $export->id, 'created_by' => $actor, 'escalate_at' => now()->addMinutes(30)]);
+            // A correction of an older revision cannot steal a newer revision's
+            // durable ownership, including when its provider request is in flight.
+            $destination->update(['on_hold' => true, 'active_export_id' => $destination->active_export_id ?? $export->id]);
+            $export->assets()->update(['grant_revoked_at' => now()]);
+            if (in_array($data['kind'], ['wrong_destination', 'unauthorized_release', 'duplicate_delivery'], true)) {
+                $i = $destination->installation;
+                $i->update(['paused_workflows' => array_values(array_unique([...($i->paused_workflows ?? []), $destination->workflow]))]);
+            }
+
+            return $case;
+        }), 'aryeo-api.open-correction');
 
         return response()->json(['case' => $case], 201);
     }
@@ -321,9 +336,15 @@ class AryeoApiController extends Controller
         $remote = app(\App\Services\Aryeo\Api\Inventory::class)->read($e->destination);
         abort_if(collect($remote)->contains(fn ($a) => ! $a['delivery_id']), 409, 'undelivered_assets_require_resolution');
         LockedWrite::run(fn () => DB::transaction(function () use ($case, $e, $data, $actor) {
+            $destination = $e->destination()->firstOrFail();
+            abort_unless($case->fresh()->status === 'open', 409, 'case_already_resolved');
+            abort_if($destination->executor_token || $e->operations()->whereIn('status', ['sent', 'unknown'])->exists(), 409, 'executor_or_outcome_unresolved');
             $case->update(['status' => 'resolved', 'resolved_at' => now(), 'resolution_url' => $data['evidence_url'], 'resolution' => $data + ['verified_by' => $actor, 'verified_at' => now()->toIso8601String()]]);
             if (! $e->cases()->where('status', 'open')->exists()) {
-                $e->destination->update(['active_export_id' => null, 'executor' => null, 'on_hold' => true]);
+                $otherCases = AryeoApiCase::whereIn('export_id', AryeoApiExport::where('destination_id', $destination->id)->select('id'))->where('status', 'open')->exists();
+                if (! $otherCases && (! $destination->active_export_id || $destination->active_export_id === $e->id)) {
+                    $destination->update(['active_export_id' => null, 'executor' => null, 'on_hold' => true]);
+                }
                 if ($e->cancelled_at) {
                     $e->update(['status' => 'cancelled', 'blocker' => null]);
                 }

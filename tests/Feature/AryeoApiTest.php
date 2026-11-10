@@ -547,6 +547,32 @@ class AryeoApiTest extends TestCase
         $this->assertContains('ordinary', $this->installation->fresh()->paused_workflows);
     }
 
+    public function test_correcting_an_older_revision_cannot_steal_or_clear_a_newer_exports_ownership(): void
+    {
+        $old = $this->approved();
+        app(Exports::class)->submit($old);
+        $this->runWorker($old);
+        $next = $this->approved();
+        app(Exports::class)->submit($next);
+        $case = $this->actingAs($this->admin)->postJson($this->base.'/exports/'.$old->id.'/cases', [
+            'kind' => 'correction', 'reason' => 'Review an older revision', 'owner' => 'Shubham', 'next_action' => 'Verify provider correction',
+        ])->assertCreated()->json('case.id');
+        $this->assertSame($next->id, $this->destination->fresh()->active_export_id);
+        $this->assertTrue($this->destination->fresh()->on_hold);
+        $owner = (string) Str::uuid();
+        $this->destination->update(['executor_token' => $owner, 'executor_expires_at' => now()->subMinute()]);
+        $this->postJson($this->base.'/exports/'.$old->id.'/actions/release-executor', [
+            'previous_executor_stopped' => true, 'evidence_url' => 'https://evidence.test/old-worker-stopped',
+        ])->assertConflict();
+        $this->assertSame($owner, $this->destination->fresh()->executor_token);
+        $this->destination->update(['executor_token' => null]);
+        $this->postJson($this->base.'/cases/'.$case.'/resolve', ['evidence_url' => 'https://evidence.test/correction',
+            'provider_objects_accounted_for' => true, 'downstream_verified' => true])->assertOk();
+        $this->assertSame($next->id, $this->destination->fresh()->active_export_id);
+        $this->assertTrue($this->destination->fresh()->on_hold);
+        $this->blocked(fn () => app(Exports::class)->submit($next), 'shoot_on_hold');
+    }
+
     public function test_completed_api_destination_requires_explicit_verified_bridge_handoff(): void
     {
         $e = $this->approved();
