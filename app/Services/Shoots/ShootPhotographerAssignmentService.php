@@ -44,6 +44,15 @@ class ShootPhotographerAssignmentService
             ? in_array($photographerId, $assignments[$shoot], true) : null;
     }
 
+    /** A nested policy clone shares the same freshly fetched assignment snapshot. */
+    public function copyPreparedRead(Shoot $source, Shoot $copy): void
+    {
+        $assignments = request()->attributes->get(self::PREPARED_READ_KEY);
+        if ($assignments instanceof \WeakMap && isset($assignments[$source]) && $source->getKey() === $copy->getKey()) {
+            $assignments[$copy] = $assignments[$source];
+        }
+    }
+
     /** Match the same per-service ownership used by the photographer's shoot details. */
     public function scopeAssignedTo(Builder $query, int|array $photographerIds): Builder
     {

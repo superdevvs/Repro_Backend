@@ -29,6 +29,7 @@ final class DeliveredCardMedia
         // Some read-policy checks load raw service assignments. Keep those
         // relations off the source model that the list presenter will serialize.
         $policyShoot = clone $shoot;
+        app(ShootPhotographerAssignmentService::class)->copyPreparedRead($shoot, $policyShoot);
         $activeClient = $this->authorization->isClientUser($viewer)
             && app(ShootActiveWorkLifecycle::class)->hasActiveWork($policyShoot);
         $viewable = $viewer ? $candidates->filter(fn (ShootFile $file) => $this->eligible($file)
