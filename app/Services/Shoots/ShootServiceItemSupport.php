@@ -79,8 +79,9 @@ class ShootServiceItemSupport
         $brackets = app(BracketModeResolver::class);
         $intake = app(UploadIntakeResolver::class);
         $progress = app(ShootServiceProgress::class)->forItems($shoot, $items);
+        $deliveryComponents = app(DeliveryPlanService::class)->componentSummaries($shoot);
 
-        $serviceSummaries = $items->map(function (ShootService $item) use ($shoot, $paidByItem, $hasAllocations, $brackets, $intake, $progress) {
+        $serviceSummaries = $items->map(function (ShootService $item) use ($shoot, $paidByItem, $hasAllocations, $brackets, $intake, $progress, $deliveryComponents) {
             $item->setRelation('shoot', $shoot);
             $financialOnly = app(FinancialServiceClassification::class)->isFinancialOnly($item);
             $canAssignPhotographer = $item->service?->allowsPhotographerAssignment() ?? true;
@@ -189,6 +190,7 @@ class ShootServiceItemSupport
                 'progressStatus' => $progress[$item->id] ?? 'pending',
                 'delivery_status' => $item->delivery_status ?? ShootService::DELIVERY_NOT_STARTED,
                 'deliveryStatus' => $item->delivery_status ?? ShootService::DELIVERY_NOT_STARTED,
+                'delivery_components' => $deliveryComponents[$item->id] ?? [],
                 'ready_at' => $item->ready_at?->toIso8601String(),
                 'readyAt' => $item->ready_at?->toIso8601String(),
                 'delivered_at' => $item->delivered_at?->toIso8601String(),

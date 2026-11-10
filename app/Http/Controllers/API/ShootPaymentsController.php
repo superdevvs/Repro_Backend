@@ -67,7 +67,8 @@ class ShootPaymentsController extends Controller
             'allow_no_media_delivery' => 'nullable|boolean',
             'component_ids' => 'sometimes|array|min:1|max:100',
             'component_ids.*' => 'string|distinct|max:100',
-            'mode' => 'sometimes|in:media,external,manual_no_content',
+            'mode' => 'sometimes|in:media,external,manual_no_content,auto',
+            'allow_without_content' => 'sometimes|boolean',
             'reason' => 'nullable|string|max:2000',
             'confirmed' => 'sometimes|boolean',
             'plan_revision' => 'sometimes|string|size:64',
@@ -87,10 +88,10 @@ class ShootPaymentsController extends Controller
         if ($shoot->serviceItems()->exists()) {
             $planner = app(\App\Services\Shoots\DeliveryPlanService::class);
             abort_unless($planner->canFinalize($user), 403);
-            if ($planner->isReplay($shoot, $user, $request->only(['idempotency_key', 'component_ids', 'mode', 'reason', 'confirmed', 'plan_revision']))) {
+            if ($planner->isReplay($shoot, $user, $request->only(['idempotency_key', 'component_ids', 'mode', 'reason', 'confirmed', 'plan_revision', 'allow_without_content']))) {
                 return response()->json(['message' => 'This delivery was already applied.', 'data' => ['id' => $shoot->id, 'queued' => false, 'already_applied' => true], 'delivery_plan' => $planner->plan($shoot, $user)]);
             }
-            $intent = $planner->validateSelection($shoot, $user, $request->only(['component_ids', 'mode', 'reason', 'confirmed', 'plan_revision', 'idempotency_key', 'shoot_service_id']));
+            $intent = $planner->validateSelection($shoot, $user, $request->only(['component_ids', 'mode', 'reason', 'confirmed', 'plan_revision', 'idempotency_key', 'shoot_service_id', 'allow_without_content']));
             $this->finalizeProgress->start((int) $shoot->id, ['queued_by' => $user->id, 'component_ids' => $intent['component_ids'], 'mode' => $intent['mode']]);
             $shoot->workflowLogs()->create(['user_id' => $user->id, 'action' => 'finalize_queued', 'details' => 'Selected delivery components queued for review commit', 'metadata' => $intent]);
             FinalizeShootJob::dispatch((int) $shoot->id, (int) $user->id, $request->input('final_status'), $shootServiceId, false, $intent['idempotency_key'], $intent);

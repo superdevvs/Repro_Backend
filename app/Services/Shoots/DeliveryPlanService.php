@@ -101,7 +101,7 @@ class DeliveryPlanService
                     'external_url' => $external['url'] ?? null, 'external_evidence' => $external,
                     'photographer_id' => $item->photographer_id, 'editor_id' => $kind === 'video' ? ($item->video_editor_id ?: $item->editor_id) : $item->editor_id,
                     'scheduled_at' => $item->scheduled_at?->toIso8601String(), 'receipt_id' => $receipt?->id,
-                    'execution_key' => $componentExecution,
+                    'execution_key' => $componentExecution, 'delivery_method' => $resolved ? $receipt?->method : null,
                     'versions' => $files->map(fn ($file) => ['id' => $file->id, 'version' => (int) ($file->content_version ?: 1)])->values()->all()];
             }
         }
@@ -116,6 +116,16 @@ class DeliveryPlanService
         return $result;
     }
 
+    /** Client-safe progress only: no provider URLs, evidence, file IDs or staff capabilities. */
+    public function componentSummaries(Shoot $shoot): array
+    {
+        if (! $this->usesComponents($shoot)) return [];
+        return collect($this->plan($shoot, null)['components'])->groupBy('shoot_service_id')->map(fn ($components) => $components->map(fn ($component) => [
+            'kind' => $component['kind'], 'label' => $component['label'], 'status' => $component['status'],
+            'without_content' => ($component['delivery_method'] ?? null) === 'manual_no_content',
+        ])->values()->all())->all();
+    }
+
     public function validateSelection(Shoot $shoot, User $actor, array $intent): array
     {
         abort_unless($this->canFinalize($actor->fresh() ?? $actor), 403, 'You do not have permission to finalize this work.');
@@ -124,21 +134,38 @@ class DeliveryPlanService
             throw new \App\Exceptions\PublicApiResponseException(response()->json(['message' => 'Delivery changed. Review the current plan.', 'delivery_plan' => $plan], 409));
         }
         $mode = $intent['mode'] ?? 'media';
-        if (! in_array($mode, ['media', 'external', 'manual_no_content'], true)) throw ValidationException::withMessages(['mode' => 'Choose a delivery method.']);
+        if (! in_array($mode, ['media', 'external', 'manual_no_content', 'auto'], true)) throw ValidationException::withMessages(['mode' => 'Choose a delivery method.']);
         if ($mode !== 'media' && empty($intent['component_ids'])) throw ValidationException::withMessages(['component_ids' => 'Select the exact components for this delivery method.']);
         $ids = $intent['component_ids'] ?? collect($plan['components'])->filter(fn ($c) => in_array($mode, $c['methods'], true) && $c['status'] === 'ready')->pluck('id')->all();
         if (isset($intent['shoot_service_id'])) $ids = array_values(array_filter($ids, fn ($id) => str_starts_with($id, $intent['shoot_service_id'].':')));
         if (! is_array($ids) || $ids === [] || count($ids) !== count(array_unique($ids))) throw ValidationException::withMessages(['component_ids' => $plan['summary']]);
+        $methods = [];
         foreach ($ids as $id) {
             $component = collect($plan['components'])->firstWhere('id', $id);
-            if (! $component || $component['resolved'] || ! in_array($mode, $component['methods'], true)) throw ValidationException::withMessages(['component_ids' => $component['reason'] ?? 'This component cannot be delivered with the selected method.']);
+            $method = $mode === 'auto' && $component ? $this->automaticMethod($component, ! empty($intent['allow_without_content'])) : $mode;
+            if (! $component || $component['resolved'] || ! in_array($method, $component['methods'], true)) throw ValidationException::withMessages(['component_ids' => $component['reason'] ?? 'This component cannot be delivered with the selected method.']);
+            $methods[$id] = $method;
         }
-        if ($mode === 'manual_no_content' && (mb_strlen(trim($intent['reason'] ?? '')) < 5 || empty($intent['confirmed']))) {
+        if (in_array('manual_no_content', $methods, true) && (mb_strlen(trim($intent['reason'] ?? '')) < 5 || empty($intent['confirmed']))) {
             throw ValidationException::withMessages(['reason' => 'Confirm the selected missing work and provide a reason of at least five characters.']);
         }
-        if ($mode === 'external' && empty($intent['confirmed'])) throw ValidationException::withMessages(['confirmed' => 'Confirm that the selected requirements are present at the reviewed external destination.']);
+        if (in_array('external', $methods, true) && empty($intent['confirmed'])) throw ValidationException::withMessages(['confirmed' => 'Confirm that the selected requirements are present at the reviewed external destination.']);
         return ['component_ids' => array_values($ids), 'mode' => $mode, 'reason' => trim($intent['reason'] ?? ''), 'confirmed' => (bool) ($intent['confirmed'] ?? false),
+            'allow_without_content' => $mode === 'auto' && ! empty($intent['allow_without_content']), 'component_methods' => $methods,
             'plan_revision' => $plan['revision'], 'idempotency_key' => $intent['idempotency_key'] ?? (string) Str::uuid()];
+    }
+
+    /** Choose from server-owned readiness; a provider URL alone never implies delivery. */
+    private function automaticMethod(array $component, bool $allowWithoutContent): ?string
+    {
+        if ($component['status'] === 'ready') {
+            foreach (['media', 'external'] as $method) if (in_array($method, $component['methods'], true)) return $method;
+        }
+        // Explicitly selected, reviewed external work keeps the existing confirmation
+        // path. It is never included in the automatically selected ready set.
+        if (! $allowWithoutContent && in_array('external', $component['methods'], true)
+            && in_array('external_review_required', $component['reason_codes'], true)) return 'external';
+        return $allowWithoutContent && in_array('manual_no_content', $component['methods'], true) ? 'manual_no_content' : null;
     }
 
     public function isReplay(Shoot $shoot, User $actor, array $intent): bool
@@ -150,7 +177,9 @@ class DeliveryPlanService
         $expected = $rows->map(fn ($row) => $row->shoot_service_id.':'.$row->component_key)->sort()->values()->all();
         $requested = collect($intent['component_ids'] ?? $expected)->sort()->values()->all();
         $same = $expected === $requested && $rows->every(fn ($row) => (int) $row->actor_id === (int) $actor->id
-            && $row->method === ($intent['mode'] ?? 'media') && trim((string) $row->reason) === trim((string) ($intent['reason'] ?? ''))
+            && (json_decode($row->evidence, true)['operation_mode'] ?? $row->method) === ($intent['mode'] ?? 'media')
+            && (bool) (json_decode($row->evidence, true)['allow_without_content'] ?? false) === (bool) ($intent['allow_without_content'] ?? false)
+            && trim((string) $row->reason) === trim((string) ($intent['reason'] ?? ''))
             && (! isset($intent['plan_revision']) || hash_equals($row->plan_revision, $intent['plan_revision']))
             && ((bool) (json_decode($row->evidence, true)['confirmed'] ?? false)) === (bool) ($intent['confirmed'] ?? false));
         if (! $same) throw new \App\Exceptions\PublicApiResponseException(response()->json(['message' => 'This delivery operation key was already used for a different selection or method.'], 409));
@@ -167,22 +196,24 @@ class DeliveryPlanService
         foreach ($plan['components'] as $component) {
             if (! in_array($component['id'], $intent['component_ids'], true)) continue;
             [$serviceId, $key] = explode(':', $component['id'], 2);
-            $evidence = ['files' => $intent['mode'] === 'media' ? $component['versions'] : [],
-                'external' => $intent['mode'] === 'external' ? $component['external_evidence'] : null,
-                'missing_components' => $intent['mode'] === 'manual_no_content' ? [$component['label']] : [], 'confirmed' => $intent['confirmed']];
+            $method = $intent['component_methods'][$component['id']];
+            $evidence = ['files' => $method === 'media' ? $component['versions'] : [],
+                'external' => $method === 'external' ? $component['external_evidence'] : null,
+                'missing_components' => $method === 'manual_no_content' ? [$component['label']] : [], 'confirmed' => $intent['confirmed'],
+                'operation_mode' => $intent['mode'], 'allow_without_content' => $intent['allow_without_content']];
             // The historical single-line fallback is an explicit reviewed scope.
             // Bind its exact approved files atomically; never guess across lines.
-            if ($intent['mode'] === 'media' && $shoot->serviceItems()->count() === 1) {
+            if ($method === 'media' && $shoot->serviceItems()->count() === 1) {
                 $bound = DB::table('shoot_files')->where('shoot_id', $shoot->id)->whereIn('id', $component['file_ids'])->whereNull('shoot_service_id')->update(['shoot_service_id' => $serviceId]);
                 if ($bound) $shoot->workflowLogs()->create(['user_id' => $actor->id, 'action' => 'legacy_output_scope_reviewed', 'details' => 'Approved the unique booked service ownership.', 'metadata' => ['shoot_service_id' => (int) $serviceId, 'file_ids' => $component['file_ids']]]);
             }
             DB::table('shoot_delivery_receipts')->insert(['shoot_id' => $shoot->id, 'shoot_service_id' => $serviceId, 'component_key' => $key,
-                'execution_key' => $component['execution_key'], 'method' => $intent['mode'], 'evidence' => json_encode($evidence, JSON_THROW_ON_ERROR),
+                'execution_key' => $component['execution_key'], 'method' => $method, 'evidence' => json_encode($evidence, JSON_THROW_ON_ERROR),
                 'actor_id' => $actor->id, 'reason' => $intent['reason'] ?: null, 'plan_revision' => $intent['plan_revision'],
                 'operation_key' => $intent['idempotency_key'], 'delivered_at' => now()]);
-            if ($intent['mode'] === 'media') $ids = array_merge($ids, $component['file_ids']);
+            if ($method === 'media') $ids = array_merge($ids, $component['file_ids']);
             $services[] = (int) $serviceId;
-            $approvedComponents[] = ['shoot_service_id' => (int) $serviceId, 'kind' => $component['kind'], 'method' => $intent['mode']];
+            $approvedComponents[] = ['shoot_service_id' => (int) $serviceId, 'kind' => $component['kind'], 'method' => $method];
         }
         $shoot->workflowLogs()->create(['user_id' => $actor->id, 'action' => 'delivery_components_approved', 'details' => $intent['reason'] ?: 'Reviewed component delivery',
             'metadata' => ['component_ids' => $intent['component_ids'], 'method' => $intent['mode'], 'operation_key' => $intent['idempotency_key'], 'plan_revision' => $intent['plan_revision']]]);

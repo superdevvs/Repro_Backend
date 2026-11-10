@@ -608,6 +608,9 @@ class ShootListingService
                 $scope->whereIn('status', $statuses)
                     ->orWhereIn('workflow_status', $workflowStatuses);
                 if ($user && $user->role === 'client') {
+                    $scope->orWhere(fn (Builder $partial) => $partial->where('delivery_status', 'partially_delivered')
+                        ->whereNotIn('status', ['cancelled', 'canceled', 'declined'])
+                        ->whereNotIn('workflow_status', ['cancelled', 'canceled', 'declined']));
                     $scope->orWhere(fn (Builder $active) => $active->whereRaw(ActiveWorkQuery::openSql())->whereHas('serviceItems', fn (Builder $item) => $item->where('delivery_status', 'delivered')));
                 }
             });

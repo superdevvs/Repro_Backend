@@ -79,6 +79,35 @@ class ShootServicePaymentAllocationTest extends TestCase
         $this->assertDatabaseCount('payment_service_allocations', 0);
     }
 
+    public function test_refunded_and_half_paid_services_do_not_keep_original_download_access(): void
+    {
+        [$shoot, $photo, $video] = $this->createMultiServiceShoot();
+        $admin = User::factory()->create(['role' => 'admin']);
+        Sanctum::actingAs($admin);
+        $this->postJson("/api/shoots/{$shoot->id}/mark-paid", [
+            'payment_type' => 'cash', 'amount' => 175, 'shoot_service_ids' => [$photo->id],
+            'allocation_strategy' => 'selected_services',
+        ])->assertOk();
+        $this->assertTrue($photo->fresh()->is_unlocked_for_delivery);
+        $this->assertFalse($video->fresh()->is_unlocked_for_delivery);
+        $payment = Payment::where('shoot_id', $shoot->id)->firstOrFail();
+        PaymentRefund::create(['payment_id' => $payment->id, 'shoot_id' => $shoot->id, 'amount' => 87.50,
+            'provider' => 'stripe', 'provider_refund_id' => 're_simple_delivery_half', 'status' => 'succeeded']);
+        $this->assertSame(87.50, $photo->fresh()->paid_amount);
+        $this->assertFalse($photo->fresh()->is_unlocked_for_delivery);
+        $this->assertSame('partially_paid', $photo->fresh()->payment_status);
+        $photo->forceFill(['force_unlock_delivery' => true])->save();
+        $this->assertTrue($photo->fresh()->is_unlocked_for_delivery);
+    }
+
+    public function test_zero_price_service_is_unlocked_while_other_services_remain_unpaid(): void
+    {
+        [, $photo, $video] = $this->createMultiServiceShoot();
+        $photo->forceFill(['price' => 0])->save();
+        $this->assertTrue($photo->fresh()->is_unlocked_for_delivery);
+        $this->assertFalse($video->fresh()->is_unlocked_for_delivery);
+    }
+
     public function test_full_payment_allocates_across_all_service_items(): void
     {
         $admin = User::factory()->create(['role' => 'admin']);

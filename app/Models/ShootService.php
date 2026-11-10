@@ -188,7 +188,9 @@ class ShootService extends Model
 
     public function getPaidAmountAttribute(): float
     {
-        return round((float) $this->completedPaymentAllocations()->sum('amount'), 2);
+        // Use the same net-of-refunds allocation as the client-facing summary.
+        // Otherwise a refunded service can look locked but still download originals.
+        return (float) (app(\App\Services\Shoots\ShootServiceItemSupport::class)->paidAmountsByItem(collect([$this]))[$this->id] ?? 0);
     }
 
     public function getBalanceDueAttribute(): float
@@ -198,6 +200,7 @@ class ShootService extends Model
 
     public function getPaymentStatusAttribute(): string
     {
+        if ($this->subtotal <= 0.01) return self::PAYMENT_PAID;
         if ($this->paid_amount <= 0) {
             return self::PAYMENT_UNPAID;
         }
