@@ -55,13 +55,20 @@ class Operations
 
     public function unknown(AryeoApiExport $export, AryeoApiOperation $op, string $code): void
     {
-        $op->update(['status' => 'unknown', 'error_code' => $code]);
-        $export->update(['status' => $export->cancelled_at ? 'correction_required' : 'outcome_unknown', 'blocker' => 'outcome_unknown',
-            'outcomes' => array_replace($export->outcomes, $op->operation_key === 'deliver' ? ['delivery' => 'outcome_unknown'] : [])]);
-        DB::table('aryeo_api_alerts')->insertOrIgnore(['key' => 'unknown:'.$op->id, 'export_id' => $export->id, 'owner' => 'Shubham',
-            'message' => 'Provider outcome unknown. Reconcile before another executor or retry.', 'created_at' => now()]);
-        AryeoApiCase::firstOrCreate(['export_id' => $export->id, 'kind' => 'unknown_operation', 'status' => 'open'],
-            ['reason' => 'Provider outcome requires reconciliation: '.$op->operation_key, 'escalate_at' => now()->addMinutes(30)]);
+        LockedWrite::run(fn () => DB::transaction(function () use ($export, $op, $code) {
+            $export->refresh();
+            $op->refresh();
+            if ($op->status === 'confirmed') {
+                return;
+            }
+            $op->update(['status' => 'unknown', 'error_code' => $code]);
+            $export->update(['status' => $export->cancelled_at ? 'correction_required' : 'outcome_unknown', 'blocker' => 'outcome_unknown',
+                'outcomes' => array_replace($export->outcomes, $op->operation_key === 'deliver' ? ['delivery' => 'outcome_unknown'] : [])]);
+            DB::table('aryeo_api_alerts')->insertOrIgnore(['key' => 'unknown:'.$op->id, 'export_id' => $export->id, 'owner' => 'Shubham',
+                'message' => 'Provider outcome unknown. Reconcile before another executor or retry.', 'created_at' => now()]);
+            AryeoApiCase::firstOrCreate(['export_id' => $export->id, 'kind' => 'unknown_operation', 'status' => 'open'],
+                ['reason' => 'Provider outcome requires reconciliation: '.$op->operation_key, 'escalate_at' => now()->addMinutes(30)]);
+        }), 'aryeo-api.unknown-operation');
     }
 
     public function reconcile(AryeoApiExport $export): array
