@@ -135,21 +135,22 @@ class AryeoApiController extends Controller
                 && ($place['job_id'] ?? null) === $job['id'] && ($place['company_id'] ?? null) === $i->company_id, 409, 'provider_relationship_mismatch');
             $address['provider'] = $place['address'];
         }
-        $key = hash('sha256', json_encode([$i->id, $shoot->id, $data['unit_id'] ?? null, $data['legacy_listing_id'] ?? null, $data['request_record_id'] ?? null,
-            $shoot->client_id, $data['recipients'], $data['consent'], $data['provider_job_id'] ?? null, $data['provider_place_id'] ?? null]));
+        $key = hash('sha256', json_encode([$shoot->id, $shoot->client_id, $data, $address]));
         $binding = collect($data)->except('relationship_evidence_url')->all();
         $binding['consent'] += ['verified_by' => $actor, 'verified_at' => now()->toIso8601String(), 'automation_opt_in' => false];
         $attributes = $binding + ['shoot_id' => $shoot->id, 'client_id' => $shoot->client_id,
             'identity' => app(AryeoCatalog::class)->identity($shoot->loadMissing('client')), 'address' => $address,
             'association_status' => empty($data['provider_job_id']) ? 'awaiting_listing' : 'matched', 'verified_by' => $actor, 'verified_at' => now()];
-        $d = LockedWrite::run(fn () => DB::transaction(function () use ($key, $attributes, $shoot, $i, $data) {
+        $d = LockedWrite::run(fn () => DB::transaction(function () use ($key, $attributes, $shoot, $data) {
             if ($existing = AryeoApiDestination::where('binding_key', $key)->first()) {
+                abort_if($existing->superseded_at, 409, 'binding_superseded_requires_fresh_review');
+
                 return $existing;
             }
-            $previous = AryeoApiDestination::where('installation_id', $i->id)->where('shoot_id', $shoot->id)
+            $previous = AryeoApiDestination::where('shoot_id', $shoot->id)->whereNull('superseded_at')
                 ->where('unit_id', $data['unit_id'] ?? null)->where('workflow', $data['workflow']);
             abort_if((clone $previous)->whereNotNull('active_export_id')->exists(), 409, 'previous_binding_requires_resolution');
-            $previous->update(['on_hold' => true]);
+            $previous->update(['on_hold' => true, 'superseded_at' => now()]);
 
             return AryeoApiDestination::create($attributes + ['binding_key' => $key]);
         }), 'aryeo-api.bind');
@@ -162,6 +163,7 @@ class AryeoApiController extends Controller
         $this->actor($r);
         $this->access($r, $destination->shoot);
         $data = $r->validate(['on_hold' => 'required|boolean', 'distribution_authorized' => 'sometimes|declined']);
+        abort_if(! $data['on_hold'] && $destination->superseded_at, 409, 'destination_superseded');
         $changes = ['on_hold' => $data['on_hold']];
         if (array_key_exists('distribution_authorized', $data)) {
             $changes['consent'] = array_replace($destination->consent, ['distribution_authorized' => false]);

@@ -64,6 +64,10 @@ Correction cases intentionally use **staff/partner-assisted provider cleanup**. 
 
 The pause switches stop subsequent writes and future grant access while allowing read-only reconciliation. They cannot undo a request already in flight. Global `ARYEO_API_WRITES_ENABLED=false` is the mutation rollback switch. Keep mappings, operations and receipts; never roll back by deleting them. Returning a destination to the bridge uses explicit handoff with stopped-worker evidence and complete inventory reconciliation.
 
+Replacement bindings retire the prior binding for that shoot, unit and workflow, including across a company reconnection. Retired approvals and grants cannot be resumed or unheld; receipts remain inspectable. Binding identity includes the full reviewed relationship, package requirements, listing URL and consent evidence. A historical delivery still requires explicit reconciliation before browser handoff.
+
+Legacy queued jobs created before this release need fresh staff approval to bind their requester, destination and distribution permission. Completed receipts are preserved.
+
 ## Configuration and deployment
 
 Defaults: provider access, writes and production all disabled; installations initially paused. Never infer a sandbox URL.

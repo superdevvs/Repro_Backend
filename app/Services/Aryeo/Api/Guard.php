@@ -43,6 +43,9 @@ class Guard
         if ($destination->on_hold) {
             $blockers[] = 'shoot_on_hold';
         }
+        if ($destination->superseded_at) {
+            $blockers[] = 'destination_superseded';
+        }
         if ($destination->executor === 'bridge') {
             $blockers[] = 'bridge_handoff_requires_reconciliation';
         }

@@ -61,6 +61,7 @@ return new class extends Migration
             $t->json('requirements');
             $t->json('consent');
             $t->boolean('on_hold')->default(false);
+            $t->timestamp('superseded_at')->nullable();
             $t->string('association_status')->default('awaiting_listing');
             $t->uuid('active_export_id')->nullable();
             $t->string('executor')->nullable();

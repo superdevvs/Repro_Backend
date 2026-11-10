@@ -13,6 +13,7 @@ class Snapshots
     public function build(AryeoApiDestination $destination, bool $hashOriginals = true): array
     {
         $destination->refresh();
+        abort_if($destination->superseded_at, 409, 'destination_superseded');
         $shoot = $destination->shoot()->with('client')->firstOrFail();
         $installation = $destination->installation()->firstOrFail();
         $catalog = app(AryeoCatalog::class);

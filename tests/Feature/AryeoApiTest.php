@@ -390,6 +390,30 @@ class AryeoApiTest extends TestCase
         $this->assertSame([], $this->writes);
     }
 
+    public function test_rebinding_material_fields_retires_prior_approvals_without_blocking_the_replacement_bridge(): void
+    {
+        $e = $this->approved();
+        $d = $this->destination;
+        $body = ['installation_id' => $d->installation_id, 'workflow' => 'ordinary', 'unit_id' => null,
+            'provider_job_id' => $d->provider_job_id, 'provider_place_id' => $d->provider_place_id,
+            'legacy_listing_id' => $d->legacy_listing_id, 'listing_url' => $d->listing_url,
+            'recipients' => $d->recipients, 'requirements' => ['photos' => 2], 'consent' => $d->consent,
+            'relationship_evidence_url' => 'https://evidence.test/relationship'];
+        $url = '/api/shoots/'.$this->shoot->id.'/aryeo-api/destinations';
+        $first = $this->actingAs($this->admin)->postJson($url, $body)->assertCreated()->json('destination.id');
+        $this->assertNotNull($d->fresh()->superseded_at);
+        $this->blocked(fn () => app(Exports::class)->submit($e), 'destination_superseded');
+        $this->patchJson($this->base.'/destinations/'.$d->id.'/hold', ['on_hold' => false])->assertConflict();
+        app(BridgeGuard::class)->assertAvailable($this->shoot->id);
+        $body['requirements']['photos'] = 3;
+        $second = $this->postJson($url, $body)->assertCreated()->json('destination.id');
+        $this->assertNotSame($first, $second);
+        $this->assertNotNull(AryeoApiDestination::findOrFail($first)->superseded_at);
+        $this->assertSame(3, AryeoApiDestination::findOrFail($second)->requirements['photos']);
+        $body['requirements']['photos'] = 2;
+        $this->postJson($url, $body)->assertConflict();
+    }
+
     public function test_webhooks_require_signature_deduplicate_and_do_not_claim_delivery(): void
     {
         config(['aryeo_api.webhook_secrets' => [$this->installation->id => 'test-signing-secret'], 'aryeo_api.webhook_source' => 'https://app.aryeo.com']);

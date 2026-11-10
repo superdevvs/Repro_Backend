@@ -13,7 +13,7 @@ class AryeoApiDestination extends Model
 
     protected $hidden = ['executor_token'];
 
-    protected $casts = ['identity' => 'array', 'recipients' => 'array', 'address' => 'array', 'requirements' => 'array', 'consent' => 'array', 'on_hold' => 'boolean', 'executor_expires_at' => 'datetime', 'verified_at' => 'datetime'];
+    protected $casts = ['identity' => 'array', 'recipients' => 'array', 'address' => 'array', 'requirements' => 'array', 'consent' => 'array', 'on_hold' => 'boolean', 'superseded_at' => 'datetime', 'executor_expires_at' => 'datetime', 'verified_at' => 'datetime'];
 
     public function installation()
     {
