@@ -246,6 +246,23 @@ class AryeoApiTest extends TestCase
         $this->blocked(fn () => app(Guard::class)->claim($e), 'executor_stop_and_reconciliation_required');
     }
 
+    public function test_lost_response_after_cancellation_preserves_hold_and_durable_escalation(): void
+    {
+        $e = $this->approved();
+        $op = AryeoApiOperation::create(['export_id' => $e->id, 'operation_key' => 'deliver', 'method' => 'POST',
+            'path' => '/deliveries/test/actions/deliver', 'request_hash' => str_repeat('a', 64), 'request' => [], 'status' => 'sent']);
+        app(Exports::class)->cancel($e->fresh(), $this->admin->id, 'Withdrawn while provider request was in flight');
+        app(Operations::class)->unknown($e, $op, 'response_unavailable');
+        $this->assertSame('correction_required', $e->fresh()->status);
+        $this->assertNotNull($e->fresh()->cancelled_at);
+        $this->assertSame('outcome_unknown', $e->fresh()->outcomes['delivery']);
+        $this->assertDatabaseHas('aryeo_api_alerts', ['key' => 'unknown:'.$op->id]);
+        $this->assertTrue($e->cases()->where('kind', 'unknown_operation')->where('status', 'open')->exists());
+        $op->update(['status' => 'confirmed']);
+        app(Operations::class)->unknown($e, $op, 'late_worker_timeout');
+        $this->assertSame('confirmed', $op->fresh()->status);
+    }
+
     public function test_recipient_change_invalidates_approval_and_withdrawal_after_ingestion_stops_delivery(): void
     {
         $e = $this->approved();
