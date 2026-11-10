@@ -68,6 +68,11 @@ class AryeoApiTest extends TestCase
         Http::preventStrayRequests();
         config(['app.key' => 'base64:'.base64_encode(str_repeat('x', 32)), 'aryeo_api.enabled' => true, 'aryeo_api.writes_enabled' => true,
             'aryeo_api.production_enabled' => false, 'aryeo_api.sandbox_url' => 'https://aryeo.test/v2beta1', 'aryeo_api.client_id' => Str::uuid()->toString()]);
+        // CI's unprivileged runner does not belong to the production web group.
+        // Exercise the same chmod/chgrp path using its own configured group.
+        if (function_exists('posix_getegid')) {
+            config(['aryeo_api.storage_group' => posix_getegid()]);
+        }
         $this->admin = User::factory()->create(['role' => 'admin']);
         $client = User::factory()->create(['role' => 'client']);
         $this->shoot = Shoot::factory()->create(['client_id' => $client->id, 'status' => 'delivered', 'workflow_status' => 'delivered', 'admin_verified_at' => now(), 'payment_status' => 'paid']);
@@ -591,6 +596,11 @@ class AryeoApiTest extends TestCase
         $url = app(Grants::class)->issue($asset, $owner);
         Storage::disk('local')->put('aryeo-test/photo.jpg', 'replaced');
         $this->get(parse_url($url, PHP_URL_PATH))->assertOk()->assertStreamedContent('original');
+        if (function_exists('posix_getegid')) {
+            $path = app(\App\Services\Aryeo\Api\FrozenOriginals::class)->path($asset);
+            $this->assertSame(0660, fileperms($path) & 0777);
+            $this->assertSame(posix_getegid(), filegroup($path));
+        }
         $this->blocked(fn () => app(Snapshots::class)->assertCurrent($e, true), 'approval_stale');
     }
 

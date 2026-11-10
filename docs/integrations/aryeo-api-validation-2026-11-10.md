@@ -4,7 +4,7 @@ This is implementation evidence, not partner or production qualification. Provid
 
 ## Results
 
-- Linux PHP 8.3.6: **169 tests, 1,229 assertions, no failures or skips** across the API workflow, complete legacy connector, delivery enablement, request inbox, partner setup, telemetry, component delivery, mixed finalization, service payment allocation, SQLite write helper and public-storage deployment safeguards.
+- Linux PHP 8.3.6: **169 tests, 1,231 assertions, no failures or skips** across the API workflow, complete legacy connector, delivery enablement, request inbox, partner setup, telemetry, component delivery, mixed finalization, service payment allocation, SQLite write helper and public-storage deployment safeguards.
 - Frontend: **52 focused tests passed**, covering the new approval/evidence/superseded-binding behavior, legacy Aryeo panel and Integrations regressions. TypeScript and changed-file ESLint passed.
 - Repository lint baseline, production frontend build, source-file limits and bundle-size gates passed. Existing Rollup manual-chunk and dependency-comment warnings remain.
 - Mocked desktop (1280 px) and mobile (390 px) visual review of settings and delivery screens: no browser errors or horizontal overflow. This was an isolated preview of the real components, not a live authenticated production test.
