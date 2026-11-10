@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\Shoot;
+use App\Models\Service;
 use App\Models\TourEvent;
 use App\Models\User;
 use App\Services\Shoots\Actions\ApproveShootAction;
@@ -81,6 +82,9 @@ class ShootAdjacentAccessSecurityTest extends TestCase
         $editor = User::factory()->create(['role' => 'editor']);
         $shoot = $this->shoot(['editor_id' => $editor->id]);
         $servicePhotographer = User::factory()->create(['role' => 'photographer']);
+        // Both photographers must own booked work; an obsolete header alone
+        // must not grant schedule access after its service is reassigned.
+        $shoot->services()->attach(Service::factory()->create()->id, ['photographer_id' => $shoot->photographer_id, 'price' => 100, 'quantity' => 1]);
         $shoot->services()->attach($shoot->service_id, ['photographer_id' => $servicePhotographer->id, 'price' => 100, 'quantity' => 1]);
         $actors = [$shoot->photographer, $servicePhotographer, $editor,
             User::factory()->create(['role' => 'admin']), User::factory()->create(['role' => 'superadmin'])];
@@ -95,6 +99,25 @@ class ShootAdjacentAccessSecurityTest extends TestCase
             $this->postJson("/api/shoots/{$shoot->id}/schedule", ['scheduled_at' => now()->addDays(5)->toIso8601String()])
                 ->assertOk()->assertJsonPath('data.id', (string) $shoot->id);
         }
+    }
+
+    public function test_reassigned_primary_photographer_cannot_reach_the_schedule_action(): void
+    {
+        $shoot = $this->shoot();
+        $former = $shoot->photographer;
+        $replacement = User::factory()->photographer()->create();
+        $shoot->services()->attach($shoot->service_id, ['photographer_id' => $replacement->id, 'price' => 100, 'quantity' => 1]);
+        $before = $shoot->fresh()->getAttributes();
+        $this->mock(ScheduleShootAction::class, fn (MockInterface $mock) => $mock->shouldNotReceive('execute'));
+
+        Sanctum::actingAs($former);
+        $this->postJson("/api/shoots/{$shoot->id}/schedule", [
+            'scheduled_at' => now()->addDays(5)->toIso8601String(),
+        ])->assertForbidden();
+
+        $this->assertSame($before, $shoot->fresh()->getAttributes());
+        Queue::assertNothingPushed();
+        Http::assertNothingSent();
     }
 
     public function test_unassigned_sales_aliases_can_approve_requests_even_when_client_relation_is_missing(): void

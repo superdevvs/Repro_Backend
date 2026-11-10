@@ -806,6 +806,9 @@ class ShootAuthorizationSupport
 
     public function isPhotographerAssignedToShoot(Shoot $shoot, User $photographer): bool
     {
+        $prepared = app(ShootPhotographerAssignmentService::class)->preparedReadAssignment($shoot, $photographer->id);
+        if ($prepared !== null) return $prepared;
+
         // Fetch current ownership instead of trusting a stale/filtered relation.
         // A gallery checks this for every file; share the result only within the
         // current HTTP read. Writes and the next request always recheck storage.

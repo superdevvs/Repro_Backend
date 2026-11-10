@@ -430,21 +430,25 @@ class ShootListingService
         $policyShoots = new \Illuminate\Database\Eloquent\Collection($shoots->map(fn (Shoot $shoot) => clone $shoot)->all());
         if ($viewer && ($authorization->hasRole($viewer, ['editor', 'photographer'])
             || ($authorization->isClientUser($viewer) && $shoots->contains(fn (Shoot $shoot) => app(ShootActiveWorkLifecycle::class)->hasActiveWork($shoot))))) {
-            $policyShoots->loadMissing('serviceItems.service');
+            $policyShoots->load('serviceItems.service.category');
         }
         $policyShoots = $policyShoots->keyBy('id');
-        foreach ($shoots as $shoot) {
-            $policyShoot = $policyShoots->get($shoot->id);
-            if ($policyShoot->relationLoaded('serviceItems')) app(DeliveryPlanService::class)->primeRequirements($policyShoot, $policyShoot->serviceItems);
-            $group = $preferred->get($shoot->id) ?? $fallback->get($shoot->id) ?? collect();
-            if (isset($dispatchOnly[(int) $shoot->id])) {
-                $allowed = array_flip($dispatchFiles[(int) $shoot->id] ?? []);
-                $group = $group->filter(fn (ShootFile $file) => isset($allowed[(int) $file->id]))->values();
+        app(ShootPhotographerAssignmentService::class)->withPreparedRead($policyShoots, function () use (
+            $shoots, $policyShoots, $preferred, $fallback, $dispatchOnly, $dispatchFiles, $viewer, $authorization, $cardMedia
+        ) {
+            foreach ($shoots as $shoot) {
+                $policyShoot = $policyShoots->get($shoot->id);
+                if ($policyShoot->relationLoaded('serviceItems')) app(DeliveryPlanService::class)->primeRequirements($policyShoot, $policyShoot->serviceItems);
+                $group = $preferred->get($shoot->id) ?? $fallback->get($shoot->id) ?? collect();
+                if (isset($dispatchOnly[(int) $shoot->id])) {
+                    $allowed = array_flip($dispatchFiles[(int) $shoot->id] ?? []);
+                    $group = $group->filter(fn (ShootFile $file) => isset($allowed[(int) $file->id]))->values();
+                }
+                $group = $viewer ? $group->filter(fn (ShootFile $file) => $authorization->canViewShootMediaFile($policyShoot, $file, $viewer))->values() : collect();
+                $shoot->setRelation('list_preview_files', $group->take(6)->values());
+                $shoot->setAttribute('delivery_card_media', $cardMedia->forShoot($policyShoot, $group, $viewer));
             }
-            $group = $viewer ? $group->filter(fn (ShootFile $file) => $authorization->canViewShootMediaFile($policyShoot, $file, $viewer))->values() : collect();
-            $shoot->setRelation('list_preview_files', $group->take(6)->values());
-            $shoot->setAttribute('delivery_card_media', $cardMedia->forShoot($policyShoot, $group, $viewer));
-        }
+        });
     }
 
     private function privateListingDiscovery(Request $request): JsonResponse

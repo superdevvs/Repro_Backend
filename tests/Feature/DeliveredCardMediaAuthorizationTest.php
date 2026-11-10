@@ -92,6 +92,30 @@ class DeliveredCardMediaAuthorizationTest extends TestCase
         $this->assertCount(6, $page->first()->getAttribute('delivery_card_media')['preview_images']);
     }
 
+    public function test_preview_policy_refreshes_preloaded_assignments_and_clears_its_read_context(): void
+    {
+        $viewer = User::factory()->photographer()->create();
+        $peer = User::factory()->photographer()->create();
+        $shoot = $this->shoot(['photographer_id' => $viewer->id]);
+        $item = $this->item($shoot, ['photographer_id' => $viewer->id]);
+        $this->photo($shoot, 'reassigned', ['shoot_service_id' => $item->id]);
+        $page = Shoot::with(['services', 'serviceItems.service'])->whereKey($shoot->id)->get();
+        Sanctum::actingAs($viewer);
+        $listing = app(ShootListingService::class);
+
+        $listing->eagerLoadListCardPreviewFiles($page);
+        $this->assertCount(1, $page->first()->getAttribute('delivery_card_media')['preview_images']);
+        $this->assertFalse(request()->attributes->has('shoot_photographer_prepared_read'));
+
+        $item->update(['photographer_id' => $peer->id]);
+        // Reuse the previously loaded page deliberately: the policy must fetch
+        // current assignments without trusting or replacing its old relations.
+        $listing->eagerLoadListCardPreviewFiles($page);
+        $this->assertSame([], $page->first()->getAttribute('delivery_card_media')['preview_images']);
+        $this->assertSame($viewer->id, $page->first()->serviceItems->first()->photographer_id);
+        $this->assertFalse(request()->attributes->has('shoot_photographer_prepared_read'));
+    }
+
     public function test_authorized_video_editor_retains_read_only_final_photo_references(): void
     {
         $viewer = User::factory()->create(['role' => 'editor', 'metadata' => ['editing_capabilities' => ['video']]]);

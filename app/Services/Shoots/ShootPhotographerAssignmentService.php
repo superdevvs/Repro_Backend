@@ -4,9 +4,46 @@ namespace App\Services\Shoots;
 
 use App\Models\Shoot;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Support\Collection;
 
 class ShootPhotographerAssignmentService
 {
+    private const PREPARED_READ_KEY = 'shoot_photographer_prepared_read';
+
+    /** Use freshly batched policy clones only for this bounded read operation. */
+    public function withPreparedRead(Collection $shoots, callable $read): mixed
+    {
+        $request = request();
+        $previous = $request->attributes->get(self::PREPARED_READ_KEY);
+        $assignments = new \WeakMap;
+        foreach ($shoots as $shoot) {
+            if (! $shoot->relationLoaded('serviceItems')) continue;
+            $items = $shoot->getRelation('serviceItems');
+            $owners = $items->pluck('photographer_id')->filter()->map(fn ($id) => (int) $id);
+            if ($shoot->photographer_id && ($items->isEmpty() || $items->contains(fn ($item) => ! $item->photographer_id
+                && ! app(FinancialServiceClassification::class)->isFinancialOnly($item)
+                && ($item->service?->allowsPhotographerAssignment() ?? false)))) {
+                $owners->push((int) $shoot->photographer_id);
+            }
+            $assignments[$shoot] = $owners->unique()->all();
+        }
+        $request->attributes->set(self::PREPARED_READ_KEY, $assignments);
+        try {
+            return $read();
+        } finally {
+            $previous === null ? $request->attributes->remove(self::PREPARED_READ_KEY)
+                : $request->attributes->set(self::PREPARED_READ_KEY, $previous);
+        }
+    }
+
+    public function preparedReadAssignment(Shoot $shoot, int $photographerId): ?bool
+    {
+        $assignments = request()->attributes->get(self::PREPARED_READ_KEY);
+
+        return $assignments instanceof \WeakMap && isset($assignments[$shoot])
+            ? in_array($photographerId, $assignments[$shoot], true) : null;
+    }
+
     /** Match the same per-service ownership used by the photographer's shoot details. */
     public function scopeAssignedTo(Builder $query, int|array $photographerIds): Builder
     {

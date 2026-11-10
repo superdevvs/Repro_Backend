@@ -1220,7 +1220,9 @@ class ShootMutationActionsTest extends TestCase
             data_get($detachMetadata, 'service_detach_impact.removed_services.0.name')
         );
         $this->assertSame($scheduledAt, $shoot->scheduled_at?->format('Y-m-d H:i:s'));
-        $this->assertSame($this->photographer->id, $shoot->photographer_id);
+        // The only remaining service belongs to the category photographer.
+        // Keeping the submitted header would recreate a no-services assignment.
+        $this->assertSame($servicePhotographer->id, $shoot->photographer_id);
         $this->assertSame('Gate code is 1234', $shoot->shoot_notes);
         $this->assertSame('Internal dispatch note', $shoot->company_notes);
         $this->assertSame('Bring a drone if weather is clear', $shoot->photographer_notes);
