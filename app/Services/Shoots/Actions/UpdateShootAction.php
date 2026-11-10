@@ -820,7 +820,18 @@ class UpdateShootAction
                     );
                 }
             };
-            $travelGuard->commit($travelPrepared, fn () => \App\Support\LockedWrite::run(fn () => DB::transaction($applyEdit), 'shoot-update'),
+            $write = function () use ($shoot, $applyEdit) {
+                // A rolled-back attempt may have refreshed this model to values
+                // that were never committed. Rebuild each attempt from the row.
+                // Without the schedule guard, read before opening a transaction.
+                $shoot->refresh();
+
+                return DB::transaction($applyEdit);
+            };
+            // A savepoint retry cannot replace the outer SQLite read snapshot.
+            // Let ScheduleCommitGuard roll back and retry the complete schedule.
+            $travelGuard->commit($travelPrepared, fn () => DB::transactionLevel() > 0
+                ? $write() : \App\Support\LockedWrite::run($write, 'shoot-update'),
                 function () use ($shoot, &$createdReturnVisit, $travelChildOnly) { return $travelChildOnly ? [$createdReturnVisit] : [$shoot, $createdReturnVisit]; });
         } catch (\DomainException $exception) {
                     $this->abortJson(\App\Services\ApiErrorResponder::publicMessage($exception), 409);

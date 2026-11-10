@@ -2,6 +2,7 @@
 
 namespace App\Services\Scheduling;
 
+use App\Exceptions\PublicApiException;
 use App\Models\Shoot;
 use App\Models\User;
 use App\Services\AuditLogService;
@@ -79,6 +80,12 @@ class ScheduleCommitGuard
                     $changed = true;
                 } else {
                     return LockedWrite::run(fn () => DB::transaction(function () use ($write, $targets, $prepared, $ids) {
+                        // Reserve SQLite's writer before taking the schedule snapshot.
+                        // Even a zero-row UPDATE acquires the reservation without
+                        // changing any booking; Laravel still owns rollback hooks.
+                        if (DB::connection()->getDriverName() === 'sqlite') {
+                            DB::table('shoots')->whereRaw('1 = 0')->update(['id' => DB::raw('id')]);
+                        }
                         // Recheck after acquiring the write transaction as well. No network here.
                         if (! hash_equals($prepared['target_version'], $this->targetVersion($prepared['plans']))) {
                             throw new ConflictHttpException('This booking changed. Reload it before updating its schedule.');
@@ -113,9 +120,24 @@ class ScheduleCommitGuard
                 }
             } catch (LockTimeoutException $exception) {
                 throw new ConflictHttpException('Another scheduling change is in progress. Please try again.', $exception);
+            } catch (\Throwable $exception) {
+                if (! LockedWrite::isLockContention($exception)) {
+                    throw $exception;
+                }
+                throw new PublicApiException('The schedule is busy. Please try again.', 'schedule_busy', 409,
+                    ['retryable' => true], $exception);
             } finally {
                 foreach (array_reverse($locks) as $lock) {
-                    $lock->release();
+                    try {
+                        $lock->release();
+                    } catch (\Throwable $exception) {
+                        if (! LockedWrite::isLockContention($exception)) {
+                            throw $exception;
+                        }
+                        // Database-backed locks expire at their original TTL.
+                        // Cleanup contention must not mask the write's outcome.
+                        \App\Services\ApiErrorResponder::log($exception, 'warning');
+                    }
                 }
             }
             if ($changed && $attempt === 0) {
