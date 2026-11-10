@@ -79,7 +79,7 @@ class AryeoCatalog
         $paymentKnown = $shoot->payment_status === 'paid' || $shoot->total_quote !== null;
         $paid = $paymentKnown && $release->resolvePaymentStatus($shoot) === 'paid';
         $wholeReleased = $shoot->bypass_paywall || $paid;
-        $approvedLine = fn ($line) => $line && $line->is_deliverable && in_array($line->delivery_status, ['ready', 'delivered']);
+        $approvedLine = fn ($line) => $line && $line->is_deliverable && ! $line->cancelled_at && (int) $line->shoot_id === (int) $shoot->id && in_array($line->delivery_status, ['ready', 'delivered']);
         $unlocked = fn ($line) => $approvedLine($line)
             && ($wholeReleased || $line->force_unlock_delivery || ($line->is_unlocked_for_delivery && in_array($line->delivery_status, ['ready', 'delivered'])));
         $classifier = app(ShootDownloadAssetClassifier::class);
@@ -93,6 +93,13 @@ class AryeoCatalog
                 continue;
             }
             if ($file->serviceItem && ! $approvedLine($file->serviceItem)) {
+                continue;
+            }
+            if (app(\App\Services\Shoots\DeliveryPlanService::class)->usesComponents($shoot)
+                && ! $file->is_extra && ! $release->isApprovedFile($shoot, $file)) {
+                continue;
+            }
+            if (data_get($file->metadata, 'reference_only') || $file->isIguideOfflinePackage()) {
                 continue;
             }
             if ($file->workflow_stage !== 'verified' && ! $file->verified_at
@@ -109,6 +116,7 @@ class AryeoCatalog
             }
             $assets[] = [
                 'id' => $file->id, 'type' => $classifier->type($file), 'filename' => $file->filename,
+                'mime_type' => $file->mime_type ?: $file->file_type,
                 'bytes' => $file->file_size, 'sha256' => data_get($file->metadata, 'sha256'),
                 'extra' => (bool) $file->is_extra, 'order' => $file->sort_order,
                 'revision' => hash('sha256', json_encode([$file->updated_at, $file->path, $file->storage_path, $file->file_size])),
@@ -133,7 +141,10 @@ class AryeoCatalog
         foreach ($assets as $asset) {
             $available[$asset['type']]++;
         }
-        if (! $paid) {
+        // External delivery follows explicit release overrides, at asset scope.
+        // Staff access alone never unlocks an asset. No override may release a
+        // different service's files. Unknown payment remains locked by default.
+        if (! $wholeReleased && ! $assets && ! $tours) {
             $blockers[] = 'payment_required';
         }
         if ($requirements === null) {
@@ -166,7 +177,7 @@ class AryeoCatalog
 
         return [
             'shoot_id' => $shoot->id, 'unit_id' => $unitId, 'eligible' => ! $blockers,
-            'dashboard' => ['paid' => $paid, 'delivered' => $dashboardDelivered, 'summary_required' => false],
+            'dashboard' => ['paid' => $paid, 'release_override' => ! $paid && (bool) ($assets || $tours), 'delivered' => $dashboardDelivered, 'summary_required' => false],
             'blockers' => array_values(array_unique($blockers)), 'required' => $requirements,
             'available' => $available, 'withheld_for_payment' => $withheld,
             'media_version' => $version, 'assets' => $assets, 'tours' => $tours,

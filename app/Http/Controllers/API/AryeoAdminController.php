@@ -154,8 +154,10 @@ class AryeoAdminController extends Controller
 
     public function process(Request $r, int $shoot, int $order)
     {
+        abort_if($r->attributes->get('is_impersonating') || $r->header('X-Impersonate-User-Id'), 403);
         $shoot = $this->shoot($r, $shoot);
         $record = AryeoRequest::whereIn('connection_id', $this->connections($shoot, true)->pluck('id'))->where('shoot_id', $shoot->id)->findOrFail($order);
+        $r->validate(['distribution_authorized' => 'required|accepted']);
 
         return response()->json($this->jobs->enqueue($record, AryeoConnection::findOrFail($record->connection_id), $r->user()->id));
     }

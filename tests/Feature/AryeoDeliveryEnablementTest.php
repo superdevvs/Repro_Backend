@@ -176,7 +176,7 @@ class AryeoDeliveryEnablementTest extends TestCase
         $this->order->update(['discovery' => [...$this->order->fresh()->discovery,
             'required' => ['photos' => 1, 'floorplans' => 0, 'videos' => 0, 'tours' => 0]],
             'inventory' => ['provider_status' => $observation]]);
-        $job = $this->postJson($this->base().'/process')->assertOk()->json('id');
+        $job = $this->postJson($this->base().'/process', ['distribution_authorized' => true])->assertOk()->json('id');
         $lease = 'test_lease_secret_for_pending_request_acceptance';
         $this->withHeader('Authorization', 'Bearer '.self::TOKEN)->postJson('/api/integrations/aryeo/v1/jobs/claim',
             ['claim_id' => (string) \Illuminate\Support\Str::uuid(), 'lease_token' => $lease])->assertOk()->assertJsonPath('job.id', $job);

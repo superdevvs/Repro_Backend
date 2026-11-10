@@ -29,7 +29,9 @@ class SystemOverviewTelemetryService
     ];
 
     private const LIVE_WINDOW_SECONDS = 120;
+
     private const HISTORY_HOURS = 24;
+
     private const IGNORED_PREFIXES = [
         'api/admin/system-overview',
         'api/system-telemetry',
@@ -57,6 +59,12 @@ class SystemOverviewTelemetryService
         'token',
         'access_token',
         'refresh_token',
+        'client_assertion',
+        'code_verifier',
+        'source_url',
+        'grant_hash',
+        'code',
+        'state',
         'authorization',
         'auth',
         'secret',
@@ -89,7 +97,7 @@ class SystemOverviewTelemetryService
 
         try {
             foreach (self::REQUIRED_TABLES as $table) {
-                if (!Schema::hasTable($table)) {
+                if (! Schema::hasTable($table)) {
                     return $this->telemetryAvailableCache = false;
                 }
             }
@@ -102,7 +110,7 @@ class SystemOverviewTelemetryService
 
     public function recordRequestTrace(Request $request, Response $response): ?SystemOverviewRequestTrace
     {
-        if (!$this->telemetryAvailable() || !$this->shouldTrackRequest($request)) {
+        if (! $this->telemetryAvailable() || ! $this->shouldTrackRequest($request)) {
             return null;
         }
 
@@ -164,7 +172,7 @@ class SystemOverviewTelemetryService
 
     public function recordException(Request $request, Throwable $exception, int $status): void
     {
-        if (!$this->telemetryAvailable() || !$this->shouldTrackRequest($request)) {
+        if (! $this->telemetryAvailable() || ! $this->shouldTrackRequest($request)) {
             return;
         }
 
@@ -242,12 +250,12 @@ class SystemOverviewTelemetryService
 
     public function recordClientEvent(Request $request, array $event): ?array
     {
-        if (!$this->telemetryAvailable()) {
+        if (! $this->telemetryAvailable()) {
             return null;
         }
 
         $type = (string) ($event['type'] ?? '');
-        if (!in_array($type, self::EVENT_TYPES, true)) {
+        if (! in_array($type, self::EVENT_TYPES, true)) {
             return null;
         }
 
@@ -341,7 +349,7 @@ class SystemOverviewTelemetryService
 
     public function buildSnapshot(): array
     {
-        if (!$this->telemetryAvailable()) {
+        if (! $this->telemetryAvailable()) {
             return $this->emptySnapshot();
         }
 
@@ -436,7 +444,7 @@ class SystemOverviewTelemetryService
 
     public function buildHistory(): array
     {
-        if (!$this->telemetryAvailable()) {
+        if (! $this->telemetryAvailable()) {
             return [
                 'window' => '24h',
                 'timeline' => [],
@@ -480,7 +488,7 @@ class SystemOverviewTelemetryService
 
     public function buildLiveUsers(): array
     {
-        if (!$this->telemetryAvailable()) {
+        if (! $this->telemetryAvailable()) {
             return [];
         }
 
@@ -512,7 +520,7 @@ class SystemOverviewTelemetryService
 
     public function buildRoutesCatalog(): array
     {
-        if (!$this->telemetryAvailable()) {
+        if (! $this->telemetryAvailable()) {
             return [];
         }
 
@@ -539,12 +547,12 @@ class SystemOverviewTelemetryService
 
     public function buildTraceDetail(string $traceId): ?array
     {
-        if (!$this->telemetryAvailable()) {
+        if (! $this->telemetryAvailable()) {
             return null;
         }
 
         $trace = SystemOverviewRequestTrace::query()->where('trace_id', $traceId)->first();
-        if (!$trace) {
+        if (! $trace) {
             return null;
         }
 
@@ -591,7 +599,7 @@ class SystemOverviewTelemetryService
 
     public function prune(): array
     {
-        if (!$this->telemetryAvailable()) {
+        if (! $this->telemetryAvailable()) {
             return [
                 'sessions' => 0,
                 'route_events' => 0,
@@ -612,7 +620,8 @@ class SystemOverviewTelemetryService
 
     private function shouldTrackRequest(Request $request): bool
     {
-        if (!$request->is('api/*') || $request->is('api/admin/users/*/tax-document*')) {
+        if (! $request->is('api/*') || $request->is('api/admin/users/*/tax-document*')
+            || $request->is('api/integrations/aryeo/oauth/*', 'api/integrations/aryeo/download/*', 'api/integrations/aryeo/api/installations/*/connect')) {
             return false;
         }
 
@@ -630,7 +639,7 @@ class SystemOverviewTelemetryService
         $sessionKey = $request->headers->get('X-System-Session-Id');
         $user = $request->user();
 
-        if (!is_string($sessionKey) || !preg_match('/\A[A-Za-z0-9_-]{1,80}\z/', $sessionKey) || !$user) {
+        if (! is_string($sessionKey) || ! preg_match('/\A[A-Za-z0-9_-]{1,80}\z/', $sessionKey) || ! $user) {
             return null;
         }
 
@@ -654,7 +663,7 @@ class SystemOverviewTelemetryService
             'last_activity_at' => now(),
         ]);
 
-        if (!$session->exists) {
+        if (! $session->exists) {
             $session->started_at = now();
         }
 
@@ -665,7 +674,7 @@ class SystemOverviewTelemetryService
 
     private function touchSession(?SystemOverviewSession $session, array $attributes = []): void
     {
-        if (!$session) {
+        if (! $session) {
             return;
         }
 
@@ -679,15 +688,15 @@ class SystemOverviewTelemetryService
 
     private function updateSessionFromEvent(?SystemOverviewSession $session, string $type, array $event, Carbon $occurredAt): void
     {
-        if (!$session) {
+        if (! $session) {
             return;
         }
 
         $components = collect($session->component_stack ?? []);
-        if ($type === 'component_mount' && !empty($event['componentName'])) {
+        if ($type === 'component_mount' && ! empty($event['componentName'])) {
             $components->push($event['componentName']);
         }
-        if ($type === 'component_unmount' && !empty($event['componentName'])) {
+        if ($type === 'component_unmount' && ! empty($event['componentName'])) {
             $components = $components->reject(fn (string $name) => $name === $event['componentName']);
         }
 
@@ -729,7 +738,7 @@ class SystemOverviewTelemetryService
 
     private function responseSummary(Response $response): ?array
     {
-        if (!$response instanceof JsonResponse) {
+        if (! $response instanceof JsonResponse) {
             return [
                 'byteSize' => strlen((string) $response->getContent()),
                 'contentType' => $response->headers->get('content-type'),
@@ -765,7 +774,7 @@ class SystemOverviewTelemetryService
             return is_array($value) ? '[TRUNCATED]' : $this->sanitizeScalar($value);
         }
 
-        if (!is_array($value)) {
+        if (! is_array($value)) {
             return $this->sanitizeScalar($value);
         }
 
@@ -783,6 +792,7 @@ class SystemOverviewTelemetryService
             ], true) ? $normalizedKey : 'field_'.count($result));
             if (in_array($normalizedKey, self::REDACTED_KEYS, true)) {
                 $result[$key] = '[REDACTED]';
+
                 continue;
             }
 
@@ -808,7 +818,7 @@ class SystemOverviewTelemetryService
 
     private function previewPayload(mixed $payload): ?string
     {
-        if (!is_array($payload)) {
+        if (! is_array($payload)) {
             return is_scalar($payload) ? Str::limit((string) $payload, 120) : null;
         }
 
@@ -852,7 +862,7 @@ class SystemOverviewTelemetryService
             ];
         }
 
-        if ($durationMs >= 2000 && !$this->isUploadLikePath($this->routeTemplate($request))) {
+        if ($durationMs >= 2000 && ! $this->isUploadLikePath($this->routeTemplate($request))) {
             return [
                 'type' => 'slow_request',
                 'state' => 'warning',
@@ -906,12 +916,13 @@ class SystemOverviewTelemetryService
     private function routeTemplate(Request $request): string
     {
         $route = $request->route();
+
         return $route instanceof Route ? '/'.ltrim($route->uri(), '/') : '/api/unmatched';
     }
 
     private function safeLabel(mixed $value): ?string
     {
-        if (!is_string($value)) {
+        if (! is_string($value)) {
             return null;
         }
         if (str_starts_with($value, '/')) {
@@ -923,6 +934,7 @@ class SystemOverviewTelemetryService
         } elseif (preg_match('/\A(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+\//', $value, $match)) {
             $value = $match[1].' API request';
         }
+
         // No URL query strings, control characters, or free-form diagnostic text.
         return preg_match('/\A[A-Za-z0-9_\/. :{}-]{1,160}\z/', $value) ? $value : null;
     }
@@ -969,7 +981,6 @@ class SystemOverviewTelemetryService
             'occurredAt' => optional($error->occurred_at)->toIso8601String(),
         ];
     }
-
 
     private function countSlowRoutes(Carbon $cutoff): int
     {

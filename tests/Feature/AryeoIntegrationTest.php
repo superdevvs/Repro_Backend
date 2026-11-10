@@ -53,7 +53,7 @@ class AryeoIntegrationTest extends TestCase
 
     private function enqueue(): string
     {
-        return $this->actingAs($this->admin)->postJson('/api/shoots/'.$this->shoot->id.'/aryeo/requests/'.$this->order->id.'/process')->assertOk()->json('id');
+        return $this->actingAs($this->admin)->postJson('/api/shoots/'.$this->shoot->id.'/aryeo/requests/'.$this->order->id.'/process', ['distribution_authorized' => true])->assertOk()->json('id');
     }
 
     private function claim(string $id = 'd02aba1b-a106-4f60-bc4e-7866f0189a80', string $token = 'claim_secret_12345678901234567890')
@@ -153,14 +153,14 @@ class AryeoIntegrationTest extends TestCase
 
     public function test_roles_are_enforced_on_panel_and_processing(): void
     {
-        $this->actingAs(User::factory()->create(['role' => 'client']))->postJson('/api/shoots/'.$this->shoot->id.'/aryeo/requests/'.$this->order->id.'/process')->assertForbidden();
+        $this->actingAs(User::factory()->create(['role' => 'client']))->postJson('/api/shoots/'.$this->shoot->id.'/aryeo/requests/'.$this->order->id.'/process', ['distribution_authorized' => true])->assertForbidden();
         $this->actingAs(User::factory()->create(['role' => 'editing_manager']))->getJson('/api/shoots/'.$this->shoot->id.'/aryeo')->assertOk();
     }
 
     public function test_staff_privilege_does_not_bypass_customer_release(): void
     {
         $this->shoot->update(['payment_status' => 'unpaid']);
-        $this->actingAs($this->admin)->postJson('/api/shoots/'.$this->shoot->id.'/aryeo/requests/'.$this->order->id.'/process')->assertConflict();
+        $this->actingAs($this->admin)->postJson('/api/shoots/'.$this->shoot->id.'/aryeo/requests/'.$this->order->id.'/process', ['distribution_authorized' => true])->assertConflict();
         $ready = app(AryeoCatalog::class)->readiness($this->shoot->fresh(), null, $this->order->discovery['required']);
         $this->assertFalse($ready['eligible']);
         $this->assertContains('payment_required', $ready['blockers']);
@@ -170,7 +170,7 @@ class AryeoIntegrationTest extends TestCase
     public function test_missing_summary_is_not_a_readiness_blocker(): void
     {
         $this->worker()->getJson($this->prefix.'/shoots/'.$this->shoot->id.'/readiness?request_record_id='.$this->order->id)
-            ->assertOk()->assertJsonPath('eligible', true)->assertJsonPath('dashboard', ['paid' => true, 'delivered' => true, 'summary_required' => false]);
+            ->assertOk()->assertJsonPath('eligible', true)->assertJsonPath('dashboard', ['paid' => true, 'release_override' => false, 'delivered' => true, 'summary_required' => false]);
     }
 
     public function test_paid_but_not_dashboard_delivered_cannot_be_processed(): void
@@ -179,7 +179,7 @@ class AryeoIntegrationTest extends TestCase
         $ready = app(AryeoCatalog::class)->readiness($this->shoot->fresh(), null, $this->order->discovery['required']);
         $this->assertContains('dashboard_delivery_pending', $ready['blockers']);
         $this->assertFalse($ready['dashboard']['delivered']);
-        $this->actingAs($this->admin)->postJson('/api/shoots/'.$this->shoot->id.'/aryeo/requests/'.$this->order->id.'/process')->assertConflict();
+        $this->actingAs($this->admin)->postJson('/api/shoots/'.$this->shoot->id.'/aryeo/requests/'.$this->order->id.'/process', ['distribution_authorized' => true])->assertConflict();
     }
 
     public function test_requested_category_without_quantity_uses_all_approved_media(): void
@@ -249,12 +249,13 @@ class AryeoIntegrationTest extends TestCase
         $this->assertContains('no_approved_media', $empty['blockers']);
     }
 
-    public function test_paywall_override_does_not_replace_paid_requirement_for_aryeo(): void
+    public function test_explicit_paywall_override_releases_approved_media_for_aryeo(): void
     {
         $this->shoot->update(['payment_status' => 'unpaid', 'bypass_paywall' => true]);
         $ready = app(AryeoCatalog::class)->readiness($this->shoot->fresh(), null, $this->order->discovery['required']);
-        $this->assertContains('payment_required', $ready['blockers']);
-        $this->assertFalse($ready['eligible']);
+        $this->assertNotContains('payment_required', $ready['blockers']);
+        $this->assertTrue($ready['eligible']);
+        $this->assertTrue($ready['dashboard']['release_override']);
     }
 
     public function test_non_media_fee_does_not_hide_an_approved_tour(): void
@@ -282,9 +283,9 @@ class AryeoIntegrationTest extends TestCase
     public function test_processing_disabled_by_default_and_selected_shoot_enforced(): void
     {
         $this->connection->update(['processing_enabled' => false]);
-        $this->actingAs($this->admin)->postJson('/api/shoots/'.$this->shoot->id.'/aryeo/requests/'.$this->order->id.'/process')->assertConflict();
+        $this->actingAs($this->admin)->postJson('/api/shoots/'.$this->shoot->id.'/aryeo/requests/'.$this->order->id.'/process', ['distribution_authorized' => true])->assertConflict();
         $this->connection->update(['processing_enabled' => true, 'delivery_shoot_ids' => []]);
-        $this->actingAs($this->admin)->postJson('/api/shoots/'.$this->shoot->id.'/aryeo/requests/'.$this->order->id.'/process')->assertConflict();
+        $this->actingAs($this->admin)->postJson('/api/shoots/'.$this->shoot->id.'/aryeo/requests/'.$this->order->id.'/process', ['distribution_authorized' => true])->assertConflict();
     }
 
     public function test_duplicate_clicks_and_claim_retries_reuse_job(): void
@@ -475,7 +476,7 @@ class AryeoIntegrationTest extends TestCase
             ->assertJsonPath('connections.0.shoot_enabled', false)->assertJsonPath('orders.0.id', $recordId)
             ->assertJsonPath('orders.0.readiness.eligible', false)->assertJsonPath('orders.0.readiness.available.photos', 0);
         $this->assertContains('editing_not_approved', $panel->json('orders.0.readiness.blockers'));
-        $this->actingAs($this->admin)->postJson('/api/shoots/'.$shoot->id.'/aryeo/requests/'.$recordId.'/process')->assertNotFound();
+        $this->actingAs($this->admin)->postJson('/api/shoots/'.$shoot->id.'/aryeo/requests/'.$recordId.'/process', ['distribution_authorized' => true])->assertNotFound();
         $this->assertSame(0, AryeoJob::count());
     }
 
@@ -597,7 +598,7 @@ class AryeoIntegrationTest extends TestCase
         $this->assertSame($before, AryeoRequest::findOrFail($id)->toArray());
         $this->assertSame($scope, $this->connection->fresh()->only(array_keys($scope)));
         $this->actingAs($this->admin)->postJson('/api/shoots/'.$shoot->id.'/aryeo/requests/'.$id.'/match', ['confirm_identity' => false])->assertUnprocessable();
-        $this->actingAs($this->admin)->postJson('/api/shoots/'.$shoot->id.'/aryeo/requests/'.$id.'/process')->assertNotFound();
+        $this->actingAs($this->admin)->postJson('/api/shoots/'.$shoot->id.'/aryeo/requests/'.$id.'/process', ['distribution_authorized' => true])->assertNotFound();
         $this->worker()->getJson($this->prefix.'/shoots/'.$shoot->id)->assertNotFound();
         $this->assertSame('scheduled', $shoot->fresh()->status);
         $this->assertSame('unpaid', $shoot->fresh()->payment_status);
@@ -656,7 +657,7 @@ class AryeoIntegrationTest extends TestCase
         // Even a released, media-scoped shoot cannot queue a request whose
         // recipient is still unknown. A staff match only confirms association.
         $this->order->update(['discovery' => [...$this->order->discovery, 'requester_email' => null]]);
-        $this->actingAs($this->admin)->postJson('/api/shoots/'.$this->shoot->id.'/aryeo/requests/'.$this->order->id.'/process')
+        $this->actingAs($this->admin)->postJson('/api/shoots/'.$this->shoot->id.'/aryeo/requests/'.$this->order->id.'/process', ['distribution_authorized' => true])
             ->assertConflict();
         $this->assertSame(0, AryeoJob::count());
         $this->worker()->postJson($this->prefix.'/requests', [...$payload, 'requester_email' => $client->email])->assertOk()
@@ -800,7 +801,7 @@ class AryeoIntegrationTest extends TestCase
         $this->worker()->postJson($this->prefix.'/jobs/'.$id.'/authorize', ['lease_token' => 'claim_secret_12345678901234567890'])
             ->assertConflict();
         AryeoJob::findOrFail($id)->update(['status' => 'cancelled']);
-        $this->actingAs($this->admin)->postJson('/api/shoots/'.$this->shoot->id.'/aryeo/requests/'.$this->order->id.'/process')
+        $this->actingAs($this->admin)->postJson('/api/shoots/'.$this->shoot->id.'/aryeo/requests/'.$this->order->id.'/process', ['distribution_authorized' => true])
             ->assertConflict();
         $this->assertSame(1, AryeoJob::count());
         $this->assertNull(AryeoJob::findOrFail($id)->receipt);
@@ -910,7 +911,7 @@ class AryeoIntegrationTest extends TestCase
         $second->source_id = 'second-source';
         $second->request_id = 'second-order';
         $second->save();
-        $this->actingAs($this->admin)->postJson('/api/shoots/'.$this->shoot->id.'/aryeo/requests/'.$second->id.'/process')->assertOk();
+        $this->actingAs($this->admin)->postJson('/api/shoots/'.$this->shoot->id.'/aryeo/requests/'.$second->id.'/process', ['distribution_authorized' => true])->assertOk();
         $this->claim()->assertOk()->assertJsonPath('job.id', $first);
         $this->claim('bdc5c716-05f7-4e26-b17a-ea10dfb2d133')->assertOk()->assertJsonPath('job', null);
     }

@@ -11,8 +11,10 @@ use Illuminate\Support\Facades\Route;
 Route::prefix('integrations/aryeo')->middleware('throttle:60,1')->group(function () {
     Route::get('setup', [AryeoPartnerSetupController::class, 'show'])->name('aryeo.partner.setup');
     Route::get('setup.json', [AryeoPartnerSetupController::class, 'registration'])->name('aryeo.partner.registration');
-    Route::get('oauth/callback', [AryeoPartnerSetupController::class, 'callback'])->name('aryeo.oauth.callback');
+    Route::get('oauth/callback', [\App\Http\Controllers\API\AryeoOAuthController::class, 'callback'])->name('aryeo.oauth.callback');
 });
+
+require __DIR__.'/aryeo-api.php';
 
 Route::get('dashboard/aryeo-requests', AryeoRequestsController::class)
     ->middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager,salesRep', 'throttle:120,1']);

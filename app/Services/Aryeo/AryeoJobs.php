@@ -23,6 +23,7 @@ class AryeoJobs
             abort_unless(data_get($connection->capabilities, 'processing_mode') === 'dashboard_jobs'
                 && data_get($connection->capabilities, 'shoot_executor') === true, 409, 'Worker is not in dashboard-job mode.');
             $order->refresh();
+            app(\App\Services\Aryeo\Api\BridgeGuard::class)->assertAvailable((int) $order->shoot_id, $order->listing_id);
             abort_unless(in_array((int) $order->shoot_id, $connection->delivery_shoot_ids ?? [], true), 409, 'This shoot is not enabled for delivery.');
             abort_unless($order->match_status === 'matched' && $order->request_id, 409, 'An exact Aryeo request match is required.');
             abort_unless(filter_var($order->discovery['requester_email'] ?? null, FILTER_VALIDATE_EMAIL), 409, 'Verify the Aryeo requester email before delivery.');
@@ -43,6 +44,8 @@ class AryeoJobs
                 'id' => (string) Str::uuid(), 'request_record_id' => $order->id, 'connection_id' => $connection->id,
                 'media_version' => $ready['media_version'], 'created_by' => $userId, 'status' => 'queued',
                 'snapshot' => [...$ready, 'request_id' => $order->request_id, 'listing_id' => $order->listing_id,
+                    'requester_email' => strtolower(trim($order->discovery['requester_email'])),
+                    'distribution_authorization' => ['approved_by' => $userId, 'approved_at' => now()->toIso8601String(), 'scope' => 'this_request_listing_and_revision'],
                     'source_id' => $order->source_id, 'identity' => $this->catalog->identity($shoot)],
                 'steps' => array_fill_keys(self::STEPS, 'pending'),
             ]);
@@ -110,12 +113,14 @@ class AryeoJobs
 
     private function pendingRequestReadiness(AryeoJob $job, AryeoConnection $connection): array
     {
+        app(\App\Services\Aryeo\Api\BridgeGuard::class)->assertAvailable((int) $job->snapshot['shoot_id'], $job->snapshot['listing_id'] ?? null);
         abort_unless($connection->enabled && $connection->processing_enabled
             && data_get($connection->capabilities, 'processing_mode') === 'dashboard_jobs'
             && data_get($connection->capabilities, 'shoot_executor') === true
             && in_array((int) $job->snapshot['shoot_id'], $connection->delivery_shoot_ids ?? [], true),
             409, 'Request acceptance is not enabled for this running job.');
         $order = AryeoRequest::where('connection_id', $connection->id)->findOrFail($job->request_record_id);
+        $this->assertApprovedDestination($job, $order);
         $shoot = $this->catalog->shoot($connection, $job->snapshot['shoot_id']);
         abort_unless(! $order->listing_id && empty($job->snapshot['listing_id']) && ! $job->receipt
             && ($job->steps['delivery'] ?? '') !== 'success', 409, 'Reconcile the existing listing or receipt before accepting a request.');
@@ -145,12 +150,14 @@ class AryeoJobs
 
     public function authorizeDelivery(AryeoJob $job, AryeoConnection $connection): array
     {
+        app(\App\Services\Aryeo\Api\BridgeGuard::class)->assertAvailable((int) $job->snapshot['shoot_id'], $job->snapshot['listing_id'] ?? null);
         abort_unless($job->status === 'running' && $connection->processing_enabled
             && data_get($connection->capabilities, 'processing_mode') === 'dashboard_jobs'
             && data_get($connection->capabilities, 'shoot_executor') === true, 409, 'Reconciliation or worker setup is required before proceeding.');
         abort_if(($job->steps['delivery'] ?? '') === 'success', 409, 'Delivery is already confirmed; resume only unfinished follow-up steps.');
         abort_unless(in_array((int) $job->snapshot['shoot_id'], $connection->delivery_shoot_ids ?? [], true), 409, 'Delivery is not enabled for this shoot.');
         $order = AryeoRequest::findOrFail($job->request_record_id);
+        $this->assertApprovedDestination($job, $order);
         abort_if($order->hasVerifiedProviderDelivery()
             && ! AryeoJob::where('request_record_id', $order->id)->where('steps->delivery', 'success')->whereNotNull('receipt')->exists(),
             409, 'Aryeo already reports delivery. Reconcile it before repeating an external action.');
@@ -166,6 +173,7 @@ class AryeoJobs
     /** Preparing local files grants no execution lease or permission to deliver. */
     public function authorizePreparation(AryeoJob $job, AryeoConnection $connection): array
     {
+        app(\App\Services\Aryeo\Api\BridgeGuard::class)->assertAvailable((int) $job->snapshot['shoot_id'], $job->snapshot['listing_id'] ?? null);
         abort_unless($job->connection_id === $connection->id, 404);
         $shoot = $this->catalog->shoot($connection, $job->snapshot['shoot_id']);
         abort_unless($job->status === 'queued' && ! $job->receipt
@@ -175,6 +183,7 @@ class AryeoJobs
             && data_get($connection->capabilities, 'shoot_executor') === true
             && in_array((int) $shoot->id, $connection->delivery_shoot_ids ?? [], true), 409, 'Preparation is disabled for this shoot.');
         $order = AryeoRequest::where('connection_id', $connection->id)->findOrFail($job->request_record_id);
+        $this->assertApprovedDestination($job, $order);
         abort_unless($order->match_status === 'matched'
             && $order->shoot_id === $shoot->id
             && $order->unit_id === $job->snapshot['unit_id']
@@ -187,6 +196,17 @@ class AryeoJobs
         abort_unless($ready['eligible'] && $ready['media_version'] === $job->media_version, 409, 'Readiness or approved media changed.');
 
         return $ready;
+    }
+
+    private function assertApprovedDestination(AryeoJob $job, AryeoRequest $order): void
+    {
+        $shoot = \App\Models\Shoot::with('client')->findOrFail($job->snapshot['shoot_id']);
+        abort_unless(! empty($job->snapshot['distribution_authorization']['approved_by'])
+            && ($job->snapshot['requester_email'] ?? null) === strtolower(trim($order->discovery['requester_email'] ?? ''))
+            && $order->listing_id === ($job->snapshot['listing_id'] ?? null)
+            && $order->source_id === $job->snapshot['source_id']
+            && $order->unit_id === $job->snapshot['unit_id']
+            && $this->catalog->identity($shoot) === $job->snapshot['identity'], 409, 'Delivery destination or recipient changed; review required.');
     }
 
     public function result(AryeoJob $job, array $data): AryeoJob

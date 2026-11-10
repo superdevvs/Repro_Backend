@@ -106,7 +106,6 @@ Artisan::command('groundwire-sms:recover', function () {
     $this->info('Groundwire notification recovery complete.');
 })->purpose('Recover recent Groundwire SMS notifications without resending messages');
 
-
 // Generic native alert outbox. Off until separately configured and device-verified.
 \Illuminate\Support\Facades\Artisan::command('mobile-notifications:dispatch', function () {
     app(\App\Services\MobileNotifications\MobileNotificationService::class)->reconcile();
@@ -115,3 +114,4 @@ Artisan::command('groundwire-sms:recover', function () {
 
 \Illuminate\Support\Facades\Schedule::command('provider:auto-deliver --limit=100')->everyFiveMinutes()->withoutOverlapping();
 \Illuminate\Support\Facades\Schedule::command('delivery-notifications:recover --limit=100')->everyMinute()->withoutOverlapping();
+\Illuminate\Support\Facades\Schedule::command('aryeo:monitor-api')->everyMinute()->withoutOverlapping();
