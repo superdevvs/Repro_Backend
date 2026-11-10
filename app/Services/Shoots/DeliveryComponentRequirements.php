@@ -39,7 +39,9 @@ class DeliveryComponentRequirements
             // Subsequent catalog renames cannot change this snapshot.
             $name = strtolower((string) ($component['name'] ?? ''));
             $provider = str_contains($name, 'iguide') ? 'iguide' : (str_contains($name, 'matterport') ? 'matterport' : (str_contains($name, 'zillow') ? 'zillow' : $contextProvider));
-            if (preg_match('/floor\s*plans?|cubicasa/', $name)) { $kinds['floorplan'] = 'Floorplans'; $providers['floorplan'] = $provider; }
+            // iGuide inclusions supply both the viewer and downloadable plans,
+            // including bundles whose catalog calls the inclusion only a tour.
+            if (preg_match('/floor\s*plans?|cubicasa|iguide/', $name)) { $kinds['floorplan'] = 'Floorplans'; $providers['floorplan'] = $provider; }
             if (preg_match('/iguide|zillow|matterport|\b3d\b|tour/', $name)) { $kinds['tour'] = 'Property tour'; $providers['tour'] = $provider; }
             if (! preg_match('/floor\s*plans?|cubicasa|iguide|zillow|matterport|\b3d\b|tour/', $name)) $kinds['external'] = $component['name'] ?? 'External delivery';
         }
