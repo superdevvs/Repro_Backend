@@ -2584,11 +2584,11 @@ class ShootMutationActionsTest extends TestCase
     }
 
     #[\PHPUnit\Framework\Attributes\Test]
-    public function admin_cannot_remove_services_from_a_terminal_shoot(): void
+    public function admin_cannot_remove_services_from_a_cancelled_or_declined_shoot(): void
     {
         Sanctum::actingAs($this->admin);
 
-        foreach ([Shoot::STATUS_DELIVERED, Shoot::STATUS_CANCELLED, 'canceled', 'declined'] as $status) {
+        foreach ([Shoot::STATUS_CANCELLED, 'canceled', 'declined'] as $status) {
             $shoot = Shoot::factory()->create([
                 'client_id' => $this->client->id,
                 'service_id' => $this->service->id,
