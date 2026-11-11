@@ -28,10 +28,12 @@ class VisitPlanBuilder
         $photographer = (int) ($data['photographer_id'] ?? $shoot?->photographer_id ?? 0);
         $resolver = app(ShootDurationResolver::class);
         $multi = app(MultiUnitBookingService::class);
-        if ($multi->handles($shoot, $data)) {
-            $rows = $multi->prepare($shoot, $data, $actor)['services'];
-        } elseif ($shoot) {
+        if ($shoot) {
+            // Match the save path, including confirmed corrections to completed
+            // unit services. The ordinary unit planner rejects their history.
             $rows = app(ShootEditablePayloadService::class)->targetServicesFor($shoot, $data, $actor);
+        } elseif ($multi->handles(null, $data)) {
+            $rows = $multi->prepare(null, $data, $actor)['services'];
         } else {
             $services = $data['services'] ?? array_map(fn ($item) => ['id' => $item['service_id']] + $item, $data['service_items'] ?? []);
             $rows = app(ShootMutationSupportService::class)->mergeServiceItemPayload(
