@@ -113,9 +113,10 @@ class ShootUnitTourScope
     {
         $view = $this->project($shoot, $unit);
         $own = $unit->serviceItems()->where('is_deliverable', true)->whereNotIn('delivery_status', ['cancelled'])->get();
-        $released = $own->filter(fn ($line) => $this->isReleased($line));
+        // Public tours preview completed work independently of paid downloads.
+        $released = $own->filter(fn ($line) => $this->isReadyForPublicTour($line));
         abort_if($released->isEmpty(), 404, 'This unit’s tour is not available yet.');
-        $ids = $shoot->serviceItems()->whereIn('id', $this->fileLineIds($shoot, $unit))->get()->filter(fn ($line) => $this->isReleased($line))->pluck('id')->all();
+        $ids = $shoot->serviceItems()->whereIn('id', $this->fileLineIds($shoot, $unit))->get()->filter(fn ($line) => $this->isReadyForPublicTour($line))->pluck('id')->all();
         $view->setRelation('releasedUnitLineIds', $ids);
         $view->setRelation('files', $view->files->whereIn('shoot_service_id', $ids)->whereIn('workflow_stage', [\App\Models\ShootFile::STAGE_COMPLETED, \App\Models\ShootFile::STAGE_VERIFIED])->filter(fn ($file) => ! $file->is_hidden && ! $file->isBlockedFromDelivery())->values());
         $safe = $this->releasedTourData($unit, $released->pluck('id')->all(), $own->count());
@@ -154,7 +155,12 @@ class ShootUnitTourScope
 
     public function isReleased(ShootService $line): bool
     {
-        return $line->is_deliverable && in_array($line->delivery_status, [ShootService::DELIVERY_READY, ShootService::DELIVERY_DELIVERED], true) && $line->is_unlocked_for_delivery;
+        return $this->isReadyForPublicTour($line) && $line->is_unlocked_for_delivery;
+    }
+
+    private function isReadyForPublicTour(ShootService $line): bool
+    {
+        return $line->is_deliverable && in_array($line->delivery_status, [ShootService::DELIVERY_READY, ShootService::DELIVERY_DELIVERED], true);
     }
 
     public function persistProvider(Shoot $view): void

@@ -72,7 +72,7 @@ class ShootUnitToursTest extends TestCase
         $this->assertSame('BUILDING', $shoot->fresh()->tour_links['property_mls']);
     }
 
-    public function test_public_unit_links_require_ready_unlocked_lines_and_hide_todo_media(): void
+    public function test_public_unit_links_require_ready_lines_and_hide_todo_media_even_before_payment(): void
     {
         [$admin, $shoot, $units] = $this->property();
         [$unit, $line] = $units[0];
@@ -80,11 +80,71 @@ class ShootUnitToursTest extends TestCase
         $this->getJson("/api/public/shoots/{$shoot->id}/branded?unitId={$unit->id}")->assertNotFound();
         $line->update(['delivery_status' => ShootService::DELIVERY_READY]);
         $shoot->update(['payment_status' => 'unpaid', 'bypass_paywall' => false, 'total_quote' => 100]);
-        $this->getJson("/api/public/shoots/{$shoot->id}/branded?unitId={$unit->id}")->assertNotFound();
-        $line->update(['force_unlock_delivery' => true]);
         ShootFile::create(['shoot_id' => $shoot->id, 'shoot_service_id' => $line->id, 'filename' => 'raw.jpg', 'stored_filename' => 'raw.jpg', 'path' => 'raw.jpg', 'file_type' => 'image/jpeg', 'file_size' => 10, 'uploaded_by' => $admin->id, 'workflow_stage' => ShootFile::STAGE_TODO]);
         $this->getJson("/api/public/shoots/{$shoot->id}/branded?unitId={$unit->id}")->assertOk()->assertJsonPath('photos', []);
         $this->assertTrue(app(ShootUnitTourScope::class)->projectPublic($shoot->fresh(), $unit)->files->isEmpty());
+    }
+
+    public function test_unpaid_unit_tours_show_only_ready_scoped_media_without_unlocking_downloads(): void
+    {
+        Storage::fake('local'); Storage::fake('public'); Queue::fake();
+        config(['link_preview.enabled' => true, 'media.read_from_r2' => false, 'media.r2_only' => false]);
+        [$admin, $shoot, $units] = $this->property();
+        [$unit, $line] = $units[0];
+        $client = User::factory()->create(['role' => 'client']);
+        $shoot->update(['client_id' => $client->id, 'payment_status' => 'unpaid', 'bypass_paywall' => false, 'total_quote' => 300]);
+        // A delivered legacy line makes payment the only remaining download gate.
+        $line->forceFill(['workflow_status' => ShootService::WORKFLOW_DELIVERED, 'delivery_requirements' => []])->saveQuietly();
+        $unit->update(['tour_links' => ['matterport_branded' => 'https://tour.test/unit101']]);
+        $pending = ShootService::create(['shoot_id' => $shoot->id, 'shoot_unit_id' => $unit->id,
+            'service_id' => Service::factory()->create()->id, 'client_key' => (string) Str::uuid(),
+            'quantity' => 1, 'price' => 100, 'delivery_status' => ShootService::DELIVERY_NOT_STARTED]);
+        $visible = null;
+        foreach ([
+            ['visible', $line, []],
+            ['hidden', $line, ['is_hidden' => true]],
+            ['infected', $line, ['scan_status' => ShootFile::SCAN_STATUS_INFECTED]],
+            ['todo', $line, ['workflow_stage' => ShootFile::STAGE_TODO]],
+            ['raw', $line, ['media_type' => 'raw']],
+            ['pending', $pending, []],
+            ['other-unit', $units[1][1], []],
+            ['common-area', $units[2][1], []],
+        ] as [$name, $item, $changes]) {
+            $path = "shoots/{$shoot->id}/web/{$name}.jpg";
+            Storage::disk('public')->put($path, 'preview-'.$name);
+            $file = ShootFile::create($changes + ['shoot_id' => $shoot->id, 'shoot_service_id' => $item->id,
+                'filename' => $name.'.jpg', 'stored_filename' => $name.'.jpg', 'path' => $path, 'web_path' => $path,
+                'file_type' => 'image/jpeg', 'file_size' => 10, 'uploaded_by' => $admin->id,
+                'workflow_stage' => ShootFile::STAGE_VERIFIED, 'media_type' => 'edited',
+                'scan_status' => ShootFile::SCAN_STATUS_CLEAN, 'is_hidden' => false]);
+            if ($name === 'visible') $visible = $file;
+        }
+        foreach ([ShootService::DELIVERY_READY, ShootService::DELIVERY_DELIVERED] as $status) {
+            $line->update(['delivery_status' => $status]);
+            foreach (['branded', 'mls', 'g-mls'] as $variant) {
+                $response = $this->getJson("/api/public/shoots/{$shoot->id}/{$variant}?unitId={$unit->id}")
+                    ->assertOk()->assertJsonCount(1, 'photos')->assertJsonPath('shoot.unit_id', $unit->id);
+                $this->assertStringEndsWith('/visible.jpg', parse_url($response->json('photos.0'), PHP_URL_PATH));
+                $this->get($response->json('photos.0'))->assertOk();
+                $this->assertArrayNotHasKey('locked', $response->json());
+                $this->assertArrayNotHasKey('payment_status', $response->json('shoot'));
+            }
+        }
+        $this->getJson("/api/public/link-previews/branded?shootId={$shoot->id}&unitId={$unit->id}")->assertOk();
+        $unit->update(['include_common_area_media' => true]);
+        $this->getJson("/api/public/shoots/{$shoot->id}/branded?unitId={$unit->id}")->assertOk()->assertJsonCount(2, 'photos');
+        $units[2][1]->update(['delivery_status' => ShootService::DELIVERY_NOT_STARTED]);
+        $this->getJson("/api/public/shoots/{$shoot->id}/branded?unitId={$unit->id}")->assertOk()->assertJsonCount(1, 'photos');
+
+        Sanctum::actingAs($client);
+        $this->getJson("/api/shoots/{$shoot->id}/media/{$visible->id}/download")
+            ->assertForbidden()->assertJsonPath('code', 'payment_required');
+        $this->getJson("/api/shoots/{$shoot->id}/media/download-zip?type=edited")
+            ->assertForbidden()->assertJsonPath('code', 'payment_required');
+        $this->assertSame('unpaid', $shoot->fresh()->payment_status);
+        $this->assertFalse($shoot->fresh()->bypass_paywall);
+        $this->assertFalse($line->fresh()->force_unlock_delivery);
+        $this->assertFalse(app(ShootUnitTourScope::class)->isReleased($line->fresh()));
     }
 
     public function test_same_unit_provider_service_lines_keep_their_own_order_and_webhook_identity(): void
