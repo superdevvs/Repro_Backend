@@ -386,6 +386,22 @@ class ShootServiceItemSupport
             && empty($payload['allocation_strategy']);
     }
 
+    /** No allocation is not proof of nonpayment on legacy or incompletely allocated orders. */
+    public function unpaidItemIds(Shoot $shoot, Collection $items): array
+    {
+        $paid = $this->paidAmountsByItem($items);
+        $totalPaid = $shoot->calculateCanonicalTotalPaid();
+        if ($totalPaid - array_sum($paid) > 0.01) return [];
+        if ($shoot->getCanonicalCompletedPayments()->isEmpty()) {
+            $legacyPaid = $shoot->payment_status === 'paid' && (float) $shoot->total_quote > 0;
+            $legacyPaid = $legacyPaid || app(\App\Services\Invoices\InvoiceAdjustmentService::class)
+                ->clientInvoicesForShoot($shoot)->contains(fn ($invoice) => (float) $invoice->amount_paid > 0
+                    || (float) $invoice->payments_total > 0);
+            if ($legacyPaid) return [];
+        }
+        return $items->filter(fn ($line) => ($paid[$line->id] ?? 0) < 0.005)->pluck('id')->all();
+    }
+
     public function paidAmountsByItem(Collection $items, ?int $excludePaymentId = null): array
     {
         if ($items->isEmpty()) {

@@ -127,9 +127,8 @@ class PostCaptureServiceCorrection
         }
         $removed = $items->whereNotIn('id', $kept);
         if ($removed->isEmpty()) return false;
-        $paid = app(ShootServiceItemSupport::class)->paidAmountsByItem($items);
-        if ($shoot->calculateCanonicalTotalPaid() - array_sum($paid) > 0.01) return false;
-        return $removed->every(fn ($line) => ($paid[$line->id] ?? 0) < 0.005);
+        $unpaid = app(ShootServiceItemSupport::class)->unpaidItemIds($shoot, $items);
+        return $removed->every(fn ($line) => in_array($line->id, $unpaid, true));
     }
 
     private function same(string $key, mixed $incoming, mixed $stored, Shoot $shoot): bool

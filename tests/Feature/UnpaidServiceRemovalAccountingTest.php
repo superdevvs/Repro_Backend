@@ -71,7 +71,7 @@ class UnpaidServiceRemovalAccountingTest extends TestCase
 
     public static function commissionStates(): array
     {
-        return [['pending'], ['accounts_approved'], ['paid']];
+        return [['pending'], ['accounts_approved'], ['paid'], ['flag_paid'], ['partially_paid']];
     }
 
     #[DataProvider('commissionStates')]
@@ -82,8 +82,8 @@ class UnpaidServiceRemovalAccountingTest extends TestCase
         $commission = Invoice::create(['role' => Invoice::ROLE_SALES_REP, 'user_id' => $rep->id, 'sales_rep_id' => $rep->id,
             'period_start' => $start, 'period_end' => $end, 'billing_period_start' => $start, 'billing_period_end' => $end,
             'approval_status' => $state === 'paid' ? 'accounts_approved' : $state,
-            'status' => $state === 'paid' ? 'paid' : 'draft', 'amount_paid' => $state === 'paid' ? 48.75 : 0,
-            'is_paid' => $state === 'paid', 'paid_at' => $state === 'paid' ? now() : null]);
+            'status' => $state === 'paid' ? 'paid' : 'draft', 'amount_paid' => $state === 'paid' ? 48.75 : ($state === 'partially_paid' ? 10 : 0),
+            'is_paid' => in_array($state, ['paid', 'flag_paid'], true), 'paid_at' => $state === 'paid' ? now() : null]);
         $commission->items()->create(['shoot_id' => $shoot->id, 'type' => 'charge', 'description' => 'Commission',
             'quantity' => 1, 'unit_amount' => 18.75, 'total_amount' => 18.75,
             'meta' => ['commission_rate' => 15, 'commissionable_gross' => 125]]);
@@ -108,7 +108,7 @@ class UnpaidServiceRemovalAccountingTest extends TestCase
         $correction = InvoiceItem::where('meta->source', 'unpaid_service_removal')->sole();
         $this->assertEquals(-18.75, $correction->total_amount);
         $this->assertSame('pending_approval', $correction->invoice->approval_status);
-        if ($state === 'paid') $this->assertSame($commissionBefore, $commission->fresh()->getRawOriginal());
+        if (in_array($state, ['paid', 'flag_paid', 'partially_paid'], true)) $this->assertSame($commissionBefore, $commission->fresh()->getRawOriginal());
         else $this->assertSame($commission->id, $correction->invoice_id);
         $this->assertDatabaseHas('invoice_audit_events', ['invoice_id' => $correction->invoice_id, 'event' => 'admin_edit']);
         $this->patchJson('/api/shoots/'.$shoot->id, ['expected_units_revision' => $shoot->fresh()->units_revision,
@@ -194,6 +194,17 @@ class UnpaidServiceRemovalAccountingTest extends TestCase
         $this->assertNull($photo->fresh());
         $this->assertDatabaseCount('shoot_service_earning_snapshots', 0);
         $this->assertEquals(60, $shoot->fresh()->total_quote);
+    }
+
+    public function test_legacy_invoice_payment_evidence_does_not_label_a_line_unpaid(): void
+    {
+        [$shoot, $photo, $fee, $invoice, $payment] = $this->fixture();
+        $payment->delete();
+        $shoot->forceFill(['payment_status' => 'unpaid'])->saveQuietly();
+        $invoice->forceFill(['amount_paid' => 60, 'payments_total' => 60])->saveQuietly();
+        $this->assertSame([], app(\App\Services\Shoots\ShootServiceItemSupport::class)
+            ->unpaidItemIds($shoot->fresh(), $shoot->serviceItems()->get()));
+        $this->assertFalse(app(\App\Services\Shoots\ShootServiceChangeGuard::class)->canRemoveAllServices($shoot->fresh(), auth()->user()));
     }
 
     public function test_accounting_failure_rolls_back_service_invoice_and_earned_snapshots_together(): void

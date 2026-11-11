@@ -14,9 +14,7 @@ final class UnpaidServiceRemovalAccounting
     public function snapshot(Shoot $shoot): array
     {
         $items = $shoot->serviceItems()->with('service')->get();
-        $paid = app(ShootServiceItemSupport::class)->paidAmountsByItem($items);
-        // Legacy money without a line allocation is not evidence that each line is unpaid.
-        $unallocated = $shoot->calculateCanonicalTotalPaid() - array_sum($paid) > 0.01;
+        $unpaidIds = app(ShootServiceItemSupport::class)->unpaidItemIds($shoot, $items);
         $basis = app(PhotographerPayoutBasis::class);
         $earnings = [];
         foreach ($items as $item) {
@@ -38,14 +36,13 @@ final class UnpaidServiceRemovalAccounting
             ];
         }
 
-        return ['items' => $items, 'paid' => $paid, 'unallocated' => $unallocated, 'earnings' => $earnings];
+        return ['items' => $items, 'unpaid_ids' => $unpaidIds, 'earnings' => $earnings];
     }
 
     public function reconcile(Shoot $shoot, array $before, User $actor): void
     {
         $remaining = $shoot->serviceItems()->pluck('id');
-        $removed = $before['items']->whereNotIn('id', $remaining)
-            ->filter(fn ($item) => ! $before['unallocated'] && ($before['paid'][$item->id] ?? 0) < 0.005);
+        $removed = $before['items']->whereNotIn('id', $remaining)->whereIn('id', $before['unpaid_ids']);
         if ($removed->isEmpty()) return;
 
         // A retained financial-only fee can depend on the removed capture's completion.
@@ -79,7 +76,8 @@ final class UnpaidServiceRemovalAccounting
             if (abs($delta) < 0.005) continue;
             $invoice = Invoice::lockForUpdate()->findOrFail($item->invoice_id);
             $before = $invoice->buildApprovalSnapshot();
-            $settled = $invoice->is_paid || $invoice->paid_at || $invoice->status === Invoice::STATUS_PAID
+            $settled = filter_var($invoice->getRawOriginal('is_paid'), FILTER_VALIDATE_BOOLEAN)
+                || $invoice->is_paid || $invoice->paid_at || $invoice->status === Invoice::STATUS_PAID
                 || (float) $invoice->amount_paid > 0 || $invoice->items()->where('type', InvoiceItem::TYPE_PAYMENT)->exists();
             if ($settled) {
                 // Never rewrite a payout that has moved money. Its credit is a new ledger document.

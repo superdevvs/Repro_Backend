@@ -33,14 +33,16 @@ class ShootServiceChangeGuard
 
     public function canRemoveAllServices(Shoot $shoot, ?User $actor): bool
     {
-        return $actor !== null
-            && (in_array($this->normalizeRole($actor->role), self::ZERO_SERVICE_ROLES, true)
-                || (app(ShootManagementAccess::class)->isSalesRep($actor)
-                    && app(ShootManagementAccess::class)->canEdit($shoot, $actor)))
-            && ((! app(ShootManagementAccess::class)->isDeliveredForSalesEdits($shoot)
-                    && in_array($this->normalizeStatus($shoot), self::PRE_DELIVERY_STATUSES, true))
-                || (app(ShootManagementAccess::class)->isDeliveredForSalesEdits($shoot)
-                    && $shoot->calculateCanonicalTotalPaid() < 0.005));
+        $access = app(ShootManagementAccess::class);
+        if (! $actor || (! in_array($this->normalizeRole($actor->role), self::ZERO_SERVICE_ROLES, true)
+            && ! ($access->isSalesRep($actor) && $access->canEdit($shoot, $actor)))) return false;
+        if (! $access->isDeliveredForSalesEdits($shoot)) {
+            return in_array($this->normalizeStatus($shoot), self::PRE_DELIVERY_STATUSES, true);
+        }
+        if ($shoot->calculateCanonicalTotalPaid() >= 0.005) return false;
+        // Presenter also exposes a serviceItems array attribute; use the actual relation.
+        $items = $shoot->relationLoaded('serviceItems') ? $shoot->getRelation('serviceItems') : $shoot->serviceItems()->get();
+        return count(app(ShootServiceItemSupport::class)->unpaidItemIds($shoot, $items)) === $items->count();
     }
 
     /**
@@ -177,8 +179,7 @@ class ShootServiceChangeGuard
         $calculatedTotal = round((float) $pricing['total_quote'] + $adjustments, 2);
         $newTotal = $adjustedTotal !== null ? round($adjustedTotal, 2) : $calculatedTotal;
         $paid = $shoot->calculateCanonicalTotalPaid();
-        $paidByItem = app(ShootServiceItemSupport::class)->paidAmountsByItem($shoot->serviceItems);
-        $hasUnallocatedPayment = $paid - array_sum($paidByItem) > 0.01;
+        $unpaidIds = app(ShootServiceItemSupport::class)->unpaidItemIds($shoot, $shoot->serviceItems);
 
         return [
             'removed_services' => $removedItems->map(fn (ShootService $item) => [
@@ -206,8 +207,8 @@ class ShootServiceChangeGuard
             'total_paid' => round($paid, 2),
             'new_balance' => round(max($newTotal - $paid, 0), 2),
             'refund_credit_due' => round(max($paid - $newTotal, 0), 2),
-            'all_removed_services_unpaid' => ! $hasUnallocatedPayment && $removedItems->every(
-                fn (ShootService $item) => ($paidByItem[$item->id] ?? 0) < 0.005
+            'all_removed_services_unpaid' => $removedItems->every(
+                fn (ShootService $item) => in_array($item->id, $unpaidIds, true)
             ),
             'unpaid_removal_updates_accounting' => true,
         ];
