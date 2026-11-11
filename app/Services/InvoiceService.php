@@ -1044,7 +1044,7 @@ class InvoiceService
         return self::DEFAULT_SALES_COMMISSION_RATE;
     }
 
-    private function buildSalesRepCommissionRow(Shoot $shoot, float $commissionRate): array
+    public function buildSalesRepCommissionRow(Shoot $shoot, float $commissionRate): array
     {
         $warnings = [];
         $commissionableGross = 0.0;

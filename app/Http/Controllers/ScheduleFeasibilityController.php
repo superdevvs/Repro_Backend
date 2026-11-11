@@ -14,6 +14,7 @@ class ScheduleFeasibilityController extends Controller
     {
         $request->merge(\App\Support\Timezone::scheduleInput($request->only(['timezone'])));
         $rules = array_merge(MultiUnitBookingService::rules(), \App\Services\Scheduling\DaySchedulePlan::rules(), [
+            'service_lines' => 'sometimes|array|min:0|max:3000',
             'shoot_id' => 'nullable|integer|exists:shoots,id',
             'client_id' => 'nullable|integer|exists:users,id',
             'photographer_id' => 'nullable|integer|exists:users,id',

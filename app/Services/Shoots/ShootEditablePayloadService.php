@@ -29,6 +29,8 @@ class ShootEditablePayloadService
     public function validationRules(): array
     {
         return array_merge(MultiUnitBookingService::rules(), \App\Services\Scheduling\DaySchedulePlan::rules(), [
+            // Update-only: the removal guard checks actor and payment state for an empty selection.
+            'service_lines' => 'sometimes|array|min:0|max:3000',
             'scheduled_date' => 'nullable|date',
             'expected_edit_version' => 'nullable|string|size:64',
             'scheduled_at' => 'nullable|date',
@@ -242,7 +244,12 @@ class ShootEditablePayloadService
                 $lockedShoot->forceFill($pendingAttributes);
             }
 
+            $removalAccounting = app(\App\Services\Invoices\UnpaidServiceRemovalAccounting::class);
+            $accountingBefore = $serviceChangeRequested ? $removalAccounting->snapshot($lockedShoot) : null;
             $this->applyWithinTransaction($lockedShoot, $validated, $actor);
+            if ($accountingBefore !== null) {
+                $removalAccounting->reconcile($lockedShoot->fresh(), $accountingBefore, $actor);
+            }
 
             if ($serviceDetachImpact !== null) {
                 $this->activityLogger->log($lockedShoot, 'shoot_services_detached', [

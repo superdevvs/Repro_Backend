@@ -17,7 +17,9 @@ class DeliveredSalesServicePlan
             $existing = $shoot->serviceItems()->pluck('service_id')->map(fn ($id) => (int) $id)->all();
             $rows = $data['services'] ?? $data['service_lines'] ?? $data['service_items'] ?? [];
             $hasNew = collect($rows)->contains(fn ($row) => ! in_array((int) ($row['service_id'] ?? $row['id'] ?? 0), $existing, true));
-            if (! $hasNew || app(ActiveServiceEditGuard::class)->changesCapture($shoot, $data)) return false;
+            if (! $hasNew || app(ActiveServiceEditGuard::class)->changesCapture($shoot, $data)) {
+                return app(PostCaptureServiceCorrection::class)->applies($shoot, $actor, $data);
+            }
         }
         return ((app(ShootManagementAccess::class)->canCorrectDeliveredServices($shoot, $actor)
                 || (app(ShootManagementAccess::class)->canEdit($shoot, $actor)

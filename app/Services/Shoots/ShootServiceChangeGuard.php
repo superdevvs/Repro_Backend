@@ -37,8 +37,10 @@ class ShootServiceChangeGuard
             && (in_array($this->normalizeRole($actor->role), self::ZERO_SERVICE_ROLES, true)
                 || (app(ShootManagementAccess::class)->isSalesRep($actor)
                     && app(ShootManagementAccess::class)->canEdit($shoot, $actor)))
-            && ! app(ShootManagementAccess::class)->isDeliveredForSalesEdits($shoot)
-            && in_array($this->normalizeStatus($shoot), self::PRE_DELIVERY_STATUSES, true);
+            && ((! app(ShootManagementAccess::class)->isDeliveredForSalesEdits($shoot)
+                    && in_array($this->normalizeStatus($shoot), self::PRE_DELIVERY_STATUSES, true))
+                || (app(ShootManagementAccess::class)->isDeliveredForSalesEdits($shoot)
+                    && $shoot->calculateCanonicalTotalPaid() < 0.005));
     }
 
     /**
@@ -64,7 +66,7 @@ class ShootServiceChangeGuard
 
         if ($targetServiceIds->isEmpty() && ! $this->canRemoveAllServices($shoot, $actor)) {
             throw new PublicApiResponseException(response()->json([
-                'message' => 'Only Admin and Super Admin can save a pre-delivery shoot without services.',
+                'message' => 'Removing every service requires booking permission and a pre-delivery or fully unpaid delivered shoot.',
                 'errors' => ['services' => ['At least one service must be selected.']],
             ], 422));
         }
@@ -101,19 +103,19 @@ class ShootServiceChangeGuard
             ], 422));
         }
 
-        if ($deliveredSalesCorrection) {
-            foreach ($removedItems as $item) {
-                $accountingHistory = $item->compensations()->exists() || $item->sourceForCompReshootItems()->exists()
-                    || \Illuminate\Support\Facades\DB::table('editor_payouts')->where('shoot_service_id', $item->id)->exists();
-                $providerHistory = \App\Models\StudioWorkspace::where('shoot_id', $shoot->id)->get()
-                    ->contains(fn ($workspace) => \App\Services\Studio\WorkspaceServiceScope::contains($workspace, (int) $item->id));
-                $providerHistory = $providerHistory || \Illuminate\Support\Facades\DB::table('iguide_offline_upload_sessions')->where('shoot_service_id', $item->id)->exists();
-                if ($accountingHistory || $providerHistory) {
-                    throw new PublicApiResponseException(response()->json([
-                        'message' => 'This service has recorded payouts, compensation or provider work and needs an admin review before removal.',
-                        'errors' => ['services' => ['This service has protected accounting or provider history.']],
-                    ], 422));
-                }
+        // These foreign keys/provider identities must remain intact regardless of
+        // whether the customer's charge has been paid or who edits the booking.
+        foreach ($removedItems as $item) {
+            $accountingHistory = $item->compensations()->exists() || $item->sourceForCompReshootItems()->exists()
+                || \Illuminate\Support\Facades\DB::table('editor_payouts')->where('shoot_service_id', $item->id)->exists();
+            $providerHistory = \App\Models\StudioWorkspace::where('shoot_id', $shoot->id)->get()
+                ->contains(fn ($workspace) => \App\Services\Studio\WorkspaceServiceScope::contains($workspace, (int) $item->id));
+            $providerHistory = $providerHistory || \Illuminate\Support\Facades\DB::table('iguide_offline_upload_sessions')->where('shoot_service_id', $item->id)->exists();
+            if ($accountingHistory || $providerHistory) {
+                throw new PublicApiResponseException(response()->json([
+                    'message' => 'This service has protected editor payouts, reshoot compensation or provider work. Use its accounting or cancellation workflow to preserve that history.',
+                    'errors' => ['services' => ['This service has protected accounting or provider history.']],
+                ], 422));
             }
         }
 
@@ -175,6 +177,8 @@ class ShootServiceChangeGuard
         $calculatedTotal = round((float) $pricing['total_quote'] + $adjustments, 2);
         $newTotal = $adjustedTotal !== null ? round($adjustedTotal, 2) : $calculatedTotal;
         $paid = $shoot->calculateCanonicalTotalPaid();
+        $paidByItem = app(ShootServiceItemSupport::class)->paidAmountsByItem($shoot->serviceItems);
+        $hasUnallocatedPayment = $paid - array_sum($paidByItem) > 0.01;
 
         return [
             'removed_services' => $removedItems->map(fn (ShootService $item) => [
@@ -202,6 +206,10 @@ class ShootServiceChangeGuard
             'total_paid' => round($paid, 2),
             'new_balance' => round(max($newTotal - $paid, 0), 2),
             'refund_credit_due' => round(max($paid - $newTotal, 0), 2),
+            'all_removed_services_unpaid' => ! $hasUnallocatedPayment && $removedItems->every(
+                fn (ShootService $item) => ($paidByItem[$item->id] ?? 0) < 0.005
+            ),
+            'unpaid_removal_updates_accounting' => true,
         ];
     }
 

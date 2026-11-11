@@ -5,7 +5,7 @@ namespace App\Services\Shoots;
 use App\Models\{Service, Shoot, User};
 use Carbon\Carbon;
 
-/** A catalog correction after capture does not book another photographer visit. */
+/** Billing-only removals and catalog corrections preserve the existing visit context. */
 class PostCaptureServiceCorrection
 {
     public function applies(Shoot $shoot, ?User $actor, array $data): bool
@@ -21,12 +21,16 @@ class PostCaptureServiceCorrection
 
         $stages = ['scheduled', 'booked', 'uploaded', 'completed', 'editing', 'review', 'ready', 'delivered', 'ready_for_client', 'admin_verified'];
         if (! in_array(strtolower((string) $shoot->status), $stages, true)
-            || ! in_array(strtolower((string) ($shoot->workflow_status ?: $shoot->status)), $stages, true)
-            || (! $shoot->photos_uploaded_at && ! $shoot->completed_at && ! $shoot->files()->exists())) return false;
+            || ! in_array(strtolower((string) ($shoot->workflow_status ?: $shoot->status)), $stages, true)) return false;
 
-        $windows = app(ShootDurationResolver::class)->windowsForShoot($shoot);
-        if ($windows === [] || ! collect($windows)->every(fn ($window) => $window['start']
-            && $window['start']->copy()->addMinutes($window['minutes'])->lte(now()))) return false;
+        $unpaidRemoval = $this->isUnpaidRemoval($shoot, $data);
+        if ($unpaidRemoval && app(ActiveServiceEditGuard::class)->changesCapture($shoot, $data)) return false;
+        if (! $unpaidRemoval) {
+            if (! $shoot->photos_uploaded_at && ! $shoot->completed_at && ! $shoot->files()->exists()) return false;
+            $windows = app(ShootDurationResolver::class)->windowsForShoot($shoot);
+            if ($windows === [] || ! collect($windows)->every(fn ($window) => $window['start']
+                && $window['start']->copy()->addMinutes($window['minutes'])->lte(now()))) return false;
+        }
 
         foreach (['scheduled_at', 'scheduled_date', 'time', 'timezone', 'photographer_id', 'status', 'workflow_status'] as $key) {
             if (array_key_exists($key, $data) && ! $this->same($key, $data[$key], $shoot->{$key}, $shoot)) return false;
@@ -104,6 +108,28 @@ class PostCaptureServiceCorrection
             }
         }
         return true;
+    }
+
+    private function isUnpaidRemoval(Shoot $shoot, array $data): bool
+    {
+        $selection = $data['service_lines'] ?? $data['services'] ?? null;
+        if (! is_array($selection)) return false;
+        $items = $shoot->serviceItems()->get();
+        $kept = collect();
+        foreach ($selection as $row) {
+            if (! is_array($row)) return false;
+            $item = array_key_exists('service_lines', $data)
+                ? $items->first(fn ($line) => isset($row['shoot_service_id']) ? (int) $row['shoot_service_id'] === (int) $line->id
+                    : isset($row['client_key']) && $row['client_key'] === $line->client_key)
+                : $items->firstWhere('service_id', $row['id'] ?? $row['service_id'] ?? null);
+            if (! $item || (int) $item->service_id !== (int) ($row['service_id'] ?? $row['id'] ?? 0)) return false;
+            $kept->push($item->id);
+        }
+        $removed = $items->whereNotIn('id', $kept);
+        if ($removed->isEmpty()) return false;
+        $paid = app(ShootServiceItemSupport::class)->paidAmountsByItem($items);
+        if ($shoot->calculateCanonicalTotalPaid() - array_sum($paid) > 0.01) return false;
+        return $removed->every(fn ($line) => ($paid[$line->id] ?? 0) < 0.005);
     }
 
     private function same(string $key, mixed $incoming, mixed $stored, Shoot $shoot): bool

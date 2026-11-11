@@ -40,6 +40,12 @@ final class PhotographerPayoutReconciliation
         }
         $periodIds = Invoice::where('role', Invoice::ROLE_PHOTOGRAPHER)
             ->whereDate('billing_period_start', '>=', $start->toDateString())->whereDate('billing_period_end', '<=', $end->toDateString())->pluck('id')->all();
+        $earned = DB::table('shoot_service_earning_snapshots')
+            ->whereDate('scheduled_date', '<=', $end->toDateString())
+            ->when(! $includeLate, fn ($q) => $q->whereDate('scheduled_date', '>=', $start->toDateString()))
+            ->when($recipientId, fn ($q) => $q->where('recipient_id', $recipientId))->get();
+        $earnedIds = DB::table('shoot_service_earning_snapshots')->whereIn('shoot_id', $shoots->pluck('id'))
+            ->pluck('shoot_service_id')->map(fn ($id) => (int) $id)->all();
         $rows = collect();
         foreach ($shoots as $shoot) {
             $services = $shoot->services;
@@ -52,6 +58,7 @@ final class PhotographerPayoutReconciliation
             }
             foreach ($services as $service) {
                 $line = $service->pivot;
+                if (in_array((int) $line->id, $earnedIds, true)) continue;
                 // An unassigned editing extra cannot inherit the onsite photographer's pay.
                 // Explicit historical recipients and their booked payout evidence stay intact.
                 if ($line->photographer_id === null && $service->isDigitalEnhancement()) continue;
@@ -84,6 +91,28 @@ final class PhotographerPayoutReconciliation
                     'payout_basis'=>$snapshot,
                 ]);
             }
+        }
+        $earnedShoots = Shoot::whereIn('id', $earned->pluck('shoot_id'))->get()->keyBy('id');
+        foreach ($earned as $saved) {
+            $shoot = $earnedShoots->get($saved->shoot_id);
+            if (! $shoot) continue;
+            $snapshot = json_decode($saved->snapshot, true, 512, JSON_THROW_ON_ERROR);
+            $key = 'service:'.$saved->shoot_service_id;
+            $owner = $this->owner((int) $saved->recipient_id, $key, (int) $saved->shoot_id, (int) $saved->shoot_service_id);
+            if ($owner && ! in_array((int) $owner, $periodIds, true)) continue;
+            if ($shoot->photographer_paid_at && ! $owner) continue;
+            $date = Carbon::parse($saved->scheduled_date);
+            $rows->push([
+                'shoot_id' => $shoot->id, 'shoot' => $shoot, 'service_id' => $snapshot['service_id'],
+                'shoot_service_id' => (int) $saved->shoot_service_id, 'shoot_unit_id' => $snapshot['shoot_unit_id'],
+                'unit_label' => $snapshot['unit_label'],
+                'service_name' => ($snapshot['unit_label'] ? $snapshot['unit_label'].' · ' : '').$snapshot['service_name'],
+                'resolved_photographer_id' => (int) $saved->recipient_id, 'photographer_pay' => (float) $saved->amount,
+                'scheduled_date' => $date, 'address' => $shoot->address, 'work_key' => $key,
+                'owner_invoice_id' => $owner, 'late_work' => $date->toDateString() < $start->toDateString(),
+                'eligible' => true, 'completed_date' => $saved->earned_at, 'pending_reason' => null,
+                'payout_basis' => $snapshot['payout_basis'],
+            ]);
         }
         return $rows;
     }

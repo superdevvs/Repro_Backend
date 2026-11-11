@@ -170,7 +170,7 @@ class DeliveredSalesServiceCorrectionsTest extends TestCase
         ]);
         $other = Service::factory()->noIntake()->create(['price' => 25, 'photographer_required' => false]);
         $this->save($shoot, ['services' => [['id' => $other->id]]])->assertUnprocessable()
-            ->assertJsonPath('message', 'This service has recorded payouts, compensation or provider work and needs an admin review before removal.');
+            ->assertJsonPath('message', 'This service has protected editor payouts, reshoot compensation or provider work. Use its accounting or cancellation workflow to preserve that history.');
         $this->assertNotNull($item->fresh());
     }
 
@@ -374,7 +374,7 @@ class DeliveredSalesServiceCorrectionsTest extends TestCase
         $this->save($shoot, $payload + ['confirm_service_detach' => true, 'service_detach_confirmation_token' => $confirmation->json('confirmation_token')])->assertOk();
         $this->assertSame($status, $shoot->fresh()->status);
         $this->assertSame($workflow, $shoot->fresh()->workflow_status);
-        $this->assertFalse(app(\App\Services\Shoots\ShootServiceChangeGuard::class)->canRemoveAllServices($shoot->fresh(), auth()->user()));
+        $this->assertTrue(app(\App\Services\Shoots\ShootServiceChangeGuard::class)->canRemoveAllServices($shoot->fresh(), auth()->user()));
         $this->assertNull($item->fresh());
     }
 }

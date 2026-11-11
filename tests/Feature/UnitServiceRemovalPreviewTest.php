@@ -123,7 +123,7 @@ class UnitServiceRemovalPreviewTest extends TestCase
         Mail::assertNothingSent(); Notification::assertNothingSent();
     }
 
-    public function test_preview_keeps_the_history_guard_for_an_ordinary_unit_booking(): void
+    public function test_preview_keeps_the_history_guard_for_a_paid_ordinary_unit_booking(): void
     {
         [$shoot, $photo, $fee] = $this->fixture();
         $shoot->forceFill(['status' => 'scheduled', 'workflow_status' => 'scheduled', 'delivery_status' => 'not_started',
@@ -131,6 +131,8 @@ class UnitServiceRemovalPreviewTest extends TestCase
             'scheduled_at' => now()->addWeek(), 'scheduled_date' => now()->addWeek()->toDateString()])->saveQuietly();
         $photo->forceFill(['workflow_status' => 'scheduled', 'delivery_status' => 'not_started', 'delivered_at' => null,
             'scheduled_at' => $shoot->scheduled_at])->saveQuietly();
+        $payment = Payment::factory()->create(['shoot_id' => $shoot->id, 'amount' => 125, 'status' => Payment::STATUS_COMPLETED]);
+        PaymentServiceAllocation::create(['payment_id' => $payment->id, 'shoot_service_id' => $photo->id, 'amount' => 125]);
         $payload = $this->removal($shoot, $fee);
         $this->postJson('/api/photographer/availability/feasibility', $payload + [
             'shoot_id' => $shoot->id, 'action_mode' => 'update',
