@@ -14,6 +14,8 @@ class EditorPayout extends Model
         'shoot_id',
         'service_id',
         'shoot_service_id',
+        'removed_shoot_service_id',
+        'service_removed_at',
         'service_name',
         'quantity_snapshot',
         'rate_snapshot',
@@ -26,6 +28,8 @@ class EditorPayout extends Model
     ];
 
     protected $casts = [
+        'removed_shoot_service_id' => 'integer',
+        'service_removed_at' => 'datetime',
         'quantity_snapshot' => 'integer',
         'rate_snapshot' => 'decimal:2',
         'payout_amount' => 'decimal:2',

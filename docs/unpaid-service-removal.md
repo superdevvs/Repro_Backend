@@ -24,10 +24,13 @@ generation and reconciliation retain the original work identity, preventing
 duplicates even if assignments change later. Pending unperformed work does not
 create an earned snapshot.
 
-Service rows protected by editor payouts, complimentary-reshoot compensation or
-provider work still use their dedicated cancellation/accounting workflows. An
-unpaid customer charge is not permission to erase those records. Media files are
-retained at shoot level by the existing removal flow.
+Editor payout records retain their amounts, payment state and original execution
+identity when an unpaid customer service is removed. Their live foreign key is
+replaced by `removed_shoot_service_id`, so even a zero-dollar payout record cannot
+block removal and later payout synchronization cannot reuse a historical record.
+Complimentary-reshoot compensation or provider work still uses its dedicated
+cancellation/accounting workflow. Media files are retained at shoot level by the
+existing removal flow.
 
 This is prospective behavior: deployment does not remove any service or rewrite
 historical financial records. The user confirms the selected service removal.

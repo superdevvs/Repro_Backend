@@ -39,6 +39,30 @@ final class UnpaidServiceRemovalAccounting
         return ['items' => $items, 'unpaid_ids' => $unpaidIds, 'earnings' => $earnings];
     }
 
+    public function preserveEditorPayouts(Shoot $shoot, array $before, array $targetServices): void
+    {
+        $byLineIdentity = $shoot->units()->exists();
+        $keptLines = collect($targetServices)->pluck('shoot_service_id')->filter()->map(fn ($id) => (int) $id);
+        $replacedLines = collect($targetServices)->pluck('replaces_shoot_service_id')->filter()->map(fn ($id) => (int) $id);
+        $keptServices = collect($targetServices)->map(fn ($item) => (int) ($item['id'] ?? $item['service_id'] ?? 0));
+        $removed = $before['items']->whereIn('id', $before['unpaid_ids'])->filter(fn ($item) =>
+            ! $replacedLines->contains((int) $item->id) && ($byLineIdentity
+                ? ! $keptLines->contains((int) $item->id) : ! $keptServices->contains((int) $item->service_id)));
+        if ($removed->isEmpty()) return;
+        // Materialize earned work that the periodic editor sync has not visited yet.
+        // Existing paid/unpaid snapshots retain their exact recorded amounts.
+        app(\App\Services\EditorPayoutService::class)->syncPayouts(null, null, null, (int) $shoot->id, true);
+        foreach ($removed as $item) {
+            DB::table('editor_payouts')->where('shoot_id', $shoot->id)->where(function ($query) use ($item) {
+                $query->where('shoot_service_id', $item->id);
+                if (! $item->shoot_unit_id) {
+                    $query->orWhere(fn ($legacy) => $legacy->whereNull('shoot_service_id')->whereNull('removed_shoot_service_id')
+                        ->where('service_id', $item->service_id));
+                }
+            })->update(['removed_shoot_service_id' => $item->id, 'shoot_service_id' => null, 'service_removed_at' => now()]);
+        }
+    }
+
     public function reconcile(Shoot $shoot, array $before, User $actor): void
     {
         $remaining = $shoot->serviceItems()->pluck('id');

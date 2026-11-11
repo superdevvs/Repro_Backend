@@ -13,10 +13,11 @@ use Illuminate\Support\Str;
 
 class EditorPayoutService
 {
-    public function syncPayouts(?Carbon $start = null, ?Carbon $end = null, ?int $editorId = null): void
+    public function syncPayouts(?Carbon $start = null, ?Carbon $end = null, ?int $editorId = null, ?int $shootId = null, bool $createOnly = false): void
     {
         $rows = DB::table('shoot_service')
             ->join('shoots', 'shoots.id', '=', 'shoot_service.shoot_id')
+            ->when($shootId, fn ($query) => $query->where('shoots.id', $shootId))
             ->where(fn ($query) => $query->whereNull('shoots.shoot_type')->orWhere('shoots.shoot_type', '!=', \App\Models\Shoot::SHOOT_TYPE_INTERNAL_TEST))
             ->where(function ($query) {
                 $query->whereNull('shoots.external_booking_payload->legacy_migration->historical_payments_only')
@@ -123,6 +124,7 @@ class EditorPayoutService
                 'shoot_id' => (int) $row->shoot_id,
                 'service_id' => $row->service_id ? (int) $row->service_id : null,
                 'shoot_service_id' => $row->shoot_unit_id ? (int) $row->shoot_service_id : null,
+                'removed_shoot_service_id' => null,
             ]);
 
             if (!$payout->exists) {
@@ -138,6 +140,9 @@ class EditorPayoutService
             }
 
             // Paid records are immutable historical snapshots — only repair missing metadata.
+            if ($createOnly) {
+                continue;
+            }
             if ($payout->is_paid) {
                 if (!$payout->completed_at || !$payout->service_name) {
                     $payout->fill([

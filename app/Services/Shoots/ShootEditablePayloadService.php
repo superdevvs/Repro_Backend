@@ -246,6 +246,10 @@ class ShootEditablePayloadService
 
             $removalAccounting = app(\App\Services\Invoices\UnpaidServiceRemovalAccounting::class);
             $accountingBefore = $serviceChangeRequested ? $removalAccounting->snapshot($lockedShoot) : null;
+            if ($accountingBefore !== null) {
+                $removalAccounting->preserveEditorPayouts($lockedShoot, $accountingBefore,
+                    $this->targetServicesFor($lockedShoot, $validated, $actor));
+            }
             $this->applyWithinTransaction($lockedShoot, $validated, $actor);
             if ($accountingBefore !== null) {
                 $removalAccounting->reconcile($lockedShoot->fresh(), $accountingBefore, $actor);

@@ -2,7 +2,7 @@
 
 namespace Tests\Feature;
 
-use App\Models\{Invoice, InvoiceItem, Payment, PaymentServiceAllocation, Service, Shoot, ShootService, User};
+use App\Models\{EditorPayout, Invoice, InvoiceItem, Payment, PaymentServiceAllocation, Service, Shoot, ShootService, User};
 use App\Services\InvoiceService;
 use App\Services\Invoices\UnpaidServiceRemovalAccounting;
 use App\Support\ReportingWeek;
@@ -210,6 +210,8 @@ class UnpaidServiceRemovalAccountingTest extends TestCase
     public function test_accounting_failure_rolls_back_service_invoice_and_earned_snapshots_together(): void
     {
         [$shoot, $photo, $fee, $clientInvoice] = $this->fixture();
+        $editorPayout = $this->editorPayout($shoot, $photo, 25, false);
+        $editorBefore = $editorPayout->fresh()->getRawOriginal();
         $shoot->update(['sales_rep_pay_enabled' => true]);
         [$start, $end] = ReportingWeek::containing('2026-11-06');
         $commission = app(InvoiceService::class)->generateSalesRepInvoicesForPeriod($start, $end)->sole();
@@ -231,5 +233,92 @@ class UnpaidServiceRemovalAccountingTest extends TestCase
         $this->assertEquals(18.75, $commission->fresh()->total_amount);
         $this->assertDatabaseCount('shoot_service_earning_snapshots', 0);
         $this->assertSame(0, InvoiceItem::where('meta->source', 'unpaid_service_removal')->count());
+        $this->assertSame($editorBefore, $editorPayout->fresh()->getRawOriginal());
+    }
+
+    private function editorPayout(Shoot $shoot, ShootService $photo, float $amount, bool $paid): EditorPayout
+    {
+        $editor = User::factory()->create(['role' => 'editor', 'metadata' => ['service_rates' => [
+            ['service_id' => $photo->service_id, 'rate' => 9],
+        ]]]);
+        $photo->forceFill(['editor_id' => $editor->id, 'editing_completed_at' => $shoot->completed_at,
+            'contracted_photo_count' => 25])->saveQuietly();
+        return EditorPayout::create(['editor_id' => $editor->id, 'shoot_id' => $shoot->id,
+            'service_id' => $photo->service_id, 'shoot_service_id' => $photo->shoot_unit_id ? $photo->id : null,
+            'service_name' => 'Original photo work', 'quantity_snapshot' => 25, 'rate_snapshot' => $amount / 25,
+            'payout_amount' => $amount, 'completed_at' => $shoot->completed_at, 'is_paid' => $paid,
+            'paid_at' => $paid ? now() : null]);
+    }
+
+    public static function editorPayoutStates(): array
+    {
+        return [[0, false], [25, false], [25, true]];
+    }
+
+    #[DataProvider('editorPayoutStates')]
+    public function test_editor_payout_history_survives_unpaid_service_removal_and_resync(float $amount, bool $paid): void
+    {
+        [$shoot, $photo, $fee] = $this->fixture();
+        $payout = $this->editorPayout($shoot, $photo, $amount, $paid);
+        $before = $payout->fresh()->getRawOriginal();
+        $this->remove($shoot, [$fee]);
+        app(\App\Services\EditorPayoutService::class)->syncPayouts();
+        $after = $payout->fresh()->getRawOriginal();
+        $this->assertNull($after['shoot_service_id']);
+        $this->assertSame($photo->id, $after['removed_shoot_service_id']);
+        $this->assertNotNull($after['service_removed_at']);
+        foreach (['shoot_service_id', 'removed_shoot_service_id', 'service_removed_at'] as $key) {
+            unset($before[$key], $after[$key]);
+        }
+        $this->assertSame($before, $after);
+        $this->assertDatabaseCount('editor_payouts', 1);
+    }
+
+    public function test_multiple_unit_payouts_keep_distinct_removed_execution_identities(): void
+    {
+        [$shoot, $photo, $fee] = $this->fixture();
+        $first = $this->editorPayout($shoot, $photo, 25, false);
+        $unit = $shoot->units()->create(['client_key' => 'unit-b', 'label' => 'B', 'kind' => 'unit', 'sqft' => 2004]);
+        $secondPhoto = $photo->replicate()->fill(['shoot_unit_id' => $unit->id, 'client_key' => 'line-b']);
+        $secondPhoto->saveQuietly();
+        $second = $first->replicate()->fill(['shoot_service_id' => $secondPhoto->id]);
+        $second->save();
+        $shoot->forceFill(['base_quote' => 310, 'total_quote' => 310])->saveQuietly();
+        $this->remove($shoot, [$fee]);
+        $this->assertSame([$photo->id, $secondPhoto->id], EditorPayout::orderBy('id')->pluck('removed_shoot_service_id')->all());
+        $this->assertEquals(50, EditorPayout::sum('payout_amount'));
+    }
+
+    public function test_unrecorded_completed_editor_work_is_preserved_before_removal(): void
+    {
+        [$shoot, $photo, $fee] = $this->fixture();
+        $editor = User::factory()->create(['role' => 'editor', 'metadata' => ['service_rates' => [
+            ['service_id' => $photo->service_id, 'rate' => 2],
+        ]]]);
+        $photo->forceFill(['editor_id' => $editor->id, 'editing_completed_at' => $shoot->completed_at,
+            'contracted_photo_count' => 25])->saveQuietly();
+        $this->remove($shoot, [$fee]);
+        $payout = EditorPayout::sole();
+        $this->assertEquals(50, $payout->payout_amount);
+        $this->assertSame($photo->id, $payout->removed_shoot_service_id);
+    }
+
+    public function test_new_legacy_work_does_not_reuse_a_removed_editor_snapshot(): void
+    {
+        [$shoot, $photo, $fee] = $this->fixture();
+        $photo->forceFill(['shoot_unit_id' => null])->saveQuietly();
+        $fee->forceFill(['shoot_unit_id' => null])->saveQuietly();
+        $shoot->units()->delete();
+        $payout = $this->editorPayout($shoot, $photo, 25, false);
+        $payload = ['services' => [['id' => $fee->service_id]], 'notify_client' => false, 'notify_photographer' => false];
+        $confirmation = $this->patchJson('/api/shoots/'.$shoot->id, $payload)->assertConflict();
+        $this->patchJson('/api/shoots/'.$shoot->id, $payload + ['confirm_service_detach' => true,
+            'service_detach_confirmation_token' => $confirmation->json('confirmation_token')])->assertOk();
+        $newPhoto = $photo->replicate()->fill(['client_key' => 'new-legacy-work']);
+        $newPhoto->saveQuietly();
+        app(\App\Services\EditorPayoutService::class)->syncPayouts();
+        $this->assertDatabaseCount('editor_payouts', 2);
+        $this->assertEquals(25, $payout->fresh()->payout_amount);
+        $this->assertSame($photo->id, $payout->fresh()->removed_shoot_service_id);
     }
 }

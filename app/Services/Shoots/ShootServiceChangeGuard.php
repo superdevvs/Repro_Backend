@@ -105,11 +105,13 @@ class ShootServiceChangeGuard
             ], 422));
         }
 
-        // These foreign keys/provider identities must remain intact regardless of
-        // whether the customer's charge has been paid or who edits the booking.
+        // Unpaid removals preserve editor payout snapshots before detaching the
+        // booking row. Compensation/provider identities require their own workflow.
+        $unpaidIds = app(ShootServiceItemSupport::class)->unpaidItemIds($shoot, $shoot->serviceItems);
         foreach ($removedItems as $item) {
             $accountingHistory = $item->compensations()->exists() || $item->sourceForCompReshootItems()->exists()
-                || \Illuminate\Support\Facades\DB::table('editor_payouts')->where('shoot_service_id', $item->id)->exists();
+                || (! in_array((int) $item->id, $unpaidIds, true)
+                    && \Illuminate\Support\Facades\DB::table('editor_payouts')->where('shoot_service_id', $item->id)->exists());
             $providerHistory = \App\Models\StudioWorkspace::where('shoot_id', $shoot->id)->get()
                 ->contains(fn ($workspace) => \App\Services\Studio\WorkspaceServiceScope::contains($workspace, (int) $item->id));
             $providerHistory = $providerHistory || \Illuminate\Support\Facades\DB::table('iguide_offline_upload_sessions')->where('shoot_service_id', $item->id)->exists();
