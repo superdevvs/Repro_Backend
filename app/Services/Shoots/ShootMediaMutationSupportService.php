@@ -384,6 +384,7 @@ class ShootMediaMutationSupportService
             $file->thumbnail_path,
             $file->web_path,
             $file->placeholder_path,
+            $file->grid_path,
             $file->watermarked_storage_path,
             $file->watermarked_thumbnail_path,
             $file->watermarked_web_path,

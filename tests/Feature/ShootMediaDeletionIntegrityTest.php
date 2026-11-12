@@ -49,7 +49,23 @@ class ShootMediaDeletionIntegrityTest extends TestCase
 
         $this->assertDatabaseMissing('shoot_files', ['id' => $file->id]);
         $this->assertEquals($history + ['shoot_file_id' => null], (array) DB::table('september_import_assets')->first());
-        Storage::disk('local')->assertMissing([$file->storage_path, $file->web_path]);
+        Storage::disk('local')->assertMissing([$file->storage_path, $file->web_path, $file->grid_path]);
+    }
+
+    public function test_single_delete_removes_grid_previews_from_all_local_disks_without_touching_other_media(): void
+    {
+        [$shoot, $file] = $this->createMedia();
+        [, $otherFile] = $this->createMedia();
+        Storage::disk('public')->put($file->grid_path, 'legacy-grid-preview');
+
+        $this->deleteJson('/api/shoots/'.$shoot->id.'/media/'.$file->id)
+            ->assertOk()->assertJsonPath('deleted_id', $file->id);
+
+        $this->assertDatabaseMissing('shoot_files', ['id' => $file->id]);
+        Storage::disk('local')->assertMissing($file->grid_path);
+        Storage::disk('public')->assertMissing($file->grid_path);
+        $this->assertDatabaseHas('shoot_files', ['id' => $otherFile->id]);
+        Storage::disk('local')->assertExists($otherFile->grid_path);
     }
 
     public function test_another_restrictive_reference_rolls_back_the_detach_and_preserves_every_asset(): void
@@ -67,7 +83,7 @@ class ShootMediaDeletionIntegrityTest extends TestCase
 
         $this->assertDatabaseHas('shoot_files', ['id' => $file->id]);
         $this->assertEquals($history + ['shoot_file_id' => $file->id], (array) DB::table('september_import_assets')->first());
-        Storage::disk('local')->assertExists([$file->storage_path, $file->web_path]);
+        Storage::disk('local')->assertExists([$file->storage_path, $file->web_path, $file->grid_path]);
     }
 
     public function test_outer_rollback_preserves_bytes_and_does_not_dispatch_deleted_file_jobs(): void
@@ -84,7 +100,7 @@ class ShootMediaDeletionIntegrityTest extends TestCase
         try {
             $support->deleteFile($shoot, $file);
             $this->assertDatabaseMissing('shoot_files', ['id' => $file->id]);
-            Storage::disk('local')->assertExists([$file->storage_path, $file->web_path]);
+            Storage::disk('local')->assertExists([$file->storage_path, $file->web_path, $file->grid_path]);
             $this->assertSame($revision, $support->currentMediaRevision($shoot));
             Queue::assertNotPushed(GenerateShootMediaArchiveJob::class);
         } finally {
@@ -93,7 +109,7 @@ class ShootMediaDeletionIntegrityTest extends TestCase
 
         $this->assertDatabaseHas('shoot_files', ['id' => $file->id]);
         $this->assertDatabaseHas('september_import_assets', ['shoot_file_id' => $file->id]);
-        Storage::disk('local')->assertExists([$file->storage_path, $file->web_path]);
+        Storage::disk('local')->assertExists([$file->storage_path, $file->web_path, $file->grid_path]);
         Queue::assertNotPushed(GenerateShootMediaArchiveJob::class);
     }
 
@@ -108,7 +124,7 @@ class ShootMediaDeletionIntegrityTest extends TestCase
 
         $this->assertDatabaseHas('shoot_files', ['id' => $file->id]);
         $this->assertDatabaseHas('september_import_assets', ['shoot_file_id' => $file->id]);
-        Storage::disk('local')->assertExists([$file->storage_path, $file->web_path]);
+        Storage::disk('local')->assertExists([$file->storage_path, $file->web_path, $file->grid_path]);
     }
 
     public function test_a_locked_delete_is_retried_with_its_import_detach_rolled_back(): void
@@ -121,7 +137,7 @@ class ShootMediaDeletionIntegrityTest extends TestCase
                 return;
             }
             $attempts++;
-            Storage::disk('local')->assertExists([$file->storage_path, $file->web_path]);
+            Storage::disk('local')->assertExists([$file->storage_path, $file->web_path, $file->grid_path]);
             if ($attempts === 1) {
                 // The statement ran, but this exception rolls back its whole
                 // transaction, matching a SQLite write refusal's net effect.
@@ -135,7 +151,7 @@ class ShootMediaDeletionIntegrityTest extends TestCase
         $this->assertSame(2, $attempts);
         $this->assertDatabaseMissing('shoot_files', ['id' => $file->id]);
         $this->assertDatabaseHas('september_import_assets', ['shoot_file_id' => null]);
-        Storage::disk('local')->assertMissing([$file->storage_path, $file->web_path]);
+        Storage::disk('local')->assertMissing([$file->storage_path, $file->web_path, $file->grid_path]);
     }
 
     public function test_cleanup_and_observers_run_only_after_the_outer_commit(): void
@@ -150,7 +166,7 @@ class ShootMediaDeletionIntegrityTest extends TestCase
         DB::beginTransaction();
         try {
             $support->deleteFile($shoot, $file);
-            Storage::disk('local')->assertExists([$file->storage_path, $file->web_path]);
+            Storage::disk('local')->assertExists([$file->storage_path, $file->web_path, $file->grid_path]);
             Queue::assertNotPushed(GenerateShootMediaArchiveJob::class);
             $this->assertSame($revision, $support->currentMediaRevision($shoot));
             DB::commit();
@@ -160,7 +176,7 @@ class ShootMediaDeletionIntegrityTest extends TestCase
             }
         }
 
-        Storage::disk('local')->assertMissing([$file->storage_path, $file->web_path]);
+        Storage::disk('local')->assertMissing([$file->storage_path, $file->web_path, $file->grid_path]);
         Queue::assertPushed(GenerateShootMediaArchiveJob::class, fn ($job) => $job->shootId === $shoot->id && $job->type === 'edited');
         $this->assertGreaterThan($revision, $support->currentMediaRevision($shoot));
     }
@@ -176,7 +192,7 @@ class ShootMediaDeletionIntegrityTest extends TestCase
             ->assertOk()->assertJsonPath('deleted_ids', [$file->id])->assertJsonPath('failed_ids', []);
 
         $this->assertDatabaseMissing('shoot_files', ['id' => $file->id]);
-        Storage::disk('local')->assertExists([$file->storage_path, $file->web_path]);
+        Storage::disk('local')->assertExists([$file->storage_path, $file->web_path, $file->grid_path]);
     }
 
     public function test_audit_failure_does_not_put_a_committed_deletion_in_failed_ids(): void
@@ -190,7 +206,7 @@ class ShootMediaDeletionIntegrityTest extends TestCase
             ->assertOk()->assertJsonPath('deleted_ids', [$file->id])->assertJsonPath('failed_ids', []);
 
         $this->assertDatabaseMissing('shoot_files', ['id' => $file->id]);
-        Storage::disk('local')->assertMissing([$file->storage_path, $file->web_path]);
+        Storage::disk('local')->assertMissing([$file->storage_path, $file->web_path, $file->grid_path]);
     }
 
     public function test_single_delete_audit_failure_still_reports_the_committed_deletion(): void
@@ -204,7 +220,7 @@ class ShootMediaDeletionIntegrityTest extends TestCase
             ->assertOk()->assertJsonPath('deleted_id', $file->id);
 
         $this->assertDatabaseMissing('shoot_files', ['id' => $file->id]);
-        Storage::disk('local')->assertMissing([$file->storage_path, $file->web_path]);
+        Storage::disk('local')->assertMissing([$file->storage_path, $file->web_path, $file->grid_path]);
     }
 
     private function createMedia(): array
@@ -218,6 +234,7 @@ class ShootMediaDeletionIntegrityTest extends TestCase
             'path' => 'shoots/'.$shoot->id.'/completed/front.jpg',
             'storage_path' => 'shoots/'.$shoot->id.'/completed/front.jpg',
             'web_path' => 'shoots/'.$shoot->id.'/web/front.jpg',
+            'grid_path' => 'shoots/'.$shoot->id.'/grids/front_grid.jpg',
             'file_type' => 'image/jpeg',
             'file_size' => 10,
             'workflow_stage' => ShootFile::STAGE_COMPLETED,
@@ -225,6 +242,7 @@ class ShootMediaDeletionIntegrityTest extends TestCase
         ]);
         Storage::disk('local')->put($file->storage_path, 'original');
         Storage::disk('local')->put($file->web_path, 'preview');
+        Storage::disk('local')->put($file->grid_path, 'grid-preview');
 
         return [$shoot, $file];
     }
