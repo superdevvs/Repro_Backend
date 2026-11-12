@@ -583,6 +583,11 @@ class MessagingService
         ?string $providerOverride = null,
         bool $deferSmsBroadcast = false
     ): Message {
+        // Only the in-process Siri route adapter sets this attribute. HTTP input cannot supply it.
+        $assistantReceipt = request()->attributes->get('assistant_action_id');
+        if ($direction === 'OUTBOUND' && is_string($assistantReceipt) && \Illuminate\Support\Str::isUuid($assistantReceipt)) {
+            $payload['metadata'] = array_merge($payload['metadata'] ?? [], ['assistant_action_id' => $assistantReceipt]);
+        }
         if ($channelType === 'SMS' && ! empty($payload['sms_group_id']) && ! $deferSmsBroadcast) {
             $message = \App\Support\LockedWrite::run(fn () => DB::transaction(fn () => $this->storeMessageRecord(
                 $payload, $channel, $channelType, $direction, $status, $providerOverride, deferSmsBroadcast: true

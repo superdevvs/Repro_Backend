@@ -126,6 +126,11 @@ class LlmClient
         try {
             $request = ['json' => $payload];
             if (isset($options['timeout'])) $request['timeout'] = max(30, min(240, (int) $options['timeout']));
+            // Siri has a short interaction budget. Existing chat callers retain their current timeout.
+            if (($options['usage_feature'] ?? '') === 'mobile_assistant') {
+                $request['timeout'] = 8;
+                $request['connect_timeout'] = 3;
+            }
             $response = $this->client->post('chat/completions', $request);
 
             $data = json_decode($response->getBody()->getContents(), true);

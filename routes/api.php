@@ -1,5 +1,7 @@
 <?php
 
+require __DIR__.'/mobile-assistant.php';
+
 require __DIR__.'/copilot.php';
 require __DIR__.'/groundwire-sms.php';
 
