@@ -866,6 +866,54 @@ class VoiceMobileTest extends TestCase
         $this->claim($s, $o, $sdk)->assertStatus(409);
     }
 
+    #[DataProvider('incomingCallerIdentities')]
+    public function test_incoming_mobile_leg_preserves_the_original_caller(string $number, ?string $userName, ?string $contactName,
+        ?string $privacy, string $expectedNumber, string $expectedName, string $displayName, string $presentation): void
+    {
+        $s = $this->bootstrap();
+        $user = $userName === null ? null : User::factory()->create(['name' => $userName]);
+        $contact = $contactName === null ? null : \App\Models\Contact::create(['name' => $contactName, 'phone' => $number]);
+        $call = VoiceCall::create(['provider' => 'telnyx', 'direction' => 'INBOUND', 'status' => 'ringing',
+            'from_phone' => $number, 'to_phone' => '+12025550100', 'call_control_id' => 'original-customer',
+            'caller_user_id' => $user?->id, 'caller_contact_id' => $contact?->id,
+            'metadata' => ['raw_initiated' => ['privacy' => $privacy]]]);
+        $shared = VoiceIncomingOffer::create(['voice_call_id' => $call->id,
+            'eligible_user_ids' => [$this->staff->id], 'expires_at' => now()->addSeconds(45)]);
+        $o = $this->incoming($s, $shared);
+
+        Http::assertSent(function ($request) use ($s, $o, $expectedNumber, $expectedName, $displayName, $presentation) {
+            if (parse_url($request->url(), PHP_URL_PATH) !== '/v2/calls') {
+                return false;
+            }
+            $this->assertStringStartsWith('sip:', $request['to']);
+            $this->assertSame($expectedNumber ?: '+12025550100', $request['from']);
+            $this->assertSame($displayName, $request['from_display_name']);
+            $headers = collect($request['custom_headers'])->pluck('value', 'name')->all();
+            $this->assertSame($presentation, $headers['X-Repro-Caller-Presentation']);
+            $this->assertSame($expectedNumber, $headers['X-Repro-Caller-Number'] ?? '');
+            $this->assertSame($expectedName, rawurldecode($headers['X-Repro-Caller-Name'] ?? ''));
+            $this->assertTrue(app(VoiceMobileProof::class)->verify($headers['X-Repro-Mobile-Offer'], 'incoming', $s['session_id'], $o->id));
+
+            return true;
+        });
+        $this->assertSame($number, $call->fresh()->from_phone);
+        $this->assertSame('+12025550100', $call->fresh()->to_phone);
+    }
+
+    public static function incomingCallerIdentities(): array
+    {
+        return [
+            'known user' => ['+12025550199', 'Andrea Lovelace', null, null, '+12025550199', 'Andrea Lovelace', 'Andrea Lovelace', 'allowed'],
+            'contact fallback' => ['+12025550199', '   ', 'Sam Jones', null, '+12025550199', 'Sam Jones', 'Sam Jones', 'allowed'],
+            'unknown number' => ['+12025550199', null, null, null, '+12025550199', '', '+12025550199', 'allowed'],
+            'unicode contact' => ['+12025550199', null, 'José O’Neill', null, '+12025550199', 'José O’Neill', 'Jose ONeill', 'allowed'],
+            'unsafe whitespace' => ['+12025550199', "Andrea\r\nLovelace", null, null, '+12025550199', 'Andrea Lovelace', 'Andrea Lovelace', 'allowed'],
+            'private caller' => ['anonymous', 'Hidden Name', null, null, '', '', 'Private caller', 'restricted'],
+            'explicit privacy' => ['+12025550199', 'Hidden Name', null, 'id', '', '', 'Private caller', 'restricted'],
+            'unavailable number' => ['', 'Unverified Name', null, null, '', '', 'Unknown caller', 'unavailable'],
+        ];
+    }
+
     public function test_incoming_proof_is_not_persisted_in_command_payload_or_event_audit(): void
     {
         $s = $this->bootstrap();

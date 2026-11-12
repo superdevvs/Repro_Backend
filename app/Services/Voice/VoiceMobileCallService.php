@@ -73,10 +73,17 @@ class VoiceMobileCallService
                 abort_unless($incoming->status === 'waiting' && in_array($o->state, ['pending', 'dialing'], true) && $o->expires_at->isFuture(), 409);
                 $o->update(['state' => 'dialing']);
             });
+            $identity = $this->incomingCallerIdentity($call);
             $r = $this->gateway->command('mobile-offer:'.$o->id, '/calls', ['connection_id' => config('services.telnyx.voice.connection_id'),
-                'to' => 'sip:'.$s->sip_username.'@sip.telnyx.com', 'from' => $call->to_phone,
+                'to' => 'sip:'.$s->sip_username.'@sip.telnyx.com', 'from' => $identity['number'] ?: $call->to_phone,
+                'from_display_name' => $identity['display_name'],
                 'webhook_url' => config('services.telnyx.voice.webhook_url'), 'timeout_secs' => 40,
-                'client_state' => $o->client_state, 'custom_headers' => [['name' => 'X-Repro-Mobile-Offer', 'value' => $this->proof->token('incoming', $s->id, $o->id)]]], true);
+                'client_state' => $o->client_state, 'custom_headers' => array_values(array_filter([
+                    ['name' => 'X-Repro-Mobile-Offer', 'value' => $this->proof->token('incoming', $s->id, $o->id)],
+                    ['name' => 'X-Repro-Caller-Presentation', 'value' => $identity['presentation']],
+                    ['name' => 'X-Repro-Caller-Name', 'value' => rawurlencode($identity['name'])],
+                    ['name' => 'X-Repro-Caller-Number', 'value' => $identity['number']],
+                ], fn ($header) => $header['value'] !== ''))], true);
             if (filled($r['call_control_id'] ?? null)) {
                 $o->update(['call_control_id' => $r['call_control_id']]);
             }
@@ -85,6 +92,32 @@ class VoiceMobileCallService
                 $this->cancelOffer($o);
             }
         });
+    }
+
+    /** Preserve the original party on the internal SIP leg, never a customer's outbound caller ID. */
+    private function incomingCallerIdentity(\App\Models\VoiceCall $call): array
+    {
+        $number = trim((string) $call->from_phone);
+        $restricted = strtolower((string) data_get($call->metadata, 'raw_initiated.privacy')) === 'id'
+            || preg_match('/anonymous|private|restricted|withheld/i', $number);
+        if ($restricted || ! preg_match('/\A\+[1-9][0-9]{7,14}\z/', $number)) {
+            return ['number' => '', 'name' => '', 'display_name' => $restricted ? 'Private caller' : 'Unknown caller',
+                'presentation' => $restricted ? 'restricted' : 'unavailable'];
+        }
+
+        $name = '';
+        foreach ([$call->callerUser?->name, $call->callerContact?->name] as $candidate) {
+            $clean = trim(preg_replace('/[\p{C}\s]+/u', ' ', (string) $candidate) ?? '');
+            if ($clean !== '') {
+                $name = mb_substr($clean, 0, 128);
+                break;
+            }
+        }
+        // Telnyx restricts the SIP display name; the encoded header preserves the original spelling.
+        $display = trim(preg_replace('/[^A-Za-z0-9 _~!.+\-]/', '', Str::ascii($name)) ?? '');
+
+        return ['number' => $number, 'name' => $name, 'display_name' => substr($display, 0, 128) ?: $number,
+            'presentation' => 'allowed'];
     }
 
     public function claim(VoiceMobileSession $s, string $sdkID, string $token): array
