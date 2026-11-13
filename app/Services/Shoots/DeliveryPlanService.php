@@ -80,8 +80,9 @@ class DeliveryPlanService
                 // added outputs to the ordinary reviewed finalization path.
                 $approvedVersions = collect($receipt ? (json_decode($receipt->evidence, true)['files'] ?? []) : []);
                 $additionalOutput = $resolved && ! $cancelled && $kind !== 'legacy' && $files->contains(fn ($file) =>
-                    ! $this->releasedFile($file) && ! $approvedVersions->contains(fn ($entry) =>
-                        (int) $entry['id'] === (int) $file->id && (int) $entry['version'] === (int) ($file->content_version ?: 1)));
+                    ! $approvedVersions->contains(fn ($entry) =>
+                        (int) $entry['id'] === (int) $file->id && (int) $entry['version'] === (int) ($file->content_version ?: 1))
+                    && ! $this->releasedFile($file->setRelation('shoot', $shoot)));
                 if ($additionalOutput) $resolved = false;
                 $reasons = $additionalOutput ? ['additional_output'] : [];
                 if (! $resolved) {
