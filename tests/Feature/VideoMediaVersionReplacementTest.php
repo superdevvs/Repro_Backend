@@ -2,7 +2,7 @@
 
 namespace Tests\Feature;
 
-use App\Jobs\{FinalizeShootJob, ProcessMediaVersion};
+use App\Jobs\{FinalizeShootJob, NotifyShootDeliveryUpdate, ProcessMediaVersion};
 use App\Models\{Service, Shoot, ShootFile, ShootFileVersion, User};
 use App\Services\ImageProcessingService;
 use App\Services\Media\MediaStorage;
@@ -91,6 +91,40 @@ class VideoMediaVersionReplacementTest extends TestCase
     {
         return $this->actingAs($this->manager)->postJson("/api/shoots/{$this->shoot->id}/media-versions/{$version->id}/resolve",
             ['choice' => 'replace_latest', 'expected_latest_version' => $expected]);
+    }
+
+    private function failReviewedPublication(): array
+    {
+        $version = $this->process($this->upload());
+        $targetId = $this->file->id;
+        $failure = (object) ['enabled' => true];
+        ShootFile::saving(function (ShootFile $candidate) use ($targetId, $failure) {
+            if ($failure->enabled && $candidate->id === $targetId && $candidate->isDirty('path')) {
+                throw new \RuntimeException('Private database failure /internal/path secret');
+            }
+        });
+        Queue::fake();
+        $response = $this->resolve($version)->assertStatus(503)->assertJsonPath('message',
+            'This service is temporarily unavailable. Please try again.');
+        $this->assertStringNotContainsString('Private database failure', $response->getContent());
+        $this->actingAs($this->manager)->getJson("/api/shoots/{$this->shoot->id}/media-versions/{$version->id}")
+            ->assertOk()->assertJsonPath('data.status', 'failed')->assertJsonPath('data.error_code', 'processing_failed')
+            ->assertJsonPath('data.error', 'The saved edit could not be published. Retry the saved upload; the previous media is unchanged.');
+        Queue::assertNotPushed(NotifyShootDeliveryUpdate::class);
+        Mail::assertNothingSent();
+        Notification::assertNothingSent();
+        return [$version->fresh(), $failure];
+    }
+
+    private function queueSavedUploadRetry(ShootFileVersion $version): ProcessMediaVersion
+    {
+        Queue::fake();
+        $url = "/api/shoots/{$this->shoot->id}/media-versions/{$version->id}/retry";
+        $this->actingAs($this->manager)->postJson($url)->assertAccepted()->assertJsonPath('data.status', 'queued');
+        $this->postJson($url)->assertConflict();
+        Queue::assertPushed(ProcessMediaVersion::class, 1);
+        Queue::assertNotPushed(NotifyShootDeliveryUpdate::class);
+        return Queue::pushed(ProcessMediaVersion::class, fn ($job) => $job->versionId === $version->id)->sole();
     }
 
     private function downloadUrl(): string { return "/api/shoots/{$this->shoot->id}/media/{$this->file->id}/download"; }
@@ -235,24 +269,12 @@ class VideoMediaVersionReplacementTest extends TestCase
         $this->actingAs(User::factory()->create(['role' => 'client']))->getJson($this->downloadUrl())->assertForbidden();
     }
 
-    public function test_reviewed_publication_write_failure_preserves_original_receipt_and_client_download_for_later_worker_retry(): void
+    public function test_reviewed_publication_write_failure_preserves_original_receipt_and_recovers_through_saved_upload_retry_api(): void
     {
-        $version = $this->process($this->upload());
         $receipt = DB::table('shoot_delivery_receipts')->first();
         $oldPath = $this->file->path;
         $targetId = $this->file->id;
-        $failWrite = true;
-        ShootFile::saving(function (ShootFile $candidate) use ($targetId, &$failWrite) {
-            if ($failWrite && $candidate->id === $targetId && $candidate->isDirty('path')) {
-                throw new \RuntimeException('Simulated reviewed publication failure');
-            }
-        });
-        try {
-            app(MediaVersionPublisher::class)->resolve($version, 'replace_latest', 1, $this->manager);
-            $this->fail('The reviewed publication write must fail.');
-        } catch (\RuntimeException $error) {
-            $this->assertSame('Simulated reviewed publication failure', $error->getMessage());
-        }
+        [$version, $failure] = $this->failReviewedPublication();
         $this->assertSame($oldPath, $this->file->fresh()->path);
         $this->assertSame(1, $this->file->fresh()->content_version);
         $this->assertSame('verified', $this->file->fresh()->workflow_stage);
@@ -260,15 +282,102 @@ class VideoMediaVersionReplacementTest extends TestCase
         $this->assertDatabaseCount('shoot_delivery_receipts', 1);
         $this->assertEquals($receipt, DB::table('shoot_delivery_receipts')->first());
         $this->assertDatabaseMissing('shoot_file_versions', ['published_file_id' => $targetId]);
-        $this->assertSame('ready', $version->fresh()->status);
+        $review = $version->metadata['delivery_review'];
+        $this->assertSame($this->manager->id, $review['actor_id']);
+        $this->assertSame(1, $review['content_version']);
         $this->assertSame($this->videoBytes('replacement'), app(MediaStorage::class)->get($version->snapshot['path']));
-        $failWrite = false;
-        // Exercise a later worker retry explicitly; resolve() itself does not
-        // enqueue this retry when its synchronous publication throws.
-        $this->assertSame('published', $this->process($version->fresh())->status);
+        $failure->enabled = false;
+        $job = $this->queueSavedUploadRetry($version);
+        app()->call([$job, 'handle']);
+        $this->assertSame('published', $version->fresh()->status);
+        $this->assertSame($review, $version->fresh()->metadata['delivery_review']);
         $this->assertClientBytes($this->videoBytes('replacement'));
         $this->assertDatabaseCount('shoot_delivery_receipts', 2);
         $this->assertEquals($receipt, DB::table('shoot_delivery_receipts')->where('id', $receipt->id)->first());
+        Queue::assertPushed(NotifyShootDeliveryUpdate::class, 1);
+    }
+
+    public function test_saved_upload_retry_rechecks_reviewer_permission_before_publication(): void
+    {
+        [$version, $failure] = $this->failReviewedPublication();
+        $failure->enabled = false;
+        $job = $this->queueSavedUploadRetry($version);
+        $this->manager->forceFill(['permission_overrides' => ['deny' => ['shoots-manage']]])->save();
+        app()->call([$job, 'handle']);
+        $this->assertSame('delivery_review_required', $version->fresh()->error_code);
+        $this->resolve($version)->assertForbidden();
+        $this->assertSame(1, $this->file->fresh()->content_version);
+        $this->assertClientBytes($this->videoBytes());
+        $this->assertDatabaseCount('shoot_delivery_receipts', 1);
+        Queue::assertNotPushed(NotifyShootDeliveryUpdate::class);
+    }
+
+    public function test_saved_upload_retry_does_not_replace_a_newer_reviewed_version(): void
+    {
+        [$version, $failure] = $this->failReviewedPublication();
+        $failure->enabled = false;
+        $newer = $this->process($this->upload('newer'));
+        $this->resolve($newer)->assertOk();
+        $job = $this->queueSavedUploadRetry($version);
+        app()->call([$job, 'handle']);
+        $this->assertSame('newer_version', $version->fresh()->error_code);
+        $this->assertClientBytes($this->videoBytes('newer'));
+        $this->assertSame(2, $this->file->fresh()->content_version);
+        $this->assertDatabaseCount('shoot_delivery_receipts', 2);
+        Queue::assertNotPushed(NotifyShootDeliveryUpdate::class);
+    }
+
+    public function test_saved_upload_retry_cannot_publish_after_shoot_cancellation(): void
+    {
+        [$version, $failure] = $this->failReviewedPublication();
+        $failure->enabled = false;
+        $job = $this->queueSavedUploadRetry($version);
+        $this->shoot->update(['status' => 'cancelled', 'workflow_status' => 'cancelled']);
+        app()->call([$job, 'handle']);
+        $this->assertSame('delivery_review_required', $version->fresh()->error_code);
+        $this->assertSame(1, $this->file->fresh()->content_version);
+        $this->assertSame($this->videoBytes(), app(MediaStorage::class)->get($this->file->fresh()->storage_path));
+        $this->assertDatabaseCount('shoot_delivery_receipts', 1);
+        Queue::assertNotPushed(NotifyShootDeliveryUpdate::class);
+    }
+
+    public function test_exhausted_publication_retry_remains_retryable_and_preserves_previous_bytes(): void
+    {
+        [$version, $failure] = $this->failReviewedPublication();
+        $job = $this->queueSavedUploadRetry($version);
+        try {
+            app()->call([$job, 'handle']);
+            $this->fail('The publication write must still fail.');
+        } catch (\RuntimeException $exception) {
+            $this->assertSame('Private database failure /internal/path secret', $exception->getMessage());
+            $job->failed($exception);
+        }
+        $this->assertSame('failed', $version->fresh()->status);
+        $this->assertSame('processing_failed', $version->fresh()->error_code);
+        $this->assertStringNotContainsString('secret', $version->fresh()->error);
+        $this->assertClientBytes($this->videoBytes());
+        $this->assertDatabaseCount('shoot_delivery_receipts', 1);
+        Queue::assertNotPushed(NotifyShootDeliveryUpdate::class);
+        $failure->enabled = false;
+        app()->call([$this->queueSavedUploadRetry($version), 'handle']);
+        $this->assertSame('published', $version->fresh()->status);
+        $this->assertClientBytes($this->videoBytes('replacement'));
+    }
+
+    public function test_post_commit_reconciliation_failure_does_not_downgrade_published_media(): void
+    {
+        $version = $this->process($this->upload());
+        $publisher = \Mockery::mock(MediaVersionPublisher::class, [app(MediaStorage::class)])->makePartial();
+        $publisher->shouldReceive('syncDispatch')->once()->andThrow(new \RuntimeException('Private reconciliation failure'));
+        app()->instance(MediaVersionPublisher::class, $publisher);
+        $this->resolve($version)->assertOk()->assertJsonPath('data.status', 'published')->assertJsonPath('data.version', 2);
+        $this->assertNull($version->fresh()->error_code);
+        $this->assertClientBytes($this->videoBytes('replacement'));
+        $this->assertDatabaseCount('shoot_delivery_receipts', 2);
+        // The queue's terminal failure callback must also preserve committed work.
+        $publisher->shouldReceive('syncDispatch')->once();
+        (new ProcessMediaVersion($version->id))->failed(new \RuntimeException('Late worker error'));
+        $this->assertSame('published', $version->fresh()->status);
     }
 
     public function test_hidden_same_name_is_not_overwritten_and_explicit_hidden_target_is_rejected(): void

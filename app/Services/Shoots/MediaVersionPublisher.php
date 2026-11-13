@@ -186,7 +186,6 @@ class MediaVersionPublisher
             }
             return $version;
         }), 'media-version.publish');
-        $this->syncDispatch($result);
         if ($result->status === 'published') {
             try {
                 app(ShootMediaMutationSupportService::class)->clearShootFilesCache(\App\Models\Shoot::findOrFail($result->shoot_id));
@@ -195,6 +194,7 @@ class MediaVersionPublisher
                 Log::error('Published media cache invalidation failed', ['version_id' => $result->id, 'exception' => $exception]);
             }
         }
+        $this->syncDispatch($result);
         return $result;
     }
 
@@ -258,7 +258,25 @@ class MediaVersionPublisher
             $locked->status = 'ready';
             $locked->save();
         }), 'media-version.resolve');
-        return $this->publish($version->fresh());
+        try {
+            return $this->publish($version->fresh());
+        } catch (\Throwable $exception) {
+            Log::error('Reviewed media publication failed', ['version_id' => $version->id, 'exception' => $exception]);
+            $saved = LockedWrite::run(fn () => DB::transaction(function () use ($version) {
+                EditingDispatchWriteLock::acquire((int) $version->shoot_id);
+                $locked = ShootFileVersion::lockForUpdate()->findOrFail($version->id);
+                // Publication is atomic, but reconciliation can throw after it
+                // commits. Never downgrade published or concurrently changed work.
+                if ($locked->status === 'ready' && !$locked->published_file_id) {
+                    $locked->update(['status' => 'failed', 'error_code' => 'processing_failed',
+                        'error' => 'The saved edit could not be published. Retry the saved upload; the previous media is unchanged.']);
+                }
+                return $locked;
+            }), 'media-version.resolve-recovery');
+            if ($saved->status === 'published') return $saved;
+            abort(503, $saved->status === 'failed' && $saved->error_code === 'processing_failed'
+                ? $saved->error : 'The saved edit changed while publishing. Refresh to see its current status.');
+        }
     }
 
     private function deliveryReviewer(ShootFileVersion $version, ShootFile $approved): ?User

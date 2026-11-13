@@ -91,7 +91,9 @@ class ProcessMediaVersion implements ShouldQueue
 
     public function failed(\Throwable $exception): void
     {
-        ShootFileVersion::whereKey($this->versionId)->whereIn('status', ['queued', 'processing'])->update([
+        // Publication may exhaust its retries after processing reached ready.
+        // Keep that saved upload retryable without changing an already published row.
+        ShootFileVersion::whereKey($this->versionId)->whereNull('published_file_id')->whereIn('status', ['queued', 'processing', 'ready'])->update([
             'status' => 'failed', 'error_code' => 'processing_failed', 'error' => 'The saved edit could not be processed. Retry the saved upload; the previous media is unchanged.',
         ]);
         Log::error('Media version processing failed', ['version_id' => $this->versionId, 'exception' => $exception]);
