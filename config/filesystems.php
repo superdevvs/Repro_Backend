@@ -30,6 +30,15 @@ return [
 
     'disks' => [
 
+        // Authenticated message attachments: shared by PHP-FPM and scanning workers, never web-served.
+        'message_media' => [
+            'driver' => 'local', 'root' => storage_path('app/private/message-media'),
+            'visibility' => 'private', 'directory_visibility' => 'private',
+            'shared_group' => env('MESSAGE_MEDIA_GROUP', 'www-data'),
+            'permissions' => ['file' => ['public' => 0660, 'private' => 0660], 'dir' => ['public' => 02770, 'private' => 02770]],
+            'serve' => false, 'throw' => true, 'report' => false,
+        ],
+
         // Accepted provider receipts must survive a failed SQLite checkpoint write.
         'studio_receipts' => [
             'driver' => 'local', 'root' => storage_path('app/private/studio/provider-receipts'),

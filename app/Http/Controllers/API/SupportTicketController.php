@@ -84,7 +84,7 @@ class SupportTicketController extends Controller
     {
         $data = $request->validate([
             'request_key' => ['required', 'uuid'], 'subject' => ['required', 'string', 'min:3', 'max:180'],
-            'body' => ['required', 'string', 'min:10', 'max:8000'], 'category' => ['required', Rule::in(self::CATEGORIES)],
+            'body' => ['required', 'string', 'min:'.($request->attributes->get('message_media_send') ? 1 : 10), 'max:8000'], 'category' => ['required', Rule::in(self::CATEGORIES)],
             'page_path' => ['nullable', 'string', 'max:240', 'regex:~^/[A-Za-z0-9/_-]*$~'],
             ...\App\Services\SupportAttachmentService::rules(),
         ]);

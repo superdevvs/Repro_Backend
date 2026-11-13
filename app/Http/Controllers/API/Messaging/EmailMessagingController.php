@@ -905,7 +905,7 @@ class EmailMessagingController extends Controller
         $query->whereRaw('1 = 0');
     }
 
-    private function canAccessMessage(User $user, Message $message): bool
+    public function canAccessMessage(User $user, Message $message): bool
     {
         if ($this->isAdminUser($user)) {
             return true;

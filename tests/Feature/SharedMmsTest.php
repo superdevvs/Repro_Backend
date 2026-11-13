@@ -84,6 +84,32 @@ class SharedMmsTest extends TestCase
     }
     private function create(array $replace = []): array { return $this->postJson(self::BASE, $this->body($replace))->assertCreated()->json(); }
 
+    public function test_large_file_links_create_and_reply_to_shared_groups_without_duplicate_sends(): void
+    {
+        \Illuminate\Support\Facades\Storage::fake('local');
+        $file = \App\Models\MessageMedia::create(['user_id' => $this->actor->id, 'channel' => 'shared', 'name' => 'walkthrough.mov',
+            'mime_type' => 'video/quicktime', 'size' => 1073741824, 'received_bytes' => 1073741824, 'status' => 'ready', 'expires_at' => now()->addDay()]);
+        $body = ['request_key' => (string) Str::uuid(), 'channel' => 'shared', 'sender_id' => $this->number->id, 'participants' => self::PEOPLE,
+            'title' => 'Media team', 'attachment_ids' => [$file->id]];
+        $response = $this->postJson('/api/messaging/media/send', $body)->assertCreated()->assertJsonPath('success', true);
+        $this->postJson('/api/messaging/media/send', $body)->assertCreated();
+        $this->assertCount(1, $this->sent);
+        $this->assertStringContainsString('/api/messaging/media/shared/', $this->sent[0]['text']);
+        $this->assertSame($response->json('id'), $file->fresh()->message_id);
+        $groupID = $response->json('result.data.id');
+        $this->postJson('/api/messaging/media/content', ['kind' => 'shared', 'ids' => [$response->json('id')]])->assertOk()
+            ->assertJsonPath('data.'.$response->json('id').'.attachments.0.size', 1073741824);
+        $replyFile = $file->replicate(['id', 'message_id', 'message_kind', 'send_request_key', 'share_expires_at']);
+        $replyFile->save();
+        $reply = ['request_key' => (string) Str::uuid(), 'channel' => 'shared', 'conversation_id' => $groupID, 'attachment_ids' => [$replyFile->id]];
+        $this->postJson('/api/messaging/media/send', $reply)->assertOk()->assertJsonPath('success', true);
+        $this->postJson('/api/messaging/media/send', $reply)->assertOk();
+        $this->assertCount(2, $this->sent);
+        $this->assertNotSame($file->fresh()->message_id, $replyFile->fresh()->message_id);
+        DB::table('sms_shared_group_members')->where('group_id', $groupID)->where('user_id', $this->actor->id)->delete();
+        $this->postJson('/api/messaging/media/content', ['kind' => 'shared', 'ids' => [$response->json('id')]])->assertNotFound();
+    }
+
     public function test_feature_flag_and_sender_capabilities_fail_closed_without_provider_send(): void
     {
         config(['shared_mms.enabled' => false]);

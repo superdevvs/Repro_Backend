@@ -301,7 +301,7 @@ class SmsMessagingController extends Controller
             'recipients.*.user_id' => ['nullable', 'integer', 'exists:users,id'],
             'group_ids' => ['nullable', 'array', 'max:10'],
             'group_ids.*' => ['integer', 'exists:sms_groups,id'],
-            'body_text' => ['required', 'string', 'max:1200'],
+            'body_text' => ['required', 'string', 'max:'.($request->attributes->get('message_media_send') ? 8000 : 1200)],
             'sms_number_id' => ['nullable', 'integer', Rule::exists('sms_numbers', 'id')->where('provider', 'TELNYX')],
             'contact_name' => ['nullable', 'string'],
             'contact_type' => ['nullable', 'string'],
@@ -346,7 +346,7 @@ class SmsMessagingController extends Controller
         $this->authorizeThread($thread, $request->user());
 
         $data = $request->validate([
-            'body' => ['required', 'string', 'max:1200'],
+            'body' => ['required', 'string', 'max:'.($request->attributes->get('message_media_send') ? 8000 : 1200)],
             'sms_number_id' => ['nullable', 'integer', Rule::exists('sms_numbers', 'id')->where('provider', 'TELNYX')],
         ]);
         $thread->loadMissing('latestSmsMessage');

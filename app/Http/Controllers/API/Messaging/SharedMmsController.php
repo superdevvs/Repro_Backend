@@ -77,6 +77,6 @@ class SharedMmsController extends Controller
     }
     private function messageRules(): array
     {
-        return ['request_key' => ['required', 'uuid'], 'body_text' => ['required', 'string', 'max:1200'], 'media_urls' => ['prohibited'], 'attachments' => ['prohibited']];
+        return ['request_key' => ['required', 'uuid'], 'body_text' => ['required', 'string', 'max:'.(request()->attributes->get('message_media_send_key') ? 8000 : 1200)], 'media_urls' => ['prohibited'], 'attachments' => ['prohibited']];
     }
 }

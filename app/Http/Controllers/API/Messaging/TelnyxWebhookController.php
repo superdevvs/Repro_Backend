@@ -132,6 +132,7 @@ class TelnyxWebhookController extends Controller
                 ],
             ]);
 
+            app(\App\Services\Messaging\MessageMediaService::class)->incoming('sms', (string) $message->id, (array) data_get($payload, 'data.payload.media', []));
             $thread->update([
                 'last_message_at' => now(),
                 'last_direction' => 'INBOUND',

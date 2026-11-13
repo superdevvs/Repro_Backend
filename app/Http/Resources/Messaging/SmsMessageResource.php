@@ -17,7 +17,7 @@ class SmsMessageResource extends JsonResource
     {
         $canViewDiagnostics = $request->user()?->role === 'superadmin';
         $metadata = $this->metadata ?? [];
-        $reaction = $this->resource->getAttribute('_sms_reaction');
+        $reaction = $this->resource->getAttribute('_sms_reaction') ?? $metadata['app_reaction'] ?? null;
         if ($reaction === null && $this->channel === 'SMS' && $this->direction === 'INBOUND') {
             $reaction = app(SmsReactionParser::class)->parse((string) $this->body_text);
         }

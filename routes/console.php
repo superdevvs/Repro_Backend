@@ -1,5 +1,7 @@
 <?php
 
+\Illuminate\Support\Facades\Schedule::command('messaging:prune-uploads')->daily()->withoutOverlapping();
+
 \Illuminate\Support\Facades\Artisan::command('voice:maintain-voicemail', function (\App\Services\Voice\VoiceVoicemailService $voicemail) {
     $voicemail->maintain();
     $this->info('Voicemail maintenance completed.');

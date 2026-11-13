@@ -171,6 +171,7 @@ class SharedMmsService
         $message = SmsSharedMessage::create(['group_id' => $group->id, 'created_by' => $user->id, 'request_key' => $key, 'request_hash' => $hash,
             'direction' => 'OUTBOUND', 'from_number' => $group->business_number, 'body_text' => $body, 'status' => 'sending',
             'recipient_statuses' => array_map(fn ($p) => ['phone_number' => $p, 'status' => 'unconfirmed'], $group->participants), 'provider_attempted_at' => now()]);
+        MessageMediaService::bindPending('shared', $message->id, $user->id);
         $group->update(['last_message_at' => now(), 'last_snippet' => Str::limit($body, 190)]);
         return $message;
     }
@@ -338,6 +339,7 @@ class SharedMmsService
                 'body_text' => $text, 'status' => 'received', 'provider_message_id' => $id, 'recipient_statuses' => [],
                 'media_count' => min(100, is_array($p['media'] ?? null) ? count($p['media']) : 0), 'created_at' => $at]);
             DB::table('sms_shared_webhook_events')->insert(['event_id' => $eventID, 'message_id' => $message->id, 'created_at' => now()]);
+            app(MessageMediaService::class)->incoming('shared', $message->id, (array) ($p['media'] ?? []));
             SmsSharedGroup::whereKey($group->id)->where(fn ($q) => $q->whereNull('last_message_at')->orWhere('last_message_at', '<=', $at))
                 ->update(['last_message_at' => $at, 'last_snippet' => Str::limit($text, 190)]);
             // A group STOP never causes a bot reply to all participants. Retain a

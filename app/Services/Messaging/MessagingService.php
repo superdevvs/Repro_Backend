@@ -332,7 +332,7 @@ class MessagingService
             $providerMessageId = $this->telnyxProvider->send($number, [
                 'to' => $payload['to'],
                 'text' => $payload['body_text'] ?? '',
-                'single_attempt' => (bool) ($payload['single_attempt'] ?? false),
+                'single_attempt' => (bool) ($payload['single_attempt'] ?? false) || request()->attributes->has('message_media_send_key'),
             ]);
 
             $message->update([
@@ -644,6 +644,7 @@ class MessagingService
             'hidden_from_inbox' => (bool) ($payload['hidden_from_inbox'] ?? false),
         ]);
 
+        MessageMediaService::bindPending(strtolower($channelType), (string) $message->id, $message->created_by);
         $thread = $this->updateThreadForMessage($thread, $message);
 
         if ($channelType === 'SMS' && ! $deferSmsBroadcast) {
