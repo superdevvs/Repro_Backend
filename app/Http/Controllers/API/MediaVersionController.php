@@ -31,17 +31,18 @@ class MediaVersionController extends Controller
         return response()->json(['data' => ShootFileVersion::where('shoot_id', $shoot->id)
             ->where(fn ($query) => $query->where('published_file_id', $file->id)->orWhere('target_file_id', $file->id)->orWhere('source_file_id', $file->id)
                 ->when($file->source_file_id, fn ($query) => $query->orWhere('source_file_id', $file->source_file_id)))
-            ->latest()->get()->map->present(), 'current_version' => $file->content_version]);
+            ->latest()->get()->map->present(), 'current_version' => $file->content_version, 'mime_type' => $file->mime_type ?: $file->file_type,
+            'media_type' => app(\App\Services\Shoots\ShootDownloadAssetClassifier::class)->isVideo($file) ? 'video' : 'image']);
     }
 
     public function store(Request $request, Shoot $shoot, ShootFile $file, MediaVersionPublisher $publisher)
     {
         $this->authorizeStaff($request, $shoot);
         abort_unless((int) $file->shoot_id === (int) $shoot->id && !$file->is_hidden, 404);
-        $data = $request->validate(['file' => 'required|file|max:262144', 'request_id' => 'required|uuid', 'expected_version' => 'required|integer|min:1']);
+        $data = $request->validate(['file' => 'required|file|max:1048576', 'request_id' => 'required|uuid', 'expected_version' => 'required|integer|min:1']);
         $upload = $request->file('file');
         $version = $publisher->stage($file, $upload->getRealPath(), $upload->getClientOriginalName(), $data['expected_version'], $request->user(), 'upload:'.$data['request_id'], ['origin' => 'manual']);
-        return response()->json(['data' => $version->present(), 'message' => 'Upload saved. The current image stays available until processing completes.'], 202);
+        return response()->json(['data' => $version->present(), 'message' => 'Upload saved. The current media stays available until processing and review complete.'], 202);
     }
 
     public function show(Request $request, Shoot $shoot, ShootFileVersion $version)
@@ -98,6 +99,27 @@ class MediaVersionController extends Controller
         $path = $version->snapshot['web_path'] ?? $version->snapshot['thumbnail_path'] ?? null;
         abort_unless($path && $storage->exists($path), 404);
         return response($storage->get($path), 200, ['Content-Type' => 'image/jpeg', 'Cache-Control' => 'private, no-store', 'X-Content-Type-Options' => 'nosniff']);
+    }
+
+    public function videoPreview(Request $request, Shoot $shoot, ShootFileVersion $version, \App\Models\User $viewer, MediaStorage $storage)
+    {
+        abort_unless(in_array($viewer->role, ['admin', 'superadmin', 'editing_manager'], true)
+            && app(\App\Services\Shoots\DeliveryPlanService::class)->canFinalize($viewer), 403);
+        app(ShootAuthorizationSupport::class)->ensureShootAccess($shoot, $viewer);
+        abort_unless((int) $version->shoot_id === (int) $shoot->id
+            && in_array($version->status, ['published', 'archived', 'conflict', 'alternative'], true)
+            && \App\Services\Shoots\MediaVersionVideo::extension((string) ($version->snapshot['mime_type'] ?? $version->snapshot['file_type'] ?? '')), 404);
+        abort_unless(($version->snapshot['scan_status'] ?? null) === 'clean'
+            || (in_array($version->status, ['published', 'archived'], true) && ($version->snapshot['scan_status'] ?? null) === null), 403);
+        $path = $version->snapshot['path'] ?? $version->snapshot['storage_path'] ?? null;
+        abort_unless($path && $storage->exists($path), 404);
+        $mime = $version->snapshot['mime_type'] ?? $version->snapshot['file_type'];
+        $headers = ['Content-Type' => $mime, 'Cache-Control' => 'private, no-store', 'X-Content-Type-Options' => 'nosniff'];
+        $disk = $storage->diskFor($path);
+        if ($disk instanceof \Illuminate\Filesystem\FilesystemAdapter && $disk->getAdapter() instanceof \League\Flysystem\Local\LocalFilesystemAdapter) {
+            return $storage->localResponse($disk->path($path), null, $headers, $shoot->id);
+        }
+        return $storage->streamResponse($path, $mime, $headers);
     }
 
     public function dismiss(Request $request, Shoot $shoot, ShootFileVersion $version)

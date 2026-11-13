@@ -333,7 +333,8 @@ class ShootMediaStorageService
         ?array $metadataOverride = null,
         ?int $replaceFileId = null
     ): ShootFile {
-        if ($stage === ShootFile::STAGE_COMPLETED && str_starts_with((string) $file->getMimeType(), 'image/')) {
+        $detectedMime = app(\App\Services\Shoots\UploadIntakeResolver::class)->detectedMimeType($file);
+        if ($stage === ShootFile::STAGE_COMPLETED && (str_starts_with((string) $detectedMime, 'image/') || str_starts_with((string) $detectedMime, 'video/'))) {
             $replacement = $this->stageVersionedReplacement($shoot, $file, (int) $userId, $shootServiceId, $replaceFileId);
             if ($replacement) return $replacement;
         }
@@ -410,11 +411,12 @@ class ShootMediaStorageService
         if ($replaceFileId) $query->whereKey($replaceFileId);
         else $query->where('filename', $file->getClientOriginalName());
         $matches = $query->get();
-        if ($replaceFileId && $matches->isEmpty()) throw ValidationException::withMessages(['replace_file_id' => 'Choose an edited image in this service.']);
-        if ($matches->count() > 1) throw ValidationException::withMessages(['replace_file_id' => 'Several images have this filename. Choose the intended image from Versions / upload saved edit.']);
+        if ($replaceFileId && $matches->isEmpty()) throw ValidationException::withMessages(['replace_file_id' => 'Choose visible edited media in this service.']);
+        if ($matches->count() > 1) throw ValidationException::withMessages(['replace_file_id' => 'Several files have this filename. Choose the intended file from Versions / upload saved edit.']);
         $target = $matches->first();
         if (!$target) return null;
-        abort_unless(in_array($file->getMimeType(), ['image/jpeg', 'image/png', 'image/tiff'], true), 422, 'Export JPEG, PNG or TIFF to replace an edited image safely.');
+        $mime = app(\App\Services\Shoots\UploadIntakeResolver::class)->detectedMimeType($file);
+        abort_unless(in_array($mime, ['image/jpeg', 'image/png', 'image/tiff'], true) || str_starts_with((string) $mime, 'video/'), 422, 'Export a supported image or video to replace edited media safely.');
         $hash = hash_file('sha256', $file->getRealPath());
         $current = \App\Models\ShootFileVersion::where('published_file_id', $target->id)->where('version', $target->content_version)->where('sha256', $hash)->first();
         if ($current) return $target;
@@ -535,6 +537,11 @@ class ShootMediaStorageService
                     $query->whereNull('media_type')
                         ->orWhereNotIn('media_type', ['raw']);
                 });
+                // A superseded video must never become the target of an implicit
+                // filename match. Visible media goes through staged versions above.
+                if (str_starts_with((string) app(\App\Services\Shoots\UploadIntakeResolver::class)->detectedMimeType($file), 'video/')) {
+                    $candidatesQuery->where('is_hidden', false);
+                }
             }
 
             if ($replaceFileId !== null) {

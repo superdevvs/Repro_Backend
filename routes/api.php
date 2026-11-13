@@ -301,6 +301,9 @@ Route::get('/public/shoot-media/curation-preview/{shoot}/{file}/{viewer}', App\H
     ->middleware('signed')
     ->name('api.public.shoot-media.curation-preview');
 
+Route::get('/public/media-version/video/{shoot}/{version}/{viewer}', [App\Http\Controllers\API\MediaVersionController::class, 'videoPreview'])
+    ->whereNumber(['shoot', 'viewer'])->middleware('signed')->name('api.media-version.video-preview');
+
 Route::get('/public/video-editor/reference/{shoot}/{file}/{viewer}', [App\Http\Controllers\API\VideoEditorReferenceMediaController::class, 'file'])
     ->whereNumber(['shoot', 'file', 'viewer'])->middleware('signed')->name('api.video-editor.reference-file');
 Route::get('/public/video-editor/archive/{shoot}/{viewer}', [App\Http\Controllers\API\VideoEditorReferenceMediaController::class, 'archive'])

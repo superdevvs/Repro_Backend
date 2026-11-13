@@ -173,6 +173,7 @@ class ShootListingService
                         'id',
                         'shoot_id',
                         'shoot_service_id',
+                        'content_version',
                         'filename',
                         'stored_filename',
                         'workflow_stage',
@@ -186,6 +187,11 @@ class ShootListingService
                         'file_type',
                         'mime_type',
                         'media_type',
+                        'scan_status',
+                        'is_extra',
+                        'metadata',
+                        'created_at',
+                        'verified_at',
                         'thumbnail_path',
                         // The 600px grid rendition every card and grid tile
                         // displays. Omitting it here silently downgraded those

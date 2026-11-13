@@ -25,10 +25,14 @@ class MediaVersionPublisher
 
     public function stage(ShootFile $source, string $localPath, string $filename, int $expectedVersion, User $user, string $requestKey, array $metadata = []): ShootFileVersion
     {
-        $mime = (new \finfo(FILEINFO_MIME_TYPE))->file($localPath);
-        $extension = ['image/jpeg' => 'jpg', 'image/png' => 'png', 'image/tiff' => 'tif'][$mime] ?? null;
-        abort_unless($extension, 422, 'Export a JPEG, PNG or TIFF to upload. Layered Photoshop masters stay on your computer.');
-        abort_unless(is_file($localPath) && filesize($localPath) > 0 && filesize($localPath) <= 268435456, 422, 'The exported image must be between 1 byte and 256 MB.');
+        $mime = app(UploadIntakeResolver::class)->detectedMimeType(new \Illuminate\Http\UploadedFile($localPath, $filename, null, null, true));
+        $video = MediaVersionVideo::extension((string) $mime) !== null;
+        $extension = $video ? MediaVersionVideo::extension($mime) : (['image/jpeg' => 'jpg', 'image/png' => 'png', 'image/tiff' => 'tif'][$mime] ?? null);
+        abort_unless($extension, 422, 'Export a JPEG, PNG, TIFF or supported video to upload.');
+        $sourceVideo = app(ShootDownloadAssetClassifier::class)->isVideo($source);
+        abort_unless($video === $sourceVideo, 422, 'A replacement must keep the original media type.');
+        abort_unless(is_file($localPath) && filesize($localPath) > 0 && filesize($localPath) <= ($video ? 1073741824 : 268435456), 422,
+            $video ? 'The video must be between 1 byte and 1 GB.' : 'The exported image must be between 1 byte and 256 MB.');
         $hash = hash_file('sha256', $localPath);
         $existing = ShootFileVersion::where('request_key', $requestKey)->first();
         if ($existing) {
@@ -47,7 +51,7 @@ class MediaVersionPublisher
         // Keep the export's extension honest while retaining the target's display name on publication.
         $snapshot = ['filename' => pathinfo(basename($filename), PATHINFO_FILENAME).'.'.$extension, 'stored_filename' => $stored,
             'path' => $path, 'storage_path' => $path, 'file_type' => $mime, 'mime_type' => $mime, 'file_size' => filesize($localPath)];
-        return LockedWrite::run(fn () => DB::transaction(function () use ($source, $expectedVersion, $user, $requestKey, $metadata, $snapshot, $hash, $id) {
+        return LockedWrite::run(fn () => DB::transaction(function () use ($source, $expectedVersion, $user, $requestKey, $metadata, $snapshot, $hash, $id, $video) {
             $existing = ShootFileVersion::where('request_key', $requestKey)->first();
             if ($existing) {
                 abort_unless($existing->sha256 === $hash && (int) ($existing->metadata['requested_version'] ?? $existing->expected_version) === $expectedVersion && (int) $existing->source_file_id === (int) $source->id && (int) $existing->created_by === (int) $user->id, 409, 'This upload request was already used for different bytes or media.');
@@ -60,13 +64,13 @@ class MediaVersionPublisher
                 $shoot = $fresh->shoot()->firstOrFail();
                 $target = $fresh->serviceItem;
                 abort_unless($actor && app(ShootAuthorizationSupport::class)->canUploadShootMedia($shoot, $actor, 'edited', $fresh->shoot_service_id)
-                    && (! $target || (app(ShootUploadTargetPolicy::class)->accepts($target, 'photo', 'edited')
-                        && app(ShootUploadTargetPolicy::class)->canUploadFamilies($shoot, $actor, $target, ['photo']))), 403, 'Your editing assignment changed before this replacement was saved.');
+                    && (! $target || (app(ShootUploadTargetPolicy::class)->accepts($target, $video ? 'video' : 'photo', 'edited')
+                        && app(ShootUploadTargetPolicy::class)->canUploadFamilies($shoot, $actor, $target, [$video ? 'video' : 'photo']))), 403, 'Your editing assignment changed before this replacement was saved.');
             }
             $raw = $fresh->workflow_stage === ShootFile::STAGE_TODO;
             $version = ShootFileVersion::create(['id' => $id, 'shoot_id' => $source->shoot_id, 'source_file_id' => $source->id,
                 'target_file_id' => $raw ? null : $source->id, 'expected_version' => $expectedVersion, 'request_key' => $requestKey,
-                'sha256' => $hash, 'status' => 'queued', 'snapshot' => $snapshot, 'metadata' => $metadata + ['source_was_raw' => $raw, 'requested_version' => $expectedVersion],
+                'sha256' => $hash, 'status' => 'queued', 'snapshot' => $snapshot, 'metadata' => $metadata + ['source_was_raw' => $raw, 'requested_version' => $expectedVersion, 'source_service_id' => $source->shoot_service_id],
                 'created_by' => $user->id, 'dispatch_item_id' => $metadata['dispatch_item_id'] ?? null]);
             if ($version->dispatch_item_id) {
                 $items = \App\Models\ShootEditingDispatchItem::whereIn('id', $metadata['dispatch_item_ids'] ?? [$version->dispatch_item_id])->get();
@@ -113,9 +117,15 @@ class MediaVersionPublisher
                 $version->update(['status' => 'conflict', 'error_code' => 'newer_version', 'error' => 'A newer edit is already current. Choose Replace latest or Save as copy.']);
                 return $version;
             }
+            if (array_key_exists('source_service_id', $version->metadata ?? []) && (int) $source->shoot_service_id !== (int) $version->metadata['source_service_id']) {
+                $version->update(['status' => 'conflict', 'error_code' => 'source_changed', 'error' => 'Media ownership changed. Review the replacement again.']);
+                return $version;
+            }
             $snapshot = $version->snapshot;
+            $video = MediaVersionVideo::extension((string) ($snapshot['mime_type'] ?? '')) !== null;
             abort_unless(($snapshot['scan_status'] ?? '') === 'clean' && !empty($snapshot['processed_at'])
-                && collect(['thumbnail_path', 'grid_path', 'web_path', 'placeholder_path'])->every(fn ($key) => !empty($snapshot[$key])), 409, 'The returned image is not ready to publish.');
+                && ($video ? !empty($snapshot['video_validated_at'])
+                    : collect(['thumbnail_path', 'grid_path', 'web_path', 'placeholder_path'])->every(fn ($key) => !empty($snapshot[$key]))), 409, 'The returned media is not ready to publish.');
             $planner = app(DeliveryPlanService::class);
             $shoot = $source->shoot()->firstOrFail();
             $planner->forgetReleasedFiles($shoot);
@@ -137,6 +147,13 @@ class MediaVersionPublisher
                         $this->archiveCurrent($target, $version->created_by);
                         $snapshot['filename'] = pathinfo($target->filename, PATHINFO_FILENAME).'.'.pathinfo($snapshot['stored_filename'], PATHINFO_EXTENSION);
                         $target->fill(Arr::only($snapshot, self::CONTENT_FIELDS));
+                        if (MediaVersionVideo::extension((string) ($snapshot['mime_type'] ?? ''))) {
+                            // Missing-local fallbacks must not route back to the
+                            // superseded remote video after publication.
+                            $target->forceFill(['dropbox_path' => null, 'dropbox_file_id' => null]);
+                            $target->metadata = array_merge(Arr::except($target->metadata ?? [], ['width', 'height', 'duration']),
+                                Arr::only($snapshot['video_validation'] ?? [], ['width', 'height', 'duration']));
+                        }
                         $target->content_version++;
                         $target->save();
                     } else {
@@ -145,7 +162,7 @@ class MediaVersionPublisher
                             ? ShootFile::normalizeTreatment(str_replace('-', '_', $version->metadata['ai_editing_metadata']['workflow'] ?? '')) : $source->treatment;
                         $target = ShootFile::create(Arr::only($snapshot, self::CONTENT_FIELDS) + [
                             'shoot_id' => $source->shoot_id, 'shoot_service_id' => $source->shoot_service_id, 'source_file_id' => $source->id,
-                            'media_type' => $treatment ?? ($source->media_type === 'drone' ? 'drone' : 'edited'), 'treatment' => $treatment,
+                            'media_type' => $treatment ?? ($source->media_type === 'drone' ? 'drone' : (str_starts_with((string) $snapshot['mime_type'], 'video/') ? 'video' : 'edited')), 'treatment' => $treatment,
                             'workflow_stage' => ShootFile::STAGE_VERIFIED, 'verified_at' => now(), 'moved_to_completed_at' => now(),
                             'uploaded_by' => $version->created_by, 'uploaded_at' => now(), 'required_for_editing' => false, 'content_version' => 1,
                         ]);
@@ -253,6 +270,10 @@ class MediaVersionPublisher
                 || (int) ($review['shoot_service_id'] ?? 0) !== (int) $approved->shoot_service_id) return null;
             $actor = User::find($review['actor_id'] ?? null);
         } elseif (in_array($version->metadata['origin'] ?? '', ['manual', 'restore', 'photoshop'], true)) {
+            // Uploading a new video is not a review of its playback/audio. Staff
+            // inspect the scanned saved version before replacing delivered bytes.
+            if (($version->metadata['origin'] ?? '') === 'manual'
+                && MediaVersionVideo::extension((string) ($version->snapshot['mime_type'] ?? ''))) return null;
             $actor = User::find($version->created_by);
         } else return null;
         return app(DeliveryPlanService::class)->canFinalize($actor) ? $actor : null;

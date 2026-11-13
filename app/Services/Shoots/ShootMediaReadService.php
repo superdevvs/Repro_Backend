@@ -447,8 +447,6 @@ class ShootMediaReadService
                 ? ($contractorAccess || ($curation && $this->authorizationSupport->isClientHeroEligibleFile($file)))
                 : $this->authorizationSupport->hasRole($actor, ['admin', 'superadmin', 'editing_manager', 'photographer', 'editor']);
             $data['media_curation_scope'] = $contractorAccess ? 'contractor' : ($customerActor ? ($data['can_manage_visibility'] ? 'customer' : null) : 'staff');
-            if ($customerActor) $data['can_download'] = $this->authorizationSupport->canDownloadShootMediaFile($file->shoot, $file, $actor)
-                && ! $file->isBlockedFromDelivery() && ! $this->shootClientReleaseAccessService->isFileReleaseLocked($file->shoot, $file, $actor);
             if ($file->is_hidden && $data['media_curation_scope'] === 'customer') {
                 $preview = URL::temporarySignedRoute('api.public.shoot-media.curation-preview', now()->addMinutes(15),
                     ['shoot' => $file->shoot_id, 'file' => $file->id, 'viewer' => $actor->id]);
@@ -466,13 +464,10 @@ class ShootMediaReadService
                 // Secondary rep roles keep the customer curation and release
                 // flags resolved above; reference access adds no write rights.
                 if (! $customerActor) {
-                    $data['can_download'] = $this->authorizationSupport->canDownloadShootMediaFile($file->shoot, $file, $actor)
-                        && ! $file->isBlockedFromDelivery();
                     $data['can_manage_visibility'] = $contractorAccess;
                     $data['can_set_hero'] = $contractorAccess;
                 }
                 if ($this->authorizationSupport->canVideoEditorReadFinalImage($file->shoot, $file, $actor)) {
-                    $data['can_download'] = $this->authorizationSupport->canDownloadShootMediaFile($file->shoot, $file, $actor);
                     $preview = \App\Http\Controllers\API\VideoEditorReferenceMediaController::fileUrl($file, $actor);
                     $original = \App\Http\Controllers\API\VideoEditorReferenceMediaController::fileUrl($file, $actor, true);
                     foreach (['url', 'thumbnail_url', 'thumb_url', 'thumb', 'grid_url', 'web_url', 'medium_url', 'medium', 'large_url', 'large', 'placeholder_url'] as $key) $data[$key] = $preview;
@@ -486,6 +481,7 @@ class ShootMediaReadService
             }
         }
 
+        if ($file->shoot) $data = array_merge($data, app(ShootMediaDownloadCapability::class)->forFile($file->shoot, $file, $actor));
         return $data;
     }
 

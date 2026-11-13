@@ -275,6 +275,7 @@ class ShootPresenter
                     'id',
                     'shoot_id',
                     'shoot_service_id',
+                    'content_version',
                     'filename',
                     'stored_filename',
                     'workflow_stage',
@@ -288,6 +289,11 @@ class ShootPresenter
                     'file_type',
                     'mime_type',
                     'media_type',
+                    'scan_status',
+                    'is_extra',
+                    'metadata',
+                    'created_at',
+                    'verified_at',
                     'thumbnail_path',
                     // Needed for grid_url; see the note in ShootListingService.
                     'grid_path',
@@ -321,6 +327,17 @@ class ShootPresenter
         $releaseAccess = app(ShootClientReleaseAccessService::class);
         $classifier = app(ShootDownloadAssetClassifier::class);
         foreach ($shoot->files as $file) {
+            // Metadata is needed for classification and approval checks but may
+            // contain provider source URLs and internal processing information.
+            if (app(ShootAuthorizationSupport::class)->isCustomerMediaCurator($requestingUser)) {
+                foreach (['width', 'height', 'captured_at'] as $key) {
+                    if (isset($file->metadata[$key])) $file->setAttribute($key, $file->metadata[$key]);
+                }
+                $file->makeHidden('metadata');
+            }
+            foreach (app(ShootMediaDownloadCapability::class)->forFile($shoot, $file, $requestingUser) as $key => $value) {
+                $file->setAttribute($key, $value);
+            }
             if ($shoot->isImportDraft() && Shoot::canReviewImportDrafts() && ! $file->isBlockedFromDelivery()) {
                 $file->setAttribute('url', $this->mediaStorage->servingUrl($file->path));
                 $file->setAttribute('web_url', $this->mediaStorage->servingUrl($file->web_path));

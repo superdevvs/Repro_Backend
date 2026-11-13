@@ -7,6 +7,7 @@ use App\Services\ImageProcessingService;
 use App\Services\Media\MediaStorage;
 use App\Services\Scanning\ClamAvClient;
 use App\Services\Shoots\MediaVersionPublisher;
+use App\Services\Shoots\MediaVersionVideo;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -44,27 +45,34 @@ class ProcessMediaVersion implements ShouldQueue
             $version->update(['status' => 'processing', 'error' => null, 'error_code' => null]);
             $verdict = $scanner->scan($path);
             if (!$verdict->isClean()) {
-                $version->update(['status' => 'failed', 'error_code' => 'scan_failed', 'error' => 'The returned file failed scanning. The previous image remains available.']);
+                $version->update(['status' => 'failed', 'error_code' => 'scan_failed', 'error' => 'The returned file failed scanning. The previous media remains available.']);
                 $publisher->syncDispatch($version);
                 return;
             }
-            $previewSource = $path;
-            if (($snapshot['mime_type'] ?? '') === 'image/tiff') {
-                $previewSource = tempnam(sys_get_temp_dir(), 'repro-tiff-');
-                $temporary[] = $previewSource;
-                // Reuse the ImageMagick installation already used for RAW extraction on the worker.
-                // Decode only the first TIFF page, with bounded memory/disk/time.
-                $conversion = new Process(['convert', '-limit', 'memory', '256MiB', '-limit', 'map', '512MiB', '-limit', 'disk', '1GiB',
-                    $path.'[0]', '-auto-orient', '-colorspace', 'sRGB', '-background', 'white', '-alpha', 'remove', '-quality', '94', 'jpeg:'.$previewSource]);
-                $conversion->setTimeout(60)->mustRun();
-            }
-            $size = @getimagesize($previewSource);
-            if (!$size || $size[0] < 1 || $size[1] < 1 || $size[0] * $size[1] > 100000000) throw new \RuntimeException('Export a valid image with at most 100 megapixels.');
-            // Unique stored names prevent new previews from overwriting a previous version's bytes.
-            $paths = $images->processImageFromPath($version->shoot_id, $snapshot['stored_filename'], $previewSource, $snapshot['media_type'] ?? null);
-            foreach (['thumbnail', 'grid', 'web', 'placeholder'] as $rendition) {
-                if (empty($paths[$rendition]) || !$storage->exists($paths[$rendition])) throw new \RuntimeException('Image processing is incomplete. The previous image remains available.');
-                $snapshot[$rendition.'_path'] = $paths[$rendition];
+            $isVideo = MediaVersionVideo::extension((string) ($snapshot['mime_type'] ?? '')) !== null;
+            if ($isVideo) {
+                $snapshot['video_validation'] = app(MediaVersionVideo::class)->inspect($path);
+                $snapshot['video_validated_at'] = now()->toIso8601String();
+                foreach (['thumbnail_path', 'grid_path', 'web_path', 'placeholder_path'] as $field) $snapshot[$field] = null;
+            } else {
+                $previewSource = $path;
+                if (($snapshot['mime_type'] ?? '') === 'image/tiff') {
+                    $previewSource = tempnam(sys_get_temp_dir(), 'repro-tiff-');
+                    $temporary[] = $previewSource;
+                    // Reuse the ImageMagick installation already used for RAW extraction on the worker.
+                    // Decode only the first TIFF page, with bounded memory/disk/time.
+                    $conversion = new Process(['convert', '-limit', 'memory', '256MiB', '-limit', 'map', '512MiB', '-limit', 'disk', '1GiB',
+                        $path.'[0]', '-auto-orient', '-colorspace', 'sRGB', '-background', 'white', '-alpha', 'remove', '-quality', '94', 'jpeg:'.$previewSource]);
+                    $conversion->setTimeout(60)->mustRun();
+                }
+                $size = @getimagesize($previewSource);
+                if (!$size || $size[0] < 1 || $size[1] < 1 || $size[0] * $size[1] > 100000000) throw new \RuntimeException('Export a valid image with at most 100 megapixels.');
+                // Unique stored names prevent new previews from overwriting a previous version's bytes.
+                $paths = $images->processImageFromPath($version->shoot_id, $snapshot['stored_filename'], $previewSource, $snapshot['media_type'] ?? null);
+                foreach (['thumbnail', 'grid', 'web', 'placeholder'] as $rendition) {
+                    if (empty($paths[$rendition]) || !$storage->exists($paths[$rendition])) throw new \RuntimeException('Image processing is incomplete. The previous image remains available.');
+                    $snapshot[$rendition.'_path'] = $paths[$rendition];
+                }
             }
             foreach (['watermarked_storage_path', 'watermarked_thumbnail_path', 'watermarked_web_path', 'watermarked_placeholder_path'] as $field) $snapshot[$field] = null;
             foreach (['large_path', 'medium_path'] as $field) {
@@ -84,7 +92,7 @@ class ProcessMediaVersion implements ShouldQueue
     public function failed(\Throwable $exception): void
     {
         ShootFileVersion::whereKey($this->versionId)->whereIn('status', ['queued', 'processing'])->update([
-            'status' => 'failed', 'error_code' => 'processing_failed', 'error' => 'The saved edit could not be processed. Retry the saved upload; the previous image is unchanged.',
+            'status' => 'failed', 'error_code' => 'processing_failed', 'error' => 'The saved edit could not be processed. Retry the saved upload; the previous media is unchanged.',
         ]);
         Log::error('Media version processing failed', ['version_id' => $this->versionId, 'exception' => $exception]);
         if ($version = ShootFileVersion::find($this->versionId)) app(MediaVersionPublisher::class)->syncDispatch($version);
