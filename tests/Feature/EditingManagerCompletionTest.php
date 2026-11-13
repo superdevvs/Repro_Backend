@@ -2,12 +2,17 @@
 
 namespace Tests\Feature;
 
+use App\Exceptions\Scanning\ClamAvUnavailable;
+use App\Jobs\ProcessMediaVersion;
 use App\Models\MessageTemplate;
 use App\Models\Shoot;
 use App\Models\ShootFile;
+use App\Models\ShootFileVersion;
 use App\Models\User;
+use App\Services\Media\MediaStorage;
 use App\Services\Messaging\ManualNotificationService;
 use App\Services\Messaging\MessagingService;
+use App\Services\Scanning\{ClamAvClient, ClamAvScanResult};
 use App\Services\ShootMediaStorageService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
@@ -25,54 +30,79 @@ class EditingManagerCompletionTest extends TestCase
         Queue::fake();
         Storage::fake('local');
         Storage::fake('public');
-        config(['clamav.scan_on_upload' => true]);
+        config(['clamav.scan_on_upload' => true, 'media.local_disk' => 'local', 'media.tiered_storage_enabled' => false,
+            'media.dual_write' => false, 'media.r2_only' => false, 'media.read_from_r2' => false]);
     }
 
     public function test_replacement_scan_failure_keeps_old_bytes_and_identity(): void
     {
         $shoot = Shoot::factory()->create();
         $file = $this->savedFile($shoot);
-        $service = $this->storageService('unavailable');
+        $version = $this->stageReplacement($shoot);
+        $this->mock(ClamAvClient::class, fn ($mock) => $mock->shouldReceive('scan')->once()->andThrow(new ClamAvUnavailable('Scanner unavailable')));
         try {
-            $service->uploadToCompleted($shoot, UploadedFile::fake()->create('saved.mp4', 1, 'video/mp4'), $shoot->client_id);
+            app()->call([new ProcessMediaVersion($version->id), 'handle']);
             $this->fail('Unavailable scanner must not replace a live file.');
-        } catch (\App\Exceptions\MediaReplacementUnavailable $error) {
-            $this->assertStringContainsString('previous file is unchanged', $error->getMessage());
+        } catch (ClamAvUnavailable $error) {
+            $this->assertSame('Scanner unavailable', $error->getMessage());
         }
         $this->assertSame('shoots/old.mp4', $file->fresh()->path);
-        Storage::disk('local')->assertExists('shoots/old.mp4');
+        $this->assertSame($this->videoBytes(), Storage::disk('local')->get('shoots/old.mp4'));
+        $this->assertSame(1, $file->fresh()->content_version);
+        $this->assertDatabaseMissing('shoot_file_versions', ['published_file_id' => $file->id]);
+        $this->assertSame($this->videoBytes('replacement'), app(MediaStorage::class)->get($version->snapshot['path']));
         $this->assertCount(1, $shoot->files()->get());
     }
 
-    public function test_verified_replacement_keeps_identity_and_deletes_old_bytes_only_after_commit(): void
+    public function test_verified_replacement_keeps_identity_and_archives_old_bytes_after_publication(): void
     {
         $shoot = Shoot::factory()->create();
         $file = $this->savedFile($shoot);
-        $result = $this->storageService('clean')->uploadToCompleted($shoot, UploadedFile::fake()->create('saved.mp4', 1, 'video/mp4'), $shoot->client_id);
-        $this->assertSame($file->id, $result->id);
-        $this->assertSame(7, $result->fresh()->sort_order);
-        $this->assertSame('clean', $result->fresh()->scan_status);
-        Storage::disk('local')->assertExists($result->path);
-        Storage::disk('local')->assertMissing('shoots/old.mp4');
+        $version = $this->stageReplacement($shoot);
+        $this->assertSame('shoots/old.mp4', $file->fresh()->path);
+        $this->assertSame(1, $file->fresh()->content_version);
+        $this->mock(ClamAvClient::class, fn ($mock) => $mock->shouldReceive('scan')->once()->andReturn(ClamAvScanResult::clean()));
+        app()->call([new ProcessMediaVersion($version->id), 'handle']);
+        $current = $file->fresh();
+        $this->assertSame($file->id, $version->fresh()->published_file_id);
+        $this->assertSame(7, $current->sort_order);
+        $this->assertSame('clean', $current->scan_status);
+        $this->assertSame('verified', $current->workflow_stage);
+        $this->assertSame(2, $current->content_version);
+        $this->assertSame($current->path, $current->storage_path);
+        $this->assertSame($this->videoBytes('replacement'), app(MediaStorage::class)->get($current->path));
+        $this->assertSame($this->videoBytes(), Storage::disk('local')->get('shoots/old.mp4'));
+        $this->assertDatabaseHas('shoot_file_versions', ['published_file_id' => $file->id, 'version' => 1, 'status' => 'archived']);
+        $this->assertCount(1, $shoot->files()->get());
     }
 
-    public function test_failed_record_write_preserves_previous_file(): void
+    public function test_failed_publication_write_rolls_back_identity_and_preserves_previous_and_staged_bytes(): void
     {
         $shoot = Shoot::factory()->create();
         $file = $this->savedFile($shoot);
+        $version = $this->stageReplacement($shoot);
+        $this->mock(ClamAvClient::class, fn ($mock) => $mock->shouldReceive('scan')->once()->andReturn(ClamAvScanResult::clean()));
         ShootFile::saving(function (ShootFile $candidate) use ($file) {
             if ($candidate->id === $file->id && $candidate->isDirty('path')) {
                 throw new \RuntimeException('Simulated write failure');
             }
         });
         try {
-            $this->storageService('clean')->uploadToCompleted($shoot, UploadedFile::fake()->create('saved.mp4', 1, 'video/mp4'), $shoot->client_id);
+            app()->call([new ProcessMediaVersion($version->id), 'handle']);
             $this->fail('The write must fail.');
         } catch (\RuntimeException $error) {
             $this->assertSame('Simulated write failure', $error->getMessage());
         }
         $this->assertSame('shoots/old.mp4', $file->fresh()->path);
-        $this->assertSame(['shoots/old.mp4'], Storage::disk('local')->allFiles());
+        $this->assertSame(1, $file->fresh()->content_version);
+        $this->assertSame('verified', $file->fresh()->workflow_stage);
+        $this->assertSame($this->videoBytes(), Storage::disk('local')->get('shoots/old.mp4'));
+        $this->assertSame('ready', $version->fresh()->status);
+        $this->assertNull($version->fresh()->published_file_id);
+        $this->assertDatabaseMissing('shoot_file_versions', ['published_file_id' => $file->id]);
+        $this->assertDatabaseCount('shoot_delivery_receipts', 0);
+        $this->assertSame($this->videoBytes('replacement'), app(MediaStorage::class)->get($version->snapshot['path']));
+        $this->assertEqualsCanonicalizing(['shoots/old.mp4', $version->snapshot['path']], Storage::disk('local')->allFiles());
     }
 
     public function test_editing_manager_catalogue_preview_and_send_guard_agree(): void
@@ -148,20 +178,25 @@ class EditingManagerCompletionTest extends TestCase
 
     private function savedFile(Shoot $shoot): ShootFile
     {
-        Storage::disk('local')->put('shoots/old.mp4', 'previous media');
+        Storage::disk('local')->put('shoots/old.mp4', $this->videoBytes());
         return ShootFile::create([
             'shoot_id' => $shoot->id, 'filename' => 'saved.mp4', 'stored_filename' => 'old.mp4', 'path' => 'shoots/old.mp4',
             'workflow_stage' => ShootFile::STAGE_VERIFIED, 'media_type' => 'video', 'file_type' => 'video/mp4',
-            'file_size' => 14, 'uploaded_by' => $shoot->client_id, 'scan_status' => 'clean', 'sort_order' => 7,
+            'file_size' => strlen($this->videoBytes()), 'uploaded_by' => $shoot->client_id, 'scan_status' => 'clean', 'sort_order' => 7,
         ]);
     }
 
-    private function storageService(string $verdict): ShootMediaStorageService
+    private function stageReplacement(Shoot $shoot): ShootFileVersion
     {
-        return new class($verdict) extends ShootMediaStorageService {
-            public function __construct(private readonly string $verdict) { parent::__construct(); }
-            protected function scanUploadSynchronously(UploadedFile $file): string { return $this->verdict; }
-            protected function extractImageMetadata(UploadedFile $file): array { return []; }
-        };
+        $manager = User::factory()->create(['role' => 'editing_manager']);
+        $saved = app(ShootMediaStorageService::class)->uploadToCompleted($shoot,
+            UploadedFile::fake()->createWithContent('saved.mp4', $this->videoBytes('replacement')), $manager->id);
+        $this->assertNotNull($saved->pendingMediaVersionId);
+        return ShootFileVersion::findOrFail($saved->pendingMediaVersionId);
+    }
+
+    private function videoBytes(string $label = ''): string
+    {
+        return file_get_contents(__DIR__.'/../Fixtures/media/replacement-video.mp4').pack('N', 8 + strlen($label)).'free'.$label;
     }
 }

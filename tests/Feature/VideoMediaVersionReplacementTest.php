@@ -235,6 +235,42 @@ class VideoMediaVersionReplacementTest extends TestCase
         $this->actingAs(User::factory()->create(['role' => 'client']))->getJson($this->downloadUrl())->assertForbidden();
     }
 
+    public function test_reviewed_publication_write_failure_preserves_original_receipt_and_client_download_for_later_worker_retry(): void
+    {
+        $version = $this->process($this->upload());
+        $receipt = DB::table('shoot_delivery_receipts')->first();
+        $oldPath = $this->file->path;
+        $targetId = $this->file->id;
+        $failWrite = true;
+        ShootFile::saving(function (ShootFile $candidate) use ($targetId, &$failWrite) {
+            if ($failWrite && $candidate->id === $targetId && $candidate->isDirty('path')) {
+                throw new \RuntimeException('Simulated reviewed publication failure');
+            }
+        });
+        try {
+            app(MediaVersionPublisher::class)->resolve($version, 'replace_latest', 1, $this->manager);
+            $this->fail('The reviewed publication write must fail.');
+        } catch (\RuntimeException $error) {
+            $this->assertSame('Simulated reviewed publication failure', $error->getMessage());
+        }
+        $this->assertSame($oldPath, $this->file->fresh()->path);
+        $this->assertSame(1, $this->file->fresh()->content_version);
+        $this->assertSame('verified', $this->file->fresh()->workflow_stage);
+        $this->assertClientBytes($this->videoBytes());
+        $this->assertDatabaseCount('shoot_delivery_receipts', 1);
+        $this->assertEquals($receipt, DB::table('shoot_delivery_receipts')->first());
+        $this->assertDatabaseMissing('shoot_file_versions', ['published_file_id' => $targetId]);
+        $this->assertSame('ready', $version->fresh()->status);
+        $this->assertSame($this->videoBytes('replacement'), app(MediaStorage::class)->get($version->snapshot['path']));
+        $failWrite = false;
+        // Exercise a later worker retry explicitly; resolve() itself does not
+        // enqueue this retry when its synchronous publication throws.
+        $this->assertSame('published', $this->process($version->fresh())->status);
+        $this->assertClientBytes($this->videoBytes('replacement'));
+        $this->assertDatabaseCount('shoot_delivery_receipts', 2);
+        $this->assertEquals($receipt, DB::table('shoot_delivery_receipts')->where('id', $receipt->id)->first());
+    }
+
     public function test_hidden_same_name_is_not_overwritten_and_explicit_hidden_target_is_rejected(): void
     {
         $this->file->update(['is_hidden' => true]);
