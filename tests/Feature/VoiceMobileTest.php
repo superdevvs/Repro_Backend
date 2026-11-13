@@ -179,6 +179,65 @@ class VoiceMobileTest extends TestCase
         $this->assertFalse($none['receive_calls']);
     }
 
+    public function test_muting_one_phone_skips_incoming_offers_but_preserves_outbound_and_sibling_registration(): void
+    {
+        $one = $this->bootstrap();
+        $session = VoiceMobileSession::findOrFail($one['session_id']);
+        $secondToken = $this->staff->createToken('other-phone')->accessToken;
+        $this->staff->withAccessToken($secondToken);
+        $two = $this->bootstrap(null, str_repeat('b', 64));
+        \App\Models\MobileDevicePreference::create(['personal_access_token_id' => $session->personal_access_token_id,
+            'user_id' => $this->staff->id, 'installation_id' => (string) Str::uuid(), 'sequence' => 1,
+            'preferences' => array_replace(\App\Models\MobileDevicePreference::defaults(), ['calls' => false]), 'enabled_after' => []]);
+        $service = app(VoiceMobileSessionService::class);
+        $this->assertFalse($service->registered($session));
+        $this->assertTrue($service->authorized($session));
+        $this->assertTrue($service->registered(VoiceMobileSession::findOrFail($two['session_id'])));
+        $muted = $this->incoming($one);
+        $this->assertContains($muted->state, ['cancelled', 'cancel_requested']);
+        $this->assertSame(0, $this->dials);
+        $other = $this->incoming($two, $muted->incomingOffer);
+        $this->assertSame('dialing', $other->state);
+        $this->assertSame(1, $this->dials);
+    }
+
+    public function test_mute_after_dial_prevents_a_new_claim_without_ending_an_accepted_call(): void
+    {
+        $session = $this->bootstrap();
+        $offer = $this->incoming($session);
+        $preference = \App\Models\MobileDevicePreference::create([
+            'personal_access_token_id' => $this->staff->currentAccessToken()->id, 'user_id' => $this->staff->id,
+            'installation_id' => (string) Str::uuid(), 'sequence' => 1,
+            'preferences' => array_replace(\App\Models\MobileDevicePreference::defaults(), ['calls' => false]), 'enabled_after' => []]);
+        $sdk = (string) Str::uuid();
+        $this->claim($session, $offer, $sdk)->assertForbidden();
+        $preference->update(['preferences' => \App\Models\MobileDevicePreference::defaults()]);
+        $this->claim($session, $offer, $sdk)->assertOk();
+        $preference->update(['preferences' => array_replace(\App\Models\MobileDevicePreference::defaults(), ['calls' => false])]);
+        $this->claim($session, $offer, $sdk)->assertOk();
+        $this->assertSame('accepted', $offer->fresh()->state);
+    }
+
+    public function test_reenabling_does_not_ring_for_an_offer_from_the_muted_period(): void
+    {
+        $session = $this->bootstrap();
+        $model = VoiceMobileSession::findOrFail($session['session_id']);
+        $started = now()->subSeconds(10);
+        \App\Models\MobileDevicePreference::create(['personal_access_token_id' => $model->personal_access_token_id,
+            'user_id' => $this->staff->id, 'installation_id' => (string) Str::uuid(), 'sequence' => 2,
+            'preferences' => \App\Models\MobileDevicePreference::defaults(), 'enabled_after' => ['calls' => now()->subSeconds(5)->toISOString()]]);
+        $service = app(VoiceMobileSessionService::class);
+        $this->assertTrue($service->registered($model));
+        $this->assertFalse($service->receivesCalls($model, $started));
+        $this->assertTrue($service->receivesCalls($model, now()));
+        $offer = VoiceIncomingOffer::create(['voice_call_id' => VoiceCall::create(['provider' => 'telnyx', 'direction' => 'INBOUND',
+            'status' => 'ringing', 'from_phone' => '+12025550199', 'to_phone' => '+12025550100', 'call_control_id' => 'test-old-offer'])->id,
+            'eligible_user_ids' => [$this->staff->id], 'expires_at' => now()->addSeconds(30), 'created_at' => $started]);
+        app(VoiceMobileCallService::class)->offer($offer);
+        $this->assertDatabaseMissing('voice_mobile_offers', ['incoming_offer_id' => $offer->id]);
+        $this->assertSame(0, $this->dials);
+    }
+
     public function test_refresh_without_push_token_preserves_incoming_registration_and_identity(): void
     {
         $device = (string) Str::uuid();

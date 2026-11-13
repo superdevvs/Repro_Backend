@@ -31,6 +31,10 @@ class SendMobileNotification implements ShouldQueue
             $delivery->update(['status' => 'expired']);
             return;
         }
+        if (! $service->deviceAllows($device, $delivery->kind, $delivery->source_id)) {
+            $delivery->update(['status' => 'suppressed']);
+            return;
+        }
         // Re-evaluate fresh account timezone/purpose after waiting. The scheduler
         // releases this same outbox row; no provider request has occurred yet.
         $notBefore = $service->notBefore($user, $delivery->kind, $delivery->source_id);

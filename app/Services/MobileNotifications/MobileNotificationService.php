@@ -6,6 +6,7 @@ use App\Jobs\SendMobileNotification;
 use App\Models\Message;
 use App\Models\MobileNotificationDelivery;
 use App\Models\MobileNotificationDevice;
+use App\Models\MobileDevicePreference;
 use App\Models\SmsSharedMessage;
 use App\Models\ShootActivityLog;
 use App\Models\SupportTicketMessage;
@@ -39,6 +40,27 @@ class MobileNotificationService
     public function notBefore(User $user, string $kind, string $id): ?\Carbon\CarbonImmutable
     {
         return app(MobileNotificationAudience::class)->notBefore($user, $kind, $id);
+    }
+
+    public function deviceAllows(MobileNotificationDevice $device, string $kind, string $id): bool
+    {
+        $channel = MobileDevicePreference::channel($kind);
+        if (! $channel) { return false; }
+        $preference = MobileDevicePreference::forLogin($device->user_id, $device->personal_access_token_id);
+        if (! $preference) { return true; } // Existing installations keep their current behavior.
+        if (! $preference->enabled($channel)) { return false; }
+        $after = $preference->enabled_after[$channel] ?? null;
+        if (! $after) { return true; }
+        $event = match ($kind) {
+            'sms', 'email' => Message::find($id),
+            'shared_group' => SmsSharedMessage::find($id),
+            'voicemail' => VoiceVoicemail::find($id),
+            'support' => SupportTicketMessage::find($id),
+            'shoot_activity' => ShootActivityLog::find($id),
+            'account_activity' => UserActivityLog::find($id),
+        };
+        $occurred = $kind === 'voicemail' ? $event?->saved_at : $event?->created_at;
+        return $occurred && $occurred->gt(\Carbon\CarbonImmutable::parse($after));
     }
 
     public function allowed(User $user, string $kind, string $id): bool
@@ -79,12 +101,13 @@ class MobileNotificationService
                 foreach ($devices as $device) {
                     $user = $device->activeOwner();
                     if (! $user || ! $this->allowed($user, $kind, $id)) { continue; }
+                    $enabled = $this->deviceAllows($device, $kind, $id);
                     $notBefore = $this->notBefore($user, $kind, $id);
                     $delivery = MobileNotificationDelivery::firstOrCreate([
                         'device_id' => $device->id, 'event_key' => $kind.':'.$id.':'.$user->id,
-                    ], ['user_id' => $user->id, 'kind' => $kind, 'source_id' => $id, 'status' => 'queued',
+                    ], ['user_id' => $user->id, 'kind' => $kind, 'source_id' => $id, 'status' => $enabled ? 'queued' : 'suppressed',
                         'not_before' => $notBefore, 'expires_at' => ($notBefore ?? now())->addMinutes(self::DELIVERY_LIFETIME_MINUTES)]);
-                    if ($delivery->wasRecentlyCreated && ! $notBefore?->isFuture()) {
+                    if ($delivery->wasRecentlyCreated && $enabled && ! $notBefore?->isFuture()) {
                         SendMobileNotification::dispatch($delivery->id)->onQueue(config('mobile_notifications.queue'))->afterCommit();
                     }
                 }

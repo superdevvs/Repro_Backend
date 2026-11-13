@@ -42,6 +42,7 @@ class MobileNotificationTransport
     {
         return ['aps' => ['alert' => app(MobileNotificationContent::class)->alert($delivery), 'sound' => 'default'],
             'repro' => ['version' => 1, 'event_id' => $delivery->id, 'user_id' => (string) $delivery->user_id,
+                'category' => \App\Models\MobileDevicePreference::channel($delivery->kind),
                 'destination' => match ($delivery->kind) {
                     'voicemail' => 'calls',
                     'shoot_activity', 'account_activity' => 'notifications',
@@ -52,6 +53,11 @@ class MobileNotificationTransport
     /** APNs acceptance is not evidence of handset delivery. No payload/token/error-body logging. */
     public function send(MobileNotificationDevice $device, MobileNotificationDelivery $delivery): array
     {
+        // Recheck immediately before provider I/O; a setting may change after
+        // a queued job was claimed. Already accepted APNs alerts cannot be recalled.
+        if (! app(MobileNotificationService::class)->deviceAllows($device, $delivery->kind, $delivery->source_id)) {
+            return ['status' => 'suppressed', 'provider_status' => null, 'revoke' => false];
+        }
         if (! $this->ready() || $device->environment !== config('mobile_notifications.environment')) {
             return ['status' => 'unavailable', 'provider_status' => null, 'revoke' => false];
         }

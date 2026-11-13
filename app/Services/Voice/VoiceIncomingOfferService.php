@@ -197,6 +197,7 @@ class VoiceIncomingOfferService
             if ($mobile->state === 'accepted' && $mobile->sdk_call_id === $sdkID && $offer->status === 'claimed' && $offer->claim_key === 'mobile:'.$mobile->id) {
                 return VoiceBrowserCall::findOrFail($offer->browser_call_id);
             }
+            abort_unless(app(VoiceMobileSessionService::class)->receivesCalls($session, $offer->created_at), 403, 'Incoming calls are off on this device.');
             $this->assertClaimable($offer, $user);
             abort_unless($mobile->expires_at->isFuture() && $mobile->state === 'dialing' && $mobile->call_control_id && ! $mobile->sdk_call_id, 409, 'This mobile offer is no longer available.');
             $browser = LockedWrite::run(fn () => DB::transaction(function () use ($offer, $user, $mobile, $sdkID) {

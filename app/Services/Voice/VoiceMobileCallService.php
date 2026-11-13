@@ -47,6 +47,7 @@ class VoiceMobileCallService
         $eligible = VoiceMobileSession::whereIn('user_id', $incoming->eligible_user_ids)->whereNull('revoked_at')->where('status', 'ready')
             ->whereNotNull('push_token_hash')->where('registration_expires_at', '>', now())->get()->filter(fn ($s) => $this->sessions->registered($s));
         foreach ($eligible as $s) {
+            if (! $this->sessions->receivesCalls($s, $incoming->created_at)) { continue; }
             $offer = VoiceMobileOffer::firstOrCreate(['incoming_offer_id' => $incoming->id, 'session_id' => $s->id],
                 ['expires_at' => $incoming->expires_at, 'client_state' => base64_encode((string) Str::uuid())]);
             \App\Jobs\DialVoiceMobileOffer::dispatch($offer->id)->afterCommit();
@@ -60,12 +61,14 @@ class VoiceMobileCallService
             $o->refresh();
             $s = $o->session;
             $incoming = $o->incomingOffer;
-            if (! $this->sessions->registered($s) || $incoming->status !== 'waiting' || $o->expires_at->isPast() || $o->state === 'cancelled') {
+            if (! $this->sessions->registered($s) || ! $this->sessions->receivesCalls($s, $incoming->created_at)
+                || $incoming->status !== 'waiting' || $o->expires_at->isPast() || $o->state === 'cancelled') {
                 $this->cancelOffer($o);
 
                 return;
             }
             $this->sessions->prepareIncoming($s);
+            if (! $this->sessions->registered($s)) { $this->cancelOffer($o); return; }
             $call = $incoming->voiceCall;
             VoiceLocks::lock('voice-incoming:'.$incoming->id, 60)->block(5, function () use ($o, $incoming) {
                 $o->refresh();
@@ -88,7 +91,7 @@ class VoiceMobileCallService
                 $o->update(['call_control_id' => $r['call_control_id']]);
             }
             $o->refresh();
-            if (($incoming->fresh()->status !== 'waiting' || $o->state === 'cancel_requested' || ! $this->sessions->authorized($s->fresh())) && $o->state !== 'accepted') {
+            if (($incoming->fresh()->status !== 'waiting' || $o->state === 'cancel_requested' || ! $this->sessions->registered($s->fresh())) && $o->state !== 'accepted') {
                 $this->cancelOffer($o);
             }
         });
@@ -126,6 +129,7 @@ class VoiceMobileCallService
         $id = explode('.', $token, 2)[0];
         $o = VoiceMobileOffer::where('id', $id)->where('session_id', $s->id)->firstOrFail();
         abort_unless($this->proof->verify($token, 'incoming', $s->id, $o->id), 403);
+        abort_unless($o->state === 'accepted' || $this->sessions->receivesCalls($s, $o->incomingOffer->created_at), 403, 'Incoming calls are off on this device.');
 
         return app(VoiceIncomingOfferService::class)->claimMobile($o, strtolower($sdkID));
     }
@@ -266,6 +270,7 @@ class VoiceMobileCallService
             $id = explode('.', $token, 2)[0];
             $o = VoiceMobileOffer::where('session_id', $s->id)->whereKey($id)->first();
             $valid = $o && $this->sessions->authorized($s) && $this->proof->verify($token, 'incoming', $s->id, $o->id)
+                && ($o->state === 'accepted' || $this->sessions->receivesCalls($s, $o->incomingOffer->created_at))
                 && in_array($o->state, ['dialing', 'accepted'], true) && ($o->state === 'accepted' || $o->expires_at->isFuture());
             if (! $valid && $control !== '' && $type === 'call.initiated') {
                 $this->gateway->command('mobile-denied:'.$control, '/calls/'.rawurlencode($control).'/actions/hangup');

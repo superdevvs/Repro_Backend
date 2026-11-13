@@ -35,7 +35,17 @@ class VoiceMobileSessionService
         $s = $s->fresh();
         return $s && $this->configured($s->apns_environment) && $s->status === 'ready' && ! $s->revoked_at
             && $s->registration_expires_at->isFuture() && filled($s->push_token_hash)
+            && $this->receivesCalls($s)
             && ($owner = $this->activeOwner($s)) && $this->permissions->canOperate($owner);
+    }
+
+    public function receivesCalls(VoiceMobileSession $session, ?\Carbon\CarbonInterface $startedAt = null): bool
+    {
+        $preference = \App\Models\MobileDevicePreference::forLogin($session->user_id, $session->personal_access_token_id);
+        if (! $preference) { return true; }
+        if (! $preference->enabled('calls')) { return false; }
+        $after = $preference->enabled_after['calls'] ?? null;
+        return ! $startedAt || ! $after || $startedAt->gt(\Carbon\CarbonImmutable::parse($after));
     }
 
     private function tokenFor(User $user, mixed $id): ?PersonalAccessToken
