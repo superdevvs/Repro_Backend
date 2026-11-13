@@ -4,6 +4,7 @@ namespace App\Services\Shoots\Actions;
 
 use App\Models\ShootFile;
 use App\Services\Media\MediaStorage;
+use App\Services\Media\MediaDownloadUrl;
 use App\Services\Shoots\DeliveryFilenameFormatter;
 use App\Services\Shoots\ShootFileAccessService;
 use App\Services\Shoots\ShootDownloadAssetClassifier;
@@ -49,6 +50,16 @@ class DownloadShootMediaAction
         foreach ($candidates as $candidate) {
             $localPath = $this->fileAccess->resolveLocalPath($candidate);
             if ($localPath && file_exists($localPath)) {
+                $media = app(MediaStorage::class);
+                $key = $media->normalizeKey($candidate);
+                if (app(MediaDownloadUrl::class)->enabled() && $key
+                    && preg_match('#^(shoots|share-links|editor-downloads)/#', $key)
+                    && $media->exists($key)) {
+                    $url = $media->signedAppUrl($key, null, $filename);
+                    return ($request?->expectsJson() || $request?->prefers(['application/json', 'application/zip']) === 'application/zip')
+                        ? response()->json(['type' => 'redirect', 'url' => $url])
+                        : redirect()->away($url);
+                }
                 return app(MediaStorage::class)->localResponse($localPath, $filename, [], (int) $file->shoot_id);
             }
         }

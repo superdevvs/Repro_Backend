@@ -4,6 +4,8 @@ return [
 
     // Enable separately after the matching administrator configuration and canary checks.
     'download_offload' => (bool) env('MEDIA_DOWNLOAD_OFFLOAD', false),
+    // Activate only after the DNS-only host has a valid certificate and restricted nginx vhost.
+    'download_origin' => env('MEDIA_DOWNLOAD_ORIGIN', ''),
     'archive_store_compressed' => (bool) env('MEDIA_ARCHIVE_STORE_COMPRESSED', false),
     'archive_dedicated_queue' => (bool) env('MEDIA_ARCHIVE_DEDICATED_QUEUE', false),
     'archive_prewarm' => (bool) env('MEDIA_ARCHIVE_PREWARM', false),

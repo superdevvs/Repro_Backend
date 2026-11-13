@@ -5,7 +5,6 @@ namespace App\Services\Media;
 use Illuminate\Contracts\Filesystem\Filesystem;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
-use Illuminate\Support\Facades\URL;
 use League\Flysystem\UnableToRetrieveMetadata;
 use Symfony\Component\HttpFoundation\Response;
 
@@ -549,7 +548,7 @@ class MediaStorage
      *
      * These URLs are the replacement for `/storage/shoots/...` aliases.
      */
-    public function signedAppUrl(string $key, ?int $ttlSeconds = null): string
+    public function signedAppUrl(string $key, ?int $ttlSeconds = null, ?string $downloadFilename = null): string
     {
         $key = $this->normalizeKey($key) ?? '';
         $ttl = $ttlSeconds ?? (int) config('media.signed_url_ttl', 604800);
@@ -561,11 +560,8 @@ class MediaStorage
                 abort(404);
             }
 
-            return URL::temporarySignedRoute(
-                'api.public.shoot-media.file',
-                now()->addSeconds(max(1, $ttl)),
-                ['path' => $key]
-            );
+            return app(MediaDownloadUrl::class)->signed($key, $ttl, $downloadFilename,
+                $downloadFilename !== null || str_ends_with(strtolower($key), '.zip'));
         } finally {
             $lease?->release();
         }

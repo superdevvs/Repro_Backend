@@ -35,6 +35,16 @@ class PublicShootMediaFileController extends Controller
             'X-Accel-Buffering' => 'no',
         ];
 
+        // The requested name is covered by the absolute URL signature.
+        if ($request->query->has('download')) {
+            $filename = basename(str_replace('\\', '/', (string) $request->query('download')));
+            if ($filename === '' || preg_match('/[\x00-\x1f\x7f]/', $filename)) {
+                abort(400);
+            }
+
+            return $media->downloadResponse($key, $filename, $headers);
+        }
+
         if (str_ends_with(strtolower($key), '.zip')) {
             $filename = basename($key);
             $headers['Content-Type'] = 'application/zip';
