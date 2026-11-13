@@ -135,7 +135,8 @@ class LabComposites
             'resolutionStrategy' => $manifest['resolutionStrategy'],
             'preview' => $manifest['preview'] + ['assetPath' => '/api/iguide-lab/assets/composite-preview/'.$record->id, 'mime' => 'image/png', 'preview' => true],
             'native' => $record->native_path ? $manifest['native'] + ['assetPath' => '/api/iguide-lab/assets/composite-native/'.$record->id, 'mime' => 'image/png', 'preview' => false] : null,
-            'manifest' => $manifest, 'latestReview' => app(LabReviews::class)->latest($record), 'createdAt' => $record->created_at->toIso8601String()];
+            'manifest' => $manifest, 'displayMetadata' => app(LabDisplayMetadata::class)->latest($record),
+            'latestReview' => app(LabReviews::class)->latest($record), 'createdAt' => $record->created_at->toIso8601String()];
     }
 
     private function verifyPng(string $file, array $expected, int $maxBytes): void

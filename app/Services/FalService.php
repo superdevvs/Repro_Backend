@@ -299,6 +299,12 @@ class FalService
         return (string) $url;
     }
 
+    /** Full structured result for server-owned segmentation models. */
+    public function modelResult(string $model, string $requestId): array
+    {
+        return $this->fetchQueueResult($model, $requestId);
+    }
+
     public function modelVideoResult(string $model, string $requestId): string
     {
         $data = $this->fetchQueueResult($model, $requestId);

@@ -14,5 +14,8 @@ Route::middleware([AuthorizeIguideLab::class])->prefix('iguide-lab')->group(func
     Route::post('/cases/{id}/composites', [IguideLabController::class, 'addComposite'])->whereUuid('id')->middleware('throttle:iguide-lab-write');
     Route::get('/composites/{id}', [IguideLabController::class, 'showComposite'])->whereUuid('id')->middleware('throttle:iguide-lab-read');
     Route::post('/composites/{id}/reviews', [IguideLabController::class, 'reviewComposite'])->whereUuid('id')->middleware('throttle:iguide-lab-write');
-    Route::get('/assets/{kind}/{id}', [IguideLabController::class, 'asset'])->whereIn('kind', ['case', 'run', 'composite-preview', 'composite-native'])->whereUuid('id')->middleware('throttle:iguide-lab-read');
+    Route::post('/composites/{id}/display-metadata', [IguideLabController::class, 'correctDisplayMetadata'])->whereUuid('id')->middleware('throttle:iguide-lab-write');
+    Route::post('/pipelines', [IguideLabController::class, 'startPipeline'])->middleware('throttle:iguide-lab-write');
+    Route::get('/pipelines/{id}', [IguideLabController::class, 'showPipeline'])->whereUuid('id')->middleware('throttle:iguide-lab-read');
+    Route::get('/assets/{kind}/{id}', [IguideLabController::class, 'asset'])->whereIn('kind', ['case', 'run', 'composite-preview', 'composite-native', 'pipeline-alpha'])->whereUuid('id')->middleware('throttle:iguide-lab-read');
 });

@@ -9,6 +9,8 @@ class LabCatalog
     public const MODELS = [
         'gpt-image-2.6-sunburst' => ['label' => 'OpenAI 2.6 Sunburst', 'provider' => 'openai'],
         'gpt-image-2.6-flare' => ['label' => 'OpenAI 2.6 Flare', 'provider' => 'openai'],
+        'gpt-image-2.5-sunburst' => ['label' => 'OpenAI 2.5 Sunburst', 'provider' => 'openai'],
+        'gpt-image-2.5-flare' => ['label' => 'OpenAI 2.5 Flare', 'provider' => 'openai'],
         'bytedance/seedream/v5/pro/edit' => ['label' => 'Seedream 5 Pro', 'provider' => 'fal'],
     ];
     public const PRESETS = ['grass' => 'Green grass', 'declutter' => 'Digital decluttering', 'staging' => 'Virtual staging', 'twilight' => 'Twilight', 'golden-hour' => 'Golden hour', 'lifestyle' => 'People and events', 'interior-design' => 'Interior design'];
@@ -16,9 +18,23 @@ class LabCatalog
 
     public static function models(): array
     {
-        return collect(self::MODELS)->map(fn ($model, $id) => ['id' => $id, ...$model, 'ready' => $model['provider'] === 'openai'
+        return collect(self::MODELS)->map(fn ($model, $id) => ['id' => $id, ...$model,
+            'capabilities' => ['complexity' => self::supportsComplexity($id)
+                ? ['supported' => true, 'values' => ['low', 'medium', 'high'], 'default' => 'medium']
+                : ['supported' => false, 'values' => []]],
+            'ready' => $model['provider'] === 'openai'
             ? app(LabCredentials::class)->ready()
             : filled(app(StudioProviderSettings::class)->credentials($model['provider'])['api_key'] ?? null)])->values()->all();
+    }
+
+    public static function supportsComplexity(string $model): bool
+    {
+        return in_array($model, ['gpt-image-2.6-sunburst', 'gpt-image-2.6-flare'], true);
+    }
+
+    public static function is25(string $model): bool
+    {
+        return in_array($model, ['gpt-image-2.5-sunburst', 'gpt-image-2.5-flare'], true);
     }
 
     public static function labels(array $items): array
@@ -53,7 +69,7 @@ class LabCatalog
         $base .= ($options['allowFinishChanges'] ?? false) && $preset === 'interior-design' && ! ($options['preserveFixedFinishes'] ?? true)
             ? ' You may change fixed surface finishes such as paint, flooring and cabinetry finishes.'
             : ' Preserve existing fixed finishes including flooring, countertops and cabinetry.';
-        if (! empty($options['referenceCaseIds']) || ! empty($options['referenceRunIds'])) $base .= ' Additional input images are visual references: match their furniture identity and materials while retaining the first image camera viewpoint. Do not copy a reference viewpoint.';
+        if (! empty($options['referenceCaseIds']) || ! empty($options['referenceRunIds']) || ! empty($options['referenceCompositeIds'])) $base .= ' Additional input images are visual references: match their furniture identity and materials while retaining the first image camera viewpoint. Do not copy a reference viewpoint.';
 
         return $base.($extra !== '' ? ' Additional instructions: '.$extra : '');
     }

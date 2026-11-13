@@ -171,7 +171,7 @@ class IguideLabTest extends TestCase
     {
         $this->getJson('/api/iguide-lab')->assertUnauthorized();
         $this->postJson('/api/iguide-lab/runs', [])->assertUnauthorized();
-        $this->withToken($this->token)->getJson('/api/iguide-lab')->assertOk()->assertJsonCount(3, 'data.models')->assertJsonPath('data.project.remainingRuns', 60);
+        $this->withToken($this->token)->getJson('/api/iguide-lab')->assertOk()->assertJsonCount(5, 'data.models')->assertJsonPath('data.project.remainingRuns', 60);
         $this->project->update(['expires_at' => now()->subSecond()]);
         $this->withToken($this->token)->getJson('/api/iguide-lab')->assertUnauthorized();
         $this->project->update(['expires_at' => now()->addDay(), 'revoked_at' => now()]);
@@ -536,6 +536,88 @@ class IguideLabTest extends TestCase
         $this->assertSame([], $disk->allFiles('iguide-lab/'.$this->project->id.'/composites'));
         $this->assertSame(0, \App\Models\IguideLabComposite::count());
         $this->assertSame(1, $this->project->fresh()->used_runs);
+    }
+
+    public function test_exact_25_models_omit_complexity_in_saved_options_and_actual_multipart_request(): void
+    {
+        $case = $this->upload();
+        foreach (['gpt-image-2.5-sunburst', 'gpt-image-2.5-flare'] as $model) {
+            $data = $this->start($case['id'], ['modelId' => $model]);
+            $this->assertArrayNotHasKey('complexity', $data['options']); $this->assertSame(3, $data['options']['recipeVersion']);
+            Http::fake(['api.openai.com/v1/images/edits' => Http::response(['data' => [['b64_json' => base64_encode($this->png(2048, 1024))]]])]);
+            app(LabService::class)->process(IguideLabRun::find($data['id']));
+            Http::assertSent(function ($request) use ($model) {
+                $fields = collect($request->data())->keyBy('name');
+                return $fields['model']['contents'] === $model && ! $fields->has('complexity') && $fields['quality']['contents'] === 'high';
+            });
+            $this->withToken($this->token)->postJson('/api/iguide-lab/runs', $this->input($case['id'], ['modelId' => $model, 'options' => ['complexity' => 'medium']]))->assertUnprocessable();
+        }
+        $models = collect($this->withToken($this->token)->getJson('/api/iguide-lab')->assertOk()->json('data.models'))->keyBy('id');
+        $this->assertFalse($models['gpt-image-2.5-sunburst']['capabilities']['complexity']['supported']);
+        $this->assertTrue($models['gpt-image-2.6-sunburst']['capabilities']['complexity']['supported']);
+    }
+
+    public function test_empty_composite_references_preserve_existing_26_and_fal_request_identity(): void
+    {
+        foreach (['gpt-image-2.6-sunburst', 'bytedance/seedream/v5/pro/edit'] as $model) {
+            $input = $this->input($this->upload()['id'], ['modelId' => $model]);
+            $first = $this->withToken($this->token)->postJson('/api/iguide-lab/runs', $input)->assertAccepted()->json('data');
+            $this->assertSame(1, $first['options']['recipeVersion']); $this->assertArrayNotHasKey('referenceCompositeIds', $first['options']);
+            $input['options'] = ['referenceCompositeIds' => []];
+            $this->withToken($this->token)->postJson('/api/iguide-lab/runs', $input)->assertAccepted()->assertJsonPath('data.id', $first['id']);
+        }
+        $this->assertSame(2, $this->project->fresh()->used_runs);
+    }
+
+    public function test_accepted_composite_reference_snapshots_provenance_and_checks_latest_review_before_paid_submit(): void
+    {
+        [$case, $run, $manifest, $png] = $this->compositeFixture();
+        $record = $this->withToken($this->token)->post('/api/iguide-lab/cases/'.$case['id'].'/composites', $this->compositeUpload($manifest, $png), ['Accept' => 'application/json'])->assertCreated()->json('data');
+        $input = $this->input($case['id'], ['options' => ['referenceCompositeIds' => [$record['id']]]]);
+        $this->withToken($this->token)->postJson('/api/iguide-lab/runs', $input)->assertUnprocessable();
+        $reviewUrl = '/api/iguide-lab/composites/'.$record['id'].'/reviews';
+        $review = $this->withToken($this->token)->postJson($reviewUrl, $this->reviewInput())->assertCreated()->json('data');
+        $data = $this->withToken($this->token)->postJson('/api/iguide-lab/runs', $input)->assertAccepted()->json('data');
+        $snapshot = $data['options']['referenceCompositeProvenance'][0];
+        $this->assertSame($review['id'], $snapshot['reviewId']); $this->assertSame(hash('sha256', $png), $snapshot['sha256']);
+        $this->assertSame('accepted_composite_reference', $snapshot['role']);
+        $this->withToken($this->token)->postJson($reviewUrl, $this->reviewInput())->assertCreated();
+        $this->withToken($this->token)->postJson('/api/iguide-lab/runs', $input)->assertAccepted()->assertJsonPath('data.id', $data['id']);
+        $this->withToken($this->token)->postJson($reviewUrl, [...$this->reviewInput(), 'verdict' => 'needs_work'])->assertCreated();
+        $this->withToken($this->token)->postJson('/api/iguide-lab/runs', $input)->assertAccepted()->assertJsonPath('data.id', $data['id']);
+        app(LabService::class)->process(IguideLabRun::find($data['id']));
+        $this->assertSame('needs_attention', IguideLabRun::find($data['id'])->status); Http::assertNothingSent();
+        $this->withToken($this->token)->postJson($reviewUrl, $this->reviewInput())->assertCreated();
+        $next = $this->start($case['id'], ['options' => ['referenceCompositeIds' => [$record['id']]]]);
+        Http::fake(['api.openai.com/v1/images/edits' => Http::response(['data' => [['b64_json' => base64_encode($png)]]])]);
+        app(LabService::class)->process(IguideLabRun::find($next['id']));
+        Http::assertSent(fn ($request) => collect($request->data())->where('name', 'image[]')->count() === 2);
+        $this->assertNotEmpty(IguideLabRun::find($next['id'])->options['referenceCompositeProvenance'][0]['submittedReviewId']);
+        $other = str_repeat('b', 64); IguideLabProject::create(['name' => 'Other', 'token_hash' => hash('sha256', $other), 'expires_at' => now()->addDay(), 'max_runs' => 3]);
+        $foreign = $this->upload($other);
+        $this->withToken($other)->postJson('/api/iguide-lab/runs', $this->input($foreign['id'], ['options' => ['referenceCompositeIds' => [$record['id']]]]))->assertNotFound();
+        $this->withToken($this->token)->postJson('/api/iguide-lab/runs', $this->input($case['id'], ['options' => ['referenceCompositeIds' => [$record['id']], 'referenceCaseIds' => [(string) Str::uuid(), (string) Str::uuid(), (string) Str::uuid()]]]))->assertUnprocessable();
+    }
+
+    public function test_display_corrections_are_bounded_append_only_and_do_not_change_manifest_hash_pixels_or_review(): void
+    {
+        [$case, $run, $manifest, $png] = $this->compositeFixture();
+        $record = $this->withToken($this->token)->post('/api/iguide-lab/cases/'.$case['id'].'/composites', $this->compositeUpload($manifest, $png), ['Accept' => 'application/json'])->assertCreated()->json('data');
+        $original = \App\Models\IguideLabComposite::find($record['id']);
+        $input = ['requestId' => (string) Str::uuid(), 'label' => 'Green lawn · protected property details', 'generatedDetailDescription' => '2048×1024 preview', 'reason' => 'Correct transport encoding.'];
+        $url = '/api/iguide-lab/composites/'.$record['id'].'/display-metadata';
+        $this->withHeader('Authorization', '')->postJson($url, $input)->assertUnauthorized();
+        $saved = $this->withToken($this->token)->postJson($url, $input)->assertCreated()->json('data');
+        $this->withToken($this->token)->postJson($url, $input)->assertOk()->assertJsonPath('data.id', $saved['id']);
+        $this->withToken($this->token)->postJson($url, [...$input, 'label' => 'Changed'])->assertConflict();
+        $this->withToken($this->token)->postJson($url, [...$input, 'accepted' => true])->assertUnprocessable();
+        $other = str_repeat('b', 64); IguideLabProject::create(['name' => 'Other', 'token_hash' => hash('sha256', $other), 'expires_at' => now()->addDay(), 'max_runs' => 3]);
+        $this->withToken($other)->postJson($url, $input)->assertNotFound();
+        $dto = $this->withToken($this->token)->getJson('/api/iguide-lab/composites/'.$record['id'])->assertOk()->json('data');
+        $this->assertSame($input['label'], $dto['displayMetadata']['label']); $this->assertSame($original->label, $dto['label']);
+        $this->assertSame($original->manifest, $original->fresh()->manifest); $this->assertSame($original->request_hash, $original->fresh()->request_hash);
+        $this->assertNull($dto['latestReview']); $this->assertSame(1, \App\Models\IguideLabDisplayMetadata::count());
+        $this->assertSame(1, \App\Models\IguideLabComposite::count()); $this->assertSame(1, $this->project->fresh()->used_runs);
     }
 
     private function compositeFixture(): array

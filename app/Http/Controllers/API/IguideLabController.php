@@ -6,10 +6,13 @@ use App\Http\Controllers\Controller;
 use App\Models\IguideLabCase;
 use App\Models\IguideLabRun;
 use App\Models\IguideLabComposite;
+use App\Models\IguideLabPipeline;
 use App\Services\IguideLab\LabComposites;
 use App\Services\IguideLab\LabCatalog;
 use App\Services\IguideLab\LabService;
 use App\Services\IguideLab\LabReviews;
+use App\Services\IguideLab\LabPipelines;
+use App\Services\IguideLab\LabDisplayMetadata;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\Rule;
@@ -24,10 +27,15 @@ class IguideLabController extends Controller
             'project' => ['id' => $project->id, 'name' => $project->name, 'expiresAt' => $project->expires_at->toIso8601String(),
                 'maxRuns' => $project->max_runs, 'usedRuns' => $project->used_runs, 'remainingRuns' => max(0, $project->max_runs - $project->used_runs)],
             'models' => LabCatalog::models(), 'presets' => LabCatalog::labels(LabCatalog::PRESETS), 'styles' => LabCatalog::labels(LabCatalog::STYLES),
-            'capabilities' => ['schemaVersion' => 2, 'composites' => true, 'openaiComplexity' => ['low', 'medium', 'high'], 'selectedObjectInstructions' => true, 'maskUpload' => false, 'nativeCompositeUpload' => 'operator_only'],
+            'capabilities' => ['schemaVersion' => 3, 'composites' => true, 'openaiComplexity' => ['low', 'medium', 'high'], 'selectedObjectInstructions' => true, 'maskUpload' => false, 'nativeCompositeUpload' => 'operator_only',
+                'referenceComposites' => ['supported' => true, 'requiresAcceptedReview' => true, 'maxCombinedReferences' => 3],
+                'pipelines' => ['supported' => true, 'automaticAcceptance' => false, 'recipes' => [['id' => LabPipelines::RECIPE, 'version' => LabPipelines::VERSION,
+                    'ready' => app(LabPipelines::class)->ready(), 'preset' => 'grass', 'projection' => 'equirectangular', 'supportsExistingRun' => true,
+                    'output' => ['width' => 2048, 'height' => 1024, 'resolutionStrategy' => 'preview_only'], 'supportModelId' => 'fal-ai/sam-3-1/image']]]],
             'cases' => IguideLabCase::where('project_id', $project->id)->oldest()->get()->map(fn ($case) => $service->caseDto($case)),
             'runs' => IguideLabRun::where('project_id', $project->id)->latest()->get()->map(fn ($run) => $service->runDto($run)),
             'composites' => IguideLabComposite::where('project_id', $project->id)->latest()->get()->map(fn ($record) => app(LabComposites::class)->dto($record)),
+            'pipelines' => IguideLabPipeline::where('project_id', $project->id)->latest()->get()->map(fn ($record) => app(LabPipelines::class)->dto($record)),
         ]]);
     }
 
@@ -54,7 +62,8 @@ class IguideLabController extends Controller
             'modelId' => ['required', Rule::in(array_keys(LabCatalog::MODELS))],
             'preset' => ['required', Rule::in(array_keys(LabCatalog::PRESETS))],
             'style' => ['nullable', Rule::in(array_keys(LabCatalog::STYLES))], 'prompt' => ['nullable', 'string', 'max:4000'],
-            'options' => ['sometimes', 'array:roomType,referenceCaseIds,referenceRunIds,furnitureDensity,lightingIntensity,preserveArchitecture,preserveFixedFinishes,allowFinishChanges,complexity,declutterMode,selectedObjects,preserveObjects'],
+            'options' => ['sometimes', 'array:roomType,referenceCaseIds,referenceRunIds,referenceCompositeIds,furnitureDensity,lightingIntensity,preserveArchitecture,preserveFixedFinishes,allowFinishChanges,complexity,declutterMode,selectedObjects,preserveObjects'],
+            'options.referenceCompositeIds' => ['sometimes', 'array', 'max:3'], 'options.referenceCompositeIds.*' => ['required', 'uuid', 'distinct'],
             'options.complexity' => ['sometimes', Rule::in(['low', 'medium', 'high'])],
             'options.declutterMode' => ['sometimes', Rule::in(['generic', 'selected-object'])],
             'options.selectedObjects' => ['sometimes', 'array', 'max:20'], 'options.selectedObjects.*' => ['required', 'string', 'max:300'],
@@ -131,10 +140,10 @@ class IguideLabController extends Controller
     public function asset(Request $request, string $kind, string $id)
     {
         $projectId = $request->attributes->get('iguide_lab_project')->id;
-        $query = match ($kind) { 'case' => IguideLabCase::query(), 'run' => IguideLabRun::query(), default => IguideLabComposite::query() };
+        $query = match ($kind) { 'case' => IguideLabCase::query(), 'run' => IguideLabRun::query(), 'pipeline-alpha' => IguideLabPipeline::query(), default => IguideLabComposite::query() };
         $record = $query->where('project_id', $projectId)->findOrFail($id);
         abort_if($kind === 'run' && $record->status !== 'completed', 404);
-        $path = match ($kind) { 'case' => $record->source_path, 'run' => $record->output_path, 'composite-preview' => $record->preview_path, 'composite-native' => $record->native_path };
+        $path = match ($kind) { 'case' => $record->source_path, 'run' => $record->output_path, 'composite-preview' => $record->preview_path, 'composite-native' => $record->native_path, 'pipeline-alpha' => $record->data['alphaPath'] ?? null };
         abort_unless(is_string($path) && str_starts_with($path, 'iguide-lab/'.$projectId.'/') && ! str_contains($path, '..') && Storage::disk(LabService::DISK)->exists($path), 404);
 
         return response()->file(Storage::disk(LabService::DISK)->path($path), [
@@ -142,5 +151,34 @@ class IguideLabController extends Controller
             'Content-Disposition' => ($kind === 'composite-native' ? 'attachment' : 'inline').'; filename="'.($kind === 'case' ? 'source' : 'experiment').'.'.pathinfo($path, PATHINFO_EXTENSION).'"',
             'X-Content-Type-Options' => 'nosniff', 'Cache-Control' => 'private, no-store',
         ]);
+    }
+
+    public function startPipeline(Request $request, LabPipelines $service)
+    {
+        $input = $request->validate([
+            'requestId' => ['required', 'uuid'], 'caseId' => ['required', 'uuid'], 'recipe' => ['required', Rule::in([LabPipelines::RECIPE])],
+            'existingRunId' => ['nullable', 'uuid'], 'modelId' => ['required_without:existingRunId', Rule::in(array_keys(LabCatalog::MODELS))],
+            'prompt' => ['nullable', 'string', 'max:4000'], 'options' => ['sometimes', 'array:complexity'],
+            'options.complexity' => ['sometimes', Rule::in(['low', 'medium', 'high'])],
+        ]);
+        $record = $service->start($request->attributes->get('iguide_lab_project'), $input);
+        return response()->json(['data' => $service->dto($record)], 202);
+    }
+
+    public function showPipeline(Request $request, string $id, LabPipelines $service)
+    {
+        $record = IguideLabPipeline::where('project_id', $request->attributes->get('iguide_lab_project')->id)->findOrFail($id);
+        return response()->json(['data' => $service->dto($record)]);
+    }
+
+    public function correctDisplayMetadata(Request $request, string $id, LabDisplayMetadata $service)
+    {
+        $project = $request->attributes->get('iguide_lab_project');
+        $record = IguideLabComposite::where('project_id', $project->id)->findOrFail($id);
+        $input = $request->validate(['requestId' => ['required', 'uuid'], 'label' => ['required', 'string', 'max:160'],
+            'generatedDetailDescription' => ['required', 'string', 'max:1000'], 'reason' => ['required', 'string', 'max:1000']]);
+        abort_if(array_diff(array_keys($request->all()), array_keys($input)), 422, 'Only display text can be corrected.');
+        [$entry, $created] = $service->add($project, $record, $input);
+        return response()->json(['data' => $service->dto($entry)], $created ? 201 : 200);
     }
 }

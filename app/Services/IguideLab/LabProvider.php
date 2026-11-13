@@ -9,7 +9,6 @@ use App\Services\FalService;
 use App\Support\LockedWrite;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Http;
-use Intervention\Image\ImageManager;
 use RuntimeException;
 
 /** Exact model allowlist; only an explicit rejected primary quota may select the fallback key. */
@@ -22,7 +21,7 @@ class LabProvider
     {
         if (! isset(LabCatalog::MODELS[$run->model_id])) throw new RuntimeException('Unsupported lab model.');
         $options = $run->options;
-        $prepared = array_map(fn ($bytes) => (string) ImageManager::gd()->read($bytes)->scaleDown(width: 2048, height: 2048)->toPng(), $images);
+        $prepared = array_map(fn ($bytes) => LabImages::prepared($bytes), $images);
         $options['preparedInputSha256'] = array_map(fn ($bytes) => hash('sha256', $bytes), $prepared);
         // Persist the exact derivative fingerprints before either paid request leaves this process.
         LockedWrite::run(fn () => $run->update(['options' => $options]), 'iguide-lab.input-fingerprints');
@@ -67,11 +66,13 @@ class LabProvider
         try {
             $request = Http::withToken($key)->acceptJson()->connectTimeout(15)->timeout($remainingSeconds)->withOptions(['allow_redirects' => false]);
             foreach ($prepared as $imageIndex => $bytes) $request->attach('image[]', $bytes, 'input-'.$imageIndex.'.png', ['Content-Type' => 'image/png']);
-            $response = $request->post('https://api.openai.com/v1/images/edits', [
+            $payload = [
                 'model' => $run->model_id, 'prompt' => $run->prompt, 'n' => 1,
-                'size' => $options['width'].'x'.$options['height'], 'quality' => 'high', 'complexity' => $options['complexity'] ?? 'medium',
+                'size' => $options['width'].'x'.$options['height'], 'quality' => 'high',
                 'output_format' => 'png', 'background' => 'opaque',
-            ]);
+            ];
+            if (LabCatalog::supportsComplexity($run->model_id)) $payload['complexity'] = $options['complexity'] ?? 'medium';
+            $response = $request->post('https://api.openai.com/v1/images/edits', $payload);
         } catch (ConnectionException) {
             $attempts[$index] = array_merge($attempts[$index], ['status' => 'unknown', 'completedAt' => now()->toIso8601String()]);
             $this->saveAttempts($run, $attempts);

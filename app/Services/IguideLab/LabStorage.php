@@ -13,5 +13,13 @@ class LabStorage extends ListingStudioPrivateStorage
         $this->prepare(['iguide-lab', $projectId, 'cases']);
         $this->prepare(['iguide-lab', $projectId, 'runs']);
         $this->prepare(['iguide-lab', $projectId, 'composites']);
+        $this->prepare(['iguide-lab', $projectId, 'pipelines']);
+    }
+
+    public function preparePipeline(string $projectId, string $id): void
+    {
+        $this->uuid($projectId); $this->uuid($id);
+        $this->prepare(['iguide-lab', $projectId, 'pipelines', $id]);
+        $this->prepare(['iguide-lab', $projectId, 'pipelines', $id, 'composed']);
     }
 }

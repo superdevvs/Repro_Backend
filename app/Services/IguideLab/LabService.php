@@ -6,6 +6,7 @@ use App\Exceptions\FalTerminalException;
 use App\Exceptions\OpenAiImageException;
 use App\Jobs\ProcessIguideLabRun;
 use App\Models\IguideLabCase;
+use App\Models\IguideLabComposite;
 use App\Models\IguideLabProject;
 use App\Models\IguideLabRun;
 use App\Support\LockedWrite;
@@ -53,19 +54,20 @@ class LabService
     {
         $case = IguideLabCase::where('project_id', $project->id)->findOrFail($input['caseId']);
         $requested = $input['options'] ?? [];
-        $complexity = $requested['complexity'] ?? 'medium';
+        $complexity = $requested['complexity'] ?? (LabCatalog::is25($input['modelId']) ? null : 'medium');
+        $compositeIds = array_values(array_unique($requested['referenceCompositeIds'] ?? []));
         $selected = ($requested['declutterMode'] ?? 'generic') === 'selected-object';
-        abort_if(isset($requested['complexity']) && LabCatalog::MODELS[$input['modelId']]['provider'] !== 'openai', 422, 'Complexity is an OpenAI control.');
+        abort_if(isset($requested['complexity']) && ! LabCatalog::supportsComplexity($input['modelId']), 422, 'This exact model does not support a complexity setting.');
         abort_if($selected && ($input['preset'] !== 'declutter' || empty($requested['selectedObjects'])), 422, 'Selected-object decluttering requires explicit objects to remove.');
         abort_if(! $selected && (! empty($requested['selectedObjects']) || ! empty($requested['preserveObjects'])), 422, 'Object lists require selected-object decluttering.');
         $selection = $selected ? ['declutterMode' => 'selected-object', 'selectedObjects' => $requested['selectedObjects'], 'preserveObjects' => $requested['preserveObjects'] ?? []] : [];
-        unset($requested['complexity'], $requested['declutterMode'], $requested['selectedObjects'], $requested['preserveObjects']);
+        unset($requested['complexity'], $requested['declutterMode'], $requested['selectedObjects'], $requested['preserveObjects'], $requested['referenceCompositeIds']);
         // Keep the original default option order and recipe for previously reserved request IDs.
         $options = array_merge(['roomType' => 'auto', 'referenceCaseIds' => [], 'referenceRunIds' => [], 'furnitureDensity' => 'balanced', 'lightingIntensity' => 'natural', 'preserveArchitecture' => true, 'preserveFixedFinishes' => true, 'allowFinishChanges' => false], $requested);
         foreach (['preserveArchitecture', 'preserveFixedFinishes', 'allowFinishChanges'] as $flag) $options[$flag] = (bool) $options[$flag];
         $options['referenceCaseIds'] = array_values(array_unique($options['referenceCaseIds']));
         $options['referenceRunIds'] = array_values(array_unique($options['referenceRunIds']));
-        abort_if(count($options['referenceCaseIds']) + count($options['referenceRunIds']) > 3, 422, 'Use at most three references.');
+        abort_if(count($options['referenceCaseIds']) + count($options['referenceRunIds']) + count($compositeIds) > 3, 422, 'Use at most three references.');
         foreach ($options['referenceCaseIds'] as $id) IguideLabCase::where('project_id', $project->id)->findOrFail($id);
         foreach ($options['referenceRunIds'] as $id) {
             $reference = IguideLabRun::where('project_id', $project->id)->where('status', 'completed')->findOrFail($id);
@@ -75,12 +77,27 @@ class LabService
         $options['width'] = $case->width >= $case->height ? 2048 : max(16, (int) round(2048 * $case->width / $case->height / 16) * 16);
         $options['height'] = $case->height >= $case->width ? 2048 : max(16, (int) round(2048 * $case->height / $case->width / 16) * 16);
         $options += ['quality' => 'high', 'complexity' => $complexity, 'seedreamMode' => 'standard', 'projection' => $case->projection, 'recipeVersion' => $selected || $complexity !== 'medium' ? 2 : 1];
+        if (LabCatalog::is25($input['modelId'])) { unset($options['complexity']); $options['recipeVersion'] = 3; }
+        if ($compositeIds) { $options['referenceCompositeIds'] = $compositeIds; $options['recipeVersion'] = 3; }
         $options += $selection;
         $style = $input['style'] ?? (in_array($input['preset'], ['staging', 'interior-design']) ? 'modern' : null);
         $extra = trim($input['prompt'] ?? '');
         $options['customInstructions'] = $extra;
         $prompt = LabCatalog::prompt($input['preset'], $style, $case->projection, $extra, $options);
         $hash = hash('sha256', json_encode([$case->id, $case->source_sha256, $input['modelId'], $input['preset'], $style, $prompt, $options], JSON_THROW_ON_ERROR));
+        // A later QA revocation blocks queued submission, not reconciliation of a known request.
+        if ($compositeIds && ($existing = IguideLabRun::where('project_id', $project->id)->where('request_id', $input['requestId'])->first())) {
+            abort_unless($project->fresh()->active(), 401);
+            abort_unless(hash_equals($existing->request_hash, $hash), 409, 'This request ID was already used with different settings.');
+            return $existing;
+        }
+        $compositeProvenance = [];
+        foreach ($compositeIds as $id) {
+            [$reference, $review] = $this->acceptedComposite($project->id, $id);
+            $compositeProvenance[] = ['id' => $id, 'sha256' => $reference->manifest['preview']['sha256'], 'reviewId' => $review['id'], 'role' => 'accepted_composite_reference'];
+        }
+        // Review IDs are an immutable reservation snapshot, not user request identity.
+        if ($compositeProvenance) $options['referenceCompositeProvenance'] = $compositeProvenance;
         [$run, $created] = LockedWrite::run(fn () => DB::transaction(function () use ($project, $case, $input, $options, $style, $prompt, $hash) {
             // Writing the quota row first acquires SQLite's write lock before count/read decisions.
             IguideLabProject::whereKey($project->id)->update(['updated_at' => now()]);
@@ -135,6 +152,14 @@ class LabService
                     $reference = IguideLabRun::where('project_id', $run->project_id)->where('status', 'completed')->findOrFail($id);
                     $bytes[] = Storage::disk(self::DISK)->get($reference->output_path);
                 }
+                $options = $run->options;
+                foreach ($options['referenceCompositeProvenance'] ?? [] as $index => $snapshot) {
+                    [$reference, $review] = $this->acceptedComposite($run->project_id, $snapshot['id']);
+                    abort_unless(hash_equals($snapshot['sha256'], $reference->manifest['preview']['sha256']), 422, 'The accepted reference changed.');
+                    $options['referenceCompositeProvenance'][$index]['submittedReviewId'] = $review['id'];
+                    $bytes[] = Storage::disk(self::DISK)->get($reference->preview_path);
+                }
+                if ($options !== $run->options) LockedWrite::run(fn () => $run->update(['options' => $options]), 'iguide-lab.reference-provenance');
                 $result = $provider->submit($run, $bytes);
                 if (! isset($result['bytes'])) {
                     LockedWrite::run(fn () => $run->update(['status' => 'processing', 'provider_request_id' => $result['requestId']]), 'iguide-lab.submitted');
@@ -181,6 +206,16 @@ class LabService
     public function attention(IguideLabRun $run, string $message, string $status = 'needs_attention'): void
     {
         LockedWrite::run(fn () => IguideLabRun::whereKey($run->id)->whereNotIn('status', ['completed', 'failed'])->update(['status' => $status, 'error' => $message, 'completed_at' => now(), 'updated_at' => now()]), 'iguide-lab.attention');
+    }
+
+    private function acceptedComposite(string $projectId, string $id): array
+    {
+        $record = IguideLabComposite::where('project_id', $projectId)->where('status', 'completed')->findOrFail($id);
+        $review = app(LabReviews::class)->latest($record);
+        abort_unless(($review['verdict'] ?? null) === 'accepted', 422, 'A composite reference requires a current accepted review.');
+        abort_unless(Storage::disk(self::DISK)->exists($record->preview_path)
+            && hash_equals($record->manifest['preview']['sha256'], hash_file('sha256', Storage::disk(self::DISK)->path($record->preview_path))), 422, 'The accepted reference bytes do not match.');
+        return [$record, $review];
     }
 
     public function caseDto(IguideLabCase $case): array
