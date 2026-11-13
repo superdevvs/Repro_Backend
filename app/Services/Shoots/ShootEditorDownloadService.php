@@ -9,6 +9,8 @@ use App\Services\Media\MediaStorage;
 use App\Services\ShootActivityLogger;
 use App\Services\ShootMediaStorageService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use Symfony\Component\HttpFoundation\Response;
@@ -16,6 +18,7 @@ use Symfony\Component\HttpFoundation\Response;
 class ShootEditorDownloadService
 {
     private const POLL_AFTER_MS = 3000;
+    private const DOWNLOAD_NOTIFICATION_WINDOW_MINUTES = 30;
 
     public function __construct(
         protected ShootMediaStorageService $mediaStorageService,
@@ -70,22 +73,6 @@ class ShootEditorDownloadService
             );
         }
 
-        $this->activityLogger->log(
-            $shoot,
-            $isEditorDownload ? 'raw_downloaded_by_editor' : 'raw_downloaded_by_admin',
-            [
-                'downloader_id' => $user->id,
-                'downloader_name' => $user->name,
-                'downloader_role' => $user->role,
-                'file_count' => $fileCount > 0 ? $fileCount : 'all',
-            ],
-            $user
-        );
-
-        if ($isEditorDownload) {
-            $this->notifyAdminsOfEditorDownload($shoot, $user, $fileCount > 0 ? $fileCount : 0);
-        }
-
         // Prefer the shared async archive pipeline when this download is the full
         // raw hand-off set. Custom photo selections fall through to a scoped ZIP.
         // Building multi-GB ZIPs inline was causing nginx 499/502 timeouts for
@@ -105,6 +92,10 @@ class ShootEditorDownloadService
                 $payload['file_count'] = $fileCount;
                 if (($payload['type'] ?? null) === 'redirect' && empty($payload['message'])) {
                     $payload['message'] = 'Raw files ready for download.';
+                }
+                if ($archiveResponse['status'] === 200 && ($payload['type'] ?? null) === 'redirect'
+                    && is_string($payload['url'] ?? null) && $payload['url'] !== '') {
+                    $this->recordReadyDownload($shoot, $user, $files, $isEditorDownload);
                 }
 
                 return $this->withCors(
@@ -160,6 +151,9 @@ class ShootEditorDownloadService
                 ?? $media->publicUrl($storagePath);
 
             if (is_string($url) && $url !== '') {
+                $this->recordReadyDownload($shoot, $user, $files,
+                    $this->shootAuthorizationSupport->hasRole($user, ['editor']));
+
                 return $this->withCors(response()->json([
                     'type' => 'redirect',
                     'url' => $url,
@@ -178,6 +172,50 @@ class ShootEditorDownloadService
             'status_url' => $request->fullUrl(),
             'file_count' => $fileCount,
         ], 202), $request);
+    }
+
+    /**
+     * Record a ready hand-off, never a preparation poll or failed request.
+     *
+     * @param Collection<int, ShootFile> $files
+     */
+    protected function recordReadyDownload(Shoot $shoot, User $user, Collection $files, bool $isEditor): void
+    {
+        $signature = hash('sha256', json_encode($files->sortBy('id')->map(fn (ShootFile $file) => [
+            $file->id, $file->storage_path ?: $file->path, $file->file_size,
+            $file->updated_at?->format('Y-m-d H:i:s.u'),
+        ])->values()->all(), JSON_THROW_ON_ERROR));
+        $action = $isEditor ? 'raw_downloaded_by_editor' : 'raw_downloaded_by_admin';
+        $key = "raw-download-notification:{$shoot->id}:{$user->id}:{$action}:{$signature}";
+
+        // Atomic across concurrent ready responses. The persisted activity also
+        // prevents duplicate alerts after a cache clear or deployment.
+        if (! Cache::add($key, true, now()->addMinutes(self::DOWNLOAD_NOTIFICATION_WINDOW_MINUTES))) {
+            return;
+        }
+        try {
+            if ($shoot->activityLogs()->where('action', $action)->where('user_id', $user->id)
+                ->where('created_at', '>=', now()->subMinutes(self::DOWNLOAD_NOTIFICATION_WINDOW_MINUTES))
+                ->where('metadata->download_signature', $signature)->exists()) {
+                return;
+            }
+
+            $this->activityLogger->log($shoot, $action, [
+                'downloader_id' => $user->id,
+                'downloader_name' => $user->name,
+                'downloader_role' => $user->role,
+                'file_count' => $files->count(),
+                'download_signature' => $signature,
+                'download_ready' => true,
+            ], $user);
+
+            if ($isEditor) {
+                $this->notifyAdminsOfEditorDownload($shoot, $user, $files->count());
+            }
+        } catch (\Throwable $exception) {
+            Cache::forget($key);
+            throw $exception;
+        }
     }
 
     /**

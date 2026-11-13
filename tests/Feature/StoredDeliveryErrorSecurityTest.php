@@ -106,7 +106,7 @@ class StoredDeliveryErrorSecurityTest extends TestCase
         $user->id = 912004;
         $dropbox = Mockery::mock(ShootMediaStorageService::class);
         $activity = Mockery::mock(ShootActivityLogger::class);
-        $activity->shouldReceive('log')->once();
+        $activity->shouldNotReceive('log');
         $authorization = Mockery::mock(ShootAuthorizationSupport::class);
         $authorization->shouldReceive('hasRole')->once()->with($user, ['editor'])->andReturnFalse();
         $share = Mockery::mock(ShootShareLinkService::class);
