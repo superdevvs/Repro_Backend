@@ -67,7 +67,7 @@ server {{
     gzip off;
     location ^~ /api/public/shoot-media/file/ {{
         if ($request_method = OPTIONS) {{ return 204; }}
-        limit_except GET {{ deny all; }}
+        limit_except GET OPTIONS {{ deny all; }}
         include fastcgi_params;
         fastcgi_param SCRIPT_FILENAME /var/www/backend/public/index.php;
         fastcgi_param SCRIPT_NAME /index.php;
