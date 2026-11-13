@@ -75,7 +75,15 @@ class DeliveryPlanService
                 $resolved = $cancelled || ($kind === 'legacy' && $item->workflow_status === 'delivered' && $item->delivery_status === 'delivered')
                     || ($receipt && $this->validReceipt($receipt, $all->keyBy('id'), $external,
                         $receipt->execution_key !== $componentExecution && $item->workflow_status === 'delivered' && $item->delivery_status === 'delivered' ? null : $current));
-                $reasons = [];
+                // A receipt approves exact file versions, not every future upload
+                // to this service. Keep old releases available while exposing the
+                // added outputs to the ordinary reviewed finalization path.
+                $approvedVersions = collect($receipt ? (json_decode($receipt->evidence, true)['files'] ?? []) : []);
+                $additionalOutput = $resolved && ! $cancelled && $kind !== 'legacy' && $files->contains(fn ($file) =>
+                    ! $this->releasedFile($file) && ! $approvedVersions->contains(fn ($entry) =>
+                        (int) $entry['id'] === (int) $file->id && (int) $entry['version'] === (int) ($file->content_version ?: 1)));
+                if ($additionalOutput) $resolved = false;
+                $reasons = $additionalOutput ? ['additional_output'] : [];
                 if (! $resolved) {
                     if ($suspended) $reasons[] = 'work_suspended';
                     if ($future) $reasons[] = 'future_appointment';
@@ -530,6 +538,6 @@ class DeliveryPlanService
         return null;
     }
     private function url($value): bool { return is_string($value) && filter_var($value, FILTER_VALIDATE_URL) && in_array(strtolower((string) parse_url($value, PHP_URL_SCHEME)), ['https','http'], true); }
-    private function reason(?string $code, string $label): ?string { return match ($code) { 'work_suspended' => 'Resume this work before delivery.', 'future_appointment' => 'The service appointment has not happened yet.', 'unsafe_scan' => 'Output is awaiting a clean safety scan.', 'unassigned_media' => 'Assign the available output to its booked service.', 'provider_not_ready' => 'The provider reports that this output is not ready.', 'external_review_required' => 'Open the destination and verify the selected deliverables are actually available.', 'video_pending' => 'Video pending: upload or review the finished video.', 'provider_output_pending' => $label.' pending: no reviewed provider output.', 'output_pending' => $label.' pending: no eligible finished output.', 'outdated_approval' => 'Output changed after its approval. Review it again.', default => null }; }
+    private function reason(?string $code, string $label): ?string { return match ($code) { 'additional_output' => 'Additional files await review and finalization.', 'work_suspended' => 'Resume this work before delivery.', 'future_appointment' => 'The service appointment has not happened yet.', 'unsafe_scan' => 'Output is awaiting a clean safety scan.', 'unassigned_media' => 'Assign the available output to its booked service.', 'provider_not_ready' => 'The provider reports that this output is not ready.', 'external_review_required' => 'Open the destination and verify the selected deliverables are actually available.', 'video_pending' => 'Video pending: upload or review the finished video.', 'provider_output_pending' => $label.' pending: no reviewed provider output.', 'output_pending' => $label.' pending: no eligible finished output.', 'outdated_approval' => 'Output changed after its approval. Review it again.', default => null }; }
     private function reasonForPlan(array $components): string { return collect($components)->first(fn ($c) => ! $c['resolved'])['reason'] ?? 'No ready components.'; }
 }
