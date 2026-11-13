@@ -49,6 +49,10 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
+        foreach (['read' => 180, 'write' => 30] as $kind => $limit) {
+            \Illuminate\Support\Facades\RateLimiter::for('iguide-lab-'.$kind, fn ($request) =>
+                \Illuminate\Cache\RateLimiting\Limit::perMinute($limit)->by('iguide-lab-'.$kind.':'.hash('sha256', $request->bearerToken() ?: $request->ip())));
+        }
         $this->app['queue']->extend('database', fn () => new \App\Queue\SqliteRetryDatabaseConnector($this->app['db']));
 
         \Illuminate\Support\Facades\View::composer('emails.*', \App\Services\SystemEmails\EmailViewComposer::class);

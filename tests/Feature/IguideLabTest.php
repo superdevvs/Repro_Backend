@@ -348,6 +348,222 @@ class IguideLabTest extends TestCase
         Http::assertSentCount(4);
     }
 
+    public function test_selected_object_recipe_omits_generic_removal_and_complexity_reaches_provider(): void
+    {
+        $case = $this->upload();
+        foreach (['low', 'high'] as $complexity) {
+            $data = $this->start($case['id'], ['preset' => 'declutter', 'options' => ['complexity' => $complexity,
+                'declutterMode' => 'selected-object', 'selectedObjects' => ['flower vase on island'], 'preserveObjects' => ['knife block', 'coffee appliance']]]);
+            $this->assertStringNotContainsString('Remove loose clutter', $data['prompt']);
+            foreach (['Remove only', 'flower vase on island', 'knife block', 'coffee appliance', 'every other object'] as $phrase) $this->assertStringContainsString($phrase, $data['prompt']);
+            $this->assertSame(2, $data['options']['recipeVersion']);
+            Http::fake(['api.openai.com/v1/images/edits' => Http::response(['data' => [['b64_json' => base64_encode($this->png(2048, 1024))]]])]);
+            app(LabService::class)->process(IguideLabRun::find($data['id']));
+            Http::assertSent(fn ($request) => collect($request->data())->keyBy('name')['complexity']['contents'] === $complexity);
+        }
+        $generic = $this->start($case['id'], ['preset' => 'declutter']);
+        $this->assertStringContainsString('Remove loose clutter', $generic['prompt']);
+        $this->assertSame(1, $generic['options']['recipeVersion']);
+        foreach ([['declutterMode' => 'selected-object'], ['selectedObjects' => ['vase']]] as $options) {
+            $this->withToken($this->token)->postJson('/api/iguide-lab/runs', $this->input($case['id'], ['preset' => 'declutter', 'options' => $options]))->assertUnprocessable();
+        }
+        $this->withToken($this->token)->postJson('/api/iguide-lab/runs', $this->input($case['id'], ['modelId' => 'bytedance/seedream/v5/pro/edit', 'options' => ['complexity' => 'low']]))->assertUnprocessable();
+    }
+
+    public function test_explicit_default_v2_controls_replay_existing_v1_reservation(): void
+    {
+        $input = $this->input($this->upload()['id'], ['preset' => 'declutter']);
+        $first = $this->withToken($this->token)->postJson('/api/iguide-lab/runs', $input)->assertAccepted()->json('data');
+        $input['options'] = ['complexity' => 'medium', 'declutterMode' => 'generic', 'selectedObjects' => [], 'preserveObjects' => []];
+        $this->withToken($this->token)->postJson('/api/iguide-lab/runs', $input)->assertAccepted()->assertJsonPath('data.id', $first['id']);
+        Queue::assertPushed(ProcessIguideLabRun::class, 1);
+        $this->assertSame(1, $this->project->fresh()->used_runs);
+    }
+
+    public function test_read_traffic_and_write_traffic_have_independent_capability_limits(): void
+    {
+        \Illuminate\Support\Facades\Cache::flush();
+        for ($i = 0; $i < 35; $i++) $this->withToken($this->token)->getJson('/api/iguide-lab')->assertOk();
+        for ($i = 0; $i < 30; $i++) $this->withToken($this->token)->postJson('/api/iguide-lab/runs', [])->assertUnprocessable();
+        $this->withToken($this->token)->postJson('/api/iguide-lab/runs', [])->assertStatus(429);
+        $this->withToken($this->token)->getJson('/api/iguide-lab')->assertOk();
+        $other = str_repeat('b', 64);
+        IguideLabProject::create(['name' => 'Other', 'token_hash' => hash('sha256', $other), 'expires_at' => now()->addDay(), 'max_runs' => 1]);
+        $this->withToken($other)->postJson('/api/iguide-lab/runs', [])->assertUnprocessable();
+        Http::assertNothingSent();
+        Queue::assertNothingPushed();
+    }
+
+    public function test_composite_is_separate_idempotent_private_and_does_not_consume_generation_quota(): void
+    {
+        [$case, $run, $manifest, $png] = $this->compositeFixture();
+        $url = '/api/iguide-lab/cases/'.$case['id'].'/composites';
+        $this->withHeader('Authorization', '')->post($url, $this->compositeUpload($manifest, $png), ['Accept' => 'application/json'])->assertUnauthorized();
+        $first = $this->withToken($this->token)->post($url, $this->compositeUpload($manifest, $png), ['Accept' => 'application/json'])->assertCreated()->json('data');
+        $this->assertFalse($first['singleProviderOutput']);
+        $this->assertNull($first['latestReview']);
+        $this->assertNull($first['native']);
+        foreach (['modelId', 'provider', 'usage'] as $key) $this->assertArrayNotHasKey($key, $first);
+        $this->withToken($this->token)->post($url, $this->compositeUpload(array_reverse($manifest, true), $png), ['Accept' => 'application/json'])->assertOk()->assertJsonPath('data.id', $first['id']);
+        $changed = $manifest; $changed['label'] = 'Changed';
+        $this->withToken($this->token)->post($url, $this->compositeUpload($changed, $png), ['Accept' => 'application/json'])->assertConflict();
+        $response = $this->withToken($this->token)->get($first['preview']['assetPath'])->assertOk()->assertHeader('Content-Type', 'image/png');
+        $this->assertSame(hash('sha256', $png), hash_file('sha256', $response->baseResponse->getFile()->getPathname()));
+        $this->withToken($this->token)->get('/api/iguide-lab/assets/composite-native/'.$first['id'])->assertNotFound();
+        $this->withToken($this->token)->getJson('/api/iguide-lab')->assertOk()->assertJsonCount(1, 'data.composites')->assertJsonPath('data.capabilities.maskUpload', false);
+        $other = str_repeat('b', 64);
+        IguideLabProject::create(['name' => 'Other', 'token_hash' => hash('sha256', $other), 'expires_at' => now()->addDay(), 'max_runs' => 1]);
+        $this->withToken($other)->get($first['preview']['assetPath'])->assertNotFound();
+        $this->withToken($other)->getJson('/api/iguide-lab/composites/'.$first['id'])->assertNotFound();
+        $this->withToken($other)->post($url, $this->compositeUpload($manifest, $png), ['Accept' => 'application/json'])->assertNotFound();
+        $this->assertSame(1, $this->project->fresh()->used_runs);
+        $this->assertSame(1, IguideLabRun::count());
+        Queue::assertPushed(ProcessIguideLabRun::class, 1);
+        Http::assertNothingSent();
+    }
+
+    public function test_composite_rejects_forged_lineage_hashes_projection_and_acceptance_claims(): void
+    {
+        [$case, $run, $manifest, $png] = $this->compositeFixture();
+        $url = '/api/iguide-lab/cases/'.$case['id'].'/composites';
+        $invalid = [];
+        foreach (['preview.sha256', 'source.sourceSha256', 'source.originalSha256', 'children.0.outputSha256'] as $key) {
+            $value = $manifest; data_set($value, $key, str_repeat('f', 64)); $invalid[] = $value;
+        }
+        $value = $manifest; $value['children'][0]['maskSha256'] = null; $invalid[] = $value;
+        $value = $manifest; $value['children'][0]['projection'] = 'rectilinear'; $invalid[] = $value;
+        $value = $manifest; $value['generatedDetail']['width'] = 4096; $invalid[] = $value;
+        $value = $manifest; $value['accepted'] = true; $invalid[] = $value;
+        $value = $manifest; $value['preset'] = 'staging'; $invalid[] = $value;
+        $value = $manifest; $value['resolutionStrategy'] = 'native_canvas'; $value['native'] = $value['preview']; $invalid[] = $value;
+        foreach ($invalid as $value) $this->withToken($this->token)->post($url, $this->compositeUpload($value, $png), ['Accept' => 'application/json'])->assertUnprocessable();
+        $run->update(['status' => 'needs_attention']);
+        $this->withToken($this->token)->post($url, $this->compositeUpload($manifest, $png), ['Accept' => 'application/json'])->assertNotFound();
+        $this->assertSame(0, \App\Models\IguideLabComposite::count());
+    }
+
+    public function test_composite_reviews_are_scoped_append_only_and_require_explicit_quality_checks(): void
+    {
+        [$case, $run, $manifest, $png] = $this->compositeFixture();
+        $record = $this->withToken($this->token)->post('/api/iguide-lab/cases/'.$case['id'].'/composites', $this->compositeUpload($manifest, $png), ['Accept' => 'application/json'])->assertCreated()->json('data');
+        $url = '/api/iguide-lab/composites/'.$record['id'].'/reviews';
+        $input = $this->reviewInput();
+        $this->withHeader('Authorization', '')->postJson($url, $input)->assertUnauthorized();
+        $other = str_repeat('b', 64);
+        IguideLabProject::create(['name' => 'Other', 'token_hash' => hash('sha256', $other), 'expires_at' => now()->addDay(), 'max_runs' => 1]);
+        $this->withToken($other)->postJson($url, $input)->assertNotFound();
+        $invalid = $input; $invalid['checks']['seam'] = 'unreviewed';
+        $this->withToken($this->token)->postJson($url, $invalid)->assertUnprocessable();
+        $this->withToken($this->token)->postJson($url, [...$input, 'scope' => 'cross_view'])->assertUnprocessable();
+        $first = $this->withToken($this->token)->postJson($url, $input)->assertCreated()->json('data');
+        $this->withToken($this->token)->postJson($url, $input)->assertOk()->assertJsonPath('data.id', $first['id']);
+        $this->withToken($this->token)->postJson($url, [...$input, 'notes' => 'changed'])->assertConflict();
+        $this->withToken($this->token)->postJson($url, [...$input, 'requestId' => (string) Str::uuid(), 'verdict' => 'needs_work'])->assertCreated();
+        $this->withToken($this->token)->getJson('/api/iguide-lab/composites/'.$record['id'])->assertOk()->assertJsonPath('data.latestReview.verdict', 'needs_work');
+        $this->assertSame(2, \App\Models\IguideLabCompositeReview::count());
+        $this->assertSame(0, IguideLabReview::count());
+    }
+
+    public function test_native_canvas_operator_import_retains_full_bytes_and_truthful_generated_resolution(): void
+    {
+        [$case, $run, $manifest, $png] = $this->compositeFixture();
+        $parent = \App\Models\IguideLabCase::find($case['id']);
+        $metadata = $parent->metadata; $metadata['originalWidth'] = 2048; $metadata['originalHeight'] = 1024; $parent->update(['metadata' => $metadata]);
+        $manifest['source']['originalWidth'] = 2048; $manifest['source']['originalHeight'] = 1024;
+        $manifest['resolutionStrategy'] = 'native_canvas'; $manifest['native'] = $manifest['preview'];
+        $file = tempnam(sys_get_temp_dir(), 'lab-native-'); file_put_contents($file, $png);
+        try {
+            [$record] = app(\App\Services\IguideLab\LabComposites::class)->add($this->project, $parent, $file, $manifest, $file);
+            $dto = app(\App\Services\IguideLab\LabComposites::class)->dto($record);
+            $this->assertSame(2048, $dto['manifest']['generatedDetail']['width']);
+            $response = $this->withToken($this->token)->get($dto['native']['assetPath'])->assertOk();
+            $this->assertStringStartsWith('attachment;', $response->headers->get('Content-Disposition'));
+            $this->assertSame(hash('sha256', $png), hash_file('sha256', $response->baseResponse->getFile()->getPathname()));
+            $other = str_repeat('b', 64);
+            IguideLabProject::create(['name' => 'Other', 'token_hash' => hash('sha256', $other), 'expires_at' => now()->addDay(), 'max_runs' => 1]);
+            $this->withToken($other)->get($dto['native']['assetPath'])->assertNotFound();
+        } finally { unlink($file); }
+        Http::assertNothingSent();
+    }
+
+    public function test_perspective_composite_requires_matching_parent_and_projection_manifest(): void
+    {
+        [$case, $run, $manifest, $png] = $this->compositeFixture();
+        $source = $this->withToken($this->token)->post('/api/iguide-lab/cases', [
+            'image' => UploadedFile::fake()->image('section.png', 256, 256), 'label' => 'Kitchen section', 'projection' => 'rectilinear',
+            'metadata' => json_encode(['parentCaseId' => $case['id'], 'includeInBatch' => false]),
+        ], ['Accept' => 'application/json'])->assertCreated()->json('data');
+        $child = IguideLabRun::find($this->start($source['id'])['id']);
+        $square = $this->png(2048, 2048); $path = 'iguide-lab/'.$this->project->id.'/runs/'.$child->id.'.png';
+        Storage::disk(LabService::DISK)->put($path, $square);
+        $child->update(['status' => 'completed', 'output_path' => $path, 'output_width' => 2048, 'output_height' => 2048]);
+        $manifest['compositionMode'] = 'perspective_sections';
+        $manifest['generatedDetail']['height'] = 2048;
+        $manifest['children'][0] = ['runId' => $child->id, 'requestId' => $child->request_id, 'outputSha256' => hash('sha256', $square),
+            'projection' => 'rectilinear', 'editScope' => 'masked', 'maskSha256' => str_repeat('d', 64),
+            'view' => ['yaw' => 20, 'pitch' => -15, 'hFov' => 100, 'vFov' => 100, 'coordinateConvention' => 'degrees; pixel centers']];
+        $url = '/api/iguide-lab/cases/'.$case['id'].'/composites';
+        $this->withToken($this->token)->post($url, $this->compositeUpload($manifest, $png), ['Accept' => 'application/json'])->assertUnprocessable();
+        $manifest['geometryManifestSha256'] = str_repeat('b', 64);
+        $this->withToken($this->token)->post($url, $this->compositeUpload($manifest, $png), ['Accept' => 'application/json'])->assertCreated();
+        \App\Models\IguideLabCase::find($source['id'])->update(['metadata' => []]);
+        $manifest['requestId'] = (string) Str::uuid();
+        $this->withToken($this->token)->post($url, $this->compositeUpload($manifest, $png), ['Accept' => 'application/json'])->assertUnprocessable();
+        Http::assertNothingSent();
+    }
+
+    public function test_failed_native_storage_cleans_up_preview_without_creating_an_artifact(): void
+    {
+        [$case, $run, $manifest, $png] = $this->compositeFixture();
+        $parent = \App\Models\IguideLabCase::find($case['id']);
+        $metadata = $parent->metadata; $metadata['originalWidth'] = 2048; $metadata['originalHeight'] = 1024; $parent->update(['metadata' => $metadata]);
+        $manifest['source']['originalWidth'] = 2048; $manifest['source']['originalHeight'] = 1024;
+        $manifest['resolutionStrategy'] = 'native_canvas'; $manifest['native'] = $manifest['preview'];
+        $file = tempnam(sys_get_temp_dir(), 'lab-storage-'); file_put_contents($file, $png);
+        $disk = Storage::disk(LabService::DISK);
+        $proxy = \Mockery::mock($disk);
+        $proxy->shouldReceive('put')->twice()->andReturnUsing(function ($path, $contents, $options) use ($disk) {
+            if (str_ends_with($path, '-native.png')) throw new \RuntimeException('Fixture disk failure');
+            return $disk->put($path, $contents, $options);
+        });
+        Storage::shouldReceive('disk')->with(LabService::DISK)->andReturn($proxy);
+        try {
+            app(\App\Services\IguideLab\LabComposites::class)->add($this->project, $parent, $file, $manifest, $file);
+            $this->fail('Storage failure must not report success.');
+        } catch (\RuntimeException $exception) {
+            $this->assertSame('Fixture disk failure', $exception->getMessage());
+        } finally { unlink($file); }
+        $this->assertSame([], $disk->allFiles('iguide-lab/'.$this->project->id.'/composites'));
+        $this->assertSame(0, \App\Models\IguideLabComposite::count());
+        $this->assertSame(1, $this->project->fresh()->used_runs);
+    }
+
+    private function compositeFixture(): array
+    {
+        $case = $this->upload();
+        $parent = \App\Models\IguideLabCase::find($case['id']);
+        $parent->update(['metadata' => $parent->metadata + ['originalSha256' => str_repeat('e', 64)]]);
+        $run = IguideLabRun::find($this->start($case['id'])['id']);
+        $png = $this->png(2048, 1024);
+        $path = 'iguide-lab/'.$this->project->id.'/runs/'.$run->id.'.png';
+        Storage::disk(LabService::DISK)->put($path, $png);
+        $run->update(['status' => 'completed', 'output_path' => $path, 'output_width' => 2048, 'output_height' => 1024]);
+        $hash = hash('sha256', $png);
+        $manifest = ['schemaVersion' => 1, 'requestId' => (string) Str::uuid(), 'label' => 'Grass composition', 'kind' => 'locally_composited_panorama',
+            'preset' => 'grass', 'style' => null,
+            'projection' => 'equirectangular', 'resolutionStrategy' => 'preview_only', 'compositionMode' => 'masked_whole_panorama',
+            'source' => ['caseId' => $case['id'], 'sourceSha256' => $case['sourceSha256'], 'originalSha256' => str_repeat('e', 64), 'originalWidth' => 11008, 'originalHeight' => 5504],
+            'preview' => ['sha256' => $hash, 'width' => 2048, 'height' => 1024], 'generatedDetail' => ['width' => 2048, 'height' => 1024, 'description' => 'Preview generated detail; original pixels outside mask.'],
+            'recipeSha256' => str_repeat('c', 64), 'children' => [['runId' => $run->id, 'requestId' => $run->request_id, 'outputSha256' => $hash,
+                'projection' => 'equirectangular', 'editScope' => 'masked', 'maskSha256' => str_repeat('d', 64)]]];
+        return [$case, $run, $manifest, $png];
+    }
+
+    private function compositeUpload(array $manifest, string $png): array
+    {
+        return ['preview' => UploadedFile::fake()->createWithContent('preview.png', $png), 'manifest' => json_encode($manifest, JSON_THROW_ON_ERROR)];
+    }
+
     private function upload(?string $token = null): array
     {
         return $this->withToken($token ?? $this->token)->post('/api/iguide-lab/cases', [

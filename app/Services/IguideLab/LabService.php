@@ -52,7 +52,16 @@ class LabService
     public function start(IguideLabProject $project, array $input): IguideLabRun
     {
         $case = IguideLabCase::where('project_id', $project->id)->findOrFail($input['caseId']);
-        $options = array_merge(['roomType' => 'auto', 'referenceCaseIds' => [], 'referenceRunIds' => [], 'furnitureDensity' => 'balanced', 'lightingIntensity' => 'natural', 'preserveArchitecture' => true, 'preserveFixedFinishes' => true, 'allowFinishChanges' => false], $input['options'] ?? []);
+        $requested = $input['options'] ?? [];
+        $complexity = $requested['complexity'] ?? 'medium';
+        $selected = ($requested['declutterMode'] ?? 'generic') === 'selected-object';
+        abort_if(isset($requested['complexity']) && LabCatalog::MODELS[$input['modelId']]['provider'] !== 'openai', 422, 'Complexity is an OpenAI control.');
+        abort_if($selected && ($input['preset'] !== 'declutter' || empty($requested['selectedObjects'])), 422, 'Selected-object decluttering requires explicit objects to remove.');
+        abort_if(! $selected && (! empty($requested['selectedObjects']) || ! empty($requested['preserveObjects'])), 422, 'Object lists require selected-object decluttering.');
+        $selection = $selected ? ['declutterMode' => 'selected-object', 'selectedObjects' => $requested['selectedObjects'], 'preserveObjects' => $requested['preserveObjects'] ?? []] : [];
+        unset($requested['complexity'], $requested['declutterMode'], $requested['selectedObjects'], $requested['preserveObjects']);
+        // Keep the original default option order and recipe for previously reserved request IDs.
+        $options = array_merge(['roomType' => 'auto', 'referenceCaseIds' => [], 'referenceRunIds' => [], 'furnitureDensity' => 'balanced', 'lightingIntensity' => 'natural', 'preserveArchitecture' => true, 'preserveFixedFinishes' => true, 'allowFinishChanges' => false], $requested);
         foreach (['preserveArchitecture', 'preserveFixedFinishes', 'allowFinishChanges'] as $flag) $options[$flag] = (bool) $options[$flag];
         $options['referenceCaseIds'] = array_values(array_unique($options['referenceCaseIds']));
         $options['referenceRunIds'] = array_values(array_unique($options['referenceRunIds']));
@@ -65,7 +74,8 @@ class LabService
         abort_if($options['allowFinishChanges'] && $input['preset'] !== 'interior-design', 422, 'Finish changes are available only for interior design.');
         $options['width'] = $case->width >= $case->height ? 2048 : max(16, (int) round(2048 * $case->width / $case->height / 16) * 16);
         $options['height'] = $case->height >= $case->width ? 2048 : max(16, (int) round(2048 * $case->height / $case->width / 16) * 16);
-        $options += ['quality' => 'high', 'complexity' => 'medium', 'seedreamMode' => 'standard', 'projection' => $case->projection, 'recipeVersion' => 1];
+        $options += ['quality' => 'high', 'complexity' => $complexity, 'seedreamMode' => 'standard', 'projection' => $case->projection, 'recipeVersion' => $selected || $complexity !== 'medium' ? 2 : 1];
+        $options += $selection;
         $style = $input['style'] ?? (in_array($input['preset'], ['staging', 'interior-design']) ? 'modern' : null);
         $extra = trim($input['prompt'] ?? '');
         $options['customInstructions'] = $extra;

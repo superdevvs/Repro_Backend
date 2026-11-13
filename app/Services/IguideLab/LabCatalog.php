@@ -36,7 +36,9 @@ class LabCatalog
         }
         $base .= match ($preset) {
             'grass' => 'Refresh only existing grass to healthy natural green, retaining lawn boundaries, texture, trees, paths and shadows.',
-            'declutter' => 'Remove loose clutter, small personal belongings and rubbish. Retain furniture, permanent fixtures and the building. Reconstruct occluded surfaces naturally.',
+            'declutter' => ($options['declutterMode'] ?? 'generic') === 'selected-object'
+                ? 'Remove only these explicitly selected objects: '.implode('; ', $options['selectedObjects']).'. Keep every other object and surface unchanged. Reconstruct only the surfaces occluded by the selected objects. Explicitly preserve: '.implode('; ', $options['preserveObjects'] ?: ['all objects outside the selection']).'.'
+                : 'Remove loose clutter, small personal belongings and rubbish. Retain furniture, permanent fixtures and the building. Reconstruct occluded surfaces naturally.',
             'staging' => 'Add realistic, appropriately scaled furniture and decor in a '.(self::STYLES[$style] ?? 'Modern').' style. Preserve existing room layout and leave doors and circulation routes clear.',
             'twilight' => 'Create believable blue-hour twilight with a coherent sky and warm existing windows and lights. Keep architecture and landscaping unchanged. Match shadows and reflections.',
             'golden-hour' => 'Relight the scene with warm low-angle golden-hour sunlight, coherent sun direction, shadows and reflections. Preserve the property and landscaping.',

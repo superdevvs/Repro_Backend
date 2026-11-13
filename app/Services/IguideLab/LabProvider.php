@@ -69,7 +69,7 @@ class LabProvider
             foreach ($prepared as $imageIndex => $bytes) $request->attach('image[]', $bytes, 'input-'.$imageIndex.'.png', ['Content-Type' => 'image/png']);
             $response = $request->post('https://api.openai.com/v1/images/edits', [
                 'model' => $run->model_id, 'prompt' => $run->prompt, 'n' => 1,
-                'size' => $options['width'].'x'.$options['height'], 'quality' => 'high', 'complexity' => 'medium',
+                'size' => $options['width'].'x'.$options['height'], 'quality' => 'high', 'complexity' => $options['complexity'] ?? 'medium',
                 'output_format' => 'png', 'background' => 'opaque',
             ]);
         } catch (ConnectionException) {
