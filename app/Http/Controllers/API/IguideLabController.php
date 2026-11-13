@@ -7,12 +7,15 @@ use App\Models\IguideLabCase;
 use App\Models\IguideLabRun;
 use App\Models\IguideLabComposite;
 use App\Models\IguideLabPipeline;
+use App\Models\IguideLabAnalysis;
 use App\Services\IguideLab\LabComposites;
 use App\Services\IguideLab\LabCatalog;
 use App\Services\IguideLab\LabService;
 use App\Services\IguideLab\LabReviews;
 use App\Services\IguideLab\LabPipelines;
 use App\Services\IguideLab\LabDisplayMetadata;
+use App\Services\IguideLab\LabAnalyses;
+use App\Services\IguideLab\LabScenePlanProtocol;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\Rule;
@@ -27,7 +30,10 @@ class IguideLabController extends Controller
             'project' => ['id' => $project->id, 'name' => $project->name, 'expiresAt' => $project->expires_at->toIso8601String(),
                 'maxRuns' => $project->max_runs, 'usedRuns' => $project->used_runs, 'remainingRuns' => max(0, $project->max_runs - $project->used_runs)],
             'models' => LabCatalog::models(), 'presets' => LabCatalog::labels(LabCatalog::PRESETS), 'styles' => LabCatalog::labels(LabCatalog::STYLES),
-            'capabilities' => ['schemaVersion' => 3, 'composites' => true, 'openaiComplexity' => ['low', 'medium', 'high'], 'selectedObjectInstructions' => true, 'maskUpload' => false, 'nativeCompositeUpload' => 'operator_only',
+            'capabilities' => ['schemaVersion' => 4, 'composites' => true, 'openaiComplexity' => ['low', 'medium', 'high'], 'selectedObjectInstructions' => true, 'maskUpload' => false, 'nativeCompositeUpload' => 'operator_only',
+                'sceneAnalysis' => ['supported' => true, 'ready' => app(LabAnalyses::class)->ready(), 'modelId' => LabScenePlanProtocol::MODEL,
+                    'protocolVersion' => LabScenePlanProtocol::VERSION, 'automaticGeneration' => false, 'applyDraft' => true, 'maxAnalyses' => 120,
+                    'usedAnalyses' => IguideLabAnalysis::where('project_id', $project->id)->count(), 'suggestedSectionMaxHfov' => 120, 'sectionExecution' => false],
                 'referenceComposites' => ['supported' => true, 'requiresAcceptedReview' => true, 'maxCombinedReferences' => 3],
                 'pipelines' => ['supported' => true, 'automaticAcceptance' => false, 'recipes' => [['id' => LabPipelines::RECIPE, 'version' => LabPipelines::VERSION,
                     'ready' => app(LabPipelines::class)->ready(), 'preset' => 'grass', 'projection' => 'equirectangular', 'supportsExistingRun' => true,
@@ -36,6 +42,7 @@ class IguideLabController extends Controller
             'runs' => IguideLabRun::where('project_id', $project->id)->latest()->get()->map(fn ($run) => $service->runDto($run)),
             'composites' => IguideLabComposite::where('project_id', $project->id)->latest()->get()->map(fn ($record) => app(LabComposites::class)->dto($record)),
             'pipelines' => IguideLabPipeline::where('project_id', $project->id)->latest()->get()->map(fn ($record) => app(LabPipelines::class)->dto($record)),
+            'analyses' => IguideLabAnalysis::where('project_id', $project->id)->latest()->get()->map(fn ($record) => app(LabAnalyses::class)->dto($record)),
         ]]);
     }
 
@@ -62,7 +69,8 @@ class IguideLabController extends Controller
             'modelId' => ['required', Rule::in(array_keys(LabCatalog::MODELS))],
             'preset' => ['required', Rule::in(array_keys(LabCatalog::PRESETS))],
             'style' => ['nullable', Rule::in(array_keys(LabCatalog::STYLES))], 'prompt' => ['nullable', 'string', 'max:4000'],
-            'options' => ['sometimes', 'array:roomType,referenceCaseIds,referenceRunIds,referenceCompositeIds,furnitureDensity,lightingIntensity,preserveArchitecture,preserveFixedFinishes,allowFinishChanges,complexity,declutterMode,selectedObjects,preserveObjects'],
+            'options' => ['sometimes', 'array:roomType,referenceCaseIds,referenceRunIds,referenceCompositeIds,furnitureDensity,lightingIntensity,preserveArchitecture,preserveFixedFinishes,allowFinishChanges,complexity,declutterMode,selectedObjects,preserveObjects,analysisId,promptMode'],
+            'options.analysisId' => ['sometimes', 'uuid'], 'options.promptMode' => ['sometimes', Rule::in(['preset', 'scene-plan'])],
             'options.referenceCompositeIds' => ['sometimes', 'array', 'max:3'], 'options.referenceCompositeIds.*' => ['required', 'uuid', 'distinct'],
             'options.complexity' => ['sometimes', Rule::in(['low', 'medium', 'high'])],
             'options.declutterMode' => ['sometimes', Rule::in(['generic', 'selected-object'])],
@@ -180,5 +188,40 @@ class IguideLabController extends Controller
         abort_if(array_diff(array_keys($request->all()), array_keys($input)), 422, 'Only display text can be corrected.');
         [$entry, $created] = $service->add($project, $record, $input);
         return response()->json(['data' => $service->dto($entry)], $created ? 201 : 200);
+    }
+
+    public function startAnalysis(Request $request, LabAnalyses $service)
+    {
+        abort_if(array_diff(array_keys($request->all()), ['requestId', 'caseId', 'preset', 'style', 'instructions', 'options']), 422, 'Unsupported analysis field.');
+        $input = $request->validate([
+            'requestId' => ['required', 'uuid'], 'caseId' => ['required', 'uuid'], 'preset' => ['required', Rule::in(array_keys(LabCatalog::PRESETS))],
+            'style' => ['nullable', Rule::in(array_keys(LabCatalog::STYLES))], 'instructions' => ['nullable', 'string', 'max:2500'],
+            'options' => ['sometimes', 'array:roomType,furnitureDensity,lightingIntensity,preserveArchitecture,preserveFixedFinishes,allowFinishChanges,declutterMode,selectedObjects,preserveObjects'],
+            'options.declutterMode' => ['sometimes', Rule::in(['generic', 'selected-object'])],
+            'options.selectedObjects' => ['sometimes', 'array', 'max:8'], 'options.selectedObjects.*' => ['required', 'string', 'max:100'],
+            'options.preserveObjects' => ['sometimes', 'array', 'max:8'], 'options.preserveObjects.*' => ['required', 'string', 'max:100'],
+            'options.roomType' => ['sometimes', Rule::in(['auto', 'living', 'bedroom', 'dining', 'kitchen', 'office', 'bathroom', 'outdoor', 'rec-room', 'other'])],
+            'options.furnitureDensity' => ['sometimes', Rule::in(['light', 'balanced', 'full'])],
+            'options.lightingIntensity' => ['sometimes', Rule::in(['natural', 'dramatic'])],
+            'options.preserveArchitecture' => ['sometimes', 'boolean'], 'options.preserveFixedFinishes' => ['sometimes', 'boolean'], 'options.allowFinishChanges' => ['sometimes', 'boolean'],
+        ]);
+        return response()->json(['data' => $service->dto($service->start($request->attributes->get('iguide_lab_project'), $input))], 202);
+    }
+
+    public function showAnalysis(Request $request, string $id, LabAnalyses $service)
+    {
+        $record = IguideLabAnalysis::where('project_id', $request->attributes->get('iguide_lab_project')->id)->findOrFail($id);
+        return response()->json(['data' => $service->dto($record)]);
+    }
+
+    public function analysisView(Request $request, string $id, string $view)
+    {
+        $project = $request->attributes->get('iguide_lab_project');
+        $record = IguideLabAnalysis::where('project_id', $project->id)->findOrFail($id);
+        $entry = collect($record->data['views'] ?? [])->firstWhere('id', $view); $path = $entry['path'] ?? null;
+        abort_unless(is_string($path) && str_starts_with($path, 'iguide-lab/'.$project->id.'/analyses/'.$record->id.'/')
+            && ! str_contains($path, '..') && Storage::disk(LabService::DISK)->exists($path), 404);
+        return response()->file(Storage::disk(LabService::DISK)->path($path), ['Content-Type' => 'image/png', 'Content-Disposition' => 'inline; filename="diagnostic-'.$view.'.png"',
+            'X-Content-Type-Options' => 'nosniff', 'Cache-Control' => 'private, no-store']);
     }
 }

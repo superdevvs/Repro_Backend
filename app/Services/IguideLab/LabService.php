@@ -54,6 +54,10 @@ class LabService
     {
         $case = IguideLabCase::where('project_id', $project->id)->findOrFail($input['caseId']);
         $requested = $input['options'] ?? [];
+        $analysisId = $requested['analysisId'] ?? null;
+        $scenePlan = ($requested['promptMode'] ?? 'preset') === 'scene-plan';
+        abort_if($scenePlan !== filled($analysisId), 422, 'Scene-plan drafts require a completed analysis association.');
+        unset($requested['analysisId'], $requested['promptMode']);
         $complexity = $requested['complexity'] ?? (LabCatalog::is25($input['modelId']) ? null : 'medium');
         $compositeIds = array_values(array_unique($requested['referenceCompositeIds'] ?? []));
         $selected = ($requested['declutterMode'] ?? 'generic') === 'selected-object';
@@ -83,7 +87,11 @@ class LabService
         $style = $input['style'] ?? (in_array($input['preset'], ['staging', 'interior-design']) ? 'modern' : null);
         $extra = trim($input['prompt'] ?? '');
         $options['customInstructions'] = $extra;
-        $prompt = LabCatalog::prompt($input['preset'], $style, $case->projection, $extra, $options);
+        if ($scenePlan) {
+            $options['sourceAnalysis'] = app(LabAnalyses::class)->appliedDraft($project->id, $analysisId, $case, $input['preset'], $style, $options, $extra);
+            $options['analysisId'] = $analysisId; $options['promptMode'] = 'scene-plan'; $options['recipeVersion'] = 4;
+        }
+        $prompt = $scenePlan ? $extra : LabCatalog::prompt($input['preset'], $style, $case->projection, $extra, $options);
         $hash = hash('sha256', json_encode([$case->id, $case->source_sha256, $input['modelId'], $input['preset'], $style, $prompt, $options], JSON_THROW_ON_ERROR));
         // A later QA revocation blocks queued submission, not reconciliation of a known request.
         if ($compositeIds && ($existing = IguideLabRun::where('project_id', $project->id)->where('request_id', $input['requestId'])->first())) {
@@ -148,6 +156,10 @@ class LabService
                 $sources = [$case];
                 foreach ($run->options['referenceCaseIds'] ?? [] as $id) $sources[] = IguideLabCase::where('project_id', $run->project_id)->findOrFail($id);
                 $bytes = array_map(fn ($source) => Storage::disk(self::DISK)->get($source->source_path), $sources);
+                if ($snapshot = ($run->options['sourceAnalysis'] ?? null)) {
+                    abort_unless(hash_equals($snapshot['sourceSha256'], hash('sha256', $bytes[0]))
+                        && hash_equals($snapshot['preparedSourceSha256'], hash('sha256', LabImages::prepared($bytes[0]))), 422, 'The applied analysis no longer matches the submitted source.');
+                }
                 foreach ($run->options['referenceRunIds'] ?? [] as $id) {
                     $reference = IguideLabRun::where('project_id', $run->project_id)->where('status', 'completed')->findOrFail($id);
                     $bytes[] = Storage::disk(self::DISK)->get($reference->output_path);

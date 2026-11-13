@@ -35,7 +35,8 @@ class IguideLabPipelineTest extends TestCase
         parent::setUp();
         $this->key = tempnam(sys_get_temp_dir(), 'lab-pipeline-key-'); file_put_contents($this->key, 'fixture-only-key');
         config(['app.key' => 'base64:'.base64_encode(str_repeat('k', 32)), 'services.fal.key' => 'fixture-fal', 'iguide-lab.openai_primary_key_path' => $this->key]);
-        Storage::fake(LabService::DISK, config('filesystems.disks.'.LabService::DISK));
+        $disk = Storage::fake(LabService::DISK, config('filesystems.disks.'.LabService::DISK));
+        $disk->makeDirectory(''); $disk->setVisibility('', 'private');
         Queue::fake(); Http::preventStrayRequests();
         $this->token = str_repeat('a', 64);
         $this->project = IguideLabProject::create(['name' => 'Pipeline tests', 'token_hash' => hash('sha256', $this->token), 'expires_at' => now()->addDay(), 'max_runs' => 20]);

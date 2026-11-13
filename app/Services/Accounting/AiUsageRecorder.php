@@ -16,7 +16,7 @@ class AiUsageRecorder
         'property_description' => 'Property descriptions', 'photo_classification' => 'Photo classification',
         'object_detection' => 'Object detection', 'image_edit' => 'Image editing',
         'image_outpaint' => 'Image extension', 'voice_summary' => 'Voice intelligence',
-        'health_check' => 'Provider health checks', 'other' => 'Other OpenAI calls',
+        'health_check' => 'Provider health checks', 'scene_analysis' => 'Property scene analysis', 'other' => 'Other OpenAI calls',
     ];
 
     public function begin(string $feature, string $model, string $endpoint): ?string

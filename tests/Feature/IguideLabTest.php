@@ -374,7 +374,7 @@ class IguideLabTest extends TestCase
     {
         $input = $this->input($this->upload()['id'], ['preset' => 'declutter']);
         $first = $this->withToken($this->token)->postJson('/api/iguide-lab/runs', $input)->assertAccepted()->json('data');
-        $input['options'] = ['complexity' => 'medium', 'declutterMode' => 'generic', 'selectedObjects' => [], 'preserveObjects' => []];
+        $input['options'] = ['complexity' => 'medium', 'declutterMode' => 'generic', 'selectedObjects' => [], 'preserveObjects' => [], 'promptMode' => 'preset'];
         $this->withToken($this->token)->postJson('/api/iguide-lab/runs', $input)->assertAccepted()->assertJsonPath('data.id', $first['id']);
         Queue::assertPushed(ProcessIguideLabRun::class, 1);
         $this->assertSame(1, $this->project->fresh()->used_runs);

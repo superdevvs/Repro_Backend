@@ -91,6 +91,13 @@ final class IguideLabScenePlanProtocolTest extends TestCase
         LabScenePlanProtocol::parse($this->response($proposal), $this->context());
     }
 
+    public function test_wider_than_supported_group_framing_is_rejected_instead_of_clamped(): void
+    {
+        $proposal = $this->proposal(); $proposal['workflow']['sections'][0]['hfovDegrees'] = 130;
+        $this->expectException(InvalidArgumentException::class);
+        LabScenePlanProtocol::parse($this->response($proposal), $this->context());
+    }
+
     public function test_prompt_length_is_checked_locally(): void
     {
         $proposal = $this->proposal(); $proposal['generationPrompt'] = str_repeat('x', 4001);
