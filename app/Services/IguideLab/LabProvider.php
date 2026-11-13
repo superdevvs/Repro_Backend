@@ -6,17 +6,17 @@ use App\Exceptions\OpenAiImageException;
 use App\Models\IguideLabRun;
 use App\Services\Accounting\AiUsageRecorder;
 use App\Services\FalService;
-use App\Services\Studio\StudioProviderSettings;
 use App\Support\LockedWrite;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Http;
 use Intervention\Image\ImageManager;
 use RuntimeException;
 
-/** Exact lab allowlist; no automatic paid retries, fallback, or model substitution. */
+/** Exact model allowlist; only an explicit rejected primary quota may select the fallback key. */
 class LabProvider
 {
-    public function __construct(private StudioProviderSettings $settings, private FalService $fal) {}
+    private const QUOTA_CODES = ['insufficient_quota', 'credit_balance_exhausted', 'organization_usage_limit_exceeded', 'organization_spend_limit_exceeded', 'project_spend_limit_exceeded'];
+    public function __construct(private LabCredentials $credentials, private FalService $fal) {}
 
     public function submit(IguideLabRun $run, array $images): array
     {
@@ -36,31 +36,74 @@ class LabProvider
 
             return ['requestId' => $id];
         }
-        $key = $this->settings->credentials('openai')['api_key'] ?? null;
-        if (! filled($key)) throw new OpenAiImageException(reason: 'not_configured');
+        $key = $this->credentials->primary();
+        $deadline = hrtime(true) + 540 * 1_000_000_000;
+        $result = $this->openAiAttempt($run, $prepared, $key, 'lab-primary', $deadline);
+        if ($result['quotaRejected'] ?? false) {
+            $fallback = $this->credentials->quotaFallback($key);
+            if ($fallback === null) throw new OpenAiImageException(429, reason: 'quota_exhausted');
+            // The primary explicitly rejected the request: no accepted generation is being repeated.
+            $result = $this->openAiAttempt($run, $prepared, $fallback, 'dashboard-fallback', $deadline);
+            if ($result['quotaRejected'] ?? false) throw new OpenAiImageException(429, reason: 'quota_exhausted');
+        }
+
+        return $result;
+    }
+
+    private function openAiAttempt(IguideLabRun $run, array $prepared, #[\SensitiveParameter] string $key, string $credentialSource, int $deadline): array
+    {
+        $remainingSeconds = (int) floor(($deadline - hrtime(true)) / 1e9);
+        if ($remainingSeconds < 15) throw new OpenAiImageException(reason: 'attempt_budget_exhausted');
+        $options = $run->options;
+        $attempts = $options['providerAttempts'] ?? [];
+        $index = count($attempts);
+        $attempts[] = ['credentialSource' => $credentialSource, 'requestedModelId' => $run->model_id,
+            'status' => 'submitting', 'providerRequestId' => null, 'httpStatus' => null,
+            'startedAt' => now()->toIso8601String(), 'completedAt' => null];
+        $this->saveAttempts($run, $attempts);
         $usage = app(AiUsageRecorder::class);
         $usageId = $usage->begin('image_edit', $run->model_id, 'images/edits');
         $start = hrtime(true);
         try {
-            $request = Http::withToken($key)->acceptJson()->connectTimeout(15)->timeout(540)->withOptions(['allow_redirects' => false]);
-            foreach ($prepared as $index => $bytes) $request->attach('image[]', $bytes, 'input-'.$index.'.png', ['Content-Type' => 'image/png']);
+            $request = Http::withToken($key)->acceptJson()->connectTimeout(15)->timeout($remainingSeconds)->withOptions(['allow_redirects' => false]);
+            foreach ($prepared as $imageIndex => $bytes) $request->attach('image[]', $bytes, 'input-'.$imageIndex.'.png', ['Content-Type' => 'image/png']);
             $response = $request->post('https://api.openai.com/v1/images/edits', [
                 'model' => $run->model_id, 'prompt' => $run->prompt, 'n' => 1,
                 'size' => $options['width'].'x'.$options['height'], 'quality' => 'high', 'complexity' => 'medium',
                 'output_format' => 'png', 'background' => 'opaque',
             ]);
         } catch (ConnectionException) {
+            $attempts[$index] = array_merge($attempts[$index], ['status' => 'unknown', 'completedAt' => now()->toIso8601String()]);
+            $this->saveAttempts($run, $attempts);
             $usage->finish($usageId, $run->model_id, null, 'unknown', durationMs: (int) ((hrtime(true) - $start) / 1e6));
             throw new OpenAiImageException(ambiguous: true, reason: 'transport');
         }
         $metering = $response->json('usage');
         $metering = is_array($metering) ? $metering : null;
+        // Do not infer quota exhaustion from status alone or from free-text error messages.
+        $quotaRejected = $response->status() === 429 && (in_array($response->json('error.code'), self::QUOTA_CODES, true)
+            || ($response->json('error.code') === null && $response->json('error.type') === 'insufficient_quota'));
+        $attempts[$index] = array_merge($attempts[$index], [
+            'status' => $response->successful() ? 'received' : ($quotaRejected ? 'quota_rejected' : (($response->status() >= 500 || $response->status() === 408) ? 'unknown' : 'rejected')),
+            'httpStatus' => $response->status(), 'providerRequestId' => $response->header('x-request-id'),
+            'errorCode' => $quotaRejected ? ($response->json('error.code') ?? 'insufficient_quota') : ($response->successful() ? null : 'provider_rejection'),
+            'completedAt' => now()->toIso8601String(), 'durationMs' => (int) ((hrtime(true) - $start) / 1e6),
+        ]);
+        $this->saveAttempts($run, $attempts);
         $usage->finish($usageId, $run->model_id, $metering, $response->successful() ? 'success' : 'failed', $response->status(), $response->header('x-request-id'), (int) ((hrtime(true) - $start) / 1e6));
+        if ($quotaRejected) return ['quotaRejected' => true];
         if (! $response->successful()) throw new OpenAiImageException($response->status(), $response->status() >= 500 || $response->status() === 408);
         $encoded = $response->json('data.0.b64_json');
         if (! is_string($encoded) || strlen($encoded) > 40_000_000 || ! ($bytes = base64_decode($encoded, true))) throw new OpenAiImageException(ambiguous: true, reason: 'invalid_result');
 
         return ['bytes' => $bytes, 'requestId' => $response->header('x-request-id'), 'usage' => $metering];
+    }
+
+    private function saveAttempts(IguideLabRun $run, array $attempts): void
+    {
+        $options = $run->options;
+        $options['providerAttempts'] = $attempts;
+        LockedWrite::run(fn () => $run->update(['options' => $options]), 'iguide-lab.provider-attempt');
     }
 
     public function poll(IguideLabRun $run): ?array

@@ -6,6 +6,7 @@ use App\Exceptions\OpenAiImageException;
 use App\Jobs\ProcessIguideLabRun;
 use App\Models\IguideLabProject;
 use App\Models\IguideLabRun;
+use App\Models\IguideLabReview;
 use App\Services\IguideLab\LabProvider;
 use App\Services\IguideLab\LabService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -22,11 +23,15 @@ class IguideLabTest extends TestCase
 
     private string $token;
     private IguideLabProject $project;
+    private string $primaryKeyPath;
 
     protected function setUp(): void
     {
         parent::setUp();
         config(['app.key' => 'base64:'.base64_encode(str_repeat('k', 32)), 'services.openai.api_key' => 'test-openai-key', 'services.fal.key' => 'test-fal-key']);
+        $this->primaryKeyPath = tempnam(sys_get_temp_dir(), 'lab-key-');
+        file_put_contents($this->primaryKeyPath, 'test-primary-key');
+        config(['iguide-lab.openai_primary_key_path' => $this->primaryKeyPath]);
         $disk = Storage::fake(LabService::DISK, config('filesystems.disks.'.LabService::DISK));
         $disk->makeDirectory('');
         $disk->setVisibility('', 'private');
@@ -34,6 +39,132 @@ class IguideLabTest extends TestCase
         Http::preventStrayRequests();
         $this->token = str_repeat('a', 64);
         $this->project = IguideLabProject::create(['name' => 'Private lab', 'token_hash' => hash('sha256', $this->token), 'expires_at' => now()->addDays(30), 'max_runs' => 60]);
+    }
+
+    protected function tearDown(): void
+    {
+        if (isset($this->primaryKeyPath) && is_file($this->primaryKeyPath)) unlink($this->primaryKeyPath);
+        parent::tearDown();
+    }
+
+    public function test_primary_key_is_used_and_explicit_quota_rejection_uses_one_fallback_in_the_same_run(): void
+    {
+        $run = IguideLabRun::find($this->start($this->upload()['id'])['id']);
+        Http::fakeSequence('api.openai.com/v1/images/edits')
+            ->push(['error' => ['code' => 'credit_balance_exhausted', 'type' => 'insufficient_quota']], 429, ['x-request-id' => 'req-quota'])
+            ->push(['data' => [['b64_json' => base64_encode($this->png(2048, 1024))]]], 200, ['x-request-id' => 'req-fallback']);
+        app(LabService::class)->process($run);
+        $run->refresh();
+        $this->assertSame('completed', $run->status);
+        $this->assertSame('req-fallback', $run->provider_request_id);
+        $this->assertSame(['lab-primary', 'dashboard-fallback'], array_column($run->options['providerAttempts'], 'credentialSource'));
+        $this->assertSame(['quota_rejected', 'received'], array_column($run->options['providerAttempts'], 'status'));
+        $this->assertSame('req-quota', $run->options['providerAttempts'][0]['providerRequestId']);
+        $this->assertSame(1, $this->project->fresh()->used_runs);
+        $requests = Http::recorded();
+        $this->assertTrue($requests[0][0]->hasHeader('Authorization', 'Bearer test-primary-key'));
+        $this->assertTrue($requests[1][0]->hasHeader('Authorization', 'Bearer test-openai-key'));
+        $primaryFields = collect($requests[0][0]->data())->keyBy('name');
+        $fallbackFields = collect($requests[1][0]->data())->keyBy('name');
+        $this->assertSame('gpt-image-2.6-sunburst', $primaryFields['model']['contents']);
+        foreach (['model', 'prompt', 'size', 'quality', 'complexity'] as $field) $this->assertSame($primaryFields[$field]['contents'], $fallbackFields[$field]['contents']);
+        app(LabService::class)->process($run);
+        Http::assertSentCount(2);
+        $body = $this->withToken($this->token)->getJson('/api/iguide-lab/runs/'.$run->id)->assertOk()->getContent();
+        foreach (['test-primary-key', 'test-openai-key', $this->primaryKeyPath] as $secret) $this->assertStringNotContainsString($secret, $body);
+    }
+
+    public function test_rate_limits_auth_errors_and_timeouts_never_switch_to_dashboard_credentials(): void
+    {
+        $sequence = Http::fakeSequence('api.openai.com/v1/images/edits');
+        foreach ([['rate_limit_exceeded', 429], ['slow_down', 429], ['invalid_api_key', 401], ['server_error', 500]] as [$code, $status]) {
+            $sequence->push(['error' => ['code' => $code, 'type' => 'insufficient_quota']], $status);
+        }
+        for ($index = 0; $index < 4; $index++) {
+            $run = IguideLabRun::find($this->start($this->upload()['id'])['id']);
+            app(LabService::class)->process($run);
+            $this->assertCount(1, $run->fresh()->options['providerAttempts']);
+        }
+        Http::assertSentCount(4);
+        Http::assertNotSent(fn ($request) => $request->hasHeader('Authorization', 'Bearer test-openai-key'));
+    }
+
+    public function test_transport_failure_is_ambiguous_without_fallback_or_automatic_replay(): void
+    {
+        $run = IguideLabRun::find($this->start($this->upload()['id'])['id']);
+        $attempts = 0;
+        Http::fake(function () use (&$attempts) { $attempts++; throw new \Illuminate\Http\Client\ConnectionException('fixture timeout'); });
+        app(LabService::class)->process($run);
+        app(LabService::class)->process($run->fresh());
+        $this->assertSame(1, $attempts);
+        $this->assertSame('needs_attention', $run->fresh()->status);
+        $this->assertSame('unknown', $run->fresh()->options['providerAttempts'][0]['status']);
+    }
+
+    public function test_fallback_failure_stops_after_two_attempts_and_missing_primary_fails_closed(): void
+    {
+        $run = IguideLabRun::find($this->start($this->upload()['id'])['id']);
+        Http::fakeSequence('api.openai.com/v1/images/edits')
+            ->push(['error' => ['code' => 'insufficient_quota']], 429)
+            ->push(['error' => ['code' => 'insufficient_quota']], 429);
+        app(LabService::class)->process($run);
+        app(LabService::class)->process($run->fresh());
+        Http::assertSentCount(2);
+        $this->assertSame('failed', $run->fresh()->status);
+        $next = IguideLabRun::find($this->start($this->upload()['id'])['id']);
+        unlink($this->primaryKeyPath);
+        app(LabService::class)->process($next);
+        $this->assertSame('failed', $next->fresh()->status);
+        Http::assertSentCount(2);
+        $this->withToken($this->token)->postJson('/api/iguide-lab/runs', $this->input($next->case_id))->assertStatus(503);
+    }
+
+    public function test_reviews_are_append_only_idempotent_and_latest_review_persists(): void
+    {
+        $run = IguideLabRun::find($this->start($this->upload()['id'])['id']);
+        $run->update(['status' => 'completed']);
+        $input = $this->reviewInput();
+        $url = '/api/iguide-lab/runs/'.$run->id.'/reviews';
+        $first = $this->withToken($this->token)->postJson($url, $input)->assertCreated()->json('data');
+        $this->withToken($this->token)->postJson($url, $input)->assertOk()->assertJsonPath('data.id', $first['id']);
+        $this->withToken($this->token)->postJson($url, [...$input, 'notes' => 'Changed'])->assertConflict();
+        $next = [...$input, 'requestId' => (string) Str::uuid(), 'verdict' => 'needs_work', 'notes' => 'Sofa changes across views.'];
+        $this->withToken($this->token)->postJson($url, $next)->assertCreated();
+        $this->assertSame(2, IguideLabReview::where('run_id', $run->id)->count());
+        $this->assertSame('accepted', IguideLabReview::oldest('id')->first()->verdict);
+        $this->withToken($this->token)->getJson('/api/iguide-lab/runs/'.$run->id)->assertOk()
+            ->assertJsonPath('data.latestReview.verdict', 'needs_work')->assertJsonPath('data.latestReview.requestId', $next['requestId']);
+        $this->assertSame(1, $this->project->fresh()->used_runs);
+    }
+
+    public function test_review_auth_scope_completion_and_acceptance_are_enforced(): void
+    {
+        $run = IguideLabRun::find($this->start($this->upload()['id'])['id']);
+        $url = '/api/iguide-lab/runs/'.$run->id.'/reviews';
+        $input = $this->reviewInput();
+        $this->withHeader('Authorization', '')->postJson($url, $input)->assertUnauthorized();
+        $other = str_repeat('b', 64);
+        IguideLabProject::create(['name' => 'Other', 'token_hash' => hash('sha256', $other), 'expires_at' => now()->addDay(), 'max_runs' => 1]);
+        $this->withToken($other)->postJson($url, $input)->assertNotFound();
+        $this->withToken($this->token)->postJson($url, $input)->assertUnprocessable();
+        $run->update(['status' => 'completed']);
+        foreach (['fail', 'unreviewed', 'not_applicable'] as $value) {
+            $invalid = $input; $invalid['checks']['geometry'] = $value;
+            $this->withToken($this->token)->postJson($url, $invalid)->assertUnprocessable();
+        }
+        $this->withToken($this->token)->postJson($url, [...$input, 'scope' => 'cross_view'])->assertUnprocessable();
+        $invalid = $input; $invalid['checks']['crossView'] = 'pass';
+        $this->withToken($this->token)->postJson($url, $invalid)->assertUnprocessable();
+        $this->withToken($this->token)->postJson($url, [...$invalid, 'scope' => 'cross_view'])->assertCreated();
+        $this->withToken($this->token)->postJson($url, [...$input, 'requestId' => (string) Str::uuid(), 'metrics' => ['oversized' => str_repeat('x', 8193)]])->assertUnprocessable();
+        $this->assertSame(1, IguideLabReview::count());
+        Http::assertNothingSent();
+    }
+
+    private function reviewInput(): array
+    {
+        return ['requestId' => (string) Str::uuid(), 'verdict' => 'accepted', 'checks' => ['edit' => 'pass', 'geometry' => 'pass', 'seam' => 'pass', 'appearance' => 'pass', 'crossView' => 'not_applicable'],
+            'notes' => 'Reviewed matching camera view and wrap seam.', 'pipeline' => 'whole_panorama', 'scope' => 'single_panorama', 'batchId' => 'batch-1', 'metrics' => ['seam' => 0.02]];
     }
 
     public function test_capability_is_required_and_expired_or_revoked_capabilities_fail_closed(): void
@@ -155,9 +286,17 @@ class IguideLabTest extends TestCase
     public function test_wrong_result_dimensions_are_not_stretched_into_a_panorama(): void
     {
         $run = IguideLabRun::find($this->start($this->upload()['id'])['id']);
-        $this->mock(LabProvider::class)->shouldReceive('submit')->once()->andReturn(['bytes' => $this->png(512, 512)]);
+        $bytes = $this->png(512, 512);
+        $this->mock(LabProvider::class)->shouldReceive('submit')->once()->andReturn(['bytes' => $bytes, 'requestId' => 'req-rejected', 'usage' => ['output_tokens' => 5]]);
         app(LabService::class)->process($run);
         $this->assertSame('needs_attention', $run->fresh()->status);
+        $run->refresh();
+        $this->assertSame($bytes, Storage::disk(LabService::DISK)->get($run->output_path));
+        $this->assertSame(512, $run->output_width);
+        $this->assertSame(512, $run->output_height);
+        $this->assertSame('req-rejected', $run->provider_request_id);
+        $this->assertSame(['output_tokens' => 5], $run->usage);
+        $this->assertSame(hash('sha256', $bytes), $run->options['diagnosticOutput']['sha256']);
         $this->withToken($this->token)->get('/api/iguide-lab/assets/run/'.$run->id)->assertNotFound();
     }
 

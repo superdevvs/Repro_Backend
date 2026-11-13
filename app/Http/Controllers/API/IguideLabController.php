@@ -7,6 +7,7 @@ use App\Models\IguideLabCase;
 use App\Models\IguideLabRun;
 use App\Services\IguideLab\LabCatalog;
 use App\Services\IguideLab\LabService;
+use App\Services\IguideLab\LabReviews;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\Rule;
@@ -68,6 +69,25 @@ class IguideLabController extends Controller
         $run = IguideLabRun::where('project_id', $request->attributes->get('iguide_lab_project')->id)->findOrFail($id);
 
         return response()->json(['data' => $service->runDto($run)]);
+    }
+
+    public function review(Request $request, string $id, LabReviews $reviews)
+    {
+        $project = $request->attributes->get('iguide_lab_project');
+        $run = IguideLabRun::where('project_id', $project->id)->findOrFail($id);
+        $rules = [
+            'requestId' => ['required', 'uuid'], 'verdict' => ['required', Rule::in(['accepted', 'needs_work'])],
+            'checks' => ['required', 'array:edit,geometry,seam,appearance,crossView'],
+            'notes' => ['nullable', 'string', 'max:4000'],
+            'pipeline' => ['required', Rule::in(['whole_panorama', 'perspective_sections'])],
+            'scope' => ['required', Rule::in(['single_panorama', 'cross_view'])],
+            'batchId' => ['nullable', 'string', 'max:100'], 'metrics' => ['nullable', 'array', 'max:100'],
+        ];
+        foreach (['edit', 'geometry', 'seam', 'appearance', 'crossView'] as $check) {
+            $rules['checks.'.$check] = ['required', Rule::in(['pass', 'fail', 'unreviewed', 'not_applicable'])];
+        }
+        [$review, $created] = $reviews->add($project, $run, $request->validate($rules));
+        return response()->json(['data' => $reviews->dto($review)], $created ? 201 : 200);
     }
 
     public function asset(Request $request, string $kind, string $id)

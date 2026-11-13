@@ -133,6 +133,17 @@ class LabService
             }
             $size = @getimagesizefromstring($result['bytes']);
             if (! $size || $size[0] !== $run->options['width'] || $size[1] !== $run->options['height']) {
+                app(LabStorage::class)->prepareProject($run->project_id);
+                $path = 'iguide-lab/'.$run->project_id.'/runs/'.$run->id.'-rejected.bin';
+                // Preserve exact rejected bytes for operator diagnosis; ordinary asset routes remain closed.
+                Storage::disk(self::DISK)->put($path, $result['bytes'], ['visibility' => 'private']);
+                $options = $run->options;
+                $options['diagnosticOutput'] = ['stored' => true, 'width' => $size[0] ?? null, 'height' => $size[1] ?? null,
+                    'mime' => $size['mime'] ?? null, 'sha256' => hash('sha256', $result['bytes'])];
+                LockedWrite::run(fn () => $run->update(['output_path' => $path, 'output_width' => $size[0] ?? null,
+                    'output_height' => $size[1] ?? null, 'options' => $options, 'usage' => $result['usage'] ?? null,
+                    'provider_request_id' => $result['requestId'] ?? $run->provider_request_id,
+                    'duration_ms' => (int) $run->started_at->diffInMilliseconds(now())]), 'iguide-lab.rejected-output');
                 $this->attention($run, 'The provider returned an unexpected image size. The panorama was not stretched or published.');
                 return true;
             }
@@ -175,6 +186,7 @@ class LabService
             'modelId' => $run->model_id, 'requestedModelId' => $run->model_id, 'provider' => $run->provider, 'providerRequestId' => $run->provider_request_id, 'preset' => $run->preset, 'style' => $run->style,
             'prompt' => $run->prompt, 'customPrompt' => $run->options['customInstructions'] ?? '', 'options' => $run->options, 'status' => $run->status, 'error' => $run->error,
             'output' => $run->status === 'completed' ? ['assetPath' => '/api/iguide-lab/assets/run/'.$run->id, 'width' => $run->output_width, 'height' => $run->output_height, 'mime' => 'image/png', 'preview' => true] : null,
+            'latestReview' => app(LabReviews::class)->latest($run),
             'usage' => $run->usage, 'durationMs' => $run->duration_ms, 'createdAt' => $run->created_at->toIso8601String(), 'completedAt' => $run->completed_at?->toIso8601String()];
     }
 }

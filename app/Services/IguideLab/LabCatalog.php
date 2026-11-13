@@ -16,7 +16,9 @@ class LabCatalog
 
     public static function models(): array
     {
-        return collect(self::MODELS)->map(fn ($model, $id) => ['id' => $id, ...$model, 'ready' => filled(app(StudioProviderSettings::class)->credentials($model['provider'])['api_key'] ?? null)])->values()->all();
+        return collect(self::MODELS)->map(fn ($model, $id) => ['id' => $id, ...$model, 'ready' => $model['provider'] === 'openai'
+            ? app(LabCredentials::class)->ready()
+            : filled(app(StudioProviderSettings::class)->credentials($model['provider'])['api_key'] ?? null)])->values()->all();
     }
 
     public static function labels(array $items): array
