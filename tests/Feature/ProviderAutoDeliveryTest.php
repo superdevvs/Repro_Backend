@@ -130,6 +130,20 @@ class ProviderAutoDeliveryTest extends TestCase
         Queue::assertPushed(\App\Jobs\IngestCubiCasaAssetsJob::class);
     }
 
+    public function test_cubicasa_home_report_alone_cannot_complete_missing_floorplan_work(): void
+    {
+        [$shoot, $item, $floorplan, $parsed] = $this->fixture();
+        $report = $this->homeReport($floorplan, $parsed);
+        $parsed['floorplans'] = [$parsed['floorplans'][1]];
+        $this->currentCubi($parsed);
+        app(ProviderAutoDeliveryService::class)->run($shoot->id);
+
+        $this->assertSame('completed', $report->fresh()->workflow_stage);
+        $this->assertSame('not_started', $item->fresh()->delivery_status);
+        $this->assertDatabaseCount('shoot_delivery_receipts', 0);
+        $this->assertDatabaseCount('shoot_delivery_notification_outbox', 0);
+    }
+
     public function test_clean_preview_ready_provider_floorplan_delivers_automatically_without_impersonating_authenticated_staff(): void
     {
         [$shoot, $item, $file, $parsed] = $this->fixture(); $this->currentCubi($parsed);

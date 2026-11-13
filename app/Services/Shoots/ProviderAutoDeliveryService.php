@@ -197,6 +197,7 @@ class ProviderAutoDeliveryService
     public function assetManifest(array $assets): array
     {
         $result = [];
+        $hasFloorplan = false;
         foreach ($assets as $asset) {
             $type = (string) ($asset['type'] ?? pathinfo(parse_url($asset['url'] ?? '', PHP_URL_PATH) ?: '', PATHINFO_EXTENSION));
             $kind = $asset['component_kind'] ?? 'floorplan';
@@ -207,9 +208,11 @@ class ProviderAutoDeliveryService
             if ($homeReport ? ! in_array($kind, ['floorplan', 'report'], true) || strtolower($type) !== 'pdf' : $kind !== 'floorplan') continue;
             if (! preg_match('/^(pdf|jpe?g|png)$/i', $type) || empty($asset['asset_key']) || empty($asset['url'])) continue;
             $result[] = ['key' => (string) $asset['asset_key'], 'url' => ProviderDeliveryUrl::canonical($asset['url'])];
+            $hasFloorplan = $hasFloorplan || ! $homeReport;
         }
         usort($result, fn ($a, $b) => [$a['key'], $a['url']] <=> [$b['key'], $b['url']]);
-        return $result;
+        // A supplementary report cannot fulfill missing floorplan work by itself.
+        return $hasFloorplan ? $result : [];
     }
 
     private function requestRecovery(Shoot $shoot, ShootService $item, string $provider, array $assets): void
