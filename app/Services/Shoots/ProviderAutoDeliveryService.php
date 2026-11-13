@@ -198,8 +198,13 @@ class ProviderAutoDeliveryService
     {
         $result = [];
         foreach ($assets as $asset) {
-            if (($asset['component_kind'] ?? 'floorplan') !== 'floorplan' || str_starts_with((string) ($asset['asset_key'] ?? ''), 'pdf_home_report_')) continue;
             $type = (string) ($asset['type'] ?? pathinfo(parse_url($asset['url'] ?? '', PHP_URL_PATH) ?: '', PATHINFO_EXTENSION));
+            $kind = $asset['component_kind'] ?? 'floorplan';
+            $homeReport = str_starts_with((string) ($asset['asset_key'] ?? ''), 'pdf_home_report_');
+            // CubiCasa imports the Home Report with its floorplan delivery.
+            // Approve its exact PDF bytes through the same provider checks;
+            // download categorization still keeps it separate from floorplans.
+            if ($homeReport ? ! in_array($kind, ['floorplan', 'report'], true) || strtolower($type) !== 'pdf' : $kind !== 'floorplan') continue;
             if (! preg_match('/^(pdf|jpe?g|png)$/i', $type) || empty($asset['asset_key']) || empty($asset['url'])) continue;
             $result[] = ['key' => (string) $asset['asset_key'], 'url' => ProviderDeliveryUrl::canonical($asset['url'])];
         }

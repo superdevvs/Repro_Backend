@@ -49,6 +49,87 @@ class ProviderAutoDeliveryTest extends TestCase
         $client->shouldReceive('parseOrderData')->andReturn($parsed);
     }
 
+    private function homeReport(ShootFile $floorplan, array &$parsed): ShootFile
+    {
+        $pdf = "%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\n%%EOF\n";
+        Storage::disk('public')->put('plans/home-report.pdf', $pdf);
+        Http::fake(['https://provider.test/home-report.pdf' => Http::response($pdf, 200, ['Content-Type' => 'application/pdf'])]);
+        $report = $floorplan->replicate();
+        $report->forceFill(['filename' => 'home-report.pdf', 'stored_filename' => 'home-report.pdf',
+            'path' => 'plans/home-report.pdf', 'storage_path' => null, 'file_size' => strlen($pdf),
+            'mime_type' => 'application/pdf', 'file_type' => 'application/pdf', 'workflow_stage' => 'completed',
+            'verified_at' => null, 'verified_by' => null, 'created_at' => now(),
+            'metadata' => ['source' => 'cubicasa', 'cubicasa_asset_key' => 'pdf_home_report_0',
+                'provider_identity' => 'order-current', 'original_url' => 'https://provider.test/home-report.pdf']])->save();
+        $parsed['floorplans'][] = ['asset_key' => 'pdf_home_report_0', 'component_kind' => 'report',
+            'type' => 'pdf', 'url' => 'https://provider.test/home-report.pdf'];
+        return $report;
+    }
+
+    public function test_verified_cubicasa_home_report_is_released_with_floorplans_and_retains_document_download_rules(): void
+    {
+        [$shoot, $item, $floorplan, $parsed] = $this->fixture();
+        $report = $this->homeReport($floorplan, $parsed);
+        $this->currentCubi($parsed);
+        $provider = app(ProviderAutoDeliveryService::class);
+        $provider->run($shoot->id);
+
+        $this->assertSame('verified', $report->fresh()->workflow_stage);
+        $this->assertEqualsCanonicalizing([$floorplan->id, $report->id],
+            app(DeliveryPlanService::class)->releasedFileIds($shoot->fresh()));
+        $this->assertSame('other', app(\App\Services\Shoots\ShootDownloadAssetClassifier::class)->type($report));
+        $this->assertSame('unpaid', $shoot->fresh()->payment_status);
+        Sanctum::actingAs($shoot->client);
+        $url = '/api/shoots/'.$shoot->id.'/media/'.$report->id.'/download';
+        $this->getJson($url)->assertForbidden();
+        $shoot->forceFill(['payment_status' => 'paid'])->saveQuietly();
+        $this->get($url, ['Accept' => 'application/octet-stream'])->assertOk();
+        $this->getJson($url.'?format=jpg')->assertUnprocessable();
+        $payload = $this->getJson('/api/shoots/'.$shoot->id.'/files?type=edited')->assertOk()->json('data');
+        $this->assertTrue(collect($payload)->firstWhere('id', $report->id)['can_download']);
+        Sanctum::actingAs(User::factory()->create(['role' => 'client']));
+        $this->getJson($url)->assertForbidden();
+        $provider->run($shoot->id);
+        $this->assertDatabaseCount('shoot_delivery_receipts', 1);
+    }
+
+    public function test_cubicasa_home_report_added_after_floorplan_delivery_gets_its_own_verified_release(): void
+    {
+        [$shoot, $item, $floorplan, $parsed] = $this->fixture();
+        $client = $this->mock(CubiCasaService::class);
+        $client->shouldReceive('getOrder')->andReturn(['id' => 'order-current']);
+        $client->shouldReceive('parseOrderData')->andReturnUsing(function () use (&$parsed) { return $parsed; });
+        $provider = app(ProviderAutoDeliveryService::class);
+        $provider->run($shoot->id);
+        $deliveredAt = $item->fresh()->getRawOriginal('delivered_at');
+        $this->travel(1)->minutes();
+        $report = $this->homeReport($floorplan, $parsed);
+        $provider->run($shoot->id);
+
+        $this->assertSame('verified', $report->fresh()->workflow_stage);
+        $this->assertTrue(app(DeliveryPlanService::class)->releasedFile($report->fresh()));
+        $this->assertTrue(app(DeliveryPlanService::class)->releasedFile($floorplan->fresh()));
+        $this->assertSame($deliveredAt, $item->fresh()->getRawOriginal('delivered_at'));
+        $this->assertSame('delivered', $shoot->fresh()->workflow_status);
+        $this->assertDatabaseCount('shoot_delivery_receipts', 2);
+        $provider->run($shoot->id);
+        $this->assertDatabaseCount('shoot_delivery_receipts', 2);
+    }
+
+    public function test_cubicasa_home_report_without_a_clean_scan_is_not_approved(): void
+    {
+        [$shoot, $item, $floorplan, $parsed] = $this->fixture();
+        $report = $this->homeReport($floorplan, $parsed);
+        $report->forceFill(['scan_status' => ShootFile::SCAN_STATUS_QUARANTINED])->saveQuietly();
+        $this->currentCubi($parsed);
+        app(ProviderAutoDeliveryService::class)->run($shoot->id);
+
+        $this->assertSame('completed', $report->fresh()->workflow_stage);
+        $this->assertDatabaseCount('shoot_delivery_receipts', 0);
+        $this->assertDatabaseCount('shoot_delivery_notification_outbox', 0);
+        Queue::assertPushed(\App\Jobs\IngestCubiCasaAssetsJob::class);
+    }
+
     public function test_clean_preview_ready_provider_floorplan_delivers_automatically_without_impersonating_authenticated_staff(): void
     {
         [$shoot, $item, $file, $parsed] = $this->fixture(); $this->currentCubi($parsed);
