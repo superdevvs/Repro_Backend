@@ -1,0 +1,21 @@
+# Private iGUIDE AI lab
+
+This URL-only experiment uses a separate expiring capability, never the public Listing Studio guest-trial authority. It preserves original tours and produces 2048-pixel previews. The lab does not publish to iGUIDE or claim cross-view consistency or native-resolution restoration.
+
+Create an operator-authorized project with `php artisan iguide-lab:create "RePro iGUIDE Lab" --days=30 --max-runs=60 --token-file=/private/new-file`. The command saves a 0600 capability file and prints only the project ID. Keep the token server-side in the website's scoped session proxy. Every API request requires `Authorization: Bearer <capability>`; it cannot access Dashboard accounts or billing. Revoking a project's `revoked_at` or reaching its expiry disables access and queued work.
+
+All JSON responses use `{ "data": ... }`:
+
+- `GET /api/iguide-lab`: project allowance, exact configured models, presets, styles, source cases and runs.
+- `POST /api/iguide-lab/cases`: multipart `image`, `label`, `projection` (`equirectangular` or `rectilinear`), optional `roomId`, `panoId`, `tourUrl` and JSON-string `metadata`. No remote image URL is fetched. Exact 2:1 is required for panoramas. Uploads allow 30 MB and 64 MP; submitted derivatives are downscaled to at most 2048 pixels. Uploaded width/height/hash describe the upload; original scan resolution and hash belong separately in metadata.
+- `POST /api/iguide-lab/runs`: `caseId`, exact `modelId`, `preset`, UUID `requestId`, optional `style`, `prompt`, `options`. Options: `roomType`, `furnitureDensity` (light/balanced/full), `lightingIntensity` (natural/dramatic), `preserveArchitecture`, `preserveFixedFinishes`, `allowFinishChanges` (interior-design only), `referenceCaseIds`, `referenceRunIds`. References must belong to the project; generated references must be completed, and at most three combined references are allowed. Target image is first. An identical requestId replays its existing run; changed settings return 409.
+- `GET /api/iguide-lab/runs/{id}`: immutable requested model/settings, status, provider request ID, actual output dimensions, usage when supplied, elapsed processing milliseconds, error, and authenticated output path. Status is `queued`, `submitting`, `processing`, `completed`, `failed`, or `needs_attention`.
+- `GET /api/iguide-lab/assets/case/{id}` and `/assets/run/{id}`: capability-scoped private images with no-store and noindex headers.
+
+The two allowed OpenAI models are `gpt-image-2.6-sunburst` and `gpt-image-2.6-flare`; both use Images edits, high quality, medium complexity, one PNG, no input_fidelity. Seedream is exactly `bytedance/seedream/v5/pro/edit`, standard prompt enhancement, one PNG. All equi outputs request 2048×1024. Prepared input PNG hashes are persisted before provider submission. Response dimensions are checked; unexpected dimensions are not stretched. Provider keys remain in existing Dashboard configuration.
+
+Each accepted run reserves one of the project's generation slots; the global lab also limits admission to 120 runs per rolling day. Provider calls run on the existing Studio queue. A write-first reservation serializes SQLite quota/idempotency decisions. A submitting checkpoint prevents accidental repeat charges. Known fal requests poll the same request ID; ambiguous submissions stop for operator review. Provider output is persisted privately before reporting completion. No automatic fallback or paid resubmission occurs.
+
+`iguide-lab:seed <project-id> <manifest.json>` imports a JSON array containing local `file`, `label`, `projection` and optional case fields. `iguide-lab:export <project-id> --output=<file>` exports provenance and run outcomes without credentials. Neither command publishes imagery.
+
+Validation: `tests/Feature/IguideLabTest.php` covers capability expiry, resource/reference isolation, source metadata, strict projection, model/option allowlists, quota/idempotency, request settings, private outputs, ambiguous requests, and fal request reuse. Model capabilities are documented at https://developers.openai.com/api/reference/resources/images/methods/edit and https://fal.ai/models/bytedance/seedream/v5/pro/edit/api; successful real outputs remain an independent benchmark, not a unit-test claim.
