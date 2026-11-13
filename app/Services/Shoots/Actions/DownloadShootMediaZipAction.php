@@ -91,9 +91,15 @@ class DownloadShootMediaZipAction
             return response()->json(['message' => 'This service is not finalized for delivery.', 'code' => 'content_not_finalized'], 403);
         }
 
-        $releaseScopes = $shootUnitId !== null && $shootServiceId === null
-            ? $shoot->serviceItems()->where('shoot_unit_id', $shootUnitId)->where('is_deliverable', true)->where('workflow_status', '!=', 'cancelled')->pluck('id')->all()
-            : [$shootServiceId];
+        $archiveFiles = null;
+        $releaseScopes = [$shootServiceId];
+        if ($shootUnitId !== null && $shootServiceId === null) {
+            // A unit can have released photos while its floorplans are pending.
+            // Apply payment/release gates only to services represented in this
+            // filtered archive; unrelated work must not block the delivered files.
+            $archiveFiles = $this->shootMediaArchiveService->getFilesForType($shoot, $type, null, $shootUnitId);
+            $releaseScopes = $archiveFiles->pluck('shoot_service_id')->unique()->all();
+        }
         foreach ($releaseScopes as $releaseScope) {
             if ($this->shootClientReleaseAccessService->isArchiveReleaseLocked($shoot, $releaseScope, $request->user())) {
                 return $this->shootClientReleaseAccessService->downloadLockedResponse();
@@ -107,7 +113,7 @@ class DownloadShootMediaZipAction
 
             // Cached studio archives are shared objects. Check every member before
             // returning their URL so a service assignment cannot unlock other lanes.
-            foreach ($this->shootMediaArchiveService->getFilesForType($shoot, $type, $shootServiceId, $shootUnitId) as $file) {
+            foreach ($archiveFiles ?? $this->shootMediaArchiveService->getFilesForType($shoot, $type, $shootServiceId, $shootUnitId) as $file) {
                 if (! $this->shootAuthorizationSupport->canDownloadShootMediaFile($shoot, $file, $request->user())) {
                     return response()->json([
                         'message' => 'This archive contains files you cannot access. Download an assigned service or select accessible files.',
