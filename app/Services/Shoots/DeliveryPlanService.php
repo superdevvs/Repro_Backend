@@ -78,8 +78,9 @@ class DeliveryPlanService
                 // A receipt approves exact file versions, not every future upload
                 // to this service. Keep old releases available while exposing the
                 // added outputs to the ordinary reviewed finalization path.
+                // External/no-content completion does not approve local files.
                 $approvedVersions = collect($receipt ? (json_decode($receipt->evidence, true)['files'] ?? []) : []);
-                $additionalOutput = $resolved && ! $cancelled && $kind !== 'legacy' && $files->contains(fn ($file) =>
+                $additionalOutput = $resolved && ! $cancelled && $receipt?->method === 'media' && $kind !== 'legacy' && $files->contains(fn ($file) =>
                     ! $approvedVersions->contains(fn ($entry) =>
                         (int) $entry['id'] === (int) $file->id && (int) $entry['version'] === (int) ($file->content_version ?: 1))
                     && ! $this->releasedFile($file->setRelation('shoot', $shoot)));

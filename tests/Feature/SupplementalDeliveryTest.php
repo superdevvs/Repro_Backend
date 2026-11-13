@@ -98,4 +98,23 @@ class SupplementalDeliveryTest extends TestCase
         $this->assertSame([], app(DeliveryPlanService::class)->plan($shoot->fresh(), $actor)['ready_component_ids']);
         $this->assertSame(1, DB::table('shoot_delivery_receipts')->where('shoot_id', $shoot->id)->count());
     }
+
+    public function test_manual_completion_does_not_accidentally_approve_or_require_local_media(): void
+    {
+        $actor = User::factory()->create(['role' => 'admin']);
+        $shoot = Shoot::factory()->create(['status' => 'ready', 'workflow_status' => 'ready', 'scheduled_at' => now()->subDay()]);
+        $service = Service::factory()->unbracketedPhoto(1)->create();
+        $item = $shoot->serviceItems()->create(['service_id' => $service->id, 'quantity' => 1, 'price' => 175,
+            'workflow_status' => 'ready', 'delivery_status' => 'ready', 'scheduled_at' => now()->subDay()]);
+        $file = ShootFile::forceCreate(['shoot_id' => $shoot->id, 'shoot_service_id' => $item->id, 'filename' => 'output.jpg', 'stored_filename' => 'output.jpg',
+            'path' => 'output.jpg', 'file_size' => 100, 'file_type' => 'image/jpeg', 'mime_type' => 'image/jpeg',
+            'media_type' => 'edited', 'workflow_stage' => 'completed', 'scan_status' => 'clean', 'uploaded_by' => $actor->id]);
+        $intent = app(DeliveryPlanService::class)->validateSelection($shoot, $actor, ['component_ids' => [$item->id.':photo'],
+            'mode' => 'manual_no_content', 'confirmed' => true, 'reason' => 'Client received the finished work externally.']);
+        $this->finalize($shoot, $actor, $intent);
+        $this->assertSame('delivered', $shoot->fresh()->workflow_status);
+        $this->assertSame('completed', $file->fresh()->workflow_stage);
+        $this->assertFalse(app(DeliveryPlanService::class)->releasedFile($file->fresh()));
+        $this->assertSame([], app(DeliveryPlanService::class)->plan($shoot->fresh(), $actor)['remaining_component_ids']);
+    }
 }
