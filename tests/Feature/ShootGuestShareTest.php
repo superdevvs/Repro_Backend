@@ -152,6 +152,39 @@ class ShootGuestShareTest extends TestCase
         $this->assertNull($share->fresh()->code_hash);
     }
 
+    public function test_guest_overview_and_invitation_preserve_the_unit_without_private_property_details(): void
+    {
+        [$shoot, $client, , $share, $token] = $this->fixture();
+        $street = '2061 Alice Avenue';
+        $displayAddress = $street.', Unit 204';
+        $shoot->update(['address' => $street, 'property_details' => array_merge($shoot->property_details, [
+            'aptSuite' => '204', 'private_notes' => 'PRIVATE-PROPERTY-NOTES',
+        ])]);
+        $base = '/api/public/guest-shares/'.$token;
+        $this->getJson($base)->assertOk()->assertJsonPath('verified', false)->assertJsonPath('data', null)
+            ->assertDontSee($street)->assertDontSee('Unit 204')->assertDontSee('PRIVATE-PROPERTY-NOTES');
+        $service = app(ShootGuestShareService::class);
+        $this->withUnencryptedCookie($service->cookieName($share), $this->verifiedSession($share));
+
+        foreach ([$street, $displayAddress] as $savedAddress) {
+            $shoot->update(['address' => $savedAddress]);
+            $this->getJson($base)->assertOk()->assertJsonPath('data.property.address', $displayAddress)
+                ->assertJsonMissingPath('data.property.property_details')->assertDontSee('PRIVATE-PROPERTY-NOTES')
+                ->assertDontSee('SECRET-CODE')->assertDontSee('INTERNAL-SECRET');
+            $service->create($shoot, $client, 'unit-guest@example.test');
+            $invitation = end($this->sent);
+            $this->assertSame('Your Magic Link to '.$displayAddress, $invitation['subject']);
+            foreach (['body_text', 'body_html'] as $body) {
+                $this->assertStringContainsString($displayAddress, $invitation[$body]);
+                $this->assertSame(1, substr_count($invitation[$body], 'Unit 204'));
+                foreach (['PRIVATE-PROPERTY-NOTES', 'SECRET-CODE', 'INTERNAL-SECRET'] as $privateContent) {
+                    $this->assertStringNotContainsString($privateContent, $invitation[$body]);
+                }
+            }
+            $this->assertSame($savedAddress, $shoot->fresh()->address);
+        }
+    }
+
     public function test_unverified_invitation_exposes_only_the_actual_senders_display_name(): void
     {
         [$shoot, $client, , $share, $token] = $this->fixture();

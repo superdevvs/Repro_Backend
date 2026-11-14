@@ -7,6 +7,7 @@ use App\Models\ShootGuestShare;
 use App\Models\User;
 use App\Services\Messaging\MessagingService;
 use App\Support\LockedWrite;
+use App\Support\ShootAddress;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -32,11 +33,12 @@ class ShootGuestShareService
             'token_hash' => hash('sha256', $token), 'expires_at' => now()->addDays(30),
         ]), 'guest-share-create');
         $url = rtrim(config('app.frontend_url') ?: config('app.url'), '/').'/guest/shoot/'.$token;
+        $propertyAddress = ShootAddress::streetWithAptSuite($shoot->address, $shoot->property_details);
         try {
-            $this->send($share, 'Your Magic Link to '.$shoot->address,
-                "Your Magic Link to released media and tours for {$shoot->address}: {$url}. Open the link and request an email verification code. No account is required. Access expires in 30 days.",
+            $this->send($share, 'Your Magic Link to '.$propertyAddress,
+                "Your Magic Link to released media and tours for {$propertyAddress}: {$url}. Open the link and request an email verification code. No account is required. Access expires in 30 days.",
                 view('emails.guest_shoot_invitation', [
-                    'propertyAddress' => $shoot->address,
+                    'propertyAddress' => $propertyAddress,
                     'guestUrl' => $url,
                     'emailAtelier' => ['kind' => 'none'],
                 ])->render());

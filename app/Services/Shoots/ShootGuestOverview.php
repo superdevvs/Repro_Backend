@@ -5,6 +5,7 @@ namespace App\Services\Shoots;
 use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Models\ShootGuestShare;
+use App\Support\ShootAddress;
 use Illuminate\Support\Collection;
 
 /** An explicit guest allowlist, never the authenticated shoot presenter. */
@@ -59,7 +60,8 @@ class ShootGuestOverview
         $summaries = $plan->componentSummaries($shoot);
         return [
             'property' => [
-                'address' => $shoot->address, 'city' => $shoot->city, 'state' => $shoot->state, 'zip' => $shoot->zip,
+                'address' => ShootAddress::streetWithAptSuite($shoot->address, $details),
+                'city' => $shoot->city, 'state' => $shoot->state, 'zip' => $shoot->zip,
                 'beds' => $details['bedrooms'] ?? $details['beds'] ?? null,
                 'baths' => $details['bathrooms'] ?? $details['baths'] ?? null,
                 'sqft' => $details['sqft'] ?? $details['squareFeet'] ?? null,
