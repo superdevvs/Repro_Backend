@@ -18,8 +18,8 @@ class ShootGuestShareService
     public function authorizeManager(Shoot $shoot, User $actor): void
     {
         $access = app(ShootAuthorizationSupport::class);
-        abort_unless(! $shoot->isImportDraft() && $access->canViewShootDetails($shoot, $actor)
-            && ($access->canManageShootOperations($actor)
+        abort_unless($actor->isAccountEligibleForAuthentication() && ! $shoot->isImportDraft() && $access->canViewShootDetails($shoot, $actor)
+            && (($access->canManageShootOperations($actor) && app(\App\Services\RolePermissionService::class)->userCan($actor, 'shoots', 'manage'))
                 || ($actor->role === 'client' && (int) $shoot->client_id === (int) $actor->id)), 403);
     }
 
@@ -50,6 +50,9 @@ class ShootGuestShareService
         $share = ShootGuestShare::where('token_hash', hash('sha256', $token))->firstOrFail();
         abort_if($share->revoked_at || $share->expires_at->isPast(), 410, 'This invitation has expired or been revoked.');
         abort_unless($share->shoot && ! $share->shoot->isImportDraft(), 404);
+        $creator = User::find($share->created_by);
+        abort_unless($creator, 410, 'This invitation is no longer available.');
+        $this->authorizeManager($share->shoot, $creator);
         return $share;
     }
 
