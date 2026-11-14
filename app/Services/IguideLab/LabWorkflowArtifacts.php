@@ -17,19 +17,23 @@ class LabWorkflowArtifacts
     public function snapshot(): array
     {
         $worker = resource_path('iguide-lab/workflow_qa.py');
-        return ['recipeVersion' => self::VERSION, 'adapterSha256' => hash_file('sha256', __FILE__), 'workerSha256' => is_file($worker) ? hash_file('sha256', $worker) : null,
+        $snapshot = ['recipeVersion' => self::VERSION, 'adapterSha256' => hash_file('sha256', __FILE__), 'workerSha256' => is_file($worker) ? hash_file('sha256', $worker) : null,
             'lightingSha256' => is_file(resource_path('iguide-lab/lighting_transfer.py')) ? hash_file('sha256', resource_path('iguide-lab/lighting_transfer.py')) : null,
             'globalLightingSha256' => hash_file('sha256', resource_path('iguide-lab/global_lighting.py')),
             'sourceAdapterSha256' => hash_file('sha256', resource_path('iguide-lab/workflow_source.py')),
             'geometrySha256' => hash_file('sha256', resource_path('iguide-lab/pano_geometry.py')),
             'preparerSha256' => hash_file('sha256', (new \ReflectionClass(LabImages::class))->getFileName()),
             'runtimeManifestSha256' => is_file((string) config('iguide-lab.workflow_runtime_manifest')) ? hash_file('sha256', config('iguide-lab.workflow_runtime_manifest')) : null];
+        if (LabLightingD2::enabled()) {
+            $snapshot['recipeVersion'] = LabLightingD2::VERSION;
+            $snapshot['lightingD2'] = LabLightingD2::snapshot();
+        }
+        return $snapshot;
     }
     public function validateSnapshot(array $snapshot): void
     {
         // Composite manifests canonicalize object-key order before storage.
-        $current = $this->snapshot(); ksort($snapshot); ksort($current);
-        abort_unless($snapshot === $current, 422, 'The reserved automatic composition implementation changed.');
+        abort_unless(LabMachineSegmentationPlan::canonicalHash($snapshot) === LabMachineSegmentationPlan::canonicalHash($this->snapshot()), 422, 'The reserved automatic composition implementation changed.');
     }
     public function ready(): bool
     {
@@ -73,6 +77,7 @@ class LabWorkflowArtifacts
     {
         $this->validateSnapshot($step->input['recipe']); $this->runtime();
         $global = isset($step->input['repair']);
+        $d2 = ! $global && isset($step->input['recipe']['lightingD2']);
         if ($global) app(LabLightingRepairs::class)->verifyComposition($item, $step, $run);
         $case = app(LabWorkflowSources::class)->verify($item->project_id, $item->source);
         abort_unless($run->project_id === $item->project_id && $run->case_id === $case->id && $analysis->case_id === $case->id
@@ -85,11 +90,11 @@ class LabWorkflowArtifacts
             && ($analysis->data['preparedSourceSha256'] ?? '') === $preparedHash, 422, 'The exact submitted source preparation differs.');
         $this->putOnce($base.'/source-prepared.png', $prepared);
         $out = $base.'/lighting-'.$step->id;
-        $request = ['schemaVersion' => 1, 'operation' => $global ? 'transfer-lighting-global' : 'transfer-lighting', 'privateRoot' => $disk->path('iguide-lab/'.$item->project_id),
+        $request = ['schemaVersion' => 1, 'operation' => $global ? 'transfer-lighting-global' : ($d2 ? 'transfer-lighting-d2' : 'transfer-lighting'), 'privateRoot' => $disk->path('iguide-lab/'.$item->project_id),
             'source' => ['path' => $disk->path($case->source_path), 'sha256' => $case->source_sha256],
             'guidanceSource' => ['path' => $disk->path($base.'/source-prepared.png'), 'sha256' => $preparedHash],
             'candidate' => ['path' => $disk->path($run->output_path), 'sha256' => $step->input['outputSha256']],
-            'preset' => $item->preset, 'outputDirectory' => $disk->path($out), 'editScope' => 'entire_view', 'recipe' => $global ? LabLightingRepairs::RECIPE : self::VERSION,
+            'preset' => $item->preset, 'outputDirectory' => $disk->path($out), 'editScope' => 'entire_view', 'recipe' => $global ? LabLightingRepairs::RECIPE : ($d2 ? LabLightingD2::VERSION : self::VERSION),
             'sourcePreparation' => ['nativeSourceSha256' => $case->source_sha256, 'guidanceSourceSha256' => $preparedHash,
                 'preparerSha256' => $step->input['recipe']['preparerSha256'], 'method' => 'LabImages::prepared/GD', 'verifiedByCaller' => true]];
         $report = $this->execute($base.'/lighting-'.$step->id.'-request.json', $request, $step->input['recipe']);
@@ -217,19 +222,23 @@ class LabWorkflowArtifacts
             abort_unless(is_file(resource_path('iguide-lab/'.$file)) && ($manifest[$key] ?? null) === hash_file('sha256', resource_path('iguide-lab/'.$file)), 503, 'Automatic code was not validated with this runtime.');
         }
         abort_unless(($manifest['validatedPreparerSha256'] ?? null) === hash_file('sha256', (new \ReflectionClass(LabImages::class))->getFileName()), 503, 'Automatic source preparation was not validated.');
+        if (LabLightingD2::enabled()) LabLightingD2::validateRuntime(LabLightingD2::snapshot());
         return $manifest;
     }
     protected function execute(string $path, array $request, array $snapshot): array
     {
         $this->validateSnapshot($snapshot); $this->runtime(); $disk = Storage::disk(LabService::DISK);
         $this->putOnce($path, json_encode($request, JSON_THROW_ON_ERROR));
-        $process = new Process([(string) config('iguide-lab.pipeline_python_path'), resource_path('iguide-lab/workflow_qa.py'), '--request', $disk->path($path)], null, $this->environment(), null, 240);
+        $d2 = ($request['operation'] ?? null) === 'transfer-lighting-d2';
+        if ($d2) LabLightingD2::validateRuntime($snapshot['lightingD2'] ?? []);
+        $process = new Process([(string) config('iguide-lab.pipeline_python_path'), resource_path('iguide-lab/'.($d2 ? 'lighting_d2_worker.py' : 'workflow_qa.py')), '--request', $disk->path($path)], null, $this->environment(), null, 240);
         $process->run(); $report = json_decode($process->getOutput(), true);
         abort_unless($process->isSuccessful() && is_array($report) && ($report['status'] ?? null) === 'completed'
             && ($report['automaticAcceptance'] ?? true) === false && ($report['providerCalls'] ?? -1) === 0
             && ($report['reviewStatus'] ?? null) === 'unreviewed' && ($report['operation'] ?? null) === $request['operation']
             && ($report['sourceSha256'] ?? null) === $request['source']['sha256'] && ($report['candidateSha256'] ?? null) === $request['candidate']['sha256']
             && $this->runtimeMatches($report['runtime'] ?? [], $snapshot), 422, 'Automatic local processing failed its execution checks.');
+        if ($d2) LabLightingD2::verifyReport($report, $snapshot['lightingD2']);
         $this->validateSnapshot($snapshot);
         return $report;
     }
