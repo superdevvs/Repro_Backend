@@ -38,26 +38,52 @@ class LabLifestyleFramings
         $workflow=IguideLabWorkflow::where('project_id',$item->project_id)->findOrFail($item->workflow_id);
         abort_unless($item->preset==='lifestyle'&&isset($workflow->policy['lifestyleFraming'])&&LabLifestyleAssessmentPolicy::enabled($workflow->policy,$item->preset),422);
         $this->validate($workflow->policy['lifestyleFraming']);
+        if(isset($workflow->policy['lifestyleOpticalDetails']))return $this->reserveOptical($item,$workflow);
         return app(LabWorkflowSteps::class)->reserve($item,'lifestyle-framing','analysis',['protocolVersion'=>LabLifestyleFramingProtocol::VERSION,
             'contextSnapshot'=>app(LabLifestyleFramingContext::class)->capture($item),'recipe'=>$workflow->policy['lifestyleFraming']]);
+    }
+    private function reserveOptical(IguideLabWorkflowItem $item,IguideLabWorkflow $workflow,?string $parentId=null): IguideLabWorkflowStep
+    {
+        app(LabLifestyleOpticalDetails::class)->validate($workflow->policy['lifestyleOpticalDetails']);
+        return app(LabWorkflowSteps::class)->reserve($item,$parentId===null?'lifestyle-optical-framing':'lifestyle-optical-followup','analysis',
+            ['protocolVersion'=>LabLifestyleOpticalProtocol::VERSION,'parentFramingId'=>$parentId,
+                'contextSnapshot'=>app(LabLifestyleOpticalDetails::class)->capture($item,$parentId),'recipe'=>$workflow->policy['lifestyleOpticalDetails']]);
+    }
+    public function reserveFollowup(IguideLabWorkflowItem $item,string $parentId): IguideLabWorkflowStep
+    {
+        $workflow=IguideLabWorkflow::where('project_id',$item->project_id)->findOrFail($item->workflow_id);
+        abort_unless(isset($workflow->policy['lifestyleOpticalDetails'])&&LabLifestyleAssessmentPolicy::enabled($workflow->policy,$item->preset),422);
+        $parent=$this->completed($item,$parentId);
+        abort_unless(($parent->result['version']??null)===LabLifestyleOpticalProtocol::VERSION&&($parent->result['status']??null)==='detail_required'
+            &&($parent->result['followupOrdinal']??null)===0,422,'Only one initial optical enquiry may have a follow-up.');
+        return $this->reserveOptical($item,$workflow,$parentId);
     }
     private function verifyStep(IguideLabWorkflowStep $step): IguideLabWorkflowItem
     {
         abort_unless(config('iguide-lab.lifestyle_framing_enabled',false)===true,503,'Source framing is disabled.');
-        abort_unless($step->kind==='analysis'&&$step->step_key==='lifestyle-framing'&&($step->input['protocolVersion']??null)===LabLifestyleFramingProtocol::VERSION
+        $version=$step->input['protocolVersion']??null;$optical=$version===LabLifestyleOpticalProtocol::VERSION;
+        $parent=$optical?($step->input['parentFramingId']??null):null;
+        abort_unless($parent===null||is_string($parent)&&\Illuminate\Support\Str::isUuid($parent),422);
+        $expected=$optical?($parent===null?'lifestyle-optical-framing':'lifestyle-optical-followup'):'lifestyle-framing';
+        abort_unless($step->kind==='analysis'&&$step->step_key===$expected&&in_array($version,[LabLifestyleFramingProtocol::VERSION,LabLifestyleOpticalProtocol::VERSION],true)
             &&$step->input_sha256===LabAnalysisRecipes::hash($step->input),422,'Framing reservation changed.');
+        LabLifestyleFramingProtocol::keys($step->input,$optical?['protocolVersion','parentFramingId','contextSnapshot','recipe']:['protocolVersion','contextSnapshot','recipe']);
         $item=IguideLabWorkflowItem::where('project_id',$step->project_id)->findOrFail($step->item_id);
         $workflow=IguideLabWorkflow::where('project_id',$step->project_id)->findOrFail($item->workflow_id);
         abort_unless($item->preset==='lifestyle'&&isset($workflow->policy['lifestyleFraming'])&&LabLifestyleAssessmentPolicy::enabled($workflow->policy,$item->preset),422);
         app(LabWorkflowInvocation::class)->verify(app(LabWorkflowSteps::class)->invocation($step),$step->project_id,$step->request_id,'analysis');
-        $this->validate($step->input['recipe']);abort_unless(LabAnalysisRecipes::hash($step->input['recipe'])===LabAnalysisRecipes::hash($workflow->policy['lifestyleFraming']),422);
-        abort_unless(LabAnalysisRecipes::hash(app(LabLifestyleFramingContext::class)->capture($item))===LabAnalysisRecipes::hash($step->input['contextSnapshot']),422,'Framing source/evidence changed.');return $item;
+        $this->validate($workflow->policy['lifestyleFraming']);
+        if($optical){app(LabLifestyleOpticalDetails::class)->validate($step->input['recipe']);$policy=$workflow->policy['lifestyleOpticalDetails']??[];
+            $fresh=app(LabLifestyleOpticalDetails::class)->capture($item,$parent);
+        }else{$this->validate($step->input['recipe']);$policy=$workflow->policy['lifestyleFraming'];$fresh=app(LabLifestyleFramingContext::class)->capture($item);}
+        abort_unless(LabAnalysisRecipes::hash($step->input['recipe'])===LabAnalysisRecipes::hash($policy)
+            &&LabAnalysisRecipes::hash($fresh)===LabAnalysisRecipes::hash($step->input['contextSnapshot']),422,'Framing source/evidence changed.');return $item;
     }
     private function payload(IguideLabWorkflowStep $step): string
     {
         $images=[];$snapshot=$step->input['contextSnapshot'];
         foreach($snapshot['assets'] as $asset){$path=app(LabLifestyleFramingContext::class)->file($step->project_id,$asset['path'],$asset['sha256']);$images[]='data:image/png;base64,'.base64_encode(file_get_contents($path));}
-        return json_encode(LabLifestyleFramingProtocol::request($snapshot['context'],$images),JSON_THROW_ON_ERROR);
+        return json_encode(($step->input['protocolVersion']===LabLifestyleOpticalProtocol::VERSION?LabLifestyleOpticalProtocol::class:LabLifestyleFramingProtocol::class)::request($snapshot['context'],$images),JSON_THROW_ON_ERROR);
     }
     /** Revalidate retained source evidence before each primary or explicit-quota attempt. */
     public function verifyForAttempt(IguideLabLifestyleFraming $record,string $payload): void
@@ -118,7 +144,7 @@ class LabLifestyleFramings
     {
         $attempts=$record->provider_attempts??[];$index=count($attempts)-1;$attempt=$attempts[$index]??[];$receipt=$record->data['providerReceipt']??[];
         abort_unless(in_array(count($attempts),[1,2],true)&&($attempts[0]['credentialSource']??null)==='lab-primary'&&($attempt['status']??null)==='received'
-            &&($attempt['requestedModelId']??null)==='gpt-6-astra'&&($attempt['providerRequestId']??null)===$record->provider_request_id&&is_string($record->provider_request_id)&&$record->provider_request_id!==''
+            &&($attempts[0]['requestedModelId']??null)==='gpt-6-astra'&&($attempt['requestedModelId']??null)==='gpt-6-astra'&&($attempt['providerRequestId']??null)===$record->provider_request_id&&is_string($record->provider_request_id)&&$record->provider_request_id!==''
             &&($attempt['httpStatus']??0)>=200&&($attempt['httpStatus']??0)<300
             &&($index===0||(($attempts[0]['status']??null)==='quota_rejected'&&($attempts[0]['httpStatus']??null)===429&&($attempt['credentialSource']??null)==='dashboard-fallback')),422,'Framing provider receipt is not confirmed.');
         $path='iguide-lab/'.$record->project_id.'/lifestyle-framings/'.$record->id.'/response-'.$index.'.json';abort_unless(($receipt['response']['path']??null)===$path
@@ -126,7 +152,7 @@ class LabLifestyleFramings
         $file=app(LabLifestyleFramingContext::class)->file($record->project_id,$path,$receipt['response']['sha256']??'',128*1024);
         $raw=json_decode(file_get_contents($file),true,flags:JSON_THROW_ON_ERROR);
         abort_unless(($raw['id']??null)===($receipt['providerResponseId']??null)&&is_string($raw['id']??null)&&$raw['id']!==''&&($raw['model']??null)==='gpt-6-astra'&&$receipt['model']==='gpt-6-astra',422);
-        return LabLifestyleFramingProtocol::parse($raw,$step->input['contextSnapshot']['context']);
+        return ($step->input['protocolVersion']===LabLifestyleOpticalProtocol::VERSION?LabLifestyleOpticalProtocol::class:LabLifestyleFramingProtocol::class)::parse($raw,$step->input['contextSnapshot']['context']);
     }
     public function completed(IguideLabWorkflowItem $item,string $id): IguideLabLifestyleFraming
     {
@@ -138,6 +164,6 @@ class LabLifestyleFramings
     public function attention(IguideLabLifestyleFraming $record,string $code): void
     {LockedWrite::run(fn()=>IguideLabLifestyleFraming::whereKey($record->id)->where('status','!=','completed')->update(['status'=>'needs_attention','error_code'=>$code,'completed_at'=>now(),'updated_at'=>now()]),'iguide-lab.framing-attention');}
     public function dto(IguideLabLifestyleFraming $record): array
-    {return ['version'=>LabLifestyleFramingProtocol::VERSION,'id'=>$record->id,'status'=>$record->status,'sourceSha256'=>$record->data['contextSnapshot']['context']['sourceSha256'],
+    {return ['version'=>$record->data['contextSnapshot']['context']['version'],'id'=>$record->id,'status'=>$record->status,'sourceSha256'=>$record->data['contextSnapshot']['context']['sourceSha256'],
         'resultSha256'=>$record->result_sha256,'result'=>$record->result,'imageGenerationAuthorized'=>false,'errorCode'=>$record->error_code,'createdAt'=>$record->created_at->toIso8601String(),'completedAt'=>$record->completed_at?->toIso8601String()];}
 }

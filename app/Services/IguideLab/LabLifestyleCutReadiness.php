@@ -38,7 +38,7 @@ class LabLifestyleCutReadiness
             &&$cut->projection==='rectilinear'&&[$cut->width,$cut->height]===[2048,2048],422,'Framing section association changed.');
         foreach(['yaw','pitch','hFov'] as $key)abort_unless((float)$section->view[$key]===(float)$result['view'][$key],422,'Framing section pose changed.');
         $context=app(LabAnalysisSourceContext::class)->capture($cut);abort_unless($context&&$context['binding']['sectionId']===$section->id&&$context['binding']['nativeCaseId']===$item->case_id,422);
-        return ['version'=>LabLifestyleFramingProtocol::VERSION,'id'=>$framing->id,'resultSha256'=>$framing->result_sha256,
+        return ['version'=>$result['version'],'id'=>$framing->id,'resultSha256'=>$framing->result_sha256,
             'nativeSourceSha256'=>$item->source['sha256'],'view'=>$result['view'],'constraints'=>$result['constraints']];
     }
     public function verifyReference(array $invocation,IguideLabCase $cut,array $reference): void

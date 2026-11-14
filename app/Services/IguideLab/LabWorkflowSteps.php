@@ -39,6 +39,14 @@ class LabWorkflowSteps
             }
             if (LabLifestyleAssessmentPolicy::enabled($workflow->policy, $item->preset)) {
                 $limit = match ($kind) { 'analysis' => 3, 'image' => 1, 'segmentation' => 2, 'evaluation','section','composition' => 1, default => $limit };
+                if(isset($workflow->policy['lifestyleOpticalDetails'])){
+                    app(LabLifestyleOpticalDetails::class)->validate($workflow->policy['lifestyleOpticalDetails']);
+                    if($kind==='analysis'){
+                        $limit=4;
+                        abort_unless(in_array($key,['lifestyle-optical-framing','lifestyle-optical-followup','lifestyle-section-plan'],true)
+                            || (($input['protocolVersion']??null)===LabLifestyleAssessmentPolicy::VERSION&&$key==='placement-'.($input['candidateRunId']??'')),422,'Unsupported bounded Lifestyle analysis step.');
+                    }
+                }
             }
             if (class_exists(LabGrassAssessmentPolicy::class) && LabGrassAssessmentPolicy::enabled($workflow->policy,$item->preset)) {
                 $limit = match ($kind) { 'analysis' => 2, 'image' => 1, 'segmentation' => 6, 'evaluation' => 1, default => $limit };

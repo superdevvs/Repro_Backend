@@ -17,7 +17,8 @@ class LabLifestyleWorkflow
     }
     public function ready(): bool
     {
-        return config('iguide-lab.lifestyle_framing_enabled',false)===true
+        return (!config('iguide-lab.lifestyle_optical_details_enabled',false)||app(LabLifestyleOpticalDetails::class)->ready())
+            &&config('iguide-lab.lifestyle_framing_enabled',false)===true
             &&app(LabLifestyleFramings::class)->ready()
             &&app(LabLifestyleSupport::class)->ready()&&app(LabLifestyleAssessments::class)->ready()
             &&app(LabSectionGeometry::class)->ready()&&app(LabWorkflowArtifacts::class)->ready()
@@ -49,6 +50,11 @@ class LabLifestyleWorkflow
         $framing=$framingService->start($framingService->reserve($item));$data['sourceFramingId']=$framing->id;
         if(!$this->completed($item,$framing,'analyzing',$data))return;
         $framing=$framingService->completed($item,$framing->id);
+        if(($framing->result['version']??null)===LabLifestyleOpticalProtocol::VERSION&&$framing->result['status']==='detail_required'){
+            $followup=$framingService->start($framingService->reserveFollowup($item,$framing->id));$data['sourceOpticalFollowupId']=$followup->id;
+            if(!$this->completed($item,$followup,'analyzing',$data))return;
+            $framing=$framingService->completed($item,$followup->id);
+        }
         if($framing->result['status']!=='framing_candidate') {
             $owner->finish($item,'needs_review','framing_requires_review','A safe standing-pair source framing could not be proposed. No image was requested.',$data);return;
         }
