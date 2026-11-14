@@ -55,22 +55,24 @@ class LabSections
         return IguideLabCase::where('project_id', $project->id)->findOrFail($saved['caseId']);
     }
 
-    public function start(IguideLabProject $project, array $input): IguideLabSection
+    public function start(IguideLabProject $project, array $input, ?array $workflowInvocation=null): IguideLabSection
     {
+        app(LabWorkflowInvocation::class)->verifyInput($workflowInvocation,$project->id,$input,'section');
         $case = IguideLabCase::where('project_id', $project->id)->findOrFail($input['caseId']);
         abort_unless($case->projection === 'equirectangular' && $case->width >= 2048 && $case->width === 2 * $case->height, 422, 'Use an actual uploaded full panorama at least2048 pixels wide.');
         // Metadata about a high-resolution original cannot stand in for its actual uploaded pixels.
         abort_if(isset($case->metadata['originalSha256']) && ! hash_equals($case->metadata['originalSha256'], $case->source_sha256), 422, 'Attach the hash-matched original scan before native section editing.');
         $view = ['yaw' => (float) $input['view']['yaw'], 'pitch' => (float) $input['view']['pitch'], 'hFov' => (float) $input['view']['hFov']];
         $hash = hash('sha256', json_encode([$case->id, $case->source_sha256, $view], JSON_THROW_ON_ERROR));
-        [$record, $created] = LockedWrite::run(fn () => DB::transaction(function () use ($project, $case, $input, $view, $hash) {
+        [$record, $created] = LockedWrite::run(fn () => DB::transaction(function () use ($project, $case, $input, $view, $hash, $workflowInvocation) {
             IguideLabProject::whereKey($project->id)->update(['updated_at' => now()]); abort_unless($project->fresh()->active(), 401);
             $saved = IguideLabSection::where('project_id', $project->id)->where('request_id', $input['requestId'])->first();
             if ($saved) { abort_unless(hash_equals($saved->request_hash, $hash), 409); return [$saved, false]; }
             abort_unless(app(LabSectionGeometry::class)->ready(), 503, 'Section geometry is unavailable.');
-            abort_if(IguideLabSection::where('project_id', $project->id)->count() >= 120, 429, 'Section safety ceiling reached.');
+            app(LabWorkflowRecordCapacity::class)->assertRoom(IguideLabSection::class,$project->id,$workflowInvocation,null);
             return [IguideLabSection::create(['project_id' => $project->id, 'case_id' => $case->id, 'request_id' => $input['requestId'],
-                'request_hash' => $hash, 'source_sha256' => $case->source_sha256, 'view' => $view, 'status' => 'queued']), true];
+                'request_hash' => $hash, 'source_sha256' => $case->source_sha256, 'view' => $view, 'status' => 'queued',
+                'data'=>$workflowInvocation===null?null:['workflowInvocation'=>$workflowInvocation]]), true];
         }), 'iguide-lab.section-reserve');
         if ($created) {
             try { ProcessIguideLabSection::dispatch($record->id); }
@@ -84,6 +86,8 @@ class LabSections
         if (in_array($record->status, ['completed', 'needs_attention'], true)) return;
         try {
             $project = IguideLabProject::findOrFail($record->project_id); abort_unless($project->active(), 401);
+            $invocation=$record->data['workflowInvocation']??null;
+            app(LabWorkflowInvocation::class)->verify($invocation,$project->id,$record->request_id,'section');
             $case = IguideLabCase::where('project_id', $project->id)->findOrFail($record->case_id); $disk = Storage::disk(LabService::DISK);
             abort_unless(hash_equals($record->source_sha256, $case->source_sha256) && hash_equals($record->source_sha256, hash_file('sha256', $disk->path($case->source_path))), 422);
             $this->save($record, ['status' => 'extracting', 'started_at' => $record->started_at ?? now()]);
@@ -99,8 +103,9 @@ class LabSections
             $derived = app(LabService::class)->addCase($project, new UploadedFile($cut['path'], 'section.png', null, null, true),
                 ['label' => mb_substr($case->label, 0, 100).' - section '.substr($record->id, 0, 8), 'roomId' => $case->room_id, 'panoId' => $case->pano_id,
                     'tourUrl' => $case->tour_url, 'projection' => 'rectilinear', 'metadata' => ['role' => 'section-source', 'includeInBatch' => false,
-                        'parentCaseId' => $case->id, 'sectionId' => $record->id, 'nativeSourceSha256' => $case->source_sha256, 'view' => $record->view, 'geometrySha256' => $geometry['sha256']]]);
+                        'parentCaseId' => $case->id, 'sectionId' => $record->id, 'nativeSourceSha256' => $case->source_sha256, 'view' => $record->view, 'geometrySha256' => $geometry['sha256']]],$invocation);
             $this->save($record, ['status' => 'completed', 'derived_case_id' => $derived->id, 'data' => ['cutSha256' => $cut['sha256'],
+                ...($invocation===null?[]:['workflowInvocation'=>$invocation]),
                 'geometryPath' => $base.'/geometry/cut/manifest.json', 'geometrySha256' => $geometry['sha256'], 'geometryVersion' => $report['geometryVersion'],
                 'sourceDimensions' => $report['sourceDimensions'], 'adapterSha256' => $report['adapterSha256'], 'geometryCodeSha256' => $report['geometryCodeSha256']], 'completed_at' => now(), 'error' => null]);
         } catch (Throwable) { $this->attention($record, 'Section extraction failed source, geometry or storage checks. No provider request was sent.'); }

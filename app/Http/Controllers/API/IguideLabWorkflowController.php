@@ -19,7 +19,9 @@ class IguideLabWorkflowController extends Controller
     public function start(Request $request, LabWorkflows $service)
     {
         abort_if(array_diff(array_keys($request->all()), ['requestId', 'items']), 422, 'Unsupported workflow field.');
-        $input = $request->validate(['requestId' => ['required', 'uuid'], 'items' => ['required', 'array', 'min:1', 'max:20'],
+        // The hard parse bound also permits exact reconciliation of an existing
+        // 80-item request after new tour admission is disabled.
+        $input = $request->validate(['requestId' => ['required', 'uuid'], 'items' => ['required', 'array', 'min:1', 'max:'.\App\Services\IguideLab\LabWorkflowScheduler::MAX_ITEMS],
             'items.*' => ['required', 'array:caseId,preset,style,instructions'], 'items.*.caseId' => ['required', 'uuid'],
             'items.*.preset' => ['required', Rule::in(array_keys(LabCatalog::PRESETS))], 'items.*.style' => ['nullable', Rule::in(array_keys(LabCatalog::STYLES))],
             'items.*.instructions' => ['sometimes', 'nullable', 'string', 'max:2000']]);

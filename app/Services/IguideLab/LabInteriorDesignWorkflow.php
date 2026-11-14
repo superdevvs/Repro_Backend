@@ -40,7 +40,7 @@ class LabInteriorDesignWorkflow
         $sectionInput=['caseId'=>$native->id,'view'=>$framing->result['view'],'framingId'=>$framing->id];
         $sectionStep=$steps->reserve($item,'interior-section','section',$sectionInput);
         $section=IguideLabSection::where('project_id',$project->id)->where('request_id',$sectionStep->request_id)->first();
-        if(!$section)$section=app(LabSections::class)->start($project,['caseId'=>$native->id,'view'=>$framing->result['view'],'requestId'=>$sectionStep->request_id]);
+        if(!$section)$section=app(LabSections::class)->start($project,$sectionInput+['requestId'=>$sectionStep->request_id],$steps->invocation($sectionStep));
         else $this->reconcileSection($sectionStep,$section);
         $steps->attach($sectionStep,$section->id);$data['sectionId']=$section->id;
         if(!$this->completed($item,$section,'preparing',$data))return;

@@ -8,7 +8,7 @@ class LabWorkflowPolicy
     {
         $policy = ['version' => self::VERSION, 'modelId' => 'gpt-image-2.6-sunburst', 'quality' => 'high', 'complexity' => 'low',
             'credentialPolicy' => 'lab-primary-explicit-quota-fallback', 'maxImageAttemptsPerItem' => 3, 'maxPlanRevisionsPerItem' => 2,
-            'maxSegmentationsPerImageAttempt' => 2, 'maxItems' => 20, 'maxActiveItems' => 1, 'recipeVersion' => 'whole-panorama-lighting/1',
+            'maxSegmentationsPerImageAttempt' => 2, 'maxItems' => LabWorkflowScheduler::maxItems(), 'maxActiveItems' => 1, 'recipeVersion' => 'whole-panorama-lighting/1',
             'manualAcceptance' => false, 'operatorInterventions' => 0,
             'analysisRecipe' => app(LabAnalysisRecipes::class)->active(),
             'evaluationRecipeSha256' => LabVisualQualityProtocol::recipeSha256(),
@@ -59,7 +59,7 @@ class LabWorkflowPolicy
         $lifestyleReady=$ready&&config('iguide-lab.lifestyle_workflow_enabled',false)===true&&class_exists(LabLifestyleWorkflow::class)&&app(LabLifestyleWorkflow::class)->ready();
         $interiorReady=$ready&&config('iguide-lab.interior_design_workflow_enabled',false)===true&&app(LabInteriorDesignWorkflow::class)->ready();
         $recipeReady=fn($preset)=>match($preset){'interior-design'=>$interiorReady,'staging'=>$stagingReady,'grass'=>$grassReady,'declutter'=>$declutterReady,'lifestyle'=>$lifestyleReady,'twilight','golden-hour'=>$ready,default=>false};
-        return ['supported' => true, 'ready' => $ready, 'version' => self::VERSION, 'maxItems' => 20,
+        return ['supported' => true, 'ready' => $ready, 'version' => self::VERSION, 'maxItems' => LabWorkflowScheduler::maxItems(),
             'manualAcceptance' => false, 'requiresAutomaticChecks' => true,
             'recipes' => array_map(fn ($preset) => ['preset' => $preset, 'ready' => $recipeReady($preset),
                 'reason' => in_array($preset, ['twilight', 'golden-hour','staging','grass','declutter','lifestyle','interior-design'], true)

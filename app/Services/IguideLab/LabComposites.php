@@ -16,8 +16,9 @@ use Illuminate\Validation\Rule;
 /** Stores derived pixels and their lineage; never dispatches a provider job. */
 class LabComposites
 {
-    public function add(IguideLabProject $project, IguideLabCase $case, string $previewFile, array $input, ?string $nativeFile = null): array
+    public function add(IguideLabProject $project, IguideLabCase $case, string $previewFile, array $input, ?string $nativeFile = null, ?array $workflowInvocation=null): array
     {
+        app(LabWorkflowInvocation::class)->verify($workflowInvocation,$project->id,$input['requestId']??'','composition');
         abort_unless($project->active(), 401);
         abort_unless($case->project_id === $project->id, 404);
         abort_unless($case->projection === 'equirectangular', 422, 'The parent must be a full panorama.');
@@ -109,12 +110,12 @@ class LabComposites
         try {
             $this->store($previewFile, $previewPath);
             if ($nativeFile) $this->store($nativeFile, $nativePath);
-            $result = LockedWrite::run(fn () => DB::transaction(function () use ($project, $case, $manifest, $hash, $id, $previewPath, $nativePath) {
+            $result = LockedWrite::run(fn () => DB::transaction(function () use ($project, $case, $manifest, $hash, $id, $previewPath, $nativePath, $workflowInvocation) {
                 IguideLabProject::whereKey($project->id)->update(['updated_at' => now()]);
                 abort_unless($project->fresh()->active(), 401);
                 $existing = IguideLabComposite::where('project_id', $project->id)->where('request_id', $manifest['requestId'])->first();
                 if ($existing) return $this->replay($existing, $hash);
-                abort_if(IguideLabComposite::where('project_id', $project->id)->count() >= 120, 429, 'This lab has reached its derived artifact limit.');
+                app(LabWorkflowRecordCapacity::class)->assertRoom(IguideLabComposite::class,$project->id,$workflowInvocation,null);
                 return [IguideLabComposite::create(['id' => $id, 'project_id' => $project->id, 'case_id' => $case->id,
                     'request_id' => $manifest['requestId'], 'request_hash' => $hash, 'label' => $manifest['label'], 'status' => 'completed',
                     'preview_path' => $previewPath, 'native_path' => $nativePath, 'manifest' => $manifest]), true];

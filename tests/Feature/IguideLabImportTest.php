@@ -118,6 +118,28 @@ class IguideLabImportTest extends TestCase
         $this->assertSame('needs_attention', $record->fresh()->status); $this->assertSame(0, IguideLabCase::count());
     }
 
+    public function test_retained_history_plus_full_metadata_tour_requires_explicit_capacity_and_imports_atomically(): void
+    {
+        $capacity=app(\App\Services\IguideLab\LabCaseCapacity::class);
+        $capacity->set($this->project->id,172);$this->fillCases(130);
+        $oldIds=IguideLabCase::orderBy('id')->pluck('source_sha256','id')->all();
+        $protected=$this->project->only(['token_hash','expires_at','revoked_at','max_runs','used_runs']);
+        $data=$this->viewerFixture();$panos=[];$entries=[];
+        for($i=1;$i<=43;$i++){$panos[]=['id'=>$i,'roomId'=>7];$entries['tour/spheres/p'.$i.'-s.jpg']=$this->image;}
+        $data['dataV2']['buildings'][0]['floors'][0]['panos']=$panos;
+        $entries['tour/index.html']='<script>const viewerParams={viewObject:'.json_encode($data).'};</script>';
+        $archive=$this->zip($entries);$held=IguideLabImport::findOrFail($this->reserve($archive)['id']);$this->process($held);
+        $this->assertSame('needs_attention',$held->fresh()->status);$this->assertSame(130,IguideLabCase::count());
+        $this->assertSame([],Storage::disk(LabService::DISK)->files('iguide-lab/'.$this->project->id.'/imports/'.$held->id));
+        $capacity->set($this->project->id,173);$record=IguideLabImport::findOrFail($this->reserve($archive)['id']);$this->process($record);
+        $this->assertSame('completed',$record->fresh()->status);$this->assertCount(43,$record->fresh()->sources);$this->assertSame(173,IguideLabCase::count());
+        $replay=IguideLabImport::findOrFail($this->reserve($archive)['id']);$this->process($replay);
+        $this->assertSame('completed',$replay->fresh()->status);$this->assertSame(173,IguideLabCase::count());
+        foreach($replay->fresh()->sources as $source)$this->assertTrue($source['reused']);
+        $this->assertSame($oldIds,IguideLabCase::whereIn('id',array_keys($oldIds))->orderBy('id')->pluck('source_sha256','id')->all());
+        $this->assertEquals($protected,$this->project->fresh()->only(array_keys($protected)));Http::assertNothingSent();Queue::assertNotPushed(ProcessIguideLabRun::class);
+    }
+
     public function test_link_keeps_token_private_and_uses_only_fixed_tour_and_sphere_routes(): void
     {
         $fixture = $this->zip(['sample/spheres/p1-s.jpg' => $this->image]); $archive = file_get_contents($fixture->getRealPath());
