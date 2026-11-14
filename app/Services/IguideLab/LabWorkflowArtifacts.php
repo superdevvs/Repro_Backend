@@ -26,7 +26,9 @@ class LabWorkflowArtifacts
     }
     public function validateSnapshot(array $snapshot): void
     {
-        abort_unless($snapshot === $this->snapshot(), 422, 'The reserved automatic composition implementation changed.');
+        // Composite manifests canonicalize object-key order before storage.
+        $current = $this->snapshot(); ksort($snapshot); ksort($current);
+        abort_unless($snapshot === $current, 422, 'The reserved automatic composition implementation changed.');
     }
     public function ready(): bool
     {

@@ -140,10 +140,17 @@ class IguideLabWorkflowEvaluationTest extends TestCase
 
     public function test_evidence_rejects_wrong_or_changed_scene_proposal_before_local_processing(): void
     {
+        $runtime = new class extends \App\Services\IguideLab\LabWorkflowArtifacts {
+            public function snapshot(): array { return ['recipeVersion' => 'fixture', 'adapterSha256' => str_repeat('a', 64)]; }
+        };
+        $runtime->validateSnapshot(['adapterSha256' => str_repeat('a', 64), 'recipeVersion' => 'fixture']);
+        try { $runtime->validateSnapshot(['adapterSha256' => str_repeat('b', 64), 'recipeVersion' => 'fixture']); $this->fail('Changed code accepted.'); }
+        catch (\Symfony\Component\HttpKernel\Exception\HttpException $error) { $this->assertSame(422, $error->getStatusCode()); }
         [$project, $item, , $composite] = $this->fixture();
-        $proposal = ['summary' => 'Original source-bound proposal'];
-        $sha = \App\Services\IguideLab\LabAnalysisRecipes::hash($proposal);
-        $composite->manifest = $composite->manifest + ['scenePlanSha256' => $sha];
+        $proposal = ['summary' => 'Original source-bound proposal', 'sourceSha256' => $item->source['sha256']];
+        // Match the persisted scene-proposal encoding, whose key order is preserved.
+        $sha = hash('sha256', json_encode($proposal, JSON_THROW_ON_ERROR));
+        $composite->manifest = $composite->manifest + ['scenePlanSha256' => $sha, 'lineage' => ['recipe' => []]];
         $values = ['project_id' => $project->id, 'case_id' => $item->case_id, 'source_sha256' => $item->source['sha256'],
             'status' => 'completed', 'proposal' => $proposal, 'proposal_sha256' => $sha];
         foreach ([['project_id' => (string) Str::uuid()], ['case_id' => (string) Str::uuid()],
@@ -154,6 +161,11 @@ class IguideLabWorkflowEvaluationTest extends TestCase
                 $this->assertSame(422, $error->getStatusCode()); $this->assertStringContainsString('scene proposal', $error->getMessage());
             }
         }
+        $guard = new class extends \App\Services\IguideLab\LabWorkflowArtifacts {
+            public function validateSnapshot(array $snapshot): void { throw new \LogicException('valid-binding-reached'); }
+        };
+        try { $guard->evidence($item, $composite, new \App\Models\IguideLabAnalysis($values)); $this->fail('Expected local processing boundary.'); }
+        catch (\LogicException $error) { $this->assertSame('valid-binding-reached', $error->getMessage()); }
         Http::assertNothingSent();
     }
 
