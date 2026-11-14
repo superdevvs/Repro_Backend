@@ -28,6 +28,19 @@ class LabCompositions
         $data = ['sourceSha256' => $target['sourceSha256'], 'maskSha256' => $mask->sha256,
             'candidateSha256' => hash_file('sha256', $disk->path($run->output_path)),
             'geometrySha256' => $kind === 'section' ? $record->data['geometrySha256'] : null];
+        $mode = $input['harmonization'] ?? 'none';
+        abort_unless(in_array($mode, ['none', LabHarmonization::MODE], true), 422);
+        if ($mode !== 'none') {
+            abort_unless($kind === 'section', 422, 'Local harmonization is available only for perspective sections.');
+            abort_if(($mask->statistics['editablePixels'] ?? PHP_INT_MAX) > LabHarmonization::LIMITS['maxEditablePixels'], 422, 'Local harmonization supports at most 65,536 editable pixels. Keep this mask and use ordinary composition or a smaller reviewed section.');
+            // Replays keep their captured implementation identity across future upgrades.
+            $prior = IguideLabComposition::where('project_id', $project->id)->where('request_id', $input['requestId'])->first();
+            $captured = $prior?->data['harmonizationRecipe'] ?? null;
+            if ($prior) abort_unless(($captured['mode'] ?? null) === $mode, 409);
+            else abort_unless(app(LabHarmonization::class)->ready(), 503, 'Local harmonization is unavailable.');
+            $data['harmonizationRecipe'] = $captured ?? app(LabHarmonization::class)->snapshot($target['sourceSha256']);
+        }
+        // Missing/none deliberately contributes no new key to the original V5 identity.
         $hash = hash('sha256', json_encode([$kind, $targetId, $mask->id, $run->id, $data], JSON_THROW_ON_ERROR));
         [$composition, $created] = LockedWrite::run(fn () => DB::transaction(function () use ($project, $kind, $targetId, $target, $mask, $run, $input, $hash, $data) {
             IguideLabProject::whereKey($project->id)->update(['updated_at' => now()]); abort_unless($project->fresh()->active(), 401);
@@ -68,9 +81,34 @@ class LabCompositions
             abort_unless(hash_equals($sourceHash, hash_file('sha256', $disk->path($sourcePath))), 422);
             app(LabStorage::class)->prepareGeometry($project->id, 'compositions', $record->id);
             $base = 'iguide-lab/'.$project->id.'/compositions/'.$record->id;
+            $candidatePath = $disk->path($run->output_path); $candidateHash = $data['candidateSha256'];
+            if (isset($data['harmonizationRecipe'])) {
+                abort_unless($section && $data['harmonizationRecipe']['sourceCutSha256'] === $derived->source_sha256, 422);
+                $harmonization = app(LabHarmonization::class); $harmonization->validate($data['harmonizationRecipe']);
+                $harmRequest = ['schemaVersion' => 1, 'privateRoot' => $disk->path('iguide-lab/'.$project->id),
+                    'source' => ['path' => $disk->path($derived->source_path), 'sha256' => $derived->source_sha256],
+                    'candidate' => ['path' => $candidatePath, 'sha256' => $candidateHash],
+                    'mask' => ['path' => $disk->path($mask->path), 'sha256' => $mask->sha256],
+                    'recipe' => $data['harmonizationRecipe'], 'outputDirectory' => $disk->path($base.'/harmonized')];
+                abort_unless($disk->put($base.'/harmonization-request.json', json_encode($harmRequest, JSON_THROW_ON_ERROR), ['visibility' => 'private']), 500);
+                $this->save($record, ['status' => 'compositing', 'started_at' => $record->started_at ?? now()]);
+                $harmReport = $harmonization->run($disk->path($base.'/harmonization-request.json'), $data['harmonizationRecipe']);
+                if (isset($harmReport['clippingMask'])) {
+                    $clip = $harmReport['clippingMask'];
+                    abort_unless($clip['path'] === $disk->path($base.'/harmonized/clipping.png') && hash_equals($clip['sha256'], hash_file('sha256', $clip['path'])), 422);
+                    $data['harmonizationClippingPath'] = $base.'/harmonized/clipping.png';
+                }
+                $data['harmonizationReport'] = $harmReport; $this->save($record, ['data' => $data]);
+                if ($harmReport['status'] !== 'completed') {
+                    $code = $harmReport['errorCode'] ?? 'HARMONIZATION_REJECTED';
+                    $this->attention($record, 'Local harmonization stopped ('.$code.'). Existing source, provider output and reviewed mask remain unchanged.'); return;
+                }
+                $candidatePath = $harmReport['candidate']['path']; $candidateHash = $harmReport['candidate']['sha256'];
+                abort_unless($candidatePath === $disk->path($base.'/harmonized/candidate.png') && hash_equals($candidateHash, hash_file('sha256', $candidatePath)), 422);
+            }
             $request = ['schemaVersion' => 1, 'operation' => $section ? 'compose-section' : 'compose-grass', 'privateRoot' => $disk->path('iguide-lab/'.$project->id),
                 'source' => ['path' => $disk->path($sourcePath), 'sha256' => $sourceHash],
-                'candidate' => ['path' => $disk->path($run->output_path), 'sha256' => $data['candidateSha256']],
+                'candidate' => ['path' => $candidatePath, 'sha256' => $candidateHash],
                 'mask' => ['path' => $disk->path($mask->path), 'sha256' => $mask->sha256], 'outputDirectory' => $disk->path($base.'/rendered')];
             if ($section) $request['geometry'] = ['path' => $disk->path($parent->data['geometryPath']), 'sha256' => $data['geometrySha256']];
             $this->save($record, ['status' => 'compositing', 'started_at' => $record->started_at ?? now()]);
@@ -99,6 +137,7 @@ class LabCompositions
                     'appliedAlphaSha256' => $report['artifacts']['alpha']['sha256'], 'sourcePreparedSha256' => $sourceHash,
                     'sourceOutsideAlphaChangedPixels' => 0, 'preservationVerifiedByWorker' => true, 'automaticAcceptance' => false,
                     'providerCalls' => 0, 'statistics' => $report['statistics']]];
+            if (isset($data['harmonizationRecipe'])) $manifest['lineage']['harmonization'] = app(LabHarmonization::class)->dto($data['harmonizationRecipe'], $data['harmonizationReport'], $record->id);
             [$composite] = app(LabComposites::class)->add($project, $case, $report['artifacts']['preview']['path'], $manifest, $native ? $report['artifacts']['native']['path'] : null);
             $data += ['alphaPath' => $alphaPath, 'alphaSha256' => $report['artifacts']['alpha']['sha256'], 'statistics' => $report['statistics']];
             $this->save($record, ['status' => 'completed', 'composite_id' => $composite->id, 'data' => $data, 'completed_at' => now(), 'error' => null]);
@@ -107,10 +146,15 @@ class LabCompositions
 
     public function dto(IguideLabComposition $record): array
     {
+        $harmReport = $record->data['harmonizationReport'] ?? null;
+        if ($harmReport === null && $record->status === 'needs_attention' && isset($record->data['harmonizationRecipe'])) {
+            $harmReport = ['status' => 'needs_attention', 'errorCode' => 'COMPOSITION_PRECHECK_OR_EXECUTION_FAILED'];
+        }
         return ['id' => $record->id, 'requestId' => $record->request_id, 'caseId' => $record->case_id, 'targetKind' => $record->target_kind, 'targetId' => $record->target_id,
             'runId' => $record->run_id, 'maskId' => $record->mask_id, 'status' => $record->status, 'compositeId' => $record->composite_id,
             'alphaAssetPath' => isset($record->data['alphaPath']) ? '/api/iguide-lab/compositions/'.$record->id.'/alpha' : null,
             'alphaSha256' => $record->data['alphaSha256'] ?? null, 'statistics' => $record->data['statistics'] ?? null,
+            'harmonization' => app(LabHarmonization::class)->dto($record->data['harmonizationRecipe'] ?? null, $harmReport, $record->id),
             'providerCalls' => 0, 'automaticAcceptance' => false, 'error' => $record->error, 'createdAt' => $record->created_at->toIso8601String(), 'completedAt' => $record->completed_at?->toIso8601String()];
     }
     public function attention(IguideLabComposition $record, string $error): void

@@ -19,6 +19,7 @@ Route::middleware([AuthorizeIguideLab::class])->prefix('iguide-lab')->group(func
     Route::post('/pipelines/{id}/compositions', [IguideLabGeometryController::class, 'composePipeline'])->whereUuid('id')->middleware('throttle:iguide-lab-write');
     Route::get('/compositions/{id}', [IguideLabGeometryController::class, 'showComposition'])->whereUuid('id')->middleware('throttle:iguide-lab-read');
     Route::get('/compositions/{id}/alpha', [IguideLabGeometryController::class, 'compositionAlpha'])->whereUuid('id')->middleware('throttle:iguide-lab-read');
+    Route::get('/compositions/{id}/harmonization-clipping', [IguideLabGeometryController::class, 'compositionClipping'])->whereUuid('id')->middleware('throttle:iguide-lab-read');
     Route::post('/runs', [IguideLabController::class, 'start'])->middleware('throttle:iguide-lab-write');
     Route::get('/runs/{id}', [IguideLabController::class, 'show'])->whereUuid('id')->middleware('throttle:iguide-lab-read');
     Route::post('/runs/{id}/reviews', [IguideLabController::class, 'review'])->whereUuid('id')->middleware('throttle:iguide-lab-write');

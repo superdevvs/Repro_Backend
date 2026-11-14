@@ -53,8 +53,9 @@ class IguideLabGeometryController extends Controller
     public function composePipeline(Request $request, string $id, LabCompositions $service) { return $this->compose($request, 'pipeline', $id, $service); }
     private function compose(Request $request, string $kind, string $id, LabCompositions $service)
     {
-        $this->keys($request, ['requestId', 'runId', 'maskId']);
-        $input = $request->validate(['requestId' => ['required', 'uuid'], 'runId' => ['required', 'uuid'], 'maskId' => ['required', 'uuid']]);
+        $this->keys($request, ['requestId', 'runId', 'maskId', 'harmonization']);
+        $input = $request->validate(['requestId' => ['required', 'uuid'], 'runId' => ['required', 'uuid'], 'maskId' => ['required', 'uuid'],
+            'harmonization' => ['sometimes', 'string', \Illuminate\Validation\Rule::in(['none', \App\Services\IguideLab\LabHarmonization::MODE])]]);
         return response()->json(['data' => $service->dto($service->start($request->attributes->get('iguide_lab_project'), $kind, $id, $input))], 202);
     }
 
@@ -73,6 +74,12 @@ class IguideLabGeometryController extends Controller
         $projectId = $request->attributes->get('iguide_lab_project')->id;
         $record = IguideLabComposition::where('project_id', $projectId)->where('status', 'completed')->findOrFail($id);
         return $this->asset($projectId, $record->data['alphaPath'] ?? null);
+    }
+    public function compositionClipping(Request $request, string $id)
+    {
+        $projectId = $request->attributes->get('iguide_lab_project')->id;
+        $record = IguideLabComposition::where('project_id', $projectId)->findOrFail($id);
+        return $this->asset($projectId, $record->data['harmonizationClippingPath'] ?? null);
     }
     private function asset(string $projectId, ?string $path)
     {

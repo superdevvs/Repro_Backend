@@ -134,6 +134,12 @@ class IguideLabGeometryTest extends TestCase
         $input = ['requestId' => (string) Str::uuid(), 'runId' => $run->id, 'maskId' => $mask->id]; $url = '/api/iguide-lab/sections/'.$section->id.'/compositions';
         $first = $this->withToken($this->token)->postJson($url, $input)->assertAccepted()->json('data');
         $this->withToken($this->token)->postJson($url, $input)->assertAccepted()->assertJsonPath('data.id', $first['id']);
+        $this->withToken($this->token)->postJson($url, $input + ['harmonization' => 'none'])->assertAccepted()->assertJsonPath('data.id', $first['id']);
+        $saved = IguideLabComposition::find($first['id']);
+        $this->assertArrayNotHasKey('harmonizationRecipe', $saved->data);
+        $originalIdentity = array_intersect_key($saved->data, array_flip(['sourceSha256', 'maskSha256', 'candidateSha256', 'geometrySha256']));
+        $this->assertSame(hash('sha256', json_encode(['section', $section->id, $mask->id, $run->id, $originalIdentity], JSON_THROW_ON_ERROR)), $saved->request_hash);
+        $this->assertNull($first['harmonization']);
         $record = IguideLabComposition::find($first['id']); app(LabCompositions::class)->process($record); $record->refresh();
         $this->assertSame('completed', $record->status);
         $dto = $this->withToken($this->token)->getJson('/api/iguide-lab/compositions/'.$record->id)->assertOk()->json('data');
@@ -152,6 +158,9 @@ class IguideLabGeometryTest extends TestCase
         $mask = $this->withToken($this->token)->post('/api/iguide-lab/pipelines/'.$pipeline->id.'/masks', ['requestId' => (string) Str::uuid(), 'reviewed' => true,
             'image' => UploadedFile::fake()->createWithContent('support.png', $this->maskPng(1024))], ['Accept' => 'application/json'])->assertCreated()->json('data');
         $this->assertNull($mask['providerMaskSha256']);
+        $this->withToken($this->token)->postJson('/api/iguide-lab/pipelines/'.$pipeline->id.'/compositions', ['requestId' => (string) Str::uuid(), 'runId' => $run->id, 'maskId' => $mask['id'],
+            'harmonization' => \App\Services\IguideLab\LabHarmonization::MODE])->assertUnprocessable();
+        $this->assertSame(0, IguideLabComposition::count());
         $id = $this->withToken($this->token)->postJson('/api/iguide-lab/pipelines/'.$pipeline->id.'/compositions', ['requestId' => (string) Str::uuid(), 'runId' => $run->id, 'maskId' => $mask['id']])->assertAccepted()->json('data.id');
         $record = IguideLabComposition::find($id); app(LabCompositions::class)->process($record);
         $this->assertSame('completed', $record->fresh()->status); $this->assertSame(1, IguideLabRun::count()); $this->assertSame(0, $this->project->fresh()->used_runs); Http::assertNothingSent();
@@ -169,6 +178,106 @@ class IguideLabGeometryTest extends TestCase
         $this->assertSame('needs_attention', $record->fresh()->status); $this->assertNull($record->fresh()->composite_id);
         $this->assertSame(0, \App\Models\IguideLabComposite::count());
         $this->assertNull(app(LabCompositions::class)->dto($record->fresh())['alphaAssetPath']); Http::assertNothingSent();
+    }
+
+    public function test_harmonization_admission_is_bounded_and_replays_its_captured_recipe(): void
+    {
+        $section = $this->completedSection(); $mask = $this->sectionMask($section); $run = $this->completedRun($section->derived_case_id, 2048);
+        $url = '/api/iguide-lab/sections/'.$section->id.'/compositions';
+        $input = ['requestId' => (string) Str::uuid(), 'runId' => $run->id, 'maskId' => $mask->id, 'harmonization' => \App\Services\IguideLab\LabHarmonization::MODE];
+        $this->mock(\App\Services\IguideLab\LabHarmonization::class, fn ($mock) => $mock->shouldReceive('ready')->andReturn(false));
+        $this->withToken($this->token)->postJson($url, $input)->assertStatus(503);
+        foreach ([['harmonization' => null], ['harmonization' => 'arbitrary'], ['extra' => true]] as $invalid)
+            $this->withToken($this->token)->postJson($url, array_replace($input, $invalid))->assertUnprocessable();
+        $this->assertSame(0, IguideLabComposition::count()); Queue::assertNotPushed(ProcessIguideLabComposition::class);
+        $this->mockHarmonization();
+        $mask->update(['statistics' => ['editablePixels' => 65537]]);
+        $this->withToken($this->token)->postJson($url, $input)->assertUnprocessable();
+        $this->assertSame(0, IguideLabComposition::count()); Queue::assertNotPushed(ProcessIguideLabComposition::class);
+        $mask->update(['statistics' => ['editablePixels' => 10000]]);
+        $first = $this->withToken($this->token)->postJson($url, $input)->assertAccepted()->json('data');
+        $this->assertSame('pending', $first['harmonization']['status']);
+        $this->assertSame(IguideLabCase::find($section->derived_case_id)->source_sha256, $first['harmonization']['sourceCutSha256']);
+        $this->mockHarmonization(ready: false);
+        $this->withToken($this->token)->postJson($url, $input)->assertAccepted()->assertJsonPath('data.id', $first['id']);
+        $this->withToken($this->token)->postJson($url, array_replace($input, ['harmonization' => 'none']))->assertConflict();
+        $this->withToken($this->token)->postJson($url, array_diff_key($input, ['harmonization' => 1]))->assertConflict();
+        Queue::assertPushed(ProcessIguideLabComposition::class, 1); Queue::assertNotPushed(ProcessIguideLabRun::class); Http::assertNothingSent();
+    }
+
+    public function test_harmonization_completed_artifact_keeps_raw_lineage_and_original_support_once(): void
+    {
+        $section = $this->completedSection(); $mask = $this->sectionMask($section); $run = $this->completedRun($section->derived_case_id, 2048);
+        $disk = Storage::disk(LabService::DISK); $rawHash = hash_file('sha256', $disk->path($run->output_path)); $supportHash = $mask->sha256;
+        $this->mockHarmonization();
+        $record = app(LabCompositions::class)->start($this->project, 'section', $section->id,
+            ['requestId' => (string) Str::uuid(), 'runId' => $run->id, 'maskId' => $mask->id, 'harmonization' => \App\Services\IguideLab\LabHarmonization::MODE]);
+        app(LabCompositions::class)->process($record); $record->refresh();
+        $this->assertSame('completed', $record->status);
+        $request = json_decode($disk->get('iguide-lab/'.$this->project->id.'/compositions/'.$record->id.'/request.json'), true);
+        $this->assertSame($supportHash, $request['mask']['sha256']);
+        $this->assertStringEndsWith('/harmonized/candidate.png', $request['candidate']['path']);
+        $this->assertSame($rawHash, hash_file('sha256', $disk->path($run->output_path)));
+        $this->assertSame($supportHash, hash_file('sha256', $disk->path($mask->path)));
+        $artifact = \App\Models\IguideLabComposite::findOrFail($record->composite_id);
+        $this->assertSame($rawHash, $artifact->manifest['children'][0]['outputSha256']);
+        $this->assertSame('completed', $artifact->manifest['lineage']['harmonization']['status']);
+        $dto = app(LabCompositions::class)->dto($record);
+        $this->assertFalse($dto['harmonization']['automaticAcceptance']);
+        $this->withToken($this->token)->get($dto['harmonization']['clippingMaskAssetPath'])->assertOk();
+        $this->withToken($this->token)->getJson('/api/iguide-lab/composites/'.$record->composite_id)->assertOk()->assertJsonPath('data.latestReview', null);
+        $this->assertSame(0, $this->project->fresh()->used_runs); Http::assertNothingSent();
+    }
+
+    public function test_rejected_harmonization_keeps_scoped_clipping_evidence_without_composite(): void
+    {
+        $section = $this->completedSection(); $mask = $this->sectionMask($section); $run = $this->completedRun($section->derived_case_id, 2048);
+        $this->mockHarmonization(rejected: true);
+        $record = app(LabCompositions::class)->start($this->project, 'section', $section->id,
+            ['requestId' => (string) Str::uuid(), 'runId' => $run->id, 'maskId' => $mask->id, 'harmonization' => \App\Services\IguideLab\LabHarmonization::MODE]);
+        app(LabCompositions::class)->process($record); $record->refresh(); $dto = app(LabCompositions::class)->dto($record);
+        $this->assertSame('needs_attention', $record->status); $this->assertNull($record->composite_id);
+        $this->assertSame('clipping_fraction_limit', $dto['harmonization']['errorCode']);
+        $this->assertNull($dto['harmonization']['harmonizedCandidateSha256']);
+        $this->assertSame(0.06, $dto['harmonization']['diagnostics']['clippedPixelFraction']);
+        $this->withToken($this->token)->get($dto['harmonization']['clippingMaskAssetPath'])->assertOk();
+        $this->otherToken(); $this->get($dto['harmonization']['clippingMaskAssetPath'])->assertNotFound();
+        $this->assertSame(0, \App\Models\IguideLabComposite::count()); $this->assertSame(0, $this->project->fresh()->used_runs); Http::assertNothingSent();
+    }
+
+    public function test_changed_reserved_harmonization_implementation_stops_before_local_execution(): void
+    {
+        $section = $this->completedSection(); $mask = $this->sectionMask($section); $run = $this->completedRun($section->derived_case_id, 2048);
+        $this->mockHarmonization();
+        $record = app(LabCompositions::class)->start($this->project, 'section', $section->id,
+            ['requestId' => (string) Str::uuid(), 'runId' => $run->id, 'maskId' => $mask->id, 'harmonization' => \App\Services\IguideLab\LabHarmonization::MODE]);
+        $this->mock(\App\Services\IguideLab\LabHarmonization::class, function ($mock) {
+            $mock->shouldReceive('validate')->once()->andThrow(new \RuntimeException('changed runtime'));
+            $mock->shouldNotReceive('run');
+        });
+        app(LabCompositions::class)->process($record);
+        $this->assertSame('needs_attention', $record->fresh()->status); $this->assertNull($record->fresh()->composite_id);
+        $this->assertSame(0, \App\Models\IguideLabComposite::count()); Http::assertNothingSent();
+    }
+
+    private function mockHarmonization(bool $ready = true, bool $rejected = false): void
+    {
+        $this->partialMock(\App\Services\IguideLab\LabHarmonization::class, function ($mock) use ($ready, $rejected) {
+            $mock->shouldReceive('ready')->andReturn($ready);
+            $mock->shouldReceive('snapshot')->andReturnUsing(fn ($sha) => ['mode' => \App\Services\IguideLab\LabHarmonization::MODE, 'recipeVersion' => \App\Services\IguideLab\LabHarmonization::VERSION,
+                'solverSha256' => str_repeat('a', 64), 'adapterSha256' => str_repeat('b', 64), 'runtimeManifestSha256' => str_repeat('c', 64), 'sourceCutSha256' => $sha, 'limits' => \App\Services\IguideLab\LabHarmonization::LIMITS]);
+            $mock->shouldReceive('validate')->andReturnNull();
+            $mock->shouldReceive('run')->andReturnUsing(function ($path, $recipe) use ($rejected) {
+                $request = json_decode(file_get_contents($path), true); $out = $request['outputDirectory']; mkdir($out, 0770, true);
+                file_put_contents($out.'/clipping.png', $this->maskPng(2048));
+                $report = ['status' => $rejected ? 'needs_attention' : 'completed', 'recipe' => $recipe, 'automaticAcceptance' => false, 'reviewStatus' => 'unreviewed',
+                    'diagnostics' => ['editablePixels' => 10000, 'clippedPixelFraction' => $rejected ? 0.06 : 0],
+                    'clippingMask' => ['path' => $out.'/clipping.png', 'sha256' => hash_file('sha256', $out.'/clipping.png')]];
+                if ($rejected) $report['errorCode'] = 'clipping_fraction_limit';
+                else { file_put_contents($out.'/candidate.png', $this->cut); $report['candidate'] = ['path' => $out.'/candidate.png', 'sha256' => hash_file('sha256', $out.'/candidate.png')]; }
+                return $report;
+            });
+        });
     }
 
     private function sectionInput(): array { return ['requestId' => (string) Str::uuid(), 'caseId' => $this->source->id, 'view' => ['yaw' => 0, 'pitch' => -10, 'hFov' => 90]]; }
