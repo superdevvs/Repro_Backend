@@ -113,6 +113,7 @@ class LabWorkflows
         $analysisStep = $steps->reserve($item, 'analysis-'.$planIndex, 'analysis', $analysisInput);
         $analysis = IguideLabAnalysis::where('project_id', $project->id)->where('request_id', $analysisStep->request_id)->first();
         if (! $analysis) $analysis = app(LabAnalyses::class)->start($project, $analysisInput + ['requestId' => $analysisStep->request_id], $steps->invocation($analysisStep));
+        else $this->reconcileQueuedChild($analysisStep, $analysis);
         $steps->attach($analysisStep, $analysis->id);
         $data['analysisId'] = $analysis->id;
         if ($analysis->status !== 'completed') {
@@ -143,6 +144,7 @@ class LabWorkflows
         $imageStep = $steps->reserve($item, 'image-'.$attempt, 'image', $imageInput);
         $run = IguideLabRun::where('project_id', $project->id)->where('request_id', $imageStep->request_id)->first();
         if (! $run) $run = app(LabService::class)->start($project, $imageInput + ['requestId' => $imageStep->request_id], $steps->invocation($imageStep));
+        else $this->reconcileQueuedChild($imageStep, $run);
         $steps->attach($imageStep, $run->id); $data['runId'] = $run->id;
         $item->attempt_count = IguideLabWorkflowStep::where('item_id', $item->id)->where('kind', 'image')->count();
         if ($run->status !== 'completed') {
@@ -170,6 +172,7 @@ class LabWorkflows
         $evaluationStep ??= $steps->reserve($item, 'evaluation-'.$attempt, 'evaluation', $evidence);
         $evaluation = IguideLabWorkflowEvaluation::where('project_id', $project->id)->where('request_id', $evaluationStep->request_id)->first();
         if (! $evaluation) $evaluation = app(LabWorkflowEvaluations::class)->start($evaluationStep);
+        else $this->reconcileQueuedChild($evaluationStep, $evaluation);
         $steps->attach($evaluationStep, $evaluation->id); $data['evaluationId'] = $evaluation->id;
         if ($evaluation->status !== 'completed') {
             if (in_array($evaluation->status, ['failed', 'needs_attention'], true)) $this->finish($item, 'needs_review', 'evaluation_unconfirmed', 'The independent quality evaluation could not be confirmed.', $data);
@@ -193,6 +196,39 @@ class LabWorkflows
         $this->finish($item, 'needs_review', 'quality_checks_failed', $feedback, $data);
     }
 
+    /** Recover a record committed before queue dispatch; never retry a provider submission. */
+    private function reconcileQueuedChild(IguideLabWorkflowStep $step, IguideLabAnalysis|IguideLabRun|IguideLabWorkflowEvaluation $child): void
+    {
+        $kind = match (true) { $child instanceof IguideLabAnalysis => 'analysis', $child instanceof IguideLabRun => 'image', default => 'evaluation' };
+        $invocation = app(LabWorkflowSteps::class)->invocation($step);
+        $savedInvocation = $child instanceof IguideLabRun ? ($child->options['workflowInvocation'] ?? null) : ($child->data['workflowInvocation'] ?? null);
+        abort_unless($step->kind === $kind && $child->project_id === $step->project_id && $child->request_id === $step->request_id
+            && $savedInvocation === $invocation && $step->input_sha256 === LabAnalysisRecipes::hash($step->input), 422, 'Queued workflow child ownership changed.');
+        abort_unless($child instanceof IguideLabWorkflowEvaluation ? $child->step_id === $step->id
+            : $child->case_id === ($step->input['caseId'] ?? null), 422, 'Queued child source association changed.');
+        if (! $this->neverSubmitted($child) || $child->created_at->gt(now()->subMinute())) return;
+        $claimed = app(LabWorkflowInvocation::class)->claim($invocation, $step->project_id, $step->request_id, $kind, function () use ($step, $child) {
+            $fresh = $child->fresh(); $currentStep = $step->fresh(); $data = $currentStep->data ?? [];
+            if (! $this->neverSubmitted($fresh) || (int) ($data['lastQueueReconciledAt'] ?? 0) > now()->timestamp - 60) return false;
+            $data['lastQueueReconciledAt'] = now()->timestamp;
+            $currentStep->update(['data' => $data]);
+            return true;
+        });
+        if (! $claimed) return;
+        // Dispatch after the project/cancellation claim commits. The original job
+        // lock and queued→submitting claim make duplicate queued jobs harmless.
+        match ($kind) {
+            'analysis' => \App\Jobs\ProcessIguideLabAnalysis::dispatch($child->id),
+            'image' => \App\Jobs\ProcessIguideLabRun::dispatch($child->id),
+            'evaluation' => \App\Jobs\ProcessIguideLabWorkflowEvaluation::dispatch($child->id),
+        };
+    }
+    private function neverSubmitted(IguideLabAnalysis|IguideLabRun|IguideLabWorkflowEvaluation $child): bool
+    {
+        $attempts = $child instanceof IguideLabRun ? ($child->options['providerAttempts'] ?? []) : ($child->provider_attempts ?? []);
+        return $child->status === 'queued' && $child->started_at === null && $child->provider_request_id === null
+            && $child->completed_at === null && empty($attempts);
+    }
     private function repairFeedback(array $evaluation): string
     {
         $lines = [];

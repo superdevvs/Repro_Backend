@@ -191,12 +191,83 @@ class IguideLabWorkflowTest extends TestCase
             $mock->shouldReceive('ready')->andReturn(true);
             $mock->shouldReceive('start')->once()->andReturnUsing(fn ($step) => \App\Models\IguideLabWorkflowEvaluation::create([
                 'project_id' => $step->project_id, 'step_id' => $step->id, 'request_id' => $step->request_id,
-                'request_hash' => $step->input_sha256, 'status' => 'queued', 'data' => []]));
+                'request_hash' => $step->input_sha256, 'status' => 'queued', 'data' => ['workflowInvocation' => app(LabWorkflowSteps::class)->invocation($step)]]));
         });
         $service->process($workflow->fresh());
         $this->assertSame(0, \App\Models\IguideLabWorkflowEvaluation::count()); // Composition and evidence use separate ticks.
         $service->process($workflow->fresh()); $service->process($workflow->fresh()); $service->process($workflow->fresh());
         $this->assertSame(1, \App\Models\IguideLabWorkflowEvaluation::count()); $this->assertSame('checking', $workflow->fresh()->status);
         $this->assertSame(1, IguideLabRun::count()); Http::assertNothingSent();
+    }
+    public function test_committed_analysis_without_attachment_or_dispatch_is_reconciled_once_per_minute(): void
+    {
+        $workflow = $this->workflow(); $service = app(LabWorkflows::class); $service->process($workflow);
+        $analysis = IguideLabAnalysis::sole(); $step = IguideLabWorkflowStep::sole();
+        $step->update(['child_id' => null, 'status' => 'reserved']); Queue::fake();
+        $service->process($workflow->fresh()); Queue::assertNothingPushed(); // Normal queue grace period.
+        $this->travel(61)->seconds();
+        $service->process($workflow->fresh()); $service->process($workflow->fresh());
+        Queue::assertPushed(\App\Jobs\ProcessIguideLabAnalysis::class, 1);
+        $this->assertSame($analysis->id, $step->fresh()->child_id);
+        $this->assertSame($step->request_id, $analysis->fresh()->request_id);
+        $this->assertSame(1, IguideLabAnalysis::count()); Http::assertNothingSent();
+    }
+    private function queuedFixture(string $kind): array
+    {
+        $workflow = $this->workflow(); $item = IguideLabWorkflowItem::where('workflow_id', $workflow->id)->sole();
+        $step = app(LabWorkflowSteps::class)->reserve($item, 'recover-'.$kind, $kind, ['caseId' => $this->case->id, 'preset' => 'twilight']);
+        $invocation = app(LabWorkflowSteps::class)->invocation($step);
+        $base = ['project_id' => $this->project->id, 'request_id' => $step->request_id, 'request_hash' => $step->input_sha256, 'status' => 'queued'];
+        $child = match ($kind) {
+            'analysis' => IguideLabAnalysis::create($base + ['case_id' => $this->case->id, 'source_sha256' => $this->case->source_sha256,
+                'settings' => ['preset' => 'twilight'], 'data' => ['workflowInvocation' => $invocation]]),
+            'image' => IguideLabRun::create($base + ['case_id' => $this->case->id, 'model_id' => 'gpt-image-2.6-sunburst', 'provider' => 'openai',
+                'preset' => 'twilight', 'prompt' => 'Fixture', 'options' => ['workflowInvocation' => $invocation]]),
+            'evaluation' => \App\Models\IguideLabWorkflowEvaluation::create($base + ['step_id' => $step->id, 'data' => ['workflowInvocation' => $invocation]]),
+        };
+        $child->forceFill(['created_at' => now()->subMinutes(2)])->save();
+        return [$workflow, $step, $child];
+    }
+    public function test_all_three_never_submitted_child_types_reuse_the_original_job_identity(): void
+    {
+        $service = app(LabWorkflows::class); $method = new \ReflectionMethod($service, 'reconcileQueuedChild');
+        foreach (['analysis' => \App\Jobs\ProcessIguideLabAnalysis::class, 'image' => \App\Jobs\ProcessIguideLabRun::class, 'evaluation' => \App\Jobs\ProcessIguideLabWorkflowEvaluation::class] as $kind => $job) {
+            [, $step, $child] = $this->queuedFixture($kind); Queue::fake();
+            $method->invoke($service, $step, $child); $method->invoke($service, $step->fresh(), $child->fresh());
+            Queue::assertPushed($job, 1); $this->assertSame($step->request_id, $child->fresh()->request_id);
+        }
+        $this->assertSame(0, $this->project->fresh()->used_runs); Http::assertNothingSent();
+    }
+    public function test_submitted_or_ambiguous_children_never_qualify_for_queue_recovery(): void
+    {
+        $service = app(LabWorkflows::class); $method = new \ReflectionMethod($service, 'reconcileQueuedChild');
+        foreach (['analysis', 'image', 'evaluation'] as $kind) {
+            [, $step, $child] = $this->queuedFixture($kind); Queue::fake();
+            foreach (['submitting', 'processing', 'received', 'needs_attention', 'completed'] as $status) {
+                $child->update(['status' => $status]); $method->invoke($service, $step, $child);
+            }
+            $child->update(['status' => 'queued', 'started_at' => now()]); $method->invoke($service, $step, $child);
+            $child->update(['started_at' => null, 'provider_request_id' => 'known-receipt']); $method->invoke($service, $step, $child);
+            $child->update(['provider_request_id' => null]);
+            if ($kind === 'image') { $options = $child->options; $options['providerAttempts'] = [['status' => 'unknown']]; $child->update(['options' => $options]); }
+            else $child->update(['provider_attempts' => [['status' => 'unknown']]]);
+            $method->invoke($service, $step, $child); Queue::assertNothingPushed();
+        }
+        Http::assertNothingSent();
+    }
+    public function test_cancel_source_drift_and_foreign_child_block_queue_recovery(): void
+    {
+        $service = app(LabWorkflows::class); $method = new \ReflectionMethod($service, 'reconcileQueuedChild');
+        [$workflow, $step, $child] = $this->queuedFixture('analysis'); Queue::fake();
+        $wrong = clone $child; $wrong->request_id = (string) Str::uuid();
+        try { $method->invoke($service, $step, $wrong); $this->fail('Foreign child dispatched.'); }
+        catch (\Symfony\Component\HttpKernel\Exception\HttpException $error) { $this->assertSame(422, $error->getStatusCode()); }
+        $bytes = Storage::disk(LabService::DISK)->get($this->case->source_path); Storage::disk(LabService::DISK)->put($this->case->source_path, 'changed');
+        try { $method->invoke($service, $step, $child); $this->fail('Changed source dispatched.'); }
+        catch (\Symfony\Component\HttpKernel\Exception\HttpException $error) { $this->assertSame(422, $error->getStatusCode()); }
+        Storage::disk(LabService::DISK)->put($this->case->source_path, $bytes); $service->cancel($workflow);
+        try { $method->invoke($service, $step, $child); $this->fail('Cancelled child dispatched.'); }
+        catch (\Symfony\Component\HttpKernel\Exception\HttpException $error) { $this->assertSame(409, $error->getStatusCode()); }
+        Queue::assertNothingPushed(); Http::assertNothingSent();
     }
 }
