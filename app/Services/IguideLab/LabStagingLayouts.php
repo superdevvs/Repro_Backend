@@ -15,7 +15,7 @@ class LabStagingLayouts
             LabAnalysisSourceContext::class,LabAnalyses::class,LabAnalysisProvider::class,LabAnalysisRecipes::class,LabStagingWorkflow::class,
             LabWorkflowPolicy::class,LabWorkflowSteps::class,LabWorkflowInvocation::class,LabStagingArtifacts::class,LabImages::class] as $class){
             $path=(new \ReflectionClass($class))->getFileName();$files[str_replace('\\','/',substr($path,strlen(base_path())+1))]=hash_file('sha256',$path);}
-        foreach(['staging_layout_details.py','pano_geometry.py','analysis-recipes/staging-layout-1.json'] as $name)$files['resources/iguide-lab/'.$name]=hash_file('sha256',resource_path('iguide-lab/'.$name));
+        foreach(['staging_layout_details.py','pano_geometry.py','analysis-recipes/staging-layout-1.json','analysis-recipes/staging-layout-3.json'] as $name)$files['resources/iguide-lab/'.$name]=hash_file('sha256',resource_path('iguide-lab/'.$name));
         foreach(['app/Http/Controllers/API/IguideLabController.php','routes/iguide-lab.php','config/iguide-lab.php'] as $name)$files[$name]=hash_file('sha256',base_path($name));
         ksort($files);return $files;
     }
@@ -29,7 +29,7 @@ class LabStagingLayouts
             &&($manifest['pythonVersion']??null)==='3.12.3'&&($manifest['numpyVersion']??null)==='2.5.4'&&($manifest['pillowVersion']??null)==='13.0.0'
             &&LabMachineSegmentationPlan::canonicalHash($manifest['files']??[])===LabMachineSegmentationPlan::canonicalHash($files),503,'Staging layout implementation is not validated.');
         return ['version'=>self::VERSION,'files'=>$files,'runtimeManifestSha256'=>hash_file('sha256',$path),'pythonSha256'=>$manifest['pythonSha256'],
-            'cutRecipe'=>app(LabAnalysisRecipes::class)->snapshot(LabAnalysisRecipes::STAGING_LAYOUT),
+            'cutRecipe'=>app(LabAnalysisRecipes::class)->snapshot(LabAnalysisRecipes::STAGING_LAYOUT_ADAPTIVE),
             'maxAdaptiveSourceOperations'=>1,'maxNativeDetails'=>2,'maxSourceSections'=>2,'maxImages'=>1,'maxAnalyses'=>4];
     }
     public function validate(array $snapshot): void
