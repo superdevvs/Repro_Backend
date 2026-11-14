@@ -8,6 +8,8 @@ class LabMachineSegmentationCapabilities
     public function forStep(IguideLabWorkflowStep $step): LabMachineSegmentationCapability
     {
         return match ($step->input['protocolVersion'] ?? null) {
+            LabDeclutterRemovalPolicy::SEGMENTATION => config('iguide-lab.declutter_workflow_enabled',false)===true
+                ? app(LabDeclutterSegmentationAuthority::class) : abort(503,'The source-removal capability is disabled.'),
             LabMachineSegmentations::PROTOCOL => app(LabStagingSegmentationAuthority::class),
             'automatic-native-grass-segmentation/1' => class_exists(LabGrassSegmentationAuthority::class)
                 ? app(LabGrassSegmentationAuthority::class) : abort(503,'The source-sphere grass capability is not installed.'),

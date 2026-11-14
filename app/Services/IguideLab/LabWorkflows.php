@@ -87,6 +87,9 @@ class LabWorkflows
 
     private function advance(IguideLabWorkflow $workflow, IguideLabWorkflowItem $item, IguideLabProject $project): void
     {
+        if ($item->preset === 'declutter' && LabDeclutterRemovalPolicy::enabled($workflow->policy,$item->preset)) {
+            app(LabDeclutterWorkflow::class)->advance($workflow,$item,$project); return;
+        }
         $case = app(LabWorkflowSources::class)->verify($project->id, $item->source);
         if ($item->preset === 'grass' && isset($workflow->policy['grassAssessment'])) {
             app(LabGrassWorkflow::class)->advance($workflow,$item,$project); return;

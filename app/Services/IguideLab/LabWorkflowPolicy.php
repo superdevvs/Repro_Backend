@@ -26,6 +26,10 @@ class LabWorkflowPolicy
             $policy['grassAssessment'] = LabGrassAssessmentPolicy::snapshot();
             $policy['grassRecipe'] = app(LabGrassWorkflow::class)->snapshot();
         }
+        if (config('iguide-lab.declutter_workflow_enabled',false) === true && class_exists(LabDeclutterWorkflow::class) && app(LabDeclutterWorkflow::class)->ready()) {
+            $policy['declutterRemoval'] = LabDeclutterRemovalPolicy::snapshot();
+            $policy['declutterWorkflow'] = app(LabDeclutterWorkflow::class)->snapshot();
+        }
         return $policy;
     }
     public function capabilities(): array
@@ -35,11 +39,12 @@ class LabWorkflowPolicy
         $ready = $evaluationReady && app(LabAnalyses::class)->ready() && ($model['ready'] ?? false) && app(LabWorkflowArtifacts::class)->ready();
         $stagingReady=$ready&&config('iguide-lab.staging_workflow_enabled',false)===true&&class_exists(LabStagingWorkflow::class)&&app(LabStagingWorkflow::class)->ready();
         $grassReady=$ready&&config('iguide-lab.grass_workflow_enabled',false)===true&&class_exists(LabGrassWorkflow::class)&&app(LabGrassWorkflow::class)->ready();
-        $recipeReady=fn($preset)=>match($preset){'staging'=>$stagingReady,'grass'=>$grassReady,'twilight','golden-hour'=>$ready,default=>false};
+        $declutterReady=$ready&&config('iguide-lab.declutter_workflow_enabled',false)===true&&class_exists(LabDeclutterWorkflow::class)&&app(LabDeclutterWorkflow::class)->ready();
+        $recipeReady=fn($preset)=>match($preset){'staging'=>$stagingReady,'grass'=>$grassReady,'declutter'=>$declutterReady,'twilight','golden-hour'=>$ready,default=>false};
         return ['supported' => true, 'ready' => $ready, 'version' => self::VERSION, 'maxItems' => 20,
             'manualAcceptance' => false, 'requiresAutomaticChecks' => true,
             'recipes' => array_map(fn ($preset) => ['preset' => $preset, 'ready' => $recipeReady($preset),
-                'reason' => in_array($preset, ['twilight', 'golden-hour','staging','grass'], true)
+                'reason' => in_array($preset, ['twilight', 'golden-hour','staging','grass','declutter'], true)
                     ? ($recipeReady($preset) ? null : 'Required automatic checking or explicit recipe enablement is not available yet.')
                     : 'An automatic support and composition adapter is not available yet.'], array_keys(LabCatalog::PRESETS))];
     }
