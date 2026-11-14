@@ -100,6 +100,12 @@ class LabMachineSegmentations
             $receipt = ['requestId'=>$record->request_id,'providerRequestId'=>$record->provider_request_id,'model'=>LabMachineSegmentationTransport::MODEL,
                 'inputFingerprint'=>$plan['inputFingerprint'],'inputSha256'=>$plan['inputSha256'],'rawResponseSha256'=>$responseHash,
                 'status'=>$invalid?'needs_review':'completed','masks'=>$descriptors];
+            if (! $invalid) {
+                // A known receipt is GET-only recovery, not permission to accept stale support.
+                abort_unless($this->authority()->plan($step) === $plan, 422, 'The machine assessment changed while segmentation was pending.');
+                [$currentBytes, $currentBinding] = $this->input($step, $plan); unset($currentBytes);
+                abort_unless($currentBinding === $data['assetBinding'], 422, 'The segmentation source changed while its receipt was pending.');
+            }
             $association = $invalid ? ['status'=>'needs_review','reviewReasons'=>['MASK_COUNT_DIMENSIONS_OR_PIXELS_INVALID'],'associations'=>[]]
                 : $this->authority()->associate($step,$receipt);
             $ready = ($association['status'] ?? null) === 'ready_for_support_validation';
