@@ -34,6 +34,10 @@ class LabAnalysisProvider
     private function attempt(IguideLabAnalysis $analysis, array $payload, #[\SensitiveParameter] string $key, string $slot, int $deadline): array
     {
         $analysis->refresh();
+        if (isset($analysis->data['stagingLayout']) || ($analysis->data['executionRecipe']['recipe']['compilerVersion'] ?? null) === LabStagingLayoutProtocol::VERSION
+            || isset($payload['text']['format']['schema']['properties']['stagingLayout'])) {
+            app(LabStagingLayoutReadiness::class)->verifyForAttempt($analysis,$payload);
+        }
         if (isset($analysis->data['lifestyleFraming']) || ($analysis->data['executionRecipe']['recipe']['compilerVersion'] ?? null) === LabLifestyleCutProtocol::VERSION
             || isset($payload['text']['format']['schema']['properties']['lifestyleReadiness'])) {
             app(LabLifestyleCutReadiness::class)->verifyForAttempt($analysis,$payload);
@@ -68,14 +72,15 @@ class LabAnalysisProvider
         $path = 'iguide-lab/'.$analysis->project_id.'/analyses/'.$analysis->id.'/response-'.$index.'.json';
         $compiler = $analysis->data['executionRecipe']['recipe']['compilerVersion'] ?? null;
         $lifestyleGate = $compiler === LabLifestyleCutProtocol::VERSION;
-        $stagingGate = $compiler === LabStagingCutProtocol::VERSION || $lifestyleGate;
+        $layoutGate = $compiler === LabStagingLayoutProtocol::VERSION;
+        $stagingGate = $compiler === LabStagingCutProtocol::VERSION || $lifestyleGate || $layoutGate;
         if ($stagingGate) abort_unless(strlen($response->body()) <= 512 * 1024, 422, 'Cut analysis receipt exceeded its limit.');
         $stored = Storage::disk(LabService::DISK)->put($path, $response->body(), ['visibility' => 'private']);
         if ($stagingGate) {
             abort_unless($stored, 503, 'Cut analysis receipt storage failed.');
             if ($response->successful()) {
                 $data = $analysis->fresh()->data;
-                $data[$lifestyleGate ? 'lifestyleCutReceipt' : 'stagingCutReceipt'] = ['path' => $path, 'sha256' => hash('sha256', $response->body()),
+                $data[$layoutGate ? 'stagingLayoutReceipt' : ($lifestyleGate ? 'lifestyleCutReceipt' : 'stagingCutReceipt')] = ['path' => $path, 'sha256' => hash('sha256', $response->body()),
                     'payloadSha256' => $data['providerBodySha256'], 'providerRequestId' => $response->header('x-request-id'), 'responseId' => $response->json('id')];
                 $this->save($analysis, ['data' => $data]);
             }

@@ -81,11 +81,16 @@ class LabStagingArtifacts extends LabWorkflowArtifacts
     }
     protected function evidenceReviewContext(IguideLabWorkflowItem $item,IguideLabComposite $composite,IguideLabAnalysis $analysis,array $qa): array
     {
-        if(isset($analysis->data['stagingFraming'])) {
+        if(isset($analysis->data['stagingFraming'])||isset($analysis->data['stagingLayout'])) {
             $authority=$this->sourceAuthority($item,$analysis);
             foreach($authority as $key=>$value)abort_unless(($composite->manifest['lineage'][$key]??null)===$value,422,'Source framing authority changed.');
             $framing=app(LabStagingFramings::class)->completed($item,$authority['sourceFramingId']);
             $claims=[];foreach($framing->result['constraints'] as $name=>$check)$claims[]=$name.' ('.$check['status'].'): '.$check['reason'];
+            if(isset($analysis->data['stagingLayout'])) {
+                $layout=app(LabStagingLayoutReadiness::class)->verified($analysis);
+                foreach($layout['checks'] as $name=>$check)$claims[]='Prospective '.$name.' ('.$check['status'].'): '.$check['reason'];
+                $claims[]='Source layout proxies are unmeasured planning hypotheses, not proof of actual furniture scale, contacts, clearance or reflected appearance.';
+            }
             return $this->stagingReviewContext(['protectedFeatures'=>[],'uncertainties'=>$claims,'sourceArtifacts'=>[], 'reviewChecks'=>[]],$analysis->proposal,$qa);
         }
         $source=$this->sourcePlan($item);
@@ -95,6 +100,13 @@ class LabStagingArtifacts extends LabWorkflowArtifacts
     }
     private function sourceAuthority(IguideLabWorkflowItem $item,IguideLabAnalysis $analysis): array
     {
+        if(isset($analysis->data['stagingLayout'])) {
+            $gate=app(LabStagingLayoutReadiness::class)->verified($analysis);
+            $framing=app(LabStagingFramings::class)->completed($item,$analysis->data['stagingLayout']['framingId']);
+            return ['sourceFramingId'=>$framing->id,'sourceFramingResultSha256'=>$framing->result_sha256,
+                'sourceLayoutResultSha256'=>LabMachineSegmentationPlan::canonicalHash($gate),
+                'sourceLayoutReferenceSha256'=>LabMachineSegmentationPlan::canonicalHash($analysis->data['stagingLayout'])];
+        }
         if(isset($analysis->data['stagingFraming'])) {
             $gate=app(LabStagingCutReadiness::class)->verified($analysis);
             $framing=app(LabStagingFramings::class)->completed($item,$analysis->data['stagingFraming']['id']);

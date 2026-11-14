@@ -14,6 +14,8 @@ return [
     'interior_material_python_path' => env('IGUIDE_LAB_INTERIOR_MATERIAL_PYTHON'),
     'staging_framing_enabled' => env('IGUIDE_LAB_STAGING_FRAMING_ENABLED', false),
     'staging_framing_runtime_manifest' => env('IGUIDE_LAB_STAGING_FRAMING_RUNTIME_MANIFEST'),
+    'staging_layout_enabled' => env('IGUIDE_LAB_STAGING_LAYOUT_ENABLED', false),
+    'staging_layout_runtime_manifest' => env('IGUIDE_LAB_STAGING_LAYOUT_RUNTIME_MANIFEST'),
     'staging_workflow_enabled' => env('IGUIDE_LAB_STAGING_WORKFLOW_ENABLED', false),
     'grass_workflow_enabled' => env('IGUIDE_LAB_GRASS_WORKFLOW_ENABLED', false),
     'lighting_repair_enabled' => env('IGUIDE_LAB_LIGHTING_REPAIR_ENABLED', false),
