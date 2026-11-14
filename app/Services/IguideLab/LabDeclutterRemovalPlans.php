@@ -148,6 +148,8 @@ class LabDeclutterRemovalPlans
         abort_unless(array_keys($out) === array_column($record->result['segmentationPlan'], 'stepKey') && in_array(count($out), [1,2], true), 422);
         return $out; // The optional shadow role exists only when declared by source evidence.
     }
+    /** Internal image/support callers receive current authority, never client assertions. */
+    public function verified(IguideLabDeclutterRemovalPlan $record): array { return $this->completed($record); }
     /** Called again for both initial SAM planning and every resumed receipt association. */
     public function forSegmentation(IguideLabWorkflowStep $step): array
     {

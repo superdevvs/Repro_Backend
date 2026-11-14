@@ -70,7 +70,7 @@ class LabService
         return $query->first();
     }
 
-    public function start(IguideLabProject $project, array $input, ?array $workflowInvocation = null): IguideLabRun
+    public function start(IguideLabProject $project, array $input, ?array $workflowInvocation = null, ?\App\Models\IguideLabDeclutterRemovalPlan $removalPlan = null): IguideLabRun
     {
         app(LabWorkflowInvocation::class)->verifyInput($workflowInvocation, $project->id, $input, 'image');
         $case = IguideLabCase::where('project_id', $project->id)->findOrFail($input['caseId']);
@@ -82,6 +82,10 @@ class LabService
         unset($requested['sectionId'], $requested['sectionMaskId']);
         $analysisId = $requested['analysisId'] ?? null;
         $scenePlan = ($requested['promptMode'] ?? 'preset') === 'scene-plan';
+        // This fourth argument is internal only. Public controllers never pass
+        // a typed record and cannot assert machine authority in request options.
+        abort_if($removalPlan === null && (isset($requested['sourceMachinePlan']) || ($requested['promptMode'] ?? null) === 'machine-removal-plan' || isset($input['removalPlanId'])),422,'Machine drafts require internal source authority.');
+        abort_if($removalPlan !== null && ($scenePlan || filled($analysisId)),422,'A removal plan is distinct from scene analysis.');
         abort_if($scenePlan !== filled($analysisId), 422, 'Scene-plan drafts require a completed analysis association.');
         unset($requested['analysisId'], $requested['promptMode']);
         $complexity = $requested['complexity'] ?? (LabCatalog::is25($input['modelId']) ? null : 'medium');
@@ -111,7 +115,7 @@ class LabService
         if ($compositeIds) { $options['referenceCompositeIds'] = $compositeIds; $options['recipeVersion'] = 3; }
         $options += $selection;
         $style = $input['style'] ?? (in_array($input['preset'], ['staging', 'interior-design']) ? 'modern' : null);
-        $extra = trim($input['prompt'] ?? '');
+        $extra = $removalPlan !== null ? (string) ($input['prompt'] ?? '') : trim($input['prompt'] ?? '');
         $options['customInstructions'] = $extra;
         if ($sectionId) {
             $options['sectionId'] = $sectionId;
@@ -124,12 +128,16 @@ class LabService
             $options['analysisId'] = $analysisId; $options['promptMode'] = 'scene-plan'; $options['recipeVersion'] = 4;
             if ($sectionId) $options['recipeVersion'] = 5;
         }
-        if ($workflowInvocation !== null) {
-            abort_unless($scenePlan, 422, 'Automatic generation requires its reserved scene proposal.');
-            $options['workflowInvocation'] = $workflowInvocation;
-            $options['sourceAnalysis']['automaticGeneration'] = true;
+        if ($removalPlan !== null) {
+            $options['sourceMachinePlan']=app(LabDeclutterImageDraft::class)->apply($removalPlan,$case,$input,$workflowInvocation);
+            $options['promptMode']='machine-removal-plan';
         }
-        $prompt = $scenePlan ? $extra : LabCatalog::prompt($input['preset'], $style, $case->projection, $extra, $options);
+        if ($workflowInvocation !== null) {
+            abort_unless($scenePlan || $removalPlan !== null, 422, 'Automatic generation requires its reserved machine proposal.');
+            $options['workflowInvocation'] = $workflowInvocation;
+            if ($scenePlan) $options['sourceAnalysis']['automaticGeneration'] = true;
+        }
+        $prompt = $scenePlan || $removalPlan !== null ? $extra : LabCatalog::prompt($input['preset'], $style, $case->projection, $extra, $options);
         $hash = hash('sha256', json_encode([$case->id, $case->source_sha256, $input['modelId'], $input['preset'], $style, $prompt, $options], JSON_THROW_ON_ERROR));
         // A later QA revocation blocks queued submission, not reconciliation of a known request.
         if ($compositeIds && ($existing = IguideLabRun::where('project_id', $project->id)->where('request_id', $input['requestId'])->first())) {
@@ -193,6 +201,7 @@ class LabService
                 if (! $claimed) { $this->attention($run, 'A previous submission could not be confirmed. It will not be repeated automatically.'); return true; }
                 $run->refresh();
                 $case = IguideLabCase::where('project_id', $run->project_id)->findOrFail($run->case_id);
+                if (isset($run->options['sourceMachinePlan'])) app(LabDeclutterImageDraft::class)->verifyRun($run,$case);
                 if ($snapshot = ($run->options['sourceSection'] ?? null)) {
                     $current = app(LabMasks::class)->sectionSnapshot($run->project_id, $snapshot['id'], $case, $snapshot['maskId']);
                     abort_unless($current === $snapshot, 422, 'Section or reviewed support changed before generation.');
