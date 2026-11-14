@@ -94,7 +94,7 @@ class LabRoomFurnishingArtifacts extends LabWorkflowArtifacts
             $views[]=['id'=>$board['id'],'sha256'=>$a['sha256'],'width'=>2048,'height'=>1024];$assets[]=['path'=>$out.'/'.$board['id'].'.png','sha256'=>$a['sha256']];}abort_if($total>24*1024*1024,422);
         $candidate=app(LabInteriorRoomAssessments::class)->completed($item,$l['candidateAssessmentId'],'candidate');$c=$candidate->data['contextSnapshot']['context'];
         $caveats=['Original classifier optics: '.$c['route']['result']['opticalDependencies']['reason']];
-        foreach($c['framing']['result']['checks'] as $name=>$check)$caveats[]='Original framing '.$name.' ('.$check['status'].'): '.$check['reason'];
+        foreach($c['framing']['result']['checks'] as $name=>$check)$caveats[]='Framing '.$name.' ('.$check['status'].'): '.$check['reason'];
         $caveats[]='Planning and mask claims are not independent physical, optical or calibrated evidence.';
         foreach($caveats as $text)abort_unless(mb_strlen($text)<=600,422,'Complete source caveat exceeds the quality context bound.');abort_if(count($caveats)>13,422);
         $intent=app(LabWorkflowEvaluations::class)->intent($item);$blockers=array_values(array_map(fn($r)=>$r['code'],array_filter($report['qa']['reviewReasons']??[],fn($r)=>$r['blocking']??false)));

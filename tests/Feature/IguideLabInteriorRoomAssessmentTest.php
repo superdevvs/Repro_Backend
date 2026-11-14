@@ -166,6 +166,47 @@ class IguideLabInteriorRoomAssessmentTest extends TestCase
             $this->rejects(fn()=>$scope::fresh(fn()=>$routes->verify($item)));$disk->put($path,$raw);
         });$this->assertSame($binding,$routes->verify($item));Http::assertSentCount(1);
     }
+    public function test_room_evidence_retains_maximum_valid_framing_reasons_and_status_within_quality_bounds(): void
+    {
+        [$project,,$item,$case]=$this->fixture();$disk=Storage::disk(LabService::DISK);$reason=str_repeat('r',550);
+        $framingContext=\Tests\Unit\IguideLabRoomFurnishingProtocolTest::context();
+        $v=\Tests\Unit\IguideLabRoomFurnishingProtocolTest::value(\App\Services\IguideLab\LabRoomFurnishingFramingProtocol::class,$framingContext);
+        foreach($v['checks'] as &$check)$check['reason']=$reason;unset($check);
+        $framing=\App\Services\IguideLab\LabRoomFurnishingFramingProtocol::parse(LabInteriorDesignProtocol::response($v),$framingContext);
+        $base='iguide-lab/'.$project->id.'/workflow-items/'.$item->id;
+        $disk->put($base.'/geometry.json','{}');$disk->put($base.'/alpha.png','fixture-alpha');
+        $section=\App\Models\IguideLabSection::create(['project_id'=>$project->id,'case_id'=>$case->id,'request_id'=>(string)Str::uuid(),
+            'request_hash'=>str_repeat('a',64),'source_sha256'=>$case->source_sha256,'view'=>['yaw'=>0,'pitch'=>-25,'hFov'=>100],
+            'data'=>['geometryPath'=>$base.'/geometry.json','geometrySha256'=>hash('sha256','{}')]]);
+        $candidate=new IguideLabRoomAssessment(['id'=>(string)Str::uuid(),'data'=>['contextSnapshot'=>['context'=>[
+            'route'=>['result'=>['opticalDependencies'=>['reason'=>$reason]]],'framing'=>['result'=>$framing]]]]]);
+        $composite=new \App\Models\IguideLabComposite(['id'=>(string)Str::uuid(),'preview_path'=>$case->source_path,'manifest'=>[
+            'preview'=>['sha256'=>$case->source_sha256],'lineage'=>['candidateAssessmentId'=>$candidate->id,'profileId'=>LabInteriorRoomProfiles::BEDROOM,
+                'sectionId'=>$section->id,'recipe'=>[],'effectiveAlpha'=>['path'=>$base.'/alpha.png','sha256'=>hash('sha256','fixture-alpha')]]]]);
+        $this->mock(\App\Services\IguideLab\LabWorkflowSources::class,fn($m)=>$m->shouldReceive('verify')->andReturn($case));
+        $this->mock(LabInteriorRoomAssessments::class,fn($m)=>$m->shouldReceive('completed')->andReturn($candidate));
+        $this->mock(\App\Services\IguideLab\LabWorkflowEvaluations::class,fn($m)=>$m->shouldReceive('intent')->andReturn(['preset'=>'interior-design','style'=>'modern','instructions'=>'']));
+        // Isolate text/evidence assembly. Full authority and real native processing have separate chain proofs.
+        $artifacts=new class extends \App\Services\IguideLab\LabRoomFurnishingArtifacts {
+            public array $report;
+            public function verifyComposite(\App\Models\IguideLabWorkflowItem $item,\App\Models\IguideLabComposite $composite,\App\Models\IguideLabWorkflowStep $step,\App\Models\IguideLabRun $run): void {}
+            protected function execute(string $path,array $request,array $snapshot): array {return $this->report;}
+        };
+        $out=$base.'/room-evidence-'.$composite->id;$disk->put($out.'/report.json','{}');$boards=[];$images=[];
+        [, $fixtureImages]=Fixtures::fixture();$png=base64_decode(explode(',',$fixtureImages[0],2)[1]);
+        foreach([...\App\Services\IguideLab\LabVisualQualityProtocol::VIEW_IDS,'detail_1'] as $id){
+            $disk->put($out.'/'.$id.'.png',$png);$boards[]=['id'=>$id,'path'=>$disk->path($out.'/'.$id.'.png'),'sha256'=>hash('sha256',$png),
+                'sourceLeftCandidateRight'=>true,'halves'=>[['originalAssetSha256'=>$case->source_sha256],['originalAssetSha256'=>$case->source_sha256]]];
+            $images[]='data:image/png;base64,'.base64_encode($png);
+        }
+        $artifacts->report=['evidence'=>$boards,'qa'=>['numericIntegrity'=>'pass','reviewReasons'=>[]]];
+        $evidence=$artifacts->roomEvidence($item,$composite,new \App\Models\IguideLabWorkflowStep,new IguideLabRun);
+        $caveats=$evidence['context']['sourceCaveats'];
+        foreach($framing['checks'] as $name=>$check)$this->assertContains('Framing '.$name.' ('.$check['status'].'): '.$reason,$caveats);
+        $this->assertLessThanOrEqual(600,max(array_map('mb_strlen',$caveats)));
+        $wire=\App\Services\IguideLab\LabVisualQualityProtocol::request($evidence['context'],$images);
+        $this->assertSame($evidence['context'],json_decode($wire['input'][0]['content'][0]['text'],true));Http::assertNothingSent();
+    }
     private function rejects(callable $f): void {try{$f();$this->fail('Invalid room authority accepted.');}catch(HttpException $e){$this->assertContains($e->getStatusCode(),[409,422,503]);}}
 }
 class RoomContextFixture extends LabInteriorRoomContext
