@@ -54,6 +54,12 @@ class LabProvider
     {
         $remainingSeconds = (int) floor(($deadline - hrtime(true)) / 1e9);
         if ($remainingSeconds < 15) throw new OpenAiImageException(reason: 'attempt_budget_exhausted');
+        // A quota rejection is not authority for a later attempt. Recheck the
+        // retained machine plan, source and support outside the short claim lock.
+        if (isset($run->options['sourceMachinePlan'])) {
+            $case = \App\Models\IguideLabCase::where('project_id', $run->project_id)->findOrFail($run->case_id);
+            app(LabDeclutterImageDraft::class)->verifyRun($run, $case);
+        }
         $options = $run->options;
         $attempts = $options['providerAttempts'] ?? [];
         $index = count($attempts);
