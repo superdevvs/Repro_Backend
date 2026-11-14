@@ -211,8 +211,43 @@ class LabStagingAssessments
         $file = app(LabStagingAssessmentContext::class)->file($record->project_id, $path, $record->result_sha256 ?? '', 1024 * 1024);
         abort_unless(($record->data['resultAsset']['path'] ?? null) === $file
             && ($record->data['resultAsset']['sha256'] ?? null) === $record->result_sha256
-            && json_decode(file_get_contents($file), true, flags: JSON_THROW_ON_ERROR) === $record->result, 422, 'The persisted machine assessment changed.');
+            && LabMachineSegmentationPlan::canonicalHash(json_decode(file_get_contents($file), true, flags: JSON_THROW_ON_ERROR))
+                === LabMachineSegmentationPlan::canonicalHash($record->result), 422, 'The persisted machine assessment changed.');
+        $this->verifyCompletedReceipt($record, $step);
         return [$step, $item];
+    }
+    private function verifyCompletedReceipt(IguideLabStagingAssessment $record, IguideLabWorkflowStep $step): void
+    {
+        $data = $record->data; $attempts = $record->provider_attempts ?? [];
+        $base = 'iguide-lab/'.$record->project_id.'/staging-assessments/'.$record->id;
+        abort_unless(($data['base'] ?? null) === $base && is_array($attempts) && array_is_list($attempts)
+            && in_array(count($attempts), [1, 2], true)
+            && LabMachineSegmentationPlan::canonicalHash($data['contextSnapshot'] ?? []) === LabMachineSegmentationPlan::canonicalHash($step->input['contextSnapshot'])
+            && ($data['recipe'] ?? null) === $step->input['recipe'], 422, 'The completed assessment receipt binding changed.');
+        $index = count($attempts) - 1; $attempt = $attempts[$index];
+        abort_unless(($attempt['status'] ?? null) === 'received' && ($attempt['requestedModelId'] ?? null) === 'gpt-6-astra'
+            && is_int($attempt['httpStatus'] ?? null) && $attempt['httpStatus'] >= 200 && $attempt['httpStatus'] < 300
+            && ($attempt['providerRequestId'] ?? null) === $record->provider_request_id
+            && ($attempt['credentialSource'] ?? null) === ($index === 0 ? 'lab-primary' : 'dashboard-fallback'), 422, 'The completed provider attempt changed.');
+        if ($index === 1) abort_unless(($attempts[0]['status'] ?? null) === 'quota_rejected' && ($attempts[0]['httpStatus'] ?? null) === 429
+            && ($attempts[0]['credentialSource'] ?? null) === 'lab-primary' && ($attempts[0]['requestedModelId'] ?? null) === 'gpt-6-astra', 422, 'The assessment fallback was not quota-authorized.');
+        $receipt = $data['providerReceipt'] ?? []; $loader = app(LabStagingAssessmentContext::class);
+        abort_unless(($receipt['response']['path'] ?? null) === $base.'/response-'.$index.'.json'
+            && ($receipt['model'] ?? null) === 'gpt-6-astra' && is_string($receipt['providerResponseId'] ?? null)
+            && preg_match('/\A[A-Za-z0-9_-]{1,200}\z/D', $receipt['providerResponseId']), 422, 'The retained assessment response identity changed.');
+        $response = $loader->file($record->project_id, $receipt['response']['path'], $receipt['response']['sha256'] ?? '', 128 * 1024);
+        $payload = $loader->file($record->project_id, $base.'/compiled/payload.json', $data['providerBodySha256'] ?? '', 36 * 1024 * 1024);
+        abort_unless(($data['payload']['path'] ?? null) === $payload && ($data['payload']['sha256'] ?? null) === $data['providerBodySha256'], 422, 'The retained assessment request changed.');
+        $raw = json_decode(file_get_contents($response), true, flags: JSON_THROW_ON_ERROR);
+        $body = json_decode(file_get_contents($payload), true, flags: JSON_THROW_ON_ERROR);
+        abort_unless(($raw['status'] ?? null) === 'completed' && ($raw['id'] ?? null) === $receipt['providerResponseId']
+            && ($raw['model'] ?? null) === $receipt['model'] && ($body['model'] ?? null) === 'gpt-6-astra' && ($body['store'] ?? null) === false, 422, 'The retained assessment envelope changed.');
+        $execution = ['state' => 'completed', 'requestId' => $record->request_id, 'providerResponseId' => $receipt['providerResponseId'],
+            'model' => $receipt['model'], 'contextSha256' => $this->protocolContextHash(['outputs' => ['payload' => ['path' => $payload]]]),
+            'requestPayloadSha256' => $data['providerBodySha256'], 'responseSha256' => $receipt['response']['sha256']];
+        abort_unless(LabMachineSegmentationPlan::canonicalHash($data['execution'] ?? []) === LabMachineSegmentationPlan::canonicalHash($execution)
+            && LabMachineSegmentationPlan::canonicalHash($record->result['execution'] ?? []) === LabMachineSegmentationPlan::canonicalHash($execution), 422, 'The parsed assessment execution changed.');
+        $loader->file($record->project_id, $base.'/execution.json', hash('sha256', json_encode($execution, JSON_THROW_ON_ERROR)), 4096);
     }
     public function attention(IguideLabStagingAssessment $record, string $code): void
     {

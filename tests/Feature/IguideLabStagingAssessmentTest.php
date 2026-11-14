@@ -139,6 +139,27 @@ class IguideLabStagingAssessmentTest extends TestCase
         catch (HttpException $e) { $this->assertSame(422, $e->getStatusCode()); }
         Http::assertSentCount(1);
     }
+    public function test_integral_floor_box_result_survives_database_json_roundtrip_but_value_drift_is_rejected(): void
+    {
+        [, , , , , $record] = $this->reserved(); $service = app(LabStagingAssessments::class);
+        $this->bridge->floorBoundaryFloats = true;
+        Http::fake(['api.openai.com/v1/responses' => Http::response($this->response())]);
+        $service->process($record); $service->process($record->fresh()); $record->refresh();
+        $this->assertSame('completed', $record->status);
+        $path = $record->data['resultAsset']['path'];
+        $parsed = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $this->assertSame(0.0, $parsed['floorSelection']['box']['xMin']);
+        $this->assertSame(0, $record->result['floorSelection']['box']['xMin']);
+        $this->assertSame(hash_file('sha256', $path), $record->result_sha256);
+        $steps = $service->reserveSegmentationSteps($record);
+        $this->assertSame($record->id, $service->forSegmentation($steps['source-floor'])['assessmentId']);
+        $result = $record->result; $result['floorSelection']['box']['xMin'] = 0.01;
+        $record->update(['result' => $result]);
+        try { $service->forSegmentation($steps['source-floor']); $this->fail('Changed floor box authorized segmentation.'); }
+        catch (HttpException $e) { $this->assertSame(422, $e->getStatusCode()); }
+        $this->assertSame(hash_file('sha256', $path), $record->fresh()->result_sha256);
+        Http::assertSentCount(1);
+    }
     public function test_distinct_policy_adds_only_the_staging_third_analysis_and_bounds_image_calls(): void
     {
         [, , $item] = $this->fixture(); $steps = app(LabWorkflowSteps::class);
@@ -153,6 +174,41 @@ class IguideLabStagingAssessmentTest extends TestCase
         try { $steps->reserve($lighting, 'plan-3', 'analysis', []); $this->fail('Lighting budget widened.'); }
         catch (HttpException $e) { $this->assertSame(422, $e->getStatusCode()); }
         Http::assertNothingSent();
+    }
+    public function test_completed_receipt_files_provider_ids_and_execution_are_rechecked_before_segmentation(): void
+    {
+        [, , , , , $record] = $this->reserved(); $service = app(LabStagingAssessments::class);
+        Http::fake(['api.openai.com/v1/responses' => Http::response($this->response(), 200, ['x-request-id' => 'fixture-request'])]);
+        $service->process($record); $service->process($record->fresh()); $record->refresh();
+        $steps = $service->reserveSegmentationSteps($record); $step = $steps['source-floor'];
+        $data = $record->data; $attempts = $record->provider_attempts; $disk = Storage::disk(LabService::DISK);
+        $reject = function () use ($service, $step): void {
+            try { $service->forSegmentation($step); $this->fail('Changed paid receipt authorized segmentation.'); }
+            catch (HttpException $e) { $this->assertSame(422, $e->getStatusCode()); }
+        };
+        $path = $data['providerReceipt']['response']['path']; $bytes = $disk->get($path);
+        $disk->delete($path); $reject(); $disk->put($path, $bytes.' '); $reject(); $disk->put($path, $bytes);
+        $record->update(['provider_request_id' => 'changed-provider']); $reject(); $record->update(['provider_request_id' => 'fixture-request']);
+        $changed = $data; $changed['providerReceipt']['providerResponseId'] = 'changed-response'; $record->update(['data' => $changed]); $reject();
+        $changed = $data; $changed['execution']['requestPayloadSha256'] = str_repeat('a', 64); $record->update(['data' => $changed]); $reject();
+        $record->update(['data' => $data]);
+        $changedAttempts = $attempts; $changedAttempts[0]['status'] = 'unknown'; $record->update(['provider_attempts' => $changedAttempts]); $reject();
+        $record->update(['provider_attempts' => $attempts]);
+        $payload = $data['payload']['path']; $savedPayload = file_get_contents($payload); file_put_contents($payload, $savedPayload.' '); $reject(); file_put_contents($payload, $savedPayload);
+        $this->assertSame($record->id, $service->forSegmentation($step)['assessmentId']);
+        Http::assertSentCount(1);
+    }
+    public function test_completed_quota_fallback_receipt_remains_valid_but_nonquota_history_is_rejected(): void
+    {
+        [, , , , , $record] = $this->reserved(); $service = app(LabStagingAssessments::class);
+        Http::fakeSequence('api.openai.com/v1/responses')->push(['error' => ['code' => 'insufficient_quota']], 429)->push($this->response(), 200);
+        $service->process($record); $service->process($record->fresh()); $record->refresh();
+        $steps = $service->reserveSegmentationSteps($record);
+        $this->assertSame($record->id, $service->forSegmentation($steps['source-floor'])['assessmentId']);
+        $attempts = $record->provider_attempts; $attempts[0]['status'] = 'unknown'; $record->update(['provider_attempts' => $attempts]);
+        try { $service->forSegmentation($steps['source-floor']); $this->fail('Nonquota history authorized fallback result.'); }
+        catch (HttpException $e) { $this->assertSame(422, $e->getStatusCode()); }
+        Http::assertSentCount(2);
     }
     public function test_missing_runtime_and_foreign_output_path_fail_closed(): void
     {
@@ -195,7 +251,7 @@ class AssessmentContextFixture extends LabStagingAssessmentContext
 }
 class AssessmentBridgeFixture extends LabStagingAssessmentBridge
 {
-    public bool $available = true; public string $sourceSha = '';
+    public bool $available = true; public string $sourceSha = ''; public bool $floorBoundaryFloats = false;
     public function ready(): bool { return $this->available; }
     public function snapshot(): array { return ['fixtureProtocol' => 1]; }
     public function run(string $projectId, string $relativeRequest, array $request, array $snapshot): array
@@ -209,9 +265,11 @@ class AssessmentBridgeFixture extends LabStagingAssessmentBridge
             $assessment = json_decode(file_get_contents($request['assessment']['path']), true); $reservations = json_decode(file_get_contents($request['reservations']['path']), true);
             $outputs = ['plans' => array_map(fn ($plan) => $plan + ['requestId' => $reservations[$plan['stepKey']]], $assessment['segmentationPlan'])];
         } else $outputs = ['association' => ['status' => 'ready_for_support_validation']];
+        if ($operation === 'parse' && $this->floorBoundaryFloats) $outputs['assessment']['floorSelection'] = ['box' => ['xMin' => 0.0, 'yMin' => 0.5, 'xMax' => 1.0, 'yMax' => 1.0]];
+        if ($operation === 'parse') $outputs['assessment']['execution'] = json_decode(file_get_contents($request['execution']['path']), true, flags: JSON_THROW_ON_ERROR);
         $root = $disk->path(''); $base = str_replace('\\', '/', substr($request['outputDirectory'], strlen($root)));
         $descriptors = [];
-        foreach ($outputs as $key => $value) { $asset = $this->json(ltrim($base, '/').'/'.$key.'.json', $value); $descriptors[$key] = $asset + ['bytes' => filesize($asset['path'])]; }
+        foreach ($outputs as $key => $value) { $asset = $this->bytes(ltrim($base, '/').'/'.$key.'.json', json_encode($value, JSON_THROW_ON_ERROR | JSON_PRESERVE_ZERO_FRACTION)); $descriptors[$key] = $asset + ['bytes' => filesize($asset['path'])]; }
         return ['operation' => $operation, 'outputs' => $descriptors];
     }
 }
