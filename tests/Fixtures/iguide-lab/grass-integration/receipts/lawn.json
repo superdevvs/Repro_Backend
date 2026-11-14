@@ -1,0 +1,35 @@
+{
+  "requestId": "936a699e-0b8e-58a6-90bd-ebe761b3055b",
+  "providerRequestId": "SYNTHETIC_sam_lawn",
+  "model": "fal-ai/sam-3-1/image",
+  "inputFingerprint": "5e28bb5d18eb30edc873762f7f695381789a40e02ed54490b490d0c52de1f74e",
+  "inputSha256": "494d0db5fa2e8843c9cc53a45aec303aeed33bcb2b7bdffab73331187d2d13f0",
+  "rawResponseSha256": "c2dbce5d9e04feca2829cb3855715e56baa43f177317a67f94353f57e53b126b",
+  "status": "completed",
+  "masks": [
+    {
+      "sha256": "f144ba964e29ca000d24699a798950b1c91b210b7a586935426c6da6f0d140aa",
+      "width": 2048,
+      "height": 1024,
+      "bounds": [
+        1189,
+        565,
+        2045,
+        900
+      ],
+      "positivePixels": 286760
+    },
+    {
+      "sha256": "6490ec00fef06769c68c950fc66a170336915cc0a97382f46a17f5a30c47d7fc",
+      "width": 2048,
+      "height": 1024,
+      "bounds": [
+        2,
+        565,
+        859,
+        900
+      ],
+      "positivePixels": 287095
+    }
+  ]
+}

@@ -1,0 +1,62 @@
+[
+  {
+    "name": "filter-0-opaque.png",
+    "filter": 0,
+    "opaque": true,
+    "sha256": "6ff58e361ad6d496cdd1e2f4900027be9f88c7c8dca66a5ffb062879943a7309"
+  },
+  {
+    "name": "filter-0-alpha254.png",
+    "filter": 0,
+    "opaque": false,
+    "sha256": "91010b9e9425c35bad5fd96262687801233a9a65765444cc6748f923cae8e032"
+  },
+  {
+    "name": "filter-1-opaque.png",
+    "filter": 1,
+    "opaque": true,
+    "sha256": "3c147c6e6fe3bc89ff8327c9fa3d48ceb8a893d5cc0371f70f41f13b0a81d729"
+  },
+  {
+    "name": "filter-1-alpha254.png",
+    "filter": 1,
+    "opaque": false,
+    "sha256": "3870493f7b37a34316cb8b538e92b863f2d2b631405d02922a27218f79e1a384"
+  },
+  {
+    "name": "filter-2-opaque.png",
+    "filter": 2,
+    "opaque": true,
+    "sha256": "18f9096d2a916e6d11d8fbf4f3a702db4a60e1e9d485885b042dddb493679ae5"
+  },
+  {
+    "name": "filter-2-alpha254.png",
+    "filter": 2,
+    "opaque": false,
+    "sha256": "8243010a13f68048d7262150656d65ad6d75a3e3cf6c0de983bd56394feb9f6d"
+  },
+  {
+    "name": "filter-3-opaque.png",
+    "filter": 3,
+    "opaque": true,
+    "sha256": "f26603d69e9509c028e88957140ad758d2974d18637585afca89e3b62156af5b"
+  },
+  {
+    "name": "filter-3-alpha254.png",
+    "filter": 3,
+    "opaque": false,
+    "sha256": "e05919686d7a0677b09a394b4ea1b832f73dcde4682c178fab6c9311142e7804"
+  },
+  {
+    "name": "filter-4-opaque.png",
+    "filter": 4,
+    "opaque": true,
+    "sha256": "d79aeda6a5219f53a646fb529943dba4179b404f96baca5f3402f410001dfddd"
+  },
+  {
+    "name": "filter-4-alpha254.png",
+    "filter": 4,
+    "opaque": false,
+    "sha256": "c7cdfa6f79bbfed6514f6afaf10a36117737a91b308f7faba64623b741331079"
+  }
+]

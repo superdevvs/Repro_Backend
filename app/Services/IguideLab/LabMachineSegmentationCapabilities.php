@@ -1,0 +1,17 @@
+<?php
+namespace App\Services\IguideLab;
+use App\Contracts\LabMachineSegmentationCapability;
+use App\Models\IguideLabWorkflowStep;
+/** Closed server protocol routing. Clients cannot name a class or relax dimensions. */
+class LabMachineSegmentationCapabilities
+{
+    public function forStep(IguideLabWorkflowStep $step): LabMachineSegmentationCapability
+    {
+        return match ($step->input['protocolVersion'] ?? null) {
+            LabMachineSegmentations::PROTOCOL => app(LabStagingSegmentationAuthority::class),
+            'automatic-native-grass-segmentation/1' => class_exists(LabGrassSegmentationAuthority::class)
+                ? app(LabGrassSegmentationAuthority::class) : abort(503,'The source-sphere grass capability is not installed.'),
+            default => abort(422,'Unsupported machine segmentation capability.'),
+        };
+    }
+}

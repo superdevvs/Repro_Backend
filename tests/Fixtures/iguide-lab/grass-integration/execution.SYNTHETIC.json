@@ -1,0 +1,9 @@
+{
+  "state": "completed",
+  "requestId": "dff44271-0da2-52a2-b877-e082156a3354",
+  "providerResponseId": "resp_SYNTHETIC_grass_integration",
+  "model": "gpt-6-astra",
+  "contextSha256": "34585bd4b9cce5b04e27cbd2479ae8fadd458dab1505201a00ca18edb8502c09",
+  "requestPayloadSha256": "a5af3a79b3563e9527698108515289dfc5f78c70cf72b88e2795a8cae8cf2cdf",
+  "responseSha256": "bb4b8ac4845011613b0f75aca7ff956479699f294e4cd34ffcb1d83c041be0eb"
+}

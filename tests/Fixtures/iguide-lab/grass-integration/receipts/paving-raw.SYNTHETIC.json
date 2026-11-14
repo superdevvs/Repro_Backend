@@ -1,0 +1,18 @@
+{
+  "synthetic": true,
+  "masks": [
+    {
+      "sha256": "e08bddc9a0bcbc99c839e9f3de3ee5804ebb27aeb403d054d8cd7c8c5d42ab6f",
+      "width": 2048,
+      "height": 1024,
+      "bounds": [
+        903,
+        534,
+        1145,
+        920
+      ],
+      "positivePixels": 93412
+    }
+  ],
+  "providerWasCalled": false
+}

@@ -1,0 +1,23 @@
+{
+  "requestId": "fc58a707-b449-52db-bfec-f45419acad08",
+  "providerRequestId": "SYNTHETIC_sam_plants",
+  "model": "fal-ai/sam-3-1/image",
+  "inputFingerprint": "c8fcb420d1c264e98c6899673003e2d13b8adbaa7fd43b7b510810ad17c047f4",
+  "inputSha256": "494d0db5fa2e8843c9cc53a45aec303aeed33bcb2b7bdffab73331187d2d13f0",
+  "rawResponseSha256": "abc31cc0aa3f972f007cc524a2246cd20597081f5517bcb23777fd03f8a8f921",
+  "status": "completed",
+  "masks": [
+    {
+      "sha256": "ed47edb9535ba644b5dd13a661dd8745e6da3a5fc8a8e626b95bbbd749614a71",
+      "width": 2048,
+      "height": 1024,
+      "bounds": [
+        165,
+        411,
+        367,
+        613
+      ],
+      "positivePixels": 40804
+    }
+  ]
+}

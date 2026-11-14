@@ -1,0 +1,270 @@
+{
+  "schemaVersion": "source-native-grass-assessment/1",
+  "status": "ready_for_source_segmentation",
+  "contextSha256": "34585bd4b9cce5b04e27cbd2479ae8fadd458dab1505201a00ca18edb8502c09",
+  "binding": {
+    "workflowItemId": "c4809bd8-c783-52ca-a779-ab170bb53e36",
+    "captureId": "99ab309d-3f06-579a-ab90-bc58fe64212f",
+    "nativeSourceSha256": "494d0db5fa2e8843c9cc53a45aec303aeed33bcb2b7bdffab73331187d2d13f0",
+    "guidanceSourceSha256": "494d0db5fa2e8843c9cc53a45aec303aeed33bcb2b7bdffab73331187d2d13f0",
+    "candidateSha256": "c31d1b7552cb0dd9c500e52c78781562d217b81eb981948c9667843115d51329",
+    "sourcePreparationSha256": "dc08793fdaca9d1f7aae6611b3eee968eecae23861fdb4a97524c98efc4ea284",
+    "sourceAnalysisSha256": "84c066662ad0e1d7d611c5de5d6059b55880aaf31adf5b4de4d9120253a213f2",
+    "generationSettingsSha256": "5b98dffc2031c9857f04d7d2c59c36feb53b0c4d9360099d48748537c8fac40b"
+  },
+  "policy": {
+    "scope": "all_visible_established_turf",
+    "operation": "recolor_existing_turf",
+    "maximumSegmentationOperations": 6,
+    "maximumSelectionsPerRole": 8,
+    "width": 2048,
+    "height": 1024
+  },
+  "proposal": {
+    "schemaVersion": "source-native-grass-assessment/1",
+    "contextSha256": "34585bd4b9cce5b04e27cbd2479ae8fadd458dab1505201a00ca18edb8502c09",
+    "binding": {
+      "workflowItemId": "c4809bd8-c783-52ca-a779-ab170bb53e36",
+      "captureId": "99ab309d-3f06-579a-ab90-bc58fe64212f",
+      "nativeSourceSha256": "494d0db5fa2e8843c9cc53a45aec303aeed33bcb2b7bdffab73331187d2d13f0",
+      "guidanceSourceSha256": "494d0db5fa2e8843c9cc53a45aec303aeed33bcb2b7bdffab73331187d2d13f0",
+      "candidateSha256": "c31d1b7552cb0dd9c500e52c78781562d217b81eb981948c9667843115d51329",
+      "sourcePreparationSha256": "dc08793fdaca9d1f7aae6611b3eee968eecae23861fdb4a97524c98efc4ea284",
+      "sourceAnalysisSha256": "84c066662ad0e1d7d611c5de5d6059b55880aaf31adf5b4de4d9120253a213f2",
+      "generationSettingsSha256": "5b98dffc2031c9857f04d7d2c59c36feb53b0c4d9360099d48748537c8fac40b"
+    },
+    "summary": "Synthetic all-six-role integration fixture; not scene acceptance.",
+    "material": {
+      "status": "established_turf",
+      "evidenceIds": [
+        "source_panorama",
+        "source_front",
+        "source_right",
+        "source_back",
+        "source_left",
+        "source_zenith",
+        "source_nadir"
+      ],
+      "notes": "Synthetic binding fixture; not a real material or optical finding."
+    },
+    "scope": {
+      "status": "all_visible_established_turf",
+      "evidenceIds": [
+        "source_panorama",
+        "source_front",
+        "source_right",
+        "source_back",
+        "source_left",
+        "source_zenith",
+        "source_nadir"
+      ],
+      "notes": "Synthetic binding fixture; not a real material or optical finding."
+    },
+    "lawn": {
+      "status": "visible_selectable",
+      "evidenceIds": [
+        "source_panorama",
+        "source_front",
+        "source_right",
+        "source_back",
+        "source_left",
+        "source_zenith",
+        "source_nadir"
+      ],
+      "notes": "Synthetic source selection, not a mask.",
+      "selections": [
+        {
+          "id": "lawn_1",
+          "box": {
+            "xMin": 0.0,
+            "yMin": 0.55,
+            "xMax": 0.42,
+            "yMax": 0.88
+          }
+        },
+        {
+          "id": "lawn_2",
+          "box": {
+            "xMin": 0.58,
+            "yMin": 0.55,
+            "xMax": 1.0,
+            "yMax": 0.88
+          }
+        }
+      ]
+    },
+    "exclusions": {
+      "capture_artifact": {
+        "status": "none_observed",
+        "evidenceIds": [
+          "source_panorama",
+          "source_front",
+          "source_right",
+          "source_back",
+          "source_left",
+          "source_zenith",
+          "source_nadir"
+        ],
+        "notes": "Synthetic source selection, not a mask.",
+        "selections": []
+      },
+      "non_turf_ground": {
+        "status": "none_observed",
+        "evidenceIds": [
+          "source_panorama",
+          "source_front",
+          "source_right",
+          "source_back",
+          "source_left",
+          "source_zenith",
+          "source_nadir"
+        ],
+        "notes": "Synthetic source selection, not a mask.",
+        "selections": []
+      },
+      "loose_debris": {
+        "status": "none_observed",
+        "evidenceIds": [
+          "source_panorama",
+          "source_front",
+          "source_right",
+          "source_back",
+          "source_left",
+          "source_zenith",
+          "source_nadir"
+        ],
+        "notes": "Synthetic source selection, not a mask.",
+        "selections": []
+      },
+      "plants": {
+        "status": "none_observed",
+        "evidenceIds": [
+          "source_panorama",
+          "source_front",
+          "source_right",
+          "source_back",
+          "source_left",
+          "source_zenith",
+          "source_nadir"
+        ],
+        "notes": "Synthetic source selection, not a mask.",
+        "selections": []
+      },
+      "paving": {
+        "status": "none_observed",
+        "evidenceIds": [
+          "source_panorama",
+          "source_front",
+          "source_right",
+          "source_back",
+          "source_left",
+          "source_zenith",
+          "source_nadir"
+        ],
+        "notes": "Synthetic source selection, not a mask.",
+        "selections": []
+      }
+    },
+    "contextCoverage": {
+      "status": "sufficient_same_capture_views",
+      "evidenceIds": [
+        "source_panorama",
+        "source_front",
+        "source_right",
+        "source_back",
+        "source_left",
+        "source_zenith",
+        "source_nadir"
+      ],
+      "notes": "Synthetic binding fixture; not a real material or optical finding.",
+      "requestedDetails": []
+    },
+    "reflections": {
+      "status": "no_visible_turf_reflection_observed",
+      "evidenceIds": [
+        "source_panorama",
+        "source_front",
+        "source_right",
+        "source_back",
+        "source_left",
+        "source_zenith",
+        "source_nadir"
+      ],
+      "notes": "Synthetic binding fixture; not a real material or optical finding."
+    },
+    "candidateGuidance": {
+      "status": "natural_green_corresponding_turf",
+      "evidenceIds": [
+        "source_panorama",
+        "candidate_panorama"
+      ],
+      "notes": "Synthetic color fixture, not real candidate quality."
+    },
+    "uncertainties": []
+  },
+  "proposalSha256": "e738cedea5178f8f399ffa5409f8d52ce3751c9177a6dbb02900d8da2f639db8",
+  "execution": {
+    "state": "completed",
+    "requestId": "dff44271-0da2-52a2-b877-e082156a3354",
+    "providerResponseId": "resp_SYNTHETIC_grass_integration",
+    "model": "gpt-6-astra",
+    "contextSha256": "34585bd4b9cce5b04e27cbd2479ae8fadd458dab1505201a00ca18edb8502c09",
+    "requestPayloadSha256": "a5af3a79b3563e9527698108515289dfc5f78c70cf72b88e2795a8cae8cf2cdf",
+    "responseSha256": "b4b0bc29896dc458331e71f2d697242e0938131be22a331e28fa38c9a3f3b1ac"
+  },
+  "reviewReasons": [],
+  "authorOrigin": "machine",
+  "automaticAcceptance": false,
+  "maskSemanticsVerified": false,
+  "opticsPhysicallyVerified": false,
+  "crossViewVerified": false,
+  "providerCallsPerformed": 0,
+  "segmentationPlan": [
+    {
+      "stepKey": "source-grass-lawn",
+      "maskRole": "lawn",
+      "requestId": null,
+      "reservationState": "unreserved",
+      "model": "fal-ai/sam-3-1/image",
+      "inputSha256": "494d0db5fa2e8843c9cc53a45aec303aeed33bcb2b7bdffab73331187d2d13f0",
+      "width": 2048,
+      "height": 1024,
+      "payload": {
+        "prompt": "grass lawn",
+        "box_prompts": [
+          {
+            "x_min": 0,
+            "y_min": 563,
+            "x_max": 861,
+            "y_max": 902,
+            "object_id": 1
+          },
+          {
+            "x_min": 1187,
+            "y_min": 563,
+            "x_max": 2047,
+            "y_max": 902,
+            "object_id": 2
+          }
+        ],
+        "apply_mask": false,
+        "output_format": "png",
+        "return_multiple_masks": true,
+        "max_masks": 2,
+        "include_scores": true,
+        "include_boxes": true
+      },
+      "expectedIdentities": [
+        "lawn_1",
+        "lawn_2"
+      ],
+      "selectionOrigin": "machine",
+      "assessmentProposalSha256": "e738cedea5178f8f399ffa5409f8d52ce3751c9177a6dbb02900d8da2f639db8",
+      "contextSha256": "34585bd4b9cce5b04e27cbd2479ae8fadd458dab1505201a00ca18edb8502c09",
+      "maximumPostAttempts": 1,
+      "automaticRetry": false,
+      "semanticClassVerified": false,
+      "inputFingerprint": "3c1889c0c505e6e727bd1562b4f41cdcf814eabd9b1a93776311d0bfe7a3fa6e"
+    }
+  ]
+}

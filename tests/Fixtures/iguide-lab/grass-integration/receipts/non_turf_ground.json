@@ -1,0 +1,23 @@
+{
+  "requestId": "113a762a-747b-563e-b5da-26ef6c771c08",
+  "providerRequestId": "SYNTHETIC_sam_non_turf_ground",
+  "model": "fal-ai/sam-3-1/image",
+  "inputFingerprint": "8f3b6eedc4dded6c6a8f8373996fb8db123f686187f3268d6257ac73cbc85b0e",
+  "inputSha256": "494d0db5fa2e8843c9cc53a45aec303aeed33bcb2b7bdffab73331187d2d13f0",
+  "rawResponseSha256": "97b7743785b00b168df19abac3d6f1f7fcb31059a6e7726b25ffab4ac1c15f55",
+  "status": "completed",
+  "masks": [
+    {
+      "sha256": "dea04aeae5f1605e4a9125e0c31b7c636d70a405f9cad64705e30d8f67cf808d",
+      "width": 2048,
+      "height": 1024,
+      "bounds": [
+        1497,
+        432,
+        1739,
+        582
+      ],
+      "positivePixels": 36300
+    }
+  ]
+}
