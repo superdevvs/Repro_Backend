@@ -70,8 +70,9 @@ class LabService
         return $query->first();
     }
 
-    public function start(IguideLabProject $project, array $input): IguideLabRun
+    public function start(IguideLabProject $project, array $input, ?array $workflowInvocation = null): IguideLabRun
     {
+        app(LabWorkflowInvocation::class)->verifyInput($workflowInvocation, $project->id, $input, 'image');
         $case = IguideLabCase::where('project_id', $project->id)->findOrFail($input['caseId']);
         $requested = $input['options'] ?? [];
         $sectionId = $requested['sectionId'] ?? null; $sectionMaskId = $requested['sectionMaskId'] ?? null;
@@ -123,6 +124,11 @@ class LabService
             $options['analysisId'] = $analysisId; $options['promptMode'] = 'scene-plan'; $options['recipeVersion'] = 4;
             if ($sectionId) $options['recipeVersion'] = 5;
         }
+        if ($workflowInvocation !== null) {
+            abort_unless($scenePlan, 422, 'Automatic generation requires its reserved scene proposal.');
+            $options['workflowInvocation'] = $workflowInvocation;
+            $options['sourceAnalysis']['automaticGeneration'] = true;
+        }
         $prompt = $scenePlan ? $extra : LabCatalog::prompt($input['preset'], $style, $case->projection, $extra, $options);
         $hash = hash('sha256', json_encode([$case->id, $case->source_sha256, $input['modelId'], $input['preset'], $style, $prompt, $options], JSON_THROW_ON_ERROR));
         // A later QA revocation blocks queued submission, not reconciliation of a known request.
@@ -138,7 +144,7 @@ class LabService
         }
         // Review IDs are an immutable reservation snapshot, not user request identity.
         if ($compositeProvenance) $options['referenceCompositeProvenance'] = $compositeProvenance;
-        [$run, $created] = LockedWrite::run(fn () => DB::transaction(function () use ($project, $case, $input, $options, $style, $prompt, $hash) {
+        [$run, $created] = LockedWrite::run(fn () => DB::transaction(function () use ($project, $case, $input, $options, $style, $prompt, $hash, $workflowInvocation) {
             // Writing the quota row first acquires SQLite's write lock before count/read decisions.
             IguideLabProject::whereKey($project->id)->update(['updated_at' => now()]);
             $current = $project->fresh();
@@ -148,6 +154,7 @@ class LabService
                 abort_unless(hash_equals($existing->request_hash, $hash), 409, 'This request ID was already used with different settings.');
                 return [$existing, false];
             }
+            if ($workflowInvocation !== null) app(LabWorkflowInvocation::class)->verify($workflowInvocation, $project->id, $input['requestId'], 'image', false);
             abort_if($current->used_runs >= $current->max_runs, 429, 'This lab has reached its generation limit.');
             abort_if(IguideLabRun::where('created_at', '>=', now()->subDay())->count() >= 120, 429, 'The lab daily generation limit has been reached.');
             $provider = LabCatalog::MODELS[$input['modelId']]['provider'];
@@ -181,7 +188,8 @@ class LabService
                 $result = $provider->poll($run);
                 if ($result === null) return false;
             } else {
-                $claimed = LockedWrite::run(fn () => IguideLabRun::whereKey($run->id)->where('status', 'queued')->update(['status' => 'submitting', 'started_at' => now(), 'updated_at' => now()]), 'iguide-lab.claim');
+                $claimed = app(LabWorkflowInvocation::class)->claim($run->options['workflowInvocation'] ?? null, $run->project_id, $run->request_id, 'image',
+                    fn () => LockedWrite::run(fn () => IguideLabRun::whereKey($run->id)->where('status', 'queued')->update(['status' => 'submitting', 'started_at' => now(), 'updated_at' => now()]), 'iguide-lab.claim'));
                 if (! $claimed) { $this->attention($run, 'A previous submission could not be confirmed. It will not be repeated automatically.'); return true; }
                 $run->refresh();
                 $case = IguideLabCase::where('project_id', $run->project_id)->findOrFail($run->case_id);

@@ -27,8 +27,9 @@ class LabAnalyses
         return $options;
     }
 
-    public function start(IguideLabProject $project, array $input): IguideLabAnalysis
+    public function start(IguideLabProject $project, array $input, ?array $workflowInvocation = null): IguideLabAnalysis
     {
+        app(LabWorkflowInvocation::class)->verifyInput($workflowInvocation, $project->id, $input, 'analysis');
         $case = IguideLabCase::where('project_id', $project->id)->findOrFail($input['caseId']);
         abort_if($case->projection === 'equirectangular' && $case->width < 2048, 422, 'Use a panorama at least 2048 pixels wide for diagnostic views.');
         $options = $this->editSettings($input['options'] ?? []);
@@ -40,17 +41,20 @@ class LabAnalyses
             'protocolVersion' => LabAnalysisRecipes::LEGACY_PROTOCOL, 'viewRecipe' => LabAnalysisRecipes::LEGACY_VIEW_RECIPE];
         abort_if(mb_strlen($this->contextInstructions($settings)) > 4000, 422, 'Combined analysis instructions and object lists are too long.');
         $hash = hash('sha256', json_encode([$case->id, $case->source_sha256, $case->projection, $settings], JSON_THROW_ON_ERROR));
-        [$record, $created] = LockedWrite::run(fn () => DB::transaction(function () use ($project, $case, $input, $hash, $settings) {
+        if ($workflowInvocation !== null) $hash = LabAnalysisRecipes::hash([$hash, $workflowInvocation]);
+        [$record, $created] = LockedWrite::run(fn () => DB::transaction(function () use ($project, $case, $input, $hash, $settings, $workflowInvocation) {
             IguideLabProject::whereKey($project->id)->update(['updated_at' => now()]); abort_unless($project->fresh()->active(), 401);
             $saved = IguideLabAnalysis::where('project_id', $project->id)->where('request_id', $input['requestId'])->first();
             if ($saved) { abort_unless(hash_equals($saved->request_hash, $hash), 409, 'This analysis request already has different source or settings.'); return [$saved, false]; }
             abort_unless($this->ready(), 503, 'Scene analysis is unavailable.');
             abort_if(IguideLabAnalysis::where('project_id', $project->id)->count() >= 120 || IguideLabAnalysis::where('created_at', '>=', now()->subDay())->count() >= 120, 429, 'The analysis safety ceiling has been reached.');
-            $snapshot = app(LabAnalysisRecipes::class)->active();
+            if ($workflowInvocation !== null) app(LabWorkflowInvocation::class)->verify($workflowInvocation, $project->id, $input['requestId'], 'analysis', false);
+            $snapshot = $workflowInvocation === null ? app(LabAnalysisRecipes::class)->active() : app(LabWorkflowInvocation::class)->policy($workflowInvocation)['analysisRecipe'];
+            app(LabAnalysisRecipes::class)->validate($snapshot);
             abort_unless($snapshot['recipe']['protocolVersion'] === $settings['protocolVersion'] && $snapshot['recipe']['viewRecipe'] === $settings['viewRecipe'], 503, 'This analysis protocol is unavailable.');
             return [IguideLabAnalysis::create(['project_id' => $project->id, 'case_id' => $case->id, 'request_id' => $input['requestId'], 'request_hash' => $hash,
                 'source_sha256' => $case->source_sha256, 'settings' => $settings, 'status' => 'queued',
-                'data' => ['originalSourceSha256' => $case->metadata['originalSha256'] ?? null, 'executionRecipe' => $snapshot, 'recipeCaptureMode' => 'reservation_snapshot']]), true];
+                'data' => array_merge(['originalSourceSha256' => $case->metadata['originalSha256'] ?? null, 'executionRecipe' => $snapshot, 'recipeCaptureMode' => 'reservation_snapshot'], $workflowInvocation === null ? [] : ['workflowInvocation' => $workflowInvocation])]), true];
         }), 'iguide-lab.analysis-reserve');
         if ($created) {
             try { ProcessIguideLabAnalysis::dispatch($record->id); }
@@ -93,7 +97,8 @@ class LabAnalyses
             // Persist source, pinned instruction recipe and exact body hash before any paid claim.
             $disk->put('iguide-lab/'.$record->project_id.'/analyses/'.$record->id.'/input-manifest.json', json_encode(['context' => $context, 'views' => $data['views'],
                 'executionRecipeSha256' => $snapshot['recipeSha256'], 'providerBodySha256' => $bodyHash], JSON_THROW_ON_ERROR), ['visibility' => 'private']);
-            $claimed = LockedWrite::run(fn () => IguideLabAnalysis::whereKey($record->id)->where('status', 'preparing')->update(['status' => 'submitting', 'updated_at' => now()]), 'iguide-lab.analysis-claim');
+            $claimed = app(LabWorkflowInvocation::class)->claim($record->data['workflowInvocation'] ?? null, $record->project_id, $record->request_id, 'analysis',
+                fn () => LockedWrite::run(fn () => IguideLabAnalysis::whereKey($record->id)->where('status', 'preparing')->update(['status' => 'submitting', 'updated_at' => now()]), 'iguide-lab.analysis-claim'));
             if (! $claimed) { $this->attention($record, 'A previous analysis submission is unconfirmed.'); return; }
             $record->refresh(); $response = app(LabAnalysisProvider::class)->analyze($record, $payload);
             $parsed = LabScenePlanProtocol::parse($response, $context);
