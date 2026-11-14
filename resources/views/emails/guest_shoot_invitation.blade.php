@@ -4,24 +4,20 @@
 @section('preheader', 'View shared property media and tours. No account required.')
 
 @section('hero')
-    @if(!empty($magicLinkIllustrationUrl))
-        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 24px;">
-            <tr><td align="center"><img src="{{ $magicLinkIllustrationUrl }}" alt="Magic Link" width="200" height="133" style="display:block;width:200px;max-width:100%;height:auto;border:0;"></td></tr>
-        </table>
-    @endif
-    <p class="dark-muted" style="margin:0 0 16px;font-size:11px;line-height:16px;letter-spacing:1.4px;text-transform:uppercase;font-weight:600;">Shared property</p>
-    <h1 class="dark-title" style="margin:0;font-size:36px;line-height:42px;font-weight:500;letter-spacing:-1.2px;">Your property overview.</h1>
-    <p class="dark-body" style="margin:20px 0 0;font-size:16px;line-height:26px;">You have been invited to view released media and tours for this property.</p>
+    <h1 class="dark-title" style="margin:0;font-size:30px;line-height:36px;font-weight:500;letter-spacing:-0.8px;">Your property overview.</h1>
+    <p class="dark-body" style="margin:12px 0 0;font-size:15px;line-height:24px;">The property's released media and tours, in one place.</p>
 @endsection
 
 @section('content')
-    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 24px;">
-        <tr><td class="section-card-bg" style="padding:24px;border-radius:12px;background-color:#f5f7fa;">
-            <p class="dark-muted" style="margin:0 0 8px;font-size:11px;line-height:16px;letter-spacing:1.4px;text-transform:uppercase;font-weight:600;">Property</p>
-            <p class="dark-heading" style="margin:0;font-size:20px;line-height:28px;font-weight:600;">{{ $propertyAddress }}</p>
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 20px;">
+        <tr><td class="section-card-bg" style="padding:20px;border-radius:12px;background-color:#f5f7fa;">
+            <p class="dark-muted" style="margin:0 0 8px;font-size:11px;line-height:16px;letter-spacing:1.4px;text-transform:uppercase;font-weight:600;">Shared property</p>
+            <p class="dark-heading" style="margin:0;font-size:22px;line-height:30px;font-weight:600;">{{ $propertyAddress }}</p>
+            <p class="dark-muted" style="margin:10px 0 0;font-size:13px;line-height:20px;">Photos &middot; Videos &middot; Tours</p>
+            <p class="dark-muted" style="margin:10px 0 0;font-size:13px;line-height:20px;">Shared by {{ $senderName ?? 'Your sender' }}</p>
         </td></tr>
     </table>
-    <p class="dark-body" style="margin:0 0 12px;">Open your Magic Link, then request an email verification code to continue. No account is required.</p>
+    <p class="dark-body" style="margin:0 0 12px;">Open your Magic Link and verify your email to continue. No account is required.</p>
     <p class="dark-muted" style="margin:0;">{{ $expiryCopy ?? 'Access expires in 30 days.' }} More media will appear in the overview as it is released.</p>
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:24px 0 0;">
         <tr><td>

@@ -101,21 +101,26 @@ class ShootGuestShareTest extends TestCase
         [$shoot, $client, $file] = $this->fixture();
         $address = '1211 Ripple Court <img src=x onerror=alert(1)> & Suite "A"';
         $shoot->update(['address' => $address]);
+        $client->update(['name' => 'Office <script>alert(1)</script>']);
         $service = app(ShootGuestShareService::class);
         $share = $service->create($shoot, $client, 'guest2@example.test');
         $invitation = end($this->sent);
         preg_match('#https://repro\.test/guest/shoot/[A-Za-z0-9]{64}#', $invitation['body_text'], $match);
         $this->assertNotEmpty($match);
         $this->assertSame('Your Magic Link to '.$address, $invitation['subject']);
-        $this->assertSame("Your Magic Link to released media and tours for {$address}: {$match[0]}. Open the link and request an email verification code. No account is required. Access expires in 30 days.", $invitation['body_text']);
+        $this->assertSame("Your Magic Link to released media and tours for {$address}: {$match[0]}. Shared by {$client->name}. Open the link and request an email verification code. No account is required. Access expires in 30 days.", $invitation['body_text']);
         $this->assertStringContainsString('&lt;img src=x onerror=alert(1)&gt;', $invitation['body_html']);
         $this->assertStringContainsString($address, html_entity_decode(strip_tags($invitation['body_html']), ENT_QUOTES | ENT_HTML5, 'UTF-8'));
         $this->assertStringNotContainsString('<img src=x', $invitation['body_html']);
         $this->assertStringContainsString('href="'.$match[0].'"', $invitation['body_html']);
         $this->assertStringContainsString('Open Magic Link</a>', $invitation['body_html']);
         $this->assertStringContainsString('Access expires in 30 days.', $invitation['body_html']);
-        $this->assertStringContainsString('src="https://repro.test/brand/magic-link-glass.png"', $invitation['body_html']);
-        $this->assertStringContainsString('alt="Magic Link" width="200"', $invitation['body_html']);
+        $this->assertStringContainsString('src="https://repro.test/images/email-atelier/v6/guest_shoot_invitation.png"', $invitation['body_html']);
+        $this->assertSame(1, substr_count($invitation['body_html'], 'data-artwork="guest_shoot_invitation"'));
+        $this->assertStringContainsString('role="presentation" width="640"', $invitation['body_html']);
+        $this->assertStringContainsString('Shared by Office &lt;script&gt;alert(1)&lt;/script&gt;', $invitation['body_html']);
+        $this->assertStringNotContainsString('<script>', $invitation['body_html']);
+        $this->assertStringContainsString('Photos · Videos · Tours', html_entity_decode(strip_tags($invitation['body_html']), ENT_QUOTES | ENT_HTML5, 'UTF-8'));
 
         $service->requestCode($share);
         $codeEmail = end($this->sent);
@@ -126,14 +131,16 @@ class ShootGuestShareTest extends TestCase
         $this->assertStringContainsString('10 minutes', $codeEmail['body_html']);
         $this->assertStringNotContainsString('/guest/shoot/', $codeEmail['body_html']);
         $this->assertStringNotContainsString(e($address), $codeEmail['body_html']);
-        $this->assertStringNotContainsString('magic-link-glass.png', $codeEmail['body_html']);
+        $this->assertStringNotContainsString('guest_shoot_invitation.png', $codeEmail['body_html']);
+        $this->assertStringNotContainsString('Shared by', $codeEmail['body_html']);
+        $this->assertStringNotContainsString('data-artwork=', $codeEmail['body_html']);
         foreach ([$invitation, $codeEmail] as $payload) {
             $this->assertSame('guest2@example.test', $payload['to']);
             $this->assertSame('SHOOT_GUEST_ACCESS', $payload['send_source']);
             $this->assertNull(app(EmailNotificationPermissions::class)->category($payload));
             $this->assertStringContainsString('data-email-design="atelier-v6"', $payload['body_html']);
             $this->assertStringContainsString('https://repro.test/images/repro-email-logo-grey.png', $payload['body_html']);
-            foreach (['SECRET-CODE', 'INTERNAL-SECRET', $file->path, $client->email, '/tour/', 'data-shoot-photo=', 'data-artwork='] as $privateContent) {
+            foreach (['SECRET-CODE', 'INTERNAL-SECRET', $file->path, $client->email, '/tour/', 'data-shoot-photo='] as $privateContent) {
                 $this->assertStringNotContainsString($privateContent, $payload['body_html']);
             }
         }

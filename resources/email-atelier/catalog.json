@@ -8,6 +8,7 @@
     "schedule": "30a0519a81b4e14b824419dc36a54a41fc83c75f",
     "schedule_change": "4bee35f4efd9443e8a7f02fe654ac14047c30bd5",
     "delivery_access": "9d10d7ea6e0e27a1b058aa3daf707ee90623a8f1",
+    "guest_shoot_invitation": "5cf9c7a11b2c91f796893f84e6ffb6aa28be695e",
     "invoice": "cb2285d7ccbe751e60823d617425fefb48385275",
     "payment": "68601fd2a4489b34b08431e7b18149ff397f7d7d",
     "editing": "26fb7ace262411d23ab8b5d46615276baa5eef97",
@@ -49,6 +50,13 @@
     "offline_payment_intent_submitted__cheque": "d55bb80c6926694c98ca3cc96813ef686bcdd76a"
   },
   "templates": {
+    "guest_shoot_invitation": {
+      "kind": "illustration",
+      "asset": "guest_shoot_invitation",
+      "eyebrow": "SHARED PROPERTY",
+      "footer_reason": "This invitation gives you access to shared property media after email verification.",
+      "marketing": false
+    },
     "account_created": {
       "kind": "illustration",
       "asset": "welcome",

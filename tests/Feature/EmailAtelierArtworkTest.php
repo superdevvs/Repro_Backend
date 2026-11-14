@@ -20,13 +20,13 @@ class EmailAtelierArtworkTest extends TestCase
     public function test_complete_approved_catalog_uses_local_wide_transparent_artwork(): void
     {
         $catalog = app(EmailArtwork::class)->catalog();
-        $this->assertCount(72, $catalog['templates']);
-        $this->assertCount(45, $catalog['assets']);
+        $this->assertCount(73, $catalog['templates']);
+        $this->assertCount(46, $catalog['assets']);
         foreach ($catalog['assets'] as $asset => $figmaHash) {
             $path = public_path('images/email-atelier/v6/'.$asset.'.png');
             $this->assertFileExists($path);
             $size = getimagesize($path);
-            $this->assertEqualsWithDelta(2.4, $size[0] / $size[1], 0.02, $asset);
+            $this->assertEqualsWithDelta($asset === 'guest_shoot_invitation' ? 2.5 : 2.4, $size[0] / $size[1], 0.02, $asset);
             $this->assertSame(IMAGETYPE_PNG, $size[2]);
             $this->assertSame(6, ord(file_get_contents($path, false, null, 25, 1)), $asset.' must retain alpha');
         }

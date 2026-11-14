@@ -71,17 +71,17 @@ class ShootGuestShareService
         abort_unless($token, 409, 'This older invitation needs a new link. Use Resend invitation.');
         $url = $this->url($token);
         $propertyAddress = ShootAddress::streetWithAptSuite($shoot->address, $shoot->property_details);
+        $senderName = $this->senderName($share);
         $expiryCopy = $revokeOnFailure ? 'Access expires in 30 days.'
             : 'Access expires on '.$share->expires_at->copy()->utc()->format('F j, Y').' (UTC).';
         try {
             $this->send($share, 'Your Magic Link to '.$propertyAddress,
-                "Your Magic Link to released media and tours for {$propertyAddress}: {$url}. Open the link and request an email verification code. No account is required. {$expiryCopy}",
+                "Your Magic Link to released media and tours for {$propertyAddress}: {$url}. Shared by {$senderName}. Open the link and request an email verification code. No account is required. {$expiryCopy}",
                 view('emails.guest_shoot_invitation', [
                     'propertyAddress' => $propertyAddress,
                     'guestUrl' => $url,
                     'expiryCopy' => $expiryCopy,
-                    'magicLinkIllustrationUrl' => rtrim(config('app.frontend_url') ?: config('app.url'), '/').'/brand/magic-link-glass.png',
-                    'emailAtelier' => ['kind' => 'none'],
+                    'senderName' => $senderName,
                 ])->render());
         } catch (\Throwable $exception) {
             // An explicit revocation remains final even if an in-flight send fails afterward.
