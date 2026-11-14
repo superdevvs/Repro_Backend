@@ -40,6 +40,7 @@ class LabInteriorDesignAssessments
     {
         $protocol=$this->protocol($phase);$workflow=IguideLabWorkflow::where('project_id',$item->project_id)->findOrFail($item->workflow_id);
         abort_unless(config('iguide-lab.interior_design_workflow_enabled',false)===true&&LabInteriorDesignPolicy::enabled($workflow->policy,$item->preset),503,'Interior material workflow is disabled.');
+        if(LabInteriorRoomPolicy::enabled($workflow->policy,$item->preset)) app(LabInteriorRoomRoutes::class)->verify($item,LabInteriorRoomProfiles::MATERIALS);
         $recipe=$workflow->policy['interiorAssessments']??[];$this->validate($recipe);
         $snapshot=app(LabInteriorDesignContext::class)->capture($item,$phase,$parents);
         return app(LabWorkflowSteps::class)->reserve($item,'interior-'.$phase,'analysis',['protocolVersion'=>$protocol::VERSION,'phase'=>$phase,'parents'=>$parents,'contextSnapshot'=>$snapshot,'recipe'=>$recipe]);
@@ -54,6 +55,7 @@ class LabInteriorDesignAssessments
         $item=IguideLabWorkflowItem::where('project_id',$step->project_id)->findOrFail($step->item_id);
         $workflow=IguideLabWorkflow::where('project_id',$step->project_id)->findOrFail($item->workflow_id);
         abort_unless(LabInteriorDesignPolicy::enabled($workflow->policy,$item->preset),422);
+        if(LabInteriorRoomPolicy::enabled($workflow->policy,$item->preset)) app(LabInteriorRoomRoutes::class)->verify($item,LabInteriorRoomProfiles::MATERIALS);
         app(LabWorkflowInvocation::class)->verify(app(LabWorkflowSteps::class)->invocation($step),$step->project_id,$step->request_id,'analysis');
         $this->validate($input['recipe']);abort_unless(LabAnalysisRecipes::hash($input['recipe'])===LabAnalysisRecipes::hash($workflow->policy['interiorAssessments']??[]),422);
         $current=app(LabInteriorDesignContext::class)->capture($item,$phase,$input['parents']);
@@ -89,6 +91,10 @@ class LabInteriorDesignAssessments
         if($queue){try{ProcessIguideLabInteriorAssessment::dispatch($record->id);}catch(\Throwable){$this->attention($record,'queue_receipt_unconfirmed');}}return $record->fresh();
     }
     public function verifyForAttempt(IguideLabInteriorAssessment $record,string $payload): void
+    {
+        LabInteriorRoomReadScope::fresh(fn()=>$this->verifyCurrentAttempt($record,$payload));
+    }
+    private function verifyCurrentAttempt(IguideLabInteriorAssessment $record,string $payload): void
     {
         $record->refresh();abort_unless($record->status==='submitting'&&empty($record->data['providerReceipt']),409);
         $step=IguideLabWorkflowStep::where('project_id',$record->project_id)->findOrFail($record->step_id);$this->verifyStep($step);$this->verifyRecord($record,$step);
@@ -133,6 +139,11 @@ class LabInteriorDesignAssessments
         $protocol=$this->protocol($record->phase);return $protocol::parse($raw,$step->input['contextSnapshot']['context']);
     }
     public function completed(IguideLabWorkflowItem $item,string $id,string $phase): IguideLabInteriorAssessment
+    {
+        return LabInteriorRoomReadScope::completed($item,fn()=>LabInteriorRoomReadScope::verified(
+            $item,'material:'.$phase.':'.$id,fn()=>$this->completedCurrent($item,$id,$phase)));
+    }
+    private function completedCurrent(IguideLabWorkflowItem $item,string $id,string $phase): IguideLabInteriorAssessment
     {
         $record=IguideLabInteriorAssessment::where('project_id',$item->project_id)->where('phase',$phase)->findOrFail($id);
         $step=IguideLabWorkflowStep::where('project_id',$item->project_id)->where('item_id',$item->id)->findOrFail($record->step_id);

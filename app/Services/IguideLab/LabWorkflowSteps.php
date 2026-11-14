@@ -52,6 +52,18 @@ class LabWorkflowSteps
             if (LabInteriorDesignPolicy::enabled($workflow->policy,$item->preset)) {
                 $limit = match ($kind) { 'analysis' => 3, 'image' => 1, 'segmentation' => 15, 'evaluation','section','composition' => 1, default => $limit };
             }
+            if (LabInteriorRoomPolicy::enabled($workflow->policy,$item->preset)) {
+                // The whole branch budget exists before the classifier is dispatched; it never resets on a route change.
+                $limit=LabInteriorRoomProfiles::BUDGET[$kind];
+                if($kind==='analysis') abort_unless(in_array($key,['room-route','room-framing','room-layout','room-candidate','interior-framing','interior-cut','interior-candidate'],true),422,'Unknown bounded Interior room analysis.');
+                if($key!=='room-route') {
+                    $route=$item->fresh()->data['interiorRoomRoute']??null;
+                    abort_unless(is_array($route)&&($route['version']??null)===LabInteriorRoomProfiles::VERSION,422,'Select the immutable source room route before reserving branch work.');
+                    $profile=LabInteriorRoomProfiles::get($route['profileId']);
+                    if($kind==='analysis') abort_unless(($profile['kind']==='existing_materials')===str_starts_with($key,'interior-'),422,'The reserved Interior branch cannot change.');
+                    if($profile['kind']==='new_furnishings'&&$kind==='segmentation') $limit=2;
+                }
+            }
             abort_if(IguideLabWorkflowStep::where('item_id', $item->id)->where('kind', $kind)->count() >= $limit, 422, 'The bounded workflow attempt limit was reached.');
             return IguideLabWorkflowStep::create(['project_id' => $item->project_id, 'item_id' => $item->id, 'step_key' => $key,
                 'kind' => $kind, 'request_id' => (string) Str::uuid(), 'input' => $input, 'input_sha256' => $hash, 'status' => 'reserved']);

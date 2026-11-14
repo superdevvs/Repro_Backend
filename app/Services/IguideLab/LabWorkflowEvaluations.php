@@ -158,6 +158,13 @@ class LabWorkflowEvaluations
             abort_unless(LabInteriorDesignPolicy::enabled($workflow->policy,$item->preset),422,'Material evaluation recipe is unavailable.');
             app(LabInteriorDesignWorkflow::class)->validateSnapshot($workflow->policy['interiorWorkflow']);
             $intent['fixedRecipeConstraints']=LabInteriorDesignArtifacts::REVIEW_CONSTRAINTS;
+            if(LabInteriorRoomPolicy::enabled($workflow->policy,$item->preset)) {
+                app(LabInteriorRoomWorkflow::class)->validateSnapshot($workflow->policy['interiorRoomWorkflow']);
+                $route=app(LabInteriorRoomRoutes::class)->verify($item);
+                $intent['sourceRoomProfile']=['version'=>LabInteriorRoomProfiles::VERSION,'profileId'=>$route['profileId'],
+                    'routeId'=>$route['assessmentId'],'routeSha256'=>LabMachineSegmentationPlan::canonicalHash($route)];
+                if($route['profileId']!==LabInteriorRoomProfiles::MATERIALS) $intent['fixedRecipeConstraints']=LabRoomFurnishingArtifacts::constraints($route['profileId']);
+            }
         }
         if($item->preset==='staging'){
             $workflow=\App\Models\IguideLabWorkflow::where('project_id',$item->project_id)->findOrFail($item->workflow_id);

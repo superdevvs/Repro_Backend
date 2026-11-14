@@ -70,7 +70,7 @@ class LabService
         return $query->first();
     }
 
-    public function start(IguideLabProject $project, array $input, ?array $workflowInvocation = null, ?\App\Models\IguideLabDeclutterRemovalPlan $removalPlan = null, ?\App\Models\IguideLabInteriorAssessment $interiorPlan = null): IguideLabRun
+    public function start(IguideLabProject $project, array $input, ?array $workflowInvocation = null, ?\App\Models\IguideLabDeclutterRemovalPlan $removalPlan = null, ?\App\Models\IguideLabInteriorAssessment $interiorPlan = null, ?\App\Models\IguideLabRoomAssessment $roomPlan = null): IguideLabRun
     {
         app(LabWorkflowInvocation::class)->verifyInput($workflowInvocation, $project->id, $input, 'image');
         $case = IguideLabCase::where('project_id', $project->id)->findOrFail($input['caseId']);
@@ -84,9 +84,9 @@ class LabService
         $scenePlan = ($requested['promptMode'] ?? 'preset') === 'scene-plan';
         // This fourth argument is internal only. Public controllers never pass
         // a typed record and cannot assert machine authority in request options.
-        abort_if($removalPlan !== null && $interiorPlan !== null,422,'A run has exactly one typed source plan.');
-        $machinePlan = $removalPlan !== null || $interiorPlan !== null;
-        abort_if(!$machinePlan && (isset($requested['sourceMachinePlan']) || in_array($requested['promptMode'] ?? null,['machine-removal-plan','machine-interior-material-plan'],true) || isset($input['removalPlanId']) || isset($input['interiorPlanId'])),422,'Machine drafts require internal source authority.');
+        abort_if((int)($removalPlan!==null)+(int)($interiorPlan!==null)+(int)($roomPlan!==null)>1,422,'A run has exactly one typed source plan.');
+        $machinePlan = $removalPlan !== null || $interiorPlan !== null || $roomPlan !== null;
+        abort_if(!$machinePlan && (isset($requested['sourceMachinePlan']) || in_array($requested['promptMode'] ?? null,['machine-removal-plan','machine-interior-material-plan','machine-interior-furnishing-plan'],true) || isset($input['removalPlanId']) || isset($input['interiorPlanId']) || isset($input['roomPlanId'])),422,'Machine drafts require internal source authority.');
         abort_if($machinePlan && ($scenePlan || filled($analysisId)),422,'A typed machine plan is distinct from scene analysis.');
         abort_if($scenePlan !== filled($analysisId), 422, 'Scene-plan drafts require a completed analysis association.');
         unset($requested['analysisId'], $requested['promptMode']);
@@ -137,6 +137,10 @@ class LabService
         if ($interiorPlan !== null) {
             $options['sourceMachinePlan']=app(LabInteriorDesignImageDraft::class)->apply($interiorPlan,$case,$input,$workflowInvocation);
             $options['promptMode']='machine-interior-material-plan';
+        }
+        if ($roomPlan !== null) {
+            $options['sourceMachinePlan']=app(LabRoomFurnishingImageDraft::class)->apply($roomPlan,$case,$input,$workflowInvocation);
+            $options['promptMode']='machine-interior-furnishing-plan';
         }
         if ($workflowInvocation !== null) {
             abort_unless($scenePlan || $machinePlan, 422, 'Automatic generation requires its reserved machine proposal.');

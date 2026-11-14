@@ -39,6 +39,8 @@ class LabWorkflowEvaluationProvider
         $attempts[] = ['credentialSource' => $slot, 'requestedModelId' => $payload['model'], 'status' => 'submitting',
             'providerRequestId' => null, 'httpStatus' => null, 'startedAt' => now()->toIso8601String(), 'completedAt' => null];
         app(LabWorkflowInvocation::class)->claim($analysis->data['workflowInvocation'] ?? null, $analysis->project_id, $analysis->request_id, 'evaluation', fn () => $this->save($analysis, ['provider_attempts' => $attempts]));
+        $remaining = (int) floor(($deadline - hrtime(true)) / 1e9);
+        if ($remaining < 15) throw new OpenAiImageException(reason: 'attempt_budget_exhausted');
         $usage = app(AiUsageRecorder::class); $usageId = $usage->begin('workflow_visual_evaluation', $payload['model'], 'responses'); $start = hrtime(true);
         try {
             $response = Http::withToken($key)->acceptJson()->connectTimeout(15)->timeout($remaining)->withOptions(['allow_redirects' => false])
