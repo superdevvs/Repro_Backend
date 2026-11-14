@@ -23,7 +23,7 @@ class LabAnalysisRecipes
         self::LIGHTING_REPAIR => ['lighting-repair-1.json', 'dd1cc556379d9963b0ec4fd68d0dbb8da0c4a4cd690989a0d3b865f2dea089aa'],
         self::LIFESTYLE_CUT => ['lifestyle-cut-gate-1.json', 'ac42379d6bf0e87a6d772aa9ce675f39e7341e1991a983d96d65e48b8542a6f6'],
         self::STAGING_CUT => ['staging-cut-gate-1.json', '50cf8dd230363a08055a532e56a88a9b4c6613fe627b502c8eaacb4e060e73b2'],
-        self::STAGING_LAYOUT => ['staging-layout-1.json', '20814d6c3a8b7557c76633cb53c271c6e84046d49d78d7ed5666df94036b0381'],
+        self::STAGING_LAYOUT => ['staging-layout-1.json', 'c3166d4b86c79f1c1b6ebdcd8f0f0dda1b7d160680013cbaa9c8ec0b70a93601'],
     ];
 
     public function active(): array
