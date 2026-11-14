@@ -79,7 +79,7 @@ Apply proposed draft is an explicit local UI action and makes no image request. 
 
 ## Reviewed support and native section editing
 
-Schema5 exposes `capabilities.sectionEditing`: runtime readiness, fixed2048-square cut size, user-selected HFOV30–130, source-hash attachment requirement, exact2.6 provider-mask model IDs, white-edit/black-preserve mask convention and0.1 section edge inset. Scene-analysis `sectionExecution:false` still means suggestions are not executed automatically; explicit section controls are separate.
+Schema5 exposes `capabilities.sectionEditing`: runtime readiness, fixed2048-square cut size, user-selected HFOV30-130, source-hash attachment requirement, exact2.6 provider-mask model IDs, white-edit/black-preserve mask convention and0.1 section edge inset. Scene-analysis `sectionExecution:false` still means suggestions are not executed automatically; explicit section controls are separate.
 
 `POST /cases/{id}/native-source` takes multipart image/requestId. Its actual upload hash and dimensions must match the parent case original provenance. It creates an immutable native-source helper and stores a server-owned `case.nativeSource` snapshot (caseId/requestId/sha256/width/height). The parent preview bytes remain unchanged. Exact replay returns the same helper with201; another requestId after attachment returns409. Clients recover the saved attachment on reload. An unknown original can instead be uploaded as a new ordinary case. Native uploads retain the30MiB/64MP limit. ICC profiles, nontrivial EXIF orientation, animation and transparent source pixels require an explicit normalized source with a new hash; the adapter does not silently transform them.
 
