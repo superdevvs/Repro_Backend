@@ -80,8 +80,8 @@ class LabDeclutterArtifacts extends LabWorkflowArtifacts
         $lineage=$composite->manifest['lineage'];
         abort_unless(($lineage['removalPlanSha256']??null)===$step->input['removalPlanSha256']
             &&($lineage['supportReportSha256']??null)===$step->input['supportSha256']
-            &&LabAnalysisRecipes::hash($lineage['declutterRecipe'])===LabAnalysisRecipes::hash($step->input['declutterRecipe'])
-            &&LabAnalysisRecipes::hash($lineage['harmonization'])===LabAnalysisRecipes::hash($step->input['harmonization']),422);
+            &&LabMachineSegmentationPlan::canonicalHash($lineage['declutterRecipe'])===LabMachineSegmentationPlan::canonicalHash($step->input['declutterRecipe'])
+            &&LabMachineSegmentationPlan::canonicalHash($lineage['harmonization'])===LabMachineSegmentationPlan::canonicalHash($step->input['harmonization']),422);
         app(LabHarmonization::class)->validate($step->input['harmonization']);
     }
     protected function validateEvidenceAnalysis(IguideLabWorkflowItem $item,IguideLabComposite $composite,IguideLabAnalysis $analysis): void
