@@ -17,6 +17,7 @@ class LabStagingWorkflow
     public function ready(): bool
     {
         return (config('iguide-lab.staging_framing_enabled', false)!==true || app(LabStagingFramings::class)->ready())
+            &&(config('iguide-lab.staging_layout_enabled', false)!==true || app(LabStagingLayouts::class)->ready())
             &&app(LabStagingSupport::class)->ready()&&app(LabStagingAssessments::class)->ready()
             &&app(LabSectionGeometry::class)->ready()&&app(LabWorkflowArtifacts::class)->ready()
             &&app(LabWorkflowEvaluations::class)->ready()&&app(LabAnalyses::class)->ready()
@@ -42,6 +43,11 @@ class LabStagingWorkflow
         $instructions=self::INTENT.($item->instructions!==''?"\nUser intent (must remain within the three-item recipe): ".$item->instructions:'');
         abort_if(mb_strlen($instructions)>3200,422);
         $options=array_replace(LabAnalyses::EDIT_DEFAULTS,['roomType'=>'living','furnitureDensity'=>'light']);
+        if(isset($workflow->policy['stagingLayout'])) {
+            $prepared=app(LabStagingLayouts::class)->prepare($workflow,$item,$project,$options);
+            if($prepared===null)return;
+            $section=$prepared['section'];$cut=$prepared['cut'];$analysis=$prepared['analysis'];$data=$prepared['data'];
+        } else {
         if (isset($workflow->policy['stagingFraming'])) {
             $framingService=app(LabStagingFramings::class);
             $framing=$framingService->start($framingService->reserve($item));$data['sourceFramingId']=$framing->id;
@@ -91,6 +97,7 @@ class LabStagingWorkflow
         }
         if(!$this->threeTargets($analysis->proposal)||($analysis->proposal['workflow']['mode']??null)!=='whole_panorama'){
             $owner->finish($item,'needs_review','unsupported_section_plan','The actual section does not support the unchanged three-object scope.',$data);return;}
+        }
         $context=$analysis->data['sourceContext']??null;
         abort_unless(is_array($context),422,'The actual section has no verified native parent context.');
         app(LabAnalysisSourceContext::class)->verify($cut,$context);

@@ -234,6 +234,12 @@ class IguideLabController extends Controller
         $entry = collect($record->data['views'] ?? [])->firstWhere('id', $view); $path = $entry['path'] ?? null;
         abort_unless(is_string($path) && str_starts_with($path, 'iguide-lab/'.$project->id.'/analyses/'.$record->id.'/')
             && ! str_contains($path, '..') && Storage::disk(LabService::DISK)->exists($path), 404);
+        if (in_array($view, ['source_detail_1','source_detail_2'], true)) {
+            $descriptor=collect($record->data['stagingLayout']['detailViews']??[])->firstWhere('id',$view);
+            abort_unless(is_array($descriptor)&&($descriptor['sha256']??null)===($entry['sha256']??null)
+                &&($record->data['stagingLayout']['followup']['operation']??null)==='native_details',404);
+            app(\App\Services\IguideLab\LabStagingFramingContext::class)->file($project->id,$path,$descriptor['sha256'],8*1024*1024);
+        }
         return response()->file(Storage::disk(LabService::DISK)->path($path), ['Content-Type' => 'image/png', 'Content-Disposition' => 'inline; filename="diagnostic-'.$view.'.png"',
             'X-Content-Type-Options' => 'nosniff', 'Cache-Control' => 'private, no-store']);
     }

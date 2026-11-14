@@ -60,7 +60,22 @@ TEXT;
 
     public static function parse(array $response, array $context): array
     {
-        self::validateContext($context);
+        return self::parseBounded($response, $context, 7);
+    }
+
+    /** Closed eight-image extension; legacy parse/request remain at their original seven-view bound. */
+    public static function parseWithSourceDetails(array $response, array $context): array
+    {
+        $ids = $context['viewIds'] ?? [];
+        $base = LabAnalysisSourceContext::IDS;
+        if ($ids !== $base && $ids !== [...$base, 'source_detail_1'] && $ids !== [...$base, 'source_detail_1', 'source_detail_2']) self::invalid('Unsupported original-detail evidence IDs.');
+        if (($context['projection'] ?? null) !== 'rectilinear') self::invalid('Source details require an authoritative cut.');
+        return self::parseBounded($response, $context, 8);
+    }
+
+    private static function parseBounded(array $response, array $context, int $maxViews): array
+    {
+        self::validateContext($context, $maxViews);
         if (($response['status'] ?? null) !== 'completed') self::invalid('The analysis response is incomplete.');
         $texts = [];
         foreach ($response['output'] ?? [] as $item) {
@@ -74,7 +89,7 @@ TEXT;
         if (count($texts) !== 1 || strlen($texts[0]) > 64 * 1024) self::invalid('Expected one bounded structured proposal.');
         try { $proposal = json_decode($texts[0], true, 32, JSON_THROW_ON_ERROR); }
         catch (JsonException) { self::invalid('The proposal is not valid JSON.'); }
-        self::validate($proposal, self::validationSchema(), '$');
+        self::validate($proposal, self::validationSchema($maxViews), '$');
         foreach (['sourceSha256', 'projection', 'preset', 'style'] as $field) {
             if ($proposal[$field] !== $context[$field]) self::invalid('The proposal does not match its source and edit settings.');
         }
@@ -99,13 +114,13 @@ TEXT;
             'maskVerified' => false, 'crossViewVerified' => false, 'automaticGeneration' => false];
     }
 
-    private static function validationSchema(): array
+    private static function validationSchema(int $maxViews = 7): array
     {
         $string = fn (int $max, int $min = 1): array => ['type' => 'string', 'minLength' => $min, 'maxLength' => $max];
         $enum = fn (array $values): array => ['type' => 'string', 'enum' => $values];
         $list = fn (array $item, int $max, int $min = 0): array => ['type' => 'array', 'items' => $item, 'minItems' => $min, 'maxItems' => $max];
         $object = fn (array $properties): array => ['type' => 'object', 'properties' => $properties, 'required' => array_keys($properties), 'additionalProperties' => false];
-        $viewIds = $list($string(80), 7, 1);
+        $viewIds = $list($string(80), $maxViews, 1);
         return $object([
             'schemaVersion' => $enum([self::VERSION]),
             'sourceSha256' => ['type' => 'string', 'pattern' => '^[a-f0-9]{64}$'],
@@ -133,7 +148,7 @@ TEXT;
         ]);
     }
 
-    private static function validateContext(array $context): void
+    private static function validateContext(array $context, int $maxViews = 7): void
     {
         if (array_diff(array_keys($context), ['sourceSha256', 'projection', 'preset', 'style', 'viewIds', 'instructions'])) self::invalid('Unknown analysis context field.');
         if (! is_string($context['sourceSha256'] ?? null) || ! preg_match('/\A[a-f0-9]{64}\z/D', $context['sourceSha256'])
@@ -141,7 +156,7 @@ TEXT;
             || ! is_string($context['preset'] ?? null) || ! isset(LabCatalog::PRESETS[$context['preset']]) || ! array_key_exists('style', $context)
             || ($context['style'] !== null && (! is_string($context['style']) || ! isset(LabCatalog::STYLES[$context['style']])))
             || ! is_array($context['viewIds'] ?? null) || ! array_is_list($context['viewIds'])
-            || count($context['viewIds']) < 1 || count($context['viewIds']) > 7
+            || count($context['viewIds']) < 1 || count($context['viewIds']) > $maxViews
             || $context['viewIds'][0] !== 'source') self::invalid('Invalid source analysis context.');
         foreach ($context['viewIds'] as $id) {
             if (! is_string($id) || ! preg_match('/\A[a-zA-Z0-9_-]{1,80}\z/D', $id)) self::invalid('Invalid analysis view ID.');

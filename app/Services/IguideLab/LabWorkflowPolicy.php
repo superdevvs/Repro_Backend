@@ -22,6 +22,7 @@ class LabWorkflowPolicy
             $policy['stagingWorkflow'] = app(LabStagingWorkflow::class)->snapshot();
             $policy['sectionAnalysisRecipe'] = app(LabAnalysisRecipes::class)->snapshot(LabAnalysisRecipes::SECTION_CONTEXT);
             if (config('iguide-lab.staging_framing_enabled', false) === true) $policy['stagingFraming'] = app(LabStagingFramings::class)->snapshot();
+            if (config('iguide-lab.staging_layout_enabled', false) === true) $policy['stagingLayout'] = app(LabStagingLayouts::class)->snapshot();
         }
         if (config('iguide-lab.lifestyle_workflow_enabled',false) === true && class_exists(LabLifestyleWorkflow::class) && app(LabLifestyleWorkflow::class)->ready()) {
             $policy['lifestyleAssessment'] = LabLifestyleAssessmentPolicy::snapshot();

@@ -52,7 +52,8 @@ class LabWorkflowInvocation
                 app(LabLifestyleCutReadiness::class)->verifyImageStep($step);
             }
             if ($kind === 'image' && $item->preset === 'staging' && isset($workflow->policy['stagingFraming'])) {
-                app(LabStagingCutReadiness::class)->verifyImageStep($step);
+                if (isset($workflow->policy['stagingLayout'])) app(LabStagingLayoutReadiness::class)->verifyImageStep($step);
+                else app(LabStagingCutReadiness::class)->verifyImageStep($step);
             }
             if ($kind === 'image' && LabGrassSourceAdmissionPolicy::enabled($workflow->policy, $item->preset)) {
                 app(LabGrassSourceAdmissions::class)->verifyImageStep($step);

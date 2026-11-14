@@ -34,6 +34,9 @@ final class LabSectionAnalysisProtocol
         return LabScenePlanProtocol::parse($response, $base);
     }
 
+    /** Other closed typed compilers may validate the unchanged six-view authority. */
+    public static function validateContext(array $context): void { self::validate($context); }
+
     private static function validate(array $context): void
     {
         $manifest = $context['sourceContext'] ?? null; $binding = $manifest['binding'] ?? null;

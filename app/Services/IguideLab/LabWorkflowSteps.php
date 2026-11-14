@@ -30,6 +30,12 @@ class LabWorkflowSteps
             }
             if (LabStagingAssessmentPolicy::enabled($workflow->policy, $item->preset)) {
                 $limit = match ($kind) { 'analysis' => 3, 'image' => 1, 'segmentation' => 2, 'evaluation' => 1, default => $limit };
+                if (isset($workflow->policy['stagingLayout'])) {
+                    $limit = match ($kind) { 'analysis' => 4, 'section' => 2, 'composition' => 1, default => $limit };
+                    if ($kind === 'section') abort_unless(in_array($key,['staging-section','staging-reframed-section'],true),422,'Unsupported source section step.');
+                    if ($kind === 'analysis') abort_unless(in_array($key,['staging-framing','staging-layout-initial','staging-layout-followup'],true)
+                        || (($input['protocolVersion']??null)===LabStagingAssessmentPolicy::VERSION&&$key==='placement-'.($input['candidateRunId']??'')),422,'Unsupported bounded staging analysis step.');
+                }
             }
             if (LabLifestyleAssessmentPolicy::enabled($workflow->policy, $item->preset)) {
                 $limit = match ($kind) { 'analysis' => 3, 'image' => 1, 'segmentation' => 2, 'evaluation','section','composition' => 1, default => $limit };
