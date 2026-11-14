@@ -177,6 +177,66 @@ class IguideLabAnalysisTest extends TestCase
         Http::assertNothingSent(); Queue::assertNotPushed(ProcessIguideLabRun::class);
     }
 
+    public function test_reserved_recipe_and_idempotent_replay_survive_an_active_default_change(): void
+    {
+        $input = $this->input();
+        $id = $this->withToken($this->token)->postJson('/api/iguide-lab/analyses', $input)->assertAccepted()->json('data.id');
+        $record = IguideLabAnalysis::findOrFail($id); $snapshot = $record->data['executionRecipe']; $hash = $record->request_hash;
+        $this->assertSame('f25a88708519f3f704ca957787d8b815358780be8c669f7bcb4a574fc822d514', $snapshot['instructionsSha256']);
+        config(['iguide-lab.analysis_instructions_version' => 'future-default-not-installed']);
+        $this->withToken($this->token)->postJson('/api/iguide-lab/analyses', $input)->assertAccepted()->assertJsonPath('data.id', $id);
+        $this->withToken($this->token)->postJson('/api/iguide-lab/analyses', [...$input, 'instructions' => 'Different target'])->assertConflict();
+        Http::fake(['api.openai.com/v1/responses' => Http::response($this->response())]);
+        app(LabAnalyses::class)->process($record); $record->refresh();
+        $this->assertSame('completed', $record->status); $this->assertSame($snapshot, $record->data['executionRecipe']); $this->assertSame($hash, $record->request_hash);
+        $request = Http::recorded()[0][0]->data();
+        $this->assertSame($snapshot['recipe']['instructions'], $request['instructions']);
+        $this->assertSame($snapshot['recipe']['schema'], $request['text']['format']['schema']);
+        $this->assertSame(\App\Services\IguideLab\LabAnalysisRecipes::hash($request), $record->data['providerBodySha256']);
+        $manifest = json_decode(Storage::disk(LabService::DISK)->get('iguide-lab/'.$this->project->id.'/analyses/'.$id.'/input-manifest.json'), true);
+        $this->assertSame($record->data['providerBodySha256'], $manifest['providerBodySha256']);
+        $this->assertSame(1, IguideLabAnalysis::count()); Queue::assertPushed(ProcessIguideLabAnalysis::class, 1); Http::assertSentCount(1);
+    }
+
+    public function test_changed_recipe_bytes_controls_or_schema_fail_before_a_paid_attempt(): void
+    {
+        foreach (['instructions', 'model', 'schema'] as $field) {
+            $record = $this->reserve(); $data = $record->data;
+            $data['executionRecipe']['recipe'][$field] = $field === 'schema' ? ['type' => 'string'] : 'modified';
+            // Even a recomputed self-hash cannot make an unregistered recipe legitimate.
+            $data['executionRecipe']['recipeSha256'] = \App\Services\IguideLab\LabAnalysisRecipes::hash($data['executionRecipe']['recipe']);
+            $record->update(['data' => $data]); app(LabAnalyses::class)->process($record);
+            $this->assertSame('needs_attention', $record->fresh()->status); $this->assertNull($record->fresh()->provider_attempts);
+            $this->assertNull(app(LabAnalyses::class)->dto($record->fresh())['instructionProvenance']);
+        }
+        Http::assertNothingSent(); Queue::assertNotPushed(ProcessIguideLabRun::class);
+    }
+
+    public function test_legacy_recipe_resolution_is_explicit_and_keeps_original_request_hash(): void
+    {
+        $input = $this->input();
+        $id = $this->withToken($this->token)->postJson('/api/iguide-lab/analyses', $input)->assertAccepted()->json('data.id');
+        $record = IguideLabAnalysis::findOrFail($id); $hash = $record->request_hash;
+        $record->update(['data' => ['originalSourceSha256' => null]]);
+        $this->assertNull(app(LabAnalyses::class)->dto($record)['instructionProvenance']);
+        config(['iguide-lab.analysis_instructions_version' => 'future-default-not-installed']);
+        $this->withToken($this->token)->postJson('/api/iguide-lab/analyses', $input)->assertAccepted()->assertJsonPath('data.id', $id);
+        Http::fake(['api.openai.com/v1/responses' => Http::response($this->response())]);
+        app(LabAnalyses::class)->process($record); $record->refresh();
+        $this->assertSame('completed', $record->status); $this->assertSame($hash, $record->request_hash);
+        $this->assertSame('legacy_registry_resolution', app(LabAnalyses::class)->dto($record)['instructionProvenance']['captureMode']);
+        $this->assertSame('scene-plan-v1', app(LabAnalyses::class)->dto($record)['protocolVersion']);
+        Http::assertSentCount(1);
+    }
+
+    public function test_removed_marked_snapshot_is_not_silently_treated_as_legacy(): void
+    {
+        $record = $this->reserve(); $data = $record->data; unset($data['executionRecipe']);
+        $record->update(['data' => $data]); app(LabAnalyses::class)->process($record);
+        $this->assertSame('needs_attention', $record->fresh()->status); $this->assertNull($record->fresh()->provider_attempts);
+        Http::assertNothingSent();
+    }
+
     private function input(): array { return ['requestId' => (string) Str::uuid(), 'caseId' => $this->case->id, 'preset' => 'declutter', 'instructions' => 'Remove the vase only.']; }
     private function reserve(): IguideLabAnalysis { return IguideLabAnalysis::find($this->withToken($this->token)->postJson('/api/iguide-lab/analyses', $this->input())->assertAccepted()->json('data.id')); }
     private function proposal(): array
