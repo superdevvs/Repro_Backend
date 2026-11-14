@@ -118,8 +118,7 @@ class LabImports
                 IguideLabProject::whereKey($project->id)->update(['updated_at' => now()]); $current = $project->fresh(); abort_unless($current->active(), 401);
                 $record->refresh(); if ($record->status === 'completed') return;
                 $existing = IguideLabCase::where('project_id', $project->id)->whereIn('id', array_column($plans, 'id'))->get()->keyBy('id');
-                $capacityClass = __NAMESPACE__.'\\LabCaseCapacity';
-                $limit = class_exists($capacityClass) ? app($capacityClass)->limit($current) : 80;
+                $limit = app(LabCaseCapacity::class)->limit($current);
                 abort_if(IguideLabCase::where('project_id', $project->id)->count() + count($plans) - $existing->count() > $limit, 429, 'The complete import does not fit the remaining source capacity. No partial import was created.');
                 $sources = [];
                 foreach ($plans as $plan) {

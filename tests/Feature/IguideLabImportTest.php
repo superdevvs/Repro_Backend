@@ -101,6 +101,16 @@ class IguideLabImportTest extends TestCase
         }
     }
 
+    public function test_atomic_import_uses_shared_project_capacity_without_changing_paid_quota(): void
+    {
+        $this->project->update(['max_cases' => 81]); $this->fillCases(79);
+        $record = IguideLabImport::findOrFail($this->reserve($this->zip(['one.png' => $this->image, 'two.png' => $this->image]))['id']);
+        $this->process($record);
+        $this->assertSame('completed', $record->fresh()->status); $this->assertCount(2, $record->fresh()->sources);
+        $this->assertSame(81, IguideLabCase::count()); $this->assertSame(0, $this->project->fresh()->used_runs);
+        $this->assertSame(20, $this->project->fresh()->max_runs); Http::assertNothingSent();
+    }
+
     public function test_changed_private_archive_is_not_imported(): void
     {
         $record = IguideLabImport::find($this->reserve($this->zip(['room.png' => $this->image]))['id']);
