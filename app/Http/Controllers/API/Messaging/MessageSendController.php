@@ -44,7 +44,11 @@ class MessageSendController extends Controller
             $media = app(MessageMediaService::class);
             $files = $media->attachments($r->user(), $data['channel'], $data['attachment_ids']);
             foreach ($files as $file) { $file->update(['share_expires_at' => now()->addDays(30)]); }
-            $body = $data['channel'] === 'support' ? ($data['body'] ?: 'Shared attachments.') : $media->linkedBody($data['body'], $files);
+            $body = match ($data['channel']) {
+                'support' => $data['body'] ?: 'Shared attachments.',
+                'sms', 'shared' => $media->carrierBody($data['body'], $files, $data['channel'] === 'sms'),
+                default => $media->linkedBody($data['body'], $files),
+            };
             $fields = ['body' => $body, 'body_text' => $body, 'to' => $data['recipient'] ?? '',
                 'sms_number_id' => $data['sender_id'] ?? null, 'request_key' => $data['request_key'],
                 'subject' => $data['subject'] ?? '', 'category' => $data['category'] ?? 'other', 'internal' => false];

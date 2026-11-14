@@ -97,6 +97,25 @@ class MessageMediaService
     {
         return trim($body.($files->isNotEmpty() ? "\n\n".$files->map(fn ($file) => $file->name."\n".$this->shareURL($file))->implode("\n") : ''));
     }
+    public function bundleURL(MessageMedia $file): string
+    {
+        return URL::temporarySignedRoute('message-media.bundle', $file->share_expires_at ?? now()->addDays(30), ['mediaFile' => $file->id]);
+    }
+    public function carrierBody(string $body, \Illuminate\Support\Collection $files, bool $sms): string
+    {
+        $result = trim($body.($files->isNotEmpty() ? "\n\nAttachments (".$files->count().")\n".$this->bundleURL($files->first()) : ''));
+        if ($sms) {
+            // Ten SMS parts: count extension escapes for GSM text and UTF-16
+            // code units for other text. Never truncate the user's message.
+            $ascii = preg_match('/^[\x20-\x7e\r\n]*$/D', $result) && ! str_contains($result, '`');
+            $units = $ascii ? strlen($result) + preg_match_all('/[~^|{}\[\]\\\\]/', $result)
+                : strlen(mb_convert_encoding($result, 'UTF-16BE', 'UTF-8')) / 2;
+            if ($units > ($ascii ? 1530 : 670)) {
+                throw ValidationException::withMessages(['body' => 'Shorten this message before sending. Your text and attachments are still in the draft.']);
+            }
+        }
+        return $result;
+    }
     public function bind(\Illuminate\Support\Collection $files, string $kind, string $id): void
     {
         foreach ($files as $file) { $file->update(['message_kind' => $kind, 'message_id' => $id]); }

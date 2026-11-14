@@ -94,7 +94,7 @@ class SharedMmsTest extends TestCase
         $response = $this->postJson('/api/messaging/media/send', $body)->assertCreated()->assertJsonPath('success', true);
         $this->postJson('/api/messaging/media/send', $body)->assertCreated();
         $this->assertCount(1, $this->sent);
-        $this->assertStringContainsString('/api/messaging/media/shared/', $this->sent[0]['text']);
+        $this->assertStringContainsString('/api/messaging/media/bundle/', $this->sent[0]['text']);
         $this->assertSame($response->json('id'), $file->fresh()->message_id);
         $groupID = $response->json('result.data.id');
         $this->postJson('/api/messaging/media/content', ['kind' => 'shared', 'ids' => [$response->json('id')]])->assertOk()

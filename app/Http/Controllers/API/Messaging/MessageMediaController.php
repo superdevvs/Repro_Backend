@@ -97,7 +97,11 @@ class MessageMediaController extends Controller
     }
     public function shared(Request $r, MessageMedia $mediaFile)
     {
-        $file = $mediaFile;
+        $this->authorizeShare($r, $mediaFile);
+        return $this->media->download($mediaFile);
+    }
+    private function authorizeShare(Request $r, MessageMedia $file): void
+    {
         abort_unless($r->hasValidSignature() && $file->message_id && $file->share_expires_at?->isFuture(), 404);
         $exists = match ($file->message_kind) {
             'sms', 'email' => \App\Models\Message::whereKey($file->message_id)->where('channel', strtoupper($file->message_kind))->exists(),
@@ -105,7 +109,20 @@ class MessageMediaController extends Controller
             default => false,
         };
         abort_unless($exists, 404);
-        return $this->media->download($file);
+    }
+    public function bundle(Request $r, MessageMedia $mediaFile)
+    {
+        $this->authorizeShare($r, $mediaFile);
+        $files = MessageMedia::where('message_kind', $mediaFile->message_kind)->where('message_id', $mediaFile->message_id)
+            ->where('status', 'ready')->where('share_expires_at', '>', now())->orderBy('created_at')->orderBy('id')->limit(10)->get();
+        abort_if($files->isEmpty(), 404);
+        return response()->view('messaging.attachments', ['files' => $files->map(fn ($file) => [
+            'name' => $file->name, 'size' => $file->size, 'url' => $this->media->shareURL($file),
+        ]), 'expires' => $mediaFile->share_expires_at])->withHeaders([
+            'Cache-Control' => 'private, no-store', 'X-Content-Type-Options' => 'nosniff',
+            'Referrer-Policy' => 'no-referrer', 'X-Robots-Tag' => 'noindex, nofollow, noarchive',
+            'Content-Security-Policy' => "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
+        ]);
     }
     public function legacy(Request $r, string $kind, string $id, int $index)
     {

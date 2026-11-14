@@ -132,7 +132,7 @@ class MessageMediaTest extends TestCase
         $this->smsProvider(); $file = $this->ready();
         $draft = ['request_key' => (string) Str::uuid(), 'channel' => 'sms', 'recipient' => '+12025550122', 'attachment_ids' => [$file->id]];
         $sent = $this->postJson('/api/messaging/media/send', $draft)->assertOk()->assertJsonPath('success', true);
-        $this->assertStringContainsString('/api/messaging/media/shared/', Message::sole()->body_text);
+        $this->assertStringContainsString('/api/messaging/media/bundle/', Message::sole()->body_text);
         $this->assertSame((string) Message::sole()->id, $file->fresh()->message_id);
         $this->postJson('/api/messaging/media/uploads', ['id' => $file->id, 'name' => $file->name, 'size' => $file->size, 'channel' => 'sms'])
             ->assertOk()->assertJsonPath('status', 'ready')->assertJsonPath('received_bytes', 4);
@@ -144,6 +144,42 @@ class MessageMediaTest extends TestCase
         $this->get('/api/messaging/media/shared/'.$file->id)->assertNotFound();
         Message::sole()->delete();
         $this->get(app(MessageMediaService::class)->shareURL($file->fresh()))->assertNotFound();
+    }
+    public function test_ten_attachments_use_one_bounded_signed_link_without_exposing_other_messages(): void
+    {
+        URL::forceRootUrl('https://reprodashboard.com');
+        URL::forceScheme('https');
+        $this->smsProvider();
+        $files = collect(range(1, 10))->map(fn () => $this->ready());
+        $name = '<img src=x onerror=alert(1)>.jpg';
+        $files->first()->update(['name' => $name]);
+        $unrelated = $this->ready();
+        $unrelated->update(['name' => 'Unrelated private file.pdf']);
+        $this->postJson('/api/messaging/media/send', ['request_key' => (string) Str::uuid(), 'channel' => 'sms',
+            'recipient' => '+12025550122', 'body' => str_repeat('A', 1200), 'attachment_ids' => $files->pluck('id')->all()])
+            ->assertOk()->assertJsonPath('success', true);
+        $text = Message::sole()->body_text;
+        $this->assertSame(1, substr_count($text, 'https://'));
+        $this->assertLessThanOrEqual(1530, strlen($text));
+        $link = app(MessageMediaService::class)->bundleURL($files->first()->fresh());
+        $this->get($link)->assertOk()->assertSee('10 files')->assertSee(e($name), false)->assertDontSee($name, false)
+            ->assertDontSee('Unrelated private file.pdf')->assertHeader('Referrer-Policy', 'no-referrer');
+        $this->get($link.'&changed=1')->assertNotFound();
+        $expired = URL::temporarySignedRoute('message-media.bundle', now()->subMinute(), ['mediaFile' => $files->first()->id]);
+        $this->get($expired)->assertNotFound();
+        Message::sole()->delete();
+        $this->get($link)->assertNotFound();
+    }
+    public function test_oversize_unicode_sms_is_rejected_before_reserving_or_sending_attachments(): void
+    {
+        $file = $this->ready();
+        $this->postJson('/api/messaging/media/send', ['request_key' => (string) Str::uuid(), 'channel' => 'sms',
+            'recipient' => '+12025550122', 'body' => str_repeat('😀', 400), 'attachment_ids' => [$file->id]])
+            ->assertUnprocessable()->assertJsonValidationErrors('body');
+        $this->assertDatabaseCount('message_send_receipts', 0);
+        $this->assertDatabaseCount('messages', 0);
+        $this->assertNull($file->fresh()->send_request_key);
+        $this->assertSame('ready', $file->fresh()->status);
     }
     public function test_support_attachment_and_reactions_are_visible_only_to_ticket_participants(): void
     {
