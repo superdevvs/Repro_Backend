@@ -35,6 +35,12 @@ class SectionGeometryTest(unittest.TestCase):
 
     def test_extract_replay_is_identical_and_cached_cut_drift_is_rejected(self):
         request = self.extract_request(); report = adapter.run(request)
+        if os.name == 'posix':
+            output = Path(request['outputDirectory'])
+            self.assertEqual(output.stat().st_mode & 0o7777, 0o2770)
+            for path in output.rglob('*'):
+                self.assertEqual(path.stat().st_mode & 0o7777, 0o2770 if path.is_dir() else 0o660)
+                self.assertEqual(path.stat().st_gid, output.stat().st_gid)
         self.assertEqual(report, adapter.run(request))
         manifest = json.loads(Path(report['artifacts']['geometry']['path']).read_text())
         view = manifest['views'][0]

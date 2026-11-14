@@ -161,6 +161,10 @@ def run(request):
         return verify_result(json.loads((out / 'report.json').read_text()), request_hash, out, root)
     out.parent.mkdir(parents=True, exist_ok=True)
     temporary = Path(tempfile.mkdtemp(prefix='.section-', dir=out.parent))
+    if os.name == 'posix':
+        # The parent is the Studio setgid directory shared by worker and PHP-FPM.
+        # mkdtemp otherwise leaves a0700 result that HTTP cannot inspect after rename.
+        os.chmod(temporary, 0o2770)
     try:
         report = {'status': 'completed', 'version': VERSION, 'operation': operation, 'requestSha256': request_hash,
                   'adapterSha256': geometry.sha256(__file__), 'geometryCodeSha256': geometry.sha256(geometry.__file__),
@@ -212,6 +216,11 @@ def run(request):
             if geometry.sha256(candidate) != request['candidate']['sha256'] or geometry.sha256(mask) != request['mask']['sha256']:
                 raise ValueError('Input changed during processing')
         geometry.write_json(temporary / 'report.json', report)
+        if os.name == 'posix':
+            for path in temporary.rglob('*'):
+                if path.is_symlink():
+                    raise ValueError('Unexpected symlink in generated artifacts')
+                os.chmod(path, 0o2770 if path.is_dir() else 0o660)
         os.rename(temporary, out)
         return verify_result(report, request_hash, out, root)
     finally:
