@@ -42,19 +42,30 @@ class LabAnalyses
         abort_if(mb_strlen($this->contextInstructions($settings)) > 4000, 422, 'Combined analysis instructions and object lists are too long.');
         $hash = hash('sha256', json_encode([$case->id, $case->source_sha256, $case->projection, $settings], JSON_THROW_ON_ERROR));
         if ($workflowInvocation !== null) $hash = LabAnalysisRecipes::hash([$hash, $workflowInvocation]);
-        [$record, $created] = LockedWrite::run(fn () => DB::transaction(function () use ($project, $case, $input, $hash, $settings, $workflowInvocation) {
+        // Keep normalized intent identity across recipe upgrades; validate bytes outside the write lock.
+        $prior = IguideLabAnalysis::where('project_id', $project->id)->where('request_id', $input['requestId'])->exists();
+        $sourceContext = $prior ? null : app(LabAnalysisSourceContext::class)->capture($case);
+        [$record, $created] = LockedWrite::run(fn () => DB::transaction(function () use ($project, $case, $input, $hash, $settings, $sourceContext, $workflowInvocation) {
             IguideLabProject::whereKey($project->id)->update(['updated_at' => now()]); abort_unless($project->fresh()->active(), 401);
             $saved = IguideLabAnalysis::where('project_id', $project->id)->where('request_id', $input['requestId'])->first();
             if ($saved) { abort_unless(hash_equals($saved->request_hash, $hash), 409, 'This analysis request already has different source or settings.'); return [$saved, false]; }
             abort_unless($this->ready(), 503, 'Scene analysis is unavailable.');
             abort_if(IguideLabAnalysis::where('project_id', $project->id)->count() >= 120 || IguideLabAnalysis::where('created_at', '>=', now()->subDay())->count() >= 120, 429, 'The analysis safety ceiling has been reached.');
             if ($workflowInvocation !== null) app(LabWorkflowInvocation::class)->verify($workflowInvocation, $project->id, $input['requestId'], 'analysis', false);
-            $snapshot = $workflowInvocation === null ? app(LabAnalysisRecipes::class)->active() : app(LabWorkflowInvocation::class)->policy($workflowInvocation)['analysisRecipe'];
+            if ($workflowInvocation !== null) {
+                $policy = app(LabWorkflowInvocation::class)->policy($workflowInvocation);
+                $snapshot = $sourceContext ? ($policy['sectionAnalysisRecipe'] ?? null) : $policy['analysisRecipe'];
+                abort_unless(is_array($snapshot), 422, 'The workflow did not reserve a section-context recipe.');
+            } else $snapshot = $sourceContext ? app(LabAnalysisRecipes::class)->snapshot(LabAnalysisRecipes::SECTION_CONTEXT) : app(LabAnalysisRecipes::class)->active();
             app(LabAnalysisRecipes::class)->validate($snapshot);
-            abort_unless($snapshot['recipe']['protocolVersion'] === $settings['protocolVersion'] && $snapshot['recipe']['viewRecipe'] === $settings['viewRecipe'], 503, 'This analysis protocol is unavailable.');
+            $executionSettings = $settings;
+            if ($sourceContext) $executionSettings['viewRecipe'] = LabAnalysisSourceContext::VIEW_RECIPE;
+            abort_unless($snapshot['recipe']['protocolVersion'] === $executionSettings['protocolVersion'] && $snapshot['recipe']['viewRecipe'] === $executionSettings['viewRecipe'], 503, 'This analysis protocol is unavailable.');
             return [IguideLabAnalysis::create(['project_id' => $project->id, 'case_id' => $case->id, 'request_id' => $input['requestId'], 'request_hash' => $hash,
-                'source_sha256' => $case->source_sha256, 'settings' => $settings, 'status' => 'queued',
-                'data' => array_merge(['originalSourceSha256' => $case->metadata['originalSha256'] ?? null, 'executionRecipe' => $snapshot, 'recipeCaptureMode' => 'reservation_snapshot'], $workflowInvocation === null ? [] : ['workflowInvocation' => $workflowInvocation])]), true];
+                'source_sha256' => $case->source_sha256, 'settings' => $executionSettings, 'status' => 'queued',
+                'data' => ['originalSourceSha256' => $sourceContext['binding']['nativeSourceSha256'] ?? $case->metadata['originalSha256'] ?? null,
+                    'executionRecipe' => $snapshot, 'recipeCaptureMode' => 'reservation_snapshot', ...($sourceContext ? ['sourceContext' => $sourceContext] : []),
+                    ...($workflowInvocation === null ? [] : ['workflowInvocation' => $workflowInvocation])]]), true];
         }), 'iguide-lab.analysis-reserve');
         if ($created) {
             try { ProcessIguideLabAnalysis::dispatch($record->id); }
@@ -81,11 +92,15 @@ class LabAnalyses
             $this->save($record, ['status' => 'preparing', 'started_at' => $record->started_at ?? now()]);
             $case = IguideLabCase::where('project_id', $record->project_id)->findOrFail($record->case_id);
             abort_unless(hash_equals($record->source_sha256, $case->source_sha256), 422, 'The source association changed.');
-            $prepared = app(LabAnalysisViews::class)->prepare($record, $case);
+            $hasContext = $recipe['compilerVersion'] === LabSectionAnalysisProtocol::VERSION;
+            abort_unless($hasContext === isset($record->data['sourceContext']), 422, 'The analysis context recipe association changed.');
+            $prepared = $hasContext ? app(LabSectionAnalysisViews::class)->prepare($record, $case, $record->data['sourceContext'])
+                : app(LabAnalysisViews::class)->prepare($record, $case);
             $data = array_merge($record->data ?? [], $prepared); $this->save($record, ['data' => $data]);
             $settings = $record->settings;
             $context = ['sourceSha256' => $record->source_sha256, 'projection' => $case->projection, 'preset' => $settings['preset'], 'style' => $settings['style'],
                 'viewIds' => array_column($data['views'], 'id'), 'instructions' => $this->contextInstructions($settings)];
+            if ($hasContext) $context['sourceContext'] = $data['sourceContextManifest'];
             $disk = Storage::disk(LabService::DISK); $images = [];
             foreach ($data['views'] as $view) {
                 $bytes = $disk->get($view['path']); abort_unless(hash_equals($view['sha256'], hash('sha256', $bytes)), 422, 'Analysis view fingerprint changed.');
@@ -101,7 +116,7 @@ class LabAnalyses
                 fn () => LockedWrite::run(fn () => IguideLabAnalysis::whereKey($record->id)->where('status', 'preparing')->update(['status' => 'submitting', 'updated_at' => now()]), 'iguide-lab.analysis-claim'));
             if (! $claimed) { $this->attention($record, 'A previous analysis submission is unconfirmed.'); return; }
             $record->refresh(); $response = app(LabAnalysisProvider::class)->analyze($record, $payload);
-            $parsed = LabScenePlanProtocol::parse($response, $context);
+            $parsed = $recipes->parse($snapshot, $response, $context);
             $proposal = $parsed['proposal']; $data = $record->data;
             $data['responseModel'] = is_string($response['model'] ?? null) ? $response['model'] : null;
             $this->save($record, ['status' => 'completed', 'proposal' => $proposal, 'proposal_sha256' => hash('sha256', json_encode($proposal, JSON_THROW_ON_ERROR)),
@@ -121,9 +136,15 @@ class LabAnalyses
             && $record->settings['preset'] === $preset && $record->settings['style'] === $style
             && $record->settings['options'] === $this->editSettings($options), 422, 'Source or edit settings changed; analyze again or detach this proposal.');
         abort_unless($prompt !== '', 422, 'Apply a proposed draft explicitly before generating.');
+        $contextProvenance = [];
+        if (isset($record->data['sourceContext'])) {
+            app(LabAnalysisSourceContext::class)->verify($case, $record->data['sourceContext']);
+            app(LabSectionAnalysisViews::class)->verifyStored($record);
+            $contextProvenance = ['sourceContextBindingSha256' => $record->data['sourceContext']['bindingSha256'], 'sourceContextManifestSha256' => $record->data['sourceContextManifestSha256']];
+        }
         return ['id' => $record->id, 'proposalSha256' => $record->proposal_sha256, 'sourceSha256' => $record->source_sha256,
             'preparedSourceSha256' => $record->data['preparedSourceSha256'], 'appliedDraftSha256' => hash('sha256', $prompt),
-            'editedFromProposal' => $prompt !== $record->proposal['generationPrompt'], 'automaticGeneration' => false];
+            'editedFromProposal' => $prompt !== $record->proposal['generationPrompt'], 'automaticGeneration' => false, ...$contextProvenance];
     }
 
     public function dto(IguideLabAnalysis $record): array
@@ -138,6 +159,8 @@ class LabAnalyses
             'settings' => $record->settings, 'protocolVersion' => $record->settings['protocolVersion'] ?? LabAnalysisRecipes::LEGACY_PROTOCOL,
             'requestedModelId' => $provenance ? $data['executionRecipe']['recipe']['model'] : ($record->provider_attempts[0]['requestedModelId'] ?? 'gpt-6-astra'),
             'instructionProvenance' => $provenance,
+            'sourceContext' => isset($data['sourceContext']) ? [...$data['sourceContext']['binding'], 'bindingSha256' => $data['sourceContext']['bindingSha256'],
+                'manifestSha256' => $data['sourceContextManifestSha256'] ?? null] : null,
             'responseModel' => $data['responseModel'] ?? null, 'providerRequestId' => $record->provider_request_id, 'providerAttempts' => $record->provider_attempts ?? [],
             'status' => $record->status, 'views' => $views, 'coordinateConvention' => $data['coordinateConvention'] ?? null,
             'proposal' => $record->proposal, 'proposalSha256' => $record->proposal_sha256, 'reviewStatus' => 'unreviewed',
