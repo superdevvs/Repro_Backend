@@ -97,7 +97,9 @@ class SectionHarmonizationTest(unittest.TestCase):
             self.mask[0, 2] = 1
             self.assert_rejected('edge_domain')
             self.mask[:] = 0
-            self.mask[500:757, 500:756] = 1
+            self.mask[500:1012, 500:756] = 1
+            self.mask[1012, 500] = 1
+            self.assertEqual(np.count_nonzero(self.mask), 131_073)
             self.assert_rejected('domain_limit')
             self.mask = np.zeros((1024, 1024), np.uint8)
             self.assert_rejected('invalid_input')
@@ -160,25 +162,36 @@ class SectionHarmonizationTest(unittest.TestCase):
             stats = self.assert_rejected('clipping_overshoot_limit')
             self.assertEqual(stats['maxOvershoot'], 65)
 
-    def test_compact_256_square_limit_has_bounded_factor_and_exact_offset_result(self):
+    def test_compact_512_by_256_limit_has_bounded_factor_and_exact_offset_result(self):
         self.mask[:] = 0
-        self.mask[700:956, 700:956] = 255
+        self.mask[700:1212, 700:956] = 255
         self.candidate[:] = [120, 85, 135]
         result, stats, _ = self.run_solver()
-        self.assertEqual(stats['editablePixels'], 65_536)
+        self.assertEqual(stats['editablePixels'], 131_072)
         self.assertEqual(stats['components4Connected'], 1)
         self.assertLess(stats['factorBytes'], h.MAX_FACTOR_STORAGE_BYTES)
         self.assertTrue(np.array_equal(result, self.source))
 
-    def test_65536_disconnected_pixels_do_not_allocate_dense_operator(self):
+    def test_near_square_exact_limit_has_bounded_factor_and_exact_offset_result(self):
         self.mask[:] = 0
-        self.mask[600:1112:2, 600:1112:2] = 127
+        self.mask[700:1062, 700:1062] = 255
+        self.mask[1062, 700:728] = 255
         self.candidate[:] = [120, 85, 135]
         result, stats, _ = self.run_solver()
-        self.assertEqual(stats['editablePixels'], 65_536)
-        self.assertEqual(stats['components4Connected'], 65_536)
-        self.assertEqual(stats['matrixNnz'], 65_536)
-        self.assertLess(stats['factorBytes'], 4_000_000)
+        self.assertEqual(stats['editablePixels'], 131_072)
+        self.assertEqual(stats['components4Connected'], 1)
+        self.assertLess(stats['factorBytes'], h.MAX_FACTOR_STORAGE_BYTES)
+        self.assertTrue(np.array_equal(result, self.source))
+
+    def test_131072_disconnected_pixels_do_not_allocate_dense_operator(self):
+        self.mask[:] = 0
+        self.mask[500:1524:2, 600:1112:2] = 127
+        self.candidate[:] = [120, 85, 135]
+        result, stats, _ = self.run_solver()
+        self.assertEqual(stats['editablePixels'], 131_072)
+        self.assertEqual(stats['components4Connected'], 131_072)
+        self.assertEqual(stats['matrixNnz'], 131_072)
+        self.assertLess(stats['factorBytes'], 5_000_000)
         self.assertTrue(np.array_equal(result, self.source))
 
 

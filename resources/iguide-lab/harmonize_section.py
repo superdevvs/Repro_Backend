@@ -20,7 +20,7 @@ from PIL import Image
 
 MODE = 'exact-domain-harmonic-v1'
 VERSION = 'exact-domain-harmonic/1'
-LIMITS = {'maxEditablePixels': 65536, 'maxClippedPixelFraction': 0.05, 'maxOvershoot': 64}
+LIMITS = {'maxEditablePixels': 131072, 'maxClippedPixelFraction': 0.05, 'maxOvershoot': 64}
 RUNTIME = {'pythonVersion': '3.12.3', 'numpyVersion': '2.5.4', 'pillowVersion': '13.0.0', 'scipyVersion': '1.18.1'}
 
 
@@ -76,7 +76,9 @@ def run(request, runtime_manifest):
         raise ValueError('Reserved runtime manifest changed')
     runtime_record = json.loads(runtime_path.read_text(encoding='utf-8'))
     if (runtime_record.get('schemaVersion') != 1 or runtime_record.get('validationStatus') != 'passed'
-            or any(runtime_record.get(key) != value for key, value in versions.items())):
+            or any(runtime_record.get(key) != value for key, value in versions.items())
+            or runtime_record.get('validatedSolverSha256') != recipe['solverSha256']
+            or runtime_record.get('validatedAdapterSha256') != recipe['adapterSha256']):
         raise ValueError('Runtime validation record changed')
     root = Path(request['privateRoot']).resolve(strict=True)
     source = checked(request['source'], root); candidate = checked(request['candidate'], root); mask = checked(request['mask'], root)

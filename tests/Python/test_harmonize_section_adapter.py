@@ -30,7 +30,9 @@ class HarmonizeSectionAdapterTest(unittest.TestCase):
                         'pillowVersion': PIL.__version__, 'scipyVersion': scipy.__version__}
         self.pin = mock.patch.object(adapter, 'RUNTIME', self.runtime); self.pin.start()
         self.runtime_path = self.base / 'trusted-runtime.json'
-        self.runtime_path.write_text(json.dumps({'schemaVersion': 1, 'validationStatus': 'passed', **self.runtime}))
+        self.runtime_path.write_text(json.dumps({'schemaVersion': 1, 'validationStatus': 'passed',
+            'validatedSolverSha256': adapter.sha(solver.__file__),
+            'validatedAdapterSha256': adapter.sha(SCRIPT), **self.runtime}))
         self.source = np.full((2048, 2048, 3), 100, np.uint8)
         self.raw = self.source.copy(); self.raw[900:925, 900:930] = [130, 140, 150]
         self.mask = np.zeros((2048, 2048), np.uint8); self.mask[900:925, 900:930] = 64
@@ -95,6 +97,18 @@ class HarmonizeSectionAdapterTest(unittest.TestCase):
             request = self.request(); request['recipe'][key] = '0' * 64
             with self.assertRaisesRegex(ValueError, 'Reserved local implementation changed'):
                 self.run_adapter(request)
+        self.assertFalse((self.root / 'harmonized').exists())
+
+    def test_runtime_record_must_validate_the_actual_solver_and_adapter_bytes(self):
+        original = json.loads(self.runtime_path.read_text())
+        with mock.patch.object(solver, 'harmonize') as solve:
+            for key in ['validatedSolverSha256', 'validatedAdapterSha256']:
+                record = copy.deepcopy(original); record[key] = '0' * 64
+                self.runtime_path.write_text(json.dumps(record))
+                request = self.request()  # Correct new manifest SHA cannot bless stale validated code.
+                with self.assertRaisesRegex(ValueError, 'Runtime validation record changed'):
+                    self.run_adapter(request)
+            solve.assert_not_called()
         self.assertFalse((self.root / 'harmonized').exists())
 
     def test_input_fingerprint_escape_and_output_collision_fail_before_solver(self):

@@ -32,7 +32,7 @@ class LabCompositions
         abort_unless(in_array($mode, ['none', LabHarmonization::MODE], true), 422);
         if ($mode !== 'none') {
             abort_unless($kind === 'section', 422, 'Local harmonization is available only for perspective sections.');
-            abort_if(($mask->statistics['editablePixels'] ?? PHP_INT_MAX) > LabHarmonization::LIMITS['maxEditablePixels'], 422, 'Local harmonization supports at most 65,536 editable pixels. Keep this mask and use ordinary composition or a smaller reviewed section.');
+            abort_if(($mask->statistics['editablePixels'] ?? PHP_INT_MAX) > LabHarmonization::LIMITS['maxEditablePixels'], 422, 'Local harmonization supports at most 131,072 editable pixels. Keep this mask and use ordinary composition or a smaller reviewed section.');
             // Replays keep their captured implementation identity across future upgrades.
             $prior = IguideLabComposition::where('project_id', $project->id)->where('request_id', $input['requestId'])->first();
             $captured = $prior?->data['harmonizationRecipe'] ?? null;

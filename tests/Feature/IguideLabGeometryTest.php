@@ -191,7 +191,7 @@ class IguideLabGeometryTest extends TestCase
             $this->withToken($this->token)->postJson($url, array_replace($input, $invalid))->assertUnprocessable();
         $this->assertSame(0, IguideLabComposition::count()); Queue::assertNotPushed(ProcessIguideLabComposition::class);
         $this->mockHarmonization();
-        $mask->update(['statistics' => ['editablePixels' => 65537]]);
+        $mask->update(['statistics' => ['editablePixels' => 131073]]);
         $this->withToken($this->token)->postJson($url, $input)->assertUnprocessable();
         $this->assertSame(0, IguideLabComposition::count()); Queue::assertNotPushed(ProcessIguideLabComposition::class);
         $mask->update(['statistics' => ['editablePixels' => 10000]]);

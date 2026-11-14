@@ -10,7 +10,7 @@ class LabHarmonization
 {
     public const MODE = 'exact-domain-harmonic-v1';
     public const VERSION = 'exact-domain-harmonic/1';
-    public const LIMITS = ['maxEditablePixels' => 65536, 'maxClippedPixelFraction' => 0.05, 'maxOvershoot' => 64];
+    public const LIMITS = ['maxEditablePixels' => 131072, 'maxClippedPixelFraction' => 0.05, 'maxOvershoot' => 64];
     private const RUNTIME = ['pythonVersion' => '3.12.3', 'numpyVersion' => '2.5.4', 'pillowVersion' => '13.0.0', 'scipyVersion' => '1.18.1'];
 
     public function ready(): bool
@@ -65,6 +65,10 @@ class LabHarmonization
         $bytes = file_get_contents($path); $manifest = json_decode($bytes, true, flags: JSON_THROW_ON_ERROR);
         if (($manifest['schemaVersion'] ?? null) !== 1 || ($manifest['validationStatus'] ?? null) !== 'passed' || ($manifest['pythonPath'] ?? null) !== $python) throw new RuntimeException('Pinned local harmonization runtime was not validated.');
         foreach (self::RUNTIME as $key => $version) if (($manifest[$key] ?? null) !== $version) throw new RuntimeException('Pinned local harmonization runtime version changed.');
+        foreach (['validatedSolverSha256' => 'section_harmonization.py', 'validatedAdapterSha256' => 'harmonize_section.py'] as $key => $filename) {
+            $source = resource_path('iguide-lab/'.$filename);
+            if (! is_file($source) || ($manifest[$key] ?? null) !== hash_file('sha256', $source)) throw new RuntimeException('Local harmonization code has not been validated with this runtime.');
+        }
         return ['sha256' => hash('sha256', $bytes), 'manifest' => $manifest];
     }
 }

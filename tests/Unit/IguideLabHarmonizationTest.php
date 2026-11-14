@@ -18,7 +18,9 @@ class IguideLabHarmonizationTest extends TestCase
         $this->manifest = tempnam(sys_get_temp_dir(), 'harmonic-runtime-');
         file_put_contents($this->python, "#!/bin/sh\nexit 1\n"); chmod($this->python, 0700);
         file_put_contents($this->manifest, json_encode(['schemaVersion' => 1, 'validationStatus' => 'passed', 'pythonPath' => $this->python,
-            'pythonVersion' => '3.12.3', 'numpyVersion' => '2.5.4', 'pillowVersion' => '13.0.0', 'scipyVersion' => '1.18.1']));
+            'pythonVersion' => '3.12.3', 'numpyVersion' => '2.5.4', 'pillowVersion' => '13.0.0', 'scipyVersion' => '1.18.1',
+            'validatedSolverSha256' => hash_file('sha256', resource_path('iguide-lab/section_harmonization.py')),
+            'validatedAdapterSha256' => hash_file('sha256', resource_path('iguide-lab/harmonize_section.py'))]));
         config(['iguide-lab.harmonization_python_path' => $this->python, 'iguide-lab.harmonization_runtime_manifest' => $this->manifest]);
     }
 
@@ -40,7 +42,8 @@ class IguideLabHarmonizationTest extends TestCase
     public function test_unvalidated_or_wrong_runtime_is_not_ready(): void
     {
         $manifest = json_decode(file_get_contents($this->manifest), true);
-        foreach ([['validationStatus' => 'pending'], ['scipyVersion' => 'other'], ['pythonPath' => '/another/python']] as $changes) {
+        foreach ([['validationStatus' => 'pending'], ['scipyVersion' => 'other'], ['pythonPath' => '/another/python'],
+            ['validatedSolverSha256' => str_repeat('f', 64)], ['validatedAdapterSha256' => str_repeat('f', 64)]] as $changes) {
             file_put_contents($this->manifest, json_encode(array_replace($manifest, $changes)));
             $this->assertFalse(app(LabHarmonization::class)->ready());
         }
