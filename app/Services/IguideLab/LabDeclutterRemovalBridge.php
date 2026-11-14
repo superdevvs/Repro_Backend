@@ -9,7 +9,7 @@ class LabDeclutterRemovalBridge
     public function snapshot(): array
     {
         $manifest = (string) config('iguide-lab.declutter_removal_runtime_manifest');
-        return ['version' => 'declutter-removal-filesystem/1', 'adapterSha256' => hash_file('sha256', __FILE__),
+        $snapshot = ['version' => 'declutter-removal-filesystem/1', 'adapterSha256' => hash_file('sha256', __FILE__),
             'protocolSha256' => hash_file('sha256', resource_path('iguide-lab/declutter_removal_protocol.py')),
             'sharedProtocolSha256' => hash_file('sha256', resource_path('iguide-lab/staging_assessment_protocol.py')),
             'bridgeSha256' => hash_file('sha256', resource_path('iguide-lab/declutter_removal_bridge.py')),
@@ -18,6 +18,12 @@ class LabDeclutterRemovalBridge
             'viewAdapterSha256' => hash_file('sha256', resource_path('iguide-lab/analysis_views.py')),
             'geometrySha256' => hash_file('sha256', resource_path('iguide-lab/pano_geometry.py')),
             'runtimeManifestSha256' => is_file($manifest) ? hash_file('sha256', $manifest) : null];
+        foreach(['policy'=>LabDeclutterRemovalPolicy::class,'plans'=>LabDeclutterRemovalPlans::class,'provider'=>LabDeclutterRemovalProvider::class,
+            'workflow'=>LabDeclutterWorkflow::class,'artifacts'=>LabDeclutterArtifacts::class,'imageDraft'=>LabDeclutterImageDraft::class,
+            'segmentationAuthority'=>LabDeclutterSegmentationAuthority::class,'steps'=>LabWorkflowSteps::class,
+            'invocation'=>LabWorkflowInvocation::class,'evaluation'=>LabWorkflowEvaluations::class] as $key=>$class)
+            $snapshot[$key.'Sha256']=hash_file('sha256',(new \ReflectionClass($class))->getFileName());
+        return $snapshot;
     }
     public function validate(array $reserved): void
     {
@@ -33,7 +39,7 @@ class LabDeclutterRemovalBridge
             abort_unless(($runtime['validationStatus'] ?? null) === 'passed' && ($runtime['pythonVersion'] ?? null) === '3.12.3'
                 && ($runtime['pillowVersion'] ?? null) === '13.0.0' && ($runtime['pythonPath'] ?? null) === config('iguide-lab.pipeline_python_path')
                 && is_executable($runtime['pythonPath']), 503);
-            foreach (['adapterSha256', 'protocolSha256', 'sharedProtocolSha256', 'bridgeSha256', 'contextSha256', 'preparerSha256', 'viewAdapterSha256', 'geometrySha256'] as $key) {
+            foreach (array_keys(array_diff_key($snapshot,['version'=>true,'runtimeManifestSha256'=>true])) as $key) {
                 abort_unless(($runtime['validated'.ucfirst($key)] ?? null) === $snapshot[$key], 503);
             }
             return true;

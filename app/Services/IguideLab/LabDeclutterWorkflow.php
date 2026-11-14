@@ -6,13 +6,15 @@ use App\Models\{IguideLabAnalysis,IguideLabCase,IguideLabComposite,IguideLabProj
 class LabDeclutterWorkflow
 {
     public const INTENT = 'Remove exactly one compact, clearly decorative, opaque tabletop object and only its attributable short local shadow. Preserve all other objects and every permanent finish. In targets use exactly target_object, action remove, objectCount 1. Select one complete perspective section with at least 10% margin around the object and its local shadow. The surrounding receiver must be simple continuous matte material. Transparent, reflective or patterned support, possible reflections, shared or long shadows, overlapping objects, thin foliage or open holes, uncertain foreground ordering, missing context, and hidden optical dependencies require manual_review. Do not infer unseen detail as ground truth. A proposed framing is not measured clearance. If no such object is clearly supported, choose manual_review.';
-    public function snapshot(): array
+    public const MATERIALS_INTENT = 'Remove exactly one compact opaque portable countertop or tabletop item and only its attributable short local shadow. The selected item may be decorative or everyday clutter, including a container, utensil holder or freestanding knife block. Preserve all non-selected items, installed appliances, plumbing, sockets, cabinetry and other fixed features. In targets use exactly target_object, action remove, objectCount 1. Select one complete perspective section with at least 10% margin around the item and its local shadow. The visible receiver may be simple continuous material or stochastic stone/speckle, with unobstructed nearby material on at least two cardinal sides. No structural joint, counter edge, regular grid, major directional vein or coherent target reflection may cross the replacement. Broad unrelated illumination is not a target reflection and must continue. Transparency, foliage, holes, overlap, shared or long shadows, uncertain foreground ordering, missing optical context and possible target reflections require manual_review. Hidden receiver pixels are an unobserved generated estimate, not recoverable ground truth. This is one-item removal, not whole-room decluttering. If this bounded route is unsupported, choose manual_review.';
+    public static function intent(bool $materials = false): string { return $materials?self::MATERIALS_INTENT:self::INTENT; }
+    public function snapshot(bool $materials = false): array
     {
-        return ['version'=>LabDeclutterRemovalPolicy::POLICY,'driverSha256'=>hash_file('sha256',__FILE__),
+        return ['version'=>$materials?LabDeclutterRemovalPolicy::MATERIALS_POLICY:LabDeclutterRemovalPolicy::POLICY,'driverSha256'=>hash_file('sha256',__FILE__),
             'artifactAdapterSha256'=>hash_file('sha256',(new \ReflectionClass(LabDeclutterArtifacts::class))->getFileName()),
             'imageAdapterSha256'=>hash_file('sha256',(new \ReflectionClass(LabDeclutterImageDraft::class))->getFileName()),
             'authoritySha256'=>hash_file('sha256',(new \ReflectionClass(LabDeclutterSegmentationAuthority::class))->getFileName()),
-            'intentSha256'=>hash('sha256',self::INTENT),'support'=>app(LabDeclutterSupport::class)->snapshot(),
+            'intentSha256'=>hash('sha256',self::intent($materials)),'support'=>app(LabDeclutterSupport::class)->snapshot(),
             'removalPlan'=>app(LabDeclutterRemovalBridge::class)->snapshot()];
     }
     public function ready(): bool
@@ -24,12 +26,16 @@ class LabDeclutterWorkflow
     }
     public function validateSnapshot(array $snapshot): void
     {
-        abort_unless(LabMachineSegmentationPlan::canonicalHash($snapshot)===LabMachineSegmentationPlan::canonicalHash($this->snapshot()),422,'The reserved removal implementation changed.');
+        $materials=($snapshot['version']??null)===LabDeclutterRemovalPolicy::MATERIALS_POLICY;
+        abort_unless(LabMachineSegmentationPlan::canonicalHash($snapshot)===LabMachineSegmentationPlan::canonicalHash($this->snapshot($materials)),422,'The reserved removal implementation changed.');
     }
     public function advance(IguideLabWorkflow $workflow,IguideLabWorkflowItem $item,IguideLabProject $project): void
     {
         $owner=app(LabWorkflows::class);$steps=app(LabWorkflowSteps::class);$data=$item->data;
         abort_unless(config('iguide-lab.declutter_workflow_enabled',false)===true&&LabDeclutterRemovalPolicy::enabled($workflow->policy,$item->preset),503,'Automatic removal is disabled.');
+        $materials=LabDeclutterRemovalPolicy::materials($workflow->policy);
+        abort_unless(!$materials||config('iguide-lab.declutter_materials_enabled',false)===true,503,'Material-aware removal is disabled.');
+        abort_unless(($workflow->policy['declutterWorkflow']['version']??null)===($materials?LabDeclutterRemovalPolicy::MATERIALS_POLICY:LabDeclutterRemovalPolicy::POLICY),422,'Removal policy and recipe versions differ.');
         $this->validateSnapshot($workflow->policy['declutterWorkflow']);abort_unless($this->ready(),503);
         app(LabAnalysisRecipes::class)->validate($workflow->policy['analysisRecipe']);
         abort_unless($workflow->policy['modelId']==='gpt-image-2.6-sunburst'&&$workflow->policy['quality']==='high'&&$workflow->policy['complexity']==='low'
@@ -38,7 +44,7 @@ class LabDeclutterWorkflow
         if($item->instructions!==''||$item->style!==null){$owner->finish($item,'needs_review','unsupported_removal_scope','The initial automatic removal recipe does not accept custom scope or style.',$data);return;}
         app(LabWorkflowArtifacts::class)->preflight($item,$workflow->policy['artifacts']);
         $native=app(LabWorkflowSources::class)->verify($project->id,$item->source);
-        $input=['caseId'=>$native->id,'preset'=>'declutter','style'=>null,'instructions'=>self::INTENT,'options'=>LabAnalyses::EDIT_DEFAULTS];
+        $input=['caseId'=>$native->id,'preset'=>'declutter','style'=>null,'instructions'=>self::intent($materials),'options'=>LabAnalyses::EDIT_DEFAULTS];
         $sourceStep=$steps->reserve($item,'declutter-source','analysis',$input);
         $source=IguideLabAnalysis::where('project_id',$project->id)->where('request_id',$sourceStep->request_id)->first();
         if(!$source)$source=app(LabAnalyses::class)->start($project,$input+['requestId'=>$sourceStep->request_id],$steps->invocation($sourceStep));

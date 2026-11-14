@@ -58,6 +58,13 @@ def derive(masks,proposal):
         if b is None:reasons.append('PROTECTED_FEATURE_UNLOCATED');continue
         x1,y1=int(b['xMin']*2048),int(b['yMin']*2048);x2,y2=int(np.ceil(b['xMax']*2048)),int(np.ceil(b['yMax']*2048))
         if np.any(expanded[y1:y2,x1:x2]):reasons.append('PROTECTED_FEATURE_OVERLAP')
+    if 'samples' in proposal.get('receiver',{}):
+        reasons.extend(protocol.receiver_sample_reasons(proposal))
+        for sample in proposal['receiver']['samples']:
+            if not protocol.valid_sample_box(sample):continue
+            x1,y1=int(sample['xMin']*2048),int(sample['yMin']*2048)
+            x2,y2=int(np.ceil(sample['xMax']*2048)),int(np.ceil(sample['yMax']*2048))
+            if np.any(expanded[y1:y2,x1:x2]):reasons.append('RECEIVER_SAMPLE_INTERSECTS_ACTUAL_SUPPORT')
     alpha=np.rint(np.minimum(ndimage.distance_transform_edt(expanded)/LIMITS['featherPixels'],1)*255).astype(np.uint8)
     if np.any(alpha[union]!=255):reasons.append('ORIGINAL_TARGET_NOT_FULLY_REPLACED')
     return alpha,sorted(set(reasons)),{'objectPixels':count,'shadowPixels':int(masks.get('target_local_shadow',np.zeros_like(obj)).sum()),

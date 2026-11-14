@@ -11,6 +11,11 @@ class LabDeclutterArtifacts extends LabWorkflowArtifacts
         'Inspect the removed silhouette, shadow boundary and entire receiver for object remnants, ghost edges, invented texture, tonal seams or damage to nearby protected detail. The hidden surface is an unobserved generated estimate, never recovered ground truth.',
         'Inspect all original parent directions, poles, wrap and edit boundary for unresolved reflection, occlusion or shadow dependencies. Machine masks and source-plan claims are not proof that a dependency is absent.',
     ];
+    public const MATERIALS_REVIEW_CONSTRAINTS=[
+        'Remove exactly one source-selected opaque portable countertop or tabletop item, decorative or functional, and only its attributable short local shadow. Preserve all other objects and fixed features. This is not full-room decluttering.',
+        'Inspect the entire replacement for target/shadow remnants, ghost outlines, pasted or repeated stone texture, local contrast/noise and scale mismatch, tonal seams, disrupted broad illumination, and damage to counter edges, joints, regular patterns or directional veins. The hidden receiver is a plausible generated estimate, never observed ground truth.',
+        'Inspect original and candidate context for coherent target reflections, uncertain occlusion or attributable shadows. Nearby receiver samples and machine masks are supporting evidence, not proof of hidden geometry or optical correctness. Unresolved dependencies require review.',
+    ];
     public function runHash(IguideLabRun $run): string
     {
         abort_unless($run->status==='completed'&&$run->output_path==='iguide-lab/'.$run->project_id.'/runs/'.$run->id.'.png'
@@ -58,7 +63,9 @@ class LabDeclutterArtifacts extends LabWorkflowArtifacts
             'projection'=>'equirectangular','preset'=>'declutter','style'=>null,'resolutionStrategy'=>$nativeCanvas?'native_canvas':'preview_only','compositionMode'=>'perspective_sections',
             'source'=>['caseId'=>$case->id,'sourceSha256'=>$case->source_sha256,'originalSha256'=>$case->source_sha256,'originalWidth'=>$case->width,'originalHeight'=>$case->height],
             'preview'=>['sha256'=>$preview['sha256'],'width'=>2048,'height'=>1024],'native'=>$nativeCanvas?['sha256'=>$native['sha256'],'width'=>$case->width,'height'=>$case->height]:null,
-            'generatedDetail'=>['width'=>2048,'height'=>2048,'description'=>'One generated square section supplies estimated hidden matte receiver detail through source-only machine support after exact-domain boundary correction. Native canvas is not native generated detail.'],
+            'generatedDetail'=>['width'=>2048,'height'=>2048,'description'=>($plan->result['schemaVersion']===LabDeclutterRemovalPolicy::MATERIALS_VERSION
+                ?'One generated square section estimates hidden continuous receiver material, including stochastic stone, through source-only machine support and exact-domain boundary correction. Native canvas is not native generated detail.'
+                :'One generated square section supplies estimated hidden matte receiver detail through source-only machine support after exact-domain boundary correction. Native canvas is not native generated detail.')],
             'recipeSha256'=>LabAnalysisRecipes::hash($step->input),'geometryManifestSha256'=>$geometry['sha256'],'scenePlanSha256'=>$sourcePlan->proposal_sha256,
             'qaManifestSha256'=>hash_file('sha256',$disk->path($out.'/report.json')),
             'children'=>[['runId'=>$run->id,'requestId'=>$run->request_id,'outputSha256'=>$run->output_sha256,'projection'=>'rectilinear','editScope'=>'masked','maskSha256'=>$mask['sha256'],'view'=>$view]],
@@ -104,16 +111,20 @@ class LabDeclutterArtifacts extends LabWorkflowArtifacts
     {
         $plan=IguideLabDeclutterRemovalPlan::where('project_id',$item->project_id)->findOrFail($composite->manifest['lineage']['removalPlanId']);
         app(LabDeclutterRemovalPlans::class)->verified($plan);
-        return $this->removalReviewContext($analysis->proposal,$plan->result['proposal'],$qa);
+        return $this->removalReviewContext($analysis->proposal,$plan->result['proposal'],$qa,$plan->result['schemaVersion']===LabDeclutterRemovalPolicy::MATERIALS_VERSION);
     }
-    public function removalReviewContext(array $source,array $plan,array $qa): array
+    public function removalReviewContext(array $source,array $plan,array $qa,bool $materials=false): array
     {
         $unique=fn(array $a)=>array_values(array_unique($a));
+        $samples=$materials?array_map(fn($b)=>[(int)floor($b['xMin']*2048),(int)floor($b['yMin']*2048),(int)ceil($b['xMax']*2048),(int)ceil($b['yMax']*2048)],$plan['receiver']['samples']):[];
         $result=['protectedFeatures'=>$unique([...array_column($source['protectedFeatures'],'description'),...array_map(fn($v)=>$v['id'].': '.$v['notes'],$plan['protectedFeatures'])]),
             'sourceCaveats'=>$unique([...($source['uncertainties']??[]),...($source['sourceArtifacts']??[]),...$plan['uncertainties'],
                 'The receiver behind the removed object is unobserved. Generated continuation is an estimate, not source restoration or ground truth.']),
             'opticalDependencies'=>[],
-            'reviewRequirements'=>$unique([...self::REVIEW_CONSTRAINTS,'Selected target: '.$plan['target']['description'].'. Source shadow finding: '.$plan['shadow']['status'].'.',...$this->evaluationReviewRequirements($source,$qa)])];
+            'reviewRequirements'=>$unique([...($materials?self::MATERIALS_REVIEW_CONSTRAINTS:self::REVIEW_CONSTRAINTS),
+                'Selected target: '.$plan['target']['description'].'. Source shadow finding: '.$plan['shadow']['status'].'.'
+                    .($materials?' Receiver: '.$plan['receiver']['material'].'; source sample boxes in the 2048 cut [x1,y1,x2,y2]: '.json_encode($samples,JSON_THROW_ON_ERROR).'. No hidden-surface verification.':''),
+                ...$this->evaluationReviewRequirements($source,$qa)])];
         foreach(['protectedFeatures'=>20,'sourceCaveats'=>13,'reviewRequirements'=>12] as $key=>$limit){
             abort_unless(count($result[$key])<=$limit,422,'Complete removal constraints exceed bounded evaluation.');
             foreach($result[$key] as $text)abort_unless(is_string($text)&&mb_strlen($text)<=600,422,'A removal constraint exceeds bounded evaluation.');

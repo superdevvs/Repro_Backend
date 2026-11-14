@@ -87,6 +87,22 @@ class IguideLabDeclutterRemovalContextTest extends TestCase
         try{$this->capture();$this->fail('Changed machine source authority accepted.');}
         catch(HttpException $e){$this->assertContains($e->getStatusCode(),[404,422]);}
     }
+    public function test_material_context_uses_reserved_version_and_requires_its_exact_source_intent(): void
+    {
+        config(['iguide-lab.declutter_materials_enabled'=>true]);
+        $this->assertSame(LabDeclutterRemovalPolicy::VERSION,$this->capture()['context']['schemaVersion']);
+        $workflow=\App\Models\IguideLabWorkflow::findOrFail($this->item->workflow_id);$policy=$workflow->policy;
+        $policy['declutterRemoval']=LabDeclutterRemovalPolicy::snapshot(true);$workflow->update(['policy'=>$policy]);
+        $this->rejected();
+        $step=\App\Models\IguideLabWorkflowStep::where('child_id',$this->analysis->id)->sole();$input=$step->input;
+        $input['instructions']=\App\Services\IguideLab\LabDeclutterWorkflow::MATERIALS_INTENT;
+        $step->update(['input'=>$input,'input_sha256'=>LabAnalysisRecipes::hash($input)]);
+        $data=$this->analysis->data;$data['workflowInvocation']=app(LabWorkflowSteps::class)->invocation($step->fresh());$this->analysis->update(['data'=>$data]);
+        $context=$this->capture();$this->assertSame(LabDeclutterRemovalPolicy::MATERIALS_VERSION,$context['context']['schemaVersion']);
+        $this->assertSame($this->cut->source_sha256,$context['context']['binding']['sourceCutSha256']);
+        $input['instructions']=\App\Services\IguideLab\LabDeclutterWorkflow::INTENT;$step->update(['input'=>$input,'input_sha256'=>LabAnalysisRecipes::hash($input)]);
+        $this->rejected();Http::assertNothingSent();
+    }
     public function test_actual_imported_native_and_source_plan_bind_six_inputs_without_forged_attachment(): void
     {
         $a=$this->capture();$b=$this->capture();$this->assertSame(LabAnalysisRecipes::hash($a),LabAnalysisRecipes::hash($b));

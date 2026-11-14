@@ -5,6 +5,7 @@ use App\Models\IguideLabAnalysis;
 use App\Models\IguideLabCase;
 use App\Models\IguideLabSection;
 use App\Models\IguideLabWorkflowItem;
+use App\Models\IguideLabWorkflow;
 use App\Models\IguideLabWorkflowStep;
 use Illuminate\Support\Facades\Storage;
 use Symfony\Component\Process\Process;
@@ -14,6 +15,9 @@ class LabDeclutterRemovalContext
 {
     public function capture(IguideLabWorkflowItem $item, string $sectionId, string $sourceAnalysisId): array
     {
+        $workflow=IguideLabWorkflow::where('project_id',$item->project_id)->findOrFail($item->workflow_id);
+        abort_unless(LabDeclutterRemovalPolicy::enabled($workflow->policy,$item->preset),422,'Removal policy is not reserved.');
+        $protocolVersion=LabDeclutterRemovalPolicy::protocolVersion($workflow->policy);
         $native = app(LabWorkflowSources::class)->verify($item->project_id, $item->source);
         $section = IguideLabSection::where('project_id', $item->project_id)->where('status', 'completed')->findOrFail($sectionId);
         $cut = IguideLabCase::where('project_id', $item->project_id)->findOrFail($section->derived_case_id);
@@ -23,6 +27,9 @@ class LabDeclutterRemovalContext
         $this->child($item,'section',$section->id);
         $analysis = IguideLabAnalysis::where('project_id',$item->project_id)->where('status','completed')->findOrFail($sourceAnalysisId);
         $analysisStep = $this->child($item,'analysis',$analysis->id);
+        if(LabDeclutterRemovalPolicy::materials($workflow->policy)){
+            abort_unless(($analysisStep->input['instructions']??null)===LabDeclutterWorkflow::MATERIALS_INTENT,422,'Material-aware source intent changed.');
+        }
         abort_unless($analysis->case_id === $native->id && $analysis->source_sha256 === $native->source_sha256
             && ($analysis->settings['preset'] ?? null) === 'declutter' && $analysis->proposal_sha256 === LabAnalysisRecipes::hash($analysis->proposal)
             && ($analysis->data['workflowInvocation'] ?? null) === app(LabWorkflowSteps::class)->invocation($analysisStep),422,'Source routing plan is not this workflow native capture.');
@@ -87,7 +94,7 @@ class LabDeclutterRemovalContext
                 && [$view['width'], $view['height']] === [1024, 1024], 422, 'Parent cardinal pose changed.');
             $append('parent_'.$view['id'], $path, $view['sha256'], 1024, 1024, 'rectilinear', $expected, $parentGeometrySha);
         }
-        $context = ['schemaVersion' => LabDeclutterRemovalPolicy::VERSION, 'binding' => ['workflowItemId' => $item->id, 'captureId' => $native->id,
+        $context = ['schemaVersion' => $protocolVersion, 'binding' => ['workflowItemId' => $item->id, 'captureId' => $native->id,
             'nativeSourceSha256' => $native->source_sha256, 'sourceCutSha256' => $cut->source_sha256, 'submittedSourceSha256' => $preparedSha,
             'parentContextSha256' => $overviewSha, 'sourceGeometrySha256' => $normalizedSha,
             'sourcePreparationSha256' => LabAnalysisRecipes::hash($preparation), 'sourceAnalysisSha256' => $analysis->proposal_sha256],

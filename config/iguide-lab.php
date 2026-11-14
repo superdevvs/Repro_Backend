@@ -10,6 +10,7 @@ return [
     'grass_assessment_runtime_manifest' => env('IGUIDE_LAB_GRASS_ASSESSMENT_RUNTIME_MANIFEST'),
     'grass_runtime_manifest' => env('IGUIDE_LAB_GRASS_RUNTIME_MANIFEST'),
     'declutter_workflow_enabled' => env('IGUIDE_LAB_DECLUTTER_WORKFLOW_ENABLED', false),
+    'declutter_materials_enabled' => env('IGUIDE_LAB_DECLUTTER_MATERIALS_ENABLED', false),
     'declutter_removal_runtime_manifest' => env('IGUIDE_LAB_DECLUTTER_REMOVAL_RUNTIME_MANIFEST'),
     'declutter_support_runtime_manifest' => env('IGUIDE_LAB_DECLUTTER_SUPPORT_RUNTIME_MANIFEST'),
     'grass_source_admission_enabled' => env('IGUIDE_LAB_GRASS_SOURCE_ADMISSION_ENABLED', false),

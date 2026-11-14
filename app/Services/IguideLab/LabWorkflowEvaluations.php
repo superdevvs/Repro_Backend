@@ -159,6 +159,13 @@ class LabWorkflowEvaluations
             app(LabStagingWorkflow::class)->validateSnapshot($workflow->policy['stagingWorkflow']);
             $intent['fixedRecipeConstraints']=LabStagingArtifacts::REVIEW_CONSTRAINTS;
         }
+        if($item->preset==='declutter'){
+            $workflow=\App\Models\IguideLabWorkflow::where('project_id',$item->project_id)->findOrFail($item->workflow_id);
+            if(LabDeclutterRemovalPolicy::materials($workflow->policy)){
+                app(LabDeclutterWorkflow::class)->validateSnapshot($workflow->policy['declutterWorkflow']);
+                $intent['fixedRecipeConstraints']=LabDeclutterArtifacts::MATERIALS_REVIEW_CONSTRAINTS;
+            }
+        }
         return $intent;
     }
 

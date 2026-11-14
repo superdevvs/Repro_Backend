@@ -49,7 +49,7 @@ class IguideLabDeclutterRemovalPlanTest extends TestCase
         $workflow = app(LabWorkflows::class)->start($project, ['requestId' => (string) Str::uuid(), 'items' => [['caseId' => $case->id, 'preset' => $preset]]]);
         if ($preset === 'declutter') { $policy = $workflow->policy; $policy['declutterRemoval'] = LabDeclutterRemovalPolicy::snapshot(); $workflow->update(['policy' => $policy]); }
         $item = IguideLabWorkflowItem::where('workflow_id', $workflow->id)->sole();
-        $this->context->bundle = ['context' => ['binding' => ['fixtureSourceSha256' => $case->source_sha256]],
+        $this->context->bundle = ['context' => ['schemaVersion'=>LabDeclutterRemovalPolicy::VERSION,'binding' => ['fixtureSourceSha256' => $case->source_sha256]],
             'assets' => [['id' => 'source_cut', 'path' => $case->source_path, 'sha256' => $case->source_sha256],
                 ['id' => 'parent_overview', 'path' => $case->source_path, 'sha256' => $case->source_sha256]]];
         $this->bridge->sourceSha = $case->source_sha256;
@@ -62,6 +62,46 @@ class IguideLabDeclutterRemovalPlanTest extends TestCase
         return [...$values, $step, $service->start($step)];
     }
     private function response(): array { return ['id' => 'resp-fixture', 'model' => 'gpt-6-astra', 'status' => 'completed', 'usage' => ['input_tokens' => 10, 'output_tokens' => 20]]; }
+    public function test_materials_version_is_reserved_and_replayed_without_silently_upgrading_v1(): void
+    {
+        [, $workflow, $item]=$this->fixture();$service=app(LabDeclutterRemovalPlans::class);
+        config(['iguide-lab.declutter_materials_enabled'=>true]);
+        $legacy=$service->reserve($item,(string)Str::uuid(),(string)Str::uuid());
+        $this->assertSame(LabDeclutterRemovalPolicy::VERSION,$legacy->input['protocolVersion']);
+        $policy=$workflow->policy;$policy['declutterRemoval']=LabDeclutterRemovalPolicy::snapshot(true);$workflow->update(['policy'=>$policy]);
+        try{$service->start($legacy);$this->fail('Mixed v1 step and v2 policy accepted.');}
+        catch(HttpException $e){$this->assertSame(422,$e->getStatusCode());}
+        Http::assertNothingSent();
+    }
+    public function test_v2_queued_replay_retains_version_and_disabling_flag_stops_submission(): void
+    {
+        [, $workflow, $item]=$this->fixture();$policy=$workflow->policy;$policy['declutterRemoval']=LabDeclutterRemovalPolicy::snapshot(true);$workflow->update(['policy'=>$policy]);
+        config(['iguide-lab.declutter_materials_enabled'=>true]);$this->context->bundle['context']['schemaVersion']=LabDeclutterRemovalPolicy::MATERIALS_VERSION;
+        $service=app(LabDeclutterRemovalPlans::class);$step=$service->reserve($item,(string)Str::uuid(),(string)Str::uuid());$record=$service->start($step);
+        $this->assertSame(LabDeclutterRemovalPolicy::MATERIALS_VERSION,$step->input['protocolVersion']);
+        $this->assertSame($record->id,$service->start($step->fresh())->id);
+        config(['iguide-lab.declutter_materials_enabled'=>false]);$service->process($record);
+        $this->assertSame('needs_attention',$record->fresh()->status);Http::assertNothingSent();
+    }
+    public function test_v2_completed_receipt_cannot_change_to_legacy_protocol(): void
+    {
+        [, $workflow, $item]=$this->fixture();$policy=$workflow->policy;$policy['declutterRemoval']=LabDeclutterRemovalPolicy::snapshot(true);$workflow->update(['policy'=>$policy]);
+        config(['iguide-lab.declutter_materials_enabled'=>true]);$this->context->bundle['context']['schemaVersion']=LabDeclutterRemovalPolicy::MATERIALS_VERSION;
+        $service=app(LabDeclutterRemovalPlans::class);$step=$service->reserve($item,(string)Str::uuid(),(string)Str::uuid());$record=$service->start($step);
+        Http::fake(['api.openai.com/v1/responses'=>Http::response($this->response())]);$service->process($record);$service->process($record->fresh());$record->refresh();
+        $this->assertSame('completed',$record->status);$this->assertSame(LabDeclutterRemovalPolicy::MATERIALS_VERSION,$record->result['schemaVersion']);
+        $value=$record->result;$value['schemaVersion']=LabDeclutterRemovalPolicy::VERSION;$record->update(['result'=>$value]);
+        try{$service->reserveSegmentationSteps($record);$this->fail('Changed result protocol authorized masks.');}
+        catch(HttpException $e){$this->assertSame(422,$e->getStatusCode());}Http::assertSentCount(1);
+    }
+    public function test_source_drift_after_explicit_quota_stops_the_fallback_attempt(): void
+    {
+        [, , , , , $record]=$this->reserved();$calls=0;
+        Http::fake(function()use(&$calls){$calls++;$this->context->reject=true;return Http::response(['error'=>['code'=>'insufficient_quota']],429);});
+        app(LabDeclutterRemovalPlans::class)->process($record);
+        $this->assertSame(1,$calls);$this->assertSame('needs_attention',$record->fresh()->status);
+        $this->assertSame(['quota_rejected'],array_column($record->fresh()->provider_attempts,'status'));
+    }
     public function test_integral_camera_angles_survive_database_json_roundtrip_without_losing_drift_checks(): void
     {
         [, , $item] = $this->fixture();
@@ -284,6 +324,7 @@ class RemovalBridgeFixture extends LabDeclutterRemovalBridge
         } else $outputs = ['association' => ['status' => 'ready_for_support_validation']];
         if ($operation === 'parse' && $this->boundaryFloats) $outputs['assessment']['targetSelection'] = ['box' => ['xMin' => 0.0, 'yMin' => 0.5, 'xMax' => 1.0, 'yMax' => 1.0]];
         if ($operation === 'parse' && ! $this->shadow) $outputs['assessment']['segmentationPlan']=array_slice($outputs['assessment']['segmentationPlan'],0,1);
+        if ($operation === 'parse') $outputs['assessment']['schemaVersion'] = json_decode(file_get_contents($request['context']['path']),true)['schemaVersion'];
         if ($operation === 'parse') $outputs['assessment']['execution'] = json_decode(file_get_contents($request['execution']['path']), true, flags: JSON_THROW_ON_ERROR);
         $root = $disk->path(''); $base = str_replace('\\', '/', substr($request['outputDirectory'], strlen($root)));
         $descriptors = [];
