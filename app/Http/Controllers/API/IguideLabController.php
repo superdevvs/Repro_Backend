@@ -244,8 +244,11 @@ class IguideLabController extends Controller
                 // Closed read extension: public callers cannot attach native optical context.
                 try { $recipe=app(\App\Services\IguideLab\LabAnalysisRecipes::class)->validate($record->data['executionRecipe']??[]); }
                 catch (\Throwable) { abort(404); }
-                abort_unless($recipe['compilerVersion']===\App\Services\IguideLab\LabLifestyleOpticalCutProtocol::VERSION
-                    &&$recipe['instructionsVersion']===\App\Services\IguideLab\LabAnalysisRecipes::LIFESTYLE_OPTICAL_CUT
+                $pair=[$recipe['instructionsVersion'],$recipe['compilerVersion']];
+                abort_unless(in_array($pair,[
+                    [\App\Services\IguideLab\LabAnalysisRecipes::LIFESTYLE_OPTICAL_CUT,\App\Services\IguideLab\LabLifestyleOpticalCutProtocol::VERSION],
+                    [\App\Services\IguideLab\LabAnalysisRecipes::LIFESTYLE_ORIGINAL_OPTICAL_CUT,\App\Services\IguideLab\LabLifestyleOriginalOpticalCutProtocol::VERSION],
+                    ],true)
                     &&($record->settings['viewRecipe']??null)===\App\Services\IguideLab\LabLifestyleOpticalCutProtocol::VIEW_RECIPE
                     &&($record->data['lifestyleFraming']['version']??null)===\App\Services\IguideLab\LabLifestyleOpticalProtocol::VERSION
                     &&($record->data['lifestyleFraming']['opticalDetails']['version']??null)==='lifestyle-bound-native-optical-context/1',404);

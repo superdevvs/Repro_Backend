@@ -73,4 +73,21 @@ class IguideLabLifestyleOpticalAssetsTest extends TestCase
         $bad=$data;$bad['executionRecipe']=app(LabAnalysisRecipes::class)->snapshot(LabAnalysisRecipes::LIFESTYLE_CUT);$a->update(['data'=>$bad]);
         $this->withToken($token)->getJson($url)->assertNotFound();
     }
+
+    public function test_original_detail_recipe_has_owned_read_access_but_mismatched_pair_is_rejected(): void
+    {
+        [$a,$token]=$this->fixture();$data=$a->data;
+        $data['executionRecipe']=app(LabAnalysisRecipes::class)->snapshot(LabAnalysisRecipes::LIFESTYLE_ORIGINAL_OPTICAL_CUT);$a->update(['data'=>$data]);
+        $url='/api/iguide-lab/analyses/'.$a->id.'/views/';
+        foreach(['source_detail_1','source_detail_2'] as $i=>$id){
+            $r=$this->withToken($token)->get($url.$id);$r->assertOk();
+            $this->assertSame($data['views'][6+$i]['sha256'],hash_file('sha256',$r->baseResponse->getFile()->getPathname()));
+            $this->assertStringContainsString('no-store',$r->headers->get('Cache-Control'));
+        }
+        $this->withToken($token)->getJson($url.'source_detail_3')->assertNotFound();
+        $bad=$data;$bad['executionRecipe']['recipe']['compilerVersion']=LabLifestyleOpticalCutProtocol::VERSION;$a->update(['data'=>$bad]);
+        $this->withToken($token)->getJson($url.'source_detail_1')->assertNotFound();
+        $bad=$data;$bad['executionRecipe']['recipe']['instructionsVersion']=LabAnalysisRecipes::LIFESTYLE_OPTICAL_CUT;$a->update(['data'=>$bad]);
+        $this->withToken($token)->getJson($url.'source_detail_1')->assertNotFound();
+    }
 }
