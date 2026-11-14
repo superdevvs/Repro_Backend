@@ -58,7 +58,7 @@ $python=(string)getenv('IGUIDE_TEST_PYTHON'); check(is_executable($python), 'Set
 $runtime=['validationStatus'=>'passed','pythonPath'=>$python,'pythonVersion'=>'3.12.3','numpyVersion'=>'2.5.4','pillowVersion'=>'13.0.0',
     'validatedPreparerSha256'=>hash_file('sha256',(new ReflectionClass(App\Services\IguideLab\LabImages::class))->getFileName()),
     'fixtureOnly'=>true, 'evidence'=>['This manifest binds the exact code for this disposable fake-provider test only.']];
-foreach (['validatedWorkerSha256'=>'workflow_qa.py','validatedLightingSha256'=>'lighting_transfer.py','validatedGeometrySha256'=>'pano_geometry.py','validatedSourceAdapterSha256'=>'workflow_source.py'] as $k=>$f) $runtime[$k]=hash_file('sha256',resource_path('iguide-lab/'.$f));
+foreach (['validatedWorkerSha256'=>'workflow_qa.py','validatedLightingSha256'=>'lighting_transfer.py','validatedGlobalLightingSha256'=>'global_lighting.py','validatedGeometrySha256'=>'pano_geometry.py','validatedSourceAdapterSha256'=>'workflow_source.py'] as $k=>$f) $runtime[$k]=hash_file('sha256',resource_path('iguide-lab/'.$f));
 $manifest=$root.'/runtime-manifest.json'; file_put_contents($manifest,json_encode($runtime,JSON_THROW_ON_ERROR|JSON_PRETTY_PRINT)); chmod($manifest,0660);
 config(['iguide-lab.workflow_runtime_manifest'=>$manifest,'iguide-lab.pipeline_python_path'=>$python]);
 
