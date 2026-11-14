@@ -120,6 +120,24 @@ class LabLifestyleAssessments
         abort_unless(is_string($text['contextSha256'] ?? null) && preg_match('/\A[a-f0-9]{64}\z/D', $text['contextSha256']), 422);
         return $text['contextSha256'];
     }
+    /** Current source/candidate/parent receipts and exact compiled bytes, outside the claim transaction. */
+    public function verifyForAttempt(IguideLabLifestyleAssessment $record,string $bytes): void
+    {
+        $record->refresh();$step=IguideLabWorkflowStep::where('project_id',$record->project_id)->findOrFail($record->step_id);
+        $this->verifyStep($step);$data=$record->data;
+        $base='iguide-lab/'.$record->project_id.'/lifestyle-assessments/'.$record->id;
+        abort_unless($record->status==='submitting'&&empty($data['providerReceipt'])&&$record->request_id===$step->request_id
+            &&$record->request_hash===$step->input_sha256&&$step->child_id===$record->id&&$data['base']===$base
+            &&$data['workflowInvocation']===app(LabWorkflowSteps::class)->invocation($step)
+            &&LabMachineSegmentationPlan::canonicalHash($data['contextSnapshot'])===LabMachineSegmentationPlan::canonicalHash($step->input['contextSnapshot'])
+            &&$data['recipe']===$step->input['recipe'],422,'Placement attempt association changed.');
+        $bridge=app(LabLifestyleAssessmentBridge::class);
+        $context=$bridge->json($base.'/context.json',$step->input['contextSnapshot']['context']);
+        abort_unless($context===$data['context'],422,'Placement context asset changed.');
+        $compiled=$this->compile($step,$base,$context);$payload=$bridge->output($record->project_id,$compiled,'payload',36*1024*1024);
+        abort_unless($payload===$data['payload']&&$payload['sha256']===$data['providerBodySha256']
+            &&hash('sha256',$bytes)===$payload['sha256'],422,'Placement attempt payload changed.');
+    }
     private function compile(IguideLabWorkflowStep $step, string $base, array $context): array
     {
         $disk = Storage::disk(LabService::DISK); $images = array_map(fn ($asset) => ['id' => $asset['id'], 'path' => $disk->path($asset['path']), 'sha256' => $asset['sha256']], $step->input['contextSnapshot']['assets']);

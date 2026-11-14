@@ -6,6 +6,28 @@ use Illuminate\Support\Facades\Storage;
 /** Receipt-bound actual-cut authority. Source-framing candidates alone never authorize paid image claims. */
 class LabLifestyleCutReadiness
 {
+    /** Actual-cut source and parent authority must still hold before every analysis attempt. */
+    public function verifyForAttempt(IguideLabAnalysis $analysis,array $payload): void
+    {
+        $analysis->refresh();$data=$analysis->data;$invocation=$data['workflowInvocation']??null;$reference=$data['lifestyleFraming']??null;
+        abort_unless($analysis->status==='submitting'&&is_array($invocation)&&is_array($reference),422);
+        $cut=IguideLabCase::where('project_id',$analysis->project_id)->findOrFail($analysis->case_id);
+        $this->verifyReference($invocation,$cut,$reference);
+        $step=IguideLabWorkflowStep::where('project_id',$analysis->project_id)->where('item_id',$invocation['itemId'])->findOrFail($invocation['stepId']);
+        abort_unless($step->kind==='analysis'&&$step->child_id===$analysis->id&&$step->request_id===$analysis->request_id
+            &&$step->input_sha256===LabAnalysisRecipes::hash($step->input)&&$invocation===app(LabWorkflowSteps::class)->invocation($step)
+            &&($step->input['caseId']??null)===$cut->id&&($step->input['preset']??null)==='lifestyle'
+            &&($step->input['style']??null)===$analysis->settings['style']&&$analysis->source_sha256===$cut->source_sha256
+            &&LabAnalysisRecipes::hash($step->input['lifestyleFraming']??[])===LabAnalysisRecipes::hash($reference),422,'Cut attempt association changed.');
+        $recipe=app(LabAnalysisRecipes::class)->validate($data['executionRecipe']);abort_unless($recipe['compilerVersion']===LabLifestyleCutProtocol::VERSION,422);
+        app(LabAnalysisSourceContext::class)->verify($cut,$data['sourceContext']);app(LabSectionAnalysisViews::class)->verifyStored($analysis);
+        $context=['sourceSha256'=>$analysis->source_sha256,'projection'=>'rectilinear','preset'=>'lifestyle','style'=>$analysis->settings['style'],
+            'viewIds'=>array_column($data['views'],'id'),'instructions'=>app(LabAnalyses::class)->wireInstructions($analysis->settings),
+            'sourceContext'=>$data['sourceContextManifest'],'lifestyleFraming'=>$reference];
+        $images=[];foreach($data['views'] as $view)$images[]='data:image/png;base64,'.base64_encode(file_get_contents(app(LabLifestyleFramingContext::class)->file($analysis->project_id,$view['path'],$view['sha256'])));
+        $fresh=app(LabAnalysisRecipes::class)->request($data['executionRecipe'],$context,$images);
+        abort_unless(LabAnalysisRecipes::hash($fresh)===$data['providerBodySha256']&&LabAnalysisRecipes::hash($payload)===$data['providerBodySha256'],422,'Cut attempt payload changed.');
+    }
     public function reference(IguideLabWorkflowItem $item,string $framingId,IguideLabCase $cut): array
     {
         $framing=app(LabLifestyleFramings::class)->completed($item,$framingId);$result=$framing->result;

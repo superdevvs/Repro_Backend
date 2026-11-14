@@ -59,6 +59,15 @@ class LabLifestyleFramings
         foreach($snapshot['assets'] as $asset){$path=app(LabLifestyleFramingContext::class)->file($step->project_id,$asset['path'],$asset['sha256']);$images[]='data:image/png;base64,'.base64_encode(file_get_contents($path));}
         return json_encode(LabLifestyleFramingProtocol::request($snapshot['context'],$images),JSON_THROW_ON_ERROR);
     }
+    /** Revalidate retained source evidence before each primary or explicit-quota attempt. */
+    public function verifyForAttempt(IguideLabLifestyleFraming $record,string $payload): void
+    {
+        $record->refresh();$step=IguideLabWorkflowStep::where('project_id',$record->project_id)->findOrFail($record->step_id);
+        $this->verifyStep($step);$this->verifyRecord($record,$step);
+        abort_unless($record->status==='submitting'&&empty($record->data['providerReceipt'])
+            &&hash('sha256',$payload)===$record->data['providerBodySha256']
+            &&hash('sha256',$this->payload($step))===$record->data['providerBodySha256'],422,'Framing attempt authority changed.');
+    }
     public function start(IguideLabWorkflowStep $step): IguideLabLifestyleFraming
     {
         if($prior=IguideLabLifestyleFraming::where('project_id',$step->project_id)->where('request_id',$step->request_id)->first()){

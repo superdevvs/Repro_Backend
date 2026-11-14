@@ -109,6 +109,22 @@ class IguideLabLifestyleAssessmentTest extends TestCase
         $this->assertSame(1, $count); $this->assertSame('needs_attention', $record->fresh()->status);
         $this->assertSame(['quota_rejected'], array_column($record->fresh()->provider_attempts, 'status'));
     }
+    public function test_candidate_context_drift_after_quota_blocks_placement_fallback(): void
+    {
+        [,,,,,$record]=$this->reserved();
+        Http::fake(function(){ $this->context->bundle['context']['candidateSha256']=str_repeat('e',64);return Http::response(['error'=>['code'=>'insufficient_quota']],429); });
+        app(LabLifestyleAssessments::class)->process($record);
+        Http::assertSentCount(1);$this->assertSame('needs_attention',$record->fresh()->status);
+        $this->assertSame(['quota_rejected'],array_column($record->fresh()->provider_attempts,'status'));
+    }
+    public function test_compiled_payload_drift_after_quota_blocks_placement_fallback(): void
+    {
+        [,,,,,$record]=$this->reserved();$path=$record->data['payload']['path'];
+        Http::fake(function()use($path){file_put_contents($path,'changed payload');return Http::response(['error'=>['code'=>'insufficient_quota']],429);});
+        app(LabLifestyleAssessments::class)->process($record);
+        Http::assertSentCount(1);$this->assertSame('needs_attention',$record->fresh()->status);
+        $this->assertSame(['quota_rejected'],array_column($record->fresh()->provider_attempts,'status'));
+    }
     public function test_ambiguous_submission_is_retained_without_retry(): void
     {
         [, , , , , $record] = $this->reserved(); $count = 0;

@@ -86,6 +86,29 @@ class IguideLabLifestyleFramingTest extends TestCase
         $service=app(LabLifestyleFramings::class);$service->process($record);$this->assertSame('received',$record->fresh()->status);$service->process($record->fresh());
         $this->assertSame('completed',$record->fresh()->status);Http::assertSentCount(2);$requests=Http::recorded();$this->assertSame($requests[0][0]->body(),$requests[1][0]->body());
     }
+    public function test_diagnostic_file_drift_after_quota_blocks_framing_fallback(): void
+    {
+        [,,,,,$record]=$this->fixture();$path=$this->context->bundle['assets'][1]['path'];
+        Http::fake(function()use($path){Storage::disk(LabService::DISK)->put($path,'changed diagnostic');return Http::response(['error'=>['code'=>'insufficient_quota']],429);});
+        app(LabLifestyleFramings::class)->process($record);
+        Http::assertSentCount(1);$this->assertSame('needs_attention',$record->fresh()->status);
+        $this->assertSame(['quota_rejected'],array_column($record->fresh()->provider_attempts,'status'));
+    }
+    public function test_actual_cut_provider_rechecks_retained_authority_after_quota(): void
+    {
+        [$project,,$item,$case]=$this->fixture();$steps=app(LabWorkflowSteps::class);
+        $step=$steps->reserve($item,'lifestyle-cut-analysis','analysis',['caseId'=>$case->id,'preset'=>'lifestyle']);
+        $payload=['model'=>'gpt-6-astra','store'=>false,'input'=>[],'text'=>['format'=>['schema'=>['properties'=>['lifestyleReadiness'=>[]]]]]];$path='iguide-lab/'.$project->id.'/cut-authority.json';Storage::disk(LabService::DISK)->put($path,'retained');
+        $analysis=IguideLabAnalysis::create(['project_id'=>$project->id,'case_id'=>$case->id,'request_id'=>$step->request_id,'request_hash'=>$step->input_sha256,
+            'source_sha256'=>$case->source_sha256,'settings'=>[],'status'=>'submitting','data'=>['workflowInvocation'=>$steps->invocation($step),
+                'lifestyleFraming'=>['id'=>'fixture'],'providerBodySha256'=>LabAnalysisRecipes::hash($payload)]]);
+        $steps->attach($step,$analysis->id);
+        $this->mock(LabLifestyleCutReadiness::class)->shouldReceive('verifyForAttempt')->twice()->andReturnUsing(function()use($path){abort_unless(Storage::disk(LabService::DISK)->exists($path),422,'Parent receipt changed.');});
+        Http::fake(function()use($path,$analysis){Storage::disk(LabService::DISK)->delete($path);$data=$analysis->fresh()->data;unset($data['lifestyleFraming']);$analysis->update(['data'=>$data]);return Http::response(['error'=>['code'=>'insufficient_quota']],429);});
+        try{app(\App\Services\IguideLab\LabAnalysisProvider::class)->analyze($analysis,$payload);$this->fail('Changed cut authority reached fallback.');}
+        catch(HttpException $e){$this->assertSame(422,$e->getStatusCode());}
+        Http::assertSentCount(1);$this->assertSame(['quota_rejected'],array_column($analysis->fresh()->provider_attempts,'status'));
+    }
     public function test_raw_receipt_and_result_tampering_or_context_drift_cannot_authorize_a_cut(): void
     {
         [,, $item,,$step,$record]=$this->fixture();$record=$this->finish($record);$service=app(LabLifestyleFramings::class);
