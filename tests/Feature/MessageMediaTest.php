@@ -23,6 +23,9 @@ class MessageMediaTest extends TestCase
     {
         parent::setUp();
         config(['app.key' => 'base64:'.base64_encode(str_repeat('m', 32)), 'clamav.scan_on_upload' => false]);
+        // CI is an unprivileged account, not a member of production's www-data
+        // group. Exercise the same setgid/private-mode contract using its group.
+        config(['filesystems.disks.message_media.shared_group' => posix_getgrgid(posix_getegid())['name']]);
         Storage::fake('local'); Storage::fake('message_media', config('filesystems.disks.message_media')); Queue::fake(); Http::preventStrayRequests();
         $this->actor = User::factory()->create(['role' => 'superadmin']);
         Sanctum::actingAs($this->actor);
@@ -353,6 +356,6 @@ class MessageMediaTest extends TestCase
         $this->assertSame(0660, fileperms($file->path()) & 0777);
         $this->assertSame(02770, fileperms(dirname($file->path())) & 07777);
         $this->assertSame(02770, fileperms(Storage::disk('message_media')->path('')) & 07777);
-        $this->assertSame(posix_getgrnam('www-data')['gid'], filegroup($file->path()));
+        $this->assertSame(posix_getgrnam(config('filesystems.disks.message_media.shared_group'))['gid'], filegroup($file->path()));
     }
 }
