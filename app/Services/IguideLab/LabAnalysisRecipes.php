@@ -18,7 +18,7 @@ class LabAnalysisRecipes
 
     public function active(): array
     {
-        return $this->snapshot(config('iguide-lab.analysis_instructions_version', self::CANDIDATE));
+        return $this->snapshot(config('iguide-lab.analysis_instructions_version') ?? self::CANDIDATE);
     }
 
     public function snapshot(string $version): array

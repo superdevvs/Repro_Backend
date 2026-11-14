@@ -34,4 +34,17 @@ class IguideLabAnalysisRecipesTest extends TestCase
         $onlyInstructionsChanged['instructionsVersion'] = $baseline['recipe']['instructionsVersion'];
         $this->assertSame($baseline['recipe'], $onlyInstructionsChanged);
     }
+
+    public function test_absent_and_null_configuration_use_the_candidate_but_explicit_baseline_is_retained(): void
+    {
+        $recipes = app(LabAnalysisRecipes::class);
+        $configuration = config('iguide-lab');
+        unset($configuration['analysis_instructions_version']);
+        config(['iguide-lab' => $configuration]);
+        $this->assertSame(LabAnalysisRecipes::CANDIDATE, $recipes->active()['recipe']['instructionsVersion']);
+        config(['iguide-lab.analysis_instructions_version' => null]);
+        $this->assertSame(LabAnalysisRecipes::CANDIDATE, $recipes->active()['recipe']['instructionsVersion']);
+        config(['iguide-lab.analysis_instructions_version' => LabAnalysisRecipes::BASELINE]);
+        $this->assertSame(LabAnalysisRecipes::BASELINE, $recipes->active()['recipe']['instructionsVersion']);
+    }
 }
