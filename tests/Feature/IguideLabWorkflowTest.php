@@ -71,6 +71,34 @@ class IguideLabWorkflowTest extends TestCase
         Http::assertNothingSent();
     }
 
+    public function test_optional_empty_instructions_replay_as_the_existing_omitted_identity(): void
+    {
+        $body = $this->body(); unset($body['items'][0]['instructions'], $body['items'][0]['style']);
+        $first = $this->withToken($this->token)->postJson('/api/iguide-lab/workflows', $body)->assertAccepted()->json('data.id');
+        $identity = IguideLabWorkflow::sole()->request_hash;
+        foreach (['', null, '   '] as $instructions) {
+            $replay = $body; $replay['items'][0]['instructions'] = $instructions; $replay['items'][0]['style'] = null;
+            $this->withToken($this->token)->postJson('/api/iguide-lab/workflows', $replay)->assertAccepted()->assertJsonPath('data.id', $first);
+            $this->assertSame($identity, IguideLabWorkflow::sole()->request_hash);
+            $this->assertSame('', IguideLabWorkflowItem::sole()->instructions);
+        }
+        $this->assertSame(1, IguideLabWorkflow::count()); $this->assertSame(1, IguideLabWorkflowItem::count());
+        Queue::assertPushed(\App\Jobs\ProcessIguideLabWorkflow::class, 1);
+        $this->assertSame(0, IguideLabAnalysis::count()); $this->assertSame(0, $this->project->fresh()->used_runs);
+        Http::assertNothingSent();
+    }
+
+    public function test_optional_instructions_still_reject_nonstrings_and_overlong_values_before_reservation(): void
+    {
+        foreach ([[], 123, false, str_repeat('x', 2001)] as $instructions) {
+            $body = $this->body(); $body['items'][0]['instructions'] = $instructions;
+            $this->withToken($this->token)->postJson('/api/iguide-lab/workflows', $body)
+                ->assertUnprocessable()->assertJsonValidationErrors('items.0.instructions');
+        }
+        $this->assertSame(0, IguideLabWorkflow::count()); $this->assertSame(0, IguideLabWorkflowItem::count());
+        $this->assertSame(0, $this->project->fresh()->used_runs); Queue::assertNothingPushed(); Http::assertNothingSent();
+    }
+
     public function test_public_stage_dtos_keep_technical_paths_private_and_no_manual_acceptance(): void
     {
         $workflow = $this->workflow(); $service = app(LabWorkflows::class);

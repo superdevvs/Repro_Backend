@@ -22,7 +22,8 @@ class IguideLabWorkflowController extends Controller
         $input = $request->validate(['requestId' => ['required', 'uuid'], 'items' => ['required', 'array', 'min:1', 'max:20'],
             'items.*' => ['required', 'array:caseId,preset,style,instructions'], 'items.*.caseId' => ['required', 'uuid'],
             'items.*.preset' => ['required', Rule::in(array_keys(LabCatalog::PRESETS))], 'items.*.style' => ['nullable', Rule::in(array_keys(LabCatalog::STYLES))],
-            'items.*.instructions' => ['sometimes', 'string', 'max:2000']]);
+            'items.*.instructions' => ['sometimes', 'nullable', 'string', 'max:2000']]);
+        $input['items'] = array_map(fn ($item) => [...$item, 'instructions' => $item['instructions'] ?? ''], $input['items']);
         return response()->json(['data' => $service->dto($service->start($request->attributes->get('iguide_lab_project'), $input))], 202);
     }
     public function show(Request $request, string $id, LabWorkflows $service)
