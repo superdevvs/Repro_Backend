@@ -129,7 +129,15 @@ class IguideLabImportTest extends TestCase
                 return ['sha256' => hash('sha256', $bytes), 'sizeBytes' => strlen($bytes)];
             });
         });
-        $first = $this->withToken($this->token)->postJson('/api/iguide-lab/imports', ['requestId' => (string) Str::uuid(), 'url' => 'https://youriguide.com/sample/?accessToken=secret'])->assertAccepted()->json('data');
+        $requestId = (string) Str::uuid();
+        $first = $this->withToken($this->token)->postJson('/api/iguide-lab/imports', ['requestId' => $requestId, 'url' => 'https://youriguide.com/sample/?accessToken=secret&pano=13'])->assertAccepted()->json('data');
+        foreach (['https://youriguide.com/embed/sample/?pano=29&accessToken=secret', 'https://youriguide.com/sample/?accessToken=secret'] as $url) {
+            $same = $this->withToken($this->token)->postJson('/api/iguide-lab/imports', ['requestId' => $requestId, 'url' => $url])->assertAccepted()->json('data');
+            $this->assertSame($first['id'], $same['id']);
+        }
+        $this->withToken($this->token)->postJson('/api/iguide-lab/imports', ['requestId' => $requestId, 'url' => 'https://youriguide.com/sample/?accessToken=changed&pano=13'])->assertConflict();
+        $this->assertSame(1, IguideLabImport::count());
+        Queue::assertPushed(ProcessIguideLabImport::class, 1);
         $this->assertStringNotContainsString('secret', json_encode($first));
         $this->assertStringNotContainsString('secret', \Illuminate\Support\Facades\DB::table('iguide_lab_imports')->where('id', $first['id'])->value('private_input'));
         $record = IguideLabImport::find($first['id']); $this->process($record);

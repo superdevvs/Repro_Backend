@@ -32,6 +32,7 @@ class LabWorkflowPolicy
         if (config('iguide-lab.grass_workflow_enabled',false) === true && class_exists(LabGrassWorkflow::class) && app(LabGrassWorkflow::class)->ready()) {
             $policy['grassAssessment'] = LabGrassAssessmentPolicy::snapshot();
             $policy['grassRecipe'] = app(LabGrassWorkflow::class)->snapshot();
+            if (config('iguide-lab.grass_source_admission_enabled', false) === true) $policy['grassSourceAdmission'] = LabGrassSourceAdmissionPolicy::snapshot();
         }
         if (config('iguide-lab.declutter_workflow_enabled',false) === true && class_exists(LabDeclutterWorkflow::class) && app(LabDeclutterWorkflow::class)->ready()) {
             $policy['declutterRemoval'] = LabDeclutterRemovalPolicy::snapshot();

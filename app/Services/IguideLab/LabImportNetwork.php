@@ -9,16 +9,39 @@ class LabImportNetwork
 {
     public function tour(string $url): array
     {
+        // parse_url replaces raw control characters; do not silently change a token.
+        $this->require(! preg_match('/[\x00-\x1f\x7f]/', $url), 'This tour link contains malformed characters.');
         $parts = parse_url($url);
         $this->require(is_array($parts) && ($parts['scheme'] ?? '') === 'https' && ($parts['host'] ?? '') === 'youriguide.com'
             && ! isset($parts['user'], $parts['pass']) && ! isset($parts['user']) && ! isset($parts['pass'])
             && ! isset($parts['port']) && ! isset($parts['fragment']), 'Use a supported HTTPS youriguide.com tour link.');
         $this->require((bool) preg_match('~^/(?:embed/)?([a-zA-Z0-9_-]{1,200})/?$~D', $parts['path'] ?? '', $match), 'The link must identify one iGUIDE tour, not an arbitrary asset.');
-        parse_str($parts['query'] ?? '', $query);
-        $this->require(array_diff(array_keys($query), ['accessToken']) === [] && (! isset($query['accessToken']) || (is_string($query['accessToken']) && strlen($query['accessToken']) <= 4096)), 'This tour link contains unsupported parameters.');
+        $query = $this->tourQuery($parts['query'] ?? '');
         $alias = $match[1]; $base = 'https://youriguide.com/'.$alias.'/';
         $suffix = $query ? '?'.http_build_query($query, '', '&', PHP_QUERY_RFC3986) : '';
         return ['alias' => $alias, 'publicUrl' => $base, 'pageUrl' => $base.$suffix, 'archiveUrl' => $base.'doc/spheres.zip'.$suffix];
+    }
+
+    private function tourQuery(string $raw): array
+    {
+        // parse_str silently collapses duplicates and interprets array syntax.
+        // Validate decoded names before canonicalizing a whole-tour identity.
+        $this->require(strlen($raw) <= 16384, 'This tour link contains unsupported parameters.');
+        $query = [];
+        foreach ($raw === '' ? [] : explode('&', $raw) as $field) {
+            $this->require(str_contains($field, '=') && ! preg_match('/%(?![a-fA-F0-9]{2})/', $field), 'This tour link contains malformed parameters.');
+            [$name, $value] = array_map('urldecode', explode('=', $field, 2));
+            $this->require(in_array($name, ['accessToken', 'pano'], true) && ! array_key_exists($name, $query), 'This tour link contains unsupported or repeated parameters.');
+            if ($name === 'pano') {
+                $this->require((bool) preg_match('/\A[0-9]{1,10}\z/D', $value) && (float) $value <= 2147483647, 'The viewer panorama ID must be a bounded nonnegative integer.');
+            } else {
+                $this->require(strlen($value) <= 4096 && ! preg_match('/[\x00-\x1f\x7f]/', $value), 'This tour link contains an invalid access token.');
+            }
+            $query[$name] = $value;
+        }
+        // pano changes only the copied viewer position, never download authority
+        // or the complete-tour page/archive/import request identity.
+        return array_key_exists('accessToken', $query) ? ['accessToken' => $query['accessToken']] : [];
     }
 
     public function download(string $url, string $target, int $limit): array

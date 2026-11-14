@@ -36,6 +36,9 @@ class LabWorkflowSteps
             }
             if (class_exists(LabGrassAssessmentPolicy::class) && LabGrassAssessmentPolicy::enabled($workflow->policy,$item->preset)) {
                 $limit = match ($kind) { 'analysis' => 2, 'image' => 1, 'segmentation' => 6, 'evaluation' => 1, default => $limit };
+                if (LabGrassSourceAdmissionPolicy::enabled($workflow->policy, $item->preset)) {
+                    $limit = match ($kind) { 'analysis' => 4, default => $limit };
+                }
             }
             if (LabDeclutterRemovalPolicy::enabled($workflow->policy,$item->preset)) {
                 $limit = match ($kind) { 'analysis' => 2, 'image' => 1, 'segmentation' => 2, 'evaluation' => 1, 'section','composition' => 1, default => $limit };

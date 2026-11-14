@@ -35,6 +35,33 @@ class LabImportMetadataTest extends TestCase
         foreach (['127.0.0.1', '10.0.0.1', '169.254.169.254', '100.64.0.1', '224.0.0.1', '::1', '::ffff:127.0.0.1', 'fc00::1', 'fe80::1', '2002:7f00:1::', '2001:0::1'] as $ip) $this->assertFalse($network->publicAddress($ip), $ip);
         $this->assertTrue($network->publicAddress('8.8.8.8')); $this->assertTrue($network->publicAddress('2606:4700:4700::1111'));
     }
+    public function test_viewer_panorama_is_removed_without_changing_whole_tour_access_identity(): void
+    {
+        $network = app(LabImportNetwork::class);
+        $plain = $network->tour('https://youriguide.com/sample/');
+        foreach (['0', '13', '10027', '00013', '2147483647'] as $pano) {
+            $this->assertSame($plain, $network->tour('https://youriguide.com/embed/sample/?pano='.$pano));
+        }
+        $token = $network->tour('https://youriguide.com/sample/?accessToken=a%2Bb%2Fc%3D');
+        $this->assertSame('https://youriguide.com/sample/', $token['publicUrl']);
+        $this->assertSame('https://youriguide.com/sample/?accessToken=a%2Bb%2Fc%3D', $token['pageUrl']);
+        foreach (['pano=13&accessToken=a%2Bb%2Fc%3D', 'accessToken=a%2Bb%2Fc%3D&pano=29', '%70ano=13&accessToken=a%2Bb%2Fc%3D'] as $query) {
+            $this->assertSame($token, $network->tour('https://youriguide.com/sample/?'.$query));
+        }
+        $this->assertSame('https://youriguide.com/sample/?accessToken=', $network->tour('https://youriguide.com/sample/?accessToken=')['pageUrl']);
+    }
+    public function test_duplicate_array_unknown_and_malformed_viewer_query_fields_are_rejected(): void
+    {
+        $queries = ['pano=13&pano=14', 'accessToken=a&accessToken=b', 'pano=13&%70ano=14', 'accessToken=a&access%54oken=b',
+            'pano[]=13', 'pano%5B0%5D=13', 'accessToken[]=a', 'pano=13&unknown=1', 'Pano=13', 'pano=', 'pano',
+            'pano=-1', 'pano=+1', 'pano=1.0', 'pano=1e3', 'pano=2147483648', 'pano=00000000000', 'pano=%2013',
+            'pano=%ZZ', 'accessToken=%', 'accessToken=%00', 'accessToken=a%0Ab', "accessToken=a\nb", "accessToken=a\tb",
+            '&pano=13', 'pano=13&', 'pano=13&&accessToken=a'];
+        foreach ($queries as $query) {
+            try { app(LabImportNetwork::class)->tour('https://youriguide.com/sample/?'.$query); $this->fail('Malformed query accepted: '.$query); }
+            catch (ValidationException) { $this->addToAssertionCount(1); }
+        }
+    }
     public function test_truncated_image_with_valid_dimensions_is_rejected_by_decoder(): void
     {
         $image = imagecreatetruecolor(2048, 1024); ob_start(); imagepng($image); $bytes = ob_get_clean(); imagedestroy($image);
