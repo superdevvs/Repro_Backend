@@ -415,6 +415,8 @@ class ShootPresenter
 
         $requestingUser = auth()->user();
         $requestingRole = $requestingUser ? strtolower($requestingUser->role ?? '') : '';
+        // Compute from the original relations before client/rep details are projected for this viewer.
+        $shoot->setAttribute('can_share_guest', app(ShootGuestShareService::class)->canManage($shoot, $requestingUser));
         // Secondary reps need complete booking metadata. Media is still scoped
         // independently by the file/assignment services and original role below.
         $isBookingRep = app(ShootManagementAccess::class)->isSalesRep($requestingUser)
