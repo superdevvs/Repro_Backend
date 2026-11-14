@@ -14,6 +14,7 @@ class LabLifestyleOpticalDetails
         $out['opticalServiceSha256']=hash_file('sha256',__FILE__);
         $out['opticalProtocolSha256']=hash_file('sha256',(new \ReflectionClass(LabLifestyleOpticalProtocol::class))->getFileName());
         $out['opticalWorkerSha256']=hash_file('sha256',resource_path('iguide-lab/lifestyle_optical_details_v2.py'));
+        $out['publicAssetReaderSha256']=hash_file('sha256',(new \ReflectionClass(\App\Http\Controllers\API\IguideLabController::class))->getFileName());
         foreach(['opticalCut'=>LabLifestyleOpticalCutProtocol::class,'opticalCutViews'=>LabLifestyleOpticalCutViews::class,'sampling'=>LabLifestyleOpticalSampling::class,'canonicalBinding'=>LabMachineSegmentationPlan::class,'recipes'=>LabAnalysisRecipes::class,'analyses'=>LabAnalyses::class,'analysisProvider'=>LabAnalysisProvider::class,'cutReadiness'=>LabLifestyleCutReadiness::class,'policy'=>LabWorkflowPolicy::class,'steps'=>LabWorkflowSteps::class,'sourceAuthority'=>LabWorkflowSources::class] as $key=>$class)$out[$key.'Sha256']=hash_file('sha256',(new \ReflectionClass($class))->getFileName());
         return $out;
     }
