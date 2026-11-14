@@ -14,8 +14,10 @@ final class LabLightingD2
         $files = [];
         foreach (self::FILES as $key => $file) $files[$key] = hash_file('sha256', resource_path('iguide-lab/'.$file));
         $path = (string) config('iguide-lab.lighting_d2_runtime_manifest');
+        $python = (string) config('iguide-lab.pipeline_python_path');
         return ['recipeVersion' => self::VERSION, 'files' => $files,
             'authoritySha256' => hash_file('sha256', __FILE__),
+            'pythonPath' => $python, 'pythonExecutableSha256' => is_file($python) ? hash_file('sha256', $python) : null,
             'runtimeManifestSha256' => is_file($path) ? hash_file('sha256', $path) : null];
     }
     public static function validateRuntime(array $snapshot): void
@@ -27,6 +29,8 @@ final class LabLightingD2
         $m = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
         abort_unless(($m['validationStatus'] ?? null) === 'passed' && ($m['recipeVersion'] ?? null) === self::VERSION
             && ($m['pythonPath'] ?? null) === $python && ($m['pythonVersion'] ?? null) === '3.12.3'
+            && is_string($snapshot['pythonExecutableSha256'])
+            && ($m['pythonExecutableSha256'] ?? null) === $snapshot['pythonExecutableSha256']
             && ($m['numpyVersion'] ?? null) === '2.5.4' && ($m['pillowVersion'] ?? null) === '13.0.0'
             && ($m['authoritySha256'] ?? null) === $snapshot['authoritySha256']
             && LabMachineSegmentationPlan::canonicalHash($m['files'] ?? []) === LabMachineSegmentationPlan::canonicalHash($snapshot['files']), 503, 'D2 lighting code was not validated with this runtime.');

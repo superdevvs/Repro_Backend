@@ -9,13 +9,14 @@ class LabLightingD2Test extends TestCase
 {
     private array $temporary = [];
     protected function tearDown(): void { foreach ($this->temporary as $p) @unlink($p); parent::tearDown(); }
-    private function manifest(): array
+    private function manifest(string $python = PHP_BINARY): array
     {
         $path = tempnam(sys_get_temp_dir(), 'd2-test-'); $this->temporary[] = $path;
-        config(['iguide-lab.lighting_d2_enabled' => true, 'iguide-lab.lighting_d2_runtime_manifest' => $path, 'iguide-lab.pipeline_python_path' => PHP_BINARY]);
+        config(['iguide-lab.lighting_d2_enabled' => true, 'iguide-lab.lighting_d2_runtime_manifest' => $path, 'iguide-lab.pipeline_python_path' => $python]);
         $snapshot = LabLightingD2::snapshot();
         // Synthetic guard fixture, not proof that PHP_BINARY is a Python runtime.
-        $m = ['validationStatus' => 'passed', 'recipeVersion' => LabLightingD2::VERSION, 'pythonPath' => PHP_BINARY,
+        $m = ['validationStatus' => 'passed', 'recipeVersion' => LabLightingD2::VERSION, 'pythonPath' => $python,
+            'pythonExecutableSha256' => hash_file('sha256', $python),
             'pythonVersion' => '3.12.3', 'numpyVersion' => '2.5.4', 'pillowVersion' => '13.0.0',
             'authoritySha256' => $snapshot['authoritySha256'], 'files' => $snapshot['files']];
         file_put_contents($path, json_encode($m, JSON_THROW_ON_ERROR));
@@ -55,5 +56,26 @@ class LabLightingD2Test extends TestCase
         $m['files']['core']=str_repeat('0',64);file_put_contents($path,json_encode($m,JSON_THROW_ON_ERROR));
         try { LabLightingD2::validateRuntime($snapshot);$this->fail('Reserved manifest drift accepted'); } catch(HttpException $e) { $this->assertSame(422,$e->getStatusCode()); }
         try { LabLightingD2::validateRuntime(LabLightingD2::snapshot());$this->fail('Unvalidated code accepted'); } catch(HttpException $e) { $this->assertSame(503,$e->getStatusCode()); }
+    }
+    public function test_manifest_requires_the_validated_interpreter_digest(): void
+    {
+        [$path,$m]=$this->manifest();LabLightingD2::validateRuntime(LabLightingD2::snapshot());$this->addToAssertionCount(1);
+        foreach ([null,str_repeat('0',64)] as $bad) {
+            $m['pythonExecutableSha256']=$bad;file_put_contents($path,json_encode($m,JSON_THROW_ON_ERROR));
+            try { LabLightingD2::validateRuntime(LabLightingD2::snapshot());$this->fail('Missing or mismatched interpreter digest accepted'); }
+            catch(HttpException $e) { $this->assertSame(503,$e->getStatusCode()); }
+        }
+    }
+    public function test_same_path_interpreter_replacement_rejects_reserved_and_new_snapshots(): void
+    {
+        $python=tempnam(sys_get_temp_dir(),'d2-interpreter-');$this->temporary[]=$python;
+        copy(PHP_BINARY,$python);chmod($python,0700);$this->manifest($python);$snapshot=LabLightingD2::snapshot();
+        LabLightingD2::validateRuntime($snapshot);$this->addToAssertionCount(1);
+        file_put_contents($python,'changed',FILE_APPEND);clearstatcache(true,$python);
+        $this->assertNotSame($snapshot['pythonExecutableSha256'],LabLightingD2::snapshot()['pythonExecutableSha256']);
+        try { LabLightingD2::validateRuntime($snapshot);$this->fail('Reserved interpreter drift accepted'); }
+        catch(HttpException $e) { $this->assertSame(422,$e->getStatusCode()); }
+        try { LabLightingD2::validateRuntime(LabLightingD2::snapshot());$this->fail('Unvalidated replacement interpreter accepted'); }
+        catch(HttpException $e) { $this->assertSame(503,$e->getStatusCode()); }
     }
 }
