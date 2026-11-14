@@ -85,19 +85,18 @@ class IguideLabRoomFurnishingProtocolTest extends TestCase
     }
     public function test_each_furnishing_request_supplies_and_schema_binds_the_exact_context_hash(): void
     {
-        foreach([F::class,L::class,C::class] as $p){
-            $c=self::context($p::PHASE);$images=[];
-            foreach($c['views'] as $i=>$view){
-                $image=imagecreatetruecolor($view['width'],$view['height']);imagefill($image,0,0,imagecolorallocate($image,30+$i,60,90));
-                ob_start();imagepng($image);$bytes=ob_get_clean();imagedestroy($image);
-                $c['views'][$i]['sha256']=hash('sha256',$bytes);$images[]='data:image/png;base64,'.base64_encode($bytes);
-            }
-            $c['preparedSourceSha256']=$c['views'][0]['sha256'];
-            if($p===C::class)$c['candidateSha256']=$c['views'][1]['sha256'];
-            $wire=$p::request($c,$images);$content=$wire['input'][0]['content'];$expected=H::canonicalHash($c);
+        foreach([F::class,L::class,C::class] as $p)foreach([R::BEDROOM,R::LIVING] as $profile){
+            [$c,$images,$wire]=self::wireFixture($p,$profile);$content=$wire['input'][0]['content'];$expected=H::canonicalHash($c);
             $this->assertSame($c,json_decode($content[0]['text'],true));
             $this->assertSame(['requestVersion'=>Base::REQUEST_VERSION,'contextSha256'=>$expected],json_decode($content[1]['text'],true));
             $this->assertSame(['type'=>'string','enum'=>[$expected]],$wire['text']['format']['schema']['properties']['contextSha256']);
+            $schema=$wire['text']['format']['schema']['properties'];$roles=R::get($profile)['roles'];
+            $this->assertSame([$profile],$schema['profileId']['enum']);
+            $this->assertSame($roles,$schema['objects']['items']['properties']['id']['enum']);
+            $this->assertSame($roles,$schema['styleFeatures']['items']['properties']['objectIds']['items']['enum']);
+            $contacts=$schema['objects']['items']['properties']['visibleBaseContacts'];
+            if($p===C::class&&$profile===R::BEDROOM){$this->assertSame(1,$contacts['minItems']);$this->assertSame(3,$contacts['maxItems']);}
+            else $this->assertSame(0,$contacts['maxItems']);
             $this->assertNotSame($c['nativeSourceSha256'],$expected);$this->assertNotSame($c['preparedSourceSha256'],$expected);
             $this->assertSame(Base::REQUEST_VERSION,$p::snapshot()['requestVersion']);
             $this->assertSame(6000,$wire['max_output_tokens']);$this->assertSame('medium',$wire['reasoning']['effort']);
@@ -110,6 +109,59 @@ class IguideLabRoomFurnishingProtocolTest extends TestCase
             $value=self::value($p,$c);$value['contextSha256']=$c['nativeSourceSha256'];
             $this->rejects(fn()=>$p::parse(V::response($value),$c));
         }
+    }
+    public static function wireFixture(string $p,string $profile=R::BEDROOM): array
+    {
+        $c=self::context($p::PHASE,$profile);$images=[];
+        foreach($c['views'] as $i=>$view){
+            $image=imagecreatetruecolor($view['width'],$view['height']);imagefill($image,0,0,imagecolorallocate($image,30+$i,60,90));
+            ob_start();imagepng($image);$bytes=ob_get_clean();imagedestroy($image);
+            $c['views'][$i]['sha256']=hash('sha256',$bytes);$images[]='data:image/png;base64,'.base64_encode($bytes);
+        }
+        $c['preparedSourceSha256']=$c['views'][0]['sha256'];
+        if($p===C::class)$c['candidateSha256']=$c['views'][1]['sha256'];
+        return [$c,$images,$p::request($c,$images)];
+    }
+    public function test_phase_schema_and_status_matrix_keep_held_diagnostics_separate_from_authority(): void
+    {
+        foreach([F::class,L::class,C::class] as $p){
+            $c=self::context($p::PHASE);$v=self::value($p,$c);$schema=$p::schema()['properties'];
+            if($p===F::class){$this->assertSame(0,$schema['objects']['maxItems']);$this->assertSame(['type'=>'null'],$schema['sourceFloor']);}
+            else $this->assertSame(['type'=>'null'],$schema['view']);
+            $this->assertSame(count($p::ids()),$schema['checks']['properties']['optical_dependencies']['properties']['evidenceViewIds']['minItems']);
+            $this->assertSame(count($p::ids()),$schema['checks']['properties']['optical_dependencies']['properties']['evidenceViewIds']['maxItems']);
+            $bad=$v;$bad['view']=$p===F::class?null:['yaw'=>15,'pitch'=>-22,'hFov'=>115];
+            $this->rejects(fn()=>$p::parse(V::response($bad),$c));
+            $held=$v;$held['status']='needs_review';$held['view']=null;$held['objects']=[];$held['sourceFloor']=null;$held['styleFeatures']=[];
+            $held['checks']['optical_dependencies']['status']=$p===F::class?'blocked':'uncertain';
+            $this->assertSame('needs_review',$p::parse(V::response($held),$c)['status']);
+            $bad=$held;$bad['view']=['yaw'=>15,'pitch'=>-22,'hFov'=>115];$this->rejects(fn()=>$p::parse(V::response($bad),$c));
+            foreach(['objects'=>[['id'=>'bed']],'sourceFloor'=>['status'=>'opaque_matte','prompt'=>'floor','box'=>[0,0,2047,2047]],'styleFeatures'=>[['kind'=>'form']]] as $key=>$value){
+                $bad=$held;$bad[$key]=$value;$this->rejects(fn()=>$p::parse(V::response($bad),$c));
+            }
+            $this->assertStringContainsString('EVERY layout and candidate result returns view=null',$p::instructions());
+            $this->assertStringContainsString('copies the entire prior layout.result.sourceFloor exactly',$p::instructions());
+        }
+    }
+    public function test_evidence_bounds_box_order_and_text_limits_remain_parser_requirements(): void
+    {
+        foreach([F::class,L::class,C::class] as $p){
+            $c=self::context($p::PHASE);$v=self::value($p,$c);$key=$p===C::class?'geometry':'room_scope';
+            foreach([['source','source'],['unknown'],array_values(array_diff($p::ids(),['source']))] as $ids){
+                $bad=$v;$bad['checks'][$key]['evidenceViewIds']=$ids;$this->rejects(fn()=>$p::parse(V::response($bad),$c));
+            }
+            $bad=$v;$bad['checks']['optical_dependencies']['evidenceViewIds']=['source'];$this->rejects(fn()=>$p::parse(V::response($bad),$c));
+            $bad=$v;$bad['summary']=str_repeat('x',901);$this->rejects(fn()=>$p::parse(V::response($bad),$c));
+            $bad=$v;$bad['checks'][$key]['reason']=str_repeat('x',551);$this->rejects(fn()=>$p::parse(V::response($bad),$c));
+            $bad=$v;$bad['checks'][$key]['reason']=' ';$this->rejects(fn()=>$p::parse(V::response($bad),$c));
+            $v['summary']=str_repeat('x',900);$v['checks'][$key]['reason']=str_repeat('x',550);
+            $this->assertSame($v['status'],$p::parse(V::response($v),$c)['status']);
+        }
+        $c=self::context('layout');$v=self::value(L::class,$c);
+        foreach([[800,550,650,1500],[650,900,1400,900]] as $box){$bad=$v;$bad['objects'][0]['box']=$box;$this->rejects(fn()=>L::parse(V::response($bad),$c));}
+        $bad=$v;$bad['styleFeatures'][0]['objectIds']=['bed','bed'];$this->rejects(fn()=>L::parse(V::response($bad),$c));
+        $this->assertStringContainsString('Boxes are [xMin,yMin,xMax,yMax]',L::instructions());
+        $this->assertStringContainsString('EvidenceViewIds and style-feature objectIds contain unique allowed IDs',L::instructions());
     }
     public function test_framing_wire_forbids_style_features_without_weakening_later_style_or_hold_gates(): void
     {
