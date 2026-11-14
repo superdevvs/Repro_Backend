@@ -83,5 +83,51 @@ class IguideLabRoomFurnishingProtocolTest extends TestCase
             fn($v)=>array_replace_recursive($v,['styleFeatures'=>[0=>['kind'=>'colour'],1=>['kind'=>'colour']]])
         ] as $change)$this->rejects(fn()=>C::parse(V::response($change($v)),$c));
     }
+    public function test_each_furnishing_request_supplies_and_schema_binds_the_exact_context_hash(): void
+    {
+        foreach([F::class,L::class,C::class] as $p){
+            $c=self::context($p::PHASE);$images=[];
+            foreach($c['views'] as $i=>$view){
+                $image=imagecreatetruecolor($view['width'],$view['height']);imagefill($image,0,0,imagecolorallocate($image,30+$i,60,90));
+                ob_start();imagepng($image);$bytes=ob_get_clean();imagedestroy($image);
+                $c['views'][$i]['sha256']=hash('sha256',$bytes);$images[]='data:image/png;base64,'.base64_encode($bytes);
+            }
+            $c['preparedSourceSha256']=$c['views'][0]['sha256'];
+            if($p===C::class)$c['candidateSha256']=$c['views'][1]['sha256'];
+            $wire=$p::request($c,$images);$content=$wire['input'][0]['content'];$expected=H::canonicalHash($c);
+            $this->assertSame($c,json_decode($content[0]['text'],true));
+            $this->assertSame(['requestVersion'=>Base::REQUEST_VERSION,'contextSha256'=>$expected],json_decode($content[1]['text'],true));
+            $this->assertSame(['type'=>'string','enum'=>[$expected]],$wire['text']['format']['schema']['properties']['contextSha256']);
+            $this->assertNotSame($c['nativeSourceSha256'],$expected);$this->assertNotSame($c['preparedSourceSha256'],$expected);
+            $this->assertSame(Base::REQUEST_VERSION,$p::snapshot()['requestVersion']);
+            $this->assertSame(6000,$wire['max_output_tokens']);$this->assertSame('medium',$wire['reasoning']['effort']);
+            $this->assertSame($images,array_column(array_filter($content,fn($part)=>$part['type']==='input_image'),'image_url'));
+            $this->assertSame(array_map(fn($id)=>'View ID: '.$id,$p::ids()),array_values(array_map(fn($part)=>$part['text'],array_filter($content,fn($part)=>$part['type']==='input_text'&&str_starts_with($part['text'],'View ID: ')))));
+            $changed=$c;$changed['instructions']='Preserve the same bounded profile, with natural materials.';
+            $changedWire=$p::request($changed,$images);
+            $this->assertSame([H::canonicalHash($changed)],$changedWire['text']['format']['schema']['properties']['contextSha256']['enum']);
+            $this->assertNotSame($expected,H::canonicalHash($changed));
+            $value=self::value($p,$c);$value['contextSha256']=$c['nativeSourceSha256'];
+            $this->rejects(fn()=>$p::parse(V::response($value),$c));
+        }
+    }
+    public function test_framing_wire_forbids_style_features_without_weakening_later_style_or_hold_gates(): void
+    {
+        $this->assertSame(0,F::schema()['properties']['styleFeatures']['maxItems']);
+        $this->assertStringContainsString('Every framing result returns objects=[], sourceFloor=null and styleFeatures=[]',F::instructions());
+        $this->assertStringContainsString('Only a successful layout or candidate returns two to five style features',F::instructions());
+        $c=self::context();$value=self::value(F::class,$c);
+        $value['styleFeatures']=[['kind'=>'form','description'=>'A prospective platform bed.','objectIds'=>['bed']]];
+        $this->rejects(fn()=>F::parse(V::response($value),$c));
+        $value['styleFeatures']=[];$parsed=F::parse(V::response($value),$c);
+        $this->assertSame('framing_candidate',$parsed['status']);$this->assertFalse($parsed['automaticAcceptance']);
+        foreach([L::class,C::class] as $p){
+            $this->assertSame(5,$p::schema()['properties']['styleFeatures']['maxItems']);
+            $context=self::context($p::PHASE);$candidate=self::value($p,$context);$candidate['styleFeatures']=[];
+            $this->rejects(fn()=>$p::parse(V::response($candidate),$context));
+            $candidate['status']='needs_review';$candidate['objects']=[];$candidate['sourceFloor']=null;
+            $this->assertSame('needs_review',$p::parse(V::response($candidate),$context)['status']);
+        }
+    }
     private function rejects(callable $f): void {try{$f();$this->fail('Unsafe profile authority accepted.');}catch(\InvalidArgumentException $e){$this->assertNotEmpty($e->getMessage());}}
 }
