@@ -78,7 +78,7 @@ class LabStagingLayouts
     {
         $steps=app(LabWorkflowSteps::class);$input=['caseId'=>$native->id,'view'=>$view];$step=$steps->reserve($item,$key,'section',$input);
         $section=IguideLabSection::where('project_id',$project->id)->where('request_id',$step->request_id)->first();
-        if(!$section)$section=app(LabSections::class)->start($project,$input+['requestId'=>$step->request_id]);
+        if(!$section)$section=app(LabSections::class)->start($project,$input+['requestId'=>$step->request_id],$steps->invocation($step));
         elseif($section->status==='queued'&&$section->started_at===null&&$section->created_at->lt(now()->subMinute())){
             $claimed=app(LabWorkflowInvocation::class)->claim($steps->invocation($step),$project->id,$step->request_id,'section',function()use($section,$step){
                 $fresh=$section->fresh();$record=$step->fresh();$data=$record->data??[];

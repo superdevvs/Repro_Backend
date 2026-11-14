@@ -74,7 +74,7 @@ class LabAnalyses
             $saved = IguideLabAnalysis::where('project_id', $project->id)->where('request_id', $input['requestId'])->first();
             if ($saved) { abort_unless(hash_equals($saved->request_hash, $hash), 409, 'This analysis request already has different source or settings.'); return [$saved, false]; }
             abort_unless($this->ready(), 503, 'Scene analysis is unavailable.');
-            abort_if(IguideLabAnalysis::where('project_id', $project->id)->count() >= 120 || IguideLabAnalysis::where('created_at', '>=', now()->subDay())->count() >= 120, 429, 'The analysis safety ceiling has been reached.');
+            app(LabWorkflowRecordCapacity::class)->assertRoom(IguideLabAnalysis::class,$project->id,$workflowInvocation);
             if ($workflowInvocation !== null) app(LabWorkflowInvocation::class)->verify($workflowInvocation, $project->id, $input['requestId'], 'analysis', false);
             if ($workflowInvocation !== null) {
                 $policy = app(LabWorkflowInvocation::class)->policy($workflowInvocation);

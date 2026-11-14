@@ -11,6 +11,24 @@ use Illuminate\Support\Str;
 /** Stable child identity is persisted before any dispatcher or paid executor is called. */
 class LabWorkflowSteps
 {
+    /** One owning budget definition, used for both reservation and tour allowance. */
+    public function limits(array $policy,string $preset):array
+    {
+        $limits=['analysis'=>2,'section'=>8,'image'=>3,'segmentation'=>6,'composition'=>8,'evaluation'=>8];
+        if(isset($policy['lightingRepair'])&&in_array($preset,['golden-hour','twilight'],true))$limits=array_replace($limits,['composition'=>5,'evaluation'=>5]);
+        if(LabStagingAssessmentPolicy::enabled($policy,$preset)){
+            $limits=array_replace($limits,['analysis'=>3,'image'=>1,'segmentation'=>2,'evaluation'=>1]);
+            if(isset($policy['stagingLayout']))$limits=array_replace($limits,['analysis'=>4,'section'=>2,'composition'=>1]);
+        }
+        if(LabLifestyleAssessmentPolicy::enabled($policy,$preset))$limits=array_replace($limits,['analysis'=>3,'image'=>1,'segmentation'=>2,'evaluation'=>1,'section'=>1,'composition'=>1]);
+        if(class_exists(LabGrassAssessmentPolicy::class)&&LabGrassAssessmentPolicy::enabled($policy,$preset)){
+            $limits=array_replace($limits,['analysis'=>2,'image'=>1,'segmentation'=>6,'evaluation'=>1]);
+            if(LabGrassSourceAdmissionPolicy::enabled($policy,$preset))$limits['analysis']=4;
+        }
+        if(LabDeclutterRemovalPolicy::enabled($policy,$preset))$limits=array_replace($limits,['analysis'=>2,'image'=>1,'segmentation'=>2,'evaluation'=>1,'section'=>1,'composition'=>1]);
+        if(LabInteriorDesignPolicy::enabled($policy,$preset))$limits=array_replace($limits,['analysis'=>3,'image'=>1,'segmentation'=>15,'evaluation'=>1,'section'=>1,'composition'=>1]);
+        return $limits;
+    }
     public function reserve(IguideLabWorkflowItem $item, string $key, string $kind, array $input): IguideLabWorkflowStep
     {
         abort_unless(in_array($kind, ['analysis', 'section', 'image', 'segmentation', 'composition', 'evaluation'], true)
@@ -22,35 +40,15 @@ class LabWorkflowSteps
             abort_if($workflow->cancelled_at, 409, 'The workflow is cancelled.');
             $prior = IguideLabWorkflowStep::where('item_id', $item->id)->where('step_key', $key)->first();
             if ($prior) { abort_unless($prior->kind === $kind && hash_equals($prior->input_sha256, $hash), 409, 'A workflow step changed.'); return $prior; }
-            $limit = match ($kind) { 'image' => 3, 'analysis' => 2, 'segmentation' => 6, default => 8 };
+            $limit=$this->limits($workflow->policy,$item->preset)[$kind];
             if (isset($workflow->policy['lightingRepair']) && in_array($item->preset, ['golden-hour','twilight'], true)) {
                 app(LabLightingRepairs::class)->validate($workflow->policy);
-                $limit = match ($kind) { 'evaluation','composition' => 5, 'image' => 3, 'analysis' => 2, default => $limit };
                 if (str_contains($key, '-global-')) abort_unless(in_array($key, ['composition-global-1','evaluation-global-1','composition-global-2','evaluation-global-2'], true), 422, 'At most two local lighting repairs are allowed.');
             }
-            if (LabStagingAssessmentPolicy::enabled($workflow->policy, $item->preset)) {
-                $limit = match ($kind) { 'analysis' => 3, 'image' => 1, 'segmentation' => 2, 'evaluation' => 1, default => $limit };
-                if (isset($workflow->policy['stagingLayout'])) {
-                    $limit = match ($kind) { 'analysis' => 4, 'section' => 2, 'composition' => 1, default => $limit };
-                    if ($kind === 'section') abort_unless(in_array($key,['staging-section','staging-reframed-section'],true),422,'Unsupported source section step.');
-                    if ($kind === 'analysis') abort_unless(in_array($key,['staging-framing','staging-layout-initial','staging-layout-followup'],true)
-                        || (($input['protocolVersion']??null)===LabStagingAssessmentPolicy::VERSION&&$key==='placement-'.($input['candidateRunId']??'')),422,'Unsupported bounded staging analysis step.');
-                }
-            }
-            if (LabLifestyleAssessmentPolicy::enabled($workflow->policy, $item->preset)) {
-                $limit = match ($kind) { 'analysis' => 3, 'image' => 1, 'segmentation' => 2, 'evaluation','section','composition' => 1, default => $limit };
-            }
-            if (class_exists(LabGrassAssessmentPolicy::class) && LabGrassAssessmentPolicy::enabled($workflow->policy,$item->preset)) {
-                $limit = match ($kind) { 'analysis' => 2, 'image' => 1, 'segmentation' => 6, 'evaluation' => 1, default => $limit };
-                if (LabGrassSourceAdmissionPolicy::enabled($workflow->policy, $item->preset)) {
-                    $limit = match ($kind) { 'analysis' => 4, default => $limit };
-                }
-            }
-            if (LabDeclutterRemovalPolicy::enabled($workflow->policy,$item->preset)) {
-                $limit = match ($kind) { 'analysis' => 2, 'image' => 1, 'segmentation' => 2, 'evaluation' => 1, 'section','composition' => 1, default => $limit };
-            }
-            if (LabInteriorDesignPolicy::enabled($workflow->policy,$item->preset)) {
-                $limit = match ($kind) { 'analysis' => 3, 'image' => 1, 'segmentation' => 15, 'evaluation','section','composition' => 1, default => $limit };
+            if (LabStagingAssessmentPolicy::enabled($workflow->policy, $item->preset) && isset($workflow->policy['stagingLayout'])) {
+                if ($kind === 'section') abort_unless(in_array($key,['staging-section','staging-reframed-section'],true),422,'Unsupported source section step.');
+                if ($kind === 'analysis') abort_unless(in_array($key,['staging-framing','staging-layout-initial','staging-layout-followup'],true)
+                    || (($input['protocolVersion']??null)===LabStagingAssessmentPolicy::VERSION&&$key==='placement-'.($input['candidateRunId']??'')),422,'Unsupported bounded staging analysis step.');
             }
             abort_if(IguideLabWorkflowStep::where('item_id', $item->id)->where('kind', $kind)->count() >= $limit, 422, 'The bounded workflow attempt limit was reached.');
             return IguideLabWorkflowStep::create(['project_id' => $item->project_id, 'item_id' => $item->id, 'step_key' => $key,
