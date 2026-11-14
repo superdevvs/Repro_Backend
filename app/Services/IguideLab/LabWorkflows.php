@@ -90,6 +90,9 @@ class LabWorkflows
         if ($item->preset === 'lifestyle' && LabLifestyleAssessmentPolicy::enabled($workflow->policy,$item->preset)) {
             app(LabLifestyleWorkflow::class)->advance($workflow,$item,$project); return;
         }
+        if ($item->preset === 'interior-design' && LabInteriorDesignPolicy::enabled($workflow->policy,$item->preset)) {
+            app(LabInteriorDesignWorkflow::class)->advance($workflow,$item,$project); return;
+        }
         if ($item->preset === 'declutter' && LabDeclutterRemovalPolicy::enabled($workflow->policy,$item->preset)) {
             app(LabDeclutterWorkflow::class)->advance($workflow,$item,$project); return;
         }

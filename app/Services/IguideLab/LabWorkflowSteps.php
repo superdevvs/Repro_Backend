@@ -43,6 +43,9 @@ class LabWorkflowSteps
             if (LabDeclutterRemovalPolicy::enabled($workflow->policy,$item->preset)) {
                 $limit = match ($kind) { 'analysis' => 2, 'image' => 1, 'segmentation' => 2, 'evaluation' => 1, 'section','composition' => 1, default => $limit };
             }
+            if (LabInteriorDesignPolicy::enabled($workflow->policy,$item->preset)) {
+                $limit = match ($kind) { 'analysis' => 3, 'image' => 1, 'segmentation' => 15, 'evaluation','section','composition' => 1, default => $limit };
+            }
             abort_if(IguideLabWorkflowStep::where('item_id', $item->id)->where('kind', $kind)->count() >= $limit, 422, 'The bounded workflow attempt limit was reached.');
             return IguideLabWorkflowStep::create(['project_id' => $item->project_id, 'item_id' => $item->id, 'step_key' => $key,
                 'kind' => $kind, 'request_id' => (string) Str::uuid(), 'input' => $input, 'input_sha256' => $hash, 'status' => 'reserved']);

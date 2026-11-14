@@ -153,6 +153,12 @@ class LabWorkflowEvaluations
     public function intent(IguideLabWorkflowItem $item): array
     {
         $intent=['sourceSha256'=>$item->source['sha256'],'preset'=>$item->preset,'style'=>$item->style,'instructions'=>$item->instructions];
+        if($item->preset==='interior-design'){
+            $workflow=\App\Models\IguideLabWorkflow::where('project_id',$item->project_id)->findOrFail($item->workflow_id);
+            abort_unless(LabInteriorDesignPolicy::enabled($workflow->policy,$item->preset),422,'Material evaluation recipe is unavailable.');
+            app(LabInteriorDesignWorkflow::class)->validateSnapshot($workflow->policy['interiorWorkflow']);
+            $intent['fixedRecipeConstraints']=LabInteriorDesignArtifacts::REVIEW_CONSTRAINTS;
+        }
         if($item->preset==='staging'){
             $workflow=\App\Models\IguideLabWorkflow::where('project_id',$item->project_id)->findOrFail($item->workflow_id);
             abort_unless(LabStagingAssessmentPolicy::enabled($workflow->policy,$item->preset),422,'Staging evaluation recipe is unavailable.');

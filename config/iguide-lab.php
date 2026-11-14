@@ -8,6 +8,10 @@ return [
     'lifestyle_support_runtime_manifest' => env('IGUIDE_LAB_LIFESTYLE_SUPPORT_RUNTIME_MANIFEST'),
     'lifestyle_support_python_path' => env('IGUIDE_LAB_LIFESTYLE_SUPPORT_PYTHON'),
     // Operator opt-in only; validated runtimes are required in addition to these flags.
+    'interior_design_workflow_enabled' => env('IGUIDE_LAB_INTERIOR_DESIGN_WORKFLOW_ENABLED', false),
+    'interior_design_runtime_manifest' => env('IGUIDE_LAB_INTERIOR_DESIGN_RUNTIME_MANIFEST'),
+    'interior_material_runtime_manifest' => env('IGUIDE_LAB_INTERIOR_MATERIAL_RUNTIME_MANIFEST'),
+    'interior_material_python_path' => env('IGUIDE_LAB_INTERIOR_MATERIAL_PYTHON'),
     'staging_framing_enabled' => env('IGUIDE_LAB_STAGING_FRAMING_ENABLED', false),
     'staging_framing_runtime_manifest' => env('IGUIDE_LAB_STAGING_FRAMING_RUNTIME_MANIFEST'),
     'staging_workflow_enabled' => env('IGUIDE_LAB_STAGING_WORKFLOW_ENABLED', false),
