@@ -117,10 +117,7 @@ class LabWorkflowArtifacts
     {
         $case = app(LabWorkflowSources::class)->verify($item->project_id, $item->source);
         abort_unless($composite->case_id === $case->id && $composite->project_id === $item->project_id, 422);
-        abort_unless($analysis->status === 'completed' && $analysis->project_id === $item->project_id && $analysis->case_id === $case->id
-            && $analysis->source_sha256 === $case->source_sha256
-            && $analysis->proposal_sha256 === ($composite->manifest['scenePlanSha256'] ?? null)
-            && $analysis->proposal_sha256 === LabAnalysisRecipes::hash($analysis->proposal), 422, 'The evidence scene proposal does not match this artifact.');
+        $this->validateEvidenceAnalysis($item,$composite,$analysis);
         $snapshot = $composite->manifest['lineage']['recipe']; $this->validateSnapshot($snapshot);
         $disk = Storage::disk(LabService::DISK); $base = 'iguide-lab/'.$item->project_id.'/workflow-items/'.$item->id;
         $kind = $composite->native_path ? 'native' : 'preview'; $candidate = $kind === 'native' ? $composite->native_path : $composite->preview_path;
@@ -128,7 +125,7 @@ class LabWorkflowArtifacts
         $request = ['schemaVersion' => 1, 'operation' => 'build-evidence', 'privateRoot' => $disk->path('iguide-lab/'.$item->project_id),
             'source' => ['path' => $disk->path($case->source_path), 'sha256' => $case->source_sha256],
             'candidate' => ['path' => $disk->path($candidate), 'sha256' => $composite->manifest[$kind]['sha256']],
-            'preset' => $item->preset, 'editScope' => 'entire_view', 'outputDirectory' => $disk->path($out)];
+            'preset' => $item->preset, 'outputDirectory' => $disk->path($out)] + $this->evidenceSupport($item,$composite);
         $report = $this->execute($base.'/evidence-'.$composite->id.'-request.json', $request, $snapshot);
         abort_unless(array_column($report['evidence'] ?? [], 'id') === LabVisualQualityProtocol::VIEW_IDS, 422, 'Automatic evidence coverage changed.');
         $views = $assets = []; $total = 0;
@@ -151,6 +148,16 @@ class LabWorkflowArtifacts
             'mechanicalQa' => ['passed' => ($report['qa']['numericIntegrity'] ?? null) === 'pass' && ! $blockers, 'blockingReasons' => $blockers], 'views' => $views];
         return ['compositeId' => $composite->id, 'manifestPath' => $out.'/report.json', 'context' => $context, 'assets' => $assets];
     }
+
+    protected function validateEvidenceAnalysis(IguideLabWorkflowItem $item,IguideLabComposite $composite,IguideLabAnalysis $analysis): void
+    {
+        $case = app(LabWorkflowSources::class)->verify($item->project_id,$item->source);
+        abort_unless($analysis->status === 'completed' && $analysis->project_id === $item->project_id && $analysis->case_id === $case->id
+            && $analysis->source_sha256 === $case->source_sha256
+            && $analysis->proposal_sha256 === ($composite->manifest['scenePlanSha256'] ?? null)
+            && $analysis->proposal_sha256 === LabAnalysisRecipes::hash($analysis->proposal), 422, 'The evidence scene proposal does not match this artifact.');
+    }
+    protected function evidenceSupport(IguideLabWorkflowItem $item,IguideLabComposite $composite): array { return ['editScope'=>'entire_view']; }
 
     public function evaluationReviewRequirements(array $proposal, array $qa): array
     {
@@ -182,7 +189,7 @@ class LabWorkflowArtifacts
         }
     }
 
-    private function runtime(): array
+    protected function runtime(): array
     {
         $path = (string) config('iguide-lab.workflow_runtime_manifest'); $python = (string) config('iguide-lab.pipeline_python_path');
         abort_unless(is_executable($python) && is_file($path) && filesize($path) <= 65536, 503, 'Validated automatic runtime is unavailable.');
@@ -196,7 +203,7 @@ class LabWorkflowArtifacts
         abort_unless(($manifest['validatedPreparerSha256'] ?? null) === hash_file('sha256', (new \ReflectionClass(LabImages::class))->getFileName()), 503, 'Automatic source preparation was not validated.');
         return $manifest;
     }
-    private function execute(string $path, array $request, array $snapshot): array
+    protected function execute(string $path, array $request, array $snapshot): array
     {
         $this->validateSnapshot($snapshot); $this->runtime(); $disk = Storage::disk(LabService::DISK);
         $this->putOnce($path, json_encode($request, JSON_THROW_ON_ERROR));
@@ -210,25 +217,25 @@ class LabWorkflowArtifacts
         $this->validateSnapshot($snapshot);
         return $report;
     }
-    private function runtimeMatches(array $runtime, array $snapshot): bool
+    protected function runtimeMatches(array $runtime, array $snapshot): bool
     {
         return ($runtime['python'] ?? null) === '3.12.3' && ($runtime['numpy'] ?? null) === '2.5.4' && ($runtime['pillow'] ?? null) === '13.0.0'
             && ($runtime['workerSha256'] ?? null) === $snapshot['workerSha256']
             && ($runtime['lightingCodeSha256'] ?? null) === $snapshot['lightingSha256']
             && ($runtime['geometrySha256'] ?? null) === $snapshot['geometrySha256'];
     }
-    private function environment(): array
+    protected function environment(): array
     {
         $env = array_fill_keys(array_keys(array_merge($_SERVER, $_ENV, getenv() ?: [])), false);
         return array_merge($env, ['PATH' => '/usr/bin:/bin', 'LANG' => 'C.UTF-8', 'PYTHONNOUSERSITE' => '1', 'OMP_NUM_THREADS' => '1', 'OPENBLAS_NUM_THREADS' => '1']);
     }
-    private function putOnce(string $path, string $bytes): void
+    protected function putOnce(string $path, string $bytes): void
     {
         $disk = Storage::disk(LabService::DISK);
         if ($disk->exists($path)) { abort_unless(hash_equals(hash('sha256', $bytes), hash_file('sha256', $disk->path($path))), 422, 'An immutable local input changed.'); return; }
         abort_unless($disk->put($path, $bytes, ['visibility' => 'private']), 500, 'A private local input could not be saved.');
     }
-    private function asset(array $descriptor, string $outputDirectory, array $dimensions): array
+    protected function asset(array $descriptor, string $outputDirectory, array $dimensions): array
     {
         $path = $descriptor['path'] ?? ''; $real = realpath($path); $root = realpath($outputDirectory);
         abort_unless($real && $root && ! is_link($path) && str_starts_with($real, $root.DIRECTORY_SEPARATOR)

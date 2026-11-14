@@ -6,7 +6,7 @@ class LabWorkflowPolicy
     public const VERSION = 'automatic-tour-edit-workflow/1';
     public function snapshot(): array
     {
-        return ['version' => self::VERSION, 'modelId' => 'gpt-image-2.6-sunburst', 'quality' => 'high', 'complexity' => 'low',
+        $policy = ['version' => self::VERSION, 'modelId' => 'gpt-image-2.6-sunburst', 'quality' => 'high', 'complexity' => 'low',
             'credentialPolicy' => 'lab-primary-explicit-quota-fallback', 'maxImageAttemptsPerItem' => 3, 'maxPlanRevisionsPerItem' => 2,
             'maxSegmentationsPerImageAttempt' => 2, 'maxItems' => 20, 'maxActiveItems' => 1, 'recipeVersion' => 'whole-panorama-lighting/1',
             'manualAcceptance' => false, 'operatorInterventions' => 0,
@@ -14,6 +14,11 @@ class LabWorkflowPolicy
             'evaluationRecipeSha256' => LabVisualQualityProtocol::recipeSha256(),
             'evaluationParserSha256' => hash_file('sha256', (new \ReflectionClass(LabVisualQualityProtocol::class))->getFileName()),
             'artifacts' => app(LabWorkflowArtifacts::class)->snapshot()];
+        if (config('iguide-lab.staging_workflow_enabled',false) === true && app(LabStagingWorkflow::class)->ready()) {
+            $policy['stagingAssessment'] = LabStagingAssessmentPolicy::snapshot();
+            $policy['stagingWorkflow'] = app(LabStagingWorkflow::class)->snapshot();
+        }
+        return $policy;
     }
     public function capabilities(): array
     {

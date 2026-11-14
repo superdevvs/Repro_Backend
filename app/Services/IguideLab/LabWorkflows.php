@@ -88,6 +88,9 @@ class LabWorkflows
     private function advance(IguideLabWorkflow $workflow, IguideLabWorkflowItem $item, IguideLabProject $project): void
     {
         $case = app(LabWorkflowSources::class)->verify($project->id, $item->source);
+        if ($item->preset === 'staging' && LabStagingAssessmentPolicy::enabled($workflow->policy,$item->preset)) {
+            app(LabStagingWorkflow::class)->advance($workflow,$item,$project); return;
+        }
         if (! in_array($item->preset, ['twilight', 'golden-hour'], true)) {
             $this->finish($item, 'needs_review', 'recipe_unavailable', 'Automatic support and composition for this preset are not available yet.'); return;
         }
@@ -197,7 +200,7 @@ class LabWorkflows
     }
 
     /** Recover a record committed before queue dispatch; never retry a provider submission. */
-    private function reconcileQueuedChild(IguideLabWorkflowStep $step, IguideLabAnalysis|IguideLabRun|IguideLabWorkflowEvaluation $child): void
+    public function reconcileQueuedChild(IguideLabWorkflowStep $step, IguideLabAnalysis|IguideLabRun|IguideLabWorkflowEvaluation $child): void
     {
         $kind = match (true) { $child instanceof IguideLabAnalysis => 'analysis', $child instanceof IguideLabRun => 'image', default => 'evaluation' };
         $invocation = app(LabWorkflowSteps::class)->invocation($step);
@@ -255,7 +258,7 @@ class LabWorkflows
         $item->refresh();
     }
 
-    private function save(IguideLabWorkflowItem $item, string $status, array $data): void
+    public function save(IguideLabWorkflowItem $item, string $status, array $data): void
     {
         LockedWrite::run(fn () => DB::transaction(function () use ($item, $status, $data) {
             IguideLabProject::whereKey($item->project_id)->update(['updated_at' => now()]);
@@ -267,7 +270,7 @@ class LabWorkflows
             $item->refresh();
         }), 'iguide-lab.workflow-state');
     }
-    private function finish(IguideLabWorkflowItem $item, string $status, ?string $code, ?string $message, ?array $data = null): void
+    public function finish(IguideLabWorkflowItem $item, string $status, ?string $code, ?string $message, ?array $data = null): void
     {
         $data ??= $item->data; $data['reviewReasons'] = $code ? [['code' => $code, 'message' => $message]] : [];
         $data['qualityStatus'] = $status === 'ready' ? 'passed_automated_checks' : ($status === 'failed' ? 'failed' : 'needs_review');

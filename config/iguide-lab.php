@@ -1,6 +1,11 @@
 <?php
 
 return [
+    // Internal candidate only. No public automatic staging readiness is advertised.
+    'staging_workflow_enabled' => false,
+    'staging_support_python_path' => env('IGUIDE_LAB_STAGING_SUPPORT_PYTHON'),
+    'staging_support_runtime_manifest' => env('IGUIDE_LAB_STAGING_SUPPORT_RUNTIME_MANIFEST'),
+
     // Separate internal placement protocol; no default manifest means unavailable.
     'staging_assessment_runtime_manifest' => '/home/maverick/iguide-ai-runtime-staging-assessment-v1/runtime-manifest.json',
     // Read only by the Studio worker. Never place the credential itself in config/cache.
