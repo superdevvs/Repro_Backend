@@ -111,6 +111,48 @@ class IguideLabGrassSourceAdmissionTest extends TestCase
         app(LabGrassSourceAdmissions::class)->process($record);
         $this->assertSame('needs_attention', $record->fresh()->status); Http::assertNothingSent();
     }
+    private function reservedImage(IguideLabProject $project, IguideLabWorkflowItem $item): \App\Models\IguideLabRun
+    {
+        $input = ['caseId' => $item->case_id, 'preset' => 'grass', 'style' => null,
+            'modelId' => 'gpt-image-2.6-sunburst', 'prompt' => 'Recolor the established turf only.', 'options' => ['complexity' => 'low']];
+        $steps = app(LabWorkflowSteps::class); $step = $steps->reserve($item, 'grass-image', 'image', $input);
+        // Transport fixture: the full Linux chain separately exercises the real
+        // scene-plan reservation. Keep this regression at the actual paid claim.
+        return \App\Models\IguideLabRun::create(['project_id' => $project->id, 'case_id' => $item->case_id,
+            'request_id' => $step->request_id, 'request_hash' => $step->input_sha256, 'model_id' => $input['modelId'],
+            'provider' => 'openai', 'preset' => 'grass', 'style' => null, 'prompt' => $input['prompt'], 'status' => 'submitting',
+            'options' => ['width' => 2048, 'height' => 1024, 'complexity' => 'low', 'workflowInvocation' => $steps->invocation($step)]]);
+    }
+    public function test_queued_image_revalidates_retained_source_receipt_before_primary(): void
+    {
+        [$project, , $item, , $record] = $this->reserved();
+        Http::fake(['api.openai.com/v1/responses' => Http::response($this->response())]);
+        $service = app(LabGrassSourceAdmissions::class); $service->process($record); $service->process($record->fresh());
+        $run = $this->reservedImage($project, $item);
+        Storage::disk(LabService::DISK)->delete($record->fresh()->data['providerReceipt']['response']['path']);
+        $bytes = Storage::disk(LabService::DISK)->get(\App\Models\IguideLabCase::findOrFail($item->case_id)->source_path);
+        try { app(\App\Services\IguideLab\LabProvider::class)->submit($run, [$bytes]); $this->fail('Missing source receipt reached image HTTP.'); }
+        catch (HttpException $e) { $this->assertSame(422, $e->getStatusCode()); }
+        $this->assertEmpty($run->fresh()->options['providerAttempts'] ?? []);
+        Http::assertSentCount(1);
+    }
+    public function test_image_quota_fallback_revalidates_original_source_admission(): void
+    {
+        [$project, , $item, , $record] = $this->reserved(); $images = 0;
+        Http::fake(function ($request) use ($record, &$images) {
+            if (str_ends_with($request->url(), '/responses')) return Http::response($this->response());
+            $images++;
+            Storage::disk(LabService::DISK)->delete($record->fresh()->data['providerReceipt']['response']['path']);
+            return Http::response(['error' => ['code' => 'insufficient_quota']], 429);
+        });
+        $service = app(LabGrassSourceAdmissions::class); $service->process($record); $service->process($record->fresh());
+        $run = $this->reservedImage($project, $item); $bytes = Storage::disk(LabService::DISK)->get(\App\Models\IguideLabCase::findOrFail($item->case_id)->source_path);
+        try { app(\App\Services\IguideLab\LabProvider::class)->submit($run, [$bytes]); $this->fail('Missing source receipt reached fallback image HTTP.'); }
+        catch (HttpException $e) { $this->assertSame(422, $e->getStatusCode()); }
+        $this->assertSame(1, $images);
+        $this->assertSame(['quota_rejected'], array_column($run->fresh()->options['providerAttempts'], 'status'));
+        Http::assertSentCount(2); // One admission and one rejected image; no fallback image.
+    }
     public function test_four_analysis_budget_does_not_expand_image_budget(): void
     {
         [, , $item] = $this->reserved(); $steps = app(LabWorkflowSteps::class);

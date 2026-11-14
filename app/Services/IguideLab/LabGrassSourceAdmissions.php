@@ -146,6 +146,29 @@ class LabGrassSourceAdmissions
         $file = app(LabGrassSourceAdmissionContext::class)->file($record->project_id, $path, $record->data['providerBodySha256'] ?? '', 36 * 1024 * 1024);
         abort_unless(($record->data['payload']['path'] ?? null) === $file && ($record->data['payload']['sha256'] ?? null) === $record->data['providerBodySha256'], 422);
     }
+    /** Recheck the source-only gate on every queued image/credential attempt. */
+    public function verifyImageStep(IguideLabWorkflowStep $step): void
+    {
+        $item = IguideLabWorkflowItem::where('project_id', $step->project_id)->findOrFail($step->item_id);
+        $workflow = IguideLabWorkflow::where('project_id', $step->project_id)->findOrFail($item->workflow_id);
+        abort_unless(LabGrassSourceAdmissionPolicy::enabled($workflow->policy, $item->preset)
+            && $step->kind === 'image' && $step->step_key === 'grass-image'
+            && $step->input_sha256 === LabAnalysisRecipes::hash($step->input)
+            && ($step->input['caseId'] ?? null) === $item->case_id && ($step->input['preset'] ?? null) === 'grass', 422, 'Original admission image association changed.');
+        $priorId = null;
+        for ($round = 0; $round < 2; $round++) {
+            $admissionStep = IguideLabWorkflowStep::where('project_id', $step->project_id)->where('item_id', $item->id)
+                ->where('step_key', 'grass-source-admission-'.$round)->sole();
+            abort_unless(($admissionStep->input['priorAdmissionId'] ?? null) === $priorId, 422, 'Original admission ancestry changed.');
+            $record = IguideLabGrassSourceAdmission::where('project_id', $step->project_id)->where('step_id', $admissionStep->id)
+                ->where('request_id', $admissionStep->request_id)->findOrFail($admissionStep->child_id);
+            $result = $this->verifiedReport($record, $item);
+            if ($result['status'] === 'eligible_for_image') return;
+            abort_unless($round === 0 && $result['status'] === 'needs_detail', 422, 'Original source is not eligible for a grass image.');
+            $priorId = $record->id;
+        }
+        abort(422, 'Original source detail evidence did not authorize an image.');
+    }
     /** Current source/receipt proof; this does not authorize segmentation. */
     public function verifiedReport(IguideLabGrassSourceAdmission $record, IguideLabWorkflowItem $item): array
     {

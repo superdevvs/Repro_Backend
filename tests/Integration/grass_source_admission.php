@@ -5,7 +5,7 @@ $root = $argv[1] ?? '';
 if (!str_starts_with($root, '/') || is_dir($root)) throw new RuntimeException('Use a new absolute private fixture directory.');
 $code = dirname(__DIR__, 2);
 $scenario = $argv[2] ?? 'success';
-if (!in_array($scenario, ['success', 'source-hold', 'detail-success', 'detail-hold', 'source-receipt-drift'], true)) throw new RuntimeException('Unsupported test scenario.');
+if (!in_array($scenario, ['success', 'source-hold', 'detail-success', 'detail-hold', 'source-receipt-drift', 'queued-image-receipt-drift', 'image-quota-receipt-drift'], true)) throw new RuntimeException('Unsupported test scenario.');
 if (!is_dir($root)) mkdir($root,02770);
 chmod($root,02770);
 $db = $root.'/test.sqlite';
@@ -93,7 +93,14 @@ foreach(json_decode(file_get_contents($fixtures.'/masks-index.json'),true) as $e
 $preparedSha=hash('sha256',App\Services\IguideLab\LabImages::prepared($source));
 Http::fake(function($request)use(&$fakeCalls,&$submittedSourceHashes,$maskBytes,$fixtures,$preparedSha,$scenario){
     $url=$request->url();$fakeCalls[]=['url'=>$url,'method'=>$request->method()];
-    if($url==='https://api.openai.com/v1/images/edits') return Http::response(['data'=>[['b64_json'=>base64_encode(file_get_contents($fixtures.'/images/candidate.png'))]],'usage'=>['input_tokens'=>10,'output_tokens'=>10]],200,['x-request-id'=>'fake-image']);
+    if($url==='https://api.openai.com/v1/images/edits') {
+        if($scenario==='image-quota-receipt-drift') {
+            $admission=App\Models\IguideLabGrassSourceAdmission::where('status','completed')->sole();
+            Storage::disk(LabService::DISK)->delete($admission->data['providerReceipt']['response']['path']);
+            return Http::response(['error'=>['code'=>'insufficient_quota']],429,['x-request-id'=>'fake-image-quota']);
+        }
+        return Http::response(['data'=>[['b64_json'=>base64_encode(file_get_contents($fixtures.'/images/candidate.png'))]],'usage'=>['input_tokens'=>10,'output_tokens'=>10]],200,['x-request-id'=>'fake-image']);
+    }
     if($url==='https://queue.fal.run/fal-ai/sam-3-1/image'){
         $role=array_search($request['prompt'],LabGrassAssessmentPolicy::PROMPTS,true);check(is_string($role),'Unknown source role prompt');
         $raw=base64_decode(explode(',',$request['image_url'],2)[1],true);check($raw!==false&&hash('sha256',$raw)===$preparedSha,'SAM did not receive the exact original prepared sphere');
@@ -175,6 +182,10 @@ for($tick=0;$tick<40;$tick++){
         if($r){Storage::disk(LabService::DISK)->delete($r->data['providerReceipt']['response']['path']);$proof['driftInjected']=true;}
     }
     foreach(IguideLabAnalysis::where('status','queued')->get() as $r)app(LabAnalyses::class)->process($r);
+    if($scenario==='queued-image-receipt-drift'&&IguideLabRun::where('status','queued')->exists()) {
+        $admission=App\Models\IguideLabGrassSourceAdmission::where('status','completed')->sole();
+        Storage::disk(LabService::DISK)->delete($admission->data['providerReceipt']['response']['path']);
+    }
     foreach(IguideLabRun::where('status','queued')->get() as $r)app(LabService::class)->process($r);
     foreach(IguideLabGrassAssessment::whereIn('status',['queued','received'])->get() as $r)app(LabGrassAssessments::class)->process($r);
     foreach(IguideLabMachineSegmentation::whereIn('status',['queued','processing'])->get() as $r)app(LabMachineSegmentations::class)->process($r);
@@ -184,6 +195,19 @@ $workflow->refresh();$item->refresh();$proof=['status'=>$workflow->status==='rea
     'syntheticQualityOnly'=>true,'automaticRealSceneSuccess'=>false,'workflowId'=>$workflow->id,'sourceCaseId'=>$case->id,'importId'=>$import->id,
     'fakeHttpCalls'=>$fakeCalls,'sourceRoleHashes'=>$submittedSourceHashes,'usedRuns'=>$project->fresh()->used_runs,'item'=>$item->toArray(),'history'=>$history];
 file_put_contents($root.'/proof.json',json_encode($proof,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES));
+if(in_array($scenario,['queued-image-receipt-drift','image-quota-receipt-drift'],true)) {
+    check($workflow->status==='needs_review','Queued image authority did not hold');
+    check(IguideLabRun::count()===1&&IguideLabAnalysis::count()===1&&IguideLabMachineSegmentation::count()===0,'Unexpected drift children');
+    check(IguideLabGrassAssessment::count()===0&&App\Models\IguideLabComposite::count()===0&&IguideLabWorkflowEvaluation::count()===0,'Drift reached material/final stages');
+    $run=IguideLabRun::sole();check($run->status==='needs_attention','Image did not hold');
+    $expected=$scenario==='image-quota-receipt-drift'?['quota_rejected']:[];
+    check(array_column($run->options['providerAttempts']??[],'status')===$expected,'Unexpected image credential attempt');
+    $before=count($fakeCalls);$service->process($workflow->fresh());check(count($fakeCalls)===$before,'Drift replay submitted HTTP');
+    $proof['status']='passed_expected_image_authority_hold';$proof['scenario']=$scenario;$proof['terminalReplayNoHttp']=true;
+    $proof['fakePaidPosts']=count(array_filter($fakeCalls,fn($r)=>$r['method']==='POST'));
+    check($proof['fakePaidPosts']===($scenario==='image-quota-receipt-drift'?3:2),'Unexpected drift HTTP count');
+    file_put_contents($root.'/proof.json',json_encode($proof,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES));echo json_encode(['status'=>$proof['status'],'scenario'=>$scenario,'externalCalls'=>0]).PHP_EOL;exit;
+}
 if(in_array($scenario,['source-hold','detail-hold','source-receipt-drift'],true)) {
     check($workflow->status==='needs_review','Source gate did not hold');
     check(IguideLabRun::count()===0&&IguideLabMachineSegmentation::count()===0&&IguideLabAnalysis::count()===0,'Source hold spent an image/SAM/scene plan');
