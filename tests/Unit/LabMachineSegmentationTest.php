@@ -13,6 +13,14 @@ class LabMachineSegmentationTest extends TestCase
 {
     protected function setUp(): void { parent::setUp(); config(['services.fal.key'=>'test-only-placeholder']); Http::preventStrayRequests(); }
 
+    public function test_independent_python_protocol_fingerprints_match_both_php_plan_roles(): void
+    {
+        $fixture=json_decode(file_get_contents(base_path('tests/Fixtures/iguide-lab/machine-segmentation-python-plans.json')),true,flags:JSON_THROW_ON_ERROR);
+        $this->assertTrue($fixture['synthetic']); $this->assertSame(0,$fixture['providerCalls']);
+        foreach ($fixture['plans'] as $plan) { app(LabMachineSegmentationPlan::class)->validate($plan,$plan['requestId']); $this->assertSame('server_reserved',$plan['reservationState']); }
+        Http::assertNothingSent();
+    }
+
     public function test_exact_machine_plan_rejects_extra_parameters_before_transport(): void
     {
         $plan=$this->plan(); $bytes=$this->png(); $plan['inputSha256']=hash('sha256',$bytes); $plan=$this->fingerprint($plan);

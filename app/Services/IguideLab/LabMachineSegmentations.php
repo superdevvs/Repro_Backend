@@ -52,7 +52,8 @@ class LabMachineSegmentations
         $polling = false;
         try {
             $step = IguideLabWorkflowStep::where('project_id', $record->project_id)->findOrFail($record->step_id);
-            abort_unless($step->request_id === $record->request_id && $step->input_sha256 === $record->request_hash, 422, 'Segmentation step changed.');
+            abort_unless($step->request_id === $record->request_id && $step->input_sha256 === $record->request_hash
+                && hash_equals($step->input_sha256, LabAnalysisRecipes::hash($step->input)), 422, 'Segmentation step changed.');
             $data = $record->data; $plan = $data['plan']; app(LabMachineSegmentationPlan::class)->validate($plan, $record->request_id);
             app(LabStorage::class)->prepareMachineSegmentation($record->project_id, $record->id);
             $disk = Storage::disk(LabService::DISK); $base = 'iguide-lab/'.$record->project_id.'/machine-segmentations/'.$record->id;
@@ -90,7 +91,8 @@ class LabMachineSegmentations
             $descriptors = []; $artifacts = []; $invalid = count($masks) !== count($plan['expectedIdentities']);
             foreach ($masks as $index => $mask) {
                 abort_unless(is_array($mask) && is_string($mask['url'] ?? null), 422, 'Invalid mask asset descriptor.');
-                $bytes = $transport->mask($mask['url']); $path = $base.'/mask-'.$index.'.png'; $disk->put($path,$bytes,['visibility'=>'private']);
+                $polling = true; $bytes = $transport->mask($mask['url']); $polling = false;
+                $path = $base.'/mask-'.$index.'.png'; $disk->put($path,$bytes,['visibility'=>'private']);
                 $artifacts[] = ['index'=>$index,'path'=>$path,'sha256'=>hash('sha256',$bytes)];
                 try { $descriptor=app(LabMachineMaskPixels::class)->describe($bytes); $descriptors[]=$descriptor; if ($descriptor['positivePixels']===0) $invalid=true; }
                 catch (\InvalidArgumentException) { $invalid=true; }
@@ -104,8 +106,9 @@ class LabMachineSegmentations
             $this->save($record,['status'=>$ready?'completed':'needs_review','result'=>['receipt'=>$receipt,'association'=>$association,'artifacts'=>$artifacts,
                 'maskOrigin'=>'model_segmentation','selectionOrigin'=>'machine','humanReviewed'=>false,'automaticAcceptance'=>false,
                 'usage'=>is_array($result['result']['usage'] ?? null)?$result['result']['usage']:null,'costUsd'=>null], 'completed_at'=>now(), 'error'=>$ready?null:'Machine support requires review.']);
-        } catch (Throwable) {
-            $record->refresh(); if ($polling && $record->provider_request_id && $record->status==='processing' && $record->started_at?->gt(now()->subMinutes(30))) return false;
+        } catch (Throwable $error) {
+            $record->refresh(); if ($polling && ! $error instanceof \Symfony\Component\HttpKernel\Exception\HttpExceptionInterface
+                && $record->provider_request_id && $record->status==='processing' && $record->started_at?->gt(now()->subMinutes(30))) return false;
             $this->stop($record,'Segmentation binding, transport or support verification needs review. No paid retry will be sent.');
         }
         return true;
@@ -138,7 +141,10 @@ class LabMachineSegmentations
         $root=realpath($disk->path('iguide-lab')); $file=$disk->path($path); $real=realpath($file);
         abort_unless($path===$expected && $root && $real && $real===$root.DIRECTORY_SEPARATOR.$projectId.DIRECTORY_SEPARATOR.str_replace('/',DIRECTORY_SEPARATOR,$suffix)
             && !is_link($file) && filesize($real)>0 && filesize($real)<=30*1024*1024,422,'Segmentation input is outside owned storage.');
-        $bytes=file_get_contents($real); abort_unless(hash_equals($sha,hash('sha256',$bytes)),422,'Segmentation input bytes changed.'); return $bytes;
+        $bytes=file_get_contents($real); abort_unless(hash_equals($sha,hash('sha256',$bytes)),422,'Segmentation input bytes changed.');
+        $size=@getimagesizefromstring($bytes); abort_unless($size && ($size['mime'] ?? null)==='image/png' && [$size[0],$size[1]]===[2048,2048],422,'Stored segmentation input dimensions changed.');
+        $decoded=@imagecreatefromstring($bytes); abort_unless($decoded!==false,422,'Stored segmentation input cannot be decoded.'); imagedestroy($decoded);
+        return $bytes;
     }
     private function priorFloor(IguideLabWorkflowStep $step,array $plan): void
     {
@@ -148,6 +154,13 @@ class LabMachineSegmentations
             && ($r->data['plan']['contextSha256'] ?? null)===$plan['contextSha256'] && ($r->data['plan']['assessmentProposalSha256'] ?? null)===$plan['assessmentProposalSha256']
             && ($r->result['association']['status'] ?? null)==='ready_for_support_validation');
         abort_unless($found,422,'The original-floor receipt must pass before spending the furniture request.');
+        $disk=Storage::disk(LabService::DISK); $artifacts=$found->result['artifacts'] ?? [];
+        abort_unless(count($artifacts)===1,422,'The original-floor artifact is unavailable.');
+        foreach ($artifacts as $artifact) {
+            $expected='iguide-lab/'.$step->project_id.'/machine-segmentations/'.$found->id.'/mask-0.png';
+            abort_unless(($artifact['path'] ?? null)===$expected && $disk->exists($expected) && filesize($disk->path($expected))<=LabMachineSegmentationTransport::MAX_MASK_BYTES,422,'The original-floor mask is unavailable.');
+            $this->ownedBytes($step->project_id,$expected,'machine-segmentations/'.$found->id.'/mask-0.png',$artifact['sha256']);
+        }
     }
     private function authority(): LabMachineSegmentationAuthority
     {
