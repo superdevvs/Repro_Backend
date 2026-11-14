@@ -1,0 +1,97 @@
+{
+  "synthetic": true,
+  "providerCalls": 0,
+  "protocolSha256": "58bb5d3577d30b07b1eafcfa5111bbf4664376e94b495f4200c75e1889d0e57b",
+  "plans": [
+    {
+      "stepKey": "source-floor",
+      "requestId": "6291f9c2-32a1-4441-8bdf-4b99f8e9b9b0",
+      "reservationState": "server_reserved",
+      "model": "fal-ai/sam-3-1/image",
+      "inputSha256": "8eff46f9102f5afb33c04124d0e1e0e1c3bc21640e2e0d15c6d53038774ad415",
+      "width": 2048,
+      "height": 2048,
+      "payload": {
+        "prompt": "floor",
+        "box_prompts": [
+          {
+            "x_min": 102,
+            "y_min": 716,
+            "x_max": 1946,
+            "y_max": 1946,
+            "object_id": 1
+          }
+        ],
+        "apply_mask": false,
+        "output_format": "png",
+        "return_multiple_masks": true,
+        "max_masks": 1,
+        "include_scores": true,
+        "include_boxes": true
+      },
+      "expectedIdentities": [
+        "floor"
+      ],
+      "selectionOrigin": "machine",
+      "assessmentProposalSha256": "0b8cc64762a6260b2d6dea58b53a2ff1881d525f23c51442b5150af52984c96c",
+      "contextSha256": "0621f3901a50910085b8f31f6c4612990a3b97f8871402182b66089f80411481",
+      "maximumPostAttempts": 1,
+      "automaticRetry": false,
+      "identityCaveat": "Returned array order is not object identity. Associate masks geometrically; ambiguous or missing masks require review.",
+      "inputFingerprint": "be366dfe646fcd439a8a4df1db6f3e2a96cab523e8ca62f96850914900253032"
+    },
+    {
+      "stepKey": "candidate-furniture",
+      "requestId": "219bd6d3-d9ee-4ef9-a3fa-ce7a11bda6c9",
+      "reservationState": "server_reserved",
+      "model": "fal-ai/sam-3-1/image",
+      "inputSha256": "353e458094bf0c6b9620244db95d58c7c3e71b30285f3abf9abe647dc20cf0dc",
+      "width": 2048,
+      "height": 2048,
+      "payload": {
+        "prompt": "furniture",
+        "box_prompts": [
+          {
+            "x_min": 1044,
+            "y_min": 778,
+            "x_max": 1721,
+            "y_max": 1393,
+            "object_id": 1
+          },
+          {
+            "x_min": 307,
+            "y_min": 921,
+            "x_max": 717,
+            "y_max": 1639,
+            "object_id": 2
+          },
+          {
+            "x_min": 819,
+            "y_min": 1269,
+            "x_max": 1291,
+            "y_max": 1741,
+            "object_id": 3
+          }
+        ],
+        "apply_mask": false,
+        "output_format": "png",
+        "return_multiple_masks": true,
+        "max_masks": 3,
+        "include_scores": true,
+        "include_boxes": true
+      },
+      "expectedIdentities": [
+        "sofa",
+        "chair",
+        "coffee_table"
+      ],
+      "selectionOrigin": "machine",
+      "assessmentProposalSha256": "0b8cc64762a6260b2d6dea58b53a2ff1881d525f23c51442b5150af52984c96c",
+      "contextSha256": "0621f3901a50910085b8f31f6c4612990a3b97f8871402182b66089f80411481",
+      "maximumPostAttempts": 1,
+      "automaticRetry": false,
+      "identityCaveat": "Returned array order is not object identity. Associate masks geometrically; ambiguous or missing masks require review.",
+      "inputFingerprint": "4d611346e9390754ea0be269380099b8b02f7f3d8eb88acf675ccaff6646b44d"
+    }
+  ]
+}
