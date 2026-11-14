@@ -19,7 +19,7 @@ class EmailNotificationPermissions
     public function category(array $payload): ?string
     {
         // Personal correspondence and security/account emails are not shoot subscriptions.
-        if (in_array(strtoupper((string) ($payload['send_source'] ?? 'MANUAL')), ['MANUAL', 'PASSWORD_RESET'], true)) {
+        if (in_array(strtoupper((string) ($payload['send_source'] ?? 'MANUAL')), ['MANUAL', 'PASSWORD_RESET', 'SHOOT_GUEST_ACCESS'], true)) {
             return null;
         }
 

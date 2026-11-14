@@ -283,6 +283,13 @@ Route::get('/ip-location', [IpLocationController::class, 'show'])
 
 Route::get('/public/share-links/{token}', [PublicShootShareLinkController::class, 'show'])
     ->name('api.public.share-links.show');
+Route::prefix('/public/guest-shares/{token}')->group(function () {
+    $controller = \App\Http\Controllers\API\ShootGuestShareController::class;
+    Route::get('/', [$controller, 'show'])->middleware('throttle:120,1,guest-overview');
+    Route::post('/code', [$controller, 'code'])->middleware('throttle:5,1,guest-code');
+    Route::post('/verify', [$controller, 'verify'])->middleware('throttle:10,1,guest-verify');
+    Route::get('/files/{file}', [$controller, 'file'])->middleware('throttle:1200,1,guest-files')->name('api.guest-shares.file');
+});
 Route::get('/public/share-links/{token}/download', [PublicShootShareLinkController::class, 'download'])
     ->name('api.public.share-links.download');
 Route::get('/public/shoot-media/{shoot}/download-zip', [PublicShootMediaArchiveController::class, 'show'])
@@ -902,6 +909,9 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/shoots/{shoot}/editor-download-raw', [ShootMediaController::class, 'editorDownloadRaw'])->middleware('role:editor,admin,superadmin,editing_manager');
     Route::post('/shoots/{shoot}/generate-share-link', [ShootMediaController::class, 'generateShareLink'])->middleware('role:editor');
     Route::get('/shoots/{shoot}/share-links', [ShootMediaController::class, 'listShareLinks']);
+    Route::get('/shoots/{shoot}/guest-shares', [\App\Http\Controllers\API\ShootGuestShareController::class, 'index']);
+    Route::post('/shoots/{shoot}/guest-shares', [\App\Http\Controllers\API\ShootGuestShareController::class, 'store'])->middleware('throttle:10,1,guest-invite');
+    Route::delete('/shoots/{shoot}/guest-shares/{shareId}', [\App\Http\Controllers\API\ShootGuestShareController::class, 'revoke']);
     Route::get('/shoots/{shoot}/realtor-options', ShootRealtorOptionsController::class);
     Route::post('/shoots/{shoot}/share-links/{linkId}/revoke', [ShootMediaController::class, 'revokeShareLink']);
     Route::post('/shoots/{shoot}/files/{file}/move-to-completed', [ShootMediaController::class, 'moveFileToCompleted']);
