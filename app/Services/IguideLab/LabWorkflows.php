@@ -87,6 +87,9 @@ class LabWorkflows
 
     private function advance(IguideLabWorkflow $workflow, IguideLabWorkflowItem $item, IguideLabProject $project): void
     {
+        if ($item->preset === 'interior-design' && LabInteriorDesignPolicy::enabled($workflow->policy,$item->preset)) {
+            app(LabInteriorDesignWorkflow::class)->advance($workflow,$item,$project); return;
+        }
         if ($item->preset === 'declutter' && LabDeclutterRemovalPolicy::enabled($workflow->policy,$item->preset)) {
             app(LabDeclutterWorkflow::class)->advance($workflow,$item,$project); return;
         }

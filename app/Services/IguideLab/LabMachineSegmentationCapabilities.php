@@ -8,6 +8,8 @@ class LabMachineSegmentationCapabilities
     public function forStep(IguideLabWorkflowStep $step): LabMachineSegmentationCapability
     {
         return match ($step->input['protocolVersion'] ?? null) {
+            LabInteriorDesignPolicy::SEGMENTATION => config('iguide-lab.interior_design_workflow_enabled',false)===true
+                ? app(LabInteriorDesignMasks::class) : abort(503,'The material-region capability is disabled.'),
             LabDeclutterRemovalPolicy::SEGMENTATION => config('iguide-lab.declutter_workflow_enabled',false)===true
                 ? app(LabDeclutterSegmentationAuthority::class) : abort(503,'The source-removal capability is disabled.'),
             LabMachineSegmentations::PROTOCOL => app(LabStagingSegmentationAuthority::class),

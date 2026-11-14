@@ -9,6 +9,9 @@ final class LabSectionAnalysisProtocol
 {
     public const VERSION = 'responses-section-context-v1';
 
+    /** Reuse the identical server-owned context contract in typed non-scene-plan protocols. */
+    public static function validateContext(array $context): void { self::validate($context); }
+
     public static function compile(array $recipe, array $context, array $images): array
     {
         self::validate($context);

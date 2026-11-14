@@ -58,7 +58,7 @@ class LabProvider
         // retained machine plan, source and support outside the short claim lock.
         if (isset($run->options['sourceMachinePlan'])) {
             $case = \App\Models\IguideLabCase::where('project_id', $run->project_id)->findOrFail($run->case_id);
-            app(LabDeclutterImageDraft::class)->verifyRun($run, $case);
+            app(LabMachineImageDrafts::class)->verifyRun($run, $case);
         }
         $options = $run->options;
         $attempts = $options['providerAttempts'] ?? [];
