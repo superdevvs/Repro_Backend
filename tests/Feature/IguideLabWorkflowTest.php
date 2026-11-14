@@ -56,6 +56,86 @@ class IguideLabWorkflowTest extends TestCase
     }
     private function workflow(?array $body = null): IguideLabWorkflow { return app(LabWorkflows::class)->start($this->project, $body ?? $this->body()); }
 
+    private function completedProposal(IguideLabAnalysis $analysis): void
+    {
+        $proposal=['generationPrompt'=>'Apply visible requested lighting while retaining the original sphere and matching reflected surfaces.', 'workflow'=>['mode'=>'whole_panorama'], 'uncertainties'=>[]];
+        $sha=hash('sha256',\App\Services\IguideLab\LabImages::prepared(Storage::disk(LabService::DISK)->get($this->case->source_path)));
+        $analysis->update(['status'=>'completed','proposal'=>$proposal,'proposal_sha256'=>\App\Services\IguideLab\LabAnalysisRecipes::hash($proposal),
+            'data'=>array_merge($analysis->data,['preparedSourceSha256'=>$sha,'repairContextManifestSha256'=>str_repeat('e',64)])]);
+    }
+    private function qualityResult(string $failedCheck, string $action): array
+    {
+        $checks=[];foreach(\App\Services\IguideLab\LabVisualQualityProtocol::CHECKS as $key)$checks[$key]=['status'=>$key===$failedCheck?'fail':'pass','evidenceViewIds'=>[$key==='seam'?'wrap':($key==='poles'?'poles':'front')], 'reason'=>str_repeat('Full retained failure detail. ',12).' END_REASON'];
+        return ['protocolVersion'=>\App\Services\IguideLab\LabVisualQualityProtocol::VERSION,'qualityStatus'=>$failedCheck===''?'passed_automated_checks':'needs_review','checks'=>$checks,'unresolvedDependencies'=>[], 'recommendedAction'=>$action,'summary'=>'The requested effect must remain visibly sufficient.', 'manualAcceptance'=>false,'crossViewVerified'=>false];
+    }
+    public static function repairCases(): array { return ['first repair then replan'=>[false], 'later guidance gets its own repair'=>[true]]; }
+    #[\PHPUnit\Framework\Attributes\DataProvider('repairCases')]
+    public function test_global_fallback_reuses_latest_run_once_and_failed_intent_replans_before_new_image(bool $laterGlobal): void
+    {
+        config(['iguide-lab.lighting_repair_enabled'=>true]);$workflow=$this->workflow();$service=app(LabWorkflows::class);
+        $service->process($workflow);$this->completedProposal(IguideLabAnalysis::sole());$service->process($workflow->fresh());
+        $firstRun=IguideLabRun::sole();$firstRun->update(['status'=>'completed']);
+        $artifacts=app(LabWorkflowArtifacts::class);$artifacts->shouldReceive('runHash')->andReturn(str_repeat('a',64));
+        $artifacts->shouldReceive('verifyComposite')->andReturnNull();
+        $artifacts->shouldReceive('compose')->times($laterGlobal?4:3)->andReturnUsing(function($item,$step,$run){
+            return \App\Models\IguideLabComposite::create(['project_id'=>$item->project_id,'case_id'=>$item->case_id,'request_id'=>$step->request_id,'request_hash'=>str_repeat('a',64),'label'=>'Fixture local artifact','status'=>'completed','preview_path'=>'test','manifest'=>['children'=>[['runId'=>$run->id]]]]);
+        });
+        $artifacts->shouldReceive('evidence')->times($laterGlobal?4:3)->andReturnUsing(fn($item,$composite)=>['compositeId'=>$composite->id,'context'=>['mechanicalQa'=>['passed'=>true],'evidenceManifestSha256'=>str_repeat('e',64)]]);
+        $count=0;$this->mock(\App\Services\IguideLab\LabWorkflowEvaluations::class,function($mock)use(&$count,$laterGlobal){
+            $mock->shouldReceive('ready')->andReturn(true);$mock->shouldReceive('payload')->andReturn([]);
+            $mock->shouldReceive('verifiedCompleted')->andReturnUsing(fn($item,$record)=>$record->fresh()->result);
+            $mock->shouldReceive('start')->times($laterGlobal?4:3)->andReturnUsing(function($step)use(&$count,$laterGlobal){
+                $result=match(++$count){1=>$this->qualityResult('optical_dependencies','replan'),2=>$this->qualityResult('edit','regenerate'),3=>$laterGlobal?$this->qualityResult('optical_dependencies','recompose'):$this->qualityResult('','none'),default=>$this->qualityResult('','none')};
+                return \App\Models\IguideLabWorkflowEvaluation::create(['project_id'=>$step->project_id,'step_id'=>$step->id,'request_id'=>$step->request_id,'request_hash'=>$step->input_sha256,'status'=>'completed','result'=>$result,
+                    'data'=>['workflowInvocation'=>app(LabWorkflowSteps::class)->invocation($step),'evidence'=>$step->input,'responseReceipt'=>['sha256'=>str_repeat('f',64)]]]);
+            });
+        });
+        // Real authority references and hashes; only the already completed quality provider is faked.
+        $this->partialMock(\App\Services\IguideLab\LabWorkflowRepairContext::class)->shouldReceive('prepare')->andReturn(['repairContextManifestSha256'=>str_repeat('e',64)]);
+        $service->process($workflow->fresh()); // Original local composition.
+        $service->process($workflow->fresh()); // Optical failure reserves the free repair state.
+        $item=IguideLabWorkflowItem::sole();$this->assertSame('pending',$item->data['globalRepair']['state']);
+        $pendingData=$item->data;
+        $service->process($workflow->fresh()); // Free retained-guidance composition.
+        $this->assertSame(1,IguideLabRun::count());$this->assertSame(1,IguideLabAnalysis::count());
+        $globalStep=IguideLabWorkflowStep::where('step_key','composition-global-1')->sole();
+        $this->assertSame($firstRun->id,$globalStep->input['runId']);$this->assertFalse($globalStep->input['repair']['newPaidImage']);
+        // Crash checkpoint: the child attach committed, but the item still has the old composite.
+        $item->update(['data'=>$pendingData]);
+        $service->process($workflow->fresh()); // Weak effect fails; full context is retained.
+        $item->refresh();$this->assertSame('failed',$item->data['globalRepair']['state']);$this->assertSame('repairing',$item->status);
+        $this->assertSame($globalStep->child_id,$item->data['globalRepair']['compositeId']);
+        $this->assertSame(2,$item->data['planRevision']);$this->assertStringContainsString('END_REASON',json_encode($item->data['lastQualityFeedback']));
+        $this->assertArrayNotHasKey('imageCorrection',$item->data);$this->assertSame(1,IguideLabRun::count());
+        $this->assertFalse(app(\App\Services\IguideLab\LabLightingRepairs::class)->begin($workflow->fresh(),$item,$firstRun,IguideLabAnalysis::sole(),\App\Models\IguideLabWorkflowEvaluation::first(),$item->data));
+        $service->process($workflow->fresh());$second=IguideLabAnalysis::whereKeyNot(IguideLabAnalysis::orderBy('created_at')->first()->id)->sole();
+        $this->assertSame($item->data['repairContext'],$second->data['repairContext']);
+        $this->completedProposal($second);$service->process($workflow->fresh());
+        $this->assertSame(2,IguideLabRun::count());IguideLabRun::whereKeyNot($firstRun->id)->sole()->update(['status'=>'completed']);
+        $service->process($workflow->fresh());$service->process($workflow->fresh());$service->process($workflow->fresh());
+        if($laterGlobal){$service->process($workflow->fresh());$service->process($workflow->fresh());
+            $latest=IguideLabRun::whereKeyNot($firstRun->id)->sole();$secondGlobal=IguideLabWorkflowStep::where('step_key','composition-global-2')->sole();
+            $this->assertSame($latest->id,$secondGlobal->input['repair']['retainedRunId']);$this->assertSame(2,IguideLabRun::count());
+            $this->assertCount(1,IguideLabWorkflowItem::sole()->data['globalRepairHistory']);
+        }
+        $this->assertSame('ready',IguideLabWorkflowItem::sole()->status);
+        $this->assertSame(1,IguideLabWorkflowStep::where('step_key','composition-global-1')->count());
+        $this->assertSame($laterGlobal?4:3,\App\Models\IguideLabWorkflowEvaluation::count());$this->assertSame(2,IguideLabAnalysis::count());
+        $this->assertSame(0,\App\Models\IguideLabReview::count());Http::assertNothingSent();
+    }
+    public function test_enabled_repair_limits_and_snapshot_drift_fail_closed(): void
+    {
+        config(['iguide-lab.lighting_repair_enabled'=>true]);$workflow=$this->workflow();$item=IguideLabWorkflowItem::sole();$steps=app(LabWorkflowSteps::class);
+        foreach(['image'=>3,'analysis'=>2,'evaluation'=>5,'composition'=>5] as $kind=>$limit){
+            for($i=1;$i<=$limit;$i++)$steps->reserve($item,$kind.'-'.$i,$kind,[]);
+            try{$steps->reserve($item,$kind.'-'.($limit+1),$kind,[]);$this->fail('Unbounded '.$kind);}catch(\Symfony\Component\HttpKernel\Exception\HttpException $e){$this->assertSame(422,$e->getStatusCode());}
+        }
+        try{$steps->reserve($item,'composition-global-3','composition',[]);$this->fail('Third local fallback accepted.');}catch(\Symfony\Component\HttpKernel\Exception\HttpException $e){$this->assertSame(422,$e->getStatusCode());}
+        $policy=$workflow->policy;$policy['lightingRepair']['maxLocalRepairsPerItem']=3;
+        try{app(\App\Services\IguideLab\LabLightingRepairs::class)->validate($policy);$this->fail('Changed policy accepted.');}catch(\Symfony\Component\HttpKernel\Exception\HttpException $e){$this->assertSame(422,$e->getStatusCode());}
+        Http::assertNothingSent();
+    }
+
     public function test_scoped_api_replay_binds_intent_and_does_not_charge_on_reservation(): void
     {
         $body = $this->body(); $this->postJson('/api/iguide-lab/workflows', $body)->assertUnauthorized();

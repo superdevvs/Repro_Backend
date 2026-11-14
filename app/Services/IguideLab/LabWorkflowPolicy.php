@@ -14,6 +14,9 @@ class LabWorkflowPolicy
             'evaluationRecipeSha256' => LabVisualQualityProtocol::recipeSha256(),
             'evaluationParserSha256' => hash_file('sha256', (new \ReflectionClass(LabVisualQualityProtocol::class))->getFileName()),
             'artifacts' => app(LabWorkflowArtifacts::class)->snapshot()];
+        if (config('iguide-lab.lighting_repair_enabled', false) === true && app(LabWorkflowArtifacts::class)->ready()) {
+            $policy['lightingRepair'] = app(LabLightingRepairs::class)->snapshot();
+        }
         if (config('iguide-lab.staging_workflow_enabled',false) === true && class_exists(LabStagingWorkflow::class) && app(LabStagingWorkflow::class)->ready()) {
             $policy['stagingAssessment'] = LabStagingAssessmentPolicy::snapshot();
             $policy['stagingWorkflow'] = app(LabStagingWorkflow::class)->snapshot();

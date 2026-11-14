@@ -19,6 +19,7 @@ class LabWorkflowArtifacts
         $worker = resource_path('iguide-lab/workflow_qa.py');
         return ['recipeVersion' => self::VERSION, 'adapterSha256' => hash_file('sha256', __FILE__), 'workerSha256' => is_file($worker) ? hash_file('sha256', $worker) : null,
             'lightingSha256' => is_file(resource_path('iguide-lab/lighting_transfer.py')) ? hash_file('sha256', resource_path('iguide-lab/lighting_transfer.py')) : null,
+            'globalLightingSha256' => hash_file('sha256', resource_path('iguide-lab/global_lighting.py')),
             'sourceAdapterSha256' => hash_file('sha256', resource_path('iguide-lab/workflow_source.py')),
             'geometrySha256' => hash_file('sha256', resource_path('iguide-lab/pano_geometry.py')),
             'preparerSha256' => hash_file('sha256', (new \ReflectionClass(LabImages::class))->getFileName()),
@@ -71,6 +72,8 @@ class LabWorkflowArtifacts
     public function compose(IguideLabWorkflowItem $item, IguideLabWorkflowStep $step, IguideLabRun $run, IguideLabAnalysis $analysis): IguideLabComposite
     {
         $this->validateSnapshot($step->input['recipe']); $this->runtime();
+        $global = isset($step->input['repair']);
+        if ($global) app(LabLightingRepairs::class)->verifyComposition($item, $step, $run);
         $case = app(LabWorkflowSources::class)->verify($item->project_id, $item->source);
         abort_unless($run->project_id === $item->project_id && $run->case_id === $case->id && $analysis->case_id === $case->id
             && $analysis->project_id === $item->project_id && $run->options['sourceAnalysis']['id'] === $analysis->id
@@ -82,14 +85,15 @@ class LabWorkflowArtifacts
             && ($analysis->data['preparedSourceSha256'] ?? '') === $preparedHash, 422, 'The exact submitted source preparation differs.');
         $this->putOnce($base.'/source-prepared.png', $prepared);
         $out = $base.'/lighting-'.$step->id;
-        $request = ['schemaVersion' => 1, 'operation' => 'transfer-lighting', 'privateRoot' => $disk->path('iguide-lab/'.$item->project_id),
+        $request = ['schemaVersion' => 1, 'operation' => $global ? 'transfer-lighting-global' : 'transfer-lighting', 'privateRoot' => $disk->path('iguide-lab/'.$item->project_id),
             'source' => ['path' => $disk->path($case->source_path), 'sha256' => $case->source_sha256],
             'guidanceSource' => ['path' => $disk->path($base.'/source-prepared.png'), 'sha256' => $preparedHash],
             'candidate' => ['path' => $disk->path($run->output_path), 'sha256' => $step->input['outputSha256']],
-            'preset' => $item->preset, 'outputDirectory' => $disk->path($out), 'editScope' => 'entire_view', 'recipe' => self::VERSION,
+            'preset' => $item->preset, 'outputDirectory' => $disk->path($out), 'editScope' => 'entire_view', 'recipe' => $global ? LabLightingRepairs::RECIPE : self::VERSION,
             'sourcePreparation' => ['nativeSourceSha256' => $case->source_sha256, 'guidanceSourceSha256' => $preparedHash,
                 'preparerSha256' => $step->input['recipe']['preparerSha256'], 'method' => 'LabImages::prepared/GD', 'verifiedByCaller' => true]];
         $report = $this->execute($base.'/lighting-'.$step->id.'-request.json', $request, $step->input['recipe']);
+        abort_unless(($report['recipe'] ?? null) === $request['recipe'], 422, 'The lighting recipe association changed.');
         $preview = $this->asset($report['artifacts']['preview'], $disk->path($out), [2048, 1024]);
         $native = $this->asset($report['artifacts']['native'], $disk->path($out), [$case->width, $case->height]);
         abort_unless(($report['telemetry']['nonfiniteChannels'] ?? -1) === 0 && ($report['telemetry']['policyProtectedNadirChangedPixels'] ?? -1) === 0, 422, 'Lighting transfer failed its numerical invariants.');
@@ -108,8 +112,9 @@ class LabWorkflowArtifacts
             'children' => [['runId' => $run->id, 'requestId' => $run->request_id, 'outputSha256' => $step->input['outputSha256'], 'projection' => 'equirectangular', 'editScope' => 'entire_view', 'maskSha256' => null, 'view' => null]],
             'lineage' => ['executionContext' => 'unattended_workflow', 'workflowInvocation' => app(LabWorkflowSteps::class)->invocation($step),
                 'recipe' => $step->input['recipe'], 'sourcePreparation' => $request['sourcePreparation'], 'parameters' => $report['parameters'],
+                'compositionRecipe' => $report['recipe'], 'repair' => $step->input['repair'] ?? null,
                 'telemetry' => $report['telemetry'], 'limitations' => $report['limitations'], 'operatorInterventions' => 0, 'manualAcceptance' => false,
-                'guidanceRole' => 'low_frequency_lighting_only', 'sourceCaveats' => $analysis->proposal['uncertainties'] ?? []]];
+                'guidanceRole' => $global ? 'global_color_offset_only' : 'low_frequency_lighting_only', 'sourceCaveats' => $analysis->proposal['uncertainties'] ?? []]];
         [$composite] = app(LabComposites::class)->add(\App\Models\IguideLabProject::findOrFail($item->project_id), $case, $preview['path'], $manifest, $nativeCanvas ? $native['path'] : null);
         return $composite;
     }
@@ -162,9 +167,11 @@ class LabWorkflowArtifacts
     }
     protected function evidenceReviewContext(IguideLabWorkflowItem $item,IguideLabComposite $composite,IguideLabAnalysis $analysis,array $qa): array
     {
+        $requirements = $this->evaluationReviewRequirements($analysis->proposal,$qa);
+        if ($composite->manifest['lineage']['repair'] ?? null) $requirements[] = 'This retained-guidance global repair must visibly satisfy the ORIGINAL requested lighting intent. Geometry preservation or a near-source result alone is not an edit pass; independently inspect mirror consistency, appearance and sufficient preset effect.';
         return ['protectedFeatures'=>array_column($analysis->proposal['protectedFeatures'],'description'),
             'sourceCaveats'=>[...($analysis->proposal['uncertainties']??[]),'The scene plan has no separate structured optical dependency inventory; independently inspect reflections, shadows and glazing.'],
-            'opticalDependencies'=>[],'reviewRequirements'=>$this->evaluationReviewRequirements($analysis->proposal,$qa)];
+            'opticalDependencies'=>[],'reviewRequirements'=>$requirements];
     }
 
     public function evaluationReviewRequirements(array $proposal, array $qa): array
@@ -189,6 +196,7 @@ class LabWorkflowArtifacts
             && ($composite->manifest['children'][0]['runId'] ?? null) === $run->id
             && ($composite->manifest['children'][0]['outputSha256'] ?? null) === $this->runHash($run), 422, 'Stored automatic artifact lineage changed.');
         $this->validateSnapshot($composite->manifest['lineage']['recipe']); $disk = Storage::disk(LabService::DISK);
+        abort_unless(LabMachineSegmentationPlan::canonicalHash($composite->manifest['lineage']['repair'] ?? []) === LabMachineSegmentationPlan::canonicalHash($step->input['repair'] ?? []), 422, 'Stored repair provenance changed.');
         foreach (['preview' => $composite->preview_path, 'native' => $composite->native_path] as $kind => $path) {
             if ($path === null) continue;
             abort_unless($path === 'iguide-lab/'.$item->project_id.'/composites/'.$composite->id.'-'.$kind.'.png'
@@ -205,7 +213,7 @@ class LabWorkflowArtifacts
         abort_unless(($manifest['validationStatus'] ?? null) === 'passed' && ($manifest['pythonPath'] ?? null) === $python
             && ($manifest['pythonVersion'] ?? null) === '3.12.3' && ($manifest['numpyVersion'] ?? null) === '2.5.4'
             && ($manifest['pillowVersion'] ?? null) === '13.0.0', 503, 'Automatic runtime version changed.');
-        foreach (['validatedWorkerSha256' => 'workflow_qa.py', 'validatedLightingSha256' => 'lighting_transfer.py', 'validatedGeometrySha256' => 'pano_geometry.py', 'validatedSourceAdapterSha256' => 'workflow_source.py'] as $key => $file) {
+        foreach (['validatedWorkerSha256' => 'workflow_qa.py', 'validatedLightingSha256' => 'lighting_transfer.py', 'validatedGlobalLightingSha256' => 'global_lighting.py', 'validatedGeometrySha256' => 'pano_geometry.py', 'validatedSourceAdapterSha256' => 'workflow_source.py'] as $key => $file) {
             abort_unless(is_file(resource_path('iguide-lab/'.$file)) && ($manifest[$key] ?? null) === hash_file('sha256', resource_path('iguide-lab/'.$file)), 503, 'Automatic code was not validated with this runtime.');
         }
         abort_unless(($manifest['validatedPreparerSha256'] ?? null) === hash_file('sha256', (new \ReflectionClass(LabImages::class))->getFileName()), 503, 'Automatic source preparation was not validated.');
@@ -230,6 +238,7 @@ class LabWorkflowArtifacts
         return ($runtime['python'] ?? null) === '3.12.3' && ($runtime['numpy'] ?? null) === '2.5.4' && ($runtime['pillow'] ?? null) === '13.0.0'
             && ($runtime['workerSha256'] ?? null) === $snapshot['workerSha256']
             && ($runtime['lightingCodeSha256'] ?? null) === $snapshot['lightingSha256']
+            && ($runtime['globalLightingCodeSha256'] ?? null) === $snapshot['globalLightingSha256']
             && ($runtime['geometrySha256'] ?? null) === $snapshot['geometrySha256'];
     }
     protected function environment(): array

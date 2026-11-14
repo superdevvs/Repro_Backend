@@ -10,12 +10,14 @@ class LabAnalysisRecipes
     public const BASELINE = 'scene-instructions-baseline-1';
     public const CANDIDATE = 'scene-instructions-physical-dependencies-1';
     public const SECTION_CONTEXT = 'scene-instructions-section-context-1';
+    public const LIGHTING_REPAIR = 'scene-instructions-lighting-repair-1';
     public const LEGACY_PROTOCOL = 'scene-plan-v1';
     public const LEGACY_VIEW_RECIPE = 'source2k-six1024-fov100/1';
     private const FILES = [
         self::BASELINE => ['baseline-1.json', '81673992581f6d86261b7fb74e4d639b271a57d867643c304d34b9cd5b7f007a'],
         self::CANDIDATE => ['physical-dependencies-1.json', '1a57bba52b4b785ee53a3b9991fab3a2169ae06a824507fce107f79f29cc6244'],
         self::SECTION_CONTEXT => ['section-context-1.json', '9bbe4e34f1aa6355eb1f661642110ce82970dadf07884b415d121a92f358d5de'],
+        self::LIGHTING_REPAIR => ['lighting-repair-1.json', 'dd1cc556379d9963b0ec4fd68d0dbb8da0c4a4cd690989a0d3b865f2dea089aa'],
     ];
 
     public function active(): array
@@ -51,6 +53,7 @@ class LabAnalysisRecipes
     public function request(array $snapshot, array $context, array $images): array
     {
         $recipe = $this->validate($snapshot);
+        if ($recipe['compilerVersion'] === LabRepairAnalysisProtocol::VERSION) return LabRepairAnalysisProtocol::compile($recipe, $context, $images);
         if ($recipe['compilerVersion'] === LabSectionAnalysisProtocol::VERSION) return LabSectionAnalysisProtocol::compile($recipe, $context, $images);
         if ($recipe['compilerVersion'] !== LabAnalysisRequestV1::VERSION) throw new InvalidArgumentException('Unsupported analysis request compiler.');
         return LabAnalysisRequestV1::compile($recipe, $context, $images);
@@ -59,6 +62,7 @@ class LabAnalysisRecipes
     public function parse(array $snapshot, array $response, array $context): array
     {
         $recipe = $this->validate($snapshot);
+        if ($recipe['compilerVersion'] === LabRepairAnalysisProtocol::VERSION) return LabRepairAnalysisProtocol::parse($response, $context);
         return $recipe['compilerVersion'] === LabSectionAnalysisProtocol::VERSION
             ? LabSectionAnalysisProtocol::parse($response, $context) : LabScenePlanProtocol::parse($response, $context);
     }

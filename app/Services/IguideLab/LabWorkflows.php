@@ -110,12 +110,15 @@ class LabWorkflows
         }
         $steps = app(LabWorkflowSteps::class); $data = $item->data;
         app(LabWorkflowArtifacts::class)->preflight($item, $workflow->policy['artifacts']);
+        if (isset($workflow->policy['lightingRepair'])) app(LabLightingRepairs::class)->validate($workflow->policy);
+        if (app(LabLightingRepairs::class)->advance($workflow, $item, $project)) return;
         $planIndex = $data['planRevision'] ?? 1;
         $instructions = $item->instructions;
         if (isset($data['planningCorrection'])) $instructions .= "\nAutomatic quality feedback to resolve without expanding the edit: ".$data['planningCorrection'];
         abort_if(mb_strlen($instructions) > 3200, 422);
         $analysisInput = ['caseId' => $case->id, 'preset' => $item->preset, 'style' => $item->style,
             'instructions' => $instructions, 'options' => LabAnalyses::EDIT_DEFAULTS];
+        if (isset($data['repairContext'])) $analysisInput['repairContext'] = $data['repairContext'];
         $analysisStep = $steps->reserve($item, 'analysis-'.$planIndex, 'analysis', $analysisInput);
         $analysis = IguideLabAnalysis::where('project_id', $project->id)->where('request_id', $analysisStep->request_id)->first();
         if (! $analysis) $analysis = app(LabAnalyses::class)->start($project, $analysisInput + ['requestId' => $analysisStep->request_id], $steps->invocation($analysisStep));
@@ -186,10 +189,32 @@ class LabWorkflows
             return;
         }
         if ($evaluation->result['qualityStatus'] === 'passed_automated_checks') {
+            if (isset($workflow->policy['lightingRepair'])) app(LabWorkflowEvaluations::class)->verifiedCompleted($item, $evaluation);
             app(LabWorkflowEvaluations::class)->payload($evidence, $project->id, $item->id);
             $data['qualityStatus'] = 'passed_automated_checks'; $this->finish($item, 'ready', null, null, $data); return;
         }
-        $feedback = $this->repairFeedback($evaluation->result); $action = $evaluation->result['recommendedAction'];
+        if (app(LabLightingRepairs::class)->begin($workflow, $item, $run, $analysis, $evaluation, $data)) return;
+        $this->repairAfterEvaluation($workflow, $item, $analysis, $evaluation, $data);
+    }
+
+    public function repairAfterEvaluation(IguideLabWorkflow $workflow, IguideLabWorkflowItem $item, IguideLabAnalysis $analysis, IguideLabWorkflowEvaluation $evaluation, array $data): void
+    {
+        $planIndex = $data['planRevision'] ?? 1; $attempt = $data['currentAttempt'] ?? 1;
+        $proposal = $analysis->proposal;
+        $result = isset($workflow->policy['lightingRepair']) ? app(LabWorkflowEvaluations::class)->verifiedCompleted($item, $evaluation) : $evaluation->result;
+        $feedback = $this->repairFeedback($result); $action = $result['recommendedAction'];
+        if (isset($workflow->policy['lightingRepair'])) {
+            app(LabLightingRepairs::class)->validate($workflow->policy);
+            $data['lastQualityFeedback'] = $result; // Complete bounded check reasons, dependencies and summary.
+            if (in_array($action, ['replan','regenerate'], true) && $planIndex < $workflow->policy['maxPlanRevisionsPerItem'] && $attempt < $workflow->policy['maxImageAttemptsPerItem']) {
+                $data['repairContext'] = app(LabWorkflowRepairContext::class)->reference($item, $evaluation);
+                $data['planRevision'] = $planIndex + 1; $data['currentAttempt'] = $attempt + 1;
+                unset($data['imageCorrection'], $data['planningCorrection']);
+                $this->save($item, 'repairing', $data); return;
+            }
+            // No semantic fallback to a cropped feedback string when the full repair context cannot run.
+            $this->finish($item, 'needs_review', 'quality_checks_failed', $result['summary'], $data); return;
+        }
         // Only explicit evidence-backed repair actions can authorize a new bounded child, never transport retries.
         if ($action === 'regenerate' && $attempt < $workflow->policy['maxImageAttemptsPerItem'] && mb_strlen($proposal['generationPrompt']."\nResolve this observed problem while preserving the same source geometry and requested scope: ".$feedback) <= 4000) {
             $data['currentAttempt'] = $attempt + 1; $data['imageCorrection'] = $feedback;

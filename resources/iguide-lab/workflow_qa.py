@@ -24,6 +24,7 @@ GEOMETRY_DIR = (Path(__file__).resolve().parent if (Path(__file__).resolve().par
 sys.path.insert(0, str(GEOMETRY_DIR))
 import pano_geometry as g
 import lighting_transfer as lighting
+import global_lighting
 
 VERSION = 'iguide-automation-geometry/1'
 MAX_PIXELS = 64_000_000
@@ -51,7 +52,8 @@ def runtime():
     return {'python': platform.python_version(), 'numpy': np.__version__, 'pillow': PILLOW_VERSION,
             'platform': platform.system(), 'workerVersion': VERSION, 'workerSha256': g.sha256(__file__),
             'geometryVersion': g.PIPELINE_VERSION, 'geometrySha256': g.sha256(g.__file__),
-            'lightingRecipe': lighting.RECIPE, 'lightingCodeSha256': g.sha256(lighting.__file__)}
+            'lightingRecipe': lighting.RECIPE, 'lightingCodeSha256': g.sha256(lighting.__file__),
+            'globalLightingCodeSha256': g.sha256(global_lighting.__file__)}
 
 
 def validate_runtime():
@@ -439,7 +441,9 @@ def transfer_lighting(request):
                'editScope','recipe','sourcePreparation'}
     require(set(request) == allowed, 'REQUEST_FIELDS_INVALID')
     require(request['preset'] in {'golden-hour','twilight'} and request['editScope'] == 'entire_view', 'LIGHTING_SCOPE_INVALID')
-    require(request['recipe'] == lighting.RECIPE, 'LIGHTING_RECIPE_UNSUPPORTED')
+    is_global = request['operation'] == 'transfer-lighting-global'
+    selected_recipe = global_lighting.VERSION if is_global else lighting.RECIPE
+    require(request['recipe'] == selected_recipe, 'LIGHTING_RECIPE_UNSUPPORTED')
     prep = request['sourcePreparation']
     require(set(prep) == {'nativeSourceSha256','guidanceSourceSha256','preparerSha256','method','verifiedByCaller'}, 'SOURCE_PREPARATION_DESCRIPTOR_INVALID')
     require(prep['nativeSourceSha256'] == request['source']['sha256'] and prep['guidanceSourceSha256'] == request['guidanceSource']['sha256']
@@ -456,6 +460,12 @@ def transfer_lighting(request):
         report = json.loads((out/'report.json').read_text())
         require(report.get('requestFingerprint') == fingerprint and report.get('status') == 'completed'
                 and report.get('reviewStatus') == 'unreviewed' and report.get('automaticAcceptance') is False, 'CACHE_IDENTITY_MISMATCH')
+        require(report.get('operation') == request['operation'] and report.get('recipe') == selected_recipe
+                and report.get('runtime') == identity and report.get('sourceSha256') == request['source']['sha256']
+                and report.get('candidateSha256') == request['candidate']['sha256']
+                and report.get('guidanceSourceSha256') == request['guidanceSource']['sha256']
+                and report.get('sourcePreparation') == prep and report.get('editScope') == 'entire_view'
+                and report.get('providerCalls') == 0, 'CACHE_EXECUTION_BINDING_INVALID')
         require(set(report.get('artifacts',{})) == {'native','preview','lighting-field'} and isinstance(report.get('qa'),dict), 'CACHE_ARTIFACT_SET_INVALID')
         for item in report['artifacts'].values():
             p=Path(item['path']).resolve(strict=True)
@@ -465,8 +475,16 @@ def transfer_lighting(request):
     source=read_image(assets['source'],panorama=True)
     guide=read_image(assets['guidanceSource'],expected=(2048,1024),panorama=True)
     donor=read_image(assets['candidate'],expected=(2048,1024),panorama=True)
-    field=lighting.derive_field(guide,donor,g.to_linear)
+    estimation = None
+    if is_global:
+        offset, estimation = global_lighting.derive_offset(guide, donor, g.to_linear)
+        field = np.broadcast_to(offset, (64, 128, 3)).copy()
+    else:
+        field=lighting.derive_field(guide,donor,g.to_linear)
     result,telemetry=lighting.apply_field(source,field,g)
+    require(telemetry['nonfiniteChannels'] == 0 and telemetry['policyProtectedNadirChangedPixels'] == 0
+            and telemetry['preclipLinearMinMax'][0] >= -1e-6 and telemetry['preclipLinearMinMax'][1] <= 1+1e-6,
+            'LIGHTING_NUMERICAL_INVARIANT_FAILED')
     qa=qa_arrays(source,result,None,request['preset'])
     require(all(g.sha256(p)==request[key]['sha256'] for key,p in assets.items()), 'INPUT_CHANGED_DURING_WORK')
     out.parent.mkdir(parents=True,exist_ok=True)
@@ -477,17 +495,18 @@ def transfer_lighting(request):
         np.save(temp/'lighting-field.npy',field,allow_pickle=False)
         artifacts={name:_descriptor(temp/f'{name}.png',out/f'{name}.png') for name in ['native','preview']}
         artifacts['lighting-field']={'path':str(out/'lighting-field.npy'),'sha256':g.sha256(temp/'lighting-field.npy'),
-            'dimensions':[2048,1024,3],'dtype':'float32','role':'Low-frequency guidance only; no generated RGB pixels copied.'}
-        report={'schemaVersion':1,'status':'completed','operation':'transfer-lighting','recipe':lighting.RECIPE,
+            'dimensions':[field.shape[1],field.shape[0],3],'dtype':'float32','role':'Global constant color offset; no generated pixels copied.' if is_global else 'Low-frequency guidance only; no generated RGB pixels copied.'}
+        report={'schemaVersion':1,'status':'completed','operation':request['operation'],'recipe':selected_recipe,
             'requestFingerprint':fingerprint,'runtime':identity,'reviewStatus':'unreviewed','automaticAcceptance':False,
             'providerCalls':0,'editScope':'entire_view','preset':request['preset'],'sourceSha256':request['source']['sha256'],
             'candidateSha256':request['candidate']['sha256'],'guidanceSourceSha256':request['guidanceSource']['sha256'],
             'sourcePreparation':prep,'sourcePreparationEvidence':'Exact preparation relation asserted and checked by trusted PHP caller; this worker checks asset hashes, not a different resampler.',
-            'parameters':lighting.PARAMETERS,'telemetry':telemetry,'qa':qa,'artifacts':artifacts,
+            'parameters':({**global_lighting.PARAMETERS, 'nadirPreserveBelowElevationDegrees': -80.0, 'nadirFadeBeginsElevationDegrees': -70.0} if is_global else lighting.PARAMETERS),
+            'estimation':estimation,'telemetry':telemetry,'qa':qa,'artifacts':artifacts,
             'fieldMinMax':[float(field.min()),float(field.max())], 'elapsedMs':round((time.monotonic()-start)*1000),
             'kind':'derived_source_detail_lighting_composite',
             'limitations':['Lighting is an artistic inference, not calibrated radiance or recovered material properties.',
-                'Smooth lighting can retain unsupported broad shadow/light patterns from the donor; visual optics/obstruction checks remain mandatory.',
+                ('A single global color offset cannot reproduce directional lighting or guarantee visible preset intent; visual optics and appearance checks remain mandatory.' if is_global else 'Smooth lighting can retain unsupported broad shadow/light patterns from the donor; visual optics/obstruction checks remain mandatory.'),
                 'Only source spatial detail is used, but RGB and local contrast change. No pixel-identical texture or whole-image pixel lock claim.',
                 'Fixed nadir preservation can leave source-colored capture surroundings; it does not identify every scanner artifact.',
                 'No lamp-emission synthesis, new sky structure, body reflections or cross-camera consistency is supplied by this operation.']}
@@ -510,7 +529,7 @@ def run(request):
     op = request.get('operation')
     if op == 'build-evidence':
         return build_evidence(request)
-    if op == 'transfer-lighting':
+    if op in {'transfer-lighting', 'transfer-lighting-global'}:
         return transfer_lighting(request)
     require(op in {'qa-panorama', 'recompose-section'}, 'OPERATION_UNSUPPORTED')
     allowed = {'schemaVersion', 'operation', 'privateRoot', 'source', 'candidate', 'preset', 'outputDirectory'}

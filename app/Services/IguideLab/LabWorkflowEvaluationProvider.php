@@ -64,6 +64,11 @@ class LabWorkflowEvaluationProvider
         if (! $response->successful()) throw new OpenAiImageException($response->status(), $response->status() >= 500 || $response->status() === 408);
         $result = $response->json();
         if (! is_array($result)) throw new OpenAiImageException(ambiguous: true, reason: 'invalid_response');
+        $this->save($analysis, ['data' => array_merge($analysis->data, ['responseReceipt' => [
+            'path' => $path, 'sha256' => hash('sha256', $response->body()), 'attemptIndex' => $index,
+            'responseId' => $result['id'] ?? null, 'responseModel' => $result['model'] ?? null,
+            'providerRequestId' => $response->header('x-request-id'),
+            'providerBodySha256' => $analysis->data['providerBodySha256']]])]);
         return $result;
     }
 

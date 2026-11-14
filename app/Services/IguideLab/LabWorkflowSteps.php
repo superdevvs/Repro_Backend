@@ -23,6 +23,11 @@ class LabWorkflowSteps
             $prior = IguideLabWorkflowStep::where('item_id', $item->id)->where('step_key', $key)->first();
             if ($prior) { abort_unless($prior->kind === $kind && hash_equals($prior->input_sha256, $hash), 409, 'A workflow step changed.'); return $prior; }
             $limit = match ($kind) { 'image' => 3, 'analysis' => 2, 'segmentation' => 6, default => 8 };
+            if (isset($workflow->policy['lightingRepair']) && in_array($item->preset, ['golden-hour','twilight'], true)) {
+                app(LabLightingRepairs::class)->validate($workflow->policy);
+                $limit = match ($kind) { 'evaluation','composition' => 5, 'image' => 3, 'analysis' => 2, default => $limit };
+                if (str_contains($key, '-global-')) abort_unless(in_array($key, ['composition-global-1','evaluation-global-1','composition-global-2','evaluation-global-2'], true), 422, 'At most two local lighting repairs are allowed.');
+            }
             if (LabStagingAssessmentPolicy::enabled($workflow->policy, $item->preset)) {
                 $limit = match ($kind) { 'analysis' => 3, 'image' => 1, 'segmentation' => 2, 'evaluation' => 1, default => $limit };
             }

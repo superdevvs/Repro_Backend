@@ -39,13 +39,21 @@ class LabAnalyses
         $style = $input['style'] ?? (in_array($input['preset'], ['staging', 'interior-design']) ? 'modern' : null);
         $settings = ['preset' => $input['preset'], 'style' => $style, 'instructions' => trim($input['instructions'] ?? ''), 'options' => $options,
             'protocolVersion' => LabAnalysisRecipes::LEGACY_PROTOCOL, 'viewRecipe' => LabAnalysisRecipes::LEGACY_VIEW_RECIPE];
+        $repairContext = $input['repairContext'] ?? null;
+        if ($repairContext !== null) {
+            abort_unless(is_array($workflowInvocation) && is_array($repairContext) && $case->projection === 'equirectangular'
+                && in_array($input['preset'], ['golden-hour','twilight'], true), 422, 'Repair context is server-owned lighting evidence.');
+            $item = \App\Models\IguideLabWorkflowItem::where('project_id', $project->id)->findOrFail($workflowInvocation['itemId']);
+            app(LabWorkflowRepairContext::class)->verify($item, $repairContext);
+        }
         abort_if(mb_strlen($this->contextInstructions($settings)) > 4000, 422, 'Combined analysis instructions and object lists are too long.');
         $hash = hash('sha256', json_encode([$case->id, $case->source_sha256, $case->projection, $settings], JSON_THROW_ON_ERROR));
+        if ($repairContext !== null) $hash = LabAnalysisRecipes::hash([$hash, $repairContext]);
         if ($workflowInvocation !== null) $hash = LabAnalysisRecipes::hash([$hash, $workflowInvocation]);
         // Keep normalized intent identity across recipe upgrades; validate bytes outside the write lock.
         $prior = IguideLabAnalysis::where('project_id', $project->id)->where('request_id', $input['requestId'])->exists();
-        $sourceContext = $prior ? null : app(LabAnalysisSourceContext::class)->capture($case);
-        [$record, $created] = LockedWrite::run(fn () => DB::transaction(function () use ($project, $case, $input, $hash, $settings, $sourceContext, $workflowInvocation) {
+        $sourceContext = ($prior || $repairContext !== null) ? null : app(LabAnalysisSourceContext::class)->capture($case);
+        [$record, $created] = LockedWrite::run(fn () => DB::transaction(function () use ($project, $case, $input, $hash, $settings, $sourceContext, $repairContext, $workflowInvocation) {
             IguideLabProject::whereKey($project->id)->update(['updated_at' => now()]); abort_unless($project->fresh()->active(), 401);
             $saved = IguideLabAnalysis::where('project_id', $project->id)->where('request_id', $input['requestId'])->first();
             if ($saved) { abort_unless(hash_equals($saved->request_hash, $hash), 409, 'This analysis request already has different source or settings.'); return [$saved, false]; }
@@ -54,17 +62,20 @@ class LabAnalyses
             if ($workflowInvocation !== null) app(LabWorkflowInvocation::class)->verify($workflowInvocation, $project->id, $input['requestId'], 'analysis', false);
             if ($workflowInvocation !== null) {
                 $policy = app(LabWorkflowInvocation::class)->policy($workflowInvocation);
-                $snapshot = $sourceContext ? ($policy['sectionAnalysisRecipe'] ?? null) : $policy['analysisRecipe'];
+                $snapshot = $repairContext !== null ? ($policy['lightingRepair']['analysisRecipe'] ?? null)
+                    : ($sourceContext ? ($policy['sectionAnalysisRecipe'] ?? null) : $policy['analysisRecipe']);
                 abort_unless(is_array($snapshot), 422, 'The workflow did not reserve a section-context recipe.');
             } else $snapshot = $sourceContext ? app(LabAnalysisRecipes::class)->snapshot(LabAnalysisRecipes::SECTION_CONTEXT) : app(LabAnalysisRecipes::class)->active();
             app(LabAnalysisRecipes::class)->validate($snapshot);
             $executionSettings = $settings;
             if ($sourceContext) $executionSettings['viewRecipe'] = LabAnalysisSourceContext::VIEW_RECIPE;
+            if ($repairContext !== null) $executionSettings['viewRecipe'] = LabWorkflowRepairContext::VIEW_RECIPE;
             abort_unless($snapshot['recipe']['protocolVersion'] === $executionSettings['protocolVersion'] && $snapshot['recipe']['viewRecipe'] === $executionSettings['viewRecipe'], 503, 'This analysis protocol is unavailable.');
             return [IguideLabAnalysis::create(['project_id' => $project->id, 'case_id' => $case->id, 'request_id' => $input['requestId'], 'request_hash' => $hash,
                 'source_sha256' => $case->source_sha256, 'settings' => $executionSettings, 'status' => 'queued',
                 'data' => ['originalSourceSha256' => $sourceContext['binding']['nativeSourceSha256'] ?? $case->metadata['originalSha256'] ?? null,
                     'executionRecipe' => $snapshot, 'recipeCaptureMode' => 'reservation_snapshot', ...($sourceContext ? ['sourceContext' => $sourceContext] : []),
+                    ...($repairContext === null ? [] : ['repairContext' => $repairContext]),
                     ...($workflowInvocation === null ? [] : ['workflowInvocation' => $workflowInvocation])]]), true];
         }), 'iguide-lab.analysis-reserve');
         if ($created) {
@@ -93,14 +104,18 @@ class LabAnalyses
             $case = IguideLabCase::where('project_id', $record->project_id)->findOrFail($record->case_id);
             abort_unless(hash_equals($record->source_sha256, $case->source_sha256), 422, 'The source association changed.');
             $hasContext = $recipe['compilerVersion'] === LabSectionAnalysisProtocol::VERSION;
+            $hasRepairContext = $recipe['compilerVersion'] === LabRepairAnalysisProtocol::VERSION;
             abort_unless($hasContext === isset($record->data['sourceContext']), 422, 'The analysis context recipe association changed.');
-            $prepared = $hasContext ? app(LabSectionAnalysisViews::class)->prepare($record, $case, $record->data['sourceContext'])
-                : app(LabAnalysisViews::class)->prepare($record, $case);
+            abort_unless($hasRepairContext === isset($record->data['repairContext']), 422, 'The repair recipe association changed.');
+            $prepared = $hasRepairContext ? app(LabWorkflowRepairContext::class)->prepare($record, $case)
+                : ($hasContext ? app(LabSectionAnalysisViews::class)->prepare($record, $case, $record->data['sourceContext'])
+                    : app(LabAnalysisViews::class)->prepare($record, $case));
             $data = array_merge($record->data ?? [], $prepared); $this->save($record, ['data' => $data]);
             $settings = $record->settings;
             $context = ['sourceSha256' => $record->source_sha256, 'projection' => $case->projection, 'preset' => $settings['preset'], 'style' => $settings['style'],
                 'viewIds' => array_column($data['views'], 'id'), 'instructions' => $this->contextInstructions($settings)];
             if ($hasContext) $context['sourceContext'] = $data['sourceContextManifest'];
+            if ($hasRepairContext) $context['repairContext'] = $data['repairContextManifest'];
             $disk = Storage::disk(LabService::DISK); $images = [];
             foreach ($data['views'] as $view) {
                 $bytes = $disk->get($view['path']); abort_unless(hash_equals($view['sha256'], hash('sha256', $bytes)), 422, 'Analysis view fingerprint changed.');
@@ -142,6 +157,12 @@ class LabAnalyses
             app(LabSectionAnalysisViews::class)->verifyStored($record);
             $contextProvenance = ['sourceContextBindingSha256' => $record->data['sourceContext']['bindingSha256'], 'sourceContextManifestSha256' => $record->data['sourceContextManifestSha256']];
         }
+        if (isset($record->data['repairContext'])) {
+            $verifiedRepair = app(LabWorkflowRepairContext::class)->prepare($record, $case);
+            abort_unless(($verifiedRepair['repairContextManifestSha256'] ?? null) === ($record->data['repairContextManifestSha256'] ?? null), 422, 'The saved repair context changed.');
+            // Full feedback and receipt references remain in the immutable analysis record.
+            // Public image provenance keeps the existing analysis ID/proposal/source binding.
+        }
         return ['id' => $record->id, 'proposalSha256' => $record->proposal_sha256, 'sourceSha256' => $record->source_sha256,
             'preparedSourceSha256' => $record->data['preparedSourceSha256'], 'appliedDraftSha256' => hash('sha256', $prompt),
             'editedFromProposal' => $prompt !== $record->proposal['generationPrompt'], 'automaticGeneration' => false, ...$contextProvenance];
@@ -154,6 +175,7 @@ class LabAnalyses
         foreach ($data['views'] ?? [] as $view) {
             unset($view['path']); $view['assetPath'] = '/api/iguide-lab/analyses/'.$record->id.'/views/'.$view['id']; $views[] = $view;
         }
+        if (isset($data['repairContext'])) $views = []; // Private paired failure evidence is not a public source diagnostic.
         return ['id' => $record->id, 'requestId' => $record->request_id, 'caseId' => $record->case_id, 'sourceSha256' => $record->source_sha256,
             'originalSourceSha256' => $data['originalSourceSha256'] ?? null, 'preparedSourceSha256' => $data['preparedSourceSha256'] ?? null,
             'settings' => $record->settings, 'protocolVersion' => $record->settings['protocolVersion'] ?? LabAnalysisRecipes::LEGACY_PROTOCOL,

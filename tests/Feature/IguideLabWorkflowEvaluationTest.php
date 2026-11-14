@@ -33,7 +33,7 @@ class IguideLabWorkflowEvaluationTest extends TestCase
         $disk->makeDirectory(''); $disk->setVisibility('', 'private');
     }
     protected function tearDown(): void { if (is_file($this->key)) unlink($this->key); parent::tearDown(); }
-    private function fixture(string $instructions = ''): array
+    private function fixture(string $instructions = '', bool $nativePairs = false): array
     {
         $project = IguideLabProject::create(['name' => 'Evaluation', 'token_hash' => hash('sha256', Str::random(64)), 'expires_at' => now()->addDay(), 'max_runs' => 20]);
         $png = (string) \Intervention\Image\ImageManager::gd()->create(2048, 1024)->fill('888888')->toPng();
@@ -52,9 +52,10 @@ class IguideLabWorkflowEvaluationTest extends TestCase
             'opticalDependencies' => [], 'sourceCaveats' => [], 'reviewRequirements' => ['Retain source floor detail.'], 'mechanicalQa' => ['passed' => true, 'blockingReasons' => []], 'views' => []];
         $assets = [];
         foreach (Protocol::VIEW_IDS as $offset => $name) {
-            $bytes = (string) \Intervention\Image\ImageManager::gd()->create(128, 64)->fill(sprintf('%02x8888', 30 + 20 * $offset))->toPng();
+            [$width,$height]=$nativePairs?[2048,1024]:[128,64];
+            $bytes = (string) \Intervention\Image\ImageManager::gd()->create($width, $height)->fill(sprintf('%02x8888', 30 + 20 * $offset))->toPng();
             $path = 'iguide-lab/'.$project->id.'/workflow-items/'.$item->id.'/'.$name.'.png'; Storage::disk(LabService::DISK)->put($path, $bytes, ['visibility' => 'private']);
-            $context['views'][] = ['id' => $name, 'sha256' => hash('sha256', $bytes), 'width' => 128, 'height' => 64];
+            $context['views'][] = ['id' => $name, 'sha256' => hash('sha256', $bytes), 'width' => $width, 'height' => $height];
             $assets[] = ['path' => $path, 'sha256' => hash('sha256', $bytes)];
         }
         $intent = ['sourceSha256' => $item->source['sha256'], 'preset' => $item->preset, 'style' => $item->style, 'instructions' => $item->instructions];
@@ -73,7 +74,7 @@ class IguideLabWorkflowEvaluationTest extends TestCase
         foreach (Protocol::CHECKS as $key) $checks[$key] = ['status' => 'pass', 'evidenceViewIds' => [match ($key) { 'seam' => 'wrap', 'poles' => 'poles', default => 'front' }], 'reason' => 'Matched evidence preserves the source.'];
         $evaluation = array_intersect_key($context, array_flip(['sourceSha256', 'candidateSha256', 'intentSha256', 'evidenceManifestSha256']))
             + ['protocolVersion' => Protocol::VERSION, 'checks' => $checks, 'unresolvedDependencies' => [], 'recommendedAction' => 'none', 'summary' => 'The paired evidence passes.'];
-        return ['status' => 'completed', 'usage' => ['input_tokens' => 10, 'output_tokens' => 20],
+        return ['id' => 'resp_fixture_quality', 'model' => Protocol::MODEL, 'status' => 'completed', 'usage' => ['input_tokens' => 10, 'output_tokens' => 20],
             'output' => [['type' => 'reasoning', 'private' => 'PRIVATE_REASONING'], ['type' => 'message', 'role' => 'assistant', 'status' => 'completed',
                 'content' => [['type' => 'output_text', 'text' => json_encode($evaluation)]]]]];
     }
@@ -89,7 +90,7 @@ class IguideLabWorkflowEvaluationTest extends TestCase
     }
     public function test_explicit_quota_only_fallback_preserves_payload_and_never_creates_human_acceptance(): void
     {
-        [, , $step] = $this->fixture(); $service = app(LabWorkflowEvaluations::class); $record = $service->start($step);
+        [, $item, $step] = $this->fixture(); $service = app(LabWorkflowEvaluations::class); $record = $service->start($step);
         Http::fakeSequence('api.openai.com/v1/responses')->push(['error' => ['code' => 'insufficient_quota']], 429, ['x-request-id' => 'quota'])
             ->push($this->response($step->input['context']), 200, ['x-request-id' => 'evaluation']);
         $service->process($record); $service->process($record->fresh()); $record->refresh();
@@ -98,6 +99,64 @@ class IguideLabWorkflowEvaluationTest extends TestCase
         $this->assertSame('passed_automated_checks', $record->result['qualityStatus']); $this->assertFalse($record->result['manualAcceptance']);
         $this->assertStringNotContainsString('PRIVATE_REASONING', json_encode($record->result));
         $this->assertSame(0, \App\Models\IguideLabReview::count());
+        app(LabWorkflowSteps::class)->attach($step,$record->id);
+        $this->assertSame($record->result,$service->verifiedCompleted($item,$record));
+    }
+
+    public function test_completed_quality_receipt_and_payload_are_revalidated_before_repair_authority(): void
+    {
+        [, $item, $step] = $this->fixture(); $service=app(LabWorkflowEvaluations::class);$record=$service->start($step);
+        Http::fakeSequence('api.openai.com/v1/responses')->push($this->response($step->input['context']),200,['x-request-id'=>'quality-primary']);
+        $service->process($record);$record->refresh();app(LabWorkflowSteps::class)->attach($step,$record->id);
+        $this->assertSame($record->result,$service->verifiedCompleted($item,$record));
+        $disk=Storage::disk(LabService::DISK);$savedData=$record->data;$path=$savedData['responseReceipt']['path'];$bytes=$disk->get($path);$savedResult=$record->result;
+        foreach(['missing','raw','path','response-id','provider-id','body','parsed-result'] as $variant){
+            $data=$savedData;$result=$savedResult;
+            match($variant){
+                'missing'=>$disk->delete($path),'raw'=>$disk->put($path,'{}'),
+                'path'=>$data['responseReceipt']['path']='other/response.json',
+                'response-id'=>$data['responseReceipt']['responseId']='another-response',
+                'provider-id'=>$data['responseReceipt']['providerRequestId']='another-provider',
+                'body'=>$data['providerBodySha256']=str_repeat('f',64),
+                'parsed-result'=>$result['summary']='Tampered result.',
+            };
+            $record->update(['data'=>$data,'result'=>$result]);
+            try{$service->verifiedCompleted($item,$record->fresh());$this->fail('Accepted '.$variant);}catch(\Symfony\Component\HttpKernel\Exception\HttpException $e){$this->assertSame(422,$e->getStatusCode());}
+            $disk->put($path,$bytes);$record->update(['data'=>$savedData,'result'=>$savedResult]);
+        }
+        $this->assertSame($savedResult,$service->verifiedCompleted($item,$record->fresh()));Http::assertSentCount(1);
+    }
+
+    public function test_failed_native_pairs_and_full_feedback_reach_repair_analysis_without_public_private_fields(): void
+    {
+        [$project,$item,$step]=$this->fixture('Visible twilight, same source geometry.',true);
+        $workflow=\App\Models\IguideLabWorkflow::findOrFail($item->workflow_id);$policy=$workflow->policy;
+        $policy['lightingRepair']=app(\App\Services\IguideLab\LabLightingRepairs::class)->snapshot();$workflow->update(['policy'=>$policy]);
+        $raw=$this->response($step->input['context']);$text=json_decode($raw['output'][1]['content'][0]['text'],true);
+        $text['checks']['optical_dependencies']=['status'=>'fail','evidenceViewIds'=>['front','back'],'reason'=>str_repeat('Direct and reflected surfaces differ. ',15).' FINAL_OPTICAL_REASON'];
+        $text['recommendedAction']='replan';$text['unresolvedDependencies']=[str_repeat('Preserve matching reflected source material. ',10).' END_DEPENDENCY'];
+        $raw['output'][1]['content'][0]['text']=json_encode($text);
+        $service=app(LabWorkflowEvaluations::class);$record=$service->start($step);
+        Http::fakeSequence('api.openai.com/v1/responses')->push($raw,200,['x-request-id'=>'quality-repair']);$service->process($record);$record->refresh();app(LabWorkflowSteps::class)->attach($step,$record->id);
+        $reference=app(\App\Services\IguideLab\LabWorkflowRepairContext::class)->reference($item,$record);
+        $input=['caseId'=>$item->case_id,'preset'=>$item->preset,'style'=>$item->style,'instructions'=>$item->instructions,'repairContext'=>$reference];
+        $analysisStep=app(LabWorkflowSteps::class)->reserve($item,'analysis-2','analysis',$input);
+        $this->mock(\App\Services\IguideLab\LabAnalysisViews::class)->shouldReceive('ready')->andReturn(true);
+        $analyses=app(\App\Services\IguideLab\LabAnalyses::class);
+        $analysis=$analyses->start($project,$input+['requestId'=>$analysisStep->request_id],app(LabWorkflowSteps::class)->invocation($analysisStep));
+        $contextService=app(\App\Services\IguideLab\LabWorkflowRepairContext::class);
+        $prepared=$contextService->prepare($analysis,\App\Models\IguideLabCase::findOrFail($item->case_id));
+        $this->assertSame($prepared,$contextService->prepare($analysis,\App\Models\IguideLabCase::findOrFail($item->case_id)));
+        $this->assertCount(7,$prepared['views']);$this->assertSame($record->result,$prepared['repairContextManifest']['feedback']);
+        $this->assertStringContainsString('FINAL_OPTICAL_REASON',json_encode($prepared));
+        $this->assertStringContainsString('END_DEPENDENCY',json_encode($prepared));
+        $analysis->update(['data'=>array_merge($analysis->data,$prepared)]);$dto=$analyses->dto($analysis->fresh());
+        $this->assertSame([],$dto['views']);$this->assertArrayNotHasKey('repairContext',$dto);
+        $this->assertSame('failed-native-paired7/1',$dto['settings']['viewRecipe']);
+        if($path=getenv('REPAIR_ANALYSIS_DTO_FIXTURE_PATH'))file_put_contents($path,json_encode(['data'=>$dto],JSON_PRETTY_PRINT|JSON_THROW_ON_ERROR));
+        $disk=Storage::disk(LabService::DISK);$disk->put($record->data['responseReceipt']['path'],'{}');
+        try{$contextService->prepare($analysis,\App\Models\IguideLabCase::findOrFail($item->case_id));$this->fail('Changed authority accepted.');}catch(\Symfony\Component\HttpKernel\Exception\HttpException $e){$this->assertSame(422,$e->getStatusCode());}
+        Http::assertSentCount(1);
     }
     public function test_changed_candidate_or_evidence_stops_before_provider_submission(): void
     {

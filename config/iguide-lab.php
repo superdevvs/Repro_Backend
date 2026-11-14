@@ -4,6 +4,7 @@ return [
     // Operator opt-in only; validated runtimes are required in addition to these flags.
     'staging_workflow_enabled' => env('IGUIDE_LAB_STAGING_WORKFLOW_ENABLED', false),
     'grass_workflow_enabled' => env('IGUIDE_LAB_GRASS_WORKFLOW_ENABLED', false),
+    'lighting_repair_enabled' => env('IGUIDE_LAB_LIGHTING_REPAIR_ENABLED', false),
     'grass_assessment_runtime_manifest' => env('IGUIDE_LAB_GRASS_ASSESSMENT_RUNTIME_MANIFEST'),
     'grass_runtime_manifest' => env('IGUIDE_LAB_GRASS_RUNTIME_MANIFEST'),
     'staging_support_python_path' => env('IGUIDE_LAB_STAGING_SUPPORT_PYTHON'),
