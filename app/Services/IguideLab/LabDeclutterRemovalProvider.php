@@ -35,11 +35,14 @@ class LabDeclutterRemovalProvider
     {
         $remaining = (int) floor(($deadline - hrtime(true)) / 1e9);
         if ($remaining < 15) throw new OpenAiImageException(reason: 'attempt_budget_exhausted');
+        app(LabDeclutterRemovalPlans::class)->verifyForAttempt($record,$payload);
         $attempts = $record->provider_attempts ?? []; $index = count($attempts);
         $attempts[] = ['credentialSource' => $slot, 'requestedModelId' => 'gpt-6-astra', 'status' => 'submitting', 'providerRequestId' => null,
             'httpStatus' => null, 'startedAt' => now()->toIso8601String(), 'completedAt' => null];
         app(LabWorkflowInvocation::class)->claim($record->data['workflowInvocation'], $record->project_id, $record->request_id, 'analysis',
             fn () => $this->save($record, ['provider_attempts' => $attempts]));
+        $remaining=(int)floor(($deadline-hrtime(true))/1e9);
+        if($remaining<15)throw new OpenAiImageException(reason:'attempt_budget_exhausted');
         $meter = app(AiUsageRecorder::class); $usageId = $meter->begin('workflow_declutter_removal', 'gpt-6-astra', 'responses'); $start = hrtime(true);
         try {
             $response = Http::withToken($key)->acceptJson()->connectTimeout(15)->timeout($remaining)->withOptions(['allow_redirects' => false])

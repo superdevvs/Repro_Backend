@@ -1,0 +1,15 @@
+# One-item material-aware declutter candidate
+
+This disabled candidate extends the original one-decoration/plain-matte route to one compact opaque portable countertop or tabletop item, including functional clutter, on a simple continuous receiver or stochastic stone/speckle. It does not provide whole-room decluttering, transparency reconstruction, foliage removal, new reflection correction, or structural-detail reconstruction.
+
+`IGUIDE_LAB_DECLUTTER_MATERIALS_ENABLED` defaults to false. New workflows select saved policy `automatic-isolated-object-declutter/2`, typed context/step protocol `automatic-declutter-removal-plan/2`, and a separately hashed source intent only when enabled. The existing default remains v1; toggling configuration does not upgrade a reserved v1 workflow or change its UUID/request identity. The budget remains two analyses, one image, at most two source SAM calls, one native composition and one independent evaluation.
+
+The original source plan must identify a supported isolated item and exact framing. The actual cut plus original parent context must then confirm one opaque solid silhouette, no unresolved overlap or target reflection, and no structural joint, edge, regular grid or major directional vein crossing the replacement. Receiver samples are two to four unobstructed source boxes, at least 32 pixels per side, on distinct cardinal sides with perpendicular overlap. Diagonal patches do not establish independent sides. Boxes must be normalized, finite, nondegenerate, nearby and disjoint from target/shadow, other samples and known protection.
+
+These sample boxes are source observations, not verified material equivalence or hidden-surface ground truth. After segmentation, the existing original-target/shadow mask gates still apply, and the expanded actual edit support must not intersect any receiver sample. The existing 131,072-pixel cap, connected solid mask, border guard, bounded shadow, harmonic clipping limits, exact source exterior and native full-sphere quality checks are unchanged.
+
+The evaluator receives the exact selected target and receiver sample pixel coordinates, with explicit checks for stone texture scale/noise mismatch, repetition, tonal seams, broad illumination, target remnants and structural damage. Hidden receiver pixels remain a plausible generated estimate. A numeric pass or source-plan assertion is not acceptance.
+
+The image transport DTO remains `machine-removal-plan/1`: this wrapper describes typed-plan transport, not the source recipe version. Its result and context hashes bind the internal v2 record and saved policy. Public callers still cannot provide machine plans, approval claims or internal workflow invocation.
+
+Validation is local and synthetic until a separately authorized pinned Linux replay and real regression are completed. No provider call or production activation is included. Existing runtime manifests require exact source rebinding for the changed protocol/context/provider/support code before rollout.

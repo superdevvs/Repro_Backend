@@ -21,7 +21,7 @@ class LabDeclutterRemovalPlans
         abort_unless($this->ready(), 503, 'Validated source-removal plan is unavailable.');
         $snapshot = app(LabDeclutterRemovalContext::class)->capture($item, $sectionId, $sourceAnalysisId);
         return app(LabWorkflowSteps::class)->reserve($item, 'removal-plan', 'analysis',
-            ['protocolVersion' => LabDeclutterRemovalPolicy::VERSION, 'sectionId' => $sectionId, 'sourceAnalysisId' => $sourceAnalysisId,
+            ['protocolVersion' => LabDeclutterRemovalPolicy::protocolVersion($workflow->policy), 'sectionId' => $sectionId, 'sourceAnalysisId' => $sourceAnalysisId,
                 'contextSnapshot' => $snapshot, 'recipe' => app(LabDeclutterRemovalBridge::class)->snapshot()]);
     }
     public function start(IguideLabWorkflowStep $step): IguideLabDeclutterRemovalPlan
@@ -100,6 +100,7 @@ class LabDeclutterRemovalPlans
                 'execution' => $executionAsset, 'compiledPayload' => $payload], $data['recipe']);
             $asset = $bridge->output($record->project_id, $report, 'assessment'); $result = json_decode(file_get_contents($asset['path']), true, flags: JSON_THROW_ON_ERROR);
             abort_unless(in_array($result['status'] ?? '', ['ready_for_segmentation', 'needs_review'], true)
+                && ($result['schemaVersion']??null)===$step->input['protocolVersion']
                 && ($result['automaticAcceptance'] ?? true) === false && ($result['authorOrigin'] ?? null) === 'machine', 422);
             $data['resultAsset'] = $asset; $data['execution'] = $execution;
             LockedWrite::run(fn () => $record->update(['status' => 'completed', 'result' => $result, 'result_sha256' => $asset['sha256'],
@@ -123,11 +124,14 @@ class LabDeclutterRemovalPlans
     }
     private function verifyStep(IguideLabWorkflowStep $step): IguideLabWorkflowItem
     {
-        abort_unless($step->kind === 'analysis' && ($step->input['protocolVersion'] ?? null) === LabDeclutterRemovalPolicy::VERSION
+        abort_unless($step->kind === 'analysis' && in_array($step->input['protocolVersion'] ?? null,[LabDeclutterRemovalPolicy::VERSION,LabDeclutterRemovalPolicy::MATERIALS_VERSION],true)
             && $step->input_sha256 === LabAnalysisRecipes::hash($step->input), 422, 'The source-removal reservation changed.');
         $item = IguideLabWorkflowItem::where('project_id', $step->project_id)->findOrFail($step->item_id);
         $workflow = IguideLabWorkflow::where('project_id', $step->project_id)->findOrFail($item->workflow_id);
         abort_unless(LabDeclutterRemovalPolicy::enabled($workflow->policy, $item->preset), 422, 'Declutter removal plan policy is unavailable.');
+        abort_unless(($step->input['protocolVersion']??null)===LabDeclutterRemovalPolicy::protocolVersion($workflow->policy)
+            &&($step->input['contextSnapshot']['context']['schemaVersion']??null)===$step->input['protocolVersion'],422,'Removal protocol and reserved policy differ.');
+        abort_unless(!LabDeclutterRemovalPolicy::materials($workflow->policy)||config('iguide-lab.declutter_materials_enabled',false)===true,503,'Material-aware removal is disabled.');
         app(LabWorkflowInvocation::class)->verify(app(LabWorkflowSteps::class)->invocation($step), $step->project_id, $step->request_id, 'analysis');
         $bridge = app(LabDeclutterRemovalBridge::class); $bridge->validate($step->input['recipe']); abort_unless($this->ready(), 503);
         $fresh = app(LabDeclutterRemovalContext::class)->capture($item, $step->input['sectionId'], $step->input['sourceAnalysisId']);
@@ -135,6 +139,18 @@ class LabDeclutterRemovalPlans
         // actual persisted representation, retaining all values and source hashes.
         abort_unless(LabAnalysisRecipes::hash($fresh) === LabAnalysisRecipes::hash($step->input['contextSnapshot']), 422, 'The actual source or parent context changed.');
         return $item;
+    }
+    /** Revalidate typed source, recipe and payload before every primary/quota claim. */
+    public function verifyForAttempt(IguideLabDeclutterRemovalPlan $record,string $payload): void
+    {
+        $record->refresh();$step=IguideLabWorkflowStep::where('project_id',$record->project_id)->findOrFail($record->step_id);
+        $this->verifyStep($step);$data=$record->data;
+        abort_unless($record->status==='submitting'&&$record->request_hash===$step->input_sha256
+            &&LabMachineSegmentationPlan::canonicalHash($data['contextSnapshot']??[])===LabMachineSegmentationPlan::canonicalHash($step->input['contextSnapshot'])
+            &&($data['recipe']??null)===$step->input['recipe']&&hash('sha256',$payload)===($data['providerBodySha256']??null),422,'The reserved removal attempt changed.');
+        $path='iguide-lab/'.$record->project_id.'/declutter-removal-plans/'.$record->id.'/compiled/payload.json';
+        $actual=app(LabDeclutterRemovalContext::class)->file($record->project_id,$path,$data['providerBodySha256'],36*1024*1024);
+        abort_unless(($data['payload']['path']??null)===$actual&&($data['payload']['sha256']??null)===$data['providerBodySha256'],422);
     }
     public function reserveSegmentationSteps(IguideLabDeclutterRemovalPlan $record): array
     {
@@ -202,6 +218,7 @@ class LabDeclutterRemovalPlans
         $record->refresh(); $step = IguideLabWorkflowStep::where('project_id', $record->project_id)->findOrFail($record->step_id);
         $item = $this->verifyStep($step);
         abort_unless($record->status === 'completed' && $record->request_hash === $step->input_sha256 && $step->child_id === $record->id
+            && ($record->result['schemaVersion']??null)===$step->input['protocolVersion']
             && ($record->result['status'] ?? null) === 'ready_for_segmentation' && ($record->result['reviewReasons'] ?? null) === []
             && ($record->result['automaticAcceptance'] ?? true) === false, 422, 'The persisted source-removal plan does not authorize support.');
         $path = $record->data['base'].'/parsed/assessment.json';
