@@ -6,6 +6,10 @@ use Tests\TestCase;
 
 class IguideLabLifestyleOpticalProtocolTest extends TestCase
 {
+    public static function sampling(int $w=4096,int $h=2048): array
+    {return ['version'=>'native-grid-sampling/1','sourceWidth'=>$w,'sourceHeight'=>$h,'outputWidth'=>2048,'outputHeight'=>2048,'sampleGridSize'=>33,
+        'minAxisFootprint'=>['min'=>0.2,'p50'=>0.3,'max'=>0.5],'maxAxisFootprint'=>['min'=>0.3,'p50'=>0.4,'max'=>0.6],
+        'upsampledGridFraction'=>1,'samplingMethod'=>'lanczos-mipmap-trilinear-bilinear','independentOpticalResolutionKnown'=>false];}
     public static function fixture(): array
     {
         [$c,$images]=IguideLabLifestyleFramingProtocolTest::fixture();$c['version']=P::VERSION;
@@ -27,7 +31,7 @@ class IguideLabLifestyleOpticalProtocolTest extends TestCase
         $result=P::parse(IguideLabLifestyleFramingProtocolTest::response(self::enquiry($c)),$c);
         $c['followupOrdinal']=1;$c['parent']=['id'=>(string)Str::uuid(),'resultSha256'=>LabAnalysisRecipes::hash($result),'responseSha256'=>str_repeat('d',64),'result'=>$result];
         $im=imagecreatetruecolor(2048,2048);imagefill($im,0,0,imagecolorallocate($im,110,150,190));ob_start();imagepng($im);$png=ob_get_clean();imagedestroy($im);
-        $c['views'][]=['id'=>'source_detail_1','sha256'=>hash('sha256',$png),'width'=>2048,'height'=>2048,'nativeSourceSha256'=>$c['sourceSha256'],'pose'=>$result['detailRequests'][0]['pose']];
+        $c['views'][]=['id'=>'source_detail_1','sha256'=>hash('sha256',$png),'width'=>2048,'height'=>2048,'nativeSourceSha256'=>$c['sourceSha256'],'pose'=>$result['detailRequests'][0]['pose'],'sourceSampling'=>self::sampling()];
         $images[]='data:image/png;base64,'.base64_encode($png);return [$c,$images];
     }
     public function test_followup_has_all_original_views_and_true_detail_binding_without_generation_authority(): void

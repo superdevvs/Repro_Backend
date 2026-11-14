@@ -27,10 +27,20 @@ class IguideLabLifestyleOpticalTest extends TestCase
         foreach(['lifestyle_framing_runtime_manifest'=>[LabLifestyleFramingProtocol::VERSION,app(LabLifestyleFramings::class)->implementation()],
             'lifestyle_optical_runtime_manifest'=>[LabLifestyleOpticalProtocol::VERSION,app(LabLifestyleOpticalDetails::class)->implementation()]] as $key=>[$version,$code]){
             $path=tempnam(sys_get_temp_dir(),'optical-runtime');$this->temporary[]=$path;
-            file_put_contents($path,json_encode(['version'=>$version,'validationStatus'=>'passed','implementation'=>$code,'pythonPath'=>PHP_BINARY,'pythonSha256'=>hash_file('sha256',PHP_BINARY),
+            file_put_contents($path,json_encode(['version'=>$version,'validationStatus'=>'passed','implementation'=>$code,'pythonPath'=>PHP_BINARY,'pythonResolvedPath'=>realpath(PHP_BINARY),'pythonSha256'=>hash_file('sha256',PHP_BINARY),
                 'pythonVersion'=>'3.12.3','numpyVersion'=>'2.5.4','pillowVersion'=>'13.0.0']));config(['iguide-lab.'.$key=>$path]);}
     }
     protected function tearDown(): void {foreach($this->temporary as $p)if(is_file($p))unlink($p);parent::tearDown();}
+    public function test_validated_interpreter_symlink_is_bound_to_resolved_executable_and_retarget_is_held(): void
+    {
+        if(!function_exists('symlink'))$this->markTestSkipped('Symlink API unavailable.');
+        $link=sys_get_temp_dir().'/optical-python-'.Str::uuid();symlink(PHP_BINARY,$link);$this->temporary[]=$link;
+        $path=config('iguide-lab.lifestyle_optical_runtime_manifest');$m=json_decode(file_get_contents($path),true);
+        $m['pythonPath']=$link;$m['pythonResolvedPath']=realpath(PHP_BINARY);file_put_contents($path,json_encode($m));config(['iguide-lab.pipeline_python_path'=>$link]);
+        $snapshot=app(LabLifestyleOpticalDetails::class)->snapshot();$this->assertSame(realpath(PHP_BINARY),$snapshot['pythonResolvedPath']);
+        unlink($link);symlink('/usr/bin/env',$link);clearstatcache(true,$link);
+        $this->assertFalse(app(LabLifestyleOpticalDetails::class)->ready());
+    }
     private function fixture(): array
     {
         $project=IguideLabProject::create(['name'=>'Synthetic optical follow-up','token_hash'=>hash('sha256',Str::random(64)),'expires_at'=>now()->addDay(),'max_runs'=>20]);
@@ -57,6 +67,14 @@ class IguideLabLifestyleOpticalTest extends TestCase
         $step=$service->reserveFollowup($item,$parent->id);$record=$service->start($step);$this->resetHttp();return [$project,$workflow,$item,$case,$step,$parent,$record];
     }
     private function resetHttp(): void {Http::swap(new \Illuminate\Http\Client\Factory);Http::preventStrayRequests();}
+    public function test_canonical_python_report_order_is_accepted_but_source_drift_is_not(): void
+    {
+        [,$workflow,$item,$native,,$parent]=$this->followup();$worker=new OpticalReportFixture;
+        $method=new \ReflectionMethod(LabLifestyleOpticalDetails::class,'extract');
+        $result=$method->invoke($worker,$item,$parent,$parent->result,$native,$workflow->policy);
+        $this->assertCount(1,$result['views']);$this->assertFalse($result['views'][0]['sourceSampling']['independentOpticalResolutionKnown']);
+        $worker->drift=true;$this->expectException(HttpException::class);$method->invoke($worker,$item,$parent,$parent->result,$native,$workflow->policy);
+    }
     public function test_one_followup_has_stable_identity_original_receipt_and_no_image_spend(): void
     {
         [$project,,$item,,$step,$parent,$record]=$this->followup();$record=$this->finish($record,'candidate');$service=app(LabLifestyleFramings::class);
@@ -143,7 +161,25 @@ class OpticalDetailFixture extends LabLifestyleOpticalDetails
     {
         $im=imagecreatetruecolor(2048,2048);imagefill($im,0,0,imagecolorallocate($im,100,120,140));ob_start();imagepng($im);$bytes=ob_get_clean();imagedestroy($im);
         $sha=hash('sha256',$bytes);$path='iguide-lab/'.$item->project_id.'/workflow-items/'.$item->id.'/fixture-detail-'.$parent->id.'.png';app(LabLifestyleFramingContext::class)->put($path,$bytes);
-        return ['views'=>[['id'=>'source_detail_1','sha256'=>$sha,'width'=>2048,'height'=>2048,'nativeSourceSha256'=>$native->source_sha256,'pose'=>$result['detailRequests'][0]['pose']]],
+        return ['views'=>[['id'=>'source_detail_1','sha256'=>$sha,'width'=>2048,'height'=>2048,'nativeSourceSha256'=>$native->source_sha256,'pose'=>$result['detailRequests'][0]['pose'],'sourceSampling'=>F::sampling($native->width,$native->height)]],
             'assets'=>[['id'=>'source_detail_1','path'=>$path,'sha256'=>$sha]],'manifestSha256'=>str_repeat('e',64)];
+    }
+}
+
+class OpticalReportFixture extends LabLifestyleOpticalDetails
+{
+    public bool $drift=false;
+    protected function execute(string $request,string $root): array
+    {
+        $r=json_decode(file_get_contents($request),true);$out=$r['outputDirectory'];if(!is_dir($out.'/views'))mkdir($out.'/views',02770,true);
+        $im=imagecreatetruecolor(2048,2048);imagepng($im,$out.'/views/source_detail_1.png');imagedestroy($im);file_put_contents($out.'/manifest.json','{}');
+        $source=$r['source'];$authority=$r['authority'];$pose=$r['requests'][0]['pose']+['width'=>2048,'height'=>2048];ksort($source);ksort($authority);ksort($pose);
+        if($this->drift)$source['sha256']=str_repeat('0',64);
+        return ['status'=>'completed','sameCaptureOnly'=>true,'editScopeExpanded'=>false,'independentCameraEvidence'=>false,'providerCalls'=>0,
+            'source'=>$source,'authority'=>$authority,'manifest'=>['path'=>$out.'/manifest.json','sha256'=>hash_file('sha256',$out.'/manifest.json')],
+            'runtime'=>['version'=>'lifestyle-original-native-details/2','python'=>'3.12.3','numpy'=>'2.5.4','pillow'=>'13.0.0',
+                'workerSha256'=>hash_file('sha256',resource_path('iguide-lab/lifestyle_optical_details_v2.py')),'geometrySha256'=>hash_file('sha256',resource_path('iguide-lab/pano_geometry.py'))],
+            'views'=>[['id'=>'source_detail_1','path'=>$out.'/views/source_detail_1.png','sha256'=>hash_file('sha256',$out.'/views/source_detail_1.png'),
+                'pose'=>$pose,'sourceSampling'=>F::sampling($source['width'],$source['height'])]]];
     }
 }

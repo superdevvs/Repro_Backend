@@ -13,20 +13,20 @@ class LabLifestyleOpticalDetails
         $out=app(LabLifestyleFramings::class)->implementation();
         $out['opticalServiceSha256']=hash_file('sha256',__FILE__);
         $out['opticalProtocolSha256']=hash_file('sha256',(new \ReflectionClass(LabLifestyleOpticalProtocol::class))->getFileName());
-        $out['opticalWorkerSha256']=hash_file('sha256',resource_path('iguide-lab/lifestyle_optical_details.py'));
-        foreach(['policy'=>LabWorkflowPolicy::class,'steps'=>LabWorkflowSteps::class,'sourceAuthority'=>LabWorkflowSources::class] as $key=>$class)$out[$key.'Sha256']=hash_file('sha256',(new \ReflectionClass($class))->getFileName());
+        $out['opticalWorkerSha256']=hash_file('sha256',resource_path('iguide-lab/lifestyle_optical_details_v2.py'));
+        foreach(['opticalCut'=>LabLifestyleOpticalCutProtocol::class,'opticalCutViews'=>LabLifestyleOpticalCutViews::class,'sampling'=>LabLifestyleOpticalSampling::class,'canonicalBinding'=>LabMachineSegmentationPlan::class,'recipes'=>LabAnalysisRecipes::class,'analyses'=>LabAnalyses::class,'analysisProvider'=>LabAnalysisProvider::class,'cutReadiness'=>LabLifestyleCutReadiness::class,'policy'=>LabWorkflowPolicy::class,'steps'=>LabWorkflowSteps::class,'sourceAuthority'=>LabWorkflowSources::class] as $key=>$class)$out[$key.'Sha256']=hash_file('sha256',(new \ReflectionClass($class))->getFileName());
         return $out;
     }
     public function snapshot(): array
     {
-        $path=(string)config('iguide-lab.lifestyle_optical_runtime_manifest');$python=(string)config('iguide-lab.pipeline_python_path');
-        abort_unless($path!==''&&is_file($path)&&!is_link($path)&&filesize($path)<=65536&&is_file($python)&&!is_link($python),503,'Validated Lifestyle optical detail runtime is unavailable.');
-        $m=json_decode(file_get_contents($path),true,flags:JSON_THROW_ON_ERROR);$code=$this->implementation();$pythonSha=hash_file('sha256',$python);
+        $path=(string)config('iguide-lab.lifestyle_optical_runtime_manifest');$python=(string)config('iguide-lab.pipeline_python_path');clearstatcache(true,$python);
+        abort_unless($path!==''&&is_file($path)&&!is_link($path)&&filesize($path)<=65536&&is_file($python)&&is_executable($python)&&realpath($python)!==false,503,'Validated Lifestyle optical detail runtime is unavailable.');
+        $m=json_decode(file_get_contents($path),true,flags:JSON_THROW_ON_ERROR);$code=$this->implementation();$resolved=realpath($python);$pythonSha=hash_file('sha256',$resolved);
         abort_unless(($m['version']??null)===LabLifestyleOpticalProtocol::VERSION&&($m['validationStatus']??null)==='passed'
-            &&($m['pythonPath']??null)===$python&&($m['pythonSha256']??null)===$pythonSha&&($m['pythonVersion']??null)==='3.12.3'
+            &&($m['pythonPath']??null)===$python&&($m['pythonResolvedPath']??null)===$resolved&&($m['pythonSha256']??null)===$pythonSha&&($m['pythonVersion']??null)==='3.12.3'
             &&($m['numpyVersion']??null)==='2.5.4'&&($m['pillowVersion']??null)==='13.0.0'&&($m['implementation']??null)===$code,503,'Optical detail runtime is not validated.');
         return ['version'=>LabLifestyleOpticalProtocol::VERSION,'implementation'=>$code,'runtimeManifestSha256'=>hash_file('sha256',$path),
-            'pythonPath'=>$python,'pythonSha256'=>$pythonSha,'protocol'=>LabLifestyleOpticalProtocol::snapshot(),'maxFollowups'=>1,'maxDetails'=>2,
+            'pythonPath'=>$python,'pythonResolvedPath'=>$resolved,'pythonSha256'=>$pythonSha,'cutRecipe'=>app(LabAnalysisRecipes::class)->snapshot(LabAnalysisRecipes::LIFESTYLE_OPTICAL_CUT),'protocol'=>LabLifestyleOpticalProtocol::snapshot(),'maxFollowups'=>1,'maxDetails'=>2,
             'analysisSteps'=>4,'imageSteps'=>1,'segmentationSteps'=>2,'sectionSteps'=>1,'compositionSteps'=>1,'evaluationSteps'=>1];
     }
     public function ready(): bool {try{$this->snapshot();return true;}catch(\Throwable){return false;}}
@@ -64,19 +64,20 @@ class LabLifestyleOpticalDetails
         $files->put($base.'-request.json',json_encode($request,JSON_THROW_ON_ERROR));
         $report=$this->execute($disk->path($base.'-request.json'),$disk->path('iguide-lab/'.$item->project_id));
         abort_unless(($report['status']??null)==='completed'&&($report['sameCaptureOnly']??null)===true&&($report['editScopeExpanded']??null)===false
-            &&($report['independentCameraEvidence']??null)===false&&($report['providerCalls']??null)===0&&($report['source']??null)===$request['source']
-            &&LabAnalysisRecipes::hash($report['authority']??[])===LabAnalysisRecipes::hash($request['authority'])&&count($report['views']??[])===count($request['requests']),422,'Native optical detail report changed.');
+            &&($report['independentCameraEvidence']??null)===false&&($report['providerCalls']??null)===0&&LabMachineSegmentationPlan::canonicalHash($report['source']??[])===LabMachineSegmentationPlan::canonicalHash($request['source'])
+            &&LabMachineSegmentationPlan::canonicalHash($report['authority']??[])===LabMachineSegmentationPlan::canonicalHash($request['authority'])&&count($report['views']??[])===count($request['requests']),422,'Native optical detail report changed.');
         $r=$report['runtime']??[];
-        abort_unless(($r['version']??null)==='lifestyle-original-native-details/1'&&($r['python']??null)==='3.12.3'&&($r['numpy']??null)==='2.5.4'&&($r['pillow']??null)==='13.0.0'
-            &&($r['workerSha256']??null)===hash_file('sha256',resource_path('iguide-lab/lifestyle_optical_details.py'))
+        abort_unless(($r['version']??null)==='lifestyle-original-native-details/2'&&($r['python']??null)==='3.12.3'&&($r['numpy']??null)==='2.5.4'&&($r['pillow']??null)==='13.0.0'
+            &&($r['workerSha256']??null)===hash_file('sha256',resource_path('iguide-lab/lifestyle_optical_details_v2.py'))
             &&($r['geometrySha256']??null)===hash_file('sha256',resource_path('iguide-lab/pano_geometry.py')),422,'Optical detail runtime changed.');
         $manifest=$files->file($item->project_id,$base.'/manifest.json',$report['manifest']['sha256']??'',65536);
         abort_unless(realpath($report['manifest']['path']??'')===$manifest,422);$views=$assets=[];
         foreach($report['views'] as $i=>$v){$id=LabLifestyleOpticalProtocol::DETAILS[$i];$pose=$request['requests'][$i]['pose'];$path=$base.'/views/'.$id.'.png';
             $file=$files->file($item->project_id,$path,$v['sha256']??'',16*1024*1024);$s=getimagesize($file);
             abort_unless(($v['id']??null)===$id&&realpath($v['path']??'')===$file&&[$s[0],$s[1],$s['mime']] === [2048,2048,'image/png']
-                &&LabAnalysisRecipes::hash($v['pose']??[])===LabAnalysisRecipes::hash($pose+['width'=>2048,'height'=>2048]),422,'Native detail bytes or pose changed.');
-            $views[]=['id'=>$id,'sha256'=>$v['sha256'],'width'=>2048,'height'=>2048,'nativeSourceSha256'=>$native->source_sha256,'pose'=>$pose];
+                &&LabMachineSegmentationPlan::canonicalHash($v['pose']??[])===LabMachineSegmentationPlan::canonicalHash($pose+['width'=>2048,'height'=>2048]),422,'Native detail bytes or pose changed.');
+            LabLifestyleOpticalSampling::validate($v['sourceSampling']??null,$native->width,$native->height);
+            $views[]=['id'=>$id,'sha256'=>$v['sha256'],'width'=>2048,'height'=>2048,'nativeSourceSha256'=>$native->source_sha256,'pose'=>$pose,'sourceSampling'=>$v['sourceSampling']];
             $assets[]=['id'=>$id,'path'=>$path,'sha256'=>$v['sha256']];}
         return ['views'=>$views,'assets'=>$assets,'manifestSha256'=>$report['manifest']['sha256']];
     }
@@ -84,7 +85,7 @@ class LabLifestyleOpticalDetails
     {
         $env=array_fill_keys(array_keys(array_merge($_SERVER,$_ENV,getenv()?:[])),false);
         $env=array_merge($env,['PATH'=>'/usr/bin:/bin','LANG'=>'C.UTF-8','PYTHONNOUSERSITE'=>'1','OMP_NUM_THREADS'=>'1','OPENBLAS_NUM_THREADS'=>'1']);
-        $p=new Process([(string)config('iguide-lab.pipeline_python_path'),resource_path('iguide-lab/lifestyle_optical_details.py'),'--request',$request,'--allowed-root',$root],null,$env,null,130);
+        $p=new Process([(string)config('iguide-lab.pipeline_python_path'),resource_path('iguide-lab/lifestyle_optical_details_v2.py'),'--request',$request,'--allowed-root',$root],null,$env,null,130);
         $p->run();$report=json_decode($p->getOutput(),true);abort_unless($p->isSuccessful()&&is_array($report),422,'Original native detail extraction failed.');return $report;
     }
 }
