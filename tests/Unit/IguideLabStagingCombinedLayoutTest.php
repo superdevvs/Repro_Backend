@@ -44,6 +44,7 @@ class IguideLabStagingCombinedLayoutTest extends TestCase
     {
         [$s,$c,$images,$v]=$this->fixture();$r=app(LabAnalysisRecipes::class);$this->assertFalse(config('iguide-lab.staging_layout_combined_enabled'));
         $this->assertSame(Combined::VERSION,$s['recipe']['compilerVersion']);$this->assertSame(Combined::gateSchema(),$s['recipe']['schema']['properties']['stagingLayout']);
+        $this->assertStringContainsString('For request_details, request_reframe, request_reframe_details or needs_review, set layout exactly null.',$s['recipe']['instructions']);
         $this->assertSame(['effort'=>'medium'],$s['recipe']['reasoning']);$this->assertSame(12000,$s['recipe']['max_output_tokens']);
         foreach([LabAnalysisRecipes::STAGING_LAYOUT,LabAnalysisRecipes::STAGING_LAYOUT_MEDIUM,LabAnalysisRecipes::STAGING_LAYOUT_ADAPTIVE] as $version){
             $legacy=$r->snapshot($version);$this->assertSame(Legacy::VERSION,$legacy['recipe']['compilerVersion']);
