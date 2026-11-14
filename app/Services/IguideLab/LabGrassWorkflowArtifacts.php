@@ -19,6 +19,7 @@ class LabGrassWorkflowArtifacts
         $worker = resource_path('iguide-lab/workflow_qa.py');
         return ['recipeVersion' => self::VERSION, 'adapterSha256' => hash_file('sha256', __FILE__), 'workerSha256' => is_file($worker) ? hash_file('sha256', $worker) : null,
             'lightingSha256' => is_file(resource_path('iguide-lab/lighting_transfer.py')) ? hash_file('sha256', resource_path('iguide-lab/lighting_transfer.py')) : null,
+            'globalLightingSha256' => hash_file('sha256', resource_path('iguide-lab/global_lighting.py')),
             'sourceAdapterSha256' => hash_file('sha256', resource_path('iguide-lab/workflow_source.py')),
             'geometrySha256' => hash_file('sha256', resource_path('iguide-lab/pano_geometry.py')),
             'preparerSha256' => hash_file('sha256', (new \ReflectionClass(LabImages::class))->getFileName()),
@@ -235,7 +236,7 @@ class LabGrassWorkflowArtifacts
         abort_unless(($manifest['validationStatus'] ?? null) === 'passed' && ($manifest['pythonPath'] ?? null) === $python
             && ($manifest['pythonVersion'] ?? null) === '3.12.3' && ($manifest['numpyVersion'] ?? null) === '2.5.4'
             && ($manifest['pillowVersion'] ?? null) === '13.0.0', 503, 'Automatic runtime version changed.');
-        foreach (['validatedWorkerSha256' => 'workflow_qa.py', 'validatedLightingSha256' => 'lighting_transfer.py', 'validatedGeometrySha256' => 'pano_geometry.py', 'validatedSourceAdapterSha256' => 'workflow_source.py', 'validatedGrassCoreSha256' => 'grass_chroma.py', 'validatedGrassWorkerSha256' => 'grass_chroma_worker.py'] as $key => $file) {
+        foreach (['validatedWorkerSha256' => 'workflow_qa.py', 'validatedLightingSha256' => 'lighting_transfer.py', 'validatedGlobalLightingSha256' => 'global_lighting.py', 'validatedGeometrySha256' => 'pano_geometry.py', 'validatedSourceAdapterSha256' => 'workflow_source.py', 'validatedGrassCoreSha256' => 'grass_chroma.py', 'validatedGrassWorkerSha256' => 'grass_chroma_worker.py'] as $key => $file) {
             abort_unless(is_file(resource_path('iguide-lab/'.$file)) && ($manifest[$key] ?? null) === hash_file('sha256', resource_path('iguide-lab/'.$file)), 503, 'Automatic code was not validated with this runtime.');
         }
         abort_unless(($manifest['validatedPreparerSha256'] ?? null) === hash_file('sha256', (new \ReflectionClass(LabImages::class))->getFileName()), 503, 'Automatic source preparation was not validated.');
@@ -261,6 +262,7 @@ class LabGrassWorkflowArtifacts
         return ($runtime['python'] ?? null) === '3.12.3' && ($runtime['numpy'] ?? null) === '2.5.4' && ($runtime['pillow'] ?? null) === '13.0.0'
             && ($runtime['workerSha256'] ?? null) === $snapshot['workerSha256']
             && ($runtime['lightingCodeSha256'] ?? null) === $snapshot['lightingSha256']
+            && ($runtime['globalLightingCodeSha256'] ?? null) === $snapshot['globalLightingSha256']
             && ($runtime['geometrySha256'] ?? null) === $snapshot['geometrySha256'];
     }
     private function environment(): array

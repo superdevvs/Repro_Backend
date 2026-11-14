@@ -69,4 +69,46 @@ class IguideLabGrassArtifactBindingTest extends TestCase
         }
         $composite->manifest = $original; $service->verifyComposite($item, $composite, $step, $run); Http::assertNothingSent();
     }
+
+    public function test_imported_global_module_is_bound_in_manifest_snapshot_and_worker_report(): void
+    {
+        $service = app(LabGrassWorkflowArtifacts::class);
+        $path = tempnam(sys_get_temp_dir(), 'iguide-grass-runtime-');
+        try {
+            config(['iguide-lab.pipeline_python_path' => PHP_BINARY, 'iguide-lab.grass_runtime_manifest' => $path]);
+            $snapshot = $service->snapshot();
+            $this->assertSame(hash_file('sha256', resource_path('iguide-lab/global_lighting.py')), $snapshot['globalLightingSha256']);
+            $manifest = ['validationStatus' => 'passed', 'pythonPath' => PHP_BINARY, 'pythonVersion' => '3.12.3',
+                'numpyVersion' => '2.5.4', 'pillowVersion' => '13.0.0', 'validatedArtifactAdapterSha256' => $snapshot['adapterSha256']];
+            foreach (['workerSha256', 'lightingSha256', 'globalLightingSha256', 'geometrySha256', 'sourceAdapterSha256', 'preparerSha256', 'grassCoreSha256', 'grassWorkerSha256'] as $key) {
+                $manifest['validated'.ucfirst($key)] = $snapshot[$key];
+            }
+            file_put_contents($path, json_encode($manifest));
+            $this->assertTrue($service->ready());
+            foreach ([null, str_repeat('f', 64)] as $changed) {
+                $drift = $manifest;
+                if ($changed === null) unset($drift['validatedGlobalLightingSha256']);
+                else $drift['validatedGlobalLightingSha256'] = $changed;
+                file_put_contents($path, json_encode($drift));
+                $this->assertFalse($service->ready());
+            }
+            file_put_contents($path, json_encode($manifest));
+            $snapshot = $service->snapshot();
+            $service->validateSnapshot($snapshot);
+            $drift = $snapshot; $drift['globalLightingSha256'] = str_repeat('f', 64);
+            $this->rejected(fn () => $service->validateSnapshot($drift));
+            $runtime = ['python' => '3.12.3', 'numpy' => '2.5.4', 'pillow' => '13.0.0',
+                'workerSha256' => $snapshot['workerSha256'], 'lightingCodeSha256' => $snapshot['lightingSha256'],
+                'globalLightingCodeSha256' => $snapshot['globalLightingSha256'], 'geometrySha256' => $snapshot['geometrySha256']];
+            $method = new \ReflectionMethod($service, 'runtimeMatches');
+            $this->assertTrue($method->invoke($service, $runtime, $snapshot));
+            $runtime['globalLightingCodeSha256'] = str_repeat('e', 64);
+            $this->assertFalse($method->invoke($service, $runtime, $snapshot));
+            unset($runtime['globalLightingCodeSha256']);
+            $this->assertFalse($method->invoke($service, $runtime, $snapshot));
+            Http::assertNothingSent();
+        } finally {
+            if (is_file($path)) unlink($path);
+        }
+    }
 }
