@@ -25,7 +25,7 @@ class LabInteriorDesignImageDraft
         abort_unless($case->projection==='rectilinear'&&[$case->width,$case->height]===[2048,2048]
             &&$case->source_sha256===$bundle['context']['sourceSha256']&&($case->metadata['sectionId']??null)===$bundle['sectionId'],422);
         $bytes=Storage::disk(LabService::DISK)->get($case->source_path);
-        abort_unless(hash('sha256',$bytes)===$case->source_sha256&&hash('sha256',LabImages::prepared($bytes))===$source['sha256'],422,'Prepared original material input changed.');
+        abort_unless(hash('sha256',$bytes)===$case->source_sha256&&hash('sha256',LabInteriorDesignContext::prepared($bytes))===$source['sha256'],422,'Prepared original material input changed.');
         return ['version'=>self::VERSION,'id'=>$record->id,'stepId'=>$record->step_id,'requestId'=>$record->request_id,'resultSha256'=>$record->result_sha256,
             'sourceSha256'=>$case->source_sha256,'preparedSourceSha256'=>$source['sha256'],'nativeSourceSha256'=>$item->source['sha256'],
             'sourceGeometrySha256'=>$bundle['geometry']['sha256'],'promptSha256'=>hash('sha256',$input['prompt']),'sourceContext'=>$binding,

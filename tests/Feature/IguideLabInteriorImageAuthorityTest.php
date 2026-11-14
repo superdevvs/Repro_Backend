@@ -73,10 +73,31 @@ class IguideLabInteriorImageAuthorityTest extends TestCase
         [$project,,,,,,,,$input]=$this->fixture();$this->expectException(HttpException::class);
         app(LabService::class)->start($project,$input+['requestId'=>(string)Str::uuid()]);
     }
+    public function test_changed_report_and_local_commit_cannot_replace_the_persisted_source_support_digest(): void
+    {
+        [,,$item,,$record]=$this->fixture();$materials=new PersistedSupportFixture;
+        $first=$materials->sourceSupport($item,$record,[]);
+        $this->assertSame($first['reportSha256'],$record->fresh()->data['sourceSupport']['reportSha256']);
+        $this->assertSame($first,$materials->sourceSupport($item,$record,[]));
+        $materials->sha=str_repeat('a',64);
+        try{$materials->sourceSupport($item,$record,[]);$this->fail('A replacement report changed immutable image authority.');}
+        catch(HttpException $e){$this->assertSame(422,$e->getStatusCode());}
+        $this->assertSame($first['reportSha256'],$record->fresh()->data['sourceSupport']['reportSha256']);
+        Http::assertNothingSent();
+    }
 }
 class ImageSupportFixture extends LabInteriorDesignMaterials
 {
     public string $sha='eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';public string $status='eligible_for_donor_request';
     public function sourceSupport(IguideLabWorkflowItem $item,IguideLabInteriorAssessment $cut,array $snapshot): array
     {return ['reportSha256'=>$this->sha,'report'=>['status'=>$this->status]];}
+}
+class PersistedSupportFixture extends LabInteriorDesignMaterials
+{
+    public string $sha='eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
+    public function validate(array $snapshot): void {}
+    protected function request(IguideLabWorkflowItem $item,IguideLabInteriorAssessment $cut,?IguideLabInteriorAssessment $candidate,array $snapshot,string $requestId): array{return [];}
+    protected function execute(IguideLabWorkflowItem $item,array $request,array $snapshot): array
+    {return ['reportPath'=>'private-fixture/report.json','reportSha256'=>$this->sha,'requestSha256'=>str_repeat('c',64),
+        'report'=>['operation'=>'source-support','status'=>'eligible_for_donor_request','imageGenerationAuthorized'=>false,'materialTransferAuthorized'=>false]];}
 }

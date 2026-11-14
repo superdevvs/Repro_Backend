@@ -8,6 +8,17 @@ use Symfony\Component\Process\Process;
 /** Exact original source, extracted cut and actual donor contexts. No client evidence is accepted. */
 class LabInteriorDesignContext
 {
+    private static array $preparedCache=[];
+    /** Pure byte transform cache only: source, ownership and receipts are still checked at every boundary. */
+    public static function prepared(string $bytes): string
+    {
+        $key=hash_file('sha256',__DIR__.'/LabImages.php').':'.hash('sha256',$bytes);
+        if(!isset(self::$preparedCache[$key])){
+            if(count(self::$preparedCache)>=4)array_shift(self::$preparedCache);
+            self::$preparedCache[$key]=LabImages::prepared($bytes);
+        }
+        return self::$preparedCache[$key];
+    }
     public function snapshot(): array
     {
         return ['contextSha256'=>hash_file('sha256',__FILE__),'preparerSha256'=>hash_file('sha256',__DIR__.'/LabImages.php'),
@@ -24,21 +35,32 @@ class LabInteriorDesignContext
         abort_unless($parents===[],422);$native=app(LabWorkflowSources::class)->verify($item->project_id,$item->source);
         $disk=Storage::disk(LabService::DISK);app(LabStorage::class)->prepareWorkflow($item->project_id,$item->id);
         $base='iguide-lab/'.$item->project_id.'/workflow-items/'.$item->id.'/interior-original';
-        $png=LabImages::prepared($disk->get($native->source_path));$sha=hash('sha256',$png);$size=getimagesizefromstring($png);
+        $png=self::prepared($disk->get($native->source_path));$sha=hash('sha256',$png);$size=getimagesizefromstring($png);
         abort_unless([$size[0],$size[1],$size['mime']]===[2048,1024,'image/png'],422);$this->put($base.'/source.png',$png);
         $request=['schemaVersion'=>1,'source'=>['path'=>$disk->path($base.'/source.png'),'sha256'=>$sha],'outputDirectory'=>$disk->path($base.'/views')];
         $this->put($base.'/request.json',json_encode($request,JSON_THROW_ON_ERROR));
-        $env=array_fill_keys(array_keys(array_merge($_SERVER,$_ENV,getenv()?:[])),false);
-        $env=array_merge($env,['PATH'=>'/usr/bin:/bin','LANG'=>'C.UTF-8','PYTHONNOUSERSITE'=>'1','OMP_NUM_THREADS'=>'1','OPENBLAS_NUM_THREADS'=>'1']);
-        $p=new Process([(string)config('iguide-lab.pipeline_python_path'),resource_path('iguide-lab/analysis_views.py'),'--request',$disk->path($base.'/request.json')],null,$env,null,90);
-        $p->run();$result=json_decode($p->getOutput(),true);abort_unless($p->isSuccessful()&&($result['status']??null)==='completed',422,'Interior original diagnostics failed.');
-        $m=$result['manifest'];$code=$this->snapshot();
-        abort_unless(($m['source']['sha256']??null)===$sha&&($m['adapterSha256']??null)===$code['diagnosticSha256']&&($m['geometrySha256']??null)===$code['geometrySha256']
+        $manifestPath=$base.'/views/manifest.json';
+        if($disk->exists($manifestPath)){
+            abort_unless(!is_link($disk->path($manifestPath))&&$disk->size($manifestPath)<=65536,422);
+            $m=json_decode($disk->get($manifestPath),true,flags:JSON_THROW_ON_ERROR);
+        }else{
+            $env=array_fill_keys(array_keys(array_merge($_SERVER,$_ENV,getenv()?:[])),false);
+            $env=array_merge($env,['PATH'=>'/usr/bin:/bin','LANG'=>'C.UTF-8','PYTHONNOUSERSITE'=>'1','OMP_NUM_THREADS'=>'1','OPENBLAS_NUM_THREADS'=>'1']);
+            $p=new Process([(string)config('iguide-lab.pipeline_python_path'),resource_path('iguide-lab/analysis_views.py'),'--request',$disk->path($base.'/request.json')],null,$env,null,90);
+            $p->run();$result=json_decode($p->getOutput(),true);abort_unless($p->isSuccessful()&&($result['status']??null)==='completed',422,'Interior original diagnostics failed.');
+            $m=$result['manifest'];
+        }
+        // Replay verifies every retained byte and pose below; it does not rerun a Python decoder.
+        // The complete manifest digest is also part of the persisted typed reservation.
+        $code=$this->snapshot();
+        abort_unless(($m['source']['sha256']??null)===$sha&&realpath($m['source']['path']??'')===realpath($disk->path($base.'/source.png'))
+            &&($m['pipeline_version']??null)==='iguide-local-geometry/1.3.0'
+            &&($m['adapterSha256']??null)===$code['diagnosticSha256']&&($m['geometrySha256']??null)===$code['geometrySha256']
             &&array_column($m['views']??[],'id')===array_slice(LabInteriorDesignFramingProtocol::IDS,1),422);
         $views=[['id'=>'source','sha256'=>$sha,'width'=>2048,'height'=>1024]];$assets=[['id'=>'source','path'=>$base.'/source.png','sha256'=>$sha]];$angles=[[0,0],[90,0],[180,0],[270,0],[0,90],[0,-90]];
         foreach($m['views'] as $i=>$view){$path=$base.'/views/views/'.$view['id'].'.png';$file=$this->file($item->project_id,$path,$view['sha256']);$s=getimagesize($file);
             abort_unless(realpath($view['path'])===$file&&[(float)$view['yaw_degrees'],(float)$view['pitch_degrees'],(float)$view['hfov_degrees']] === [(float)$angles[$i][0],(float)$angles[$i][1],100.0]
-                &&[$s[0],$s[1],$s['mime']]===[1024,1024,'image/png'],422,'Interior parent diagnostic geometry changed.');
+                &&[$view['width'],$view['height']]===[1024,1024]&&[$s[0],$s[1],$s['mime']]===[1024,1024,'image/png'],422,'Interior parent diagnostic geometry changed.');
             $views[]=['id'=>$view['id'],'sha256'=>$view['sha256'],'width'=>1024,'height'=>1024];$assets[]=['id'=>$view['id'],'path'=>$path,'sha256'=>$view['sha256']];}
         $intent=['sourceSha256'=>$native->source_sha256,'preset'=>'interior-design','style'=>$item->style,'instructions'=>$item->instructions];
         return ['context'=>['version'=>LabInteriorDesignFramingProtocol::VERSION,'nativeSourceSha256'=>$native->source_sha256,'preparedSourceSha256'=>$sha,
@@ -57,7 +79,7 @@ class LabInteriorDesignContext
         $cut=IguideLabCase::where('project_id',$item->project_id)->findOrFail($section->derived_case_id);$sourceContext=app(LabAnalysisSourceContext::class)->capture($cut);
         abort_unless($sourceContext!==null&&$sourceContext['binding']['nativeCaseId']===$native->id,422);
         $disk=Storage::disk(LabService::DISK);$base='iguide-lab/'.$item->project_id.'/workflow-items/'.$item->id.'/interior-cut-'.$section->id;
-        $png=LabImages::prepared($disk->get($cut->source_path));$sha=hash('sha256',$png);$size=getimagesizefromstring($png);
+        $png=self::prepared($disk->get($cut->source_path));$sha=hash('sha256',$png);$size=getimagesizefromstring($png);
         abort_unless([$size[0],$size[1],$size['mime']]===[2048,2048,'image/png'],422);$this->put($base.'/source.png',$png);
         $views=[['id'=>'source','sha256'=>$sha,'width'=>2048,'height'=>2048,'projection'=>'rectilinear','role'=>'authoritative_edit_cut']+$framing->result['view']];
         $assets=[['id'=>'source','path'=>$base.'/source.png','sha256'=>$sha]];$bundle=$framing->data['contextSnapshot'];

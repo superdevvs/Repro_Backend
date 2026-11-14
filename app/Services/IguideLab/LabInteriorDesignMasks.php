@@ -6,6 +6,7 @@ use App\Models\{IguideLabInteriorAssessment,IguideLabMachineSegmentation,IguideL
 /** Typed per-region machine selections. No client mask/review assertion is ever consumed. */
 class LabInteriorDesignMasks implements LabMachineSegmentationCapability
 {
+    private static array $describedBytes=[];
     public function selections(IguideLabInteriorAssessment $record): array
     {
         $out=[];
@@ -46,7 +47,16 @@ class LabInteriorDesignMasks implements LabMachineSegmentationCapability
     public function plan(IguideLabWorkflowStep $step): array {return $this->owned($step)['plan'];}
     public function validatePlan(array $plan,string $requestId): void {app(LabInteriorDesignMaskPlan::class)->validate($plan,$requestId);}
     public function payload(array $plan,string $bytes): array {return app(LabInteriorDesignMaskPlan::class)->payload($plan,$bytes);}
-    public function describeMask(string $bytes): array {return app(LabMachineMaskPixels::class)->describe($bytes);}
+    public function describeMask(string $bytes): array
+    {
+        // Retained bytes are read and hashed on every call. Only the pure PNG decode is reused.
+        $key=hash_file('sha256',__DIR__.'/LabMachineMaskPixels.php').':'.hash('sha256',$bytes);
+        if(!isset(self::$describedBytes[$key])){
+            if(count(self::$describedBytes)>=32)array_shift(self::$describedBytes);
+            self::$describedBytes[$key]=app(LabMachineMaskPixels::class)->describe($bytes);
+        }
+        return self::$describedBytes[$key];
+    }
     public function readyAssociationStatus(): string {return 'ready_for_material_support';}
     public function associate(IguideLabWorkflowStep $step,array $receipt): array {return app(LabInteriorDesignMaskPlan::class)->associate($this->owned($step)['plan'],$receipt);}
     public function verifyOwnedInputs(IguideLabWorkflowStep $step,array $plan): array
@@ -67,7 +77,12 @@ class LabInteriorDesignMasks implements LabMachineSegmentationCapability
     }
     public function verifiedReceipt(IguideLabWorkflowStep $step): array
     {
-        $step->refresh();$plan=$this->plan($step);$this->validatePlan($plan,$step->request_id);[$bytes,$binding]=$this->verifyOwnedInputs($step,$plan);unset($bytes);
+        // Resolve the current typed authority once for this synchronous receipt check.
+        // Each paid attempt still enters owned() again; no authority is cached across claims.
+        $step->refresh();$owned=$this->owned($step);$plan=$owned['plan'];$this->validatePlan($plan,$step->request_id);
+        $bytes=file_get_contents($owned['inputPath']);abort_unless(hash('sha256',$bytes)===$plan['inputSha256'],422);unset($bytes);
+        $binding=['assessmentId'=>$owned['record']->id,'assessmentSha256'=>$owned['record']->result_sha256,'inputSha256'=>$owned['inputSha256'],
+            'sourceRole'=>$plan['maskRole'],'targetId'=>$plan['targetId'],'contextSha256'=>$plan['contextSha256']];
         $record=IguideLabMachineSegmentation::where('project_id',$step->project_id)->where('step_id',$step->id)->sole();
         abort_unless($record->status==='completed'&&$step->child_id===$record->id&&$record->request_id===$step->request_id&&$record->request_hash===$step->input_sha256
             &&LabMachineSegmentationPlan::canonicalHash($record->data['plan']??[])===LabMachineSegmentationPlan::canonicalHash($plan)
@@ -81,7 +96,7 @@ class LabInteriorDesignMasks implements LabMachineSegmentationCapability
         $asset=$assets[0];abort_unless(($asset['index']??null)===0&&($asset['path']??null)===$base.'/mask-0.png',422);
         $path=$loader->file($step->project_id,$asset['path'],$asset['sha256'],LabMachineSegmentationTransport::MAX_MASK_BYTES);
         abort_unless($this->describeMask(file_get_contents($path))===$receipt['masks'][0],422,'Material mask pixels changed.');
-        $association=$this->associate($step,$receipt);abort_unless($association['status']===$this->readyAssociationStatus()
+        $association=app(LabInteriorDesignMaskPlan::class)->associate($plan,$receipt);abort_unless($association['status']===$this->readyAssociationStatus()
             &&LabAnalysisRecipes::hash($association)===LabAnalysisRecipes::hash($record->result['association']),422,'Material mask association changed.');
         return ['plan'=>$plan,'receipt'=>$receipt,'association'=>$association,'artifacts'=>$assets,'recordId'=>$record->id];
     }
