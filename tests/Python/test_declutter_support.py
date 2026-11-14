@@ -35,9 +35,14 @@ class SupportTests(unittest.TestCase):
         shadow=np.zeros_like(self.mask);shadow[1300:1320,1200:1220]=True
         self.assertIn('SHADOW_NOT_LOCAL_TO_OBJECT',s.derive({'target_object':self.mask,'target_local_shadow':shadow},{'protectedFeatures':[]})[1])
     def test_local_shadow_unioned_without_changing_object_coverage(self):
-        shadow=np.zeros_like(self.mask);shadow[920:970,820:900]=True
+        shadow=np.zeros_like(self.mask);shadow[920:970,820:880]=True
         a,reasons,stats=s.derive({'target_object':self.mask,'target_local_shadow':shadow},self.proposal)
         self.assertEqual(reasons,[]);self.assertTrue(np.all(a[self.mask|shadow]==255));self.assertGreater(stats['shadowPixels'],0)
+    def test_connected_thin_long_shadow_tail_holds_despite_small_area_and_contact(self):
+        shadow=np.zeros_like(self.mask);shadow[900:905,840:1400]=True
+        _,reasons,stats=s.derive({'target_object':self.mask,'target_local_shadow':shadow},self.proposal)
+        self.assertNotIn('SHADOW_NOT_LOCAL_TO_OBJECT',reasons);self.assertIn('SHADOW_EXTENT_UNSUPPORTED',reasons)
+        self.assertLess(stats['positiveSupportPixels'],131072);self.assertGreater(stats['maximumShadowDistancePixels'],stats['allowedShadowDistancePixels'])
     def test_exact_opaque_mask_formats_and_fractional_alpha_rejection(self):
         with tempfile.TemporaryDirectory() as d:
             path=Path(d)/'mask.png';base=Image.fromarray(self.mask.astype('uint8')*255)

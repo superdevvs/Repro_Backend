@@ -11,7 +11,8 @@ import declutter_removal_protocol as protocol
 from declutter_removal_bridge import safe_path,canonical,decode_json,sha
 
 VERSION='automatic-declutter-support/1'
-LIMITS={'maxEditablePixels':131072,'minimumObjectPixels':64,'guardPixels':205,'dilationPixels':4,'featherPixels':2}
+LIMITS={'maxEditablePixels':131072,'minimumObjectPixels':64,'guardPixels':205,'dilationPixels':4,'featherPixels':2,
+        'maxShadowDistancePixels':64,'shadowObjectExtentFraction':.25,'maxShadowAreaRatio':1}
 def runtime():return {'python':platform.python_version(),'numpy':np.__version__,'pillow':PILLOW_VERSION,'scipy':scipy.__version__,
     'workerSha256':sha(__file__),'protocolSha256':sha(protocol.__file__),'sharedProtocolSha256':sha(protocol.shared.__file__)}
 
@@ -37,11 +38,16 @@ def derive(masks,proposal):
     if count<LIMITS['minimumObjectPixels']:reasons.append('OBJECT_MASK_EMPTY_OR_TOO_SMALL')
     if ndimage.label(obj,np.ones((3,3),bool))[1]!=1:reasons.append('OBJECT_MASK_DISCONNECTED')
     if np.any(ndimage.binary_fill_holes(obj)&~obj):reasons.append('OBJECT_MASK_HAS_UNRESOLVED_HOLES')
-    union=obj.copy()
+    union=obj.copy();shadow_distance=0.0;shadow_limit=0.0
     if 'target_local_shadow' in masks:
         shadow=masks['target_local_shadow']
         if not shadow.any() or ndimage.label(shadow,np.ones((3,3),bool))[1]!=1:reasons.append('SHADOW_MASK_EMPTY_OR_DISCONNECTED')
         if not np.any(shadow&ndimage.binary_dilation(obj,iterations=12)):reasons.append('SHADOW_NOT_LOCAL_TO_OBJECT')
+        if obj.any() and shadow.any():
+            yy,xx=np.where(obj)
+            shadow_limit=min(LIMITS['maxShadowDistancePixels'],max(8,max(int(xx.max()-xx.min()+1),int(yy.max()-yy.min()+1))*LIMITS['shadowObjectExtentFraction']))
+            shadow_distance=float(ndimage.distance_transform_edt(~obj)[shadow].max())
+            if shadow_distance>shadow_limit or int(shadow.sum())>count*LIMITS['maxShadowAreaRatio']:reasons.append('SHADOW_EXTENT_UNSUPPORTED')
         union|=shadow
     expanded=ndimage.binary_dilation(union,iterations=LIMITS['dilationPixels'])
     if int(expanded.sum())>LIMITS['maxEditablePixels']:reasons.append('EDIT_DOMAIN_TOO_LARGE')
@@ -55,7 +61,8 @@ def derive(masks,proposal):
     alpha=np.rint(np.minimum(ndimage.distance_transform_edt(expanded)/LIMITS['featherPixels'],1)*255).astype(np.uint8)
     if np.any(alpha[union]!=255):reasons.append('ORIGINAL_TARGET_NOT_FULLY_REPLACED')
     return alpha,sorted(set(reasons)),{'objectPixels':count,'shadowPixels':int(masks.get('target_local_shadow',np.zeros_like(obj)).sum()),
-        'rawUnionPixels':int(union.sum()),'positiveSupportPixels':int((alpha>0).sum()),'opaqueOriginalTargetPixels':int((alpha[union]==255).sum())}
+        'rawUnionPixels':int(union.sum()),'positiveSupportPixels':int((alpha>0).sum()),'opaqueOriginalTargetPixels':int((alpha[union]==255).sum()),
+        'maximumShadowDistancePixels':shadow_distance,'allowedShadowDistancePixels':shadow_limit}
 
 def run(request):
     expected={'schemaVersion','privateRoot','source','assessment','plans','receipts','masks','outputDirectory'}
