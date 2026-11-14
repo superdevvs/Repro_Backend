@@ -16,7 +16,8 @@ class LabStagingWorkflow
     }
     public function ready(): bool
     {
-        return app(LabStagingSupport::class)->ready()&&app(LabStagingAssessments::class)->ready()
+        return (config('iguide-lab.staging_framing_enabled', false)!==true || app(LabStagingFramings::class)->ready())
+            &&app(LabStagingSupport::class)->ready()&&app(LabStagingAssessments::class)->ready()
             &&app(LabSectionGeometry::class)->ready()&&app(LabWorkflowArtifacts::class)->ready()
             &&app(LabWorkflowEvaluations::class)->ready()&&app(LabAnalyses::class)->ready()
             &&app(LabMachineSegmentationTransport::class)->ready();
@@ -41,6 +42,16 @@ class LabStagingWorkflow
         $instructions=self::INTENT.($item->instructions!==''?"\nUser intent (must remain within the three-item recipe): ".$item->instructions:'');
         abort_if(mb_strlen($instructions)>3200,422);
         $options=array_replace(LabAnalyses::EDIT_DEFAULTS,['roomType'=>'living','furnitureDensity'=>'light']);
+        if (isset($workflow->policy['stagingFraming'])) {
+            $framingService=app(LabStagingFramings::class);
+            $framing=$framingService->start($framingService->reserve($item));$data['sourceFramingId']=$framing->id;
+            if(!$this->completed($item,$framing,'analyzing',$data))return;
+            $framing=$framingService->completed($item,$framing->id);
+            if($framing->result['status']!=='framing_candidate') {
+                $owner->finish($item,'needs_review','framing_requires_review','A safe source framing candidate could not be proposed. No image was requested.',$data);return;
+            }
+            $view=$framing->result['view'];
+        } else {
         $input=['caseId'=>$native->id,'preset'=>'staging','style'=>$item->style,'instructions'=>$instructions,'options'=>$options];
         $source=$this->analysis($item,$project,'staging-source',$input);$data['sourceAnalysisId']=$source->id;
         if(!$this->completed($item,$source,'analyzing',$data))return;
@@ -51,6 +62,7 @@ class LabStagingWorkflow
         if($ids!==['chair','coffee_table','sofa']||$suggestion['pitchDegrees'] < -60||$suggestion['pitchDegrees'] > 15){
             $owner->finish($item,'needs_review','unsupported_staging_view','The proposed section is outside the supported floor-view geometry.',$data);return;}
         $view=['yaw'=>(float)$suggestion['yawDegrees'],'pitch'=>(float)$suggestion['pitchDegrees'],'hFov'=>(float)$suggestion['hfovDegrees']];
+        }
         $sectionInput=['caseId'=>$native->id,'view'=>$view];$sectionStep=$steps->reserve($item,'staging-section','section',$sectionInput);
         $section=IguideLabSection::where('project_id',$project->id)->where('request_id',$sectionStep->request_id)->first();
         if(!$section)$section=app(LabSections::class)->start($project,$sectionInput+['requestId'=>$sectionStep->request_id]);
@@ -68,8 +80,15 @@ class LabStagingWorkflow
         abort_unless($section->case_id===$native->id&&$section->source_sha256===$native->source_sha256&&LabAnalysisRecipes::hash($section->view)===LabAnalysisRecipes::hash($view),422);
         $cut=IguideLabCase::where('project_id',$project->id)->findOrFail($section->derived_case_id);
         $cutInput=['caseId'=>$cut->id,'preset'=>'staging','style'=>$item->style,'instructions'=>$instructions,'options'=>$options];
+        if(isset($workflow->policy['stagingFraming']))$cutInput['stagingFraming']=app(LabStagingCutReadiness::class)->reference($item,$framing->id,$cut);
         $analysis=$this->analysis($item,$project,'staging-section-plan',$cutInput);$data['analysisId']=$analysis->id;
         if(!$this->completed($item,$analysis,'analyzing',$data))return;
+        if(isset($workflow->policy['stagingFraming'])) {
+            $gate=app(LabStagingCutReadiness::class)->verified($analysis,false);
+            if(!$gate['allRequiredChecksPass']) {
+                $owner->finish($item,'needs_review','actual_cut_requires_review','Actual view scope, margin, clearance or optical checks require review. No image was requested.',$data);return;
+            }
+        }
         if(!$this->threeTargets($analysis->proposal)||($analysis->proposal['workflow']['mode']??null)!=='whole_panorama'){
             $owner->finish($item,'needs_review','unsupported_section_plan','The actual section does not support the unchanged three-object scope.',$data);return;}
         $context=$analysis->data['sourceContext']??null;

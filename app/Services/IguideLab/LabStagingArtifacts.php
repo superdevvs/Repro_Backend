@@ -44,7 +44,7 @@ class LabStagingArtifacts extends LabWorkflowArtifacts
         $preview=$this->asset($report['artifacts']['preview'],$disk->path($out),[2048,1024]);
         $native=$this->asset($report['artifacts']['native'],$disk->path($out),[$case->width,$case->height]);
         $alpha=$this->asset($report['artifacts']['effective-alpha'],$disk->path($out),[$case->width,$case->height]);
-        $sourcePlan=$this->sourcePlan($item);
+        $sourceAuthority=$this->sourceAuthority($item,$analysis);
         $nativeCanvas=$case->width>2048; $view=$section->view+['vFov'=>$section->view['hFov'],'coordinateConvention'=>'raw panorama yaw zero at centre, positive yaw right, positive pitch up'];
         $manifest=['requestId'=>$step->request_id,'label'=>'Automatic three-piece staging candidate','schemaVersion'=>1,'kind'=>'locally_composited_panorama',
             'projection'=>'equirectangular','preset'=>'staging','style'=>$item->style,'resolutionStrategy'=>$nativeCanvas?'native_canvas':'preview_only','compositionMode'=>'perspective_sections',
@@ -59,7 +59,7 @@ class LabStagingArtifacts extends LabWorkflowArtifacts
                 'supportReportSha256'=>$support['reportSha256'],'effectiveAlpha'=>['path'=>$out.'/effective-alpha.png','sha256'=>$alpha['sha256']],
                 'composition'=>$report['composition']??null,'numericalQa'=>$report['qa'],'operatorInterventions'=>0,'manualAcceptance'=>false,
                 'sourceAnalysisId'=>$analysis->id,'sectionId'=>$section->id,'editView'=>$section->view,
-                'originalSourceAnalysisId'=>$sourcePlan->id,'originalSourceProposalSha256'=>$sourcePlan->proposal_sha256,
+                ...$sourceAuthority,
                 'editViewAuthority'=>'exact server extraction pose; not independent camera calibration','maskOrigin'=>'model_segmentation','selectionOrigin'=>'machine',
                 'limitations'=>['Single panorama only; model placement and mask association do not prove physical geometry.','Unattended candidate requires separate full-sphere visual checking.']]];
         [$composite]=app(LabComposites::class)->add(IguideLabProject::findOrFail($item->project_id),$case,$preview['path'],$manifest,$nativeCanvas?$native['path']:null);
@@ -81,10 +81,28 @@ class LabStagingArtifacts extends LabWorkflowArtifacts
     }
     protected function evidenceReviewContext(IguideLabWorkflowItem $item,IguideLabComposite $composite,IguideLabAnalysis $analysis,array $qa): array
     {
+        if(isset($analysis->data['stagingFraming'])) {
+            $authority=$this->sourceAuthority($item,$analysis);
+            foreach($authority as $key=>$value)abort_unless(($composite->manifest['lineage'][$key]??null)===$value,422,'Source framing authority changed.');
+            $framing=app(LabStagingFramings::class)->completed($item,$authority['sourceFramingId']);
+            $claims=[];foreach($framing->result['constraints'] as $name=>$check)$claims[]=$name.' ('.$check['status'].'): '.$check['reason'];
+            return $this->stagingReviewContext(['protectedFeatures'=>[],'uncertainties'=>$claims,'sourceArtifacts'=>[], 'reviewChecks'=>[]],$analysis->proposal,$qa);
+        }
         $source=$this->sourcePlan($item);
         abort_unless(($composite->manifest['lineage']['originalSourceAnalysisId']??null)===$source->id
             &&($composite->manifest['lineage']['originalSourceProposalSha256']??null)===$source->proposal_sha256,422,'The original source constraints changed.');
         return $this->stagingReviewContext($source->proposal,$analysis->proposal,$qa);
+    }
+    private function sourceAuthority(IguideLabWorkflowItem $item,IguideLabAnalysis $analysis): array
+    {
+        if(isset($analysis->data['stagingFraming'])) {
+            $gate=app(LabStagingCutReadiness::class)->verified($analysis);
+            $framing=app(LabStagingFramings::class)->completed($item,$analysis->data['stagingFraming']['id']);
+            return ['sourceFramingId'=>$framing->id,'sourceFramingResultSha256'=>$framing->result_sha256,
+                'actualCutReadinessSha256'=>LabAnalysisRecipes::hash($gate)];
+        }
+        $source=$this->sourcePlan($item);
+        return ['originalSourceAnalysisId'=>$source->id,'originalSourceProposalSha256'=>$source->proposal_sha256];
     }
     public function stagingReviewContext(array $source,array $section,array $qa): array
     {
