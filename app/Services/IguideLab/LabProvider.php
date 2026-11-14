@@ -67,6 +67,10 @@ class LabProvider
             'status' => 'submitting', 'providerRequestId' => null, 'httpStatus' => null,
             'startedAt' => now()->toIso8601String(), 'completedAt' => null];
         app(LabWorkflowInvocation::class)->claim($run->options['workflowInvocation'] ?? null, $run->project_id, $run->request_id, 'image', fn () => $this->saveAttempts($run, $attempts));
+        // Typed source gates may perform bounded local evidence verification.
+        // That time belongs to the same total deadline as the HTTP attempt.
+        $remainingSeconds = (int) floor(($deadline - hrtime(true)) / 1e9);
+        if ($remainingSeconds < 15) throw new OpenAiImageException(reason: 'attempt_budget_exhausted');
         $usage = app(AiUsageRecorder::class);
         $usageId = $usage->begin('image_edit', $run->model_id, 'images/edits');
         $start = hrtime(true);

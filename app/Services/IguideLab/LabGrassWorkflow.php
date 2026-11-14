@@ -17,15 +17,18 @@ class LabGrassWorkflow
 {
     public function snapshot(): array
     {
-        return ['version' => LabGrassAssessmentPolicy::POLICY, 'driverSha256' => hash_file('sha256', __FILE__),
+        $snapshot = ['version' => LabGrassAssessmentPolicy::POLICY, 'driverSha256' => hash_file('sha256', __FILE__),
             'assessment' => app(LabGrassAssessmentBridge::class)->snapshot(), 'artifacts' => app(LabGrassWorkflowArtifacts::class)->snapshot(),
             'segmentationAuthoritySha256' => hash_file('sha256', (new \ReflectionClass(LabGrassSegmentationAuthority::class))->getFileName()),
             'segmentationPlanSha256' => hash_file('sha256', (new \ReflectionClass(LabGrassSegmentationPlan::class))->getFileName()),
             'maskDecoderSha256' => hash_file('sha256', (new \ReflectionClass(LabGrassMaskPixels::class))->getFileName())];
+        if (config('iguide-lab.grass_source_admission_enabled', false) === true) $snapshot['sourceAdmission'] = app(LabGrassSourceAdmissionBridge::class)->snapshot();
+        return $snapshot;
     }
     public function ready(): bool
     {
         return config('iguide-lab.grass_workflow_enabled', false) === true
+            && (config('iguide-lab.grass_source_admission_enabled', false) !== true || app(LabGrassSourceAdmissions::class)->ready())
             && app(LabGrassAssessments::class)->ready() && app(LabGrassWorkflowArtifacts::class)->ready()
             && app(LabMachineSegmentationTransport::class)->ready() && app(LabAnalyses::class)->ready()
             && app(LabWorkflowEvaluations::class)->ready()
@@ -46,6 +49,9 @@ class LabGrassWorkflow
             && $workflow->policy['evaluationParserSha256'] === hash_file('sha256', (new \ReflectionClass(LabVisualQualityProtocol::class))->getFileName()), 422);
         $case = app(LabWorkflowSources::class)->verify($project->id, $item->source); $artifacts = app(LabGrassWorkflowArtifacts::class);
         $artifacts->preflight($item, $workflow->policy['grassRecipe']['artifacts']);
+        if (LabGrassSourceAdmissionPolicy::enabled($workflow->policy, $item->preset)) {
+            if (! $this->sourceAdmission($item, $data)) return;
+        } else abort_if(isset($workflow->policy['grassRecipe']['sourceAdmission']), 422, 'Source-admission policy is missing.');
         $analysisInput = ['caseId' => $case->id, 'preset' => 'grass', 'style' => $item->style,
             'instructions' => $item->instructions, 'options' => LabAnalyses::EDIT_DEFAULTS];
         $analysisStep = $steps->reserve($item, 'grass-source-analysis', 'analysis', $analysisInput);
@@ -129,5 +135,30 @@ class LabGrassWorkflow
             $state->finish($item, 'ready', null, null, $data); return;
         }
         $state->finish($item, 'needs_review', 'grass_quality_requires_review', 'The independent sphere check did not pass. No automatic reroll was requested.', $data);
+    }
+    private function sourceAdmission(IguideLabWorkflowItem $item, array &$data): bool
+    {
+        $service = app(LabGrassSourceAdmissions::class); $state = app(LabWorkflows::class); $priorId = null;
+        for ($round = 0; $round < 2; $round++) {
+            $step = $service->reserve($item, $priorId); $record = $service->start($step);
+            $data['grassSourceAdmissionIds'][$round] = $record->id;
+            if ($record->status !== 'completed') {
+                if ($record->status === 'needs_attention') $state->finish($item, 'needs_review', 'grass_source_admission_unconfirmed', 'Original lawn admissibility could not be confirmed; no image was requested.', $data);
+                else $state->save($item, 'analyzing', $data);
+                return false;
+            }
+            $result = $service->verifiedReport($record, $item);
+            if ($result['status'] === 'eligible_for_image') {
+                $data['grassSourceAdmissionId'] = $record->id; $data['grassSourceAdmissionSha256'] = $record->result_sha256;
+                return true;
+            }
+            if ($result['status'] !== 'needs_detail' || $round === 1) {
+                $data['grassSourceAdmissionReasons'] = $result['reviewReasons'];
+                $state->finish($item, 'needs_review', 'grass_original_material_or_context', 'Original turf, protected debris or optical boundaries require review; no image was requested.', $data);
+                return false;
+            }
+            $priorId = $record->id;
+        }
+        return false;
     }
 }

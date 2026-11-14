@@ -12,6 +12,8 @@ return [
     'declutter_workflow_enabled' => env('IGUIDE_LAB_DECLUTTER_WORKFLOW_ENABLED', false),
     'declutter_removal_runtime_manifest' => env('IGUIDE_LAB_DECLUTTER_REMOVAL_RUNTIME_MANIFEST'),
     'declutter_support_runtime_manifest' => env('IGUIDE_LAB_DECLUTTER_SUPPORT_RUNTIME_MANIFEST'),
+    'grass_source_admission_enabled' => env('IGUIDE_LAB_GRASS_SOURCE_ADMISSION_ENABLED', false),
+    'grass_source_admission_runtime_manifest' => env('IGUIDE_LAB_GRASS_SOURCE_ADMISSION_RUNTIME_MANIFEST'),
     'staging_support_python_path' => env('IGUIDE_LAB_STAGING_SUPPORT_PYTHON'),
     'staging_support_runtime_manifest' => env('IGUIDE_LAB_STAGING_SUPPORT_RUNTIME_MANIFEST'),
 

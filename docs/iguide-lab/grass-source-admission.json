@@ -1,0 +1,59 @@
+{
+  "version": "grass-original-source-admission/1",
+  "status": "isolated_candidate_not_enabled",
+  "defaultEnabled": false,
+  "userInput": ["owned original panorama", "grass preset"],
+  "scope": "Recolor all visible established turf while retaining original texture, luminance, debris and non-turf features.",
+  "eligibleMaterials": ["established turf", "established dormant turf with visible retained blade texture"],
+  "blockedMaterialsAndDependencies": [
+    "sparse or missing turf requiring new texture",
+    "bare soil requiring grass creation",
+    "unclear turf versus non-turf support",
+    "debris or foliage too fine/dense for reliable 2048x1024 source-mask protection",
+    "visible or possible turf reflection requiring optical editing",
+    "requested parcel subset without verified source support",
+    "insufficient original context after the bounded follow-up"
+  ],
+  "workflow": [
+    "Verify owned native bytes and original preparation.",
+    "Run typed source-only admissibility on the original 2K panorama and six original directions.",
+    "When a resolvable original boundary remains uncertain, extract at most two exact native detail views and run one follow-up carrying the prior findings.",
+    "Only an eligible source proceeds to the existing scene plan and one image.",
+    "Retain the existing post-image material/color-guidance assessment, source-role segmentation, native chroma composition and independent full-sphere checks."
+  ],
+  "budget": {
+    "sourceAdmissionAnalyses": 2,
+    "scenePlanAnalyses": 1,
+    "postImageMaterialAnalyses": 1,
+    "totalAnalysisCeiling": 4,
+    "images": 1,
+    "sourceSegmentationOperations": 6,
+    "evaluations": 1,
+    "automaticProviderRetries": 0,
+    "credentialFallback": "Only explicit exhausted-quota response; fresh authority and cancellation check before each attempt."
+  },
+  "detailViews": {
+    "source": "exact owned native original",
+    "count": [1, 2],
+    "dimensions": [1024, 1024],
+    "yawDegrees": [0, 360],
+    "pitchDegrees": [-85, 85],
+    "horizontalFovDegrees": [30, 70],
+    "nativePixelCeiling": 64000000,
+    "nativeByteCeiling": 134217728,
+    "sameCaptureOnly": true,
+    "increasesSegmentationResolution": false,
+    "expandsEditScope": false,
+    "provenance": ["native SHA", "original authority snapshot SHA", "exact pose", "extraction manifest SHA", "crop SHA", "worker and geometry SHA", "prior typed result SHA"]
+  },
+  "authority": {
+    "record": "IguideLabGrassSourceAdmission",
+    "publicWriteRoute": null,
+    "allowsSegmentation": false,
+    "automaticAcceptance": false,
+    "crossViewVerified": false,
+    "historicalRecordsReparsed": false,
+    "requiresNewValidatedRuntimeManifest": true
+  },
+  "validation": "Pending exact-tree pinned Linux integration and independent review. Synthetic tests do not establish fresh-scene quality."
+}

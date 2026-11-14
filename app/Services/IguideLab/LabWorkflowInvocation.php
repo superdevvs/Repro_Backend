@@ -51,6 +51,9 @@ class LabWorkflowInvocation
             if ($kind === 'image' && $item->preset === 'staging' && isset($workflow->policy['stagingFraming'])) {
                 app(LabStagingCutReadiness::class)->verifyImageStep($step);
             }
+            if ($kind === 'image' && LabGrassSourceAdmissionPolicy::enabled($workflow->policy, $item->preset)) {
+                app(LabGrassSourceAdmissions::class)->verifyImageStep($step);
+            }
         }
     }
 }
