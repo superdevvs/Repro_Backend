@@ -1,6 +1,9 @@
 <?php
 
 return [
+    // Separate D2 candidate; baseline and global-repair recipes remain available unchanged.
+    'lighting_d2_enabled' => env('IGUIDE_LAB_LIGHTING_D2_ENABLED', false),
+    'lighting_d2_runtime_manifest' => env('IGUIDE_LAB_LIGHTING_D2_RUNTIME_MANIFEST'),
     'lifestyle_workflow_enabled' => env('IGUIDE_LAB_LIFESTYLE_WORKFLOW_ENABLED', false),
     'lifestyle_framing_enabled' => env('IGUIDE_LAB_LIFESTYLE_FRAMING_ENABLED', false),
     'lifestyle_framing_runtime_manifest' => env('IGUIDE_LAB_LIFESTYLE_FRAMING_RUNTIME_MANIFEST'),
