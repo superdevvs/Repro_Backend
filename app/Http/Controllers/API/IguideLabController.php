@@ -30,7 +30,11 @@ class IguideLabController extends Controller
             'project' => ['id' => $project->id, 'name' => $project->name, 'expiresAt' => $project->expires_at->toIso8601String(),
                 'maxRuns' => $project->max_runs, 'usedRuns' => $project->used_runs, 'remainingRuns' => max(0, $project->max_runs - $project->used_runs)],
             'models' => LabCatalog::models(), 'presets' => LabCatalog::labels(LabCatalog::PRESETS), 'styles' => LabCatalog::labels(LabCatalog::STYLES),
-            'capabilities' => ['schemaVersion' => 4, 'composites' => true, 'openaiComplexity' => ['low', 'medium', 'high'], 'selectedObjectInstructions' => true, 'maskUpload' => false, 'nativeCompositeUpload' => 'operator_only',
+            'capabilities' => ['schemaVersion' => 5, 'composites' => true, 'openaiComplexity' => ['low', 'medium', 'high'], 'selectedObjectInstructions' => true, 'maskUpload' => true, 'nativeCompositeUpload' => 'operator_only',
+                'sectionEditing' => ['supported' => true, 'ready' => app(\App\Services\IguideLab\LabSectionGeometry::class)->ready(), 'automaticAcceptance' => false,
+                    'size' => ['width' => 2048, 'height' => 2048], 'hFov' => ['min' => 30, 'max' => 130], 'nativeAttachmentRequiresExactHash' => true,
+                    'providerMaskModels' => ['gpt-image-2.6-sunburst', 'gpt-image-2.6-flare'], 'providerMaskGuarantee' => 'soft_guidance_only',
+                    'maskConvention' => 'white_edit_black_preserve', 'maskEdgeInsetFraction' => 0.1, 'grassMaskRecomposition' => true],
                 'sceneAnalysis' => ['supported' => true, 'ready' => app(LabAnalyses::class)->ready(), 'modelId' => LabScenePlanProtocol::MODEL,
                     'protocolVersion' => LabScenePlanProtocol::VERSION, 'automaticGeneration' => false, 'applyDraft' => true, 'maxAnalyses' => 120,
                     'usedAnalyses' => IguideLabAnalysis::where('project_id', $project->id)->count(), 'suggestedSectionMaxHfov' => 120, 'sectionExecution' => false],
@@ -43,6 +47,9 @@ class IguideLabController extends Controller
             'composites' => IguideLabComposite::where('project_id', $project->id)->latest()->get()->map(fn ($record) => app(LabComposites::class)->dto($record)),
             'pipelines' => IguideLabPipeline::where('project_id', $project->id)->latest()->get()->map(fn ($record) => app(LabPipelines::class)->dto($record)),
             'analyses' => IguideLabAnalysis::where('project_id', $project->id)->latest()->get()->map(fn ($record) => app(LabAnalyses::class)->dto($record)),
+            'sections' => \App\Models\IguideLabSection::where('project_id', $project->id)->latest()->get()->map(fn ($record) => app(\App\Services\IguideLab\LabSections::class)->dto($record)),
+            'masks' => \App\Models\IguideLabMask::where('project_id', $project->id)->latest()->get()->map(fn ($record) => app(\App\Services\IguideLab\LabMasks::class)->dto($record)),
+            'compositions' => \App\Models\IguideLabComposition::where('project_id', $project->id)->latest()->get()->map(fn ($record) => app(\App\Services\IguideLab\LabCompositions::class)->dto($record)),
         ]]);
     }
 
@@ -69,7 +76,8 @@ class IguideLabController extends Controller
             'modelId' => ['required', Rule::in(array_keys(LabCatalog::MODELS))],
             'preset' => ['required', Rule::in(array_keys(LabCatalog::PRESETS))],
             'style' => ['nullable', Rule::in(array_keys(LabCatalog::STYLES))], 'prompt' => ['nullable', 'string', 'max:4000'],
-            'options' => ['sometimes', 'array:roomType,referenceCaseIds,referenceRunIds,referenceCompositeIds,furnitureDensity,lightingIntensity,preserveArchitecture,preserveFixedFinishes,allowFinishChanges,complexity,declutterMode,selectedObjects,preserveObjects,analysisId,promptMode'],
+            'options' => ['sometimes', 'array:roomType,referenceCaseIds,referenceRunIds,referenceCompositeIds,furnitureDensity,lightingIntensity,preserveArchitecture,preserveFixedFinishes,allowFinishChanges,complexity,declutterMode,selectedObjects,preserveObjects,analysisId,promptMode,sectionId,sectionMaskId'],
+            'options.sectionId' => ['sometimes', 'uuid'], 'options.sectionMaskId' => ['sometimes', 'uuid'],
             'options.analysisId' => ['sometimes', 'uuid'], 'options.promptMode' => ['sometimes', Rule::in(['preset', 'scene-plan'])],
             'options.referenceCompositeIds' => ['sometimes', 'array', 'max:3'], 'options.referenceCompositeIds.*' => ['required', 'uuid', 'distinct'],
             'options.complexity' => ['sometimes', Rule::in(['low', 'medium', 'high'])],

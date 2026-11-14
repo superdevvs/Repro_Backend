@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\API\IguideLabController;
+use App\Http\Controllers\API\IguideLabGeometryController;
 use App\Http\Middleware\AuthorizeIguideLab;
 use Illuminate\Support\Facades\Route;
 
@@ -8,6 +9,16 @@ use Illuminate\Support\Facades\Route;
 Route::middleware([AuthorizeIguideLab::class])->prefix('iguide-lab')->group(function () {
     Route::get('/', [IguideLabController::class, 'index'])->middleware('throttle:iguide-lab-read');
     Route::post('/cases', [IguideLabController::class, 'upload'])->middleware('throttle:iguide-lab-write');
+    Route::post('/cases/{id}/native-source', [IguideLabGeometryController::class, 'attachNative'])->whereUuid('id')->middleware('throttle:iguide-lab-write');
+    Route::post('/sections', [IguideLabGeometryController::class, 'startSection'])->middleware('throttle:iguide-lab-write');
+    Route::get('/sections/{id}', [IguideLabGeometryController::class, 'showSection'])->whereUuid('id')->middleware('throttle:iguide-lab-read');
+    Route::post('/sections/{id}/masks', [IguideLabGeometryController::class, 'addSectionMask'])->whereUuid('id')->middleware('throttle:iguide-lab-write');
+    Route::post('/pipelines/{id}/masks', [IguideLabGeometryController::class, 'addPipelineMask'])->whereUuid('id')->middleware('throttle:iguide-lab-write');
+    Route::get('/masks/{id}/asset', [IguideLabGeometryController::class, 'maskAsset'])->whereUuid('id')->middleware('throttle:iguide-lab-read');
+    Route::post('/sections/{id}/compositions', [IguideLabGeometryController::class, 'composeSection'])->whereUuid('id')->middleware('throttle:iguide-lab-write');
+    Route::post('/pipelines/{id}/compositions', [IguideLabGeometryController::class, 'composePipeline'])->whereUuid('id')->middleware('throttle:iguide-lab-write');
+    Route::get('/compositions/{id}', [IguideLabGeometryController::class, 'showComposition'])->whereUuid('id')->middleware('throttle:iguide-lab-read');
+    Route::get('/compositions/{id}/alpha', [IguideLabGeometryController::class, 'compositionAlpha'])->whereUuid('id')->middleware('throttle:iguide-lab-read');
     Route::post('/runs', [IguideLabController::class, 'start'])->middleware('throttle:iguide-lab-write');
     Route::get('/runs/{id}', [IguideLabController::class, 'show'])->whereUuid('id')->middleware('throttle:iguide-lab-read');
     Route::post('/runs/{id}/reviews', [IguideLabController::class, 'review'])->whereUuid('id')->middleware('throttle:iguide-lab-write');

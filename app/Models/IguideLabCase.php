@@ -10,5 +10,5 @@ class IguideLabCase extends Model
     use HasUuids;
 
     protected $guarded = [];
-    protected $casts = ['metadata' => 'array', 'width' => 'integer', 'height' => 'integer'];
+    protected $casts = ['metadata' => 'array', 'native_source' => 'array', 'width' => 'integer', 'height' => 'integer'];
 }

@@ -410,7 +410,8 @@ class IguideLabTest extends TestCase
         $response = $this->withToken($this->token)->get($first['preview']['assetPath'])->assertOk()->assertHeader('Content-Type', 'image/png');
         $this->assertSame(hash('sha256', $png), hash_file('sha256', $response->baseResponse->getFile()->getPathname()));
         $this->withToken($this->token)->get('/api/iguide-lab/assets/composite-native/'.$first['id'])->assertNotFound();
-        $this->withToken($this->token)->getJson('/api/iguide-lab')->assertOk()->assertJsonCount(1, 'data.composites')->assertJsonPath('data.capabilities.maskUpload', false);
+        $this->withToken($this->token)->getJson('/api/iguide-lab')->assertOk()->assertJsonCount(1, 'data.composites')->assertJsonPath('data.capabilities.maskUpload', true)
+            ->assertJsonPath('data.capabilities.sectionEditing.maskConvention', 'white_edit_black_preserve');
         $other = str_repeat('b', 64);
         IguideLabProject::create(['name' => 'Other', 'token_hash' => hash('sha256', $other), 'expires_at' => now()->addDay(), 'max_runs' => 1]);
         $this->withToken($other)->get($first['preview']['assetPath'])->assertNotFound();

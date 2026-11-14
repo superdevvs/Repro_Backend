@@ -28,4 +28,11 @@ class LabStorage extends ListingStudioPrivateStorage
         $this->uuid($projectId); $this->uuid($id);
         $this->prepare(['iguide-lab', $projectId, 'analyses', $id]);
     }
+
+    public function prepareGeometry(string $projectId, string $kind, string $id): void
+    {
+        $this->uuid($projectId); $this->uuid($id);
+        if (! in_array($kind, ['sections', 'masks', 'compositions'], true)) throw new \InvalidArgumentException('Invalid geometry directory.');
+        $this->prepare(['iguide-lab', $projectId, $kind, $id]);
+    }
 }

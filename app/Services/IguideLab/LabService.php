@@ -54,6 +54,11 @@ class LabService
     {
         $case = IguideLabCase::where('project_id', $project->id)->findOrFail($input['caseId']);
         $requested = $input['options'] ?? [];
+        $sectionId = $requested['sectionId'] ?? null; $sectionMaskId = $requested['sectionMaskId'] ?? null;
+        abort_if(isset($case->metadata['sectionId']) && $case->metadata['sectionId'] !== $sectionId, 422, 'Use the explicit source-bound section workflow for this helper image.');
+        abort_if($sectionMaskId && ! $sectionId, 422, 'Provider masks require a source-bound section.');
+        abort_if($sectionMaskId && ! LabCatalog::supportsSectionMask($input['modelId']), 422, 'This exact model is not enabled for section masks.');
+        unset($requested['sectionId'], $requested['sectionMaskId']);
         $analysisId = $requested['analysisId'] ?? null;
         $scenePlan = ($requested['promptMode'] ?? 'preset') === 'scene-plan';
         abort_if($scenePlan !== filled($analysisId), 422, 'Scene-plan drafts require a completed analysis association.');
@@ -87,9 +92,16 @@ class LabService
         $style = $input['style'] ?? (in_array($input['preset'], ['staging', 'interior-design']) ? 'modern' : null);
         $extra = trim($input['prompt'] ?? '');
         $options['customInstructions'] = $extra;
+        if ($sectionId) {
+            $options['sectionId'] = $sectionId;
+            if ($sectionMaskId) $options['sectionMaskId'] = $sectionMaskId;
+            $options['sourceSection'] = app(LabMasks::class)->sectionSnapshot($project->id, $sectionId, $case, $sectionMaskId);
+            $options['recipeVersion'] = 5;
+        }
         if ($scenePlan) {
             $options['sourceAnalysis'] = app(LabAnalyses::class)->appliedDraft($project->id, $analysisId, $case, $input['preset'], $style, $options, $extra);
             $options['analysisId'] = $analysisId; $options['promptMode'] = 'scene-plan'; $options['recipeVersion'] = 4;
+            if ($sectionId) $options['recipeVersion'] = 5;
         }
         $prompt = $scenePlan ? $extra : LabCatalog::prompt($input['preset'], $style, $case->projection, $extra, $options);
         $hash = hash('sha256', json_encode([$case->id, $case->source_sha256, $input['modelId'], $input['preset'], $style, $prompt, $options], JSON_THROW_ON_ERROR));
@@ -153,6 +165,10 @@ class LabService
                 if (! $claimed) { $this->attention($run, 'A previous submission could not be confirmed. It will not be repeated automatically.'); return true; }
                 $run->refresh();
                 $case = IguideLabCase::where('project_id', $run->project_id)->findOrFail($run->case_id);
+                if ($snapshot = ($run->options['sourceSection'] ?? null)) {
+                    $current = app(LabMasks::class)->sectionSnapshot($run->project_id, $snapshot['id'], $case, $snapshot['maskId']);
+                    abort_unless($current === $snapshot, 422, 'Section or reviewed support changed before generation.');
+                }
                 $sources = [$case];
                 foreach ($run->options['referenceCaseIds'] ?? [] as $id) $sources[] = IguideLabCase::where('project_id', $run->project_id)->findOrFail($id);
                 $bytes = array_map(fn ($source) => Storage::disk(self::DISK)->get($source->source_path), $sources);
@@ -234,7 +250,7 @@ class LabService
     {
         return ['id' => $case->id, 'label' => $case->label, 'roomId' => $case->room_id, 'panoId' => $case->pano_id, 'tourUrl' => $case->tour_url,
             'projection' => $case->projection, 'width' => $case->width, 'height' => $case->height, 'sourceSha256' => $case->source_sha256,
-            'metadata' => $case->metadata ?? [], 'assetPath' => '/api/iguide-lab/assets/case/'.$case->id, 'createdAt' => $case->created_at->toIso8601String()];
+            'metadata' => $case->metadata ?? [], 'nativeSource' => $case->native_source, 'assetPath' => '/api/iguide-lab/assets/case/'.$case->id, 'createdAt' => $case->created_at->toIso8601String()];
     }
 
     public function runDto(IguideLabRun $run): array

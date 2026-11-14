@@ -20,6 +20,7 @@ class LabProvider
     public function submit(IguideLabRun $run, array $images): array
     {
         if (! isset(LabCatalog::MODELS[$run->model_id])) throw new RuntimeException('Unsupported lab model.');
+        if (! empty($run->options['sectionMaskId']) && ! LabCatalog::supportsSectionMask($run->model_id)) throw new RuntimeException('Unsupported masked-edit model.');
         $options = $run->options;
         $prepared = array_map(fn ($bytes) => LabImages::prepared($bytes), $images);
         $options['preparedInputSha256'] = array_map(fn ($bytes) => hash('sha256', $bytes), $prepared);
@@ -66,6 +67,11 @@ class LabProvider
         try {
             $request = Http::withToken($key)->acceptJson()->connectTimeout(15)->timeout($remainingSeconds)->withOptions(['allow_redirects' => false]);
             foreach ($prepared as $imageIndex => $bytes) $request->attach('image[]', $bytes, 'input-'.$imageIndex.'.png', ['Content-Type' => 'image/png']);
+            if ($maskId = ($options['sectionMaskId'] ?? null)) {
+                $mask = app(LabMasks::class)->verified($run->project_id, 'section', $options['sectionId'], $maskId);
+                // This is a distinct mask field, never an image reference. Provider guidance is not a hard pixel guarantee.
+                $request->attach('mask', \Illuminate\Support\Facades\Storage::disk(LabService::DISK)->get($mask->provider_path), 'edit-mask.png', ['Content-Type' => 'image/png']);
+            }
             $payload = [
                 'model' => $run->model_id, 'prompt' => $run->prompt, 'n' => 1,
                 'size' => $options['width'].'x'.$options['height'], 'quality' => 'high',

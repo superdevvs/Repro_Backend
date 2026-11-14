@@ -32,6 +32,11 @@ class LabCatalog
         return in_array($model, ['gpt-image-2.6-sunburst', 'gpt-image-2.6-flare'], true);
     }
 
+    public static function supportsSectionMask(string $model): bool
+    {
+        return in_array($model, ['gpt-image-2.6-sunburst', 'gpt-image-2.6-flare'], true);
+    }
+
     public static function is25(string $model): bool
     {
         return in_array($model, ['gpt-image-2.5-sunburst', 'gpt-image-2.5-flare'], true);
