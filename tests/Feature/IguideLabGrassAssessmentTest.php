@@ -89,6 +89,7 @@ class IguideLabGrassAssessmentTest extends TestCase
         $requests = Http::recorded(); $this->assertSame($requests[0][0]->body(), $requests[1][0]->body());
         $this->assertSame(file_get_contents($record->data['payload']['path']), $requests[0][0]->body());
         $this->assertSame(['lab-primary', 'dashboard-fallback'], array_column($record->fresh()->provider_attempts, 'credentialSource'));
+        $this->assertCount(2, app(LabGrassAssessments::class)->reserveSegmentationSteps($record->fresh()));
     }
     public function test_cancellation_after_quota_rejection_blocks_fallback_claim(): void
     {
@@ -138,6 +139,48 @@ class IguideLabGrassAssessmentTest extends TestCase
         catch (HttpException $e) { $this->assertSame(422, $e->getStatusCode()); }
         finally { unlink($path); }
         $this->assertSame(0, IguideLabGrassAssessment::count()); Http::assertNothingSent();
+    }
+    public function test_completed_assessment_rechecks_raw_paid_receipt_and_execution_before_sam_authority(): void
+    {
+        [, , , , , $record] = $this->reserved(); $service = app(LabGrassAssessments::class);
+        Http::fake(['api.openai.com/v1/responses' => Http::response($this->response(), 200, ['x-request-id' => 'req-retained'])]);
+        $service->process($record); $service->process($record->fresh());
+        $steps = $service->reserveSegmentationSteps($record->fresh()); $step = $steps['source-grass-lawn'];
+        $this->assertSame($record->id, $service->forSegmentation($step)['assessmentId']);
+        $record->refresh(); $data = $record->data; $attempts = $record->provider_attempts;
+        $disk = Storage::disk(LabService::DISK); $responsePath = $data['providerReceipt']['response']['path'];
+        $responseBytes = $disk->get($responsePath); $payloadBytes = file_get_contents($data['payload']['path']);
+        $executionPath = $data['base'].'/execution.json'; $executionBytes = $disk->get($executionPath);
+        $probes = [
+            'missing raw response' => function () use ($disk, $responsePath) { $disk->delete($responsePath); },
+            'changed raw response bytes' => function () use ($disk, $responsePath) { $disk->put($responsePath, '{"changed":true}'); },
+            'same bytes at noncanonical response path' => function () use ($record, $data, $disk, $responseBytes) {
+                $changed = $data; $changed['providerReceipt']['response']['path'] = $data['base'].'/other-response.json';
+                $disk->put($changed['providerReceipt']['response']['path'], $responseBytes); $record->update(['data' => $changed]);
+            },
+            'changed provider response ID' => function () use ($record, $data) { $changed = $data; $changed['providerReceipt']['providerResponseId'] = 'resp-other'; $record->update(['data' => $changed]); },
+            'changed provider model' => function () use ($record, $data) { $changed = $data; $changed['providerReceipt']['model'] = 'unapproved-model'; $record->update(['data' => $changed]); },
+            'changed transport request ID' => function () use ($record) { $record->update(['provider_request_id' => 'req-other']); },
+            'changed terminal attempt' => function () use ($record, $attempts) { $changed = $attempts; $changed[0]['status'] = 'unknown'; $record->update(['provider_attempts' => $changed]); },
+            'changed saved payload bytes' => function () use ($data) { file_put_contents($data['payload']['path'], '{}'); },
+            'changed saved execution bytes' => function () use ($disk, $executionPath) { $disk->put($executionPath, '{}'); },
+            'changed saved execution identity' => function () use ($record, $data) { $changed = $data; $changed['execution']['requestId'] = (string) Str::uuid(); $record->update(['data' => $changed]); },
+            'rebound raw identity disagrees with parsed execution' => function () use ($record, $data, $disk, $responsePath) {
+                $raw = $this->response(); $raw['id'] = 'resp-rebound'; $bytes = json_encode($raw, JSON_THROW_ON_ERROR); $disk->put($responsePath, $bytes);
+                $changed = $data; $changed['providerReceipt']['providerResponseId'] = $raw['id']; $changed['providerReceipt']['response']['sha256'] = hash('sha256', $bytes);
+                $record->update(['data' => $changed]);
+            },
+        ];
+        foreach ($probes as $name => $mutate) {
+            try {
+                $mutate(); $service->forSegmentation($step); $this->fail($name.' still authorized SAM.');
+            } catch (HttpException $error) { $this->assertSame(422, $error->getStatusCode(), $name); }
+            finally {
+                $disk->put($responsePath, $responseBytes); file_put_contents($data['payload']['path'], $payloadBytes); $disk->put($executionPath, $executionBytes);
+                $record->update(['data' => $data, 'provider_attempts' => $attempts, 'provider_request_id' => 'req-retained']);
+            }
+        }
+        $this->assertSame($record->id, $service->forSegmentation($step)['assessmentId']); Http::assertSentCount(1);
     }
     public function test_scene_proposal_digest_retains_unsorted_key_order(): void
     {
@@ -199,6 +242,7 @@ class GrassAssessmentBridgeFixture extends LabGrassAssessmentBridge
         $operation = $request['operation'];
         if ($operation === 'compile') $outputs = ['payload' => ['model' => 'gpt-6-astra', 'store' => false, 'input' => [['content' => [['type' => 'input_text', 'text' => json_encode(['contextSha256' => str_repeat('c', 64)])]]]]]];
         elseif ($operation === 'parse') $outputs = ['assessment' => ['status' => 'ready_for_source_segmentation', 'automaticAcceptance' => false, 'authorOrigin' => 'machine', 'reviewReasons' => [],
+            'contextSha256' => str_repeat('c', 64), 'execution' => json_decode(file_get_contents($request['execution']['path']), true, flags: JSON_THROW_ON_ERROR),
             'segmentationPlan' => [['stepKey' => 'source-grass-lawn', 'maskRole' => 'lawn', 'inputSha256' => $this->sourceSha], ['stepKey' => 'source-grass-paving', 'maskRole' => 'paving', 'inputSha256' => $this->sourceSha]]]];
         elseif ($operation === 'bind-plans') {
             $assessment = json_decode(file_get_contents($request['assessment']['path']), true); $reservations = json_decode(file_get_contents($request['reservations']['path']), true);

@@ -171,9 +171,16 @@ function mustReject(callable $operation,string $name,array &$proof):void{
 $rawRun=IguideLabRun::sole();
 $maskPath=$lawn->result['artifacts'][0]['path'];$rawReceipt='iguide-lab/'.$project->id.'/machine-segmentations/'.$lawn->id.'/provider-result.json';
 $preparedPath=collect($assessment->data['contextSnapshot']['assets'])->firstWhere('id','source_panorama')['path'];
-foreach(['native'=>$case->source_path,'candidate'=>$rawRun->output_path,'prepared-source'=>$preparedPath,'mask'=>$maskPath,'provider-response'=>$rawReceipt] as $name=>$path){
+foreach(['native'=>$case->source_path,'candidate'=>$rawRun->output_path,'prepared-source'=>$preparedPath,'mask'=>$maskPath,'provider-response'=>$rawReceipt,
+    'assessment-provider-response'=>$assessment->data['providerReceipt']['response']['path']] as $name=>$path){
     $bytes=$disk->get($path);$disk->put($path,$bytes.'tamper');mustReject(fn()=>$authority->verifiedReceipt($lawnStep),$name,$proof);$disk->put($path,$bytes);
 }
+$assessmentData=$assessment->data;$responsePath=$assessmentData['providerReceipt']['response']['path'];$bytes=$disk->get($responsePath);
+$disk->delete($responsePath);mustReject(fn()=>$authority->verifiedReceipt($lawnStep),'missing-assessment-provider-response',$proof);$disk->put($responsePath,$bytes);
+$changed=$assessmentData;$changed['providerReceipt']['providerResponseId']='resp-other';$assessment->update(['data'=>$changed]);
+mustReject(fn()=>$authority->verifiedReceipt($lawnStep),'assessment-provider-id',$proof);$assessment->update(['data'=>$assessmentData]);
+$changed=$assessmentData;$changed['execution']['requestId']=(string)Str::uuid();$assessment->update(['data'=>$changed]);
+mustReject(fn()=>$authority->verifiedReceipt($lawnStep),'assessment-execution',$proof);$assessment->update(['data'=>$assessmentData]);
 $result=$lawn->result;$changed=$result;$changed['receipt']['masks'][0]['positivePixels']--;$lawn->update(['result'=>$changed]);
 mustReject(fn()=>$authority->verifiedReceipt($lawnStep),'persisted-mask-descriptor',$proof);$lawn->update(['result'=>$result]);
 $changed=$result;$changed['association']['associations'][0]['selectionIoU']=.01;$lawn->update(['result'=>$changed]);
