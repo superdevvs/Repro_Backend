@@ -1,0 +1,63 @@
+{
+  "canonicalEncoding": "UTF-8, sorted object keys recursively, compact comma/colon separators, no escaping slashes; use frozen protocol.digest as authority.",
+  "floatWarning": "Do not replace Python context/proposal hashing with plain PHP json_encode; use the bridge-returned digest and exact compiled bytes. Bound plans/preparation fixtures contain integers/strings/booleans only.",
+  "sourcePreparation": {
+    "value": {
+      "nativeSourceSha256": "494d0db5fa2e8843c9cc53a45aec303aeed33bcb2b7bdffab73331187d2d13f0",
+      "guidanceSourceSha256": "494d0db5fa2e8843c9cc53a45aec303aeed33bcb2b7bdffab73331187d2d13f0",
+      "preparerSha256": "f45ecfd70560d45808fa1af7ed86399e56ab7acae6f8fde569374bd704c0068f",
+      "method": "LabImages::prepared/GD",
+      "verifiedByCaller": true
+    },
+    "canonicalJson": "{\"guidanceSourceSha256\":\"494d0db5fa2e8843c9cc53a45aec303aeed33bcb2b7bdffab73331187d2d13f0\",\"method\":\"LabImages::prepared/GD\",\"nativeSourceSha256\":\"494d0db5fa2e8843c9cc53a45aec303aeed33bcb2b7bdffab73331187d2d13f0\",\"preparerSha256\":\"f45ecfd70560d45808fa1af7ed86399e56ab7acae6f8fde569374bd704c0068f\",\"verifiedByCaller\":true}",
+    "sha256": "dc08793fdaca9d1f7aae6611b3eee968eecae23861fdb4a97524c98efc4ea284"
+  },
+  "contextSha256": "34585bd4b9cce5b04e27cbd2479ae8fadd458dab1505201a00ca18edb8502c09",
+  "proposalSha256": "df389bdd1a545fe02ab17a365d0a533b6a5ede68e5862c3de873b13b5573774d",
+  "plans": [
+    {
+      "stepKey": "source-grass-lawn",
+      "requestId": "936a699e-0b8e-58a6-90bd-ebe761b3055b",
+      "inputFingerprint": "5e28bb5d18eb30edc873762f7f695381789a40e02ed54490b490d0c52de1f74e",
+      "canonicalJsonWithoutFingerprint": "{\"assessmentProposalSha256\":\"df389bdd1a545fe02ab17a365d0a533b6a5ede68e5862c3de873b13b5573774d\",\"automaticRetry\":false,\"contextSha256\":\"34585bd4b9cce5b04e27cbd2479ae8fadd458dab1505201a00ca18edb8502c09\",\"expectedIdentities\":[\"lawn_1\",\"lawn_2\"],\"height\":1024,\"inputSha256\":\"494d0db5fa2e8843c9cc53a45aec303aeed33bcb2b7bdffab73331187d2d13f0\",\"maskRole\":\"lawn\",\"maximumPostAttempts\":1,\"model\":\"fal-ai/sam-3-1/image\",\"payload\":{\"apply_mask\":false,\"box_prompts\":[{\"object_id\":1,\"x_max\":861,\"x_min\":0,\"y_max\":902,\"y_min\":563},{\"object_id\":2,\"x_max\":2047,\"x_min\":1187,\"y_max\":902,\"y_min\":563}],\"include_boxes\":true,\"include_scores\":true,\"max_masks\":2,\"output_format\":\"png\",\"prompt\":\"grass lawn\",\"return_multiple_masks\":true},\"requestId\":\"936a699e-0b8e-58a6-90bd-ebe761b3055b\",\"reservationState\":\"server_reserved\",\"selectionOrigin\":\"machine\",\"semanticClassVerified\":false,\"stepKey\":\"source-grass-lawn\",\"width\":2048}"
+    },
+    {
+      "stepKey": "source-grass-paving",
+      "requestId": "5ca4e708-a28a-512c-ac46-917c07ff30f4",
+      "inputFingerprint": "01c834fff8481cbc6654fbc2393e996b83f47114900a747d037c7af98b36609e",
+      "canonicalJsonWithoutFingerprint": "{\"assessmentProposalSha256\":\"df389bdd1a545fe02ab17a365d0a533b6a5ede68e5862c3de873b13b5573774d\",\"automaticRetry\":false,\"contextSha256\":\"34585bd4b9cce5b04e27cbd2479ae8fadd458dab1505201a00ca18edb8502c09\",\"expectedIdentities\":[\"paving_1\"],\"height\":1024,\"inputSha256\":\"494d0db5fa2e8843c9cc53a45aec303aeed33bcb2b7bdffab73331187d2d13f0\",\"maskRole\":\"paving\",\"maximumPostAttempts\":1,\"model\":\"fal-ai/sam-3-1/image\",\"payload\":{\"apply_mask\":false,\"box_prompts\":[{\"object_id\":1,\"x_max\":1147,\"x_min\":901,\"y_max\":922,\"y_min\":532}],\"include_boxes\":true,\"include_scores\":true,\"max_masks\":1,\"output_format\":\"png\",\"prompt\":\"paving\",\"return_multiple_masks\":true},\"requestId\":\"5ca4e708-a28a-512c-ac46-917c07ff30f4\",\"reservationState\":\"server_reserved\",\"selectionOrigin\":\"machine\",\"semanticClassVerified\":false,\"stepKey\":\"source-grass-paving\",\"width\":2048}"
+    },
+    {
+      "stepKey": "source-grass-plants",
+      "requestId": "fc58a707-b449-52db-bfec-f45419acad08",
+      "inputFingerprint": "c8fcb420d1c264e98c6899673003e2d13b8adbaa7fd43b7b510810ad17c047f4",
+      "canonicalJsonWithoutFingerprint": "{\"assessmentProposalSha256\":\"df389bdd1a545fe02ab17a365d0a533b6a5ede68e5862c3de873b13b5573774d\",\"automaticRetry\":false,\"contextSha256\":\"34585bd4b9cce5b04e27cbd2479ae8fadd458dab1505201a00ca18edb8502c09\",\"expectedIdentities\":[\"plants_1\"],\"height\":1024,\"inputSha256\":\"494d0db5fa2e8843c9cc53a45aec303aeed33bcb2b7bdffab73331187d2d13f0\",\"maskRole\":\"plants\",\"maximumPostAttempts\":1,\"model\":\"fal-ai/sam-3-1/image\",\"payload\":{\"apply_mask\":false,\"box_prompts\":[{\"object_id\":1,\"x_max\":369,\"x_min\":163,\"y_max\":615,\"y_min\":409}],\"include_boxes\":true,\"include_scores\":true,\"max_masks\":1,\"output_format\":\"png\",\"prompt\":\"plants\",\"return_multiple_masks\":true},\"requestId\":\"fc58a707-b449-52db-bfec-f45419acad08\",\"reservationState\":\"server_reserved\",\"selectionOrigin\":\"machine\",\"semanticClassVerified\":false,\"stepKey\":\"source-grass-plants\",\"width\":2048}"
+    },
+    {
+      "stepKey": "source-grass-loose_debris",
+      "requestId": "5f793345-6d76-594a-8d11-d640f3b30fb4",
+      "inputFingerprint": "d84462db7380d5c365643cc0cced97c4525c25723980959f1a271edca4ed6ac5",
+      "canonicalJsonWithoutFingerprint": "{\"assessmentProposalSha256\":\"df389bdd1a545fe02ab17a365d0a533b6a5ede68e5862c3de873b13b5573774d\",\"automaticRetry\":false,\"contextSha256\":\"34585bd4b9cce5b04e27cbd2479ae8fadd458dab1505201a00ca18edb8502c09\",\"expectedIdentities\":[\"loose_debris_1\"],\"height\":1024,\"inputSha256\":\"494d0db5fa2e8843c9cc53a45aec303aeed33bcb2b7bdffab73331187d2d13f0\",\"maskRole\":\"loose_debris\",\"maximumPostAttempts\":1,\"model\":\"fal-ai/sam-3-1/image\",\"payload\":{\"apply_mask\":false,\"box_prompts\":[{\"object_id\":1,\"x_max\":594,\"x_min\":512,\"y_max\":779,\"y_min\":716}],\"include_boxes\":true,\"include_scores\":true,\"max_masks\":1,\"output_format\":\"png\",\"prompt\":\"fallen leaves and twigs\",\"return_multiple_masks\":true},\"requestId\":\"5f793345-6d76-594a-8d11-d640f3b30fb4\",\"reservationState\":\"server_reserved\",\"selectionOrigin\":\"machine\",\"semanticClassVerified\":false,\"stepKey\":\"source-grass-loose_debris\",\"width\":2048}"
+    },
+    {
+      "stepKey": "source-grass-non_turf_ground",
+      "requestId": "113a762a-747b-563e-b5da-26ef6c771c08",
+      "inputFingerprint": "8f3b6eedc4dded6c6a8f8373996fb8db123f686187f3268d6257ac73cbc85b0e",
+      "canonicalJsonWithoutFingerprint": "{\"assessmentProposalSha256\":\"df389bdd1a545fe02ab17a365d0a533b6a5ede68e5862c3de873b13b5573774d\",\"automaticRetry\":false,\"contextSha256\":\"34585bd4b9cce5b04e27cbd2479ae8fadd458dab1505201a00ca18edb8502c09\",\"expectedIdentities\":[\"non_turf_ground_1\"],\"height\":1024,\"inputSha256\":\"494d0db5fa2e8843c9cc53a45aec303aeed33bcb2b7bdffab73331187d2d13f0\",\"maskRole\":\"non_turf_ground\",\"maximumPostAttempts\":1,\"model\":\"fal-ai/sam-3-1/image\",\"payload\":{\"apply_mask\":false,\"box_prompts\":[{\"object_id\":1,\"x_max\":1741,\"x_min\":1495,\"y_max\":584,\"y_min\":430}],\"include_boxes\":true,\"include_scores\":true,\"max_masks\":1,\"output_format\":\"png\",\"prompt\":\"bare soil and mulch\",\"return_multiple_masks\":true},\"requestId\":\"113a762a-747b-563e-b5da-26ef6c771c08\",\"reservationState\":\"server_reserved\",\"selectionOrigin\":\"machine\",\"semanticClassVerified\":false,\"stepKey\":\"source-grass-non_turf_ground\",\"width\":2048}"
+    },
+    {
+      "stepKey": "source-grass-capture_artifact",
+      "requestId": "00600d2c-0a8c-570e-b878-48d145de5638",
+      "inputFingerprint": "77994a967920b1a9bbade27e5f125013b0c4bf3bbd3f1510f2e9a4683f3493ee",
+      "canonicalJsonWithoutFingerprint": "{\"assessmentProposalSha256\":\"df389bdd1a545fe02ab17a365d0a533b6a5ede68e5862c3de873b13b5573774d\",\"automaticRetry\":false,\"contextSha256\":\"34585bd4b9cce5b04e27cbd2479ae8fadd458dab1505201a00ca18edb8502c09\",\"expectedIdentities\":[\"capture_artifact_1\"],\"height\":1024,\"inputSha256\":\"494d0db5fa2e8843c9cc53a45aec303aeed33bcb2b7bdffab73331187d2d13f0\",\"maskRole\":\"capture_artifact\",\"maximumPostAttempts\":1,\"model\":\"fal-ai/sam-3-1/image\",\"payload\":{\"apply_mask\":false,\"box_prompts\":[{\"object_id\":1,\"x_max\":1168,\"x_min\":880,\"y_max\":1014,\"y_min\":931}],\"include_boxes\":true,\"include_scores\":true,\"max_masks\":1,\"output_format\":\"png\",\"prompt\":\"camera and tripod\",\"return_multiple_masks\":true},\"requestId\":\"00600d2c-0a8c-570e-b878-48d145de5638\",\"reservationState\":\"server_reserved\",\"selectionOrigin\":\"machine\",\"semanticClassVerified\":false,\"stepKey\":\"source-grass-capture_artifact\",\"width\":2048}"
+    }
+  ],
+  "associationStatus": "ready_for_source_support",
+  "lawnMaskIndexes": [
+    1,
+    0
+  ],
+  "minimalRoleOrder": [
+    "lawn"
+  ]
+}

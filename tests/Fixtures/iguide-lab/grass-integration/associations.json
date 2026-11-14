@@ -1,0 +1,176 @@
+[
+  {
+    "status": "ready_for_source_support",
+    "reviewReasons": [],
+    "associations": [
+      {
+        "identity": "lawn_1",
+        "maskRole": "lawn",
+        "maskIndex": 1,
+        "maskSha256": "6490ec00fef06769c68c950fc66a170336915cc0a97382f46a17f5a30c47d7fc",
+        "sourceSha256": "494d0db5fa2e8843c9cc53a45aec303aeed33bcb2b7bdffab73331187d2d13f0",
+        "generationOrigin": "model_segmentation",
+        "selectionOrigin": "machine",
+        "providerRequestId": "SYNTHETIC_sam_lawn",
+        "selectionContainment": 1.0,
+        "selectionIoU": 0.9836096464630891
+      },
+      {
+        "identity": "lawn_2",
+        "maskRole": "lawn",
+        "maskIndex": 0,
+        "maskSha256": "f144ba964e29ca000d24699a798950b1c91b210b7a586935426c6da6f0d140aa",
+        "sourceSha256": "494d0db5fa2e8843c9cc53a45aec303aeed33bcb2b7bdffab73331187d2d13f0",
+        "generationOrigin": "model_segmentation",
+        "selectionOrigin": "machine",
+        "providerRequestId": "SYNTHETIC_sam_lawn",
+        "selectionContainment": 1.0,
+        "selectionIoU": 0.9836043081566852
+      }
+    ],
+    "maskSemanticsVerified": false,
+    "automaticRetry": false,
+    "stepKey": "source-grass-lawn",
+    "maskRole": "lawn",
+    "requestId": "936a699e-0b8e-58a6-90bd-ebe761b3055b",
+    "inputFingerprint": "5e28bb5d18eb30edc873762f7f695381789a40e02ed54490b490d0c52de1f74e",
+    "inputSha256": "494d0db5fa2e8843c9cc53a45aec303aeed33bcb2b7bdffab73331187d2d13f0",
+    "contextSha256": "34585bd4b9cce5b04e27cbd2479ae8fadd458dab1505201a00ca18edb8502c09",
+    "receiptSha256": "de9c1fb7a8b7a46a4c754f70ef2622d5cc21bfe6c02589b42e0313513c8f2d15"
+  },
+  {
+    "status": "ready_for_source_support",
+    "reviewReasons": [],
+    "associations": [
+      {
+        "identity": "paving_1",
+        "maskRole": "paving",
+        "maskIndex": 0,
+        "maskSha256": "e08bddc9a0bcbc99c839e9f3de3ee5804ebb27aeb403d054d8cd7c8c5d42ab6f",
+        "sourceSha256": "494d0db5fa2e8843c9cc53a45aec303aeed33bcb2b7bdffab73331187d2d13f0",
+        "generationOrigin": "model_segmentation",
+        "selectionOrigin": "machine",
+        "providerRequestId": "SYNTHETIC_sam_paving",
+        "selectionContainment": 1.0,
+        "selectionIoU": 0.973650198040442
+      }
+    ],
+    "maskSemanticsVerified": false,
+    "automaticRetry": false,
+    "stepKey": "source-grass-paving",
+    "maskRole": "paving",
+    "requestId": "5ca4e708-a28a-512c-ac46-917c07ff30f4",
+    "inputFingerprint": "01c834fff8481cbc6654fbc2393e996b83f47114900a747d037c7af98b36609e",
+    "inputSha256": "494d0db5fa2e8843c9cc53a45aec303aeed33bcb2b7bdffab73331187d2d13f0",
+    "contextSha256": "34585bd4b9cce5b04e27cbd2479ae8fadd458dab1505201a00ca18edb8502c09",
+    "receiptSha256": "74e59932fbdd294f4e88d98869126969d0e660d038f75deff57bf411190235c8"
+  },
+  {
+    "status": "ready_for_source_support",
+    "reviewReasons": [],
+    "associations": [
+      {
+        "identity": "plants_1",
+        "maskRole": "plants",
+        "maskIndex": 0,
+        "maskSha256": "ed47edb9535ba644b5dd13a661dd8745e6da3a5fc8a8e626b95bbbd749614a71",
+        "sourceSha256": "494d0db5fa2e8843c9cc53a45aec303aeed33bcb2b7bdffab73331187d2d13f0",
+        "generationOrigin": "model_segmentation",
+        "selectionOrigin": "machine",
+        "providerRequestId": "SYNTHETIC_sam_plants",
+        "selectionContainment": 1.0,
+        "selectionIoU": 0.9615420869073428
+      }
+    ],
+    "maskSemanticsVerified": false,
+    "automaticRetry": false,
+    "stepKey": "source-grass-plants",
+    "maskRole": "plants",
+    "requestId": "fc58a707-b449-52db-bfec-f45419acad08",
+    "inputFingerprint": "c8fcb420d1c264e98c6899673003e2d13b8adbaa7fd43b7b510810ad17c047f4",
+    "inputSha256": "494d0db5fa2e8843c9cc53a45aec303aeed33bcb2b7bdffab73331187d2d13f0",
+    "contextSha256": "34585bd4b9cce5b04e27cbd2479ae8fadd458dab1505201a00ca18edb8502c09",
+    "receiptSha256": "d987219427087407a7495f6ad3996a765ba8469ae83a7bac16e6e7794b144333"
+  },
+  {
+    "status": "ready_for_source_support",
+    "reviewReasons": [],
+    "associations": [
+      {
+        "identity": "loose_debris_1",
+        "maskRole": "loose_debris",
+        "maskIndex": 0,
+        "maskSha256": "309daf5a8a71487b8d1654ab05016fc95211fadd85bc5d2524ccb01be75bb210",
+        "sourceSha256": "494d0db5fa2e8843c9cc53a45aec303aeed33bcb2b7bdffab73331187d2d13f0",
+        "generationOrigin": "model_segmentation",
+        "selectionOrigin": "machine",
+        "providerRequestId": "SYNTHETIC_sam_loose_debris",
+        "selectionContainment": 1.0,
+        "selectionIoU": 0.8908246225319396
+      }
+    ],
+    "maskSemanticsVerified": false,
+    "automaticRetry": false,
+    "stepKey": "source-grass-loose_debris",
+    "maskRole": "loose_debris",
+    "requestId": "5f793345-6d76-594a-8d11-d640f3b30fb4",
+    "inputFingerprint": "d84462db7380d5c365643cc0cced97c4525c25723980959f1a271edca4ed6ac5",
+    "inputSha256": "494d0db5fa2e8843c9cc53a45aec303aeed33bcb2b7bdffab73331187d2d13f0",
+    "contextSha256": "34585bd4b9cce5b04e27cbd2479ae8fadd458dab1505201a00ca18edb8502c09",
+    "receiptSha256": "34a4535144fead10010114cb903536498b48e655fd765c03db70d6fd300da62d"
+  },
+  {
+    "status": "ready_for_source_support",
+    "reviewReasons": [],
+    "associations": [
+      {
+        "identity": "non_turf_ground_1",
+        "maskRole": "non_turf_ground",
+        "maskIndex": 0,
+        "maskSha256": "dea04aeae5f1605e4a9125e0c31b7c636d70a405f9cad64705e30d8f67cf808d",
+        "sourceSha256": "494d0db5fa2e8843c9cc53a45aec303aeed33bcb2b7bdffab73331187d2d13f0",
+        "generationOrigin": "model_segmentation",
+        "selectionOrigin": "machine",
+        "providerRequestId": "SYNTHETIC_sam_non_turf_ground",
+        "selectionContainment": 1.0,
+        "selectionIoU": 0.9581881533101045
+      }
+    ],
+    "maskSemanticsVerified": false,
+    "automaticRetry": false,
+    "stepKey": "source-grass-non_turf_ground",
+    "maskRole": "non_turf_ground",
+    "requestId": "113a762a-747b-563e-b5da-26ef6c771c08",
+    "inputFingerprint": "8f3b6eedc4dded6c6a8f8373996fb8db123f686187f3268d6257ac73cbc85b0e",
+    "inputSha256": "494d0db5fa2e8843c9cc53a45aec303aeed33bcb2b7bdffab73331187d2d13f0",
+    "contextSha256": "34585bd4b9cce5b04e27cbd2479ae8fadd458dab1505201a00ca18edb8502c09",
+    "receiptSha256": "8b70a8f6f323b766287352b1e884a8f57ba73289884c02c1dda2a67dc8c81c49"
+  },
+  {
+    "status": "ready_for_source_support",
+    "reviewReasons": [],
+    "associations": [
+      {
+        "identity": "capture_artifact_1",
+        "maskRole": "capture_artifact",
+        "maskIndex": 0,
+        "maskSha256": "ce4235c753ffaf7e77526d245a8f4ea0f42a8696e3c7a21c5841f4cdd66c4d43",
+        "sourceSha256": "494d0db5fa2e8843c9cc53a45aec303aeed33bcb2b7bdffab73331187d2d13f0",
+        "generationOrigin": "model_segmentation",
+        "selectionOrigin": "machine",
+        "providerRequestId": "SYNTHETIC_sam_capture_artifact",
+        "selectionContainment": 1.0,
+        "selectionIoU": 0.9385876840696118
+      }
+    ],
+    "maskSemanticsVerified": false,
+    "automaticRetry": false,
+    "stepKey": "source-grass-capture_artifact",
+    "maskRole": "capture_artifact",
+    "requestId": "00600d2c-0a8c-570e-b878-48d145de5638",
+    "inputFingerprint": "77994a967920b1a9bbade27e5f125013b0c4bf3bbd3f1510f2e9a4683f3493ee",
+    "inputSha256": "494d0db5fa2e8843c9cc53a45aec303aeed33bcb2b7bdffab73331187d2d13f0",
+    "contextSha256": "34585bd4b9cce5b04e27cbd2479ae8fadd458dab1505201a00ca18edb8502c09",
+    "receiptSha256": "d8f1c0c4b982ca5ab9c7b1eb1ebb3950c9c8e86464e122c5c65231367d4192d9"
+  }
+]

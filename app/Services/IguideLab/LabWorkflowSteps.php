@@ -23,6 +23,12 @@ class LabWorkflowSteps
             $prior = IguideLabWorkflowStep::where('item_id', $item->id)->where('step_key', $key)->first();
             if ($prior) { abort_unless($prior->kind === $kind && hash_equals($prior->input_sha256, $hash), 409, 'A workflow step changed.'); return $prior; }
             $limit = match ($kind) { 'image' => 3, 'analysis' => 2, 'segmentation' => 6, default => 8 };
+            if (LabStagingAssessmentPolicy::enabled($workflow->policy, $item->preset)) {
+                $limit = match ($kind) { 'analysis' => 3, 'image' => 1, 'segmentation' => 2, 'evaluation' => 1, default => $limit };
+            }
+            if (class_exists(LabGrassAssessmentPolicy::class) && LabGrassAssessmentPolicy::enabled($workflow->policy,$item->preset)) {
+                $limit = match ($kind) { 'analysis' => 2, 'image' => 1, 'segmentation' => 6, 'evaluation' => 1, default => $limit };
+            }
             abort_if(IguideLabWorkflowStep::where('item_id', $item->id)->where('kind', $kind)->count() >= $limit, 422, 'The bounded workflow attempt limit was reached.');
             return IguideLabWorkflowStep::create(['project_id' => $item->project_id, 'item_id' => $item->id, 'step_key' => $key,
                 'kind' => $kind, 'request_id' => (string) Str::uuid(), 'input' => $input, 'input_sha256' => $hash, 'status' => 'reserved']);

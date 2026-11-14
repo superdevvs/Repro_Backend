@@ -1,0 +1,84 @@
+[
+  {
+    "path": "fixtures/encodings/opaque-L.png",
+    "sha256": "6490ec00fef06769c68c950fc66a170336915cc0a97382f46a17f5a30c47d7fc",
+    "width": 2048,
+    "height": 1024,
+    "mode": "L",
+    "grassDecoder": "accept",
+    "stagingSquareDecoder": "reject_dimensions"
+  },
+  {
+    "path": "fixtures/encodings/opaque-LA.png",
+    "sha256": "a0deaa3902439ea41ddeece31c7a7ba54dbfb9a0a7f7ddc28634a1431c8dd671",
+    "width": 2048,
+    "height": 1024,
+    "mode": "LA",
+    "grassDecoder": "accept",
+    "stagingSquareDecoder": "reject_dimensions"
+  },
+  {
+    "path": "fixtures/encodings/opaque-RGB.png",
+    "sha256": "6e67be56092e10abdb16bdea1f806697d9d84a859d97de7fd2d0969fd2c9a924",
+    "width": 2048,
+    "height": 1024,
+    "mode": "RGB",
+    "grassDecoder": "accept",
+    "stagingSquareDecoder": "reject_dimensions"
+  },
+  {
+    "path": "fixtures/encodings/opaque-RGBA.png",
+    "sha256": "1acb4c38235f6d26065e173b0caad707028856740792f4edac6f09314bc7e104",
+    "width": 2048,
+    "height": 1024,
+    "mode": "RGBA",
+    "grassDecoder": "accept",
+    "stagingSquareDecoder": "reject_dimensions"
+  },
+  {
+    "path": "fixtures/encodings/translucent-RGBA.png",
+    "sha256": "bc0ae9c241ddbfa497cbb9fd2e63ca81b4a449ebc57a800aafa8112b8ca6ce83",
+    "width": 2048,
+    "height": 1024,
+    "mode": "RGBA",
+    "grassDecoder": "reject_opacity",
+    "stagingSquareDecoder": "reject_dimensions"
+  },
+  {
+    "path": "fixtures/encodings/colored-RGB.png",
+    "sha256": "f479b8fea664eaaeeae36dd6e0ea27729f4c3646f37a0b69e0f3729bfe258fc6",
+    "width": 2048,
+    "height": 1024,
+    "mode": "RGB",
+    "grassDecoder": "reject_channels",
+    "stagingSquareDecoder": "reject_dimensions"
+  },
+  {
+    "path": "fixtures/encodings/square-L.png",
+    "sha256": "47409785b30cc38f1ec62f219ce1c46f885427442416c0768dc470497ef784cb",
+    "width": 2048,
+    "height": 2048,
+    "mode": "L",
+    "grassDecoder": "reject_dimensions",
+    "stagingSquareDecoder": "valid_encoding_empty_support"
+  },
+  {
+    "path": "fixtures/encodings/empty-L.png",
+    "sha256": "454f752f9eabe65b6365ea208069fbd2a897bd77612865865fe08ab6ee5f808e",
+    "width": 2048,
+    "height": 1024,
+    "mode": "L",
+    "grassDecoder": "valid_encoding_empty_support",
+    "grassReceipt": "needs_review_not_absence"
+  },
+  {
+    "path": "fixtures/encodings/nonbinary-L.png",
+    "sha256": "2b0cc3d8d5f70217f75efa50683836ecc4fccbc2f6752a267ed9ca6352420a3f",
+    "width": 2048,
+    "height": 1024,
+    "mode": "L",
+    "grassDecoder": "accept",
+    "grassLawnComposer": "reject_nonbinary_lawn",
+    "grassExclusionComposer": "protect_every_positive_pixel"
+  }
+]

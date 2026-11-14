@@ -1,0 +1,23 @@
+{
+  "requestId": "5f793345-6d76-594a-8d11-d640f3b30fb4",
+  "providerRequestId": "SYNTHETIC_sam_loose_debris",
+  "model": "fal-ai/sam-3-1/image",
+  "inputFingerprint": "d84462db7380d5c365643cc0cced97c4525c25723980959f1a271edca4ed6ac5",
+  "inputSha256": "494d0db5fa2e8843c9cc53a45aec303aeed33bcb2b7bdffab73331187d2d13f0",
+  "rawResponseSha256": "080ac611c36d6336671c787d5c1a51d02a3b7fa1de3f32e9aca0d71cdf309e14",
+  "status": "completed",
+  "masks": [
+    {
+      "sha256": "309daf5a8a71487b8d1654ab05016fc95211fadd85bc5d2524ccb01be75bb210",
+      "width": 2048,
+      "height": 1024,
+      "bounds": [
+        514,
+        718,
+        592,
+        777
+      ],
+      "positivePixels": 4602
+    }
+  ]
+}

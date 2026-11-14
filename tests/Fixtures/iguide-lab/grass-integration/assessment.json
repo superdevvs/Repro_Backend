@@ -1,0 +1,510 @@
+{
+  "schemaVersion": "source-native-grass-assessment/1",
+  "status": "ready_for_source_segmentation",
+  "contextSha256": "34585bd4b9cce5b04e27cbd2479ae8fadd458dab1505201a00ca18edb8502c09",
+  "binding": {
+    "workflowItemId": "c4809bd8-c783-52ca-a779-ab170bb53e36",
+    "captureId": "99ab309d-3f06-579a-ab90-bc58fe64212f",
+    "nativeSourceSha256": "494d0db5fa2e8843c9cc53a45aec303aeed33bcb2b7bdffab73331187d2d13f0",
+    "guidanceSourceSha256": "494d0db5fa2e8843c9cc53a45aec303aeed33bcb2b7bdffab73331187d2d13f0",
+    "candidateSha256": "c31d1b7552cb0dd9c500e52c78781562d217b81eb981948c9667843115d51329",
+    "sourcePreparationSha256": "dc08793fdaca9d1f7aae6611b3eee968eecae23861fdb4a97524c98efc4ea284",
+    "sourceAnalysisSha256": "84c066662ad0e1d7d611c5de5d6059b55880aaf31adf5b4de4d9120253a213f2",
+    "generationSettingsSha256": "5b98dffc2031c9857f04d7d2c59c36feb53b0c4d9360099d48748537c8fac40b"
+  },
+  "policy": {
+    "scope": "all_visible_established_turf",
+    "operation": "recolor_existing_turf",
+    "maximumSegmentationOperations": 6,
+    "maximumSelectionsPerRole": 8,
+    "width": 2048,
+    "height": 1024
+  },
+  "proposal": {
+    "schemaVersion": "source-native-grass-assessment/1",
+    "contextSha256": "34585bd4b9cce5b04e27cbd2479ae8fadd458dab1505201a00ca18edb8502c09",
+    "binding": {
+      "workflowItemId": "c4809bd8-c783-52ca-a779-ab170bb53e36",
+      "captureId": "99ab309d-3f06-579a-ab90-bc58fe64212f",
+      "nativeSourceSha256": "494d0db5fa2e8843c9cc53a45aec303aeed33bcb2b7bdffab73331187d2d13f0",
+      "guidanceSourceSha256": "494d0db5fa2e8843c9cc53a45aec303aeed33bcb2b7bdffab73331187d2d13f0",
+      "candidateSha256": "c31d1b7552cb0dd9c500e52c78781562d217b81eb981948c9667843115d51329",
+      "sourcePreparationSha256": "dc08793fdaca9d1f7aae6611b3eee968eecae23861fdb4a97524c98efc4ea284",
+      "sourceAnalysisSha256": "84c066662ad0e1d7d611c5de5d6059b55880aaf31adf5b4de4d9120253a213f2",
+      "generationSettingsSha256": "5b98dffc2031c9857f04d7d2c59c36feb53b0c4d9360099d48748537c8fac40b"
+    },
+    "summary": "Synthetic all-six-role integration fixture; not scene acceptance.",
+    "material": {
+      "status": "established_turf",
+      "evidenceIds": [
+        "source_panorama",
+        "source_front",
+        "source_right",
+        "source_back",
+        "source_left",
+        "source_zenith",
+        "source_nadir"
+      ],
+      "notes": "Synthetic binding fixture; not a real material or optical finding."
+    },
+    "scope": {
+      "status": "all_visible_established_turf",
+      "evidenceIds": [
+        "source_panorama",
+        "source_front",
+        "source_right",
+        "source_back",
+        "source_left",
+        "source_zenith",
+        "source_nadir"
+      ],
+      "notes": "Synthetic binding fixture; not a real material or optical finding."
+    },
+    "lawn": {
+      "status": "visible_selectable",
+      "evidenceIds": [
+        "source_panorama",
+        "source_front",
+        "source_right",
+        "source_back",
+        "source_left",
+        "source_zenith",
+        "source_nadir"
+      ],
+      "notes": "Synthetic source selection, not a mask.",
+      "selections": [
+        {
+          "id": "lawn_1",
+          "box": {
+            "xMin": 0.0,
+            "yMin": 0.55,
+            "xMax": 0.42,
+            "yMax": 0.88
+          }
+        },
+        {
+          "id": "lawn_2",
+          "box": {
+            "xMin": 0.58,
+            "yMin": 0.55,
+            "xMax": 1.0,
+            "yMax": 0.88
+          }
+        }
+      ]
+    },
+    "exclusions": {
+      "paving": {
+        "status": "observed_selectable",
+        "evidenceIds": [
+          "source_panorama",
+          "source_front",
+          "source_right",
+          "source_back",
+          "source_left",
+          "source_zenith",
+          "source_nadir"
+        ],
+        "notes": "Synthetic source selection, not a mask.",
+        "selections": [
+          {
+            "id": "paving_1",
+            "box": {
+              "xMin": 0.44,
+              "yMin": 0.52,
+              "xMax": 0.56,
+              "yMax": 0.9
+            }
+          }
+        ]
+      },
+      "plants": {
+        "status": "observed_selectable",
+        "evidenceIds": [
+          "source_panorama",
+          "source_front",
+          "source_right",
+          "source_back",
+          "source_left",
+          "source_zenith",
+          "source_nadir"
+        ],
+        "notes": "Synthetic source selection, not a mask.",
+        "selections": [
+          {
+            "id": "plants_1",
+            "box": {
+              "xMin": 0.08,
+              "yMin": 0.4,
+              "xMax": 0.18,
+              "yMax": 0.6
+            }
+          }
+        ]
+      },
+      "loose_debris": {
+        "status": "observed_selectable",
+        "evidenceIds": [
+          "source_panorama",
+          "source_front",
+          "source_right",
+          "source_back",
+          "source_left",
+          "source_zenith",
+          "source_nadir"
+        ],
+        "notes": "Synthetic source selection, not a mask.",
+        "selections": [
+          {
+            "id": "loose_debris_1",
+            "box": {
+              "xMin": 0.25,
+              "yMin": 0.7,
+              "xMax": 0.29,
+              "yMax": 0.76
+            }
+          }
+        ]
+      },
+      "non_turf_ground": {
+        "status": "observed_selectable",
+        "evidenceIds": [
+          "source_panorama",
+          "source_front",
+          "source_right",
+          "source_back",
+          "source_left",
+          "source_zenith",
+          "source_nadir"
+        ],
+        "notes": "Synthetic source selection, not a mask.",
+        "selections": [
+          {
+            "id": "non_turf_ground_1",
+            "box": {
+              "xMin": 0.73,
+              "yMin": 0.42,
+              "xMax": 0.85,
+              "yMax": 0.57
+            }
+          }
+        ]
+      },
+      "capture_artifact": {
+        "status": "observed_selectable",
+        "evidenceIds": [
+          "source_panorama",
+          "source_front",
+          "source_right",
+          "source_back",
+          "source_left",
+          "source_zenith",
+          "source_nadir"
+        ],
+        "notes": "Synthetic source selection, not a mask.",
+        "selections": [
+          {
+            "id": "capture_artifact_1",
+            "box": {
+              "xMin": 0.43,
+              "yMin": 0.91,
+              "xMax": 0.57,
+              "yMax": 0.99
+            }
+          }
+        ]
+      }
+    },
+    "contextCoverage": {
+      "status": "sufficient_same_capture_views",
+      "evidenceIds": [
+        "source_panorama",
+        "source_front",
+        "source_right",
+        "source_back",
+        "source_left",
+        "source_zenith",
+        "source_nadir"
+      ],
+      "notes": "Synthetic binding fixture; not a real material or optical finding.",
+      "requestedDetails": []
+    },
+    "reflections": {
+      "status": "no_visible_turf_reflection_observed",
+      "evidenceIds": [
+        "source_panorama",
+        "source_front",
+        "source_right",
+        "source_back",
+        "source_left",
+        "source_zenith",
+        "source_nadir"
+      ],
+      "notes": "Synthetic binding fixture; not a real material or optical finding."
+    },
+    "candidateGuidance": {
+      "status": "natural_green_corresponding_turf",
+      "evidenceIds": [
+        "source_panorama",
+        "candidate_panorama"
+      ],
+      "notes": "Synthetic color fixture, not real candidate quality."
+    },
+    "uncertainties": []
+  },
+  "proposalSha256": "df389bdd1a545fe02ab17a365d0a533b6a5ede68e5862c3de873b13b5573774d",
+  "execution": {
+    "state": "completed",
+    "requestId": "dff44271-0da2-52a2-b877-e082156a3354",
+    "providerResponseId": "resp_SYNTHETIC_grass_integration",
+    "model": "gpt-6-astra",
+    "contextSha256": "34585bd4b9cce5b04e27cbd2479ae8fadd458dab1505201a00ca18edb8502c09",
+    "requestPayloadSha256": "a5af3a79b3563e9527698108515289dfc5f78c70cf72b88e2795a8cae8cf2cdf",
+    "responseSha256": "bb4b8ac4845011613b0f75aca7ff956479699f294e4cd34ffcb1d83c041be0eb"
+  },
+  "reviewReasons": [],
+  "authorOrigin": "machine",
+  "automaticAcceptance": false,
+  "maskSemanticsVerified": false,
+  "opticsPhysicallyVerified": false,
+  "crossViewVerified": false,
+  "providerCallsPerformed": 0,
+  "segmentationPlan": [
+    {
+      "stepKey": "source-grass-lawn",
+      "maskRole": "lawn",
+      "requestId": null,
+      "reservationState": "unreserved",
+      "model": "fal-ai/sam-3-1/image",
+      "inputSha256": "494d0db5fa2e8843c9cc53a45aec303aeed33bcb2b7bdffab73331187d2d13f0",
+      "width": 2048,
+      "height": 1024,
+      "payload": {
+        "prompt": "grass lawn",
+        "box_prompts": [
+          {
+            "x_min": 0,
+            "y_min": 563,
+            "x_max": 861,
+            "y_max": 902,
+            "object_id": 1
+          },
+          {
+            "x_min": 1187,
+            "y_min": 563,
+            "x_max": 2047,
+            "y_max": 902,
+            "object_id": 2
+          }
+        ],
+        "apply_mask": false,
+        "output_format": "png",
+        "return_multiple_masks": true,
+        "max_masks": 2,
+        "include_scores": true,
+        "include_boxes": true
+      },
+      "expectedIdentities": [
+        "lawn_1",
+        "lawn_2"
+      ],
+      "selectionOrigin": "machine",
+      "assessmentProposalSha256": "df389bdd1a545fe02ab17a365d0a533b6a5ede68e5862c3de873b13b5573774d",
+      "contextSha256": "34585bd4b9cce5b04e27cbd2479ae8fadd458dab1505201a00ca18edb8502c09",
+      "maximumPostAttempts": 1,
+      "automaticRetry": false,
+      "semanticClassVerified": false,
+      "inputFingerprint": "eb5a8fb011474b21f8f9528729f109cb85066f7109cb77f8bef2d8ff1d384ace"
+    },
+    {
+      "stepKey": "source-grass-paving",
+      "maskRole": "paving",
+      "requestId": null,
+      "reservationState": "unreserved",
+      "model": "fal-ai/sam-3-1/image",
+      "inputSha256": "494d0db5fa2e8843c9cc53a45aec303aeed33bcb2b7bdffab73331187d2d13f0",
+      "width": 2048,
+      "height": 1024,
+      "payload": {
+        "prompt": "paving",
+        "box_prompts": [
+          {
+            "x_min": 901,
+            "y_min": 532,
+            "x_max": 1147,
+            "y_max": 922,
+            "object_id": 1
+          }
+        ],
+        "apply_mask": false,
+        "output_format": "png",
+        "return_multiple_masks": true,
+        "max_masks": 1,
+        "include_scores": true,
+        "include_boxes": true
+      },
+      "expectedIdentities": [
+        "paving_1"
+      ],
+      "selectionOrigin": "machine",
+      "assessmentProposalSha256": "df389bdd1a545fe02ab17a365d0a533b6a5ede68e5862c3de873b13b5573774d",
+      "contextSha256": "34585bd4b9cce5b04e27cbd2479ae8fadd458dab1505201a00ca18edb8502c09",
+      "maximumPostAttempts": 1,
+      "automaticRetry": false,
+      "semanticClassVerified": false,
+      "inputFingerprint": "83c4a83a81f3ba5829e3904f2d05f3948f0e51cbe325f963780b9cd9fbc545e7"
+    },
+    {
+      "stepKey": "source-grass-plants",
+      "maskRole": "plants",
+      "requestId": null,
+      "reservationState": "unreserved",
+      "model": "fal-ai/sam-3-1/image",
+      "inputSha256": "494d0db5fa2e8843c9cc53a45aec303aeed33bcb2b7bdffab73331187d2d13f0",
+      "width": 2048,
+      "height": 1024,
+      "payload": {
+        "prompt": "plants",
+        "box_prompts": [
+          {
+            "x_min": 163,
+            "y_min": 409,
+            "x_max": 369,
+            "y_max": 615,
+            "object_id": 1
+          }
+        ],
+        "apply_mask": false,
+        "output_format": "png",
+        "return_multiple_masks": true,
+        "max_masks": 1,
+        "include_scores": true,
+        "include_boxes": true
+      },
+      "expectedIdentities": [
+        "plants_1"
+      ],
+      "selectionOrigin": "machine",
+      "assessmentProposalSha256": "df389bdd1a545fe02ab17a365d0a533b6a5ede68e5862c3de873b13b5573774d",
+      "contextSha256": "34585bd4b9cce5b04e27cbd2479ae8fadd458dab1505201a00ca18edb8502c09",
+      "maximumPostAttempts": 1,
+      "automaticRetry": false,
+      "semanticClassVerified": false,
+      "inputFingerprint": "49c54cc795aea6e6ebb512a4fee3148accddb329367bf0a8e474cf9012cf4b9b"
+    },
+    {
+      "stepKey": "source-grass-loose_debris",
+      "maskRole": "loose_debris",
+      "requestId": null,
+      "reservationState": "unreserved",
+      "model": "fal-ai/sam-3-1/image",
+      "inputSha256": "494d0db5fa2e8843c9cc53a45aec303aeed33bcb2b7bdffab73331187d2d13f0",
+      "width": 2048,
+      "height": 1024,
+      "payload": {
+        "prompt": "fallen leaves and twigs",
+        "box_prompts": [
+          {
+            "x_min": 512,
+            "y_min": 716,
+            "x_max": 594,
+            "y_max": 779,
+            "object_id": 1
+          }
+        ],
+        "apply_mask": false,
+        "output_format": "png",
+        "return_multiple_masks": true,
+        "max_masks": 1,
+        "include_scores": true,
+        "include_boxes": true
+      },
+      "expectedIdentities": [
+        "loose_debris_1"
+      ],
+      "selectionOrigin": "machine",
+      "assessmentProposalSha256": "df389bdd1a545fe02ab17a365d0a533b6a5ede68e5862c3de873b13b5573774d",
+      "contextSha256": "34585bd4b9cce5b04e27cbd2479ae8fadd458dab1505201a00ca18edb8502c09",
+      "maximumPostAttempts": 1,
+      "automaticRetry": false,
+      "semanticClassVerified": false,
+      "inputFingerprint": "3048339ba3b519280a7df810fe0cb5cd2a77db87155495bf89f65e08258fbf67"
+    },
+    {
+      "stepKey": "source-grass-non_turf_ground",
+      "maskRole": "non_turf_ground",
+      "requestId": null,
+      "reservationState": "unreserved",
+      "model": "fal-ai/sam-3-1/image",
+      "inputSha256": "494d0db5fa2e8843c9cc53a45aec303aeed33bcb2b7bdffab73331187d2d13f0",
+      "width": 2048,
+      "height": 1024,
+      "payload": {
+        "prompt": "bare soil and mulch",
+        "box_prompts": [
+          {
+            "x_min": 1495,
+            "y_min": 430,
+            "x_max": 1741,
+            "y_max": 584,
+            "object_id": 1
+          }
+        ],
+        "apply_mask": false,
+        "output_format": "png",
+        "return_multiple_masks": true,
+        "max_masks": 1,
+        "include_scores": true,
+        "include_boxes": true
+      },
+      "expectedIdentities": [
+        "non_turf_ground_1"
+      ],
+      "selectionOrigin": "machine",
+      "assessmentProposalSha256": "df389bdd1a545fe02ab17a365d0a533b6a5ede68e5862c3de873b13b5573774d",
+      "contextSha256": "34585bd4b9cce5b04e27cbd2479ae8fadd458dab1505201a00ca18edb8502c09",
+      "maximumPostAttempts": 1,
+      "automaticRetry": false,
+      "semanticClassVerified": false,
+      "inputFingerprint": "802fcb86b4b8951291fd933fd35412f003cd96b789b4536a7b932b4963384159"
+    },
+    {
+      "stepKey": "source-grass-capture_artifact",
+      "maskRole": "capture_artifact",
+      "requestId": null,
+      "reservationState": "unreserved",
+      "model": "fal-ai/sam-3-1/image",
+      "inputSha256": "494d0db5fa2e8843c9cc53a45aec303aeed33bcb2b7bdffab73331187d2d13f0",
+      "width": 2048,
+      "height": 1024,
+      "payload": {
+        "prompt": "camera and tripod",
+        "box_prompts": [
+          {
+            "x_min": 880,
+            "y_min": 931,
+            "x_max": 1168,
+            "y_max": 1014,
+            "object_id": 1
+          }
+        ],
+        "apply_mask": false,
+        "output_format": "png",
+        "return_multiple_masks": true,
+        "max_masks": 1,
+        "include_scores": true,
+        "include_boxes": true
+      },
+      "expectedIdentities": [
+        "capture_artifact_1"
+      ],
+      "selectionOrigin": "machine",
+      "assessmentProposalSha256": "df389bdd1a545fe02ab17a365d0a533b6a5ede68e5862c3de873b13b5573774d",
+      "contextSha256": "34585bd4b9cce5b04e27cbd2479ae8fadd458dab1505201a00ca18edb8502c09",
+      "maximumPostAttempts": 1,
+      "automaticRetry": false,
+      "semanticClassVerified": false,
+      "inputFingerprint": "c1a551b6b3788868d5c9f8c9cbf616bed734e29dddbbc8958d009e11eeae2102"
+    }
+  ]
+}
