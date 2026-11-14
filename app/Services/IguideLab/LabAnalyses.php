@@ -32,6 +32,12 @@ class LabAnalyses
         app(LabWorkflowInvocation::class)->verifyInput($workflowInvocation, $project->id, $input, 'analysis');
         $case = IguideLabCase::where('project_id', $project->id)->findOrFail($input['caseId']);
         $framing = $input['stagingFraming'] ?? null;
+        $lifestyleFraming = $input['lifestyleFraming'] ?? null;
+        abort_if($framing !== null && $lifestyleFraming !== null, 422, 'A cut has one source-framing authority.');
+        if ($lifestyleFraming !== null) {
+            abort_unless(is_array($lifestyleFraming) && $workflowInvocation !== null, 422, 'Lifestyle framing is server-only.');
+            app(LabLifestyleCutReadiness::class)->verifyReference($workflowInvocation, $case, $lifestyleFraming);
+        }
         if ($framing !== null) {
             abort_unless(is_array($framing) && $workflowInvocation !== null, 422, 'Framing context is server-only.');
             app(LabStagingCutReadiness::class)->verifyReference($workflowInvocation, $case, $framing);
@@ -58,7 +64,7 @@ class LabAnalyses
         // Keep normalized intent identity across recipe upgrades; validate bytes outside the write lock.
         $prior = IguideLabAnalysis::where('project_id', $project->id)->where('request_id', $input['requestId'])->exists();
         $sourceContext = ($prior || $repairContext !== null) ? null : app(LabAnalysisSourceContext::class)->capture($case);
-        [$record, $created] = LockedWrite::run(fn () => DB::transaction(function () use ($project, $case, $input, $hash, $settings, $sourceContext, $repairContext, $workflowInvocation, $framing) {
+        [$record, $created] = LockedWrite::run(fn () => DB::transaction(function () use ($project, $case, $input, $hash, $settings, $sourceContext, $repairContext, $workflowInvocation, $framing, $lifestyleFraming) {
             IguideLabProject::whereKey($project->id)->update(['updated_at' => now()]); abort_unless($project->fresh()->active(), 401);
             $saved = IguideLabAnalysis::where('project_id', $project->id)->where('request_id', $input['requestId'])->first();
             if ($saved) { abort_unless(hash_equals($saved->request_hash, $hash), 409, 'This analysis request already has different source or settings.'); return [$saved, false]; }
@@ -73,6 +79,10 @@ class LabAnalyses
                     abort_unless($sourceContext !== null && isset($policy['stagingFraming']), 422);
                     $snapshot = $policy['stagingFraming']['cutRecipe'];
                 }
+                if ($lifestyleFraming !== null) {
+                    abort_unless($sourceContext !== null && isset($policy['lifestyleFraming']), 422);
+                    $snapshot = $policy['lifestyleFraming']['cutRecipe'];
+                }
                 abort_unless(is_array($snapshot), 422, 'The workflow did not reserve a section-context recipe.');
             } else $snapshot = $sourceContext ? app(LabAnalysisRecipes::class)->snapshot(LabAnalysisRecipes::SECTION_CONTEXT) : app(LabAnalysisRecipes::class)->active();
             app(LabAnalysisRecipes::class)->validate($snapshot);
@@ -86,6 +96,7 @@ class LabAnalyses
                     'executionRecipe' => $snapshot, 'recipeCaptureMode' => 'reservation_snapshot', ...($sourceContext ? ['sourceContext' => $sourceContext] : []),
                     ...($repairContext === null ? [] : ['repairContext' => $repairContext]),
                     ...($framing === null ? [] : ['stagingFraming' => $framing]),
+                    ...($lifestyleFraming === null ? [] : ['lifestyleFraming' => $lifestyleFraming]),
                     ...($workflowInvocation === null ? [] : ['workflowInvocation' => $workflowInvocation])]]), true];
         }), 'iguide-lab.analysis-reserve');
         if ($created) {
@@ -114,7 +125,10 @@ class LabAnalyses
             $case = IguideLabCase::where('project_id', $record->project_id)->findOrFail($record->case_id);
             abort_unless(hash_equals($record->source_sha256, $case->source_sha256), 422, 'The source association changed.');
             $hasRepairContext = $recipe['compilerVersion'] === LabRepairAnalysisProtocol::VERSION;
-            $hasContext = in_array($recipe['compilerVersion'], [LabSectionAnalysisProtocol::VERSION, LabStagingCutProtocol::VERSION], true);
+            $hasContext = in_array($recipe['compilerVersion'], [LabSectionAnalysisProtocol::VERSION, LabStagingCutProtocol::VERSION, LabLifestyleCutProtocol::VERSION], true);
+            $lifestyleGate = $recipe['compilerVersion'] === LabLifestyleCutProtocol::VERSION;
+            abort_unless($lifestyleGate === isset($record->data['lifestyleFraming']), 422);
+            if ($lifestyleGate) app(LabLifestyleCutReadiness::class)->verifyReference($record->data['workflowInvocation'], $case, $record->data['lifestyleFraming']);
             $stagingGate = $recipe['compilerVersion'] === LabStagingCutProtocol::VERSION;
             abort_unless($stagingGate === isset($record->data['stagingFraming']), 422);
             if ($stagingGate) app(LabStagingCutReadiness::class)->verifyReference($record->data['workflowInvocation'], $case, $record->data['stagingFraming']);
@@ -130,6 +144,7 @@ class LabAnalyses
             if ($hasContext) $context['sourceContext'] = $data['sourceContextManifest'];
             if ($hasRepairContext) $context['repairContext'] = $data['repairContextManifest'];
             if ($stagingGate) $context['stagingFraming'] = $data['stagingFraming'];
+            if ($lifestyleGate) $context['lifestyleFraming'] = $data['lifestyleFraming'];
             $disk = Storage::disk(LabService::DISK); $images = [];
             foreach ($data['views'] as $view) {
                 $bytes = $disk->get($view['path']); abort_unless(hash_equals($view['sha256'], hash('sha256', $bytes)), 422, 'Analysis view fingerprint changed.');
@@ -148,6 +163,7 @@ class LabAnalyses
             $parsed = $recipes->parse($snapshot, $response, $context);
             $proposal = $parsed['proposal']; $data = $record->data;
             if ($stagingGate) $data['stagingReadiness'] = $parsed['stagingReadiness'];
+            if ($lifestyleGate) $data['lifestyleReadiness'] = $parsed['lifestyleReadiness'];
             $data['responseModel'] = is_string($response['model'] ?? null) ? $response['model'] : null;
             $this->save($record, ['status' => 'completed', 'proposal' => $proposal, 'proposal_sha256' => hash('sha256', json_encode($proposal, JSON_THROW_ON_ERROR)),
                 'data' => $data, 'duration_ms' => (int) $record->started_at->diffInMilliseconds(now()), 'completed_at' => now(), 'error' => null]);
@@ -163,6 +179,7 @@ class LabAnalyses
     {
         $record = IguideLabAnalysis::where('project_id', $projectId)->where('status', 'completed')->findOrFail($id);
         if (isset($record->data['stagingFraming'])) app(LabStagingCutReadiness::class)->verified($record);
+        if (isset($record->data['lifestyleFraming'])) app(LabLifestyleCutReadiness::class)->verified($record);
         abort_unless($record->case_id === $case->id && hash_equals($record->source_sha256, $case->source_sha256)
             && $record->settings['preset'] === $preset && $record->settings['style'] === $style
             && $record->settings['options'] === $this->editSettings($options), 422, 'Source or edit settings changed; analyze again or detach this proposal.');
@@ -198,6 +215,7 @@ class LabAnalyses
             'requestedModelId' => $provenance ? $data['executionRecipe']['recipe']['model'] : ($record->provider_attempts[0]['requestedModelId'] ?? 'gpt-6-astra'),
             'instructionProvenance' => $provenance,
             ...(isset($data['stagingFraming']) ? ['stagingFraming' => $data['stagingFraming'], 'stagingReadiness' => $data['stagingReadiness'] ?? null] : []),
+            ...(isset($data['lifestyleFraming']) ? ['lifestyleFraming' => $data['lifestyleFraming'], 'lifestyleReadiness' => $data['lifestyleReadiness'] ?? null] : []),
             'sourceContext' => isset($data['sourceContext']) ? [...$data['sourceContext']['binding'], 'bindingSha256' => $data['sourceContext']['bindingSha256'],
                 'manifestSha256' => $data['sourceContextManifestSha256'] ?? null] : null,
             'responseModel' => $data['responseModel'] ?? null, 'providerRequestId' => $record->provider_request_id, 'providerAttempts' => $record->provider_attempts ?? [],

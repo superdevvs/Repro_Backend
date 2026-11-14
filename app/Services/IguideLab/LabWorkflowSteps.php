@@ -31,6 +31,9 @@ class LabWorkflowSteps
             if (LabStagingAssessmentPolicy::enabled($workflow->policy, $item->preset)) {
                 $limit = match ($kind) { 'analysis' => 3, 'image' => 1, 'segmentation' => 2, 'evaluation' => 1, default => $limit };
             }
+            if (LabLifestyleAssessmentPolicy::enabled($workflow->policy, $item->preset)) {
+                $limit = match ($kind) { 'analysis' => 3, 'image' => 1, 'segmentation' => 2, 'evaluation','section','composition' => 1, default => $limit };
+            }
             if (class_exists(LabGrassAssessmentPolicy::class) && LabGrassAssessmentPolicy::enabled($workflow->policy,$item->preset)) {
                 $limit = match ($kind) { 'analysis' => 2, 'image' => 1, 'segmentation' => 6, 'evaluation' => 1, default => $limit };
             }

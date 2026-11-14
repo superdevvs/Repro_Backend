@@ -23,6 +23,12 @@ class LabWorkflowPolicy
             $policy['sectionAnalysisRecipe'] = app(LabAnalysisRecipes::class)->snapshot(LabAnalysisRecipes::SECTION_CONTEXT);
             if (config('iguide-lab.staging_framing_enabled', false) === true) $policy['stagingFraming'] = app(LabStagingFramings::class)->snapshot();
         }
+        if (config('iguide-lab.lifestyle_workflow_enabled',false) === true && class_exists(LabLifestyleWorkflow::class) && app(LabLifestyleWorkflow::class)->ready()) {
+            $policy['lifestyleAssessment'] = LabLifestyleAssessmentPolicy::snapshot();
+            $policy['lifestyleWorkflow'] = app(LabLifestyleWorkflow::class)->snapshot();
+            $policy['lifestyleFraming'] = app(LabLifestyleFramings::class)->snapshot();
+            $policy['sectionAnalysisRecipe'] = app(LabAnalysisRecipes::class)->snapshot(LabAnalysisRecipes::SECTION_CONTEXT);
+        }
         if (config('iguide-lab.grass_workflow_enabled',false) === true && class_exists(LabGrassWorkflow::class) && app(LabGrassWorkflow::class)->ready()) {
             $policy['grassAssessment'] = LabGrassAssessmentPolicy::snapshot();
             $policy['grassRecipe'] = app(LabGrassWorkflow::class)->snapshot();
@@ -41,11 +47,12 @@ class LabWorkflowPolicy
         $stagingReady=$ready&&config('iguide-lab.staging_workflow_enabled',false)===true&&class_exists(LabStagingWorkflow::class)&&app(LabStagingWorkflow::class)->ready();
         $grassReady=$ready&&config('iguide-lab.grass_workflow_enabled',false)===true&&class_exists(LabGrassWorkflow::class)&&app(LabGrassWorkflow::class)->ready();
         $declutterReady=$ready&&config('iguide-lab.declutter_workflow_enabled',false)===true&&class_exists(LabDeclutterWorkflow::class)&&app(LabDeclutterWorkflow::class)->ready();
-        $recipeReady=fn($preset)=>match($preset){'staging'=>$stagingReady,'grass'=>$grassReady,'declutter'=>$declutterReady,'twilight','golden-hour'=>$ready,default=>false};
+        $lifestyleReady=$ready&&config('iguide-lab.lifestyle_workflow_enabled',false)===true&&class_exists(LabLifestyleWorkflow::class)&&app(LabLifestyleWorkflow::class)->ready();
+        $recipeReady=fn($preset)=>match($preset){'staging'=>$stagingReady,'grass'=>$grassReady,'declutter'=>$declutterReady,'lifestyle'=>$lifestyleReady,'twilight','golden-hour'=>$ready,default=>false};
         return ['supported' => true, 'ready' => $ready, 'version' => self::VERSION, 'maxItems' => 20,
             'manualAcceptance' => false, 'requiresAutomaticChecks' => true,
             'recipes' => array_map(fn ($preset) => ['preset' => $preset, 'ready' => $recipeReady($preset),
-                'reason' => in_array($preset, ['twilight', 'golden-hour','staging','grass','declutter'], true)
+                'reason' => in_array($preset, ['twilight', 'golden-hour','staging','grass','declutter','lifestyle'], true)
                     ? ($recipeReady($preset) ? null : 'Required automatic checking or explicit recipe enablement is not available yet.')
                     : 'An automatic support and composition adapter is not available yet.'], array_keys(LabCatalog::PRESETS))];
     }

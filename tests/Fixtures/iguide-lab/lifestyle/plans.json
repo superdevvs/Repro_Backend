@@ -1,0 +1,84 @@
+[
+  {
+    "stepKey": "source-floor",
+    "requestId": "783b490d-41f2-42a5-b001-f455b5575692",
+    "reservationState": "server_reserved",
+    "model": "fal-ai/sam-3-1/image",
+    "inputSha256": "fe0785ff3d82322f0c81b842b2f502fce5dfe9a5a7ff48cb081f0067a43cd6c2",
+    "width": 2048,
+    "height": 2048,
+    "payload": {
+      "prompt": "floor",
+      "box_prompts": [
+        {
+          "x_min": 204,
+          "y_min": 1228,
+          "x_max": 1844,
+          "y_max": 1946,
+          "object_id": 1
+        }
+      ],
+      "apply_mask": false,
+      "output_format": "png",
+      "return_multiple_masks": true,
+      "max_masks": 1,
+      "include_scores": true,
+      "include_boxes": true
+    },
+    "expectedIdentities": [
+      "floor"
+    ],
+    "selectionOrigin": "machine",
+    "assessmentProposalSha256": "c12ef1d9c82c3edcf69ab13bc613fff1599220d99f86fc62027688cae1920cba",
+    "contextSha256": "14aeea87b32b99d7c1068fe3aa3a90ecd1aef4e17f99329b8a1baa5786b43787",
+    "maximumPostAttempts": 1,
+    "automaticRetry": false,
+    "identityCaveat": "Unique decoded-mask geometric association only; array order is not identity and semantics remain model screening.",
+    "inputFingerprint": "2d5198de6a89c73129287a51aab8175323a4c634e673912d74ef43320f3b6ae8"
+  },
+  {
+    "stepKey": "candidate-people",
+    "requestId": "ed06c2b5-2cba-4fd4-8835-6ad6fd6c15c1",
+    "reservationState": "server_reserved",
+    "model": "fal-ai/sam-3-1/image",
+    "inputSha256": "21bbf4be4c4658db88e0f2ef159a61b22bbdc845554f4ffcdd1cd70c16870185",
+    "width": 2048,
+    "height": 2048,
+    "payload": {
+      "prompt": "person",
+      "box_prompts": [
+        {
+          "x_min": 409,
+          "y_min": 409,
+          "x_max": 820,
+          "y_max": 1680,
+          "object_id": 1
+        },
+        {
+          "x_min": 1187,
+          "y_min": 409,
+          "x_max": 1598,
+          "y_max": 1680,
+          "object_id": 2
+        }
+      ],
+      "apply_mask": false,
+      "output_format": "png",
+      "return_multiple_masks": true,
+      "max_masks": 2,
+      "include_scores": true,
+      "include_boxes": true
+    },
+    "expectedIdentities": [
+      "adult_1",
+      "adult_2"
+    ],
+    "selectionOrigin": "machine",
+    "assessmentProposalSha256": "c12ef1d9c82c3edcf69ab13bc613fff1599220d99f86fc62027688cae1920cba",
+    "contextSha256": "14aeea87b32b99d7c1068fe3aa3a90ecd1aef4e17f99329b8a1baa5786b43787",
+    "maximumPostAttempts": 1,
+    "automaticRetry": false,
+    "identityCaveat": "Unique decoded-mask geometric association only; array order is not identity and semantics remain model screening.",
+    "inputFingerprint": "51750bb90426ae4b18ad605d01b522fdd5709d4cf2151627eb5901cdf0ded21b"
+  }
+]

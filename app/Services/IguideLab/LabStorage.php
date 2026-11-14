@@ -7,6 +7,16 @@ use App\Services\ListingStudio\ListingStudioPrivateStorage;
 /** Reuse the already provisioned private, group-writable Studio disk. */
 class LabStorage extends ListingStudioPrivateStorage
 {
+    public function prepareLifestyleFraming(string $projectId, string $id): void
+    {
+        $this->uuid($projectId); $this->uuid($id);
+        $this->prepare(['iguide-lab', $projectId, 'lifestyle-framings', $id]);
+    }
+    public function prepareLifestyleAssessment(string $projectId, string $id): void
+    {
+        $this->uuid($projectId); $this->uuid($id);
+        $this->prepare(['iguide-lab', $projectId, 'lifestyle-assessments', $id]);
+    }
     public function prepareStagingFraming(string $projectId, string $id): void
     {
         $this->uuid($projectId); $this->uuid($id);

@@ -59,14 +59,16 @@ class LabAnalysisProvider
         $usage->finish($usageId, $payload['model'], $metering, $response->successful() ? 'success' : 'failed', $response->status(), $response->header('x-request-id'), $duration);
         // Raw reasoning is retained privately for diagnosis, never included in DTOs or logs.
         $path = 'iguide-lab/'.$analysis->project_id.'/analyses/'.$analysis->id.'/response-'.$index.'.json';
-        $stagingGate = ($analysis->data['executionRecipe']['recipe']['compilerVersion'] ?? null) === LabStagingCutProtocol::VERSION;
+        $compiler = $analysis->data['executionRecipe']['recipe']['compilerVersion'] ?? null;
+        $lifestyleGate = $compiler === LabLifestyleCutProtocol::VERSION;
+        $stagingGate = $compiler === LabStagingCutProtocol::VERSION || $lifestyleGate;
         if ($stagingGate) abort_unless(strlen($response->body()) <= 512 * 1024, 422, 'Cut analysis receipt exceeded its limit.');
         $stored = Storage::disk(LabService::DISK)->put($path, $response->body(), ['visibility' => 'private']);
         if ($stagingGate) {
             abort_unless($stored, 503, 'Cut analysis receipt storage failed.');
             if ($response->successful()) {
                 $data = $analysis->fresh()->data;
-                $data['stagingCutReceipt'] = ['path' => $path, 'sha256' => hash('sha256', $response->body()),
+                $data[$lifestyleGate ? 'lifestyleCutReceipt' : 'stagingCutReceipt'] = ['path' => $path, 'sha256' => hash('sha256', $response->body()),
                     'payloadSha256' => $data['providerBodySha256'], 'providerRequestId' => $response->header('x-request-id'), 'responseId' => $response->json('id')];
                 $this->save($analysis, ['data' => $data]);
             }

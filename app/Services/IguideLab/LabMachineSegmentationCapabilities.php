@@ -8,6 +8,8 @@ class LabMachineSegmentationCapabilities
     public function forStep(IguideLabWorkflowStep $step): LabMachineSegmentationCapability
     {
         return match ($step->input['protocolVersion'] ?? null) {
+            'automatic-lifestyle-segmentation/1' => config('iguide-lab.lifestyle_workflow_enabled',false)===true
+                ? app(LabLifestyleSegmentationAuthority::class) : abort(503,'The standing-pair capability is disabled.'),
             LabDeclutterRemovalPolicy::SEGMENTATION => config('iguide-lab.declutter_workflow_enabled',false)===true
                 ? app(LabDeclutterSegmentationAuthority::class) : abort(503,'The source-removal capability is disabled.'),
             LabMachineSegmentations::PROTOCOL => app(LabStagingSegmentationAuthority::class),

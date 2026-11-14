@@ -1,6 +1,12 @@
 <?php
 
 return [
+    'lifestyle_workflow_enabled' => env('IGUIDE_LAB_LIFESTYLE_WORKFLOW_ENABLED', false),
+    'lifestyle_framing_enabled' => env('IGUIDE_LAB_LIFESTYLE_FRAMING_ENABLED', false),
+    'lifestyle_framing_runtime_manifest' => env('IGUIDE_LAB_LIFESTYLE_FRAMING_RUNTIME_MANIFEST'),
+    'lifestyle_assessment_runtime_manifest' => env('IGUIDE_LAB_LIFESTYLE_ASSESSMENT_RUNTIME_MANIFEST'),
+    'lifestyle_support_runtime_manifest' => env('IGUIDE_LAB_LIFESTYLE_SUPPORT_RUNTIME_MANIFEST'),
+    'lifestyle_support_python_path' => env('IGUIDE_LAB_LIFESTYLE_SUPPORT_PYTHON'),
     // Operator opt-in only; validated runtimes are required in addition to these flags.
     'staging_framing_enabled' => env('IGUIDE_LAB_STAGING_FRAMING_ENABLED', false),
     'staging_framing_runtime_manifest' => env('IGUIDE_LAB_STAGING_FRAMING_RUNTIME_MANIFEST'),
