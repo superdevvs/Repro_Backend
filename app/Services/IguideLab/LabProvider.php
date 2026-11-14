@@ -60,7 +60,7 @@ class LabProvider
         $attempts[] = ['credentialSource' => $credentialSource, 'requestedModelId' => $run->model_id,
             'status' => 'submitting', 'providerRequestId' => null, 'httpStatus' => null,
             'startedAt' => now()->toIso8601String(), 'completedAt' => null];
-        $this->saveAttempts($run, $attempts);
+        app(LabWorkflowInvocation::class)->claim($run->options['workflowInvocation'] ?? null, $run->project_id, $run->request_id, 'image', fn () => $this->saveAttempts($run, $attempts));
         $usage = app(AiUsageRecorder::class);
         $usageId = $usage->begin('image_edit', $run->model_id, 'images/edits');
         $start = hrtime(true);

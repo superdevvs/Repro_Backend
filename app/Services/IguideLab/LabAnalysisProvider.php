@@ -38,7 +38,7 @@ class LabAnalysisProvider
         $attempts = $analysis->provider_attempts ?? []; $index = count($attempts);
         $attempts[] = ['credentialSource' => $slot, 'requestedModelId' => $payload['model'], 'status' => 'submitting',
             'providerRequestId' => null, 'httpStatus' => null, 'startedAt' => now()->toIso8601String(), 'completedAt' => null];
-        $this->save($analysis, ['provider_attempts' => $attempts]);
+        app(LabWorkflowInvocation::class)->claim($analysis->data['workflowInvocation'] ?? null, $analysis->project_id, $analysis->request_id, 'analysis', fn () => $this->save($analysis, ['provider_attempts' => $attempts]));
         $usage = app(AiUsageRecorder::class); $usageId = $usage->begin('scene_analysis', $payload['model'], 'responses'); $start = hrtime(true);
         try {
             $response = Http::withToken($key)->acceptJson()->connectTimeout(15)->timeout($remaining)->withOptions(['allow_redirects' => false])

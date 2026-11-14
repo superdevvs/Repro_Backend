@@ -7,6 +7,21 @@ use App\Services\ListingStudio\ListingStudioPrivateStorage;
 /** Reuse the already provisioned private, group-writable Studio disk. */
 class LabStorage extends ListingStudioPrivateStorage
 {
+    public function prepareWorkflow(string $projectId, string $itemId): void
+    {
+        $this->uuid($projectId); $this->uuid($itemId);
+        $this->prepare(['iguide-lab', $projectId, 'workflow-items', $itemId]);
+    }
+    public function prepareEvaluation(string $projectId, string $id): void
+    {
+        $this->uuid($projectId); $this->uuid($id);
+        $this->prepare(['iguide-lab', $projectId, 'workflow-evaluations', $id]);
+    }
+    public function prepareMachineSegmentation(string $projectId, string $id): void
+    {
+        $this->uuid($projectId); $this->uuid($id);
+        $this->prepare(['iguide-lab', $projectId, 'machine-segmentations', $id]);
+    }
     public function prepareProject(string $projectId): void
     {
         $this->uuid($projectId);
