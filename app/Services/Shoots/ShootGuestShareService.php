@@ -54,10 +54,19 @@ class ShootGuestShareService
         $share = ShootGuestShare::where('token_hash', hash('sha256', $token))->firstOrFail();
         abort_if($share->revoked_at || $share->expires_at->isPast(), 410, 'This invitation has expired or been revoked.');
         abort_unless($share->shoot && ! $share->shoot->isImportDraft(), 404);
-        $creator = User::find($share->created_by);
+        $creator = $share->creator;
         abort_unless($creator, 410, 'This invitation is no longer available.');
         $this->authorizeManager($share->shoot, $creator);
         return $share;
+    }
+
+    /** Display only the authorized invitation creator's name, never contact details. */
+    public function senderName(ShootGuestShare $share): string
+    {
+        $name = Str::squish((string) $share->creator?->name);
+
+        // Some imported accounts use an email address as their display name.
+        return $name !== '' && ! str_contains($name, '@') ? $name : 'Your sender';
     }
 
     public function requestCode(ShootGuestShare $share): void

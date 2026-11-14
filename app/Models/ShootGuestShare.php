@@ -18,4 +18,9 @@ class ShootGuestShare extends Model
     {
         return $this->belongsTo(Shoot::class);
     }
+
+    public function creator(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'created_by');
+    }
 }

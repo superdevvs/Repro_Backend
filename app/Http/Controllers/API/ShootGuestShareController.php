@@ -45,6 +45,7 @@ class ShootGuestShareController extends Controller
         $verified = $this->shares->verified($request, $share);
         [$name, $domain] = explode('@', $share->email, 2);
         return response()->json(['verified' => $verified, 'recipient' => mb_substr($name, 0, 1).'***@'.$domain,
+            'sender_name' => $this->shares->senderName($share),
             'data' => $verified ? $this->overview->build($share, $token) : null])
             ->header('Cache-Control', 'private, no-store')->header('Referrer-Policy', 'no-referrer');
     }
