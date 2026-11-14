@@ -112,6 +112,10 @@ class LabWorkflowArtifacts
     {
         $case = app(LabWorkflowSources::class)->verify($item->project_id, $item->source);
         abort_unless($composite->case_id === $case->id && $composite->project_id === $item->project_id, 422);
+        abort_unless($analysis->status === 'completed' && $analysis->project_id === $item->project_id && $analysis->case_id === $case->id
+            && $analysis->source_sha256 === $case->source_sha256
+            && $analysis->proposal_sha256 === ($composite->manifest['scenePlanSha256'] ?? null)
+            && $analysis->proposal_sha256 === LabAnalysisRecipes::hash($analysis->proposal), 422, 'The evidence scene proposal does not match this artifact.');
         $snapshot = $composite->manifest['lineage']['recipe']; $this->validateSnapshot($snapshot);
         $disk = Storage::disk(LabService::DISK); $base = 'iguide-lab/'.$item->project_id.'/workflow-items/'.$item->id;
         $kind = $composite->native_path ? 'native' : 'preview'; $candidate = $kind === 'native' ? $composite->native_path : $composite->preview_path;

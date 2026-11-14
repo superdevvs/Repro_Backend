@@ -138,6 +138,25 @@ class IguideLabWorkflowEvaluationTest extends TestCase
         Http::assertNothingSent();
     }
 
+    public function test_evidence_rejects_wrong_or_changed_scene_proposal_before_local_processing(): void
+    {
+        [$project, $item, , $composite] = $this->fixture();
+        $proposal = ['summary' => 'Original source-bound proposal'];
+        $sha = \App\Services\IguideLab\LabAnalysisRecipes::hash($proposal);
+        $composite->manifest = $composite->manifest + ['scenePlanSha256' => $sha];
+        $values = ['project_id' => $project->id, 'case_id' => $item->case_id, 'source_sha256' => $item->source['sha256'],
+            'status' => 'completed', 'proposal' => $proposal, 'proposal_sha256' => $sha];
+        foreach ([['project_id' => (string) Str::uuid()], ['case_id' => (string) Str::uuid()],
+            ['source_sha256' => str_repeat('f', 64)], ['proposal_sha256' => str_repeat('f', 64)], ['proposal' => ['summary' => 'Changed']]] as $changes) {
+            $analysis = new \App\Models\IguideLabAnalysis(array_replace($values, $changes));
+            try { (new \App\Services\IguideLab\LabWorkflowArtifacts)->evidence($item, $composite, $analysis); $this->fail('Unbound scene context accepted.'); }
+            catch (\Symfony\Component\HttpKernel\Exception\HttpException $error) {
+                $this->assertSame(422, $error->getStatusCode()); $this->assertStringContainsString('scene proposal', $error->getMessage());
+            }
+        }
+        Http::assertNothingSent();
+    }
+
     public function test_full_length_unicode_intent_and_all_source_caveats_fit_without_truncation(): void
     {
         $instructions = str_repeat('光/', 1000);
