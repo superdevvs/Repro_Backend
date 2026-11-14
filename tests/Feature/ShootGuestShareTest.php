@@ -152,6 +152,89 @@ class ShootGuestShareTest extends TestCase
         $this->assertNull($share->fresh()->code_hash);
     }
 
+    public function test_guest_overview_and_invitation_preserve_the_unit_without_private_property_details(): void
+    {
+        [$shoot, $client, , $share, $token] = $this->fixture();
+        $street = '2061 Alice Avenue';
+        $displayAddress = $street.', Unit 204';
+        $shoot->update(['address' => $street, 'property_details' => array_merge($shoot->property_details, [
+            'aptSuite' => '204', 'private_notes' => 'PRIVATE-PROPERTY-NOTES',
+        ])]);
+        $base = '/api/public/guest-shares/'.$token;
+        $this->getJson($base)->assertOk()->assertJsonPath('verified', false)->assertJsonPath('data', null)
+            ->assertDontSee($street)->assertDontSee('Unit 204')->assertDontSee('PRIVATE-PROPERTY-NOTES');
+        $service = app(ShootGuestShareService::class);
+        $this->withUnencryptedCookie($service->cookieName($share), $this->verifiedSession($share));
+
+        foreach ([$street, $displayAddress] as $savedAddress) {
+            $shoot->update(['address' => $savedAddress]);
+            $this->getJson($base)->assertOk()->assertJsonPath('data.property.address', $displayAddress)
+                ->assertJsonMissingPath('data.property.property_details')->assertDontSee('PRIVATE-PROPERTY-NOTES')
+                ->assertDontSee('SECRET-CODE')->assertDontSee('INTERNAL-SECRET');
+            $service->create($shoot, $client, 'unit-guest@example.test');
+            $invitation = end($this->sent);
+            $this->assertSame('Your Magic Link to '.$displayAddress, $invitation['subject']);
+            foreach (['body_text', 'body_html'] as $body) {
+                $this->assertStringContainsString($displayAddress, $invitation[$body]);
+                $this->assertSame(1, substr_count($invitation[$body], 'Unit 204'));
+                foreach (['PRIVATE-PROPERTY-NOTES', 'SECRET-CODE', 'INTERNAL-SECRET'] as $privateContent) {
+                    $this->assertStringNotContainsString($privateContent, $invitation[$body]);
+                }
+            }
+            $this->assertSame($savedAddress, $shoot->fresh()->address);
+        }
+    }
+
+    public function test_unverified_invitation_exposes_only_the_actual_senders_display_name(): void
+    {
+        [$shoot, $client, , $share, $token] = $this->fixture();
+        $client->update(['name' => "  Jordan   Client\n", 'email' => 'private-owner@example.test', 'phone' => 'PRIVATE-PHONE']);
+        $base = '/api/public/guest-shares/'.$token;
+        $this->getJson($base)->assertOk()->assertExactJson([
+            'verified' => false, 'recipient' => 'g***@example.test', 'sender_name' => 'Jordan Client', 'data' => null,
+        ])->assertHeader('Cache-Control', 'no-store, private')->assertHeader('Referrer-Policy', 'no-referrer')
+            ->assertDontSee($client->email)->assertDontSee('PRIVATE-PHONE')->assertDontSee($shoot->address);
+
+        $staff = User::factory()->create(['role' => 'superadmin', 'name' => 'Casey Staff', 'email' => 'private-staff@example.test']);
+        $share->update(['created_by' => $staff->id]);
+        $this->getJson($base)->assertOk()->assertExactJson([
+            'verified' => false, 'recipient' => 'g***@example.test', 'sender_name' => 'Casey Staff', 'data' => null,
+        ])->assertDontSee($staff->email)->assertDontSee('Jordan Client')->assertDontSee($shoot->address);
+
+        $this->withUnencryptedCookie(app(ShootGuestShareService::class)->cookieName($share), $this->verifiedSession($share));
+        $this->getJson($base)->assertOk()->assertJsonPath('verified', true)->assertJsonPath('sender_name', 'Casey Staff')
+            ->assertJsonMissingPath('creator')->assertJsonMissingPath('sender_email')->assertDontSee($staff->email);
+    }
+
+    public function test_sender_name_never_falls_back_to_email_or_username(): void
+    {
+        [, $client, , , $token] = $this->fixture();
+        $client->update(['email' => 'private-sender@example.test', 'username' => 'PRIVATE-USERNAME']);
+        foreach (['', " \n\t ", 'private-sender@example.test', 'Contact <private-sender@example.test>'] as $name) {
+            $client->update(['name' => $name]);
+            $this->getJson('/api/public/guest-shares/'.$token)->assertOk()->assertExactJson([
+                'verified' => false, 'recipient' => 'g***@example.test', 'sender_name' => 'Your sender', 'data' => null,
+            ])->assertDontSee($client->email)->assertDontSee('PRIVATE-USERNAME');
+        }
+    }
+
+    public function test_sender_name_is_not_exposed_when_the_invitation_or_creator_is_unavailable(): void
+    {
+        [, $client, , $share, $token] = $this->fixture();
+        $client->update(['name' => 'PRIVATE-SENDER-NAME']);
+        $base = '/api/public/guest-shares/'.$token;
+        $share->update(['revoked_at' => now()]);
+        $this->getJson($base)->assertGone()->assertJsonMissingPath('sender_name')->assertDontSee($client->name);
+        $share->update(['revoked_at' => null, 'expires_at' => now()->subMinute()]);
+        $this->getJson($base)->assertGone()->assertJsonMissingPath('sender_name')->assertDontSee($client->name);
+        $share->update(['expires_at' => now()->addDay()]);
+        $client->update(['account_status' => 'inactive']);
+        $this->getJson($base)->assertForbidden()->assertJsonMissingPath('sender_name')->assertDontSee($client->name);
+        $client->update(['account_status' => 'active']);
+        $client->delete();
+        $this->getJson($base)->assertGone()->assertJsonMissingPath('sender_name')->assertDontSee($client->name);
+    }
+
     public function test_verified_guest_sees_only_released_accessible_media_and_allowlisted_details(): void
     {
         [$shoot, , $file, $share, $token] = $this->fixture();
