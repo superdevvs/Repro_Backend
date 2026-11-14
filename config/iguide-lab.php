@@ -7,6 +7,8 @@ return [
     'lighting_repair_enabled' => env('IGUIDE_LAB_LIGHTING_REPAIR_ENABLED', false),
     'grass_assessment_runtime_manifest' => env('IGUIDE_LAB_GRASS_ASSESSMENT_RUNTIME_MANIFEST'),
     'grass_runtime_manifest' => env('IGUIDE_LAB_GRASS_RUNTIME_MANIFEST'),
+    'grass_source_admission_enabled' => env('IGUIDE_LAB_GRASS_SOURCE_ADMISSION_ENABLED', false),
+    'grass_source_admission_runtime_manifest' => env('IGUIDE_LAB_GRASS_SOURCE_ADMISSION_RUNTIME_MANIFEST'),
     'staging_support_python_path' => env('IGUIDE_LAB_STAGING_SUPPORT_PYTHON'),
     'staging_support_runtime_manifest' => env('IGUIDE_LAB_STAGING_SUPPORT_RUNTIME_MANIFEST'),
 
