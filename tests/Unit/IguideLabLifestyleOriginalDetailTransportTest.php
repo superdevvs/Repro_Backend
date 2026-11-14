@@ -58,4 +58,12 @@ class IguideLabLifestyleOriginalDetailTransportTest extends TestCase
         $this->expectException(\InvalidArgumentException::class);$this->expectExceptionMessage('byte limit');
         T::apply($wire,array_column($c['views'],'id'),$c['views']);
     }
+
+    public function test_unknown_third_native_detail_is_not_promoted_to_original(): void
+    {
+        [$c,$images]=IguideLabLifestyleOpticalProtocolTest::fixture();[$c,$images]=IguideLabLifestyleOpticalProtocolTest::followup($c,$images);
+        $wire=LabLifestyleOpticalProtocol::request($c,$images);$ids=array_column($c['views'],'id');$ids[7]='source_detail_3';
+        $this->expectException(\InvalidArgumentException::class);$this->expectExceptionMessage('Unknown native detail ID.');
+        T::apply($wire,$ids,$c['views']);
+    }
 }

@@ -109,6 +109,24 @@ class IguideLabLifestyleOpticalTest extends TestCase
         Http::fake(function()use($path){Storage::disk(LabService::DISK)->put($path,'tampered native detail');return Http::response(['error'=>['code'=>'insufficient_quota']],429);});
         app(LabLifestyleFramings::class)->process($record);Http::assertSentCount(1);$this->assertSame('needs_attention',$record->fresh()->status);
     }
+    public function test_removed_or_downgraded_original_transport_after_quota_cannot_start_fallback(): void
+    {
+        foreach(['removed','downgraded'] as $mutation){
+            [,$workflow,,,,,$record]=$this->followup();
+            Http::fake(function($request)use($workflow,$mutation){
+                $body=json_decode($request->body(),true,512,JSON_THROW_ON_ERROR);
+                $images=array_values(array_filter($body['input'][0]['content'],fn($p)=>($p['type']??null)==='input_image'));
+                $this->assertSame('original',$images[7]['detail']);
+                $policy=$workflow->fresh()->policy;
+                if($mutation==='removed')unset($policy['lifestyleOpticalDetails']['imageDetailPolicy']);
+                else $policy['lifestyleOpticalDetails']['imageDetailPolicy']['nativeDetail']='high';
+                $workflow->update(['policy'=>$policy]);return Http::response(['error'=>['code'=>'insufficient_quota']],429);
+            });
+            app(LabLifestyleFramings::class)->process($record);Http::assertSentCount(1);
+            $this->assertSame(['quota_rejected'],array_column($record->fresh()->provider_attempts,'status'));
+            $this->assertSame('needs_attention',$record->fresh()->status);
+        }
+    }
     public function test_cancel_after_quota_blocks_followup_and_queued_recovery(): void
     {
         [,$workflow,,,$step,,$record]=$this->followup();Http::fake(function()use($workflow){app(LabWorkflows::class)->cancel($workflow);return Http::response(['error'=>['code'=>'insufficient_quota']],429);});
