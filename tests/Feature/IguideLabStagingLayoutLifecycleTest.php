@@ -95,9 +95,11 @@ class IguideLabStagingLayoutLifecycleTest extends TestCase
     private function response(array $context,string $decision='draft_candidate'):array {
         $fixture=new LayoutFixture('test_initial_explicit_plan_is_not_actual_placement_or_mask_authority');[,,,$value]=(new \ReflectionMethod($fixture,'fixture'))->invoke($fixture);
         $value['sourceSha256']=$context['sourceSha256'];$value['stagingLayout']['sourceSha256']=$context['sourceSha256'];
+        $value['stagingLayout']['version']=$context['stagingLayout']['version'];
         $value['stagingLayout']['nativeSourceSha256']=$context['stagingLayout']['nativeSourceSha256'];$value['stagingLayout']['framingResultSha256']=$context['stagingLayout']['framingResultSha256'];
         $value['stagingLayout']['decision']=$decision;
-        if($decision==='request_reframe'){$value['stagingLayout']['reframePose']=['yaw'=>10,'pitch'=>-15,'hFov'=>90];$value['workflow']['mode']='manual_review';}
+        if($decision==='request_reframe'){$value['stagingLayout']['reframePose']=['yaw'=>10,'pitch'=>-15,'hFov'=>90];$value['workflow']['mode']='manual_review';
+            if($this->combinedLayoutFixture())$value['stagingLayout']['layout']=null;}
         return FramingFixture::response($value);
     }
     private function finish(IguideLabAnalysis $record,string $decision='draft_candidate'):IguideLabAnalysis {
