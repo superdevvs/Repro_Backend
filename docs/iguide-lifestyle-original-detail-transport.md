@@ -1,0 +1,9 @@
+# Lifestyle native-detail transport
+
+The reserved `lifestyle-native-original-details/1` wire policy sends only `source_detail_1` and `source_detail_2` as `detail: original`. Original overview projections and the authoritative edit cut retain `high`. Staging's 1024-square details and every other recipe are unchanged.
+
+OpenAI's model sizing documentation says `gpt-6-astra` high detail resizes a 2048-square input to 1600 square, while original preserves dimensions within its 65,535-pixel dimension and 30,000-patch limits. The adapter checks these bounds, decoded asset hashes, ordered IDs, and the existing aggregate 24 MiB raw-image budget. A 2048-square detail uses 4,096 32-pixel patches. This prevents documented preprocessing loss; it is not a claim of optical acuity or physical correctness. Source: https://developers.openai.com/api/docs/guides/images-vision.md (model sizing and patch-based tokenization).
+
+The frozen v2 framing and cut builders remain unchanged. The new framing wire policy is stored in the server-reserved optical recipe and its payload hash. No geometry/result schema changes. Actual-cut recipe `scene-instructions-lifestyle-cut-gate-3` pairs only with compiler `responses-lifestyle-cut-original-details-v1`; view recipe `section-parent-native-optical8/2`, gate `lifestyle-cut-readiness/2`, semantic instructions, and strict parser remain unchanged. Retained v2 requests still compile through their original builders. New workflow cut attempts and receipt reuse must match the exact reserved optical cut recipe.
+
+Public framing/result DTO shapes are unchanged. The strict reader needs only the new closed actual-cut instructions/compiler pair alongside the old pair; it must not mix their identities. The new compiler delegates semantic parsing to v2. All existing source, parent, detail-citation, receipt, cancellation, and image-generation gates remain mandatory.

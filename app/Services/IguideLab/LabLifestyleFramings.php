@@ -83,7 +83,10 @@ class LabLifestyleFramings
     {
         $images=[];$snapshot=$step->input['contextSnapshot'];
         foreach($snapshot['assets'] as $asset){$path=app(LabLifestyleFramingContext::class)->file($step->project_id,$asset['path'],$asset['sha256']);$images[]='data:image/png;base64,'.base64_encode(file_get_contents($path));}
-        return json_encode(($step->input['protocolVersion']===LabLifestyleOpticalProtocol::VERSION?LabLifestyleOpticalProtocol::class:LabLifestyleFramingProtocol::class)::request($snapshot['context'],$images),JSON_THROW_ON_ERROR);
+        $payload=$step->input['protocolVersion']===LabLifestyleOpticalProtocol::VERSION
+            ? LabLifestyleOriginalDetailTransport::framing($snapshot['context'],$images,$step->input['recipe']['imageDetailPolicy']??null)
+            : LabLifestyleFramingProtocol::request($snapshot['context'],$images);
+        return json_encode($payload,JSON_THROW_ON_ERROR);
     }
     /** Revalidate retained source evidence before each primary or explicit-quota attempt. */
     public function verifyForAttempt(IguideLabLifestyleFraming $record,string $payload): void

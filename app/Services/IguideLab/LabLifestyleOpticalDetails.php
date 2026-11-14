@@ -15,6 +15,9 @@ class LabLifestyleOpticalDetails
         $out['opticalProtocolSha256']=hash_file('sha256',(new \ReflectionClass(LabLifestyleOpticalProtocol::class))->getFileName());
         $out['opticalWorkerSha256']=hash_file('sha256',resource_path('iguide-lab/lifestyle_optical_details_v2.py'));
         $out['publicAssetReaderSha256']=hash_file('sha256',(new \ReflectionClass(\App\Http\Controllers\API\IguideLabController::class))->getFileName());
+        $out['originalDetailTransportSha256']=hash_file('sha256',(new \ReflectionClass(LabLifestyleOriginalDetailTransport::class))->getFileName());
+        $out['originalOpticalCutCompilerSha256']=hash_file('sha256',(new \ReflectionClass(LabLifestyleOriginalOpticalCutProtocol::class))->getFileName());
+        $out['originalOpticalCutRecipeSha256']=hash_file('sha256',resource_path('iguide-lab/analysis-recipes/lifestyle-cut-gate-3.json'));
         foreach(['opticalCut'=>LabLifestyleOpticalCutProtocol::class,'opticalCutViews'=>LabLifestyleOpticalCutViews::class,'sampling'=>LabLifestyleOpticalSampling::class,'canonicalBinding'=>LabMachineSegmentationPlan::class,'recipes'=>LabAnalysisRecipes::class,'analyses'=>LabAnalyses::class,'analysisProvider'=>LabAnalysisProvider::class,'cutReadiness'=>LabLifestyleCutReadiness::class,'policy'=>LabWorkflowPolicy::class,'steps'=>LabWorkflowSteps::class,'sourceAuthority'=>LabWorkflowSources::class] as $key=>$class)$out[$key.'Sha256']=hash_file('sha256',(new \ReflectionClass($class))->getFileName());
         return $out;
     }
@@ -27,7 +30,8 @@ class LabLifestyleOpticalDetails
             &&($m['pythonPath']??null)===$python&&($m['pythonResolvedPath']??null)===$resolved&&($m['pythonSha256']??null)===$pythonSha&&($m['pythonVersion']??null)==='3.12.3'
             &&($m['numpyVersion']??null)==='2.5.4'&&($m['pillowVersion']??null)==='13.0.0'&&($m['implementation']??null)===$code,503,'Optical detail runtime is not validated.');
         return ['version'=>LabLifestyleOpticalProtocol::VERSION,'implementation'=>$code,'runtimeManifestSha256'=>hash_file('sha256',$path),
-            'pythonPath'=>$python,'pythonResolvedPath'=>$resolved,'pythonSha256'=>$pythonSha,'cutRecipe'=>app(LabAnalysisRecipes::class)->snapshot(LabAnalysisRecipes::LIFESTYLE_OPTICAL_CUT),'protocol'=>LabLifestyleOpticalProtocol::snapshot(),'maxFollowups'=>1,'maxDetails'=>2,
+            'pythonPath'=>$python,'pythonResolvedPath'=>$resolved,'pythonSha256'=>$pythonSha,'cutRecipe'=>app(LabAnalysisRecipes::class)->snapshot(LabAnalysisRecipes::LIFESTYLE_ORIGINAL_OPTICAL_CUT),'protocol'=>LabLifestyleOpticalProtocol::snapshot(),
+            'imageDetailPolicy'=>LabLifestyleOriginalDetailTransport::snapshot(),'maxFollowups'=>1,'maxDetails'=>2,
             'analysisSteps'=>4,'imageSteps'=>1,'segmentationSteps'=>2,'sectionSteps'=>1,'compositionSteps'=>1,'evaluationSteps'=>1];
     }
     public function ready(): bool {try{$this->snapshot();return true;}catch(\Throwable){return false;}}

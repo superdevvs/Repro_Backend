@@ -19,7 +19,10 @@ class LabLifestyleCutReadiness
             &&($step->input['caseId']??null)===$cut->id&&($step->input['preset']??null)==='lifestyle'
             &&($step->input['style']??null)===$analysis->settings['style']&&$analysis->source_sha256===$cut->source_sha256
             &&LabAnalysisRecipes::hash($step->input['lifestyleFraming']??[])===LabAnalysisRecipes::hash($reference),422,'Cut attempt association changed.');
-        $recipe=app(LabAnalysisRecipes::class)->validate($data['executionRecipe']);$optical=($reference['version']??null)===LabLifestyleOpticalProtocol::VERSION;abort_unless($recipe['compilerVersion']===($optical?LabLifestyleOpticalCutProtocol::VERSION:LabLifestyleCutProtocol::VERSION),422);
+        $recipe=app(LabAnalysisRecipes::class)->validate($data['executionRecipe']);$optical=($reference['version']??null)===LabLifestyleOpticalProtocol::VERSION;
+        abort_unless($optical?in_array($recipe['compilerVersion'],[LabLifestyleOpticalCutProtocol::VERSION,LabLifestyleOriginalOpticalCutProtocol::VERSION],true):$recipe['compilerVersion']===LabLifestyleCutProtocol::VERSION,422);
+        if($optical){$policy=app(LabWorkflowInvocation::class)->policy($invocation);
+            abort_unless(LabAnalysisRecipes::hash($data['executionRecipe'])===LabAnalysisRecipes::hash($policy['lifestyleOpticalDetails']['cutRecipe']??[]),422,'Cut recipe differs from its reserved optical policy.');}
         app(LabAnalysisSourceContext::class)->verify($cut,$data['sourceContext']);app($optical?LabLifestyleOpticalCutViews::class:LabSectionAnalysisViews::class)->verifyStored($analysis);
         $context=['sourceSha256'=>$analysis->source_sha256,'projection'=>'rectilinear','preset'=>'lifestyle','style'=>$analysis->settings['style'],
             'viewIds'=>array_column($data['views'],'id'),'instructions'=>app(LabAnalyses::class)->wireInstructions($analysis->settings),
@@ -66,7 +69,10 @@ class LabLifestyleCutReadiness
             &&$step->input_sha256===LabAnalysisRecipes::hash($step->input)&&$invocation===app(LabWorkflowSteps::class)->invocation($step)
             &&LabAnalysisRecipes::hash($step->input['lifestyleFraming']??[])===LabAnalysisRecipes::hash($reference)
             &&$analysis->source_sha256===$cut->source_sha256&&$analysis->proposal_sha256===LabAnalysisRecipes::hash($analysis->proposal),422,'Cut gate ownership changed.');
-        $recipe=app(LabAnalysisRecipes::class)->validate($data['executionRecipe']);$optical=($reference['version']??null)===LabLifestyleOpticalProtocol::VERSION;abort_unless($recipe['compilerVersion']===($optical?LabLifestyleOpticalCutProtocol::VERSION:LabLifestyleCutProtocol::VERSION),422);
+        $recipe=app(LabAnalysisRecipes::class)->validate($data['executionRecipe']);$optical=($reference['version']??null)===LabLifestyleOpticalProtocol::VERSION;
+        abort_unless($optical?in_array($recipe['compilerVersion'],[LabLifestyleOpticalCutProtocol::VERSION,LabLifestyleOriginalOpticalCutProtocol::VERSION],true):$recipe['compilerVersion']===LabLifestyleCutProtocol::VERSION,422);
+        if($optical){$policy=app(LabWorkflowInvocation::class)->policy($invocation);
+            abort_unless(LabAnalysisRecipes::hash($data['executionRecipe'])===LabAnalysisRecipes::hash($policy['lifestyleOpticalDetails']['cutRecipe']??[]),422,'Cut recipe differs from its reserved optical policy.');}
         app(LabAnalysisSourceContext::class)->verify($cut,$data['sourceContext']);app($optical?LabLifestyleOpticalCutViews::class:LabSectionAnalysisViews::class)->verifyStored($analysis);
         $context=['sourceSha256'=>$analysis->source_sha256,'projection'=>'rectilinear','preset'=>'lifestyle','style'=>$analysis->settings['style'],
             'viewIds'=>array_column($data['views'],'id'),'instructions'=>app(LabAnalyses::class)->wireInstructions($analysis->settings),
