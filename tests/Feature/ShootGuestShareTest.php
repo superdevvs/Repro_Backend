@@ -96,6 +96,46 @@ class ShootGuestShareTest extends TestCase
             ->assertJsonMissingPath('data.0.token_hash')->assertJsonMissingPath('data.0.code_hash');
     }
 
+    public function test_guest_emails_use_repro_branding_without_private_shoot_details_or_media(): void
+    {
+        [$shoot, $client, $file] = $this->fixture();
+        $address = '1211 Ripple Court <img src=x onerror=alert(1)> & Suite "A"';
+        $shoot->update(['address' => $address]);
+        $service = app(ShootGuestShareService::class);
+        $share = $service->create($shoot, $client, 'guest2@example.test');
+        $invitation = end($this->sent);
+        preg_match('#https://repro\.test/guest/shoot/[A-Za-z0-9]{64}#', $invitation['body_text'], $match);
+        $this->assertNotEmpty($match);
+        $this->assertSame('Your Magic Link to '.$address, $invitation['subject']);
+        $this->assertSame("Your Magic Link to released media and tours for {$address}: {$match[0]}. Open the link and request an email verification code. No account is required. Access expires in 30 days.", $invitation['body_text']);
+        $this->assertStringContainsString('&lt;img src=x onerror=alert(1)&gt;', $invitation['body_html']);
+        $this->assertStringContainsString($address, html_entity_decode(strip_tags($invitation['body_html']), ENT_QUOTES | ENT_HTML5, 'UTF-8'));
+        $this->assertStringNotContainsString('<img src=x', $invitation['body_html']);
+        $this->assertStringContainsString('href="'.$match[0].'"', $invitation['body_html']);
+        $this->assertStringContainsString('Open Magic Link</a>', $invitation['body_html']);
+        $this->assertStringContainsString('Access expires in 30 days.', $invitation['body_html']);
+
+        $service->requestCode($share);
+        $codeEmail = end($this->sent);
+        preg_match('/\b([0-9]{6})\b/', $codeEmail['body_text'], $codeMatch);
+        $this->assertSame('Your property access code', $codeEmail['subject']);
+        $this->assertSame("Your verification code is {$codeMatch[1]}. It expires in 10 minutes. If you did not request this code, ignore this email.", $codeEmail['body_text']);
+        $this->assertStringContainsString($codeMatch[1], $codeEmail['body_html']);
+        $this->assertStringContainsString('10 minutes', $codeEmail['body_html']);
+        $this->assertStringNotContainsString('/guest/shoot/', $codeEmail['body_html']);
+        $this->assertStringNotContainsString(e($address), $codeEmail['body_html']);
+        foreach ([$invitation, $codeEmail] as $payload) {
+            $this->assertSame('guest2@example.test', $payload['to']);
+            $this->assertSame('SHOOT_GUEST_ACCESS', $payload['send_source']);
+            $this->assertNull(app(EmailNotificationPermissions::class)->category($payload));
+            $this->assertStringContainsString('data-email-design="atelier-v6"', $payload['body_html']);
+            $this->assertStringContainsString('https://repro.test/images/repro-email-logo-grey.png', $payload['body_html']);
+            foreach (['SECRET-CODE', 'INTERNAL-SECRET', $file->path, $client->email, '/tour/', 'data-shoot-photo=', 'data-artwork='] as $privateContent) {
+                $this->assertStringNotContainsString($privateContent, $payload['body_html']);
+            }
+        }
+    }
+
     public function test_unverified_link_exposes_no_property_or_media_and_code_is_single_use(): void
     {
         [$shoot, , $file, $share, $token] = $this->fixture();
