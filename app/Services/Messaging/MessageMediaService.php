@@ -148,6 +148,6 @@ class MessageMediaService
             'Content-Type' => $inline ? $file->mime_type : 'application/octet-stream',
             'X-Content-Type-Options' => 'nosniff', 'Cache-Control' => 'private, no-store',
             'Content-Security-Policy' => "default-src 'none'; sandbox", 'Referrer-Policy' => 'no-referrer',
-        ])->setContentDisposition($inline ? 'inline' : 'attachment', $file->name, 'attachment');
+        ])->setContentDisposition($inline ? 'inline' : 'attachment', $file->name);
     }
 }
