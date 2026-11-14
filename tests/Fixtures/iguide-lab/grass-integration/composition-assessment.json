@@ -1,0 +1,34 @@
+{
+  "nativeSourceSha256": "494d0db5fa2e8843c9cc53a45aec303aeed33bcb2b7bdffab73331187d2d13f0",
+  "guidanceSourceSha256": "494d0db5fa2e8843c9cc53a45aec303aeed33bcb2b7bdffab73331187d2d13f0",
+  "sourcePreparationSha256": "dc08793fdaca9d1f7aae6611b3eee968eecae23861fdb4a97524c98efc4ea284",
+  "candidateSha256": "c31d1b7552cb0dd9c500e52c78781562d217b81eb981948c9667843115d51329",
+  "authorOrigin": "machine",
+  "maskSelectionOrigin": "machine",
+  "lawnMaterial": "established_turf",
+  "requestedChange": "recolor_existing_turf",
+  "scope": "all_visible_established_turf",
+  "exclusions": {
+    "paving": "supplied",
+    "plants": "supplied",
+    "loose_debris": "supplied",
+    "non_turf_ground": "supplied",
+    "capture_artifact": "supplied"
+  },
+  "uncertainties": [],
+  "assessmentProtocol": "source-native-grass-assessment/1",
+  "assessmentProposalSha256": "df389bdd1a545fe02ab17a365d0a533b6a5ede68e5862c3de873b13b5573774d",
+  "contextSha256": "34585bd4b9cce5b04e27cbd2479ae8fadd458dab1505201a00ca18edb8502c09",
+  "executionRequestId": "dff44271-0da2-52a2-b877-e082156a3354",
+  "segmentationReceiptSha256": [
+    "de9c1fb7a8b7a46a4c754f70ef2622d5cc21bfe6c02589b42e0313513c8f2d15",
+    "74e59932fbdd294f4e88d98869126969d0e660d038f75deff57bf411190235c8",
+    "d987219427087407a7495f6ad3996a765ba8469ae83a7bac16e6e7794b144333",
+    "34a4535144fead10010114cb903536498b48e655fd765c03db70d6fd300da62d",
+    "8b70a8f6f323b766287352b1e884a8f57ba73289884c02c1dda2a67dc8c81c49",
+    "d8f1c0c4b982ca5ab9c7b1eb1ebb3950c9c8e86464e122c5c65231367d4192d9"
+  ],
+  "automaticAcceptance": false,
+  "maskSemanticsVerified": false,
+  "opticalAssurance": "Source-context model screening only; no physical proof. Independent full-sphere evaluation remains mandatory."
+}

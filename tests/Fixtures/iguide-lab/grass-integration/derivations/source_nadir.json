@@ -1,0 +1,12 @@
+{
+  "kind": "same_capture_perspective",
+  "sourceSha256": "494d0db5fa2e8843c9cc53a45aec303aeed33bcb2b7bdffab73331187d2d13f0",
+  "geometrySha256": "3415cd69d72e60d2fd3fa37e738d4af1fe31a85299153756ee18b79d5aabb98f",
+  "pose": {
+    "yaw": 0,
+    "pitch": -90,
+    "hFov": 100,
+    "width": 1024,
+    "height": 1024
+  }
+}

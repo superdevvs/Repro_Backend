@@ -1,0 +1,23 @@
+{
+  "requestId": "5ca4e708-a28a-512c-ac46-917c07ff30f4",
+  "providerRequestId": "SYNTHETIC_sam_paving",
+  "model": "fal-ai/sam-3-1/image",
+  "inputFingerprint": "01c834fff8481cbc6654fbc2393e996b83f47114900a747d037c7af98b36609e",
+  "inputSha256": "494d0db5fa2e8843c9cc53a45aec303aeed33bcb2b7bdffab73331187d2d13f0",
+  "rawResponseSha256": "a4b1da832ed91d4f389ffc4c4b7a993ceb5bbf43657df83885160011f9b62b1e",
+  "status": "completed",
+  "masks": [
+    {
+      "sha256": "e08bddc9a0bcbc99c839e9f3de3ee5804ebb27aeb403d054d8cd7c8c5d42ab6f",
+      "width": 2048,
+      "height": 1024,
+      "bounds": [
+        903,
+        534,
+        1145,
+        920
+      ],
+      "positivePixels": 93412
+    }
+  ]
+}

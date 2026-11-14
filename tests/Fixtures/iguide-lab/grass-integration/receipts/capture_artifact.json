@@ -1,0 +1,23 @@
+{
+  "requestId": "00600d2c-0a8c-570e-b878-48d145de5638",
+  "providerRequestId": "SYNTHETIC_sam_capture_artifact",
+  "model": "fal-ai/sam-3-1/image",
+  "inputFingerprint": "77994a967920b1a9bbade27e5f125013b0c4bf3bbd3f1510f2e9a4683f3493ee",
+  "inputSha256": "494d0db5fa2e8843c9cc53a45aec303aeed33bcb2b7bdffab73331187d2d13f0",
+  "rawResponseSha256": "e2740e2e2309e05e1e31b447d3001f4cfe716f6ee3d5a0ce49e0dd4347cd6ec8",
+  "status": "completed",
+  "masks": [
+    {
+      "sha256": "ce4235c753ffaf7e77526d245a8f4ea0f42a8696e3c7a21c5841f4cdd66c4d43",
+      "width": 2048,
+      "height": 1024,
+      "bounds": [
+        882,
+        933,
+        1166,
+        1012
+      ],
+      "positivePixels": 22436
+    }
+  ]
+}
