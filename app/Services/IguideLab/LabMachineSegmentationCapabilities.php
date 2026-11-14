@@ -8,6 +8,8 @@ class LabMachineSegmentationCapabilities
     public function forStep(IguideLabWorkflowStep $step): LabMachineSegmentationCapability
     {
         return match ($step->input['protocolVersion'] ?? null) {
+            LabRoomFurnishingMaskPlan::PROTOCOL => config('iguide-lab.interior_room_routing_enabled',false)===true
+                ? app(LabRoomFurnishingMasks::class) : abort(503,'The Interior furnishing capability is disabled.'),
             'automatic-lifestyle-segmentation/1' => config('iguide-lab.lifestyle_workflow_enabled',false)===true
                 ? app(LabLifestyleSegmentationAuthority::class) : abort(503,'The standing-pair capability is disabled.'),
             LabInteriorDesignPolicy::SEGMENTATION => config('iguide-lab.interior_design_workflow_enabled',false)===true

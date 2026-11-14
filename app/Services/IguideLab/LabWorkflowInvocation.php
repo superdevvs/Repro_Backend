@@ -58,6 +58,10 @@ class LabWorkflowInvocation
             if ($kind === 'image' && LabGrassSourceAdmissionPolicy::enabled($workflow->policy, $item->preset)) {
                 app(LabGrassSourceAdmissions::class)->verifyImageStep($step);
             }
+            if ($kind === 'evaluation' && LabInteriorRoomPolicy::enabled($workflow->policy,$item->preset)
+                && ($item->data['interiorRoomRoute']['profileId']??null)!==LabInteriorRoomProfiles::MATERIALS) {
+                app(LabRoomFurnishingArtifacts::class)->verifyEvaluationStep($item,$step);
+            }
         }
     }
 }

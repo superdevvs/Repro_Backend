@@ -91,6 +91,10 @@ class LabWorkflows
             app(LabLifestyleWorkflow::class)->advance($workflow,$item,$project); return;
         }
         if ($item->preset === 'interior-design' && LabInteriorDesignPolicy::enabled($workflow->policy,$item->preset)) {
+            // A captured room policy must never degrade to the older material-only route.
+            if (array_key_exists('interiorRoomRouting',$workflow->policy)) {
+                app(LabInteriorRoomWorkflow::class)->advance($workflow,$item,$project); return;
+            }
             app(LabInteriorDesignWorkflow::class)->advance($workflow,$item,$project); return;
         }
         if ($item->preset === 'declutter' && LabDeclutterRemovalPolicy::enabled($workflow->policy,$item->preset)) {
@@ -341,7 +345,20 @@ class LabWorkflows
     private function itemDto(IguideLabWorkflowItem $item): array
     {
         $data = $item->data; $result = null;
-        $framing = null;
+        $framing = null; $roomRouting = null;
+        $workflow=IguideLabWorkflow::where('project_id',$item->project_id)->findOrFail($item->workflow_id);
+        if(LabInteriorRoomPolicy::enabled($workflow->policy,$item->preset)) {
+            $records=[];
+            foreach(['route','framing','layout','candidate'] as $phase) {
+                $step=IguideLabWorkflowStep::where('project_id',$item->project_id)->where('item_id',$item->id)->where('step_key','room-'.$phase)->where('kind','analysis')->first();
+                if(!$step?->child_id)continue;
+                $record=\App\Models\IguideLabRoomAssessment::where('project_id',$item->project_id)->where('step_id',$step->id)->where('request_id',$step->request_id)->where('phase',$phase)->find($step->child_id);
+                if($record&&$record->request_hash===$step->input_sha256)$records[]=app(LabInteriorRoomAssessments::class)->dto($record);
+            }
+            $roomRouting=['version'=>LabInteriorRoomProfiles::VERSION,'selectedProfileId'=>$data['interiorRoomRoute']['profileId']??null,
+                'sourceSha256'=>$item->source['sha256'],'publicPreset'=>'interior-design','style'=>$item->style,
+                'assessments'=>$records,'nativeDetailFollowupAvailable'=>false,'branchSwitchAllowed'=>false];
+        }
         if (isset($data['sourceFramingId'])) {
             $record = \App\Models\IguideLabStagingFraming::where('project_id', $item->project_id)->find($data['sourceFramingId']);
             if ($record && IguideLabWorkflowStep::where('project_id', $item->project_id)->where('item_id', $item->id)
@@ -357,6 +374,7 @@ class LabWorkflows
         return ['id' => $item->id, 'caseId' => $item->case_id, 'preset' => $item->preset, 'style' => $item->style, 'status' => $item->status,
             'stageLabel' => $label, 'attemptCount' => $item->attempt_count, 'result' => $result, 'reviewReasons' => $data['reviewReasons'] ?? [],
             ...($framing === null ? [] : ['sourceFraming' => $framing]),
+            ...($roomRouting === null ? [] : ['roomRouting' => $roomRouting]),
             'automation' => ['mode' => 'unattended', 'operatorInterventions' => 0, 'qualityStatus' => $data['qualityStatus'] ?? 'pending', 'manualAcceptance' => false, 'crossViewVerified' => false],
             'createdAt' => $item->created_at->toIso8601String(), 'updatedAt' => $item->updated_at->toIso8601String()];
     }

@@ -1,6 +1,11 @@
 <?php
 
 return [
+    // Isolated source-owned Interior routing. No public caller can choose a private profile.
+    'interior_room_routing_enabled' => env('IGUIDE_LAB_INTERIOR_ROOM_ROUTING_ENABLED', false),
+    'interior_room_runtime_manifest' => env('IGUIDE_LAB_INTERIOR_ROOM_RUNTIME_MANIFEST'),
+    'interior_room_support_runtime_manifest' => env('IGUIDE_LAB_INTERIOR_ROOM_SUPPORT_RUNTIME_MANIFEST'),
+    'interior_room_support_python_path' => env('IGUIDE_LAB_INTERIOR_ROOM_SUPPORT_PYTHON'),
     // Separate D2 candidate; baseline and global-repair recipes remain available unchanged.
     'lighting_d2_enabled' => env('IGUIDE_LAB_LIGHTING_D2_ENABLED', false),
     'lighting_d2_runtime_manifest' => env('IGUIDE_LAB_LIGHTING_D2_RUNTIME_MANIFEST'),

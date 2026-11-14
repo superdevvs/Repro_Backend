@@ -41,11 +41,18 @@ class LabWorkflowPolicy
             $policy['declutterRemoval'] = LabDeclutterRemovalPolicy::snapshot($materials);
             $policy['declutterWorkflow'] = app(LabDeclutterWorkflow::class)->snapshot($materials);
         }
-        if (config('iguide-lab.interior_design_workflow_enabled',false) === true && app(LabInteriorDesignWorkflow::class)->ready()) {
+        if (config('iguide-lab.interior_design_workflow_enabled',false) === true && app(LabInteriorDesignWorkflow::class)->ready()
+            && (config('iguide-lab.interior_room_routing_enabled',false) !== true || app(LabInteriorRoomWorkflow::class)->ready())) {
             $policy['interiorDesign'] = LabInteriorDesignPolicy::snapshot();
             $policy['interiorWorkflow'] = app(LabInteriorDesignWorkflow::class)->snapshot();
             $policy['interiorAssessments'] = app(LabInteriorDesignAssessments::class)->snapshot();
             $policy['interiorMaterials'] = app(LabInteriorDesignMaterials::class)->snapshot();
+            if (config('iguide-lab.interior_room_routing_enabled',false) === true && app(LabInteriorRoomWorkflow::class)->ready()) {
+                $policy['interiorRoomRouting'] = LabInteriorRoomPolicy::snapshot();
+                $policy['interiorRoomWorkflow'] = app(LabInteriorRoomWorkflow::class)->snapshot();
+                $policy['interiorRoomAssessments'] = app(LabInteriorRoomAssessments::class)->snapshot();
+                $policy['interiorRoomSupport'] = app(LabRoomFurnishingSupport::class)->snapshot();
+            }
         }
         return $policy;
     }
@@ -59,6 +66,7 @@ class LabWorkflowPolicy
         $declutterReady=$ready&&config('iguide-lab.declutter_workflow_enabled',false)===true&&class_exists(LabDeclutterWorkflow::class)&&app(LabDeclutterWorkflow::class)->ready();
         $lifestyleReady=$ready&&config('iguide-lab.lifestyle_workflow_enabled',false)===true&&class_exists(LabLifestyleWorkflow::class)&&app(LabLifestyleWorkflow::class)->ready();
         $interiorReady=$ready&&config('iguide-lab.interior_design_workflow_enabled',false)===true&&app(LabInteriorDesignWorkflow::class)->ready();
+        if (config('iguide-lab.interior_room_routing_enabled',false)===true) $interiorReady=$interiorReady&&app(LabInteriorRoomWorkflow::class)->ready();
         $recipeReady=fn($preset)=>match($preset){'interior-design'=>$interiorReady,'staging'=>$stagingReady,'grass'=>$grassReady,'declutter'=>$declutterReady,'lifestyle'=>$lifestyleReady,'twilight','golden-hour'=>$ready,default=>false};
         return ['supported' => true, 'ready' => $ready, 'version' => self::VERSION, 'maxItems' => 20,
             'manualAcceptance' => false, 'requiresAutomaticChecks' => true,
