@@ -46,10 +46,15 @@ class SupportAttachmentService
 
     public function payload(SupportTicketMessage $message): array
     {
-        return collect($message->attachments_json ?? [])->map(fn ($file, $index) => [
+        $legacy = collect($message->attachments_json ?? [])->map(fn ($file, $index) => [
             'index' => $index, 'name' => $file['name'] ?? 'Attachment', 'size' => $file['size'] ?? null,
             'type' => $file['type'] ?? 'application/octet-stream',
             'download_url' => '/api/support/tickets/'.$message->support_ticket_id.'/messages/'.$message->id.'/attachments/'.$index,
-        ])->values()->all();
+        ])->values();
+        return $legacy->concat($message->messageMedia->values()->map(fn ($file, $index) => [
+            ...app(\App\Services\Messaging\MessageMediaService::class)->payload($file),
+            'index' => $legacy->count() + $index,
+            'download_url' => '/api/support/tickets/'.$message->support_ticket_id.'/messages/'.$message->id.'/attachments/'.($legacy->count() + $index),
+        ]))->all();
     }
 }

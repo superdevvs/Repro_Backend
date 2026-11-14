@@ -67,7 +67,7 @@ class SupportTicketController extends Controller
         $data = $request->validate(['page' => ['nullable', 'integer', 'min:1']]);
         $user = $request->user();
         $item = $this->tickets->find($user, $ticket);
-        $messages = $item->messages()->with('author:id,name')
+        $messages = $item->messages()->with(['author:id,name', 'messageMedia'])
             ->when(! $this->tickets->canManage($user), fn ($q) => $q->where('internal', false))
             ->latest('id')->paginate(30, ['*'], 'page', $data['page'] ?? 1);
 
@@ -120,6 +120,12 @@ class SupportTicketController extends Controller
         $item = $this->tickets->find($request->user(), $ticket);
         $entry = $item->messages()->whereKey($message)
             ->when(! $this->tickets->canManage($request->user()), fn ($q) => $q->where('internal', false))->firstOrFail();
+        $legacyCount = count($entry->attachments_json ?? []);
+        if ($index >= $legacyCount) {
+            $media = $entry->messageMedia()->skip($index - $legacyCount)->first();
+            abort_unless($media, 404);
+            return app(\App\Services\Messaging\MessageMediaService::class)->download($media);
+        }
         $file = ($entry->attachments_json ?? [])[$index] ?? null;
         abort_unless(is_array($file), 404);
         $path = $file['storage_path'] ?? '';

@@ -156,7 +156,14 @@ class MessageMediaTest extends TestCase
         $this->postJson('/api/messaging/media/content', ['kind' => 'support', 'ids' => [(string) $message->id]])->assertOk()
             ->assertJsonPath('data.'.$message->id.'.reactions.0.emoji', '❤️')->assertJsonPath('data.'.$message->id.'.reactions.0.mine', true)
             ->assertJsonPath('data.'.$message->id.'.attachments.0.id', $file->id);
+        $webDownload = '/api/support/tickets/'.$message->support_ticket_id.'/messages/'.$message->id.'/attachments/0';
+        $this->getJson('/api/support/tickets/'.$message->support_ticket_id)->assertOk()
+            ->assertJsonPath('messages.0.attachments.0.id', $file->id)
+            ->assertJsonPath('messages.0.attachments.0.index', 0)
+            ->assertJsonPath('messages.0.attachments.0.download_url', $webDownload);
+        $this->getJson($webDownload)->assertOk()->assertDownload('photo.jpg');
         Sanctum::actingAs(User::factory()->create(['role' => 'client']));
+        $this->getJson($webDownload)->assertNotFound();
         $this->getJson('/api/messaging/media/files/'.$file->id)->assertNotFound();
         $this->putJson($route, ['request_key' => (string) Str::uuid(), 'emoji' => '👍'])->assertNotFound();
         $this->postJson('/api/messaging/media/content', ['kind' => 'support', 'ids' => [(string) $message->id]])->assertNotFound();
