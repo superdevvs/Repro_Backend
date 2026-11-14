@@ -11,6 +11,7 @@ use App\Models\ShootService;
 use App\Models\User;
 use App\Services\PhotographerAvailabilityService;
 use App\Services\ShootTaxService;
+use App\Support\ServiceDiscountEligibility;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -27,6 +28,16 @@ class ShootMutationSupportService
 
     public function calculateBaseQuote(array $services): float
     {
+        return $this->calculateServiceSubtotal($services);
+    }
+
+    public function calculateDiscountEligibleSubtotal(array $services): float
+    {
+        return $this->calculateServiceSubtotal($services, true);
+    }
+
+    private function calculateServiceSubtotal(array $services, bool $discountEligibleOnly = false): float
+    {
         if (empty($services)) {
             return 0.0;
         }
@@ -37,6 +48,9 @@ class ShootMutationSupportService
 
         foreach ($services as $service) {
             $serviceModel = $serviceModels->get($service['id']);
+            if ($discountEligibleOnly && (! $serviceModel || ! ServiceDiscountEligibility::allows($serviceModel))) {
+                continue;
+            }
             $price = $service['price'] ?? $serviceModel?->price ?? 0;
             $quantity = $service['quantity'] ?? 1;
             $total += $price * $quantity;
@@ -79,7 +93,9 @@ class ShootMutationSupportService
         ?string $couponCode = null
     ): array {
         $serviceSubtotal = $this->calculateBaseQuote($services);
-        $discountSnapshot = $this->resolveDiscountSnapshot($serviceSubtotal, $client, $couponCode);
+        $discountSnapshot = $this->resolveDiscountSnapshot(
+            $serviceSubtotal, $client, $couponCode, $this->calculateDiscountEligibleSubtotal($services)
+        );
         $resolvedTaxRegion = $taxRegion ?? $this->taxService->determineTaxRegion((string) $state);
         $taxCalculation = $this->taxService->calculateTotal($discountSnapshot['discounted_subtotal'], $resolvedTaxRegion);
 
@@ -141,7 +157,7 @@ class ShootMutationSupportService
         $discountType = strtolower(trim((string) $shoot->discount_type));
         $discountValue = (float) $shoot->discount_value;
         $discountAmount = $this->calculateDiscountAmount(
-            $serviceSubtotal,
+            $this->calculateDiscountEligibleSubtotal($services),
             $discountType,
             $discountValue
         );
@@ -1104,19 +1120,21 @@ class ShootMutationSupportService
     public function resolveDiscountSnapshot(
         float $serviceSubtotal,
         ?User $client,
-        ?string $couponCode = null
+        ?string $couponCode = null,
+        ?float $discountEligibleSubtotal = null
     ): array {
+        $discountEligibleSubtotal = min(max($discountEligibleSubtotal ?? $serviceSubtotal, 0), $serviceSubtotal);
         $clientDiscountType = $client?->client_discount_type ?: null;
         $clientDiscountValue = $client?->client_discount_value !== null
             ? (float) $client->client_discount_value
             : null;
         $clientDiscountAmount = $this->calculateDiscountAmount(
-            $serviceSubtotal,
+            $discountEligibleSubtotal,
             $clientDiscountType,
             $clientDiscountValue
         );
 
-        $subtotalAfterClientDiscount = max($serviceSubtotal - $clientDiscountAmount, 0);
+        $subtotalAfterClientDiscount = max($discountEligibleSubtotal - $clientDiscountAmount, 0);
         $coupon = $this->resolveCoupon($couponCode);
         $couponDiscountType = $coupon?->type ?: null;
         $couponDiscountValue = $coupon?->amount !== null ? (float) $coupon->amount : null;

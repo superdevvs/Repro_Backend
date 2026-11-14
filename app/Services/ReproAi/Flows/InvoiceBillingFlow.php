@@ -9,6 +9,7 @@ use App\Models\Shoot;
 use App\Models\User;
 use App\Services\InvoiceService;
 use App\Services\Messaging\MessagingService;
+use App\Services\Shoots\ShootEditablePayloadService;
 use App\Services\SystemEmails\EmailAtelierTemplates;
 use App\Support\InvoiceReference;
 use Illuminate\Support\Facades\Schema;
@@ -604,21 +605,17 @@ class InvoiceBillingFlow
         }
 
         $originalTotal = $shoot->total_quote ?? 0;
-        $discountAmount = 0;
-
-        if (! empty($data['discount_percent'])) {
-            $discountAmount = $originalTotal * ($data['discount_percent'] / 100);
-            $discountLabel = "{$data['discount_percent']}%";
-        } else {
-            $discountAmount = $data['discount_amount'];
-            $discountLabel = '$'.number_format($discountAmount, 2);
-        }
-
-        $newTotal = max($originalTotal - $discountAmount, 0);
-
-        // Update shoot
-        $shoot->total_quote = $newTotal;
-        $shoot->save();
+        $isPercent = ! empty($data['discount_percent']);
+        $discountValue = max((float) ($isPercent ? $data['discount_percent'] : $data['discount_amount']), 0);
+        $discountLabel = $isPercent ? "{$discountValue}%" : '$'.number_format($discountValue, 2);
+        // Use the same fee exclusions, tax calculation and invoice refresh as the overview editor.
+        app(ShootEditablePayloadService::class)->apply($shoot, [
+            'discount_type' => $isPercent ? 'percent' : 'fixed',
+            'discount_value' => $discountValue,
+        ], $session->user);
+        $shoot->refresh();
+        $discountAmount = (float) $shoot->discount_amount;
+        $newTotal = (float) $shoot->total_quote;
 
         $this->setStepAndData($session, null, []);
         $session->save();
