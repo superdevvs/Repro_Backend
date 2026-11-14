@@ -18,6 +18,7 @@ class LabWorkflowPolicy
             $policy['stagingAssessment'] = LabStagingAssessmentPolicy::snapshot();
             $policy['stagingWorkflow'] = app(LabStagingWorkflow::class)->snapshot();
             $policy['sectionAnalysisRecipe'] = app(LabAnalysisRecipes::class)->snapshot(LabAnalysisRecipes::SECTION_CONTEXT);
+            if (config('iguide-lab.staging_framing_enabled', false) === true) $policy['stagingFraming'] = app(LabStagingFramings::class)->snapshot();
         }
         if (config('iguide-lab.grass_workflow_enabled',false) === true && class_exists(LabGrassWorkflow::class) && app(LabGrassWorkflow::class)->ready()) {
             $policy['grassAssessment'] = LabGrassAssessmentPolicy::snapshot();

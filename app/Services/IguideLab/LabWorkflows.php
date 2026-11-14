@@ -307,6 +307,14 @@ class LabWorkflows
     private function itemDto(IguideLabWorkflowItem $item): array
     {
         $data = $item->data; $result = null;
+        $framing = null;
+        if (isset($data['sourceFramingId'])) {
+            $record = \App\Models\IguideLabStagingFraming::where('project_id', $item->project_id)->find($data['sourceFramingId']);
+            if ($record && IguideLabWorkflowStep::where('project_id', $item->project_id)->where('item_id', $item->id)
+                ->where('step_key', 'staging-framing')->where('child_id', $record->id)->whereKey($record->step_id)->exists()) {
+                $framing = app(LabStagingFramings::class)->dto($record);
+            }
+        }
         if (isset($data['compositeId']) && ($composite = IguideLabComposite::where('project_id', $item->project_id)->find($data['compositeId']))) {
             $dto = app(LabComposites::class)->dto($composite);
             $result = ['kind' => 'composite', 'id' => $composite->id, 'preview' => $dto['preview'], 'native' => $dto['native'], 'sourceSha256' => $item->source['sha256']];
@@ -314,6 +322,7 @@ class LabWorkflows
         $label = match ($item->status) { 'queued', 'analyzing', 'preparing' => 'Preparing', 'editing', 'repairing' => 'Editing', 'checking' => 'Checking', 'ready' => 'Ready', 'cancelled' => 'Cancelled', 'failed' => 'Failed', default => 'Needs review' };
         return ['id' => $item->id, 'caseId' => $item->case_id, 'preset' => $item->preset, 'style' => $item->style, 'status' => $item->status,
             'stageLabel' => $label, 'attemptCount' => $item->attempt_count, 'result' => $result, 'reviewReasons' => $data['reviewReasons'] ?? [],
+            ...($framing === null ? [] : ['sourceFraming' => $framing]),
             'automation' => ['mode' => 'unattended', 'operatorInterventions' => 0, 'qualityStatus' => $data['qualityStatus'] ?? 'pending', 'manualAcceptance' => false, 'crossViewVerified' => false],
             'createdAt' => $item->created_at->toIso8601String(), 'updatedAt' => $item->updated_at->toIso8601String()];
     }

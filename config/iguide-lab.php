@@ -2,6 +2,8 @@
 
 return [
     // Operator opt-in only; validated runtimes are required in addition to these flags.
+    'staging_framing_enabled' => env('IGUIDE_LAB_STAGING_FRAMING_ENABLED', false),
+    'staging_framing_runtime_manifest' => env('IGUIDE_LAB_STAGING_FRAMING_RUNTIME_MANIFEST'),
     'staging_workflow_enabled' => env('IGUIDE_LAB_STAGING_WORKFLOW_ENABLED', false),
     'grass_workflow_enabled' => env('IGUIDE_LAB_GRASS_WORKFLOW_ENABLED', false),
     'grass_assessment_runtime_manifest' => env('IGUIDE_LAB_GRASS_ASSESSMENT_RUNTIME_MANIFEST'),
