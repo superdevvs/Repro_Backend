@@ -24,6 +24,7 @@ final class ShootCardProjection
             'can_view_video_editor_context', 'canViewVideoEditorContext',
             'can_submit_raw', 'canSubmitRaw', 'can_submit_edits', 'canSubmitEdits',
             'can_view_invoice', 'canViewInvoice', 'can_finalize_no_media', 'canFinalizeNoMedia',
+            'can_finalize_delivery', 'canFinalizeDelivery',
             'can_remove_all_services', 'canRemoveAllServices',
             'canManageBooking', 'canManageShootActions', 'canAdjustShootPricing', 'editVersion',
             'canEditAppointment', 'canReassignPhotographer', 'canScheduleShoot',

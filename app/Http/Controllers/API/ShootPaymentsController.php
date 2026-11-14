@@ -92,6 +92,7 @@ class ShootPaymentsController extends Controller
                 return response()->json(['message' => 'This delivery was already applied.', 'data' => ['id' => $shoot->id, 'queued' => false, 'already_applied' => true], 'delivery_plan' => $planner->plan($shoot, $user)]);
             }
             $intent = $planner->validateSelection($shoot, $user, $request->only(['component_ids', 'mode', 'reason', 'confirmed', 'plan_revision', 'idempotency_key', 'shoot_service_id', 'allow_without_content']));
+            $intent = app(\App\Services\Shoots\SubmitUploadsBeforeDelivery::class)->prepare($shoot, $user, $intent);
             $this->finalizeProgress->start((int) $shoot->id, ['queued_by' => $user->id, 'component_ids' => $intent['component_ids'], 'mode' => $intent['mode']]);
             $shoot->workflowLogs()->create(['user_id' => $user->id, 'action' => 'finalize_queued', 'details' => 'Selected delivery components queued for review commit', 'metadata' => $intent]);
             FinalizeShootJob::dispatch((int) $shoot->id, (int) $user->id, $request->input('final_status'), $shootServiceId, false, $intent['idempotency_key'], $intent);

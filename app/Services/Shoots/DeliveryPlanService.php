@@ -37,6 +37,19 @@ class DeliveryPlanService
             && app(RolePermissionService::class)->userCan($actor, 'shoots', 'manage');
     }
 
+    /** Current delivery work, rather than the actor's permanent role, controls the action. */
+    public function canFinalizeDelivery(Shoot $shoot, ?User $actor): bool
+    {
+        if (! $this->canFinalize($actor)) return false;
+        if ($this->usesComponents($shoot)) {
+            return collect($this->plan($shoot, null)['components'])->contains(fn ($component) => ! $component['resolved']
+                && ($component['status'] === 'ready' || ! $component['deferred'])
+                && ! array_intersect(['work_suspended', 'future_appointment'], $component['reason_codes']));
+        }
+        return app(NoMediaDeliveryEligibility::class)->allows($shoot, $actor)
+            || $shoot->files()->where('workflow_stage', 'completed')->exists();
+    }
+
     public function executionKey(Shoot $shoot): string
     {
         return app(ShootActiveWorkLifecycle::class)->hasActiveWork($shoot)
@@ -96,17 +109,18 @@ class DeliveryPlanService
                         elseif ($external && ($external['readiness'] ?? null) !== 'ready') $reasons[] = 'external_review_required';
                         elseif (! $external) $reasons[] = $kind === 'video' ? 'video_pending' : ($kind === 'floorplan' || $kind === 'tour' ? 'provider_output_pending' : 'output_pending');
                     }
-                    if ($receipt && ! $resolved) $reasons[] = 'outdated_approval';
+                    if ($receipt && ! $resolved && $receipt->method !== 'defer') $reasons[] = 'outdated_approval';
                 }
                 $ready = ! $resolved && ! $suspended && ! $future && ($files->isNotEmpty() || ($external && ($external['readiness'] ?? null) === 'ready'));
                 $methods = [];
                 if ($ready && $files->isNotEmpty()) $methods[] = 'media';
                 if (! $resolved && ! $suspended && ! $future && $external && ($external['readiness'] ?? null) !== 'not_ready') $methods[] = 'external';
                 if (! $resolved && ! $suspended && ! $future && $this->canFinalize($actor)) $methods[] = 'manual_no_content';
+                if (! $resolved && ! $suspended && ! $future && $this->canFinalize($actor)) $methods[] = 'defer';
                 $components[] = ['id' => $item->id.':'.$requirement['key'], 'shoot_service_id' => $item->id,
                     'unit_id' => $item->shoot_unit_id, 'service_name' => $item->service?->name, 'label' => $requirement['label'], 'kind' => $kind,
                     'status' => $cancelled ? 'cancelled' : ($resolved ? 'delivered' : ($ready ? 'ready' : 'pending')),
-                    'resolved' => (bool) $resolved, 'required' => true, 'file_ids' => $files->modelKeys(), 'output_count' => $files->count(),
+                    'resolved' => (bool) $resolved, 'deferred' => ! $resolved && $receipt?->method === 'defer', 'required' => true, 'file_ids' => $files->modelKeys(), 'output_count' => $files->count(),
                     'reason_codes' => $reasons, 'reason' => $this->reason($reasons[0] ?? null, $requirement['label']), 'methods' => $methods,
                     'external_url' => $external['url'] ?? null, 'external_evidence' => $external,
                     'photographer_id' => $item->photographer_id, 'editor_id' => $kind === 'video' ? ($item->video_editor_id ?: $item->editor_id) : $item->editor_id,
@@ -120,7 +134,7 @@ class DeliveryPlanService
         $pending = collect($components)->where('resolved', false)->pluck('id')->all();
         $result = ['shoot_id' => $shoot->id, 'revision' => $revision, 'components' => $components,
             'ready_component_ids' => $ready, 'remaining_component_ids' => $pending,
-            'capabilities' => ['can_finalize' => $this->canFinalize($actor), 'can_manual_no_content' => $this->canFinalize($actor), 'can_assign_service' => app(ShootMediaServiceAssignment::class)->canAssign($shoot, $actor)],
+            'capabilities' => ['can_finalize' => $this->canFinalize($actor), 'can_finalize_ready' => $this->canFinalize($actor) && $ready !== [], 'can_manual_no_content' => $this->canFinalize($actor), 'can_assign_service' => app(ShootMediaServiceAssignment::class)->canAssign($shoot, $actor)],
             'summary' => $pending === [] ? 'All required work is resolved.' : ($ready ? 'Ready content can be delivered; other components remain pending.' : ($components ? ($this->reasonForPlan($components)) : 'No required delivery components.'))];
         if (! $actor) $this->readPlanCache[$shoot->id] = $result;
         return $result;
@@ -133,6 +147,7 @@ class DeliveryPlanService
         return collect($this->plan($shoot, null)['components'])->groupBy('shoot_service_id')->map(fn ($components) => $components->map(fn ($component) => [
             'kind' => $component['kind'], 'label' => $component['label'], 'status' => $component['status'],
             'without_content' => ($component['delivery_method'] ?? null) === 'manual_no_content',
+            'deferred' => $component['deferred'],
         ])->values()->all())->all();
     }
 
@@ -156,13 +171,14 @@ class DeliveryPlanService
             if (! $component || $component['resolved'] || ! in_array($method, $component['methods'], true)) throw ValidationException::withMessages(['component_ids' => $component['reason'] ?? 'This component cannot be delivered with the selected method.']);
             $methods[$id] = $method;
         }
-        if (in_array('manual_no_content', $methods, true) && (mb_strlen(trim($intent['reason'] ?? '')) < 5 || empty($intent['confirmed']))) {
+        if (array_intersect(['manual_no_content', 'defer'], $methods) && (mb_strlen(trim($intent['reason'] ?? '')) < 5 || empty($intent['confirmed']))) {
             throw ValidationException::withMessages(['reason' => 'Confirm the selected missing work and provide a reason of at least five characters.']);
         }
         if (in_array('external', $methods, true) && empty($intent['confirmed'])) throw ValidationException::withMessages(['confirmed' => 'Confirm that the selected requirements are present at the reviewed external destination.']);
         return ['component_ids' => array_values($ids), 'mode' => $mode, 'reason' => trim($intent['reason'] ?? ''), 'confirmed' => (bool) ($intent['confirmed'] ?? false),
             'allow_without_content' => $mode === 'auto' && ! empty($intent['allow_without_content']), 'component_methods' => $methods,
-            'plan_revision' => $plan['revision'], 'idempotency_key' => $intent['idempotency_key'] ?? (string) Str::uuid()];
+            'plan_revision' => $plan['revision'], 'request_plan_revision' => $intent['request_plan_revision'] ?? $intent['plan_revision'] ?? $plan['revision'],
+            'idempotency_key' => $intent['idempotency_key'] ?? (string) Str::uuid()];
     }
 
     /** Choose from server-owned readiness; a provider URL alone never implies delivery. */
@@ -175,7 +191,7 @@ class DeliveryPlanService
         // path. It is never included in the automatically selected ready set.
         if (! $allowWithoutContent && in_array('external', $component['methods'], true)
             && in_array('external_review_required', $component['reason_codes'], true)) return 'external';
-        return $allowWithoutContent && in_array('manual_no_content', $component['methods'], true) ? 'manual_no_content' : null;
+        return $allowWithoutContent && in_array('defer', $component['methods'], true) ? 'defer' : null;
     }
 
     public function isReplay(Shoot $shoot, User $actor, array $intent): bool
@@ -190,7 +206,8 @@ class DeliveryPlanService
             && (json_decode($row->evidence, true)['operation_mode'] ?? $row->method) === ($intent['mode'] ?? 'media')
             && (bool) (json_decode($row->evidence, true)['allow_without_content'] ?? false) === (bool) ($intent['allow_without_content'] ?? false)
             && trim((string) $row->reason) === trim((string) ($intent['reason'] ?? ''))
-            && (! isset($intent['plan_revision']) || hash_equals($row->plan_revision, $intent['plan_revision']))
+            && (! isset($intent['plan_revision']) || hash_equals($row->plan_revision, $intent['plan_revision'])
+                || hash_equals((string) (json_decode($row->evidence, true)['request_plan_revision'] ?? ''), $intent['plan_revision']))
             && ((bool) (json_decode($row->evidence, true)['confirmed'] ?? false)) === (bool) ($intent['confirmed'] ?? false));
         if (! $same) throw new \App\Exceptions\PublicApiResponseException(response()->json(['message' => 'This delivery operation key was already used for a different selection or method.'], 409));
         return true;
@@ -209,8 +226,9 @@ class DeliveryPlanService
             $method = $intent['component_methods'][$component['id']];
             $evidence = ['files' => $method === 'media' ? $component['versions'] : [],
                 'external' => $method === 'external' ? $component['external_evidence'] : null,
-                'missing_components' => $method === 'manual_no_content' ? [$component['label']] : [], 'confirmed' => $intent['confirmed'],
-                'operation_mode' => $intent['mode'], 'allow_without_content' => $intent['allow_without_content']];
+                'missing_components' => in_array($method, ['manual_no_content', 'defer'], true) ? [$component['label']] : [], 'confirmed' => $intent['confirmed'],
+                'operation_mode' => $intent['mode'], 'allow_without_content' => $intent['allow_without_content'],
+                'request_plan_revision' => $intent['request_plan_revision']];
             // The historical single-line fallback is an explicit reviewed scope.
             // Bind its exact approved files atomically; never guess across lines.
             if ($method === 'media' && $shoot->serviceItems()->count() === 1) {
@@ -414,6 +432,7 @@ class DeliveryPlanService
     private function validReceipt($receipt, $files, ?array $external = null, $current = null): bool
     {
         $evidence = json_decode($receipt->evidence, true) ?: [];
+        if ($receipt->method === 'defer') return false;
         if ($receipt->method === 'manual_no_content') return ! empty($receipt->reason) && ! empty($evidence['confirmed']);
         if ($receipt->method === 'external') {
             $stored = $evidence['external'] ?? null;

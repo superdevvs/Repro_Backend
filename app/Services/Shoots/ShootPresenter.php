@@ -1017,6 +1017,9 @@ class ShootPresenter
             ->allows($shoot, $requestingUser, $serviceItemSummaries);
         $shoot->setAttribute('can_finalize_no_media', $canFinalizeNoMedia);
         $shoot->setAttribute('canFinalizeNoMedia', $canFinalizeNoMedia);
+        $canFinalizeDelivery = app(DeliveryPlanService::class)->canFinalizeDelivery($shoot, $requestingUser);
+        $shoot->setAttribute('can_finalize_delivery', $canFinalizeDelivery);
+        $shoot->setAttribute('canFinalizeDelivery', $canFinalizeDelivery);
         $canRemoveAllServices = app(ShootServiceChangeGuard::class)
             ->canRemoveAllServices($shoot, $requestingUser);
         $shoot->setAttribute('can_remove_all_services', $canRemoveAllServices);

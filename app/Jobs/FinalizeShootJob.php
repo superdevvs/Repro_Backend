@@ -108,6 +108,11 @@ class FinalizeShootJob implements ShouldQueue
                 return;
             }
 
+            // The bulk verification update bypasses ShootFile observers. Publish
+            // a new media revision before polling reports success, including
+            // partial deliveries whose shoot status may stay unchanged.
+            app(\App\Services\Shoots\ShootMediaMutationSupportService::class)->clearShootFilesCache($shoot);
+
             $progress->stageCompleted(
                 $this->shootId,
                 FinalizeProgressTracker::STAGE_COMMIT,

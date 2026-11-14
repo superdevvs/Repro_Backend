@@ -69,7 +69,13 @@ class ShootSubmissionCapabilityService
         if (!$hasFiles && !$this->hasVideoLinkOutput($shoot, $user)) return false;
         $status = strtolower((string) ($shoot->workflow_status ?: $shoot->status));
         if ($activeWork && ! in_array($status, ['on_hold', 'hold_on', 'cancelled', 'canceled', 'declined'], true)) {
-            return $user->role !== 'editor' || $this->pendingEditorAssignments($shoot, $user);
+            if ($user->role === 'editor') return $this->pendingEditorAssignments($shoot, $user);
+            $planner = app(DeliveryPlanService::class);
+            // A pending floorplan keeps the order active, but already released
+            // photos do not constitute another editing submission.
+            return $files->contains(fn ($file) => ! $planner->releasedFile($file->setRelation('shoot', $shoot)))
+                || collect($planner->plan($shoot, null)['components'])->contains(fn ($component) =>
+                    $component['kind'] === 'video' && ! $component['resolved'] && $component['external_url']);
         }
         if (in_array($status, ['active', 'uploaded', 'editing'], true)) {
             return $user->role !== 'editor' || $assignments->getTrackedServiceAssignments($shoot)->isEmpty() || $this->pendingEditorAssignments($shoot, $user);

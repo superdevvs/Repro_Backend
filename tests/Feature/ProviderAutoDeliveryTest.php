@@ -49,6 +49,29 @@ class ProviderAutoDeliveryTest extends TestCase
         $client->shouldReceive('parseOrderData')->andReturn($parsed);
     }
 
+    public function test_deferred_floorplans_are_automatically_released_when_verified_output_arrives(): void
+    {
+        [$shoot, $item, $file, $parsed] = $this->fixture();
+        $actor = User::factory()->create(['role' => 'superadmin']);
+        $file->forceFill(['is_hidden' => true])->save();
+        $planner = app(DeliveryPlanService::class);
+        $intent = $planner->validateSelection($shoot, $actor, ['mode' => 'auto',
+            'component_ids' => [$item->id.':floorplan'], 'allow_without_content' => true,
+            'confirmed' => true, 'reason' => 'Waiting for provider output']);
+        $job = new FinalizeShootJob($shoot->id, $actor->id, deliveryEventKey: $intent['idempotency_key'], deliveryIntent: $intent);
+        $job->suppressSideEffects = true;
+        $job->handle(app(\App\Services\ShootActivityLogger::class));
+        $this->assertSame('pending', $planner->componentSummaries($shoot->fresh())[$item->id][0]['status']);
+        $this->assertFalse($planner->itemResolved($shoot->fresh(), $item->fresh()));
+        $file->forceFill(['is_hidden' => false])->save();
+        $this->currentCubi($parsed);
+        app(ProviderAutoDeliveryService::class)->run($shoot->id);
+        $this->assertSame('verified', $file->fresh()->workflow_stage);
+        $this->assertSame('delivered', $shoot->fresh()->delivery_status);
+        $this->assertSame('unpaid', $shoot->fresh()->payment_status);
+        $this->assertSame(['defer', 'media'], DB::table('shoot_delivery_receipts')->orderBy('id')->pluck('method')->all());
+    }
+
     private function homeReport(ShootFile $floorplan, array &$parsed): ShootFile
     {
         $pdf = "%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\n%%EOF\n";

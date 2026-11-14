@@ -316,10 +316,18 @@ class FinalizeRawUploadAction
             ->where(fn ($query) => $query->whereNull('is_extra')->orWhere('is_extra', false)->orWhere('required_for_editing', true))
             ->get();
         $cycle = app(\App\Services\Shoots\DeliveryPlanService::class)->executionKey($shoot);
+        $releasedKinds = collect(app(\App\Services\Shoots\DeliveryPlanService::class)->plan($shoot, null)['components'])
+            ->where('resolved', true)->mapWithKeys(fn ($component) => [$component['shoot_service_id'].':'.$component['kind'] => true]);
         return app(\App\Services\Shoots\ServiceDeliveryEligibility::class)->currentCycleFiles($shoot, $files)
-            ->filter(function (ShootFile $file) use ($cycle, $items, $shoot) {
+            ->filter(function (ShootFile $file) use ($cycle, $items, $shoot, $releasedKinds) {
                 if ($file->isBlockedFromDelivery()) return false;
                 $receipt = data_get($file->metadata, 'active_work_raw_submission', []);
+                // Initial RAW submissions predate per-file active-work receipts.
+                // Partial photo delivery must not make those same inputs new.
+                if ($receipt === [] && ! app(\App\Services\Shoots\ShootActiveWorkLifecycle::class)->hasActiveWork($shoot)
+                    && $shoot->photos_uploaded_at && $file->created_at?->lte($shoot->photos_uploaded_at)
+                    && $releasedKinds->has($file->shoot_service_id.':'.app(\App\Services\Shoots\ShootEditingAssignmentService::class)->getFileLane($file))
+                    && (int) ($file->content_version ?: 1) === 1) return false;
                 $item = $items->firstWhere('id', $file->shoot_service_id);
                 $execution = $item ? app(\App\Services\Shoots\DeliveryPlanService::class)->itemExecutionKey($shoot, $item) : $cycle;
                 $matches = isset($receipt['execution_key']) ? $receipt['execution_key'] === $execution : $execution === $cycle && ($receipt['cycle'] ?? null) === $cycle;
