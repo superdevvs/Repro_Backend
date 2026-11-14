@@ -6,6 +6,11 @@ use Illuminate\Support\Facades\Storage;
 /** Native source plus separately projected objects and scalar source-floor shadows. */
 class LabStagingArtifacts extends LabWorkflowArtifacts
 {
+    public const REVIEW_CONSTRAINTS = [
+        'Exactly one sofa, one coffee table and one accent chair must be added, in the requested style. No rug, extra cushions, lamps, art, plants or accessories may be added.',
+        'Preserve all existing objects, architecture, finishes and source detail. Inspect furniture scale, all legs, floor contacts, complete silhouettes, routes, openings, vents and hearth clearance.',
+        'Inspect the whole sphere, section boundaries and original parent context for occlusion, reflection or shadow dependencies. A proposed framing or model assessment is not measured physical clearance or optical proof.',
+    ];
     public function runHash(IguideLabRun $run): string
     {
         abort_unless($run->status==='completed'&&$run->output_path==='iguide-lab/'.$run->project_id.'/runs/'.$run->id.'.png'
@@ -39,6 +44,7 @@ class LabStagingArtifacts extends LabWorkflowArtifacts
         $preview=$this->asset($report['artifacts']['preview'],$disk->path($out),[2048,1024]);
         $native=$this->asset($report['artifacts']['native'],$disk->path($out),[$case->width,$case->height]);
         $alpha=$this->asset($report['artifacts']['effective-alpha'],$disk->path($out),[$case->width,$case->height]);
+        $sourcePlan=$this->sourcePlan($item);
         $nativeCanvas=$case->width>2048; $view=$section->view+['vFov'=>$section->view['hFov'],'coordinateConvention'=>'raw panorama yaw zero at centre, positive yaw right, positive pitch up'];
         $manifest=['requestId'=>$step->request_id,'label'=>'Automatic three-piece staging candidate','schemaVersion'=>1,'kind'=>'locally_composited_panorama',
             'projection'=>'equirectangular','preset'=>'staging','style'=>$item->style,'resolutionStrategy'=>$nativeCanvas?'native_canvas':'preview_only','compositionMode'=>'perspective_sections',
@@ -52,7 +58,9 @@ class LabStagingArtifacts extends LabWorkflowArtifacts
                 'stagingRecipe'=>$step->input['stagingRecipe'],'assessmentId'=>$assessment->id,'assessmentSha256'=>$assessment->result_sha256,
                 'supportReportSha256'=>$support['reportSha256'],'effectiveAlpha'=>['path'=>$out.'/effective-alpha.png','sha256'=>$alpha['sha256']],
                 'composition'=>$report['composition']??null,'numericalQa'=>$report['qa'],'operatorInterventions'=>0,'manualAcceptance'=>false,
-                'sourceAnalysisId'=>$analysis->id,'sectionId'=>$section->id,'maskOrigin'=>'model_segmentation','selectionOrigin'=>'machine',
+                'sourceAnalysisId'=>$analysis->id,'sectionId'=>$section->id,'editView'=>$section->view,
+                'originalSourceAnalysisId'=>$sourcePlan->id,'originalSourceProposalSha256'=>$sourcePlan->proposal_sha256,
+                'editViewAuthority'=>'exact server extraction pose; not independent camera calibration','maskOrigin'=>'model_segmentation','selectionOrigin'=>'machine',
                 'limitations'=>['Single panorama only; model placement and mask association do not prove physical geometry.','Unattended candidate requires separate full-sphere visual checking.']]];
         [$composite]=app(LabComposites::class)->add(IguideLabProject::findOrFail($item->project_id),$case,$preview['path'],$manifest,$nativeCanvas?$native['path']:null);
         return $composite;
@@ -70,5 +78,36 @@ class LabStagingArtifacts extends LabWorkflowArtifacts
         $a=$composite->manifest['lineage']['effectiveAlpha']??[];
         $path=app(LabStagingAssessmentContext::class)->file($item->project_id,$a['path']??'',$a['sha256']??'',128*1024*1024);
         return ['editScope'=>'masked','effectiveAlpha'=>['path'=>$path,'sha256'=>$a['sha256']]];
+    }
+    protected function evidenceReviewContext(IguideLabWorkflowItem $item,IguideLabComposite $composite,IguideLabAnalysis $analysis,array $qa): array
+    {
+        $source=$this->sourcePlan($item);
+        abort_unless(($composite->manifest['lineage']['originalSourceAnalysisId']??null)===$source->id
+            &&($composite->manifest['lineage']['originalSourceProposalSha256']??null)===$source->proposal_sha256,422,'The original source constraints changed.');
+        return $this->stagingReviewContext($source->proposal,$analysis->proposal,$qa);
+    }
+    public function stagingReviewContext(array $source,array $section,array $qa): array
+    {
+        $unique=fn(array $values)=>array_values(array_unique($values));
+        $result=['protectedFeatures'=>$unique([...array_column($source['protectedFeatures'],'description'),...array_column($section['protectedFeatures'],'description')]),
+            'sourceCaveats'=>$unique([...($source['uncertainties']??[]),...($source['sourceArtifacts']??[]),
+                ...($section['uncertainties']??[]),...($section['sourceArtifacts']??[]),
+                'Source and section plans are same-capture model evidence, not independent calibrated optical or physical geometry proof.']),
+            'opticalDependencies'=>[],
+            'reviewRequirements'=>$unique([...self::REVIEW_CONSTRAINTS,...$this->evaluationReviewRequirements($source,[]),...$this->evaluationReviewRequirements($section,$qa)])];
+        foreach(['protectedFeatures'=>20,'sourceCaveats'=>13,'reviewRequirements'=>12] as $key=>$limit){
+            abort_unless(count($result[$key])<=$limit,422,'The complete staging constraints exceed bounded evaluation; review is required.');
+            foreach($result[$key] as $text)abort_unless(is_string($text)&&mb_strlen($text)<=600,422,'A staging constraint exceeds bounded evaluation.');
+        }
+        return $result;
+    }
+    private function sourcePlan(IguideLabWorkflowItem $item): IguideLabAnalysis
+    {
+        $step=IguideLabWorkflowStep::where('project_id',$item->project_id)->where('item_id',$item->id)->where('kind','analysis')->where('step_key','staging-source')->sole();
+        $source=IguideLabAnalysis::where('project_id',$item->project_id)->where('case_id',$item->case_id)->where('status','completed')->findOrFail($step->child_id);
+        abort_unless($source->request_id===$step->request_id&&$step->input_sha256===LabAnalysisRecipes::hash($step->input)
+            &&($source->data['workflowInvocation']??null)===app(LabWorkflowSteps::class)->invocation($step)
+            &&$source->source_sha256===$item->source['sha256']&&$source->proposal_sha256===LabAnalysisRecipes::hash($source->proposal),422,'Original source planning authority changed.');
+        return $source;
     }
 }

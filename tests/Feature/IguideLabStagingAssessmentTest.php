@@ -62,6 +62,17 @@ class IguideLabStagingAssessmentTest extends TestCase
         return [...$values, $step, $service->start($step)];
     }
     private function response(): array { return ['id' => 'resp-fixture', 'model' => 'gpt-6-astra', 'status' => 'completed', 'usage' => ['input_tokens' => 10, 'output_tokens' => 20]]; }
+    public function test_integral_camera_angles_survive_database_json_roundtrip_without_losing_drift_checks(): void
+    {
+        [, , $item] = $this->fixture();
+        $this->context->bundle['context']['pose']=['yaw'=>0.0,'pitch'=>0.0,'hFov'=>90.0];
+        $service=app(LabStagingAssessments::class); $step=$service->reserve($item,(string)Str::uuid(),(string)Str::uuid());
+        $record=$service->start($step->fresh());
+        $this->assertSame('queued',$record->status);
+        $this->assertSame($record->id,$service->start($step->fresh())->id);
+        $this->context->bundle['context']['pose']['yaw']=0.01;
+        $this->expectException(HttpException::class);$service->start($step->fresh());
+    }
     public function test_reservation_replay_and_known_receipt_resume_do_not_repeat_paid_submission(): void
     {
         [$project, , , , $step, $record] = $this->reserved(); $service = app(LabStagingAssessments::class);

@@ -138,6 +138,27 @@ class IguideLabWorkflowEvaluationTest extends TestCase
         Http::assertNothingSent();
     }
 
+    public function test_staging_intent_binds_original_user_text_and_fixed_server_constraints(): void
+    {
+        [$project,$item,$step]=$this->fixture('Use muted earth tones.');$item->update(['preset'=>'staging','style'=>'modern']);
+        $workflow=\App\Models\IguideLabWorkflow::findOrFail($item->workflow_id);
+        $workflow->update(['policy'=>$workflow->policy+['stagingAssessment'=>\App\Services\IguideLab\LabStagingAssessmentPolicy::snapshot(),
+            'stagingWorkflow'=>app(\App\Services\IguideLab\LabStagingWorkflow::class)->snapshot()]]);
+        $service=app(LabWorkflowEvaluations::class);$intent=$service->intent($item);$evidence=$step->input;
+        $this->assertSame('Use muted earth tones.',$intent['instructions']);
+        $this->assertSame(\App\Services\IguideLab\LabStagingArtifacts::REVIEW_CONSTRAINTS,$intent['fixedRecipeConstraints']);
+        $evidence['context']['preset']='staging';$evidence['context']['style']='modern';
+        $evidence['context']['intent']=json_encode($intent,JSON_THROW_ON_ERROR|JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES);
+        $evidence['context']['intentSha256']=\App\Services\IguideLab\LabAnalysisRecipes::hash($intent);
+        $this->assertIsArray($service->payload($evidence,$project->id,$item->id));
+        unset($intent['fixedRecipeConstraints']);
+        $evidence['context']['intent']=json_encode($intent,JSON_THROW_ON_ERROR|JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES);
+        $evidence['context']['intentSha256']=\App\Services\IguideLab\LabAnalysisRecipes::hash($intent);
+        try{$service->payload($evidence,$project->id,$item->id);$this->fail('Missing fixed constraints accepted.');}
+        catch(\Symfony\Component\HttpKernel\Exception\HttpException $e){$this->assertSame(422,$e->getStatusCode());}
+        Http::assertNothingSent();
+    }
+
     public function test_evidence_rejects_wrong_or_changed_scene_proposal_before_local_processing(): void
     {
         $runtime = new class extends \App\Services\IguideLab\LabWorkflowArtifacts {

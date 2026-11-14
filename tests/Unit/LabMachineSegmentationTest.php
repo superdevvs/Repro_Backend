@@ -106,6 +106,17 @@ class LabMachineSegmentationTest extends TestCase
         }
     }
 
+    public function test_original_eight_bit_alpha_all_png_filters_and_alpha_modes(): void
+    {
+        foreach (['LA','RGBA'] as $mode) foreach (range(0,4) as $filter) {
+            $base=base_path('tests/Fixtures/iguide-lab/staging-alpha/'.$mode.'-filter-'.$filter.'-');
+            $valid=app(LabMachineMaskPixels::class)->describe(file_get_contents($base.'opaque.png'));
+            $this->assertSame(2048*2048,$valid['positivePixels']);
+            try { app(LabMachineMaskPixels::class)->describe(file_get_contents($base.'alpha254.png')); $this->fail('Eight-bit alpha lost for '.$mode.' filter '.$filter); }
+            catch (\InvalidArgumentException) { $this->addToAssertionCount(1); }
+        }
+    }
+
     private function png(bool $target=true,int $height=2048,bool $color=false,bool $transparent=false): string
     {
         $image=imagecreatetruecolor(2048,$height); imagefill($image,0,0,imagecolorallocate($image,0,0,0));

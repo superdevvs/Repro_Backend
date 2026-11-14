@@ -56,12 +56,34 @@ class LabStagingSegmentationAuthority implements LabMachineSegmentationCapabilit
             && ($r->data['plan']['contextSha256'] ?? null)===$plan['contextSha256'] && ($r->data['plan']['assessmentProposalSha256'] ?? null)===$plan['assessmentProposalSha256']
             && ($r->result['association']['status'] ?? null)==='ready_for_support_validation');
         abort_unless($found,422,'The original-floor receipt must pass before spending the furniture request.');
-        $disk=Storage::disk(LabService::DISK); $artifacts=$found->result['artifacts'] ?? [];
-        abort_unless(count($artifacts)===1,422,'The original-floor artifact is unavailable.');
-        foreach ($artifacts as $artifact) {
-            $expected='iguide-lab/'.$step->project_id.'/machine-segmentations/'.$found->id.'/mask-0.png';
-            abort_unless(($artifact['path'] ?? null)===$expected && $disk->exists($expected) && filesize($disk->path($expected))<=LabMachineSegmentationTransport::MAX_MASK_BYTES,422,'The original-floor mask is unavailable.');
-            $this->ownedBytes($step->project_id,$expected,'machine-segmentations/'.$found->id.'/mask-0.png',$artifact['sha256']);
+        $floorStep=IguideLabWorkflowStep::where('project_id',$step->project_id)->where('item_id',$step->item_id)->findOrFail($found->step_id);
+        $this->verifiedReceipt($floorStep);
+    }
+    /** Revalidate retained raw receipt and all machine coverage before reuse. */
+    public function verifiedReceipt(IguideLabWorkflowStep $step): array
+    {
+        $step->refresh();$plan=$this->plan($step);$this->validatePlan($plan,$step->request_id);
+        [$bytes,$binding]=$this->verifyOwnedInputs($step,$plan);unset($bytes);
+        $record=IguideLabMachineSegmentation::where('project_id',$step->project_id)->where('step_id',$step->id)->sole();
+        abort_unless($record->status==='completed'&&$step->child_id===$record->id&&$record->request_id===$step->request_id
+            &&$record->request_hash===$step->input_sha256&&($record->data['plan']??null)===$plan
+            &&LabAnalysisRecipes::hash($record->data['assetBinding']??[])===LabAnalysisRecipes::hash($binding)
+            &&($record->result['maskOrigin']??null)==='model_segmentation'&&($record->result['selectionOrigin']??null)==='machine'
+            &&($record->result['humanReviewed']??null)===false&&($record->result['automaticAcceptance']??null)===false,422,'Stored machine receipt ownership changed.');
+        $receipt=$record->result['receipt'];
+        abort_unless(($receipt['providerRequestId']??null)===$record->provider_request_id&&($receipt['status']??null)==='completed',422,'Provider receipt identity changed.');
+        $base='iguide-lab/'.$step->project_id.'/machine-segmentations/'.$record->id;$loader=app(LabStagingAssessmentContext::class);
+        $loader->file($step->project_id,$base.'/provider-result.json',$receipt['rawResponseSha256'],LabMachineSegmentationTransport::MAX_RESPONSE_BYTES);
+        $artifacts=$record->result['artifacts']??[];
+        abort_unless(count($artifacts)===count($receipt['masks'])&&count($artifacts)===count($plan['expectedIdentities']),422);
+        foreach($artifacts as $index=>$asset){
+            abort_unless(($asset['index']??null)===$index&&($asset['path']??null)===$base.'/mask-'.$index.'.png',422);
+            $path=$loader->file($step->project_id,$asset['path'],$asset['sha256'],LabMachineSegmentationTransport::MAX_MASK_BYTES);
+            abort_unless($this->describeMask(file_get_contents($path))===$receipt['masks'][$index],422,'Decoded support mask changed.');
         }
+        $association=$this->associate($step,$receipt);
+        abort_unless(($association['status']??null)===$this->readyAssociationStatus()
+            &&LabAnalysisRecipes::hash($association)===LabAnalysisRecipes::hash($record->result['association']),422,'Machine support association changed.');
+        return ['plan'=>$plan,'receipt'=>$receipt,'association'=>$association,'artifacts'=>$artifacts,'recordId'=>$record->id];
     }
 }

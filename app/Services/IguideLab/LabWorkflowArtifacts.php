@@ -138,14 +138,12 @@ class LabWorkflowArtifacts
         }
         abort_if($total > 24 * 1024 * 1024, 422, 'Automatic visual evidence exceeds its bounded request.');
         $blockers = array_values(array_map(fn ($reason) => $reason['code'], array_filter($report['qa']['reviewReasons'] ?? [], fn ($reason) => $reason['blocking'] ?? false)));
-        $intent = ['sourceSha256' => $item->source['sha256'], 'preset' => $item->preset, 'style' => $item->style, 'instructions' => $item->instructions];
+        $intent = $this->evidenceIntent($item);
         $context = ['sourceSha256' => $case->source_sha256, 'candidateSha256' => $composite->manifest[$kind]['sha256'],
             'intentSha256' => LabAnalysisRecipes::hash($intent), 'evidenceManifestSha256' => hash_file('sha256', $disk->path($out.'/report.json')),
             'projection' => 'equirectangular', 'preset' => $item->preset, 'style' => $item->style, 'intent' => json_encode($intent, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
-            'protectedFeatures' => array_column($analysis->proposal['protectedFeatures'], 'description'),
-            'sourceCaveats' => [...($analysis->proposal['uncertainties'] ?? []), 'The scene plan has no separate structured optical dependency inventory; independently inspect reflections, shadows and glazing.'],
-            'opticalDependencies' => [], 'reviewRequirements' => $this->evaluationReviewRequirements($analysis->proposal, $report['qa']),
-            'mechanicalQa' => ['passed' => ($report['qa']['numericIntegrity'] ?? null) === 'pass' && ! $blockers, 'blockingReasons' => $blockers], 'views' => $views];
+            'mechanicalQa' => ['passed' => ($report['qa']['numericIntegrity'] ?? null) === 'pass' && ! $blockers, 'blockingReasons' => $blockers], 'views' => $views]
+            + $this->evidenceReviewContext($item,$composite,$analysis,$report['qa']);
         return ['compositeId' => $composite->id, 'manifestPath' => $out.'/report.json', 'context' => $context, 'assets' => $assets];
     }
 
@@ -158,6 +156,16 @@ class LabWorkflowArtifacts
             && $analysis->proposal_sha256 === LabAnalysisRecipes::hash($analysis->proposal), 422, 'The evidence scene proposal does not match this artifact.');
     }
     protected function evidenceSupport(IguideLabWorkflowItem $item,IguideLabComposite $composite): array { return ['editScope'=>'entire_view']; }
+    protected function evidenceIntent(IguideLabWorkflowItem $item): array
+    {
+        return app(LabWorkflowEvaluations::class)->intent($item);
+    }
+    protected function evidenceReviewContext(IguideLabWorkflowItem $item,IguideLabComposite $composite,IguideLabAnalysis $analysis,array $qa): array
+    {
+        return ['protectedFeatures'=>array_column($analysis->proposal['protectedFeatures'],'description'),
+            'sourceCaveats'=>[...($analysis->proposal['uncertainties']??[]),'The scene plan has no separate structured optical dependency inventory; independently inspect reflections, shadows and glazing.'],
+            'opticalDependencies'=>[],'reviewRequirements'=>$this->evaluationReviewRequirements($analysis->proposal,$qa)];
+    }
 
     public function evaluationReviewRequirements(array $proposal, array $qa): array
     {

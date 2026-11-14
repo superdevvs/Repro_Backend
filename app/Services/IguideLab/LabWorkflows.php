@@ -88,6 +88,9 @@ class LabWorkflows
     private function advance(IguideLabWorkflow $workflow, IguideLabWorkflowItem $item, IguideLabProject $project): void
     {
         $case = app(LabWorkflowSources::class)->verify($project->id, $item->source);
+        if ($item->preset === 'grass' && isset($workflow->policy['grassAssessment'])) {
+            app(LabGrassWorkflow::class)->advance($workflow,$item,$project); return;
+        }
         if ($item->preset === 'staging' && LabStagingAssessmentPolicy::enabled($workflow->policy,$item->preset)) {
             app(LabStagingWorkflow::class)->advance($workflow,$item,$project); return;
         }

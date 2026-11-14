@@ -136,7 +136,9 @@ class LabStagingAssessments
         app(LabWorkflowInvocation::class)->verify(app(LabWorkflowSteps::class)->invocation($step), $step->project_id, $step->request_id, 'analysis');
         $bridge = app(LabStagingAssessmentBridge::class); $bridge->validate($step->input['recipe']); abort_unless($this->ready(), 503);
         $fresh = app(LabStagingAssessmentContext::class)->capture($item, $step->input['sectionId'], $step->input['candidateRunId']);
-        abort_unless($fresh === $step->input['contextSnapshot'], 422, 'The actual source, candidate or parent context changed.');
+        // JSON persistence normalizes integral floats (0.0 -> 0); compare the
+        // actual persisted representation, retaining all values and source hashes.
+        abort_unless(LabAnalysisRecipes::hash($fresh) === LabAnalysisRecipes::hash($step->input['contextSnapshot']), 422, 'The actual source, candidate or parent context changed.');
         return $item;
     }
     public function reserveSegmentationSteps(IguideLabStagingAssessment $record): array

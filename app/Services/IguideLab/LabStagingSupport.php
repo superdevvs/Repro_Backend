@@ -32,7 +32,7 @@ class LabStagingSupport
     }
     public function validate(array $snapshot): void
     {
-        abort_unless(LabAnalysisRecipes::hash($snapshot)===LabAnalysisRecipes::hash($this->snapshot())&&$this->ready(),503,'Validated staging support changed or is unavailable.');
+        abort_unless(LabMachineSegmentationPlan::canonicalHash($snapshot)===LabMachineSegmentationPlan::canonicalHash($this->snapshot())&&$this->ready(),503,'Validated staging support changed or is unavailable.');
     }
     public function derive(IguideLabWorkflowItem $item,IguideLabStagingAssessment $assessment,array $snapshot): array
     {
@@ -42,16 +42,13 @@ class LabStagingSupport
             $step=IguideLabWorkflowStep::where('project_id',$item->project_id)->where('item_id',$item->id)->where('step_key',$key.'-'.$assessment->id)->sole();
             $trusted=$service->forSegmentation($step); // Revalidate native, cut, candidate, context, recipe and cancellation.
             abort_unless($trusted['assessmentId']===$assessment->id,422);
-            $record=IguideLabMachineSegmentation::where('project_id',$item->project_id)->where('step_id',$step->id)->sole();
-            abort_unless($record->status==='completed'&&$record->id===$step->child_id&&$record->request_id===$step->request_id
-                &&$record->request_hash===$step->input_sha256&&$record->data['plan']===$trusted['boundPlan'],422,'Segmentation receipt binding changed.');
-            $receipt=$record->result['receipt']; $association=$service->associate($step,$receipt);
-            abort_unless($association['status']==='ready_for_support_validation'
-                &&LabAnalysisRecipes::hash($association)===LabAnalysisRecipes::hash($record->result['association']),422);
+            $verified=app(LabStagingSegmentationAuthority::class)->verifiedReceipt($step);
+            $recordId=$verified['recordId'];$receipt=$verified['receipt'];$association=$verified['association'];
+            abort_unless($verified['plan']===$trusted['boundPlan'],422);
             $plans[]=$trusted['boundPlan']; $receipts[]=$receipt;
             foreach($association['associations'] as $bound) {
-                $artifact=collect($record->result['artifacts'])->firstWhere('index',$bound['maskIndex']);
-                $expected='iguide-lab/'.$item->project_id.'/machine-segmentations/'.$record->id.'/mask-'.$bound['maskIndex'].'.png';
+                $artifact=collect($verified['artifacts'])->firstWhere('index',$bound['maskIndex']);
+                $expected='iguide-lab/'.$item->project_id.'/machine-segmentations/'.$recordId.'/mask-'.$bound['maskIndex'].'.png';
                 abort_unless($artifact&&$artifact['path']===$expected&&$artifact['sha256']===$bound['maskSha256'],422);
                 $path=app(LabStagingAssessmentContext::class)->file($item->project_id,$expected,$bound['maskSha256'],LabMachineSegmentationTransport::MAX_MASK_BYTES);
                 $pixels=app(LabMachineMaskPixels::class)->describe(file_get_contents($path));
@@ -64,8 +61,8 @@ class LabStagingSupport
         $base=$assessment->data['base']; $final=$bridge->run($item->project_id,$base.'/finalize-support-request.json',[
             'schemaVersion'=>1,'operation'=>'finalize-support','outputDirectory'=>$disk->path($base.'/support-authority'),
             'assessment'=>$assessment->data['resultAsset'],'plans'=>$bridge->json($base.'/final-support-plans.json',$plans),
-            'receipts'=>$bridge->json($base.'/final-support-receipts.json',$receipts)],$assessment->data['recipe']);
-        abort_unless($final['status']==='ready_for_support_validation',422,'Machine support authority requires review.');
+            'receipts'=>array_map(fn($receipt,$index)=>$bridge->json($base.'/final-support-receipt-'.$index.'.json',$receipt),$receipts,array_keys($receipts))],$assessment->data['recipe']);
+        abort_unless($final['resultStatus']==='ready_for_support_validation',422,'Machine support authority requires review.');
         $supportAssessment=$bridge->output($item->project_id,$final,'support-assessment');
         $context=$assessment->data['contextSnapshot'];
         $asset=function(string $id)use($context,$item){$a=collect($context['assets'])->firstWhere('id',$id); abort_unless($a,422);
@@ -87,6 +84,11 @@ class LabStagingSupport
         $process->run(); abort_unless($process->isSuccessful(),422,'Automatic support validation failed.');
         $path=$out.'/report.json'; abort_unless($disk->exists($path)&&!is_link($disk->path($path))&&filesize($disk->path($path))<=1024*1024,422);
         $report=json_decode($disk->get($path),true,flags:JSON_THROW_ON_ERROR);
+        $runtime=json_decode(file_get_contents((string)config('iguide-lab.staging_support_runtime_manifest')),true,flags:JSON_THROW_ON_ERROR);
+        abort_unless(($report['adapterSha256']??null)===$snapshot['workerSha256']
+            &&LabAnalysisRecipes::hash($report['runtime']??[])===LabAnalysisRecipes::hash(['opencv'=>$runtime['opencvVersion'],'numpy'=>$runtime['numpyVersion'],
+                'opencvBuildSha256'=>$runtime['opencvBuildSha256'],'codeSha256'=>$snapshot['coreSha256']])
+            &&LabAnalysisRecipes::hash($report['workerRuntime']??[])===LabAnalysisRecipes::hash(['python'=>$runtime['pythonVersion'],'pillow'=>$runtime['pillowVersion']]),422,'The support runtime differs from its validated snapshot.');
         abort_unless(in_array($report['status']??null,['needs_review','ready_for_unreviewed_composition'],true)&&($report['automaticAcceptance']??true)===false
             &&($report['providerCalls']??-1)===0&&($report['nativeCompositionPerformed']??true)===false
             &&$report['sourceCutSha256']===$request['sourceCut']['sha256']&&$report['candidateCutSha256']===$request['candidateCut']['sha256']

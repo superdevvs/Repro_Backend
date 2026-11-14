@@ -23,7 +23,7 @@ class LabStagingWorkflow
     }
     public function validateSnapshot(array $snapshot): void
     {
-        abort_unless(LabAnalysisRecipes::hash($snapshot)===LabAnalysisRecipes::hash($this->snapshot()),422,'The reserved staging implementation changed.');
+        abort_unless(LabMachineSegmentationPlan::canonicalHash($snapshot)===LabMachineSegmentationPlan::canonicalHash($this->snapshot()),422,'The reserved staging implementation changed.');
     }
     public function advance(IguideLabWorkflow $workflow,IguideLabWorkflowItem $item,IguideLabProject $project): void
     {
@@ -32,6 +32,7 @@ class LabStagingWorkflow
         $this->validateSnapshot($workflow->policy['stagingWorkflow']);
         abort_unless($this->ready(),503,'Automatic staging runtime is unavailable.');
         app(LabAnalysisRecipes::class)->validate($workflow->policy['analysisRecipe']);
+        app(LabAnalysisRecipes::class)->validate($workflow->policy['sectionAnalysisRecipe']);
         abort_unless($workflow->policy['modelId']==='gpt-image-2.6-sunburst'&&$workflow->policy['quality']==='high'&&$workflow->policy['complexity']==='low'
             &&$workflow->policy['evaluationRecipeSha256']===LabVisualQualityProtocol::recipeSha256()
             &&$workflow->policy['evaluationParserSha256']===hash_file('sha256',(new \ReflectionClass(LabVisualQualityProtocol::class))->getFileName()),422);
@@ -55,8 +56,12 @@ class LabStagingWorkflow
         if(!$section)$section=app(LabSections::class)->start($project,$sectionInput+['requestId'=>$sectionStep->request_id]);
         elseif($section->status==='queued'&&$section->started_at===null&&$section->created_at->lt(now()->subMinute())) {
             // Free local child, only a never-started extraction is eligible for dispatch reconciliation.
-            app(LabWorkflowInvocation::class)->verify($steps->invocation($sectionStep),$project->id,$sectionStep->request_id,'section');
-            \App\Jobs\ProcessIguideLabSection::dispatch($section->id);
+            $claimed=app(LabWorkflowInvocation::class)->claim($steps->invocation($sectionStep),$project->id,$sectionStep->request_id,'section',function()use($section,$sectionStep){
+                $fresh=$section->fresh();$step=$sectionStep->fresh();$data=$step->data??[];
+                if($fresh->status!=='queued'||$fresh->started_at!==null||(int)($data['lastQueueReconciledAt']??0)>now()->timestamp-60)return false;
+                $data['lastQueueReconciledAt']=now()->timestamp;$step->update(['data'=>$data]);return true;
+            });
+            if($claimed)\App\Jobs\ProcessIguideLabSection::dispatch($section->id);
         }
         $steps->attach($sectionStep,$section->id);$data['sectionId']=$section->id;
         if(!$this->completed($item,$section,'preparing',$data))return;
@@ -67,6 +72,11 @@ class LabStagingWorkflow
         if(!$this->completed($item,$analysis,'analyzing',$data))return;
         if(!$this->threeTargets($analysis->proposal)||($analysis->proposal['workflow']['mode']??null)!=='whole_panorama'){
             $owner->finish($item,'needs_review','unsupported_section_plan','The actual section does not support the unchanged three-object scope.',$data);return;}
+        $context=$analysis->data['sourceContext']??null;
+        abort_unless(is_array($context),422,'The actual section has no verified native parent context.');
+        app(LabAnalysisSourceContext::class)->verify($cut,$context);
+        abort_unless(($context['binding']['nativeCaseId']??null)===$native->id&&($context['binding']['sectionId']??null)===$section->id
+            &&($context['binding']['nativeSourceSha256']??null)===$native->source_sha256,422,'Section analysis parent authority changed.');
         $imageInput=['caseId'=>$cut->id,'preset'=>'staging','style'=>$item->style,'modelId'=>$workflow->policy['modelId'],'prompt'=>$analysis->proposal['generationPrompt'],
             'options'=>array_replace($analysis->settings['options'],['analysisId'=>$analysis->id,'promptMode'=>'scene-plan','complexity'=>'low','sectionId'=>$section->id])];
         $imageStep=$steps->reserve($item,'staging-image','image',$imageInput);
@@ -78,6 +88,9 @@ class LabStagingWorkflow
         $assessments=app(LabStagingAssessments::class);$assessmentStep=$assessments->reserve($item,$section->id,$run->id);
         $assessment=$assessments->start($assessmentStep);$data['assessmentId']=$assessment->id;
         if(!$this->completed($item,$assessment,'checking',$data))return;
+        if(($assessment->result['status']??null)!=='ready_for_segmentation'){
+            $data['assessmentReviewReasons']=$assessment->result['reviewReasons']??[];
+            $owner->finish($item,'needs_review','placement_requires_review','Actual placement or its optical/context dependencies require review before segmentation.',$data);return;}
         $segSteps=$assessments->reserveSegmentationSteps($assessment);
         foreach(['source-floor','candidate-furniture'] as $role) {
             $step=collect($segSteps)->first(fn($s)=>($s->input['logicalPlan']['stepKey']??null)===$role);abort_unless($step,422);

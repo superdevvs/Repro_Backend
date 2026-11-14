@@ -45,11 +45,13 @@ class IguideLabMachineSegmentationTest extends TestCase
             'output_sha256'=>hash('sha256',$output),'output_width'=>2048,'output_height'=>2048,
             'options'=>['sourceSection'=>$snapshot,'preparedInputSha256'=>[hash('sha256',LabImages::prepared($source))]]]);
         $lookup=fn($step)=>$this->plans[$step->id];
-        app()->instance(LabMachineSegmentationAuthority::class,new class($lookup) implements LabMachineSegmentationAuthority {
+        $authority=new class($lookup) extends \App\Services\IguideLab\LabStagingSegmentationAuthority {
             public function __construct(private \Closure $lookup) {}
             public function plan(IguideLabWorkflowStep $step): array { return ($this->lookup)($step); }
             public function associate(IguideLabWorkflowStep $step,array $receipt): array { return ['status'=>'ready_for_support_validation','associations'=>[],'synthetic'=>true]; }
-        });
+        };
+        app()->instance(LabMachineSegmentationAuthority::class,$authority);
+        app()->instance(\App\Services\IguideLab\LabStagingSegmentationAuthority::class,$authority);
         app()->instance(LabMachineSegmentationTransport::class,new class extends LabMachineSegmentationTransport { protected function addresses(string $host): array { return ['8.8.8.8']; } });
     }
 
@@ -127,6 +129,7 @@ class IguideLabMachineSegmentationTest extends TestCase
     public function test_missing_typed_assessment_binding_stops_before_any_record_or_call(): void
     {
         app()->offsetUnset(LabMachineSegmentationAuthority::class);
+        app()->offsetUnset(\App\Services\IguideLab\LabStagingSegmentationAuthority::class);
         try { app(LabMachineSegmentations::class)->start($this->step('source-floor')); $this->fail('Missing authority passed.'); }
         catch (\Symfony\Component\HttpKernel\Exception\HttpException $e) { $this->assertSame(503,$e->getStatusCode()); }
         $this->assertSame(0,IguideLabMachineSegmentation::count()); Http::assertNothingSent();
@@ -159,6 +162,24 @@ class IguideLabMachineSegmentationTest extends TestCase
         try { $service->start($this->step('candidate-furniture')); $this->fail('Changed floor mask allowed furniture spending.'); }
         catch (\Symfony\Component\HttpKernel\Exception\HttpException $e) { $this->assertSame(422,$e->getStatusCode()); }
         $this->assertSame(1,Http::recorded()->filter(fn($pair)=>$pair[0]->method()==='POST')->count());
+    }
+
+    public function test_missing_tampered_or_reassociated_raw_receipt_blocks_reuse_and_furniture(): void
+    {
+        $service=app(LabMachineSegmentations::class);$floor=$this->step('source-floor');$record=$service->start($floor);
+        Http::fakeSequence()->push(['request_id'=>'floor-receipt'])->push(['status'=>'COMPLETED'])->push(['masks'=>[['url'=>'https://v3b.fal.media/mask.png']]])->push($this->png(2048));
+        $service->process($record);$record->refresh();$this->assertSame('completed',$record->status);
+        $disk=Storage::disk(LabService::DISK);$path='iguide-lab/'.$record->project_id.'/machine-segmentations/'.$record->id.'/provider-result.json';$raw=$disk->get($path);
+        $furniture=$this->step('candidate-furniture');$authority=app(\App\Services\IguideLab\LabStagingSegmentationAuthority::class);
+        foreach(['missing','tampered','identity'] as $mutation){
+            $disk->put($path,$raw);$record->update(['provider_request_id'=>'floor-receipt']);
+            if($mutation==='missing')$disk->delete($path);elseif($mutation==='tampered')$disk->put($path,$raw.' ');else $record->update(['provider_request_id'=>'another-receipt']);
+            foreach([fn()=>$authority->verifiedReceipt($floor->fresh()),fn()=>$service->start($furniture)] as $action){
+                try{$action();$this->fail('Changed retained receipt passed '.$mutation);}catch(\Symfony\Component\HttpKernel\Exception\HttpException $e){$this->assertSame(422,$e->getStatusCode());}
+            }
+        }
+        $this->assertSame(1,Http::recorded()->filter(fn($pair)=>$pair[0]->method()==='POST')->count());
+        $this->assertSame(1,IguideLabMachineSegmentation::count());
     }
 
     public function test_known_receipt_resume_revalidates_current_candidate_before_association(): void

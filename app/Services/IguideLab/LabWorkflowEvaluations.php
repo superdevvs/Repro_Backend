@@ -79,7 +79,7 @@ class LabWorkflowEvaluations
         $item = IguideLabWorkflowItem::where('project_id', $projectId)->findOrFail($itemId);
         app(LabWorkflowSources::class)->verify($projectId, $item->source);
         abort_unless(($evidence['context']['sourceSha256'] ?? null) === $item->source['sha256'], 422, 'Evaluation source mismatch.');
-        $intent = ['sourceSha256' => $item->source['sha256'], 'preset' => $item->preset, 'style' => $item->style, 'instructions' => $item->instructions];
+        $intent = $this->intent($item);
         abort_unless(($evidence['context']['intentSha256'] ?? null) === LabAnalysisRecipes::hash($intent)
             && ($evidence['context']['intent'] ?? null) === json_encode($intent, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)
             && ($evidence['context']['preset'] ?? null) === $item->preset && ($evidence['context']['style'] ?? null) === $item->style, 422, 'Evaluation must use the original requested intent.');
@@ -107,6 +107,19 @@ class LabWorkflowEvaluations
             $images[] = 'data:image/png;base64,'.base64_encode($bytes);
         }
         return LabVisualQualityProtocol::request($evidence['context'], $images);
+    }
+
+    /** Original user intent plus only constraints from the immutable server recipe. */
+    public function intent(IguideLabWorkflowItem $item): array
+    {
+        $intent=['sourceSha256'=>$item->source['sha256'],'preset'=>$item->preset,'style'=>$item->style,'instructions'=>$item->instructions];
+        if($item->preset==='staging'){
+            $workflow=\App\Models\IguideLabWorkflow::where('project_id',$item->project_id)->findOrFail($item->workflow_id);
+            abort_unless(LabStagingAssessmentPolicy::enabled($workflow->policy,$item->preset),422,'Staging evaluation recipe is unavailable.');
+            app(LabStagingWorkflow::class)->validateSnapshot($workflow->policy['stagingWorkflow']);
+            $intent['fixedRecipeConstraints']=LabStagingArtifacts::REVIEW_CONSTRAINTS;
+        }
+        return $intent;
     }
 
     public function attention(IguideLabWorkflowEvaluation $record, string $message, string $status = 'needs_attention'): void
