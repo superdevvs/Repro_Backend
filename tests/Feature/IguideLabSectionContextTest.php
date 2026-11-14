@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\IguideLabAnalysis;
 use App\Models\IguideLabCase;
+use App\Models\IguideLabImport;
 use App\Models\IguideLabProject;
 use App\Models\IguideLabSection;
 use App\Services\IguideLab\LabAnalyses;
@@ -190,6 +191,74 @@ class IguideLabSectionContextTest extends TestCase
         $this->withToken($this->token)->get('/api/iguide-lab/analyses/'.$record->id.'/views/parent_zenith')->assertNotFound();
         $data = $record->data; $data['views'][5]['path'] = $this->native->source_path; $record->update(['data' => $data]);
         $this->withToken($this->token)->get($url)->assertNotFound();
+    }
+
+    public function test_completed_import_is_explicit_native_context_and_keeps_same_request_replay(): void
+    {
+        $import = $this->convertNativeToImport(); $input = $this->input();
+        $record = app(LabAnalyses::class)->start($this->project, $input);
+        $binding = $record->data['sourceContext']['binding'];
+        $this->assertSame('completed_scan_import', $binding['sourceOrigin']);
+        $this->assertSame($this->native->id, $binding['visibleParentCaseId']);
+        $this->assertSame(['version' => LabAnalysisSourceContext::IMPORT_AUTHORITY, 'importId' => $import->id,
+            'importSourceKey' => 'pano-fixture', 'mappingSha256' => LabAnalysisRecipes::hash($import->sources[0])], $binding['sourceAuthority']);
+        $this->assertNull($this->native->native_source);
+        $this->assertSame($record->id, app(LabAnalyses::class)->start($this->project, $input)->id);
+        $this->exportFixture('importedQueued', app(LabAnalyses::class)->dto($record));
+        Http::fake(['api.openai.com/v1/responses' => Http::response($this->response(true))]);
+        app(LabAnalyses::class)->process($record); $record->refresh();
+        $this->assertSame('completed', $record->status, $record->error ?? '');
+        $this->assertSame(LabAnalysisSourceContext::IDS, array_column($record->data['views'], 'id'));
+        Http::assertSent(fn ($request) => json_decode($request['input'][0]['content'][0]['text'], true)['sourceContext']['binding'] === $binding);
+        $draft = app(LabAnalyses::class)->appliedDraft($this->project->id, $record->id, $this->cut, 'lifestyle', null, [], $record->proposal['generationPrompt']);
+        $this->assertSame($record->data['sourceContext']['bindingSha256'], $draft['sourceContextBindingSha256']);
+        $this->exportFixture('importedCompleted', app(LabAnalyses::class)->dto($record));
+        $changed = $import->sources; $changed[0]['importSourceKey'] = 'different-source'; $import->update(['sources' => $changed]);
+        try { app(LabAnalyses::class)->appliedDraft($this->project->id, $record->id, $this->cut, 'lifestyle', null, [], $record->proposal['generationPrompt']); $this->fail('Changed import authority was applied.'); }
+        catch (\Symfony\Component\HttpKernel\Exception\HttpException $error) { $this->assertSame(422, $error->getStatusCode()); }
+        Http::assertSentCount(1); $this->assertSame(0, $this->project->fresh()->used_runs);
+    }
+
+    public function test_missing_foreign_incomplete_or_mismatched_import_authority_is_not_a_metadata_claim(): void
+    {
+        $import = $this->convertNativeToImport(); $mapping = $import->sources;
+        $foreign = IguideLabProject::create(['name' => 'Foreign', 'token_hash' => str_repeat('f', 64), 'expires_at' => now()->addDay()]);
+        $mutations = [
+            ['status' => 'importing'], ['project_id' => $foreign->id], ['sources' => []],
+            ['sources' => [array_replace($mapping[0], ['sourceSha256' => str_repeat('e', 64)])]],
+            ['sources' => [array_replace($mapping[0], ['width' => 2048])]], ['sources' => [$mapping[0], $mapping[0]]],
+        ];
+        foreach ($mutations as $change) {
+            $import->update($change);
+            $status = $this->withToken($this->token)->postJson('/api/iguide-lab/analyses', $this->input())->status();
+            $this->assertContains($status, [404, 422]);
+            $import->update(['status' => 'completed', 'project_id' => $this->project->id, 'sources' => $mapping]);
+        }
+        $this->native->update(['metadata' => ['role' => 'imported-panorama', 'importId' => (string) Str::uuid()]]);
+        $this->withToken($this->token)->postJson('/api/iguide-lab/analyses', $this->input())->assertUnprocessable();
+        $this->assertSame(0, IguideLabAnalysis::count()); Http::assertNothingSent();
+    }
+
+    public function test_import_mapping_drift_after_reservation_stops_before_provider(): void
+    {
+        $import = $this->convertNativeToImport(); $record = $this->reserve();
+        $mapping = $import->sources; $mapping[0]['importSourceKey'] = 'changed-key'; $import->update(['sources' => $mapping]);
+        app(LabAnalyses::class)->process($record); $record->refresh();
+        $this->assertSame('needs_attention', $record->status); $this->assertEmpty($record->provider_attempts); Http::assertNothingSent();
+    }
+
+    private function convertNativeToImport(): IguideLabImport
+    {
+        $id = (string) Str::uuid(); $disk = Storage::disk(LabService::DISK);
+        $path = 'iguide-lab/'.$this->project->id.'/imports/'.$id.'/'.$this->native->id.'.png';
+        $disk->put($path, $disk->get($this->native->source_path));
+        $this->native->update(['source_path' => $path, 'metadata' => ['role' => 'imported-panorama', 'importId' => $id]]);
+        $geometryPath = $this->section->data['geometryPath']; $geometry = json_decode($disk->get($geometryPath), true);
+        $geometry['source']['path'] = $disk->path($path); $bytes = json_encode($geometry); $disk->put($geometryPath, $bytes);
+        $this->section->update(['data' => array_replace($this->section->data, ['geometrySha256' => hash('sha256', $bytes)])]);
+        return IguideLabImport::create(['id' => $id, 'project_id' => $this->project->id, 'request_id' => (string) Str::uuid(),
+            'request_hash' => str_repeat('d', 64), 'source_kind' => 'zip', 'private_input' => [], 'status' => 'completed',
+            'sources' => [['caseId' => $this->native->id, 'sourceSha256' => $this->native->source_sha256, 'width' => 4096, 'height' => 2048, 'importSourceKey' => 'pano-fixture']]]);
     }
 
     private function exportFixture(string $name, array $value): void

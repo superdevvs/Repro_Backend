@@ -63,6 +63,29 @@ class IguideLabSectionAnalysisProtocolTest extends TestCase
         LabSectionAnalysisProtocol::compile($recipe, $context, $images);
     }
 
+    public function test_import_origin_requires_closed_versioned_authority_and_cannot_be_attached_metadata(): void
+    {
+        [$recipe, $context, $images] = $this->fixture();
+        $binding = &$context['sourceContext']['binding']; $binding['sourceOrigin'] = 'completed_scan_import';
+        $binding['visibleParentCaseId'] = $binding['nativeCaseId'];
+        $binding['sourceAuthority'] = ['version' => LabAnalysisSourceContext::IMPORT_AUTHORITY, 'importId' => (string) Str::uuid(),
+            'importSourceKey' => 'pano-fixture', 'mappingSha256' => str_repeat('e', 64)];
+        $context['sourceContext']['bindingSha256'] = LabAnalysisRecipes::hash($binding); unset($binding);
+        $payload = LabSectionAnalysisProtocol::compile($recipe, $context, $images);
+        $this->assertSame($context, json_decode($payload['input'][0]['content'][0]['text'], true));
+        $changes = [
+            function ($c) { unset($c['sourceContext']['binding']['sourceAuthority']); return $c; },
+            fn ($c) => array_replace_recursive($c, ['sourceContext' => ['binding' => ['sourceOrigin' => 'uploaded_native_attachment']]]),
+            fn ($c) => array_replace_recursive($c, ['sourceContext' => ['binding' => ['visibleParentCaseId' => (string) Str::uuid()]]]),
+            fn ($c) => array_replace_recursive($c, ['sourceContext' => ['binding' => ['sourceAuthority' => ['version' => 'unverified']]]]),
+        ];
+        foreach ($changes as $change) {
+            $modified = $change($context); $modified['sourceContext']['bindingSha256'] = LabAnalysisRecipes::hash($modified['sourceContext']['binding']);
+            try { LabSectionAnalysisProtocol::compile($recipe, $modified, $images); $this->fail('Invalid import authority accepted.'); }
+            catch (\InvalidArgumentException $error) { $this->assertNotEmpty($error->getMessage()); }
+        }
+    }
+
     public function test_missing_or_wrong_role_and_native_pose_mismatch_are_rejected(): void
     {
         [$recipe, $context, $images] = $this->fixture();

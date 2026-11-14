@@ -43,7 +43,7 @@ final class LabSectionAnalysisProtocol
             || ($binding['sourceSha256'] ?? null) !== ($context['sourceSha256'] ?? null)
             || ($binding['version'] ?? null) !== LabAnalysisSourceContext::VERSION
             || ($binding['viewRecipe'] ?? null) !== LabAnalysisSourceContext::VIEW_RECIPE
-            || ($binding['sourceOrigin'] ?? null) !== 'uploaded_native_attachment'
+            || ! in_array($binding['sourceOrigin'] ?? null, ['uploaded_native_attachment', 'completed_scan_import'], true)
             || ($binding['sourceRole'] ?? null) !== 'authoritative_edit_cut' || ($binding['contextRole'] ?? null) !== 'same_capture_context_only'
             || ($binding['scopeExpansion'] ?? null) !== false || ($binding['independentCameraEvidence'] ?? null) !== false
             || ($binding['dedicatedPoleViews'] ?? null) !== false
@@ -53,7 +53,16 @@ final class LabSectionAnalysisProtocol
             if (! is_string($binding[$key] ?? null) || ! \Illuminate\Support\Str::isUuid($binding[$key])) self::invalid('Invalid context record identity.');
         foreach (['sourceSha256', 'nativeSourceSha256', 'geometrySha256'] as $key)
             if (! is_string($binding[$key] ?? null) || ! preg_match('/\A[a-f0-9]{64}\z/D', $binding[$key])) self::invalid('Invalid context fingerprint.');
-        if (array_diff(array_keys($binding), ['version', 'sectionId', 'nativeCaseId', 'visibleParentCaseId', 'sourceSha256', 'nativeSourceSha256', 'nativeDimensions', 'geometrySha256', 'view', 'sourceOrigin', 'sourceRole', 'contextRole', 'scopeExpansion', 'independentCameraEvidence', 'dedicatedPoleViews', 'viewRecipe', 'preparationHashes'])) self::invalid('Unknown context binding field.');
+        if (array_diff(array_keys($binding), ['version', 'sectionId', 'nativeCaseId', 'visibleParentCaseId', 'sourceSha256', 'nativeSourceSha256', 'nativeDimensions', 'geometrySha256', 'view', 'sourceOrigin', 'sourceRole', 'contextRole', 'scopeExpansion', 'independentCameraEvidence', 'dedicatedPoleViews', 'viewRecipe', 'preparationHashes', 'sourceAuthority'])) self::invalid('Unknown context binding field.');
+        if ($binding['sourceOrigin'] === 'completed_scan_import') {
+            $authority = $binding['sourceAuthority'] ?? null;
+            if (! is_array($authority) || array_diff(array_keys($authority), ['version', 'importId', 'importSourceKey', 'mappingSha256'])
+                || ($authority['version'] ?? null) !== LabAnalysisSourceContext::IMPORT_AUTHORITY
+                || ! is_string($authority['importId'] ?? null) || ! \Illuminate\Support\Str::isUuid($authority['importId'])
+                || ! is_string($authority['importSourceKey'] ?? null) || $authority['importSourceKey'] === '' || strlen($authority['importSourceKey']) > 512
+                || ! is_string($authority['mappingSha256'] ?? null) || ! preg_match('/\A[a-f0-9]{64}\z/D', $authority['mappingSha256'])
+                || $binding['visibleParentCaseId'] !== $binding['nativeCaseId']) self::invalid('Invalid completed import authority.');
+        } elseif (array_key_exists('sourceAuthority', $binding)) self::invalid('Uploaded context cannot claim imported source authority.');
         foreach (['preparer', 'imagePreparation', 'diagnosticAdapter', 'geometry'] as $key)
             if (! is_string($binding['preparationHashes'][$key] ?? null) || ! preg_match('/\A[a-f0-9]{64}\z/D', $binding['preparationHashes'][$key])) self::invalid('Invalid context preparation fingerprint.');
         if (array_diff(array_keys($binding['preparationHashes']), ['preparer', 'imagePreparation', 'diagnosticAdapter', 'geometry'])) self::invalid('Unknown preparation fingerprint.');
