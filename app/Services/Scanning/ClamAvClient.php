@@ -60,8 +60,18 @@ class ClamAvClient
      * @throws ClamAvUnavailable When clamd cannot be reached or the stream is interrupted.
      * @throws InvalidArgumentException When the argument is neither a readable path nor a stream.
      */
-    public function scan($pathOrStream): ClamAvScanResult
+    public function scan($pathOrStream, ?int $readTimeoutSeconds = null): ClamAvScanResult
     {
+        // Large messaging files can take longer than the ordinary upload timeout.
+        // Keep this override scoped to one scan, including when the client is shared.
+        if ($readTimeoutSeconds !== null) {
+            if ($readTimeoutSeconds < 1 || $readTimeoutSeconds > 900) {
+                throw new InvalidArgumentException('Scan response timeout must be between 1 and 900 seconds.');
+            }
+            $scoped = clone $this;
+            $scoped->config['read_timeout'] = $readTimeoutSeconds;
+            return $scoped->scan($pathOrStream);
+        }
         if (is_resource($pathOrStream)) {
             return $this->scanStream($pathOrStream);
         }

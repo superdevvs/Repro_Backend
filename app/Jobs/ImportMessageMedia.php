@@ -14,7 +14,7 @@ class ImportMessageMedia implements ShouldQueue
 {
     use Queueable;
     public int $tries = 4;
-    public int $timeout = 600;
+    public int $timeout = 900;
     public function __construct(public string $fileID) { $this->afterCommit(); }
     public function backoff(): array { return [15, 60, 180]; }
     public function handle(): void

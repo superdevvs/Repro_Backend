@@ -54,7 +54,7 @@ class MessageMediaService
     }
     public function locked(MessageMedia $file, callable $run): mixed
     {
-        return Cache::lock('message-media:'.$file->id, 900)->block(3, fn () => $run($file->fresh()));
+        return Cache::lock('message-media:'.$file->id, 960)->block(3, fn () => $run($file->fresh()));
     }
     public function payload(MessageMedia $file): array
     {
@@ -131,7 +131,9 @@ class MessageMediaService
             abort_unless(is_file($fresh->path()) && filesize($fresh->path()) === $fresh->size, 409);
             // Tests may disable scanning; production never releases an unscanned file.
             if (! app()->environment('testing') || config('clamav.scan_on_upload', true)) {
-                $result = app(\App\Services\Scanning\ClamAvClient::class)->scan($fresh->path());
+                // The daemon permits up to 600 seconds per scan. Keep the response
+                // deadline above it and below the worker timeout for 1 GiB files.
+                $result = app(\App\Services\Scanning\ClamAvClient::class)->scan($fresh->path(), 660);
                 if (! $result->isClean()) { $fresh->update(['status' => 'rejected']); return; }
             }
             $mime = (new \finfo(FILEINFO_MIME_TYPE))->file($fresh->path()) ?: 'application/octet-stream';
