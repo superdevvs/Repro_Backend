@@ -8,7 +8,10 @@ class LabInteriorDesignWorkflow
     public function snapshot(): array
     {
         $files=[];foreach([self::class,LabInteriorDesignArtifacts::class,LabInteriorDesignImageDraft::class,LabMachineImageDrafts::class,
-            LabInteriorDesignMasks::class,LabInteriorDesignMaskPlan::class,LabMachineSegmentationCapabilities::class,LabService::class,LabProvider::class,LabWorkflowEvaluations::class] as $class)
+            LabInteriorDesignMasks::class,LabInteriorDesignMaskPlan::class,LabInteriorDesignMaterials::class,
+            LabMachineSegmentationCapabilities::class,LabMachineSegmentations::class,LabMachineSegmentationTransport::class,LabMachineSegmentationPlan::class,LabMachineMaskPixels::class,
+            LabWorkflowSteps::class,LabWorkflowInvocation::class,LabService::class,LabProvider::class,LabSections::class,LabComposites::class,
+            LabWorkflowEvaluations::class,LabWorkflowEvaluationProvider::class] as $class)
             $files[class_basename($class)]=hash_file('sha256',(new \ReflectionClass($class))->getFileName());
         return ['version'=>LabInteriorDesignPolicy::VERSION,'implementation'=>$files,'reviewRequirementsSha256'=>LabAnalysisRecipes::hash(LabInteriorDesignArtifacts::REVIEW_CONSTRAINTS)];
     }

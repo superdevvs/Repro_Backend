@@ -5,7 +5,7 @@ $root = $argv[1] ?? '';
 if (!str_starts_with($root, '/') || is_dir($root)) throw new RuntimeException('Use a new absolute private fixture directory.');
 $code = dirname(__DIR__, 2);
 $scenario = $argv[2] ?? 'success';
-if (!in_array($scenario, ['success', 'source-hold', 'cut-hold', 'source-mask-hole', 'source-receipt-drift', 'candidate-hold', 'palette-only'], true)) throw new RuntimeException('Unsupported test scenario.');
+if (!in_array($scenario, ['success', 'source-hold', 'cut-hold', 'source-mask-hole', 'source-receipt-drift', 'source-view-drift', 'source-manifest-drift', 'source-prepared-drift', 'candidate-hold', 'palette-only'], true)) throw new RuntimeException('Unsupported test scenario.');
 if (!is_dir($root)) mkdir($root,02770);
 chmod($root,02770);
 $db = $root.'/test.sqlite';
@@ -139,9 +139,16 @@ app()->instance(LabInteriorDesignWorkflow::class,new class($root) extends LabInt
 });
 $service=app(LabWorkflows::class);$workflow=$service->start($project,['requestId'=>(string)Str::uuid(),'items'=>[['caseId'=>$case->id,'preset'=>'interior-design','style'=>'modern']]]);$history=[];$drift=false;
 for($tick=0;$tick<40;$tick++){
-    $service->process($workflow->fresh());$item=IguideLabWorkflowItem::where('workflow_id',$workflow->id)->sole();$history[]=['tick'=>$tick,'status'=>$workflow->fresh()->status,'item'=>$item->toArray(),'fakeCalls'=>count($calls)];
+    $phaseStart=microtime(true);$service->process($workflow->fresh());$item=IguideLabWorkflowItem::where('workflow_id',$workflow->id)->sole();$history[]=['tick'=>$tick,'status'=>$workflow->fresh()->status,'item'=>$item->toArray(),'fakeCalls'=>count($calls),'workflowPhaseSeconds'=>round(microtime(true)-$phaseStart,3)];
     file_put_contents($root.'/history.json',json_encode($history,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES));if(in_array($workflow->fresh()->status,LabWorkflows::TERMINAL,true))break;
     foreach(IguideLabInteriorAssessment::whereIn('status',['queued','received'])->get() as $r)app(LabInteriorDesignAssessments::class)->process($r);
+    if(in_array($scenario,['source-view-drift','source-manifest-drift','source-prepared-drift'],true)&&!$drift&&($r=IguideLabInteriorAssessment::where('phase','framing')->where('status','completed')->first())){
+        $bundle=$r->data['contextSnapshot'];$disk=Storage::disk(LabService::DISK);
+        if($scenario==='source-view-drift'){$path=$bundle['assets'][1]['path'];$disk->put($path,$disk->get($path).'changed');}
+        elseif($scenario==='source-prepared-drift'){$path=$bundle['assets'][0]['path'];$disk->put($path,$disk->get($path).'changed');}
+        else{$path=dirname($bundle['assets'][0]['path']).'/views/manifest.json';$v=json_decode($disk->get($path),true);$v['views'][0]['yaw_degrees']=1;$disk->put($path,json_encode($v));}
+        $drift=true;
+    }
     if($scenario==='source-receipt-drift'&&!$drift&&($r=IguideLabInteriorAssessment::where('phase','cut')->where('status','completed')->first())){Storage::disk(LabService::DISK)->delete($r->data['providerReceipt']['response']['path']);$drift=true;}
     foreach(IguideLabSection::where('status','queued')->get() as $r)app(LabSections::class)->process($r);
     foreach(IguideLabMachineSegmentation::whereIn('status',['queued','processing'])->get() as $r)app(LabMachineSegmentations::class)->process($r);
@@ -150,10 +157,10 @@ for($tick=0;$tick<40;$tick++){
 }
 $workflow->refresh();$item->refresh();$expected=$scenario==='success'?'ready':'needs_review';
 $before=count($calls);$service->process($workflow->fresh());check(count($calls)===$before,'Terminal replay repeated HTTP');
-$posts=count(array_filter($calls,fn($c)=>$c['method']==='POST'));$expectedPosts=['success'=>9,'source-hold'=>1,'cut-hold'=>2,'source-mask-hole'=>4,'source-receipt-drift'=>2,'candidate-hold'=>6,'palette-only'=>8][$scenario];
+$posts=count(array_filter($calls,fn($c)=>$c['method']==='POST'));$expectedPosts=['success'=>9,'source-hold'=>1,'cut-hold'=>2,'source-mask-hole'=>4,'source-receipt-drift'=>2,'source-view-drift'=>1,'source-manifest-drift'=>1,'source-prepared-drift'=>1,'candidate-hold'=>6,'palette-only'=>8][$scenario];
 $proof=['status'=>$workflow->status===$expected&&$posts===$expectedPosts?'passed':'needs_diagnosis','scenario'=>$scenario,'workflowStatus'=>$workflow->status,'expectedStatus'=>$expected,
     'fakePaidPosts'=>$posts,'expectedFakePaidPosts'=>$expectedPosts,'externalProviderCalls'=>0,'terminalReplayNoHttp'=>true,'realStyleQualityClaim'=>false,'syntheticAlgorithmFixture'=>true,
-    'workflowId'=>$workflow->id,'itemId'=>$item->id,'importId'=>$import->id,'usedRuns'=>$project->fresh()->used_runs,'fakeCalls'=>$calls,'data'=>$item->data];
+    'workflowId'=>$workflow->id,'itemId'=>$item->id,'importId'=>$import->id,'usedRuns'=>$project->fresh()->used_runs,'maximumWorkflowPhaseSeconds'=>max(array_column($history,'workflowPhaseSeconds')),'fakeCalls'=>$calls,'data'=>$item->data];
 file_put_contents($root.'/proof.json',json_encode($proof,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES));check($proof['status']==='passed','Chain did not reach the expected bounded outcome.');
 echo json_encode($proof).PHP_EOL;
 

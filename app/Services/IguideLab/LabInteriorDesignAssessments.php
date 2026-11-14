@@ -17,7 +17,10 @@ class LabInteriorDesignAssessments
         foreach(['service'=>self::class,'provider'=>LabInteriorDesignProvider::class,'job'=>ProcessIguideLabInteriorAssessment::class,'validator'=>LabInteriorDesignProtocol::class,
             'policy'=>LabInteriorDesignPolicy::class,'wireCompiler'=>LabAnalysisRequestV1::class,'sectionCompiler'=>LabSectionAnalysisProtocol::class,
             'invocation'=>LabWorkflowInvocation::class,'steps'=>LabWorkflowSteps::class] as $key=>$class)$out[$key.'Sha256']=hash_file('sha256',(new \ReflectionClass($class))->getFileName());
-        foreach(['framing','cut','candidate'] as $phase)$out[$phase]=$this->protocol($phase)::snapshot();return $out;
+        foreach(['framing','cut','candidate'] as $phase)$out[$phase]=$this->protocol($phase)::snapshot();
+        // A passed assessment runtime also validates the complete PHP orchestration/authority adapter.
+        // Taking a current hash only at reservation would otherwise admit unvalidated changed code.
+        $out['workflow']=app(LabInteriorDesignWorkflow::class)->snapshot();return $out;
     }
     public function snapshot(): array
     {
