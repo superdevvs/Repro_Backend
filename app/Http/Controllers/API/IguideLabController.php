@@ -235,10 +235,22 @@ class IguideLabController extends Controller
         abort_unless(is_string($path) && str_starts_with($path, 'iguide-lab/'.$project->id.'/analyses/'.$record->id.'/')
             && ! str_contains($path, '..') && Storage::disk(LabService::DISK)->exists($path), 404);
         if (in_array($view, ['source_detail_1','source_detail_2'], true)) {
-            $descriptor=collect($record->data['stagingLayout']['detailViews']??[])->firstWhere('id',$view);
-            abort_unless(is_array($descriptor)&&($descriptor['sha256']??null)===($entry['sha256']??null)
-                &&($record->data['stagingLayout']['followup']['operation']??null)==='native_details',404);
-            app(\App\Services\IguideLab\LabStagingFramingContext::class)->file($project->id,$path,$descriptor['sha256'],8*1024*1024);
+            if (isset($record->data['stagingLayout'])) {
+                $descriptor=collect($record->data['stagingLayout']['detailViews']??[])->firstWhere('id',$view);
+                abort_unless(is_array($descriptor)&&($descriptor['sha256']??null)===($entry['sha256']??null)
+                    &&($record->data['stagingLayout']['followup']['operation']??null)==='native_details',404);
+                app(\App\Services\IguideLab\LabStagingFramingContext::class)->file($project->id,$path,$descriptor['sha256'],8*1024*1024);
+            } else {
+                // Closed read extension: public callers cannot attach native optical context.
+                try { $recipe=app(\App\Services\IguideLab\LabAnalysisRecipes::class)->validate($record->data['executionRecipe']??[]); }
+                catch (\Throwable) { abort(404); }
+                abort_unless($recipe['compilerVersion']===\App\Services\IguideLab\LabLifestyleOpticalCutProtocol::VERSION
+                    &&$recipe['instructionsVersion']===\App\Services\IguideLab\LabAnalysisRecipes::LIFESTYLE_OPTICAL_CUT
+                    &&($record->settings['viewRecipe']??null)===\App\Services\IguideLab\LabLifestyleOpticalCutProtocol::VIEW_RECIPE
+                    &&($record->data['lifestyleFraming']['version']??null)===\App\Services\IguideLab\LabLifestyleOpticalProtocol::VERSION
+                    &&($record->data['lifestyleFraming']['opticalDetails']['version']??null)==='lifestyle-bound-native-optical-context/1',404);
+                app(\App\Services\IguideLab\LabLifestyleOpticalCutViews::class)->verifyStored($record);
+            }
         }
         return response()->file(Storage::disk(LabService::DISK)->path($path), ['Content-Type' => 'image/png', 'Content-Disposition' => 'inline; filename="diagnostic-'.$view.'.png"',
             'X-Content-Type-Options' => 'nosniff', 'Cache-Control' => 'private, no-store']);

@@ -28,6 +28,7 @@ class LabWorkflowPolicy
             $policy['lifestyleAssessment'] = LabLifestyleAssessmentPolicy::snapshot();
             $policy['lifestyleWorkflow'] = app(LabLifestyleWorkflow::class)->snapshot();
             $policy['lifestyleFraming'] = app(LabLifestyleFramings::class)->snapshot();
+            if (config('iguide-lab.lifestyle_optical_details_enabled', false) === true) $policy['lifestyleOpticalDetails'] = app(LabLifestyleOpticalDetails::class)->snapshot();
             $policy['sectionAnalysisRecipe'] = app(LabAnalysisRecipes::class)->snapshot(LabAnalysisRecipes::SECTION_CONTEXT);
         }
         if (config('iguide-lab.grass_workflow_enabled',false) === true && class_exists(LabGrassWorkflow::class) && app(LabGrassWorkflow::class)->ready()) {

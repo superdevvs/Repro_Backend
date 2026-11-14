@@ -36,7 +36,7 @@ final class LabLifestyleCutProtocol
     private static function binding(array $context): void
     {
         $b=$context['lifestyleFraming']??null;LabLifestyleFramingProtocol::keys($b,['version','id','resultSha256','nativeSourceSha256','view','constraints']);
-        if($b['version']!==LabLifestyleFramingProtocol::VERSION||!\Illuminate\Support\Str::isUuid($b['id'])
+        if(!in_array($b['version'],[LabLifestyleFramingProtocol::VERSION,LabLifestyleOpticalProtocol::VERSION],true)||!\Illuminate\Support\Str::isUuid($b['id'])
             ||!preg_match('/\A[a-f0-9]{64}\z/D',$b['resultSha256'])||$b['nativeSourceSha256']!==($context['sourceContext']['binding']['nativeSourceSha256']??null)
             ||$context['preset']!=='lifestyle')throw new \InvalidArgumentException('Invalid cut framing authority.');
         LabLifestyleFramingProtocol::keys($b['view'],['yaw','pitch','hFov']);
@@ -49,7 +49,7 @@ final class LabLifestyleCutProtocol
         foreach($b['constraints'] as $check) {
             LabLifestyleFramingProtocol::keys($check,['status','evidenceViewIds','reason']);
             if(!in_array($check['status'],['supported','verify_on_cut'],true))throw new \InvalidArgumentException('Blocked source framing cannot authorize a cut gate.');
-            LabLifestyleFramingProtocol::evidence($check,LabLifestyleFramingProtocol::IDS);LabLifestyleFramingProtocol::text($check['reason'],550);
+            LabLifestyleFramingProtocol::evidence($check,$b['version']===LabLifestyleOpticalProtocol::VERSION?[...LabLifestyleFramingProtocol::IDS,...LabLifestyleOpticalProtocol::DETAILS]:LabLifestyleFramingProtocol::IDS);LabLifestyleFramingProtocol::text($check['reason'],550);
         }
     }
 }

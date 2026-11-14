@@ -19,8 +19,8 @@ class LabLifestyleCutReadiness
             &&($step->input['caseId']??null)===$cut->id&&($step->input['preset']??null)==='lifestyle'
             &&($step->input['style']??null)===$analysis->settings['style']&&$analysis->source_sha256===$cut->source_sha256
             &&LabAnalysisRecipes::hash($step->input['lifestyleFraming']??[])===LabAnalysisRecipes::hash($reference),422,'Cut attempt association changed.');
-        $recipe=app(LabAnalysisRecipes::class)->validate($data['executionRecipe']);abort_unless($recipe['compilerVersion']===LabLifestyleCutProtocol::VERSION,422);
-        app(LabAnalysisSourceContext::class)->verify($cut,$data['sourceContext']);app(LabSectionAnalysisViews::class)->verifyStored($analysis);
+        $recipe=app(LabAnalysisRecipes::class)->validate($data['executionRecipe']);$optical=($reference['version']??null)===LabLifestyleOpticalProtocol::VERSION;abort_unless($recipe['compilerVersion']===($optical?LabLifestyleOpticalCutProtocol::VERSION:LabLifestyleCutProtocol::VERSION),422);
+        app(LabAnalysisSourceContext::class)->verify($cut,$data['sourceContext']);app($optical?LabLifestyleOpticalCutViews::class:LabSectionAnalysisViews::class)->verifyStored($analysis);
         $context=['sourceSha256'=>$analysis->source_sha256,'projection'=>'rectilinear','preset'=>'lifestyle','style'=>$analysis->settings['style'],
             'viewIds'=>array_column($data['views'],'id'),'instructions'=>app(LabAnalyses::class)->wireInstructions($analysis->settings),
             'sourceContext'=>$data['sourceContextManifest'],'lifestyleFraming'=>$reference];
@@ -38,8 +38,14 @@ class LabLifestyleCutReadiness
             &&$cut->projection==='rectilinear'&&[$cut->width,$cut->height]===[2048,2048],422,'Framing section association changed.');
         foreach(['yaw','pitch','hFov'] as $key)abort_unless((float)$section->view[$key]===(float)$result['view'][$key],422,'Framing section pose changed.');
         $context=app(LabAnalysisSourceContext::class)->capture($cut);abort_unless($context&&$context['binding']['sectionId']===$section->id&&$context['binding']['nativeCaseId']===$item->case_id,422);
-        return ['version'=>LabLifestyleFramingProtocol::VERSION,'id'=>$framing->id,'resultSha256'=>$framing->result_sha256,
+        $reference=['version'=>$result['version'],'id'=>$framing->id,'resultSha256'=>$framing->result_sha256,
             'nativeSourceSha256'=>$item->source['sha256'],'view'=>$result['view'],'constraints'=>$result['constraints']];
+        if($result['version']===LabLifestyleOpticalProtocol::VERSION){$bundle=$framing->data['contextSnapshot'];$context=$bundle['context'];$parent=$context['parent'];
+            $reference['opticalDetails']=['version'=>'lifestyle-bound-native-optical-context/1','sourceAuthoritySha256'=>$context['sourceAuthoritySha256'],
+                'responseSha256'=>$framing->data['providerReceipt']['response']['sha256'],
+                'parent'=>$parent===null?null:array_intersect_key($parent,array_flip(['id','resultSha256','responseSha256'])),
+                'manifestSha256'=>$bundle['nativeDetailManifestSha256']??null,'views'=>array_slice($context['views'],7)];}
+        return $reference;
     }
     public function verifyReference(array $invocation,IguideLabCase $cut,array $reference): void
     {
@@ -60,8 +66,8 @@ class LabLifestyleCutReadiness
             &&$step->input_sha256===LabAnalysisRecipes::hash($step->input)&&$invocation===app(LabWorkflowSteps::class)->invocation($step)
             &&LabAnalysisRecipes::hash($step->input['lifestyleFraming']??[])===LabAnalysisRecipes::hash($reference)
             &&$analysis->source_sha256===$cut->source_sha256&&$analysis->proposal_sha256===LabAnalysisRecipes::hash($analysis->proposal),422,'Cut gate ownership changed.');
-        $recipe=app(LabAnalysisRecipes::class)->validate($data['executionRecipe']);abort_unless($recipe['compilerVersion']===LabLifestyleCutProtocol::VERSION,422);
-        app(LabAnalysisSourceContext::class)->verify($cut,$data['sourceContext']);app(LabSectionAnalysisViews::class)->verifyStored($analysis);
+        $recipe=app(LabAnalysisRecipes::class)->validate($data['executionRecipe']);$optical=($reference['version']??null)===LabLifestyleOpticalProtocol::VERSION;abort_unless($recipe['compilerVersion']===($optical?LabLifestyleOpticalCutProtocol::VERSION:LabLifestyleCutProtocol::VERSION),422);
+        app(LabAnalysisSourceContext::class)->verify($cut,$data['sourceContext']);app($optical?LabLifestyleOpticalCutViews::class:LabSectionAnalysisViews::class)->verifyStored($analysis);
         $context=['sourceSha256'=>$analysis->source_sha256,'projection'=>'rectilinear','preset'=>'lifestyle','style'=>$analysis->settings['style'],
             'viewIds'=>array_column($data['views'],'id'),'instructions'=>app(LabAnalyses::class)->wireInstructions($analysis->settings),
             'sourceContext'=>$data['sourceContextManifest'],'lifestyleFraming'=>$reference];
@@ -69,7 +75,7 @@ class LabLifestyleCutReadiness
         foreach($data['views'] as $view)$images[]='data:image/png;base64,'.base64_encode(file_get_contents($files->file($analysis->project_id,$view['path'],$view['sha256'])));
         $payload=app(LabAnalysisRecipes::class)->request($data['executionRecipe'],$context,$images);
         $attempts=$analysis->provider_attempts??[];$index=count($attempts)-1;$last=$attempts[$index]??[];$receipt=$data['lifestyleCutReceipt']??[];
-        abort_unless(in_array(count($attempts),[1,2],true)&&($attempts[0]['credentialSource']??null)==='lab-primary'&&($last['status']??null)==='received'
+        abort_unless(in_array(count($attempts),[1,2],true)&&($attempts[0]['credentialSource']??null)==='lab-primary'&&($attempts[0]['requestedModelId']??null)==='gpt-6-astra'&&($last['status']??null)==='received'
             &&($last['requestedModelId']??null)==='gpt-6-astra'&&($last['httpStatus']??0)>=200&&($last['httpStatus']??0)<300
             &&($last['providerRequestId']??null)===$analysis->provider_request_id&&is_string($analysis->provider_request_id)&&$analysis->provider_request_id!==''
             &&($index===0||(($attempts[0]['status']??null)==='quota_rejected'&&($attempts[0]['httpStatus']??null)===429&&($last['credentialSource']??null)==='dashboard-fallback'))
@@ -78,7 +84,7 @@ class LabLifestyleCutReadiness
         abort_unless(($receipt['path']??null)===$path&&($receipt['providerRequestId']??null)===$analysis->provider_request_id,422);
         $raw=json_decode(file_get_contents($files->file($analysis->project_id,$path,$receipt['sha256']??'',512*1024)),true,flags:JSON_THROW_ON_ERROR);
         abort_unless(($raw['model']??null)==='gpt-6-astra'&&is_string($raw['id']??null)&&$raw['id']!==''&&$raw['id']===($receipt['responseId']??null),422);
-        $parsed=LabLifestyleCutProtocol::parse($raw,$context);$gate=$parsed['lifestyleReadiness'];
+        $parsed=app(LabAnalysisRecipes::class)->parse($data['executionRecipe'],$raw,$context);$gate=$parsed['lifestyleReadiness'];
         abort_unless(LabAnalysisRecipes::hash($parsed['proposal'])===$analysis->proposal_sha256&&LabAnalysisRecipes::hash($gate)===LabAnalysisRecipes::hash($data['lifestyleReadiness']??[]),422,'Actual cut gate changed.');
         if($requirePass)abort_unless($gate['allRequiredChecksPass']===true&&($analysis->proposal['workflow']['mode']??null)==='whole_panorama'
             &&app(LabLifestyleWorkflow::class)->twoTargets($analysis->proposal),422,'Actual cut scope/clearance/optical checks require review.');

@@ -86,7 +86,8 @@ class LabAnalyses
                 }
                 if ($lifestyleFraming !== null) {
                     abort_unless($sourceContext !== null && isset($policy['lifestyleFraming']), 422);
-                    $snapshot = $policy['lifestyleFraming']['cutRecipe'];
+                    $snapshot = ($lifestyleFraming['version']??null)===LabLifestyleOpticalProtocol::VERSION
+                        ? ($policy['lifestyleOpticalDetails']['cutRecipe']??null) : $policy['lifestyleFraming']['cutRecipe'];
                 }
                 if ($layout !== null) {
                     abort_unless($sourceContext !== null && isset($policy['stagingLayout']), 422);
@@ -97,6 +98,7 @@ class LabAnalyses
             app(LabAnalysisRecipes::class)->validate($snapshot);
             $executionSettings = $settings;
             if ($sourceContext) $executionSettings['viewRecipe'] = LabAnalysisSourceContext::VIEW_RECIPE;
+            if (($lifestyleFraming['version']??null)===LabLifestyleOpticalProtocol::VERSION) $executionSettings['viewRecipe'] = LabLifestyleOpticalCutProtocol::VIEW_RECIPE;
             if ($layout !== null) $executionSettings['viewRecipe'] = LabStagingLayoutProtocol::VIEW_RECIPE;
             if ($repairContext !== null) $executionSettings['viewRecipe'] = LabWorkflowRepairContext::VIEW_RECIPE;
             abort_unless($snapshot['recipe']['protocolVersion'] === $executionSettings['protocolVersion'] && $snapshot['recipe']['viewRecipe'] === $executionSettings['viewRecipe'], 503, 'This analysis protocol is unavailable.');
@@ -112,7 +114,7 @@ class LabAnalyses
         }), 'iguide-lab.analysis-reserve');
         // The layout verifier requires the durable child backlink before a worker
         // can claim either provider attempt; publish it before dispatch/recovery.
-        if ($layout !== null) {
+        if ($layout !== null || $lifestyleFraming !== null) {
             $step = \App\Models\IguideLabWorkflowStep::where('project_id', $project->id)->findOrFail($workflowInvocation['stepId']);
             app(LabWorkflowSteps::class)->attach($step, $record->id);
         }
@@ -142,11 +144,12 @@ class LabAnalyses
             $case = IguideLabCase::where('project_id', $record->project_id)->findOrFail($record->case_id);
             abort_unless(hash_equals($record->source_sha256, $case->source_sha256), 422, 'The source association changed.');
             $hasRepairContext = $recipe['compilerVersion'] === LabRepairAnalysisProtocol::VERSION;
-            $hasContext = in_array($recipe['compilerVersion'], [LabSectionAnalysisProtocol::VERSION, LabStagingCutProtocol::VERSION, LabLifestyleCutProtocol::VERSION, LabStagingLayoutProtocol::VERSION], true);
+            $hasContext = in_array($recipe['compilerVersion'], [LabSectionAnalysisProtocol::VERSION, LabStagingCutProtocol::VERSION, LabLifestyleCutProtocol::VERSION, LabLifestyleOpticalCutProtocol::VERSION, LabStagingLayoutProtocol::VERSION], true);
             $layoutGate = $recipe['compilerVersion'] === LabStagingLayoutProtocol::VERSION;
             abort_unless($layoutGate === isset($record->data['stagingLayout']), 422);
             if ($layoutGate) app(LabStagingLayoutReadiness::class)->verifyReference($record->data['workflowInvocation'], $case, $record->data['stagingLayout']);
-            $lifestyleGate = $recipe['compilerVersion'] === LabLifestyleCutProtocol::VERSION;
+            $opticalGate = $recipe['compilerVersion'] === LabLifestyleOpticalCutProtocol::VERSION;
+            $lifestyleGate = $opticalGate || $recipe['compilerVersion'] === LabLifestyleCutProtocol::VERSION;
             abort_unless($lifestyleGate === isset($record->data['lifestyleFraming']), 422);
             if ($lifestyleGate) app(LabLifestyleCutReadiness::class)->verifyReference($record->data['workflowInvocation'], $case, $record->data['lifestyleFraming']);
             $stagingGate = $recipe['compilerVersion'] === LabStagingCutProtocol::VERSION;
@@ -155,7 +158,7 @@ class LabAnalyses
             abort_unless($hasContext === isset($record->data['sourceContext']), 422, 'The analysis context recipe association changed.');
             abort_unless($hasRepairContext === isset($record->data['repairContext']), 422, 'The repair recipe association changed.');
             $prepared = $hasRepairContext ? app(LabWorkflowRepairContext::class)->prepare($record, $case)
-                : ($hasContext ? ($layoutGate ? app(LabStagingLayoutViews::class)->prepare($record, $case, $record->data['sourceContext']) : app(LabSectionAnalysisViews::class)->prepare($record, $case, $record->data['sourceContext']))
+                : ($hasContext ? ($layoutGate ? app(LabStagingLayoutViews::class)->prepare($record, $case, $record->data['sourceContext']) : app($opticalGate ? LabLifestyleOpticalCutViews::class : LabSectionAnalysisViews::class)->prepare($record, $case, $record->data['sourceContext']))
                     : app(LabAnalysisViews::class)->prepare($record, $case));
             $data = array_merge($record->data ?? [], $prepared); $this->save($record, ['data' => $data]);
             $settings = $record->settings;
@@ -211,6 +214,7 @@ class LabAnalyses
         if (isset($record->data['sourceContext'])) {
             app(LabAnalysisSourceContext::class)->verify($case, $record->data['sourceContext']);
             if (isset($record->data['stagingLayout'])) app(LabStagingLayoutViews::class)->verifyStored($record);
+            elseif (($record->data['lifestyleFraming']['version']??null)===LabLifestyleOpticalProtocol::VERSION) app(LabLifestyleOpticalCutViews::class)->verifyStored($record);
             else app(LabSectionAnalysisViews::class)->verifyStored($record);
             $contextProvenance = ['sourceContextBindingSha256' => $record->data['sourceContext']['bindingSha256'], 'sourceContextManifestSha256' => $record->data['sourceContextManifestSha256']];
         }
