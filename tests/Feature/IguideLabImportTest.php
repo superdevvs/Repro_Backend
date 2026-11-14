@@ -12,6 +12,8 @@ use App\Models\IguideLabProject;
 use App\Services\IguideLab\LabImportNetwork;
 use App\Services\IguideLab\LabImports;
 use App\Services\IguideLab\LabImportUploads;
+use App\Services\IguideLab\LabImportUploadLock;
+use App\Services\IguideLab\LabStorage;
 use App\Services\IguideLab\LabService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
@@ -145,6 +147,8 @@ class IguideLabImportTest extends TestCase
         $this->assertSame('completed', $upload->fresh()->status); $this->assertSame(1, IguideLabImport::count()); Queue::assertPushed(ProcessIguideLabImport::class, 1);
         $record = IguideLabImport::findOrFail($upload->fresh()->import_id); $this->assertSame($body['sha256'], $record->private_input['archiveSha256']);
         $this->process($record); $this->assertSame('completed', $record->fresh()->status); $this->assertSame(1, IguideLabCase::count());
+        app(LabImportUploads::class)->fail($upload->fresh(), 'Late duplicate worker failure');
+        $this->assertSame('completed', $upload->fresh()->status); $this->assertSame($record->id, $upload->fresh()->import_id);
         $this->assertSame([], Storage::disk(LabService::DISK)->files('iguide-lab/'.$this->project->id.'/import-uploads/'.$upload->id)); Http::assertNothingSent();
     }
 
@@ -170,6 +174,48 @@ class IguideLabImportTest extends TestCase
         $case = IguideLabCase::first(); Storage::disk(LabService::DISK)->put($case->source_path, 'changed');
         $second = IguideLabImport::find($this->reserve($archive)['id']); $this->process($second);
         $this->assertSame('needs_attention', $second->fresh()->status); $this->assertSame(1, IguideLabCase::count());
+    }
+
+    public function test_concurrent_retry_cannot_enter_publication_window_or_delete_canonical_chunk(): void
+    {
+        if (! function_exists('pcntl_fork')) $this->markTestSkipped('The Linux worker lock test requires pcntl.');
+        $service = app(LabImportUploads::class); $bytes = 'short fixture'; $sha = hash('sha256', $bytes);
+        $upload = $service->start($this->project, ['requestId' => (string) Str::uuid(), 'importRequestId' => (string) Str::uuid(), 'filename' => 'source.zip', 'sizeBytes' => 13, 'sha256' => $sha]);
+        app(LabStorage::class)->prepareImportUpload($upload->project_id, $upload->id); $disk = Storage::disk(LabService::DISK);
+        $path = 'iguide-lab/'.$this->project->id.'/import-uploads/'.$upload->id.'/0-'.$sha.'.part'; $signal = tempnam(sys_get_temp_dir(), 'lock-proof-'); chmod($signal, 0660);
+        // Exact former race window: canonical bytes exist but no chunk row committed.
+        app(LabImportUploadLock::class)->run($upload, function () use ($upload, $disk, $path, $bytes, $signal) {
+            $disk->put($path, $bytes, ['visibility' => 'private']); $this->assertSame([], $upload->fresh()->chunks);
+            $pid = pcntl_fork(); $this->assertNotSame(-1, $pid);
+            if ($pid === 0) {
+                // A distinct Unix owner sharing the private group must open the
+                // same inode without attempting chmod on the original owner.
+                if (function_exists('posix_geteuid') && posix_geteuid() === 0 && ! posix_seteuid(33)) exit(2);
+                $entered = app(LabImportUploadLock::class)->run($upload, function () use ($disk, $path) { $disk->delete($path); return true; }, false);
+                file_put_contents($signal, $entered === null ? 'blocked' : 'entered'); exit(0);
+            }
+            pcntl_waitpid($pid, $status); $this->assertSame(0, pcntl_wexitstatus($status));
+            $this->assertSame('blocked', file_get_contents($signal)); $this->assertSame($bytes, $disk->get($path));
+        });
+        unlink($signal);
+        // The canonical file then commits and exact retry converges on the same row.
+        for ($i = 0; $i < 2; $i++) { $stream = fopen('php://temp', 'w+b'); fwrite($stream, $bytes); rewind($stream); $service->chunk($upload->fresh(), 0, 'bytes 0-12/13', $sha, $stream); fclose($stream); }
+        $this->assertCount(1, $upload->fresh()->chunks); $this->assertSame($sha, hash_file('sha256', $disk->path($path)));
+        $upload->update(['expires_at' => now()->subMinute()]);
+        app(LabImportUploadLock::class)->run($upload, function () use ($service, $disk, $path, $upload) {
+            $this->assertSame(0, $service->prune($upload->project_id)); $this->assertTrue($disk->exists($path)); $this->assertSame('uploading', $upload->fresh()->status);
+        });
+        $this->assertSame(1, $service->prune($upload->project_id)); $this->assertFalse($disk->exists($path));
+        $this->assertTrue($disk->exists('iguide-lab/'.$this->project->id.'/import-upload-locks/'.$upload->id.'.lock'));
+    }
+
+    public function test_import_worker_timeout_lock_and_queue_retry_budget_are_ordered(): void
+    {
+        foreach ([new ProcessIguideLabImport((string) Str::uuid()), new AssembleIguideLabImport((string) Str::uuid())] as $job) {
+            $this->assertSame(600, $job->timeout); $lock = $job->middleware()[0];
+            $this->assertSame(660, $lock->expiresAfter); $this->assertGreaterThan($job->timeout, $lock->expiresAfter);
+            $this->assertGreaterThan($lock->expiresAfter, config('queue.connections.studio.retry_after'));
+        }
     }
 
     private function process(IguideLabImport $record): void { app(LabImports::class)->process($record); }

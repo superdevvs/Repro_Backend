@@ -21,6 +21,8 @@ Per-source case IDs are UUIDv5 over the project and a source identity bound to t
 
 All staging lives on the existing private group-writable Studio disk. Archive and metadata staging are deleted after import, retaining native files, previews and hashes. Failed/crashed staging is cleaned without deleting any case-referenced file. Expired chunk uploads are pruned hourly by `iguide-lab:prune-import-uploads`; cleanup only enumerates the exact session-owned directory. Jobs use the existing Studio queue and bounded shared import lock. Workers need sufficient GD memory for sequential 64 MP sources (the production Studio worker is already configured at 1 GiB).
 
+Chunk publication, finalization, assembly and cleanup share a persistent per-upload filesystem lock outside the cleaned staging directory. Its inode is not unlinked by expiry. This serializes the canonical-file/DB-commit window even for concurrent same-index retries; expiry skips a busy session. Terminal transitions acquire the project write lock and compare the existing status, so a late worker failure cannot replace completion. No long decode/assembly occurs under SQLite's write lock. Both jobs time out at600seconds, the middleware lock expires at660seconds, and the committed Studio retry_after is7260seconds; the focused test asserts retry exceeds the lock budget.
+
 ## Small archive or link
 
 `POST /api/iguide-lab/imports` accepts either multipart `{requestId, archive, metadata?}` (archive at most 30 MiB) or JSON `{requestId, url}`. The UUID must be retained across transport uncertainty. Same UUID with changed source returns 409; exact replay returns the existing record. Response is 202 `{data: Import}`. `GET /imports` lists the latest 100 project imports; `GET /imports/{id}` polls one.

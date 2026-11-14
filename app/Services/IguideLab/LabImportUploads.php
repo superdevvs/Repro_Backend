@@ -41,6 +41,12 @@ class LabImportUploads
     /** @param resource $input */
     public function chunk(IguideLabImportUpload $upload, int $index, string $range, string $sha256, $input): IguideLabImportUpload
     {
+        $this->active($upload);
+        return app(LabImportUploadLock::class)->run($upload, fn () => $this->chunkLocked($upload->fresh(), $index, $range, $sha256, $input));
+    }
+
+    private function chunkLocked(IguideLabImportUpload $upload, int $index, string $range, string $sha256, $input): IguideLabImportUpload
+    {
         $this->active($upload); abort_unless(is_resource($input) && preg_match('/^[a-f0-9]{64}$/D', $sha256), 422, 'A chunk stream and lowercase SHA-256 are required.');
         $start = $index * self::CHUNK_BYTES; $length = min(self::CHUNK_BYTES, $upload->size_bytes - $start);
         abort_unless($index >= 0 && $length > 0 && $range === 'bytes '.$start.'-'.($start + $length - 1).'/'.$upload->size_bytes, 416, 'The chunk range is outside the declared source.');
@@ -75,6 +81,17 @@ class LabImportUploads
 
     public function finalize(IguideLabImportUpload $upload, ?UploadedFile $metadata): IguideLabImportUpload
     {
+        $upload->refresh();
+        if (in_array($upload->status, ['completed', 'assembling'], true)) {
+            abort_if($upload->expires_at->isPast(), 410, 'This upload has expired.');
+            abort_unless(($metadata ? hash_file('sha256', $metadata->getRealPath()) : null) === $upload->metadata_sha256, 422, 'The optional metadata must match the declared SHA-256.');
+            return $upload;
+        }
+        return app(LabImportUploadLock::class)->run($upload, fn () => $this->finalizeLocked($upload, $metadata));
+    }
+
+    private function finalizeLocked(IguideLabImportUpload $upload, ?UploadedFile $metadata): IguideLabImportUpload
+    {
         $upload->refresh(); abort_if($upload->expires_at->isPast(), 410, 'This upload has expired.');
         abort_unless(($metadata ? hash_file('sha256', $metadata->getRealPath()) : null) === $upload->metadata_sha256, 422, 'The optional metadata must match the declared SHA-256.');
         if (in_array($upload->status, ['completed', 'assembling'], true)) return $upload;
@@ -82,12 +99,17 @@ class LabImportUploads
         abort_unless(count($upload->chunks) === (int) ceil($upload->size_bytes / self::CHUNK_BYTES), 422, 'Upload every chunk before finalizing.');
         app(LabStorage::class)->prepareImportUpload($upload->project_id, $upload->id); $disk = Storage::disk(LabService::DISK);
         if ($metadata) { $stream = fopen($metadata->getRealPath(), 'rb'); try { $disk->put($this->prefix($upload).'/metadata.txt', $stream, ['visibility' => 'private']); } finally { fclose($stream); } }
-        $claimed = LockedWrite::run(fn () => IguideLabImportUpload::whereKey($upload->id)->where('status', 'uploading')->update(['status' => 'assembling', 'updated_at' => now()]), 'iguide-lab.import-upload.finalize');
-        if ($claimed) try { AssembleIguideLabImport::dispatch($upload->id); } catch (Throwable) { $this->fail($upload, 'Upload assembly could not be queued.'); }
+        $claimed = $this->transition($upload, ['uploading'], ['status' => 'assembling']);
+        if ($claimed) try { AssembleIguideLabImport::dispatch($upload->id); } catch (Throwable) { $this->failLocked($upload, 'Upload assembly could not be queued.'); }
         return $upload->fresh();
     }
 
     public function assemble(IguideLabImportUpload $upload): void
+    {
+        app(LabImportUploadLock::class)->run($upload, fn () => $this->assembleLocked($upload));
+    }
+
+    private function assembleLocked(IguideLabImportUpload $upload): void
     {
         $upload->refresh(); if ($upload->status !== 'assembling') return;
         $disk = Storage::disk(LabService::DISK); $prefix = $this->prefix($upload); $assembly = $prefix.'/assembled.zip';
@@ -118,23 +140,41 @@ class LabImportUploads
             }
             abort_unless($record->source_kind === 'zip' && ($record->private_input['archiveSha256'] ?? null) === $upload->sha256
                 && ($record->private_input['metadataSha256'] ?? null) === $upload->metadata_sha256, 409, 'The linked import does not match this upload.');
-            $upload->update(['status' => 'completed', 'import_id' => $record->id]); $this->cleanup($upload);
-        } catch (Throwable $error) { $this->fail($upload, $error instanceof \Symfony\Component\HttpKernel\Exception\HttpExceptionInterface ? $error->getMessage() : 'The ZIP assembly failed integrity or storage verification.'); }
+            $this->transition($upload, ['assembling'], ['status' => 'completed', 'import_id' => $record->id]);
+            if ($upload->fresh()->status === 'completed') $this->cleanup($upload);
+        } catch (Throwable $error) { $this->failLocked($upload, $error instanceof \Symfony\Component\HttpKernel\Exception\HttpExceptionInterface ? $error->getMessage() : 'The ZIP assembly failed integrity or storage verification.'); }
     }
 
     public function prune(?string $projectId = null): int
     {
         $query = IguideLabImportUpload::where('expires_at', '<=', now())->whereIn('status', ['uploading', 'assembling']); if ($projectId) $query->where('project_id', $projectId);
         $count = 0; foreach ($query->limit(100)->get() as $upload) {
-            $changed = LockedWrite::run(fn () => IguideLabImportUpload::whereKey($upload->id)->whereIn('status', ['uploading', 'assembling'])->where('expires_at', '<=', now())->update(['status' => 'expired', 'error' => 'The upload expired.', 'updated_at' => now()]), 'iguide-lab.import-upload.expire');
-            if ($changed) { $this->cleanup($upload); $count++; }
+            $changed = app(LabImportUploadLock::class)->run($upload, function () use ($upload) {
+                if ($upload->fresh()->expires_at->isFuture()) return false;
+                $changed = $this->transition($upload, ['uploading', 'assembling'], ['status' => 'expired', 'error' => 'The upload expired.']);
+                if ($changed) $this->cleanup($upload); return $changed;
+            }, false);
+            if ($changed) $count++;
         }
         return $count;
     }
     public function fail(IguideLabImportUpload $upload, string $message): void
     {
-        IguideLabImportUpload::whereKey($upload->id)->where('status', '!=', 'completed')->update(['status' => 'needs_attention', 'error' => $message ?: 'Upload assembly failed.', 'updated_at' => now()]);
-        $this->cleanup($upload);
+        app(LabImportUploadLock::class)->run($upload, fn () => $this->failLocked($upload, $message));
+    }
+    private function failLocked(IguideLabImportUpload $upload, string $message): void
+    {
+        $changed = $this->transition($upload, ['uploading', 'assembling'], ['status' => 'needs_attention', 'error' => $message ?: 'Upload assembly failed.']);
+        if ($changed) $this->cleanup($upload);
+    }
+    /** Caller holds the persistent per-upload filesystem lock; SQLite lock is short. */
+    private function transition(IguideLabImportUpload $upload, array $from, array $attributes): bool
+    {
+        return LockedWrite::run(fn () => DB::transaction(function () use ($upload, $from, $attributes) {
+            IguideLabProject::whereKey($upload->project_id)->update(['updated_at' => now()]); $upload->refresh();
+            if (! in_array($upload->status, $from, true)) return false;
+            $upload->update($attributes); return true;
+        }), 'iguide-lab.import-upload.transition');
     }
     private function cleanup(IguideLabImportUpload $upload): void { $disk = Storage::disk(LabService::DISK); foreach ($disk->files($this->prefix($upload)) as $path) $disk->delete($path); }
     private function active(IguideLabImportUpload $upload): void

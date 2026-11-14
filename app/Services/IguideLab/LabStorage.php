@@ -12,6 +12,10 @@ class LabStorage extends ListingStudioPrivateStorage
         $this->uuid($projectId); $this->uuid($id);
         $this->prepare(['iguide-lab', $projectId, 'import-uploads', $id]);
     }
+    public function prepareImportUploadLocks(string $projectId): void
+    {
+        $this->uuid($projectId); $this->prepare(['iguide-lab', $projectId, 'import-upload-locks']);
+    }
     public function prepareImport(string $projectId, string $id): void
     {
         $this->uuid($projectId); $this->uuid($id);
