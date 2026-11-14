@@ -15,6 +15,7 @@ class LabAnalysisRecipes
     public const STAGING_CUT = 'scene-instructions-staging-cut-gate-1';
     public const STAGING_LAYOUT = 'scene-instructions-staging-layout-1';
     public const STAGING_LAYOUT_MEDIUM = 'scene-instructions-staging-layout-2';
+    public const STAGING_LAYOUT_ADAPTIVE = 'scene-instructions-staging-layout-3';
     public const LEGACY_PROTOCOL = 'scene-plan-v1';
     public const LEGACY_VIEW_RECIPE = 'source2k-six1024-fov100/1';
     private const FILES = [
@@ -26,6 +27,7 @@ class LabAnalysisRecipes
         self::STAGING_CUT => ['staging-cut-gate-1.json', '50cf8dd230363a08055a532e56a88a9b4c6613fe627b502c8eaacb4e060e73b2'],
         self::STAGING_LAYOUT => ['staging-layout-1.json', 'c3166d4b86c79f1c1b6ebdcd8f0f0dda1b7d160680013cbaa9c8ec0b70a93601'],
         self::STAGING_LAYOUT_MEDIUM => ['staging-layout-2.json', 'd1ece646fa875f43b1b3cba00c57068df319e622a6264f2c637305ce9cfcf466'],
+        self::STAGING_LAYOUT_ADAPTIVE => ['staging-layout-3.json', '4a389472dc320d991e820e745bc0de839ec6f24252835b2d210e483ec78b4ab4'],
     ];
 
     public function active(): array
