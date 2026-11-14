@@ -54,7 +54,7 @@ class LabInteriorDesignArtifacts extends LabWorkflowArtifacts
         parent::verifyComposite($item,$composite,$step,$run);$lineage=$composite->manifest['lineage'];
         app(LabInteriorDesignWorkflow::class)->validateSnapshot($lineage['interiorRecipe']);
         app(LabInteriorDesignMaterials::class)->validate($lineage['materials']);
-        abort_unless(LabAnalysisRecipes::hash($lineage['materials'])===LabAnalysisRecipes::hash($step->input['materials'])
+        abort_unless(LabMachineSegmentationPlan::canonicalHash($lineage['materials'])===LabMachineSegmentationPlan::canonicalHash($step->input['materials'])
             &&$lineage['candidateAssessmentSha256']===$step->input['candidateAssessmentSha256']&&$lineage['cutAssessmentSha256']===$step->input['cutAssessmentSha256'],422);
         $candidate=app(LabInteriorDesignAssessments::class)->completed($item,$lineage['candidateAssessmentId'],'candidate');
         abort_unless($candidate->result_sha256===$lineage['candidateAssessmentSha256']&&$candidate->data['contextSnapshot']['candidateRunId']===$run->id,422);

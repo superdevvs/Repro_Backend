@@ -39,7 +39,7 @@ class LabInteriorDesignMaterials
         }catch(\Throwable){return false;}
     }
     public function validate(array $snapshot): void
-    {abort_unless($this->ready()&&LabAnalysisRecipes::hash($snapshot)===LabAnalysisRecipes::hash($this->snapshot()),503,'The Interior material runtime changed or is unavailable.');}
+    {abort_unless($this->ready()&&LabMachineSegmentationPlan::canonicalHash($snapshot)===LabMachineSegmentationPlan::canonicalHash($this->snapshot()),503,'The Interior material runtime changed or is unavailable.');}
 
     public function sourceSupport(IguideLabWorkflowItem $item,IguideLabInteriorAssessment $cut,array $snapshot): array
     {
