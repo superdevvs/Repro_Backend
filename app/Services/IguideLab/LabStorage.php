@@ -7,6 +7,20 @@ use App\Services\ListingStudio\ListingStudioPrivateStorage;
 /** Reuse the already provisioned private, group-writable Studio disk. */
 class LabStorage extends ListingStudioPrivateStorage
 {
+    public function prepareImportUpload(string $projectId, string $id): void
+    {
+        $this->uuid($projectId); $this->uuid($id);
+        $this->prepare(['iguide-lab', $projectId, 'import-uploads', $id]);
+    }
+    public function prepareImportUploadLocks(string $projectId): void
+    {
+        $this->uuid($projectId); $this->prepare(['iguide-lab', $projectId, 'import-upload-locks']);
+    }
+    public function prepareImport(string $projectId, string $id): void
+    {
+        $this->uuid($projectId); $this->uuid($id);
+        $this->prepare(['iguide-lab', $projectId, 'imports', $id]);
+    }
     public function prepareProject(string $projectId): void
     {
         $this->uuid($projectId);

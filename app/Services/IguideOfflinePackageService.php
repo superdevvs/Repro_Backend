@@ -55,7 +55,7 @@ class IguideOfflinePackageService
      *
      * @return array{original_filename:string,size_bytes:int,sha256:string,entry_count:int,expanded_size_bytes:int,wrapper_directory:?string,index_entry_path:string}
      */
-    public function inspect(UploadedFile $package): array
+    public function inspect(UploadedFile $package, bool $requireViewerIndex = true): array
     {
         $path = $package->getRealPath();
         $filename = $package->getClientOriginalName();
@@ -175,7 +175,7 @@ class IguideOfflinePackageService
                 $relativePaths,
                 static fn (string $entry): bool => strtolower(basename($entry)) === 'index.html'
             ));
-            if (count($indexPaths) !== 1 || strtolower($indexPaths[0]) !== 'index.html') {
+            if ($requireViewerIndex && (count($indexPaths) !== 1 || strtolower($indexPaths[0]) !== 'index.html')) {
                 $this->invalid('The ZIP must contain exactly one root index.html, optionally inside one wrapper folder.');
             }
 
@@ -194,9 +194,8 @@ class IguideOfflinePackageService
                 // Preserve the archive's exact case. ZIP lookups are normally
                 // case-sensitive even though validation intentionally accepts
                 // Index.html and rejects case-colliding paths.
-                'index_entry_path' => $wrapper === null
-                    ? $indexPaths[0]
-                    : $wrapper.'/'.$indexPaths[0],
+                'index_entry_path' => count($indexPaths) === 1 && strtolower($indexPaths[0]) === 'index.html'
+                    ? ($wrapper === null ? $indexPaths[0] : $wrapper.'/'.$indexPaths[0]) : null,
             ];
         } finally {
             $zip->close();
