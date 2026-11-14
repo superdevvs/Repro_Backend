@@ -75,6 +75,39 @@ class IguideLabMachineSegmentationTest extends TestCase
         $this->assertSame('needs_attention',$record->fresh()->status); $this->assertSame('unknown',$record->fresh()->provider_attempts[0]['status']); Http::assertSentCount(1);
     }
 
+    public function test_start_recovers_committed_record_when_process_stops_before_attach_and_dispatch(): void
+    {
+        $step=$this->step('source-floor'); $service=app(LabMachineSegmentations::class);
+        $steps=\Mockery::mock(LabWorkflowSteps::class)->makePartial();
+        $steps->shouldReceive('attach')->once()->andThrow(new \RuntimeException('fixture process stopped after commit'));
+        $this->app->instance(LabWorkflowSteps::class,$steps);
+        try { $service->start($step); $this->fail('Injected process stop was missed.'); }
+        catch (\RuntimeException $e) { $this->assertSame('fixture process stopped after commit',$e->getMessage()); }
+        $record=IguideLabMachineSegmentation::sole();
+        $this->assertSame('queued',$record->status); $this->assertNull($step->fresh()->child_id);
+        $this->assertNull($record->provider_attempts); Queue::assertNothingPushed(); Http::assertNothingSent();
+        $this->app->instance(LabWorkflowSteps::class,new LabWorkflowSteps);
+        $this->assertSame($record->id,$service->start($step->fresh())->id);
+        $this->assertSame($record->id,$step->fresh()->child_id);
+        Queue::assertPushed(\App\Jobs\ProcessIguideLabMachineSegmentation::class,1);
+        $this->assertSame(1,IguideLabMachineSegmentation::count());
+        $this->pendingThenCompleted(); $service->process($record->fresh()); $service->process($record->fresh());
+        $this->assertSame('completed',$record->fresh()->status);
+        $this->assertSame(1,Http::recorded()->filter(fn($pair)=>$pair[0]->method()==='POST')->count());
+    }
+
+    public function test_start_replay_never_dispatches_a_submission_checkpoint_or_known_receipt(): void
+    {
+        $step=$this->step('source-floor'); $service=app(LabMachineSegmentations::class); $record=$service->start($step);
+        Queue::fake();
+        foreach ([['submitting',null],['processing','known-receipt'],['needs_attention',null],['queued',null]] as [$status,$receipt]) {
+            $record->update(['status'=>$status,'provider_request_id'=>$receipt,'provider_attempts'=>[['status'=>'unknown']], 'started_at'=>now()]);
+            $this->assertSame($record->id,$service->start($step->fresh())->id);
+            Queue::assertNothingPushed();
+        }
+        Http::assertNothingSent();
+    }
+
     public function test_cancelled_workflow_blocks_paid_claim_after_reservation(): void
     {
         $service=app(LabMachineSegmentations::class); $record=$service->start($this->step('source-floor'));

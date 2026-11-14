@@ -41,7 +41,11 @@ class LabMachineSegmentations
                 'request_id' => $step->request_id, 'request_hash' => $step->input_sha256, 'status' => 'queued', 'data' => $data]),true];
         }), 'iguide-lab.machine-segmentation.reserve');
         app(LabWorkflowSteps::class)->attach($step, $record->id);
-        if ($created) try { ProcessIguideLabMachineSegmentation::dispatch($record->id); }
+        // Recover a crash after the record commit but before attachment/dispatch.
+        // A submission checkpoint or known receipt is never queued by start().
+        $record->refresh();
+        if ($record->status === 'queued' && $record->provider_request_id === null
+            && empty($record->provider_attempts) && $record->started_at === null) try { ProcessIguideLabMachineSegmentation::dispatch($record->id); }
         catch (Throwable) { $this->stop($record, 'The queue reservation is unconfirmed. No paid request was repeated.'); }
         return $record->fresh();
     }
