@@ -35,7 +35,11 @@ class ShootGuestShareService
         try {
             $this->send($share, 'Your Magic Link to '.$shoot->address,
                 "Your Magic Link to released media and tours for {$shoot->address}: {$url}. Open the link and request an email verification code. No account is required. Access expires in 30 days.",
-                '<p>Your Magic Link gives you access to released media and tours for <strong>'.e($shoot->address).'</strong>.</p><p><a href="'.e($url).'">Open Magic Link</a></p><p>Request an email verification code to continue. No account is required. Access expires in 30 days.</p>');
+                view('emails.guest_shoot_invitation', [
+                    'propertyAddress' => $shoot->address,
+                    'guestUrl' => $url,
+                    'emailAtelier' => ['kind' => 'none'],
+                ])->render());
         } catch (\Throwable $exception) {
             LockedWrite::run(fn () => $share->update(['revoked_at' => now()]), 'guest-share-send-failed');
             report($exception);
@@ -70,7 +74,10 @@ class ShootGuestShareService
         try {
             $this->send($share, 'Your property access code',
                 "Your verification code is {$code}. It expires in 10 minutes. If you did not request this code, ignore this email.",
-                '<p>Your property access code is:</p><p style="font-size:28px;letter-spacing:6px"><strong>'.e($code).'</strong></p><p>It expires in 10 minutes. If you did not request this code, ignore this email.</p>');
+                view('emails.guest_shoot_code', [
+                    'verificationCode' => $code,
+                    'emailAtelier' => ['kind' => 'none'],
+                ])->render());
         } catch (\Throwable $exception) {
             LockedWrite::run(fn () => ShootGuestShare::whereKey($share->id)->where('code_hash', $this->codeHash($share, $code))
                 ->update(['code_hash' => null]), 'guest-share-code-failed');
