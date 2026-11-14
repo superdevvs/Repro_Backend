@@ -23,13 +23,15 @@ class IguideLabStagingLayoutLifecycleTest extends TestCase
     private IguideLabSection $section;
     private $framing;
     private $workflow;
+    protected function combinedLayoutFixture():bool{return false;}
 
     protected function setUp(): void
     {
         parent::setUp();Queue::fake();Http::preventStrayRequests();
         $key=tempnam(sys_get_temp_dir(),'layout-key');file_put_contents($key,'fixture-primary');$this->temporary[]=$key;
         config(['app.key'=>'base64:'.base64_encode(str_repeat('k',32)),'iguide-lab.openai_primary_key_path'=>$key,
-            'services.openai.api_key'=>'fixture-fallback','iguide-lab.pipeline_python_path'=>PHP_BINARY]);
+            'services.openai.api_key'=>'fixture-fallback','iguide-lab.pipeline_python_path'=>PHP_BINARY,
+            'iguide-lab.staging_layout_combined_enabled'=>$this->combinedLayoutFixture()]);
         if(function_exists('posix_getegid'))config(['filesystems.disks.'.LabService::DISK.'.shared_group'=>posix_getgrgid(posix_getegid())['name']]);
         Storage::fake(LabService::DISK,config('filesystems.disks.'.LabService::DISK))->makeDirectory('');
         $this->project=IguideLabProject::create(['name'=>'Prospective source layout','token_hash'=>hash('sha256',Str::random(64)),'expires_at'=>now()->addDay(),'max_runs'=>20]);

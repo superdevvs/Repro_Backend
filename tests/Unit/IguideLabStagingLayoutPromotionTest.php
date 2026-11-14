@@ -64,4 +64,18 @@ class IguideLabStagingLayoutPromotionTest extends TestCase
             $this->assertNotSame($old, app(LabStagingLayouts::class)->snapshot()['cutRecipe']);
         }
     }
+
+    public function test_combined_opt_in_keeps_budget_and_disabling_it_invalidates_reserved_policy(): void
+    {
+        config(['iguide-lab.staging_layout_combined_enabled' => true]);
+        $snapshot = app(LabStagingLayouts::class)->snapshot();
+        $this->assertSame(LabAnalysisRecipes::STAGING_LAYOUT_COMBINED, $snapshot['cutRecipe']['recipe']['instructionsVersion']);
+        $this->assertSame(4, $snapshot['maxAnalyses']);
+        $this->assertSame(2, $snapshot['maxSourceSections']);
+        $this->assertSame(1, $snapshot['maxAdaptiveSourceOperations']);
+        app(LabStagingLayouts::class)->validate($snapshot);
+        config(['iguide-lab.staging_layout_combined_enabled' => false]);
+        $this->expectException(HttpException::class);
+        app(LabStagingLayouts::class)->validate($snapshot);
+    }
 }

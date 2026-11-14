@@ -10,7 +10,8 @@ class LabStagingLayoutViews
 {
     public function details(IguideLabWorkflowItem $item,IguideLabAnalysis $prior,array $gate): array
     {
-        abort_unless(($gate['decision']??null)==='request_details'&&($gate['followupOrdinal']??null)===0
+        abort_unless(in_array($gate['decision']??null,['request_details','request_reframe_details'],true)&&($gate['followupOrdinal']??null)===0
+            &&(($gate['decision']??null)!=='request_reframe_details'||($gate['version']??null)===LabStagingCombinedLayoutProtocol::GATE)
             &&$prior->project_id===$item->project_id&&($prior->data['workflowInvocation']['itemId']??null)===$item->id,422);
         $native=app(LabWorkflowSources::class)->verify($item->project_id,$item->source);
         $files=app(LabStagingFramingContext::class);$disk=Storage::disk(LabService::DISK);
@@ -56,7 +57,7 @@ class LabStagingLayoutViews
     {
         $prepared=app(LabSectionAnalysisViews::class)->prepare($analysis,$cut,$snapshot);
         $reference=$analysis->data['stagingLayout'];
-        if($reference['followup']['operation']!=='native_details')return $prepared;
+        if(!in_array($reference['followup']['operation'],['native_details','reframe_native_details'],true))return $prepared;
         $item=IguideLabWorkflowItem::where('project_id',$analysis->project_id)->findOrFail($analysis->data['workflowInvocation']['itemId']);
         $prior=IguideLabAnalysis::where('project_id',$analysis->project_id)->findOrFail($reference['followup']['previousAnalysisId']);
         $gate=app(LabStagingLayoutReadiness::class)->verified($prior,false);$details=$this->details($item,$prior,$gate);

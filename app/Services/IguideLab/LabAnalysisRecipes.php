@@ -17,6 +17,7 @@ class LabAnalysisRecipes
     public const STAGING_CUT = 'scene-instructions-staging-cut-gate-1';
     public const STAGING_LAYOUT = 'scene-instructions-staging-layout-1';
     public const STAGING_LAYOUT_MEDIUM = 'scene-instructions-staging-layout-2';
+    public const STAGING_LAYOUT_COMBINED = 'scene-instructions-staging-layout-4';
     public const STAGING_LAYOUT_ADAPTIVE = 'scene-instructions-staging-layout-3';
     public const LEGACY_PROTOCOL = 'scene-plan-v1';
     public const LEGACY_VIEW_RECIPE = 'source2k-six1024-fov100/1';
@@ -31,6 +32,7 @@ class LabAnalysisRecipes
         self::STAGING_CUT => ['staging-cut-gate-1.json', '50cf8dd230363a08055a532e56a88a9b4c6613fe627b502c8eaacb4e060e73b2'],
         self::STAGING_LAYOUT => ['staging-layout-1.json', 'c3166d4b86c79f1c1b6ebdcd8f0f0dda1b7d160680013cbaa9c8ec0b70a93601'],
         self::STAGING_LAYOUT_MEDIUM => ['staging-layout-2.json', 'd1ece646fa875f43b1b3cba00c57068df319e622a6264f2c637305ce9cfcf466'],
+        self::STAGING_LAYOUT_COMBINED => ['staging-layout-4.json', '41e936581e98e7b926b32bb6dea9c06b33d18336ba17f1d0a26987d830449f3a'],
         self::STAGING_LAYOUT_ADAPTIVE => ['staging-layout-3.json', '4a389472dc320d991e820e745bc0de839ec6f24252835b2d210e483ec78b4ab4'],
     ];
 
@@ -72,6 +74,7 @@ class LabAnalysisRecipes
         if ($recipe['compilerVersion'] === LabLifestyleOpticalCutProtocol::VERSION) return LabLifestyleOpticalCutProtocol::compile($recipe, $context, $images);
         if ($recipe['compilerVersion'] === LabLifestyleCutProtocol::VERSION) return LabLifestyleCutProtocol::compile($recipe, $context, $images);
         if ($recipe['compilerVersion'] === LabStagingCutProtocol::VERSION) return LabStagingCutProtocol::compile($recipe, $context, $images);
+        if ($recipe['compilerVersion'] === LabStagingCombinedLayoutProtocol::VERSION) return LabStagingCombinedLayoutProtocol::compile($recipe, $context, $images);
         if ($recipe['compilerVersion'] === LabStagingLayoutProtocol::VERSION) return LabStagingLayoutProtocol::compile($recipe, $context, $images);
         if ($recipe['compilerVersion'] === LabSectionAnalysisProtocol::VERSION) return LabSectionAnalysisProtocol::compile($recipe, $context, $images);
         if ($recipe['compilerVersion'] !== LabAnalysisRequestV1::VERSION) throw new InvalidArgumentException('Unsupported analysis request compiler.');
@@ -86,6 +89,7 @@ class LabAnalysisRecipes
         if ($recipe['compilerVersion'] === LabLifestyleOpticalCutProtocol::VERSION) return LabLifestyleOpticalCutProtocol::parse($response, $context);
         if ($recipe['compilerVersion'] === LabLifestyleCutProtocol::VERSION) return LabLifestyleCutProtocol::parse($response, $context);
         if ($recipe['compilerVersion'] === LabStagingCutProtocol::VERSION) return LabStagingCutProtocol::parse($response, $context);
+        if ($recipe['compilerVersion'] === LabStagingCombinedLayoutProtocol::VERSION) return LabStagingCombinedLayoutProtocol::parse($response, $context);
         if ($recipe['compilerVersion'] === LabStagingLayoutProtocol::VERSION) return LabStagingLayoutProtocol::parse($response, $context);
         return $recipe['compilerVersion'] === LabSectionAnalysisProtocol::VERSION
             ? LabSectionAnalysisProtocol::parse($response, $context) : LabScenePlanProtocol::parse($response, $context);

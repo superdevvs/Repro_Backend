@@ -34,7 +34,7 @@ class LabAnalysisProvider
     private function attempt(IguideLabAnalysis $analysis, array $payload, #[\SensitiveParameter] string $key, string $slot, int $deadline): array
     {
         $analysis->refresh();
-        if (isset($analysis->data['stagingLayout']) || ($analysis->data['executionRecipe']['recipe']['compilerVersion'] ?? null) === LabStagingLayoutProtocol::VERSION
+        if (isset($analysis->data['stagingLayout']) || in_array(($analysis->data['executionRecipe']['recipe']['compilerVersion'] ?? null),[LabStagingLayoutProtocol::VERSION,LabStagingCombinedLayoutProtocol::VERSION],true)
             || isset($payload['text']['format']['schema']['properties']['stagingLayout'])) {
             app(LabStagingLayoutReadiness::class)->verifyForAttempt($analysis,$payload);
         }
@@ -72,7 +72,7 @@ class LabAnalysisProvider
         $path = 'iguide-lab/'.$analysis->project_id.'/analyses/'.$analysis->id.'/response-'.$index.'.json';
         $compiler = $analysis->data['executionRecipe']['recipe']['compilerVersion'] ?? null;
         $lifestyleGate = in_array($compiler,[LabLifestyleCutProtocol::VERSION,LabLifestyleOpticalCutProtocol::VERSION,LabLifestyleOriginalOpticalCutProtocol::VERSION],true);
-        $layoutGate = $compiler === LabStagingLayoutProtocol::VERSION;
+        $layoutGate = in_array($compiler, [LabStagingLayoutProtocol::VERSION, LabStagingCombinedLayoutProtocol::VERSION], true);
         $stagingGate = $compiler === LabStagingCutProtocol::VERSION || $lifestyleGate || $layoutGate;
         if ($stagingGate) abort_unless(strlen($response->body()) <= 512 * 1024, 422, 'Cut analysis receipt exceeded its limit.');
         $stored = Storage::disk(LabService::DISK)->put($path, $response->body(), ['visibility' => 'private']);

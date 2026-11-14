@@ -237,8 +237,17 @@ class IguideLabController extends Controller
         if (in_array($view, ['source_detail_1','source_detail_2'], true)) {
             if (isset($record->data['stagingLayout'])) {
                 $descriptor=collect($record->data['stagingLayout']['detailViews']??[])->firstWhere('id',$view);
+                $operation=$record->data['stagingLayout']['followup']['operation']??null;
+                if($operation==='reframe_native_details'){
+                    try{$recipe=app(\App\Services\IguideLab\LabAnalysisRecipes::class)->validate($record->data['executionRecipe']??[]);}
+                    catch(\Throwable){abort(404);}
+                    abort_unless($recipe['instructionsVersion']===\App\Services\IguideLab\LabAnalysisRecipes::STAGING_LAYOUT_COMBINED
+                        &&$recipe['compilerVersion']===\App\Services\IguideLab\LabStagingCombinedLayoutProtocol::VERSION
+                        &&($record->data['stagingLayout']['version']??null)===\App\Services\IguideLab\LabStagingCombinedLayoutProtocol::GATE,404);
+                    app(\App\Services\IguideLab\LabStagingLayoutViews::class)->verifyStored($record);
+                }
                 abort_unless(is_array($descriptor)&&($descriptor['sha256']??null)===($entry['sha256']??null)
-                    &&($record->data['stagingLayout']['followup']['operation']??null)==='native_details',404);
+                    &&in_array($operation,['native_details','reframe_native_details'],true),404);
                 app(\App\Services\IguideLab\LabStagingFramingContext::class)->file($project->id,$path,$descriptor['sha256'],8*1024*1024);
             } else {
                 // Closed read extension: public callers cannot attach native optical context.

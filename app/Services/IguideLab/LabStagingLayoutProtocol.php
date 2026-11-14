@@ -22,9 +22,9 @@ Exactly one adaptive source operation is available after the first cut: EITHER r
 Return each named readiness check with source evidence. Circulation and optical dependencies must cite actual cut plus parent/detail evidence. source_detail IDs are usable only when supplied. A draft_candidate needs all five source-feasibility checks supported, a complete consistent layout, plausible scale, diffuse floor, no unresolved foreground/optical dependency, and whole_panorama mode meaning this complete square cut. The result remains unreviewed. Do not claim realized placement, final quality, exact physics or cross-view verification. A held plan must use manual_review. Write generationPrompt only as image-facing scene instructions; no analysis, mask, provider or acceptance workflow language. Preserve architecture, source perspective/capture artifacts, same three-item scope and original finishes.
 TEXT;
 
-    public static function compile(array $recipe, array $context, array $images): array
+    public static function compile(array $recipe, array $context, array $images, bool $combined = false): array
     {
-        $base = self::context($context); $views = $context['stagingLayout']['detailViews'];
+        $base = self::context($context, $combined); $views = $context['stagingLayout']['detailViews'];
         if (count($images) !== 6 + count($views)) self::invalid('Wrong evidence count.');
         $total=0;foreach($images as $image){if(!is_string($image)||!preg_match('/\Adata:image\/png;base64,([A-Za-z0-9+\/=]+)\z/D',$image,$match))self::invalid('PNG evidence required.');$bytes=base64_decode($match[1],true);if($bytes===false||($total+=strlen($bytes))>24*1024*1024)self::invalid('Evidence byte limit exceeded.');}
         $payload = LabSectionAnalysisProtocol::compile($recipe, $base, array_slice($images, 0, 6));
@@ -40,10 +40,10 @@ TEXT;
         return $payload;
     }
 
-    public static function parse(array $response, array $context): array
+    public static function parse(array $response, array $context, bool $combined = false): array
     {
-        self::context($context); $value=LabStagingFramingProtocol::structured($response); $layout=$value['stagingLayout']??null; unset($value['stagingLayout']);
-        $gate=self::validateLayout($layout,$context);
+        self::context($context, $combined); $value=LabStagingFramingProtocol::structured($response); $layout=$value['stagingLayout']??null; unset($value['stagingLayout']);
+        $gate=self::validateLayout($layout,$context,$combined);
         $base=$context;unset($base['sourceContext'],$base['stagingLayout']);
         $plain=$response;$plain['output']=[['type'=>'message','role'=>'assistant','status'=>'completed','content'=>[['type'=>'output_text','text'=>json_encode($value,JSON_THROW_ON_ERROR)]]]];
         $parsed=LabScenePlanProtocol::parseWithSourceDetails($plain,$base); $mode=$parsed['proposal']['workflow']['mode'];
@@ -53,29 +53,32 @@ TEXT;
         return $parsed+['stagingLayout'=>$gate];
     }
 
-    public static function validateLayout(mixed $v, array $context): array
+    public static function validateLayout(mixed $v, array $context, bool $combined = false): array
     {
-        $base=self::context($context);$authority=$context['stagingLayout'];$ids=$context['viewIds'];
+        $base=self::context($context,$combined);$authority=$context['stagingLayout'];$ids=$context['viewIds'];
         self::keys($v,['version','sourceSha256','nativeSourceSha256','framingResultSha256','decision','emptyRoom','scale','floorAppearance','optics','checks','layout','detailRequests','reframePose','summary']);
-        if($v['version']!==self::GATE||$v['sourceSha256']!==$context['sourceSha256']||$v['nativeSourceSha256']!==$authority['nativeSourceSha256']||$v['framingResultSha256']!==$authority['framingResultSha256'])self::invalid('Layout belongs to another source.');
-        self::enum($v['decision'],['draft_candidate','request_details','request_reframe','needs_review']);self::enum($v['emptyRoom'],['empty','occupied','uncertain']);
+        if($v['version']!==($combined?LabStagingCombinedLayoutProtocol::GATE:self::GATE)||$v['sourceSha256']!==$context['sourceSha256']||$v['nativeSourceSha256']!==$authority['nativeSourceSha256']||$v['framingResultSha256']!==$authority['framingResultSha256'])self::invalid('Layout belongs to another source.');
+        self::enum($v['decision'],$combined?['draft_candidate','request_details','request_reframe','request_reframe_details','needs_review']:['draft_candidate','request_details','request_reframe','needs_review']);self::enum($v['emptyRoom'],['empty','occupied','uncertain']);
         self::enum($v['floorAppearance'],['diffuse','reflective','uncertain']);self::enum($v['optics'],['no_required_unsupported_change','needs_detail','required_unsupported_change','uncertain']);
         self::keys($v['scale'],['status','evidenceViewIds','reason']);self::enum($v['scale']['status'],['plausible','not_plausible','uncertain']);self::evidence($v['scale'],$ids,true);
         self::keys($v['checks'],self::CHECKS);$pass=true;
         foreach($v['checks'] as $name=>$check){self::keys($check,['status','evidenceViewIds','reason']);self::enum($check['status'],['supported','blocked','uncertain']);self::evidence($check,$ids,true);$pass=$pass&&$check['status']==='supported';
             if(in_array($name,['circulation','optical_dependencies'],true)&&!array_intersect(array_slice($ids,1),$check['evidenceViewIds']))self::invalid('Native-parent evidence is required.');}
         LabStagingFramingProtocol::text($v['summary'],1200);
+        if($combined&&$v['decision']!=='draft_candidate'&&$v['layout']!==null)self::invalid('Non-draft decisions require null layout.');
         $geometry=$v['layout']===null?null:LabStagingLayoutGeometry::inspect($v['layout']);
         if(!is_array($v['detailRequests'])||!array_is_list($v['detailRequests'])||count($v['detailRequests'])>2)self::invalid('Invalid detail requests.');
         foreach($v['detailRequests'] as $i=>$r){self::keys($r,['id','pose','evidenceViewIds','reason']);if($r['id']!==self::DETAILS[$i])self::invalid('Detail order changed.');self::pose($r['pose'],true);self::evidence($r,$ids,false);}
         if($v['reframePose']!==null)self::pose($v['reframePose'],false);
-        $adaptive=in_array($v['decision'],['request_details','request_reframe'],true);
+        $details=in_array($v['decision'],['request_details','request_reframe_details'],true);
+        $reframe=in_array($v['decision'],['request_reframe','request_reframe_details'],true);
+        $adaptive=$details||$reframe;
         if($adaptive&&($v['emptyRoom']!=='empty'||$v['optics']==='required_unsupported_change'))self::invalid('Known unsupported source cannot request adaptive work.');
         if($adaptive&&$authority['followup']['ordinal']!==0)self::invalid('Only one adaptive source follow-up is permitted.');
-        if($v['decision']==='request_details'){
-            if(!$v['detailRequests']||$v['reframePose']!==null)self::invalid('Details and reframe are mutually exclusive.');
+        if($details){
+            if(!$v['detailRequests'])self::invalid('Missing native detail requests.');
         }elseif($v['detailRequests'])self::invalid('Unexpected detail requests.');
-        if($v['decision']==='request_reframe'){
+        if($reframe){
             if($v['reframePose']===null)self::invalid('Missing revised pose.');
             $current=$base['sourceContext']['binding']['view'];$same=true;foreach(['yaw','pitch','hFov'] as $k)$same=$same&&(float)$current[$k]===(float)$v['reframePose'][$k];
             if($same)self::invalid('A reframe must change the actual cut.');
@@ -86,10 +89,10 @@ TEXT;
             'supportMaskAuthority'=>false,'realizedPlacementVerified'=>false,'geometryVerified'=>false,'manualAcceptance'=>false];
     }
 
-    private static function context(array $context): array
+    private static function context(array $context, bool $combined = false): array
     {
         $a=$context['stagingLayout']??null;self::keys($a,['version','framingId','framingResultSha256','nativeSourceSha256','sourceCutSha256','preparedSourceSha256','sourceGeometrySha256','followup','detailViews','priorResult']);
-        if($a['version']!==self::GATE||!is_string($a['framingId'])||!Str::isUuid($a['framingId'])||($context['preset']??null)!=='staging')self::invalid('Invalid layout authority.');
+        if($a['version']!==($combined?LabStagingCombinedLayoutProtocol::GATE:self::GATE)||!is_string($a['framingId'])||!Str::isUuid($a['framingId'])||($context['preset']??null)!=='staging')self::invalid('Invalid layout authority.');
         foreach(['framingResultSha256','nativeSourceSha256','sourceCutSha256','preparedSourceSha256','sourceGeometrySha256'] as $k)self::hash($a[$k]);
         $binding=$context['sourceContext']['binding']??[];
         if($a['nativeSourceSha256']!==($binding['nativeSourceSha256']??null)||$a['sourceGeometrySha256']!==($binding['geometrySha256']??null)
@@ -97,48 +100,51 @@ TEXT;
         self::keys($a['followup'],['ordinal','operation','previousAnalysisId','previousResultSha256']);$f=$a['followup'];
         if($f['ordinal']===0){if($f['operation']!=='initial'||$f['previousAnalysisId']!==null||$f['previousResultSha256']!==null||$a['priorResult']!==null)self::invalid('Invalid initial layout.');}
         elseif($f['ordinal']===1){
-            self::enum($f['operation'],['native_details','reframe']);if(!is_string($f['previousAnalysisId'])||!Str::isUuid($f['previousAnalysisId']))self::invalid('Invalid prior analysis.');self::hash($f['previousResultSha256']);
+            self::enum($f['operation'],$combined?['native_details','reframe','reframe_native_details']:['native_details','reframe']);if(!is_string($f['previousAnalysisId'])||!Str::isUuid($f['previousAnalysisId']))self::invalid('Invalid prior analysis.');self::hash($f['previousResultSha256']);
             self::keys($a['priorResult'],['proposalSha256','layout']);self::hash($a['priorResult']['proposalSha256']);$prior=$a['priorResult']['layout'];
             if(!is_array($prior)||LabMachineSegmentationPlan::canonicalHash($a['priorResult'])!==$f['previousResultSha256']
                 ||($prior['nativeSourceSha256']??null)!==$a['nativeSourceSha256']||($prior['framingResultSha256']??null)!==$a['framingResultSha256']
-                ||($prior['followupOrdinal']??null)!==0||($prior['decision']??null)!==($f['operation']==='native_details'?'request_details':'request_reframe')
+                ||($prior['version']??null)!==$a['version']||($prior['followupOrdinal']??null)!==0||($prior['decision']??null)!==match($f['operation']){'native_details'=>'request_details','reframe'=>'request_reframe','reframe_native_details'=>'request_reframe_details'}
                 ||strlen(json_encode($a['priorResult'],JSON_THROW_ON_ERROR))>32768)self::invalid('Prior source questions changed.');
         }
         else self::invalid('Invalid source follow-up ordinal.');
         if(!is_array($a['detailViews'])||!array_is_list($a['detailViews'])||count($a['detailViews'])>2)self::invalid('Invalid native details.');
         foreach($a['detailViews'] as $i=>$v){self::keys($v,['id','sha256','nativeSourceSha256','width','height','projection','role','pose']);self::hash($v['sha256']);
             if($v['id']!==self::DETAILS[$i]||$v['nativeSourceSha256']!==$a['nativeSourceSha256']||[$v['width'],$v['height']]!==[1024,1024]||$v['projection']!=='rectilinear'||$v['role']!=='same_capture_native_detail')self::invalid('Detail source/shape changed.');self::pose($v['pose'],true);}
-        if(($f['operation']==='native_details')!==($a['detailViews']!==[]))self::invalid('Detail evidence/operation mismatch.');
-        if($f['operation']==='native_details') {
+        $hasDetails=in_array($f['operation'],['native_details','reframe_native_details'],true);
+        if($hasDetails!==($a['detailViews']!==[]))self::invalid('Detail evidence/operation mismatch.');
+        if($hasDetails) {
             $requested=$a['priorResult']['layout']['detailRequests']??[];
             if(count($requested)!==count($a['detailViews']))self::invalid('Prior detail budget changed.');
             foreach($a['detailViews'] as $i=>$view)if(($requested[$i]['id']??null)!==$view['id']
                 ||LabMachineSegmentationPlan::canonicalHash($requested[$i]['pose']??[])!==LabMachineSegmentationPlan::canonicalHash($view['pose']))self::invalid('Prior detail pose changed.');
         }
-        if($f['operation']==='reframe')foreach(['yaw','pitch','hFov'] as $key)
+        if(in_array($f['operation'],['reframe','reframe_native_details'],true))foreach(['yaw','pitch','hFov'] as $key)
             if((float)($a['priorResult']['layout']['reframePose'][$key]??NAN)!==(float)$binding['view'][$key])self::invalid('Reframed cut does not match the prior request.');
         $expected=[...LabAnalysisSourceContext::IDS,...array_column($a['detailViews'],'id')];if(($context['viewIds']??null)!==$expected)self::invalid('Evidence order changed.');
         $base=$context;unset($base['stagingLayout']);$base['viewIds']=LabAnalysisSourceContext::IDS;LabSectionAnalysisProtocol::validateContext($base);return $base;
     }
 
-    public static function gateSchema(): array
+    public static function gateSchema(bool $combined = false): array
     {
         $obj=fn($p)=>LabStagingFramingProtocol::object($p);$enum=fn($v)=>['type'=>'string','enum'=>$v];$text=['type'=>'string'];$hash=['type'=>'string','pattern'=>'^[a-f0-9]{64}$'];
         $ids=[...LabAnalysisSourceContext::IDS,...self::DETAILS];$evidence=['type'=>'array','items'=>$enum($ids),'minItems'=>1,'maxItems'=>8];
-        $check=$obj(['status'=>$enum(['supported','blocked','uncertain']),'evidenceViewIds'=>$evidence,'reason'=>$text]);
+        $reason=$combined?['type'=>'string','minLength'=>1,'maxLength'=>550]:$text;
+        $summary=$combined?['type'=>'string','minLength'=>1,'maxLength'=>1200]:$text;
+        $check=$obj(['status'=>$enum(['supported','blocked','uncertain']),'evidenceViewIds'=>$evidence,'reason'=>$reason]);
         $xy=['type'=>'array','items'=>['type'=>'number','minimum'=>0,'maximum'=>1],'minItems'=>2,'maxItems'=>2];
         $poly=['type'=>'array','items'=>$xy,'minItems'=>3,'maxItems'=>12];$quad=$poly;$quad['minItems']=$quad['maxItems']=4;
         $region=$obj(['id'=>$text,'polygon'=>$poly]);$regions=fn($min,$max)=>['type'=>'array','items'=>$region,'minItems'=>$min,'maxItems'=>$max];
         $layout=$obj(['visibleFloor'=>$regions(1,4),'forbiddenFloor'=>$regions(0,12),'protectedFeatures'=>$regions(0,12),'routes'=>$regions(1,4),
             'targets'=>['type'=>'array','minItems'=>3,'maxItems'=>3,'items'=>$obj(['id'=>$enum(LabStagingLayoutGeometry::TARGETS),'footprint'=>$quad,'editEnvelope'=>['type'=>'array','items'=>['type'=>'number','minimum'=>0,'maximum'=>1],'minItems'=>4,'maxItems'=>4]])]]);
         $pose=fn($detail)=>$obj(['yaw'=>['type'=>'number','minimum'=>-180,'maximum'=>180],'pitch'=>['type'=>'number','minimum'=>$detail?-80:-60,'maximum'=>$detail?80:15],'hFov'=>['type'=>'number','minimum'=>30,'maximum'=>$detail?100:120]]);
-        return $obj(['version'=>$enum([self::GATE]),'sourceSha256'=>$hash,'nativeSourceSha256'=>$hash,'framingResultSha256'=>$hash,
-            'decision'=>$enum(['draft_candidate','request_details','request_reframe','needs_review']),'emptyRoom'=>$enum(['empty','occupied','uncertain']),
-            'scale'=>$obj(['status'=>$enum(['plausible','not_plausible','uncertain']),'evidenceViewIds'=>$evidence,'reason'=>$text]),
+        return $obj(['version'=>$enum([$combined?LabStagingCombinedLayoutProtocol::GATE:self::GATE]),'sourceSha256'=>$hash,'nativeSourceSha256'=>$hash,'framingResultSha256'=>$hash,
+            'decision'=>$enum($combined?['draft_candidate','request_details','request_reframe','request_reframe_details','needs_review']:['draft_candidate','request_details','request_reframe','needs_review']),'emptyRoom'=>$enum(['empty','occupied','uncertain']),
+            'scale'=>$obj(['status'=>$enum(['plausible','not_plausible','uncertain']),'evidenceViewIds'=>$evidence,'reason'=>$reason]),
             'floorAppearance'=>$enum(['diffuse','reflective','uncertain']),'optics'=>$enum(['no_required_unsupported_change','needs_detail','required_unsupported_change','uncertain']),
             'checks'=>$obj(array_fill_keys(self::CHECKS,$check)),'layout'=>['anyOf'=>[$layout,['type'=>'null']]],
-            'detailRequests'=>['type'=>'array','minItems'=>0,'maxItems'=>2,'items'=>$obj(['id'=>$enum(self::DETAILS),'pose'=>$pose(true),'evidenceViewIds'=>$evidence,'reason'=>$text])],
-            'reframePose'=>['anyOf'=>[$pose(false),['type'=>'null']]],'summary'=>$text]);
+            'detailRequests'=>['type'=>'array','minItems'=>0,'maxItems'=>2,'items'=>$obj(['id'=>$enum(self::DETAILS),'pose'=>$pose(true),'evidenceViewIds'=>$evidence,'reason'=>$reason])],
+            'reframePose'=>['anyOf'=>[$pose(false),['type'=>'null']]],'summary'=>$summary]);
     }
     private static function pose(mixed $p,bool $detail):void{self::keys($p,['yaw','pitch','hFov']);foreach(['yaw'=>[-180,180],'pitch'=>$detail?[-80,80]:[-60,15],'hFov'=>[30,$detail?100:120]] as $k=>[$lo,$hi]){if((!is_int($p[$k])&&!is_float($p[$k]))||!is_finite((float)$p[$k])||$p[$k]<$lo||$p[$k]>$hi)self::invalid('Unsupported source pose.');}}
     private static function evidence(array $v,array $ids,bool $source):void{LabStagingFramingProtocol::evidence($v,$ids);LabStagingFramingProtocol::text($v['reason'],550);if($source&&!in_array('source',$v['evidenceViewIds'],true))self::invalid('Actual source evidence required.');}

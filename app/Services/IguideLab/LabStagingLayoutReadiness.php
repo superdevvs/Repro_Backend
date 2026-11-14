@@ -11,6 +11,9 @@ class LabStagingLayoutReadiness
     {
         $framing=app(LabStagingFramings::class)->completed($item,$framingId);
         abort_unless($item->preset==='staging'&&$framing->result['status']==='framing_candidate',422);
+        $workflow=IguideLabWorkflow::where('project_id',$item->project_id)->findOrFail($item->workflow_id);
+        $recipe=app(LabAnalysisRecipes::class)->validate($workflow->policy['stagingLayout']['cutRecipe']);
+        $combined=$recipe['compilerVersion']===LabStagingCombinedLayoutProtocol::VERSION;
         $native=app(LabWorkflowSources::class)->verify($item->project_id,$item->source);
         $section=IguideLabSection::where('project_id',$item->project_id)->where('status','completed')->where('derived_case_id',$cut->id)->sole();
         $step=IguideLabWorkflowStep::where('project_id',$item->project_id)->where('item_id',$item->id)->where('kind','section')->where('child_id',$section->id)->sole();
@@ -29,19 +32,19 @@ class LabStagingLayoutReadiness
                 &&($prior->data['workflowInvocation']['itemId']??null)===$item->id
                 &&($prior->data['stagingLayout']['framingId']??null)===$framingId,422,'Only an owned initial layout can authorize a follow-up.');
             $gate=$this->verified($prior,false);
-            abort_unless(in_array($gate['decision'],['request_details','request_reframe'],true),422,'Prior layout did not request source work.');
-            $operation=$gate['decision']==='request_details'?'native_details':'reframe';
+            abort_unless(in_array($gate['decision'],$combined?['request_details','request_reframe','request_reframe_details']:['request_details','request_reframe'],true),422,'Prior layout did not request source work.');
+            $operation=match($gate['decision']){'request_details'=>'native_details','request_reframe'=>'reframe','request_reframe_details'=>'reframe_native_details'};
             if($operation==='native_details'){
                 abort_unless($prior->case_id===$cut->id,422,'Detail context cannot change the edit cut.');
-                $details=app(LabStagingLayoutViews::class)->details($item,$prior,$gate)['views'];
             }else{$view=$gate['reframePose'];$expectedStep='staging-reframed-section';abort_if($prior->case_id===$cut->id,422);}
+            if(in_array($operation,['native_details','reframe_native_details'],true))$details=app(LabStagingLayoutViews::class)->details($item,$prior,$gate)['views'];
             $followup=['ordinal'=>1,'operation'=>$operation,'previousAnalysisId'=>$prior->id,'previousResultSha256'=>$this->resultHash($prior)];
             $priorResult=['proposalSha256'=>$prior->proposal_sha256,'layout'=>$gate];
         }
         abort_unless($step->step_key===$expectedStep,422,'Source layout section step changed.');
         foreach(['yaw','pitch','hFov'] as $key)abort_unless((float)$section->view[$key]===(float)$view[$key],422,'Source layout pose changed.');
         $png=LabImages::prepared(Storage::disk(LabService::DISK)->get($cut->source_path));
-        return ['version'=>LabStagingLayoutProtocol::GATE,'framingId'=>$framing->id,'framingResultSha256'=>$framing->result_sha256,
+        return ['version'=>$combined?LabStagingCombinedLayoutProtocol::GATE:LabStagingLayoutProtocol::GATE,'framingId'=>$framing->id,'framingResultSha256'=>$framing->result_sha256,
             'nativeSourceSha256'=>$native->source_sha256,'sourceCutSha256'=>$cut->source_sha256,'preparedSourceSha256'=>hash('sha256',$png),
             'sourceGeometrySha256'=>$context['binding']['geometrySha256'],'followup'=>$followup,'detailViews'=>$details,'priorResult'=>$priorResult];
     }
@@ -69,7 +72,11 @@ class LabStagingLayoutReadiness
             &&($step->input['caseId']??null)===$cut->id&&($step->input['preset']??null)==='staging'
             &&($step->input['style']??null)===$analysis->settings['style']&&$analysis->source_sha256===$cut->source_sha256
             &&LabMachineSegmentationPlan::canonicalHash($step->input['stagingLayout']??[])===LabMachineSegmentationPlan::canonicalHash($reference),422,'Source layout step association changed.');
-        $recipe=app(LabAnalysisRecipes::class)->validate($data['executionRecipe']);abort_unless($recipe['compilerVersion']===LabStagingLayoutProtocol::VERSION,422);
+        $recipe=app(LabAnalysisRecipes::class)->validate($data['executionRecipe']);
+        $workflow=IguideLabWorkflow::where('project_id',$analysis->project_id)->findOrFail($invocation['workflowId']);
+        abort_unless(in_array($recipe['compilerVersion'],[LabStagingLayoutProtocol::VERSION,LabStagingCombinedLayoutProtocol::VERSION],true)
+            &&$data['executionRecipe']===$workflow->policy['stagingLayout']['cutRecipe']
+            &&$reference['version']===($recipe['compilerVersion']===LabStagingCombinedLayoutProtocol::VERSION?LabStagingCombinedLayoutProtocol::GATE:LabStagingLayoutProtocol::GATE),422,'Reserved layout recipe changed.');
         app(LabAnalysisSourceContext::class)->verify($cut,$data['sourceContext']);app(LabStagingLayoutViews::class)->verifyStored($analysis);
         $context=['sourceSha256'=>$analysis->source_sha256,'projection'=>'rectilinear','preset'=>'staging','style'=>$analysis->settings['style'],
             'viewIds'=>array_column($data['views'],'id'),'instructions'=>app(LabAnalyses::class)->wireInstructions($analysis->settings),
@@ -99,7 +106,7 @@ class LabStagingLayoutReadiness
         $path='iguide-lab/'.$analysis->project_id.'/analyses/'.$analysis->id.'/response-'.$index.'.json';abort_unless(($receipt['path']??null)===$path,422);
         $raw=json_decode(file_get_contents(app(LabStagingFramingContext::class)->file($analysis->project_id,$path,$receipt['sha256']??'',512*1024)),true,512,JSON_THROW_ON_ERROR);
         abort_unless(($raw['model']??null)==='gpt-6-astra'&&is_string($raw['id']??null)&&$raw['id']!==''&&$raw['id']===($receipt['responseId']??null),422);
-        $parsed=LabStagingLayoutProtocol::parse($raw,$context);$gate=$parsed['stagingLayout'];
+        $parsed=app(LabAnalysisRecipes::class)->parse($data['executionRecipe'],$raw,$context);$gate=$parsed['stagingLayout'];
         abort_unless(LabAnalysisRecipes::hash($parsed['proposal'])===$analysis->proposal_sha256
             &&LabMachineSegmentationPlan::canonicalHash($gate)===LabMachineSegmentationPlan::canonicalHash($data['stagingLayoutResult']??[]),422,'Saved source layout result changed.');
         if($requirePass)abort_unless($gate['eligibleForDraft']===true&&($analysis->proposal['workflow']['mode']??null)==='whole_panorama'
