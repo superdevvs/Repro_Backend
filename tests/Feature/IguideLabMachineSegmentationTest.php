@@ -128,6 +128,40 @@ class IguideLabMachineSegmentationTest extends TestCase
         $this->assertSame(1,Http::recorded()->filter(fn($pair)=>$pair[0]->method()==='POST')->count());
     }
 
+    public function test_known_receipt_resume_revalidates_current_candidate_before_association(): void
+    {
+        $service=app(LabMachineSegmentations::class); $record=$service->start($this->step('source-floor'));
+        $this->pendingThenCompleted(); $this->assertFalse($service->process($record));
+        Storage::disk(LabService::DISK)->put($this->run->output_path,'changed-after-receipt');
+        $this->assertTrue($service->process($record->fresh())); $service->process($record->fresh());
+        $this->assertSame('needs_attention',$record->fresh()->status);
+        $this->assertSame('resume-receipt',$record->fresh()->provider_request_id);
+        $this->assertNull($record->fresh()->result);
+        $this->assertSame(1,Http::recorded()->filter(fn($pair)=>$pair[0]->method()==='POST')->count());
+    }
+
+    public function test_known_receipt_resume_revalidates_bound_assessment_before_association(): void
+    {
+        $service=app(LabMachineSegmentations::class); $step=$this->step('source-floor'); $record=$service->start($step);
+        $this->pendingThenCompleted(); $this->assertFalse($service->process($record));
+        $changed=$this->plans[$step->id]; $changed['assessmentProposalSha256']=str_repeat('f',64);
+        unset($changed['inputFingerprint']); $changed['inputFingerprint']=LabMachineSegmentationPlan::canonicalHash($changed);
+        $this->plans[$step->id]=$changed;
+        $this->assertTrue($service->process($record->fresh())); $service->process($record->fresh());
+        $this->assertSame('needs_attention',$record->fresh()->status);
+        $this->assertSame('resume-receipt',$record->fresh()->provider_request_id);
+        $this->assertNull($record->fresh()->result);
+        $this->assertSame(1,Http::recorded()->filter(fn($pair)=>$pair[0]->method()==='POST')->count());
+    }
+
+    private function pendingThenCompleted(): void
+    {
+        Http::fake(['https://queue.fal.run/fal-ai/sam-3-1/image'=>Http::response(['request_id'=>'resume-receipt']),
+            'https://queue.fal.run/fal-ai/sam-3-1/requests/resume-receipt/status'=>Http::sequence()->push(['status'=>'IN_PROGRESS'])->push(['status'=>'COMPLETED']),
+            'https://queue.fal.run/fal-ai/sam-3-1/requests/resume-receipt/response'=>Http::response(['masks'=>[['url'=>'https://v3b.fal.media/mask.png']]]),
+            'https://v3b.fal.media/mask.png'=>Http::response($this->png(2048))]);
+    }
+
     private function step(string $key): IguideLabWorkflowStep
     {
         $step=app(LabWorkflowSteps::class)->reserve($this->item,$key,'segmentation',['protocolVersion'=>LabMachineSegmentations::PROTOCOL,'sectionId'=>$this->section->id,'candidateRunId'=>$this->run->id]);
