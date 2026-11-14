@@ -63,7 +63,10 @@ class LabWorkflowArtifacts
         abort_unless($root && realpath($path) === $root.DIRECTORY_SEPARATOR.$run->id.'.png' && ! is_link($path) && filesize($path) <= 32 * 1024 * 1024, 422);
         $size = @getimagesize($path);
         abort_unless($size && [$size[0], $size[1]] === [2048, 1024] && $size['mime'] === 'image/png', 422, 'The lighting candidate must be an exact 2K sphere.');
-        return hash_file('sha256', $path);
+        $hash = hash_file('sha256', $path);
+        abort_unless(is_string($run->output_sha256) && preg_match('/\A[a-f0-9]{64}\z/D', $run->output_sha256)
+            && hash_equals($run->output_sha256, $hash), 422, 'The completed image differs from its verified stored output.');
+        return $hash;
     }
     public function compose(IguideLabWorkflowItem $item, IguideLabWorkflowStep $step, IguideLabRun $run, IguideLabAnalysis $analysis): IguideLabComposite
     {

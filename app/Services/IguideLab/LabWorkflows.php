@@ -221,10 +221,15 @@ class LabWorkflows
 
     private function save(IguideLabWorkflowItem $item, string $status, array $data): void
     {
-        LockedWrite::run(function () use ($item, $status, $data) {
-            if (IguideLabWorkflow::find($item->workflow_id)?->cancelled_at) return;
-            $item->update(['status' => $status, 'data' => $data, 'attempt_count' => $item->attempt_count]);
-        }, 'iguide-lab.workflow-state');
+        LockedWrite::run(fn () => DB::transaction(function () use ($item, $status, $data) {
+            IguideLabProject::whereKey($item->project_id)->update(['updated_at' => now()]);
+            // The project lock serializes real cancel requests. The SQL predicate
+            // also prevents a stale guard read from overwriting a cancelled item.
+            IguideLabWorkflowItem::whereKey($item->id)->whereExists(function ($query) use ($item) {
+                $query->selectRaw('1')->from('iguide_lab_workflows')->where('id', $item->workflow_id)->whereNull('cancelled_at');
+            })->update(['status' => $status, 'data' => json_encode($data, JSON_THROW_ON_ERROR), 'attempt_count' => $item->attempt_count]);
+            $item->refresh();
+        }), 'iguide-lab.workflow-state');
     }
     private function finish(IguideLabWorkflowItem $item, string $status, ?string $code, ?string $message, ?array $data = null): void
     {

@@ -182,4 +182,50 @@ class IguideLabWorkflowEvaluationTest extends TestCase
         $this->assertSame($evidence['context']['sourceCaveats'], $context['sourceCaveats']);
         $this->assertCount(13, $context['sourceCaveats']); Http::assertNothingSent();
     }
+
+    public function test_first_composition_requires_the_persisted_final_output_digest(): void
+    {
+        [$project] = $this->fixture(); $id = (string) Str::uuid();
+        $path = 'iguide-lab/'.$project->id.'/runs/'.$id.'.png';
+        $bytes = (string) \Intervention\Image\ImageManager::gd()->create(2048, 1024)->fill('888888')->toPng();
+        $disk = Storage::disk(LabService::DISK); $disk->put($path, $bytes, ['visibility' => 'private']);
+        $run = new \App\Models\IguideLabRun(['id' => $id, 'project_id' => $project->id, 'status' => 'completed',
+            'output_path' => $path, 'output_sha256' => hash('sha256', $bytes)]);
+        $service = new \App\Services\IguideLab\LabWorkflowArtifacts;
+        $this->assertSame($run->output_sha256, $service->runHash($run));
+        $changed = (string) \Intervention\Image\ImageManager::gd()->create(2048, 1024)->fill('999999')->toPng();
+        $disk->put($path, $changed, ['visibility' => 'private']);
+        foreach ([$run->output_sha256, null] as $digest) {
+            $run->output_sha256 = $digest;
+            try { $service->runHash($run); $this->fail('Unverified candidate accepted before composition.'); }
+            catch (\Symfony\Component\HttpKernel\Exception\HttpException $error) { $this->assertSame(422, $error->getStatusCode()); }
+        }
+        Http::assertNothingSent();
+    }
+
+    public function test_altered_fixed_evaluation_recipe_is_not_ready_before_paid_work(): void
+    {
+        $service = new LabWorkflowEvaluations; $this->assertTrue($service->ready());
+        $original = app()->basePath(); $temp = sys_get_temp_dir().'/invalid-quality-'.Str::uuid();
+        mkdir($temp.'/resources/iguide-lab/quality-recipes', 0770, true);
+        file_put_contents($temp.'/resources/iguide-lab/quality-recipes/visual-quality-1.json', '{"changed":true}');
+        app()->setBasePath($temp);
+        try { $this->assertFalse($service->ready()); }
+        finally { app()->setBasePath($original); unlink($temp.'/resources/iguide-lab/quality-recipes/visual-quality-1.json'); rmdir($temp.'/resources/iguide-lab/quality-recipes'); rmdir($temp.'/resources/iguide-lab'); rmdir($temp.'/resources'); rmdir($temp); }
+        Http::assertNothingSent();
+    }
+
+    public function test_cancel_at_item_write_boundary_preserves_cancelled_item_state(): void
+    {
+        [, $item] = $this->fixture(); $service = new LabWorkflows; $injected = false;
+        $workflow = \App\Models\IguideLabWorkflow::findOrFail($item->workflow_id);
+        \Illuminate\Support\Facades\DB::connection()->beforeExecuting(function ($sql) use (&$injected, $service, $workflow) {
+            if (! $injected && str_contains($sql, 'update "iguide_lab_workflow_items"') && str_contains($sql, 'exists')) {
+                $injected = true; $service->cancel($workflow);
+            }
+        });
+        (new \ReflectionMethod($service, 'save'))->invoke($service, $item, 'checking', $item->data);
+        $this->assertTrue($injected); $this->assertSame('cancelled', $workflow->fresh()->status);
+        $this->assertSame('cancelled', $item->fresh()->status); Http::assertNothingSent();
+    }
 }

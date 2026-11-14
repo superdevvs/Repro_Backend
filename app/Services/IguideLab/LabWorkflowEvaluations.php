@@ -18,7 +18,7 @@ class LabWorkflowEvaluations
 {
     public function ready(): bool
     {
-        try { return app(LabCredentials::class)->ready() && filled(LabVisualQualityProtocol::recipeSha256()); }
+        try { LabVisualQualityProtocol::recipe(); return app(LabCredentials::class)->ready(); }
         catch (Throwable) { return false; }
     }
 
