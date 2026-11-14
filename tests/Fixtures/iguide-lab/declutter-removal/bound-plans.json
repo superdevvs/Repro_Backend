@@ -1,0 +1,76 @@
+[
+  {
+    "stepKey": "target_object",
+    "requestId": "00000000-0000-0000-0000-00000000000b",
+    "reservationState": "server_reserved",
+    "model": "fal-ai/sam-3-1/image",
+    "inputSha256": "769c35a2c9022ab71dbfc5a3941b4fca868c9b64406272b8edb4a5b571fdf235",
+    "width": 2048,
+    "height": 2048,
+    "payload": {
+      "prompt": "object",
+      "box_prompts": [
+        {
+          "x_min": 614,
+          "y_min": 614,
+          "x_max": 922,
+          "y_max": 1127,
+          "object_id": 1
+        }
+      ],
+      "apply_mask": false,
+      "output_format": "png",
+      "return_multiple_masks": true,
+      "max_masks": 1,
+      "include_scores": true,
+      "include_boxes": true
+    },
+    "expectedIdentities": [
+      "target_object"
+    ],
+    "selectionOrigin": "machine",
+    "assessmentProposalSha256": "88804793bc72a0aa92df0c13e44f03406ca9a48496f2811687a4c8e51e9255d0",
+    "contextSha256": "d64b0b8528679b0360b1cd4903670275fe16126c87ad64df9f977c51908bfc8b",
+    "maximumPostAttempts": 1,
+    "automaticRetry": false,
+    "identityCaveat": "Returned array order is not object identity; source-box association is not semantic certification.",
+    "inputFingerprint": "484081900d4b31cea8829c0818a611d8c24c798b9cd23f4ac836ad9a972a909b"
+  },
+  {
+    "stepKey": "target_local_shadow",
+    "requestId": "00000000-0000-0000-0000-00000000000c",
+    "reservationState": "server_reserved",
+    "model": "fal-ai/sam-3-1/image",
+    "inputSha256": "769c35a2c9022ab71dbfc5a3941b4fca868c9b64406272b8edb4a5b571fdf235",
+    "width": 2048,
+    "height": 2048,
+    "payload": {
+      "prompt": "shadow",
+      "box_prompts": [
+        {
+          "x_min": 819,
+          "y_min": 1024,
+          "x_max": 1229,
+          "y_max": 1229,
+          "object_id": 1
+        }
+      ],
+      "apply_mask": false,
+      "output_format": "png",
+      "return_multiple_masks": true,
+      "max_masks": 1,
+      "include_scores": true,
+      "include_boxes": true
+    },
+    "expectedIdentities": [
+      "target_local_shadow"
+    ],
+    "selectionOrigin": "machine",
+    "assessmentProposalSha256": "88804793bc72a0aa92df0c13e44f03406ca9a48496f2811687a4c8e51e9255d0",
+    "contextSha256": "d64b0b8528679b0360b1cd4903670275fe16126c87ad64df9f977c51908bfc8b",
+    "maximumPostAttempts": 1,
+    "automaticRetry": false,
+    "identityCaveat": "Returned array order is not object identity; source-box association is not semantic certification.",
+    "inputFingerprint": "ebf90e44c95b08c9d534d69ec4dae879bcea088adf8d29c09c6ba07fb9f2f832"
+  }
+]
