@@ -179,11 +179,12 @@ class IguideLabAnalysisTest extends TestCase
 
     public function test_reserved_recipe_and_idempotent_replay_survive_an_active_default_change(): void
     {
+        config(['iguide-lab.analysis_instructions_version' => \App\Services\IguideLab\LabAnalysisRecipes::BASELINE]);
         $input = $this->input();
         $id = $this->withToken($this->token)->postJson('/api/iguide-lab/analyses', $input)->assertAccepted()->json('data.id');
         $record = IguideLabAnalysis::findOrFail($id); $snapshot = $record->data['executionRecipe']; $hash = $record->request_hash;
         $this->assertSame('f25a88708519f3f704ca957787d8b815358780be8c669f7bcb4a574fc822d514', $snapshot['instructionsSha256']);
-        config(['iguide-lab.analysis_instructions_version' => 'future-default-not-installed']);
+        config(['iguide-lab.analysis_instructions_version' => \App\Services\IguideLab\LabAnalysisRecipes::CANDIDATE]);
         $this->withToken($this->token)->postJson('/api/iguide-lab/analyses', $input)->assertAccepted()->assertJsonPath('data.id', $id);
         $this->withToken($this->token)->postJson('/api/iguide-lab/analyses', [...$input, 'instructions' => 'Different target'])->assertConflict();
         Http::fake(['api.openai.com/v1/responses' => Http::response($this->response())]);
@@ -196,6 +197,9 @@ class IguideLabAnalysisTest extends TestCase
         $manifest = json_decode(Storage::disk(LabService::DISK)->get('iguide-lab/'.$this->project->id.'/analyses/'.$id.'/input-manifest.json'), true);
         $this->assertSame($record->data['providerBodySha256'], $manifest['providerBodySha256']);
         $this->assertSame(1, IguideLabAnalysis::count()); Queue::assertPushed(ProcessIguideLabAnalysis::class, 1); Http::assertSentCount(1);
+        $next = $this->reserve();
+        $this->assertSame('42461b443760cdfe41eeb166c03d227ea5f9cf537ffef63e16854ad02356b626', $next->data['executionRecipe']['instructionsSha256']);
+        $this->assertSame('f25a88708519f3f704ca957787d8b815358780be8c669f7bcb4a574fc822d514', $record->data['executionRecipe']['instructionsSha256']);
     }
 
     public function test_changed_recipe_bytes_controls_or_schema_fail_before_a_paid_attempt(): void

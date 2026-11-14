@@ -8,13 +8,17 @@ use InvalidArgumentException;
 class LabAnalysisRecipes
 {
     public const BASELINE = 'scene-instructions-baseline-1';
+    public const CANDIDATE = 'scene-instructions-physical-dependencies-1';
     public const LEGACY_PROTOCOL = 'scene-plan-v1';
     public const LEGACY_VIEW_RECIPE = 'source2k-six1024-fov100/1';
-    private const FILES = [self::BASELINE => ['baseline-1.json', '81673992581f6d86261b7fb74e4d639b271a57d867643c304d34b9cd5b7f007a']];
+    private const FILES = [
+        self::BASELINE => ['baseline-1.json', '81673992581f6d86261b7fb74e4d639b271a57d867643c304d34b9cd5b7f007a'],
+        self::CANDIDATE => ['physical-dependencies-1.json', '1a57bba52b4b785ee53a3b9991fab3a2169ae06a824507fce107f79f29cc6244'],
+    ];
 
     public function active(): array
     {
-        return $this->snapshot(config('iguide-lab.analysis_instructions_version', self::BASELINE));
+        return $this->snapshot(config('iguide-lab.analysis_instructions_version', self::CANDIDATE));
     }
 
     public function snapshot(string $version): array
