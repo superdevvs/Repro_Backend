@@ -34,6 +34,8 @@ INSTRUCTIONS='''Assess only the exact bound source and candidate evidence. This 
 
 Identify existing established turf and the source exclusions: paving, living plants, loose leaves/twigs, soil/mulch/non-turf ground and capture camera/tripod artifact. Only declare none_observed when the supplied source panorama and all six source directions support that finding; a missing segmentation mask is never absence evidence. Select complete visible objects/regions with approximate normalized boxes, not verified masks. Split longitude-boundary selections only when each visible segment can be independently selected; mark uncertain otherwise. Do not call thin/dense debris selectable if a 2048 x 1024 mask cannot defensibly retain it. Mark human/operator capture artifacts or a capture form not covered by camera/tripod as uncertain rather than silently protecting only a guessed cap. Preserve original uncertainty, mixed grass/soil, actual turf reflections in glazing, missing context, requested parcel subsets and unresolved material boundaries as review gates. No exact optical physics or unseen-object guarantee.
 
+For selections, use a nonblank descriptive id (at most 60 characters), unique within its role; these labels are evidence, not provider object IDs. The server assigns canonical segmentation identities from role and array order. visible_selectable and observed_selectable require at least one complete selection. none_observed requires an empty selections array. Uncertain, too_fragmented and too_fine_or_dense findings may retain valid approximate boxes to explain partial observations, or use an empty array; all such findings stop segmentation regardless of their boxes. Never change an uncertain status merely to supply selections.
+
 Use source_panorama plus relevant source views for source findings; none_observed exclusions, full coverage and reflections must cite all seven original source IDs. Candidate guidance must cite source_panorama and candidate_panorama. Return the strict structured schema only. No acceptance, invented segmentation result or calibrated camera claims.'''
 
 digest=shared.digest
@@ -49,9 +51,10 @@ _list=shared._list
 def response_schema(wire=False):
     evidence=_list(_string(40),9,1)
     box=_obj({k:{'type':'number','minimum':0,'maximum':1} for k in ['xMin','yMin','xMax','yMax']})
-    selection=_obj({'id':_string(60),'box':box})
+    selection=_obj({'id':{**_string(60),'description':'Nonblank descriptive label, at most 60 characters, unique within this role. Not a SAM identity; the server derives that from role and array order.'},'box':box})
     finding=lambda status:_obj({'status':status,'evidenceIds':evidence,'notes':_string(700)})
-    selection_finding=lambda statuses:_obj({'status':_enum(*statuses),'selections':_list(selection,8),
+    selection_finding=lambda statuses:_obj({'status':_enum(*statuses),'selections':{**_list(selection,8),
+        'description':'Selectable status requires at least one complete selection. none_observed requires []. Uncertain or fragmented/dense status may retain valid diagnostic boxes or []; it always stops segmentation.'},
         'evidenceIds':evidence,'notes':_string(700)})
     result=_obj({'schemaVersion':_enum(VERSION),'contextSha256':_string(64),
         'binding':_obj({key:_string(64 if key not in BINDINGS[:2] else 36) for key in BINDINGS}),
@@ -171,9 +174,13 @@ def parse_response(response_text,context,execution):
             evidence(finding,SOURCE_IDS if finding['status']=='none_observed' else ['source_panorama'])
             gate(finding['status'] not in {'observed_selectable','none_observed'},'EXCLUSION_UNRESOLVED:'+role)
         selected=finding['status'] in {'visible_selectable','observed_selectable'}
-        if selected!=(len(finding['selections'])>0):raise ValueError('GRASS_SELECTION_STATUS_MISMATCH')
-        for index,selection in enumerate(finding['selections']):
-            if selection['id']!=role+'_'+str(index+1):raise ValueError('GRASS_SELECTION_ID_INVALID')
+        if (selected and not finding['selections']) or (finding['status']=='none_observed' and finding['selections']):
+            raise ValueError('GRASS_SELECTION_STATUS_MISMATCH')
+        # Provider labels are immutable observations, not trusted machine identities.
+        # Uncertain roles may contain diagnostic boxes, but can never produce plans.
+        labels=[selection['id'].strip() for selection in finding['selections']]
+        if any(not label for label in labels) or len(set(labels))!=len(labels):raise ValueError('GRASS_SELECTION_ID_INVALID')
+        for selection in finding['selections']:
             box=selection['box'];width=(box['xMax']-box['xMin'])*2048;height=(box['yMax']-box['yMin'])*1024
             if width<=0 or height<=0:raise ValueError('GRASS_BOX_DEGENERATE_OR_WRAP_UNSPLIT')
             gate(min(width,height)<8,'SELECTION_TOO_FINE_FOR_GUIDANCE:'+role)
@@ -201,7 +208,7 @@ def segmentation_plan(assessment):
             'max_masks':len(boxes),'include_scores':True,'include_boxes':True}
         step={'stepKey':'source-grass-'+role,'maskRole':role,'requestId':None,'reservationState':'unreserved','model':SAM_MODEL,
             'inputSha256':binding['guidanceSourceSha256'],'width':2048,'height':1024,'payload':payload,
-            'expectedIdentities':[x['id'] for x in selections],'selectionOrigin':'machine',
+            'expectedIdentities':[role+'_'+str(i+1) for i in range(len(selections))],'selectionOrigin':'machine',
             'assessmentProposalSha256':assessment['proposalSha256'],'contextSha256':assessment['contextSha256'],
             'maximumPostAttempts':1,'automaticRetry':False,'semanticClassVerified':False}
         step['inputFingerprint']=digest(step);plans.append(step)

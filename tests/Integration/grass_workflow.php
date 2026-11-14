@@ -5,7 +5,7 @@ $root = $argv[1] ?? '';
 if (!str_starts_with($root, '/') || is_dir($root)) throw new RuntimeException('Use a new absolute private fixture directory.');
 $code = dirname(__DIR__, 2);
 $scenario = $argv[2] ?? 'success';
-if (!in_array($scenario, ['success', 'empty-lawn', 'empty-paving'], true)) throw new RuntimeException('Unsupported test scenario.');
+if (!in_array($scenario, ['success', 'empty-lawn', 'empty-paving', 'material-uncertain'], true)) throw new RuntimeException('Unsupported test scenario.');
 if (!is_dir($root)) mkdir($root,02770);
 chmod($root,02770);
 $db = $root.'/test.sqlite';
@@ -110,6 +110,22 @@ Http::fake(function($request)use(&$fakeCalls,&$submittedSourceHashes,$maskBytes,
     if(isset($context['binding'])){
         $template=json_decode(file_get_contents($fixtures.'/response.SYNTHETIC.json'),true);$value=json_decode($template['output'][0]['content'][0]['text'],true);
         $value['contextSha256']=$context['contextSha256'];$value['binding']=$context['binding'];
+        // Descriptive model labels must not become SAM object identities.
+        foreach (LabGrassAssessmentPolicy::ROLES as $role) {
+            $finding = $role === 'lawn' ? $value['lawn'] : $value['exclusions'][$role];
+            foreach ($finding['selections'] as $i => &$selection) $selection['id'] = 'Visible '.$role.' patch '.($i + 1);
+            unset($selection);
+            if ($role === 'lawn') $value['lawn'] = $finding; else $value['exclusions'][$role] = $finding;
+        }
+        if ($scenario === 'material-uncertain') {
+            $value['material']['status'] = 'sparse_or_missing_turf';
+            $value['contextCoverage']['status'] = 'extra_context_required';
+            $value['contextCoverage']['requestedDetails'] = ['Inspect source turf and mixed-material boundaries.'];
+            foreach (['plants', 'loose_debris', 'non_turf_ground', 'capture_artifact'] as $role) {
+                $value['exclusions'][$role]['status'] = $role === 'loose_debris' ? 'too_fine_or_dense' : 'uncertain';
+            }
+            $value['uncertainties'] = ['Sparse grass and fine source exclusions remain unresolved.'];
+        }
     }elseif(isset($context['candidateSha256'])){
         $checks=[];foreach(LabVisualQualityProtocol::CHECKS as $name)$checks[$name]=['status'=>'pass','evidenceViewIds'=>[match($name){'seam'=>'wrap','poles'=>'poles',default=>'front'}],'reason'=>'Synthetic mechanics fixture only.'];
         $value=array_intersect_key($context,array_flip(['sourceSha256','candidateSha256','intentSha256','evidenceManifestSha256']))+['protocolVersion'=>LabVisualQualityProtocol::VERSION,'checks'=>$checks,'unresolvedDependencies'=>[],'recommendedAction'=>'none','summary'=>'Fake evaluator, no real quality claim.'];
@@ -146,6 +162,19 @@ $workflow->refresh();$item->refresh();$proof=['status'=>$workflow->status==='rea
     'syntheticQualityOnly'=>true,'automaticRealSceneSuccess'=>false,'workflowId'=>$workflow->id,'sourceCaseId'=>$case->id,'importId'=>$import->id,
     'fakeHttpCalls'=>$fakeCalls,'sourceRoleHashes'=>$submittedSourceHashes,'usedRuns'=>$project->fresh()->used_runs,'item'=>$item->toArray(),'history'=>$history];
 file_put_contents($root.'/proof.json',json_encode($proof,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES));
+if($scenario==='material-uncertain'){
+    $assessment=IguideLabGrassAssessment::sole();
+    check($workflow->status==='needs_review'&&$assessment->status==='completed'&&$assessment->result['status']==='needs_review','Semantic hold became parser failure or success');
+    check(count($assessment->result['reviewReasons'])===7&&$assessment->result['segmentationPlan']===[],'Semantic reasons or no-plan gate changed');
+    check(IguideLabWorkflowStep::where('kind','segmentation')->count()===0&&IguideLabMachineSegmentation::count()===0,'Uncertain material reserved SAM');
+    check(App\Models\IguideLabComposite::count()===0&&IguideLabWorkflowEvaluation::count()===0,'Uncertain material reached composition or evaluation');
+    $before=count($fakeCalls);$service->process($workflow->fresh());check(count($fakeCalls)===$before,'Held workflow retried a provider');
+    $proof['status']='passed_expected_material_hold';$proof['scenario']=$scenario;$proof['terminalReplayNoHttp']=true;
+    $proof['assessmentStatus']=$assessment->status;$proof['reviewReasons']=$assessment->result['reviewReasons'];
+    $proof['fakePaidPosts']=count(array_filter($fakeCalls,fn($r)=>$r['method']==='POST'));
+    check($proof['fakePaidPosts']===3,'Unexpected provider attempt during semantic hold');
+    file_put_contents($root.'/proof.json',json_encode($proof,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES));echo json_encode(['status'=>$proof['status'],'scenario'=>$scenario,'externalCalls'=>0]).PHP_EOL;exit;
+}
 if($scenario!=='success'){
     $expected=$scenario==='empty-lawn'?1:2;
     check($workflow->status==='needs_review'&&IguideLabMachineSegmentation::count()===$expected,'Missing mask did not stop later source roles');

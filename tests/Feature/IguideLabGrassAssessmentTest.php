@@ -91,6 +91,20 @@ class IguideLabGrassAssessmentTest extends TestCase
         $this->assertSame(['lab-primary', 'dashboard-fallback'], array_column($record->fresh()->provider_attempts, 'credentialSource'));
         $this->assertCount(2, app(LabGrassAssessments::class)->reserveSegmentationSteps($record->fresh()));
     }
+    public function test_completed_semantic_hold_does_not_reserve_sam_or_retry_the_assessment(): void
+    {
+        [, , , , , $record] = $this->reserved(); $service = app(LabGrassAssessments::class);
+        $this->bridge->semanticHold = true;
+        Http::fake(['api.openai.com/v1/responses' => Http::response($this->response())]);
+        $service->process($record); $service->process($record->fresh()); $service->process($record->fresh());
+        $this->assertSame('completed', $record->fresh()->status);
+        $this->assertSame('needs_review', $record->fresh()->result['status']);
+        $this->assertSame([], $record->fresh()->result['segmentationPlan']);
+        try { $service->reserveSegmentationSteps($record->fresh()); $this->fail('Uncertain material authorized SAM.'); }
+        catch (HttpException $e) { $this->assertSame(422, $e->getStatusCode()); }
+        $this->assertSame(0, \App\Models\IguideLabWorkflowStep::where('kind', 'segmentation')->count());
+        Http::assertSentCount(1);
+    }
     public function test_cancellation_after_quota_rejection_blocks_fallback_claim(): void
     {
         [, $workflow, , , , $record] = $this->reserved(); $count = 0;
@@ -233,7 +247,7 @@ class GrassAssessmentContextFixture extends LabGrassAssessmentContext
 }
 class GrassAssessmentBridgeFixture extends LabGrassAssessmentBridge
 {
-    public bool $available = true; public string $sourceSha = '';
+    public bool $available = true; public string $sourceSha = ''; public bool $semanticHold = false;
     public function ready(): bool { return $this->available; }
     public function snapshot(): array { return ['fixtureProtocol' => 1]; }
     public function run(string $projectId, string $relativeRequest, array $request, array $snapshot): array
@@ -248,6 +262,11 @@ class GrassAssessmentBridgeFixture extends LabGrassAssessmentBridge
             $assessment = json_decode(file_get_contents($request['assessment']['path']), true); $reservations = json_decode(file_get_contents($request['reservations']['path']), true);
             $outputs = ['plans' => array_map(fn ($plan) => $plan + ['requestId' => $reservations[$plan['stepKey']]], $assessment['segmentationPlan'])];
         } else $outputs = ['association' => ['status' => 'ready_for_source_support']];
+        if ($operation === 'parse' && $this->semanticHold) {
+            $outputs['assessment']['status'] = 'needs_review';
+            $outputs['assessment']['reviewReasons'] = ['TEXTURE_OR_MATERIAL_REQUIRES_REVIEW', 'EXCLUSION_UNRESOLVED:plants'];
+            $outputs['assessment']['segmentationPlan'] = [];
+        }
         $root = $disk->path(''); $base = str_replace('\\', '/', substr($request['outputDirectory'], strlen($root)));
         $descriptors = [];
         foreach ($outputs as $key => $value) { $asset = $this->json(ltrim($base, '/').'/'.$key.'.json', $value); $descriptors[$key] = $asset + ['bytes' => filesize($asset['path'])]; }
