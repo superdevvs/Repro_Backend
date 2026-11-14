@@ -79,9 +79,11 @@ class IguideLabInteriorAssessmentTest extends TestCase
     }
     public function test_confirmed_quota_fallback_preserves_payload_and_received_resume_never_resubmits(): void
     {
-        [,,,,,$record]=$this->fixture();Http::fakeSequence('api.openai.com/v1/responses')->push(['error'=>['code'=>'insufficient_quota']],429)->push($this->response(),200,['x-request-id'=>'req-interior-fallback']);
+        [,,$item,,,$record]=$this->fixture();Http::fakeSequence('api.openai.com/v1/responses')->push(['error'=>['code'=>'insufficient_quota']],429)->push($this->response(),200,['x-request-id'=>'req-interior-fallback']);
         $service=app(LabInteriorDesignAssessments::class);$service->process($record);$this->assertSame('received',$record->fresh()->status);$service->process($record->fresh());
         $this->assertSame('completed',$record->fresh()->status);Http::assertSentCount(2);$requests=Http::recorded();$this->assertSame($requests[0][0]->body(),$requests[1][0]->body());
+        $attempts=$record->fresh()->provider_attempts;$attempts[0]['requestedModelId']='different-model';$record->update(['provider_attempts'=>$attempts]);
+        $this->expectException(HttpException::class);$service->completed($item,$record->id,'framing');
     }
     public function test_receipt_file_and_result_drift_or_foreign_item_cannot_reuse_authority(): void
     {

@@ -120,7 +120,8 @@ class LabInteriorDesignAssessments
     private function parseReceipt(IguideLabInteriorAssessment $record,IguideLabWorkflowStep $step): array
     {
         $attempts=$record->provider_attempts??[];$index=count($attempts)-1;$a=$attempts[$index]??[];$receipt=$record->data['providerReceipt']??[];
-        abort_unless(in_array(count($attempts),[1,2],true)&&($attempts[0]['credentialSource']??null)==='lab-primary'&&($a['status']??null)==='received'
+        abort_unless(in_array(count($attempts),[1,2],true)&&($attempts[0]['credentialSource']??null)==='lab-primary'
+            &&($attempts[0]['requestedModelId']??null)==='gpt-6-astra'&&($a['status']??null)==='received'
             &&($a['requestedModelId']??null)==='gpt-6-astra'&&($a['providerRequestId']??null)===$record->provider_request_id&&is_string($record->provider_request_id)&&$record->provider_request_id!==''
             &&($a['httpStatus']??0)>=200&&($a['httpStatus']??0)<300
             &&($index===0||(($attempts[0]['status']??null)==='quota_rejected'&&($attempts[0]['httpStatus']??null)===429&&($a['credentialSource']??null)==='dashboard-fallback')),422,'Interior provider receipt is not confirmed.');
