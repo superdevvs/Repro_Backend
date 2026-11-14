@@ -1,0 +1,129 @@
+{
+  "fixtureOnly": true,
+  "queuedImport": {
+    "data": {
+      "id": "11111111-1111-4111-8111-111111111111",
+      "requestId": "22222222-2222-4222-8222-222222222222",
+      "sourceKind": "zip",
+      "status": "queued",
+      "error": null,
+      "audit": {
+        "parserVersion": "scan-import-json-1",
+        "sourceUrl": null,
+        "archiveSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "metadataSha256": null,
+        "providerCalls": 0
+      },
+      "sources": [],
+      "createdAt": "2026-11-14T08:00:00+00:00",
+      "completedAt": null
+    }
+  },
+  "completedImport": {
+    "data": {
+      "id": "11111111-1111-4111-8111-111111111111",
+      "requestId": "22222222-2222-4222-8222-222222222222",
+      "sourceKind": "zip",
+      "status": "completed",
+      "error": null,
+      "audit": {
+        "parserVersion": "scan-import-json-1",
+        "sourceUrl": null,
+        "archiveSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "metadataSha256": null,
+        "providerCalls": 0,
+        "format": "generic_360_zip",
+        "expandedBytes": 10000000,
+        "archiveBytes": 9000000,
+        "sourceCount": 1,
+        "warnings": [
+          "Some panoramas have no authoritative room assignment."
+        ]
+      },
+      "sources": [
+        {
+          "caseId": "33333333-3333-4333-8333-333333333333",
+          "importSourceKey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "sourceSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "width": 11008,
+          "height": 5504,
+          "panoId": null,
+          "roomId": null,
+          "originalRoomId": null,
+          "roomName": null,
+          "floorId": null,
+          "floorName": null,
+          "metadataAuthority": "unassigned",
+          "entry": "scan.jpg",
+          "reused": false,
+          "previewSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "previewDimensions": [
+            2048,
+            1024
+          ],
+          "previewAssetPath": "/api/iguide-lab/imports/11111111-1111-4111-8111-111111111111/sources/33333333-3333-4333-8333-333333333333/preview"
+        }
+      ],
+      "createdAt": "2026-11-14T08:00:00+00:00",
+      "completedAt": "2026-11-14T08:01:00+00:00"
+    }
+  },
+  "failedImport": {
+    "data": {
+      "id": "11111111-1111-4111-8111-111111111111",
+      "requestId": "22222222-2222-4222-8222-222222222222",
+      "sourceKind": "zip",
+      "status": "needs_attention",
+      "error": "The complete import does not fit the remaining source capacity. No partial import was created.",
+      "audit": {
+        "parserVersion": "scan-import-json-1",
+        "sourceUrl": null,
+        "archiveSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "metadataSha256": null,
+        "providerCalls": 0
+      },
+      "sources": [],
+      "createdAt": "2026-11-14T08:00:00+00:00",
+      "completedAt": "2026-11-14T08:01:00+00:00"
+    }
+  },
+  "uploading": {
+    "data": {
+      "id": "11111111-1111-4111-8111-111111111111",
+      "requestId": "22222222-2222-4222-8222-222222222222",
+      "importRequestId": "33333333-3333-4333-8333-333333333333",
+      "status": "uploading",
+      "sizeBytes": 9000000,
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "chunkSizeBytes": 8388608,
+      "totalChunks": 2,
+      "receivedChunks": [
+        0
+      ],
+      "receivedBytes": 8388608,
+      "importId": null,
+      "error": null,
+      "expiresAt": "2026-11-15T08:00:00+00:00"
+    }
+  },
+  "completedUpload": {
+    "data": {
+      "id": "11111111-1111-4111-8111-111111111111",
+      "requestId": "22222222-2222-4222-8222-222222222222",
+      "importRequestId": "33333333-3333-4333-8333-333333333333",
+      "status": "completed",
+      "sizeBytes": 9000000,
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "chunkSizeBytes": 8388608,
+      "totalChunks": 2,
+      "receivedChunks": [
+        0,
+        1
+      ],
+      "receivedBytes": 9000000,
+      "importId": "22222222-2222-4222-8222-222222222222",
+      "error": null,
+      "expiresAt": "2026-11-15T08:00:00+00:00"
+    }
+  }
+}

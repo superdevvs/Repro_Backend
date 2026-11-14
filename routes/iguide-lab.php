@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\API\IguideLabController;
 use App\Http\Controllers\API\IguideLabGeometryController;
+use App\Http\Controllers\API\IguideLabImportController;
 use App\Http\Middleware\AuthorizeIguideLab;
 use Illuminate\Support\Facades\Route;
 
@@ -9,6 +10,14 @@ use Illuminate\Support\Facades\Route;
 Route::middleware([AuthorizeIguideLab::class])->prefix('iguide-lab')->group(function () {
     Route::get('/', [IguideLabController::class, 'index'])->middleware('throttle:iguide-lab-read');
     Route::post('/cases', [IguideLabController::class, 'upload'])->middleware('throttle:iguide-lab-write');
+    Route::post('/imports', [IguideLabImportController::class, 'store'])->middleware('throttle:iguide-lab-write');
+    Route::get('/imports', [IguideLabImportController::class, 'index'])->middleware('throttle:iguide-lab-read');
+    Route::get('/imports/{id}', [IguideLabImportController::class, 'show'])->whereUuid('id')->middleware('throttle:iguide-lab-read');
+    Route::get('/imports/{id}/sources/{caseId}/preview', [IguideLabImportController::class, 'preview'])->whereUuid(['id', 'caseId'])->middleware('throttle:iguide-lab-read');
+    Route::post('/import-uploads', [IguideLabImportController::class, 'startUpload'])->middleware('throttle:iguide-lab-write');
+    Route::get('/import-uploads/{id}', [IguideLabImportController::class, 'showUpload'])->whereUuid('id')->middleware('throttle:iguide-lab-read');
+    Route::put('/import-uploads/{id}/chunks/{index}', [IguideLabImportController::class, 'uploadChunk'])->whereUuid('id')->whereNumber('index')->middleware('throttle:iguide-lab-write');
+    Route::post('/import-uploads/{id}/finalize', [IguideLabImportController::class, 'finalizeUpload'])->whereUuid('id')->middleware('throttle:iguide-lab-write');
     Route::post('/cases/{id}/native-source', [IguideLabGeometryController::class, 'attachNative'])->whereUuid('id')->middleware('throttle:iguide-lab-write');
     Route::post('/sections', [IguideLabGeometryController::class, 'startSection'])->middleware('throttle:iguide-lab-write');
     Route::get('/sections/{id}', [IguideLabGeometryController::class, 'showSection'])->whereUuid('id')->middleware('throttle:iguide-lab-read');
