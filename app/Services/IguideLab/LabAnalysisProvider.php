@@ -38,7 +38,7 @@ class LabAnalysisProvider
             || isset($payload['text']['format']['schema']['properties']['stagingLayout'])) {
             app(LabStagingLayoutReadiness::class)->verifyForAttempt($analysis,$payload);
         }
-        if (isset($analysis->data['lifestyleFraming']) || in_array(($analysis->data['executionRecipe']['recipe']['compilerVersion'] ?? null),[LabLifestyleCutProtocol::VERSION,LabLifestyleOpticalCutProtocol::VERSION],true)
+        if (isset($analysis->data['lifestyleFraming']) || in_array(($analysis->data['executionRecipe']['recipe']['compilerVersion'] ?? null),[LabLifestyleCutProtocol::VERSION,LabLifestyleOpticalCutProtocol::VERSION,LabLifestyleOriginalOpticalCutProtocol::VERSION],true)
             || isset($payload['text']['format']['schema']['properties']['lifestyleReadiness'])) {
             app(LabLifestyleCutReadiness::class)->verifyForAttempt($analysis,$payload);
         }
@@ -71,7 +71,7 @@ class LabAnalysisProvider
         // Raw reasoning is retained privately for diagnosis, never included in DTOs or logs.
         $path = 'iguide-lab/'.$analysis->project_id.'/analyses/'.$analysis->id.'/response-'.$index.'.json';
         $compiler = $analysis->data['executionRecipe']['recipe']['compilerVersion'] ?? null;
-        $lifestyleGate = in_array($compiler,[LabLifestyleCutProtocol::VERSION,LabLifestyleOpticalCutProtocol::VERSION],true);
+        $lifestyleGate = in_array($compiler,[LabLifestyleCutProtocol::VERSION,LabLifestyleOpticalCutProtocol::VERSION,LabLifestyleOriginalOpticalCutProtocol::VERSION],true);
         $layoutGate = $compiler === LabStagingLayoutProtocol::VERSION;
         $stagingGate = $compiler === LabStagingCutProtocol::VERSION || $lifestyleGate || $layoutGate;
         if ($stagingGate) abort_unless(strlen($response->body()) <= 512 * 1024, 422, 'Cut analysis receipt exceeded its limit.');

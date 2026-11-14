@@ -144,11 +144,11 @@ class LabAnalyses
             $case = IguideLabCase::where('project_id', $record->project_id)->findOrFail($record->case_id);
             abort_unless(hash_equals($record->source_sha256, $case->source_sha256), 422, 'The source association changed.');
             $hasRepairContext = $recipe['compilerVersion'] === LabRepairAnalysisProtocol::VERSION;
-            $hasContext = in_array($recipe['compilerVersion'], [LabSectionAnalysisProtocol::VERSION, LabStagingCutProtocol::VERSION, LabLifestyleCutProtocol::VERSION, LabLifestyleOpticalCutProtocol::VERSION, LabStagingLayoutProtocol::VERSION], true);
+            $hasContext = in_array($recipe['compilerVersion'], [LabSectionAnalysisProtocol::VERSION, LabStagingCutProtocol::VERSION, LabLifestyleCutProtocol::VERSION, LabLifestyleOpticalCutProtocol::VERSION, LabLifestyleOriginalOpticalCutProtocol::VERSION, LabStagingLayoutProtocol::VERSION], true);
             $layoutGate = $recipe['compilerVersion'] === LabStagingLayoutProtocol::VERSION;
             abort_unless($layoutGate === isset($record->data['stagingLayout']), 422);
             if ($layoutGate) app(LabStagingLayoutReadiness::class)->verifyReference($record->data['workflowInvocation'], $case, $record->data['stagingLayout']);
-            $opticalGate = $recipe['compilerVersion'] === LabLifestyleOpticalCutProtocol::VERSION;
+            $opticalGate = in_array($recipe['compilerVersion'], [LabLifestyleOpticalCutProtocol::VERSION, LabLifestyleOriginalOpticalCutProtocol::VERSION], true);
             $lifestyleGate = $opticalGate || $recipe['compilerVersion'] === LabLifestyleCutProtocol::VERSION;
             abort_unless($lifestyleGate === isset($record->data['lifestyleFraming']), 422);
             if ($lifestyleGate) app(LabLifestyleCutReadiness::class)->verifyReference($record->data['workflowInvocation'], $case, $record->data['lifestyleFraming']);
