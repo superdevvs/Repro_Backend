@@ -2,12 +2,17 @@
 
 use App\Http\Controllers\API\IguideLabController;
 use App\Http\Controllers\API\IguideLabGeometryController;
+use App\Http\Controllers\API\IguideLabWorkflowController;
 use App\Http\Controllers\API\IguideLabImportController;
 use App\Http\Middleware\AuthorizeIguideLab;
 use Illuminate\Support\Facades\Route;
 
 // Separate scoped capability; no guest trial, billing, or ordinary Studio access.
 Route::middleware([AuthorizeIguideLab::class])->prefix('iguide-lab')->group(function () {
+    Route::get('/workflows', [IguideLabWorkflowController::class, 'index'])->middleware('throttle:iguide-lab-read');
+    Route::post('/workflows', [IguideLabWorkflowController::class, 'start'])->middleware('throttle:iguide-lab-write');
+    Route::get('/workflows/{id}', [IguideLabWorkflowController::class, 'show'])->whereUuid('id')->middleware('throttle:iguide-lab-read');
+    Route::post('/workflows/{id}/cancel', [IguideLabWorkflowController::class, 'cancel'])->whereUuid('id')->middleware('throttle:iguide-lab-write');
     Route::get('/', [IguideLabController::class, 'index'])->middleware('throttle:iguide-lab-read');
     Route::post('/cases', [IguideLabController::class, 'upload'])->middleware('throttle:iguide-lab-write');
     Route::post('/imports', [IguideLabImportController::class, 'store'])->middleware('throttle:iguide-lab-write');
