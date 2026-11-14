@@ -31,23 +31,43 @@ class LabService
         abort_if($input['projection'] === 'equirectangular' && $size[0] !== 2 * $size[1], 422, 'A full equirectangular panorama must have an exact 2:1 aspect ratio.');
         abort_if($size[0] / $size[1] > 3 || $size[1] / $size[0] > 3, 422, 'The image aspect ratio must be between 1:3 and 3:1.');
         $hash = hash_file('sha256', $image->getRealPath());
-        $existing = IguideLabCase::where('project_id', $project->id)->where('source_sha256', $hash)->where('label', $input['label'])->first();
+        $existing = $this->existingCase($project, $hash, $input);
         if ($existing) return $existing;
-        abort_if(IguideLabCase::where('project_id', $project->id)->count() >= 80, 429, 'This lab already has 80 source images.');
+        app(LabCaseCapacity::class)->assertRoom($project->fresh());
         app(LabStorage::class)->prepareProject($project->id);
         $id = (string) Str::uuid();
         $extension = match ($size['mime']) { 'image/png' => 'png', 'image/webp' => 'webp', default => 'jpg' };
         $path = 'iguide-lab/'.$project->id.'/cases/'.$id.'.'.$extension;
-        $stream = fopen($image->getRealPath(), 'rb');
-        try { Storage::disk(self::DISK)->put($path, $stream, ['visibility' => 'private']); }
-        finally { if (is_resource($stream)) fclose($stream); }
+        $disk = Storage::disk(self::DISK);
+        try {
+            $stream = fopen($image->getRealPath(), 'rb');
+            try { abort_unless($disk->put($path, $stream, ['visibility' => 'private']), 500, 'Private source storage failed.'); }
+            finally { if (is_resource($stream)) fclose($stream); }
+            return LockedWrite::run(fn () => DB::transaction(function () use ($project, $input, $hash, $id, $path, $size) {
+                IguideLabProject::whereKey($project->id)->update(['updated_at' => now()]);
+                $current = $project->fresh(); abort_unless($current?->active(), 401);
+                $existing = $this->existingCase($project, $hash, $input);
+                if ($existing) return $existing;
+                app(LabCaseCapacity::class)->assertRoom($current);
+                return IguideLabCase::create([
+                    'id' => $id, 'project_id' => $project->id, 'label' => $input['label'],
+                    'room_id' => $input['roomId'] ?? null, 'pano_id' => $input['panoId'] ?? null, 'tour_url' => $input['tourUrl'] ?? null,
+                    'projection' => $input['projection'], 'width' => $size[0], 'height' => $size[1],
+                    'source_sha256' => $hash, 'source_path' => $path, 'source_mime' => $size['mime'], 'metadata' => $input['metadata'] ?? [],
+                ]);
+            }), 'iguide-lab.case');
+        } finally { if (! IguideLabCase::whereKey($id)->exists()) $disk->delete($path); }
+    }
 
-        return LockedWrite::run(fn () => IguideLabCase::create([
-            'id' => $id, 'project_id' => $project->id, 'label' => $input['label'],
-            'room_id' => $input['roomId'] ?? null, 'pano_id' => $input['panoId'] ?? null, 'tour_url' => $input['tourUrl'] ?? null,
-            'projection' => $input['projection'], 'width' => $size[0], 'height' => $size[1],
-            'source_sha256' => $hash, 'source_path' => $path, 'source_mime' => $size['mime'], 'metadata' => $input['metadata'] ?? [],
-        ]), 'iguide-lab.case');
+    private function existingCase(IguideLabProject $project, string $hash, array $input): ?IguideLabCase
+    {
+        $query = IguideLabCase::where('project_id', $project->id)->where('source_sha256', $hash)->where('label', $input['label']);
+        // UUIDv7 display prefixes can collide. Recovery belongs to the full section, not its short label.
+        if (($input['metadata']['role'] ?? null) === 'section-source') {
+            $query->where('metadata->sectionId', $input['metadata']['sectionId'] ?? null)
+                ->where('metadata->parentCaseId', $input['metadata']['parentCaseId'] ?? null);
+        }
+        return $query->first();
     }
 
     public function start(IguideLabProject $project, array $input): IguideLabRun
@@ -213,9 +233,9 @@ class LabService
             app(LabStorage::class)->prepareProject($run->project_id);
             $path = 'iguide-lab/'.$run->project_id.'/runs/'.$run->id.'.png';
             $png = (string) ImageManager::gd()->read($result['bytes'])->toPng();
-            Storage::disk(self::DISK)->put($path, $png, ['visibility' => 'private']);
+            abort_unless(Storage::disk(self::DISK)->put($path, $png, ['visibility' => 'private']), 500, 'Private output storage failed.');
             LockedWrite::run(fn () => $run->update([
-                'status' => 'completed', 'output_path' => $path, 'output_width' => $size[0], 'output_height' => $size[1],
+                'status' => 'completed', 'output_path' => $path, 'output_sha256' => hash('sha256', $png), 'output_width' => $size[0], 'output_height' => $size[1],
                 'usage' => $result['usage'] ?? null, 'provider_request_id' => $result['requestId'] ?? $run->provider_request_id,
                 'duration_ms' => (int) $run->started_at->diffInMilliseconds(now()), 'completed_at' => now(), 'error' => null,
             ]), 'iguide-lab.complete');
@@ -258,7 +278,7 @@ class LabService
         return ['id' => $run->id, 'requestId' => $run->request_id, 'caseId' => $run->case_id, 'roomId' => IguideLabCase::find($run->case_id)?->room_id,
             'modelId' => $run->model_id, 'requestedModelId' => $run->model_id, 'provider' => $run->provider, 'providerRequestId' => $run->provider_request_id, 'preset' => $run->preset, 'style' => $run->style,
             'prompt' => $run->prompt, 'customPrompt' => $run->options['customInstructions'] ?? '', 'options' => $run->options, 'status' => $run->status, 'error' => $run->error,
-            'output' => $run->status === 'completed' ? ['assetPath' => '/api/iguide-lab/assets/run/'.$run->id, 'width' => $run->output_width, 'height' => $run->output_height, 'mime' => 'image/png', 'preview' => true] : null,
+            'output' => $run->status === 'completed' ? ['assetPath' => '/api/iguide-lab/assets/run/'.$run->id, 'width' => $run->output_width, 'height' => $run->output_height, 'sha256' => app(LabOutputDigests::class)->dto($run), 'mime' => 'image/png', 'preview' => true] : null,
             'latestReview' => app(LabReviews::class)->latest($run),
             'usage' => $run->usage, 'durationMs' => $run->duration_ms, 'createdAt' => $run->created_at->toIso8601String(), 'completedAt' => $run->completed_at?->toIso8601String()];
     }

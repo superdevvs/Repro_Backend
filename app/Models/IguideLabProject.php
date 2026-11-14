@@ -11,7 +11,7 @@ class IguideLabProject extends Model
 
     protected $guarded = [];
     protected $hidden = ['token_hash'];
-    protected $casts = ['expires_at' => 'datetime', 'revoked_at' => 'datetime', 'max_runs' => 'integer', 'used_runs' => 'integer'];
+    protected $casts = ['expires_at' => 'datetime', 'revoked_at' => 'datetime', 'max_runs' => 'integer', 'used_runs' => 'integer', 'max_cases' => 'integer'];
 
     public function active(): bool
     {

@@ -92,6 +92,23 @@ class IguideLabGeometryTest extends TestCase
         $this->assertSame('needs_attention', $record->fresh()->status); $this->assertNull($record->fresh()->derived_case_id); Http::assertNothingSent();
     }
 
+    public function test_derived_section_case_uses_project_capacity_and_recovers_no_duplicate_at_limit(): void
+    {
+        $this->project->update(['max_cases' => 160]);
+        $rows = [];
+        for ($i = 1; $i < 159; $i++) $rows[] = ['id' => (string) Str::uuid(), 'project_id' => $this->project->id, 'label' => 'Existing '.$i,
+            'projection' => 'equirectangular', 'width' => 2048, 'height' => 1024, 'source_sha256' => $this->source->source_sha256,
+            'source_path' => $this->source->source_path, 'source_mime' => 'image/png', 'created_at' => now(), 'updated_at' => now()];
+        IguideLabCase::insert($rows);
+        $section = $this->completedSection(); $derived = $section->derived_case_id;
+        $this->assertSame(160, IguideLabCase::count());
+        $section->update(['status' => 'extracting', 'derived_case_id' => null, 'data' => null]); app(LabSections::class)->process($section);
+        $this->assertSame($derived, $section->fresh()->derived_case_id); $this->assertSame(160, IguideLabCase::count());
+        $another = $this->reserveSection(); app(LabSections::class)->process($another);
+        $this->assertSame('needs_attention', $another->fresh()->status); $this->assertNull($another->fresh()->derived_case_id);
+        $this->assertSame(160, IguideLabCase::count()); Http::assertNothingSent();
+    }
+
     public function test_reviewed_mask_replay_and_project_scope_preserve_support_identity(): void
     {
         $section = $this->completedSection(); $id = (string) Str::uuid(); $url = '/api/iguide-lab/sections/'.$section->id.'/masks';

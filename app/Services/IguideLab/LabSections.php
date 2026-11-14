@@ -37,7 +37,7 @@ class LabSections
                 IguideLabProject::whereKey($project->id)->update(['updated_at' => now()]); abort_unless($project->fresh()->active(), 401);
                 $current = $parent->fresh();
                 if ($current->native_source) return $this->attached($project, $current, $hash, $requestId);
-                abort_if(IguideLabCase::where('project_id', $project->id)->count() >= 80, 429);
+                app(LabCaseCapacity::class)->assertRoom($project->fresh());
                 $case = IguideLabCase::create(['id' => $id, 'project_id' => $project->id, 'label' => mb_substr($parent->label, 0, 140).' - native source',
                     'room_id' => $parent->room_id, 'pano_id' => $parent->pano_id, 'tour_url' => $parent->tour_url, 'projection' => 'equirectangular',
                     'width' => $size[0], 'height' => $size[1], 'source_sha256' => $hash, 'source_path' => $path, 'source_mime' => $size['mime'],

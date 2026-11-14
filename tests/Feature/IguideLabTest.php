@@ -255,6 +255,9 @@ class IguideLabTest extends TestCase
         $service = app(LabService::class);
         $this->assertTrue($service->process($run));
         $this->assertTrue($service->process($run->fresh()));
+        $saved = $run->fresh(); $stored = Storage::disk(LabService::DISK)->get($saved->output_path);
+        $this->assertSame(hash('sha256', $stored), $saved->output_sha256);
+        $this->assertSame($saved->output_sha256, $service->runDto($saved)['output']['sha256']);
         $this->withToken($this->token)->getJson('/api/iguide-lab/runs/'.$run->id)->assertOk()->assertJsonPath('data.status', 'completed')->assertJsonPath('data.providerRequestId', 'req-test')->assertJsonPath('data.output.preview', true)->assertJsonPath('data.output.width', 2048);
         $this->withToken($this->token)->get('/api/iguide-lab/assets/run/'.$run->id)->assertOk()->assertHeader('Content-Type', 'image/png');
     }
