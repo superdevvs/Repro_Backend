@@ -289,6 +289,11 @@ Route::prefix('/public/guest-shares/{token}')->group(function () {
     Route::post('/code', [$controller, 'code'])->middleware('throttle:5,1,guest-code');
     Route::post('/verify', [$controller, 'verify'])->middleware('throttle:10,1,guest-verify');
     Route::get('/files/{file}', [$controller, 'file'])->middleware('throttle:1200,1,guest-files')->name('api.guest-shares.file');
+    $downloads = \App\Http\Controllers\API\ShootGuestDownloadController::class;
+    Route::post('/downloads', [$downloads, 'store'])->middleware('throttle:20,1,guest-archives')->name('api.guest-shares.downloads.store');
+    Route::get('/downloads/{archive}', [$downloads, 'show'])->where('archive', '[a-f0-9]{32}')->middleware('throttle:120,1,guest-archive-status')->name('api.guest-shares.downloads.show');
+    Route::get('/downloads/{archive}/file', [$downloads, 'download'])->where('archive', '[a-f0-9]{32}')->middleware('throttle:60,1,guest-archive-files')->name('api.guest-shares.downloads.file');
+    Route::get('/files/{file}/mls', [$downloads, 'mls'])->middleware('throttle:1200,1,guest-files')->name('api.guest-shares.file-mls');
 });
 Route::get('/public/share-links/{token}/download', [PublicShootShareLinkController::class, 'download'])
     ->name('api.public.share-links.download');
@@ -911,6 +916,8 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/shoots/{shoot}/share-links', [ShootMediaController::class, 'listShareLinks']);
     Route::get('/shoots/{shoot}/guest-shares', [\App\Http\Controllers\API\ShootGuestShareController::class, 'index']);
     Route::post('/shoots/{shoot}/guest-shares', [\App\Http\Controllers\API\ShootGuestShareController::class, 'store'])->middleware('throttle:10,1,guest-invite');
+    Route::get('/shoots/{shoot}/guest-shares/{shareId}/link', [\App\Http\Controllers\API\ShootGuestShareController::class, 'link']);
+    Route::post('/shoots/{shoot}/guest-shares/{shareId}/resend', [\App\Http\Controllers\API\ShootGuestShareController::class, 'resend'])->middleware('throttle:10,1,guest-invite-resend');
     Route::delete('/shoots/{shoot}/guest-shares/{shareId}', [\App\Http\Controllers\API\ShootGuestShareController::class, 'revoke']);
     Route::get('/shoots/{shoot}/realtor-options', ShootRealtorOptionsController::class);
     Route::post('/shoots/{shoot}/share-links/{linkId}/revoke', [ShootMediaController::class, 'revokeShareLink']);

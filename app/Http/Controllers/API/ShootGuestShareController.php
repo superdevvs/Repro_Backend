@@ -19,24 +19,71 @@ class ShootGuestShareController extends Controller
     public function index(Request $request, Shoot $shoot)
     {
         $this->shares->authorizeManager($shoot, $request->user());
-        return response()->json(['data' => ShootGuestShare::where('shoot_id', $shoot->id)->latest()->limit(100)
-            ->get(['id', 'email', 'expires_at', 'revoked_at', 'last_verified_at', 'created_at'])]);
+        $input = $request->validate(['before_id' => 'sometimes|integer|min:1']);
+        $rows = ShootGuestShare::where('shoot_id', $shoot->id)->with(['creator', 'shoot'])
+            ->when(isset($input['before_id']), fn ($query) => $query->where('id', '<', $input['before_id']))
+            ->latest('id')->limit(101)->get();
+        $page = $rows->take(100);
+        return response()->json(['data' => $page->map(fn ($share) => $this->shares->managementData($share))->values(),
+            'meta' => ['next_cursor' => $rows->count() > 100 ? $page->last()->id : null]])
+            ->header('Cache-Control', 'private, no-store');
     }
 
     public function store(Request $request, Shoot $shoot)
     {
         $this->shares->authorizeManager($shoot, $request->user());
-        $input = $request->validate(['email' => 'required|email:rfc|max:254']);
-        $share = $this->shares->create($shoot, $request->user(), $input['email']);
-        return response()->json(['message' => 'Invitation sent.', 'data' => $share->only(['id', 'email', 'expires_at'])], 201);
+        if (! $request->exists('emails')) {
+            $request->merge(['email' => is_string($request->input('email')) ? strtolower(trim($request->input('email'))) : $request->input('email')]);
+            $input = $request->validate(['email' => 'required|email:rfc|max:254']);
+            $result = $this->shares->createOrReuse($shoot, $request->user(), $input['email']);
+            return response()->json(['message' => $result['outcome'] === 'sent' ? 'Invitation sent.' : 'An active invitation already exists.',
+                'data' => $result['share']->only(['id', 'email', 'expires_at'])], 201)->header('Cache-Control', 'private, no-store');
+        }
+        $emails = $request->input('emails');
+        if (is_array($emails)) $request->merge(['emails' => array_map(fn ($email) => is_string($email) ? strtolower(trim($email)) : $email, $emails)]);
+        $input = $request->validate(['email' => 'prohibited', 'emails' => 'required|array|min:1|max:20',
+            'emails.*' => 'required|string|email:rfc|max:254']);
+        $results = [];
+        foreach (array_values(array_unique($input['emails'])) as $email) {
+            try {
+                $result = $this->shares->createOrReuse($shoot, $request->user(), $email);
+                $results[] = ['email' => $email, 'outcome' => $result['outcome'], 'share' => $this->shares->managementData($result['share'])];
+            } catch (\Throwable) {
+                $results[] = ['email' => $email, 'outcome' => 'failed', 'message' => 'The invitation could not be sent. Retry this recipient.'];
+            }
+        }
+        return response()->json(['data' => $results, 'summary' => [
+            'sent' => count(array_filter($results, fn ($row) => $row['outcome'] === 'sent')),
+            'existing' => count(array_filter($results, fn ($row) => $row['outcome'] === 'existing')),
+            'failed' => count(array_filter($results, fn ($row) => $row['outcome'] === 'failed')),
+        ]])->header('Cache-Control', 'private, no-store');
+    }
+
+    public function link(Request $request, Shoot $shoot, int $shareId)
+    {
+        $this->shares->authorizeManager($shoot, $request->user());
+        $share = ShootGuestShare::where('shoot_id', $shoot->id)->findOrFail($shareId);
+        return response()->json(['data' => ['url' => $this->shares->copyLink($shoot, $request->user(), $share)]])
+            ->header('Cache-Control', 'private, no-store')->header('Referrer-Policy', 'no-referrer');
+    }
+
+    public function resend(Request $request, Shoot $shoot, int $shareId)
+    {
+        $this->shares->authorizeManager($shoot, $request->user());
+        $share = ShootGuestShare::where('shoot_id', $shoot->id)->findOrFail($shareId);
+        $result = $this->shares->resend($shoot, $request->user(), $share);
+        return response()->json(['message' => $result['replacement'] ? 'A new invitation was sent. Previous links are unchanged.' : 'Invitation resent.',
+            'data' => $this->shares->managementData($result['share']), 'replacement' => $result['replacement']])
+            ->header('Cache-Control', 'private, no-store');
     }
 
     public function revoke(Request $request, Shoot $shoot, int $shareId)
     {
         $this->shares->authorizeManager($shoot, $request->user());
         $share = ShootGuestShare::where('shoot_id', $shoot->id)->findOrFail($shareId);
-        LockedWrite::run(fn () => $share->update(['revoked_at' => now(), 'code_hash' => null]), 'guest-share-revoke');
-        return response()->json(['message' => 'Access revoked.']);
+        LockedWrite::run(fn () => $share->update(['revoked_at' => now(), 'code_hash' => null,
+            'invitation_status' => 'revoked']), 'guest-share-revoke');
+        return response()->json(['message' => 'Access revoked.'])->header('Cache-Control', 'private, no-store');
     }
 
     public function show(Request $request, string $token)

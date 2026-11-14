@@ -9,7 +9,7 @@ use App\Services\Messaging\EmailNotificationPermissions;
 use App\Services\ShootActivityLogger;
 use App\Services\Shoots\{DeliveryPlanService, ShootGuestShareService};
 use Illuminate\Foundation\Testing\RefreshDatabase;
-use Illuminate\Support\Facades\{Cache, Http, Notification, Queue, Storage};
+use Illuminate\Support\Facades\{Cache, DB, Http, Notification, Queue, Storage};
 use Illuminate\Support\Str;
 use Tests\TestCase;
 
@@ -114,6 +114,8 @@ class ShootGuestShareTest extends TestCase
         $this->assertStringContainsString('href="'.$match[0].'"', $invitation['body_html']);
         $this->assertStringContainsString('Open Magic Link</a>', $invitation['body_html']);
         $this->assertStringContainsString('Access expires in 30 days.', $invitation['body_html']);
+        $this->assertStringContainsString('src="https://repro.test/brand/magic-link-glass.png"', $invitation['body_html']);
+        $this->assertStringContainsString('alt="Magic Link" width="200"', $invitation['body_html']);
 
         $service->requestCode($share);
         $codeEmail = end($this->sent);
@@ -124,6 +126,7 @@ class ShootGuestShareTest extends TestCase
         $this->assertStringContainsString('10 minutes', $codeEmail['body_html']);
         $this->assertStringNotContainsString('/guest/shoot/', $codeEmail['body_html']);
         $this->assertStringNotContainsString(e($address), $codeEmail['body_html']);
+        $this->assertStringNotContainsString('magic-link-glass.png', $codeEmail['body_html']);
         foreach ([$invitation, $codeEmail] as $payload) {
             $this->assertSame('guest2@example.test', $payload['to']);
             $this->assertSame('SHOOT_GUEST_ACCESS', $payload['send_source']);
@@ -392,5 +395,245 @@ class ShootGuestShareTest extends TestCase
         $this->actingAs($admin)->postJson('/api/shoots/'.$shoot->id.'/guest-shares', ['email' => 'denied@example.test'])
             ->assertForbidden();
         $this->assertDatabaseMissing('shoot_guest_shares', ['email' => 'denied@example.test']);
+    }
+
+    public function test_batch_normalizes_deduplicates_and_reuses_active_recipient_invitations(): void
+    {
+        [$shoot, $client] = $this->fixture();
+        $base = '/api/shoots/'.$shoot->id.'/guest-shares';
+        $input = ['emails' => [' First@example.test ', 'first@EXAMPLE.test', 'second@example.test']];
+        $response = $this->actingAs($client)->postJson($base, $input)->assertOk()
+            ->assertJsonPath('summary.sent', 2)->assertJsonPath('summary.existing', 0)->assertJsonPath('summary.failed', 0)
+            ->assertJsonCount(2, 'data')->assertJsonPath('data.0.email', 'first@example.test')
+            ->assertJsonPath('data.0.share.can_copy', true)->assertJsonPath('data.0.share.status', 'active');
+        $this->assertCount(2, $this->sent);
+        $this->postJson($base, $input)->assertOk()->assertJsonPath('summary.sent', 0)->assertJsonPath('summary.existing', 2);
+        $this->assertCount(2, $this->sent);
+        $this->assertSame(3, ShootGuestShare::count());
+        $links = [];
+        foreach ($response->json('data') as $row) {
+            $share = ShootGuestShare::findOrFail($row['share']['id']);
+            $url = $this->getJson($base.'/'.$share->id.'/link')->assertOk()
+                ->assertHeader('Cache-Control', 'no-store, private')->json('data.url');
+            $token = basename($url);
+            $this->assertSame($token, $share->token_encrypted);
+            $this->assertSame(hash('sha256', $token), $share->token_hash);
+            $this->assertStringNotContainsString($token, DB::table('shoot_guest_shares')->where('id', $share->id)->value('token_encrypted'));
+            $this->assertArrayNotHasKey('token_encrypted', $share->toArray());
+            $this->assertArrayNotHasKey('token_hash', $share->toArray());
+            $this->getJson('/api/public/guest-shares/'.$token)->assertOk()->assertJsonPath('verified', false)->assertJsonPath('data', null);
+            $links[] = $url;
+        }
+        $this->assertNotSame($links[0], $links[1]);
+        $list = $this->getJson($base)->assertOk()->assertJsonCount(3, 'data')->assertJsonPath('meta.next_cursor', null);
+        foreach (['token_encrypted', 'token_hash', 'code_hash', '/guest/shoot/'] as $secret) $list->assertDontSee($secret);
+    }
+
+    public function test_batch_validates_every_address_and_limit_before_any_email_is_sent(): void
+    {
+        [$shoot, $client] = $this->fixture();
+        $base = '/api/shoots/'.$shoot->id.'/guest-shares';
+        $this->actingAs($client)->postJson($base, ['emails' => ['valid@example.test', 'not-an-email']])
+            ->assertUnprocessable()->assertJsonValidationErrors('emails.1');
+        $this->postJson($base, ['emails' => array_map(fn ($index) => "guest{$index}@example.test", range(1, 21))])
+            ->assertUnprocessable()->assertJsonValidationErrors('emails');
+        $this->postJson($base, ['emails' => []])->assertUnprocessable();
+        $this->assertCount(0, $this->sent);
+        $this->assertSame(1, ShootGuestShare::count());
+    }
+
+    public function test_partial_batch_failure_can_be_retried_without_resending_successful_recipients(): void
+    {
+        [$shoot, $client] = $this->fixture();
+        $fail = true;
+        $this->mock(MessagingService::class, function ($mock) use (&$fail) {
+            $mock->shouldReceive('sendEmail')->andReturnUsing(function (array $payload) use (&$fail) {
+                $this->sent[] = $payload;
+                return new Message(['status' => $fail && $payload['to'] === 'retry@example.test' ? 'FAILED' : 'SENT']);
+            });
+        });
+        $base = '/api/shoots/'.$shoot->id.'/guest-shares';
+        $input = ['emails' => ['good@example.test', 'retry@example.test']];
+        $this->actingAs($client)->postJson($base, $input)->assertOk()->assertJsonPath('summary.sent', 1)
+            ->assertJsonPath('summary.failed', 1)->assertJsonPath('data.1.outcome', 'failed');
+        $failed = ShootGuestShare::where('email', 'retry@example.test')->sole();
+        $this->assertNotNull($failed->revoked_at);
+        $this->assertSame('failed', $failed->invitation_status);
+        $fail = false;
+        $this->postJson($base, $input)->assertOk()->assertJsonPath('summary.sent', 1)
+            ->assertJsonPath('summary.existing', 1)->assertJsonPath('summary.failed', 0);
+        $this->assertCount(3, $this->sent);
+        $this->assertSame(1, collect($this->sent)->where('to', 'good@example.test')->count());
+        $this->assertSame(2, ShootGuestShare::where('email', 'retry@example.test')->count());
+        $this->assertNotNull($failed->fresh()->revoked_at);
+    }
+
+    public function test_assigned_reps_can_share_without_global_management_and_lose_access_after_reassignment(): void
+    {
+        [$shoot, $client] = $this->fixture();
+        $rep = User::factory()->create(['role' => 'salesRep', 'permission_overrides' => ['deny' => ['shoots-manage'], 'allow' => []]]);
+        $other = User::factory()->create(['role' => 'salesRep']);
+        $shoot->update(['rep_id' => $rep->id]);
+        $base = '/api/shoots/'.$shoot->id.'/guest-shares';
+        $service = app(ShootGuestShareService::class);
+        $this->assertFalse(app(\App\Services\RolePermissionService::class)->userCan($rep, 'shoots', 'manage'));
+        $this->assertTrue($service->canManage($shoot->fresh(), $rep));
+        $response = $this->actingAs($rep)->postJson($base, ['emails' => ['assigned@example.test']])->assertOk()->assertJsonPath('summary.sent', 1);
+        $shareId = $response->json('data.0.share.id');
+        $url = $this->getJson($base.'/'.$shareId.'/link')->assertOk()->json('data.url');
+        $this->actingAs($other)->getJson($base)->assertForbidden();
+        $this->postJson($base, ['emails' => ['unrelated@example.test']])->assertForbidden();
+        $this->getJson($base.'/'.$shareId.'/link')->assertForbidden();
+        $this->postJson($base.'/'.$shareId.'/resend')->assertForbidden();
+        $this->deleteJson($base.'/'.$shareId)->assertForbidden();
+        $shoot->update(['rep_id' => $other->id]);
+        $this->getJson('/api/public/guest-shares/'.basename($url))->assertForbidden();
+        $this->actingAs($rep)->getJson($base)->assertForbidden();
+        $shoot->update(['rep_id' => null]);
+        $client->update(['metadata' => ['accountRepId' => $rep->id]]);
+        $this->assertTrue($service->canManage($shoot->fresh(), $rep));
+        $this->getJson($base)->assertOk();
+        $rep->update(['permission_overrides' => ['deny' => ['shoots-view'], 'allow' => []]]);
+        $this->actingAs($rep->fresh())->getJson($base)->assertForbidden();
+        $this->getJson('/api/public/guest-shares/'.basename($url))->assertForbidden();
+    }
+
+    public function test_copy_resend_and_revoke_require_authority_and_the_matching_shoot(): void
+    {
+        [$shoot, $client] = $this->fixture();
+        $share = app(ShootGuestShareService::class)->create($shoot, $client, 'managed@example.test');
+        $base = '/api/shoots/'.$shoot->id.'/guest-shares';
+        foreach (['client', 'editor', 'photographer'] as $role) {
+            $this->actingAs(User::factory()->create(['role' => $role]));
+            $this->getJson($base)->assertForbidden();
+            $this->getJson($base.'/'.$share->id.'/link')->assertForbidden();
+            $this->postJson($base.'/'.$share->id.'/resend')->assertForbidden();
+            $this->deleteJson($base.'/'.$share->id)->assertForbidden();
+        }
+        $foreignShoot = Shoot::factory()->create(['client_id' => $client->id]);
+        $foreign = '/api/shoots/'.$foreignShoot->id.'/guest-shares/'.$share->id;
+        $this->actingAs($client)->getJson($foreign.'/link')->assertNotFound();
+        $this->postJson($foreign.'/resend')->assertNotFound();
+        $this->deleteJson($foreign)->assertNotFound();
+        $this->assertCount(1, $this->sent);
+        $this->assertNull($share->fresh()->revoked_at);
+    }
+
+    public function test_resending_an_active_link_preserves_it_and_throttles_retries_even_after_email_failure(): void
+    {
+        [$shoot, $client] = $this->fixture();
+        $share = app(ShootGuestShareService::class)->create($shoot, $client, 'resend@example.test');
+        $base = '/api/shoots/'.$shoot->id.'/guest-shares/'.$share->id;
+        $this->actingAs($client);
+        $originalUrl = $this->getJson($base.'/link')->assertOk()->json('data.url');
+        $originalExpiry = $share->expires_at->toIso8601String();
+        $this->postJson($base.'/resend')->assertTooManyRequests();
+        $fail = true;
+        $this->mock(MessagingService::class, function ($mock) use (&$fail) {
+            $mock->shouldReceive('sendEmail')->andReturnUsing(function (array $payload) use (&$fail) {
+                $this->sent[] = $payload;
+                return new Message(['status' => $fail ? 'FAILED' : 'SENT']);
+            });
+        });
+        $this->travel(61)->seconds();
+        $this->postJson($base.'/resend')->assertStatus(503);
+        $this->assertNull($share->fresh()->revoked_at);
+        $this->getJson($base.'/link')->assertOk()->assertJsonPath('data.url', $originalUrl);
+        $this->postJson($base.'/resend')->assertTooManyRequests();
+        $fail = false;
+        $this->travel(61)->seconds();
+        $this->postJson($base.'/resend')->assertOk()->assertJsonPath('replacement', false)
+            ->assertJsonPath('data.id', $share->id)->assertJsonPath('data.status', 'active')
+            ->assertJsonPath('data.expires_at', $originalExpiry);
+        $this->getJson($base.'/link')->assertOk()->assertJsonPath('data.url', $originalUrl);
+        $this->assertCount(3, $this->sent);
+        $this->assertStringContainsString('Access expires on '.$share->expires_at->copy()->utc()->format('F j, Y').' (UTC).', end($this->sent)['body_text']);
+        $this->assertSame(2, ShootGuestShare::count());
+    }
+
+    public function test_explicit_legacy_and_expired_resends_create_new_links_without_revoking_old_ones(): void
+    {
+        [$shoot, $client, , $legacy, $legacyToken] = $this->fixture();
+        $base = '/api/shoots/'.$shoot->id.'/guest-shares';
+        $this->actingAs($client)->getJson($base.'/'.$legacy->id.'/link')->assertStatus(409);
+        $replacement = $this->postJson($base.'/'.$legacy->id.'/resend')->assertOk()->assertJsonPath('replacement', true)
+            ->assertJsonPath('data.can_copy', true)->json('data.id');
+        $this->assertNotSame($legacy->id, $replacement);
+        $this->assertNull($legacy->fresh()->revoked_at);
+        $this->getJson('/api/public/guest-shares/'.$legacyToken)->assertOk()->assertJsonPath('verified', false);
+        $expired = ShootGuestShare::findOrFail($replacement);
+        $expired->update(['expires_at' => now()->subSecond()]);
+        $this->getJson($base.'/'.$expired->id.'/link')->assertGone();
+        $this->travel(61)->seconds();
+        $renewed = $this->postJson($base.'/'.$expired->id.'/resend')->assertOk()->assertJsonPath('replacement', true)
+            ->assertJsonPath('data.can_copy', true)->json('data.id');
+        $this->assertNotSame($expired->id, $renewed);
+        $this->assertNull($expired->fresh()->revoked_at);
+        $this->assertTrue($expired->fresh()->expires_at->isPast());
+        $this->assertCount(2, $this->sent);
+    }
+
+    public function test_revoked_links_cannot_be_copied_or_resent_but_a_new_invitation_is_explicitly_allowed(): void
+    {
+        [$shoot, $client] = $this->fixture();
+        $share = app(ShootGuestShareService::class)->create($shoot, $client, 'revoked@example.test');
+        $base = '/api/shoots/'.$shoot->id.'/guest-shares';
+        $this->actingAs($client)->deleteJson($base.'/'.$share->id)->assertOk();
+        $this->getJson($base.'/'.$share->id.'/link')->assertGone();
+        $this->postJson($base.'/'.$share->id.'/resend')->assertStatus(409);
+        $row = collect($this->getJson($base)->assertOk()->json('data'))->firstWhere('id', $share->id);
+        $this->assertSame('revoked', $row['status']);
+        $this->assertFalse($row['can_copy']);
+        $this->assertFalse($row['can_resend']);
+        $newId = $this->postJson($base, ['emails' => [$share->email]])->assertOk()->assertJsonPath('summary.sent', 1)->json('data.0.share.id');
+        $this->assertNotSame($share->id, $newId);
+        $this->assertNotNull($share->fresh()->revoked_at);
+        $this->assertCount(2, $this->sent);
+    }
+
+    public function test_explicit_revocation_after_failed_delivery_disables_retrying_that_invitation(): void
+    {
+        [$shoot, $client] = $this->fixture();
+        $this->mock(MessagingService::class, fn ($mock) => $mock->shouldReceive('sendEmail')
+            ->once()->andReturn(new Message(['status' => 'FAILED'])));
+        $base = '/api/shoots/'.$shoot->id.'/guest-shares';
+        $this->actingAs($client)->postJson($base, ['emails' => ['failed-revoked@example.test']])->assertOk()
+            ->assertJsonPath('summary.failed', 1);
+        $share = ShootGuestShare::where('email', 'failed-revoked@example.test')->sole();
+        $this->assertTrue(app(ShootGuestShareService::class)->managementData($share)['can_resend']);
+        $this->deleteJson($base.'/'.$share->id)->assertOk();
+        $this->travel(61)->seconds();
+        $this->postJson($base.'/'.$share->id.'/resend')->assertStatus(409);
+        $row = collect($this->getJson($base)->assertOk()->json('data'))->firstWhere('id', $share->id);
+        $this->assertSame('revoked', $row['status']);
+        $this->assertFalse($row['can_resend']);
+        $this->assertFalse($row['can_copy']);
+    }
+
+    public function test_explicit_revocation_survives_in_flight_delivery_success_or_failure(): void
+    {
+        [$shoot, $client] = $this->fixture();
+        $status = 'SENT';
+        $this->mock(MessagingService::class, function ($mock) use ($shoot, $client, &$status) {
+            $mock->shouldReceive('sendEmail')->twice()->andReturnUsing(function (array $payload) use ($shoot, $client, &$status) {
+                $request = \Illuminate\Http\Request::create('/', 'DELETE');
+                $request->setUserResolver(fn () => $client);
+                app(\App\Http\Controllers\API\ShootGuestShareController::class)
+                    ->revoke($request, $shoot, $payload['metadata']['guest_share_id']);
+                return new Message(['status' => $status]);
+            });
+        });
+        $base = '/api/shoots/'.$shoot->id.'/guest-shares';
+        $this->actingAs($client);
+        foreach (['SENT', 'FAILED'] as $status) {
+            $email = strtolower($status).'-revoked@example.test';
+            $this->postJson($base, ['emails' => [$email]])->assertOk();
+            $share = ShootGuestShare::where('email', $email)->sole();
+            $this->assertNotNull($share->revoked_at);
+            $this->assertSame('revoked', $share->invitation_status);
+            $this->getJson($base.'/'.$share->id.'/link')->assertGone();
+            $this->postJson($base.'/'.$share->id.'/resend')->assertStatus(409);
+            $this->assertFalse(app(ShootGuestShareService::class)->managementData($share)['can_resend']);
+        }
     }
 }
