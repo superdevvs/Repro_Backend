@@ -40,7 +40,11 @@ class IguideLabLifestyleOpticalProtocolTest extends TestCase
         $this->assertSame($c+['contextSha256'=>LabAnalysisRecipes::hash($c)],json_decode($wire['input'][0]['content'][0]['text'],true));$this->assertCount(17,$wire['input'][0]['content']);
         $v=P::parse(IguideLabLifestyleFramingProtocolTest::response(self::candidate($c)),$c);
         $this->assertFalse($v['imageGenerationAuthorized']);$this->assertFalse($v['geometryVerified']);$this->assertFalse($v['manualAcceptance']);
-        $this->assertSame(1,$v['followupOrdinal']);$this->assertStringNotContainsString('maxLength',json_encode(P::schema()));
+        $this->assertSame(1,$v['followupOrdinal']);
+        $schema=$wire['text']['format']['schema']['properties'];
+        foreach($schema['constraints']['properties'] as $check)$this->assertSame(['type'=>'string','minLength'=>1,'maxLength'=>550],$check['properties']['reason']);
+        $this->assertSame(1200,$schema['summary']['maxLength']);
+        $this->assertSame(550,$schema['detailRequests']['items']['properties']['reason']['maxLength']);
     }
     public function test_physical_dependencies_and_nonoptical_uncertainty_cannot_request_details(): void
     {
@@ -96,5 +100,17 @@ class IguideLabLifestyleOpticalProtocolTest extends TestCase
         [$c]=IguideLabLifestyleFramingProtocolTest::fixture();$v=IguideLabLifestyleFramingProtocolTest::candidate($c);$v['status']='needs_review';$v['view']=null;$v['constraints']['optical_dependencies']['status']='blocked';
         $this->assertSame('blocked',Legacy::parse(IguideLabLifestyleFramingProtocolTest::response($v),$c)['constraints']['optical_dependencies']['status']);
         $v['status']='detail_required';$this->expectException(\InvalidArgumentException::class);Legacy::parse(IguideLabLifestyleFramingProtocolTest::response($v),$c);
+    }
+    public function test_long_optical_explanation_is_not_truncated_or_promoted_to_a_candidate(): void
+    {
+        [$c,$images]=self::fixture();[$c]=self::followup($c,$images);$held=self::candidate($c);
+        $held['status']='needs_review';$held['view']=null;$held['constraints']['optical_dependencies']['status']='unresolved';
+        $held['constraints']['optical_dependencies']['reason']=str_repeat('x',768);
+        $this->reject($held,$c);
+        $held['constraints']['optical_dependencies']['reason']=str_repeat('x',550);
+        $parsed=P::parse(IguideLabLifestyleFramingProtocolTest::response($held),$c);
+        $this->assertSame('needs_review',$parsed['status']);$this->assertNull($parsed['view']);
+        $this->assertFalse($parsed['imageGenerationAuthorized']);
+        $held['constraints']['optical_dependencies']['reason'].='x';$this->reject($held,$c);
     }
 }
