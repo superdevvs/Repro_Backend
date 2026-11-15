@@ -82,6 +82,33 @@ class IguideLabImportCapacityTest extends TestCase
         $this->travelBack();
     }
 
+    public function test_explicit_zero_removes_daily_count_but_preserves_active_limit_replay_and_history(): void
+    {
+        config(['iguide-lab.import_daily_limit' => 0]);
+        $firstBody = null;
+        $firstId = null;
+        for ($i = 0; $i < 10; $i++) {
+            $body = ['requestId' => (string) Str::uuid(), 'url' => 'https://youriguide.com/sample/'];
+            $id = $this->withToken($this->token)->postJson('/api/iguide-lab/imports', $body)->assertAccepted()->json('data.id');
+            $firstBody ??= $body;
+            $firstId ??= $id;
+            IguideLabImport::findOrFail($id)->update(['status' => 'completed']);
+        }
+        config(['iguide-lab.import_daily_limit' => '0']);
+        $this->start()->assertAccepted();
+        $this->start()->assertAccepted();
+        $before = IguideLabImport::orderBy('id')->get()->toArray();
+        $this->start()->assertStatus(429)->assertJsonPath('code', 'scan_import_active_limit')->assertJsonPath('limit', 2);
+        $this->withToken($this->token)->postJson('/api/iguide-lab/imports', $firstBody)->assertAccepted()->assertJsonPath('data.id', $firstId);
+        $this->assertSame($before, IguideLabImport::orderBy('id')->get()->toArray());
+        $this->assertSame(12, IguideLabImport::count());
+        $this->assertSame(87, $this->project->fresh()->used_runs);
+        $this->assertSame(120, $this->project->fresh()->max_runs);
+        $this->assertSame(160, $this->project->fresh()->max_cases);
+        Queue::assertPushed(ProcessIguideLabImport::class, 12);
+        Http::assertNothingSent();
+    }
+
     public function test_exact_replay_survives_lowered_or_invalid_operator_limit_but_changed_identity_does_not(): void
     {
         config(['iguide-lab.import_daily_limit' => 16]);
@@ -99,7 +126,7 @@ class IguideLabImportCapacityTest extends TestCase
 
     public function test_invalid_operator_values_fail_closed_and_public_fields_cannot_override_limit(): void
     {
-        foreach ([0, 65, -1, 8.5, true, false, null, '08', '8.0', '8foo', ' 8', '1e1', '999999999999999999999'] as $limit) {
+        foreach ([65, -1, 0.0, 8.5, true, false, null, '00', '-1', '08', '8.0', '8foo', ' 8', '1e1', '999999999999999999999'] as $limit) {
             config(['iguide-lab.import_daily_limit' => $limit]);
             $this->start()->assertStatus(503)->assertJsonPath('message', 'This service is temporarily unavailable. Please try again.');
         }

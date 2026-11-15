@@ -1,7 +1,7 @@
 <?php
 
 return [
-    // Operator configuration only; LabImports validates the finite 1–64 range.
+    // Operator only: 0 removes the daily scan-count quota; positive limits are 1–64.
     'import_daily_limit' => env('IGUIDE_LAB_IMPORT_DAILY_LIMIT', 8),
     'interior_room_evidence_drafts_enabled' => env('IGUIDE_LAB_INTERIOR_ROOM_EVIDENCE_DRAFTS_ENABLED', false),
     'interior_floor_witness_enabled' => env('IGUIDE_LAB_INTERIOR_FLOOR_WITNESS_ENABLED', false),

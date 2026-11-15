@@ -52,7 +52,7 @@ class LabImports
                         'scan_import_active_limit', 429, ['limit' => 2]);
                 }
                 $dailyLimit = $this->dailyLimit();
-                if (IguideLabImport::where('project_id', $project->id)->where('created_at', '>=', now()->subDay())->count() >= $dailyLimit) {
+                if ($dailyLimit > 0 && IguideLabImport::where('project_id', $project->id)->where('created_at', '>=', now()->subDay())->count() >= $dailyLimit) {
                     throw new PublicApiException('This lab has reached its limit of '.$dailyLimit.' scan imports in 24 hours. Please try again later.',
                         'scan_import_daily_limit', 429, ['limit' => $dailyLimit, 'windowHours' => 24]);
                 }
@@ -189,12 +189,12 @@ class LabImports
     private function dailyLimit(): int
     {
         $limit = config('iguide-lab.import_daily_limit', self::DEFAULT_DAILY_IMPORTS);
-        // Environment values are strings. Reject partial numbers, booleans and
-        // coercion to an unlimited value; replay still returns the original ID.
-        if (is_string($limit) && preg_match('/\A[1-9][0-9]?\z/D', $limit) === 1) {
+        // Only explicit canonical 0 disables the daily count. Concurrency,
+        // storage, source capacity and authenticated replay remain unchanged.
+        if (is_string($limit) && preg_match('/\A(?:0|[1-9][0-9]?)\z/D', $limit) === 1) {
             $limit = (int) $limit;
         }
-        abort_unless(is_int($limit) && $limit >= 1 && $limit <= self::MAX_DAILY_IMPORTS,
+        abort_unless(is_int($limit) && $limit >= 0 && $limit <= self::MAX_DAILY_IMPORTS,
             503, 'Scan-import capacity configuration needs operator review.');
         return $limit;
     }
