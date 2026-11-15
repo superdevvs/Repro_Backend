@@ -23,6 +23,7 @@ return [
     'lifestyle_support_runtime_manifest' => env('IGUIDE_LAB_LIFESTYLE_SUPPORT_RUNTIME_MANIFEST'),
     'lifestyle_support_python_path' => env('IGUIDE_LAB_LIFESTYLE_SUPPORT_PYTHON'),
     // Operator opt-in only; validated runtimes are required in addition to these flags.
+    'interior_material_source_details_enabled' => env('IGUIDE_LAB_INTERIOR_MATERIAL_SOURCE_DETAILS_ENABLED', false),
     'interior_design_workflow_enabled' => env('IGUIDE_LAB_INTERIOR_DESIGN_WORKFLOW_ENABLED', false),
     'interior_design_runtime_manifest' => env('IGUIDE_LAB_INTERIOR_DESIGN_RUNTIME_MANIFEST'),
     'interior_material_runtime_manifest' => env('IGUIDE_LAB_INTERIOR_MATERIAL_RUNTIME_MANIFEST'),

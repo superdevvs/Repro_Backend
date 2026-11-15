@@ -29,6 +29,7 @@ class LabWorkflowSteps
         }
         if(LabDeclutterRemovalPolicy::enabled($policy,$preset))$limits=array_replace($limits,['analysis'=>2,'image'=>1,'segmentation'=>2,'evaluation'=>1,'section'=>1,'composition'=>1]);
         if(LabInteriorDesignPolicy::enabled($policy,$preset))$limits=array_replace($limits,['analysis'=>3,'image'=>1,'segmentation'=>15,'evaluation'=>1,'section'=>1,'composition'=>1]);
+        if(LabInteriorDesignPolicy::enabled($policy,$preset)&&LabInteriorMaterialDetails::selected($policy['interiorAssessments']??[]))$limits['analysis']=4;
         if(LabInteriorRoomPolicy::enabled($policy,$preset)){
             $room=LabInteriorRoomProfiles::BUDGET;
             // The classifier has not fixed a branch yet: reserve enough for either
@@ -70,11 +71,15 @@ class LabWorkflowSteps
                     }
                 }
             }
+            if (LabInteriorDesignPolicy::enabled($workflow->policy,$item->preset)&&LabInteriorMaterialDetails::selected($workflow->policy['interiorAssessments']??[])) {
+                if($kind==='analysis')abort_unless(in_array($key,['interior-framing','interior-cut','interior-cut-followup','interior-candidate','room-route'],true),422,'Unknown material detail analysis.');
+                if($key==='interior-cut-followup')abort_unless(($input['protocolVersion']??null)===LabInteriorMaterialSourceProtocol::VERSION&&($input['contextSnapshot']['context']['sourceInspection']['followupOrdinal']??null)===1,422);
+            }
             if (LabInteriorRoomPolicy::enabled($workflow->policy,$item->preset)) {
                 // The whole branch budget exists before the classifier is dispatched; it never resets on a route change.
                 $limit=LabInteriorRoomProfiles::BUDGET[$kind];
                 $draft=LabRoomEvidenceDraftPolicy::selected($workflow->policy['interiorRoomAssessments']??[])!==null;
-                if($kind==='analysis') abort_unless(in_array($key,array_merge(['room-route','room-framing','room-layout','room-candidate','interior-framing','interior-cut','interior-candidate'],$draft?['room-candidate-2']:[]),true),422,'Unknown bounded Interior room analysis.');
+                if($kind==='analysis') abort_unless(in_array($key,array_merge(['room-route','room-framing','room-layout','room-candidate','interior-framing','interior-cut','interior-candidate'],$draft?['room-candidate-2']:[],LabInteriorMaterialDetails::selected($workflow->policy['interiorAssessments']??[])?['interior-cut-followup']:[]),true),422,'Unknown bounded Interior room analysis.');
                 if($key!=='room-route') {
                     $route=$item->fresh()->data['interiorRoomRoute']??null;
                     abort_unless(is_array($route),422,'Select the immutable source room route before reserving branch work.');

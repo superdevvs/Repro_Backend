@@ -7,6 +7,7 @@ use Illuminate\Support\Facades\Storage;
 class LabInteriorDesignImageDraft
 {
     public const VERSION='machine-interior-material-plan/1';
+    public const DETAIL_VERSION='machine-interior-material-plan/2';
     public function apply(IguideLabInteriorAssessment $record,IguideLabCase $case,array $input,?array $invocation): array
     {
         abort_unless(config('iguide-lab.interior_design_workflow_enabled',false)===true&&$invocation!==null,503);
@@ -26,7 +27,7 @@ class LabInteriorDesignImageDraft
             &&$case->source_sha256===$bundle['context']['sourceSha256']&&($case->metadata['sectionId']??null)===$bundle['sectionId'],422);
         $bytes=Storage::disk(LabService::DISK)->get($case->source_path);
         abort_unless(hash('sha256',$bytes)===$case->source_sha256&&hash('sha256',LabInteriorDesignContext::prepared($bytes))===$source['sha256'],422,'Prepared original material input changed.');
-        return ['version'=>self::VERSION,'id'=>$record->id,'stepId'=>$record->step_id,'requestId'=>$record->request_id,'resultSha256'=>$record->result_sha256,
+        return ['version'=>($record->result['version']??null)===LabInteriorMaterialSourceProtocol::VERSION?self::DETAIL_VERSION:self::VERSION,'id'=>$record->id,'stepId'=>$record->step_id,'requestId'=>$record->request_id,'resultSha256'=>$record->result_sha256,
             'sourceSha256'=>$case->source_sha256,'preparedSourceSha256'=>$source['sha256'],'nativeSourceSha256'=>$item->source['sha256'],
             'sourceGeometrySha256'=>$bundle['geometry']['sha256'],'promptSha256'=>hash('sha256',$input['prompt']),'sourceContext'=>$binding,
             'sourceContextBindingSha256'=>$bundle['sourceContextSnapshot']['bindingSha256'],'supportReportSha256'=>$support['reportSha256'],
@@ -34,7 +35,7 @@ class LabInteriorDesignImageDraft
     }
     public function verifyRun(IguideLabRun $run,IguideLabCase $case): void
     {
-        $saved=$run->options['sourceMachinePlan']??null;abort_unless(is_array($saved)&&($saved['version']??null)===self::VERSION,422);
+        $saved=$run->options['sourceMachinePlan']??null;abort_unless(is_array($saved)&&in_array($saved['version']??null,[self::VERSION,self::DETAIL_VERSION],true),422);
         $record=IguideLabInteriorAssessment::where('project_id',$run->project_id)->findOrFail($saved['id']);
         $step=IguideLabWorkflowStep::where('project_id',$run->project_id)->where('request_id',$run->request_id)->where('kind','image')->sole();
         abort_unless(in_array($step->child_id,[null,$run->id],true)&&$step->input_sha256===LabAnalysisRecipes::hash($step->input)

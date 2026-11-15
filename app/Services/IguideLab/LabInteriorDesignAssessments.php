@@ -9,8 +9,11 @@ use Illuminate\Support\Facades\DB;
 /** Three durable typed assessments. None is a successful scene analysis or human mask approval. */
 class LabInteriorDesignAssessments
 {
-    public function protocol(string $phase): string
-    {return match($phase){'framing'=>LabInteriorDesignFramingProtocol::class,'cut'=>LabInteriorDesignCutProtocol::class,'candidate'=>LabInteriorDesignCandidateProtocol::class,default=>abort(422,'Unknown Interior assessment phase.')};}
+    public function protocol(string $phase,?array $recipe=null): string
+    {
+        $details=$recipe===null?config('iguide-lab.interior_material_source_details_enabled',false)===true:LabInteriorMaterialDetails::selected($recipe);
+        if($details)return match($phase){'framing'=>LabInteriorMaterialFramingWire::class,'cut','cut-followup'=>LabInteriorMaterialSourceProtocol::class,'candidate'=>LabInteriorMaterialCandidateProtocol::class,default=>abort(422,'Unknown source-detail assessment phase.')};
+        return match($phase){'framing'=>LabInteriorDesignFramingProtocol::class,'cut'=>LabInteriorDesignCutProtocol::class,'candidate'=>LabInteriorDesignCandidateProtocol::class,default=>abort(422,'Unknown Interior assessment phase.')};}
     public function implementation(): array
     {
         $out=app(LabInteriorDesignContext::class)->snapshot();
@@ -20,7 +23,7 @@ class LabInteriorDesignAssessments
         foreach(['framing','cut','candidate'] as $phase)$out[$phase]=$this->protocol($phase)::snapshot();
         // A passed assessment runtime also validates the complete PHP orchestration/authority adapter.
         // Taking a current hash only at reservation would otherwise admit unvalidated changed code.
-        $out['workflow']=app(LabInteriorDesignWorkflow::class)->snapshot();return $out;
+        $out['workflow']=app(LabInteriorDesignWorkflow::class)->snapshot();if(config('iguide-lab.interior_material_source_details_enabled',false)===true)$out['sourceDetails']=LabInteriorMaterialDetails::implementation();return $out;
     }
     public function snapshot(): array
     {
@@ -35,19 +38,19 @@ class LabInteriorDesignAssessments
     public function ready(): bool
     {try{$this->snapshot();return app(LabCredentials::class)->ready()&&app(LabAnalysisViews::class)->ready();}catch(\Throwable){return false;}}
     public function validate(array $snapshot): void
-    {abort_unless(LabAnalysisRecipes::hash($snapshot)===LabAnalysisRecipes::hash($this->snapshot()),422,'Reserved Interior implementation changed.');}
+    {if(LabInteriorMaterialDetails::selected($snapshot))abort_unless(config('iguide-lab.interior_material_source_details_enabled',false)===true,503,'Material source detail route disabled.');abort_unless(LabAnalysisRecipes::hash($snapshot)===LabAnalysisRecipes::hash($this->snapshot()),422,'Reserved Interior implementation changed.');}
     public function reserve(IguideLabWorkflowItem $item,string $phase,array $parents=[]): IguideLabWorkflowStep
     {
-        $protocol=$this->protocol($phase);$workflow=IguideLabWorkflow::where('project_id',$item->project_id)->findOrFail($item->workflow_id);
+        $workflow=IguideLabWorkflow::where('project_id',$item->project_id)->findOrFail($item->workflow_id);
         abort_unless(config('iguide-lab.interior_design_workflow_enabled',false)===true&&LabInteriorDesignPolicy::enabled($workflow->policy,$item->preset),503,'Interior material workflow is disabled.');
         if(LabInteriorRoomPolicy::enabled($workflow->policy,$item->preset)) app(LabInteriorRoomRoutes::class)->verify($item,LabInteriorRoomProfiles::MATERIALS);
-        $recipe=$workflow->policy['interiorAssessments']??[];$this->validate($recipe);
+        $recipe=$workflow->policy['interiorAssessments']??[];$this->validate($recipe);$protocol=$this->protocol($phase,$recipe);
         $snapshot=app(LabInteriorDesignContext::class)->capture($item,$phase,$parents);
         return app(LabWorkflowSteps::class)->reserve($item,'interior-'.$phase,'analysis',['protocolVersion'=>$protocol::VERSION,'phase'=>$phase,'parents'=>$parents,'contextSnapshot'=>$snapshot,'recipe'=>$recipe]);
     }
     public function verifyStep(IguideLabWorkflowStep $step): IguideLabWorkflowItem
     {
-        $input=$step->input;$phase=$input['phase']??'';$protocol=$this->protocol($phase);
+        $input=$step->input;$phase=$input['phase']??'';$protocol=$this->protocol($phase,$input['recipe']??[]);
         abort_unless(config('iguide-lab.interior_design_workflow_enabled',false)===true,503,'Interior material workflow is disabled.');
         abort_unless($step->kind==='analysis'&&$step->step_key==='interior-'.$phase&&($input['protocolVersion']??null)===$protocol::VERSION
             &&$step->input_sha256===LabAnalysisRecipes::hash($input),422,'Interior reservation changed.');
@@ -65,7 +68,7 @@ class LabInteriorDesignAssessments
     {
         $images=[];$context=app(LabInteriorDesignContext::class);
         foreach($step->input['contextSnapshot']['assets'] as $asset){$file=$context->file($step->project_id,$asset['path'],$asset['sha256']);$images[]='data:image/png;base64,'.base64_encode(file_get_contents($file));}
-        $protocol=$this->protocol($step->input['phase']);return json_encode($protocol::request($step->input['contextSnapshot']['context'],$images),JSON_THROW_ON_ERROR);
+        $protocol=$this->protocol($step->input['phase'],$step->input['recipe']);return json_encode($protocol::request($step->input['contextSnapshot']['context'],$images),JSON_THROW_ON_ERROR);
     }
     public function start(IguideLabWorkflowStep $step): IguideLabInteriorAssessment
     {
@@ -136,7 +139,7 @@ class LabInteriorDesignAssessments
         $file=app(LabInteriorDesignContext::class)->file($record->project_id,$path,$receipt['response']['sha256']??'',128*1024);
         $raw=json_decode(file_get_contents($file),true,flags:JSON_THROW_ON_ERROR);
         abort_unless(($raw['id']??null)===($receipt['providerResponseId']??null)&&is_string($raw['id']??null)&&$raw['id']!==''&&($raw['model']??null)==='gpt-6-astra'&&($receipt['model']??null)==='gpt-6-astra',422);
-        $protocol=$this->protocol($record->phase);return $protocol::parse($raw,$step->input['contextSnapshot']['context']);
+        $protocol=$this->protocol($record->phase,$record->data['recipe']);return $protocol::parse($raw,$step->input['contextSnapshot']['context']);
     }
     public function completed(IguideLabWorkflowItem $item,string $id,string $phase): IguideLabInteriorAssessment
     {
@@ -145,7 +148,8 @@ class LabInteriorDesignAssessments
     }
     private function completedCurrent(IguideLabWorkflowItem $item,string $id,string $phase): IguideLabInteriorAssessment
     {
-        $record=IguideLabInteriorAssessment::where('project_id',$item->project_id)->where('phase',$phase)->findOrFail($id);
+        $record=IguideLabInteriorAssessment::where('project_id',$item->project_id)->findOrFail($id);
+        abort_unless($record->phase===$phase||($phase==='cut'&&$record->phase==='cut-followup'&&LabInteriorMaterialDetails::selected($record->data['recipe']??[])),422,'Interior phase association changed.');
         $step=IguideLabWorkflowStep::where('project_id',$item->project_id)->where('item_id',$item->id)->findOrFail($record->step_id);
         $this->verifyStep($step);$this->verifyRecord($record,$step);abort_unless($record->status==='completed',422);
         abort_unless(hash('sha256',$this->payload($step))===$record->data['providerBodySha256'],422);$result=$this->parseReceipt($record,$step);
@@ -154,6 +158,9 @@ class LabInteriorDesignAssessments
     public function attention(IguideLabInteriorAssessment $record,string $code): void
     {LockedWrite::run(fn()=>IguideLabInteriorAssessment::whereKey($record->id)->where('status','!=','completed')->update(['status'=>'needs_attention','error_code'=>$code,'completed_at'=>now(),'updated_at'=>now()]),'iguide-lab.interior-attention');}
     public function dto(IguideLabInteriorAssessment $record): array
-    {return ['version'=>$this->protocol($record->phase)::VERSION,'id'=>$record->id,'phase'=>$record->phase,'status'=>$record->status,'resultSha256'=>$record->result_sha256,'result'=>$record->result,
+    {return ['version'=>$this->protocol($record->phase,$record->data['recipe']??[])::VERSION,'id'=>$record->id,'phase'=>$record->phase,'status'=>$record->status,'resultSha256'=>$record->result_sha256,'result'=>$record->result,
+        ...(!LabInteriorMaterialDetails::selected($record->data['recipe']??[])?[]:['requestId'=>$record->request_id,'stepId'=>$record->step_id,
+            'sourceSha256'=>$record->data['contextSnapshot']['context']['sourceSha256']??$record->data['contextSnapshot']['context']['cutContext']['sourceSha256']??$record->data['contextSnapshot']['context']['nativeSourceSha256'],
+            'parentAssessmentId'=>$record->phase==='cut-followup'?($record->data['contextSnapshot']['context']['sourceInspection']['parent']['id']??null):($record->phase==='candidate'?($record->data['contextSnapshot']['cutAssessmentId']??null):null)]),
         'imageGenerationAuthorized'=>false,'materialTransferAuthorized'=>false,'errorCode'=>$record->error_code,'createdAt'=>$record->created_at->toIso8601String(),'completedAt'=>$record->completed_at?->toIso8601String()];}
 }

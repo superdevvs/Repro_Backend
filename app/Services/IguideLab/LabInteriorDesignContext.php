@@ -28,7 +28,7 @@ class LabInteriorDesignContext
     public function capture(IguideLabWorkflowItem $item,string $phase,array $parents): array
     {
         abort_unless($item->preset==='interior-design'&&isset(LabCatalog::STYLES[$item->style]),422);
-        return match($phase){'framing'=>$this->original($item,$parents),'cut'=>$this->cut($item,$parents),'candidate'=>$this->candidate($item,$parents),default=>abort(422,'Unknown Interior assessment phase.')};
+        return match($phase){'framing'=>$this->original($item,$parents),'cut'=>$this->initialCut($item,$parents),'cut-followup'=>$this->followupCut($item,$parents),'candidate'=>$this->candidate($item,$parents),default=>abort(422,'Unknown Interior assessment phase.')};
     }
     protected function original(IguideLabWorkflowItem $item,array $parents): array
     {
@@ -67,6 +67,20 @@ class LabInteriorDesignContext
             'sourceAuthoritySha256'=>LabAnalysisRecipes::hash($item->source),'intentSha256'=>LabAnalysisRecipes::hash($intent),'style'=>$item->style,'instructions'=>$item->instructions,'views'=>$views],
             'assets'=>$assets,'implementation'=>$code,'geometryManifestSha256'=>hash_file('sha256',$disk->path($base.'/views/manifest.json'))];
     }
+    protected function initialCut(IguideLabWorkflowItem $item,array $parents): array
+    {
+        $bundle=$this->cut($item,$parents);$workflow=\App\Models\IguideLabWorkflow::where('project_id',$item->project_id)->findOrFail($item->workflow_id);
+        if(LabInteriorMaterialDetails::selected($workflow->policy['interiorAssessments']??[])){$bundle['context']['sourceInspection']=LabInteriorMaterialSourceProtocol::initial();LabInteriorMaterialSourceProtocol::binding($bundle['context']);}
+        return $bundle;
+    }
+    protected function followupCut(IguideLabWorkflowItem $item,array $parents): array
+    {
+        LabInteriorDesignProtocol::keys($parents,['initialCutId']);
+        $parent=app(LabInteriorDesignAssessments::class)->completed($item,$parents['initialCutId'],'cut');
+        abort_unless($parent->phase==='cut',422,'No second material follow-up.');
+        $step=IguideLabWorkflowStep::where('project_id',$item->project_id)->where('item_id',$item->id)->findOrFail($parent->step_id);
+        return app(LabInteriorMaterialDetails::class)->followup($item,$parent,$this->cut($item,$step->input['parents']));
+    }
     protected function cut(IguideLabWorkflowItem $item,array $parents): array
     {
         LabInteriorDesignProtocol::keys($parents,['framingId','sectionId']);$framing=app(LabInteriorDesignAssessments::class)->completed($item,$parents['framingId'],'framing');
@@ -102,16 +116,18 @@ class LabInteriorDesignContext
         abort_unless($cut->result['status']==='ready_for_source_masks',422);$bundle=$cut->data['contextSnapshot'];
         $run=IguideLabRun::where('project_id',$item->project_id)->findOrFail($parents['runId']);$step=$this->child($item,'image',$run->id);
         abort_unless($run->status==='completed'&&$run->request_id===$step->request_id&&$run->case_id===$bundle['cutCaseId']&&($step->input['interiorPlanId']??null)===$cut->id
-            &&($run->options['sourceMachinePlan']['id']??null)===$cut->id&&($run->options['sourceMachinePlan']['version']??null)==='machine-interior-material-plan/1'
+            &&($run->options['sourceMachinePlan']['id']??null)===$cut->id&&($run->options['sourceMachinePlan']['version']??null)===(($cut->result['version']??null)===LabInteriorMaterialSourceProtocol::VERSION?LabInteriorDesignImageDraft::DETAIL_VERSION:LabInteriorDesignImageDraft::VERSION)
             &&$run->preset==='interior-design'&&$run->style===$item->style,422,'Interior candidate does not belong to its actual source plan.');
         app(LabInteriorDesignImageDraft::class)->verifyRun($run,IguideLabCase::where('project_id',$item->project_id)->findOrFail($run->case_id));
         $path='iguide-lab/'.$item->project_id.'/runs/'.$run->id.'.png';abort_unless($run->output_path===$path&&is_string($run->output_sha256),422);
         $file=$this->file($item->project_id,$path,$run->output_sha256,32*1024*1024);$size=getimagesize($file);abort_unless([$size[0],$size[1],$size['mime']]===[2048,2048,'image/png'],422);
-        $views=[];foreach($bundle['context']['sourceContext']['views'] as $view)$views[]=array_intersect_key($view,array_flip(['id','sha256','width','height']));
+        $sourceViews=isset($bundle['context']['sourceInspection'])?LabInteriorMaterialSourceProtocol::views($bundle['context']):$bundle['context']['sourceContext']['views'];
+        $views=[];foreach($sourceViews as $view)$views[]=array_intersect_key($view,array_flip(['id','sha256','width','height']));
         $assets=$bundle['assets'];array_splice($views,1,0,[['id'=>'candidate','sha256'=>$run->output_sha256,'width'=>2048,'height'=>2048]]);
         array_splice($assets,1,0,[['id'=>'candidate','path'=>$path,'sha256'=>$run->output_sha256]]);
-        $context=['version'=>LabInteriorDesignCandidateProtocol::VERSION,'cutContext'=>$bundle['context'],'cutResult'=>$cut->result,'cutResultSha256'=>$cut->result_sha256,
-            'candidateSha256'=>$run->output_sha256,'candidateRunId'=>$run->id,'views'=>$views];LabInteriorDesignCandidateProtocol::context($context);
+        $protocol=($cut->result['version']??null)===LabInteriorMaterialSourceProtocol::VERSION?LabInteriorMaterialCandidateProtocol::class:LabInteriorDesignCandidateProtocol::class;
+        $context=['version'=>$protocol::VERSION,'cutContext'=>$bundle['context'],'cutResult'=>$cut->result,'cutResultSha256'=>$cut->result_sha256,
+            'candidateSha256'=>$run->output_sha256,'candidateRunId'=>$run->id,'views'=>$views];$protocol::context($context);
         return ['context'=>$context,'assets'=>$assets,'cutAssessmentId'=>$cut->id,'candidateRunId'=>$run->id,'geometry'=>$bundle['geometry'],'implementation'=>$this->snapshot()];
     }
     private function child(IguideLabWorkflowItem $item,string $kind,string $id): IguideLabWorkflowStep

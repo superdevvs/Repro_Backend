@@ -46,6 +46,11 @@ class LabInteriorDesignWorkflow
         if(!$this->completed($item,$section,'preparing',$data))return;
         $cutStep=$assessments->reserve($item,'cut',['framingId'=>$framing->id,'sectionId'=>$section->id]);$cut=$assessments->start($cutStep);$data['interiorCutAssessmentId']=$cut->id;
         if(!$this->completed($item,$cut,'analyzing',$data))return;$cut=$assessments->completed($item,$cut->id,'cut');
+        if(($cut->result['version']??null)===LabInteriorMaterialSourceProtocol::VERSION&&$cut->result['status']==='detail_required'){
+            $followup=$assessments->start($assessments->reserve($item,'cut-followup',['initialCutId'=>$cut->id]));$data['interiorCutFollowupId']=$followup->id;
+            if(!$this->completed($item,$followup,'analyzing',$data))return;
+            $cut=$assessments->completed($item,$followup->id,'cut-followup');
+        }
         if($cut->result['status']!=='ready_for_source_masks'){$this->hold($item,'material_cut_scope_unsupported','Actual cut and parent context do not support complete materials, protected foreground or requested style.',$data);return;}
         if(!$this->segment($item,$cut,$data))return;
         $support=app(LabInteriorDesignMaterials::class)->sourceSupport($item,$cut,$workflow->policy['interiorMaterials']);

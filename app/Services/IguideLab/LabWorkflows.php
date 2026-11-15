@@ -381,6 +381,18 @@ class LabWorkflows
                 'sourceSha256'=>$item->source['sha256'],'publicPreset'=>'interior-design','style'=>$item->style,
                 'assessments'=>$records,'nativeDetailFollowupAvailable'=>false,'branchSwitchAllowed'=>false];
         }
+        $materialInspection=null;
+        if(LabInteriorDesignPolicy::enabled($workflow->policy,$item->preset)&&LabInteriorMaterialDetails::selected($workflow->policy['interiorAssessments']??[])
+            &&(!LabInteriorRoomPolicy::enabled($workflow->policy,$item->preset)||($data['interiorRoomRoute']['profileId']??null)===LabInteriorRoomProfiles::MATERIALS)) {
+            $records=[];foreach(['interior-cut'=>'cut','interior-cut-followup'=>'cut-followup','interior-candidate'=>'candidate'] as $key=>$phase){
+                $step=IguideLabWorkflowStep::where('project_id',$item->project_id)->where('item_id',$item->id)->where('kind','analysis')->where('step_key',$key)->first();
+                if(!$step?->child_id)continue;
+                $record=\App\Models\IguideLabInteriorAssessment::where('project_id',$item->project_id)->where('step_id',$step->id)->where('request_id',$step->request_id)->where('phase',$phase)->find($step->child_id);
+                if($record&&$record->request_hash===$step->input_sha256&&LabInteriorMaterialDetails::selected($record->data['recipe']??[]))$records[]=app(LabInteriorDesignAssessments::class)->dto($record);
+            }
+            $materialInspection=['version'=>LabInteriorMaterialDetails::VERSION,'sourceSha256'=>$item->source['sha256'],'style'=>$item->style,
+                'maxFollowups'=>1,'maxDetails'=>2,'assessments'=>$records,'editScopeExpanded'=>false,'independentCameraEvidence'=>false];
+        }
         if (isset($data['sourceFramingId'])) {
             $record = \App\Models\IguideLabStagingFraming::where('project_id', $item->project_id)->find($data['sourceFramingId']);
             if ($record && IguideLabWorkflowStep::where('project_id', $item->project_id)->where('item_id', $item->id)
@@ -397,6 +409,7 @@ class LabWorkflows
             'stageLabel' => $label, 'attemptCount' => $item->attempt_count, 'result' => $result, 'reviewReasons' => $data['reviewReasons'] ?? [],
             ...($framing === null ? [] : ['sourceFraming' => $framing]),
             ...($roomRouting === null ? [] : ['roomRouting' => $roomRouting]),
+            ...($materialInspection === null ? [] : ['materialSourceInspection'=>$materialInspection]),
             'automation' => ['mode' => 'unattended', 'operatorInterventions' => 0, 'qualityStatus' => $data['qualityStatus'] ?? 'pending', 'manualAcceptance' => false, 'crossViewVerified' => false],
             'createdAt' => $item->created_at->toIso8601String(), 'updatedAt' => $item->updated_at->toIso8601String()];
     }

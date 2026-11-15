@@ -152,6 +152,26 @@ class IguideLabInteriorRoomAssessmentTest extends TestCase
         $this->rejects(fn()=>$steps->reserve($item,'room-image-2','image',[]));$this->rejects(fn()=>$steps->reserve($item,'room-candidate-2','analysis',[]));
         Http::assertSentCount(1);
     }
+    public function test_source_detail_material_route_has_five_closed_analysis_slots_and_one_image(): void
+    {
+        [,$workflow,$item,,,$record]=$this->fixture();$v=Fixtures::candidate($this->context->bundle['context']);
+        $v['occupancy']['status']='furnished';$v['occupancy']['existingFurnishings']=[['description'=>'Existing bed and rug.','evidenceViewIds'=>['source']]];
+        $v['materialPotential']['status']='supported';$v['materialPotential']['eligibleSurfaces']=[['description'=>'Original bed cloth.','evidenceViewIds'=>['source']],['description'=>'Original rug.','evidenceViewIds'=>['source']]];
+        $v['materialPotential']['styleFeatures']=[['kind'=>'texture','description'=>'Woven fabric.'],['kind'=>'pattern','description'=>'Bounded rug pattern.']];
+        $record=$this->finish($record,$v);$route=app(LabInteriorRoomRoutes::class)->bind($item,$record);
+        $this->assertSame(LabInteriorRoomProfiles::MATERIALS,$route['profileId']);
+        $policy=$workflow->fresh()->policy;$policy['interiorDesign']=\App\Services\IguideLab\LabInteriorDesignPolicy::snapshot();
+        // Budget marker only: this test never sends a material assessment or claims a runtime proof.
+        $policy['interiorAssessments']=['implementation'=>['sourceDetails'=>['version'=>\App\Services\IguideLab\LabInteriorMaterialDetails::VERSION]]];$workflow->update(['policy'=>$policy]);
+        $steps=app(LabWorkflowSteps::class);foreach(['interior-framing','interior-cut','interior-candidate'] as $key)$steps->reserve($item,$key,'analysis',[]);
+        $this->rejects(fn()=>$steps->reserve($item,'interior-cut-followup','analysis',[]));
+        $input=['protocolVersion'=>\App\Services\IguideLab\LabInteriorMaterialSourceProtocol::VERSION,'contextSnapshot'=>['context'=>['sourceInspection'=>['followupOrdinal'=>1]]]];
+        $step=$steps->reserve($item,'interior-cut-followup','analysis',$input);$this->assertSame($step->id,$steps->reserve($item,'interior-cut-followup','analysis',$input)->id);
+        $this->assertSame(5,\App\Models\IguideLabWorkflowStep::where('item_id',$item->id)->where('kind','analysis')->count());
+        $this->rejects(fn()=>$steps->reserve($item,'interior-cut-followup-2','analysis',$input));
+        $this->rejects(fn()=>$steps->reserve($item,'room-candidate','analysis',[]));
+        $steps->reserve($item,'interior-image','image',[]);$this->rejects(fn()=>$steps->reserve($item,'interior-image-2','image',[]));Http::assertSentCount(1);
+    }
     public function test_requested_room_runtime_failure_does_not_capture_a_legacy_material_only_policy(): void
     {
         config(['iguide-lab.interior_design_workflow_enabled'=>true,'iguide-lab.interior_room_routing_enabled'=>true]);

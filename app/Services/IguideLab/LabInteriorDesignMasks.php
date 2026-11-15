@@ -10,7 +10,7 @@ class LabInteriorDesignMasks implements LabMachineSegmentationCapability
     public function selections(IguideLabInteriorAssessment $record): array
     {
         $out=[];
-        if($record->phase==='cut'){
+        if(in_array($record->phase,['cut','cut-followup'],true)){
             abort_unless($record->result['status']==='ready_for_source_masks',422);
             foreach($record->result['foreground'] as $t)$out[]=['role'=>'source-foreground','target'=>$t];
             foreach($record->result['targets'] as $t)$out[]=['role'=>'source-material','target'=>$t];
