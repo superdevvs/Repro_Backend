@@ -21,7 +21,7 @@ class LabService
 {
     public const DISK = 'listing_studio_trials';
 
-    public function addCase(IguideLabProject $project, UploadedFile $image, array $input): IguideLabCase
+    public function addCase(IguideLabProject $project, UploadedFile $image, array $input, ?array $workflowInvocation=null): IguideLabCase
     {
         abort_unless($project->active(), 401, 'This lab session is inactive.');
         abort_if($image->getSize() > 30 * 1024 * 1024, 422, 'The source image must be at most 30 MB.');
@@ -33,7 +33,7 @@ class LabService
         $hash = hash_file('sha256', $image->getRealPath());
         $existing = $this->existingCase($project, $hash, $input);
         if ($existing) return $existing;
-        app(LabCaseCapacity::class)->assertRoom($project->fresh());
+        if(!app(LabWorkflowRecordCapacity::class)->sectionHelper($project->id,$workflowInvocation,$input))app(LabCaseCapacity::class)->assertRoom($project->fresh());
         app(LabStorage::class)->prepareProject($project->id);
         $id = (string) Str::uuid();
         $extension = match ($size['mime']) { 'image/png' => 'png', 'image/webp' => 'webp', default => 'jpg' };
@@ -43,12 +43,12 @@ class LabService
             $stream = fopen($image->getRealPath(), 'rb');
             try { abort_unless($disk->put($path, $stream, ['visibility' => 'private']), 500, 'Private source storage failed.'); }
             finally { if (is_resource($stream)) fclose($stream); }
-            return LockedWrite::run(fn () => DB::transaction(function () use ($project, $input, $hash, $id, $path, $size) {
+            return LockedWrite::run(fn () => DB::transaction(function () use ($project, $input, $hash, $id, $path, $size, $workflowInvocation) {
                 IguideLabProject::whereKey($project->id)->update(['updated_at' => now()]);
                 $current = $project->fresh(); abort_unless($current?->active(), 401);
                 $existing = $this->existingCase($project, $hash, $input);
                 if ($existing) return $existing;
-                app(LabCaseCapacity::class)->assertRoom($current);
+                if(!app(LabWorkflowRecordCapacity::class)->sectionHelper($project->id,$workflowInvocation,$input))app(LabCaseCapacity::class)->assertRoom($current);
                 return IguideLabCase::create([
                     'id' => $id, 'project_id' => $project->id, 'label' => $input['label'],
                     'room_id' => $input['roomId'] ?? null, 'pano_id' => $input['panoId'] ?? null, 'tour_url' => $input['tourUrl'] ?? null,
@@ -173,8 +173,12 @@ class LabService
                 return [$existing, false];
             }
             if ($workflowInvocation !== null) app(LabWorkflowInvocation::class)->verify($workflowInvocation, $project->id, $input['requestId'], 'image', false);
-            abort_if($current->used_runs >= $current->max_runs, 429, 'This lab has reached its generation limit.');
-            abort_if(IguideLabRun::where('created_at', '>=', now()->subDay())->count() >= 120, 429, 'The lab daily generation limit has been reached.');
+            if($workflowInvocation!==null&&isset(app(LabWorkflowInvocation::class)->policy($workflowInvocation)['scheduler'])){
+                app(LabWorkflowScheduler::class)->assertImageCapacity($current);
+            }else{
+                abort_if($current->used_runs >= $current->max_runs, 429, 'This lab has reached its generation limit.');
+                abort_if(IguideLabRun::where('created_at', '>=', now()->subDay())->count() >= 120, 429, 'The lab daily generation limit has been reached.');
+            }
             $provider = LabCatalog::MODELS[$input['modelId']]['provider'];
             abort_unless(collect(LabCatalog::models())->firstWhere('id', $input['modelId'])['ready'], 503, 'This model connection is unavailable.');
             $run = IguideLabRun::create([

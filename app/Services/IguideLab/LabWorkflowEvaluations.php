@@ -74,8 +74,7 @@ class LabWorkflowEvaluations
             if ($prior) { abort_unless(hash_equals($prior->request_hash, $step->input_sha256), 409); return [$prior, false]; }
             app(LabWorkflowInvocation::class)->verify($invocation, $step->project_id, $step->request_id, 'evaluation', false);
             abort_unless($this->ready(), 503, 'Automatic visual evaluation is unavailable.');
-            abort_if(IguideLabWorkflowEvaluation::where('project_id', $step->project_id)->count() >= 120
-                || IguideLabWorkflowEvaluation::where('created_at', '>=', now()->subDay())->count() >= 120, 429, 'The evaluation safety ceiling was reached.');
+            app(LabWorkflowRecordCapacity::class)->assertRoom(IguideLabWorkflowEvaluation::class,$step->project_id,$invocation);
             return [IguideLabWorkflowEvaluation::create(['project_id' => $step->project_id, 'step_id' => $step->id,
                 'request_id' => $step->request_id, 'request_hash' => $step->input_sha256, 'status' => 'queued',
                 'data' => ['workflowInvocation' => $invocation, 'evidence' => $step->input,

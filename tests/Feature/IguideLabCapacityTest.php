@@ -63,7 +63,7 @@ class IguideLabCapacityTest extends TestCase
 
     public function test_operator_rejects_invalid_inactive_and_destructive_limit_reductions(): void
     {
-        foreach (['79', '161', '160.5', 'unlimited', '-1'] as $limit)
+        foreach (['79', '1025', '160.5', 'unlimited', '-1'] as $limit)
             $this->artisan('iguide-lab:set-case-limit', ['project' => $this->project->id, 'limit' => $limit])->assertFailed();
         app(LabCaseCapacity::class)->set($this->project->id, 160); $this->fillTo($this->project, 81);
         $this->artisan('iguide-lab:set-case-limit', ['project' => $this->project->id, 'limit' => '80'])->assertFailed();
@@ -106,7 +106,7 @@ class IguideLabCapacityTest extends TestCase
 
     public function test_invalid_capacity_fails_closed_and_auth_size_guards_are_unchanged(): void
     {
-        $this->project->update(['max_cases' => 161]); $this->upload('Invalid configuration')->assertStatus(503);
+        $this->project->update(['max_cases' => 1025]); $this->upload('Invalid configuration')->assertStatus(503);
         $this->project->update(['max_cases' => 160]);
         $this->withHeader('Authorization', '')->post('/api/iguide-lab/cases', ['label' => 'No auth', 'projection' => 'equirectangular', 'image' => $this->file()], ['Accept' => 'application/json'])->assertUnauthorized();
         $this->withToken($this->token)->post('/api/iguide-lab/cases', ['label' => 'Too large', 'projection' => 'equirectangular', 'image' => $this->file()->size(30 * 1024 + 1)], ['Accept' => 'application/json'])->assertUnprocessable();
@@ -124,6 +124,19 @@ class IguideLabCapacityTest extends TestCase
         $this->assertSame($case['sourceSha256'], IguideLabCase::findOrFail($case['id'])->source_sha256);
         $this->assertSame(7, $this->project->fresh()->used_runs);
         $migration->up(); $this->assertSame(80, $this->project->fresh()->max_cases);
+    }
+
+    public function test_explicit_larger_operator_bound_preserves_history_auth_paid_limits_and_public_guards(): void
+    {
+        $protected=$this->project->only(['token_hash','expires_at','revoked_at','max_runs','used_runs']);
+        $first=$this->upload('Retained source')->assertCreated()->json('data');
+        $this->artisan('iguide-lab:set-case-limit',['project'=>$this->project->id,'limit'=>'1024'])->assertSuccessful();
+        $this->fillTo($this->project,1023);$last=$this->upload('Last at larger limit')->assertCreated()->json('data');
+        $this->assertSame(1024,IguideLabCase::count());$this->upload('Over larger limit',['maxCases'=>2048])->assertStatus(429);
+        $this->upload('Last at larger limit')->assertCreated()->assertJsonPath('data.id',$last['id']);
+        $this->assertSame($first['sourceSha256'],IguideLabCase::findOrFail($first['id'])->source_sha256);
+        $this->assertEquals($protected,$this->project->fresh()->only(array_keys($protected)));
+        $this->assertSame(1024,$this->project->fresh()->max_cases);Http::assertNothingSent();Queue::assertNothingPushed();
     }
 
     private function upload(string $label, array $extra = [])

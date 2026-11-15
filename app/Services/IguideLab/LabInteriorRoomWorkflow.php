@@ -47,7 +47,7 @@ class LabInteriorRoomWorkflow
         $sectionInput=['caseId'=>$native->id,'framingId'=>$framing->id,'routeSha256'=>LabMachineSegmentationPlan::canonicalHash($route),'view'=>$view+['width'=>2048,'height'=>2048]];
         $sectionStep=$steps->reserve($item,'room-section','section',$sectionInput);
         $section=IguideLabSection::where('project_id',$project->id)->where('request_id',$sectionStep->request_id)->first();
-        if(!$section)$section=app(LabSections::class)->start($project,['caseId'=>$native->id,'requestId'=>$sectionStep->request_id,'view'=>$view]);
+        if(!$section)$section=app(LabSections::class)->start($project,$sectionInput+['requestId'=>$sectionStep->request_id],$steps->invocation($sectionStep));
         else $this->reconcileSection($sectionStep,$section);
         $steps->attach($sectionStep,$section->id);$data['sectionId']=$section->id;
         if(!$this->completed($item,$section,'preparing',$data))return;

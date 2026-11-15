@@ -77,7 +77,7 @@ class LabDeclutterArtifacts extends LabWorkflowArtifacts
                 'sourceAnalysisId'=>$sourcePlan->id,'sectionId'=>$section->id,'editView'=>$section->view,'editViewAuthority'=>'exact server extraction pose; not independent camera calibration',
                 'maskOrigin'=>'model_segmentation','selectionOrigin'=>'machine','hiddenSurfaceVerified'=>false,'crossViewVerified'=>false,
                 'limitations'=>['Hidden receiver detail is a plausible generated estimate, not ground truth.','Machine masks are approximate; full-sphere independent checks are still required.','Single panorama only.']]];
-        [$composite]=app(LabComposites::class)->add(IguideLabProject::findOrFail($item->project_id),$case,$preview['path'],$manifest,$nativeCanvas?$native['path']:null);return $composite;
+        [$composite]=app(LabComposites::class)->add(IguideLabProject::findOrFail($item->project_id),$case,$preview['path'],$manifest,$nativeCanvas?$native['path']:null,app(LabWorkflowSteps::class)->invocation($step));return $composite;
     }
     public function verifyComposite(IguideLabWorkflowItem $item,IguideLabComposite $composite,IguideLabWorkflowStep $step,IguideLabRun $run): void
     {

@@ -46,6 +46,7 @@ class LabWorkflowInvocation
         abort_unless(IguideLabProject::findOrFail($projectId)->active(), 401);
         abort_if($workflow->cancelled_at || $item->status === 'cancelled', 409, 'The workflow was cancelled before submission.');
         abort_if(in_array($item->status, ['ready', 'failed', 'needs_review'], true), 409, 'This workflow item is already terminal.');
+        app(LabWorkflowScheduler::class)->assertWindow($workflow,$item);
         if ($verifyBytes) {
             app(LabWorkflowSources::class)->verify($projectId, $item->source);
             if ($kind === 'image' && $item->preset === 'lifestyle' && isset($workflow->policy['lifestyleFraming'])) {

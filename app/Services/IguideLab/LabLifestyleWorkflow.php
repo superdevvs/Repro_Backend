@@ -61,7 +61,7 @@ class LabLifestyleWorkflow
         $view=$framing->result['view'];
         $sectionInput=['caseId'=>$native->id,'view'=>$view];$sectionStep=$steps->reserve($item,'lifestyle-section','section',$sectionInput);
         $section=IguideLabSection::where('project_id',$project->id)->where('request_id',$sectionStep->request_id)->first();
-        if(!$section)$section=app(LabSections::class)->start($project,$sectionInput+['requestId'=>$sectionStep->request_id]);
+        if(!$section)$section=app(LabSections::class)->start($project,$sectionInput+['requestId'=>$sectionStep->request_id],$steps->invocation($sectionStep));
         elseif($section->status==='queued'&&$section->started_at===null&&$section->created_at->lt(now()->subMinute())) {
             // Free local child, only a never-started extraction is eligible for dispatch reconciliation.
             $claimed=app(LabWorkflowInvocation::class)->claim($steps->invocation($sectionStep),$project->id,$sectionStep->request_id,'section',function()use($section,$sectionStep){

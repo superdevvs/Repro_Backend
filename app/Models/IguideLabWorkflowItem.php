@@ -6,5 +6,5 @@ class IguideLabWorkflowItem extends Model
 {
     use HasUuids;
     protected $guarded = [];
-    protected $casts = ['source' => 'array', 'data' => 'array', 'position' => 'integer', 'attempt_count' => 'integer', 'completed_at' => 'datetime'];
+    protected $casts = ['source' => 'array', 'data' => 'array', 'scheduler' => 'array', 'position' => 'integer', 'attempt_count' => 'integer', 'completed_at' => 'datetime'];
 }

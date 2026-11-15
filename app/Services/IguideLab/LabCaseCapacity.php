@@ -11,7 +11,9 @@ use Illuminate\Support\Facades\DB;
 class LabCaseCapacity
 {
     public const DEFAULT_LIMIT = 80;
-    public const MAX_LIMIT = 160;
+    // Only the existing operator command can raise a project's stored limit.
+    // Keep retained tours bounded without changing the default or paid quotas.
+    public const MAX_LIMIT = 1024;
 
     public function limit(IguideLabProject $project): int
     {
@@ -30,7 +32,7 @@ class LabCaseCapacity
     /** Operator-only mutation; no HTTP route exposes this method. */
     public function set(string $projectId, int $limit): array
     {
-        abort_unless($limit >= self::DEFAULT_LIMIT && $limit <= self::MAX_LIMIT, 422, 'Use a source limit between 80 and 160.');
+        abort_unless($limit >= self::DEFAULT_LIMIT && $limit <= self::MAX_LIMIT, 422, 'Use a source limit between 80 and 1024.');
         return LockedWrite::run(fn () => DB::transaction(function () use ($projectId, $limit) {
             // Acquire SQLite's write lock before reading counts or prior configuration.
             IguideLabProject::whereKey($projectId)->update(['updated_at' => now()]);

@@ -24,6 +24,7 @@ class LabWorkflows
     public function start(IguideLabProject $project, array $input): IguideLabWorkflow
     {
         abort_unless($project->active(), 401);
+        abort_unless(is_array($input['items']??null)&&count($input['items'])>=1&&count($input['items'])<=LabWorkflowScheduler::MAX_ITEMS,422,'A workflow accepts at most 80 captures.');
         $items = [];
         foreach ($input['items'] as $entry) {
             $case = IguideLabCase::where('project_id', $project->id)->findOrFail($entry['caseId']);
@@ -35,7 +36,9 @@ class LabWorkflows
         $identity = LabAnalysisRecipes::hash($items);
         $prior = IguideLabWorkflow::where('project_id', $project->id)->where('request_id', $input['requestId'])->first();
         if ($prior) { abort_unless(hash_equals($prior->request_hash, $identity), 409, 'This workflow request already has different source or choices.'); return $prior; }
+        abort_unless(count($items)<=LabWorkflowScheduler::maxItems(),422,'The selected capture count exceeds the currently enabled workflow capability.');
         $policy = app(LabWorkflowPolicy::class)->snapshot();
+        if(LabWorkflowScheduler::enabled())$policy['scheduler']=app(LabWorkflowScheduler::class)->snapshot($project,$items,$policy);
         [$workflow, $created] = LockedWrite::run(fn () => DB::transaction(function () use ($project, $input, $identity, $policy, $items) {
             IguideLabProject::whereKey($project->id)->update(['updated_at' => now()]); abort_unless($project->fresh()->active(), 401);
             $prior = IguideLabWorkflow::where('project_id', $project->id)->where('request_id', $input['requestId'])->first();
@@ -48,7 +51,7 @@ class LabWorkflows
             return [$record, true];
         }), 'iguide-lab.workflow-reserve');
         if ($created) {
-            try { ProcessIguideLabWorkflow::dispatch($workflow->id); }
+            try { ProcessIguideLabWorkflow::dispatch($workflow->id,$policy['scheduler']['expiresAt']??null,isset($policy['scheduler'])?LabAnalysisRecipes::hash($policy):null); }
             catch (Throwable) { $this->stop($workflow, 'queue_unconfirmed', 'The queue receipt is unconfirmed. Existing requests were retained.'); }
         }
         return $workflow->fresh();
@@ -73,7 +76,13 @@ class LabWorkflows
         if (! $project?->active()) { $this->stop($workflow, 'session_expired', 'This session expired before processing finished.'); return true; }
         foreach (IguideLabWorkflowItem::where('workflow_id', $workflow->id)->orderBy('position')->get() as $item) {
             if (in_array($item->status, self::TERMINAL, true)) continue;
-            try { $this->advance($workflow, $item, $project); }
+            try {
+                if(app(LabWorkflowScheduler::class)->admit($workflow,$item,$project))$this->advance($workflow, $item, $project);
+            }
+            catch (LabWorkflowCapacity $hold) {
+                if($workflow->fresh()->cancelled_at)break;
+                app(LabWorkflowScheduler::class)->hold($workflow,$item->fresh(),$hold);
+            }
             catch (Throwable $error) {
                 if ($workflow->fresh()->cancelled_at) break;
                 $this->diagnostic($item, $error);

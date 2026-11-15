@@ -62,7 +62,7 @@ class LabStagingArtifacts extends LabWorkflowArtifacts
                 ...$sourceAuthority,
                 'editViewAuthority'=>'exact server extraction pose; not independent camera calibration','maskOrigin'=>'model_segmentation','selectionOrigin'=>'machine',
                 'limitations'=>['Single panorama only; model placement and mask association do not prove physical geometry.','Unattended candidate requires separate full-sphere visual checking.']]];
-        [$composite]=app(LabComposites::class)->add(IguideLabProject::findOrFail($item->project_id),$case,$preview['path'],$manifest,$nativeCanvas?$native['path']:null);
+        [$composite]=app(LabComposites::class)->add(IguideLabProject::findOrFail($item->project_id),$case,$preview['path'],$manifest,$nativeCanvas?$native['path']:null,app(LabWorkflowSteps::class)->invocation($step));
         return $composite;
     }
     protected function validateEvidenceAnalysis(IguideLabWorkflowItem $item,IguideLabComposite $composite,IguideLabAnalysis $analysis): void
