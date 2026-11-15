@@ -93,10 +93,12 @@ class IguideLabRoomEvidenceDraftReadTest extends TestCase
         if($draft){$lv['draftEvidence']['sourceBindingSha256']=$lv['contextSha256'];
             $lv['opticalStatus']='uncertain';$lv['checks']['optical_dependencies']['status']='uncertain';
             $lv['draftEvidence']['candidateQuestions'][]=['id'=>'optical_dependencies','reason'=>'Synthetic observable receiver question requiring actual-candidate closure.'];}
-        $sectionId=(string)Str::uuid();$cutId=(string)Str::uuid();$geometry=hash('sha256','synthetic geometry descriptor only');
+        $sectionId=(string)Str::uuid();$cutId=(string)Str::uuid();$geometry=hash('sha256','synthetic normalized furnishing geometry descriptor');
+        $parentGeometry=hash('sha256','synthetic original extraction geometry manifest');
+        $this->assertNotSame($geometry,$parentGeometry);
         $parent=['version'=>LabAnalysisSourceContext::VERSION,'sectionId'=>$sectionId,'nativeCaseId'=>$case->id,'visibleParentCaseId'=>$case->id,
             'sourceSha256'=>$lc['sourceSha256'],'nativeSourceSha256'=>$case->source_sha256,'nativeDimensions'=>['width'=>2048,'height'=>1024],
-            'geometrySha256'=>$geometry,'view'=>$framing->result['view']+['width'=>2048,'height'=>2048],
+            'geometrySha256'=>$parentGeometry,'view'=>$framing->result['view']+['width'=>2048,'height'=>2048],
             'sourceOrigin'=>'uploaded_native_attachment','sourceRole'=>'authoritative_edit_cut','contextRole'=>'same_capture_context_only',
             'scopeExpansion'=>false,'independentCameraEvidence'=>false,'dedicatedPoleViews'=>false,'viewRecipe'=>LabAnalysisSourceContext::VIEW_RECIPE,
             'preparationHashes'=>app(LabAnalysisSourceContext::class)->preparationHashes()];
@@ -111,6 +113,8 @@ class IguideLabRoomEvidenceDraftReadTest extends TestCase
         if($draft){$cv['status']='needs_review';$cv['objects']=[];$cv['sourceFloor']=null;$cv['styleFeatures']=[];$cv['checks']['geometry']['status']='fail';
             $cv['obligationClosures'][0]['status']='fail';$cv['correction']=['decision'=>'one_correction','defects'=>[['checkId'=>'geometry','kind'=>'frame_margin',
                 'objectIds'=>['sofa'],'sourceAlternative'=>'Use a smaller supported sofa inside the same original source envelope.']]];}
+        // The owning candidate capture retains geometry but does not copy the layout source-context snapshot.
+        $bundle=array_diff_key($bundle,['sourceContextSnapshot'=>true]);
         $first=$this->record($item,'room-candidate',$cc,$cp::parse(V::response($cv),$cc),$bundle);
         $item->update(['attempt_count'=>1]);
         return compact('project','workflow','item','route','framing','layout','first','cc','bundle');
@@ -157,6 +161,7 @@ class IguideLabRoomEvidenceDraftReadTest extends TestCase
         $this->assertSame($historicalRecords,IguideLabRoomAssessment::orderBy('id')->get()->toArray());
         $routing=$queued['items'][0]['roomRouting'];$this->assertSame(Draft::ROUTE_VERSION,$routing['version']);$this->assertCount(5,$routing['assessments']);
         $dto=collect($routing['assessments'])->firstWhere('id',$second->id);$this->assertSame('queued',$dto['status']);$this->assertNull($dto['result']);
+        $this->assertNull($dto['provenance']['sourceContext']);$this->assertNull($dto['provenance']['sourceContextBindingSha256']);
         $this->assertSame(2,$dto['provenance']['imageOrdinal']);$this->assertSame(array_diff_key($this->ref($first),['result'=>true]),$dto['provenance']['correctionParent']);
         $this->export('assessment-correction-queued',['data'=>$dto]);
         $framing=collect($routing['assessments'])->firstWhere('phase','framing');$this->assertSame(Framing::VERSION,$framing['version']);
