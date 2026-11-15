@@ -186,7 +186,8 @@ class LabImports
                 unset($source['previewPath']); $source['previewAssetPath'] = '/api/iguide-lab/imports/'.$record->id.'/sources/'.$source['caseId'].'/preview'; return $source;
             }, $record->sources ?? []), 'createdAt' => $record->created_at?->toIso8601String(), 'completedAt' => $record->completed_at?->toIso8601String()];
     }
-    private function dailyLimit(): int
+    /** Shared server configuration for import and ZIP-upload admission; never a request field. */
+    public function dailyLimit(): int
     {
         $limit = config('iguide-lab.import_daily_limit', self::DEFAULT_DAILY_IMPORTS);
         // Only explicit canonical 0 disables the daily count. Concurrency,

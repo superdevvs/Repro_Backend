@@ -2,6 +2,7 @@
 
 namespace App\Services\IguideLab;
 
+use App\Exceptions\PublicApiException;
 use App\Jobs\AssembleIguideLabImport;
 use App\Models\IguideLabImport;
 use App\Models\IguideLabImportUpload;
@@ -30,8 +31,15 @@ class LabImportUploads
             }
             abort_if(IguideLabImportUpload::where('project_id', $project->id)->where('import_request_id', $input['importRequestId'])->exists()
                 || IguideLabImport::where('project_id', $project->id)->where('request_id', $input['importRequestId'])->exists(), 409, 'This import request ID is already in use.');
-            abort_if(IguideLabImportUpload::where('project_id', $project->id)->whereIn('status', ['uploading', 'assembling'])->count() >= 1, 429, 'A scan ZIP upload is already in progress.');
-            abort_if(IguideLabImportUpload::where('project_id', $project->id)->where('created_at', '>=', now()->subDay())->count() >= 8, 429, 'The daily scan upload limit has been reached.');
+            if (IguideLabImportUpload::where('project_id', $project->id)->whereIn('status', ['uploading', 'assembling'])->count() >= 1) {
+                throw new PublicApiException('A scan ZIP upload is already in progress. Wait for it to finish before adding another scan ZIP.',
+                    'scan_upload_active_limit', 429, ['limit' => 1]);
+            }
+            $dailyLimit = app(LabImports::class)->dailyLimit();
+            if ($dailyLimit > 0 && IguideLabImportUpload::where('project_id', $project->id)->where('created_at', '>=', now()->subDay())->count() >= $dailyLimit) {
+                throw new PublicApiException('This lab has reached its limit of '.$dailyLimit.' scan ZIP uploads in 24 hours. Please try again later.',
+                    'scan_upload_daily_limit', 429, ['limit' => $dailyLimit, 'windowHours' => 24]);
+            }
             return IguideLabImportUpload::create(['project_id' => $project->id, 'request_id' => $input['requestId'], 'import_request_id' => $input['importRequestId'],
                 'request_hash' => $hash, 'filename' => $input['filename'], 'size_bytes' => $input['sizeBytes'], 'sha256' => $input['sha256'],
                 'metadata_sha256' => $input['metadataSha256'] ?? null, 'chunks' => [], 'status' => 'uploading', 'expires_at' => now()->addDay()]);
