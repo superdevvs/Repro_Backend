@@ -11,8 +11,8 @@ class LabRoomFurnishingSupport
     public function implementation(): array
     {
         $hashes=['adapterSha256'=>hash_file('sha256',__FILE__)];
-        foreach(['worker'=>'room_furnishing_support_worker.py','bedroom'=>'bedroom_support.py','living'=>'staging_support.py','fileDecoder'=>'staging_support_worker.py'] as $name=>$file)$hashes[$name.'Sha256']=hash_file('sha256',resource_path('iguide-lab/'.$file));
-        foreach(['masks'=>LabRoomFurnishingMasks::class,'maskPlan'=>LabRoomFurnishingMaskPlan::class,'context'=>LabInteriorRoomContext::class] as $name=>$class)$hashes[$name.'Sha256']=hash_file('sha256',(new \ReflectionClass($class))->getFileName());
+        foreach(['worker'=>'room_furnishing_support_worker.py','floorWitness'=>'room_floor_witness.py','bedroom'=>'bedroom_support.py','living'=>'staging_support.py','fileDecoder'=>'staging_support_worker.py'] as $name=>$file)$hashes[$name.'Sha256']=hash_file('sha256',resource_path('iguide-lab/'.$file));
+        foreach(['masks'=>LabRoomFurnishingMasks::class,'maskPlan'=>LabRoomFurnishingMaskPlan::class,'floorWitnessPlan'=>LabRoomFloorWitness::class,'context'=>LabInteriorRoomContext::class] as $name=>$class)$hashes[$name.'Sha256']=hash_file('sha256',(new \ReflectionClass($class))->getFileName());
         return $hashes;
     }
     public function snapshot(): array
@@ -56,6 +56,12 @@ class LabRoomFurnishingSupport
             'geometrySha256'=>$b['geometry']['sha256'],'routeSha256'=>LabMachineSegmentationPlan::canonicalHash($route),'layoutResultSha256'=>$layout->result_sha256,'candidateResultSha256'=>$candidate->result_sha256,
             'sourceEmptyRoom'=>$b['context']['route']['result']['occupancy']['status']==='empty','foregroundStatus'=>$candidate->result['foregroundStatus'],
             'opticalStatus'=>$candidate->result['opticalStatus'],'contactShadowStatus'=>$candidate->result['contactShadowStatus'],'selectionOrigin'=>'machine','contacts'=>$contacts];
+        $witness=$floor['association']['floorWitness']??null;
+        if($witness!==null){
+            abort_unless(LabRoomFloorWitness::selected($layout->data['recipe'])!==null&&$witness['assessmentSha256']===$layout->result_sha256
+                &&$witness['sourceSha256']===$case->source_sha256&&$witness['nativeSourceSha256']===$item->source['sha256'],422);
+            $authority['version']='interior-room-support-authority/2';$authority['sourceFloorWitness']=$witness;
+        }
         $bytes=json_encode($authority,JSON_THROW_ON_ERROR);$authorityPath=$base.'/assessment.json';$loader->put($authorityPath,$bytes);
         $toAsset=function(array $a)use($item,$loader){return ['path'=>$loader->file($item->project_id,$a['path'],$a['sha256'],32*1024*1024),'sha256'=>$a['sha256']];};
         $request=['schemaVersion'=>1,'operation'=>'derive-room-furnishing-support','profileId'=>$profile['id'],'sourceCut'=>$source,'candidateCut'=>$toAsset($b['assets'][1]),
@@ -71,6 +77,13 @@ class LabRoomFurnishingSupport
             &&($report['providerCalls']??null)===0&&($report['nativeSourceSha256']??null)===$item->source['sha256']&&($report['sourceCutSha256']??null)===$case->source_sha256
             &&($report['candidateSha256']??null)===$b['context']['candidateSha256']&&($report['sourceGeometrySha256']??null)===$b['geometry']['sha256']
             &&($report['identity']['runtime']['opencvBuildSha256']??null)===$snapshot['opencvBuildSha256'],422,'Room support result association changed.');
+        if($witness!==null){
+            abort_unless(LabMachineSegmentationPlan::canonicalHash($report['floorDomain']['witness']??[])===LabMachineSegmentationPlan::canonicalHash($witness)
+                &&($report['floorDomain']['semanticClassVerified']??null)===false&&($report['floorDomain']['restrictionUsage']??null)==='support_eligibility_only'
+                &&($report['floorDomain']['objectAlphaRestrictedByWitness']??null)===false,422,'Floor witness support provenance changed.');
+            $usable=$report['assets']['usableFloor']??[];abort_unless(($usable['file']??null)==='usable-floor.png',422);
+            $loader->file($item->project_id,$base.'/result/usable-floor.png',$usable['sha256']??'',LabMachineSegmentationTransport::MAX_MASK_BYTES);
+        }
         return ['report'=>$report,'reportPath'=>$path,'reportSha256'=>hash_file('sha256',$file),'directory'=>$base.'/result'];
     }
 }

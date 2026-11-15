@@ -9,14 +9,15 @@ class LabRoomFurnishingMasks implements LabMachineSegmentationCapability
     {
         $record=app(LabInteriorRoomAssessments::class)->completed($item,$record->id,$record->phase);
         $role=match($record->phase){'layout'=>'source-floor','candidate'=>'candidate-furniture',default=>abort(422)};
-        return app(LabWorkflowSteps::class)->reserve($item,'room-'.$role,'segmentation',['protocolVersion'=>LabRoomFurnishingMaskPlan::PROTOCOL,
+        $version=$role==='source-floor'&&LabRoomFloorWitness::selected($record->data['recipe'])?LabRoomFloorWitness::VERSION:LabRoomFurnishingMaskPlan::PROTOCOL;
+        return app(LabWorkflowSteps::class)->reserve($item,'room-'.$role,'segmentation',['protocolVersion'=>$version,
             'assessmentId'=>$record->id,'assessmentStepId'=>$record->step_id,'maskRole'=>$role]);
     }
     private function owned(IguideLabWorkflowStep $step): array
     {
         abort_unless(config('iguide-lab.interior_room_routing_enabled',false)===true,503);
         LabInteriorDesignProtocol::keys($step->input,['protocolVersion','assessmentId','assessmentStepId','maskRole']);
-        abort_unless($step->kind==='segmentation'&&$step->input['protocolVersion']===LabRoomFurnishingMaskPlan::PROTOCOL&&$step->input_sha256===LabAnalysisRecipes::hash($step->input),422);
+        abort_unless($step->kind==='segmentation'&&in_array($step->input['protocolVersion'],[LabRoomFurnishingMaskPlan::PROTOCOL,LabRoomFloorWitness::VERSION],true)&&$step->input_sha256===LabAnalysisRecipes::hash($step->input),422);
         app(LabWorkflowInvocation::class)->verify(app(LabWorkflowSteps::class)->invocation($step),$step->project_id,$step->request_id,'segmentation');
         $item=IguideLabWorkflowItem::where('project_id',$step->project_id)->findOrFail($step->item_id);$route=app(LabInteriorRoomRoutes::class)->verify($item);
         $phase=match($step->input['maskRole']){'source-floor'=>'layout','candidate-furniture'=>'candidate',default=>abort(422)};
@@ -27,16 +28,34 @@ class LabRoomFurnishingMasks implements LabMachineSegmentationCapability
             $selections=[$record->result['sourceFloor']];}
         else {$asset=$b['assets'][1];abort_unless($asset['id']==='candidate',422);$selections=$record->result['objects'];}
         $path=app(LabInteriorRoomContext::class)->file($step->project_id,$asset['path'],$asset['sha256'],30*1024*1024);
-        $plan=app(LabRoomFurnishingMaskPlan::class)->bind($step->request_id,$step->input['maskRole'],$route['profileId'],$selections,$asset['sha256'],$record->result_sha256,LabMachineSegmentationPlan::canonicalHash($b['context']));
+        $v2=$phase==='layout'&&LabRoomFloorWitness::selected($record->data['recipe']);
+        abort_unless($step->input['protocolVersion']===($v2?LabRoomFloorWitness::VERSION:LabRoomFurnishingMaskPlan::PROTOCOL),422,'Floor semantics cannot change on an existing reservation.');
+        $plan=$v2?app(LabRoomFloorWitness::class)->bind($step->request_id,$route['profileId'],$selections[0],$asset['sha256'],$item->source['sha256'],$record->result_sha256,LabMachineSegmentationPlan::canonicalHash($b['context']))
+            :app(LabRoomFurnishingMaskPlan::class)->bind($step->request_id,$step->input['maskRole'],$route['profileId'],$selections,$asset['sha256'],$record->result_sha256,LabMachineSegmentationPlan::canonicalHash($b['context']));
         return ['item'=>$item,'record'=>$record,'plan'=>$plan,'inputPath'=>$path,'binding'=>['assessmentId'=>$record->id,'assessmentSha256'=>$record->result_sha256,
             'sourceRole'=>$step->input['maskRole'],'inputSha256'=>$asset['sha256'],'profileId'=>$route['profileId'],'routeSha256'=>LabMachineSegmentationPlan::canonicalHash($route)]];
     }
     public function plan(IguideLabWorkflowStep $step): array {return $this->owned($step)['plan'];}
-    public function validatePlan(array $plan,string $requestId): void {app(LabRoomFurnishingMaskPlan::class)->validate($plan,$requestId);}
-    public function payload(array $plan,string $bytes): array {return app(LabRoomFurnishingMaskPlan::class)->payload($plan,$bytes);}
+    private function planner(array $plan): LabRoomFloorWitness|LabRoomFurnishingMaskPlan {return isset($plan['witness'])?app(LabRoomFloorWitness::class):app(LabRoomFurnishingMaskPlan::class);}
+    public function validatePlan(array $plan,string $requestId): void {$this->planner($plan)->validate($plan,$requestId);}
+    public function payload(array $plan,string $bytes): array {return $this->planner($plan)->payload($plan,$bytes);}
     public function describeMask(string $bytes): array {return app(LabMachineMaskPixels::class)->describe($bytes);}
     public function readyAssociationStatus(): string {return 'ready_for_room_support';}
-    public function associate(IguideLabWorkflowStep $step,array $receipt): array {return app(LabRoomFurnishingMaskPlan::class)->associate($this->owned($step)['plan'],$receipt);}
+    public function associate(IguideLabWorkflowStep $step,array $receipt): array
+    {
+        $owned=$this->owned($step);$plan=$owned['plan'];
+        if(!isset($plan['witness']))return app(LabRoomFurnishingMaskPlan::class)->associate($plan,$receipt);
+        // Association runs after canonical files are retained but before the result is saved.
+        $record=IguideLabMachineSegmentation::where('project_id',$step->project_id)->where('step_id',$step->id)->sole();
+        abort_unless($step->child_id===$record->id&&in_array($record->status,['processing','completed'],true)&&$record->request_id===$step->request_id&&$record->request_hash===$step->input_sha256&&$record->provider_request_id===$receipt['providerRequestId']
+            &&LabMachineSegmentationPlan::canonicalHash($record->data['plan']??[])===LabMachineSegmentationPlan::canonicalHash($plan)
+            &&LabMachineSegmentationPlan::canonicalHash($record->data['assetBinding']??[])===LabMachineSegmentationPlan::canonicalHash($owned['binding']),422);
+        $base='iguide-lab/'.$step->project_id.'/machine-segmentations/'.$record->id;$loader=app(LabInteriorRoomContext::class);
+        $loader->file($step->project_id,$base.'/provider-result.json',$receipt['rawResponseSha256'],LabMachineSegmentationTransport::MAX_RESPONSE_BYTES);
+        abort_unless(count($receipt['masks'])===1,422);
+        $path=$loader->file($step->project_id,$base.'/mask-0.png',$receipt['masks'][0]['sha256'],LabMachineSegmentationTransport::MAX_MASK_BYTES);
+        return app(LabRoomFloorWitness::class)->associate($plan,$receipt,file_get_contents($path));
+    }
     public function verifyOwnedInputs(IguideLabWorkflowStep $step,array $plan): array
     {
         $owned=$this->owned($step);abort_unless(LabMachineSegmentationPlan::canonicalHash($plan)===LabMachineSegmentationPlan::canonicalHash($owned['plan']),422);
@@ -67,7 +86,7 @@ class LabRoomFurnishingMasks implements LabMachineSegmentationCapability
         foreach($assets as $i=>$asset){abort_unless(($asset['index']??null)===$i&&($asset['path']??null)===$base.'/mask-'.$i.'.png',422);
             $path=$loader->file($step->project_id,$asset['path'],$asset['sha256'],LabMachineSegmentationTransport::MAX_MASK_BYTES);
             abort_unless($this->describeMask(file_get_contents($path))===$receipt['masks'][$i],422);}
-        $association=app(LabRoomFurnishingMaskPlan::class)->associate($plan,$receipt);
+        $association=isset($plan['witness'])?$this->associate($step,$receipt):app(LabRoomFurnishingMaskPlan::class)->associate($plan,$receipt);
         abort_unless($association['status']===$this->readyAssociationStatus()&&LabMachineSegmentationPlan::canonicalHash($association)===LabMachineSegmentationPlan::canonicalHash($record->result['association']),422);
         return ['recordId'=>$record->id,'plan'=>$plan,'receipt'=>$receipt,'association'=>$association,'artifacts'=>$assets];
     }

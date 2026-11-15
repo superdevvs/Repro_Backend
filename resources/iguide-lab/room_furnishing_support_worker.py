@@ -14,6 +14,7 @@ from PIL import Image, __version__ as PILLOW_VERSION
 import bedroom_support
 import staging_support
 import staging_support_worker as files
+import room_floor_witness
 
 VERSION = 'interior-profile-support-file-adapter/1'
 PROFILES = {'empty-bedroom-platform-three-piece/1': ('bed', 'nightstand_left', 'nightstand_right'),
@@ -48,7 +49,9 @@ def execute(request, allowed_root):
     expected = {'version', 'profileId', 'nativeSourceSha256', 'sourceCutSha256', 'preparedSourceSha256', 'candidateSha256', 'sourceContextSha256',
                 'geometrySha256', 'routeSha256', 'layoutResultSha256', 'candidateResultSha256', 'sourceEmptyRoom', 'foregroundStatus',
                 'opticalStatus', 'contactShadowStatus', 'selectionOrigin', 'contacts'}
-    if not isinstance(assessment, dict) or set(assessment) != expected or assessment['version'] != 'interior-room-support-authority/1' or assessment['profileId'] != profile:
+    v2 = isinstance(assessment, dict) and assessment.get('version') == 'interior-room-support-authority/2'
+    if v2: expected.add('sourceFloorWitness')
+    if not isinstance(assessment, dict) or set(assessment) != expected or assessment['version'] != ('interior-room-support-authority/2' if v2 else 'interior-room-support-authority/1') or assessment['profileId'] != profile:
         raise ValueError('ASSESSMENT_AUTHORITY_INVALID')
     if type(assessment['sourceEmptyRoom']) is not bool or assessment['foregroundStatus'] not in {'none_observed', 'uncertain', 'required_occlusion'} or assessment['selectionOrigin'] not in {'machine', 'human', 'unknown'}:
         raise ValueError('ASSESSMENT_SCOPE_INVALID')
@@ -64,6 +67,13 @@ def execute(request, allowed_root):
     objects = {x['id']: files.mask_record(x, 'candidate_object', request['candidateCut']['sha256'], root, inputs, origins) for x in items}
     if not isinstance(request['sourceFloor'], dict) or request['sourceFloor'].get('id') != 'floor': raise ValueError('ORIGINAL_FLOOR_ID_INVALID')
     floor = files.mask_record(request['sourceFloor'], 'source_floor', request['sourceCut']['sha256'], root, inputs, origins)
+    floor_domain = None
+    if v2:
+        witness = assessment['sourceFloorWitness']
+        if witness.get('assessmentSha256') != assessment['layoutResultSha256']:
+            raise ValueError('FLOOR_WITNESS_LAYOUT_CHANGED')
+        floor, floor_domain = room_floor_witness.restrict_floor(floor, witness, request['sourceCut']['sha256'],
+                                                              assessment['nativeSourceSha256'], request['sourceFloor']['image']['sha256'])
     machine = assessment['selectionOrigin'] == 'machine' and all(x['selectionOrigin'] == 'machine' and x['generationOrigin'] == 'model_segmentation' for x in origins)
     context = {'profileId': profile, 'sourceContextSha256': assessment['sourceContextSha256'], 'placementStatus': 'ready_for_masks',
                'foregroundAssessment': assessment['foregroundStatus'], 'selectionOrigin': 'machine' if machine else 'unknown',
@@ -71,6 +81,7 @@ def execute(request, allowed_root):
     identity = {'adapterSha256': files.sha(__file__), 'bedroomCoreSha256': files.sha(bedroom_support.__file__),
                 'stagingCoreSha256': files.sha(staging_support.__file__), 'fileDecoderSha256': files.sha(files.__file__),
                 'runtime': bedroom_support.runtime(), 'python': platform.python_version(), 'pillow': PILLOW_VERSION}
+    if v2: identity['floorWitnessSha256'] = files.sha(room_floor_witness.__file__)
     fingerprint = hashlib.sha256(files.canonical({'request': request, 'identity': identity})).hexdigest()
     if out.exists():
         report_path = files.safe_path(str(out / 'report.json'), root)
@@ -81,13 +92,17 @@ def execute(request, allowed_root):
         if report.get('status') not in {'needs_review', 'ready_for_unreviewed_composition'} or report.get('automaticAcceptance') is not False or report.get('nativeCompositionPerformed') is not False or report.get('providerCalls') != 0:
             raise ValueError('REPLAY_STATUS_INVALID')
         if (report['status'] == 'needs_review') != bool(report.get('reviewReasons')): raise ValueError('REPLAY_HOLD_CHANGED')
-        if set(report.get('assets', {})) != {'objectAlpha', 'scalarShadow', 'safeFloorAlpha'}: raise ValueError('REPLAY_ASSET_SET_CHANGED')
-        for key, name in [('objectAlpha', 'object-alpha.png'), ('scalarShadow', 'scalar-shadow.png'), ('safeFloorAlpha', 'safe-floor-alpha.png')]:
+        if report.get('floorDomain') != floor_domain: raise ValueError('REPLAY_FLOOR_DOMAIN_CHANGED')
+        names = [('objectAlpha', 'object-alpha.png'), ('scalarShadow', 'scalar-shadow.png'), ('safeFloorAlpha', 'safe-floor-alpha.png')]
+        if v2: names.append(('usableFloor', 'usable-floor.png'))
+        if set(report.get('assets', {})) != {k for k, _ in names}: raise ValueError('REPLAY_ASSET_SET_CHANGED')
+        for key, name in names:
             a = report['assets'][key]
             if set(a) != {'file', 'sha256', 'width', 'height', 'mode'} or (a['file'], a['width'], a['height'], a['mode']) != (name, 2048, 2048, 'L'):
                 raise ValueError('REPLAY_ASSET_DESCRIPTOR_CHANGED')
             image = files.read_image(files.asset({'path': str(out / name), 'sha256': a['sha256']}, root, {}), 'L')
             if key == 'scalarShadow' and report['status'] == 'needs_review' and np.any(image): raise ValueError('HELD_SHADOW_PRESENT')
+            if key == 'usableFloor' and not np.array_equal(image, floor): raise ValueError('REPLAY_USABLE_FLOOR_CHANGED')
         if any(files.sha(p) != digest for p, digest in inputs.items()): raise ValueError('INPUT_CHANGED_DURING_REPLAY')
         return report
     if profile == 'empty-bedroom-platform-three-piece/1':
@@ -98,6 +113,12 @@ def execute(request, allowed_root):
         context['sourceEmptyLivingRoom'] = assessment['sourceEmptyRoom']
         result = staging_support.derive_support(source, candidate, list(objects.values()), floor, [], [], request['pose'], context)
     report = result['report']
+    if v2:
+        # Domain limits contact eligibility and complete attenuation. Never clip
+        # object alpha or silently trim a shadow that escaped its safe floor.
+        outside = (result['scalarShadow'] > 0) & (result['safeFloorAlpha'] == 0)
+        if np.any(outside): raise ValueError('CONTACT_ATTENUATION_OUTSIDE_SAFE_FLOOR')
+        report['floorDomain'] = floor_domain
     report.update({'adapter': VERSION, 'profileId': profile, 'identity': identity, 'requestFingerprint': fingerprint,
                    'inputAssets': inputs, 'maskProvenance': origins, 'nativeSourceSha256': assessment['nativeSourceSha256'],
                    'sourceCutSha256': assessment['sourceCutSha256'], 'candidateSha256': assessment['candidateSha256'],
@@ -107,7 +128,9 @@ def execute(request, allowed_root):
     out.parent.mkdir(parents=True, exist_ok=True)
     temporary = Path(tempfile.mkdtemp(prefix='.room-support-', dir=out.parent)); os.chmod(temporary, 0o2770)
     assets = {}
-    for key, name in [('objectAlpha', 'object-alpha.png'), ('scalarShadow', 'scalar-shadow.png'), ('safeFloorAlpha', 'safe-floor-alpha.png')]:
+    names = [('objectAlpha', 'object-alpha.png'), ('scalarShadow', 'scalar-shadow.png'), ('safeFloorAlpha', 'safe-floor-alpha.png')]
+    if v2: result['usableFloor'] = floor; names.append(('usableFloor', 'usable-floor.png'))
+    for key, name in names:
         path = temporary / name; Image.fromarray(result[key]).save(path); os.chmod(path, 0o660)
         assets[key] = {'file': name, 'sha256': files.sha(path), 'width': 2048, 'height': 2048, 'mode': 'L'}
     report['assets'] = assets

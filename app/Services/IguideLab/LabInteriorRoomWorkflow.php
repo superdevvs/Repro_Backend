@@ -13,7 +13,8 @@ class LabInteriorRoomWorkflow
             'provider'=>LabProvider::class,'machineDrafts'=>LabMachineImageDrafts::class,'samRouter'=>LabMachineSegmentationCapabilities::class,
             'steps'=>LabWorkflowSteps::class,'invocation'=>LabWorkflowInvocation::class,'evaluation'=>LabWorkflowEvaluations::class,'evaluationProvider'=>LabWorkflowEvaluationProvider::class] as $name=>$class)
             $hashes[$name.'Sha256']=hash_file('sha256',(new \ReflectionClass($class))->getFileName());
-        return ['version'=>LabInteriorRoomProfiles::VERSION,'implementation'=>$hashes,'profiles'=>LabInteriorRoomProfiles::snapshot(),
+        $floor=config('iguide-lab.interior_floor_witness_enabled',false)===true?['floorContract'=>LabRoomFloorWitness::snapshot()]:[];
+        return $floor+['version'=>LabInteriorRoomProfiles::VERSION,'implementation'=>$hashes,'profiles'=>LabInteriorRoomProfiles::snapshot(),
             'legacyMaterialAdapter'=>'unchanged-existing-material-workflow-with-source-route-guard/1','livingSupport'=>'unchanged-staging-support/1'];
     }
     public function validateSnapshot(array $snapshot): void {abort_unless(LabMachineSegmentationPlan::canonicalHash($snapshot)===LabMachineSegmentationPlan::canonicalHash($this->snapshot()),422,'Reserved Interior room driver changed.');}

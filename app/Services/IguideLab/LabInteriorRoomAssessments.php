@@ -67,7 +67,9 @@ class LabInteriorRoomAssessments
     {
         $images=[];$context=app(LabInteriorRoomContext::class);
         foreach($step->input['contextSnapshot']['assets'] as $asset){$file=$context->file($step->project_id,$asset['path'],$asset['sha256']);$images[]='data:image/png;base64,'.base64_encode(file_get_contents($file));}
-        $protocol=$this->protocol($step->input['phase']);return json_encode($protocol::request($step->input['contextSnapshot']['context'],$images),JSON_THROW_ON_ERROR);
+        $protocol=$this->protocol($step->input['phase']);$wire=$protocol::request($step->input['contextSnapshot']['context'],$images);
+        if($floor=LabRoomFloorWitness::selected($step->input['recipe']))$wire=LabRoomFloorWitness::request($wire,$floor,$step->input['phase']);
+        return json_encode($wire,JSON_THROW_ON_ERROR);
     }
     public function start(IguideLabWorkflowStep $step): IguideLabRoomAssessment
     {
@@ -134,7 +136,8 @@ class LabInteriorRoomAssessments
         $file=app(LabInteriorRoomContext::class)->file($record->project_id,$path,$receipt['response']['sha256']??'',128*1024);
         $raw=json_decode(file_get_contents($file),true,flags:JSON_THROW_ON_ERROR);
         abort_unless(($raw['id']??null)===($receipt['providerResponseId']??null)&&is_string($raw['id']??null)&&$raw['id']!==''&&($raw['model']??null)==='gpt-6-astra'&&($receipt['model']??null)==='gpt-6-astra',422);
-        $protocol=$this->protocol($record->phase);return $protocol::parse($raw,$step->input['contextSnapshot']['context']);
+        $protocol=$this->protocol($record->phase);$value=$protocol::parse($raw,$step->input['contextSnapshot']['context']);
+        return LabRoomFloorWitness::selected($step->input['recipe'])?LabRoomFloorWitness::result($value,$record->phase):$value;
     }
     public function completed(IguideLabWorkflowItem $item,string $id,string $phase): IguideLabRoomAssessment
     {
