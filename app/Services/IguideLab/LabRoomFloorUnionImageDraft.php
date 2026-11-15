@@ -17,6 +17,8 @@ final class LabRoomFloorUnionImageDraft extends LabRoomEvidenceImageDraft
         abort_unless(LabRoomFloorWitnessUnion::selected($record->data['recipe']),422);
         // Parent revalidates current source, layout, actual SAM receipt and correction parent on every attempt.
         $plan=parent::apply($record,$case,$input,$invocation);
+        abort_unless($record->result_sha256===$plan['resultSha256']
+            &&LabMachineSegmentationPlan::canonicalHash($record->result)===$plan['resultSha256'],422,'Source union layout changed during image binding.');
         return $plan+['sourceFloorGeometry'=>LabRoomFloorWitnessUnion::geometryBinding($record->result['sourceFloor'])];
     }
 }

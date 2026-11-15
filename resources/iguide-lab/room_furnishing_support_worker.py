@@ -106,6 +106,8 @@ def execute(request, allowed_root):
             image = files.read_image(files.asset({'path': str(out / name), 'sha256': a['sha256']}, root, {}), 'L')
             if key == 'scalarShadow' and report['status'] == 'needs_review' and np.any(image): raise ValueError('HELD_SHADOW_PRESENT')
             if key == 'usableFloor' and not np.array_equal(image, floor): raise ValueError('REPLAY_USABLE_FLOOR_CHANGED')
+            if v3 and key == 'safeFloorAlpha' and hashlib.sha256(image.tobytes()).hexdigest() != witness['safePixelsSha256']:
+                raise ValueError('REPLAY_SAFE_UNION_CHANGED')
         if any(files.sha(p) != digest for p, digest in inputs.items()): raise ValueError('INPUT_CHANGED_DURING_REPLAY')
         return report
     if profile == 'empty-bedroom-platform-three-piece/1':
@@ -121,6 +123,8 @@ def execute(request, allowed_root):
         # object alpha or silently trim a shadow that escaped its safe floor.
         outside = (result['scalarShadow'] > 0) & (result['safeFloorAlpha'] == 0)
         if np.any(outside): raise ValueError('CONTACT_ATTENUATION_OUTSIDE_SAFE_FLOOR')
+        if v3 and hashlib.sha256(result['safeFloorAlpha'].tobytes()).hexdigest() != witness['safePixelsSha256']:
+            raise ValueError('ACTUAL_CONTACT_EROSION_CHANGED')
         report['floorDomain'] = floor_domain
     report.update({'adapter': VERSION, 'profileId': profile, 'identity': identity, 'requestFingerprint': fingerprint,
                    'inputAssets': inputs, 'maskProvenance': origins, 'nativeSourceSha256': assessment['nativeSourceSha256'],
