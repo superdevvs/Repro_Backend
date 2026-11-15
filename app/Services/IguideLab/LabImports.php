@@ -2,6 +2,7 @@
 
 namespace App\Services\IguideLab;
 
+use App\Exceptions\PublicApiException;
 use App\Jobs\ProcessIguideLabImport;
 use App\Models\IguideLabCase;
 use App\Models\IguideLabImport;
@@ -18,6 +19,9 @@ use ZipArchive;
 
 class LabImports
 {
+    public const DEFAULT_DAILY_IMPORTS = 8;
+    public const MAX_DAILY_IMPORTS = 64;
+
     public function start(IguideLabProject $project, array $input, ?UploadedFile $archive, ?UploadedFile $metadata): IguideLabImport
     {
         abort_unless($project->active(), 401);
@@ -43,8 +47,15 @@ class LabImports
                 if ($prior = IguideLabImport::where('project_id', $project->id)->where('request_id', $input['requestId'])->first()) {
                     abort_unless(hash_equals($prior->request_hash, $hash), 409, 'This import request ID was already used with a different source.'); return [$prior, false];
                 }
-                abort_if(IguideLabImport::where('project_id', $project->id)->whereNotIn('status', ['completed', 'needs_attention'])->count() >= 2, 429, 'Two scan imports are already processing.');
-                abort_if(IguideLabImport::where('project_id', $project->id)->where('created_at', '>=', now()->subDay())->count() >= 8, 429, 'This lab has reached its daily scan-import limit.');
+                if (IguideLabImport::where('project_id', $project->id)->whereNotIn('status', ['completed', 'needs_attention'])->count() >= 2) {
+                    throw new PublicApiException('Two scan imports are already processing. Wait for one to finish before adding another scan.',
+                        'scan_import_active_limit', 429, ['limit' => 2]);
+                }
+                $dailyLimit = $this->dailyLimit();
+                if (IguideLabImport::where('project_id', $project->id)->where('created_at', '>=', now()->subDay())->count() >= $dailyLimit) {
+                    throw new PublicApiException('This lab has reached its limit of '.$dailyLimit.' scan imports in 24 hours. Please try again later.',
+                        'scan_import_daily_limit', 429, ['limit' => $dailyLimit, 'windowHours' => 24]);
+                }
                 return [IguideLabImport::create(['id' => $id, 'project_id' => $project->id, 'request_id' => $input['requestId'],
                     'request_hash' => $hash, 'source_kind' => $kind, 'private_input' => $private, 'status' => 'queued', 'sources' => [],
                     'audit' => ['parserVersion' => LabImportMetadata::VERSION, 'sourceUrl' => $private['tour']['publicUrl'] ?? null,
@@ -175,5 +186,18 @@ class LabImports
                 unset($source['previewPath']); $source['previewAssetPath'] = '/api/iguide-lab/imports/'.$record->id.'/sources/'.$source['caseId'].'/preview'; return $source;
             }, $record->sources ?? []), 'createdAt' => $record->created_at?->toIso8601String(), 'completedAt' => $record->completed_at?->toIso8601String()];
     }
+    private function dailyLimit(): int
+    {
+        $limit = config('iguide-lab.import_daily_limit', self::DEFAULT_DAILY_IMPORTS);
+        // Environment values are strings. Reject partial numbers, booleans and
+        // coercion to an unlimited value; replay still returns the original ID.
+        if (is_string($limit) && preg_match('/\A[1-9][0-9]?\z/D', $limit) === 1) {
+            $limit = (int) $limit;
+        }
+        abort_unless(is_int($limit) && $limit >= 1 && $limit <= self::MAX_DAILY_IMPORTS,
+            503, 'Scan-import capacity configuration needs operator review.');
+        return $limit;
+    }
+
     private function prefix(string $project, string $id): string { return 'iguide-lab/'.$project.'/imports/'.$id; }
 }
