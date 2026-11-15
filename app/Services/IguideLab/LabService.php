@@ -9,6 +9,7 @@ use App\Models\IguideLabCase;
 use App\Models\IguideLabComposite;
 use App\Models\IguideLabProject;
 use App\Models\IguideLabRun;
+use App\Models\IguideLabWorkflow;
 use App\Support\LockedWrite;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
@@ -175,7 +176,7 @@ class LabService
             }
             if ($workflowInvocation !== null) app(LabWorkflowInvocation::class)->verify($workflowInvocation, $project->id, $input['requestId'], 'image', false);
             if($workflowInvocation!==null&&isset(app(LabWorkflowInvocation::class)->policy($workflowInvocation)['scheduler'])){
-                app(LabWorkflowScheduler::class)->assertImageCapacity($current);
+                app(LabWorkflowScheduler::class)->assertImageCapacity($current,IguideLabWorkflow::findOrFail($workflowInvocation['workflowId']));
             }else{
                 abort_if($current->used_runs >= $current->max_runs, 429, 'This lab has reached its generation limit.');
                 abort_if(IguideLabRun::where('created_at', '>=', now()->subDay())->count() >= 120, 429, 'The lab daily generation limit has been reached.');

@@ -53,7 +53,7 @@ class LabWorkflowRecordCapacity
         $requests=IguideLabWorkflowStep::whereIn('item_id',$itemIds)->where('kind',$kind)->pluck('request_id');
         abort_unless($requests->contains($invocation['requestId'])&&$requests->count()<=$scheduler['recordAllowances'][$kind],422,'The reserved tour step allowance changed.');
         if($model::where('project_id',$projectId)->whereIn('request_id',$requests)->count()>=$scheduler['recordAllowances'][$kind])throw new LabWorkflowCapacity('tour_record_capacity',null);
-        if($dailyLimit!==null){
+        if($dailyLimit!==null&&!app(LabTourProcessingBudget::class)->verify($workflow,$scheduler['recordAllowances'])){
             $query=$model::where('created_at','>=',now()->subDay());
             if((clone $query)->count()>=$dailyLimit){$oldest=(clone $query)->oldest('created_at')->firstOrFail();
                 throw new LabWorkflowCapacity('daily_'.$kind.'_capacity',$oldest->created_at->addDay()->timestamp+1);}

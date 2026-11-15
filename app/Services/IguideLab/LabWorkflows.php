@@ -44,14 +44,17 @@ class LabWorkflows
             $prior = IguideLabWorkflow::where('project_id', $project->id)->where('request_id', $input['requestId'])->first();
             if ($prior) { abort_unless(hash_equals($prior->request_hash, $identity), 409); return [$prior, false]; }
             abort_if(IguideLabWorkflow::where('project_id', $project->id)->count() >= 120, 429, 'The workflow safety ceiling was reached.');
-            $record = IguideLabWorkflow::create(['project_id' => $project->id, 'request_id' => $input['requestId'], 'request_hash' => $identity, 'policy' => $policy, 'status' => 'queued']);
+            $id=(string) \Illuminate\Support\Str::uuid();
+            $savedPolicy=$policy;
+            if($allowance=app(LabTourProcessingBudget::class)->reserve($project->fresh(),$id,$items,$policy))$savedPolicy['tourProcessingAllowance']=$allowance;
+            $record = IguideLabWorkflow::create(['id'=>$id,'project_id' => $project->id, 'request_id' => $input['requestId'], 'request_hash' => $identity, 'policy' => $savedPolicy, 'status' => 'queued']);
             foreach ($items as $position => $entry) IguideLabWorkflowItem::create(['workflow_id' => $record->id, 'project_id' => $project->id,
                 'case_id' => $entry['caseId'], 'position' => $position, 'preset' => $entry['preset'], 'style' => $entry['style'],
                 'instructions' => $entry['instructions'], 'source' => $entry['source'], 'status' => 'queued', 'data' => ['reviewReasons' => [], 'planRevision' => 1]]);
             return [$record, true];
         }), 'iguide-lab.workflow-reserve');
         if ($created) {
-            try { ProcessIguideLabWorkflow::dispatch($workflow->id,$policy['scheduler']['expiresAt']??null,isset($policy['scheduler'])?LabAnalysisRecipes::hash($policy):null); }
+            try { ProcessIguideLabWorkflow::dispatch($workflow->id,$workflow->policy['scheduler']['expiresAt']??null,isset($workflow->policy['scheduler'])?LabAnalysisRecipes::hash($workflow->policy):null); }
             catch (Throwable) { $this->stop($workflow, 'queue_unconfirmed', 'The queue receipt is unconfirmed. Existing requests were retained.'); }
         }
         return $workflow->fresh();

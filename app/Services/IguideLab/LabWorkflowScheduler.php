@@ -40,6 +40,7 @@ class LabWorkflowScheduler
         $items=IguideLabWorkflowItem::where('workflow_id',$workflow->id)->get();abort_unless($items->count()===$s['itemCount'],422,'The capture count changed.');
         foreach($items as $item)foreach(app(LabWorkflowSteps::class)->limits($workflow->policy,$item->preset) as $kind=>$limit)$expected[$kind]+=$limit;
         abort_unless(LabAnalysisRecipes::hash($expected)===LabAnalysisRecipes::hash($s['recordAllowances']??[]),422,'The frozen record allowance changed.');
+        app(LabTourProcessingBudget::class)->verify($workflow,$expected);
         return $s;
     }
     public function verifyJob(IguideLabWorkflow $workflow, ?int $deadline, ?string $policyHash): void
@@ -60,9 +61,17 @@ class LabWorkflowScheduler
     }
 
     /** Also called inside the existing locked image reservation; it is authoritative there. */
-    public function assertImageCapacity(IguideLabProject $project): void
+    public function assertImageCapacity(IguideLabProject $project,?IguideLabWorkflow $workflow=null): void
     {
         if($project->used_runs >= $project->max_runs)throw new LabWorkflowCapacity('project_image_capacity',null);
+        if($workflow!==null&&$this->policy($workflow)!==null&&app(LabTourProcessingBudget::class)->verify($workflow,$workflow->policy['scheduler']['recordAllowances'])){
+            $items=IguideLabWorkflowItem::where('workflow_id',$workflow->id)->pluck('id');
+            $requests=\App\Models\IguideLabWorkflowStep::whereIn('item_id',$items)->where('kind','image')->pluck('request_id');
+            abort_unless($requests->count()<=$workflow->policy['scheduler']['recordAllowances']['image'],422);
+            if(IguideLabRun::where('project_id',$project->id)->whereIn('request_id',$requests)->count()>=$workflow->policy['scheduler']['recordAllowances']['image'])
+                throw new LabWorkflowCapacity('tour_image_capacity',null);
+            return;
+        }
         $query=IguideLabRun::where('created_at','>=',now()->subDay());
         if((clone $query)->count()>=120){
             $oldest=(clone $query)->oldest('created_at')->firstOrFail();
@@ -89,7 +98,7 @@ class LabWorkflowScheduler
             // Its pending analysis/evaluation must resume against that role's
             // locked capacity guard, not require allowance for another image.
             if($state===null||($state['admittedAt']??null)===null||($state['capacityReason']??null)==='daily_image_capacity'){
-                try{$this->assertImageCapacity($project->fresh());}
+                try{$this->assertImageCapacity($project->fresh(),$workflow);}
                 catch(LabWorkflowCapacity $hold){$this->hold($workflow,$item,$hold);return false;}
             }
             LockedWrite::run(fn()=>DB::transaction(function()use($workflow,$item,$s){
