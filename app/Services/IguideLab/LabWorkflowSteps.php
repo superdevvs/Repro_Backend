@@ -71,7 +71,8 @@ class LabWorkflowSteps
                     }
                 }
             }
-            if (LabInteriorDesignPolicy::enabled($workflow->policy,$item->preset)&&LabInteriorMaterialDetails::selected($workflow->policy['interiorAssessments']??[])) {
+            if (LabInteriorDesignPolicy::enabled($workflow->policy,$item->preset)&&LabInteriorMaterialDetails::selected($workflow->policy['interiorAssessments']??[])
+                &&(!LabInteriorRoomPolicy::enabled($workflow->policy,$item->preset)||($item->fresh()->data['interiorRoomRoute']['profileId']??null)===LabInteriorRoomProfiles::MATERIALS)) {
                 if($kind==='analysis')abort_unless(in_array($key,['interior-framing','interior-cut','interior-cut-followup','interior-candidate','room-route'],true),422,'Unknown material detail analysis.');
                 if($key==='interior-cut-followup')abort_unless(($input['protocolVersion']??null)===LabInteriorMaterialSourceProtocol::VERSION&&($input['contextSnapshot']['context']['sourceInspection']['followupOrdinal']??null)===1,422);
             }

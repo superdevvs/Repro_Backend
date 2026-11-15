@@ -152,6 +152,17 @@ class IguideLabInteriorRoomAssessmentTest extends TestCase
         $this->rejects(fn()=>$steps->reserve($item,'room-image-2','image',[]));$this->rejects(fn()=>$steps->reserve($item,'room-candidate-2','analysis',[]));
         Http::assertSentCount(1);
     }
+    public function test_source_detail_policy_does_not_replace_the_furnishing_branch_keys(): void
+    {
+        [,$workflow,$item,,,$record]=$this->fixture();$record=$this->finish($record);$route=app(LabInteriorRoomRoutes::class)->bind($item,$record);
+        $this->assertSame(LabInteriorRoomProfiles::BEDROOM,$route['profileId']);
+        $policy=$workflow->fresh()->policy;$policy['interiorDesign']=\App\Services\IguideLab\LabInteriorDesignPolicy::snapshot();
+        $policy['interiorAssessments']=['implementation'=>['sourceDetails'=>['version'=>\App\Services\IguideLab\LabInteriorMaterialDetails::VERSION]]];$workflow->update(['policy'=>$policy]);
+        $steps=app(LabWorkflowSteps::class);foreach(['room-framing','room-layout','room-candidate'] as $key)$steps->reserve($item,$key,'analysis',[]);
+        $this->assertSame(4,\App\Models\IguideLabWorkflowStep::where('item_id',$item->id)->where('kind','analysis')->count());
+        $this->rejects(fn()=>$steps->reserve($item,'interior-cut-followup','analysis',['protocolVersion'=>\App\Services\IguideLab\LabInteriorMaterialSourceProtocol::VERSION,'contextSnapshot'=>['context'=>['sourceInspection'=>['followupOrdinal'=>1]]]]));
+        $steps->reserve($item,'room-image','image',[]);$this->rejects(fn()=>$steps->reserve($item,'room-image-2','image',[]));Http::assertSentCount(1);
+    }
     public function test_source_detail_material_route_has_five_closed_analysis_slots_and_one_image(): void
     {
         [,$workflow,$item,,,$record]=$this->fixture();$v=Fixtures::candidate($this->context->bundle['context']);
