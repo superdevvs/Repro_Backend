@@ -174,7 +174,9 @@ class IguideLabInteriorRoomAssessmentTest extends TestCase
         $policy=$workflow->fresh()->policy;$policy['interiorDesign']=\App\Services\IguideLab\LabInteriorDesignPolicy::snapshot();
         // Budget marker only: this test never sends a material assessment or claims a runtime proof.
         $policy['interiorAssessments']=['implementation'=>['sourceDetails'=>['version'=>\App\Services\IguideLab\LabInteriorMaterialDetails::VERSION]]];$workflow->update(['policy'=>$policy]);
-        $steps=app(LabWorkflowSteps::class);foreach(['interior-framing','interior-cut','interior-candidate'] as $key)$steps->reserve($item,$key,'analysis',[]);
+        $steps=app(LabWorkflowSteps::class);$limits=$steps->limits($workflow->fresh()->policy,'interior-design');
+        $this->assertSame(5,$limits['analysis']);$this->assertSame(1,$limits['image']);
+        foreach(['interior-framing','interior-cut','interior-candidate'] as $key)$steps->reserve($item,$key,'analysis',[]);
         $this->rejects(fn()=>$steps->reserve($item,'interior-cut-followup','analysis',[]));
         $input=['protocolVersion'=>\App\Services\IguideLab\LabInteriorMaterialSourceProtocol::VERSION,'contextSnapshot'=>['context'=>['sourceInspection'=>['followupOrdinal'=>1]]]];
         $step=$steps->reserve($item,'interior-cut-followup','analysis',$input);$this->assertSame($step->id,$steps->reserve($item,'interior-cut-followup','analysis',$input)->id);

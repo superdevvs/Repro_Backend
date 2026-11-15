@@ -51,7 +51,10 @@ class IguideLabInteriorMaterialFollowupTest extends TestCase
     {return app(LabInteriorDesignAssessments::class)->start(app(LabInteriorDesignAssessments::class)->reserve($item,'cut-followup',['initialCutId'=>$initial->id]));}
     public function test_fresh_followup_plan_enters_unchanged_source_mask_reservation_and_replay_spends_zero(): void
     {
-        [$project,,$item,,$record]=$this->fixture();$initial=$this->finish($record,F::proposal($record->data['contextSnapshot']['context'],true));
+        [$project,$workflow,$item,,$record]=$this->fixture();
+        $limits=app(LabWorkflowSteps::class)->limits($workflow->fresh()->policy,'interior-design');
+        $this->assertSame(4,$limits['analysis']);$this->assertSame(1,$limits['image']);
+        $initial=$this->finish($record,F::proposal($record->data['contextSnapshot']['context'],true));
         $this->assertSame('completed',$initial->status);$this->assertFalse($initial->result['sourceMaskSelectionAuthorized']);
         $next=$this->followup($item,$initial);$next=$this->finish($next,F::proposal($next->data['contextSnapshot']['context']));$this->assertSame('completed',$next->status);
         $service=app(LabInteriorDesignAssessments::class);$verified=$service->completed($item,$next->id,'cut');$this->assertSame('cut-followup',$verified->phase);
