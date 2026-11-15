@@ -2,7 +2,7 @@
 /** Disposable local Docker, network disabled, synthetic provider responses only. */
 declare(strict_types=1);
 $code='/app';$root=(getenv('ROOM_PROOF_ROOT')?:'/proof').'/'.($argv[1]??'attempt-1');$scenario=$argv[2]??'bedroom';$floorUnion=getenv('ROOM_FLOOR_UNION_PROOF')==='1';
-if(!in_array($scenario,['first-success','correction-success','correction-hold','candidate-uncertain','source-hold','correction-quota-drift','correction-cancel','correction-prior-drift','final-quality-hold','union-outside-contact'],true))throw new RuntimeException('Unknown scenario');
+if(!in_array($scenario,['first-success','correction-success','correction-hold','candidate-uncertain','source-hold','correction-quota-drift','correction-cancel','correction-prior-drift','final-quality-hold','union-outside-contact','union-quota-floor-drift'],true))throw new RuntimeException('Unknown scenario');
 if(is_dir($root))throw new RuntimeException('Immutable proof directory already exists');mkdir($root,02770,true);chmod($root,02770);$db=$root.'/test.sqlite';touch($db);
 foreach(['APP_ENV'=>'testing','APP_KEY'=>'base64:'.base64_encode(str_repeat('k',32)),'DB_CONNECTION'=>'sqlite','DB_DATABASE'=>$db,'CACHE_STORE'=>'array','QUEUE_CONNECTION'=>'sync','SESSION_DRIVER'=>'array','MAIL_MAILER'=>'array','LOG_CHANNEL'=>'single','CLAMAV_SCAN_ON_UPLOAD'=>'false'] as $k=>$v){putenv($k.'='.$v);$_ENV[$k]=$v;$_SERVER[$k]=$v;}
 $loader=require $code.'/vendor/autoload.php';$app=require $code.'/bootstrap/app.php';$app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap();
@@ -52,8 +52,9 @@ Http::fake(function($request)use(&$calls,$maskBytes,$scenario,$profile,$roles,$b
     if($url==='https://api.openai.com/v1/images/edits'){$run=IguideLabRun::where('status','submitting')->sole();$ordinal=$run->options['sourceMachinePlan']['evidenceDraft']['ordinal'];
         check(in_array($ordinal,[1,2],true),'Third image attempted');check(str_contains($run->prompt,'separated narrow legs'),'Living support form missing');
         if($floorUnion){check(($run->options['sourceMachinePlan']['version']??null)===App\Services\IguideLab\LabRoomFloorUnionImageDraft::VERSION,'Union image version missing');check(str_contains($run->prompt,'Original floor placement limits')&&str_contains($run->prompt,'contact-plus-attenuation envelopes'),'Numeric source limits missing');}
-        if($ordinal===2&&in_array($scenario,['correction-quota-drift','correction-cancel'],true)){
+        if($ordinal===2&&in_array($scenario,['correction-quota-drift','correction-cancel','union-quota-floor-drift'],true)){
             if($scenario==='correction-quota-drift'){$prior=IguideLabRoomAssessment::where('phase','candidate')->where('status','completed')->sole();Storage::disk(LabService::DISK)->delete($prior->data['providerReceipt']['response']['path']);}
+            elseif($scenario==='union-quota-floor-drift'){check($floorUnion,'Union drift scenario requires new contract');$floorRecord=IguideLabMachineSegmentation::where('status','completed')->sole();$asset=$floorRecord->result['artifacts'][0];$disk=Storage::disk(LabService::DISK);$disk->put($asset['path'],$disk->get($asset['path'])."\0");}
             else{$item=IguideLabWorkflowItem::sole();app(LabWorkflows::class)->cancel(\App\Models\IguideLabWorkflow::findOrFail($item->workflow_id));}
             return Http::response(['error'=>['code'=>'insufficient_quota']],429,['x-request-id'=>'fake-explicit-quota']);
         }
