@@ -168,6 +168,9 @@ class IguideLabTourSchedulerTest extends TestCase
         $this->expectException(\Illuminate\Queue\MaxAttemptsExceededException::class);$guard->invoke(app('queue.worker'),'studio',$queued,480);
     }
     public function test_historical_analysis_ceiling_does_not_consume_owned_tour_allowance_but_manual_limit_remains():void {
+        // An explicit object mirrors imported-source metadata. Empty PHP arrays are a
+        // separate legacy DTO shape and must not obscure this count/capability proof.
+        $this->case->update(['metadata'=>['fixtureOrigin'=>'synthetic scheduler read-contract source']]);
         $this->analysisHistory(false);$w=$this->workflow(80);app(LabWorkflows::class)->process($w);
         $this->assertSame(121,IguideLabAnalysis::count());$this->assertSame(160,$w->policy['scheduler']['recordAllowances']['analysis']);
         $this->assertSame(1,IguideLabWorkflowStep::count());$this->assertSame(0,$this->project->fresh()->used_runs);
