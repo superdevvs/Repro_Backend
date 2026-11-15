@@ -124,7 +124,7 @@ class LabGrassWorkflowArtifacts
                 'effectiveAlphaMeaning' => 'Native chroma influence after support, nadir policy and gamut attenuation; not RGB paste opacity.',
                 'operatorInterventions' => 0, 'manualAcceptance' => false, 'maskSemanticsVerified' => false,
                 'guidanceRole' => 'source_native_chroma_only', 'sourceCaveats' => $analysis->proposal['uncertainties'] ?? []]];
-        [$composite] = app(LabComposites::class)->add(\App\Models\IguideLabProject::findOrFail($item->project_id), $case, $preview['path'], $manifest, $nativeCanvas ? $native['path'] : null);
+        [$composite] = app(LabComposites::class)->add(\App\Models\IguideLabProject::findOrFail($item->project_id), $case, $preview['path'], $manifest, $nativeCanvas ? $native['path'] : null,app(LabWorkflowSteps::class)->invocation($step));
         return $composite;
     }
     protected function executeGrass(string $path, array $request, array $snapshot): array

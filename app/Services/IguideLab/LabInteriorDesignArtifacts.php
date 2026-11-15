@@ -47,7 +47,7 @@ class LabInteriorDesignArtifacts extends LabWorkflowArtifacts
                 'sectionId'=>$section->id,'editView'=>$section->view,'editViewAuthority'=>'exact server extraction pose; not independent calibration','maskOrigin'=>'model_segmentation','selectionOrigin'=>'machine',
                 'registration'=>$transfer['report']['diagnostics'],'operatorInterventions'=>0,'manualAcceptance'=>false,'crossViewVerified'=>false,'styleFaithfulnessVerified'=>false,
                 'limitations'=>self::REVIEW_CONSTRAINTS]];
-        [$composite]=app(LabComposites::class)->add(IguideLabProject::findOrFail($item->project_id),$case,$preview['path'],$manifest,$nativeCanvas?$native['path']:null);return $composite;
+        [$composite]=app(LabComposites::class)->add(IguideLabProject::findOrFail($item->project_id),$case,$preview['path'],$manifest,$nativeCanvas?$native['path']:null,app(LabWorkflowSteps::class)->invocation($step));return $composite;
     }
     public function verifyComposite(IguideLabWorkflowItem $item,IguideLabComposite $composite,IguideLabWorkflowStep $step,IguideLabRun $run): void
     {

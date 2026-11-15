@@ -79,7 +79,7 @@ class LabInteriorDesignAssessments
             app(LabWorkflowInvocation::class)->verify($invocation,$step->project_id,$step->request_id,'analysis',false);
             if($prior=IguideLabInteriorAssessment::where('project_id',$step->project_id)->where('request_id',$step->request_id)->first()){
                 abort_unless($prior->request_hash===$step->input_sha256&&$prior->step_id===$step->id&&$prior->phase===$step->input['phase'],409);return $prior;}
-            abort_if(IguideLabInteriorAssessment::where('project_id',$step->project_id)->count()>=240||IguideLabInteriorAssessment::where('created_at','>=',now()->subDay())->count()>=240,429,'Interior assessment safety ceiling reached.');
+            app(LabWorkflowRecordCapacity::class)->assertRoom(IguideLabInteriorAssessment::class,$step->project_id,$invocation,240,240);
             return IguideLabInteriorAssessment::create(['id'=>$id,'project_id'=>$step->project_id,'step_id'=>$step->id,'request_id'=>$step->request_id,'request_hash'=>$step->input_sha256,
                 'phase'=>$step->input['phase'],'status'=>'queued','data'=>['workflowInvocation'=>$invocation,'payloadPath'=>$path,'providerBodySha256'=>hash('sha256',$bytes),'contextSnapshot'=>$step->input['contextSnapshot'],'recipe'=>$step->input['recipe']]]);
         }),'iguide-lab.interior-reserve');return $this->reconcile($step,$record);

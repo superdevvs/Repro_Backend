@@ -120,7 +120,7 @@ class LabWorkflowArtifacts
                 'compositionRecipe' => $report['recipe'], 'repair' => $step->input['repair'] ?? null,
                 'telemetry' => $report['telemetry'], 'limitations' => $report['limitations'], 'operatorInterventions' => 0, 'manualAcceptance' => false,
                 'guidanceRole' => $global ? 'global_color_offset_only' : 'low_frequency_lighting_only', 'sourceCaveats' => $analysis->proposal['uncertainties'] ?? []]];
-        [$composite] = app(LabComposites::class)->add(\App\Models\IguideLabProject::findOrFail($item->project_id), $case, $preview['path'], $manifest, $nativeCanvas ? $native['path'] : null);
+        [$composite] = app(LabComposites::class)->add(\App\Models\IguideLabProject::findOrFail($item->project_id), $case, $preview['path'], $manifest, $nativeCanvas ? $native['path'] : null,app(LabWorkflowSteps::class)->invocation($step));
         return $composite;
     }
     public function evidence(IguideLabWorkflowItem $item, IguideLabComposite $composite, IguideLabAnalysis $analysis): array

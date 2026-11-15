@@ -42,8 +42,7 @@ class LabLifestyleAssessments
             if ($prior = IguideLabLifestyleAssessment::where('project_id', $step->project_id)->where('request_id', $step->request_id)->first()) {
                 abort_unless($prior->request_hash === $step->input_sha256 && $prior->step_id === $step->id, 409); return [$prior, false];
             }
-            abort_if(IguideLabLifestyleAssessment::where('project_id', $step->project_id)->count() >= 120
-                || IguideLabLifestyleAssessment::where('created_at', '>=', now()->subDay())->count() >= 120, 429, 'Assessment safety ceiling reached.');
+            app(LabWorkflowRecordCapacity::class)->assertRoom(IguideLabLifestyleAssessment::class,$step->project_id,app(LabWorkflowSteps::class)->invocation($step));
             return [IguideLabLifestyleAssessment::create(['id' => $id, 'step_id' => $step->id, 'project_id' => $step->project_id,
                 'request_id' => $step->request_id, 'request_hash' => $step->input_sha256, 'status' => 'queued',
                 'data' => ['workflowInvocation' => $invocation, 'context' => $context, 'payload' => $payload, 'base' => $base,

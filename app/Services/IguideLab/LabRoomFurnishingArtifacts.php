@@ -64,7 +64,7 @@ class LabRoomFurnishingArtifacts extends LabWorkflowArtifacts
                 'sectionId'=>$section->id,'editView'=>$section->view,'editViewAuthority'=>'exact source extraction pose, not independent calibration',
                 'composition'=>$report['composition']??null,'numericalQa'=>$report['qa'],'operatorInterventions'=>0,'manualAcceptance'=>false,'crossViewVerified'=>false,
                 'maskOrigin'=>'model_segmentation','selectionOrigin'=>'machine','limitations'=>self::constraints($route['profileId'])]];
-        [$composite]=app(LabComposites::class)->add(IguideLabProject::findOrFail($item->project_id),$case,$preview['path'],$manifest,$nativeCanvas?$native['path']:null);return $composite;
+        [$composite]=app(LabComposites::class)->add(IguideLabProject::findOrFail($item->project_id),$case,$preview['path'],$manifest,$nativeCanvas?$native['path']:null,app(LabWorkflowSteps::class)->invocation($step));return $composite;
     }
     public function verifyComposite(IguideLabWorkflowItem $item,IguideLabComposite $composite,IguideLabWorkflowStep $step,IguideLabRun $run): void
     {
