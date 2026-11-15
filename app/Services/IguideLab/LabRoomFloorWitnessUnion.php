@@ -9,6 +9,10 @@ final class LabRoomFloorWitnessUnion
     public const IDS=['source','parent_source','parent_front','parent_right','parent_back','parent_left'];
     // Exact row half-widths of OpenCV5 MORPH_ELLIPSE(13,13), the existing 2048 contact erosion.
     public const KERNEL=[0,3,4,5,6,6,6,6,6,5,4,3,0];
+    // One pure raster value only: no source, selection, mask, receipt or authority is cached.
+    // PHP array/string copy-on-write prevents a caller from mutating the retained value.
+    private static ?string $domainCacheKey=null;
+    private static ?array $domainCache=null;
     public static function snapshot(): array
     {return ['version'=>self::VERSION,'implementationSha256'=>hash_file('sha256',__FILE__),'maximumRegions'=>4,'minimumSidePixels'=>16,
         'coverage'=>'every_union_pixel_255','erosionRadiusPixels'=>6,'erosionKernelHalfWidths'=>self::KERNEL,
@@ -52,13 +56,22 @@ final class LabRoomFloorWitnessUnion
     /** Exact raster union and one erosion; no convex hull, dilation or candidate-informed expansion. */
     public static function domain(array $regions): array
     {
+        // Validate the exact integer tuple on every call, including cache hits.
+        abort_unless(array_is_list($regions)&&count($regions)>=1&&count($regions)<=4,422);
+        $seen=[];foreach($regions as $b){LabInteriorDesignProtocol::box($b,false);abort_unless($b[2]-$b[0]+1>=16&&$b[3]-$b[1]+1>=16,422);
+            $identity=implode(',',$b);abort_if(isset($seen[$identity]),422,'Duplicate source witness rectangle.');$seen[$identity]=true;}
+        $key=json_encode([self::VERSION,[2048,2048],self::KERNEL,'positive_infinity',$regions],JSON_THROW_ON_ERROR);
+        if(self::$domainCacheKey===$key&&self::$domainCache!==null)return self::$domainCache;
+        // Bounded across long-lived queue jobs; a miss evicts before allocating the next raster.
+        self::$domainCacheKey=null;self::$domainCache=null;
         $rows=[];for($y=0;$y<2048;$y++){$row=str_repeat("\0",2048);foreach($regions as [$x0,$y0,$x1,$y1])if($y>=$y0&&$y<=$y1)$row=substr_replace($row,str_repeat("\xff",$x1-$x0+1),$x0,$x1-$x0+1);$rows[]=$row;}
         $safe=[];$ones=str_repeat("\xff",2048);
         for($y=0;$y<2048;$y++){$row=$ones;foreach(self::KERNEL as $k=>$r){$yy=$y+$k-6;if($yy<0||$yy>=2048)continue; // OpenCV erosion default border is positive infinity.
             $src=$rows[$yy];for($dx=-$r;$dx<=$r;$dx++){$shift=$dx<0?str_repeat("\xff",-$dx).substr($src,0,2048+$dx):substr($src,$dx).str_repeat("\xff",$dx);$row=$row&$shift;}}
             $safe[]=$row;}
-        return ['rows'=>$rows,'safeRows'=>$safe,'usablePixelsSha256'=>hash('sha256',implode('',$rows)),
+        $domain=['rows'=>$rows,'safeRows'=>$safe,'usablePixelsSha256'=>hash('sha256',implode('',$rows)),
             'safePixelsSha256'=>hash('sha256',implode('',$safe)),'usablePositivePixels'=>array_sum(array_map(fn($r)=>substr_count($r,"\xff"),$rows))];
+        self::$domainCache=$domain;self::$domainCacheKey=$key;return $domain;
     }
     public static function geometryBinding(array $selection): array
     {$d=self::selection($selection);return ['version'=>self::VERSION,'selectionSha256'=>LabMachineSegmentationPlan::canonicalHash($selection),

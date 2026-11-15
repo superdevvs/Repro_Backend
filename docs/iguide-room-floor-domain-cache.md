@@ -1,0 +1,11 @@
+# Pure floor-domain reuse
+
+This isolated candidate retains at most one deterministic 2048-square union/erosion result in each PHP process. The key includes the exact validated integer rectangle tuples, dimensions, existing kernel, positive-infinity border and floor contract version. A miss evicts the prior entry before constructing another raster. Returned PHP arrays and strings use copy-on-write; callers receive no shared mutable reference.
+
+Only raster rows, their pixel hashes and positive-pixel count are reused. Every selection still checks source-plane evidence, profile roles, prospective envelopes and planned object relationships. Every plan, source-byte, native identity, provider receipt, raw mask and source support check remains in its owning call. Neither a cache hit nor matching rectangles confer semantic floor authority. No image alpha, contact algorithm, floor boundary, recipe version, public DTO or final quality gate changes.
+
+The local network-disabled PHP 8.3.33 microbenchmark used the same two inclusive rectangles twelve times. Baseline time was 2.897 seconds; candidate time was 0.148 seconds including its initial calculation. Both produced identical union and safe-pixel hashes and reported the same 20,975,616-byte PHP peak allocation. Subsequent hits took approximately 1–22 microseconds on this machine. This is a repeated-domain measurement, not a whole-workflow performance claim. No call count or attribution for the observed 390-second correction phases has been established.
+
+Thirteen focused tests (78 assertions) cover the existing floor contract plus repeated values, caller mutation isolation, changing/reordered geometry, strict integer validation, warm-cache plane/profile/envelope/object rejection, digest/source/native/receipt drift, and the existing raw-mask hole/gray-pixel holds. They ran on the exact staged production/test tree in local network-disabled Docker. Frozen e7 source and its evidence remain unchanged.
+
+The class hash changes, so any later integration must refresh affected room assessment/support runtime bindings and run the appropriate combined verification. This candidate has not been activated, pushed, deployed or exercised against a real provider. A fresh exact-tree correction-chain timing comparison is still needed before attributing end-to-end savings.
