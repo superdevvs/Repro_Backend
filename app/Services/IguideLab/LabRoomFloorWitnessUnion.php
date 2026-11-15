@@ -65,17 +65,17 @@ final class LabRoomFloorWitnessUnion
         'usablePixelsSha256'=>$d['usablePixelsSha256'],'safePixelsSha256'=>$d['safePixelsSha256'],'erosionRadiusPixels'=>6];}
     public static function prompt(array $selection): string
     {
-        $b=self::geometryBinding($selection);
+        self::selection($selection);
         return "\nOriginal floor placement limits on this2048x2048 image, inclusive pixels [left,top,right,bottom]: ".json_encode($selection['regions'],JSON_THROW_ON_ERROR)
             .'. Only the exact UNION of these rectangles is eligible floor; gaps are excluded, never use their outer bounding rectangle. Keep the entire visible contact and tiny contact attenuation region inside the floor after6-pixel inward clearance (existing elliptical erosion), and keep complete furniture inside205..1842.'
             .' Source-planned contact-plus-attenuation envelopes by object: '.json_encode($selection['contactEnvelopes'],JSON_THROW_ON_ERROR)
-            .'. Place each object so its contacts and tiny attenuation fit its named envelope. These numeric limits are unchanged for a correction. Do not draw these boxes/labels, replace floor, or fabricate hidden support. Floor geometry binding: '.json_encode($b,JSON_THROW_ON_ERROR).'.';
+            .'. Place each object so its contacts and tiny attenuation fit its named envelope. These numeric limits are unchanged for a correction. Do not draw these boxes/labels, replace floor, or fabricate hidden support.';
     }
     public static function request(array $wire,array $contract,string $phase): array
     {
         abort_unless(LabMachineSegmentationPlan::canonicalHash($contract)===LabMachineSegmentationPlan::canonicalHash(self::snapshot()),422);
         if(!in_array($phase,['layout','candidate'],true))return $wire;
-        $wire['instructions'].="\n".self::instructions();
+        abort_unless(str_contains($wire['instructions'],self::instructions()),422,'The source union compiler is required.');
         $b=json_decode($wire['input'][0]['content'][1]['text'],true,flags:JSON_THROW_ON_ERROR);$b['requestVersion']='interior-room-evidence-floor-union-request/1';$b['floorContract']=$contract;
         $wire['input'][0]['content'][1]['text']=json_encode($b,JSON_THROW_ON_ERROR);return $wire;
     }
