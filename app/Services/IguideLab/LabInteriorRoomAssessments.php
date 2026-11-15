@@ -9,10 +9,30 @@ use Illuminate\Support\Facades\DB;
 /** Separate durable room-routing records. Old material assessments are never reclassified. */
 class LabInteriorRoomAssessments
 {
-    public function protocol(string $phase): string
-    {return match($phase){'route'=>LabInteriorRoomRouteProtocol::class,'framing'=>LabRoomFurnishingFramingProtocol::class,
-        'layout'=>LabRoomFurnishingLayoutProtocol::class,'candidate'=>LabRoomFurnishingCandidateProtocol::class,
-        default=>abort(422,'Unknown Interior room assessment phase.')};}
+    public function protocol(string $phase,?array $recipe=null): string
+    {
+        $draft=$recipe===null?config('iguide-lab.interior_room_evidence_drafts_enabled',false)===true:LabRoomEvidenceDraftPolicy::selected($recipe)!==null;
+        return match($phase){'route'=>LabInteriorRoomRouteProtocol::class,'framing'=>LabRoomFurnishingFramingProtocol::class,
+            'layout'=>$draft?LabRoomEvidenceLayoutProtocol::class:LabRoomFurnishingLayoutProtocol::class,
+            'candidate'=>$draft?LabRoomEvidenceCandidateProtocol::class:LabRoomFurnishingCandidateProtocol::class,
+            default=>abort(422,'Unknown Interior room assessment phase.')};
+    }
+    private function stepKey(string $phase,array $parents,array $recipe): string
+    {
+        if($phase==='candidate'&&LabRoomEvidenceDraftPolicy::selected($recipe)!==null){
+            abort_unless(in_array($parents['imageOrdinal']??null,[1,2],true),422);return $parents['imageOrdinal']===2?'room-candidate-2':'room-candidate';}
+        return 'room-'.$phase;
+    }
+    /** Historical display is a closed persisted version dispatch, never current execution readiness. */
+    private function readProtocol(IguideLabRoomAssessment $record): string
+    {
+        $version=$record->data['contextSnapshot']['context']['version']??null;
+        $allowed=['route'=>[LabInteriorRoomRouteProtocol::class],'framing'=>[LabRoomFurnishingFramingProtocol::class],
+            'layout'=>[LabRoomFurnishingLayoutProtocol::class,LabRoomEvidenceLayoutProtocol::class],
+            'candidate'=>[LabRoomFurnishingCandidateProtocol::class,LabRoomEvidenceCandidateProtocol::class]];
+        foreach($allowed[$record->phase]??[] as $protocol)if($version===$protocol::VERSION)return $protocol;
+        abort(422,'Unknown persisted room assessment read version.');
+    }
     public function implementation(): array
     {
         $out=app(LabInteriorRoomContext::class)->snapshot();
@@ -42,17 +62,17 @@ class LabInteriorRoomAssessments
     {abort_unless(LabAnalysisRecipes::hash($snapshot)===LabAnalysisRecipes::hash($this->snapshot()),422,'Reserved Interior implementation changed.');}
     public function reserve(IguideLabWorkflowItem $item,string $phase,array $parents=[]): IguideLabWorkflowStep
     {
-        $protocol=$this->protocol($phase);$workflow=IguideLabWorkflow::where('project_id',$item->project_id)->findOrFail($item->workflow_id);
+        $workflow=IguideLabWorkflow::where('project_id',$item->project_id)->findOrFail($item->workflow_id);
         abort_unless(config('iguide-lab.interior_room_routing_enabled',false)===true&&LabInteriorRoomPolicy::enabled($workflow->policy,$item->preset),503,'Interior room routing is disabled.');
-        $recipe=$workflow->policy['interiorRoomAssessments']??[];$this->validate($recipe);
+        $recipe=$workflow->policy['interiorRoomAssessments']??[];$this->validate($recipe);$protocol=$this->protocol($phase,$recipe);
         $snapshot=app(LabInteriorRoomContext::class)->capture($item,$phase,$parents);
-        return app(LabWorkflowSteps::class)->reserve($item,'room-'.$phase,'analysis',['protocolVersion'=>$protocol::VERSION,'phase'=>$phase,'parents'=>$parents,'contextSnapshot'=>$snapshot,'recipe'=>$recipe]);
+        return app(LabWorkflowSteps::class)->reserve($item,$this->stepKey($phase,$parents,$recipe),'analysis',['protocolVersion'=>$protocol::VERSION,'phase'=>$phase,'parents'=>$parents,'contextSnapshot'=>$snapshot,'recipe'=>$recipe]);
     }
     public function verifyStep(IguideLabWorkflowStep $step): IguideLabWorkflowItem
     {
-        $input=$step->input;$phase=$input['phase']??'';$protocol=$this->protocol($phase);
+        $input=$step->input;$phase=$input['phase']??'';$protocol=$this->protocol($phase,$input['recipe']??[]);
         abort_unless(config('iguide-lab.interior_room_routing_enabled',false)===true,503,'Interior room routing is disabled.');
-        abort_unless($step->kind==='analysis'&&$step->step_key==='room-'.$phase&&($input['protocolVersion']??null)===$protocol::VERSION
+        abort_unless($step->kind==='analysis'&&$step->step_key===$this->stepKey($phase,$input['parents']??[],$input['recipe']??[])&&($input['protocolVersion']??null)===$protocol::VERSION
             &&$step->input_sha256===LabAnalysisRecipes::hash($input),422,'Interior reservation changed.');
         LabInteriorDesignProtocol::keys($input,['protocolVersion','phase','parents','contextSnapshot','recipe']);
         $item=IguideLabWorkflowItem::where('project_id',$step->project_id)->findOrFail($step->item_id);
@@ -67,8 +87,13 @@ class LabInteriorRoomAssessments
     {
         $images=[];$context=app(LabInteriorRoomContext::class);
         foreach($step->input['contextSnapshot']['assets'] as $asset){$file=$context->file($step->project_id,$asset['path'],$asset['sha256']);$images[]='data:image/png;base64,'.base64_encode(file_get_contents($file));}
-        $protocol=$this->protocol($step->input['phase']);$wire=$protocol::request($step->input['contextSnapshot']['context'],$images);
+        $protocol=$this->protocol($step->input['phase'],$step->input['recipe']);$wire=$protocol::request($step->input['contextSnapshot']['context'],$images);
         if($floor=LabRoomFloorWitness::selected($step->input['recipe']))$wire=LabRoomFloorWitness::request($wire,$floor,$step->input['phase']);
+        if(($draft=LabRoomEvidenceDraftPolicy::selected($step->input['recipe']))!==null&&in_array($step->input['phase'],['layout','candidate'],true)){
+            $binding=json_decode($wire['input'][0]['content'][1]['text'],true,flags:JSON_THROW_ON_ERROR);
+            $binding['requestVersion']='interior-room-evidence-floor-witness-request/1';$binding['draftContract']=$draft;
+            $wire['input'][0]['content'][1]['text']=json_encode($binding,JSON_THROW_ON_ERROR);
+        }
         return json_encode($wire,JSON_THROW_ON_ERROR);
     }
     public function start(IguideLabWorkflowStep $step): IguideLabRoomAssessment
@@ -136,7 +161,7 @@ class LabInteriorRoomAssessments
         $file=app(LabInteriorRoomContext::class)->file($record->project_id,$path,$receipt['response']['sha256']??'',128*1024);
         $raw=json_decode(file_get_contents($file),true,flags:JSON_THROW_ON_ERROR);
         abort_unless(($raw['id']??null)===($receipt['providerResponseId']??null)&&is_string($raw['id']??null)&&$raw['id']!==''&&($raw['model']??null)==='gpt-6-astra'&&($receipt['model']??null)==='gpt-6-astra',422);
-        $protocol=$this->protocol($record->phase);$value=$protocol::parse($raw,$step->input['contextSnapshot']['context']);
+        $protocol=$this->protocol($record->phase,$record->data['recipe']??[]);$value=$protocol::parse($raw,$step->input['contextSnapshot']['context']);
         return LabRoomFloorWitness::selected($step->input['recipe'])?LabRoomFloorWitness::result($value,$record->phase):$value;
     }
     public function completed(IguideLabWorkflowItem $item,string $id,string $phase): IguideLabRoomAssessment
@@ -154,20 +179,23 @@ class LabInteriorRoomAssessments
         $bundle=$record->data['contextSnapshot']??[];$c=$bundle['context']??[];
         $step=IguideLabWorkflowStep::where('project_id',$record->project_id)->findOrFail($record->step_id);
         $item=IguideLabWorkflowItem::where('project_id',$record->project_id)->findOrFail($step->item_id);
+        $readProtocol=$this->readProtocol($record);$draftRead=in_array($readProtocol,[LabRoomEvidenceLayoutProtocol::class,LabRoomEvidenceCandidateProtocol::class],true)
+            ||($c['route']['binding']['version']??null)===LabRoomEvidenceDraftPolicy::ROUTE_VERSION;
         $ref=fn($value)=>is_array($value)?array_intersect_key($value,array_flip(['id','resultSha256','responseSha256'])):null;
-        return ['version'=>$this->protocol($record->phase)::VERSION,'id'=>$record->id,'requestId'=>$record->request_id,'stepId'=>$record->step_id,
+        return ['version'=>$readProtocol::VERSION,'id'=>$record->id,'requestId'=>$record->request_id,'stepId'=>$record->step_id,
             'phase'=>$record->phase,'status'=>$record->status,'nativeSourceSha256'=>$c['nativeSourceSha256']??null,
             'sourceSha256'=>$c['sourceSha256']??($c['nativeSourceSha256']??null),'preparedSourceSha256'=>$c['preparedSourceSha256']??null,
             'contextSha256'=>$c?LabMachineSegmentationPlan::canonicalHash($c):null,'resultSha256'=>$record->result_sha256,'result'=>$record->result,
             'providerResponseSha256'=>$record->data['providerReceipt']['response']['sha256']??null,
             'workflowInvocation'=>$record->data['workflowInvocation']??null,
-            'provenance'=>['version'=>'interior-room-assessment-read/1','nativeCaseId'=>$item->case_id,
+            'provenance'=>['version'=>$draftRead?LabRoomEvidenceDraftPolicy::READ_VERSION:'interior-room-assessment-read/1','nativeCaseId'=>$item->case_id,
                 'cutCaseId'=>$bundle['cutCaseId']??null,'sectionId'=>$bundle['sectionId']??null,
                 'sourceAuthoritySha256'=>$c['sourceAuthoritySha256']??null,'intentSha256'=>$c['intentSha256']??null,
                 'route'=>$c['route']['binding']??null,'framing'=>$ref($c['framing']??null),'layout'=>$ref($c['layout']??null),
                 'sourceGeometrySha256'=>$bundle['geometry']['sha256']??null,
                 'sourceContext'=>$bundle['sourceContextSnapshot']['binding']??null,'sourceContextBindingSha256'=>$bundle['sourceContextSnapshot']['bindingSha256']??null,
-                'candidateRunId'=>$c['candidateRunId']??null,'candidateSha256'=>$c['candidateSha256']??null],
+                'candidateRunId'=>$c['candidateRunId']??null,'candidateSha256'=>$c['candidateSha256']??null,
+                ...($draftRead?['imageOrdinal'=>$c['imageOrdinal']??null,'correctionParent'=>$ref($c['correctionParent']??null)]:[])],
             'imageGenerationAuthorized'=>false,'nativeCompositionAuthorized'=>false,'automaticAcceptance'=>false,
             'errorCode'=>$record->error_code,'createdAt'=>$record->created_at->toIso8601String(),'completedAt'=>$record->completed_at?->toIso8601String()];
     }

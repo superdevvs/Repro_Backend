@@ -28,7 +28,9 @@ class LabInteriorRoomContext extends LabInteriorDesignContext
 
     private function furnishing(IguideLabWorkflowItem $item,string $phase,array $parents): array
     {
-        $service=app(LabInteriorRoomAssessments::class);$protocol=$service->protocol($phase);
+        $service=app(LabInteriorRoomAssessments::class);
+        $workflow=\App\Models\IguideLabWorkflow::where('project_id',$item->project_id)->findOrFail($item->workflow_id);
+        $recipe=$workflow->policy['interiorRoomAssessments']??[];$draft=LabRoomEvidenceDraftPolicy::selected($recipe)!==null;$protocol=$service->protocol($phase,$recipe);
         $route=app(LabInteriorRoomRoutes::class)->verify($item);
         abort_unless(LabInteriorRoomProfiles::get($route['profileId'])['kind']==='new_furnishings',422);
         $routeRecord=$service->completed($item,$route['assessmentId'],'route');$original=$routeRecord->data['contextSnapshot'];
@@ -37,6 +39,7 @@ class LabInteriorRoomContext extends LabInteriorDesignContext
             'preparedSourceSha256'=>$original['context']['preparedSourceSha256'],'sourceAuthoritySha256'=>$original['context']['sourceAuthoritySha256'],
             'intentSha256'=>$original['context']['intentSha256'],'style'=>$item->style,'instructions'=>$item->instructions,
             'route'=>['binding'=>$route,'result'=>$routeRecord->result],'framing'=>null,'layout'=>null,'candidateRunId'=>null,'candidateSha256'=>null,'views'=>$original['context']['views']];
+        if($draft&&$phase!=='framing')$c+=['imageOrdinal'=>null,'correctionParent'=>null];
         if($phase==='framing') {
             LabInteriorDesignProtocol::keys($parents,['routeId']);abort_unless($parents['routeId']===$routeRecord->id,422);$protocol::context($c);
             return ['context'=>$c,'assets'=>$original['assets'],'routeId'=>$routeRecord->id,'implementation'=>$this->snapshot()];
@@ -64,17 +67,21 @@ class LabInteriorRoomContext extends LabInteriorDesignContext
             return ['context'=>$c,'assets'=>$assets,'routeId'=>$routeRecord->id,'framingId'=>$framing->id,'sectionId'=>$section->id,'cutCaseId'=>$cut->id,'nativeCaseId'=>$native->id,
                 'sourceContextSnapshot'=>$sourceContext,'geometry'=>['path'=>$base.'/geometry.json','sha256'=>hash('sha256',$bytes)],'implementation'=>$this->snapshot()];
         }
-        abort_unless($phase==='candidate',422);LabInteriorDesignProtocol::keys($parents,['layoutId','runId']);$layout=$service->completed($item,$parents['layoutId'],'layout');
+        abort_unless($phase==='candidate',422);LabInteriorDesignProtocol::keys($parents,$draft?['layoutId','runId','imageOrdinal','correctionParentId']:['layoutId','runId']);$layout=$service->completed($item,$parents['layoutId'],'layout');
         abort_unless($layout->result['status']==='ready_for_image'&&$layout->data['contextSnapshot']['routeId']===$routeRecord->id,422);
         $bundle=$layout->data['contextSnapshot'];$c=$bundle['context'];$c['version']=$protocol::VERSION;$c['phase']=$phase;$c['layout']=$this->receipt($layout);
         $run=IguideLabRun::where('project_id',$item->project_id)->where('status','completed')->findOrFail($parents['runId']);$step=$this->ownedChild($item,'image',$run->id);
         abort_unless($run->request_id===$step->request_id&&$run->case_id===$bundle['cutCaseId']&&($step->input['roomPlanId']??null)===$layout->id
-            &&($run->options['sourceMachinePlan']['version']??null)===LabRoomFurnishingImageDraft::VERSION&&($run->options['sourceMachinePlan']['id']??null)===$layout->id
+            &&($run->options['sourceMachinePlan']['version']??null)===($draft?LabRoomEvidenceImageDraft::VERSION:LabRoomFurnishingImageDraft::VERSION)&&($run->options['sourceMachinePlan']['id']??null)===$layout->id
             &&$run->preset==='interior-design'&&$run->style===$item->style,422,'Candidate does not belong to the selected room profile.');
-        app(LabRoomFurnishingImageDraft::class)->verifyRun($run,IguideLabCase::where('project_id',$item->project_id)->findOrFail($run->case_id));
+        app($draft?LabRoomEvidenceImageDraft::class:LabRoomFurnishingImageDraft::class)->verifyRun($run,IguideLabCase::where('project_id',$item->project_id)->findOrFail($run->case_id));
         $path='iguide-lab/'.$item->project_id.'/runs/'.$run->id.'.png';abort_unless($run->output_path===$path&&is_string($run->output_sha256),422);
         $file=$this->file($item->project_id,$path,$run->output_sha256,32*1024*1024);$size=getimagesize($file);abort_unless([$size[0],$size[1],$size['mime']]===[2048,2048,'image/png'],422);
         $c['candidateRunId']=$run->id;$c['candidateSha256']=$run->output_sha256;
+        if($draft){$e=$step->input['roomEvidenceDraft']??[];
+            abort_unless(($e['ordinal']??null)===$parents['imageOrdinal']&&($e['priorCandidateId']??null)===$parents['correctionParentId'],422);
+            $c['imageOrdinal']=$parents['imageOrdinal'];$c['correctionParent']=$parents['correctionParentId']===null?null:$this->receipt($service->completed($item,$parents['correctionParentId'],'candidate'));
+        }
         array_splice($c['views'],1,0,[['id'=>'candidate','sha256'=>$run->output_sha256,'width'=>2048,'height'=>2048]]);$assets=$bundle['assets'];
         array_splice($assets,1,0,[['id'=>'candidate','path'=>$path,'sha256'=>$run->output_sha256]]);$protocol::context($c);
         return ['context'=>$c,'assets'=>$assets,'routeId'=>$routeRecord->id,'layoutId'=>$layout->id,'candidateRunId'=>$run->id,

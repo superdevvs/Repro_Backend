@@ -139,7 +139,8 @@ class LabService
             $options['promptMode']='machine-interior-material-plan';
         }
         if ($roomPlan !== null) {
-            $options['sourceMachinePlan']=app(LabRoomFurnishingImageDraft::class)->apply($roomPlan,$case,$input,$workflowInvocation);
+            $draftClass=($roomPlan->result['version']??null)===LabRoomEvidenceLayoutProtocol::VERSION?LabRoomEvidenceImageDraft::class:LabRoomFurnishingImageDraft::class;
+            $options['sourceMachinePlan']=app($draftClass)->apply($roomPlan,$case,$input,$workflowInvocation);
             $options['promptMode']='machine-interior-furnishing-plan';
         }
         if ($workflowInvocation !== null) {

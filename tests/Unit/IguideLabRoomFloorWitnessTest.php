@@ -64,13 +64,8 @@ class IguideLabRoomFloorWitnessTest extends TestCase
             $this->assertSame($value,W::result($value,$protocol::PHASE));
         }
     }
-    public function test_retained_diagnostic_masks_are_read_only_coverage_regressions_when_available(): void
-    {
-        $root=getenv('IGUIDE_FLOOR_DIAGNOSTIC_ROOT');if(!$root){$this->markTestSkipped('Private retained diagnostic is optional; synthetic cases remain portable.');}
-        $p=$this->plan([350,1390,1820,1840]);$paths=['bohemian-floor-diagnosis-v1/mask-0.png'=>'needs_review','bohemian-floor-text-only-v1/mask-0.png'=>'ready_for_room_support'];
-        foreach($paths as $path=>$status){$bytes=file_get_contents($root.'/'.$path);$before=hash('sha256',$bytes);$out=app(W::class)->associate($p,$this->receipt($p,$bytes),$bytes);
-            $this->assertSame($status,$out['status']);$this->assertSame($before,hash_file('sha256',$root.'/'.$path));}
-    }
+    // Private retained-mask replay belongs to the external room-floor-witness proof.
+    // Portable CI exercises the same missing/interior/wrong-plane coverage cases above.
     private function rejects(callable $fn): void
     {try{$fn();$this->fail('Invalid authority accepted.');}catch(\Symfony\Component\HttpKernel\Exception\HttpException|\InvalidArgumentException $e){$this->assertTrue(true);}}
 }

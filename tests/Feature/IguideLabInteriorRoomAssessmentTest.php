@@ -119,6 +119,39 @@ class IguideLabInteriorRoomAssessmentTest extends TestCase
         $path=config('iguide-lab.interior_room_runtime_manifest');$m=json_decode(file_get_contents($path),true);$m['pythonSha256']=str_repeat('0',64);file_put_contents($path,json_encode($m));
         $this->assertFalse(app(LabInteriorRoomAssessments::class)->ready());
     }
+    public function test_new_draft_budget_has_exact_second_ordinals_without_new_pose_or_third_image(): void
+    {
+        config(['iguide-lab.interior_floor_witness_enabled'=>true,'iguide-lab.interior_room_evidence_drafts_enabled'=>true]);
+        $path=config('iguide-lab.interior_room_runtime_manifest');$manifest=json_decode(file_get_contents($path),true);
+        $manifest['implementation']=app(LabInteriorRoomAssessments::class)->implementation();file_put_contents($path,json_encode($manifest));
+        [,,$item,,,$record]=$this->fixture();$record=$this->finish($record);$route=app(LabInteriorRoomRoutes::class)->bind($item,$record);
+        $p=\App\Services\IguideLab\LabRoomEvidenceDraftPolicy::class;$steps=app(LabWorkflowSteps::class);
+        $this->assertSame($p::ROUTE_VERSION,$route['version']);$this->assertSame($p::BUDGET,$route['budget']);
+        foreach(['room-framing','room-layout','room-candidate'] as $key)$steps->reserve($item,$key,'analysis',[]);
+        $second=$steps->reserve($item,'room-candidate-2','analysis',['parents'=>['imageOrdinal'=>2],'protocolVersion'=>\App\Services\IguideLab\LabRoomEvidenceCandidateProtocol::VERSION]);
+        $this->assertSame($second->id,$steps->reserve($item,'room-candidate-2','analysis',$second->input)->id);
+        $this->rejects(fn()=>$steps->reserve($item,'room-candidate-3','analysis',[]));
+        foreach([1,2] as $ordinal){$input=['roomEvidenceDraft'=>['version'=>$p::VERSION,'ordinal'=>$ordinal]];$key=$ordinal===1?'room-image':'room-image-2';
+            $step=$steps->reserve($item,$key,'image',$input);$this->assertSame($step->request_id,$steps->reserve($item,$key,'image',$input)->request_id);}
+        $this->rejects(fn()=>$steps->reserve($item,'room-image-3','image',['roomEvidenceDraft'=>['version'=>$p::VERSION,'ordinal'=>3]]));
+        $steps->reserve($item,'room-section','section',[]);$this->rejects(fn()=>$steps->reserve($item,'room-section-2','section',[]));
+        $steps->reserve($item,'room-floor','segmentation',[]);$steps->reserve($item,'room-objects','segmentation',[]);
+        $this->rejects(fn()=>$steps->reserve($item,'room-extra-mask','segmentation',[]));Http::assertSentCount(1);
+    }
+    public function test_new_flag_does_not_expand_the_existing_material_branch_budget(): void
+    {
+        config(['iguide-lab.interior_floor_witness_enabled'=>true,'iguide-lab.interior_room_evidence_drafts_enabled'=>true]);
+        $path=config('iguide-lab.interior_room_runtime_manifest');$m=json_decode(file_get_contents($path),true);$m['implementation']=app(LabInteriorRoomAssessments::class)->implementation();file_put_contents($path,json_encode($m));
+        [,,$item,,,$record]=$this->fixture();$v=Fixtures::candidate($this->context->bundle['context']);
+        $v['occupancy']['status']='furnished';$v['occupancy']['existingFurnishings']=[['description'=>'Existing bed and rug.','evidenceViewIds'=>['source']]];
+        $v['materialPotential']['status']='supported';$v['materialPotential']['eligibleSurfaces']=[['description'=>'Original bed cloth.','evidenceViewIds'=>['source']],['description'=>'Original rug.','evidenceViewIds'=>['source']]];
+        $v['materialPotential']['styleFeatures']=[['kind'=>'texture','description'=>'Woven fabric.'],['kind'=>'pattern','description'=>'Bounded rug pattern.']];
+        $record=$this->finish($record,$v);$route=app(LabInteriorRoomRoutes::class)->bind($item,$record);
+        $this->assertSame(LabInteriorRoomProfiles::VERSION,$route['version']);$this->assertSame(LabInteriorRoomProfiles::BUDGET,$route['budget']);
+        $steps=app(LabWorkflowSteps::class);$steps->reserve($item,'interior-image','image',[]);
+        $this->rejects(fn()=>$steps->reserve($item,'room-image-2','image',[]));$this->rejects(fn()=>$steps->reserve($item,'room-candidate-2','analysis',[]));
+        Http::assertSentCount(1);
+    }
     public function test_requested_room_runtime_failure_does_not_capture_a_legacy_material_only_policy(): void
     {
         config(['iguide-lab.interior_design_workflow_enabled'=>true,'iguide-lab.interior_room_routing_enabled'=>true]);

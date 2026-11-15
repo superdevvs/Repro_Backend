@@ -2,7 +2,7 @@
 namespace App\Services\IguideLab;
 use App\Models\{IguideLabComposite,IguideLabProject,IguideLabRun,IguideLabSection,IguideLabWorkflow,IguideLabWorkflowItem,IguideLabWorkflowStep};
 
-/** Closed source-selected Interior branch. Exactly one branch and one image budget. */
+/** Closed source-selected branch. New explicit evidence policy permits at most one completed-candidate correction. */
 class LabInteriorRoomWorkflow
 {
     public function snapshot(): array
@@ -14,7 +14,13 @@ class LabInteriorRoomWorkflow
             'steps'=>LabWorkflowSteps::class,'invocation'=>LabWorkflowInvocation::class,'evaluation'=>LabWorkflowEvaluations::class,'evaluationProvider'=>LabWorkflowEvaluationProvider::class] as $name=>$class)
             $hashes[$name.'Sha256']=hash_file('sha256',(new \ReflectionClass($class))->getFileName());
         $floor=config('iguide-lab.interior_floor_witness_enabled',false)===true?['floorContract'=>LabRoomFloorWitness::snapshot()]:[];
-        return $floor+['version'=>LabInteriorRoomProfiles::VERSION,'implementation'=>$hashes,'profiles'=>LabInteriorRoomProfiles::snapshot(),
+        $draft=[];if(config('iguide-lab.interior_room_evidence_drafts_enabled',false)===true){
+            abort_unless($floor!==[],503,'Evidence drafts require the source-floor witness policy.');
+            $draft=['evidenceDrafts'=>LabRoomEvidenceDraftPolicy::snapshot()];
+            foreach(['draftPolicy'=>LabRoomEvidenceDraftPolicy::class,'draftProtocol'=>LabRoomEvidenceProtocol::class,'draftLayout'=>LabRoomEvidenceLayoutProtocol::class,
+                'draftCandidate'=>LabRoomEvidenceCandidateProtocol::class,'draftImage'=>LabRoomEvidenceImageDraft::class] as $name=>$class)$hashes[$name.'Sha256']=hash_file('sha256',(new \ReflectionClass($class))->getFileName());
+        }
+        return $draft+$floor+['version'=>LabInteriorRoomProfiles::VERSION,'implementation'=>$hashes,'profiles'=>LabInteriorRoomProfiles::snapshot(),
             'legacyMaterialAdapter'=>'unchanged-existing-material-workflow-with-source-route-guard/1','livingSupport'=>'unchanged-staging-support/1'];
     }
     public function validateSnapshot(array $snapshot): void {abort_unless(LabMachineSegmentationPlan::canonicalHash($snapshot)===LabMachineSegmentationPlan::canonicalHash($this->snapshot()),422,'Reserved Interior room driver changed.');}
@@ -57,17 +63,28 @@ class LabInteriorRoomWorkflow
         if($layout->result['status']!=='ready_for_image'){$this->hold($item,'interior_actual_cut_requires_review','Actual original floor, complete group placement or optical scope is unresolved; no image was requested.',$data);return;}
         $maskAuthority=app(LabRoomFurnishingMasks::class);$floorStep=$maskAuthority->reserve($item,$layout);$floorRecord=app(LabMachineSegmentations::class)->start($floorStep);$data['roomFloorSegmentationId']=$floorRecord->id;
         if(!$this->completed($item,$floorRecord,'checking',$data))return;$floor=$maskAuthority->verifiedReceipt($floorStep);
-        $imageInput=['caseId'=>$section->derived_case_id,'preset'=>'interior-design','style'=>$item->style,'modelId'=>$workflow->policy['modelId'],
-            'roomPlanId'=>$layout->id,'floorReceiptSha256'=>LabMachineSegmentationPlan::canonicalHash($floor),'prompt'=>app(LabRoomFurnishingImageDraft::class)->prompt($layout),
-            'options'=>['sectionId'=>$section->id,'complexity'=>'low','promptMode'=>'machine-interior-furnishing-plan']];
-        $imageStep=$steps->reserve($item,'room-image','image',$imageInput);$run=IguideLabRun::where('project_id',$project->id)->where('request_id',$imageStep->request_id)->first();
-        if(!$run)$run=app(LabService::class)->start($project,$imageInput+['requestId'=>$imageStep->request_id],$steps->invocation($imageStep),null,null,$layout);
-        else $owner->reconcileQueuedChild($imageStep,$run);
-        $steps->attach($imageStep,$run->id);$data['runId']=$run->id;$item->attempt_count=1;
-        if(!$this->completed($item,$run,'editing',$data))return;
-        $candidate=$service->start($service->reserve($item,'candidate',['layoutId'=>$layout->id,'runId'=>$run->id]));$data['roomCandidateAssessmentId']=$candidate->id;
-        if(!$this->completed($item,$candidate,'checking',$data))return;$candidate=$service->completed($item,$candidate->id,'candidate');
-        if($candidate->result['status']!=='ready_for_masks'){$this->hold($item,'interior_actual_furnishing_requires_review','The generated group has unresolved actual geometry, contacts, style, foreground or optical dependencies.',$data);return;}
+        $draft=LabRoomEvidenceDraftPolicy::selected($workflow->policy['interiorRoomAssessments']??[])!==null;$priorCandidate=null;
+        for($ordinal=1;$ordinal<=($draft?2:1);$ordinal++){
+            $imageAdapter=app($draft?LabRoomEvidenceImageDraft::class:LabRoomFurnishingImageDraft::class);
+            $imageInput=['caseId'=>$section->derived_case_id,'preset'=>'interior-design','style'=>$item->style,'modelId'=>$workflow->policy['modelId'],
+                'roomPlanId'=>$layout->id,'floorReceiptSha256'=>LabMachineSegmentationPlan::canonicalHash($floor),
+                'prompt'=>$draft?$imageAdapter->prompt($layout,$priorCandidate):$imageAdapter->prompt($layout),
+                'options'=>['sectionId'=>$section->id,'complexity'=>'low','promptMode'=>'machine-interior-furnishing-plan']];
+            if($draft)$imageInput['roomEvidenceDraft']=$imageAdapter->evidenceBinding($item,$layout,$ordinal,$priorCandidate?->id);
+            $imageStep=$steps->reserve($item,$ordinal===1?'room-image':'room-image-2','image',$imageInput);
+            $run=IguideLabRun::where('project_id',$project->id)->where('request_id',$imageStep->request_id)->first();
+            if(!$run)$run=app(LabService::class)->start($project,$imageInput+['requestId'=>$imageStep->request_id],$steps->invocation($imageStep),null,null,$layout);
+            else $owner->reconcileQueuedChild($imageStep,$run);
+            $steps->attach($imageStep,$run->id);$data['runId']=$run->id;$item->attempt_count=$ordinal;
+            if(!$this->completed($item,$run,'editing',$data))return;
+            $parents=['layoutId'=>$layout->id,'runId'=>$run->id];
+            if($draft)$parents+=['imageOrdinal'=>$ordinal,'correctionParentId'=>$priorCandidate?->id];
+            $candidate=$service->start($service->reserve($item,'candidate',$parents));$data['roomCandidateAssessmentId']=$candidate->id;
+            if(!$this->completed($item,$candidate,'checking',$data))return;$candidate=$service->completed($item,$candidate->id,'candidate');
+            if($candidate->result['status']==='ready_for_masks')break;
+            if($draft&&$ordinal===1&&($candidate->result['repairDecision']['eligible']??null)===true){$priorCandidate=$candidate;continue;}
+            $this->hold($item,'interior_actual_furnishing_requires_review','The generated group has unresolved actual geometry, contacts, style, foreground or optical dependencies.',$data);return;
+        }
         $objectStep=$maskAuthority->reserve($item,$candidate);$objectRecord=app(LabMachineSegmentations::class)->start($objectStep);$data['roomObjectSegmentationId']=$objectRecord->id;
         if(!$this->completed($item,$objectRecord,'checking',$data))return;$maskAuthority->verifiedReceipt($objectStep);
         $support=app(LabRoomFurnishingSupport::class)->derive($item,$candidate,$workflow->policy['interiorRoomSupport']);

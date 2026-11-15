@@ -348,14 +348,24 @@ class LabWorkflows
         $framing = null; $roomRouting = null;
         $workflow=IguideLabWorkflow::where('project_id',$item->project_id)->findOrFail($item->workflow_id);
         if(LabInteriorRoomPolicy::enabled($workflow->policy,$item->preset)) {
+            // Historical read dispatch follows the persisted route, never current enablement.
+            $routeVersion=$data['interiorRoomRoute']['version']??LabInteriorRoomProfiles::VERSION;
+            abort_unless(in_array($routeVersion,[LabInteriorRoomProfiles::VERSION,LabRoomEvidenceDraftPolicy::ROUTE_VERSION],true),422,'Unknown persisted room routing read version.');
+            $keys=['room-route'=>'route','room-framing'=>'framing','room-layout'=>'layout','room-candidate'=>'candidate'];
+            if($routeVersion===LabRoomEvidenceDraftPolicy::ROUTE_VERSION)$keys['room-candidate-2']='candidate';
             $records=[];
-            foreach(['route','framing','layout','candidate'] as $phase) {
-                $step=IguideLabWorkflowStep::where('project_id',$item->project_id)->where('item_id',$item->id)->where('step_key','room-'.$phase)->where('kind','analysis')->first();
+            foreach($keys as $key=>$phase) {
+                $step=IguideLabWorkflowStep::where('project_id',$item->project_id)->where('item_id',$item->id)->where('step_key',$key)->where('kind','analysis')->first();
                 if(!$step?->child_id)continue;
                 $record=\App\Models\IguideLabRoomAssessment::where('project_id',$item->project_id)->where('step_id',$step->id)->where('request_id',$step->request_id)->where('phase',$phase)->find($step->child_id);
-                if($record&&$record->request_hash===$step->input_sha256)$records[]=app(LabInteriorRoomAssessments::class)->dto($record);
+                if($record&&$record->request_hash===$step->input_sha256){
+                    if($routeVersion===LabRoomEvidenceDraftPolicy::ROUTE_VERSION&&$phase==='candidate')abort_unless(
+                        ($record->data['contextSnapshot']['context']['version']??null)===LabRoomEvidenceCandidateProtocol::VERSION
+                        &&($record->data['contextSnapshot']['context']['imageOrdinal']??null)===($key==='room-candidate-2'?2:1),422,'Persisted candidate ordinal changed.');
+                    $records[]=app(LabInteriorRoomAssessments::class)->dto($record);
+                }
             }
-            $roomRouting=['version'=>LabInteriorRoomProfiles::VERSION,'selectedProfileId'=>$data['interiorRoomRoute']['profileId']??null,
+            $roomRouting=['version'=>$routeVersion,'selectedProfileId'=>$data['interiorRoomRoute']['profileId']??null,
                 'sourceSha256'=>$item->source['sha256'],'publicPreset'=>'interior-design','style'=>$item->style,
                 'assessments'=>$records,'nativeDetailFollowupAvailable'=>false,'branchSwitchAllowed'=>false];
         }

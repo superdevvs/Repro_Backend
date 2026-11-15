@@ -48,12 +48,13 @@ class LabInteriorRoomRoutes
     private function binding(IguideLabWorkflowItem $item,IguideLabRoomAssessment $record): array
     {
         $profile=LabInteriorRoomProfiles::get($record->result['route']['profileId']);
-        return ['version'=>LabInteriorRoomProfiles::VERSION,'assessmentId'=>$record->id,'requestId'=>$record->request_id,
+        $draft=$profile['kind']==='new_furnishings'&&LabRoomEvidenceDraftPolicy::selected($record->data['recipe']??[])!==null;
+        return ['version'=>$draft?LabRoomEvidenceDraftPolicy::ROUTE_VERSION:LabInteriorRoomProfiles::VERSION,'assessmentId'=>$record->id,'requestId'=>$record->request_id,
             'resultSha256'=>$record->result_sha256,'responseSha256'=>$record->data['providerReceipt']['response']['sha256'],
             'profileId'=>$profile['id'],'profileSha256'=>LabMachineSegmentationPlan::canonicalHash($profile),
             'sourceSha256'=>$item->source['sha256'],'sourceAuthoritySha256'=>$record->result['sourceAuthoritySha256'],
             'intentSha256'=>$record->result['intentSha256'],'metadataSha256'=>$record->result['metadataSha256'],
-            'publicPreset'=>'interior-design','style'=>$item->style,'budget'=>LabInteriorRoomProfiles::BUDGET,
+            'publicPreset'=>'interior-design','style'=>$item->style,'budget'=>$draft?LabRoomEvidenceDraftPolicy::BUDGET:LabInteriorRoomProfiles::BUDGET,
             'operatorInterventions'=>0,'branchSwitchAllowed'=>false];
     }
 }
