@@ -15,12 +15,17 @@ final class LabRoomFloorWitness
     {
         $contract=$recipe['implementation']['workflow']['floorContract']??null;
         if($contract===null)return null;
+        if(($contract['version']??null)===LabRoomFloorWitnessUnion::VERSION){
+            abort_unless(config('iguide-lab.interior_floor_witness_enabled',false)===true&&LabRoomFloorWitnessUnion::enabled()
+                &&config('iguide-lab.interior_room_evidence_drafts_enabled',false)===true
+                &&LabMachineSegmentationPlan::canonicalHash($contract)===LabMachineSegmentationPlan::canonicalHash(LabRoomFloorWitnessUnion::snapshot()),422,'Reserved floor union changed or disabled.');return $contract;}
         abort_unless(config('iguide-lab.interior_floor_witness_enabled',false)===true
             &&LabMachineSegmentationPlan::canonicalHash($contract)===LabMachineSegmentationPlan::canonicalHash(self::snapshot()),422,'Reserved floor witness contract changed or disabled.');
         return $contract;
     }
     public static function request(array $wire,array $contract,string $phase): array
     {
+        if(($contract['version']??null)===LabRoomFloorWitnessUnion::VERSION)return LabRoomFloorWitnessUnion::request($wire,$contract,$phase);
         abort_unless(LabMachineSegmentationPlan::canonicalHash($contract)===LabMachineSegmentationPlan::canonicalHash(self::snapshot()),422);if(!in_array($phase,['layout','candidate'],true))return $wire;
         $wire['instructions'].="\nSource floor contract ".self::VERSION.'. sourceFloor.box is an inclusive INTERIOR SUPPORT WITNESS, not the bounding box of the whole visible floor and not a SAM box prompt. Every pixel inside it must be clearly visible original opaque matte floor on the target room plane, excluding all walls, baseboards, stairs, other levels, fixtures, rugs, reflections and uncertain boundaries. Each side must be at least 16 pixels. Plan all prospective contacts and their tiny contact attenuation safely inside this witness with inward clearance; the backend restricts usable support to it and retains the ordinary contact erosion. A text-only floor mask may be larger, but its outside pixels grant no support authority. Do not shrink or move furniture to conceal a failed witness. If no such source-attested rectangle supports the complete group, hold. sourceFloor.prompt must be exactly: '.self::LABEL.'. Candidate copies the original witness unchanged. Pixel coverage is not semantic certification, physical floor calibration or hidden footprint clearance.';
         $wire['text']['format']['schema']['properties']['sourceFloor']['anyOf'][0]['properties']['prompt']=['type'=>'string','enum'=>[self::LABEL]];

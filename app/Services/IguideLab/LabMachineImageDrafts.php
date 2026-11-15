@@ -10,6 +10,7 @@ class LabMachineImageDrafts
             'machine-removal-plan/1'=>app(LabDeclutterImageDraft::class)->verifyRun($run,$case),
             LabInteriorDesignImageDraft::VERSION=>app(LabInteriorDesignImageDraft::class)->verifyRun($run,$case),
             LabRoomEvidenceImageDraft::VERSION=>app(LabRoomEvidenceImageDraft::class)->verifyRun($run,$case),
+            LabRoomFloorUnionImageDraft::VERSION=>app(LabRoomFloorUnionImageDraft::class)->verifyRun($run,$case),
             LabRoomFurnishingImageDraft::VERSION=>app(LabRoomFurnishingImageDraft::class)->verifyRun($run,$case),
             default=>abort(422,'Unknown machine image authority.'),
         };

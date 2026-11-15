@@ -7,9 +7,11 @@ use Illuminate\Support\Facades\Storage;
 class LabRoomEvidenceImageDraft
 {
     public const VERSION='machine-interior-evidence-furnishing-plan/1';
+    public const LAYOUT_VERSION=LabRoomEvidenceLayoutProtocol::VERSION;
+    public const CANDIDATE_VERSION=LabRoomEvidenceCandidateProtocol::VERSION;
     public function prompt(IguideLabRoomAssessment $layout,?IguideLabRoomAssessment $prior=null): string
     {
-        abort_unless(($layout->result['version']??null)===LabRoomEvidenceLayoutProtocol::VERSION
+        abort_unless(($layout->result['version']??null)===static::LAYOUT_VERSION
             &&in_array($layout->result['draftDisposition']['disposition']??null,['standard_draft','evidence_draft'],true),422);
         $text=app(LabRoomFurnishingImageDraft::class)->prompt($layout);
         $text=str_replace('Keep every fixed finish, floor texture, fixture, opening, vent, hearth and existing object.',
@@ -32,7 +34,7 @@ class LabRoomEvidenceImageDraft
         if($ordinal===1){abort_unless($priorId===null,422);return $out;}
         abort_unless(is_string($priorId),422);$prior=app(LabInteriorRoomAssessments::class)->completed($item,$priorId,'candidate');$b=$prior->data['contextSnapshot'];
         abort_unless(($b['context']['imageOrdinal']??null)===1&&($b['layoutId']??null)===$layout->id
-            &&($prior->result['version']??null)===LabRoomEvidenceCandidateProtocol::VERSION&&$prior->result['status']==='needs_review'
+            &&($prior->result['version']??null)===static::CANDIDATE_VERSION&&$prior->result['status']==='needs_review'
             &&($prior->result['repairDecision']['eligible']??null)===true,422,'Only the exact completed first failure can reserve one correction.');
         $run=IguideLabRun::where('project_id',$item->project_id)->where('status','completed')->findOrFail($b['candidateRunId']);
         $step=IguideLabWorkflowStep::where('project_id',$item->project_id)->where('item_id',$item->id)->where('step_key','room-image')->where('child_id',$run->id)->sole();
@@ -63,7 +65,7 @@ class LabRoomEvidenceImageDraft
             &&($case->metadata['sectionId']??null)===$b['sectionId'],422);
         $bytes=Storage::disk(LabService::DISK)->get($case->source_path);abort_unless(hash('sha256',$bytes)===$case->source_sha256
             &&hash('sha256',LabInteriorRoomContext::prepared($bytes))===$source['sha256'],422);
-        return ['version'=>self::VERSION,'id'=>$record->id,'stepId'=>$record->step_id,'requestId'=>$record->request_id,'resultSha256'=>$record->result_sha256,
+        return ['version'=>static::VERSION,'id'=>$record->id,'stepId'=>$record->step_id,'requestId'=>$record->request_id,'resultSha256'=>$record->result_sha256,
             'sourceSha256'=>$case->source_sha256,'preparedSourceSha256'=>$source['sha256'],'nativeSourceSha256'=>$item->source['sha256'],
             'sourceGeometrySha256'=>$b['geometry']['sha256'],'sourceContext'=>$binding,'sourceContextBindingSha256'=>$b['sourceContextSnapshot']['bindingSha256'],
             'evidenceDraft'=>$draft,'promptSha256'=>hash('sha256',$input['prompt']),'floorReceiptSha256'=>$input['floorReceiptSha256'],'route'=>$route,'profileId'=>$route['profileId'],
@@ -71,7 +73,7 @@ class LabRoomEvidenceImageDraft
     }
     public function verifyRun(IguideLabRun $run,IguideLabCase $case): void
     {
-        $saved=$run->options['sourceMachinePlan']??null;abort_unless(is_array($saved)&&($saved['version']??null)===self::VERSION,422);
+        $saved=$run->options['sourceMachinePlan']??null;abort_unless(is_array($saved)&&($saved['version']??null)===static::VERSION,422);
         $record=IguideLabRoomAssessment::where('project_id',$run->project_id)->findOrFail($saved['id']);
         $step=IguideLabWorkflowStep::where('project_id',$run->project_id)->where('request_id',$run->request_id)->where('kind','image')->sole();
         abort_unless(in_array($step->child_id,[null,$run->id],true)&&$step->input_sha256===LabAnalysisRecipes::hash($step->input)&&$run->prompt===$step->input['prompt']

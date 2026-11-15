@@ -11,8 +11,8 @@ class LabRoomFurnishingSupport
     public function implementation(): array
     {
         $hashes=['adapterSha256'=>hash_file('sha256',__FILE__)];
-        foreach(['worker'=>'room_furnishing_support_worker.py','floorWitness'=>'room_floor_witness.py','bedroom'=>'bedroom_support.py','living'=>'staging_support.py','fileDecoder'=>'staging_support_worker.py'] as $name=>$file)$hashes[$name.'Sha256']=hash_file('sha256',resource_path('iguide-lab/'.$file));
-        foreach(['masks'=>LabRoomFurnishingMasks::class,'maskPlan'=>LabRoomFurnishingMaskPlan::class,'floorWitnessPlan'=>LabRoomFloorWitness::class,'context'=>LabInteriorRoomContext::class] as $name=>$class)$hashes[$name.'Sha256']=hash_file('sha256',(new \ReflectionClass($class))->getFileName());
+        foreach(['worker'=>'room_furnishing_support_worker.py','floorWitness'=>'room_floor_witness.py','floorUnion'=>'room_floor_union.py','bedroom'=>'bedroom_support.py','living'=>'staging_support.py','fileDecoder'=>'staging_support_worker.py'] as $name=>$file)$hashes[$name.'Sha256']=hash_file('sha256',resource_path('iguide-lab/'.$file));
+        foreach(['masks'=>LabRoomFurnishingMasks::class,'maskPlan'=>LabRoomFurnishingMaskPlan::class,'floorWitnessPlan'=>LabRoomFloorWitness::class,'floorUnionPlan'=>LabRoomFloorWitnessUnion::class,'context'=>LabInteriorRoomContext::class] as $name=>$class)$hashes[$name.'Sha256']=hash_file('sha256',(new \ReflectionClass($class))->getFileName());
         return $hashes;
     }
     public function snapshot(): array
@@ -60,7 +60,7 @@ class LabRoomFurnishingSupport
         if($witness!==null){
             abort_unless(LabRoomFloorWitness::selected($layout->data['recipe'])!==null&&$witness['assessmentSha256']===$layout->result_sha256
                 &&$witness['sourceSha256']===$case->source_sha256&&$witness['nativeSourceSha256']===$item->source['sha256'],422);
-            $authority['version']='interior-room-support-authority/2';$authority['sourceFloorWitness']=$witness;
+            $authority['version']=($witness['version']??null)===LabRoomFloorWitnessUnion::VERSION?'interior-room-support-authority/3':'interior-room-support-authority/2';$authority['sourceFloorWitness']=$witness;
         }
         $bytes=json_encode($authority,JSON_THROW_ON_ERROR);$authorityPath=$base.'/assessment.json';$loader->put($authorityPath,$bytes);
         $toAsset=function(array $a)use($item,$loader){return ['path'=>$loader->file($item->project_id,$a['path'],$a['sha256'],32*1024*1024),'sha256'=>$a['sha256']];};

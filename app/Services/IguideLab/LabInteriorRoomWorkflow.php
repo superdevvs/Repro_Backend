@@ -14,6 +14,12 @@ class LabInteriorRoomWorkflow
             'steps'=>LabWorkflowSteps::class,'invocation'=>LabWorkflowInvocation::class,'evaluation'=>LabWorkflowEvaluations::class,'evaluationProvider'=>LabWorkflowEvaluationProvider::class] as $name=>$class)
             $hashes[$name.'Sha256']=hash_file('sha256',(new \ReflectionClass($class))->getFileName());
         $floor=config('iguide-lab.interior_floor_witness_enabled',false)===true?['floorContract'=>LabRoomFloorWitness::snapshot()]:[];
+        if(LabRoomFloorWitnessUnion::enabled()){
+            abort_unless($floor!==[]&&config('iguide-lab.interior_room_evidence_drafts_enabled',false)===true,503,'Floor union requires source witnesses and evidence drafts.');
+            $floor=['floorContract'=>LabRoomFloorWitnessUnion::snapshot()];
+            foreach(['floorUnion'=>LabRoomFloorWitnessUnion::class,'unionProtocol'=>LabRoomFloorUnionProtocol::class,'unionLayout'=>LabRoomFloorUnionLayoutProtocol::class,
+                'unionCandidate'=>LabRoomFloorUnionCandidateProtocol::class,'unionImage'=>LabRoomFloorUnionImageDraft::class] as $name=>$class)$hashes[$name.'Sha256']=hash_file('sha256',(new \ReflectionClass($class))->getFileName());
+        }
         $draft=[];if(config('iguide-lab.interior_room_evidence_drafts_enabled',false)===true){
             abort_unless($floor!==[],503,'Evidence drafts require the source-floor witness policy.');
             $draft=['evidenceDrafts'=>LabRoomEvidenceDraftPolicy::snapshot()];
@@ -65,7 +71,7 @@ class LabInteriorRoomWorkflow
         if(!$this->completed($item,$floorRecord,'checking',$data))return;$floor=$maskAuthority->verifiedReceipt($floorStep);
         $draft=LabRoomEvidenceDraftPolicy::selected($workflow->policy['interiorRoomAssessments']??[])!==null;$priorCandidate=null;
         for($ordinal=1;$ordinal<=($draft?2:1);$ordinal++){
-            $imageAdapter=app($draft?LabRoomEvidenceImageDraft::class:LabRoomFurnishingImageDraft::class);
+            $imageAdapter=app(LabRoomFloorWitnessUnion::selected($layout->data['recipe'])?LabRoomFloorUnionImageDraft::class:($draft?LabRoomEvidenceImageDraft::class:LabRoomFurnishingImageDraft::class));
             $imageInput=['caseId'=>$section->derived_case_id,'preset'=>'interior-design','style'=>$item->style,'modelId'=>$workflow->policy['modelId'],
                 'roomPlanId'=>$layout->id,'floorReceiptSha256'=>LabMachineSegmentationPlan::canonicalHash($floor),
                 'prompt'=>$draft?$imageAdapter->prompt($layout,$priorCandidate):$imageAdapter->prompt($layout),

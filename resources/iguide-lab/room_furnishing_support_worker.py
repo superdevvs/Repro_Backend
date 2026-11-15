@@ -15,6 +15,7 @@ import bedroom_support
 import staging_support
 import staging_support_worker as files
 import room_floor_witness
+import room_floor_union
 
 VERSION = 'interior-profile-support-file-adapter/1'
 PROFILES = {'empty-bedroom-platform-three-piece/1': ('bed', 'nightstand_left', 'nightstand_right'),
@@ -49,9 +50,10 @@ def execute(request, allowed_root):
     expected = {'version', 'profileId', 'nativeSourceSha256', 'sourceCutSha256', 'preparedSourceSha256', 'candidateSha256', 'sourceContextSha256',
                 'geometrySha256', 'routeSha256', 'layoutResultSha256', 'candidateResultSha256', 'sourceEmptyRoom', 'foregroundStatus',
                 'opticalStatus', 'contactShadowStatus', 'selectionOrigin', 'contacts'}
-    v2 = isinstance(assessment, dict) and assessment.get('version') == 'interior-room-support-authority/2'
+    v3 = isinstance(assessment, dict) and assessment.get('version') == 'interior-room-support-authority/3'
+    v2 = isinstance(assessment, dict) and assessment.get('version') in {'interior-room-support-authority/2', 'interior-room-support-authority/3'}
     if v2: expected.add('sourceFloorWitness')
-    if not isinstance(assessment, dict) or set(assessment) != expected or assessment['version'] != ('interior-room-support-authority/2' if v2 else 'interior-room-support-authority/1') or assessment['profileId'] != profile:
+    if not isinstance(assessment, dict) or set(assessment) != expected or assessment['version'] != ('interior-room-support-authority/3' if v3 else ('interior-room-support-authority/2' if v2 else 'interior-room-support-authority/1')) or assessment['profileId'] != profile:
         raise ValueError('ASSESSMENT_AUTHORITY_INVALID')
     if type(assessment['sourceEmptyRoom']) is not bool or assessment['foregroundStatus'] not in {'none_observed', 'uncertain', 'required_occlusion'} or assessment['selectionOrigin'] not in {'machine', 'human', 'unknown'}:
         raise ValueError('ASSESSMENT_SCOPE_INVALID')
@@ -72,7 +74,8 @@ def execute(request, allowed_root):
         witness = assessment['sourceFloorWitness']
         if witness.get('assessmentSha256') != assessment['layoutResultSha256']:
             raise ValueError('FLOOR_WITNESS_LAYOUT_CHANGED')
-        floor, floor_domain = room_floor_witness.restrict_floor(floor, witness, request['sourceCut']['sha256'],
+        restrictor = room_floor_union if v3 else room_floor_witness
+        floor, floor_domain = restrictor.restrict_floor(floor, witness, request['sourceCut']['sha256'],
                                                               assessment['nativeSourceSha256'], request['sourceFloor']['image']['sha256'])
     machine = assessment['selectionOrigin'] == 'machine' and all(x['selectionOrigin'] == 'machine' and x['generationOrigin'] == 'model_segmentation' for x in origins)
     context = {'profileId': profile, 'sourceContextSha256': assessment['sourceContextSha256'], 'placementStatus': 'ready_for_masks',
@@ -81,7 +84,7 @@ def execute(request, allowed_root):
     identity = {'adapterSha256': files.sha(__file__), 'bedroomCoreSha256': files.sha(bedroom_support.__file__),
                 'stagingCoreSha256': files.sha(staging_support.__file__), 'fileDecoderSha256': files.sha(files.__file__),
                 'runtime': bedroom_support.runtime(), 'python': platform.python_version(), 'pillow': PILLOW_VERSION}
-    if v2: identity['floorWitnessSha256'] = files.sha(room_floor_witness.__file__)
+    if v2: identity['floorWitnessSha256'] = files.sha((room_floor_union if v3 else room_floor_witness).__file__)
     fingerprint = hashlib.sha256(files.canonical({'request': request, 'identity': identity})).hexdigest()
     if out.exists():
         report_path = files.safe_path(str(out / 'report.json'), root)

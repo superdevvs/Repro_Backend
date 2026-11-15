@@ -12,6 +12,8 @@ class LabInteriorRoomAssessments
     public function protocol(string $phase,?array $recipe=null): string
     {
         $draft=$recipe===null?config('iguide-lab.interior_room_evidence_drafts_enabled',false)===true:LabRoomEvidenceDraftPolicy::selected($recipe)!==null;
+        $union=$recipe===null?LabRoomFloorWitnessUnion::enabled():LabRoomFloorWitnessUnion::selected($recipe);
+        if($union){abort_unless($draft,422,'Floor union requires the evidence-draft route.');if($phase==='layout')return LabRoomFloorUnionLayoutProtocol::class;if($phase==='candidate')return LabRoomFloorUnionCandidateProtocol::class;}
         return match($phase){'route'=>LabInteriorRoomRouteProtocol::class,'framing'=>LabRoomFurnishingFramingProtocol::class,
             'layout'=>$draft?LabRoomEvidenceLayoutProtocol::class:LabRoomFurnishingLayoutProtocol::class,
             'candidate'=>$draft?LabRoomEvidenceCandidateProtocol::class:LabRoomFurnishingCandidateProtocol::class,
@@ -28,8 +30,8 @@ class LabInteriorRoomAssessments
     {
         $version=$record->data['contextSnapshot']['context']['version']??null;
         $allowed=['route'=>[LabInteriorRoomRouteProtocol::class],'framing'=>[LabRoomFurnishingFramingProtocol::class],
-            'layout'=>[LabRoomFurnishingLayoutProtocol::class,LabRoomEvidenceLayoutProtocol::class],
-            'candidate'=>[LabRoomFurnishingCandidateProtocol::class,LabRoomEvidenceCandidateProtocol::class]];
+            'layout'=>[LabRoomFurnishingLayoutProtocol::class,LabRoomEvidenceLayoutProtocol::class,LabRoomFloorUnionLayoutProtocol::class],
+            'candidate'=>[LabRoomFurnishingCandidateProtocol::class,LabRoomEvidenceCandidateProtocol::class,LabRoomFloorUnionCandidateProtocol::class]];
         foreach($allowed[$record->phase]??[] as $protocol)if($version===$protocol::VERSION)return $protocol;
         abort(422,'Unknown persisted room assessment read version.');
     }
@@ -91,7 +93,7 @@ class LabInteriorRoomAssessments
         if($floor=LabRoomFloorWitness::selected($step->input['recipe']))$wire=LabRoomFloorWitness::request($wire,$floor,$step->input['phase']);
         if(($draft=LabRoomEvidenceDraftPolicy::selected($step->input['recipe']))!==null&&in_array($step->input['phase'],['layout','candidate'],true)){
             $binding=json_decode($wire['input'][0]['content'][1]['text'],true,flags:JSON_THROW_ON_ERROR);
-            $binding['requestVersion']='interior-room-evidence-floor-witness-request/1';$binding['draftContract']=$draft;
+            $binding['requestVersion']=LabRoomFloorWitnessUnion::selected($step->input['recipe'])?'interior-room-evidence-floor-union-request/1':'interior-room-evidence-floor-witness-request/1';$binding['draftContract']=$draft;
             $wire['input'][0]['content'][1]['text']=json_encode($binding,JSON_THROW_ON_ERROR);
         }
         return json_encode($wire,JSON_THROW_ON_ERROR);
@@ -162,6 +164,7 @@ class LabInteriorRoomAssessments
         $raw=json_decode(file_get_contents($file),true,flags:JSON_THROW_ON_ERROR);
         abort_unless(($raw['id']??null)===($receipt['providerResponseId']??null)&&is_string($raw['id']??null)&&$raw['id']!==''&&($raw['model']??null)==='gpt-6-astra'&&($receipt['model']??null)==='gpt-6-astra',422);
         $protocol=$this->protocol($record->phase,$record->data['recipe']??[]);$value=$protocol::parse($raw,$step->input['contextSnapshot']['context']);
+        if(LabRoomFloorWitnessUnion::selected($step->input['recipe']))return LabRoomFloorWitnessUnion::result($value,$record->phase);
         return LabRoomFloorWitness::selected($step->input['recipe'])?LabRoomFloorWitness::result($value,$record->phase):$value;
     }
     public function completed(IguideLabWorkflowItem $item,string $id,string $phase): IguideLabRoomAssessment

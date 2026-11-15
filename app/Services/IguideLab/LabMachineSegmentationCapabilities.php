@@ -8,6 +8,8 @@ class LabMachineSegmentationCapabilities
     public function forStep(IguideLabWorkflowStep $step): LabMachineSegmentationCapability
     {
         return match ($step->input['protocolVersion'] ?? null) {
+            LabRoomFloorWitnessUnion::VERSION => config('iguide-lab.interior_room_routing_enabled',false)===true&&config('iguide-lab.interior_floor_witness_enabled',false)===true&&LabRoomFloorWitnessUnion::enabled()
+                ? app(LabRoomFurnishingMasks::class) : abort(503,'The floor union capability is disabled.'),
             LabRoomFloorWitness::VERSION => config('iguide-lab.interior_room_routing_enabled',false)===true&&config('iguide-lab.interior_floor_witness_enabled',false)===true
                 ? app(LabRoomFurnishingMasks::class) : abort(503,'The floor witness capability is disabled.'),
             LabRoomFurnishingMaskPlan::PROTOCOL => config('iguide-lab.interior_room_routing_enabled',false)===true

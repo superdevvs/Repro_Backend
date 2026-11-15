@@ -71,10 +71,11 @@ class LabInteriorRoomContext extends LabInteriorDesignContext
         abort_unless($layout->result['status']==='ready_for_image'&&$layout->data['contextSnapshot']['routeId']===$routeRecord->id,422);
         $bundle=$layout->data['contextSnapshot'];$c=$bundle['context'];$c['version']=$protocol::VERSION;$c['phase']=$phase;$c['layout']=$this->receipt($layout);
         $run=IguideLabRun::where('project_id',$item->project_id)->where('status','completed')->findOrFail($parents['runId']);$step=$this->ownedChild($item,'image',$run->id);
+        $imageClass=LabRoomFloorWitnessUnion::selected($recipe)?LabRoomFloorUnionImageDraft::class:($draft?LabRoomEvidenceImageDraft::class:LabRoomFurnishingImageDraft::class);
         abort_unless($run->request_id===$step->request_id&&$run->case_id===$bundle['cutCaseId']&&($step->input['roomPlanId']??null)===$layout->id
-            &&($run->options['sourceMachinePlan']['version']??null)===($draft?LabRoomEvidenceImageDraft::VERSION:LabRoomFurnishingImageDraft::VERSION)&&($run->options['sourceMachinePlan']['id']??null)===$layout->id
+            &&($run->options['sourceMachinePlan']['version']??null)===$imageClass::VERSION&&($run->options['sourceMachinePlan']['id']??null)===$layout->id
             &&$run->preset==='interior-design'&&$run->style===$item->style,422,'Candidate does not belong to the selected room profile.');
-        app($draft?LabRoomEvidenceImageDraft::class:LabRoomFurnishingImageDraft::class)->verifyRun($run,IguideLabCase::where('project_id',$item->project_id)->findOrFail($run->case_id));
+        app($imageClass)->verifyRun($run,IguideLabCase::where('project_id',$item->project_id)->findOrFail($run->case_id));
         $path='iguide-lab/'.$item->project_id.'/runs/'.$run->id.'.png';abort_unless($run->output_path===$path&&is_string($run->output_sha256),422);
         $file=$this->file($item->project_id,$path,$run->output_sha256,32*1024*1024);$size=getimagesize($file);abort_unless([$size[0],$size[1],$size['mime']]===[2048,2048,'image/png'],422);
         $c['candidateRunId']=$run->id;$c['candidateSha256']=$run->output_sha256;

@@ -7,6 +7,8 @@ abstract class LabRoomEvidenceProtocol
     public const PHASE='';
     public const VERSION='';
     public const REQUEST_VERSION='interior-room-evidence-draft-request/1';
+    public const LAYOUT_VERSION=LabRoomEvidenceLayoutProtocol::VERSION;
+    public const CANDIDATE_VERSION=LabRoomEvidenceCandidateProtocol::VERSION;
     public const SOURCE_IDS=['source','front','right','back','left','zenith','nadir'];
     public const CUT_IDS=['source','parent_source','parent_front','parent_right','parent_back','parent_left'];
     public const CANDIDATE_IDS=['source','candidate','parent_source','parent_front','parent_right','parent_back','parent_left'];
@@ -72,8 +74,8 @@ DRAFT;
         if(static::PHASE==='layout'&&($c['imageOrdinal']!==null||$c['correctionParent']!==null))$p::invalid('Source layout has no candidate ordinal.');
         if(static::PHASE==='candidate'){if(!in_array($c['imageOrdinal'],[1,2],true))$p::invalid('Invalid image ordinal.');
             if($c['imageOrdinal']===1&&$c['correctionParent']!==null)$p::invalid('First image has no correction parent.');
-            if($c['imageOrdinal']===2){self::parentReceipt($c['correctionParent']);if(($c['correctionParent']['result']['version']??null)!==LabRoomEvidenceCandidateProtocol::VERSION||($c['correctionParent']['result']['repairDecision']['eligible']??null)!==true)$p::invalid('Second image requires its exact eligible first-candidate receipt.');}
-            if(($c['layout']['result']['version']??null)!==LabRoomEvidenceLayoutProtocol::VERSION||($c['layout']['result']['draftDisposition']['disposition']??'blocked')==='blocked')$p::invalid('An original v2 draft layout is required.');}
+            if($c['imageOrdinal']===2){self::parentReceipt($c['correctionParent']);if(($c['correctionParent']['result']['version']??null)!==static::CANDIDATE_VERSION||($c['correctionParent']['result']['repairDecision']['eligible']??null)!==true)$p::invalid('Second image requires its exact eligible first-candidate receipt.');}
+            if(($c['layout']['result']['version']??null)!==static::LAYOUT_VERSION||($c['layout']['result']['draftDisposition']['disposition']??'blocked')==='blocked')$p::invalid('An original version-matched draft layout is required.');}
         if(static::PHASE==='candidate') {self::parentReceipt($c['layout']);$p::hash($c['candidateSha256']);
             if(!is_string($c['candidateRunId'])||!\Illuminate\Support\Str::isUuid($c['candidateRunId'])||$c['views'][1]['sha256']!==$c['candidateSha256']||($c['layout']['result']['status']??null)!=='ready_for_image')$p::invalid('Actual candidate authority changed.');}
     }
@@ -164,7 +166,7 @@ DRAFT;
                         foreach($point as $i=>$n)if(!is_int($n)||$n<$object['box'][$i]||$n>$object['box'][$i+2])$p::invalid('Contact endpoint is outside its actual object.');}
                     $length=hypot($line[1][0]-$line[0][0],$line[1][1]-$line[0][1]);
                     if($length<8||$length>600)$p::invalid('Visible base segment is outside its declared extent.');}}
-            $p::keys($v['sourceFloor'],['status','prompt','box']);if($v['sourceFloor']['status']!=='opaque_matte')$p::invalid('Unsupported source floor material.');$p::text($v['sourceFloor']['prompt'],160);$p::box($v['sourceFloor']['box'],false);
+            static::validateFloor($v['sourceFloor'],$profile['id'],static::PHASE==='layout'?$v['objects']:null);
             if(count($v['styleFeatures'])<2||count($v['styleFeatures'])>5)$p::invalid('Furnishing style requires bounded recognizable features.');$nonColour=false;
             foreach($v['styleFeatures'] as $f){$p::keys($f,['kind','description','objectIds']);$p::text($f['description'],220);$p::strings($f['objectIds'],$profile['roles'],3);
                 if(!in_array($f['kind'],['form','material','texture','pattern','colour'],true))$p::invalid('Unknown furnishing style feature.');$nonColour=$nonColour||$f['kind']!=='colour';}
@@ -184,7 +186,7 @@ DRAFT;
         $feature=$p::object(['kind'=>$enum(['form','material','texture','pattern','colour']),'description'=>$text(220),'objectIds'=>['type'=>'array','items'=>$object['properties']['id'],'minItems'=>1,'maxItems'=>3]]);
         $check=$p::object(['status'=>$enum(static::PHASE==='framing'?['supported','verify_on_cut','blocked']:['pass','fail','uncertain']),'evidenceViewIds'=>$ids,'reason'=>$text(550)]);
         $pose=$p::object(['yaw'=>['type'=>'number','minimum'=>-180,'maximum'=>180],'pitch'=>['type'=>'number','minimum'=>-55,'maximum'=>5],'hFov'=>['type'=>'number','minimum'=>45,'maximum'=>120]]);
-        $floor=$p::object(['status'=>$enum(['opaque_matte']),'prompt'=>$text(160),'box'=>$box]);
+        $floor=static::floorSchema();
         $checks=array_fill_keys(static::PHASE==='candidate'?self::CANDIDATE_CHECKS:self::CHECKS,$check);
         $checks['optical_dependencies']['properties']['evidenceViewIds']['minItems']=count(static::ids());
         return $p::object(['version'=>$enum([static::VERSION]),'contextSha256'=>['type'=>'string','pattern'=>'^[a-f0-9]{64}$'],
@@ -197,4 +199,8 @@ DRAFT;
             'contactShadowStatus'=>$enum(static::PHASE==='framing'?['not_assessed']:['tiny_local_only','nonlocal_required','uncertain']),
             'checks'=>$p::object($checks),'summary'=>$text(900)]+LabRoomEvidenceDraftPolicy::schema(static::PHASE));
     }
+    protected static function validateFloor(array $v,string $profileId,?array $objects): void
+    {$p=LabInteriorDesignProtocol::class;$p::keys($v,['status','prompt','box']);if($v['status']!=='opaque_matte')$p::invalid('Unsupported source floor material.');$p::text($v['prompt'],160);$p::box($v['box'],false);}
+    protected static function floorSchema(): array
+    {return LabInteriorDesignProtocol::object(['status'=>['type'=>'string','enum'=>['opaque_matte']],'prompt'=>['type'=>'string','minLength'=>1,'maxLength'=>160],'box'=>['type'=>'array','items'=>['type'=>'integer','minimum'=>0,'maximum'=>2047],'minItems'=>4,'maxItems'=>4]]);}
 }

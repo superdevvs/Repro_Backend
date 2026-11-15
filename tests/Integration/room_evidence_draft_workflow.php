@@ -1,8 +1,8 @@
 <?php
 /** Disposable local Docker, network disabled, synthetic provider responses only. */
 declare(strict_types=1);
-$code='/app';$root=(getenv('ROOM_PROOF_ROOT')?:'/proof').'/'.($argv[1]??'attempt-1');$scenario=$argv[2]??'bedroom';
-if(!in_array($scenario,['first-success','correction-success','correction-hold','candidate-uncertain','source-hold','correction-quota-drift','correction-cancel','correction-prior-drift','final-quality-hold'],true))throw new RuntimeException('Unknown scenario');
+$code='/app';$root=(getenv('ROOM_PROOF_ROOT')?:'/proof').'/'.($argv[1]??'attempt-1');$scenario=$argv[2]??'bedroom';$floorUnion=getenv('ROOM_FLOOR_UNION_PROOF')==='1';
+if(!in_array($scenario,['first-success','correction-success','correction-hold','candidate-uncertain','source-hold','correction-quota-drift','correction-cancel','correction-prior-drift','final-quality-hold','union-outside-contact'],true))throw new RuntimeException('Unknown scenario');
 if(is_dir($root))throw new RuntimeException('Immutable proof directory already exists');mkdir($root,02770,true);chmod($root,02770);$db=$root.'/test.sqlite';touch($db);
 foreach(['APP_ENV'=>'testing','APP_KEY'=>'base64:'.base64_encode(str_repeat('k',32)),'DB_CONNECTION'=>'sqlite','DB_DATABASE'=>$db,'CACHE_STORE'=>'array','QUEUE_CONNECTION'=>'sync','SESSION_DRIVER'=>'array','MAIL_MAILER'=>'array','LOG_CHANNEL'=>'single','CLAMAV_SCAN_ON_UPLOAD'=>'false'] as $k=>$v){putenv($k.'='.$v);$_ENV[$k]=$v;$_SERVER[$k]=$v;}
 $loader=require $code.'/vendor/autoload.php';$app=require $code.'/bootstrap/app.php';$app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap();
@@ -22,7 +22,7 @@ $key=$root.'/fake-primary';file_put_contents($key,'synthetic-no-real-key');chmod
 config(['iguide-lab.openai_primary_key_path'=>$key,'services.openai.api_key'=>'synthetic-fallback','services.fal.key'=>'synthetic-fal',
     'iguide-lab.pipeline_python_path'=>$python,'iguide-lab.interior_material_python_path'=>$python,'iguide-lab.interior_room_support_python_path'=>$python,
     'iguide-lab.interior_design_workflow_enabled'=>true,'iguide-lab.interior_room_routing_enabled'=>true,
-    'iguide-lab.interior_floor_witness_enabled'=>true,'iguide-lab.interior_room_evidence_drafts_enabled'=>true]);
+    'iguide-lab.interior_floor_witness_enabled'=>true,'iguide-lab.interior_room_evidence_drafts_enabled'=>true,'iguide-lab.interior_floor_witness_union_enabled'=>$floorUnion]);
 $pins=['validationStatus'=>'passed','pythonPath'=>$python,'pythonSha256'=>hash_file('sha256',$python),'pythonVersion'=>'3.12.3','numpyVersion'=>'2.5.4','pillowVersion'=>'13.0.0'];
 $wr=$pins+['validatedPreparerSha256'=>hash_file('sha256',app_path('Services/IguideLab/LabImages.php'))];
 foreach(['validatedWorkerSha256'=>'workflow_qa.py','validatedLightingSha256'=>'lighting_transfer.py','validatedGlobalLightingSha256'=>'global_lighting.py','validatedGeometrySha256'=>'pano_geometry.py','validatedSourceAdapterSha256'=>'workflow_source.py'] as $key=>$file)$wr[$key]=hash_file('sha256',resource_path('iguide-lab/'.$file));
@@ -44,13 +44,14 @@ $roles=LabInteriorRoomProfiles::get($profile)['roles'];$boxes=$profile===LabInte
 $rectangles=[];foreach($boxes as $i=>$b){$x=$b[0];$rectangles[$i]=$profile===LabInteriorRoomProfiles::LIVING?[[$x,650,$x+299,1149],[$x+35,1100,$x+50,1549],[$x+249,1100,$x+264,1549]]:[$b];}
 foreach($roles as $i=>$id){$mask=imagecreatetruecolor(2048,2048);imagefill($mask,0,0,0);foreach($rectangles[$i] as $rect)imagefilledrectangle($mask,...[...$rect,0xffffff]);$maskBytes[$id]=png($mask);}
 $floor=imagecreatetruecolor(2048,2048);imagefill($floor,0,0,0);imagefilledrectangle($floor,0,600,2047,2047,0xffffff);$maskBytes['floor']=png($floor);
-Http::fake(function($request)use(&$calls,$maskBytes,$scenario,$profile,$roles,$boxes,$rectangles){
+Http::fake(function($request)use(&$calls,$maskBytes,$scenario,$profile,$roles,$boxes,$rectangles,$floorUnion){
     $url=$request->url();$calls[]=['url'=>$url,'method'=>$request->method()];
     if($url==='https://queue.fal.run/fal-ai/sam-3-1/image')return Http::response(['request_id'=>$request['prompt']==='floor'?'fake-floor':'fake-furniture'],200);
     if(str_starts_with($url,'https://queue.fal.run/')){if(str_ends_with($url,'/status'))return Http::response(['status'=>'COMPLETED'],200);$ids=str_contains($url,'fake-floor')?['floor']:array_reverse($roles);return Http::response(['masks'=>array_map(fn($id)=>['url'=>'https://fixture.fal.media/'.$id.'.png'],$ids)],200);}
     if(str_starts_with($url,'https://fixture.fal.media/'))return Http::response($maskBytes[pathinfo($url,PATHINFO_FILENAME)],200,['Content-Type'=>'image/png']);
     if($url==='https://api.openai.com/v1/images/edits'){$run=IguideLabRun::where('status','submitting')->sole();$ordinal=$run->options['sourceMachinePlan']['evidenceDraft']['ordinal'];
         check(in_array($ordinal,[1,2],true),'Third image attempted');check(str_contains($run->prompt,'separated narrow legs'),'Living support form missing');
+        if($floorUnion){check(($run->options['sourceMachinePlan']['version']??null)===App\Services\IguideLab\LabRoomFloorUnionImageDraft::VERSION,'Union image version missing');check(str_contains($run->prompt,'Original floor placement limits')&&str_contains($run->prompt,'contact-plus-attenuation envelopes'),'Numeric source limits missing');}
         if($ordinal===2&&in_array($scenario,['correction-quota-drift','correction-cancel'],true)){
             if($scenario==='correction-quota-drift'){$prior=IguideLabRoomAssessment::where('phase','candidate')->where('status','completed')->sole();Storage::disk(LabService::DISK)->delete($prior->data['providerReceipt']['response']['path']);}
             else{$item=IguideLabWorkflowItem::sole();app(LabWorkflows::class)->cancel(\App\Models\IguideLabWorkflow::findOrFail($item->workflow_id));}
@@ -65,9 +66,10 @@ Http::fake(function($request)use(&$calls,$maskBytes,$scenario,$profile,$roles,$b
         return Http::response(['error'=>['code'=>'insufficient_quota','message'=>'synthetic explicit quota']],429,['x-request-id'=>'fake-quota']);
     }
     if(($c['version']??null)===LabInteriorRoomRouteProtocol::VERSION){$value=Tests\Unit\IguideLabInteriorRoomRouteProtocolTest::candidate($c);$value['room']['function']=$profile===LabInteriorRoomProfiles::BEDROOM?'bedroom':'living';$value['metadataAgreement']['status']='unknown';if($scenario==='route-hold')$value['occupancy']['status']='uncertain';}
-    elseif(isset($c['phase'])){$p=match($c['phase']){'framing'=>LabRoomFurnishingFramingProtocol::class,'layout'=>LabRoomEvidenceLayoutProtocol::class,'candidate'=>LabRoomEvidenceCandidateProtocol::class};$value=Tests\Unit\IguideLabRoomFurnishingProtocolTest::value($p,$c);
+    elseif(isset($c['phase'])){$p=match($c['phase']){'framing'=>LabRoomFurnishingFramingProtocol::class,'layout'=>$floorUnion?App\Services\IguideLab\LabRoomFloorUnionLayoutProtocol::class:LabRoomEvidenceLayoutProtocol::class,'candidate'=>$floorUnion?App\Services\IguideLab\LabRoomFloorUnionCandidateProtocol::class:LabRoomEvidenceCandidateProtocol::class};$value=Tests\Unit\IguideLabRoomFurnishingProtocolTest::value($p,$c);
         if($c['phase']==='framing')$value['view']=['yaw'=>0.,'pitch'=>-20.,'hFov'=>100.];
         else{foreach($value['objects'] as $i=>&$object){$b=$boxes[$i];$object['box']=$b;$object['supportForm']='narrow_terminals';$object['visibleBaseContacts']=[];}unset($object);$value['sourceFloor']=['status'=>'opaque_matte','prompt'=>LabRoomFloorWitness::LABEL,'box'=>[0,600,2047,2047]];
+            if($floorUnion)$value['sourceFloor']=['status'=>'opaque_matte','prompt'=>App\Services\IguideLab\LabRoomFloorWitnessUnion::LABEL,'regions'=>[[$scenario==='union-outside-contact'?400:250,1300,1200,1800],[1100,1250,1750,1800]],'planeEvidence'=>['status'=>'same_visible_target_floor','evidenceViewIds'=>App\Services\IguideLab\LabRoomFloorWitnessUnion::IDS,'reason'=>'Synthetic original same target-floor plane only.'],'contactEnvelopes'=>[['objectId'=>'sofa','box'=>[$scenario==='union-outside-contact'?425:325,1500,575,1600]],['objectId'=>'coffee_table','box'=>[1425,1500,1675,1600]],['objectId'=>'chair','box'=>[875,1500,1125,1600]]]];
             $value['draftEvidence']=null;$value['obligationClosures']=[];$value['correction']=['decision'=>'none','defects'=>[]];
             if($c['phase']==='layout'){
                 $value['checks']['frame_margin']['status']='uncertain';
@@ -78,7 +80,7 @@ Http::fake(function($request)use(&$calls,$maskBytes,$scenario,$profile,$roles,$b
                 if($scenario==='source-hold'){$value['status']='needs_review';$value['objects']=[];$value['sourceFloor']=null;$value['styleFeatures']=[];$value['draftEvidence']['sourceChecks']['receiver_observability']['status']='uncertain';$value['draftEvidence']['anchors']=[];$value['draftEvidence']['candidateQuestions']=[];}
             }else{
                 $value['sourceFloor']=$c['layout']['result']['sourceFloor'];$value['obligationClosures']=[['id'=>'verify_frame_margin','status'=>'pass','evidenceViewIds'=>['source','candidate'],'reason'=>'Synthetic fully observed candidate extent.']];
-                if(($c['imageOrdinal']===1&&!in_array($scenario,['first-success','final-quality-hold'],true))||$scenario==='correction-hold'){
+                if(($c['imageOrdinal']===1&&!in_array($scenario,['first-success','final-quality-hold','union-outside-contact'],true))||$scenario==='correction-hold'){
                     $value['status']='needs_review';$value['objects']=[];$value['sourceFloor']=null;$value['styleFeatures']=[];$value['checks']['geometry']['status']='fail';$value['obligationClosures'][0]['status']='fail';
                     if($c['imageOrdinal']===1)$value['correction']=['decision'=>'one_correction','defects'=>[['checkId'=>'geometry','kind'=>'frame_margin','objectIds'=>['sofa'],'sourceAlternative'=>'Synthetic observed source-supported inward placement; unchanged pose and floor.']]];
                     if($scenario==='candidate-uncertain')$value['checks']['visible_contacts']['status']='uncertain';
@@ -138,7 +140,7 @@ foreach(App\Models\IguideLabComposite::where('project_id',$project->id)->get() a
 saveJson($root.'/proof.json',$proof);
 $expected=$scenario==='correction-cancel'?'cancelled':(in_array($scenario,['first-success','correction-success'],true)?'ready':'needs_review');check($workflow->status===$expected,'Unexpected terminal: '.$workflow->status);
 $imageCalls=count(array_filter($calls,fn($c)=>$c['url']==='https://api.openai.com/v1/images/edits'));
-$expectedImages=match($scenario){'source-hold'=>0,'first-success','candidate-uncertain','correction-prior-drift','final-quality-hold'=>1,default=>2};
+$expectedImages=match($scenario){'source-hold'=>0,'first-success','candidate-uncertain','correction-prior-drift','final-quality-hold','union-outside-contact'=>1,default=>2};
 check($imageCalls===$expectedImages,'Unexpected primary image count or fallback');
 check(IguideLabRun::count()<=2,'Third image reservation');check(IguideLabRoomAssessment::count()<=5,'Analysis ceiling exceeded');
 $steps=\App\Models\IguideLabWorkflowStep::where('item_id',$item->id)->get();
@@ -150,7 +152,7 @@ if($scenario==='correction-success'){
     check(array_column(array_column($actual,'provenance'),'imageOrdinal')===[1,2],'Candidate read order changed');
     check($actual[1]['provenance']['correctionParent']['id']===$actual[0]['id'],'Correction parent omitted');
 }
-config(['iguide-lab.interior_room_evidence_drafts_enabled'=>false,'iguide-lab.interior_floor_witness_enabled'=>false,'iguide-lab.interior_room_routing_enabled'=>false]);
+config(['iguide-lab.interior_floor_witness_union_enabled'=>false,'iguide-lab.interior_room_evidence_drafts_enabled'=>false,'iguide-lab.interior_floor_witness_enabled'=>false,'iguide-lab.interior_room_routing_enabled'=>false]);
 controller('GET','/api/iguide-lab',null,$capability,$public.'/disabled-project-index.json',200);
 controller('GET','/api/iguide-lab/workflows/'.$workflow->id,null,$capability,$public.'/disabled-workflow.json',200);
 saveJson($root.'/validated.json',['scenario'=>$scenario,'terminal'=>$workflow->status,'imagePosts'=>$imageCalls,'roomAssessments'=>IguideLabRoomAssessment::count(),'noThirdImage'=>true,'terminalReplayNoHttp'=>true,'disabledFlagControllerRead'=>true,'syntheticOnly'=>true]);

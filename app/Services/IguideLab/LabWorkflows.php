@@ -372,7 +372,7 @@ class LabWorkflows
                 $record=\App\Models\IguideLabRoomAssessment::where('project_id',$item->project_id)->where('step_id',$step->id)->where('request_id',$step->request_id)->where('phase',$phase)->find($step->child_id);
                 if($record&&$record->request_hash===$step->input_sha256){
                     if($routeVersion===LabRoomEvidenceDraftPolicy::ROUTE_VERSION&&$phase==='candidate')abort_unless(
-                        ($record->data['contextSnapshot']['context']['version']??null)===LabRoomEvidenceCandidateProtocol::VERSION
+                        in_array($record->data['contextSnapshot']['context']['version']??null,[LabRoomEvidenceCandidateProtocol::VERSION,LabRoomFloorUnionCandidateProtocol::VERSION],true)
                         &&($record->data['contextSnapshot']['context']['imageOrdinal']??null)===($key==='room-candidate-2'?2:1),422,'Persisted candidate ordinal changed.');
                     $records[]=app(LabInteriorRoomAssessments::class)->dto($record);
                 }

@@ -3,6 +3,7 @@
 return [
     'interior_room_evidence_drafts_enabled' => env('IGUIDE_LAB_INTERIOR_ROOM_EVIDENCE_DRAFTS_ENABLED', false),
     'interior_floor_witness_enabled' => env('IGUIDE_LAB_INTERIOR_FLOOR_WITNESS_ENABLED', false),
+    'interior_floor_witness_union_enabled' => env('IGUIDE_LAB_INTERIOR_FLOOR_WITNESS_UNION_ENABLED', false),
     // Isolated source-owned Interior routing. No public caller can choose a private profile.
     'interior_room_routing_enabled' => env('IGUIDE_LAB_INTERIOR_ROOM_ROUTING_ENABLED', false),
     'interior_room_runtime_manifest' => env('IGUIDE_LAB_INTERIOR_ROOM_RUNTIME_MANIFEST'),

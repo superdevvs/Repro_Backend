@@ -89,7 +89,7 @@ class LabWorkflowSteps
                             &&($input['roomEvidenceDraft']['ordinal']??null)===($key==='room-image'?1:2),422,'Only two explicitly bound draft ordinals exist.');
                         if($kind==='section')abort_unless($key==='room-section',422,'Evidence correction cannot reframe its original source.');
                         if($kind==='analysis'&&$key==='room-candidate-2')abort_unless(($input['parents']['imageOrdinal']??null)===2
-                            &&($input['protocolVersion']??null)===LabRoomEvidenceCandidateProtocol::VERSION,422);
+                            &&($input['protocolVersion']??null)===(LabRoomFloorWitnessUnion::selected($workflow->policy['interiorRoomAssessments']??[])?LabRoomFloorUnionCandidateProtocol::VERSION:LabRoomEvidenceCandidateProtocol::VERSION),422);
                     }
 
                 }
