@@ -297,7 +297,7 @@ class LabService
     {
         return ['id' => $case->id, 'label' => $case->label, 'roomId' => $case->room_id, 'panoId' => $case->pano_id, 'tourUrl' => $case->tour_url,
             'projection' => $case->projection, 'width' => $case->width, 'height' => $case->height, 'sourceSha256' => $case->source_sha256,
-            'metadata' => $case->metadata ?? [], 'nativeSource' => $case->native_source, 'assetPath' => '/api/iguide-lab/assets/case/'.$case->id, 'createdAt' => $case->created_at->toIso8601String()];
+            'metadata' => (object) ($case->metadata ?? []), 'nativeSource' => $case->native_source, 'assetPath' => '/api/iguide-lab/assets/case/'.$case->id, 'createdAt' => $case->created_at->toIso8601String()];
     }
 
     public function runDto(IguideLabRun $run): array

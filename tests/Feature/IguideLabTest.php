@@ -179,6 +179,33 @@ class IguideLabTest extends TestCase
         Http::assertNothingSent();
     }
 
+    public function test_plain_panorama_metadata_is_a_json_object_in_upload_and_project_responses(): void
+    {
+        $response = $this->withToken($this->token)->post('/api/iguide-lab/cases', [
+            'image' => UploadedFile::fake()->createWithContent('plain.png', $this->png(2048, 1024)),
+            'label' => 'Plain panorama', 'projection' => 'equirectangular',
+        ])->assertCreated();
+        $uploaded = json_decode($response->getContent(), false, 512, JSON_THROW_ON_ERROR)->data;
+        $this->assertInstanceOf(\stdClass::class, $uploaded->metadata);
+        $this->assertSame([], get_object_vars($uploaded->metadata));
+
+        $case = \App\Models\IguideLabCase::findOrFail($uploaded->id);
+        foreach ([[], null] as $legacyMetadata) {
+            $case->update(['metadata' => $legacyMetadata]);
+            $project = $this->withToken($this->token)->getJson('/api/iguide-lab')->assertOk();
+            $body = json_decode($project->getContent(), false, 512, JSON_THROW_ON_ERROR)->data;
+            $this->assertCount(1, $body->cases);
+            $this->assertSame($case->id, $body->cases[0]->id);
+            $this->assertInstanceOf(\stdClass::class, $body->cases[0]->metadata);
+            $this->assertSame([], get_object_vars($body->cases[0]->metadata));
+            $this->assertSame($legacyMetadata, $case->fresh()->metadata);
+            if ($proof = getenv('EMPTY_METADATA_PROOF_DIR')) {
+                file_put_contents($proof.'/project-'.($legacyMetadata === null ? 'null' : 'empty').'.json', $project->getContent());
+            }
+        }
+        Http::assertNothingSent();
+    }
+
     public function test_source_provenance_round_trips_without_exposing_private_paths_or_credentials(): void
     {
         $case = $this->upload();
