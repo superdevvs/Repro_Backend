@@ -61,7 +61,7 @@ class IguideLabRoomEvidenceDraftReadTest extends TestCase
 
     private function fixture(bool $draft): array
     {
-        $this->token=Str::random(64);
+        $this->token=bin2hex(random_bytes(32));
         $project=IguideLabProject::create(['name'=>'Synthetic persisted furnishing read fixture','token_hash'=>hash('sha256',$this->token),
             'expires_at'=>now()->addDay(),'max_runs'=>10,'used_runs'=>0]);
         [$rc,$images]=RouteFixture::fixture();$bytes=base64_decode(explode(',',$images[0],2)[1]);
@@ -191,7 +191,7 @@ class IguideLabRoomEvidenceDraftReadTest extends TestCase
         foreach($routing['assessments'] as $a){$this->assertSame('interior-room-assessment-read/1',$a['provenance']['version']);
             $this->assertArrayNotHasKey('imageOrdinal',$a['provenance']);$this->assertArrayNotHasKey('correctionParent',$a['provenance']);}
         $this->withHeader('Authorization','')->getJson('/api/iguide-lab/workflows/'.$f['workflow']->id)->assertUnauthorized();
-        $foreign=Str::random(64);IguideLabProject::create(['name'=>'Foreign','token_hash'=>hash('sha256',$foreign),'expires_at'=>now()->addDay(),'max_runs'=>1]);
+        $foreign=bin2hex(random_bytes(32));IguideLabProject::create(['name'=>'Foreign','token_hash'=>hash('sha256',$foreign),'expires_at'=>now()->addDay(),'max_runs'=>1]);
         $this->withToken($foreign)->getJson('/api/iguide-lab/workflows/'.$f['workflow']->id)->assertNotFound();
         $this->withToken($this->token)->postJson('/api/iguide-lab/workflows',['requestId'=>(string)Str::uuid(),'items'=>[],
             'roomRouting'=>['version'=>Draft::ROUTE_VERSION,'automaticAcceptance'=>true]])->assertUnprocessable();
