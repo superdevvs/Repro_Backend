@@ -17,23 +17,24 @@ class SupportTests(unittest.TestCase):
         self.assertEqual(reasons,[]);self.assertTrue(np.all(a[self.mask]==255))
         self.assertEqual(a[740,650],0);self.assertTrue(np.any((a>0)&(a<255)))
         self.assertLess(stats['positiveSupportPixels'],131072)
-    def test_empty_disconnected_and_hollow_masks_hold(self):
+    def test_empty_mask_holds_while_disconnected_and_hollow_masks_are_caveats(self):
         empty=np.zeros_like(self.mask);split=self.mask.copy();split[1200:1210,1200:1210]=True
         hole=self.mask.copy();hole[800:810,700:710]=False
-        for m,reason in [(empty,'OBJECT_MASK_EMPTY_OR_TOO_SMALL'),(split,'OBJECT_MASK_DISCONNECTED'),(hole,'OBJECT_MASK_HAS_UNRESOLVED_HOLES')]:
-            self.assertIn(reason,s.derive({'target_object':m},self.proposal)[1])
-    def test_large_guard_and_protected_feature_hold(self):
+        self.assertIn('OBJECT_MASK_EMPTY_OR_TOO_SMALL',s.derive({'target_object':empty},self.proposal)[1])
+        for m,reason in [(split,'OBJECT_MASK_DISCONNECTED'),(hole,'OBJECT_MASK_HOLES_FILLED')]:
+            _,reasons,stats=s.derive({'target_object':m},self.proposal);self.assertEqual(reasons,[]);self.assertIn(reason,stats['caveats'])
+    def test_large_guard_and_protected_feature_are_caveats(self):
         large=self.mask.copy();large[600:1100,600:1100]=True
         guard=np.zeros_like(self.mask);guard[204:300,600:700]=True
-        self.assertIn('EDIT_DOMAIN_TOO_LARGE',s.derive({'target_object':large},self.proposal)[1])
-        self.assertIn('SUPPORT_TOUCHES_GUARD',s.derive({'target_object':guard},self.proposal)[1])
+        self.assertIn('EDIT_DOMAIN_TOO_LARGE',s.derive({'target_object':large},self.proposal)[2]['caveats'])
+        self.assertIn('SUPPORT_TOUCHES_GUARD',s.derive({'target_object':guard},self.proposal)[2]['caveats'])
         self.proposal['protectedFeatures']=[{'box':{'xMin':.3,'xMax':.4,'yMin':.3,'yMax':.5}}]
-        self.assertIn('PROTECTED_FEATURE_OVERLAP',s.derive({'target_object':self.mask},self.proposal)[1])
-    def test_unlocated_protection_and_detached_shadow_hold(self):
+        self.assertIn('PROTECTED_FEATURE_OVERLAP',s.derive({'target_object':self.mask},self.proposal)[2]['caveats'])
+    def test_unlocated_protection_and_detached_legacy_shadow_are_caveats(self):
         self.proposal['protectedFeatures']=[{'box':None}]
-        self.assertIn('PROTECTED_FEATURE_UNLOCATED',s.derive({'target_object':self.mask},self.proposal)[1])
+        self.assertIn('PROTECTED_FEATURE_UNLOCATED',s.derive({'target_object':self.mask},self.proposal)[2]['caveats'])
         shadow=np.zeros_like(self.mask);shadow[1300:1320,1200:1220]=True
-        self.assertIn('SHADOW_NOT_LOCAL_TO_OBJECT',s.derive({'target_object':self.mask,'target_local_shadow':shadow},{'protectedFeatures':[]})[1])
+        self.assertIn('SHADOW_NOT_LOCAL_TO_OBJECT',s.derive({'target_object':self.mask,'target_local_shadow':shadow},{'protectedFeatures':[]})[2]['caveats'])
     def test_local_shadow_unioned_without_changing_object_coverage(self):
         shadow=np.zeros_like(self.mask);shadow[920:970,820:880]=True
         a,reasons,stats=s.derive({'target_object':self.mask,'target_local_shadow':shadow},self.proposal)
@@ -41,7 +42,7 @@ class SupportTests(unittest.TestCase):
     def test_connected_thin_long_shadow_tail_holds_despite_small_area_and_contact(self):
         shadow=np.zeros_like(self.mask);shadow[900:905,840:1400]=True
         _,reasons,stats=s.derive({'target_object':self.mask,'target_local_shadow':shadow},self.proposal)
-        self.assertNotIn('SHADOW_NOT_LOCAL_TO_OBJECT',reasons);self.assertIn('SHADOW_EXTENT_UNSUPPORTED',reasons)
+        self.assertNotIn('SHADOW_NOT_LOCAL_TO_OBJECT',stats['caveats']);self.assertIn('SHADOW_EXTENT_UNSUPPORTED',stats['caveats']);self.assertEqual(reasons,[])
         self.assertLess(stats['positiveSupportPixels'],131072);self.assertGreater(stats['maximumShadowDistancePixels'],stats['allowedShadowDistancePixels'])
     def test_exact_opaque_mask_formats_and_fractional_alpha_rejection(self):
         with tempfile.TemporaryDirectory() as d:

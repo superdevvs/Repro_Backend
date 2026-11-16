@@ -11,7 +11,7 @@ import declutter_removal_protocol as protocol
 from declutter_removal_bridge import safe_path,canonical,decode_json,sha
 
 VERSION='automatic-declutter-support/1'
-LIMITS={'maxEditablePixels':131072,'minimumObjectPixels':64,'guardPixels':205,'dilationPixels':4,'featherPixels':2,
+LIMITS={'maxEditablePixels':131072,'minimumObjectPixels':64,'cutEdgePixels':41,'guardPixels':205,'dilationPixels':4,'featherPixels':2,
         'maxShadowDistancePixels':64,'shadowObjectExtentFraction':.25,'maxShadowAreaRatio':1}
 def runtime():return {'python':platform.python_version(),'numpy':np.__version__,'pillow':PILLOW_VERSION,'scipy':scipy.__version__,
     'workerSha256':sha(__file__),'protocolSha256':sha(protocol.__file__),'sharedProtocolSha256':sha(protocol.shared.__file__)}
@@ -34,42 +34,67 @@ def image(path,mask=False):
         return np.asarray(im.convert('RGB')).copy()
 
 def derive(masks,proposal):
-    reasons=[];obj=masks['target_object'];count=int(obj.sum())
+    """Finish first: only an empty mask or support reaching the cut edge stops.
+
+    Groups, holes, guard-band proximity, protected-box overlap and receiver
+    samples are recorded caveats for the final independent check.
+    """
+    reasons=[];caveats=[];obj=masks['target_object'];count=int(obj.sum())
     if count<LIMITS['minimumObjectPixels']:reasons.append('OBJECT_MASK_EMPTY_OR_TOO_SMALL')
-    if ndimage.label(obj,np.ones((3,3),bool))[1]!=1:reasons.append('OBJECT_MASK_DISCONNECTED')
-    if np.any(ndimage.binary_fill_holes(obj)&~obj):reasons.append('OBJECT_MASK_HAS_UNRESOLVED_HOLES')
-    union=obj.copy();shadow_distance=0.0;shadow_limit=0.0
-    if 'target_local_shadow' in masks:
+    if ndimage.label(obj,np.ones((3,3),bool))[1]>1:caveats.append('OBJECT_MASK_DISCONNECTED')
+    filled=ndimage.binary_fill_holes(obj)
+    if np.any(filled&~obj):caveats.append('OBJECT_MASK_HOLES_FILLED')
+    union=filled.copy();shadow_distance=0.0;shadow_limit=0.0;shadow_pixels=0
+    target=proposal.get('target') or {}
+    if obj.any() and target.get('count')=='multiple_or_uncertain' and protocol.valid_sample_box(target.get('box')):
+        # One mask request can outline a single member of a touching group; the analysis
+        # box encloses the whole selection, so the whole box is replaced.
+        b=target['box'];x1,y1=int(b['xMin']*2048),int(b['yMin']*2048);x2,y2=int(np.ceil(b['xMax']*2048)),int(np.ceil(b['yMax']*2048))
+        union[y1:y2,x1:x2]=True;caveats.append('GROUP_SELECTION_BOX_REPLACED')
+    if obj.any():
+        yy,xx=np.where(obj)
+        shadow_limit=min(LIMITS['maxShadowDistancePixels'],max(8,max(int(xx.max()-xx.min()+1),int(yy.max()-yy.min()+1))*LIMITS['shadowObjectExtentFraction']))
+    if 'target_local_shadow' in masks:  # legacy two-request records only
         shadow=masks['target_local_shadow']
-        if not shadow.any() or ndimage.label(shadow,np.ones((3,3),bool))[1]!=1:reasons.append('SHADOW_MASK_EMPTY_OR_DISCONNECTED')
-        if not np.any(shadow&ndimage.binary_dilation(obj,iterations=12)):reasons.append('SHADOW_NOT_LOCAL_TO_OBJECT')
+        if not shadow.any() or ndimage.label(shadow,np.ones((3,3),bool))[1]!=1:caveats.append('SHADOW_MASK_EMPTY_OR_DISCONNECTED')
+        if not np.any(shadow&ndimage.binary_dilation(obj,iterations=12)):caveats.append('SHADOW_NOT_LOCAL_TO_OBJECT')
         if obj.any() and shadow.any():
-            yy,xx=np.where(obj)
-            shadow_limit=min(LIMITS['maxShadowDistancePixels'],max(8,max(int(xx.max()-xx.min()+1),int(yy.max()-yy.min()+1))*LIMITS['shadowObjectExtentFraction']))
             shadow_distance=float(ndimage.distance_transform_edt(~obj)[shadow].max())
-            if shadow_distance>shadow_limit or int(shadow.sum())>count*LIMITS['maxShadowAreaRatio']:reasons.append('SHADOW_EXTENT_UNSUPPORTED')
-        union|=shadow
+            if shadow_distance>shadow_limit or int(shadow.sum())>count*LIMITS['maxShadowAreaRatio']:caveats.append('SHADOW_EXTENT_UNSUPPORTED')
+        union|=shadow;shadow_pixels=int(shadow.sum())
+    else:
+        # Shadow folded in: the source-declared shadow box, limited to a short band
+        # around the object, joins the same support. No second mask request.
+        declared=proposal.get('shadow') or {}
+        box=declared.get('box') if declared.get('status')=='single_local_attributable' else None
+        if obj.any() and protocol.valid_sample_box(box):
+            x1,y1=int(box['xMin']*2048),int(box['yMin']*2048);x2,y2=int(np.ceil(box['xMax']*2048)),int(np.ceil(box['yMax']*2048))
+            region=np.zeros_like(obj);region[y1:y2,x1:x2]=True
+            shadow=region&(ndimage.distance_transform_edt(~filled)<=shadow_limit)&~filled
+            shadow_pixels=int(shadow.sum());union|=shadow
+            if shadow_pixels:shadow_distance=float(ndimage.distance_transform_edt(~filled)[shadow].max())
     expanded=ndimage.binary_dilation(union,iterations=LIMITS['dilationPixels'])
-    if int(expanded.sum())>LIMITS['maxEditablePixels']:reasons.append('EDIT_DOMAIN_TOO_LARGE')
-    guard=LIMITS['guardPixels']
-    if any(np.any(v) for v in [expanded[:guard],expanded[-guard:],expanded[:,:guard],expanded[:,-guard:]]):reasons.append('SUPPORT_TOUCHES_GUARD')
+    if int(expanded.sum())>LIMITS['maxEditablePixels']:caveats.append('EDIT_DOMAIN_TOO_LARGE')
+    edge=LIMITS['cutEdgePixels'];guard=LIMITS['guardPixels']
+    if any(np.any(v) for v in [expanded[:edge],expanded[-edge:],expanded[:,:edge],expanded[:,-edge:]]):reasons.append('SUPPORT_TOUCHES_CUT_EDGE')
+    elif any(np.any(v) for v in [expanded[:guard],expanded[-guard:],expanded[:,:guard],expanded[:,-guard:]]):caveats.append('SUPPORT_TOUCHES_GUARD')
     for feature in proposal['protectedFeatures']:
         b=feature['box']
-        if b is None:reasons.append('PROTECTED_FEATURE_UNLOCATED');continue
+        if b is None:caveats.append('PROTECTED_FEATURE_UNLOCATED');continue
         x1,y1=int(b['xMin']*2048),int(b['yMin']*2048);x2,y2=int(np.ceil(b['xMax']*2048)),int(np.ceil(b['yMax']*2048))
-        if np.any(expanded[y1:y2,x1:x2]):reasons.append('PROTECTED_FEATURE_OVERLAP')
+        if np.any(expanded[max(0,y1):max(0,y2),max(0,x1):max(0,x2)]):caveats.append('PROTECTED_FEATURE_OVERLAP')
     if 'samples' in proposal.get('receiver',{}):
-        reasons.extend(protocol.receiver_sample_reasons(proposal))
+        caveats.extend(protocol.receiver_sample_reasons(proposal))
         for sample in proposal['receiver']['samples']:
             if not protocol.valid_sample_box(sample):continue
             x1,y1=int(sample['xMin']*2048),int(sample['yMin']*2048)
             x2,y2=int(np.ceil(sample['xMax']*2048)),int(np.ceil(sample['yMax']*2048))
-            if np.any(expanded[y1:y2,x1:x2]):reasons.append('RECEIVER_SAMPLE_INTERSECTS_ACTUAL_SUPPORT')
+            if np.any(expanded[y1:y2,x1:x2]):caveats.append('RECEIVER_SAMPLE_INTERSECTS_ACTUAL_SUPPORT')
     alpha=np.rint(np.minimum(ndimage.distance_transform_edt(expanded)/LIMITS['featherPixels'],1)*255).astype(np.uint8)
     if np.any(alpha[union]!=255):reasons.append('ORIGINAL_TARGET_NOT_FULLY_REPLACED')
-    return alpha,sorted(set(reasons)),{'objectPixels':count,'shadowPixels':int(masks.get('target_local_shadow',np.zeros_like(obj)).sum()),
+    return alpha,sorted(set(reasons)),{'objectPixels':count,'shadowPixels':shadow_pixels,
         'rawUnionPixels':int(union.sum()),'positiveSupportPixels':int((alpha>0).sum()),'opaqueOriginalTargetPixels':int((alpha[union]==255).sum()),
-        'maximumShadowDistancePixels':shadow_distance,'allowedShadowDistancePixels':shadow_limit}
+        'maximumShadowDistancePixels':shadow_distance,'allowedShadowDistancePixels':shadow_limit,'caveats':sorted(set(caveats))}
 
 def run(request):
     expected={'schemaVersion','privateRoot','source','assessment','plans','receipts','masks','outputDirectory'}
@@ -113,7 +138,7 @@ def run(request):
         return report
     if out.exists():return verify(decode_json((out/'report.json').read_bytes()))
     alpha,reasons,stats=derive(masks,assessment['proposal'])
-    report={'version':VERSION,'status':'needs_review' if reasons else 'ready_for_generation','reviewReasons':reasons,'limits':LIMITS,'stats':stats,
+    report={'version':VERSION,'status':'needs_review' if reasons else 'ready_for_generation','reviewReasons':reasons,'caveats':stats['caveats'],'limits':LIMITS,'stats':stats,
         'runtime':identity,'requestSha256':fingerprint,'inputAssets':inputs,'sourceCutSha256':request['source']['sha256'],
         'nativeSourceSha256':assessment['binding']['nativeSourceSha256'],'sourceGeometrySha256':assessment['binding']['sourceGeometrySha256'],
         'maskOrigin':'model_segmentation','selectionOrigin':'machine','automaticAcceptance':False,'humanReviewed':False,'providerCalls':0,

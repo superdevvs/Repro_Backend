@@ -54,11 +54,17 @@ class LabDeclutterRemovalBridge
         $env = array_merge($env, ['PATH' => '/usr/bin:/bin', 'LANG' => 'C.UTF-8', 'PYTHONNOUSERSITE' => '1', 'OMP_NUM_THREADS' => '1', 'OPENBLAS_NUM_THREADS' => '1']);
         $process = new Process([(string) config('iguide-lab.pipeline_python_path'), resource_path('iguide-lab/declutter_removal_bridge.py'),
             '--request', $disk->path($relativeRequest), '--allowed-root', $disk->path('iguide-lab/'.$projectId)], null, $env, null, 90);
-        $process->run(); $report = json_decode($process->getOutput(), true);
+        $process->run(); $report = json_decode($process->getOutput(), true); $code = self::errorCode($process->getErrorOutput());
         abort_unless($process->isSuccessful() && is_array($report) && ($report['automaticAcceptance'] ?? true) === false
             && ($report['providerCalls'] ?? -1) === 0 && ($report['reviewStatus'] ?? null) === 'unreviewed'
-            && ($report['operation'] ?? null) === $request['operation'], 422, 'The local assessment protocol rejected its inputs.');
+            && ($report['operation'] ?? null) === $request['operation'], 422, 'The local assessment protocol rejected its inputs'.($code ? ' ('.$code.')' : '').'.');
         return $report;
+    }
+    /** Keeps the failure reason of a parser break: only the protocol's own UPPER_SNAKE code, never free text. */
+    public static function errorCode(string $stderr): ?string
+    {
+        $lines = preg_split('/\R/', trim($stderr)); $last = trim((string) end($lines));
+        return preg_match('/\A[A-Za-z_.]*Error: ([A-Z][A-Z0-9_]{2,80})\z/D', $last, $match) ? $match[1] : null;
     }
     public function json(string $relative, array $value): array
     {

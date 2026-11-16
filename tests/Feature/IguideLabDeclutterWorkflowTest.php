@@ -45,4 +45,76 @@ class IguideLabDeclutterWorkflowTest extends TestCase
         [,,$workflow,$item]=$this->fixture();$workflow->update(['cancelled_at'=>now()]);
         $this->expectException(HttpException::class);app(LabWorkflowSteps::class)->reserve($item,'removal-plan','analysis',[]);
     }
+    public function test_a_plan_that_needs_review_is_recorded_with_its_reasons_not_a_processing_guard(): void
+    {
+        [$project,$case,$workflow,$item]=$this->fixture();config(['iguide-lab.declutter_workflow_enabled'=>true]);
+        $policy=$workflow->policy;$policy['declutterWorkflow']=app(\App\Services\IguideLab\LabDeclutterWorkflow::class)->snapshot();$workflow->update(['policy'=>$policy]);
+        $this->partialMock(\App\Services\IguideLab\LabDeclutterWorkflow::class,fn($m)=>$m->shouldReceive('ready')->andReturn(true));
+        $this->mock(\App\Services\IguideLab\LabWorkflowArtifacts::class,fn($m)=>$m->shouldReceive('preflight'));
+        $proposal=['uncertainties'=>['A faint reflection may exist.'],'targets'=>[['id'=>'target_object','action'=>'remove','objectCount'=>2]],
+            'workflow'=>['mode'=>'perspective_sections','sections'=>[['targetIds'=>['target_object'],'yawDegrees'=>10,'pitchDegrees'=>-30,'hfovDegrees'=>65]]]];
+        $this->mock(\App\Services\IguideLab\LabAnalyses::class,fn($m)=>$m->shouldReceive('start')->andReturnUsing(function()use($proposal){
+            $a=new \App\Models\IguideLabAnalysis(['status'=>'completed']);$a->id=(string)Str::uuid();$a->proposal=$proposal;return $a;}));
+        $this->mock(\App\Services\IguideLab\LabSections::class,fn($m)=>$m->shouldReceive('start')->andReturnUsing(function($p,$input)use($case){
+            $s=new \App\Models\IguideLabSection(['status'=>'completed']);$s->id=(string)Str::uuid();$s->case_id=$case->id;$s->source_sha256=$case->source_sha256;
+            $s->view=$input['view'];$s->derived_case_id=$case->id;return $s;}));
+        $plan=new \App\Models\IguideLabDeclutterRemovalPlan(['status'=>'completed']);$plan->id=(string)Str::uuid();
+        $plan->result=['status'=>'needs_review','reviewReasons'=>['TARGET_TOUCHES_CUT_EDGE'],'caveats'=>[]];
+        $this->mock(\App\Services\IguideLab\LabDeclutterRemovalPlans::class,function($m)use($item,$plan){
+            $m->shouldReceive('reserve')->andReturnUsing(fn()=>app(LabWorkflowSteps::class)->reserve($item,'removal-plan','analysis',['fixture'=>true]));
+            $m->shouldReceive('start')->andReturn($plan);
+            $m->shouldReceive('verified')->andThrow(new HttpException(422,'The persisted source-removal plan does not authorize support.'));
+        });
+        app(\App\Services\IguideLab\LabDeclutterWorkflow::class)->advance($workflow->fresh(),$item->fresh(),$project);
+        $item->refresh();
+        $this->assertSame('needs_review',$item->status);
+        $this->assertSame('removal_plan_requires_review',$item->data['reviewReasons'][0]['code']);
+        $this->assertSame(['TARGET_TOUCHES_CUT_EDGE'],$item->data['removalReviewReasons']);
+        $this->assertSame(['A faint reflection may exist.'],$item->data['sourceCaveats']);Http::assertNothingSent();
+    }
+    /** Blending failure (reported or a broken harmonizer run) still composites the paid raw draft inside the mask. */
+    public static function blendingFailures(): array { return ['reported'=>['reported'],'crashed'=>['crashed']]; }
+    #[\PHPUnit\Framework\Attributes\DataProvider('blendingFailures')]
+    public function test_failed_blending_composites_the_raw_draft_instead_of_discarding_the_image(string $mode): void
+    {
+        [$project,$case,,$item]=$this->fixture();$disk=Storage::disk(LabService::DISK);
+        $section=\App\Models\IguideLabSection::create(['id'=>(string)Str::uuid(),'project_id'=>$project->id,'case_id'=>$case->id,'derived_case_id'=>$case->id,
+            'request_id'=>(string)Str::uuid(),'request_hash'=>str_repeat('a',64),'source_sha256'=>$case->source_sha256,'status'=>'completed',
+            'view'=>['yaw'=>0,'pitch'=>-30,'hFov'=>65],'data'=>['geometryPath'=>'g.json','geometrySha256'=>str_repeat('b',64)]]);
+        $source=new \App\Models\IguideLabAnalysis(['proposal_sha256'=>str_repeat('c',64)]);$source->id=(string)Str::uuid();
+        $planStep=new \App\Models\IguideLabWorkflowStep(['input'=>['sectionId'=>$section->id,'sourceAnalysisId'=>$source->id]]);
+        $plan=new \App\Models\IguideLabDeclutterRemovalPlan(['result_sha256'=>str_repeat('d',64)]);$plan->id=(string)Str::uuid();
+        $plan->result=['schemaVersion'=>LabDeclutterRemovalPolicy::MATERIALS_VERSION];
+        $run=new \App\Models\IguideLabRun(['output_path'=>'iguide-lab/'.$project->id.'/runs/raw.png','output_sha256'=>str_repeat('e',64),'request_id'=>(string)Str::uuid()]);$run->id=(string)Str::uuid();
+        $step=new \App\Models\IguideLabWorkflowStep(['request_id'=>(string)Str::uuid(),'input'=>['recipe'=>[],'declutterRecipe'=>['support'=>[]],'harmonization'=>['v'=>1],
+            'outputSha256'=>$run->output_sha256,'supportSha256'=>str_repeat('f',64),'removalPlanSha256'=>$plan->result_sha256]]);$step->id=(string)Str::uuid();
+        $support=['reportSha256'=>str_repeat('f',64),'directory'=>'iguide-lab/'.$project->id.'/support','report'=>['status'=>'ready_for_generation','support'=>['path'=>'/m.png','sha256'=>str_repeat('9',64)]]];
+        $this->mock(\App\Services\IguideLab\LabDeclutterWorkflow::class,fn($m)=>$m->shouldReceive('validateSnapshot'));
+        $this->mock(\App\Services\IguideLab\LabDeclutterRemovalPlans::class,fn($m)=>$m->shouldReceive('verified')->andReturn([$planStep,$item]));
+        $this->mock(\App\Services\IguideLab\LabDeclutterSupport::class,fn($m)=>$m->shouldReceive('derive')->andReturn($support));
+        $this->mock(\App\Services\IguideLab\LabWorkflowSources::class,fn($m)=>$m->shouldReceive('verify')->andReturn($case));
+        $this->mock(\App\Services\IguideLab\LabDeclutterImageDraft::class,fn($m)=>$m->shouldReceive('verifyRun'));
+        $this->mock(\App\Services\IguideLab\LabDeclutterRemovalContext::class,fn($m)=>$m->shouldReceive('file')->andReturnUsing(fn($p,$rel)=>$disk->path($rel)));
+        $this->mock(\App\Services\IguideLab\LabWorkflowSteps::class,fn($m)=>$m->shouldReceive('invocation')->andReturn([]));
+        $this->mock(\App\Services\IguideLab\LabHarmonization::class,fn($m)=>$m->shouldReceive('run')->andReturnUsing(function($path)use($mode){
+            if($mode==='crashed')throw new \RuntimeException('Local harmonization failed its bounded execution checks.');
+            $request=json_decode(file_get_contents($path),true);$report=['status'=>'needs_attention','errorCode'=>'BOUNDARY_SOLVE_FAILED','automaticAcceptance'=>false];
+            @mkdir($request['outputDirectory'],0777,true);file_put_contents($request['outputDirectory'].'/report.json',json_encode($report));return $report;}));
+        $captured=null;
+        $this->mock(\App\Services\IguideLab\LabComposites::class,function($m)use(&$captured){$m->shouldReceive('add')->andReturnUsing(function($p,$c,$preview,$manifest)use(&$captured){
+            $captured=$manifest;return [new \App\Models\IguideLabComposite];});});
+        $artifacts=\Mockery::mock(\App\Services\IguideLab\LabDeclutterArtifacts::class)->makePartial()->shouldAllowMockingProtectedMethods();
+        $artifacts->shouldReceive('validateSnapshot','runtime');$artifacts->shouldReceive('runHash')->andReturn($run->output_sha256);
+        $artifacts->shouldReceive('asset')->andReturnUsing(fn($d)=>['path'=>'/asset.png','sha256'=>$d['sha256']]);
+        $donors=[];
+        $artifacts->shouldReceive('execute')->andReturnUsing(function($rel,$request)use(&$donors){
+            $donors[]=$request['candidate'];@mkdir($request['outputDirectory'],0777,true);file_put_contents($request['outputDirectory'].'/report.json','{}');
+            return ['artifacts'=>['preview'=>['sha256'=>'p'],'native'=>['sha256'=>'n'],'effective-alpha'=>['sha256'=>'a']],'qa'=>[]];});
+        $this->assertNotNull($artifacts->composeRemoval($item,$step,$run,$source,$plan,$support),$mode);
+        $this->assertSame([['path'=>$disk->path($run->output_path),'sha256'=>$run->output_sha256]],$donors,$mode);
+        $this->assertSame($run->output_sha256,$captured['lineage']['harmonizedCandidateSha256'],$mode);
+        $this->assertStringContainsString('raw generated draft',end($captured['lineage']['limitations']),$mode);
+        $this->assertStringContainsString($mode==='crashed'?'harmonization_execution_failed':'BOUNDARY_SOLVE_FAILED',end($captured['lineage']['limitations']),$mode);
+        $this->assertTrue($disk->exists($captured['lineage']['harmonizationReport']['path']),$mode);
+    }
 }

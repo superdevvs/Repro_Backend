@@ -59,11 +59,11 @@ class ProtocolTests(unittest.TestCase):
         a=parsed(self.context,self.proposal)
         self.assertEqual(a['status'],'ready_for_segmentation');self.assertEqual([x['stepKey'] for x in a['segmentationPlan']],['target_object'])
         self.assertFalse(a['automaticAcceptance']);self.assertIsNone(a['segmentationPlan'][0]['requestId'])
-    def test_shadow_declares_second_source_only_role(self):
+    def test_shadow_is_folded_into_the_one_source_only_mask_request(self):
         c,_,v=fixture(True);a=parsed(c,v)
-        self.assertEqual([x['stepKey'] for x in a['segmentationPlan']],p.ROLES)
+        self.assertEqual([x['stepKey'] for x in a['segmentationPlan']],['target_object'])
         self.assertEqual({x['inputSha256'] for x in a['segmentationPlan']},{c['binding']['sourceCutSha256']})
-    def test_closed_scope_holds(self):
+    def test_closed_scope_doubts_are_recorded_caveats(self):
         cases=[('target','count','multiple_or_uncertain'),('target','purpose','functional_or_uncertain'),
             ('target','opacity','transparent_or_uncertain'),('target','silhouette','clipped_thin_holes_or_uncertain'),
             ('receiver','material','reflective_patterned_or_uncertain'),('receiver','continuity','unresolved'),
@@ -72,26 +72,26 @@ class ProtocolTests(unittest.TestCase):
         for group,key,value in cases:
             with self.subTest(group=group,key=key):
                 proposal=copy.deepcopy(self.proposal);proposal[group][key]=value;a=parsed(self.context,proposal)
-                self.assertEqual(a['status'],'needs_review');self.assertEqual(a['segmentationPlan'],[])
-    def test_margin_and_uncertainty_hold(self):
+                self.assertEqual(a['status'],'ready_for_segmentation');self.assertTrue(a['caveats']);self.assertEqual(a['reviewReasons'],[])
+    def test_margin_and_uncertainty_are_caveats(self):
         self.proposal['target']['box']['xMin']=.09
-        self.assertIn('SUPPORT_SELECTION_TOUCHES_GUARD',parsed(self.context,self.proposal)['reviewReasons'])
+        self.assertIn('SUPPORT_SELECTION_TOUCHES_GUARD',parsed(self.context,self.proposal)['caveats'])
         self.proposal=copy.deepcopy(self.base[2]);self.proposal['uncertainties']=['Cannot distinguish adjacent edge.']
-        self.assertEqual(parsed(self.context,self.proposal)['status'],'needs_review')
+        a=parsed(self.context,self.proposal);self.assertEqual(a['status'],'ready_for_segmentation');self.assertIn('UNRESOLVED_UNCERTAINTY',a['caveats'])
     def test_parent_uncertainty_cannot_be_silently_discarded(self):
         self.context['sourcePlan']['uncertainties']=['Possible off-cut reflection.']
         self.proposal['contextSha256']=p.digest(self.context)
         a=parsed(self.context,self.proposal)
-        self.assertIn('SOURCE_PLAN_UNRESOLVED_UNCERTAINTY',a['reviewReasons'])
-        self.assertEqual(a['segmentationPlan'],[])
+        self.assertIn('SOURCE_PLAN_UNRESOLVED_UNCERTAINTY',a['caveats'])
+        self.assertEqual([x['stepKey'] for x in a['segmentationPlan']],['target_object'])
     def test_no_shadow_requires_consistent_source_evidence(self):
         self.proposal['shadow']['box']=self.proposal['target']['box']
-        self.assertIn('SHADOW_SELECTION_CONTRADICTS_FINDING',parsed(self.context,self.proposal)['reviewReasons'])
+        self.assertIn('SHADOW_SELECTION_CONTRADICTS_FINDING',parsed(self.context,self.proposal)['caveats'])
         self.proposal['shadow']['evidenceIds']=['parent_front']
         with self.assertRaisesRegex(ValueError,'FINDING_EVIDENCE'):parsed(self.context,self.proposal)
     def test_protected_overlap_holds(self):
         self.proposal['protectedFeatures']=[{'id':'nearby object','box':self.proposal['target']['box'],'evidenceIds':['source_cut'],'notes':'Keep exact.'}]
-        self.assertIn('PROTECTED_FEATURE_SELECTION_OVERLAP',parsed(self.context,self.proposal)['reviewReasons'])
+        self.assertIn('PROTECTED_FEATURE_SELECTION_OVERLAP',parsed(self.context,self.proposal)['caveats'])
     def test_parent_evidence_cannot_be_skipped(self):
         self.proposal['optics']['evidenceIds']=['parent_overview']
         with self.assertRaisesRegex(ValueError,'FINDING_EVIDENCE'):parsed(self.context,self.proposal)
@@ -101,10 +101,10 @@ class ProtocolTests(unittest.TestCase):
         self.context['candidateSha256']='b'*64
         with self.assertRaises(ValueError):p.validate_context(self.context)
     def test_reservation_ids_and_key_order_are_stable(self):
-        c,_,v=fixture(True);a=parsed(c,v);ids={key:str(uuid.UUID(int=i+10)) for i,key in enumerate(p.ROLES)}
+        c,_,v=fixture(True);a=parsed(c,v);ids={'target_object':str(uuid.UUID(int=10))}
         plans=p.bind_reserved_plans(a,ids)
-        self.assertEqual(plans,p.bind_reserved_plans(json.loads(json.dumps(a,sort_keys=True)),dict(reversed(list(ids.items())))))
-        with self.assertRaises(ValueError):p.bind_reserved_plans(a,{key:ids[p.ROLES[0]] for key in p.ROLES})
+        self.assertEqual(plans,p.bind_reserved_plans(json.loads(json.dumps(a,sort_keys=True)),dict(ids)))
+        with self.assertRaises(ValueError):p.bind_reserved_plans(a,{key:ids['target_object'] for key in p.ROLES})
     def test_empty_mask_is_hold_not_shadow_absence(self):
         a=parsed(self.context,self.proposal);plan=p.bind_reserved_plans(a,{'target_object':str(uuid.UUID(int=10))})[0]
         receipt={key:plan[key] for key in ['requestId','model','inputFingerprint','inputSha256']}
