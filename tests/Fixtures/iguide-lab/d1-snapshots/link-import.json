@@ -1,0 +1,217 @@
+{
+    "show": {
+        "queued": {
+            "data": {
+                "id": "<uuid-1>",
+                "requestId": "<uuid-2>",
+                "sourceKind": "iguide_link",
+                "status": "queued",
+                "error": null,
+                "audit": {
+                    "parserVersion": "scan-import-json-1",
+                    "sourceUrl": "https://youriguide.com/sample/",
+                    "archiveSha256": null,
+                    "metadataSha256": null,
+                    "providerCalls": 0
+                },
+                "sources": [],
+                "createdAt": "2026-11-16T08:10:00+00:00",
+                "completedAt": null
+            }
+        },
+        "completed": {
+            "data": {
+                "id": "<uuid-3>",
+                "requestId": "<uuid-4>",
+                "sourceKind": "iguide_link",
+                "status": "completed",
+                "error": null,
+                "audit": {
+                    "parserVersion": "scan-import-json-1",
+                    "sourceUrl": "https://youriguide.com/sample/",
+                    "archiveSha256": "<sha-1>",
+                    "metadataSha256": "<sha-2>",
+                    "providerCalls": 0,
+                    "format": "iguide_viewObject",
+                    "warnings": [],
+                    "expandedBytes": 48234496,
+                    "archiveBytes": 47185920,
+                    "sourceCount": 1
+                },
+                "sources": [
+                    {
+                        "caseId": "<uuid-5>",
+                        "importSourceKey": "<sha-3>",
+                        "sourceSha256": "<sha-4>",
+                        "width": 4096,
+                        "height": 2048,
+                        "panoId": "1",
+                        "roomId": "scan:65d4d56bf3e2845c38339ae8c478e8d3b3d0811f79d61f14",
+                        "originalRoomId": "7",
+                        "roomName": "Kitchen",
+                        "floorId": "1",
+                        "floorName": "Ground",
+                        "metadataAuthority": "iguide_viewObject",
+                        "entry": "sample/spheres/p1-s.jpg",
+                        "reused": false,
+                        "previewSha256": "<sha-5>",
+                        "previewDimensions": [
+                            2048,
+                            1024
+                        ],
+                        "previewAssetPath": "/api/iguide-lab/imports/<uuid-3>/sources/<uuid-5>/preview"
+                    }
+                ],
+                "createdAt": "2026-11-16T08:11:00+00:00",
+                "completedAt": "2026-11-16T08:12:00+00:00"
+            }
+        },
+        "needsAttention": {
+            "data": {
+                "id": "<uuid-6>",
+                "requestId": "<uuid-7>",
+                "sourceKind": "iguide_link",
+                "status": "needs_attention",
+                "error": "The tour metadata does not match the requested source.",
+                "audit": {
+                    "parserVersion": "scan-import-json-1",
+                    "sourceUrl": "https://youriguide.com/sample/",
+                    "archiveSha256": null,
+                    "metadataSha256": null,
+                    "providerCalls": 0
+                },
+                "sources": [],
+                "createdAt": "2026-11-16T08:13:00+00:00",
+                "completedAt": "2026-11-16T08:13:30+00:00"
+            }
+        }
+    },
+    "index": {
+        "data": [
+            {
+                "id": "<uuid-8>",
+                "requestId": "<uuid-9>",
+                "sourceKind": "zip",
+                "status": "completed",
+                "error": null,
+                "audit": {
+                    "parserVersion": "scan-import-json-1",
+                    "sourceUrl": null,
+                    "archiveSha256": "<sha-6>",
+                    "metadataSha256": null,
+                    "providerCalls": 0,
+                    "format": "generic_360_zip",
+                    "warnings": [],
+                    "expandedBytes": 48234496,
+                    "archiveBytes": 47185920,
+                    "sourceCount": 1
+                },
+                "sources": [
+                    {
+                        "caseId": "<uuid-10>",
+                        "importSourceKey": "<sha-7>",
+                        "sourceSha256": "<sha-8>",
+                        "width": 4096,
+                        "height": 2048,
+                        "panoId": null,
+                        "roomId": null,
+                        "originalRoomId": null,
+                        "roomName": null,
+                        "floorId": null,
+                        "floorName": null,
+                        "metadataAuthority": "unassigned",
+                        "entry": "room.png",
+                        "reused": false,
+                        "previewSha256": "<sha-9>",
+                        "previewDimensions": [
+                            2048,
+                            1024
+                        ],
+                        "previewAssetPath": "/api/iguide-lab/imports/<uuid-8>/sources/<uuid-10>/preview"
+                    }
+                ],
+                "createdAt": "2026-11-16T08:14:00+00:00",
+                "completedAt": "2026-11-16T08:15:00+00:00"
+            },
+            {
+                "id": "<uuid-6>",
+                "requestId": "<uuid-7>",
+                "sourceKind": "iguide_link",
+                "status": "needs_attention",
+                "error": "The tour metadata does not match the requested source.",
+                "audit": {
+                    "parserVersion": "scan-import-json-1",
+                    "sourceUrl": "https://youriguide.com/sample/",
+                    "archiveSha256": null,
+                    "metadataSha256": null,
+                    "providerCalls": 0
+                },
+                "sources": [],
+                "createdAt": "2026-11-16T08:13:00+00:00",
+                "completedAt": "2026-11-16T08:13:30+00:00"
+            },
+            {
+                "id": "<uuid-3>",
+                "requestId": "<uuid-4>",
+                "sourceKind": "iguide_link",
+                "status": "completed",
+                "error": null,
+                "audit": {
+                    "parserVersion": "scan-import-json-1",
+                    "sourceUrl": "https://youriguide.com/sample/",
+                    "archiveSha256": "<sha-1>",
+                    "metadataSha256": "<sha-2>",
+                    "providerCalls": 0,
+                    "format": "iguide_viewObject",
+                    "warnings": [],
+                    "expandedBytes": 48234496,
+                    "archiveBytes": 47185920,
+                    "sourceCount": 1
+                },
+                "sources": [
+                    {
+                        "caseId": "<uuid-5>",
+                        "importSourceKey": "<sha-3>",
+                        "sourceSha256": "<sha-4>",
+                        "width": 4096,
+                        "height": 2048,
+                        "panoId": "1",
+                        "roomId": "scan:65d4d56bf3e2845c38339ae8c478e8d3b3d0811f79d61f14",
+                        "originalRoomId": "7",
+                        "roomName": "Kitchen",
+                        "floorId": "1",
+                        "floorName": "Ground",
+                        "metadataAuthority": "iguide_viewObject",
+                        "entry": "sample/spheres/p1-s.jpg",
+                        "reused": false,
+                        "previewSha256": "<sha-5>",
+                        "previewDimensions": [
+                            2048,
+                            1024
+                        ],
+                        "previewAssetPath": "/api/iguide-lab/imports/<uuid-3>/sources/<uuid-5>/preview"
+                    }
+                ],
+                "createdAt": "2026-11-16T08:11:00+00:00",
+                "completedAt": "2026-11-16T08:12:00+00:00"
+            },
+            {
+                "id": "<uuid-1>",
+                "requestId": "<uuid-2>",
+                "sourceKind": "iguide_link",
+                "status": "queued",
+                "error": null,
+                "audit": {
+                    "parserVersion": "scan-import-json-1",
+                    "sourceUrl": "https://youriguide.com/sample/",
+                    "archiveSha256": null,
+                    "metadataSha256": null,
+                    "providerCalls": 0
+                },
+                "sources": [],
+                "createdAt": "2026-11-16T08:10:00+00:00",
+                "completedAt": null
+            }
+        ]
+    }
+}

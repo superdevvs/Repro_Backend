@@ -1,0 +1,260 @@
+{
+    "show": {
+        "queued": {
+            "data": {
+                "id": "<uuid-1>",
+                "requestId": "<uuid-2>",
+                "sourceKind": "zip",
+                "status": "queued",
+                "error": null,
+                "audit": {
+                    "parserVersion": "scan-import-json-1",
+                    "sourceUrl": null,
+                    "archiveSha256": "<sha-1>",
+                    "metadataSha256": null,
+                    "providerCalls": 0
+                },
+                "sources": [],
+                "createdAt": "2026-11-16T08:00:00+00:00",
+                "completedAt": null
+            }
+        },
+        "inspecting": {
+            "data": {
+                "id": "<uuid-3>",
+                "requestId": "<uuid-4>",
+                "sourceKind": "zip",
+                "status": "inspecting",
+                "error": null,
+                "audit": {
+                    "parserVersion": "scan-import-json-1",
+                    "sourceUrl": null,
+                    "archiveSha256": "<sha-2>",
+                    "metadataSha256": "<sha-3>",
+                    "providerCalls": 0
+                },
+                "sources": [],
+                "createdAt": "2026-11-16T08:01:00+00:00",
+                "completedAt": null
+            }
+        },
+        "completed": {
+            "data": {
+                "id": "<uuid-5>",
+                "requestId": "<uuid-6>",
+                "sourceKind": "zip",
+                "status": "completed",
+                "error": null,
+                "audit": {
+                    "parserVersion": "scan-import-json-1",
+                    "sourceUrl": null,
+                    "archiveSha256": "<sha-4>",
+                    "metadataSha256": "<sha-5>",
+                    "providerCalls": 0,
+                    "format": "iguide_viewObject",
+                    "warnings": [
+                        "Some panoramas have no authoritative room assignment."
+                    ],
+                    "expandedBytes": 96468992,
+                    "archiveBytes": 94371840,
+                    "sourceCount": 2
+                },
+                "sources": [
+                    {
+                        "caseId": "<uuid-7>",
+                        "importSourceKey": "<sha-6>",
+                        "sourceSha256": "<sha-7>",
+                        "width": 4096,
+                        "height": 2048,
+                        "panoId": "1",
+                        "roomId": "scan:752c62405ad17956712492fafac1a427025d7b5625d62399",
+                        "originalRoomId": "7",
+                        "roomName": "Kitchen",
+                        "floorId": "1",
+                        "floorName": "Ground",
+                        "metadataAuthority": "iguide_viewObject",
+                        "entry": "tour/spheres/p1-s.jpg",
+                        "reused": false,
+                        "previewSha256": "<sha-8>",
+                        "previewDimensions": [
+                            2048,
+                            1024
+                        ],
+                        "previewAssetPath": "/api/iguide-lab/imports/<uuid-5>/sources/<uuid-7>/preview"
+                    },
+                    {
+                        "caseId": "<uuid-8>",
+                        "importSourceKey": "<sha-9>",
+                        "sourceSha256": "<sha-10>",
+                        "width": 4096,
+                        "height": 2048,
+                        "panoId": null,
+                        "roomId": null,
+                        "originalRoomId": null,
+                        "roomName": null,
+                        "floorId": null,
+                        "floorName": null,
+                        "metadataAuthority": "unassigned",
+                        "entry": "tour/spheres/p2-s.jpg",
+                        "reused": true,
+                        "previewSha256": "<sha-11>",
+                        "previewDimensions": [
+                            2048,
+                            1024
+                        ],
+                        "previewAssetPath": "/api/iguide-lab/imports/<uuid-5>/sources/<uuid-8>/preview"
+                    }
+                ],
+                "createdAt": "2026-11-16T08:02:00+00:00",
+                "completedAt": "2026-11-16T08:03:00+00:00"
+            }
+        },
+        "needsAttention": {
+            "data": {
+                "id": "<uuid-9>",
+                "requestId": "<uuid-10>",
+                "sourceKind": "zip",
+                "status": "needs_attention",
+                "error": "The complete import does not fit the remaining source capacity. No partial import was created.",
+                "audit": {
+                    "parserVersion": "scan-import-json-1",
+                    "sourceUrl": null,
+                    "archiveSha256": "<sha-12>",
+                    "metadataSha256": null,
+                    "providerCalls": 0,
+                    "format": "generic_360_zip",
+                    "warnings": []
+                },
+                "sources": [],
+                "createdAt": "2026-11-16T08:04:00+00:00",
+                "completedAt": "2026-11-16T08:05:00+00:00"
+            }
+        }
+    },
+    "index": {
+        "data": [
+            {
+                "id": "<uuid-9>",
+                "requestId": "<uuid-10>",
+                "sourceKind": "zip",
+                "status": "needs_attention",
+                "error": "The complete import does not fit the remaining source capacity. No partial import was created.",
+                "audit": {
+                    "parserVersion": "scan-import-json-1",
+                    "sourceUrl": null,
+                    "archiveSha256": "<sha-12>",
+                    "metadataSha256": null,
+                    "providerCalls": 0,
+                    "format": "generic_360_zip",
+                    "warnings": []
+                },
+                "sources": [],
+                "createdAt": "2026-11-16T08:04:00+00:00",
+                "completedAt": "2026-11-16T08:05:00+00:00"
+            },
+            {
+                "id": "<uuid-5>",
+                "requestId": "<uuid-6>",
+                "sourceKind": "zip",
+                "status": "completed",
+                "error": null,
+                "audit": {
+                    "parserVersion": "scan-import-json-1",
+                    "sourceUrl": null,
+                    "archiveSha256": "<sha-4>",
+                    "metadataSha256": "<sha-5>",
+                    "providerCalls": 0,
+                    "format": "iguide_viewObject",
+                    "warnings": [
+                        "Some panoramas have no authoritative room assignment."
+                    ],
+                    "expandedBytes": 96468992,
+                    "archiveBytes": 94371840,
+                    "sourceCount": 2
+                },
+                "sources": [
+                    {
+                        "caseId": "<uuid-7>",
+                        "importSourceKey": "<sha-6>",
+                        "sourceSha256": "<sha-7>",
+                        "width": 4096,
+                        "height": 2048,
+                        "panoId": "1",
+                        "roomId": "scan:752c62405ad17956712492fafac1a427025d7b5625d62399",
+                        "originalRoomId": "7",
+                        "roomName": "Kitchen",
+                        "floorId": "1",
+                        "floorName": "Ground",
+                        "metadataAuthority": "iguide_viewObject",
+                        "entry": "tour/spheres/p1-s.jpg",
+                        "reused": false,
+                        "previewSha256": "<sha-8>",
+                        "previewDimensions": [
+                            2048,
+                            1024
+                        ],
+                        "previewAssetPath": "/api/iguide-lab/imports/<uuid-5>/sources/<uuid-7>/preview"
+                    },
+                    {
+                        "caseId": "<uuid-8>",
+                        "importSourceKey": "<sha-9>",
+                        "sourceSha256": "<sha-10>",
+                        "width": 4096,
+                        "height": 2048,
+                        "panoId": null,
+                        "roomId": null,
+                        "originalRoomId": null,
+                        "roomName": null,
+                        "floorId": null,
+                        "floorName": null,
+                        "metadataAuthority": "unassigned",
+                        "entry": "tour/spheres/p2-s.jpg",
+                        "reused": true,
+                        "previewSha256": "<sha-11>",
+                        "previewDimensions": [
+                            2048,
+                            1024
+                        ],
+                        "previewAssetPath": "/api/iguide-lab/imports/<uuid-5>/sources/<uuid-8>/preview"
+                    }
+                ],
+                "createdAt": "2026-11-16T08:02:00+00:00",
+                "completedAt": "2026-11-16T08:03:00+00:00"
+            },
+            {
+                "id": "<uuid-3>",
+                "requestId": "<uuid-4>",
+                "sourceKind": "zip",
+                "status": "inspecting",
+                "error": null,
+                "audit": {
+                    "parserVersion": "scan-import-json-1",
+                    "sourceUrl": null,
+                    "archiveSha256": "<sha-2>",
+                    "metadataSha256": "<sha-3>",
+                    "providerCalls": 0
+                },
+                "sources": [],
+                "createdAt": "2026-11-16T08:01:00+00:00",
+                "completedAt": null
+            },
+            {
+                "id": "<uuid-1>",
+                "requestId": "<uuid-2>",
+                "sourceKind": "zip",
+                "status": "queued",
+                "error": null,
+                "audit": {
+                    "parserVersion": "scan-import-json-1",
+                    "sourceUrl": null,
+                    "archiveSha256": "<sha-1>",
+                    "metadataSha256": null,
+                    "providerCalls": 0
+                },
+                "sources": [],
+                "createdAt": "2026-11-16T08:00:00+00:00",
+                "completedAt": null
+            }
+        ]
+    }
+}
