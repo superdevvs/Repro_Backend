@@ -98,6 +98,27 @@ class IngestIguideAssetsJob implements ShouldQueue
         $retryPending = false;
         $mediaStorage = app(\App\Services\Media\MediaStorage::class);
 
+        // Protected iGUIDE views gate even floorplan documents behind an access token. Resolve one at
+        // most once per job (saved, else fresh from the ready event), and refresh once if refused.
+        $iguide = app(\App\Services\IguideService::class);
+        $viewToken = null;
+        $tokenState = 'unresolved';
+        $protectedAssets = 0;
+        $tokenFor = function (bool $refused) use ($iguide, $shoot, &$viewToken, &$tokenState): ?string {
+            if ($tokenState === 'unresolved') {
+                $viewToken = $iguide->viewAccessToken($shoot);
+                $tokenState = $viewToken === null ? 'none' : 'first';
+            } elseif ($refused && $tokenState === 'first') {
+                $viewToken = $iguide->viewAccessToken($shoot, true);
+                $tokenState = $viewToken === null ? 'none' : 'refreshed';
+            } elseif ($refused) {
+                $viewToken = null;
+                $tokenState = 'none';
+            }
+
+            return $viewToken;
+        };
+
         foreach ($this->floorplans as $item) {
             $url = $item['url'] ?? null;
             $assetKey = $item['asset_key'] ?? null;
@@ -134,10 +155,22 @@ class IngestIguideAssetsJob implements ShouldQueue
                     ? sprintf('shoots/%d/services/%d/floorplans/%s', $shoot->id, $this->shootServiceId, $storedFilename)
                     : sprintf('shoots/%d/floorplans/%s', $shoot->id, $storedFilename);
 
-                $response = Http::withOptions([
-                    'verify' => config('app.env') === 'production',
-                    'timeout' => 120,
-                ])->get($url);
+                $response = $this->download($url);
+                if ($this->isProtectedViewGate($url, $response)) {
+                    // The stored link stays untokenized; only this request carries the token.
+                    $token = $tokenFor(false);
+                    if ($token !== null) {
+                        $response = $this->download(\App\Services\IguideService::withDocumentAccessToken($url, $token));
+                        if ($this->isProtectedViewGate($url, $response) && ($token = $tokenFor(true)) !== null) {
+                            $response = $this->download(\App\Services\IguideService::withDocumentAccessToken($url, $token));
+                        }
+                    }
+                    if ($this->isProtectedViewGate($url, $response)) {
+                        // Retrying cannot help without a token; it is recorded below instead.
+                        $protectedAssets++;
+                        continue;
+                    }
+                }
 
                 if (!$response->successful()) {
                     Log::warning('IngestIguideAssetsJob: download failed', [
@@ -259,6 +292,14 @@ class IngestIguideAssetsJob implements ShouldQueue
             }
         }
 
+        if ($protectedAssets > 0) {
+            // Stop the recovery sweep for this tour; staff see it in iguide:protected-floorplans.
+            app(\App\Services\Shoots\ProviderAssetRecoveryThrottle::class)->markProtected($shoot->id);
+            Log::warning('IngestIguideAssetsJob: floorplans are on a protected iGUIDE view without a usable access token.', [
+                'shoot_id' => $shoot->id,
+            ]);
+        }
+
         if ($retryPending) {
             if ($this->attempts() >= $this->tries) throw new \RuntimeException('Provider floorplan document is not ready; no HTML payload was published.');
             $this->release($this->backoff[min(max(0, $this->attempts() - 1), count($this->backoff) - 1)]);
@@ -298,6 +339,36 @@ class IngestIguideAssetsJob implements ShouldQueue
             'shoot_id' => $this->shootId,
             'error' => $exception->getMessage(),
         ]);
+    }
+
+    private function download(string $url): \Illuminate\Http\Client\Response
+    {
+        return Http::withOptions([
+            'verify' => config('app.env') === 'production',
+            'timeout' => 120,
+            'allow_redirects' => ['max' => 5, 'track_redirects' => true],
+        ])->get($url);
+    }
+
+    /**
+     * youriguide.com answers a document on a Protected View without a valid token by redirecting to
+     * the viewer's sign-in page (an HTML document), or with 401/403. A provider "still generating"
+     * page is served without a redirect and keeps the normal not-ready retry.
+     */
+    private function isProtectedViewGate(string $url, \Illuminate\Http\Client\Response $response): bool
+    {
+        $host = strtolower((string) parse_url($url, PHP_URL_HOST));
+        if (!preg_match('/(^|\.)(youriguide|iguidephotos|iguideradix)\.com$/', $host)) {
+            return false;
+        }
+        if (in_array($response->status(), [401, 403], true)) {
+            return true;
+        }
+        $redirected = trim($response->header('X-Guzzle-Redirect-History')) !== '';
+        $html = str_starts_with(strtolower($response->header('Content-Type')), 'text/html')
+            || preg_match('/^\s*(<!doctype\s+html|<html)/i', substr((string) $response->body(), 0, 512)) === 1;
+
+        return $redirected && $html;
     }
 
     private function resolveSystemUploaderId(Shoot $shoot): ?int

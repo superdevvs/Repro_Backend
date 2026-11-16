@@ -1220,6 +1220,85 @@ class IguideService
         ], static fn ($v) => $v !== null);
     }
 
+    /**
+     * Read access token for a shoot's iGUIDE view, needed to download documents of Protected Views.
+     *
+     * iGUIDE issues the token only inside the "ready" event and it lasts three weeks. A saved token is
+     * reused while valid; otherwise, when the work order is known, the Portal serves the ready event
+     * again with a fresh token. The token is saved for later imports and never written into links.
+     */
+    public function viewAccessToken(Shoot $shoot, bool $refresh = false): ?string
+    {
+        $data = is_array($shoot->iguide_data) ? $shoot->iguide_data : [];
+        $saved = $data['authtoken'] ?? null;
+        if (!$refresh && self::accessTokenUsable($saved)) {
+            return $saved;
+        }
+
+        $propertyId = trim((string) ($shoot->iguide_property_id ?? ''));
+        $taskId = trim((string) ($shoot->iguide_work_order_id ?: ($data['work_order_id'] ?? '')));
+        if ($propertyId === '' || $taskId === '') {
+            return null;
+        }
+
+        // A refused or failed lookup is not repeated for every asset and job.
+        $unavailable = 'iguide:view-token-unavailable:'.hash('sha256', $propertyId.'|'.$taskId);
+        if (\Illuminate\Support\Facades\Cache::has($unavailable)) {
+            return null;
+        }
+
+        $token = null;
+        try {
+            $response = $this->portalRequest('get', '/iguides/'.rawurlencode($propertyId).'/events/ready/object', ['taskId' => $taskId]);
+            $token = $response?->successful() ? $response->json('authtoken') : null;
+        } catch (\Throwable $e) {
+            Log::warning('iGUIDE view token lookup failed', ['shoot_id' => $shoot->id]);
+        }
+        if (!self::accessTokenUsable($token)) {
+            \Illuminate\Support\Facades\Cache::put($unavailable, true, now()->addHour());
+            return null;
+        }
+
+        // Save only at shoot level and only for the same tour: a unit-scoped view shares the shoot ID
+        // but carries its own unit's iGUIDE identifiers, and its token must not land on the shoot.
+        \App\Support\LockedWrite::run(function () use ($shoot, $token, $propertyId) {
+            $row = DB::table('shoots')->where('id', $shoot->id)->first(['iguide_property_id', 'iguide_data']);
+            if (!$row || (string) $row->iguide_property_id !== $propertyId) {
+                return;
+            }
+            $current = is_string($row->iguide_data) ? (json_decode($row->iguide_data, true) ?: []) : [];
+            $current['authtoken'] = $token;
+            DB::table('shoots')->where('id', $shoot->id)->update(['iguide_data' => json_encode($current)]);
+        }, 'iguide.view-access-token');
+
+        return $token;
+    }
+
+    /** A JWT whose expiry is more than ten minutes away. Unreadable tokens are not trusted. */
+    public static function accessTokenUsable(mixed $token): bool
+    {
+        if (!is_string($token) || substr_count($token, '.') !== 2) {
+            return false;
+        }
+        $claims = json_decode(base64_decode(strtr(explode('.', $token)[1], '-_', '+/')) ?: 'null', true);
+
+        return is_array($claims) && isset($claims['exp']) && (int) $claims['exp'] > time() + 600;
+    }
+
+    /** The same iGUIDE document link carrying the given token (replacing any previous one). */
+    public static function withDocumentAccessToken(string $url, string $token): string
+    {
+        $parts = parse_url($url);
+        $query = [];
+        foreach (explode('&', $parts['query'] ?? '') as $pair) {
+            if ($pair !== '' && strtolower(rawurldecode(explode('=', $pair, 2)[0])) !== 'accesstoken') $query[] = $pair;
+        }
+        $query[] = 'accessToken='.rawurlencode($token);
+        $base = strtok($url, '?#');
+
+        return $base.'?'.implode('&', $query).(isset($parts['fragment']) ? '#'.$parts['fragment'] : '');
+    }
+
     private function withAccessToken(?string $url, ?string $token): ?string
     {
         if (!is_string($url) || $url === '') {
