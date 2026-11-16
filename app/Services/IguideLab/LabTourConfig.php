@@ -112,8 +112,9 @@ final class LabTourConfig
     }
 
     /**
-     * Both values must be non-empty strings and the connection must exist; otherwise the pair falls back to
-     * studio/studio (today's single worker, scripts/install-studio-runtime.sh:96) and the problem is logged once.
+     * Both values must be non-empty strings and the connection must exist and use the database driver (sync would run
+     * paid surveys inline, and the pending-job guards of LabTourQueue read the jobs table); otherwise the pair falls back
+     * to studio/studio (today's single worker, scripts/install-studio-runtime.sh:96) and the problem is logged once.
      *
      * @return array{0:string,1:string}
      */
@@ -122,7 +123,7 @@ final class LabTourConfig
         $connection = config('iguide-lab-tour.queue_connection');
         $queue = config('iguide-lab-tour.queue');
         if (is_string($connection) && $connection !== '' && is_string($queue) && $queue !== ''
-            && is_array(config('queue.connections.'.$connection))) {
+            && is_array(config('queue.connections.'.$connection)) && config('queue.connections.'.$connection.'.driver') === 'database') {
             return [$connection, $queue];
         }
         $key = json_encode([$connection, $queue]);

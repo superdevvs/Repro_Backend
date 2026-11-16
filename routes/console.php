@@ -1,6 +1,6 @@
 <?php
 \Illuminate\Support\Facades\Schedule::command('iguide-lab:prune-import-uploads')->hourly()->withoutOverlapping();
-\Illuminate\Support\Facades\Schedule::command('iguide-lab:tour-monitors')->everyMinute()->withoutOverlapping();
+\Illuminate\Support\Facades\Schedule::command('iguide-lab:tour-monitors')->everyMinute()->withoutOverlapping(5)->runInBackground();
 
 \Illuminate\Support\Facades\Schedule::command('messaging:prune-uploads')->daily()->withoutOverlapping();
 
