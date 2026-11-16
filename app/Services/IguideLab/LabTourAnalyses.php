@@ -439,7 +439,7 @@ class LabTourAnalyses
     {
         $analysis = IguideLabTourAnalysis::find($analysisId);
         if (! LabTourConfig::analysisEnabled() || ! $analysis || ! in_array($analysis->status, self::ACTIVE, true)) {
-            if ($analysis) $this->stopMonitor($analysis->id, false);
+            if ($analysis) $this->stopMonitor($analysis->id);
             return false;
         }
         // Lab-wide survey sweep (9.9), with its own transactions and pushes.
@@ -455,12 +455,8 @@ class LabTourAnalyses
                 Log::warning('A tour survey job could not be queued; the sweep will retry it.', ['surveyId' => $surveyId, 'exception' => get_class($e)]);
             }
         }
-        if (! $state['active']) {
-            $this->stopMonitor($analysis->id, false);
-            return false;
-        }
-        if ($state['idle']) {
-            $this->stopMonitor($analysis->id, true);
+        if (! $state['active'] || $state['idle']) {
+            $this->stopMonitor($analysis->id);
             return false;
         }
 
@@ -529,9 +525,12 @@ class LabTourAnalyses
         if ($visible) LabTourRevisions::bump($analysis->id);
         $status = $this->statusFor($captures);
         $pending = $captures->where('status', 'pending');
+        $active = in_array($status, self::ACTIVE, true);
+        $idle = $captures->where('status', 'surveying')->isEmpty() && $pending->isNotEmpty() && $pending->where('dispatch_allowed', true)->isEmpty();
+        // Idle is written here, under the lock (bookkeeping write), so a resume that commits after T1 clears it and wins.
+        if ($active && $idle) IguideLabTourAnalysis::whereKey($analysis->id)->toBase()->update(['monitor_idle' => true]);
 
-        return ['active' => in_array($status, self::ACTIVE, true), 'push' => $push,
-            'idle' => $captures->where('status', 'surveying')->isEmpty() && $pending->isNotEmpty() && $pending->where('dispatch_allowed', true)->isEmpty()];
+        return ['active' => $active, 'push' => $push, 'idle' => $idle];
     }
 
     private function needsNewRow(IguideLabTourCapture $capture): bool
@@ -541,11 +540,14 @@ class LabTourAnalyses
         return $latest === null || in_array($latest->status, ['failed', 'needs_attention'], true);
     }
 
-    /** Bookkeeping write when a chain stops: clear heartbeat and token so the next new chain proceeds at once. */
-    private function stopMonitor(string $analysisId, bool $idle): void
+    /**
+     * Bookkeeping write when a chain stops: clear heartbeat and token so the next new chain proceeds at once. It never
+     * writes monitor_idle (T1 does), so it cannot overwrite a resume that committed after T1.
+     */
+    private function stopMonitor(string $analysisId): void
     {
-        LockedWrite::run(fn () => IguideLabTourAnalysis::whereKey($analysisId)->toBase()->update(['monitor_heartbeat_at' => null, 'monitor_token' => null]
-            + ($idle ? ['monitor_idle' => true] : [])), 'iguide-lab.tour-analysis-monitor-stop');
+        LockedWrite::run(fn () => IguideLabTourAnalysis::whereKey($analysisId)->toBase()->update(['monitor_heartbeat_at' => null, 'monitor_token' => null]),
+            'iguide-lab.tour-analysis-monitor-stop');
     }
 
     private function markDispatched(IguideLabTourSurvey $survey): bool
