@@ -160,6 +160,30 @@ class IguideLabRuntimeManifestWriteTest extends TestCase
         $this->assertSame(0, $exit, $output);
     }
 
+    public function test_a_settled_needs_attention_run_does_not_block_and_a_live_run_is_named(): void
+    {
+        $project = IguideLabProject::create(['name' => 'Settled', 'token_hash' => hash('sha256', Str::random(64)), 'expires_at' => now()->addDay(), 'max_runs' => 20]);
+        $case = (string) Str::uuid();
+        DB::table('iguide_lab_cases')->insert(['id' => $case, 'project_id' => $project->id, 'label' => 'Case', 'projection' => 'equirectangular', 'width' => 2048,
+            'height' => 1024, 'source_sha256' => str_repeat('c', 64), 'source_path' => 'x.png', 'source_mime' => 'image/png', 'created_at' => now(), 'updated_at' => now()]);
+        $run = fn (string $status) => tap((string) Str::uuid(), fn ($id) => DB::table('iguide_lab_runs')->insert(['id' => $id, 'project_id' => $project->id, 'case_id' => $case,
+            'request_id' => (string) Str::uuid(), 'request_hash' => str_repeat('a', 64), 'model_id' => 'm', 'provider' => 'openai', 'preset' => 'grass', 'prompt' => 'p',
+            'options' => '{}', 'status' => $status, 'completed_at' => $status === 'needs_attention' ? now() : null, 'created_at' => now(), 'updated_at' => now()]));
+        $run('needs_attention');
+
+        $this->assertSame(['workflows' => 0, 'workflowItems' => 0, 'runs' => 0, 'tourRuns' => 0], app(\App\Services\IguideLab\LabRuntimeManifests::class)->inFlight());
+        [$exit, $output] = $this->manifests(['--write' => true, '--dry-run' => true]);
+        $this->assertSame(0, $exit, $output);
+
+        $live = $run('processing');
+        $state = $this->state();
+        [$exit, $output] = $this->manifests(['--write' => true]);
+        $this->assertSame(1, $exit, $output);
+        $this->assertStringContainsString('Refused: lab work is in flight (workflows=0, workflowItems=0, runs=1, tourRuns=0)', $output);
+        $this->assertStringContainsString('run '.$live.' processing', $output, 'the refusal names the blocking record');
+        $this->assertSame($state, $this->state());
+    }
+
     public function test_a_candidate_that_fails_its_validator_writes_nothing(): void
     {
         // Python pins are never changed, so a stale manifest with a wrong OpenCV pin cannot be made valid.

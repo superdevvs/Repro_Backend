@@ -177,10 +177,16 @@ class LabRuntimeManifests
     /** @return array<string, int> lab work that pinned the current manifests when it started */
     public function inFlight(): array
     {
-        return ['workflows' => IguideLabWorkflow::whereNotIn('status', LabWorkflows::TERMINAL)->count(),
-            'workflowItems' => IguideLabWorkflowItem::whereNotIn('status', LabWorkflows::TERMINAL)->count(),
-            'runs' => IguideLabRun::whereNotIn('status', ['completed', 'failed'])->count(),
-            'tourRuns' => IguideLabTourRun::whereIn('status', LabTourRuns::ACTIVE)->count()];
+        return array_map(fn ($query) => $query->count(), $this->inFlightQueries());
+    }
+
+    /** needs_attention is settled (LabService::attention sets completed_at), the same settled set as LabService's run check. */
+    private function inFlightQueries(): array
+    {
+        return ['workflows' => IguideLabWorkflow::whereNotIn('status', LabWorkflows::TERMINAL),
+            'workflowItems' => IguideLabWorkflowItem::whereNotIn('status', LabWorkflows::TERMINAL),
+            'runs' => IguideLabRun::whereNotIn('status', ['completed', 'failed', 'needs_attention']),
+            'tourRuns' => IguideLabTourRun::whereIn('status', LabTourRuns::ACTIVE)];
     }
 
     /**
@@ -383,8 +389,13 @@ class LabRuntimeManifests
         if (array_sum($counts) === 0) return null;
         $parts = [];
         foreach ($counts as $name => $count) $parts[] = $name.'='.$count;
+        $labels = ['workflows' => 'workflow', 'workflowItems' => 'workflow item', 'runs' => 'run', 'tourRuns' => 'tour run'];
+        $blocking = [];
+        foreach ($this->inFlightQueries() as $name => $query) {
+            foreach ($query->orderBy('created_at')->limit(10)->get(['id', 'status']) as $row) $blocking[] = $labels[$name].' '.$row->id.' '.$row->status;
+        }
 
-        return 'Refused: lab work is in flight ('.implode(', ', $parts).'). Wait until it finishes, then run this again. Nothing was written.';
+        return 'Refused: lab work is in flight ('.implode(', ', $parts).'). Blocking: '.implode('; ', $blocking).'. Wait until it finishes, then run this again. Nothing was written.';
     }
 
     private function path(string $key): ?string
