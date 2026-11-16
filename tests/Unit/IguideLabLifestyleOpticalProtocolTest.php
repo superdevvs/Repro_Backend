@@ -63,11 +63,15 @@ class IguideLabLifestyleOpticalProtocolTest extends TestCase
         $result=self::candidate($c);$this->assertSame('framing_candidate',P::parse(IguideLabLifestyleFramingProtocolTest::response($result),$c)['status']);
         $result['constraints']['optical_dependencies']['evidenceViewIds']=['source','source_detail_1'];$this->reject($result,$c);
     }
-    public function test_clearer_details_do_not_permit_another_followup_and_holds_stay_held(): void
+    public function test_clearer_details_do_not_permit_another_followup_and_an_optics_only_hold_becomes_a_caveated_candidate(): void
     {
         [$c,$images]=self::fixture();[$c]=self::followup($c,$images);$v=self::candidate($c);
         $held=$v;$held['status']='needs_review';$held['view']=null;$held['constraints']['optical_dependencies']['status']='unresolved';
-        $this->assertSame('needs_review',P::parse(IguideLabLifestyleFramingProtocolTest::response($held),$c)['status']);
+        // No hard blocker (no people, plausible pair, visible floor): the cited front overview gives the pose; the doubt stays a caveat.
+        $parsed=P::parse(IguideLabLifestyleFramingProtocolTest::response($held),$c);
+        $this->assertSame('framing_candidate',$parsed['status']);$this->assertSame(['yaw'=>0.0,'pitch'=>-10.0,'hFov'=>100.0],$parsed['view']);
+        $this->assertSame('verify_on_cut',$parsed['constraints']['optical_dependencies']['status']);$this->assertFalse($parsed['imageGenerationAuthorized']);
+        $held['sourcePeople']='present';$this->assertSame('needs_review',P::parse(IguideLabLifestyleFramingProtocolTest::response($held),$c)['status']);
         $this->reject(self::enquiry($c),$c);$v['constraints']['optical_dependencies']['evidenceViewIds']=['source'];$this->reject($v,$c);
     }
     public function test_reflection_scale_and_clearance_doubts_are_caveats_on_a_framing_candidate(): void
@@ -135,10 +139,21 @@ class IguideLabLifestyleOpticalProtocolTest extends TestCase
         $this->assertSame('blocked',Legacy::parse(IguideLabLifestyleFramingProtocolTest::response($v),$c)['constraints']['optical_dependencies']['status']);
         $v['status']='detail_required';$this->expectException(\InvalidArgumentException::class);Legacy::parse(IguideLabLifestyleFramingProtocolTest::response($v),$c);
     }
-    public function test_long_optical_explanation_is_shortened_not_rejected_or_promoted_to_a_candidate(): void
+    public function test_long_optical_explanation_on_an_optics_only_hold_is_shortened_and_kept_as_a_caveat_on_a_candidate(): void
     {
         [$c,$images]=self::fixture();[$c]=self::followup($c,$images);$held=self::candidate($c);
         $held['status']='needs_review';$held['view']=null;$held['constraints']['optical_dependencies']['status']='unresolved';
+        $held['constraints']['optical_dependencies']['reason']=str_repeat('x',768);$held['summary']=str_repeat('y',1300);
+        $parsed=P::parse(IguideLabLifestyleFramingProtocolTest::response($held),$c);
+        $this->assertSame('framing_candidate',$parsed['status']);$this->assertNotNull($parsed['view']);
+        $this->assertSame(550,mb_strlen($parsed['constraints']['optical_dependencies']['reason']));$this->assertSame(1200,mb_strlen($parsed['summary']));
+        $this->assertSame('verify_on_cut',$parsed['constraints']['optical_dependencies']['status']);
+        $this->assertStringContainsString('unresolved',$parsed['constraints']['optical_dependencies']['reason']);
+    }
+    public function test_long_optical_explanation_on_a_hard_blocked_hold_is_shortened_not_rejected_or_promoted(): void
+    {
+        [$c,$images]=self::fixture();[$c]=self::followup($c,$images);$held=self::candidate($c);
+        $held['status']='needs_review';$held['view']=null;$held['constraints']['optical_dependencies']['status']='unresolved';$held['sourcePeople']='uncertain';
         $held['constraints']['optical_dependencies']['reason']=str_repeat('x',768);$held['summary']=str_repeat('y',1300);
         $parsed=P::parse(IguideLabLifestyleFramingProtocolTest::response($held),$c);
         $this->assertSame('needs_review',$parsed['status']);$this->assertNull($parsed['view']);
