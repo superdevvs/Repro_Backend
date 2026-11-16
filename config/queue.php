@@ -41,6 +41,17 @@ return [
             'after_commit' => true,
         ],
 
+        // Tour analysis layer (D5). retry_after must stay above the longest tour job timeout (600 s).
+        // Used only once IGUIDE_LAB_TOUR_QUEUE_CONNECTION/IGUIDE_LAB_TOUR_QUEUE point at it (config/iguide-lab-tour.php).
+        'iguide-lab-tour' => [
+            'driver' => 'database',
+            'connection' => env('DB_QUEUE_CONNECTION'),
+            'table' => env('DB_QUEUE_TABLE', 'jobs'),
+            'queue' => 'iguide-lab-tour',
+            'retry_after' => 900,
+            'after_commit' => true,
+        ],
+
         'sync' => [
             'driver' => 'sync',
         ],
