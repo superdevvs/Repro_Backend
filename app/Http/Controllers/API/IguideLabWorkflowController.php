@@ -13,7 +13,7 @@ class IguideLabWorkflowController extends Controller
     public function index(Request $request, LabWorkflows $service)
     {
         $project = $request->attributes->get('iguide_lab_project');
-        return response()->json(['data' => ['capabilities' => app(LabWorkflowPolicy::class)->capabilities(),
+        return response()->json(['data' => ['capabilities' => \App\Services\IguideLab\LabStagingRoomAlias::capabilities(app(LabWorkflowPolicy::class)->capabilities()),
             'workflows' => IguideLabWorkflow::where('project_id', $project->id)->latest()->limit(120)->get()->map(fn ($record) => $service->dto($record))]]);
     }
     public function start(Request $request, LabWorkflows $service)
