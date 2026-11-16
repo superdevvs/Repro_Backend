@@ -6,6 +6,8 @@ use Illuminate\Support\Str;
 /** Explicit 2:1 source role capability; no changes to the square staging validator. */
 class LabGrassSegmentationPlan
 {
+    public const TEXT_LAWN_PAYLOAD = ['prompt' => 'grass lawn', 'box_prompts' => [], 'apply_mask' => false, 'output_format' => 'png',
+        'return_multiple_masks' => true, 'max_masks' => 1, 'include_scores' => true, 'include_boxes' => true];
     public function validate(array $plan, string $requestId): void
     {
         $this->keys($plan, ['stepKey','maskRole','requestId','reservationState','model','inputSha256','width','height','payload',
@@ -25,6 +27,12 @@ class LabGrassSegmentationPlan
         abort_unless(is_array($identities) && array_is_list($identities) && count($identities) >= 1 && count($identities) <= 8
             && $identities === array_map(fn ($i) => $role.'_'.$i, range(1, count($identities))) && is_array($payload), 422);
         $this->keys($payload, ['prompt','box_prompts','apply_mask','output_format','return_multiple_masks','max_masks','include_scores','include_boxes']);
+        // The lawn is one text-prompted mask over the whole original source; exclusions keep their boxes.
+        if ($role === 'lawn') {
+            abort_unless($identities === ['lawn_1'] && LabMachineSegmentationPlan::canonicalHash($payload) === LabMachineSegmentationPlan::canonicalHash(self::TEXT_LAWN_PAYLOAD), 422, 'The grass lawn mask is text-only.');
+            return;
+        }
+        abort_unless($payload['box_prompts'] !== [], 422, 'Grass exclusions require their boxes.');
         abort_unless($payload['prompt'] === LabGrassAssessmentPolicy::PROMPTS[$role] && $payload['apply_mask'] === false
             && $payload['output_format'] === 'png' && $payload['return_multiple_masks'] === true && $payload['max_masks'] === count($identities)
             && $payload['include_scores'] === true && $payload['include_boxes'] === true && is_array($payload['box_prompts'])
