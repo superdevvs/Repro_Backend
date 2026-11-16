@@ -29,8 +29,6 @@ use Illuminate\Support\Str;
 class LabTourSurveys
 {
     public const TERMINAL = ['completed', 'failed', 'needs_attention', 'cancelled'];
-    /** needs_attention codes that mean "a paid answer may exist" (5.10). */
-    private const UNKNOWN_OUTCOME = ['survey_outcome_unknown', 'submission_outcome_unconfirmed', 'worker_stopped_unknown_outcome', 'receipt_unconfirmed'];
     private const RESPONSE_FILE_MAX_BYTES = 8 * 1024 * 1024;
     private const JSON = JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES;
 
@@ -154,16 +152,17 @@ class LabTourSurveys
             $values = ['status' => 'failed', 'error_code' => $error->reasonCode, 'parse_error' => $error->parseError,
                 'parser_version' => LabTourSurveyProtocol::PARSER_VERSION, 'completed_at' => $survey->completed_at ?? now()];
         }
-        $written = $this->labWrite($survey->project_id, 'survey-reparse', function () use ($survey, $status, $sha, $force, $values) {
+        $refusal = $this->labWrite($survey->project_id, 'survey-reparse', function () use ($survey, $status, $sha, $values) {
             $query = IguideLabTourSurvey::whereKey($survey->id)->where('status', $status);
             if ($status === 'completed') {
-                if ($this->runTargetExists($survey)) return false;
+                // Re-checked under the project lock: a run may have been created since the first check.
+                if ($this->runTargetExists($survey)) return 'A tour run references a capture of this survey, so its result cannot be re-parsed.';
                 $query->where('result_sha256', $sha);
             }
 
-            return $query->update($values) === 1;
+            return $query->update($values) === 1 ? null : 'The survey changed while it was re-parsed; nothing was written.';
         });
-        if (! $written) throw new \DomainException('The survey changed while it was re-parsed; nothing was written.');
+        if ($refusal !== null) throw new \DomainException($refusal);
         $survey->refresh();
         if ($survey->status === 'completed') $this->lastCapturesUpdated = app(LabTourAnalyses::class)->surveyReparsed($survey, $force);
 
@@ -295,7 +294,7 @@ class LabTourSurveys
      * submitting reset above) and that a surveying capture links is pushed again too: the analysis dispatch pass
      * (9.7 step 3) only looks at pending captures.
      *
-     * @return ?string 'push', 'terminal', 'marked' or null (nothing changed)
+     * @return ?string 'push', 'terminal' or null (nothing changed)
      */
     private function sweepQueued(IguideLabTourSurvey $survey, \Closure $pending): ?string
     {
