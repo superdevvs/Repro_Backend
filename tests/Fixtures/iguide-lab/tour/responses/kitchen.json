@@ -1,0 +1,39 @@
+{
+    "id": "resp_kitchen",
+    "object": "response",
+    "created_at": 1795305600,
+    "status": "completed",
+    "incomplete_details": null,
+    "model": "gpt-6-astra",
+    "output": [
+        {
+            "type": "reasoning",
+            "id": "rs_kitchen",
+            "summary": []
+        },
+        {
+            "type": "message",
+            "id": "msg_kitchen",
+            "status": "completed",
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "output_text",
+                    "annotations": [],
+                    "text": "{\"space\":{\"setting\":\"interior\",\"label\":\"Kitchen\",\"confidence\":0.95},\"skyShare\":0.02,\"light\":{\"windows\":true,\"windowKind\":\"normal\",\"daylight\":true,\"daylightStrength\":\"good\",\"lightFixtures\":true,\"lampsOn\":true,\"hardShadows\":false,\"mirrorsOrGlass\":false},\"lighting\":{\"goldenHour\":{\"description\":\"Warm light through the window over the sink.\",\"confidence\":0.9},\"twilight\":{\"description\":\"Blue hour in the window; pendants on.\",\"confidence\":0.86}},\"lawn\":{\"status\":\"none\",\"condition\":\"none\",\"areas\":[]},\"clutter\":{\"surfaces\":[{\"label\":\"Counter\",\"box\":{\"uMin\":0.35,\"uMax\":0.47,\"vMin\":0.58,\"vMax\":0.66},\"items\":[{\"label\":\"Dish soap\",\"description\":\"By the sink\",\"box\":{\"uMin\":0.37,\"uMax\":0.38,\"vMin\":0.58,\"vMax\":0.61},\"confidence\":0.92,\"glassOrMirror\":false,\"touchGroup\":1},{\"label\":\"Sponge\",\"description\":\"Next to the dish soap\",\"box\":{\"uMin\":0.38,\"uMax\":0.39,\"vMin\":0.6,\"vMax\":0.62},\"confidence\":0.88,\"glassOrMirror\":false,\"touchGroup\":1},{\"label\":\"Paper towels\",\"description\":\"At the end of the counter\",\"box\":{\"uMin\":0.44,\"uMax\":0.46,\"vMin\":0.57,\"vMax\":0.62},\"confidence\":0.8,\"glassOrMirror\":false,\"touchGroup\":0},{\"label\":\"Glass bottle\",\"description\":\"Beside the stove\",\"box\":{\"uMin\":0.41,\"uMax\":0.42,\"vMin\":0.57,\"vMax\":0.61},\"confidence\":0.6,\"glassOrMirror\":true,\"touchGroup\":0}]},{\"label\":\"Table\",\"box\":{\"uMin\":0.7,\"uMax\":0.82,\"vMin\":0.62,\"vMax\":0.74},\"items\":[{\"label\":\"Mail\",\"description\":\"Stack of letters on the table\",\"box\":{\"uMin\":0.74,\"uMax\":0.76,\"vMin\":0.64,\"vMax\":0.66},\"confidence\":0.85,\"glassOrMirror\":false,\"touchGroup\":0},{\"label\":\"Keys\",\"description\":\"Near the mail\",\"box\":{\"uMin\":0.77,\"uMax\":0.78,\"vMin\":0.65,\"vMax\":0.66},\"confidence\":0.7,\"glassOrMirror\":false,\"touchGroup\":0}]}]},\"notes\":[{\"topic\":\"light\",\"text\":\"The window over the sink is bright.\"}]}"
+                }
+            ]
+        }
+    ],
+    "usage": {
+        "input_tokens": 9120,
+        "input_tokens_details": {
+            "cached_tokens": 0
+        },
+        "output_tokens": 1460,
+        "output_tokens_details": {
+            "reasoning_tokens": 700
+        },
+        "total_tokens": 10580
+    }
+}

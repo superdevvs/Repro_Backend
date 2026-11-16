@@ -1,0 +1,39 @@
+{
+    "id": "resp_exterior_front",
+    "object": "response",
+    "created_at": 1795305600,
+    "status": "completed",
+    "incomplete_details": null,
+    "model": "gpt-6-astra",
+    "output": [
+        {
+            "type": "reasoning",
+            "id": "rs_exterior_front",
+            "summary": []
+        },
+        {
+            "type": "message",
+            "id": "msg_exterior_front",
+            "status": "completed",
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "output_text",
+                    "annotations": [],
+                    "text": "{\"space\":{\"setting\":\"exterior\",\"label\":\"Front yard\",\"confidence\":0.93},\"skyShare\":0.31,\"light\":{\"windows\":false,\"windowKind\":\"none\",\"lightFixtures\":false,\"lampsOn\":false,\"hardShadows\":true,\"daylight\":true,\"daylightStrength\":\"good\",\"mirrorsOrGlass\":false},\"lighting\":{\"goldenHour\":{\"description\":\"Low warm sun across the lawn and the front of the house.\",\"confidence\":0.88},\"twilight\":{\"description\":\"Blue sky over the house with the porch light warm.\",\"confidence\":0.4}},\"lawn\":{\"status\":\"found\",\"condition\":\"healthy\",\"areas\":[{\"label\":\"Front lawn\",\"position\":\"front\",\"box\":{\"uMin\":0.3,\"uMax\":0.7,\"vMin\":0.62,\"vMax\":0.95},\"confidence\":0.9},{\"label\":\"Side lawn\",\"position\":\"side\",\"box\":{\"uMin\":0.92,\"uMax\":0.08,\"vMin\":0.6,\"vMax\":0.85},\"confidence\":0.64}]},\"clutter\":{\"surfaces\":[]},\"notes\":[{\"topic\":\"lawn\",\"text\":\"Part of the front lawn is in the shade of the house.\"}]}"
+                }
+            ]
+        }
+    ],
+    "usage": {
+        "input_tokens": 9120,
+        "input_tokens_details": {
+            "cached_tokens": 0
+        },
+        "output_tokens": 1460,
+        "output_tokens_details": {
+            "reasoning_tokens": 700
+        },
+        "total_tokens": 10580
+    }
+}
