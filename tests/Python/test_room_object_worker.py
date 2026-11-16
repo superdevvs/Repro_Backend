@@ -59,7 +59,7 @@ class RoomObjectWorkerTests(unittest.TestCase):
         report = worker.run(request)
         self.assertEqual('completed', report['status']); self.assertEqual('compose-room-objects', report['operation'])
         self.assertFalse(report['automaticAcceptance']); self.assertEqual(0, report['providerCalls']); self.assertEqual('unreviewed', report['reviewStatus'])
-        self.assertEqual('objects', report['composition']['fallback']); self.assertEqual(2, report['composition']['maskCount'])
+        self.assertEqual('objects', report['objects']['fallback']); self.assertEqual(2, report['objects']['maskCount'])
         self.assertEqual({'native', 'effective-alpha', 'object-alpha', 'shadow-strength', 'preview', 'qa-wrap'} | {f'qa-{n}' for n, _, _ in q.g.FACES},
                          set(report['artifacts']))
         result, alpha = self.native(report, 'native'), self.native(report, 'effective-alpha')
@@ -67,16 +67,18 @@ class RoomObjectWorkerTests(unittest.TestCase):
         self.assertGreater(int(np.count_nonzero(alpha == 255)), 1000)
         self.assertEqual(q.runtime()['workerSha256'], report['runtime']['workerSha256'])
         self.assertEqual(q.g.sha256(ROOT / 'room_object_worker.py'), report['objectRuntime']['objectWorkerSha256'])
+        self.assertEqual({'cropMargin', 'clippedNativePixels', 'shadowOnlyPixels', 'shadowOnlyFormulaMismatchPixels', 'mode', 'alphaAppliedOnce',
+                          'nativeFloorResampled', 'generatedDetailDimensions', 'nativeCanvasDimensions'}, set(report['composition']))
         self.assertEqual(report, worker.run(request))
 
     def test_furniture_near_the_draft_edge_is_kept_opaque_with_the_small_clearance(self):
         report = worker.run(self.request([self.mask('sofa.png', (900, 1300, 800, 1200), (1000, 1200, 32, 300))]))
-        self.assertEqual('objects', report['composition']['fallback'])
-        self.assertLessEqual(max(report['composition']['compositor']['requiredSourceClearancePixels']), 32)
+        self.assertEqual('objects', report['objects']['fallback'])
+        self.assertLessEqual(max(report['objects']['compositor']['requiredSourceClearancePixels']), 32)
 
     def test_furniture_touching_the_draft_edge_falls_back_to_an_edge_fade_instead_of_failing(self):
         report = worker.run(self.request([self.mask('sofa.png', (1000, 1200, 0, 300))]))
-        self.assertEqual('completed', report['status']); self.assertEqual('edge_faded', report['composition']['fallback'])
+        self.assertEqual('completed', report['status']); self.assertEqual('edge_faded', report['objects']['fallback'])
         result, alpha = self.native(report, 'native'), self.native(report, 'effective-alpha')
         np.testing.assert_array_equal(result[alpha == 0], self.source[alpha == 0]); self.assertGreater(int(np.count_nonzero(alpha)), 0)
 

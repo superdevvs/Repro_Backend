@@ -134,9 +134,12 @@ def run(request):
         q.require(g.sha256(p) == request[key]['sha256'], 'INPUT_CHANGED_DURING_WORK')
     for p, mask in zip(mask_paths, masks):
         q.require(g.sha256(p) == mask['sha256'], 'INPUT_CHANGED_DURING_WORK')
-    composition = {'fallback': fallback, 'edgeFadeClearancePixels': clearance, 'edgeFadePixels': FADE_PIXELS if clearance else 0,
-                   'maskCount': len(masks), 'contactShadow': False, 'colorGain': gain, 'compositor': compositor,
-                   'nativeCanvasDimensions': [source.shape[1], source.shape[0]], 'generatedDetailDimensions': list(SECTION)}
+    # Same composition fields as the existing recompose step, so stored room composites keep one shape.
+    composition = {'cropMargin': compositor['sourceSupportMargin'], 'clippedNativePixels': 0, 'shadowOnlyPixels': compositor['shadowOnlyPixels'],
+                   'shadowOnlyFormulaMismatchPixels': 0, 'mode': 'replacement', 'alphaAppliedOnce': True, 'nativeFloorResampled': False,
+                   'generatedDetailDimensions': list(SECTION), 'nativeCanvasDimensions': [source.shape[1], source.shape[0]]}
+    objects = {'fallback': fallback, 'edgeFadeClearancePixels': clearance, 'edgeFadePixels': FADE_PIXELS if clearance else 0,
+               'maskCount': len(masks), 'contactShadow': False, 'colorGain': gain, 'compositor': compositor}
     out.parent.mkdir(parents=True, exist_ok=True)
     temp = Path(tempfile.mkdtemp(prefix='.automation-', dir=out.parent))
     try:
@@ -157,7 +160,7 @@ def run(request):
                   'reviewStatus': 'unreviewed', 'automaticAcceptance': False, 'runtime': identity, 'objectRuntime': objects_identity,
                   'sourceSha256': request['source']['sha256'], 'candidateSha256': request['candidate']['sha256'],
                   'inputHashes': {key: g.sha256(p) for key, p in assets.items()}, 'maskHashes': [m['sha256'] for m in masks],
-                  'preset': request['preset'], 'qa': qa, 'composition': composition, 'artifacts': artifacts,
+                  'preset': request['preset'], 'qa': qa, 'composition': composition, 'objects': objects, 'artifacts': artifacts,
                   'elapsedMs': round((time.monotonic() - start) * 1000), 'providerCalls': 0,
                   'qualityDecision': 'No semantic pass inferred. Furniture is an unreviewed draft until the final check.'}
         (temp / 'report.json').write_text(json.dumps(report, indent=2, allow_nan=False))
