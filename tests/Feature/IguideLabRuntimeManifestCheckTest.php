@@ -266,7 +266,8 @@ class IguideLabRuntimeManifestCheckTest extends TestCase
         $this->assertSame([1, 'fail'], [$exit, $this->line($lines, 'harmonization')['check']]);
     }
 
-    public function test_write_and_restore_are_refused(): void
+    /** --write and --restore are covered by IguideLabRuntimeManifestWriteTest; a missing or mixed mode probes and writes nothing. */
+    public function test_missing_or_mixed_modes_are_refused(): void
     {
         foreach (self::OWNERS as $key => $owner) {
             if ($owner !== LabLightingD2::class) $this->mock($owner, fn (MockInterface $mock) => $mock->shouldNotReceive('ready'));
@@ -275,10 +276,11 @@ class IguideLabRuntimeManifestCheckTest extends TestCase
             public function capabilities(): array { throw new \LogicException('capabilities must not be read'); }
         });
         $before = $this->manifestState();
-        foreach ([['--write' => true], ['--restore' => true], [], ['--check' => true, '--write' => true], ['--check' => true, '--restore' => true]] as $options) {
+        foreach ([['--restore' => true], [], ['--check' => true, '--write' => true], ['--check' => true, '--restore' => '20261117T000000Z-abcdef'],
+            ['--check' => true, '--only' => 'grass'], ['--check' => true, '--dry-run' => true]] as $options) {
             $exit = Artisan::call('iguide-lab:runtime-manifests', $options);
             $this->assertSame(1, $exit, json_encode($options));
-            $this->assertSame("Only --check is available in this release.\n", Artisan::output(), json_encode($options));
+            $this->assertSame("Choose one of --check, --write [--dry-run] [--only=a,b] or --restore=<set> [--only=a,b].\n", Artisan::output(), json_encode($options));
         }
         $this->assertSame($before, $this->manifestState());
     }

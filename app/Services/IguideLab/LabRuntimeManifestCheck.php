@@ -88,6 +88,22 @@ class LabRuntimeManifestCheck
         ]];
     }
 
+    /**
+     * Each manifest's check exactly as run() reports it, without the preset readiness part (used by --write/--restore).
+     *
+     * @return array<string, array{check: 'pass'|'fail'|'not_applicable', error: ?array{class: ?string, status: ?int}}>
+     */
+    public function checks(): array
+    {
+        $checks = [];
+        foreach (self::OWNERS as $key => $owner) {
+            $line = $this->manifest($key, $owner);
+            $checks[$key] = ['check' => $line['check'], 'error' => $line['error']];
+        }
+
+        return $checks;
+    }
+
     /** @return array<string, mixed> one report line */
     private function manifest(string $key, string $owner): array
     {
