@@ -1,0 +1,39 @@
+{
+    "id": "resp_walk_in_closet",
+    "object": "response",
+    "created_at": 1795305600,
+    "status": "completed",
+    "incomplete_details": null,
+    "model": "gpt-6-astra",
+    "output": [
+        {
+            "type": "reasoning",
+            "id": "rs_walk_in_closet",
+            "summary": []
+        },
+        {
+            "type": "message",
+            "id": "msg_walk_in_closet",
+            "status": "completed",
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "output_text",
+                    "annotations": [],
+                    "text": "{\"space\":{\"setting\":\"interior\",\"label\":\"Walk-in closet\",\"confidence\":0.9},\"skyShare\":0,\"light\":{\"windows\":false,\"windowKind\":\"none\",\"daylight\":false,\"daylightStrength\":\"none\",\"lampsOn\":false,\"mirrorsOrGlass\":true,\"lightFixtures\":true,\"hardShadows\":false},\"lighting\":{\"goldenHour\":{\"description\":\"\",\"confidence\":0.1},\"twilight\":{\"description\":\"No window and the ceiling light is off.\",\"confidence\":0.15}},\"lawn\":{\"status\":\"none\",\"condition\":\"none\",\"areas\":[]},\"clutter\":{\"surfaces\":[]},\"notes\":[]}"
+                }
+            ]
+        }
+    ],
+    "usage": {
+        "input_tokens": 9120,
+        "input_tokens_details": {
+            "cached_tokens": 0
+        },
+        "output_tokens": 1460,
+        "output_tokens_details": {
+            "reasoning_tokens": 700
+        },
+        "total_tokens": 10580
+    }
+}

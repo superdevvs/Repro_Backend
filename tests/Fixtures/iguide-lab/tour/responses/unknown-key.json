@@ -1,0 +1,39 @@
+{
+    "id": "resp_unknown_key",
+    "object": "response",
+    "created_at": 1795305600,
+    "status": "completed",
+    "incomplete_details": null,
+    "model": "gpt-6-astra",
+    "output": [
+        {
+            "type": "reasoning",
+            "id": "rs_unknown_key",
+            "summary": []
+        },
+        {
+            "type": "message",
+            "id": "msg_unknown_key",
+            "status": "completed",
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "output_text",
+                    "annotations": [],
+                    "text": "{\"space\":{\"setting\":\"interior\",\"label\":\"Bathroom\",\"confidence\":0.9},\"skyShare\":0,\"light\":{\"skylight\":true,\"windows\":true,\"windowKind\":\"normal\",\"daylight\":true,\"daylightStrength\":\"good\",\"lightFixtures\":true,\"lampsOn\":true,\"hardShadows\":false,\"mirrorsOrGlass\":false},\"lighting\":{\"goldenHour\":{\"description\":\"Warm light on the tiles.\",\"confidence\":0.5},\"twilight\":{\"description\":\"Blue hour in the small window.\",\"confidence\":0.5}},\"lawn\":{\"status\":\"none\",\"condition\":\"none\",\"areas\":[]},\"clutter\":{\"surfaces\":[]},\"notes\":[]}"
+                }
+            ]
+        }
+    ],
+    "usage": {
+        "input_tokens": 9120,
+        "input_tokens_details": {
+            "cached_tokens": 0
+        },
+        "output_tokens": 1460,
+        "output_tokens_details": {
+            "reasoning_tokens": 700
+        },
+        "total_tokens": 10580
+    }
+}

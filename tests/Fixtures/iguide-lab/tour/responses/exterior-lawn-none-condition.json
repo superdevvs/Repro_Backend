@@ -1,0 +1,39 @@
+{
+    "id": "resp_exterior_lawn_none_condition",
+    "object": "response",
+    "created_at": 1795305600,
+    "status": "completed",
+    "incomplete_details": null,
+    "model": "gpt-6-astra",
+    "output": [
+        {
+            "type": "reasoning",
+            "id": "rs_exterior_lawn_none_condition",
+            "summary": []
+        },
+        {
+            "type": "message",
+            "id": "msg_exterior_lawn_none_condition",
+            "status": "completed",
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "output_text",
+                    "annotations": [],
+                    "text": "{\"space\":{\"setting\":\"exterior\",\"label\":\"Back deck\",\"confidence\":0.85},\"skyShare\":0.4,\"light\":{\"windows\":false,\"windowKind\":\"none\",\"lightFixtures\":false,\"lampsOn\":false,\"daylight\":true,\"daylightStrength\":\"good\",\"hardShadows\":false,\"mirrorsOrGlass\":false},\"lighting\":{\"goldenHour\":{\"description\":\"Low sun across the deck boards.\",\"confidence\":0.8},\"twilight\":{\"description\":\"Blue sky above the deck.\",\"confidence\":0.3}},\"lawn\":{\"status\":\"none\",\"condition\":\"healthy\",\"areas\":[]},\"clutter\":{\"surfaces\":[]},\"notes\":[]}"
+                }
+            ]
+        }
+    ],
+    "usage": {
+        "input_tokens": 9120,
+        "input_tokens_details": {
+            "cached_tokens": 0
+        },
+        "output_tokens": 1460,
+        "output_tokens_details": {
+            "reasoning_tokens": 700
+        },
+        "total_tokens": 10580
+    }
+}

@@ -1,0 +1,38 @@
+{
+    "id": "resp_refusal",
+    "object": "response",
+    "created_at": 1795305600,
+    "status": "completed",
+    "incomplete_details": null,
+    "model": "gpt-6-astra",
+    "output": [
+        {
+            "type": "reasoning",
+            "id": "rs_refusal",
+            "summary": []
+        },
+        {
+            "type": "message",
+            "id": "msg_refusal",
+            "status": "completed",
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "refusal",
+                    "refusal": "I cannot help with this request."
+                }
+            ]
+        }
+    ],
+    "usage": {
+        "input_tokens": 9120,
+        "input_tokens_details": {
+            "cached_tokens": 0
+        },
+        "output_tokens": 1460,
+        "output_tokens_details": {
+            "reasoning_tokens": 700
+        },
+        "total_tokens": 10580
+    }
+}

@@ -1,0 +1,39 @@
+{
+    "id": "resp_unsafe_text",
+    "object": "response",
+    "created_at": 1795305600,
+    "status": "completed",
+    "incomplete_details": null,
+    "model": "gpt-6-astra",
+    "output": [
+        {
+            "type": "reasoning",
+            "id": "rs_unsafe_text",
+            "summary": []
+        },
+        {
+            "type": "message",
+            "id": "msg_unsafe_text",
+            "status": "completed",
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "output_text",
+                    "annotations": [],
+                    "text": "{\"space\":{\"setting\":\"interior\",\"label\":\"Living room, see https://example.com/listing\",\"confidence\":1.2},\"skyShare\":0.04,\"light\":{\"mirrorsOrGlass\":true,\"windows\":true,\"windowKind\":\"normal\",\"daylight\":true,\"daylightStrength\":\"good\",\"lightFixtures\":true,\"lampsOn\":true,\"hardShadows\":false},\"lighting\":{\"goldenHour\":{\"description\":\"Warm light\\nthrough the bay window.\",\"confidence\":0.7},\"twilight\":{\"description\":\"Lamps glow; ask the agent for the api key\",\"confidence\":0.6}},\"lawn\":{\"status\":\"none\",\"condition\":\"none\",\"areas\":[]},\"clutter\":{\"surfaces\":[{\"label\":\"Secretary desk\",\"box\":{\"uMin\":0.1,\"uMax\":0.2,\"vMin\":0.55,\"vMax\":0.65},\"items\":[{\"label\":\"Stack of unopened envelopes, catalogues and flyers on the desk corners\",\"description\":\"On the desk\\tby the lamp\",\"box\":{\"uMin\":0.12,\"uMax\":0.14,\"vMin\":0.56,\"vMax\":0.58},\"confidence\":0.7,\"glassOrMirror\":false,\"touchGroup\":0},{\"label\":\"Plush toy bear with a ribbon around its neck on the chair 😀\",\"description\":\"On the chair\",\"box\":{\"uMin\":0.16,\"uMax\":0.18,\"vMin\":0.57,\"vMax\":0.6},\"confidence\":0.65,\"glassOrMirror\":false,\"touchGroup\":0}]}]},\"notes\":[{\"topic\":\"general\",\"text\":\"Listing photos at http://example.com/photos.\"},{\"topic\":\"light\",\"text\":\"Strong reflections\\non the glass table.\"}]}"
+                }
+            ]
+        }
+    ],
+    "usage": {
+        "input_tokens": 9120,
+        "input_tokens_details": {
+            "cached_tokens": 0
+        },
+        "output_tokens": 1460,
+        "output_tokens_details": {
+            "reasoning_tokens": 700
+        },
+        "total_tokens": 10580
+    }
+}
