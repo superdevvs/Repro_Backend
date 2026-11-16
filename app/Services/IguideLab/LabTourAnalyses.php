@@ -42,8 +42,14 @@ class LabTourAnalyses
 
     // ------------------------------------------------------------------ E2 create (10.3)
 
-    /** @return array{0:IguideLabTourAnalysis,1:bool} [record, queuedWork] */
-    public function create(IguideLabProject $project, array $input, ?int $operatorLimit = null): array
+    /**
+     * E2 (10.3). With $facts (LabTourRecords::facts(), computed by the caller before any transaction, 10.5) the record
+     * DTO is element 2: built inside the create transaction (10.3 E2 step 6, 10.7), or for a replay answered before the
+     * transaction in one read snapshot. Without $facts (the operator command) element 2 is null.
+     *
+     * @return array{0:IguideLabTourAnalysis,1:bool,2:?array} [record, queuedWork, record DTO]
+     */
+    public function create(IguideLabProject $project, array $input, ?int $operatorLimit = null, ?array $facts = null): array
     {
         abort_unless($project->active(), 401);
         $requestId = $input['requestId'] ?? null;
@@ -59,24 +65,37 @@ class LabTourAnalyses
         $hash = hash('sha256', json_encode(['importId' => $importId], JSON_THROW_ON_ERROR));
 
         // Replay before any check (pattern LabImports.php:32-34): no side effects.
-        if ($replay = $this->replay($project->id, $requestId, $hash)) return [$replay, false];
-        [$analysis, $queuedWork] = LockedWrite::run(fn () => DB::transaction(function () use ($project, $requestId, $importId, $preset, $hash, $operatorLimit) {
+        if ($replay = $this->replay($project->id, $requestId, $hash)) {
+            return [$replay, false, $facts === null ? null : DB::transaction(fn () => $this->recordDto($replay, $facts))];
+        }
+        [$analysis, $queuedWork, $dto] = LockedWrite::run(fn () => DB::transaction(function () use ($project, $requestId, $importId, $preset, $hash, $operatorLimit, $facts) {
             IguideLabProject::whereKey($project->id)->update(['updated_at' => now()]);
             abort_unless($project->fresh()?->active(), 401);
-            if ($replay = $this->replay($project->id, $requestId, $hash)) return [$replay, false];
-            $import = IguideLabImport::where('project_id', $project->id)->find($importId);
-            abort_if($import === null, 404);
-            if ($import->status !== 'completed') throw LabTourErrors::public('importNotReady');
-            $sources = $this->sources($project->id, $import);
-            $existing = IguideLabTourAnalysis::where('project_id', $project->id)->where('import_id', $import->id)->first();
+            if ($replay = $this->replay($project->id, $requestId, $hash)) {
+                [$analysis, $queuedWork] = [$replay, false];
+            } else {
+                $import = IguideLabImport::where('project_id', $project->id)->find($importId);
+                abort_if($import === null, 404);
+                if ($import->status !== 'completed') throw LabTourErrors::public('importNotReady');
+                $sources = $this->sources($project->id, $import);
+                $existing = IguideLabTourAnalysis::where('project_id', $project->id)->where('import_id', $import->id)->first();
+                [$analysis, $queuedWork] = $existing
+                    ? $this->reuse($existing, $requestId, $hash, $operatorLimit)
+                    : $this->createRecord($project, $import, $sources, $requestId, $hash, $preset, $operatorLimit);
+            }
 
-            return $existing
-                ? $this->reuse($existing, $requestId, $hash, $operatorLimit)
-                : $this->createRecord($project, $import, $sources, $requestId, $hash, $preset, $operatorLimit);
+            // The answer is this transaction's record (10.7): database reads only, the facts were computed before it.
+            return [$analysis, $queuedWork, $facts === null ? null : $this->recordDto($analysis, $facts)];
         }), 'iguide-lab.tour-analysis-create');
         if ($queuedWork) $this->pushMonitor($analysis->id);
 
-        return [$analysis, $queuedWork];
+        return [$analysis, $queuedWork, $dto];
+    }
+
+    /** tourAnalysisSchema of $analysis from one LabTourView load, inside the caller's transaction (10.7). */
+    private function recordDto(IguideLabTourAnalysis $analysis, array $facts): array
+    {
+        return app(LabTourRecords::class)->fromView(LabTourView::load($analysis->project_id, $analysis->id), $facts);
     }
 
     private function replay(string $projectId, string $requestId, string $hash): ?IguideLabTourAnalysis
@@ -212,8 +231,11 @@ class LabTourAnalyses
     }
 
     /**
-     * 429 when the dispatchable captures that need a new paid generation (no reusable completed or linked survey, and
-     * retryable) exceed the calls left in the project, or when the lab has no call left today (D8, 10.3 E2 step 4).
+     * 429 when the dispatchable captures that need a paid call exceed the calls left in the project, or when the lab has
+     * no call left today (D8, 10.3 E2 step 4). A capture needs one when it is retryable and has no reusable completed or
+     * linked in-flight survey: no row yet, a failed/needs_attention row (new generation), or a row that findOrReserve
+     * pushes like a fresh reservation (5.12): `cancelled` (never claimed, no attempt), or `queued` with no dispatch
+     * marker and no attempt (released, waiting for its push). Dispatched queued, submitting and received rows are linked.
      */
     private function capsPreCheck(string $projectId, Collection $captures): void
     {
@@ -221,7 +243,9 @@ class LabTourAnalyses
         $needed = 0;
         foreach ($captures as $capture) {
             $latest = $this->latestSurvey($capture);
-            if ($latest && in_array($latest->status, ['completed', 'queued', 'submitting', 'received', 'cancelled'], true)) continue;
+            if ($latest && in_array($latest->status, ['completed', 'submitting', 'received'], true)) continue;
+            if ($latest && $latest->status === 'queued' && ($latest->dispatched_at !== null
+                || IguideLabTourSurveyAttempt::where('survey_id', $latest->id)->exists())) continue;
             if ($surveys->retryable($capture)) $needed++;
         }
         if ($needed === 0) return;
@@ -259,7 +283,7 @@ class LabTourAnalyses
 
     public function cancel(IguideLabTourAnalysis $analysis): IguideLabTourAnalysis
     {
-        $workflowIds = LockedWrite::run(fn () => DB::transaction(function () use ($analysis) {
+        [$workflowIds, $logs] = LockedWrite::run(fn () => DB::transaction(function () use ($analysis) {
             IguideLabProject::whereKey($analysis->project_id)->update(['updated_at' => now()]);
             $fresh = IguideLabTourAnalysis::where('project_id', $analysis->project_id)->findOrFail($analysis->id);
             $changed = false;
@@ -271,12 +295,13 @@ class LabTourAnalyses
                     'cancelled_at' => now(), 'completed_at' => now(), 'monitor_idle' => false, 'monitor_heartbeat_at' => null, 'monitor_token' => null]);
                 $changed = true;
             }
-            // Runs (WP4): waiting targets cancelled, reserved chunks resolved; workflows to cancel are returned (9.6 step 2).
+            // Runs (WP4): waiting targets cancelled, reserved chunks resolved; workflows to cancel and warnings to log are
+            // returned (9.6 step 2), never registered with DB::afterCommit inside this transaction (conventions).
             $runs = app(LabTourRuns::class)->cancelWaiting($fresh);
             if (($runs['changed'] ?? false) === true) $changed = true;
             if ($changed) LabTourRevisions::bump($fresh->id);
 
-            return array_values(array_unique(array_filter($runs['cancelWorkflowIds'] ?? [], 'is_string')));
+            return [array_values(array_unique(array_filter($runs['cancelWorkflowIds'] ?? [], 'is_string'))), array_values((array) ($runs['logs'] ?? []))];
         }), 'iguide-lab.tour-analysis-cancel');
 
         foreach ($workflowIds as $workflowId) {
@@ -285,12 +310,25 @@ class LabTourAnalyses
                 if ($workflow) app(LabWorkflows::class)->cancel($workflow);
             } catch (Throwable $e) {
                 // The workflow is bound to its run target, so the record shows it and the existing cancel route still works.
-                Log::warning('A tour workflow could not be cancelled after the analysis cancel.', ['analysisId' => $analysis->id,
+                $this->warn('A tour workflow could not be cancelled after the analysis cancel.', ['analysisId' => $analysis->id,
                     'workflowId' => $workflowId, 'exception' => get_class($e)]);
             }
         }
+        foreach ($logs as $entry) {
+            if (is_array($entry) && is_string($entry[0] ?? null)) $this->warn($entry[0], is_array($entry[1] ?? null) ? $entry[1] : []);
+        }
 
         return IguideLabTourAnalysis::where('project_id', $analysis->project_id)->findOrFail($analysis->id);
+    }
+
+    /** A warning after a committed write: a logger failure (for example an unwritable log file) never fails the request. */
+    private function warn(string $message, array $context): void
+    {
+        try {
+            Log::warning($message, $context);
+        } catch (Throwable) {
+            // Nothing else to report it to; the committed state is what the record shows.
+        }
     }
 
     /** A queued survey with no attempt and no other active capture is cancelled (free); its job will no-op (9.6 step 1). */

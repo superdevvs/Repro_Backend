@@ -13,7 +13,7 @@
         {"preset":"grass","ready":true,"reason":null},
         {"preset":"declutter","ready":true,"reason":null}
       ],
-      "limits": {"maxCaptures":80,"workflowChunk":20,"surveyCallsLeftProject":214,"surveyCallsLeftToday":134},
+      "limits": {"maxCaptures":80,"workflowChunk":8,"surveyCallsLeftProject":214,"surveyCallsLeftToday":134},
       "timing": {"surveyWorkers":2,"surveyMinutesPerCapture":{"min":1,"max":2},"editMinutesPerRoom":{"min":3,"max":5}}
     },
     "analyses": [

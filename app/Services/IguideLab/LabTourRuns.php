@@ -174,21 +174,24 @@ class LabTourRuns
 
     /**
      * Lifetime rule (9.2 step 7): active, or cancelled/failed with a bound non-terminal target, and the project active.
-     * The idle backstop (no bound item change for monitor_idle_hours) applies only when !$forGet.
+     * The idle backstop (no bound item change for monitor_idle_hours) applies only when !$forGet, and only while a bound
+     * target is still queued or processing: it is a backstop behind the stall rule for bound workflow items (7b). A run
+     * without such a target waits for its own next chunk (runs paused, between chunks, no chunk yet) or for its
+     * completion; only this monitor moves it on, so it never goes idle, and the scheduled sweeper restarts a dead chain
+     * of it without any client GET (9.9, D4).
      */
     public function needsMonitor(IguideLabTourRun $run, bool $forGet): bool
     {
-        $live = in_array($run->status, self::ACTIVE, true) || (in_array($run->status, ['cancelled', 'failed'], true)
-            && IguideLabTourRunTarget::where('run_id', $run->id)->whereNotNull('workflow_item_id')->whereIn('state', ['queued', 'processing'])->exists());
+        $bound = fn () => IguideLabTourRunTarget::where('run_id', $run->id)->whereNotNull('workflow_item_id');
+        $boundPending = $bound()->whereIn('state', ['queued', 'processing'])->exists();
+        $live = in_array($run->status, self::ACTIVE, true) || (in_array($run->status, ['cancelled', 'failed'], true) && $boundPending);
         if (! $live) return false;
         if (! IguideLabProject::find($run->project_id)?->active()) return false;
-        if ($forGet) return true;
-        $itemIds = IguideLabTourRunTarget::where('run_id', $run->id)->whereNotNull('workflow_item_id')->pluck('workflow_item_id')->all();
+        if ($forGet || ! $boundPending) return true;
+        $itemIds = $bound()->pluck('workflow_item_id')->all();
         $latest = $run->updated_at;
-        if ($itemIds !== []) {
-            $item = IguideLabWorkflowItem::where('project_id', $run->project_id)->whereIn('id', $itemIds)->orderByDesc('updated_at')->first();
-            if ($item?->updated_at && (! $latest || $item->updated_at->gt($latest))) $latest = $item->updated_at;
-        }
+        $item = IguideLabWorkflowItem::where('project_id', $run->project_id)->whereIn('id', $itemIds)->orderByDesc('updated_at')->first();
+        if ($item?->updated_at && (! $latest || $item->updated_at->gt($latest))) $latest = $item->updated_at;
 
         return $latest !== null && $latest->gt(now()->subHours(LabTourConfig::monitorIdleHours()));
     }
@@ -197,13 +200,16 @@ class LabTourRuns
      * Cancel (9.6 step 2), inside the caller's lab write transaction: waiting targets of every active run of the
      * analysis become cancelled ['cancelled'], reserved chunks are resolved (bound to an existing workflow, whose id is
      * returned for cancellation after the commit, or cancelled), and the run becomes cancelled. The caller bumps the
-     * revision when 'changed' is true and cancels the returned workflows at the baseline level.
+     * revision when 'changed' is true, cancels the returned workflows and writes the returned warnings ('logs', each
+     * [message, context]) at the baseline level, after LockedWrite::run() returned. Nothing here registers a
+     * DB::afterCommit callback, which would run after the commit and outside the transaction's try (conventions).
      *
-     * @return array{changed:bool,cancelWorkflowIds:list<string>}
+     * @return array{changed:bool,cancelWorkflowIds:list<string>,logs:list<array{0:string,1:array}>}
      */
     public function cancelWaiting(IguideLabTourAnalysis $analysis): array
     {
         if (DB::transactionLevel() < 1) throw new \LogicException('cancelWaiting() runs inside the caller\'s lab write transaction.');
+        $this->deferredLogs = [];
         $changed = false;
         $cancel = [];
         $runs = IguideLabTourRun::where('project_id', $analysis->project_id)->where('analysis_id', $analysis->id)->whereIn('status', self::ACTIVE)->orderBy('created_at')->get();
@@ -213,11 +219,10 @@ class LabTourRuns
             $changed = IguideLabTourRun::whereKey($run->id)->whereIn('status', self::ACTIVE)->toBase()
                 ->update(['status' => 'cancelled', 'cancelled_at' => now(), 'completed_at' => now(), 'updated_at' => now()]) > 0 || $changed;
         }
-        $logs = $this->deferredLogs;
+        $logs = array_values($this->deferredLogs);
         $this->deferredLogs = [];
-        if ($logs !== []) DB::afterCommit(fn () => $this->log($logs));
 
-        return ['changed' => $changed, 'cancelWorkflowIds' => array_values(array_unique($cancel))];
+        return ['changed' => $changed, 'cancelWorkflowIds' => array_values(array_unique($cancel)), 'logs' => $logs];
     }
 
     /** Run DTO (tourRunSchema, 10.7) from one loaded view; $run must be one of $view->runs. */

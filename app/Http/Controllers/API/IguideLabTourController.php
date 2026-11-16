@@ -39,9 +39,14 @@ class IguideLabTourController extends Controller
         $input = $this->input($request, ['requestId', 'importId', 'preset'], 'default', [
             'requestId' => LabTourErrors::uuidRules(), 'importId' => LabTourErrors::uuidRules(), 'preset' => ['required', 'string', Rule::in(LabTourCapabilities::PRESETS)]]);
         $input = ['requestId' => strtolower($input['requestId']), 'importId' => strtolower($input['importId']), 'preset' => $input['preset']];
-        [$analysis, $queuedWork] = app(LabTourAnalyses::class)->create($this->project($request), $input);
+        // The live-estimate facts may read the policy or write the capabilities cache, so they are computed before the
+        // create transaction (10.5); create() then builds the record inside that transaction (10.3 E2 step 6, 10.7) and
+        // returns it as element 2. A read snapshot here is only the fallback for a two-element answer.
+        $result = app(LabTourAnalyses::class)->create($this->project($request), $input, null, $records->facts());
+        [$analysis, $queuedWork] = $result;
+        $dto = is_array($result[2] ?? null) ? $result[2] : $records->dto($analysis, kick: false);
 
-        return response()->json(['data' => $records->dto($analysis, kick: false)], $queuedWork ? 202 : 200);
+        return response()->json(['data' => $dto], $queuedWork ? 202 : 200);
     }
 
     /** E3: the record; may kick stale monitors (9.8). */

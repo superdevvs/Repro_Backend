@@ -124,6 +124,20 @@ class IguideLabTourSelectionCanonicalTest extends TestCase
         $this->assertSame(['aaaaaaaa-0000-4000-8000-000000000000' => ['g0']], LabTourSelections::effectiveOf($captures, 'golden-hour', []));
     }
 
+    /**
+     * The sha-vector copies (spec 13.1) and the reader-mirror copies (tour-contract-mirror/) are the same amended contract
+     * fixtures (spec 12.3), so the repository never holds two diverging versions of one contract file.
+     */
+    public function test_fixture_copies_equal_the_amended_contract_mirror(): void
+    {
+        $copies = glob(__DIR__.'/../Fixtures/iguide-lab/tour-contract/*.json') ?: [];
+        $this->assertSame(['fixture-declutter.json', 'fixture-endpoints.json', 'fixture-grass.json', 'fixture-lighting.json'], array_map('basename', $copies));
+        foreach ($copies as $copy) {
+            $this->assertFileEquals(__DIR__.'/../Fixtures/iguide-lab/tour-contract-mirror/'.basename($copy), $copy, basename($copy));
+        }
+        $this->assertSame(8, $this->fixture('fixture-endpoints.json')['capabilitiesResponse']['capabilities']['limits']['workflowChunk'], 'amended in spec 12.3');
+    }
+
     private function fixture(string $name): array
     {
         return json_decode((string) file_get_contents(__DIR__.'/../Fixtures/iguide-lab/tour-contract/'.$name), true, 512, JSON_THROW_ON_ERROR);

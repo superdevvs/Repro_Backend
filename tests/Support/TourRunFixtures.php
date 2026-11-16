@@ -18,6 +18,7 @@ use App\Services\IguideLab\LabWorkflows;
 use App\Support\LockedWrite;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 
@@ -233,19 +234,24 @@ trait TourRunFixtures
         IguideLabWorkflow::whereKey($workflow->id)->update(['status' => 'needs_review', 'completed_at' => now()]);
     }
 
-    /** POST cancel as WP3's LabTourAnalyses::cancel does it for a finished analysis (spec 9.6): one lab write transaction, then cancel. */
+    /**
+     * POST cancel as WP3's LabTourAnalyses::cancel does it for a finished analysis (spec 9.6): one lab write transaction,
+     * then the workflow cancels and the deferred warnings at the baseline level (never DB::afterCommit, conventions).
+     */
     protected function cancelAnalysis(IguideLabTourAnalysis $analysis): array
     {
-        $ids = LockedWrite::run(fn () => DB::transaction(function () use ($analysis) {
+        [$ids, $logs] = LockedWrite::run(fn () => DB::transaction(function () use ($analysis) {
             IguideLabProject::whereKey($analysis->project_id)->update(['updated_at' => now()]);
             $result = app(LabTourRuns::class)->cancelWaiting(IguideLabTourAnalysis::findOrFail($analysis->id));
-            $this->assertSame(['changed', 'cancelWorkflowIds'], array_keys($result));
+            $this->assertSame(['changed', 'cancelWorkflowIds', 'logs'], array_keys($result));
             $this->assertTrue(array_is_list($result['cancelWorkflowIds']));
+            $this->assertTrue(array_is_list($result['logs']));
             if ($result['changed']) LabTourRevisions::bump($analysis->id);
 
-            return $result['cancelWorkflowIds'];
+            return [$result['cancelWorkflowIds'], $result['logs']];
         }), 'test.tour-cancel');
         foreach ($ids as $id) app(LabWorkflows::class)->cancel(IguideLabWorkflow::findOrFail($id));
+        foreach ($logs as [$message, $context]) Log::warning($message, $context);
 
         return $ids;
     }

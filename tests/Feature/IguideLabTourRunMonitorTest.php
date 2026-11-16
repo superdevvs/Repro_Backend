@@ -12,13 +12,17 @@ use App\Models\IguideLabTourRunTarget;
 use App\Models\IguideLabWorkflow;
 use App\Models\IguideLabWorkflowItem;
 use App\Services\IguideLab\LabService;
+use App\Services\IguideLab\LabTourAnalyses;
 use App\Services\IguideLab\LabTourRunCapacity;
 use App\Services\IguideLab\LabTourRuns;
 use App\Services\IguideLab\LabWorkflows;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Log\Events\MessageLogged;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -552,6 +556,82 @@ class IguideLabTourRunMonitorTest extends TestCase
         $pushed = count($this->queue->pushed(MonitorIguideLabTourRun::class));
         $runs->kickIfStale($run->fresh());
         $this->assertCount($pushed + 1, $this->queue->pushed(MonitorIguideLabTourRun::class));
+    }
+
+    /**
+     * 9.2 step 7(b) is a backstop behind the stall rule for bound items only. A run that waits for its next chunk (runs
+     * paused before the first chunk, or between chunks with only finished rooms bound) depends on its own monitor to
+     * start that chunk, so it never goes idle, and the scheduled sweeper restarts its chain without a GET (9.9, D4).
+     */
+    public function test_idle_backstop_never_ends_a_run_that_waits_for_its_next_chunk(): void
+    {
+        [$analysis] = $this->seedAnalysis(rooms: 9);
+        [$run] = $this->createRun($analysis, 'twilight');
+        $runs = app(LabTourRuns::class);
+        config(['iguide-lab-tour.tour_runs_paused' => true]);
+
+        // Paused before the first chunk: no bound item at all.
+        $this->travel(7)->hours();
+        $this->assertTrue($runs->needsMonitor($run->fresh(), false), 'a run waiting for its first chunk is not idle');
+        $this->assertTrue($this->tick($run), 'the chain keeps ticking while runs are paused');
+        $this->assertSame(0, IguideLabWorkflow::count());
+
+        // Chunk 1 (8 rooms) runs and finishes; paused again, chunk 2 waits with only finished rooms bound.
+        config(['iguide-lab-tour.tour_runs_paused' => false]);
+        $this->assertTrue($this->tick($run));
+        $this->finishWorkflow(IguideLabWorkflow::sole()->id);
+        config(['iguide-lab-tour.tour_runs_paused' => true]);
+        $this->assertTrue($this->tick($run));
+        $this->assertSame([8, 1], [$this->states($run, 'held'), $this->states($run, 'waiting')]);
+        $this->travel(7)->hours();
+        $this->assertTrue($runs->needsMonitor($run->fresh(), false), 'finished bound rooms do not make a waiting run idle');
+        $this->assertTrue($this->tick($run));
+        $this->assertSame(1, IguideLabWorkflow::count());
+
+        // The chain dies (its successor is lost): the scheduled sweeper alone restarts it, without any GET.
+        DB::table('iguide_lab_tour_runs')->where('id', $run->id)->update(['monitor_heartbeat_at' => now()->subMinutes(6), 'monitor_token' => (string) Str::uuid()]);
+        $pushed = count($this->queue->pushed(MonitorIguideLabTourRun::class));
+        $this->assertSame(0, Artisan::call('iguide-lab:tour-monitors'));
+        $this->assertSame(1, json_decode(trim(Artisan::output()), true, flags: JSON_THROW_ON_ERROR)['runsKicked']);
+        $this->assertCount($pushed + 1, $this->queue->pushed(MonitorIguideLabTourRun::class));
+        $chain = collect($this->queue->pushed(MonitorIguideLabTourRun::class))->last();
+        $this->assertSame([$run->id, null], [$chain->runId, $chain->seq], 'a new chain');
+
+        // Runs un-paused: the restarted chain reserves and starts chunk 2 on its first tick.
+        config(['iguide-lab-tour.tour_runs_paused' => false]);
+        $chain->handle($runs);
+        $this->assertSame(2, IguideLabWorkflow::count());
+        $this->assertSame(['finished', 'started'], IguideLabTourRunChunk::where('run_id', $run->id)->orderBy('position')->pluck('status')->all());
+        $this->assertSame([0, 1], [$this->states($run, 'waiting'), $this->states($run, 'queued')]);
+    }
+
+    /**
+     * Spec conventions (never DB::afterCommit inside a lab write transaction) and 9.6 step 2: a warning that
+     * cancelWaiting() decides inside LabTourAnalyses::cancel()'s transaction is logged after LockedWrite::run() returned.
+     * A logger that throws can then neither fail the committed cancel nor stop the cancel of the bound workflow.
+     */
+    public function test_cancel_logs_its_warnings_after_the_commit_and_a_failing_logger_never_blocks_the_workflow_cancel(): void
+    {
+        [$analysis] = $this->seedAnalysis(rooms: 2);
+        [$run] = $this->createRun($analysis, 'golden-hour');
+        $this->crashBetweenStartAndBind($run);
+        $workflow = IguideLabWorkflow::sole();
+        // An item status the target map does not know: Bind, in the cancel path, decides a warning (9.3).
+        IguideLabWorkflowItem::whereKey(IguideLabWorkflowItem::where('workflow_id', $workflow->id)->orderBy('position')->value('id'))->update(['status' => 'mystery_state']);
+        $logged = [];
+        Event::listen(MessageLogged::class, function (MessageLogged $event) use (&$logged) {
+            $logged[] = [$event->level, $event->message, DB::transactionLevel()];
+            throw new \RuntimeException('The log file is not writable.');
+        });
+
+        $cancelled = app(LabTourAnalyses::class)->cancel($analysis->fresh());
+
+        $this->assertSame([['warning', 'Unknown workflow item status synced as processing.', $this->queue->baselineLevel]], $logged,
+            'logged once, at the baseline transaction level, after the commit');
+        $this->assertSame($analysis->id, $cancelled->id);
+        $this->assertSame('cancelled', $run->fresh()->status);
+        $this->assertSame([$workflow->id], $this->workflows->cancelCalls, 'the workflow found for the reserved chunk is still cancelled');
+        $this->assertNotNull($workflow->fresh()->cancelled_at);
     }
 
     // ------------------------------------------------------------------ helpers

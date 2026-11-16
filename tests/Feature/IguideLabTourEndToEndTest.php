@@ -15,6 +15,7 @@ use App\Services\IguideLab\LabTourDefaults;
 use App\Services\IguideLab\LabTourErrors;
 use App\Services\IguideLab\LabTourView;
 use Illuminate\Database\Events\QueryExecuted;
+use Illuminate\Database\Events\TransactionCommitted;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Cache;
@@ -445,6 +446,151 @@ class IguideLabTourEndToEndTest extends TestCase
         $this->assertSame(['g0'], array_column(array_filter($ready['captures'][0]['candidates'], fn ($c) => $c['preset'] === 'golden-hour' && $c['defaultSelected']), 'id'));
         $this->assertSame(['Main Kitchen'], $this->providerCalls);
         $this->assertSame(1, IguideLabTourSurveyAttempt::count());
+    }
+
+    /**
+     * 10.3 E2 step 6 and 10.7: the 202 record is built inside the create transaction. A monitor tick that commits right
+     * after the create, before the answer is sent, is not in the answer; the next GET shows it.
+     */
+    public function test_create_answers_the_record_built_inside_its_transaction(): void
+    {
+        $import = $this->seedImport(['Main Kitchen' => 'kitchen', 'Walk-in Closet' => 'walk-in-closet']);
+        $hook = new class
+        {
+            public bool $fired = false;
+        };
+        Event::listen(TransactionCommitted::class, function () use ($hook, $import) {
+            if ($hook->fired) return;
+            $id = IguideLabTourAnalysis::where('import_id', $import->id)->value('id');
+            if ($id === null) return;
+            $hook->fired = true;
+            // The first commit that shows the record is the create's own: the monitor's first tick commits right after it.
+            $this->assertTrue(app(LabTourAnalyses::class)->tick($id));
+        });
+
+        $created = $this->tour('POST', 'tour-analyses', ['requestId' => (string) Str::uuid(), 'importId' => $import->id, 'preset' => 'twilight'], 202);
+        $this->assertTrue($hook->fired);
+        $stored = IguideLabTourAnalysis::sole();
+        $this->assertSame('analysing', $stored->status, 'the tick committed before the answer was sent');
+        $this->assertSame(['queued', 1, ['pending', 'pending'], 2], [$created->json('data.status'), $created->json('data.recordRevision'),
+            array_column($created->json('data.captures'), 'status'), $created->json('data.counts.pending')], 'the answer is the create transaction\'s record');
+        $this->assertGreaterThan(1, $stored->record_revision);
+
+        $next = $this->tour('GET', 'tour-analyses/'.$stored->id);
+        $this->assertSame(['analysing', $stored->record_revision, ['surveying', 'surveying']], [$next->json('data.status'), $next->json('data.recordRevision'),
+            array_column($next->json('data.captures'), 'status')]);
+    }
+
+    /**
+     * 10.3 E2 step 4 with D8 and 5.12: a resume relinks cancelled survey rows that were never claimed and pushes them like
+     * fresh reservations, so they need paid calls. Without calls left the resume is a 429 that changes nothing.
+     */
+    public function test_resume_without_survey_calls_left_is_a_429_that_changes_nothing(): void
+    {
+        $import = $this->seedImport(['Main Kitchen' => 'kitchen', 'Walk-in Closet' => 'walk-in-closet']);
+        $id = $this->tour('POST', 'tour-analyses', ['requestId' => (string) Str::uuid(), 'importId' => $import->id, 'preset' => 'twilight'], 202)->json('data.id');
+        // Only the monitor runs: both surveys are reserved and dispatched, none is sent; then the user cancels.
+        foreach ($this->queue->pushed(MonitorIguideLabTourAnalysis::class) as $job) $this->runQueued($job, fn ($job) => $job->handle(app(LabTourAnalyses::class)));
+        $this->tour('POST', "tour-analyses/$id/cancel", [])->assertJsonPath('data.status', 'cancelled');
+        $this->assertSame(['cancelled', 'cancelled'], IguideLabTourSurvey::orderBy('created_at')->pluck('status')->all());
+        $this->assertSame(0, IguideLabTourSurveyAttempt::count());
+
+        $state = fn () => array_map(fn ($table) => DB::table($table)->orderBy('id')->get()->map(fn ($row) => (array) $row)->all(),
+            ['iguide_lab_tour_analyses', 'iguide_lab_tour_analysis_requests', 'iguide_lab_tour_captures', 'iguide_lab_tour_surveys']);
+        $before = $state();
+        $pushes = count($this->queue->pushedJobs(), COUNT_RECURSIVE);
+        $resume = ['requestId' => (string) Str::uuid(), 'importId' => $import->id, 'preset' => 'twilight'];
+        // No project call left; one left for two rooms; project calls left but none left today in the lab.
+        foreach ([['survey_calls_per_project' => 0], ['survey_calls_per_project' => 1], ['survey_calls_per_project' => 240, 'survey_calls_per_day' => 0]] as $caps) {
+            config(collect($caps)->mapWithKeys(fn ($value, $key) => ["iguide-lab-tour.caps.$key" => $value])->all());
+            $this->tourError('POST', 'tour-analyses', $resume, 'surveyCapReached');
+            $this->assertSame($before, $state(), json_encode($caps).': the refused resume changes nothing');
+            $this->assertSame($pushes, count($this->queue->pushedJobs(), COUNT_RECURSIVE), json_encode($caps).': and pushes nothing');
+        }
+
+        // With calls left, the same requestId resumes the record (the refused calls stored nothing) and each room is paid once.
+        config(['iguide-lab-tour.caps.survey_calls_per_day' => 160]);
+        $resumed = $this->tour('POST', 'tour-analyses', $resume, 202);
+        $this->assertSame([$id, 'queued'], [$resumed->json('data.id'), $resumed->json('data.status')]);
+        $this->workTourQueue();
+        $this->assertEqualsCanonicalizing(['Main Kitchen', 'Walk-in Closet'], $this->providerCalls);
+        $this->tour('GET', "tour-analyses/$id")->assertJsonPath('data.status', 'ready');
+    }
+
+    /**
+     * 13.5 test_get_kick_is_deduplicated through the GET routes with the real services (9.8): with a stale run heartbeat
+     * and a pending successor 50 GETs push nothing; without one they push exactly one new chain; a queue that throws
+     * still answers 200 with a contract body.
+     */
+    public function test_get_kick_is_deduplicated_and_a_failing_push_still_answers_200(): void
+    {
+        $import = $this->seedImport(['Main Kitchen' => 'kitchen']);
+        $id = $this->tour('POST', 'tour-analyses', ['requestId' => (string) Str::uuid(), 'importId' => $import->id, 'preset' => 'twilight'], 202)->json('data.id');
+        $this->workTourQueue();
+        $selection = $this->tour('GET', "tour-analyses/$id")->json('data.presets.twilight.selection');
+        $runId = $this->tour('POST', "tour-analyses/$id/runs", ['requestId' => (string) Str::uuid(), 'preset' => 'twilight', 'selectionRevision' => 0,
+            'selectionSha256' => $selection['sha256']], 202)->json('data.id');
+        $runChains = fn () => $this->queue->pushed(MonitorIguideLabTourRun::class)->values();
+        $this->assertCount(1, $runChains());
+        $gets = function (int $count) use ($id) {
+            for ($i = 0; $i < $count; $i++) $this->tour('GET', $i % 2 === 0 ? "tour-analyses/$id" : "tour-analyses/$id/progress");
+        };
+
+        // Stale (no heartbeat 5 minutes after create), but a successor waits behind a long job: waiting, not dead.
+        $this->travel(301)->seconds();
+        DB::table('jobs')->insert(['queue' => 'studio', 'payload' => json_encode(['displayName' => MonitorIguideLabTourRun::class, 'data' => ['runId' => $runId]]),
+            'attempts' => 0, 'available_at' => now()->getTimestamp(), 'created_at' => now()->getTimestamp()]);
+        $gets(50);
+        $this->assertCount(1, $runChains());
+
+        // No pending job: 50 GETs push exactly one new chain (the per-minute gate holds).
+        DB::table('jobs')->delete();
+        $gets(50);
+        $this->assertCount(2, $runChains());
+        $this->assertNull($runChains()[1]->seq, 'a kick starts a new chain');
+
+        // The queue throws (the new chain never ran, so the monitor is still stale): the record and the progress still
+        // answer 200 with bodies that pass the reader mirror, and nothing is pushed.
+        foreach (["tour-analyses/$id", "tour-analyses/$id/progress"] as $path) {
+            $this->travel(61)->seconds();
+            $this->queue->failNextPush(new \RuntimeException('The queue table is unavailable.'));
+            $this->tour('GET', $path);
+            $this->assertCount(2, $runChains(), "$path: the failed kick pushed nothing");
+        }
+        // The failure was the push itself: once the queue works again the next GET after the gate kicks.
+        $this->travel(61)->seconds();
+        $this->tour('GET', "tour-analyses/$id");
+        $this->assertCount(3, $runChains());
+    }
+
+    /**
+     * 13.5 test_policy_is_never_read_inside_a_transaction with the real classes through HTTP: the record GET, the selection
+     * write and POST runs (each with a cold capabilities cache) and a run monitor tick each read LabWorkflowPolicy, and
+     * only at the baseline transaction level.
+     */
+    public function test_policy_is_never_read_inside_a_transaction(): void
+    {
+        $import = $this->seedImport(['Front Exterior' => 'exterior-front', 'Main Kitchen' => 'kitchen']);
+        $id = $this->tour('POST', 'tour-analyses', ['requestId' => (string) Str::uuid(), 'importId' => $import->id, 'preset' => 'golden-hour'], 202)->json('data.id');
+        $this->workTourQueue();
+        $cases = array_column($this->tour('GET', "tour-analyses/$id")->json('data.captures'), 'caseId');
+        $readsAtBaseline = function (string $label, callable $call) {
+            Cache::flush();
+            $this->policy->calls = [];
+            $result = $call();
+            $this->assertNotEmpty($this->policy->calls, "$label reads the policy");
+            foreach ($this->policy->calls as $read) $this->assertSame($this->policy->baselineLevel, $read['level'], "$label: {$read['method']}() ran inside a transaction");
+
+            return $result;
+        };
+
+        $readsAtBaseline('record GET', fn () => $this->tour('GET', "tour-analyses/$id"));
+        $write = $readsAtBaseline('selection write', fn () => $this->tour('POST', "tour-analyses/$id/selection", ['preset' => 'golden-hour', 'baseRevision' => 0,
+            'changes' => [['caseId' => $cases[1], 'add' => [], 'remove' => ['g1']]]]));
+        $readsAtBaseline('POST runs', fn () => $this->tour('POST', "tour-analyses/$id/runs", ['requestId' => (string) Str::uuid(), 'preset' => 'golden-hour',
+            'selectionRevision' => 1, 'selectionSha256' => $write->json('data.selection.sha256')], 202));
+        $readsAtBaseline('run monitor tick', fn () => $this->assertSame(1, $this->workRunMonitors()));
+        $this->assertCount(1, $this->workflows->startCalls, 'the tick started the chunk');
     }
 
     // ------------------------------------------------------------------ helpers
