@@ -105,7 +105,7 @@ class LabGrassAssessments
                 'data' => $data, 'completed_at' => now(), 'error_code' => null]), 'iguide-lab.grass-assessment-complete');
         } catch (\Throwable $error) {
             $this->attention($record, in_array($record->fresh()->status, ['submitting', 'received'], true) ? 'submitted_assessment_unconfirmed_or_rejected' : 'assessment_preflight_rejected',
-                ['class' => class_basename($error), 'message' => mb_substr($error->getMessage(), 0, 500)]);
+                ['class' => class_basename($error), 'code' => preg_match('/\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b/',$error->getMessage(), $m) === 1 ? $m[0] : null]);
         }
     }
     private function protocolContextHash(array $compiled): string

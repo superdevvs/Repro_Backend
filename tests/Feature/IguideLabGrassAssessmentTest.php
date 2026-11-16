@@ -115,7 +115,8 @@ class IguideLabGrassAssessmentTest extends TestCase
         $this->assertSame('needs_attention', $fresh->status);
         $this->assertSame('submitted_assessment_unconfirmed_or_rejected', $fresh->error_code);
         $this->assertSame('HttpException', $fresh->data['failure']['class']);
-        $this->assertStringContainsString('GRASS_SELECTION_ID_INVALID', $fresh->data['failure']['message']);
+        // only the class and the protocol error code are kept; raw messages may hold paths or provider text
+        $this->assertSame(['class' => 'HttpException', 'code' => 'GRASS_SELECTION_ID_INVALID'], $fresh->data['failure']);
         Http::assertSentCount(1);
     }
     public function test_cancellation_after_quota_rejection_blocks_fallback_claim(): void
