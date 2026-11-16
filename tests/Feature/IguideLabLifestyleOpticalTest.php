@@ -57,7 +57,8 @@ class IguideLabLifestyleOpticalTest extends TestCase
     private function finish(IguideLabLifestyleFraming $record,string $kind='enquiry'): IguideLabLifestyleFraming
     {
         $c=$record->data['contextSnapshot']['context'];$v=$kind==='enquiry'?F::enquiry($c):F::candidate($c);
-        if($kind==='hold'){$v['status']='needs_review';$v['view']=null;$v['constraints']['optical_dependencies']['status']='unresolved';}
+        if($kind==='hold'||$kind==='blocked'){$v['status']='needs_review';$v['view']=null;$v['constraints']['optical_dependencies']['status']='unresolved';}
+        if($kind==='blocked')$v['sourcePeople']='present';
         $this->resetHttp();Http::fake(['api.openai.com/v1/responses'=>Http::response(Wire::response($v),200,['x-request-id'=>'req-'.$record->id])]);
         $service=app(LabLifestyleFramings::class);$service->process($record);$service->process($record->fresh());$this->assertSame('completed',$record->fresh()->status);return $record->fresh();
     }
@@ -90,11 +91,20 @@ class IguideLabLifestyleOpticalTest extends TestCase
         }
         $this->expectException(HttpException::class);$service->reserveFollowup($item,$record->id);
     }
-    public function test_remaining_optics_holds_without_third_analysis_or_any_image(): void
+    public function test_remaining_optics_becomes_a_caveated_candidate_without_third_analysis_or_any_image(): void
     {
-        [,, $item,,$step,$parent,$record]=$this->followup();$held=$this->finish($record,'hold');
-        $this->assertSame('needs_review',$held->result['status']);$this->assertNull($held->result['view']);
+        [$project,, $item,,$step,$parent,$record]=$this->followup();$held=$this->finish($record,'hold');
+        $this->assertSame('framing_candidate',$held->result['status']);$this->assertEquals(['yaw'=>0,'pitch'=>-10,'hFov'=>100],$held->result['view']);
+        $this->assertSame('verify_on_cut',$held->result['constraints']['optical_dependencies']['status']);
+        // The stored result is exactly what a re-parse of the retained receipt gives, so the cut can reference it.
+        $this->assertSame($held->id,app(LabLifestyleFramings::class)->completed($item,$held->id)->id);
+        $this->assertSame(0,IguideLabWorkflowStep::where('kind','image')->count());$this->assertSame(0,$project->fresh()->used_runs);
         $this->expectException(HttpException::class);app(LabLifestyleFramings::class)->reserveFollowup($item,$held->id);
+    }
+    public function test_a_followup_hold_with_people_present_stays_held(): void
+    {
+        [,, $item,,$step,$parent,$record]=$this->followup();$held=$this->finish($record,'blocked');
+        $this->assertSame('needs_review',$held->result['status']);$this->assertNull($held->result['view']);
     }
     public function test_parent_raw_receipt_drift_after_primary_quota_blocks_fallback(): void
     {

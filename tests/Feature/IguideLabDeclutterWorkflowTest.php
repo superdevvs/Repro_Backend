@@ -72,6 +72,64 @@ class IguideLabDeclutterWorkflowTest extends TestCase
         $this->assertSame(['TARGET_TOUCHES_CUT_EDGE'],$item->data['removalReviewReasons']);
         $this->assertSame(['A faint reflection may exist.'],$item->data['sourceCaveats']);Http::assertNothingSent();
     }
+    /** Shared harness: the real advance() with model children replaced by fixed answers; no provider is called. */
+    private function advanceWith(array $proposal,array $planResult,?callable $before=null): array
+    {
+        [$project,$case,$workflow,$item]=$this->fixture();config(['iguide-lab.declutter_workflow_enabled'=>true]);
+        $policy=$workflow->policy;$policy['declutterWorkflow']=app(\App\Services\IguideLab\LabDeclutterWorkflow::class)->snapshot();$workflow->update(['policy'=>$policy]);
+        $this->partialMock(\App\Services\IguideLab\LabDeclutterWorkflow::class,function($m){$m->shouldReceive('ready')->andReturn(true);$m->shouldReceive('validateSnapshot');});
+        $this->mock(\App\Services\IguideLab\LabWorkflowArtifacts::class,fn($m)=>$m->shouldReceive('preflight'));
+        $this->mock(\App\Services\IguideLab\LabAnalyses::class,fn($m)=>$m->shouldReceive('start')->andReturnUsing(function()use($proposal){
+            $a=new \App\Models\IguideLabAnalysis(['status'=>'completed']);$a->id=(string)Str::uuid();$a->proposal=$proposal;return $a;}));
+        $views=new \ArrayObject;
+        $this->mock(\App\Services\IguideLab\LabSections::class,fn($m)=>$m->shouldReceive('start')->andReturnUsing(function($p,$input)use($case,$views){
+            $views[]=$input['view'];$s=new \App\Models\IguideLabSection(['status'=>'completed']);$s->id=(string)Str::uuid();$s->case_id=$case->id;$s->source_sha256=$case->source_sha256;
+            $s->view=$input['view'];$s->derived_case_id=$case->id;return $s;}));
+        $plan=new \App\Models\IguideLabDeclutterRemovalPlan(['status'=>'completed']);$plan->id=(string)Str::uuid();$plan->result=$planResult;
+        $this->mock(\App\Services\IguideLab\LabDeclutterRemovalPlans::class,function($m)use($item,$plan){
+            $m->shouldReceive('reserve')->andReturnUsing(fn()=>app(LabWorkflowSteps::class)->reserve($item,'removal-plan','analysis',['fixture'=>true]));
+            $m->shouldReceive('start')->andReturn($plan);$m->shouldReceive('verified');$m->shouldReceive('reserveSegmentationSteps')->andReturn([]);
+        });
+        $this->mock(\App\Services\IguideLab\LabDeclutterSupport::class,fn($m)=>$m->shouldReceive('derive')->andReturn(
+            ['reportPath'=>'support/report.json','reportSha256'=>str_repeat('f',64),'report'=>['status'=>'ready_for_generation','caveats'=>[],'reviewReasons'=>[]]]));
+        if($before)$before($project,$case);
+        app(\App\Services\IguideLab\LabDeclutterWorkflow::class)->advance($workflow->fresh(),$item->fresh(),$project->fresh());
+        return [$item->fresh(),$views->getArrayCopy(),$project];
+    }
+    public function test_a_stored_manual_review_source_is_cut_from_its_cited_view_and_planned_instead_of_stopping(): void
+    {
+        $stored=json_decode(file_get_contents(base_path('tests/Fixtures/iguide-lab/held-replay/declutter-f94e91.json')),true);
+        [$item,$views]=$this->advanceWith($stored['proposal'],['status'=>'needs_review','reviewReasons'=>['TARGET_BOX_MISSING'],'caveats'=>[]]);
+        $this->assertSame([['yaw'=>0.0,'pitch'=>-15.0,'hFov'=>120.0]],$views);
+        // The removal plan (a free analysis on the cut, no image) now decides; its stop is still before any image.
+        $this->assertSame('removal_plan_requires_review',$item->data['reviewReasons'][0]['code']);
+        $this->assertSame($stored['proposal']['uncertainties'],array_slice($item->data['sourceCaveats'],0,count($stored['proposal']['uncertainties'])));
+        $caveats=$item->data['sourceCaveats'];$this->assertStringContainsString('manual review',end($caveats));
+        $this->assertSame(0,\App\Models\IguideLabRun::count());Http::assertNothingSent();
+    }
+    public function test_a_manual_review_source_with_no_cited_direction_still_stops_before_any_section(): void
+    {
+        $stored=json_decode(file_get_contents(base_path('tests/Fixtures/iguide-lab/held-replay/declutter-f94e91.json')),true);
+        $proposal=$stored['proposal'];$proposal['targets'][0]['evidenceViewIds']=['source','nadir'];
+        [$item,$views]=$this->advanceWith($proposal,['status'=>'needs_review','reviewReasons'=>[],'caveats'=>[]]);
+        $this->assertSame([],$views);$this->assertSame('unsupported_removal_route',$item->data['reviewReasons'][0]['code']);
+    }
+    public static function fullCapacity(): array {return ['generation'=>['runs'],'composites'=>['composites']];}
+    #[\PHPUnit\Framework\Attributes\DataProvider('fullCapacity')]
+    public function test_capacity_is_checked_before_the_removal_image_is_bought(string $full): void
+    {
+        $proposal=['uncertainties'=>[],'targets'=>[['id'=>'target_object','action'=>'remove','objectCount'=>1,'evidenceViewIds'=>['source','front']]],
+            'workflow'=>['mode'=>'perspective_sections','sections'=>[['targetIds'=>['target_object'],'yawDegrees'=>10,'pitchDegrees'=>-30,'hfovDegrees'=>65]]]];
+        [$item]=$this->advanceWith($proposal,['status'=>'ready_for_segmentation','reviewReasons'=>[],'caveats'=>[],'proposal'=>['generationPrompt'=>'Remove the canister.']],
+            function($project,$case)use($full){
+                if($full==='runs'){$project->update(['used_runs'=>$project->max_runs]);return;}
+                foreach(range(1,120) as $i)\Illuminate\Support\Facades\DB::table('iguide_lab_composites')->insert(['id'=>(string)Str::uuid(),'project_id'=>$project->id,'case_id'=>$case->id,
+                    'request_id'=>(string)Str::uuid(),'request_hash'=>str_repeat('a',64),'label'=>'c'.$i,'status'=>'completed','preview_path'=>'p.png','manifest'=>'{}','created_at'=>now(),'updated_at'=>now()]);
+            });
+        $this->assertSame('needs_review',$item->status);$this->assertSame('generation_capacity_unavailable',$item->data['reviewReasons'][0]['code'],$full);
+        $this->assertFalse(\App\Models\IguideLabWorkflowStep::where('item_id',$item->id)->where('step_key','declutter-image')->exists());
+        $this->assertSame(0,\App\Models\IguideLabRun::count());Http::assertNothingSent();
+    }
     /** Blending failure (reported or a broken harmonizer run) still composites the paid raw draft inside the mask. */
     public static function blendingFailures(): array { return ['reported'=>['reported'],'crashed'=>['crashed']]; }
     #[\PHPUnit\Framework\Attributes\DataProvider('blendingFailures')]

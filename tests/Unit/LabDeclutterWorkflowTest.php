@@ -92,6 +92,17 @@ class LabDeclutterWorkflowTest extends TestCase
         foreach([...$source['uncertainties'],...$source['sourceArtifacts'],...$plan['uncertainties']] as $text)$this->assertStringContainsString($text,$all);
         $this->assertStringContainsString('OPTICAL_DEPENDENCY_REQUIRES_REVIEW',$all);
     }
+    public function test_a_source_manual_review_hold_reaches_the_final_check_as_a_caveat(): void
+    {
+        $source=['protectedFeatures'=>[],'uncertainties'=>['Pale marks may be canister reflections.'],'sourceArtifacts'=>[],'reviewChecks'=>[],
+            'workflow'=>['mode'=>'manual_review','reason'=>'Possible target reflections and uncertain shadow separation.','sections'=>[]]];
+        $plan=['target'=>['description'=>'one canister'],'shadow'=>['status'=>'single_local_attributable'],'protectedFeatures'=>[],'uncertainties'=>[],
+            'receiver'=>['material'=>'stochastic_stone_continuous','samples'=>[]]];
+        $all=implode(' ',app(LabDeclutterArtifacts::class)->removalReviewContext($source,$plan,[],true)['sourceCaveats']);
+        $this->assertStringContainsString('manual review',$all);$this->assertStringContainsString('uncertain shadow separation',$all);
+        $source['workflow']=['mode'=>'perspective_sections','reason'=>'Clear route.','sections'=>[['id'=>'s']]];
+        $this->assertStringNotContainsString('manual review',implode(' ',app(LabDeclutterArtifacts::class)->removalReviewContext($source,$plan,[],true)['sourceCaveats']));
+    }
     public function test_removal_caveat_line_lists_plan_and_support_codes_and_raw_draft_fallback(): void
     {
         $line=LabDeclutterArtifacts::caveatLines(['caveats'=>['UNRESOLVED_UNCERTAINTY']],['caveats'=>['OBJECT_MASK_DISCONNECTED']],true);

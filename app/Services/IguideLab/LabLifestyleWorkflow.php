@@ -94,6 +94,8 @@ class LabLifestyleWorkflow
         app(LabAnalysisSourceContext::class)->verify($cut,$context);
         abort_unless(($context['binding']['nativeCaseId']??null)===$native->id&&($context['binding']['sectionId']??null)===$section->id
             &&($context['binding']['nativeSourceSha256']??null)===$native->source_sha256,422,'Section analysis parent authority changed.');
+        // Checked before buying the image: assessment, composite and final-check records must still fit afterwards.
+        if($stop=app(LabPreImageCapacity::class)->stop($item,'lifestyle-image')){$owner->finish($item,'needs_review',$stop[0],$stop[1],$data);return;}
         $imageInput=['caseId'=>$cut->id,'preset'=>'lifestyle','style'=>$item->style,'modelId'=>$workflow->policy['modelId'],'prompt'=>$analysis->proposal['generationPrompt'],
             'options'=>array_replace($analysis->settings['options'],['analysisId'=>$analysis->id,'promptMode'=>'scene-plan','complexity'=>'low','sectionId'=>$section->id])];
         $imageStep=$steps->reserve($item,'lifestyle-image','image',$imageInput);

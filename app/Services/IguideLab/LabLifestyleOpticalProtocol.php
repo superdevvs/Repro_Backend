@@ -57,6 +57,17 @@ TEXT;
         if(count(array_unique($poses))!==count($poses))self::fail('Duplicate native detail poses.');
         $eligible=$safe&&$v['sourcePeople']==='none_observed'&&$v['coherentGroup']==='plausible';
         $floor=in_array($v['constraints']['source_floor']['status'],['supported','verify_on_cut'],true);
+        // A hold without a hard blocker (no people, plausible pair, visible floor) is not a stop: the pose is derived
+        // from the overview its floor, pair or margin evidence cites, and every doubt stays a caveat for the later checks.
+        $derived=$v['status']==='needs_review'&&$v['view']===null&&!$v['detailRequests']&&$floor
+            &&$v['sourcePeople']==='none_observed'&&$v['coherentGroup']==='plausible'?self::derivedView($v['constraints']):null;
+        if($derived!==null){
+            $v['status']='framing_candidate';$v['view']=$derived;
+            $v['summary']=mb_substr('The model held for review (needs_review) without a hard blocker; the pose was derived from the overview its floor or pair evidence cites. '.$v['summary'],0,1200);
+            $m=$v['constraints']['frame_margin'];
+            $v['constraints']['frame_margin']=['status'=>$m['status']==='supported'?'verify_on_cut':$m['status'],'evidenceViewIds'=>$m['evidenceViewIds'],
+                'reason'=>mb_substr('Pose derived from a cited overview after a needs_review hold; margin and placement are caveats for the actual cut. '.$m['reason'],0,550)];
+        }
         if($v['status']==='detail_required'){
             if(!$eligible||$context['followupOrdinal']!==0||$v['constraints']['optical_dependencies']['status']!=='resolution_limited'||!$v['detailRequests']||$v['view']!==null)self::fail('Unsupported native follow-up.');
         }elseif($v['detailRequests'])self::fail('Only initial resolution enquiry may request native details.');
@@ -67,10 +78,18 @@ TEXT;
             // Reflection, scale, margin, clearance and lighting doubts are caveats carried to the later checks.
             foreach($v['constraints'] as $name=>$c)if(!in_array($c['status'],['supported','verify_on_cut'],true))
                 $v['constraints'][$name]=['status'=>'verify_on_cut','evidenceViewIds'=>$c['evidenceViewIds'],'reason'=>mb_substr('Recorded as a caveat (model status: '.$c['status'].'). '.$c['reason'],0,550)];
-            if($context['followupOrdinal']===1){$e=$v['constraints']['optical_dependencies']['evidenceViewIds'];
+            if($context['followupOrdinal']===1&&$derived===null){$e=$v['constraints']['optical_dependencies']['evidenceViewIds'];
                 if(array_diff(array_slice($ids,7),$e)||!array_intersect(LabLifestyleFramingProtocol::IDS,$e))self::fail('Native follow-up must inspect details with original context.');}
         }elseif($v['view']!==null)self::fail('Held source has no extraction authority.');
         return $v+['authorOrigin'=>'machine','imageGenerationAuthorized'=>false,'geometryVerified'=>false,'manualAcceptance'=>false];
+    }
+    /** Overview directions (analysis_views.py ANGLES) as framing yaw; native detail crops aim at glazing, never at the floor. */
+    private const OVERVIEW_YAW=['front'=>0.0,'right'=>90.0,'back'=>180.0,'left'=>-90.0];
+    private static function derivedView(array $constraints): ?array
+    {
+        foreach(['source_floor','group_coverage','frame_margin'] as $name)foreach($constraints[$name]['evidenceViewIds'] as $id)
+            if(isset(self::OVERVIEW_YAW[$id]))return ['yaw'=>self::OVERVIEW_YAW[$id],'pitch'=>-10.0,'hFov'=>100.0];
+        return null;
     }
     /** Over-long explanations are shortened, never a reason to discard a paid answer. */
     private static function bounded(array $v): array

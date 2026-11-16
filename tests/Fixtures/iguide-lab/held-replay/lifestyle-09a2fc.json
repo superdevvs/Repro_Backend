@@ -1,0 +1,508 @@
+{
+ "itemId": "01a1dc56-9edc-70c6-9c9c-09a2fcab6f4e",
+ "framings": [
+  {
+   "step": "lifestyle-optical-framing",
+   "answer": {
+    "version": "lifestyle-source-framing-with-native-details/2",
+    "sourceSha256": "6e7b40fc27c28f8ccf8d26ad92a4566b4f1c228ac331fb8ead953acd1f79131e",
+    "intentSha256": "ed3d909a3a091ed42e0e926bfae927d0c8a404ed4c11b251b0bc9785de1adf8a",
+    "status": "detail_required",
+    "sourcePeople": "none_observed",
+    "coherentGroup": "plausible",
+    "view": null,
+    "constraints": {
+     "group_coverage": {
+      "status": "verify_on_cut",
+      "evidenceViewIds": [
+       "source",
+       "front",
+       "nadir"
+      ],
+      "reason": "The empty central floor plausibly accommodates exactly two separately standing adults without furniture interaction. Natural scale, nonoverlapping silhouettes and visibility of all four shoes require actual-cut and generated-body checks."
+     },
+     "frame_margin": {
+      "status": "verify_on_cut",
+      "evidenceViewIds": [
+       "source",
+       "front"
+      ],
+      "reason": "Visible floor and headroom make a complete standing pair plausible. At least 10% margin around the eventual body-and-shoe envelope must be verified on the actual perspective cut; an empty source cannot establish exact body extents."
+     },
+     "source_floor": {
+      "status": "supported",
+      "evidenceViewIds": [
+       "source",
+       "front",
+       "left",
+       "nadir"
+      ],
+      "reason": "Continuous, apparently level plank flooring is visible across the central room. Standing contacts can remain on this exposed floor, away from the raised hearth, slider threshold and capture apparatus at nadir."
+     },
+     "circulation": {
+      "status": "verify_on_cut",
+      "evidenceViewIds": [
+       "source",
+       "front",
+       "back",
+       "right"
+      ],
+      "reason": "The room is unfurnished, with visible entry and patio-door approaches. Exact placement must retain a usable route between them and stay clear of the open interior door and its swing area."
+     },
+     "fixed_features": {
+      "status": "verify_on_cut",
+      "evidenceViewIds": [
+       "source",
+       "front",
+       "left",
+       "right",
+       "back"
+      ],
+      "reason": "The fireplace, projecting hearth, shelving, electrical panel, glazing and open door are identifiable. The cut must preserve these features and openings without contact, alteration or ambiguous foreground ordering."
+     },
+     "optical_dependencies": {
+      "status": "resolution_limited",
+      "evidenceViewIds": [
+       "source",
+       "front",
+       "right",
+       "left"
+      ],
+      "reason": "Exterior scenery is visible through the slider and side window, but these previews cannot reliably distinguish weak interior reflections from transmission. The dark firebox face also warrants mesh-versus-glass classification. Optical clearance is not established by the absence of obvious reflected people."
+     },
+     "ambient_contact_lighting": {
+      "status": "verify_on_cut",
+      "evidenceViewIds": [
+       "source",
+       "front",
+       "zenith",
+       "nadir"
+      ],
+      "reason": "Diffuse daylight and illuminated ceiling fixtures provide a plausible ambient basis; no strong sun patch crosses the central standing area. Later body checks must establish restrained local shoe contact shading without broad or directional cast shadows."
+     }
+    },
+    "summary": "No people are observed, and the exposed central floor plausibly supports a separated standing pair. Framing is held pending native inspection of the patio slider, side window and dark firebox face. The overview images do not establish optical clearance. Any subsequent candidate authorizes only free actual-cut inspection, not generation or acceptance; generated-body and independent full-sphere checks remain mandatory.",
+    "contextSha256": "a877050631c28fdcb23dbea7915b159b5baff597d92365c970b62e5b387087a3",
+    "followupOrdinal": 0,
+    "detailRequests": [
+     {
+      "id": "source_detail_1",
+      "pose": {
+       "yaw": -28,
+       "pitch": -10,
+       "hFov": 70
+      },
+      "evidenceViewIds": [
+       "source",
+       "front",
+       "left"
+      ],
+      "reason": "Inspect the black-framed patio slider beside the wood mantel: are the fence and yard purely transmitted scenery, or mixed with identifiable interior reflections relevant to the central standing floor? Also resolve whether the adjacent dark firebox face is mesh or reflective glazing."
+     },
+     {
+      "id": "source_detail_2",
+      "pose": {
+       "yaw": 53,
+       "pitch": -9,
+       "hFov": 60
+      },
+      "evidenceViewIds": [
+       "source",
+       "right",
+       "front"
+      ],
+      "reason": "Inspect both panes of the white-trimmed side window beside the open interior door. Distinguish transmitted fence, grass and neighboring-house detail from interior reflections, and determine whether any room or person-shaped reflection is visibly resolved rather than lost in overview sampling."
+     }
+    ]
+   },
+   "context": {
+    "version": "lifestyle-source-framing-with-native-details/2",
+    "sourceSha256": "6e7b40fc27c28f8ccf8d26ad92a4566b4f1c228ac331fb8ead953acd1f79131e",
+    "sourceAuthoritySha256": "723ad0054b840c83d9ebdc83bfb28bbae0216cbade696eae68e0ca2a27e90b2f",
+    "intentSha256": "ed3d909a3a091ed42e0e926bfae927d0c8a404ed4c11b251b0bc9785de1adf8a",
+    "style": null,
+    "instructions": "",
+    "views": [
+     {
+      "id": "source",
+      "sha256": "247d7d1bd428f521928e791df42c259243c58210fd1f562dc3e7b6064792f27c",
+      "width": 2048,
+      "height": 1024
+     },
+     {
+      "id": "front",
+      "sha256": "17805350d106fe96dd91a655904d5bf680d71882c6c9004b9e6ca716c2289ef0",
+      "width": 1024,
+      "height": 1024
+     },
+     {
+      "id": "right",
+      "sha256": "1b55f940971b5aa1fb3b6db3710a3a4c57c2f1e3d18af05b687c62acd5099ecc",
+      "width": 1024,
+      "height": 1024
+     },
+     {
+      "id": "back",
+      "sha256": "b44aee883a5fb776a9418c8fabce8b17f141dfd2d87b963fcb720cdeaf5f029e",
+      "width": 1024,
+      "height": 1024
+     },
+     {
+      "id": "left",
+      "sha256": "3a4a44adca4c5f7abf475c6f2486b272bda7c25077f9cbfe0c9295114c24f974",
+      "width": 1024,
+      "height": 1024
+     },
+     {
+      "id": "zenith",
+      "sha256": "1662927a2a996f15716ca8e2a55b329bfa62e6122b8b33835e8d5061567094cc",
+      "width": 1024,
+      "height": 1024
+     },
+     {
+      "id": "nadir",
+      "sha256": "a478210909455c988b62828f9173769af954c6882023ab6d2215014dea92ecc5",
+      "width": 1024,
+      "height": 1024
+     }
+    ],
+    "nativeDimensions": {
+     "width": 11008,
+     "height": 5504
+    },
+    "followupOrdinal": 0,
+    "parent": null
+   }
+  },
+  {
+   "step": "lifestyle-optical-followup",
+   "answer": {
+    "version": "lifestyle-source-framing-with-native-details/2",
+    "sourceSha256": "6e7b40fc27c28f8ccf8d26ad92a4566b4f1c228ac331fb8ead953acd1f79131e",
+    "intentSha256": "ed3d909a3a091ed42e0e926bfae927d0c8a404ed4c11b251b0bc9785de1adf8a",
+    "status": "needs_review",
+    "sourcePeople": "none_observed",
+    "coherentGroup": "plausible",
+    "view": null,
+    "constraints": {
+     "group_coverage": {
+      "status": "verify_on_cut",
+      "evidenceViewIds": [
+       "source",
+       "front",
+       "nadir"
+      ],
+      "reason": "The exposed central floor plausibly accommodates exactly two separately standing adults without furniture interaction. Natural scale, nonoverlapping silhouettes and visibility of all four shoes require actual-cut and generated-body checks."
+     },
+     "frame_margin": {
+      "status": "verify_on_cut",
+      "evidenceViewIds": [
+       "source",
+       "front"
+      ],
+      "reason": "Visible floor and headroom make complete standing coverage plausible. At least 10% margin around the eventual body-and-shoe envelope must be checked on the actual perspective cut; the empty source does not establish exact body extents."
+     },
+     "source_floor": {
+      "status": "supported",
+      "evidenceViewIds": [
+       "source",
+       "nadir",
+       "source_detail_1",
+       "source_detail_2"
+      ],
+      "reason": "Continuous, apparently level plank flooring is exposed across the central room. Potential standing contacts can remain clear of the projecting hearth, patio threshold and capture apparatus at nadir."
+     },
+     "circulation": {
+      "status": "verify_on_cut",
+      "evidenceViewIds": [
+       "source",
+       "front",
+       "back",
+       "right"
+      ],
+      "reason": "Interior-entry and patio-door approaches are visible. Exact placement must preserve a usable route between them and remain clear of the open interior door and its swing area."
+     },
+     "fixed_features": {
+      "status": "verify_on_cut",
+      "evidenceViewIds": [
+       "source",
+       "left",
+       "back",
+       "source_detail_1",
+       "source_detail_2"
+      ],
+      "reason": "The hearth, fireplace, shelving, electrical panel, glazed openings and open door are identifiable. Any later placement must preserve these features without contact, alteration or ambiguous foreground ordering."
+     },
+     "optical_dependencies": {
+      "status": "unresolved",
+      "evidenceViewIds": [
+       "front",
+       "right",
+       "source_detail_1",
+       "source_detail_2"
+      ],
+      "reason": "The crops resolve firebox mesh/grate and transmitted exterior scenery through both glazed openings. This does not establish whether the prospective pair would produce relevant reflections in the slider or oblique side window; that visibility remains unresolved. Same-capture, partly interpolated details and sampling statistics do not independently establish optical clearance. Excluding glazing from a cut would not settle this dependency."
+     },
+     "ambient_contact_lighting": {
+      "status": "verify_on_cut",
+      "evidenceViewIds": [
+       "front",
+       "zenith",
+       "nadir",
+       "source_detail_1"
+      ],
+      "reason": "Diffuse daylight and illuminated ceiling fixtures provide a plausible ambient basis, with no strong sun patch across the central standing floor. Later body checks must establish restrained local shoe-contact shading without broad or directional cast shadows."
+     }
+    },
+    "summary": "Both native details and all seven original views were inspected. No people are observed, and a separated standing pair remains plausible on the exposed floor. Firebox mesh and exterior transmission are clearer, but the pair's reflection visibility in the glazing is not established, so framing remains on hold. No further detail requests or reframing loop are proposed. Actual-cut, generated-body and independent full-sphere checks remain mandatory; no generation or acceptance is authorized.",
+    "contextSha256": "1d480d763d61446f1b33c3f60837a6d521ddb7ec340997fc1cbde7ca4e7efa0c",
+    "followupOrdinal": 1,
+    "detailRequests": []
+   },
+   "context": {
+    "version": "lifestyle-source-framing-with-native-details/2",
+    "sourceSha256": "6e7b40fc27c28f8ccf8d26ad92a4566b4f1c228ac331fb8ead953acd1f79131e",
+    "sourceAuthoritySha256": "723ad0054b840c83d9ebdc83bfb28bbae0216cbade696eae68e0ca2a27e90b2f",
+    "intentSha256": "ed3d909a3a091ed42e0e926bfae927d0c8a404ed4c11b251b0bc9785de1adf8a",
+    "style": null,
+    "instructions": "",
+    "views": [
+     {
+      "id": "source",
+      "sha256": "247d7d1bd428f521928e791df42c259243c58210fd1f562dc3e7b6064792f27c",
+      "width": 2048,
+      "height": 1024
+     },
+     {
+      "id": "front",
+      "sha256": "17805350d106fe96dd91a655904d5bf680d71882c6c9004b9e6ca716c2289ef0",
+      "width": 1024,
+      "height": 1024
+     },
+     {
+      "id": "right",
+      "sha256": "1b55f940971b5aa1fb3b6db3710a3a4c57c2f1e3d18af05b687c62acd5099ecc",
+      "width": 1024,
+      "height": 1024
+     },
+     {
+      "id": "back",
+      "sha256": "b44aee883a5fb776a9418c8fabce8b17f141dfd2d87b963fcb720cdeaf5f029e",
+      "width": 1024,
+      "height": 1024
+     },
+     {
+      "id": "left",
+      "sha256": "3a4a44adca4c5f7abf475c6f2486b272bda7c25077f9cbfe0c9295114c24f974",
+      "width": 1024,
+      "height": 1024
+     },
+     {
+      "id": "zenith",
+      "sha256": "1662927a2a996f15716ca8e2a55b329bfa62e6122b8b33835e8d5061567094cc",
+      "width": 1024,
+      "height": 1024
+     },
+     {
+      "id": "nadir",
+      "sha256": "a478210909455c988b62828f9173769af954c6882023ab6d2215014dea92ecc5",
+      "width": 1024,
+      "height": 1024
+     },
+     {
+      "id": "source_detail_1",
+      "sha256": "b2e9d38b0e976aff93916e83037969179304843b99be9ac12451ab83abe51f8d",
+      "width": 2048,
+      "height": 2048,
+      "nativeSourceSha256": "6e7b40fc27c28f8ccf8d26ad92a4566b4f1c228ac331fb8ead953acd1f79131e",
+      "pose": {
+       "yaw": -28,
+       "pitch": -10,
+       "hFov": 70
+      },
+      "sourceSampling": {
+       "independentOpticalResolutionKnown": false,
+       "maxAxisFootprint": {
+        "max": 1.38773009,
+        "min": 0.88237333,
+        "p50": 1.09482696
+       },
+       "minAxisFootprint": {
+        "max": 1.19799598,
+        "min": 0.6276191,
+        "p50": 0.9206958
+       },
+       "outputHeight": 2048,
+       "outputWidth": 2048,
+       "sampleGridSize": 33,
+       "samplingMethod": "lanczos-mipmap-trilinear-bilinear",
+       "sourceHeight": 5504,
+       "sourceWidth": 11008,
+       "upsampledGridFraction": 0.67217631,
+       "version": "native-grid-sampling/1"
+      }
+     },
+     {
+      "id": "source_detail_2",
+      "sha256": "5734c664bde29a99e4a55cb23c2fe54d1e907ec4342b64da11118b6cf354c7ca",
+      "width": 2048,
+      "height": 2048,
+      "nativeSourceSha256": "6e7b40fc27c28f8ccf8d26ad92a4566b4f1c228ac331fb8ead953acd1f79131e",
+      "pose": {
+       "yaw": 53,
+       "pitch": -9,
+       "hFov": 60
+      },
+      "sourceSampling": {
+       "independentOpticalResolutionKnown": false,
+       "maxAxisFootprint": {
+        "max": 1.1007144,
+        "min": 0.78674961,
+        "p50": 0.92818851
+       },
+       "minAxisFootprint": {
+        "max": 0.98779758,
+        "min": 0.60883321,
+        "p50": 0.81966664
+       },
+       "outputHeight": 2048,
+       "outputWidth": 2048,
+       "sampleGridSize": 33,
+       "samplingMethod": "lanczos-mipmap-trilinear-bilinear",
+       "sourceHeight": 5504,
+       "sourceWidth": 11008,
+       "upsampledGridFraction": 1,
+       "version": "native-grid-sampling/1"
+      }
+     }
+    ],
+    "nativeDimensions": {
+     "width": 11008,
+     "height": 5504
+    },
+    "followupOrdinal": 1,
+    "parent": {
+     "id": "eec20e51-ea72-41c4-a9ee-849b2dc095b4",
+     "resultSha256": "92567d459ce4245b14d9feced0e6cc493a3d591f9d46c05e96ccd18dc2db5749",
+     "responseSha256": "4657a339fbb4ffe0bb30b70d35ed0f0d20d3cf0bebf46460a2e4d008d24ab642",
+     "result": {
+      "version": "lifestyle-source-framing-with-native-details/2",
+      "sourceSha256": "6e7b40fc27c28f8ccf8d26ad92a4566b4f1c228ac331fb8ead953acd1f79131e",
+      "intentSha256": "ed3d909a3a091ed42e0e926bfae927d0c8a404ed4c11b251b0bc9785de1adf8a",
+      "status": "detail_required",
+      "sourcePeople": "none_observed",
+      "coherentGroup": "plausible",
+      "view": null,
+      "constraints": {
+       "group_coverage": {
+        "status": "verify_on_cut",
+        "evidenceViewIds": [
+         "source",
+         "front",
+         "nadir"
+        ],
+        "reason": "The empty central floor plausibly accommodates exactly two separately standing adults without furniture interaction. Natural scale, nonoverlapping silhouettes and visibility of all four shoes require actual-cut and generated-body checks."
+       },
+       "frame_margin": {
+        "status": "verify_on_cut",
+        "evidenceViewIds": [
+         "source",
+         "front"
+        ],
+        "reason": "Visible floor and headroom make a complete standing pair plausible. At least 10% margin around the eventual body-and-shoe envelope must be verified on the actual perspective cut; an empty source cannot establish exact body extents."
+       },
+       "source_floor": {
+        "status": "supported",
+        "evidenceViewIds": [
+         "source",
+         "front",
+         "left",
+         "nadir"
+        ],
+        "reason": "Continuous, apparently level plank flooring is visible across the central room. Standing contacts can remain on this exposed floor, away from the raised hearth, slider threshold and capture apparatus at nadir."
+       },
+       "circulation": {
+        "status": "verify_on_cut",
+        "evidenceViewIds": [
+         "source",
+         "front",
+         "back",
+         "right"
+        ],
+        "reason": "The room is unfurnished, with visible entry and patio-door approaches. Exact placement must retain a usable route between them and stay clear of the open interior door and its swing area."
+       },
+       "fixed_features": {
+        "status": "verify_on_cut",
+        "evidenceViewIds": [
+         "source",
+         "front",
+         "left",
+         "right",
+         "back"
+        ],
+        "reason": "The fireplace, projecting hearth, shelving, electrical panel, glazing and open door are identifiable. The cut must preserve these features and openings without contact, alteration or ambiguous foreground ordering."
+       },
+       "optical_dependencies": {
+        "status": "resolution_limited",
+        "evidenceViewIds": [
+         "source",
+         "front",
+         "right",
+         "left"
+        ],
+        "reason": "Exterior scenery is visible through the slider and side window, but these previews cannot reliably distinguish weak interior reflections from transmission. The dark firebox face also warrants mesh-versus-glass classification. Optical clearance is not established by the absence of obvious reflected people."
+       },
+       "ambient_contact_lighting": {
+        "status": "verify_on_cut",
+        "evidenceViewIds": [
+         "source",
+         "front",
+         "zenith",
+         "nadir"
+        ],
+        "reason": "Diffuse daylight and illuminated ceiling fixtures provide a plausible ambient basis; no strong sun patch crosses the central standing area. Later body checks must establish restrained local shoe contact shading without broad or directional cast shadows."
+       }
+      },
+      "summary": "No people are observed, and the exposed central floor plausibly supports a separated standing pair. Framing is held pending native inspection of the patio slider, side window and dark firebox face. The overview images do not establish optical clearance. Any subsequent candidate authorizes only free actual-cut inspection, not generation or acceptance; generated-body and independent full-sphere checks remain mandatory.",
+      "contextSha256": "a877050631c28fdcb23dbea7915b159b5baff597d92365c970b62e5b387087a3",
+      "followupOrdinal": 0,
+      "detailRequests": [
+       {
+        "id": "source_detail_1",
+        "pose": {
+         "yaw": -28,
+         "pitch": -10,
+         "hFov": 70
+        },
+        "evidenceViewIds": [
+         "source",
+         "front",
+         "left"
+        ],
+        "reason": "Inspect the black-framed patio slider beside the wood mantel: are the fence and yard purely transmitted scenery, or mixed with identifiable interior reflections relevant to the central standing floor? Also resolve whether the adjacent dark firebox face is mesh or reflective glazing."
+       },
+       {
+        "id": "source_detail_2",
+        "pose": {
+         "yaw": 53,
+         "pitch": -9,
+         "hFov": 60
+        },
+        "evidenceViewIds": [
+         "source",
+         "right",
+         "front"
+        ],
+        "reason": "Inspect both panes of the white-trimmed side window beside the open interior door. Distinguish transmitted fence, grass and neighboring-house detail from interior reflections, and determine whether any room or person-shaped reflection is visibly resolved rather than lost in overview sampling."
+       }
+      ],
+      "authorOrigin": "machine",
+      "imageGenerationAuthorized": false,
+      "geometryVerified": false,
+      "manualAcceptance": false
+     }
+    }
+   }
+  }
+ ]
+}
