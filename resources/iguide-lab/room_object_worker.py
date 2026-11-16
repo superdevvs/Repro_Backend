@@ -81,7 +81,8 @@ def compose(source, candidate, alpha, view):
         if str(error) not in GUARD_FAILURES:
             raise
     last = None
-    for clearance in (16, 32, 64, 128, 206):
+    # 32 px covers the filter guard up to mip level 2; 206 px is the old 10% section margin, which always fits.
+    for clearance in (32, 206):
         faded = edge_fade(alpha, clearance)
         q.require(np.any(faded), 'EMPTY_OBJECT_MASK')
         try:
@@ -183,7 +184,7 @@ def main():
         if os.name == 'posix':
             import resource
             resource.setrlimit(resource.RLIMIT_AS, (4 * 1024**3, 4 * 1024**3))
-            resource.setrlimit(resource.RLIMIT_CPU, (400, 400))
+            resource.setrlimit(resource.RLIMIT_CPU, (540, 540))
         p = Path(args.request)
         q.require(p.stat().st_size <= 65536, 'REQUEST_TOO_LARGE')
         print(json.dumps(run(json.loads(p.read_text(encoding='utf-8-sig'))), separators=(',', ':')))

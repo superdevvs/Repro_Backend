@@ -133,7 +133,7 @@ class LabRoomFurnishingArtifacts extends LabWorkflowArtifacts
     {
         $this->validateSnapshot($snapshot);$this->runtime();$disk=Storage::disk(LabService::DISK);$this->putOnce($path,json_encode($request,JSON_THROW_ON_ERROR));
         $worker=resource_path('iguide-lab/room_object_worker.py');$compositor=resource_path('iguide-lab/object_layer_compositor.py');
-        $process=new \Symfony\Component\Process\Process([(string)config('iguide-lab.pipeline_python_path'),$worker,'--request',$disk->path($path)],null,$this->environment(),null,420);
+        $process=new \Symfony\Component\Process\Process([(string)config('iguide-lab.pipeline_python_path'),$worker,'--request',$disk->path($path)],null,$this->environment(),null,560);
         $process->run();$report=json_decode($process->getOutput(),true);
         abort_unless($process->isSuccessful()&&is_array($report)&&($report['status']??null)==='completed'&&($report['automaticAcceptance']??true)===false&&($report['providerCalls']??-1)===0
             &&($report['reviewStatus']??null)==='unreviewed'&&($report['operation']??null)===$request['operation']&&($report['sourceSha256']??null)===$request['source']['sha256']
