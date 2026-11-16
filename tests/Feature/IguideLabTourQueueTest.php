@@ -12,6 +12,7 @@ use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
 use PHPUnit\Framework\AssertionFailedError;
@@ -82,7 +83,7 @@ class IguideLabTourQueueTest extends TestCase
 
     public function test_push_runs_at_the_baseline_transaction_level_and_retries_a_locked_insert(): void
     {
-        $fake = RecordingQueueFake::install();
+        $fake = RecordingQueueFake::install($this);
         $this->assertSame(0, $fake->baselineLevel);
         $fake->failNextPush(new \PDOException('SQLSTATE[HY000]: General error: 5 database is locked'));
         LabTourQueue::push(new TourQueueProbeJob('locked-once'));
@@ -117,6 +118,49 @@ class IguideLabTourQueueTest extends TestCase
         $this->assertNotNull($caught, 'A push inside a transaction must fail the recording fake.');
         $this->assertStringContainsString('baseline transaction level', $caught->getMessage());
         $this->assertSame(1, end($fake->levels));
+        // This violation was provoked on purpose: take it, so the teardown check that install() registered passes.
+        $violations = $fake->pullViolations();
+        $this->assertCount(1, $violations);
+        $this->assertStringStartsWith($violations[0], $caught->getMessage());
+        $fake->assertAllPushesAtBaseline();
+    }
+
+    public function test_a_swallowed_push_assertion_still_fails_the_test_at_teardown(): void
+    {
+        $registered = count($this->beforeApplicationDestroyedCallbacks);
+        $fake = RecordingQueueFake::install($this);
+        $checks = array_slice($this->beforeApplicationDestroyedCallbacks, $registered);
+        $this->assertCount(1, $checks, 'install() registers one teardown check on the test case.');
+        $checks[0]();
+
+        // A GET kick wraps its push in try/catch with a warning log (spec 9.8), so a kick run inside a transaction
+        // swallows the fake's assertion and the job is simply not recorded.
+        try {
+            DB::transaction(fn () => LabTourQueue::push(new TourQueueProbeJob('kick-inside')));
+        } catch (\Throwable $e) {
+            Log::warning('Tour monitor kick failed.', ['error' => $e->getMessage()]);
+        }
+        $fake->assertNotPushed(TourQueueProbeJob::class);
+        $this->assertSame([1], $fake->levels);
+
+        // The teardown check still reports it, so the test fails even though nothing rethrew.
+        foreach ([$checks[0], $fake->assertAllPushesAtBaseline(...)] as $check) {
+            $caught = null;
+            try {
+                $check();
+            } catch (AssertionFailedError $e) {
+                $caught = $e;
+            }
+            $this->assertNotNull($caught, 'A swallowed push at the wrong level must still fail the test.');
+            $this->assertStringContainsString('TourQueueProbeJob was pushed at transaction level 1', $caught->getMessage());
+        }
+
+        // A push at the baseline is not a violation; taking the provoked one lets this test's own teardown pass.
+        LabTourQueue::push(new TourQueueProbeJob('baseline'));
+        $fake->assertPushed(TourQueueProbeJob::class, 1);
+        $this->assertCount(1, $fake->pullViolations());
+        $this->assertSame([], $fake->pullViolations());
+        $checks[0]();
     }
 
     public function test_claim_protocol(): void

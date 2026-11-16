@@ -13,7 +13,9 @@ final class LabTourErrors
     /**
      * Body UUID rule (spec 10.2) for requestId, importId, caseId and runId, checked before lowercasing. It equals the
      * reader's z.string().uuid() (zod 4.6.7): version nibble 1-8 and variant 8/9/a/b, or the nil or max UUID.
-     * Use it in array form ('regex:'.UUID_RULE): the pipe-separated rule string would split the alternation.
+     * This is the bare PCRE pattern (for preg_match), without the "regex:" prefix that 10.2 shows. For validation use
+     * uuidRules(). The bare constant as a rule element throws BadMethodCallException. A pipe-separated rule string
+     * splits the alternation.
      */
     public const UUID_RULE = '/\A(?:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}|0{8}-0{4}-0{4}-0{4}-0{12}|f{8}-f{4}-f{4}-f{4}-f{12})\z/Di';
 
@@ -51,6 +53,17 @@ final class LabTourErrors
         'tour_group_split' => [422, 'Items that touch must be selected together.'],
         'tour_body_too_large' => [413, 'The request is too large.'],
     ];
+
+    /**
+     * Array-form Laravel rules for every body UUID of 10.3 (all `required|string` + the 10.2 rule), for example
+     * ['requestId' => LabTourErrors::uuidRules()].
+     *
+     * @return list<string>
+     */
+    public static function uuidRules(): array
+    {
+        return ['required', 'string', 'regex:'.self::UUID_RULE];
+    }
 
     /** A contract-keyed error (MESSAGES), for example public('staleSelection'). */
     public static function public(string $key): PublicApiException

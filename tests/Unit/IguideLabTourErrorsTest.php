@@ -126,4 +126,18 @@ class IguideLabTourErrorsTest extends TestCase
         $this->assertTrue(Validator::make(['id' => $valid[0]], ['id' => $rule])->passes());
         $this->assertTrue(Validator::make(['id' => '12345678-1234-0234-8234-123456789abc'], ['id' => $rule])->fails());
     }
+
+    public function test_uuid_rules_are_the_array_form_validation_rules_for_every_body_uuid(): void
+    {
+        // Every body UUID in 10.3 (requestId, importId, changes.*.caseId, runId, caseId) is `required|string` + the 10.2 rule.
+        $this->assertSame(['required', 'string', 'regex:'.LabTourErrors::UUID_RULE], LabTourErrors::uuidRules());
+        $rules = ['requestId' => LabTourErrors::uuidRules(), 'changes.*.caseId' => LabTourErrors::uuidRules()];
+        $ok = ['requestId' => (string) Str::uuid(), 'changes' => [['caseId' => 'A0EEBC99-9C0B-4EF8-BB6D-6BB9BD380A11']]];
+        $this->assertTrue(Validator::make($ok, $rules)->passes());
+        foreach ([null, '', 42, ['x'], '12345678-1234-0234-8234-123456789abc', "{$ok['requestId']}\n"] as $bad) {
+            $this->assertTrue(Validator::make(['requestId' => $bad] + $ok, $rules)->fails(), json_encode($bad));
+        }
+        $this->assertTrue(Validator::make(['changes' => $ok['changes']], $rules)->fails(), 'requestId is required');
+        $this->assertTrue(Validator::make(['changes' => [['caseId' => '12345678-1234-0234-8234-123456789abc']]] + $ok, $rules)->fails());
+    }
 }
