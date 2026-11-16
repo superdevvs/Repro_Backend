@@ -188,8 +188,22 @@ if($scenario==='empty-paving'){
     $proof['status']='passed_missing_exclusion_finished_with_result';$proof['scenario']=$scenario;$proof['workflowStatus']=$workflow->status;
     file_put_contents($root.'/proof.json',json_encode($proof,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES));echo json_encode(['status'=>$proof['status'],'scenario'=>$scenario,'workflowStatus'=>$workflow->status,'externalCalls'=>0]).PHP_EOL;exit;
 }
+if($scenario==='empty-lawn'){
+    // A missing lawn mask no longer discards the paid image: the candidate-greened ground is recolored and held for review.
+    check($workflow->status==='needs_review'&&IguideLabMachineSegmentation::count()===6&&IguideLabMachineSegmentation::where('provider_request_id','fake-lawn')->sole()->status==='needs_review','Exclusions were not segmented after the failed lawn mask');
+    check(App\Models\IguideLabComposite::count()===1&&IguideLabWorkflowEvaluation::count()===0&&isset($item->data['compositeId']),'A missing lawn mask discarded the paid image or bought a final check');
+    check(($item->data['reviewReasons'][0]['code']??null)==='grass_lawn_region_requires_review','Fallback composite did not end Needs review');
+    check(in_array('LAWN_MASK_UNAVAILABLE',$item->data['grassFinishReview']??[],true)&&in_array('LAWN_REGION_FROM_CANDIDATE_CHANGE',$item->data['grassFinishReview']??[],true),'Fallback region was not recorded');
+    $support=json_decode(file_get_contents(Storage::disk(LabService::DISK)->path('iguide-lab/'.$project->id.'/grass-assessments/'.IguideLabGrassAssessment::sole()->id.'/finalized/support-assessment.json')),true);
+    check(in_array('LAWN_MASK_UNAVAILABLE',$support['caveats'],true),'Missing lawn mask was not recorded as a caveat');
+    $dtoItem=$service->dto($workflow->fresh())['items'][0];
+    check(($dtoItem['result']['kind']??null)==='composite'&&$dtoItem['status']==='needs_review','The fallback composite is not viewable in the workflow DTO');
+    $before=count($fakeCalls);$service->process($workflow->fresh());check(count($fakeCalls)===$before,'Finished workflow retried a provider');
+    $proof['status']='passed_missing_lawn_finished_with_result';$proof['scenario']=$scenario;$proof['workflowStatus']=$workflow->status;$proof['finishReview']=$item->data['grassFinishReview'];
+    file_put_contents($root.'/proof.json',json_encode($proof,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES));echo json_encode(['status'=>$proof['status'],'scenario'=>$scenario,'workflowStatus'=>$workflow->status,'externalCalls'=>0]).PHP_EOL;exit;
+}
 if($scenario!=='success'){
-    $expected=$scenario==='empty-lawn'?1:2;
+    $expected=2;
     check($workflow->status==='needs_review'&&IguideLabMachineSegmentation::count()===$expected,'Missing mask did not stop later source roles');
     check(App\Models\IguideLabComposite::count()===0&&IguideLabWorkflowEvaluation::count()===0,'Missing mask reached composition or evaluation');
     $before=count($fakeCalls);$service->process($workflow->fresh());check(count($fakeCalls)===$before,'Held workflow retried a provider');

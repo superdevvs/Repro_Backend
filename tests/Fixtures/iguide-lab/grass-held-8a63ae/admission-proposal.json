@@ -1,0 +1,135 @@
+{
+ "binding": {
+  "captureId": "a79bdd11-8605-50aa-9059-c93f035d845f",
+  "nativeSourceSha256": "d91ef5bb14c13c61714f15b00b15e37d60b7e57db58249836e4f6e66189886bf",
+  "sourceAuthoritySha256": "e7b59f6cd700bd2a6d3f0e926b7c134fd766597867b0d35f0ef93aacb6422e12",
+  "sourcePreparationSha256": "e04514bdc1623730a1976a6accf1dee99de6dbbccc319b7cf32097f37bdefed1",
+  "sourceSha256": "456f743cf3663fe00a389403b9192d3ed89ff612361ba8ebaa812d799a627faa",
+  "workflowItemId": "01a1da7b-d1ba-72c3-82e8-8a63ae387947"
+ },
+ "contextCoverage": {
+  "detailRequests": [],
+  "evidenceIds": [
+   "source_panorama",
+   "source_front",
+   "source_right",
+   "source_back",
+   "source_left",
+   "source_zenith",
+   "source_nadir"
+  ],
+  "notes": "The panorama and six directional projections provide sufficient same-capture coverage to identify blocking conditions. Sparse cover and fine broadleaf vegetation intermingled with grass are already visible. Native details would not restore missing turf or increase the fixed 2048x1024 mask resolution, so no diagnostic follow-up is requested.",
+  "status": "sufficient_same_capture_views"
+ },
+ "contextSha256": "d2d8155f858eeb91dd4b3977b35d4adce004e0966c440a7a4ecf434f1ae3930e",
+ "exclusions": {
+  "capture_artifact": {
+   "evidenceIds": [
+    "source_panorama",
+    "source_nadir"
+   ],
+   "notes": "The dark camera/support artifact and associated distorted nadir region are visible over the concrete. They are spatially separable from the surrounding turf and must remain unchanged.",
+   "status": "separable_at_source_mask_resolution"
+  },
+  "loose_debris": {
+   "evidenceIds": [
+    "source_panorama",
+    "source_front",
+    "source_right",
+    "source_back",
+    "source_nadir"
+   ],
+   "notes": "Loose brown leaves are visible on the entrance concrete, with smaller pale leaf-like fragments scattered through the lawn. The larger concrete-borne leaves are separable, but the identity and exact margins of the smallest lawn fragments are not reliably established at source-mask resolution. Debris absence or complete exclusion cannot be certified.",
+   "status": "uncertain"
+  },
+  "non_turf_ground": {
+   "evidenceIds": [
+    "source_panorama",
+    "source_right",
+    "source_back",
+    "source_left",
+    "source_nadir"
+   ],
+   "notes": "Exposed planting-bed soil and sparse, earth-exposing patches on the slope must remain unchanged. Broad soil areas are visible, but small soil gaps and transitions interleave with retained blades and leafy groundcover; a complete exact turf-versus-ground boundary is unresolved.",
+   "status": "uncertain"
+  },
+  "paving": {
+   "evidenceIds": [
+    "source_panorama",
+    "source_front",
+    "source_right",
+    "source_back",
+    "source_nadir"
+   ],
+   "notes": "The entrance landing, connecting concrete paths, roadside sidewalk and parking pavement have recognizable boundaries. Preserve their pixels, cracks and vegetation within cracks; they are not recoloring targets.",
+   "status": "separable_at_source_mask_resolution"
+  },
+  "plants": {
+   "evidenceIds": [
+    "source_panorama",
+    "source_right",
+    "source_back",
+    "source_left",
+    "source_nadir"
+   ],
+   "notes": "Shrubs, timber-edged beds and the broad-leaved plants beside the path are protected. Dense small broadleaf groundcover also mixes directly with grass near the fence, entrance and slope. Its numerous leaf margins cannot be isolated exactly from turf at 2048x1024 source-mask resolution. Green vegetation cannot all be treated as grass.",
+   "status": "too_fine_or_dense"
+  }
+ },
+ "lawnBoundary": {
+  "evidenceIds": [
+   "source_panorama",
+   "source_front",
+   "source_right",
+   "source_back",
+   "source_left",
+   "source_nadir"
+  ],
+  "notes": "Paths, building bases, fence and timber edging establish broad visible limits. Internal turf boundaries against dense leafy groundcover, soil gaps and thin patches are not completely resolved. These are material boundaries, not certified parcel boundaries.",
+  "status": "uncertain"
+ },
+ "material": {
+  "evidenceIds": [
+   "source_panorama",
+   "source_right",
+   "source_back",
+   "source_left",
+   "source_nadir"
+  ],
+  "notes": "Existing green grass and some brown retained blade texture are visible, but the lawn is not uniformly established turf. The lower slope and areas near the fence contain sparse cover and exposed-earth gaps, together with substantial broadleaf groundcover. Brown color alone is not the reason for holding; missing blade coverage and mixed materials are. Recoloring cannot fill these gaps or create blades.",
+  "status": "sparse_or_missing_turf"
+ },
+ "reflections": {
+  "evidenceIds": [
+   "source_panorama",
+   "source_front",
+   "source_right",
+   "source_back",
+   "source_left",
+   "source_zenith",
+   "source_nadir"
+  ],
+  "notes": "No identifiable turf reflection is observed in the supplied views, including the entrance sidelight, building windows and visible vehicle glazing. This is an observation of the original evidence, not a claim that reflective surfaces are absent.",
+  "status": "no_visible_turf_reflection_observed"
+ },
+ "schemaVersion": "grass-original-source-admission/1",
+ "scope": {
+  "evidenceIds": [
+   "source_panorama",
+   "source_front",
+   "source_right",
+   "source_back",
+   "source_left",
+   "source_zenith",
+   "source_nadir"
+  ],
+  "notes": "The requested scope is all visible established turf across this capture, including both sides of the path and the slope toward the adjoining building. No parcel-specific subset is requested or inferred. Planting beds and other non-turf vegetation remain excluded.",
+  "status": "all_visible_established_turf"
+ },
+ "summary": "HOLD source admission. The original views show sparse/missing turf, unresolved turf-to-soil transitions and dense non-turf leaves intermingled with grass beyond reliable exact exclusion at the fixed source-mask resolution. Existing dormant blades are not rejected merely for being brown. No image generation, successful segmentation or final acceptance is established by this screening.",
+ "uncertainties": [
+  "source_back and source_nadir: some brown areas retain blades, while adjacent thin patches expose earth; their fine internal boundaries remain unresolved.",
+  "source_left and source_nadir: the exact grass-only extent within dense broadleaf groundcover cannot be established at the fixed source-mask resolution.",
+  "source_right, source_back and source_nadir: the smallest pale ground fragments cannot all be confidently classified or exactly excluded; preserve this uncertainty rather than assuming debris absence."
+ ]
+}

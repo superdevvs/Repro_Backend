@@ -85,15 +85,21 @@ def compose(source,guidance_source,guidance_candidate,lawn_masks,exclusion_by_cl
     if source.dtype!=np.uint8 or source.ndim!=3 or source.shape[2]!=3 or source.shape[1]!=2*source.shape[0] or source.shape[0]*source.shape[1]>64000000:raise ValueError('NATIVE_SOURCE_INVALID')
     gh,gw=guidance_source.shape[:2]
     if gw!=2*gh or guidance_source.dtype!=np.uint8 or guidance_source.shape!=guidance_candidate.shape or guidance_candidate.dtype!=np.uint8 or guidance_source.shape[2]!=3:raise ValueError('GUIDANCE_INVALID')
-    if not 1<=len(lawn_masks)<=8 or any(m.shape!=(gh,gw) for m in lawn_masks):raise ValueError('LAWN_MASK_COUNT_OR_SHAPE_INVALID')
+    if not 0<=len(lawn_masks)<=8 or any(m.shape!=(gh,gw) for m in lawn_masks):raise ValueError('LAWN_MASK_COUNT_OR_SHAPE_INVALID')
     if set(exclusion_by_class)!=set(CLASSES) or any(len(x)>8 for x in exclusion_by_class.values()):raise ValueError('EXCLUSION_CLASSES_INVALID')
     blockers=semantic_gates(assessment,exclusion_by_class)
-    lawn=np.maximum.reduce(lawn_masks);exclusions=[m for masks in exclusion_by_class.values() for m in masks]
+    # finishReview: the paid image is still composited, but the item must end Needs review (never Ready).
+    finish=[]
+    lawn=np.maximum.reduce(lawn_masks) if lawn_masks else np.zeros((gh,gw),np.uint8)
+    exclusions=[m for masks in exclusion_by_class.values() for m in masks]
+    if not np.count_nonzero(lawn):finish.append('LAWN_MASK_UNAVAILABLE')
+    band=max(1,round(gh*10/180));upper=int(np.count_nonzero(lawn[:band]))
+    if upper:
+        # A lawn mask reaching the zenith band is trimmed there (never recolored) instead of discarding the paid image.
+        lawn=lawn.copy();lawn[:band]=0;finish.append('LAWN_SUPPORT_UPPER_POLE_TRIMMED')
     alpha,hard,protected=source_support(lawn,exclusions)
-    upper=int(np.count_nonzero(hard[:max(1,round(gh*10/180))]))
-    if upper:blockers.append('LAWN_SUPPORT_REACHES_UPPER_POLE')
     report={'schemaVersion':1,'recipe':VERSION,'status':'needs_review','automaticAcceptance':False,'providerCalls':0,
-        'editScope':'masked','parameters':PARAMETERS,'semanticBlockers':blockers,
+        'editScope':'masked','parameters':PARAMETERS,'semanticBlockers':blockers,'finishReview':finish,
         'support':{'rawLawnPixels':int(np.count_nonzero(lawn)),'protectedPixelsAtGuidance':int(np.count_nonzero(protected)),
             'positiveFeatherPixels':int(np.count_nonzero(alpha)),'maskWrapDisagreementRows':int(np.count_nonzero((hard[:,0]>0)!=(hard[:,-1]>0))),
             'upperPoleLawnPixels':upper,'holeFillingApplied':False},
@@ -105,10 +111,21 @@ def compose(source,guidance_source,guidance_candidate,lawn_masks,exclusion_by_cl
     if blockers:
         report['elapsedMs']=round((time.monotonic()-start)*1000);return {'report':report}
     src_lab=to_lab(guidance_source);donor_lab=to_lab(guidance_candidate)
-    sample=(alpha>=250)&(src_lab[...,0]>8)&(src_lab[...,0]<95)&(donor_lab[...,0]>8)&(donor_lab[...,0]<95)
+    valid=(src_lab[...,0]>8)&(src_lab[...,0]<95)&(donor_lab[...,0]>8)&(donor_lab[...,0]<95)
+    sample=(alpha>=250)&valid
     count=int(sample.sum());report['samplePixels']=count
     if count<max(64,round(1024*gw*gh/(2048*1024))):
-        blockers.append('INSUFFICIENT_SAFE_CHROMA_SAMPLES');return {'report':report}
+        if np.count_nonzero(lawn):finish.append('INSUFFICIENT_SAFE_CHROMA_SAMPLES')
+        # Best available lawn region: ground below the horizon that the paid candidate visibly greened,
+        # minus every protected mask. Chroma only, from source texture; still no generated pixels pasted.
+        elevation=90-180*(np.arange(gh,dtype=np.float32)+.5)/gh
+        greened=(donor_lab[...,1]-src_lab[...,1]<=-4)&valid&(elevation<0)[:,None]
+        alpha,hard,protected=source_support(np.uint8(greened)*255,exclusions)
+        sample=(alpha>=250)&valid;count=int(sample.sum());finish.append('LAWN_REGION_FROM_CANDIDATE_CHANGE')
+        report['samplePixels']=count;report['support'].update(fallbackRegionPixels=int(np.count_nonzero(greened)),
+            positiveFeatherPixels=int(np.count_nonzero(alpha)),protectedPixelsAtGuidance=int(np.count_nonzero(protected)))
+        if count<64:
+            blockers.append('NO_GREENED_GROUND_IN_CANDIDATE');return {'report':report}
     source_median=np.median(src_lab[sample],axis=0);donor_median=np.median(donor_lab[sample],axis=0)
     requested=donor_median[1:]-source_median[1:];delta=requested
     if not np.isfinite(requested).all():

@@ -80,7 +80,7 @@ def run(request,allowed_root):
         provenance.append({'role':role,'maskSha256':record['image']['sha256'],'evidenceSha256':record['evidence']['sha256'],
             'generationOrigin':evidence.get('generationOrigin'),'selectionOrigin':evidence.get('selectionOrigin')})
         return _mask_image(path)
-    if not isinstance(request['lawnMasks'],list) or not 1<=len(request['lawnMasks'])<=8:raise ValueError('LAWN_MASK_COUNT_INVALID')
+    if not isinstance(request['lawnMasks'],list) or not 0<=len(request['lawnMasks'])<=8:raise ValueError('LAWN_MASK_COUNT_INVALID')
     if not isinstance(request['exclusionMasks'],dict) or set(request['exclusionMasks'])!=set(core.CLASSES):raise ValueError('EXCLUSION_CLASSES_INVALID')
     lawn=[mask(x,'lawn') for x in request['lawnMasks']];excluded={}
     for name in core.CLASSES:

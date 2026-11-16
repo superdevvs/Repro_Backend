@@ -186,9 +186,9 @@ def run(request,allowed_root):
         # Reconstruct from the machine assessment and already persisted server UUIDs.
         expected=protocol.bind_reserved_plans(values['assessment'],{x['stepKey']:x['requestId'] for x in plans})
         if plans!=expected:raise ValueError('RESERVED_PLANS_CHANGED')
-        # A failed exclusion mask protects nothing; the lawn mask is always required.
+        # A failed mask protects nothing; a failed lawn mask falls back to the candidate-greened ground (Needs review).
         skipped=request['unsegmented'];keys=[x['stepKey'] for x in plans]
-        if len(set(skipped))!=len(skipped) or not set(skipped)<=set(keys) or 'source-grass-lawn' in skipped:raise ValueError('UNSEGMENTED_ROLES_INVALID')
+        if len(set(skipped))!=len(skipped) or not set(skipped)<=set(keys):raise ValueError('UNSEGMENTED_ROLES_INVALID')
         ready=[x for x in plans if x['stepKey'] not in skipped]
         if len(values['receipts'])!=len(ready):raise ValueError('RECEIPT_COUNT_INVALID')
         associations=[protocol.bind_segmentation_receipt(step,receipt) for step,receipt in zip(ready,values['receipts'])]

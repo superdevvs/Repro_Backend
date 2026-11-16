@@ -34,10 +34,12 @@ class AdmissionBridgeTests(unittest.TestCase):
             'response':response,'compiledPayload':payload,'execution':self.save('execution.json',execution)}
         return req,bridge.run(req,self.root)
     def test_actual_compile_parse_and_replay_preserve_source_only_request(self):
-        req,report=self.parsed();self.assertEqual(report['resultStatus'],'needs_detail')
+        # A detail request is a recorded caveat, never a second paid round (Deploy 2.1).
+        req,report=self.parsed();self.assertEqual(report['resultStatus'],'eligible_for_image')
         self.assertEqual(bridge.run(req,self.root),report);self.assertEqual(report['providerCalls'],0)
         value=json.loads(Path(report['outputs']['assessment']['path']).read_bytes())
-        self.assertFalse(value['segmentationAuthority']);self.assertEqual(len(value['detailPlan']),1)
+        self.assertFalse(value['segmentationAuthority']);self.assertEqual(value['detailPlan'],[])
+        self.assertIn('SOURCE_CONTEXT_UNRESOLVED',value['caveats'])
     def test_changed_retained_response_and_compiled_source_reject(self):
         req,_=self.parsed();path=Path(req['response']['path']);path.write_bytes(path.read_bytes()+b' ')
         with self.assertRaisesRegex(ValueError,'INPUT_HASH'):bridge.run(req,self.root)

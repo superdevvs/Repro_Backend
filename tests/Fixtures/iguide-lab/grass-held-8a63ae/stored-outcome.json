@@ -1,0 +1,14 @@
+{
+ "itemId": "01a1da7b-d1ba-72c3-82e8-8a63ae387947",
+ "status": "needs_review",
+ "reviewReasons": [
+  "SOURCE_TURF_MATERIAL_UNRESOLVED",
+  "SOURCE_LAWN_BOUNDARY_UNRESOLVED",
+  "SOURCE_EXCLUSION_UNRESOLVED:plants",
+  "SOURCE_EXCLUSION_UNRESOLVED:loose_debris",
+  "SOURCE_EXCLUSION_UNRESOLVED:non_turf_ground",
+  "SOURCE_ADMISSION_UNCERTAINTY"
+ ],
+ "round": 0,
+ "source": "scratch/iguide-held.json (production read-only export)"
+}

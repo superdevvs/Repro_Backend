@@ -314,11 +314,10 @@ def bind_segmentation_receipt(step,receipt):
 
 
 def composition_assessment_record(assessment,reserved_plans,bindings,unsegmented=()):
-    """unsegmented: exclusion step keys whose paid mask failed; they protect nothing and become caveats."""
+    """unsegmented: step keys whose paid mask failed; they become caveats (a missing lawn falls back to the candidate-greened ground)."""
     expected=bind_reserved_plans(assessment,{x['stepKey']:x['requestId'] for x in reserved_plans})
     skipped=list(unsegmented);keys=[x['stepKey'] for x in expected]
     if len(set(skipped))!=len(skipped) or not set(skipped)<=set(keys):raise ValueError('GRASS_UNSEGMENTED_ROLES_INVALID')
-    if 'source-grass-lawn' in skipped:raise ValueError('GRASS_LAWN_MASK_REQUIRED')
     ready=[x for x in expected if x['stepKey'] not in skipped]
     if reserved_plans!=expected or len(bindings)!=len(ready):raise ValueError('GRASS_SUPPORT_PREREQUISITES_NOT_BOUND')
     for step,bound in zip(ready,bindings):
@@ -333,7 +332,7 @@ def composition_assessment_record(assessment,reserved_plans,bindings,unsegmented
         'lawnMaterial':assessment['proposal']['material']['status'],'requestedChange':'recolor_existing_turf','scope':'all_visible_established_turf',
         'exclusions':{name:('unsegmented' if 'source-grass-'+name in skipped else {'none_observed':'none_observed','observed_selectable':'supplied'}.get(assessment['proposal']['exclusions'][name]['status'],'unsegmented')) for name in CLASSES},
         'uncertainties':[],'caveats':list(dict.fromkeys([*assessment['caveats'],*(c+':'+x['maskRole'] for x in bindings for c in x.get('associationCaveats',[])),
-            *('EXCLUSION_MASK_UNAVAILABLE:'+key.removeprefix('source-grass-') for key in keys if key in skipped)])),'assessmentProtocol':VERSION,'assessmentProposalSha256':assessment['proposalSha256'],
+            *('LAWN_MASK_UNAVAILABLE' if key=='source-grass-lawn' else 'EXCLUSION_MASK_UNAVAILABLE:'+key.removeprefix('source-grass-') for key in keys if key in skipped)])),'assessmentProtocol':VERSION,'assessmentProposalSha256':assessment['proposalSha256'],
         'contextSha256':assessment['contextSha256'],'executionRequestId':assessment['execution']['requestId'],
         'segmentationReceiptSha256':[x['receiptSha256'] for x in bindings],
         'automaticAcceptance':False,'maskSemanticsVerified':False,

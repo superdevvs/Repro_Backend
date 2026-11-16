@@ -99,7 +99,7 @@ class LabGrassWorkflow
             $steps->attach($samStep, $segmentation->id);
             $data['grassMaskRecords'][$samStep->input['logicalPlan']['maskRole']] = $segmentation->id;
             if ($segmentation->status !== 'completed') {
-                // A failed exclusion protects nothing and is a recorded caveat; only the lawn mask is required.
+                // A failed mask is a recorded caveat; a failed lawn mask falls back to the candidate-greened ground.
                 if ($authority->unsegmented($samStep)) continue;
                 if (in_array($segmentation->status, ['needs_review', 'needs_attention', 'failed'], true)) $state->finish($item, 'needs_review', 'grass_source_masks_unresolved', 'An original-source mask is missing, ambiguous or unconfirmed. No hidden repair call was sent.', $data);
                 else $state->save($item, 'preparing', $data);
@@ -117,6 +117,11 @@ class LabGrassWorkflow
         }
         $composite = IguideLabComposite::where('project_id', $project->id)->findOrFail($compositionStep->child_id);
         $artifacts->verifyComposite($item, $composite, $compositionStep, $run); $data['compositeId'] = $composite->id;
+        if ($fallback = $artifacts->finishReview($item, $composite)) {
+            // The paid image was composited on the best available lawn region: viewable, never Ready, no extra paid check.
+            $data['grassFinishReview'] = $fallback;
+            $state->finish($item, 'needs_review', 'grass_lawn_region_requires_review', 'Green grass was applied to the best available lawn region because the lawn outline was missing, too small or reached the sky. Review the result before use.', $data); return;
+        }
         $evaluationStep = IguideLabWorkflowStep::where('item_id', $item->id)->where('step_key', 'grass-evaluation')->first();
         $evidence = $evaluationStep ? $evaluationStep->input : $artifacts->evidence($item, $composite, $analysis);
         if (! $evidence['context']['mechanicalQa']['passed']) {
@@ -152,11 +157,12 @@ class LabGrassWorkflow
             $result = $service->verifiedReport($record, $item);
             if ($result['status'] === 'eligible_for_image') {
                 $data['grassSourceAdmissionId'] = $record->id; $data['grassSourceAdmissionSha256'] = $record->result_sha256;
+                $data['grassSourceAdmissionCaveats'] = $result['caveats'] ?? [];
                 return true;
             }
             if ($result['status'] !== 'needs_detail' || $round === 1) {
                 $data['grassSourceAdmissionReasons'] = $result['reviewReasons'];
-                $state->finish($item, 'needs_review', 'grass_original_material_or_context', 'Original turf, protected debris or optical boundaries require review; no image was requested.', $data);
+                $state->finish($item, 'needs_review', 'grass_original_material_or_context', 'No lawn to recolor was found (no visible lawn, bare soil only, or only part of the parcel was requested); no image was requested.', $data);
                 return false;
             }
             $priorId = $record->id;

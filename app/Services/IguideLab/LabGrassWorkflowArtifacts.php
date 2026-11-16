@@ -180,7 +180,8 @@ class LabGrassWorkflowArtifacts
             'projection' => 'equirectangular', 'preset' => $item->preset, 'style' => $item->style, 'intent' => json_encode($intent, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
             'protectedFeatures' => array_column($analysis->proposal['protectedFeatures'], 'description'),
             'sourceCaveats' => [...($analysis->proposal['uncertainties'] ?? []), 'This is source-native chroma transfer, not new turf texture. Machine lawn and exclusion masks are hypotheses, not verified semantics. Independently inspect turf edges, paving, plants, loose debris, bare ground, capture artifacts and possible turf reflections. Exact protected pixels alone do not prove the selected region or green color is correct.',
-                ...array_filter([$this->assessmentCaveat(\App\Models\IguideLabGrassAssessment::where('project_id', $item->project_id)->find($composite->manifest['lineage']['assessmentId'] ?? null)?->result ?? [])])],
+                ...array_filter([$this->assessmentCaveat(\App\Models\IguideLabGrassAssessment::where('project_id', $item->project_id)->find($composite->manifest['lineage']['assessmentId'] ?? null)?->result ?? []),
+                    $this->admissionCaveat(\App\Models\IguideLabGrassSourceAdmission::where('project_id', $item->project_id)->find($item->data['grassSourceAdmissionId'] ?? null)?->result ?? [])])],
             'opticalDependencies' => [], 'reviewRequirements' => $this->evaluationReviewRequirements($analysis->proposal, $report['qa']),
             'mechanicalQa' => ['passed' => ($report['qa']['numericIntegrity'] ?? null) === 'pass' && ! $blockers, 'blockingReasons' => $blockers], 'views' => $views];
         return ['compositeId' => $composite->id, 'manifestPath' => $out.'/report.json', 'context' => $context, 'assets' => $assets];
@@ -194,6 +195,23 @@ class LabGrassWorkflowArtifacts
         $listed = '';
         foreach ($codes as $code) { $next = $listed === '' ? $code : $listed.', '.$code; if (mb_strlen($head.$next.$tail) > 600) break; $listed = $next; }
         return mb_substr($head.($listed === '' ? 'see assessment record' : $listed).$tail, 0, 600);
+    }
+    /** Pre-image source-admission doubts are caveats (not stops); the final check must see them. One string, at most 600 characters. */
+    public function admissionCaveat(array $admission): ?string
+    {
+        $codes = array_values(array_filter($admission['caveats'] ?? [], 'is_string')); if (! $codes) return null;
+        $head = 'Recorded original-source caveats before the image (not blockers): '; $tail = '. Judge sparse turf, soil, fine plants or debris, boundaries and reflections strictly.';
+        $listed = '';
+        foreach ($codes as $code) { $next = $listed === '' ? $code : $listed.', '.$code; if (mb_strlen($head.$next.$tail) > 600) break; $listed = $next; }
+        return mb_substr($head.($listed === '' ? 'see admission record' : $listed).$tail, 0, 600);
+    }
+    /** Fallback codes from the verified composition report: when present the item ends Needs review with its composite. */
+    public function finishReview(IguideLabWorkflowItem $item, IguideLabComposite $composite): array
+    {
+        $alpha = $composite->manifest['lineage']['effectiveAlpha']['path'] ?? '';
+        $path = app(LabGrassAssessmentContext::class)->file($item->project_id, dirname($alpha).'/report.json', $composite->manifest['qaManifestSha256'] ?? '', 1024 * 1024);
+        $report = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        return array_values(array_filter($report['finishReview'] ?? [], 'is_string'));
     }
     public function evaluationReviewRequirements(array $proposal, array $qa): array
     {

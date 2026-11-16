@@ -18,9 +18,9 @@ POLICY={'scope':'all_visible_established_turf','operation':'recolor_existing_tur
     'maximumRounds':2,'maximumDetailViews':2,'detailWidth':1024,'detailHeight':1024,'minimumDetailHfov':30,'maximumDetailHfov':70}
 INSTRUCTIONS='''Screen the immutable ORIGINAL source for a bounded turf-color edit BEFORE any image is generated. There is no generated candidate in this request. The panorama, directional views and any native detail views are projections of one capture, not independent cameras. Preserve original pixels, luminance, blades, sparse variation, leaves, stems, planting beds, paths, structures and the capture artifact. This recipe changes existing turf chroma only; it cannot create blades, replace missing turf, fill bare soil, remove debris or certify parcel boundaries.
 
-Established dormant grass with visible retained blade texture is eligible for natural green recoloring; do not mistake brown color alone for missing turf. Sparse/missing turf, bare soil, unclear grass-versus-soil support, unresolved reflection dependencies, or protected debris too fine/dense for exact 2048x1024 source masks must hold. Native details can clarify material boundaries but cannot increase the segmentation mask resolution. Never use an attractive hypothetical green result as evidence of original material or absence of objects.
+Established dormant grass with visible retained blade texture is eligible for natural green recoloring; do not mistake brown color alone for missing turf. Only three findings stop the edit before an image: no visible lawn anywhere in the capture (material no_visible_lawn), bare soil only with no turf to recolor (material bare_soil), or a requested parcel subset (scope parcel_subset_requested). Sparse or patchy turf, unclear grass-versus-soil support, possible turf reflections, and protected plants or debris too fine/dense for exact 2048x1024 source masks are recorded as caveats carried to the final check: report them honestly in the matching finding, but they do not stop the edit. Never use an attractive hypothetical green result as evidence of original material or absence of objects.
 
-Assess all visible turf and each listed exclusion from original evidence. none_observed requires the panorama and all six directions, not an absent mask. Explain uncertainty and preserve it. If at most two original native detail views could resolve a boundary/material ambiguity, request bounded yaw/pitch/hFov poses with their purpose and source evidence. Yaw follows supplied camera convention (0 front,90 right,180 back,270 left), pitch is positive up. Width/height are fixed by the server. Detail requests are diagnostic views, not edit regions, masks, measured calibration or permission to expand the edit. Do not request detail for known missing turf or unsegmentable dense/fine debris. The initial round may request one follow-up only. A detail round must decide from the same seven overview images plus the exact requested original crops; unresolved findings still hold and no further view request is allowed.
+Assess all visible turf and each listed exclusion from original evidence. none_observed requires the panorama and all six directions, not an absent mask. Explain uncertainty and preserve it. Detail views are not fetched for this screening: prefer sufficient_same_capture_views or insufficient_context. If you still return details_may_resolve, include at most two bounded yaw/pitch/hFov poses with their purpose and source evidence (yaw 0 front, 90 right, 180 back, 270 left; pitch positive up); they are recorded as a caveat, not fetched, and are never edit regions, masks or permission to expand the edit. A stored detail round decides from the same seven overview images plus the exact requested original crops and requests no further views.
 
 Return the strict schema. All findings cite original evidence IDs. Full coverage, reflections and none_observed exclusions cite all seven base views. Preserve relevant prior findings when details are supplied; a small crop cannot clear unobserved whole-sphere concerns. This report is screening, not final quality, segmentation or acceptance. Do not invent a successful result or a human review.'''
 
@@ -40,7 +40,7 @@ def response_schema(wire=False):
     finding=lambda states:obj({'status':enum(*states),'evidenceIds':evidence,'notes':string(700)})
     schema=obj({'schemaVersion':enum(VERSION),'contextSha256':string(64),
         'binding':obj({key:string(36 if key in BINDINGS[:2] else 64) for key in BINDINGS}),
-        'summary':string(700),'material':finding(['established_turf','established_dormant_turf','sparse_or_missing_turf','bare_soil','uncertain']),
+        'summary':string(700),'material':finding(['established_turf','established_dormant_turf','sparse_or_missing_turf','bare_soil','no_visible_lawn','uncertain']),
         'scope':finding(['all_visible_established_turf','parcel_subset_requested','uncertain']),
         'lawnBoundary':finding(['complete_visible_boundary','uncertain']),
         'exclusions':obj({role:finding(['separable_at_source_mask_resolution','none_observed','too_fine_or_dense','uncertain']) for role in ROLES}),
@@ -142,31 +142,38 @@ def parse_response(response_text,context,execution):
         if len(ids)!=len(set(ids)) or not set(required)<=set(ids) or not set(ids)<=known:raise ValueError('ADMISSION_FINDING_EVIDENCE_INVALID')
     for field in ['material','scope','lawnBoundary']:evidence(proposal[field],['source_panorama'])
     for field in ['reflections','contextCoverage']:evidence(proposal[field],SOURCE_IDS)
-    reasons=[];hard=[]
-    def hold(condition,reason,permanent=False):
-        if condition:
-            reasons.append(reason)
-            if permanent:hard.append(reason)
-    material=proposal['material']['status']
-    hold(material not in {'established_turf','established_dormant_turf'},'SOURCE_TURF_MATERIAL_UNRESOLVED',material in {'sparse_or_missing_turf','bare_soil'})
-    hold(proposal['scope']['status']!='all_visible_established_turf','SOURCE_SCOPE_UNRESOLVED',proposal['scope']['status']=='parcel_subset_requested')
-    hold(proposal['lawnBoundary']['status']!='complete_visible_boundary','SOURCE_LAWN_BOUNDARY_UNRESOLVED')
     for role in ROLES:
         finding=proposal['exclusions'][role]
         evidence(finding,SOURCE_IDS if finding['status']=='none_observed' else ['source_panorama'])
-        hold(finding['status'] not in {'separable_at_source_mask_resolution','none_observed'},'SOURCE_EXCLUSION_UNRESOLVED:'+role,finding['status']=='too_fine_or_dense')
-    hold(proposal['reflections']['status']!='no_visible_turf_reflection_observed','SOURCE_REFLECTION_UNRESOLVED',proposal['reflections']['status']=='visible_or_possible_turf_reflection')
     coverage=proposal['contextCoverage'];requests=coverage['detailRequests']
-    hold(coverage['status']!='sufficient_same_capture_views','SOURCE_CONTEXT_UNRESOLVED',coverage['status']=='insufficient_context')
-    hold(bool(proposal['uncertainties']),'SOURCE_ADMISSION_UNCERTAINTY')
     if coverage['status']=='details_may_resolve' and not requests:raise ValueError('ADMISSION_DETAIL_REQUEST_REQUIRED')
     if coverage['status']!='details_may_resolve' and requests:raise ValueError('ADMISSION_UNEXPECTED_DETAIL_REQUEST')
     for detail in requests:evidence(detail,['source_panorama'])
     if len({digest(request['pose']) for request in requests})!=len(requests):raise ValueError('ADMISSION_DUPLICATE_DETAIL_POSE')
-    if context['round']==1 and requests:hold(True,'SOURCE_DETAIL_BUDGET_EXHAUSTED',True)
-    status='eligible_for_image' if not reasons else 'needs_review'
-    if reasons and not hard and context['round']==0 and requests:status='needs_detail'
+    status,reasons,caveats=screen(proposal,context['round'])
+    # No detail round is bought: soft doubts are caveats, so a detail view could not change the outcome.
     return {'schemaVersion':VERSION,'status':status,'contextSha256':context_sha,'binding':context['binding'],'policy':dict(POLICY),
         'round':context['round'],'proposal':proposal,'proposalSha256':digest(proposal),'execution':dict(execution),
-        'reviewReasons':reasons,'detailPlan':requests if status=='needs_detail' else [],'authorOrigin':'machine',
+        'reviewReasons':reasons,'caveats':caveats,'detailPlan':[],'authorOrigin':'machine',
         'automaticAcceptance':False,'segmentationAuthority':False,'crossViewVerified':False,'providerCallsPerformed':0}
+
+
+def screen(proposal,round_):
+    """Only no visible lawn, bare soil only or a parcel subset stop before the image; every other doubt is a caveat."""
+    reasons=[];caveats=[]
+    def note(condition,reason,stop=False):
+        if condition:(reasons if stop else caveats).append(reason)
+    material=proposal['material']['status'];scope=proposal['scope']['status'];coverage=proposal['contextCoverage']
+    note(material=='no_visible_lawn','SOURCE_NO_VISIBLE_LAWN',True)
+    note(material=='bare_soil','SOURCE_BARE_SOIL_ONLY',True)
+    note(scope=='parcel_subset_requested','SOURCE_PARCEL_SUBSET_REQUESTED',True)
+    note(material not in {'established_turf','established_dormant_turf','no_visible_lawn','bare_soil'},'SOURCE_TURF_MATERIAL_UNRESOLVED')
+    note(scope=='uncertain','SOURCE_SCOPE_UNRESOLVED')
+    note(proposal['lawnBoundary']['status']!='complete_visible_boundary','SOURCE_LAWN_BOUNDARY_UNRESOLVED')
+    for role in ROLES:
+        note(proposal['exclusions'][role]['status'] not in {'separable_at_source_mask_resolution','none_observed'},'SOURCE_EXCLUSION_UNRESOLVED:'+role)
+    note(proposal['reflections']['status']!='no_visible_turf_reflection_observed','SOURCE_REFLECTION_UNRESOLVED')
+    note(coverage['status']!='sufficient_same_capture_views','SOURCE_CONTEXT_UNRESOLVED')
+    note(bool(proposal['uncertainties']),'SOURCE_ADMISSION_UNCERTAINTY')
+    note(round_==1 and bool(coverage['detailRequests']),'SOURCE_DETAIL_BUDGET_EXHAUSTED')
+    return ('needs_review' if reasons else 'eligible_for_image'),reasons,caveats
