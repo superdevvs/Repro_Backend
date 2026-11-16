@@ -55,19 +55,32 @@ class GrassBridgeTests(unittest.TestCase):
             req=self.request('associate',step=self.save('step-'+str(i)+'.json',step),receipt=receipt)
             req['outputDirectory']=str(self.root/('association-'+str(i)))
             self.assertEqual(bridge.run(req,self.root)['resultStatus'],'ready_for_source_support')
-        req=self.request('finalize-support',assessment=assessment,plans=plans,receipts=receipts)
+        req=self.request('finalize-support',assessment=assessment,plans=plans,receipts=receipts,unsegmented=[])
         result=bridge.run(req,self.root)
         actual=json.loads(Path(result['outputs']['support-assessment']['path']).read_text())
         self.assertEqual(actual,json.loads((self.inputs/'composition-assessment.json').read_text()))
         self.assertEqual(bridge.run(req,self.root),result)
     def test_receipt_count_does_not_silently_zip(self):
         req=self.request('finalize-support',assessment=self.desc(self.inputs/'assessment.json'),plans=self.desc(self.inputs/'plans.json'),
-            receipts=[self.desc(self.inputs/'receipts/lawn.json')])
+            receipts=[self.desc(self.inputs/'receipts/lawn.json')],unsegmented=[])
         with self.assertRaisesRegex(ValueError,'RECEIPT_COUNT'):bridge.run(req,self.root)
+    def test_failed_exclusion_role_finalizes_as_unsegmented_but_lawn_cannot_be_skipped(self):
+        receipts=json.loads((self.inputs/'receipts.json').read_text());plans=json.loads((self.inputs/'plans.json').read_text())
+        saved=[self.save('receipt-'+str(i)+'.json',r) for i,r in enumerate(receipts)]
+        keep=[d for d,plan in zip(saved,plans) if plan['maskRole']!='paving']
+        req=self.request('finalize-support',assessment=self.desc(self.inputs/'assessment.json'),plans=self.desc(self.inputs/'plans.json'),
+            receipts=keep,unsegmented=['source-grass-paving'])
+        result=bridge.run(req,self.root);self.assertEqual(result['resultStatus'],'ready_for_source_support')
+        record=json.loads(Path(result['outputs']['support-assessment']['path']).read_text())
+        self.assertEqual(record['exclusions']['paving'],'unsegmented');self.assertIn('EXCLUSION_MASK_UNAVAILABLE:paving',record['caveats'])
+        for skipped in [['source-grass-lawn'],['source-grass-paving','source-grass-paving'],['source-grass-unknown']]:
+            with self.subTest(skipped=skipped):
+                req['unsegmented']=skipped;req['outputDirectory']=str(self.root/('out-skip-'+str(len(skipped))+skipped[0][-4:]))
+                with self.assertRaises(ValueError):bridge.run(req,self.root)
     def test_missing_mask_yields_review_and_no_support_record(self):
         receipts=json.loads((self.inputs/'receipts.json').read_text());receipts[0]['masks']=[]
         req=self.request('finalize-support',assessment=self.desc(self.inputs/'assessment.json'),plans=self.desc(self.inputs/'plans.json'),
-            receipts=[self.save('receipt-'+str(i)+'.json',r) for i,r in enumerate(receipts)])
+            receipts=[self.save('receipt-'+str(i)+'.json',r) for i,r in enumerate(receipts)],unsegmented=[])
         result=bridge.run(req,self.root);self.assertEqual(result['resultStatus'],'needs_review')
         self.assertEqual(set(result['outputs']),{'associations'})
     def test_changed_response_payload_native_and_mask_bindings_reject(self):

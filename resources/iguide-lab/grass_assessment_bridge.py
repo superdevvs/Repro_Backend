@@ -27,7 +27,7 @@ FIELDS={
     'parse':{'context','response','execution','compiledPayload'},
     'bind-plans':{'assessment','reservations'},
     'associate':{'step','receipt'},
-    'finalize-support':{'assessment','plans','receipts'},
+    'finalize-support':{'assessment','plans','receipts','unsegmented'},
 }
 COMMON={'schemaVersion','operation','outputDirectory'}
 
@@ -128,7 +128,7 @@ def run(request,allowed_root):
         inputs[str(path)]=desc['sha256']
         return decode_json(raw) if json_value else raw
     values={}
-    for name in FIELDS[operation]-{'images','receipts'}:
+    for name in FIELDS[operation]-{'images','receipts','unsegmented'}:
         values[name]=load(request[name],LIMITS[name],json_value=name!='response')
         if name not in {'response','plans'} and not isinstance(values[name],dict):raise ValueError('INPUT_JSON_OBJECT_REQUIRED')
     if operation=='compile':
@@ -143,6 +143,7 @@ def run(request,allowed_root):
             _validate_image(raw,view);values['images'].append(raw)
     if operation=='finalize-support':
         if not isinstance(request['receipts'],list) or not 1<=len(request['receipts'])<=6:raise ValueError('RECEIPT_COUNT_INVALID')
+        if not isinstance(request['unsegmented'],list) or any(not isinstance(x,str) for x in request['unsegmented']):raise ValueError('UNSEGMENTED_ROLES_INVALID')
         values['receipts']=[load(desc,LIMITS['receipt']) for desc in request['receipts']]
     output=safe_path(request['outputDirectory'],root,must_exist=False)
     if any(Path(path).is_relative_to(output) for path in inputs):raise ValueError('OUTPUT_CONTAINS_INPUT')
@@ -185,11 +186,15 @@ def run(request,allowed_root):
         # Reconstruct from the machine assessment and already persisted server UUIDs.
         expected=protocol.bind_reserved_plans(values['assessment'],{x['stepKey']:x['requestId'] for x in plans})
         if plans!=expected:raise ValueError('RESERVED_PLANS_CHANGED')
-        if len(values['receipts'])!=len(plans):raise ValueError('RECEIPT_COUNT_INVALID')
-        associations=[protocol.bind_segmentation_receipt(step,receipt) for step,receipt in zip(plans,values['receipts'])]
+        # A failed exclusion mask protects nothing; the lawn mask is always required.
+        skipped=request['unsegmented'];keys=[x['stepKey'] for x in plans]
+        if len(set(skipped))!=len(skipped) or not set(skipped)<=set(keys) or 'source-grass-lawn' in skipped:raise ValueError('UNSEGMENTED_ROLES_INVALID')
+        ready=[x for x in plans if x['stepKey'] not in skipped]
+        if len(values['receipts'])!=len(ready):raise ValueError('RECEIPT_COUNT_INVALID')
+        associations=[protocol.bind_segmentation_receipt(step,receipt) for step,receipt in zip(ready,values['receipts'])]
         outputs={'associations':associations};status='needs_review'
         if all(x['status']=='ready_for_source_support' for x in associations):
-            outputs['support-assessment']=protocol.composition_assessment_record(values['assessment'],plans,associations)
+            outputs['support-assessment']=protocol.composition_assessment_record(values['assessment'],plans,associations,skipped)
             status='ready_for_source_support'
     if any(sha(path)!=expected for path,expected in inputs.items()):raise ValueError('INPUT_CHANGED_DURING_PROCESSING')
     output.parent.mkdir(parents=True,exist_ok=True)

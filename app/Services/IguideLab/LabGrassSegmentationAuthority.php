@@ -45,12 +45,12 @@ class LabGrassSegmentationAuthority implements LabMachineSegmentationCapability
         $trusted = app(LabGrassAssessments::class)->forSegmentation($step);
         abort_unless($trusted['boundPlan'] === $plan, 422);
         $assessment = IguideLabGrassAssessment::where('project_id', $step->project_id)->findOrFail($trusted['assessmentId']);
-        // Sequential required roles: a missing/failed lawn cannot authorize exclusion spending.
+        // Sequential roles: a missing/failed lawn cannot authorize exclusion spending; a failed exclusion is skipped.
         foreach ($assessment->result['segmentationPlan'] as $logical) {
             if ($logical['stepKey'] === $plan['stepKey']) return;
             $prior = IguideLabWorkflowStep::where('project_id', $step->project_id)->where('item_id', $step->item_id)
                 ->where('step_key', $logical['stepKey'].'-'.$assessment->id)->where('kind', 'segmentation')->sole();
-            $this->verifiedReceipt($prior);
+            if (! $this->unsegmented($prior)) $this->verifiedReceipt($prior);
         }
         abort(422, 'The grass role was not reserved by this assessment.');
     }
@@ -84,13 +84,21 @@ class LabGrassSegmentationAuthority implements LabMachineSegmentationCapability
             && LabMachineSegmentationPlan::canonicalHash($association) === LabMachineSegmentationPlan::canonicalHash($record->result['association']), 422, 'The machine mask association changed.');
         return ['plan' => $plan, 'receipt' => $receipt, 'association' => $association, 'artifacts' => $artifacts, 'recordId' => $record->id];
     }
+    /** An exclusion whose paid mask ended without a usable result protects nothing (recorded caveat); the lawn never qualifies. */
+    public function unsegmented(IguideLabWorkflowStep $step): bool
+    {
+        if (($step->input['logicalPlan']['maskRole'] ?? 'lawn') === 'lawn') return false;
+        $record = IguideLabMachineSegmentation::where('project_id', $step->project_id)->where('step_id', $step->id)->first();
+        return $record !== null && $step->child_id === $record->id && in_array($record->status, ['needs_review', 'needs_attention', 'failed'], true);
+    }
     public function support(IguideLabGrassAssessment $assessment): array
     {
         $service = app(LabGrassAssessments::class); $service->completed($assessment);
         $steps = $service->reserveSegmentationSteps($assessment); $bridge = app(LabGrassAssessmentBridge::class);
         $disk = Storage::disk(LabService::DISK); $base = $assessment->data['base'];
-        $plans = $receipts = $lineage = $lawn = []; $exclusions = array_fill_keys(array_slice(LabGrassAssessmentPolicy::ROLES, 1), []);
-        foreach ($steps as $step) {
+        $plans = $receipts = $lineage = $lawn = $unsegmented = []; $exclusions = array_fill_keys(array_slice(LabGrassAssessmentPolicy::ROLES, 1), []);
+        foreach ($steps as $key => $step) {
+            if ($this->unsegmented($step)) { $plans[] = $this->plan($step); $unsegmented[] = $key; continue; }
             $verified = $this->verifiedReceipt($step); $plan = $verified['plan']; $role = $plan['maskRole'];
             $plans[] = $plan;
             $receipts[] = $bridge->json($base.'/support-'.$step->id.'-receipt.json', $verified['receipt']);
@@ -109,7 +117,7 @@ class LabGrassSegmentationAuthority implements LabMachineSegmentationCapability
         $planAsset = $bridge->json($base.'/support-plans.json', $plans);
         $report = $bridge->run($assessment->project_id, $base.'/finalize-support-request.json', [
             'schemaVersion' => 1, 'operation' => 'finalize-support', 'outputDirectory' => $disk->path($base.'/finalized'),
-            'assessment' => $assessment->data['resultAsset'], 'plans' => $planAsset, 'receipts' => $receipts], $assessment->data['recipe']);
+            'assessment' => $assessment->data['resultAsset'], 'plans' => $planAsset, 'receipts' => $receipts, 'unsegmented' => $unsegmented], $assessment->data['recipe']);
         abort_unless($report['resultStatus'] === $this->readyAssociationStatus(), 422, 'Required source roles are unresolved.');
         return ['assessment' => $bridge->output($assessment->project_id, $report, 'support-assessment'),
             'lawnMasks' => $lawn, 'exclusionMasks' => $exclusions, 'lineage' => $lineage];

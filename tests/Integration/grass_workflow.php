@@ -178,6 +178,16 @@ if($scenario==='material-uncertain'){
     $proof['fakePaidPosts']=count(array_filter($fakeCalls,fn($r)=>$r['method']==='POST'));
     file_put_contents($root.'/proof.json',json_encode($proof,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES));echo json_encode(['status'=>$proof['status'],'scenario'=>$scenario,'workflowStatus'=>$workflow->status,'externalCalls'=>0]).PHP_EOL;exit;
 }
+if($scenario==='empty-paving'){
+    // A missing exclusion mask protects nothing and is a recorded caveat; the paid image still ends viewable.
+    check(IguideLabMachineSegmentation::count()===6&&IguideLabMachineSegmentation::where('provider_request_id','fake-paving')->sole()->status==='needs_review','Paving fixture did not fail as expected');
+    check(App\Models\IguideLabComposite::count()===1&&IguideLabWorkflowEvaluation::count()===1&&isset($item->data['compositeId']),'A missing exclusion mask discarded the paid image');
+    $support=json_decode(file_get_contents(Storage::disk(LabService::DISK)->path('iguide-lab/'.$project->id.'/grass-assessments/'.IguideLabGrassAssessment::sole()->id.'/finalized/support-assessment.json')),true);
+    check(($support['exclusions']['paving']??null)==='unsegmented'&&in_array('EXCLUSION_MASK_UNAVAILABLE:paving',$support['caveats'],true),'Missing paving mask was not recorded as a caveat');
+    $before=count($fakeCalls);$service->process($workflow->fresh());check(count($fakeCalls)===$before,'Finished workflow retried a provider');
+    $proof['status']='passed_missing_exclusion_finished_with_result';$proof['scenario']=$scenario;$proof['workflowStatus']=$workflow->status;
+    file_put_contents($root.'/proof.json',json_encode($proof,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES));echo json_encode(['status'=>$proof['status'],'scenario'=>$scenario,'workflowStatus'=>$workflow->status,'externalCalls'=>0]).PHP_EOL;exit;
+}
 if($scenario!=='success'){
     $expected=$scenario==='empty-lawn'?1:2;
     check($workflow->status==='needs_review'&&IguideLabMachineSegmentation::count()===$expected,'Missing mask did not stop later source roles');

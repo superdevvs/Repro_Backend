@@ -99,6 +99,8 @@ class LabGrassWorkflow
             $steps->attach($samStep, $segmentation->id);
             $data['grassMaskRecords'][$samStep->input['logicalPlan']['maskRole']] = $segmentation->id;
             if ($segmentation->status !== 'completed') {
+                // A failed exclusion protects nothing and is a recorded caveat; only the lawn mask is required.
+                if ($authority->unsegmented($samStep)) continue;
                 if (in_array($segmentation->status, ['needs_review', 'needs_attention', 'failed'], true)) $state->finish($item, 'needs_review', 'grass_source_masks_unresolved', 'An original-source mask is missing, ambiguous or unconfirmed. No hidden repair call was sent.', $data);
                 else $state->save($item, 'preparing', $data);
                 return;

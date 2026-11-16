@@ -166,6 +166,13 @@ class SyntheticAssessmentTests(unittest.TestCase):
         self.assertEqual(result['status'],'ready_for_source_support')
         self.assertEqual([x['maskIndex'] for x in result['associations']],[0,1])
         self.assertEqual(result['associationCaveats'],['ROLE_MASK_ASSOCIATION_AMBIGUOUS_PROTECTED_IN_ORDER'])
+        report,plans=self.lawn_plan();bindings=[]
+        for plan in plans:
+            masks=[self.mask('lawn')] if plan['maskRole']=='lawn' else [self.mask(plan['maskRole']+str(i),bounds if plan['maskRole']=='paving' else
+                (b['x_min'],b['y_min'],b['x_max'],b['y_max']),10) for i,b in enumerate(plan['payload']['box_prompts'])]
+            bindings.append(protocol.bind_segmentation_receipt(plan,self.receipt(plan,masks)))
+        caveats=protocol.composition_assessment_record(report,plans,bindings)['caveats']
+        self.assertEqual(caveats.count('ROLE_MASK_ASSOCIATION_AMBIGUOUS_PROTECTED_IN_ORDER:paving'),1)
 
     def test_composition_record_carries_material_unsegmented_exclusions_and_caveats(self):
         self.proposal['material']['status']='patchy_turf'
@@ -183,6 +190,23 @@ class SyntheticAssessmentTests(unittest.TestCase):
         self.assertEqual(record['exclusions']['paving'],'supplied')
         self.assertEqual(record['caveats'],report['caveats'])
         self.assertEqual(record['uncertainties'],[])
+
+
+    def test_a_failed_exclusion_mask_becomes_an_unsegmented_caveat_but_the_lawn_is_required(self):
+        report,plans=self.lawn_plan()
+        def ready(plan):
+            masks=[self.mask(plan['maskRole'])] if plan['maskRole']=='lawn' else [
+                self.mask(plan['maskRole']+str(i),(b['x_min'],b['y_min'],b['x_max'],b['y_max']),10) for i,b in enumerate(plan['payload']['box_prompts'])]
+            return protocol.bind_segmentation_receipt(plan,self.receipt(plan,masks))
+        skipped=['source-grass-paving']
+        bindings=[ready(plan) for plan in plans if plan['stepKey'] not in skipped]
+        record=protocol.composition_assessment_record(report,plans,bindings,skipped)
+        self.assertEqual(record['exclusions']['paving'],'unsegmented')
+        self.assertIn('EXCLUSION_MASK_UNAVAILABLE:paving',record['caveats'])
+        with self.assertRaisesRegex(ValueError,'LAWN_MASK_REQUIRED'):
+            protocol.composition_assessment_record(report,plans,[ready(plan) for plan in plans[1:]],['source-grass-lawn'])
+        with self.assertRaisesRegex(ValueError,'PREREQUISITES_NOT_BOUND'):
+            protocol.composition_assessment_record(report,plans,bindings,[])
 
 
 class ChromaFinishTests(unittest.TestCase):

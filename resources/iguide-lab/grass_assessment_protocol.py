@@ -313,10 +313,15 @@ def bind_segmentation_receipt(step,receipt):
         'contextSha256':step['contextSha256'],'receiptSha256':digest(receipt)}
 
 
-def composition_assessment_record(assessment,reserved_plans,bindings):
+def composition_assessment_record(assessment,reserved_plans,bindings,unsegmented=()):
+    """unsegmented: exclusion step keys whose paid mask failed; they protect nothing and become caveats."""
     expected=bind_reserved_plans(assessment,{x['stepKey']:x['requestId'] for x in reserved_plans})
-    if reserved_plans!=expected or len(bindings)!=len(expected):raise ValueError('GRASS_SUPPORT_PREREQUISITES_NOT_BOUND')
-    for step,bound in zip(expected,bindings):
+    skipped=list(unsegmented);keys=[x['stepKey'] for x in expected]
+    if len(set(skipped))!=len(skipped) or not set(skipped)<=set(keys):raise ValueError('GRASS_UNSEGMENTED_ROLES_INVALID')
+    if 'source-grass-lawn' in skipped:raise ValueError('GRASS_LAWN_MASK_REQUIRED')
+    ready=[x for x in expected if x['stepKey'] not in skipped]
+    if reserved_plans!=expected or len(bindings)!=len(ready):raise ValueError('GRASS_SUPPORT_PREREQUISITES_NOT_BOUND')
+    for step,bound in zip(ready,bindings):
         if bound.get('status')!='ready_for_source_support':raise ValueError('GRASS_SUPPORT_ROLE_NOT_READY')
         for key in ['stepKey','maskRole','requestId','inputFingerprint','inputSha256','contextSha256']:
             if bound.get(key)!=step[key]:raise ValueError('GRASS_SUPPORT_RECEIPT_MIXUP')
@@ -326,8 +331,9 @@ def composition_assessment_record(assessment,reserved_plans,bindings):
         'sourcePreparationSha256':source['sourcePreparationSha256'],
         'candidateSha256':source['candidateSha256'],'authorOrigin':'machine','maskSelectionOrigin':'machine',
         'lawnMaterial':assessment['proposal']['material']['status'],'requestedChange':'recolor_existing_turf','scope':'all_visible_established_turf',
-        'exclusions':{name:{'none_observed':'none_observed','observed_selectable':'supplied'}.get(assessment['proposal']['exclusions'][name]['status'],'unsegmented') for name in CLASSES},
-        'uncertainties':[],'caveats':list(assessment['caveats'])+[c for x in bindings for c in x.get('associationCaveats',[]) if c not in assessment['caveats']],'assessmentProtocol':VERSION,'assessmentProposalSha256':assessment['proposalSha256'],
+        'exclusions':{name:('unsegmented' if 'source-grass-'+name in skipped else {'none_observed':'none_observed','observed_selectable':'supplied'}.get(assessment['proposal']['exclusions'][name]['status'],'unsegmented')) for name in CLASSES},
+        'uncertainties':[],'caveats':list(dict.fromkeys([*assessment['caveats'],*(c+':'+x['maskRole'] for x in bindings for c in x.get('associationCaveats',[])),
+            *('EXCLUSION_MASK_UNAVAILABLE:'+key.removeprefix('source-grass-') for key in keys if key in skipped)])),'assessmentProtocol':VERSION,'assessmentProposalSha256':assessment['proposalSha256'],
         'contextSha256':assessment['contextSha256'],'executionRequestId':assessment['execution']['requestId'],
         'segmentationReceiptSha256':[x['receiptSha256'] for x in bindings],
         'automaticAcceptance':False,'maskSemanticsVerified':False,
