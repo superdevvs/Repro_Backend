@@ -98,14 +98,14 @@ EOF
 chmod 755 "$runtime/worker.sh"
 
 # Tour analysis worker (docs/iguide-lab-tour-analysis.md): same Supervisor and user, its own queue and pause file.
-# It is installed only when the release has the tour job and the configured worker count is 1-8; otherwise the
-# Studio reinstall continues without it.
+# It is installed only when the release has the tour job and tour-workers --count prints 1-8 (0 unless the tour queue
+# target is the dedicated iguide-lab-tour one); otherwise the Studio reinstall continues without it.
 tour_program=''
 tour_workers=''
 if test -f "$app/app/Jobs/ProcessIguideLabTourSurvey.php"; then
   # set -Eeuo pipefail (:3): a failing artisan call or an unexpected value must not abort the studio reinstall
   tour_workers="$(cd "$app" && /usr/bin/sg www-data -c '/usr/bin/php artisan iguide-lab:tour-workers --count' 2>/dev/null || true)"
-  case "$tour_workers" in [1-8]) ;; *) echo "Warning: unexpected tour worker count '$tour_workers'; the tour worker program is not installed" >&2; tour_workers='' ;; esac
+  case "$tour_workers" in 0) echo "Info: the tour queue is not the dedicated iguide-lab-tour target; the tour worker program is not installed"; tour_workers='' ;; [1-8]) ;; *) echo "Warning: unexpected tour worker count '$tour_workers'; the tour worker program is not installed" >&2; tour_workers='' ;; esac
 fi
 if [ -n "$tour_workers" ]; then
   cat > "$runtime/lab-tour-worker.sh" <<EOF

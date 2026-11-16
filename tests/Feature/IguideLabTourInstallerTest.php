@@ -17,6 +17,7 @@ use Tests\TestCase;
 class IguideLabTourInstallerTest extends TestCase
 {
     private const SG_COUNT = "/usr/bin/sg www-data -c '/usr/bin/php artisan iguide-lab:tour-workers --count'";
+    private const INFO_NOT_DEDICATED = 'Info: the tour queue is not the dedicated iguide-lab-tour target; the tour worker program is not installed';
 
     private string $dir;
 
@@ -104,7 +105,8 @@ class IguideLabTourInstallerTest extends TestCase
         $this->assertSame('', $render->getErrorOutput());
 
         touch($app.'/app/Jobs/ProcessIguideLabTourSurvey.php');
-        foreach (['0', '9', '10', '', 'abc', '3 4', "3\n4", ' 3', '-1'] as $count) {
+        // '0' is not here: it is the expected answer for a target that is not dedicated (see the next test).
+        foreach (['00', '9', '10', '', 'abc', '3 4', "3\n4", ' 3', '-1', '0 1'] as $count) {
             $render = $this->render($app, $runtime, $count);
             $this->assertTrue($render->isSuccessful(), var_export($count, true).': '.$render->getErrorOutput());
             $this->assertStringContainsString('Warning: unexpected tour worker count', $render->getErrorOutput(), var_export($count, true));
@@ -117,6 +119,24 @@ class IguideLabTourInstallerTest extends TestCase
         $this->assertStringContainsString("Warning: unexpected tour worker count ''", $render->getErrorOutput());
         $this->assertStringNotContainsString('artisan failed', $render->getErrorOutput(), 'the count call\'s stderr is discarded');
         $this->assertSame($this->expand($this->studioConfig(), $app, $runtime), file_get_contents($runtime.'/supervisord.conf'));
+    }
+
+    public function test_a_zero_count_skips_the_tour_program_with_an_info_line(): void
+    {
+        // Deploy 1.1: iguide-lab:tour-workers --count prints 0 unless the tour queue target is the dedicated one. That is
+        // the normal Studio-only state, so it is an info line on stdout, not a warning, and only Studio is rendered.
+        [$app, $runtime] = $this->layout(withTourJob: true);
+        foreach (["0\n", '0'] as $count) {
+            $render = $this->render($app, $runtime, $count);
+            $this->assertTrue($render->isSuccessful(), $render->getErrorOutput());
+            $this->assertSame('', $render->getErrorOutput(), 'no warning');
+            $this->assertSame(self::INFO_NOT_DEDICATED."\n", $render->getOutput());
+            $this->assertSame($app.'|www-data|-c|/usr/bin/php artisan iguide-lab:tour-workers --count|', file_get_contents($this->dir.'/sg.log'));
+            $this->assertSame($this->expand($this->studioConfig(), $app, $runtime), file_get_contents($runtime.'/supervisord.conf'), 'byte-identical to the pre-D1 file');
+            $this->assertSame($this->expand($this->studioWorker(), $app, $runtime), file_get_contents($runtime.'/worker.sh'));
+            $this->assertFileDoesNotExist($runtime.'/lab-tour-worker.sh');
+        }
+        $this->assertStringContainsString(self::INFO_NOT_DEDICATED, $this->script());
     }
 
     public function test_a_stopped_tour_program_does_not_abort_the_installer(): void
