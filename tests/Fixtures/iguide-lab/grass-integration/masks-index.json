@@ -138,5 +138,25 @@
       ],
       "positivePixels": 22436
     }
+  },
+  {
+    "path": "fixtures/masks/lawn-text.png",
+    "sha256": "d9fac83fd1a89f540a64eb2d811ea7780d9e07f774826f365f4a0089111331f5",
+    "width": 2048,
+    "height": 1024,
+    "mode": "L",
+    "role": "lawn-text",
+    "descriptor": {
+      "sha256": "d9fac83fd1a89f540a64eb2d811ea7780d9e07f774826f365f4a0089111331f5",
+      "width": 2048,
+      "height": 1024,
+      "bounds": [
+        2,
+        565,
+        2045,
+        900
+      ],
+      "positivePixels": 573855
+    }
   }
 ]

@@ -104,7 +104,8 @@ class LabGrassAssessments
             LockedWrite::run(fn () => $record->update(['status' => 'completed', 'result' => $result, 'result_sha256' => $asset['sha256'],
                 'data' => $data, 'completed_at' => now(), 'error_code' => null]), 'iguide-lab.grass-assessment-complete');
         } catch (\Throwable $error) {
-            $this->attention($record, in_array($record->fresh()->status, ['submitting', 'received'], true) ? 'submitted_assessment_unconfirmed_or_rejected' : 'assessment_preflight_rejected');
+            $this->attention($record, in_array($record->fresh()->status, ['submitting', 'received'], true) ? 'submitted_assessment_unconfirmed_or_rejected' : 'assessment_preflight_rejected',
+                ['class' => class_basename($error), 'message' => mb_substr($error->getMessage(), 0, 500)]);
         }
     }
     private function protocolContextHash(array $compiled): string
@@ -245,9 +246,14 @@ class LabGrassAssessments
         return [$receipt, ['state' => 'completed', 'requestId' => $record->request_id, 'providerResponseId' => $receipt['providerResponseId'],
             'model' => $receipt['model'], 'contextSha256' => $contextHash, 'requestPayloadSha256' => $payload['sha256'], 'responseSha256' => $receipt['response']['sha256']]];
     }
-    public function attention(IguideLabGrassAssessment $record, string $code): void
+    /** $failure keeps the exact reason (e.g. the protocol error code) instead of discarding it. */
+    public function attention(IguideLabGrassAssessment $record, string $code, ?array $failure = null): void
     {
-        LockedWrite::run(fn () => IguideLabGrassAssessment::whereKey($record->id)->where('status', '!=', 'completed')->update([
-            'status' => 'needs_attention', 'error_code' => $code, 'completed_at' => now(), 'updated_at' => now()]), 'iguide-lab.grass-assessment-attention');
+        LockedWrite::run(function () use ($record, $code, $failure) {
+            $values = ['status' => 'needs_attention', 'error_code' => $code, 'completed_at' => now(), 'updated_at' => now()];
+            $open = IguideLabGrassAssessment::whereKey($record->id)->where('status', '!=', 'completed')->first();
+            if ($failure !== null && $open) $values['data'] = json_encode([...($open->data ?? []), 'failure' => $failure], JSON_THROW_ON_ERROR);
+            IguideLabGrassAssessment::whereKey($record->id)->where('status', '!=', 'completed')->update($values);
+        }, 'iguide-lab.grass-assessment-attention');
     }
 }

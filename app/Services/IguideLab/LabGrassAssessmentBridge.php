@@ -51,8 +51,18 @@ class LabGrassAssessmentBridge
         $process->run(); $report = json_decode($process->getOutput(), true);
         abort_unless($process->isSuccessful() && is_array($report) && ($report['automaticAcceptance'] ?? true) === false
             && ($report['providerCalls'] ?? -1) === 0 && ($report['reviewStatus'] ?? null) === 'unreviewed'
-            && ($report['operation'] ?? null) === $request['operation'], 422, 'The local assessment protocol rejected its inputs.');
+            && ($report['operation'] ?? null) === $request['operation'], 422,
+            'The local assessment protocol rejected its inputs: '.($process->isSuccessful() ? 'invalid_report' : self::failureCode($process->getErrorOutput())));
         return $report;
+    }
+    /** The protocol's own error code (last "XError: CODE" line), kept so a rejected paid answer is explainable. */
+    public static function failureCode(string $stderr): string
+    {
+        $code = 'unknown';
+        foreach (preg_split('/\R/', $stderr) ?: [] as $line) {
+            if (preg_match('/\A[A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception): (\S.*)\z/', trim($line), $match)) $code = $match[1];
+        }
+        return mb_substr($code, 0, 200);
     }
     public function json(string $relative, array $value): array
     {

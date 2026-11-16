@@ -263,6 +263,7 @@
     "responseSha256": "bb4b8ac4845011613b0f75aca7ff956479699f294e4cd34ffcb1d83c041be0eb"
   },
   "reviewReasons": [],
+  "caveats": [],
   "authorOrigin": "machine",
   "automaticAcceptance": false,
   "maskSemanticsVerified": false,
@@ -281,32 +282,16 @@
       "height": 1024,
       "payload": {
         "prompt": "grass lawn",
-        "box_prompts": [
-          {
-            "x_min": 0,
-            "y_min": 563,
-            "x_max": 861,
-            "y_max": 902,
-            "object_id": 1
-          },
-          {
-            "x_min": 1187,
-            "y_min": 563,
-            "x_max": 2047,
-            "y_max": 902,
-            "object_id": 2
-          }
-        ],
+        "box_prompts": [],
         "apply_mask": false,
         "output_format": "png",
         "return_multiple_masks": true,
-        "max_masks": 2,
+        "max_masks": 1,
         "include_scores": true,
         "include_boxes": true
       },
       "expectedIdentities": [
-        "lawn_1",
-        "lawn_2"
+        "lawn_1"
       ],
       "selectionOrigin": "machine",
       "assessmentProposalSha256": "df389bdd1a545fe02ab17a365d0a533b6a5ede68e5862c3de873b13b5573774d",
@@ -314,7 +299,7 @@
       "maximumPostAttempts": 1,
       "automaticRetry": false,
       "semanticClassVerified": false,
-      "inputFingerprint": "eb5a8fb011474b21f8f9528729f109cb85066f7109cb77f8bef2d8ff1d384ace"
+      "inputFingerprint": "55a4d7906cfb53e877a57d17737ab4da9c23d4ddf32ce668291b3c44b07defd6"
     },
     {
       "stepKey": "source-grass-paving",

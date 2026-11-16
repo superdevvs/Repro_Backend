@@ -85,7 +85,8 @@ $upload=new Illuminate\Http\UploadedFile($zipPath,'original.zip','application/zi
 $import=$imports->start($project,$importInput,$upload,null);$imports->process($import);$import->refresh();check($import->status==='completed','Import failed');
 $case=IguideLabCase::findOrFail($import->sources[0]['caseId']);check(app(LabWorkflowSources::class)->capture($case)['authority']['importId']===$import->id,'Import authority absent');
 $fakeCalls=[];$submittedSourceHashes=[];$maskBytes=[];
-foreach(json_decode(file_get_contents($fixtures.'/masks-index.json'),true) as $entry){$maskBytes[$entry['role']][]=file_get_contents($fixtures.'/masks/'.basename($entry['path']));}
+// The lawn is one text-prompted mask; the two seam-split lawn masks remain decoder fixtures only.
+foreach(json_decode(file_get_contents($fixtures.'/masks-index.json'),true) as $entry){if($entry['role']==='lawn')continue;$maskBytes[$entry['role']==='lawn-text'?'lawn':$entry['role']][]=file_get_contents($fixtures.'/masks/'.basename($entry['path']));}
 $preparedSha=hash('sha256',App\Services\IguideLab\LabImages::prepared($source));
 Http::fake(function($request)use(&$fakeCalls,&$submittedSourceHashes,$maskBytes,$fixtures,$preparedSha,$scenario){
     $url=$request->url();$fakeCalls[]=['url'=>$url,'method'=>$request->method()];
@@ -163,17 +164,29 @@ $workflow->refresh();$item->refresh();$proof=['status'=>$workflow->status==='rea
     'fakeHttpCalls'=>$fakeCalls,'sourceRoleHashes'=>$submittedSourceHashes,'usedRuns'=>$project->fresh()->used_runs,'item'=>$item->toArray(),'history'=>$history];
 file_put_contents($root.'/proof.json',json_encode($proof,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES));
 if($scenario==='material-uncertain'){
+    // Soft doubts are recorded caveats: the paid image is composited and checked, never discarded.
     $assessment=IguideLabGrassAssessment::sole();
-    check($workflow->status==='needs_review'&&$assessment->status==='completed'&&$assessment->result['status']==='needs_review','Semantic hold became parser failure or success');
-    check(count($assessment->result['reviewReasons'])===7&&$assessment->result['segmentationPlan']===[],'Semantic reasons or no-plan gate changed');
-    check(IguideLabWorkflowStep::where('kind','segmentation')->count()===0&&IguideLabMachineSegmentation::count()===0,'Uncertain material reserved SAM');
-    check(App\Models\IguideLabComposite::count()===0&&IguideLabWorkflowEvaluation::count()===0,'Uncertain material reached composition or evaluation');
-    $before=count($fakeCalls);$service->process($workflow->fresh());check(count($fakeCalls)===$before,'Held workflow retried a provider');
-    $proof['status']='passed_expected_material_hold';$proof['scenario']=$scenario;$proof['terminalReplayNoHttp']=true;
-    $proof['assessmentStatus']=$assessment->status;$proof['reviewReasons']=$assessment->result['reviewReasons'];
+    check($assessment->status==='completed'&&$assessment->result['status']==='ready_for_source_segmentation'&&$assessment->result['reviewReasons']===[],'Soft doubts still held the paid image');
+    check(count($assessment->result['caveats'])===7,'Soft doubts were not recorded as caveats');
+    check(IguideLabMachineSegmentation::count()===2&&array_keys($submittedSourceHashes)===['lawn','paving'],'Doubtful exclusions were segmented or the lawn was skipped');
+    check(App\Models\IguideLabComposite::count()===1&&IguideLabWorkflowEvaluation::count()===1&&isset($item->data['compositeId']),'Caveated grass did not end with a viewable composite and a final check');
+    $evaluationStep=IguideLabWorkflowStep::where('item_id',$item->id)->where('kind','evaluation')->sole();
+    check(count(array_filter($evaluationStep->input['context']['sourceCaveats'],fn($c)=>str_contains($c,'TEXTURE_OR_MATERIAL_REQUIRES_REVIEW')))===1,'Assessment caveats did not reach the final check');
+    $before=count($fakeCalls);$service->process($workflow->fresh());check(count($fakeCalls)===$before,'Finished workflow retried a provider');
+    $proof['status']='passed_material_caveats_finished_with_result';$proof['scenario']=$scenario;$proof['terminalReplayNoHttp']=true;
+    $proof['workflowStatus']=$workflow->status;$proof['caveats']=$assessment->result['caveats'];
     $proof['fakePaidPosts']=count(array_filter($fakeCalls,fn($r)=>$r['method']==='POST'));
-    check($proof['fakePaidPosts']===3,'Unexpected provider attempt during semantic hold');
-    file_put_contents($root.'/proof.json',json_encode($proof,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES));echo json_encode(['status'=>$proof['status'],'scenario'=>$scenario,'externalCalls'=>0]).PHP_EOL;exit;
+    file_put_contents($root.'/proof.json',json_encode($proof,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES));echo json_encode(['status'=>$proof['status'],'scenario'=>$scenario,'workflowStatus'=>$workflow->status,'externalCalls'=>0]).PHP_EOL;exit;
+}
+if($scenario==='empty-paving'){
+    // A missing exclusion mask protects nothing and is a recorded caveat; the paid image still ends viewable.
+    check(IguideLabMachineSegmentation::count()===6&&IguideLabMachineSegmentation::where('provider_request_id','fake-paving')->sole()->status==='needs_review','Paving fixture did not fail as expected');
+    check(App\Models\IguideLabComposite::count()===1&&IguideLabWorkflowEvaluation::count()===1&&isset($item->data['compositeId']),'A missing exclusion mask discarded the paid image');
+    $support=json_decode(file_get_contents(Storage::disk(LabService::DISK)->path('iguide-lab/'.$project->id.'/grass-assessments/'.IguideLabGrassAssessment::sole()->id.'/finalized/support-assessment.json')),true);
+    check(($support['exclusions']['paving']??null)==='unsegmented'&&in_array('EXCLUSION_MASK_UNAVAILABLE:paving',$support['caveats'],true),'Missing paving mask was not recorded as a caveat');
+    $before=count($fakeCalls);$service->process($workflow->fresh());check(count($fakeCalls)===$before,'Finished workflow retried a provider');
+    $proof['status']='passed_missing_exclusion_finished_with_result';$proof['scenario']=$scenario;$proof['workflowStatus']=$workflow->status;
+    file_put_contents($root.'/proof.json',json_encode($proof,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES));echo json_encode(['status'=>$proof['status'],'scenario'=>$scenario,'workflowStatus'=>$workflow->status,'externalCalls'=>0]).PHP_EOL;exit;
 }
 if($scenario!=='success'){
     $expected=$scenario==='empty-lawn'?1:2;

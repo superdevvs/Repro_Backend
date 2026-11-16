@@ -105,6 +105,19 @@ class IguideLabGrassAssessmentTest extends TestCase
         $this->assertSame(0, \App\Models\IguideLabWorkflowStep::where('kind', 'segmentation')->count());
         Http::assertSentCount(1);
     }
+    public function test_rejected_paid_answer_keeps_its_failure_reason(): void
+    {
+        [, , , , , $record] = $this->reserved(); $service = app(LabGrassAssessments::class);
+        $this->bridge->rejectParse = true;
+        Http::fake(['api.openai.com/v1/responses' => Http::response($this->response())]);
+        $service->process($record); $service->process($record->fresh());
+        $fresh = $record->fresh();
+        $this->assertSame('needs_attention', $fresh->status);
+        $this->assertSame('submitted_assessment_unconfirmed_or_rejected', $fresh->error_code);
+        $this->assertSame('HttpException', $fresh->data['failure']['class']);
+        $this->assertStringContainsString('GRASS_SELECTION_ID_INVALID', $fresh->data['failure']['message']);
+        Http::assertSentCount(1);
+    }
     public function test_cancellation_after_quota_rejection_blocks_fallback_claim(): void
     {
         [, $workflow, , , , $record] = $this->reserved(); $count = 0;
@@ -247,13 +260,14 @@ class GrassAssessmentContextFixture extends LabGrassAssessmentContext
 }
 class GrassAssessmentBridgeFixture extends LabGrassAssessmentBridge
 {
-    public bool $available = true; public string $sourceSha = ''; public bool $semanticHold = false;
+    public bool $available = true; public string $sourceSha = ''; public bool $semanticHold = false; public bool $rejectParse = false;
     public function ready(): bool { return $this->available; }
     public function snapshot(): array { return ['fixtureProtocol' => 1]; }
     public function run(string $projectId, string $relativeRequest, array $request, array $snapshot): array
     {
         $this->validate($snapshot); $disk = Storage::disk(LabService::DISK); $this->json($relativeRequest, $request);
         $operation = $request['operation'];
+        abort_if($operation === 'parse' && $this->rejectParse, 422, 'The local assessment protocol rejected its inputs: GRASS_SELECTION_ID_INVALID');
         if ($operation === 'compile') $outputs = ['payload' => ['model' => 'gpt-6-astra', 'store' => false, 'input' => [['content' => [['type' => 'input_text', 'text' => json_encode(['contextSha256' => str_repeat('c', 64)])]]]]]];
         elseif ($operation === 'parse') $outputs = ['assessment' => ['status' => 'ready_for_source_segmentation', 'automaticAcceptance' => false, 'authorOrigin' => 'machine', 'reviewReasons' => [],
             'contextSha256' => str_repeat('c', 64), 'execution' => json_decode(file_get_contents($request['execution']['path']), true, flags: JSON_THROW_ON_ERROR),

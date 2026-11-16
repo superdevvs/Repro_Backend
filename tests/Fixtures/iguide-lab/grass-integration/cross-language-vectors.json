@@ -18,8 +18,8 @@
     {
       "stepKey": "source-grass-lawn",
       "requestId": "936a699e-0b8e-58a6-90bd-ebe761b3055b",
-      "inputFingerprint": "5e28bb5d18eb30edc873762f7f695381789a40e02ed54490b490d0c52de1f74e",
-      "canonicalJsonWithoutFingerprint": "{\"assessmentProposalSha256\":\"df389bdd1a545fe02ab17a365d0a533b6a5ede68e5862c3de873b13b5573774d\",\"automaticRetry\":false,\"contextSha256\":\"34585bd4b9cce5b04e27cbd2479ae8fadd458dab1505201a00ca18edb8502c09\",\"expectedIdentities\":[\"lawn_1\",\"lawn_2\"],\"height\":1024,\"inputSha256\":\"494d0db5fa2e8843c9cc53a45aec303aeed33bcb2b7bdffab73331187d2d13f0\",\"maskRole\":\"lawn\",\"maximumPostAttempts\":1,\"model\":\"fal-ai/sam-3-1/image\",\"payload\":{\"apply_mask\":false,\"box_prompts\":[{\"object_id\":1,\"x_max\":861,\"x_min\":0,\"y_max\":902,\"y_min\":563},{\"object_id\":2,\"x_max\":2047,\"x_min\":1187,\"y_max\":902,\"y_min\":563}],\"include_boxes\":true,\"include_scores\":true,\"max_masks\":2,\"output_format\":\"png\",\"prompt\":\"grass lawn\",\"return_multiple_masks\":true},\"requestId\":\"936a699e-0b8e-58a6-90bd-ebe761b3055b\",\"reservationState\":\"server_reserved\",\"selectionOrigin\":\"machine\",\"semanticClassVerified\":false,\"stepKey\":\"source-grass-lawn\",\"width\":2048}"
+      "inputFingerprint": "2e327c25dea6ed2160e91472af2d2f384fa2bdaa6636e1bb7981df68c55fe350",
+      "canonicalJsonWithoutFingerprint": "{\"assessmentProposalSha256\":\"df389bdd1a545fe02ab17a365d0a533b6a5ede68e5862c3de873b13b5573774d\",\"automaticRetry\":false,\"contextSha256\":\"34585bd4b9cce5b04e27cbd2479ae8fadd458dab1505201a00ca18edb8502c09\",\"expectedIdentities\":[\"lawn_1\"],\"height\":1024,\"inputSha256\":\"494d0db5fa2e8843c9cc53a45aec303aeed33bcb2b7bdffab73331187d2d13f0\",\"maskRole\":\"lawn\",\"maximumPostAttempts\":1,\"model\":\"fal-ai/sam-3-1/image\",\"payload\":{\"apply_mask\":false,\"box_prompts\":[],\"include_boxes\":true,\"include_scores\":true,\"max_masks\":1,\"output_format\":\"png\",\"prompt\":\"grass lawn\",\"return_multiple_masks\":true},\"requestId\":\"936a699e-0b8e-58a6-90bd-ebe761b3055b\",\"reservationState\":\"server_reserved\",\"selectionOrigin\":\"machine\",\"semanticClassVerified\":false,\"stepKey\":\"source-grass-lawn\",\"width\":2048}"
     },
     {
       "stepKey": "source-grass-paving",
@@ -54,7 +54,6 @@
   ],
   "associationStatus": "ready_for_source_support",
   "lawnMaskIndexes": [
-    1,
     0
   ],
   "minimalRoleOrder": [

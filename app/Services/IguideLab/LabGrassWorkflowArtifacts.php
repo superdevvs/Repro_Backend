@@ -179,12 +179,22 @@ class LabGrassWorkflowArtifacts
             'intentSha256' => LabAnalysisRecipes::hash($intent), 'evidenceManifestSha256' => hash_file('sha256', $disk->path($out.'/report.json')),
             'projection' => 'equirectangular', 'preset' => $item->preset, 'style' => $item->style, 'intent' => json_encode($intent, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
             'protectedFeatures' => array_column($analysis->proposal['protectedFeatures'], 'description'),
-            'sourceCaveats' => [...($analysis->proposal['uncertainties'] ?? []), 'This is source-native chroma transfer, not new turf texture. Machine lawn and exclusion masks are hypotheses, not verified semantics. Independently inspect turf edges, paving, plants, loose debris, bare ground, capture artifacts and possible turf reflections. Exact protected pixels alone do not prove the selected region or green color is correct.'],
+            'sourceCaveats' => [...($analysis->proposal['uncertainties'] ?? []), 'This is source-native chroma transfer, not new turf texture. Machine lawn and exclusion masks are hypotheses, not verified semantics. Independently inspect turf edges, paving, plants, loose debris, bare ground, capture artifacts and possible turf reflections. Exact protected pixels alone do not prove the selected region or green color is correct.',
+                ...array_filter([$this->assessmentCaveat(\App\Models\IguideLabGrassAssessment::where('project_id', $item->project_id)->find($composite->manifest['lineage']['assessmentId'] ?? null)?->result ?? [])])],
             'opticalDependencies' => [], 'reviewRequirements' => $this->evaluationReviewRequirements($analysis->proposal, $report['qa']),
             'mechanicalQa' => ['passed' => ($report['qa']['numericIntegrity'] ?? null) === 'pass' && ! $blockers, 'blockingReasons' => $blockers], 'views' => $views];
         return ['compositeId' => $composite->id, 'manifestPath' => $out.'/report.json', 'context' => $context, 'assets' => $assets];
     }
 
+    /** Assessment doubts are recorded caveats (not stops); the final check must see them. One string, at most 600 characters. */
+    public function assessmentCaveat(array $assessment): ?string
+    {
+        $codes = array_values(array_filter($assessment['caveats'] ?? [], 'is_string')); if (! $codes) return null;
+        $head = 'Recorded assessment caveats (honest recolor, not blockers): '; $tail = '. Existing turf keeps its own texture and brightness; soil, sparse patches, unsegmented exclusions and reflections stay as photographed. Judge these areas strictly.';
+        $listed = '';
+        foreach ($codes as $code) { $next = $listed === '' ? $code : $listed.', '.$code; if (mb_strlen($head.$next.$tail) > 600) break; $listed = $next; }
+        return mb_substr($head.($listed === '' ? 'see assessment record' : $listed).$tail, 0, 600);
+    }
     public function evaluationReviewRequirements(array $proposal, array $qa): array
     {
         $requirements = array_column($proposal['reviewChecks'], 'instruction');

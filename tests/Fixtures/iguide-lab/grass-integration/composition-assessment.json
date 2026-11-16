@@ -16,12 +16,13 @@
     "capture_artifact": "supplied"
   },
   "uncertainties": [],
+  "caveats": [],
   "assessmentProtocol": "source-native-grass-assessment/1",
   "assessmentProposalSha256": "df389bdd1a545fe02ab17a365d0a533b6a5ede68e5862c3de873b13b5573774d",
   "contextSha256": "34585bd4b9cce5b04e27cbd2479ae8fadd458dab1505201a00ca18edb8502c09",
   "executionRequestId": "dff44271-0da2-52a2-b877-e082156a3354",
   "segmentationReceiptSha256": [
-    "de9c1fb7a8b7a46a4c754f70ef2622d5cc21bfe6c02589b42e0313513c8f2d15",
+    "b576185dc9c134868379d16fd7d6c079ead7cea784063a42e299326bdf8b90f0",
     "74e59932fbdd294f4e88d98869126969d0e660d038f75deff57bf411190235c8",
     "d987219427087407a7495f6ad3996a765ba8469ae83a7bac16e6e7794b144333",
     "34a4535144fead10010114cb903536498b48e655fd765c03db70d6fd300da62d",

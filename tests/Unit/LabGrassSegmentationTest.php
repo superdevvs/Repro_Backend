@@ -21,6 +21,19 @@ class LabGrassSegmentationTest extends TestCase
             $this->assertSame($plan['inputSha256'], hash('sha256', base64_decode(explode(',', $payload['image_url'], 2)[1], true)));
         }
     }
+    public function test_lawn_is_one_text_only_mask_and_exclusions_keep_their_boxes(): void
+    {
+        [$lawn, $paving] = $this->plans();
+        $this->assertSame([], $lawn['payload']['box_prompts']); $this->assertSame(['lawn_1'], $lawn['expectedIdentities']);
+        $rehash = function (array $p): array { $u = $p; unset($u['inputFingerprint']); $p['inputFingerprint'] = LabMachineSegmentationPlan::canonicalHash($u); return $p; };
+        $boxedLawn = $lawn; $boxedLawn['payload']['box_prompts'] = $paving['payload']['box_prompts']; $boxedLawn['payload']['max_masks'] = 1;
+        $twoLawns = $lawn; $twoLawns['expectedIdentities'] = ['lawn_1', 'lawn_2']; $twoLawns['payload']['max_masks'] = 2;
+        $textPaving = $paving; $textPaving['payload']['box_prompts'] = []; $textPaving['payload']['max_masks'] = 1; $textPaving['expectedIdentities'] = ['paving_1'];
+        foreach (['boxed lawn' => $boxedLawn, 'two lawn masks' => $twoLawns, 'text-only paving' => $textPaving] as $name => $plan) {
+            try { app(LabGrassSegmentationPlan::class)->validate($rehash($plan), $plan['requestId']); $this->fail('Accepted '.$name); }
+            catch (\Symfony\Component\HttpKernel\Exception\HttpException $e) { $this->assertSame(422, $e->getStatusCode()); }
+        }
+    }
     public function test_staging_plan_remains_square_and_rejects_grass(): void
     {
         $plan = $this->plans()[0]; $this->expectException(\Symfony\Component\HttpKernel\Exception\HttpException::class);
