@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Queue\SqliteDatabaseQueue;
 use App\Services\IguideLab\LabTourConfig;
 use App\Services\IguideLab\LabTourConfigException;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
@@ -174,6 +175,36 @@ class IguideLabTourConfigTest extends TestCase
             config(['iguide-lab-tour.queue_connection' => $connection, 'iguide-lab-tour.queue' => $queue]);
             $this->assertSame(['studio', 'studio'], [LabTourConfig::queueConnection(), LabTourConfig::queue()]);
         }
+    }
+
+    public function test_non_database_queue_connection_falls_back_to_studio(): void
+    {
+        // Deploy 1.1: a connection that exists but is not a database queue (sync in .env.example) would run paid surveys
+        // inline and turn off the pending-job guards (LabTourQueue reads the jobs table), so it is refused like a typo.
+        $this->assertSame('sync', config('queue.connections.sync.driver'));
+        Log::spy();
+        config(['iguide-lab-tour.queue_connection' => 'sync', 'iguide-lab-tour.queue' => 'default']);
+        for ($i = 0; $i < 3; $i++) $this->assertSame(['studio', 'studio'], [LabTourConfig::queueConnection(), LabTourConfig::queue()]);
+        Log::shouldHaveReceived('warning')->once();
+        $this->assertSame(['connection' => 'studio', 'queue' => 'studio', 'workers' => 1, 'dedicated' => false], $this->tourWorkers());
+
+        // The dedicated target is still accepted while its connection uses the database driver ...
+        config(['iguide-lab-tour.queue_connection' => 'iguide-lab-tour', 'iguide-lab-tour.queue' => 'iguide-lab-tour']);
+        $this->assertSame(['iguide-lab-tour', 'iguide-lab-tour'], [LabTourConfig::queueConnection(), LabTourConfig::queue()]);
+        $this->assertSame(['connection' => 'iguide-lab-tour', 'queue' => 'iguide-lab-tour', 'workers' => 1, 'dedicated' => true], $this->tourWorkers());
+
+        // ... and refused when that connection is pointed at another driver.
+        config(['queue.connections.iguide-lab-tour.driver' => 'sync']);
+        $this->assertSame(['studio', 'studio'], [LabTourConfig::queueConnection(), LabTourConfig::queue()]);
+        $this->assertSame(['connection' => 'studio', 'queue' => 'studio', 'workers' => 1, 'dedicated' => false], $this->tourWorkers());
+    }
+
+    /** @return array<string, mixed> the one JSON line of iguide-lab:tour-workers */
+    private function tourWorkers(): array
+    {
+        $this->assertSame(0, Artisan::call('iguide-lab:tour-workers'));
+
+        return json_decode(Artisan::output(), true, flags: JSON_THROW_ON_ERROR);
     }
 
     public function test_survey_settings_fail_closed(): void

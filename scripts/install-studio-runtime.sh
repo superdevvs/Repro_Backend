@@ -34,6 +34,51 @@ if [ "$prepare_only" = --prepare-only ]; then exit 0; fi
 test -f "$app/app/Jobs/ProcessStudioWorkspace.php"
 systemctl is-active --quiet cron
 
+# Hand-added Supervisor sections share supervisord.conf (on production: the repro-voice-* programs). Every
+# [program:*], [group:*] and [include] section other than repro-studio and repro-lab-tour is carried over verbatim,
+# in its original order, after the installer's own sections; comment lines directly above a header move with it.
+# This runs before anything on the host changes: a file that cannot be read safely stops the installer here.
+supervisor_kept=''
+if [ -e "$runtime/supervisord.conf" ]; then
+  if ! supervisor_kept="$(awk '
+    function fail(reason) { print reason; failed = 1; exit 1 }
+    function blank(line) { return line ~ /^[ \t]*$/ }
+    function comment(line) { return line ~ /^[ \t]*[;#]/ }
+    BEGIN { n = 0; count[0] = 0 }
+    /^\[/ {
+      header = $0; sub(/[ \t]+$/, "", header)
+      name = substr(header, 2, length(header) - 2)
+      if (substr(header, length(header)) != "]" || name == "" || index(name, "[") || index(name, "]")) fail("malformed section header at line " NR)
+      if (name in seen) fail("duplicate section [" name "] at line " NR)
+      seen[name] = 1
+      if (name == "unix_http_server" || name == "supervisord" || name == "rpcinterface:supervisor" || name == "supervisorctl" || name == "program:repro-studio" || name == "program:repro-lab-tour") keep = 0
+      else if (name ~ /^(program|group):[^ \t]+$/ || name == "include") keep = 1
+      else fail("unsupported section [" name "] at line " NR)
+      first = count[n] + 1
+      for (i = count[n]; i >= 1 && (blank(text[n, i]) || comment(text[n, i])); i--) if (comment(text[n, i])) first = i
+      n++; kept[n] = keep; count[n] = 0
+      for (i = first; i <= count[n - 1]; i++) text[n, ++count[n]] = text[n - 1, i]
+      count[n - 1] = first - 1
+      text[n, ++count[n]] = $0
+      next
+    }
+    /^[ \t]+\[/ { fail("indented section header at line " NR) }
+    n == 0 && !blank($0) && !comment($0) { fail("a setting outside any section at line " NR) }
+    { text[n, ++count[n]] = $0 }
+    END {
+      if (failed) exit 1
+      for (s = 1; s <= n; s++) if (kept[s]) {
+        last = count[s]
+        while (last > 0 && blank(text[s, last])) last--
+        print ""
+        for (i = 1; i <= last; i++) print text[s, i]
+      }
+    }' "$runtime/supervisord.conf")"; then
+    echo "Refusing to rewrite $runtime/supervisord.conf (${supervisor_kept:-it could not be read}); nothing was changed. Fix the file by hand and rerun." >&2
+    exit 1
+  fi
+fi
+
 # Flysystem creates private directories with explicit 0700 permissions, regardless
 # of umask. Precreate only the parents shared by PHP-FPM and the Studio worker.
 # Existing private leaves and unrelated storage must retain their permissions.
@@ -85,9 +130,19 @@ prepare_shared_studio_storage
 
 # A dedicated user-owned Supervisor leaves the root-owned mail/default worker intact.
 # sg and the shared parents support both OS users without relaxing private leaves.
-cat > "$runtime/worker.sh" <<EOF
-#!/bin/sh
-set -eu
+# Timestamped copies of the files rewritten below.
+backup_stamp="$(date +%Y%m%d-%H%M%S)"
+for replaced in supervisord.conf worker.sh; do
+  if [ -e "$runtime/$replaced" ]; then
+    cp -p -- "$runtime/$replaced" "$runtime/$replaced.before-$backup_stamp"
+    echo "Backed up $runtime/$replaced to $runtime/$replaced.before-$backup_stamp"
+  fi
+done
+# The host's storage guard (hand-installed on production) runs first when it is present and executable.
+{
+printf '#!/bin/sh\nset -eu\n'
+if [ -f /usr/local/sbin/repro-storage-guard ] && [ -x /usr/local/sbin/repro-storage-guard ]; then echo '/usr/local/sbin/repro-storage-guard --live'; fi
+cat <<EOF
 cd "$app"
 test -f app/Jobs/ProcessStudioWorkspace.php
 test ! -f "$runtime/paused"
@@ -95,17 +150,18 @@ umask 002
 export PATH="$runtime/bin:/usr/local/bin:/usr/bin:/bin"
 exec /usr/bin/sg www-data -c 'exec /usr/bin/php -d memory_limit=1024M artisan queue:work studio --queue=studio --sleep=2 --tries=3 --timeout=7200 --memory=768 --max-time=3600'
 EOF
+} > "$runtime/worker.sh"
 chmod 755 "$runtime/worker.sh"
 
 # Tour analysis worker (docs/iguide-lab-tour-analysis.md): same Supervisor and user, its own queue and pause file.
-# It is installed only when the release has the tour job and the configured worker count is 1-8; otherwise the
-# Studio reinstall continues without it.
+# It is installed only when the release has the tour job and tour-workers --count prints 1-8 (0 unless the tour queue
+# target is the dedicated iguide-lab-tour one); otherwise the Studio reinstall continues without it.
 tour_program=''
 tour_workers=''
 if test -f "$app/app/Jobs/ProcessIguideLabTourSurvey.php"; then
   # set -Eeuo pipefail (:3): a failing artisan call or an unexpected value must not abort the studio reinstall
   tour_workers="$(cd "$app" && /usr/bin/sg www-data -c '/usr/bin/php artisan iguide-lab:tour-workers --count' 2>/dev/null || true)"
-  case "$tour_workers" in [1-8]) ;; *) echo "Warning: unexpected tour worker count '$tour_workers'; the tour worker program is not installed" >&2; tour_workers='' ;; esac
+  case "$tour_workers" in 0) echo "Info: the tour queue is not the dedicated iguide-lab-tour target; the tour worker program is not installed"; tour_workers='' ;; [1-8]) ;; *) echo "Warning: unexpected tour worker count '$tour_workers'; the tour worker program is not installed" >&2; tour_workers='' ;; esac
 fi
 if [ -n "$tour_workers" ]; then
   cat > "$runtime/lab-tour-worker.sh" <<EOF
@@ -174,6 +230,8 @@ stdout_logfile_backups=5
 EOF
 # Appended after the here-doc so that, without the tour program, the file stays byte-identical to the Studio-only one.
 if [ -n "$tour_program" ]; then printf '%s\n' "$tour_program" >> "$runtime/supervisord.conf"; fi
+# The hand-added sections read before any change (each after a blank line), after the installer's own.
+if [ -n "$supervisor_kept" ]; then printf '%s\n' "$supervisor_kept" >> "$runtime/supervisord.conf"; fi
 cat > "$runtime/ensure-supervisor.sh" <<EOF
 #!/bin/sh
 set -eu

@@ -58,8 +58,10 @@ final class LabTourQueue
         $affected = LockedWrite::run(function () use ($table, $id, $token, $seq, $isRetry, $now, $stale) {
             $query = DB::table($table)->where('id', $id);
             if ($seq === null) {
+                // A running analysis chain never sits beside a sticky idle flag; its tick decides idle again under the lock.
                 return $query->where(fn ($q) => $q->whereNull('monitor_heartbeat_at')->orWhere('monitor_heartbeat_at', '<', $stale)->orWhere('monitor_token', $token))
-                    ->update(['monitor_token' => $token, 'monitor_seq' => 1, 'monitor_heartbeat_at' => $now]);
+                    ->update(['monitor_token' => $token, 'monitor_seq' => 1, 'monitor_heartbeat_at' => $now]
+                        + ($table === 'iguide_lab_tour_analyses' ? ['monitor_idle' => false] : []));
             }
 
             return $query->where('monitor_token', $token)

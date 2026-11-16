@@ -41,7 +41,7 @@ class IguideLabTourHttpTest extends TestCase
     use AssertsTourContract;
     use RefreshDatabase;
 
-    /** tourContract.ts TOUR_CONFLICT_MESSAGES as amended (spec 12.1: the three D11 keys; the conditional requestReused hunk is not applied). */
+    /** tourContract.ts TOUR_CONFLICT_MESSAGES as amended (spec 12.1: the three D11 keys, and requestReused since owner decision 5, Deploy 1.1). */
     private const CONTRACT_MESSAGES = [
         'staleSelection' => 'The selection changed since it was loaded. Reload and try again.',
         'selectionMismatch' => 'The selection on screen does not match the saved selection. Reload and try again.',
@@ -54,9 +54,8 @@ class IguideLabTourHttpTest extends TestCase
         'surveyCapReached' => 'The tour analysis limit for this lab has been reached. Try again later.',
         'runLimitReached' => 'This tour has reached its limit of runs.',
         'presetNotRunnable' => 'This preset cannot be run on this tour yet.',
+        'requestReused' => 'This request was already used with different settings. Reload and try again.',
     ];
-    /** The 10.4 text of 409 tour_request_reused: backend-only until the owner approves open item 15.2.1. */
-    private const REQUEST_REUSED = 'This request was already used with different settings. Reload and try again.';
     private const BRIDGE_SAFE_MESSAGE = '#\A[\w\s.,:;\'"()!?%/+-]+\z#D';
     private const SHA = 'cdcbc8989a2a851648e51d6aca88b5fe93f607b572c004d85e9bb8d703bd46e2';
 
@@ -240,10 +239,10 @@ class IguideLabTourHttpTest extends TestCase
             $this->assertLessThanOrEqual(200, mb_strlen($text), $code);
             $this->assertContains($status, [409, 413, 422, 429], $code);
         }
-        // The backend texts are the contract's 11 TOUR_CONFLICT_MESSAGES (spec 12.1) plus the requestId-reuse 409, whose text
-        // stays backend-only until the owner approves open item 15.2.1 (the conditional 12.1 hunk is not applied).
-        $this->assertCount(11, self::CONTRACT_MESSAGES);
-        $this->assertSame(self::CONTRACT_MESSAGES + ['requestReused' => self::REQUEST_REUSED], array_map(fn ($row) => $row[2], LabTourErrors::MESSAGES));
+        // The backend texts are exactly the contract's 12 TOUR_CONFLICT_MESSAGES (spec 12.1 including the requestReused hunk,
+        // approved as owner decision 5 for Deploy 1.1).
+        $this->assertCount(12, self::CONTRACT_MESSAGES);
+        $this->assertSame(self::CONTRACT_MESSAGES, array_map(fn ($row) => $row[2], LabTourErrors::MESSAGES));
         // The default texts the tour routes can also produce (404, 401, throttle 429) pass too.
         foreach (['The requested item was not found.', 'Please sign in to continue.', 'Too many attempts. Please wait and try again.',
             'Please check the information you entered.'] as $text) $this->assertMatchesRegularExpression(self::BRIDGE_SAFE_MESSAGE, $text);

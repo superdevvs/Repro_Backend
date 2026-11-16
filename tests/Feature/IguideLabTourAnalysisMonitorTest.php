@@ -7,8 +7,10 @@ use App\Models\IguideLabProject;
 use App\Models\IguideLabTourAnalysis;
 use App\Models\IguideLabTourCapture;
 use App\Models\IguideLabTourSurvey;
+use Illuminate\Database\Events\TransactionCommitted;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
 use Tests\Support\TourAnalysis\SeedsTourAnalyses;
@@ -212,6 +214,39 @@ class IguideLabTourAnalysisMonitorTest extends TestCase
         $this->runJob($this->monitorPushes()[2]);
         $this->assertCount(2, $this->surveyPushes(), 'the restarted chain dispatches the released capture (one worker)');
         $this->assertCount(4, $this->monitorPushes());
+    }
+
+    public function test_resume_between_idle_decision_and_stop_keeps_the_monitor_alive(): void
+    {
+        $import = $this->tourImport($this->project, 3);
+        [$analysis] = $this->analyses()->create($this->project, $this->input($import), 1);
+        $this->runJob($this->monitorPushes()[0]);
+        $this->completeDispatchedSurveys();
+
+        // One-shot: a UI create (no operator limit) commits right after the tick's T1 decided idle, before the chain stops.
+        $step = 'waiting';
+        $resumed = null;
+        $this->surveys->beforeSweep = function () use (&$step) {
+            if ($step === 'waiting') $step = 'armed';
+        };
+        Event::listen(TransactionCommitted::class, function () use (&$step, &$resumed, $import) {
+            if ($step !== 'armed') return;
+            $step = 'resumed';
+            [, $resumed] = $this->analyses()->create($this->project, $this->input($import));
+        });
+        $this->travel(60)->seconds();
+        $this->runJob($this->monitorPushes()[1]);
+        $this->assertSame(['resumed', true], [$step, $resumed], 'the UI create landed between T1 and the stop');
+
+        $fresh = $analysis->fresh();
+        $this->assertSame(['analysing', false], [$fresh->status, $fresh->monitor_idle], 'the resume is not overwritten by the idle stop');
+        $this->assertTrue($this->analyses()->needsMonitor($fresh));
+        $this->travel(301)->seconds();
+        $before = count($this->monitorPushes());
+        $this->artisan('iguide-lab:tour-monitors')->assertSuccessful();
+        $kicked = array_slice($this->monitorPushes(), $before);
+        $this->assertCount(1, $kicked, 'the sweeper restarts the dead chain');
+        $this->assertSame([$analysis->id, null], [$kicked[0]->analysisId, $kicked[0]->seq]);
     }
 
     public function test_duplicate_monitor_chain_exits_without_successor(): void

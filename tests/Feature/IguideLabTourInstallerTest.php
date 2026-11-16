@@ -17,6 +17,15 @@ use Tests\TestCase;
 class IguideLabTourInstallerTest extends TestCase
 {
     private const SG_COUNT = "/usr/bin/sg www-data -c '/usr/bin/php artisan iguide-lab:tour-workers --count'";
+    private const INFO_NOT_DEDICATED = 'Info: the tour queue is not the dedicated iguide-lab-tour target; the tour worker program is not installed';
+    private const GUARD_CHECK = '[ -f /usr/local/sbin/repro-storage-guard ] && [ -x /usr/local/sbin/repro-storage-guard ]';
+    private const GUARD_LINE = "/usr/local/sbin/repro-storage-guard --live
+";
+    // Script markers: the read of hand-added Supervisor sections (before any change) and the block that rewrites files.
+    private const KEEP_START = '# Hand-added Supervisor sections';
+    private const KEEP_END = '# Flysystem creates private directories';
+    private const RENDER_START = '# Timestamped copies';
+    private const RENDER_END = 'cat > "$runtime/ensure-supervisor.sh" <<EOF';
 
     private string $dir;
 
@@ -49,6 +58,13 @@ class IguideLabTourInstallerTest extends TestCase
         $this->assertStringContainsString("exec /usr/bin/sg www-data -c 'exec /usr/bin/php -d memory_limit=1024M artisan queue:work studio --queue=studio --sleep=2 --tries=3 --timeout=7200 --memory=768 --max-time=3600'", $script);
         $this->assertStringContainsString(str_replace(['RUNTIME', 'APP'], ['$runtime', '$app'], $this->studioConfig()), $script);
         $this->assertStringContainsString("supervisorctl -c \"\$runtime/supervisord.conf\" status repro-studio\n", $script);
+        // The hand-added sections are read before anything on the host changes (storage, worker.sh, the conf, cron).
+        $keep = strpos($script, self::KEEP_START);
+        $this->assertNotFalse($keep);
+        foreach (["\nprepare_shared_studio_storage\n", self::RENDER_START, 'cat > "$runtime/supervisord.conf" <<EOF', 'crontab "$cron_next"'] as $later) {
+            $this->assertGreaterThan($keep, strpos($script, $later), $later);
+        }
+        $this->assertSame(1, substr_count($script, self::GUARD_CHECK));
 
         $syntax = new Process(['bash', '-n', base_path('scripts/install-studio-runtime.sh')]);
         $syntax->run();
@@ -104,7 +120,8 @@ class IguideLabTourInstallerTest extends TestCase
         $this->assertSame('', $render->getErrorOutput());
 
         touch($app.'/app/Jobs/ProcessIguideLabTourSurvey.php');
-        foreach (['0', '9', '10', '', 'abc', '3 4', "3\n4", ' 3', '-1'] as $count) {
+        // '0' is not here: it is the expected answer for a target that is not dedicated (see the next test).
+        foreach (['00', '9', '10', '', 'abc', '3 4', "3\n4", ' 3', '-1', '0 1'] as $count) {
             $render = $this->render($app, $runtime, $count);
             $this->assertTrue($render->isSuccessful(), var_export($count, true).': '.$render->getErrorOutput());
             $this->assertStringContainsString('Warning: unexpected tour worker count', $render->getErrorOutput(), var_export($count, true));
@@ -117,6 +134,25 @@ class IguideLabTourInstallerTest extends TestCase
         $this->assertStringContainsString("Warning: unexpected tour worker count ''", $render->getErrorOutput());
         $this->assertStringNotContainsString('artisan failed', $render->getErrorOutput(), 'the count call\'s stderr is discarded');
         $this->assertSame($this->expand($this->studioConfig(), $app, $runtime), file_get_contents($runtime.'/supervisord.conf'));
+    }
+
+    public function test_a_zero_count_skips_the_tour_program_with_an_info_line(): void
+    {
+        // Deploy 1.1: iguide-lab:tour-workers --count prints 0 unless the tour queue target is the dedicated one. That is
+        // the normal Studio-only state, so it is an info line on stdout, not a warning, and only Studio is rendered.
+        [$app, $runtime] = $this->layout(withTourJob: true);
+        foreach (["0\n", '0'] as $pass => $count) {
+            $render = $this->render($app, $runtime, $count);
+            $this->assertTrue($render->isSuccessful(), $render->getErrorOutput());
+            $this->assertSame('', $render->getErrorOutput(), 'no warning');
+            if ($pass === 0) $this->assertSame(self::INFO_NOT_DEDICATED."\n", $render->getOutput(), 'first install: nothing to back up');
+            $this->assertSame([self::INFO_NOT_DEDICATED], $this->outputWithoutBackups($render), 'only the info line besides the backup paths');
+            $this->assertSame($app.'|www-data|-c|/usr/bin/php artisan iguide-lab:tour-workers --count|', file_get_contents($this->dir.'/sg.log'));
+            $this->assertSame($this->expand($this->studioConfig(), $app, $runtime), file_get_contents($runtime.'/supervisord.conf'), 'byte-identical to the pre-D1 file');
+            $this->assertSame($this->expand($this->studioWorker(), $app, $runtime), file_get_contents($runtime.'/worker.sh'));
+            $this->assertFileDoesNotExist($runtime.'/lab-tour-worker.sh');
+        }
+        $this->assertStringContainsString(self::INFO_NOT_DEDICATED, $this->script());
     }
 
     public function test_a_stopped_tour_program_does_not_abort_the_installer(): void
@@ -145,18 +181,191 @@ class IguideLabTourInstallerTest extends TestCase
         }
     }
 
+    public function test_hand_added_voice_programs_survive_a_reinstall(): void
+    {
+        // Production (16 Nov): the same supervisord.conf holds three hand-added repro-voice-* programs after the
+        // installer's sections. A reinstall used to rewrite the file from scratch, and supervisorctl update stopped them.
+        [$app, $runtime] = $this->layout(withTourJob: true);
+        $voice = $this->voicePrograms();
+        file_put_contents($runtime.'/supervisord.conf', $this->expand($this->studioConfig().$this->tourConfig(3), $app, $runtime).$voice);
+
+        // Studio-only (count 0): the old tour program goes, the voice programs stay byte-identical, after Studio.
+        $render = $this->render($app, $runtime, '0');
+        $this->assertTrue($render->isSuccessful(), $render->getErrorOutput());
+        $this->assertSame('', $render->getErrorOutput());
+        $this->assertSame($this->expand($this->studioConfig(), $app, $runtime).$voice, file_get_contents($runtime.'/supervisord.conf'));
+
+        // Dedicated tour target: Studio, then the tour program, then the voice programs in their original order.
+        foreach (['3', '3', '8'] as $count) {
+            $render = $this->render($app, $runtime, $count);
+            $this->assertTrue($render->isSuccessful(), $render->getErrorOutput());
+            $conf = (string) file_get_contents($runtime.'/supervisord.conf');
+            $this->assertSame($this->expand($this->studioConfig().$this->tourConfig((int) $count), $app, $runtime).$voice, $conf, "count $count");
+            foreach (['realtime', 'notifications', 'transcripts'] as $kind) {
+                $this->assertSame(1, substr_count($conf, "[program:repro-voice-$kind]\n"), $kind);
+            }
+        }
+    }
+
+    public function test_groups_includes_and_their_comments_are_carried_over_in_order(): void
+    {
+        [$app, $runtime] = $this->layout(withTourJob: true);
+        $studio = $this->expand($this->studioConfig(), $app, $runtime);
+        $realtime = "; Repro voice calls (added by hand)\n[program:repro-voice-realtime]\ncommand=/home/maverick/.local/share/repro-calls/voice-worker.sh realtime\n";
+        $group = "[group:repro-voice]\nprograms=repro-voice-realtime\n";
+        $include = "[include]\nfiles=/home/maverick/.local/share/repro-calls/*.conf\n";
+        // Kept sections between and after the installer's own ones, a stale tour program in the middle, extra blank lines.
+        file_put_contents($runtime.'/supervisord.conf', $studio."\n".$realtime."\n\n".$this->expand($this->tourConfig(2), $app, $runtime)
+            ."\n".$group."\n".$include."\n\n");
+
+        $render = $this->render($app, $runtime, '0');
+        $this->assertTrue($render->isSuccessful(), $render->getErrorOutput());
+        $this->assertSame($studio."\n".$realtime."\n".$group."\n".$include, file_get_contents($runtime.'/supervisord.conf'));
+    }
+
+    public function test_a_conf_without_extra_sections_renders_exactly_as_before(): void
+    {
+        [$app, $runtime] = $this->layout(withTourJob: true);
+        $studio = $this->expand($this->studioConfig(), $app, $runtime);
+        $tour = $this->expand($this->studioConfig().$this->tourConfig(3), $app, $runtime);
+        foreach ([[$studio, '0', $studio], [$studio, '3', $tour], [$tour, '3', $tour], [$tour, '0', $studio], ['', '0', $studio]] as [$before, $count, $after]) {
+            file_put_contents($runtime.'/supervisord.conf', $before);
+            $render = $this->render($app, $runtime, $count);
+            $this->assertTrue($render->isSuccessful(), $render->getErrorOutput());
+            $this->assertSame('', $render->getErrorOutput());
+            $this->assertSame($after, file_get_contents($runtime.'/supervisord.conf'), "count $count");
+            $this->assertSame($this->expand($this->studioWorker(), $app, $runtime), file_get_contents($runtime.'/worker.sh'));
+        }
+    }
+
+    public function test_worker_runs_the_storage_guard_only_when_the_host_has_it(): void
+    {
+        [$app, $runtime] = $this->layout(withTourJob: false);
+        $guard = $this->dir.'/repro-storage-guard';
+        $studioWorker = $this->expand($this->studioWorker(), $app, $runtime);
+        $withGuard = "#!/bin/sh\nset -eu\n".self::GUARD_LINE.substr($studioWorker, strlen("#!/bin/sh\nset -eu\n"));
+
+        // Absent: byte-identical to today's worker.
+        $render = $this->render($app, $runtime, '0', guard: $guard);
+        $this->assertTrue($render->isSuccessful(), $render->getErrorOutput());
+        $this->assertSame($studioWorker, file_get_contents($runtime.'/worker.sh'), 'absent');
+
+        // Present but not executable: left out.
+        file_put_contents($guard, "#!/bin/sh\nexit 0\n");
+        chmod($guard, 0644);
+        $render = $this->render($app, $runtime, '0', guard: $guard);
+        $this->assertTrue($render->isSuccessful(), $render->getErrorOutput());
+        $this->assertSame($studioWorker, file_get_contents($runtime.'/worker.sh'), 'not executable');
+
+        // Present and executable: line 3, before cd and the exec line (production's order).
+        chmod($guard, 0755);
+        $render = $this->render($app, $runtime, '0', guard: $guard);
+        $this->assertTrue($render->isSuccessful(), $render->getErrorOutput());
+        $this->assertSame($withGuard, file_get_contents($runtime.'/worker.sh'), 'present');
+        $this->assertSame('0755', sprintf('%04o', fileperms($runtime.'/worker.sh') & 07777));
+        $this->assertSame(self::GUARD_LINE, explode("\n", $withGuard)[2]."\n");
+
+        // A directory of that name is not the guard.
+        unlink($guard);
+        mkdir($guard);
+        $render = $this->render($app, $runtime, '0', guard: $guard);
+        $this->assertTrue($render->isSuccessful(), $render->getErrorOutput());
+        $this->assertSame($studioWorker, file_get_contents($runtime.'/worker.sh'), 'directory');
+    }
+
+    public function test_previous_conf_and_worker_are_backed_up_with_a_timestamp(): void
+    {
+        [$app, $runtime] = $this->layout(withTourJob: false);
+        $render = $this->render($app, $runtime, '0');
+        $this->assertTrue($render->isSuccessful(), $render->getErrorOutput());
+        $this->assertSame([], glob($runtime.'/*.before-*'), 'nothing to back up on a first install');
+
+        $oldConf = $this->expand($this->studioConfig(), $app, $runtime).$this->voicePrograms();
+        file_put_contents($runtime.'/supervisord.conf', $oldConf);
+        file_put_contents($runtime.'/worker.sh', "#!/bin/sh\nold worker\n");
+        $render = $this->render($app, $runtime, '0');
+        $this->assertTrue($render->isSuccessful(), $render->getErrorOutput());
+        $confBackups = glob($runtime.'/supervisord.conf.before-*');
+        $workerBackups = glob($runtime.'/worker.sh.before-*');
+        $this->assertCount(1, $confBackups);
+        $this->assertCount(1, $workerBackups);
+        $this->assertMatchesRegularExpression('/\.before-\d{8}-\d{6}$/', $confBackups[0]);
+        $this->assertSame($oldConf, file_get_contents($confBackups[0]));
+        $this->assertSame("#!/bin/sh\nold worker\n", file_get_contents($workerBackups[0]));
+        $this->assertStringContainsString($confBackups[0], $render->getOutput(), 'the backup paths are printed');
+        $this->assertStringContainsString($workerBackups[0], $render->getOutput());
+    }
+
+    public function test_an_unparsable_conf_stops_the_installer_and_changes_nothing(): void
+    {
+        [$app, $runtime] = $this->layout(withTourJob: true);
+        $studio = $this->expand($this->studioConfig(), $app, $runtime);
+        $cases = [
+            'setting before any section' => "command=/bin/true\n".$studio,
+            'unclosed header' => $studio."\n[program:repro-voice-realtime\ncommand=/bin/true\n",
+            'header with trailing text' => $studio."\n[program:repro-voice-realtime] extra\ncommand=/bin/true\n",
+            'nested brackets' => $studio."\n[program:[x]]\ncommand=/bin/true\n",
+            'empty header' => $studio."\n[]\ncommand=/bin/true\n",
+            'indented header' => $studio."\n  [program:repro-voice-realtime]\ncommand=/bin/true\n",
+            'unsupported section' => $studio."\n[eventlistener:repro-voice]\ncommand=/bin/true\n",
+            'duplicate section' => $studio.$this->voicePrograms().$this->voicePrograms(),
+            'duplicate installer section' => $studio."\n".$studio,
+            'program name with a space' => $studio."\n[program:repro voice]\ncommand=/bin/true\n",
+            'CRLF line endings' => str_replace("\n", "\r\n", $studio.$this->voicePrograms()),
+        ];
+        foreach ($cases as $case => $conf) {
+            file_put_contents($runtime.'/supervisord.conf', $conf);
+            file_put_contents($runtime.'/worker.sh', "#!/bin/sh\nold worker\n");
+            $render = $this->render($app, $runtime, '3');
+            $this->assertFalse($render->isSuccessful(), $case);
+            $this->assertStringContainsString("Refusing to rewrite $runtime/supervisord.conf", $render->getErrorOutput(), $case);
+            $this->assertStringContainsString('nothing was changed', $render->getErrorOutput(), $case);
+            $this->assertSame($conf, file_get_contents($runtime.'/supervisord.conf'), $case);
+            $this->assertSame("#!/bin/sh\nold worker\n", file_get_contents($runtime.'/worker.sh'), $case);
+            $this->assertFileDoesNotExist($runtime.'/lab-tour-worker.sh', $case);
+            $this->assertFileDoesNotExist($this->dir.'/sg.log', $case.': stopped before the tour count');
+            $this->assertSame([], glob($runtime.'/*.before-*'), $case.': no backups');
+        }
+    }
+
+    /** The three hand-added programs found on production (16 Nov), each after a blank line as appended by hand. */
+    private function voicePrograms(): string
+    {
+        $text = '';
+        foreach (['realtime', 'notifications', 'transcripts'] as $kind) {
+            $text .= "\n[program:repro-voice-$kind]\ncommand=/home/maverick/.local/share/repro-calls/voice-worker.sh $kind\n"
+                ."directory=/home/maverick/.local/share/repro-calls\nautostart=true\nautorestart=true\nstopasgroup=true\nkillasgroup=true\n"
+                ."environment=VOICE_ROLE=\"$kind\",HOME=\"/home/maverick\"\nredirect_stderr=true\n"
+                ."stdout_logfile=/home/maverick/.local/share/repro-calls/logs/%(program_name)s.log\n";
+        }
+
+        return $text;
+    }
+
+    /** @return list<string> stdout lines other than the "Backed up ..." ones */
+    private function outputWithoutBackups(Process $render): array
+    {
+        $lines = explode("\n", rtrim($render->getOutput(), "\n"));
+
+        return array_values(array_filter($lines, fn (string $line) => ! str_starts_with($line, 'Backed up ')));
+    }
+
     private function script(): string
     {
         return (string) file_get_contents(base_path('scripts/install-studio-runtime.sh'));
     }
 
-    /** From the worker.sh rewrite through the supervisord.conf rewrite (the tour block sits between them). */
+    /** The read of hand-added Supervisor sections, then the block from the backups through the supervisord.conf rewrite. */
     private function renderBlock(): string
     {
-        $block = $this->between($this->script(), 'cat > "$runtime/worker.sh" <<EOF', 'cat > "$runtime/ensure-supervisor.sh" <<EOF', true);
+        $script = $this->script();
+        $keep = $this->between($script, self::KEEP_START, self::KEEP_END, true);
+        $block = $this->between($script, self::RENDER_START, self::RENDER_END, true);
         $this->assertSame(1, substr_count($block, self::SG_COUNT));
+        $this->assertSame(1, substr_count($block, self::GUARD_CHECK));
 
-        return str_replace(self::SG_COUNT, "\"\$TOUR_SG\" www-data -c '/usr/bin/php artisan iguide-lab:tour-workers --count'", $block);
+        return $keep.str_replace([self::SG_COUNT, self::GUARD_CHECK], ["\"\$TOUR_SG\" www-data -c '/usr/bin/php artisan iguide-lab:tour-workers --count'",
+            '[ -f "$STORAGE_GUARD" ] && [ -x "$STORAGE_GUARD" ]'], $block);
     }
 
     /** From the Supervisor reread to the end of the script. */
@@ -191,7 +400,7 @@ class IguideLabTourInstallerTest extends TestCase
         return [$app, $runtime];
     }
 
-    private function render(string $app, string $runtime, string $count, bool $failing = false): Process
+    private function render(string $app, string $runtime, string $count, bool $failing = false, ?string $guard = null): Process
     {
         @unlink($this->dir.'/sg.log');
         @unlink($runtime.'/lab-tour-worker.sh');
@@ -199,7 +408,7 @@ class IguideLabTourInstallerTest extends TestCase
         $script = "set -Eeuo pipefail\nunset CDPATH\numask 002\napp=".escapeshellarg($app)."\nruntime=".escapeshellarg($runtime)."\n".$this->renderBlock();
         file_put_contents($this->dir.'/render.sh', $script);
         $process = new Process(['bash', $this->dir.'/render.sh'], $this->dir, ['TOUR_SG' => $this->dir.'/sg', 'STUB_SG_LOG' => $this->dir.'/sg.log',
-            'STUB_COUNT' => $count, 'STUB_FAIL' => $failing ? '1' : '0']);
+            'STUB_COUNT' => $count, 'STUB_FAIL' => $failing ? '1' : '0', 'STORAGE_GUARD' => $guard ?? $this->dir.'/no-storage-guard']);
         $process->run();
 
         return $process;

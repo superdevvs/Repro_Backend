@@ -15,6 +15,7 @@ use App\Services\IguideLab\LabTourQueue;
 use App\Services\IguideLab\LabTourSurveyProtocol;
 use App\Services\IguideLab\LabTourSurveys;
 use App\Services\IguideLab\LabTourSurveyStorage;
+use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Request;
@@ -288,6 +289,75 @@ class IguideLabTourSurveyTest extends TestCase
         $this->assertSame([], $this->analyses->reparsed);
         $this->artisan('iguide-lab:tour-survey-reparse', ['survey' => 'not-a-uuid'])->assertFailed();
         $this->artisan('iguide-lab:tour-survey-reparse', ['survey' => (string) Str::uuid()])->assertFailed();
+    }
+
+    public function test_unexpected_parse_error_fails_the_survey_without_resending(): void
+    {
+        ['captures' => [$capture]] = $this->seedTour();
+        $survey = $this->dispatchCapture($capture);
+        $this->fakeProvider('kitchen');
+        $service = app(LabTourSurveys::class);
+        $service->process($survey);
+        $this->assertSame('received', $survey->fresh()->status);
+        Http::assertSentCount(1);
+        Http::fake([]); // forget the one paid call: from here on nothing may be sent
+        $this->bindParseDouble(new \RuntimeException('tour_survey_recipe_changed'));
+
+        $job = $this->runJob(new ProcessIguideLabTourSurvey($survey->id));
+
+        $job->assertNotReleased();
+        $survey->refresh();
+        $this->assertSame(['failed', 'survey_unreadable', 'internal', 'tour-survey-parser/1'], [$survey->status, $survey->error_code, $survey->parse_error,
+            $survey->parser_version]);
+        $this->assertNotNull($survey->completed_at);
+        $this->assertSame(['failed', 'survey_unreadable'], [$capture->fresh()->status, $capture->fresh()->error_code]);
+        $this->assertSame(0, $service->inFlightCount(), 'the survey slot is freed');
+        $this->travel(301)->seconds();
+        $service->sweep();
+        $this->queue->assertNotPushed(ProcessIguideLabTourSurvey::class);
+        Http::assertNothingSent();
+
+        // The stored answer is kept: without the double, the free re-parse completes it.
+        $this->app->forgetInstance(LabTourSurveyProtocol::class);
+        $this->artisan('iguide-lab:tour-survey-reparse', ['survey' => $survey->id])
+            ->expectsOutput(json_encode(['version' => 'tour-survey-reparse/1', 'surveyId' => $survey->id, 'status' => 'completed', 'errorCode' => null,
+                'parserVersion' => 'tour-survey-parser/1', 'capturesUpdated' => 1], JSON_UNESCAPED_SLASHES))
+            ->assertSuccessful();
+        $this->assertSame(['completed', 'Kitchen'], [$survey->fresh()->status, $survey->fresh()->result['space']['label']]);
+        Http::assertNothingSent();
+        $this->assertSame([1, 1], [IguideLabTourSurveyAttempt::count(), DB::table('ai_provider_usage')->count()]);
+    }
+
+    public function test_database_error_during_parse_keeps_the_survey_received(): void
+    {
+        ['captures' => [$capture]] = $this->seedTour();
+        $survey = $this->dispatchCapture($capture);
+        $this->fakeProvider('kitchen');
+        $service = app(LabTourSurveys::class);
+        $service->process($survey);
+        Http::fake([]); // forget the one paid call: from here on nothing may be sent
+        $this->bindParseDouble(new QueryException('sqlite', 'select * from "iguide_lab_tour_survey_attempts"', [],
+            new \PDOException('SQLSTATE[HY000]: General error: 5 database is locked')));
+
+        try {
+            $this->runJob(new ProcessIguideLabTourSurvey($survey->id));
+            $this->fail('A database error reaches the worker, which retries the job.');
+        } catch (QueryException $error) {
+            $this->assertStringContainsString('database is locked', $error->getMessage());
+        }
+
+        $survey->refresh();
+        $this->assertSame(['received', null, null, null], [$survey->status, $survey->error_code, $survey->parse_error, $survey->completed_at]);
+        $this->assertSame('surveying', $capture->fresh()->status);
+        $this->assertSame([], $this->analyses->finished);
+        $this->assertSame(1, $service->inFlightCount());
+
+        // The retry parses the stored answer for free.
+        $this->app->forgetInstance(LabTourSurveyProtocol::class);
+        $this->runJob(new ProcessIguideLabTourSurvey($survey->id))->assertNotReleased();
+        $this->assertSame('completed', $survey->fresh()->status);
+        $this->assertSame('surveyed', $capture->fresh()->status);
+        Http::assertNothingSent();
     }
 
     public function test_project_cap_counts_attempts_and_skips_without_http(): void
@@ -793,5 +863,23 @@ class IguideLabTourSurveyTest extends TestCase
         $this->assertSame($captureBefore, (array) DB::table('iguide_lab_tour_captures')->where('id', $capture->id)->first());
         $this->assertSame([], $this->analyses->reparsed);
         Http::assertSentCount(1);
+    }
+
+    /** Parse seam: LabTourSurveyProtocol resolved from the container is replaced by a double whose parse() throws $error. */
+    private function bindParseDouble(\Throwable $error): void
+    {
+        $this->app->instance(LabTourSurveyProtocol::class, new class($error) {
+            private static \Throwable $error;
+
+            public function __construct(\Throwable $error)
+            {
+                self::$error = $error;
+            }
+
+            public static function parse(string $body, string $model, string $providerResponseId): array
+            {
+                throw self::$error;
+            }
+        });
     }
 }

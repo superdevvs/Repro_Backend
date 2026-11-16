@@ -7,6 +7,7 @@ use App\Models\IguideLabProject;
 use App\Models\IguideLabTourAnalysis;
 use App\Models\IguideLabTourCapture;
 use App\Services\IguideLab\LabTourAnalyses;
+use App\Services\IguideLab\LabTourConfig;
 use App\Services\IguideLab\LabTourErrors;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Artisan;
@@ -30,14 +31,32 @@ class IguideLabTourOperatorCommandTest extends TestCase
         Http::preventStrayRequests();
     }
 
-    public function test_tour_workers_count_prints_the_clamped_integer(): void
+    public function test_tour_workers_count_prints_zero_unless_dedicated(): void
     {
+        // Deploy 1.1: the installer adds [program:repro-lab-tour] only for the dedicated target, so a later Studio reinstall
+        // never adds and starts an unapproved tour worker. workers() itself keeps its 1..8 clamp: it also sets the survey
+        // slots (LabTourAnalyses), so IGUIDE_LAB_TOUR_WORKERS=0 still means one slot on the shared worker.
+        $targets = [['studio', 'studio'], ['iguide-lab-tour', 'studio'], ['studio', 'iguide-lab-tour'], ['missing-connection', 'iguide-lab-tour']];
+        foreach ($targets as [$connection, $queue]) {
+            foreach ([[1, 1], [3, 3], [8, 8], [20, 8], [0, 1], [null, 1]] as [$value, $workers]) {
+                config(['iguide-lab-tour.queue_connection' => $connection, 'iguide-lab-tour.queue' => $queue, 'iguide-lab-tour.worker_count' => $value]);
+                $label = $connection.'/'.$queue.' '.var_export($value, true);
+                $this->assertSame(0, Artisan::call('iguide-lab:tour-workers', ['--count' => true]), $label);
+                $this->assertSame("0\n", Artisan::output(), $label);
+                $this->assertSame($workers, LabTourConfig::workers(), $label);
+            }
+        }
+    }
+
+    public function test_tour_workers_count_prints_the_clamped_integer_when_dedicated(): void
+    {
+        config(['iguide-lab-tour.queue_connection' => 'iguide-lab-tour', 'iguide-lab-tour.queue' => 'iguide-lab-tour']);
         // LabTourConfig::workers() clamps to 1..8 and uses the default 1 for a value that is not an integer.
         foreach ([[1, '1'], [3, '3'], [8, '8'], [9, '8'], [20, '8'], [0, '1'], [-4, '1'], ['5', '5'], ['abc', '1'], [null, '1'], [2.5, '1']] as [$value, $printed]) {
             config(['iguide-lab-tour.worker_count' => $value]);
             $this->assertSame(0, Artisan::call('iguide-lab:tour-workers', ['--count' => true]), var_export($value, true));
             $output = Artisan::output();
-            // Exactly the integer and one newline: the installer captures it with $(...) and accepts only [1-8].
+            // Exactly the integer and one newline: the installer captures it with $(...) and installs the program only for [1-8].
             $this->assertSame($printed."\n", $output, var_export($value, true));
             $this->assertMatchesRegularExpression('/\A[1-8]\z/', rtrim($output, "\n"));
         }

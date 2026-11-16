@@ -13,7 +13,7 @@ Every step on the server needs the owner's approval first: flag flips, the insta
 | `IGUIDE_LAB_TOUR_GRASS_RUNS_ENABLED` | `false` | No effect in D1: the code keeps it off. **Never enable grass runs in D1.** |
 | `IGUIDE_LAB_TOUR_DECLUTTER_RUNS_ENABLED` | `false` | No effect in D1: the code keeps it off. **Never enable declutter runs in D1.** |
 
-Queue keys: `IGUIDE_LAB_TOUR_QUEUE_CONNECTION` and `IGUIDE_LAB_TOUR_QUEUE` default to `studio`/`studio`, and `IGUIDE_LAB_TOUR_WORKERS` (1-8) defaults to 1. Two existing flags must stay `false`: `IGUIDE_LAB_TOUR_SCHEDULER_ENABLED` and `IGUIDE_LAB_TOUR_PROCESSING_BUDGET_ENABLED`. If either is on, the estimate reports `scheduler_mode_unsupported` or `tour_budget_required` and no run starts.
+Queue keys: `IGUIDE_LAB_TOUR_QUEUE_CONNECTION` and `IGUIDE_LAB_TOUR_QUEUE` default to `studio`/`studio`, and `IGUIDE_LAB_TOUR_WORKERS` (1-8) defaults to 1. The connection must exist in `config/queue.php` and use the `database` driver. Anything else, for example a typo or `sync`, falls back to `studio`/`studio` and logs `Tour queue settings are invalid` once per process. Two existing flags must stay `false`: `IGUIDE_LAB_TOUR_SCHEDULER_ENABLED` and `IGUIDE_LAB_TOUR_PROCESSING_BUDGET_ENABLED`. If either is on, the estimate reports `scheduler_mode_unsupported` or `tour_budget_required` and no run starts.
 
 ## 2. Flip a flag
 
@@ -34,13 +34,19 @@ For the first enable, use `IGUIDE_LAB_TOUR_ANALYSIS_ENABLED=true` with `IGUIDE_L
 
 By default, tour jobs run on the single shared `studio` worker. They wait behind Listing Studio jobs that can take up to 2 h. A crashed survey job on `studio` stays reserved for about 2 h (`retry_after` 7260). While its job is pending, a survey is never sent again and never marked lost.
 
+A monitor job that runs past its 300 s timeout on `studio` is killed, and its `jobs` row also stays reserved for about 2 h. The sweeper and the record GET restart a monitor chain only when no job of that monitor is waiting or reserved (`LabTourQueue::pendingJobExists`, whatever the row's age). So that analysis or run makes no progress for about 2 h. Nothing extra is spent or queued meanwhile. On the dedicated connection the same wait is about 15 min (`retry_after` 900).
+
+The installer adds the tour program only when the tour queue target is the dedicated one. A Studio reinstall after a Studio release (`docs/studio-workspaces-v4.md`) therefore never adds or starts a tour worker while the target is `studio`/`studio`.
+
 To use the dedicated worker:
 
 1. In `.env`, set `IGUIDE_LAB_TOUR_QUEUE_CONNECTION=iguide-lab-tour` and `IGUIDE_LAB_TOUR_QUEUE=iguide-lab-tour`, and optionally `IGUIDE_LAB_TOUR_WORKERS=1`. Then run the commands of section 2.
-2. Check the target: `php artisan iguide-lab:tour-workers`. It prints `{"connection","queue","workers","dedicated"}`, and `dedicated` must be `true`.
+2. Check the target: `php artisan iguide-lab:tour-workers`. It prints `{"connection","queue","workers","dedicated"}`, and `dedicated` must be `true`. `php artisan iguide-lab:tour-workers --count` must then print the worker count (1-8). It prints `0` while the target is not dedicated.
 3. Run the installer: `bash scripts/install-studio-runtime.sh`. It also rewrites the crontab entry, Studio storage permissions and `supervisord.conf`.
    - It adds `[program:repro-lab-tour]` with `numprocs` = `iguide-lab:tour-workers --count`, read through `sg www-data`.
-   - It skips the program, with a warning, when the release has no tour job or the count is not 1-8.
+   - It skips the program without a message when the release has no tour job.
+   - It skips the program with the line `Info: the tour queue is not the dedicated iguide-lab-tour target; the tour worker program is not installed` when the count is `0`.
+   - It skips the program with a `Warning: unexpected tour worker count` line for any other value outside 1-8, including a failed artisan call.
    - It never fails the Studio install because of the tour program, and the `[program:repro-studio]` block stays unchanged.
 4. Check the processes: `supervisorctl -c ~/.local/share/repro-studio/supervisord.conf status 'repro-lab-tour:*'`.
 
@@ -60,7 +66,7 @@ A worker reads the pause file only when it starts, so the `stop` is required. Th
 | Command | Paid | What it does |
 |---|---|---|
 | `sg www-data -c 'php artisan iguide-lab:runtime-manifests --check'` | no | Read-only report. It prints one JSON line per runtime manifest (path, size, sha256, owner/group/mode, `check` = `pass`/`fail`/`not_applicable`; on failure only the error class and HTTP status), then one summary line `{"version":"runtime-manifest-check/1","presetsReady",...,"ok"}`. It exits 0 only when no manifest fails and every enabled preset is ready (golden hour and twilight always count). Run it as the worker user through `sg www-data`, as shown. Do not run it during a deploy window: an owner's readiness probe can write Python bytecode, which changes the deploy fingerprint. |
-| `php artisan iguide-lab:tour-workers [--count]` | no | Shows the tour queue target, or with `--count` only the worker count (the installer reads it). |
+| `php artisan iguide-lab:tour-workers [--count]` | no | Shows the tour queue target. With `--count` it prints only the worker count when the target is dedicated, otherwise `0` (the installer reads it). |
 | `php artisan iguide-lab:tour-survey PROJECT_UUID IMPORT_UUID --limit=N [--preset=golden-hour]` | yes | Creates or resumes the shared analysis of an import and allows the next N (1-80) pending photos to be surveyed. It prints a JSON receipt. It refuses when analysis is disabled. |
 | `php artisan iguide-lab:tour-survey-reparse SURVEY_UUID [--force]` | no | Re-reads a stored answer with the current parser. It makes no provider call. `--force` re-parses a completed survey only when no run uses it. |
 | `php artisan iguide-lab:tour-monitors` | no | The scheduler runs it every minute (see section 5). It restarts dead monitor chains and sweeps stale surveys. |
@@ -70,9 +76,41 @@ A worker reads the pause file only when it starts, so the `stop` is required. Th
 
 Background recovery uses the Laravel scheduler (`iguide-lab:tour-monitors`, every minute). The server must run `php artisan schedule:run` every minute from cron. The lab already relies on it for `iguide-lab:prune-import-uploads`.
 
-Confirm it read-only (`crontab -l`) in the server batch. Without it, a dead monitor chain restarts only when someone opens the record, and a leaked survey slot is freed only by an analysis tick.
+Without it, a dead monitor chain restarts only when someone opens the record, and a leaked survey slot is freed only by an analysis tick.
+
+The entry runs the sweep in the background with a 5-minute overlap lock (`withoutOverlapping(5)->runInBackground()`). A sweep that is killed mid-run (OOM, reboot) blocks later sweeps for at most 5 minutes, not the default 24 h. The sweep also no longer delays the other every-minute tasks.
+
+Confirm the scheduler in the server batch with these read-only checks:
+
+```bash
+crontab -l 2>/dev/null | grep -n -E 'artisan +schedule:(run|work)' || echo none-maverick
+grep -rn -E 'schedule:(run|work)' /etc/crontab /etc/cron.d 2>/dev/null || echo none-system
+grep -rln -E 'schedule:(run|work)' /etc/supervisor/conf.d 2>/dev/null || echo none-supervisor
+systemctl list-timers --all --no-pager | grep -i -E 'laravel|schedule|artisan' || echo none-timer
+# catch one live run (up to 75 s); prints the php line with the user that really runs it
+for i in $(seq 75); do p=$(ps -eo user=,args= | grep -E '[a]rtisan schedule:(run|work)' | grep -v '/sg '); [ -n "$p" ] && { echo "$p"; break; }; sleep 1; done
+sg www-data -c 'php artisan schedule:list' | grep -E 'iguide-lab:(tour-monitors|prune-import-uploads)'
+sg www-data -c 'php artisan config:show cache.default'
+```
+
+Good results:
+- Exactly one every-minute `schedule:run`, and its php line runs as a user in the `www-data` group. Root's crontab is not readable without sudo, so the owner checks that one.
+- `schedule:list` shows `iguide-lab:tour-monitors` every minute.
+- `cache.default` is `file`, `database` or `redis`. With `array`, the overlap lock and the record GET's kick gate do not work across processes.
+
+If the php line runs as root, stop and decide; a tour-only line does not help, because the root scheduler would still run the sweep. If no scheduler runs at all, do not install `schedule:run`: it would start every scheduled task, including customer SMS, invoice and email reminders and `provider:auto-deliver`. Instead, with owner approval, save `crontab -l` to a backup file and add one tagged line for the sweep only (the directory `~/.local/share/repro-iguide-lab-tour` is created first with `install -d -m 700`):
+
+```
+* * * * * /usr/bin/flock -n $HOME/.local/share/repro-iguide-lab-tour/monitors.lock /usr/bin/timeout 290 /usr/bin/sg www-data -c 'umask 0002; cd /var/www/backend && /usr/bin/php artisan iguide-lab:tour-monitors' >> $HOME/.local/share/repro-iguide-lab-tour/monitors.log 2>&1 # repro-iguide-lab-tour-monitors
+```
+
+`timeout 290` keeps a hung sweep from holding the `flock` for good. To undo it, restore the saved crontab. Upload pruning still does not run without the scheduler.
 
 ## 6. Paid 3-photo test (approval first)
+
+**What bounds spend before the editor's tour UI ships (Lovable message L1).** Until then, only two things limit paid surveys: `--limit` on the operator command, and the caps (`IGUIDE_LAB_TOUR_SURVEY_CALLS_PER_DAY`, `IGUIDE_LAB_TOUR_SURVEY_CALLS_PER_PROJECT`, at most 2 paid surveys per photo). Turning analysis on also opens `POST /api/iguide-lab/tour-analyses` to anyone who holds a lab link. That create has no limit: it allows every pending photo of the import (up to 80), and on a shared record it also lifts an operator `--limit`. So:
+- during a paid step, set the daily cap to that step's worst case: 2 attempts per allowed photo, plus the attempts of the last 24 h;
+- between paid steps, set the daily cap to `0`. A create that needs a paid call then gets a 429. Set it to `0` only when no survey is `queued`, `submitting` or `received`; a queued survey would be failed and lose one of its 2 paid surveys.
 
 1. Run `php artisan iguide-lab:tour-survey PROJECT_UUID IMPORT_UUID --limit=3`. Analysis must be enabled, and the runs can stay paused.
 2. Read the usage rows. This is read-only:
