@@ -96,6 +96,48 @@ export PATH="$runtime/bin:/usr/local/bin:/usr/bin:/bin"
 exec /usr/bin/sg www-data -c 'exec /usr/bin/php -d memory_limit=1024M artisan queue:work studio --queue=studio --sleep=2 --tries=3 --timeout=7200 --memory=768 --max-time=3600'
 EOF
 chmod 755 "$runtime/worker.sh"
+
+# Tour analysis worker (docs/iguide-lab-tour-analysis.md): same Supervisor and user, its own queue and pause file.
+# It is installed only when the release has the tour job and the configured worker count is 1-8; otherwise the
+# Studio reinstall continues without it.
+tour_program=''
+tour_workers=''
+if test -f "$app/app/Jobs/ProcessIguideLabTourSurvey.php"; then
+  # set -Eeuo pipefail (:3): a failing artisan call or an unexpected value must not abort the studio reinstall
+  tour_workers="$(cd "$app" && /usr/bin/sg www-data -c '/usr/bin/php artisan iguide-lab:tour-workers --count' 2>/dev/null || true)"
+  case "$tour_workers" in [1-8]) ;; *) echo "Warning: unexpected tour worker count '$tour_workers'; the tour worker program is not installed" >&2; tour_workers='' ;; esac
+fi
+if [ -n "$tour_workers" ]; then
+  cat > "$runtime/lab-tour-worker.sh" <<EOF
+#!/bin/sh
+set -eu
+cd "$app"
+test -f app/Jobs/ProcessIguideLabTourSurvey.php
+test ! -f "$runtime/paused"
+test ! -f "$runtime/paused-lab-tour"
+umask 002
+export PATH="$runtime/bin:/usr/local/bin:/usr/bin:/bin"
+exec /usr/bin/sg www-data -c 'exec /usr/bin/php -d memory_limit=1024M artisan queue:work iguide-lab-tour --queue=iguide-lab-tour --sleep=2 --tries=3 --timeout=660 --memory=768 --max-time=3600'
+EOF
+  chmod 755 "$runtime/lab-tour-worker.sh"
+  tour_program="
+[program:repro-lab-tour]
+command=$runtime/lab-tour-worker.sh
+process_name=%(program_name)s_%(process_num)02d
+numprocs=$tour_workers
+directory=$app
+autostart=true
+autorestart=true
+startsecs=5
+startretries=10
+stopasgroup=true
+killasgroup=true
+stopwaitsecs=720
+redirect_stderr=true
+stdout_logfile=$runtime/logs/lab-tour-worker-%(process_num)02d.log
+stdout_logfile_maxbytes=20MB
+stdout_logfile_backups=5"
+fi
 cat > "$runtime/supervisord.conf" <<EOF
 [unix_http_server]
 file=$runtime/supervisor.sock
@@ -130,6 +172,8 @@ stdout_logfile=$runtime/logs/worker.log
 stdout_logfile_maxbytes=20MB
 stdout_logfile_backups=5
 EOF
+# Appended after the here-doc so that, without the tour program, the file stays byte-identical to the Studio-only one.
+if [ -n "$tour_program" ]; then printf '%s\n' "$tour_program" >> "$runtime/supervisord.conf"; fi
 cat > "$runtime/ensure-supervisor.sh" <<EOF
 #!/bin/sh
 set -eu
@@ -155,4 +199,6 @@ supervisorctl -c "$runtime/supervisord.conf" reread
 supervisorctl -c "$runtime/supervisord.conf" update
 sleep 6
 supervisorctl -c "$runtime/supervisord.conf" status repro-studio
+# A stopped (paused) tour program makes status exit non-zero; that must not skip the runtime check below.
+if [ -n "$tour_program" ]; then supervisorctl -c "$runtime/supervisord.conf" status 'repro-lab-tour:*' || true; fi
 PATH="$runtime/bin:$PATH" php "$app/scripts/studio-runtime-check.php"
