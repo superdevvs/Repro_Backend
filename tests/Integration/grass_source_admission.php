@@ -5,7 +5,7 @@ $root = $argv[1] ?? '';
 if (!str_starts_with($root, '/') || is_dir($root)) throw new RuntimeException('Use a new absolute private fixture directory.');
 $code = dirname(__DIR__, 2);
 $scenario = $argv[2] ?? 'success';
-if (!in_array($scenario, ['success', 'source-hold', 'detail-success', 'detail-hold', 'source-receipt-drift', 'queued-image-receipt-drift', 'image-quota-receipt-drift'], true)) throw new RuntimeException('Unsupported test scenario.');
+if (!in_array($scenario, ['success', 'source-hold', 'source-caveats', 'detail-success', 'detail-hold', 'source-receipt-drift', 'queued-image-receipt-drift', 'image-quota-receipt-drift'], true)) throw new RuntimeException('Unsupported test scenario.');
 if (!is_dir($root)) mkdir($root,02770);
 chmod($root,02770);
 $db = $root.'/test.sqlite';
@@ -125,7 +125,9 @@ Http::fake(function($request)use(&$fakeCalls,&$submittedSourceHashes,$maskBytes,
             'material'=>$finding('established_dormant_turf'),'scope'=>$finding('all_visible_established_turf'),'lawnBoundary'=>$finding('complete_visible_boundary'),
             'exclusions'=>array_fill_keys(['paving','plants','loose_debris','non_turf_ground','capture_artifact'],$finding('separable_at_source_mask_resolution')),
             'reflections'=>$finding('no_visible_turf_reflection_observed'),'contextCoverage'=>$finding('sufficient_same_capture_views')+['detailRequests'=>[]],'uncertainties'=>[]];
-        if($scenario==='source-hold') {
+        if($scenario==='source-hold') $value['material']['status']='no_visible_lawn';
+        if($scenario==='source-caveats') {
+            // The stored 8a63ae doubts: sparse turf and fine debris are caveats now, not holds.
             $value['material']['status']='sparse_or_missing_turf';$value['exclusions']['loose_debris']['status']='too_fine_or_dense';
         }
         if(in_array($scenario,['detail-success','detail-hold'],true)&&$context['round']===0) {
@@ -208,14 +210,23 @@ if(in_array($scenario,['queued-image-receipt-drift','image-quota-receipt-drift']
     check($proof['fakePaidPosts']===($scenario==='image-quota-receipt-drift'?3:2),'Unexpected drift HTTP count');
     file_put_contents($root.'/proof.json',json_encode($proof,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES));echo json_encode(['status'=>$proof['status'],'scenario'=>$scenario,'externalCalls'=>0]).PHP_EOL;exit;
 }
-if(in_array($scenario,['source-hold','detail-hold','source-receipt-drift'],true)) {
+if($scenario==='source-caveats') {
+    check(App\Models\IguideLabComposite::count()===1&&isset($item->data['compositeId'])&&IguideLabRun::count()===1,'Admitted caveated source did not end with a viewable composite');
+    check($item->data['grassSourceAdmissionCaveats']===['SOURCE_TURF_MATERIAL_UNRESOLVED','SOURCE_EXCLUSION_UNRESOLVED:loose_debris'],'Admission caveats were not recorded');
+    $evaluationStep=IguideLabWorkflowStep::where('item_id',$item->id)->where('kind','evaluation')->sole();
+    check(count(array_filter($evaluationStep->input['context']['sourceCaveats'],fn($c)=>str_contains($c,'SOURCE_TURF_MATERIAL_UNRESOLVED')))===1,'Admission caveats did not reach the final check');
+    $proof['status']='passed_admission_caveats_finished_with_result';$proof['scenario']=$scenario;$proof['workflowStatus']=$workflow->status;
+    $proof['fakePaidPosts']=count(array_filter($fakeCalls,fn($r)=>$r['method']==='POST'));
+    file_put_contents($root.'/proof.json',json_encode($proof,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES));echo json_encode(['status'=>$proof['status'],'scenario'=>$scenario,'workflowStatus'=>$workflow->status,'externalCalls'=>0]).PHP_EOL;exit;
+}
+if(in_array($scenario,['source-hold','source-receipt-drift'],true)) {
     check($workflow->status==='needs_review','Source gate did not hold');
     check(IguideLabRun::count()===0&&IguideLabMachineSegmentation::count()===0&&IguideLabAnalysis::count()===0,'Source hold spent an image/SAM/scene plan');
     check(App\Models\IguideLabComposite::count()===0&&IguideLabWorkflowEvaluation::count()===0,'Source hold reached final stages');
     $before=count($fakeCalls);$service->process($workflow->fresh());check(count($fakeCalls)===$before,'Source hold retried HTTP');
     $proof['status']='passed_expected_original_source_hold';$proof['scenario']=$scenario;$proof['terminalReplayNoHttp']=true;
     $proof['fakePaidPosts']=count(array_filter($fakeCalls,fn($r)=>$r['method']==='POST'));
-    check($proof['fakePaidPosts']===($scenario==='detail-hold'?2:1),'Unexpected source admission spend');
+    check($proof['fakePaidPosts']===1,'Unexpected source admission spend');
     $proof['admissions']=App\Models\IguideLabGrassSourceAdmission::get()->map(fn($r)=>['id'=>$r->id,'status'=>$r->status,'result'=>$r->result])->all();
     file_put_contents($root.'/proof.json',json_encode($proof,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES));echo json_encode(['status'=>$proof['status'],'scenario'=>$scenario,'externalCalls'=>0]).PHP_EOL;exit;
 }
@@ -223,7 +234,8 @@ check($workflow->status==='ready','Workflow did not reach synthetic checked read
 $before=count($fakeCalls);$service->start($project,$input);$service->process($workflow->fresh());check(count($fakeCalls)===$before,'Terminal replay submitted HTTP.');
 check(IguideLabAnalysis::count()===1&&IguideLabGrassAssessment::count()===1&&IguideLabRun::count()===1&&IguideLabMachineSegmentation::count()===6&&IguideLabWorkflowEvaluation::count()===1,'Unexpected paid child count.');
 check(count($submittedSourceHashes)===6,'Not all required source roles were exercised.');
-check(App\Models\IguideLabGrassSourceAdmission::count()===($scenario==='detail-success'?2:1),'Source admission budget drift');
+// A detail request is recorded as a caveat and never bought: one admission call per item.
+check(App\Models\IguideLabGrassSourceAdmission::count()===1,'Source admission budget drift');
 $proof['terminalReplayNoHttp']=true;$proof['fakePaidPosts']=count(array_filter($fakeCalls,fn($r)=>$r['method']==='POST'));
 $proof['admissions']=App\Models\IguideLabGrassSourceAdmission::get()->map(fn($r)=>['id'=>$r->id,'status'=>$r->status,'result'=>$r->result])->all();
 // Isolated diagnostic checkpoint only: terminal items correctly reject all child

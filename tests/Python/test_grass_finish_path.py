@@ -192,7 +192,7 @@ class SyntheticAssessmentTests(unittest.TestCase):
         self.assertEqual(record['uncertainties'],[])
 
 
-    def test_a_failed_exclusion_mask_becomes_an_unsegmented_caveat_but_the_lawn_is_required(self):
+    def test_a_failed_exclusion_mask_becomes_an_unsegmented_caveat(self):
         report,plans=self.lawn_plan()
         def ready(plan):
             masks=[self.mask(plan['maskRole'])] if plan['maskRole']=='lawn' else [
@@ -203,8 +203,6 @@ class SyntheticAssessmentTests(unittest.TestCase):
         record=protocol.composition_assessment_record(report,plans,bindings,skipped)
         self.assertEqual(record['exclusions']['paving'],'unsegmented')
         self.assertIn('EXCLUSION_MASK_UNAVAILABLE:paving',record['caveats'])
-        with self.assertRaisesRegex(ValueError,'LAWN_MASK_REQUIRED'):
-            protocol.composition_assessment_record(report,plans,[ready(plan) for plan in plans[1:]],['source-grass-lawn'])
         with self.assertRaisesRegex(ValueError,'PREREQUISITES_NOT_BOUND'):
             protocol.composition_assessment_record(report,plans,bindings,[])
 
@@ -234,12 +232,12 @@ class ChromaFinishTests(unittest.TestCase):
         self.assertAlmostEqual(float(np.linalg.norm(report['chromaGuidance']['appliedDeltaAB'])),40.,places=3)
         self.assertGreater(np.linalg.norm(report['chromaGuidance']['deltaAB']),40)
 
-    def test_too_few_lawn_samples_remains_a_real_stop(self):
+    def test_too_few_lawn_samples_composites_the_candidate_greened_ground_for_review(self):
         source,guide,candidate,lawn=self.scene((-20,30,-10))
         lawn[0][:]=0;lawn[0][50:52,60:62]=255
         report=chroma.compose(source,guide,candidate,lawn,self.empty(),self.assessment())['report']
-        self.assertEqual(report['status'],'needs_review')
-        self.assertIn('INSUFFICIENT_SAFE_CHROMA_SAMPLES',report['semanticBlockers'])
+        self.assertEqual(report['status'],'completed_unreviewed')
+        self.assertIn('INSUFFICIENT_SAFE_CHROMA_SAMPLES',report['finishReview'])
 
     def test_unsegmented_exclusions_and_turf_variants_compose_but_bare_soil_does_not(self):
         source,guide,candidate,lawn=self.scene((-20,30,-10))

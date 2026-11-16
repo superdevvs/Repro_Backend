@@ -45,7 +45,7 @@ class LabGrassSegmentationAuthority implements LabMachineSegmentationCapability
         $trusted = app(LabGrassAssessments::class)->forSegmentation($step);
         abort_unless($trusted['boundPlan'] === $plan, 422);
         $assessment = IguideLabGrassAssessment::where('project_id', $step->project_id)->findOrFail($trusted['assessmentId']);
-        // Sequential roles: a missing/failed lawn cannot authorize exclusion spending; a failed exclusion is skipped.
+        // Sequential roles: an unfinished role cannot authorize later spending; a failed role (lawn included) is skipped.
         foreach ($assessment->result['segmentationPlan'] as $logical) {
             if ($logical['stepKey'] === $plan['stepKey']) return;
             $prior = IguideLabWorkflowStep::where('project_id', $step->project_id)->where('item_id', $step->item_id)
@@ -84,10 +84,12 @@ class LabGrassSegmentationAuthority implements LabMachineSegmentationCapability
             && LabMachineSegmentationPlan::canonicalHash($association) === LabMachineSegmentationPlan::canonicalHash($record->result['association']), 422, 'The machine mask association changed.');
         return ['plan' => $plan, 'receipt' => $receipt, 'association' => $association, 'artifacts' => $artifacts, 'recordId' => $record->id];
     }
-    /** An exclusion whose paid mask ended without a usable result protects nothing (recorded caveat); the lawn never qualifies. */
+    /**
+     * A role whose paid mask ended without a usable result is a recorded caveat: an exclusion protects nothing, and a
+     * missing lawn falls back to the candidate-greened ground (the item then ends Needs review with its composite).
+     */
     public function unsegmented(IguideLabWorkflowStep $step): bool
     {
-        if (($step->input['logicalPlan']['maskRole'] ?? 'lawn') === 'lawn') return false;
         $record = IguideLabMachineSegmentation::where('project_id', $step->project_id)->where('step_id', $step->id)->first();
         return $record !== null && $step->child_id === $record->id && in_array($record->status, ['needs_review', 'needs_attention', 'failed'], true);
     }

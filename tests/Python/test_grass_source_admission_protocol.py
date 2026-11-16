@@ -48,34 +48,36 @@ class AdmissionTests(unittest.TestCase):
             self.assertEqual(report['detailPlan'],[])
             self.assertNotIn('candidateSha256',report['binding'])
 
-    def test_sparse_turf_and_bare_soil_hold_even_when_details_requested(self):
-        for status in ['sparse_or_missing_turf','bare_soil']:
+    def test_no_visible_lawn_and_bare_soil_hold_even_when_details_requested(self):
+        for status in ['no_visible_lawn','bare_soil']:
             context,proposal=fixture();request_detail(proposal);proposal['material']['status']=status
             report=parse(context,proposal);self.assertEqual(report['status'],'needs_review');self.assertEqual(report['detailPlan'],[])
 
-    def test_dense_fine_debris_and_reflections_are_not_cleared_by_detail_request(self):
+    def test_dense_fine_debris_and_reflections_are_caveats_but_a_parcel_subset_holds(self):
         for kind in ['debris','reflection','subset']:
             context,proposal=fixture();request_detail(proposal)
             if kind=='debris':proposal['exclusions']['loose_debris']['status']='too_fine_or_dense'
             elif kind=='reflection':proposal['reflections']['status']='visible_or_possible_turf_reflection'
             else:proposal['scope']['status']='parcel_subset_requested'
-            report=parse(context,proposal);self.assertEqual(report['status'],'needs_review');self.assertEqual(report['detailPlan'],[])
+            report=parse(context,proposal);self.assertEqual(report['detailPlan'],[])
+            self.assertEqual(report['status'],'needs_review' if kind=='subset' else 'eligible_for_image')
 
-    def test_uncertain_original_boundary_can_request_one_bounded_followup(self):
+    def test_uncertain_original_boundary_is_a_caveat_without_a_paid_followup(self):
         context,proposal=fixture();request_detail(proposal);before=copy.deepcopy(proposal)
-        report=parse(context,proposal);self.assertEqual(report['status'],'needs_detail');self.assertEqual(report['proposal'],before)
-        self.assertEqual(report['detailPlan'],proposal['contextCoverage']['detailRequests'])
+        report=parse(context,proposal);self.assertEqual(report['status'],'eligible_for_image');self.assertEqual(report['proposal'],before)
+        self.assertEqual(report['detailPlan'],[]);self.assertIn('SOURCE_CONTEXT_UNRESOLVED',report['caveats'])
+        # A stored round-0 detail request still validates its bounded follow-up context.
         follow=next_context(context,proposal);p.validate_context(follow)
         _,resolved=fixture();resolved['contextSha256']=p.digest(follow)
         resolved['material']['evidenceIds']+=['source_detail_1']
         self.assertEqual(parse(follow,resolved)['status'],'eligible_for_image')
 
-    def test_unresolved_followup_holds_and_never_requests_a_third_analysis(self):
+    def test_unresolved_followup_is_a_caveat_and_never_requests_a_third_analysis(self):
         context,proposal=fixture();request_detail(proposal);follow=next_context(context,proposal)
         proposal['contextSha256']=p.digest(follow)
         report=parse(follow,proposal)
-        self.assertEqual(report['status'],'needs_review');self.assertEqual(report['detailPlan'],[])
-        self.assertIn('SOURCE_DETAIL_BUDGET_EXHAUSTED',report['reviewReasons'])
+        self.assertEqual(report['status'],'eligible_for_image');self.assertEqual(report['detailPlan'],[])
+        self.assertIn('SOURCE_DETAIL_BUDGET_EXHAUSTED',report['caveats'])
 
     def test_context_rejects_candidate_extra_images_pose_drift_and_foreign_native(self):
         for change in ['candidate','pose','native','prior']:

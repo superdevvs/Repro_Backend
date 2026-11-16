@@ -30,4 +30,16 @@ class LabGrassFinishPathTest extends TestCase
         $long = $service->assessmentCaveat(['caveats' => array_map(fn ($i) => 'SELECTION_TOO_FINE_FOR_GUIDANCE:role_'.$i.str_repeat('x', 40), range(1, 30))]);
         $this->assertLessThanOrEqual(600, mb_strlen($long));
     }
+
+    public function test_pre_image_admission_caveats_reach_the_final_check_as_one_plain_caveat(): void
+    {
+        $service = app(LabGrassWorkflowArtifacts::class);
+        $this->assertNull($service->admissionCaveat(['caveats' => []]));
+        $this->assertNull($service->admissionCaveat(['status' => 'eligible_for_image']));
+        $caveat = $service->admissionCaveat(['caveats' => ['SOURCE_TURF_MATERIAL_UNRESOLVED', 'SOURCE_EXCLUSION_UNRESOLVED:plants']]);
+        $this->assertStringContainsString('SOURCE_TURF_MATERIAL_UNRESOLVED, SOURCE_EXCLUSION_UNRESOLVED:plants', $caveat);
+        $this->assertStringContainsString('not blockers', $caveat);
+        $long = $service->admissionCaveat(['caveats' => array_map(fn ($i) => 'SOURCE_EXCLUSION_UNRESOLVED:role_'.$i.str_repeat('x', 40), range(1, 30))]);
+        $this->assertLessThanOrEqual(600, mb_strlen($long));
+    }
 }
