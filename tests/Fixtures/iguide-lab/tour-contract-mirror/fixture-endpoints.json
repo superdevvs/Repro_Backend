@@ -1,0 +1,684 @@
+{
+  "note": "Request and response samples for tour-analysis/1 (the record snapshots are fixture-grass/declutter/lighting.json). On the wire every response is wrapped as {\"data\": ...}.",
+  "capabilitiesResponse": {
+    "capabilities": {
+      "version": "tour-analysis/1",
+      "enabled": true,
+      "runsPaused": false,
+      "surveyVersion": "tour-survey/1",
+      "defaultsVersion": "tour-defaults/1",
+      "presets": [
+        {"preset":"golden-hour","ready":true,"reason":null},
+        {"preset":"twilight","ready":true,"reason":null},
+        {"preset":"grass","ready":true,"reason":null},
+        {"preset":"declutter","ready":true,"reason":null}
+      ],
+      "limits": {"maxCaptures":80,"workflowChunk":8,"surveyCallsLeftProject":214,"surveyCallsLeftToday":134},
+      "timing": {"surveyWorkers":2,"surveyMinutesPerCapture":{"min":1,"max":2},"editMinutesPerRoom":{"min":3,"max":5}}
+    },
+    "analyses": [
+      {
+        "id": "1399b537-687f-433d-9f6e-79cb407c2c1e",
+        "importId": "5b315aed-ea44-4f56-bf4c-ed8c99ec9c3d",
+        "status": "ready",
+        "recordRevision": 74,
+        "counts": {"total":25,"surveyed":24,"failed":1,"skipped":0,"pending":0},
+        "createdAt": "2026-11-20T14:02:11+00:00",
+        "updatedAt": "2026-11-20T16:05:30+00:00"
+      }
+    ]
+  },
+  "createRequest": {
+    "requestId": "bc9935f6-81b8-4fd5-8f04-75f8c2ef2f0a",
+    "importId": "5b315aed-ea44-4f56-bf4c-ed8c99ec9c3d",
+    "preset": "golden-hour"
+  },
+  "createResponse": {
+    "version": "tour-analysis/1",
+    "id": "1399b537-687f-433d-9f6e-79cb407c2c1e",
+    "requestId": "bc9935f6-81b8-4fd5-8f04-75f8c2ef2f0a",
+    "importId": "5b315aed-ea44-4f56-bf4c-ed8c99ec9c3d",
+    "status": "queued",
+    "recordRevision": 1,
+    "surveyVersion": "tour-survey/1",
+    "defaultsVersion": "tour-defaults/1",
+    "counts": {"total":25,"surveyed":0,"failed":0,"skipped":0,"pending":25},
+    "captures": [
+      {
+        "caseId": "7d12d073-9880-4391-9e1a-6dc9530882da",
+        "order": 0,
+        "roomName": "Front Exterior",
+        "floorName": null,
+        "status": "pending",
+        "error": null,
+        "survey": null,
+        "applicability": null,
+        "candidates": []
+      },
+      {
+        "caseId": "cd6fbe2b-92d5-4b17-b8ae-900f75118a65",
+        "order": 1,
+        "roomName": "Front Exterior",
+        "floorName": null,
+        "status": "pending",
+        "error": null,
+        "survey": null,
+        "applicability": null,
+        "candidates": []
+      },
+      {
+        "caseId": "3ba40491-8a3d-4700-970d-40ebea80c9a3",
+        "order": 2,
+        "roomName": "FOYER",
+        "floorName": "Main Floor",
+        "status": "pending",
+        "error": null,
+        "survey": null,
+        "applicability": null,
+        "candidates": []
+      },
+      {
+        "caseId": "43b3e504-611a-41af-bcb0-617ba5211901",
+        "order": 3,
+        "roomName": "LIVING",
+        "floorName": "Main Floor",
+        "status": "pending",
+        "error": null,
+        "survey": null,
+        "applicability": null,
+        "candidates": []
+      },
+      {
+        "caseId": "5f465cca-a133-466e-acb4-6cd6b1a125b9",
+        "order": 4,
+        "roomName": "LIVING",
+        "floorName": "Main Floor",
+        "status": "pending",
+        "error": null,
+        "survey": null,
+        "applicability": null,
+        "candidates": []
+      },
+      {
+        "caseId": "78f8ecec-5aa4-488c-9d02-80fbf9908f63",
+        "order": 5,
+        "roomName": "DINING",
+        "floorName": "Main Floor",
+        "status": "pending",
+        "error": null,
+        "survey": null,
+        "applicability": null,
+        "candidates": []
+      },
+      {
+        "caseId": "8e6469ce-3440-4fcc-8cda-e30da915d677",
+        "order": 6,
+        "roomName": "KITCHEN",
+        "floorName": "Main Floor",
+        "status": "pending",
+        "error": null,
+        "survey": null,
+        "applicability": null,
+        "candidates": []
+      },
+      {
+        "caseId": "b4fc8b64-15af-4fb5-b9f7-2c076ee4c368",
+        "order": 7,
+        "roomName": "KITCHEN",
+        "floorName": "Main Floor",
+        "status": "pending",
+        "error": null,
+        "survey": null,
+        "applicability": null,
+        "candidates": []
+      },
+      {
+        "caseId": "37cecb0a-ad0d-4f1e-8d54-6bd5d62857a8",
+        "order": 8,
+        "roomName": "POWDER",
+        "floorName": "Main Floor",
+        "status": "pending",
+        "error": null,
+        "survey": null,
+        "applicability": null,
+        "candidates": []
+      },
+      {
+        "caseId": "57d6a6c5-521a-43a4-8660-d8203fa70133",
+        "order": 9,
+        "roomName": "LAUNDRY",
+        "floorName": "Main Floor",
+        "status": "pending",
+        "error": null,
+        "survey": null,
+        "applicability": null,
+        "candidates": []
+      },
+      {
+        "caseId": "e0ad6276-ca98-4e1c-8825-0d16a8ec0829",
+        "order": 10,
+        "roomName": "OFFICE",
+        "floorName": "Main Floor",
+        "status": "pending",
+        "error": null,
+        "survey": null,
+        "applicability": null,
+        "candidates": []
+      },
+      {
+        "caseId": "391b9c08-25b1-4a74-9557-49e2058d1daf",
+        "order": 11,
+        "roomName": "HALL",
+        "floorName": "Upper Floor",
+        "status": "pending",
+        "error": null,
+        "survey": null,
+        "applicability": null,
+        "candidates": []
+      },
+      {
+        "caseId": "1dd172c6-b103-49fc-a09d-098c64516911",
+        "order": 12,
+        "roomName": "PRIMARY",
+        "floorName": "Upper Floor",
+        "status": "pending",
+        "error": null,
+        "survey": null,
+        "applicability": null,
+        "candidates": []
+      },
+      {
+        "caseId": "78e83bde-02b9-44d0-83f4-08a6495748e4",
+        "order": 13,
+        "roomName": "ENSUITE",
+        "floorName": "Upper Floor",
+        "status": "pending",
+        "error": null,
+        "survey": null,
+        "applicability": null,
+        "candidates": []
+      },
+      {
+        "caseId": "81a6a886-2028-4d65-b1fe-5fab5791cf57",
+        "order": 14,
+        "roomName": "WIC",
+        "floorName": "Upper Floor",
+        "status": "pending",
+        "error": null,
+        "survey": null,
+        "applicability": null,
+        "candidates": []
+      },
+      {
+        "caseId": "5f6bb9ca-1cbc-4ba4-be5b-a2b75e9b3ba5",
+        "order": 15,
+        "roomName": "BEDROOM",
+        "floorName": "Upper Floor",
+        "status": "pending",
+        "error": null,
+        "survey": null,
+        "applicability": null,
+        "candidates": []
+      },
+      {
+        "caseId": "708a27b9-6967-4b71-ac26-b2d2443a304c",
+        "order": 16,
+        "roomName": "BEDROOM",
+        "floorName": "Upper Floor",
+        "status": "pending",
+        "error": null,
+        "survey": null,
+        "applicability": null,
+        "candidates": []
+      },
+      {
+        "caseId": "7365a11f-86f3-472d-9750-dc6ae5480e9b",
+        "order": 17,
+        "roomName": "BATH",
+        "floorName": "Upper Floor",
+        "status": "pending",
+        "error": null,
+        "survey": null,
+        "applicability": null,
+        "candidates": []
+      },
+      {
+        "caseId": "b4b04601-a805-4813-b09d-fbbc1aea0e88",
+        "order": 18,
+        "roomName": "DECK",
+        "floorName": null,
+        "status": "pending",
+        "error": null,
+        "survey": null,
+        "applicability": null,
+        "candidates": []
+      },
+      {
+        "caseId": "72b7b3b5-1e80-4498-99e4-ea99f28b00ca",
+        "order": 19,
+        "roomName": "Rear Exterior",
+        "floorName": null,
+        "status": "pending",
+        "error": null,
+        "survey": null,
+        "applicability": null,
+        "candidates": []
+      },
+      {
+        "caseId": "38cb2941-9cce-4e36-bb74-61956aaef9dc",
+        "order": 20,
+        "roomName": "REC ROOM",
+        "floorName": "Basement",
+        "status": "pending",
+        "error": null,
+        "survey": null,
+        "applicability": null,
+        "candidates": []
+      },
+      {
+        "caseId": "a6ebd35b-f09a-455b-9975-47bbdd1dfc16",
+        "order": 21,
+        "roomName": "UTILITY",
+        "floorName": "Basement",
+        "status": "pending",
+        "error": null,
+        "survey": null,
+        "applicability": null,
+        "candidates": []
+      },
+      {
+        "caseId": "20e41623-52da-412a-a557-b579fb169e8b",
+        "order": 22,
+        "roomName": "BEDROOM",
+        "floorName": "Basement",
+        "status": "pending",
+        "error": null,
+        "survey": null,
+        "applicability": null,
+        "candidates": []
+      },
+      {
+        "caseId": "8954bc86-8b7b-4bf8-bf5d-f497b7cfaa3f",
+        "order": 23,
+        "roomName": "Side Exterior",
+        "floorName": null,
+        "status": "pending",
+        "error": null,
+        "survey": null,
+        "applicability": null,
+        "candidates": []
+      },
+      {
+        "caseId": "ff82b406-4c8f-481c-a402-c7f481282f86",
+        "order": 24,
+        "roomName": "GARAGE",
+        "floorName": "Main Floor",
+        "status": "pending",
+        "error": null,
+        "survey": null,
+        "applicability": null,
+        "candidates": []
+      }
+    ],
+    "presets": {
+      "golden-hour": {
+        "selection": {"revision":0,"sha256":"3961292b2eff9c4bc35671b6b86c7028f5cf186876da97baf2673e8032928a70","changes":[]},
+        "estimate": null,
+        "activeRunId": null
+      },
+      "twilight": {
+        "selection": {"revision":0,"sha256":"0fcf9a7499aa761b2cd4d8199bbbfdaed871320ef9d4bcd78e7172e6566dc8de","changes":[]},
+        "estimate": null,
+        "activeRunId": null
+      },
+      "grass": {
+        "selection": {"revision":0,"sha256":"1cbd1cd0c81a0416d7087c94e66a0020261b11805d71f15b9c81a5d83a5d96eb","changes":[]},
+        "estimate": null,
+        "activeRunId": null
+      },
+      "declutter": {
+        "selection": {"revision":0,"sha256":"f10f8af713d9fffe1b8376a35c7298f25093095d812f7ca75c69af4934e5b6ca","changes":[]},
+        "estimate": null,
+        "activeRunId": null
+      }
+    },
+    "runs": [],
+    "createdAt": "2026-11-20T14:02:11+00:00",
+    "updatedAt": "2026-11-20T14:02:11+00:00",
+    "completedAt": null
+  },
+  "progressAnalysing": {
+    "id": "1399b537-687f-433d-9f6e-79cb407c2c1e",
+    "status": "analysing",
+    "recordRevision": 13,
+    "counts": {"total":25,"surveyed":11,"failed":0,"skipped":0,"pending":14},
+    "etaMinutes": {"min":7,"max":14},
+    "runs": [],
+    "updatedAt": "2026-11-20T14:13:40+00:00"
+  },
+  "selectionRequest": {
+    "preset": "declutter",
+    "baseRevision": 1,
+    "changes": [{"caseId":"5f6bb9ca-1cbc-4ba4-be5b-a2b75e9b3ba5","add":["d15a"],"remove":[]}]
+  },
+  "selectionResponse": {
+    "analysisId": "1399b537-687f-433d-9f6e-79cb407c2c1e",
+    "preset": "declutter",
+    "selection": {
+      "revision": 2,
+      "sha256": "48292999e7244e6bc416fcc4e8129f8131cb236a434ae9443a196fd476e19707",
+      "changes": [
+        {"caseId":"8e6469ce-3440-4fcc-8cda-e30da915d677","add":[],"remove":["d6d"]},
+        {"caseId":"5f6bb9ca-1cbc-4ba4-be5b-a2b75e9b3ba5","add":["d15a"],"remove":[]}
+      ]
+    },
+    "counts": {"rooms":14,"items":30},
+    "estimate": {
+      "selectionRevision": 2,
+      "roomsSelected": 14,
+      "itemsSelected": 30,
+      "roomsThatFit": 14,
+      "worstCaseImages": 28,
+      "limitingReason": null,
+      "estimatedMinutes": {"min":42,"max":70},
+      "computedAt": "2026-11-20T14:30:58+00:00"
+    }
+  },
+  "selectionResetRequest": {
+    "preset": "declutter",
+    "baseRevision": 2,
+    "changes": [{"caseId":"8e6469ce-3440-4fcc-8cda-e30da915d677","add":[],"remove":[]}]
+  },
+  "runRequest": {
+    "requestId": "93667772-b412-49ca-93f1-b3300c55ff66",
+    "preset": "twilight",
+    "selectionRevision": 0,
+    "selectionSha256": "7c59393c3c424575b0947812a730de4124973e46f3ae38d5a6ebfc3900ca6c09"
+  },
+  "runResponse": {
+    "id": "ef6c5f71-a951-499d-977c-c1f676a126a8",
+    "requestId": "93667772-b412-49ca-93f1-b3300c55ff66",
+    "analysisId": "1399b537-687f-433d-9f6e-79cb407c2c1e",
+    "preset": "twilight",
+    "status": "creating",
+    "selectionRevision": 0,
+    "selectionSha256": "7c59393c3c424575b0947812a730de4124973e46f3ae38d5a6ebfc3900ca6c09",
+    "estimate": {
+      "selectionRevision": 0,
+      "roomsSelected": 9,
+      "itemsSelected": 9,
+      "roomsThatFit": 8,
+      "worstCaseImages": 24,
+      "limitingReason": "daily_image_limit",
+      "estimatedMinutes": {"min":24,"max":40},
+      "computedAt": "2026-11-20T15:41:18+00:00"
+    },
+    "counts": {"selected":9,"admitted":8,"pending":8,"ready":0,"held":0,"failed":0,"cancelled":0,"accepted":0},
+    "workflows": [],
+    "targets": [
+      {
+        "caseId": "3ba40491-8a3d-4700-970d-40ebea80c9a3",
+        "candidateIds": ["t2"],
+        "state": "waiting",
+        "workflowId": null,
+        "workflowItemId": null,
+        "hasAttempt": false,
+        "reasons": [],
+        "acceptance": null
+      },
+      {
+        "caseId": "43b3e504-611a-41af-bcb0-617ba5211901",
+        "candidateIds": ["t3"],
+        "state": "waiting",
+        "workflowId": null,
+        "workflowItemId": null,
+        "hasAttempt": false,
+        "reasons": [],
+        "acceptance": null
+      },
+      {
+        "caseId": "5f465cca-a133-466e-acb4-6cd6b1a125b9",
+        "candidateIds": ["t4"],
+        "state": "waiting",
+        "workflowId": null,
+        "workflowItemId": null,
+        "hasAttempt": false,
+        "reasons": [],
+        "acceptance": null
+      },
+      {
+        "caseId": "78f8ecec-5aa4-488c-9d02-80fbf9908f63",
+        "candidateIds": ["t5"],
+        "state": "waiting",
+        "workflowId": null,
+        "workflowItemId": null,
+        "hasAttempt": false,
+        "reasons": [],
+        "acceptance": null
+      },
+      {
+        "caseId": "8e6469ce-3440-4fcc-8cda-e30da915d677",
+        "candidateIds": ["t6"],
+        "state": "waiting",
+        "workflowId": null,
+        "workflowItemId": null,
+        "hasAttempt": false,
+        "reasons": [],
+        "acceptance": null
+      },
+      {
+        "caseId": "b4fc8b64-15af-4fb5-b9f7-2c076ee4c368",
+        "candidateIds": ["t7"],
+        "state": "waiting",
+        "workflowId": null,
+        "workflowItemId": null,
+        "hasAttempt": false,
+        "reasons": [],
+        "acceptance": null
+      },
+      {
+        "caseId": "e0ad6276-ca98-4e1c-8825-0d16a8ec0829",
+        "candidateIds": ["t10"],
+        "state": "waiting",
+        "workflowId": null,
+        "workflowItemId": null,
+        "hasAttempt": false,
+        "reasons": [],
+        "acceptance": null
+      },
+      {
+        "caseId": "1dd172c6-b103-49fc-a09d-098c64516911",
+        "candidateIds": ["t12"],
+        "state": "waiting",
+        "workflowId": null,
+        "workflowItemId": null,
+        "hasAttempt": false,
+        "reasons": [],
+        "acceptance": null
+      },
+      {
+        "caseId": "38cb2941-9cce-4e36-bb74-61956aaef9dc",
+        "candidateIds": ["t20"],
+        "state": "not_admitted",
+        "workflowId": null,
+        "workflowItemId": null,
+        "hasAttempt": false,
+        "reasons": ["daily_image_limit"],
+        "acceptance": null
+      }
+    ],
+    "error": null,
+    "createdAt": "2026-11-20T15:41:20+00:00",
+    "updatedAt": "2026-11-20T15:41:20+00:00",
+    "completedAt": null
+  },
+  "acceptRequest": {"runId":"422514cd-447a-43bf-87bf-b3996ceddde6","caseId":"cd6fbe2b-92d5-4b17-b8ae-900f75118a65","accepted":true},
+  "acceptResponse": {
+    "id": "422514cd-447a-43bf-87bf-b3996ceddde6",
+    "requestId": "6a46b05c-5344-460c-9025-624e553963ca",
+    "analysisId": "1399b537-687f-433d-9f6e-79cb407c2c1e",
+    "preset": "golden-hour",
+    "status": "completed",
+    "selectionRevision": 1,
+    "selectionSha256": "cdcbc8989a2a851648e51d6aca88b5fe93f607b572c004d85e9bb8d703bd46e2",
+    "estimate": {
+      "selectionRevision": 1,
+      "roomsSelected": 12,
+      "itemsSelected": 12,
+      "roomsThatFit": 12,
+      "worstCaseImages": 36,
+      "limitingReason": null,
+      "estimatedMinutes": {"min":36,"max":60},
+      "computedAt": "2026-11-20T14:39:58+00:00"
+    },
+    "counts": {"selected":12,"admitted":12,"pending":0,"ready":11,"held":1,"failed":0,"cancelled":0,"accepted":1},
+    "workflows": [
+      {
+        "id": "25ff7ec3-c4c2-4c86-b7fe-aead8fb4ed71",
+        "requestId": "2bc8bee5-8877-4a4b-9f92-e95894af52ba",
+        "caseIds": [
+          "7d12d073-9880-4391-9e1a-6dc9530882da",
+          "cd6fbe2b-92d5-4b17-b8ae-900f75118a65",
+          "3ba40491-8a3d-4700-970d-40ebea80c9a3",
+          "43b3e504-611a-41af-bcb0-617ba5211901",
+          "5f465cca-a133-466e-acb4-6cd6b1a125b9",
+          "78f8ecec-5aa4-488c-9d02-80fbf9908f63",
+          "8e6469ce-3440-4fcc-8cda-e30da915d677",
+          "b4fc8b64-15af-4fb5-b9f7-2c076ee4c368",
+          "e0ad6276-ca98-4e1c-8825-0d16a8ec0829",
+          "1dd172c6-b103-49fc-a09d-098c64516911",
+          "b4b04601-a805-4813-b09d-fbbc1aea0e88",
+          "72b7b3b5-1e80-4498-99e4-ea99f28b00ca"
+        ]
+      }
+    ],
+    "targets": [
+      {
+        "caseId": "7d12d073-9880-4391-9e1a-6dc9530882da",
+        "candidateIds": ["g0"],
+        "state": "ready",
+        "workflowId": "25ff7ec3-c4c2-4c86-b7fe-aead8fb4ed71",
+        "workflowItemId": "430d4772-bf12-436e-a527-6b408d10f527",
+        "hasAttempt": true,
+        "reasons": [],
+        "acceptance": null
+      },
+      {
+        "caseId": "cd6fbe2b-92d5-4b17-b8ae-900f75118a65",
+        "candidateIds": ["g1"],
+        "state": "held",
+        "workflowId": "25ff7ec3-c4c2-4c86-b7fe-aead8fb4ed71",
+        "workflowItemId": "f106be70-861d-4ef2-bcbe-7215f66cfe43",
+        "hasAttempt": true,
+        "reasons": ["sky_edge_needs_review"],
+        "acceptance": {"acceptedAt":"2026-11-20T16:07:02+00:00"}
+      },
+      {
+        "caseId": "3ba40491-8a3d-4700-970d-40ebea80c9a3",
+        "candidateIds": ["g2"],
+        "state": "ready",
+        "workflowId": "25ff7ec3-c4c2-4c86-b7fe-aead8fb4ed71",
+        "workflowItemId": "76449358-4ada-4617-894d-b2dba0925b6b",
+        "hasAttempt": true,
+        "reasons": [],
+        "acceptance": null
+      },
+      {
+        "caseId": "43b3e504-611a-41af-bcb0-617ba5211901",
+        "candidateIds": ["g3"],
+        "state": "ready",
+        "workflowId": "25ff7ec3-c4c2-4c86-b7fe-aead8fb4ed71",
+        "workflowItemId": "07b8e8be-dbbf-4364-88a6-bdf36cd2b9c0",
+        "hasAttempt": true,
+        "reasons": [],
+        "acceptance": null
+      },
+      {
+        "caseId": "5f465cca-a133-466e-acb4-6cd6b1a125b9",
+        "candidateIds": ["g4"],
+        "state": "ready",
+        "workflowId": "25ff7ec3-c4c2-4c86-b7fe-aead8fb4ed71",
+        "workflowItemId": "d655a237-04f5-475d-8ba8-c5949b210f3f",
+        "hasAttempt": true,
+        "reasons": [],
+        "acceptance": null
+      },
+      {
+        "caseId": "78f8ecec-5aa4-488c-9d02-80fbf9908f63",
+        "candidateIds": ["g5"],
+        "state": "ready",
+        "workflowId": "25ff7ec3-c4c2-4c86-b7fe-aead8fb4ed71",
+        "workflowItemId": "3037f12f-0612-4ca6-a05e-ae4fc4dea9a6",
+        "hasAttempt": true,
+        "reasons": [],
+        "acceptance": null
+      },
+      {
+        "caseId": "8e6469ce-3440-4fcc-8cda-e30da915d677",
+        "candidateIds": ["g6"],
+        "state": "ready",
+        "workflowId": "25ff7ec3-c4c2-4c86-b7fe-aead8fb4ed71",
+        "workflowItemId": "0892c00f-0303-48ee-a35d-7d4452e50d23",
+        "hasAttempt": true,
+        "reasons": [],
+        "acceptance": null
+      },
+      {
+        "caseId": "b4fc8b64-15af-4fb5-b9f7-2c076ee4c368",
+        "candidateIds": ["g7"],
+        "state": "ready",
+        "workflowId": "25ff7ec3-c4c2-4c86-b7fe-aead8fb4ed71",
+        "workflowItemId": "48ed4492-9a6d-4e36-97f2-15fdd3b57d59",
+        "hasAttempt": true,
+        "reasons": [],
+        "acceptance": null
+      },
+      {
+        "caseId": "e0ad6276-ca98-4e1c-8825-0d16a8ec0829",
+        "candidateIds": ["g10"],
+        "state": "ready",
+        "workflowId": "25ff7ec3-c4c2-4c86-b7fe-aead8fb4ed71",
+        "workflowItemId": "9f745032-698e-4ba7-8052-1f0c8b851e8c",
+        "hasAttempt": true,
+        "reasons": [],
+        "acceptance": null
+      },
+      {
+        "caseId": "1dd172c6-b103-49fc-a09d-098c64516911",
+        "candidateIds": ["g12"],
+        "state": "ready",
+        "workflowId": "25ff7ec3-c4c2-4c86-b7fe-aead8fb4ed71",
+        "workflowItemId": "fea47411-d545-490f-825d-dad2293a7b64",
+        "hasAttempt": true,
+        "reasons": [],
+        "acceptance": null
+      },
+      {
+        "caseId": "b4b04601-a805-4813-b09d-fbbc1aea0e88",
+        "candidateIds": ["g18"],
+        "state": "ready",
+        "workflowId": "25ff7ec3-c4c2-4c86-b7fe-aead8fb4ed71",
+        "workflowItemId": "9707c69f-d480-4e59-a0c0-f3b82c63b5e2",
+        "hasAttempt": true,
+        "reasons": [],
+        "acceptance": null
+      },
+      {
+        "caseId": "72b7b3b5-1e80-4498-99e4-ea99f28b00ca",
+        "candidateIds": ["g19"],
+        "state": "ready",
+        "workflowId": "25ff7ec3-c4c2-4c86-b7fe-aead8fb4ed71",
+        "workflowItemId": "1d885572-6806-436d-a064-fea4fb4547db",
+        "hasAttempt": true,
+        "reasons": [],
+        "acceptance": null
+      }
+    ],
+    "error": null,
+    "createdAt": "2026-11-20T14:40:00+00:00",
+    "updatedAt": "2026-11-20T16:07:02+00:00",
+    "completedAt": "2026-11-20T15:38:12+00:00"
+  },
+  "undoRequest": {"runId":"422514cd-447a-43bf-87bf-b3996ceddde6","caseId":"cd6fbe2b-92d5-4b17-b8ae-900f75118a65","accepted":false},
+  "cancelRequest": {}
+}

@@ -1,0 +1,2160 @@
+{
+  "version": "tour-analysis/1",
+  "id": "1399b537-687f-433d-9f6e-79cb407c2c1e",
+  "requestId": "bc9935f6-81b8-4fd5-8f04-75f8c2ef2f0a",
+  "importId": "5b315aed-ea44-4f56-bf4c-ed8c99ec9c3d",
+  "status": "ready",
+  "recordRevision": 31,
+  "surveyVersion": "tour-survey/1",
+  "defaultsVersion": "tour-defaults/1",
+  "counts": {"total":25,"surveyed":24,"failed":1,"skipped":0,"pending":0},
+  "captures": [
+    {
+      "caseId": "7d12d073-9880-4391-9e1a-6dc9530882da",
+      "order": 0,
+      "roomName": "Front Exterior",
+      "floorName": null,
+      "status": "surveyed",
+      "error": null,
+      "survey": {
+        "space": {"setting":"exterior","label":"Front exterior"},
+        "skyShare": 0.34,
+        "light": {"windows":true,"daylight":true,"lamps":false,"hardShadows":true,"mirrorsOrGlass":false},
+        "lawn": {
+          "status": "found",
+          "condition": "healthy",
+          "areas": [
+            {"id":"l0a","label":"Front lawn","position":"front","region":{"yaw":-20,"pitch":-28,"hfov":110,"vfov":40}},
+            {
+              "id": "l0b",
+              "label": "Strip by the driveway",
+              "position": "side",
+              "region": {"yaw":95,"pitch":-30,"hfov":35,"vfov":30}
+            }
+          ]
+        },
+        "clutter": {"surfaces":[]},
+        "notes": [{"topic":"lawn","text":"Lawn looks healthy; the strip by the driveway is partly shaded."}]
+      },
+      "applicability": {
+        "golden-hour": {"status":"recommended","reasons":["exterior_with_sky"]},
+        "twilight": {"status":"not_applicable","reasons":["outdoor_twilight_pending"]},
+        "grass": {"status":"recommended","reasons":["lawn_found"]},
+        "declutter": {"status":"not_applicable","reasons":["no_loose_items"]}
+      },
+      "candidates": [
+        {
+          "id": "g0",
+          "groupId": null,
+          "preset": "golden-hour",
+          "kind": "whole_room",
+          "label": "Whole view",
+          "description": "Low warm sun from the left; sky graded to a clear golden tone; brick and trim keep their colour.",
+          "origin": "rule",
+          "region": {"yaw":0,"pitch":0,"hfov":360,"vfov":180},
+          "confidence": 0.91,
+          "executable": true,
+          "defaultSelected": true,
+          "reasons": ["exterior_with_sky"]
+        },
+        {
+          "id": "t0",
+          "groupId": null,
+          "preset": "twilight",
+          "kind": "whole_room",
+          "label": "Whole view",
+          "description": "Outdoor twilight comes in a later release.",
+          "origin": "rule",
+          "region": {"yaw":0,"pitch":0,"hfov":360,"vfov":180},
+          "confidence": 0.9,
+          "executable": false,
+          "defaultSelected": false,
+          "reasons": ["outdoor_twilight_pending"]
+        },
+        {
+          "id": "l0a",
+          "groupId": null,
+          "preset": "grass",
+          "kind": "lawn_area",
+          "label": "Front lawn",
+          "description": "AI guess: front of the house. Existing grass is recoloured; soil and stones stay.",
+          "origin": "survey",
+          "region": {"yaw":-20,"pitch":-28,"hfov":110,"vfov":40},
+          "outline": [
+            [29.5,-28],
+            [22.9,-19],
+            [4.8,-12.4],
+            [-20,-10],
+            [-44.7,-12.4],
+            [-62.9,-19],
+            [-69.5,-28],
+            [-62.9,-37],
+            [-44.7,-43.6],
+            [-20,-46],
+            [4.8,-43.6],
+            [22.9,-37]
+          ],
+          "confidence": 0.92,
+          "executable": true,
+          "defaultSelected": true,
+          "reasons": []
+        },
+        {
+          "id": "l0b",
+          "groupId": null,
+          "preset": "grass",
+          "kind": "lawn_area",
+          "label": "Strip by the driveway",
+          "description": "AI guess: side of the house, partly shaded.",
+          "origin": "survey",
+          "region": {"yaw":95,"pitch":-30,"hfov":35,"vfov":30},
+          "confidence": 0.78,
+          "executable": true,
+          "defaultSelected": true,
+          "reasons": []
+        }
+      ]
+    },
+    {
+      "caseId": "cd6fbe2b-92d5-4b17-b8ae-900f75118a65",
+      "order": 1,
+      "roomName": "Front Exterior",
+      "floorName": null,
+      "status": "surveyed",
+      "error": null,
+      "survey": {
+        "space": {"setting":"exterior","label":"Front walk"},
+        "skyShare": 0.29,
+        "light": {"windows":true,"daylight":true,"lamps":false,"hardShadows":true,"mirrorsOrGlass":false},
+        "lawn": {
+          "status": "found",
+          "condition": "healthy",
+          "areas": [{"id":"l1a","label":"Front lawn","position":"front","region":{"yaw":30,"pitch":-30,"hfov":120,"vfov":38}}]
+        },
+        "clutter": {"surfaces":[]},
+        "notes": []
+      },
+      "applicability": {
+        "golden-hour": {"status":"recommended","reasons":["exterior_with_sky"]},
+        "twilight": {"status":"not_applicable","reasons":["outdoor_twilight_pending"]},
+        "grass": {"status":"recommended","reasons":["lawn_found"]},
+        "declutter": {"status":"not_applicable","reasons":["no_loose_items"]}
+      },
+      "candidates": [
+        {
+          "id": "g1",
+          "groupId": null,
+          "preset": "golden-hour",
+          "kind": "whole_room",
+          "label": "Whole view",
+          "description": "Warm side light along the front walk; the sky edge above the roofline is handled separately.",
+          "origin": "rule",
+          "region": {"yaw":0,"pitch":0,"hfov":360,"vfov":180},
+          "confidence": 0.88,
+          "executable": true,
+          "defaultSelected": true,
+          "reasons": ["exterior_with_sky"]
+        },
+        {
+          "id": "t1",
+          "groupId": null,
+          "preset": "twilight",
+          "kind": "whole_room",
+          "label": "Whole view",
+          "description": "Outdoor twilight comes in a later release.",
+          "origin": "rule",
+          "region": {"yaw":0,"pitch":0,"hfov":360,"vfov":180},
+          "confidence": 0.9,
+          "executable": false,
+          "defaultSelected": false,
+          "reasons": ["outdoor_twilight_pending"]
+        },
+        {
+          "id": "l1a",
+          "groupId": null,
+          "preset": "grass",
+          "kind": "lawn_area",
+          "label": "Front lawn",
+          "description": "AI guess: front of the house, seen from the walk.",
+          "origin": "survey",
+          "region": {"yaw":30,"pitch":-30,"hfov":120,"vfov":38},
+          "outline": [
+            [84,-30],
+            [76.8,-21.5],
+            [57,-15.2],
+            [30,-12.9],
+            [3,-15.2],
+            [-16.8,-21.5],
+            [-24,-30],
+            [-16.8,-38.5],
+            [3,-44.8],
+            [30,-47.1],
+            [57,-44.8],
+            [76.8,-38.6]
+          ],
+          "confidence": 0.9,
+          "executable": true,
+          "defaultSelected": true,
+          "reasons": []
+        }
+      ]
+    },
+    {
+      "caseId": "3ba40491-8a3d-4700-970d-40ebea80c9a3",
+      "order": 2,
+      "roomName": "FOYER",
+      "floorName": "Main Floor",
+      "status": "surveyed",
+      "error": null,
+      "survey": {
+        "space": {"setting":"interior","label":"Foyer"},
+        "skyShare": 0.01,
+        "light": {"windows":true,"daylight":true,"lamps":true,"hardShadows":false,"mirrorsOrGlass":true},
+        "lawn": {"status":"none","condition":null,"areas":[]},
+        "clutter": {
+          "surfaces": [
+            {
+              "id": "s2a",
+              "label": "Console table",
+              "region": {"yaw":-95,"pitch":-18,"hfov":30,"vfov":14},
+              "itemIds": ["d2a","d2b"]
+            }
+          ]
+        },
+        "notes": [{"topic":"light","text":"Hall mirror opposite the door; its reflections are kept."}]
+      },
+      "applicability": {
+        "golden-hour": {"status":"recommended","reasons":["daylight_windows"]},
+        "twilight": {"status":"recommended","reasons":["windows_and_lamps"]},
+        "grass": {"status":"not_applicable","reasons":["interior"]},
+        "declutter": {"status":"recommended","reasons":["loose_items_found"]}
+      },
+      "candidates": [
+        {
+          "id": "g2",
+          "groupId": null,
+          "preset": "golden-hour",
+          "kind": "whole_room",
+          "label": "Whole room",
+          "description": "Warm light through the door sidelights; mirror reflections kept as they are.",
+          "origin": "rule",
+          "region": {"yaw":0,"pitch":0,"hfov":360,"vfov":180},
+          "confidence": 0.86,
+          "executable": true,
+          "defaultSelected": true,
+          "reasons": ["daylight_windows"]
+        },
+        {
+          "id": "t2",
+          "groupId": null,
+          "preset": "twilight",
+          "kind": "whole_room",
+          "label": "Whole room",
+          "description": "Blue hour in the sidelights; pendant on.",
+          "origin": "rule",
+          "region": {"yaw":0,"pitch":0,"hfov":360,"vfov":180},
+          "confidence": 0.86,
+          "executable": true,
+          "defaultSelected": true,
+          "reasons": ["windows_and_lamps"]
+        },
+        {
+          "id": "d2a",
+          "groupId": null,
+          "preset": "declutter",
+          "kind": "item",
+          "label": "Bowl of keys",
+          "description": "On the console table by the door.",
+          "origin": "survey",
+          "region": {"yaw":-100,"pitch":-16,"hfov":6,"vfov":4},
+          "confidence": 0.86,
+          "executable": true,
+          "defaultSelected": true,
+          "reasons": []
+        },
+        {
+          "id": "d2b",
+          "groupId": null,
+          "preset": "declutter",
+          "kind": "item",
+          "label": "Stack of mail",
+          "description": "Letters on the console table.",
+          "origin": "survey",
+          "region": {"yaw":-90,"pitch":-17,"hfov":7,"vfov":4},
+          "confidence": 0.9,
+          "executable": true,
+          "defaultSelected": true,
+          "reasons": []
+        }
+      ]
+    },
+    {
+      "caseId": "43b3e504-611a-41af-bcb0-617ba5211901",
+      "order": 3,
+      "roomName": "LIVING",
+      "floorName": "Main Floor",
+      "status": "surveyed",
+      "error": null,
+      "survey": {
+        "space": {"setting":"interior","label":"Living room"},
+        "skyShare": 0.04,
+        "light": {"windows":true,"daylight":true,"lamps":true,"hardShadows":true,"mirrorsOrGlass":false},
+        "lawn": {"status":"none","condition":null,"areas":[]},
+        "clutter": {
+          "surfaces": [
+            {
+              "id": "s3a",
+              "label": "Coffee table",
+              "region": {"yaw":20,"pitch":-38,"hfov":40,"vfov":18},
+              "itemIds": ["d3a","d3b","d3c"]
+            },
+            {"id":"s3b","label":"Sofa","region":{"yaw":70,"pitch":-15,"hfov":60,"vfov":25},"itemIds":["d3d"]}
+          ]
+        },
+        "notes": []
+      },
+      "applicability": {
+        "golden-hour": {"status":"recommended","reasons":["daylight_windows"]},
+        "twilight": {"status":"recommended","reasons":["windows_and_lamps"]},
+        "grass": {"status":"not_applicable","reasons":["interior"]},
+        "declutter": {"status":"recommended","reasons":["loose_items_found"]}
+      },
+      "candidates": [
+        {
+          "id": "g3",
+          "groupId": null,
+          "preset": "golden-hour",
+          "kind": "whole_room",
+          "label": "Whole room",
+          "description": "Sun bands from the two west windows across the floor; whites stay clean.",
+          "origin": "rule",
+          "region": {"yaw":0,"pitch":0,"hfov":360,"vfov":180},
+          "confidence": 0.93,
+          "executable": true,
+          "defaultSelected": true,
+          "reasons": ["daylight_windows"]
+        },
+        {
+          "id": "t3",
+          "groupId": null,
+          "preset": "twilight",
+          "kind": "whole_room",
+          "label": "Whole room",
+          "description": "Blue hour in both windows; floor lamps on; sun patches removed.",
+          "origin": "rule",
+          "region": {"yaw":0,"pitch":0,"hfov":360,"vfov":180},
+          "confidence": 0.86,
+          "executable": true,
+          "defaultSelected": true,
+          "reasons": ["windows_and_lamps"]
+        },
+        {
+          "id": "d3a",
+          "groupId": null,
+          "preset": "declutter",
+          "kind": "item",
+          "label": "TV remotes",
+          "description": "Two remotes on the coffee table.",
+          "origin": "survey",
+          "region": {"yaw":12,"pitch":-40,"hfov":8,"vfov":5},
+          "confidence": 0.88,
+          "executable": true,
+          "defaultSelected": true,
+          "reasons": []
+        },
+        {
+          "id": "d3b",
+          "groupId": null,
+          "preset": "declutter",
+          "kind": "item",
+          "label": "Magazines",
+          "description": "Loose magazines on the coffee table.",
+          "origin": "survey",
+          "region": {"yaw":24,"pitch":-37,"hfov":10,"vfov":6},
+          "confidence": 0.82,
+          "executable": true,
+          "defaultSelected": true,
+          "reasons": []
+        },
+        {
+          "id": "d3c",
+          "groupId": null,
+          "preset": "declutter",
+          "kind": "item",
+          "label": "Coffee mug",
+          "description": "Mug at the table corner.",
+          "origin": "survey",
+          "region": {"yaw":33,"pitch":-36,"hfov":4,"vfov":4},
+          "confidence": 0.9,
+          "executable": true,
+          "defaultSelected": true,
+          "reasons": []
+        },
+        {
+          "id": "d3d",
+          "groupId": null,
+          "preset": "declutter",
+          "kind": "item",
+          "label": "Throw blanket",
+          "description": "Blanket over the sofa arm; may be styling.",
+          "origin": "survey",
+          "region": {"yaw":78,"pitch":-14,"hfov":20,"vfov":12},
+          "confidence": 0.55,
+          "executable": true,
+          "defaultSelected": false,
+          "reasons": ["low_confidence"]
+        }
+      ]
+    },
+    {
+      "caseId": "5f465cca-a133-466e-acb4-6cd6b1a125b9",
+      "order": 4,
+      "roomName": "LIVING",
+      "floorName": "Main Floor",
+      "status": "surveyed",
+      "error": null,
+      "survey": {
+        "space": {"setting":"interior","label":"Living room"},
+        "skyShare": 0.03,
+        "light": {"windows":true,"daylight":true,"lamps":true,"hardShadows":true,"mirrorsOrGlass":false},
+        "lawn": {"status":"none","condition":null,"areas":[]},
+        "clutter": {
+          "surfaces": [{"id":"s4a","label":"Side table","region":{"yaw":-130,"pitch":-25,"hfov":16,"vfov":12},"itemIds":["d4a"]}]
+        },
+        "notes": []
+      },
+      "applicability": {
+        "golden-hour": {"status":"recommended","reasons":["daylight_windows"]},
+        "twilight": {"status":"recommended","reasons":["windows_and_lamps"]},
+        "grass": {"status":"not_applicable","reasons":["interior"]},
+        "declutter": {"status":"recommended","reasons":["loose_items_found"]}
+      },
+      "candidates": [
+        {
+          "id": "g4",
+          "groupId": null,
+          "preset": "golden-hour",
+          "kind": "whole_room",
+          "label": "Whole room",
+          "description": "Warm daylight from the bay window; existing shadows kept soft.",
+          "origin": "rule",
+          "region": {"yaw":0,"pitch":0,"hfov":360,"vfov":180},
+          "confidence": 0.86,
+          "executable": true,
+          "defaultSelected": true,
+          "reasons": ["daylight_windows"]
+        },
+        {
+          "id": "t4",
+          "groupId": null,
+          "preset": "twilight",
+          "kind": "whole_room",
+          "label": "Whole room",
+          "description": "Blue hour in the bay window; table lamp on.",
+          "origin": "rule",
+          "region": {"yaw":0,"pitch":0,"hfov":360,"vfov":180},
+          "confidence": 0.86,
+          "executable": true,
+          "defaultSelected": true,
+          "reasons": ["windows_and_lamps"]
+        },
+        {
+          "id": "d4a",
+          "groupId": null,
+          "preset": "declutter",
+          "kind": "item",
+          "label": "Phone charger cable",
+          "description": "Cable hanging from the side table.",
+          "origin": "survey",
+          "region": {"yaw":-131,"pitch":-24,"hfov":6,"vfov":4},
+          "confidence": 0.74,
+          "executable": true,
+          "defaultSelected": true,
+          "reasons": []
+        }
+      ]
+    },
+    {
+      "caseId": "78f8ecec-5aa4-488c-9d02-80fbf9908f63",
+      "order": 5,
+      "roomName": "DINING",
+      "floorName": "Main Floor",
+      "status": "surveyed",
+      "error": null,
+      "survey": {
+        "space": {"setting":"interior","label":"Dining room"},
+        "skyShare": 0.02,
+        "light": {"windows":true,"daylight":true,"lamps":true,"hardShadows":false,"mirrorsOrGlass":false},
+        "lawn": {"status":"none","condition":null,"areas":[]},
+        "clutter": {
+          "surfaces": [
+            {
+              "id": "s5a",
+              "label": "Dining table",
+              "region": {"yaw":0,"pitch":-30,"hfov":60,"vfov":20},
+              "itemIds": ["d5a","d5b"]
+            }
+          ]
+        },
+        "notes": []
+      },
+      "applicability": {
+        "golden-hour": {"status":"recommended","reasons":["daylight_windows"]},
+        "twilight": {"status":"recommended","reasons":["windows_and_lamps"]},
+        "grass": {"status":"not_applicable","reasons":["interior"]},
+        "declutter": {"status":"recommended","reasons":["loose_items_found"]}
+      },
+      "candidates": [
+        {
+          "id": "g5",
+          "groupId": null,
+          "preset": "golden-hour",
+          "kind": "whole_room",
+          "label": "Whole room",
+          "description": "Golden light through the patio door onto the table.",
+          "origin": "rule",
+          "region": {"yaw":0,"pitch":0,"hfov":360,"vfov":180},
+          "confidence": 0.86,
+          "executable": true,
+          "defaultSelected": true,
+          "reasons": ["daylight_windows"]
+        },
+        {
+          "id": "t5",
+          "groupId": null,
+          "preset": "twilight",
+          "kind": "whole_room",
+          "label": "Whole room",
+          "description": "Dusk in the patio door; chandelier on.",
+          "origin": "rule",
+          "region": {"yaw":0,"pitch":0,"hfov":360,"vfov":180},
+          "confidence": 0.86,
+          "executable": true,
+          "defaultSelected": true,
+          "reasons": ["windows_and_lamps"]
+        },
+        {
+          "id": "d5a",
+          "groupId": null,
+          "preset": "declutter",
+          "kind": "item",
+          "label": "Laptop",
+          "description": "Open laptop at the end of the table.",
+          "origin": "survey",
+          "region": {"yaw":-8,"pitch":-29,"hfov":12,"vfov":7},
+          "confidence": 0.9,
+          "executable": true,
+          "defaultSelected": true,
+          "reasons": []
+        },
+        {
+          "id": "d5b",
+          "groupId": null,
+          "preset": "declutter",
+          "kind": "item",
+          "label": "Papers",
+          "description": "Loose papers beside the laptop.",
+          "origin": "survey",
+          "region": {"yaw":10,"pitch":-31,"hfov":10,"vfov":6},
+          "confidence": 0.85,
+          "executable": true,
+          "defaultSelected": true,
+          "reasons": []
+        }
+      ]
+    },
+    {
+      "caseId": "8e6469ce-3440-4fcc-8cda-e30da915d677",
+      "order": 6,
+      "roomName": "KITCHEN",
+      "floorName": "Main Floor",
+      "status": "surveyed",
+      "error": null,
+      "survey": {
+        "space": {"setting":"interior","label":"Kitchen"},
+        "skyShare": 0.02,
+        "light": {"windows":true,"daylight":true,"lamps":true,"hardShadows":false,"mirrorsOrGlass":false},
+        "lawn": {"status":"none","condition":null,"areas":[]},
+        "clutter": {
+          "surfaces": [
+            {
+              "id": "s6a",
+              "label": "Counter by the sink",
+              "region": {"yaw":-40,"pitch":-22,"hfov":50,"vfov":16},
+              "itemIds": ["d6a","d6b","d6c","d6d"]
+            },
+            {"id":"s6b","label":"Island","region":{"yaw":60,"pitch":-35,"hfov":50,"vfov":20},"itemIds":["d6e","d6f"]}
+          ]
+        },
+        "notes": [
+          {"topic":"clutter","text":"Dish soap and sponge touch, so they are removed together."},
+          {"topic":"clutter","text":"The glass vase on the island stays: glass is not removed in v1."}
+        ]
+      },
+      "applicability": {
+        "golden-hour": {"status":"recommended","reasons":["daylight_windows"]},
+        "twilight": {"status":"recommended","reasons":["windows_and_lamps"]},
+        "grass": {"status":"not_applicable","reasons":["interior"]},
+        "declutter": {"status":"recommended","reasons":["loose_items_found"]}
+      },
+      "candidates": [
+        {
+          "id": "g6",
+          "groupId": null,
+          "preset": "golden-hour",
+          "kind": "whole_room",
+          "label": "Whole room",
+          "description": "Warm light from the window over the sink; cabinets keep their white.",
+          "origin": "rule",
+          "region": {"yaw":0,"pitch":0,"hfov":360,"vfov":180},
+          "confidence": 0.9,
+          "executable": true,
+          "defaultSelected": true,
+          "reasons": ["daylight_windows"]
+        },
+        {
+          "id": "t6",
+          "groupId": null,
+          "preset": "twilight",
+          "kind": "whole_room",
+          "label": "Whole room",
+          "description": "Dusk in the sink window; pendants and under-cabinet lights on.",
+          "origin": "rule",
+          "region": {"yaw":0,"pitch":0,"hfov":360,"vfov":180},
+          "confidence": 0.86,
+          "executable": true,
+          "defaultSelected": true,
+          "reasons": ["windows_and_lamps"]
+        },
+        {
+          "id": "d6a",
+          "groupId": null,
+          "preset": "declutter",
+          "kind": "item",
+          "label": "Dish rack",
+          "description": "Drying rack left of the sink.",
+          "origin": "inventory",
+          "region": {"yaw":-52,"pitch":-21,"hfov":12,"vfov":9},
+          "outline": [[-46.6,-21],[-48.2,-18.1],[-52,-16.9],[-55.8,-18.1],[-57.4,-21],[-55.8,-23.9],[-52,-25],[-48.2,-23.9]],
+          "confidence": 0.93,
+          "executable": true,
+          "defaultSelected": true,
+          "reasons": []
+        },
+        {
+          "id": "d6b",
+          "groupId": "p6a",
+          "preset": "declutter",
+          "kind": "item",
+          "label": "Dish soap",
+          "description": "Soap bottle by the faucet; touches the sponge, so both go together.",
+          "origin": "inventory",
+          "region": {"yaw":-38,"pitch":-20,"hfov":3,"vfov":6},
+          "outline": [[-36.6,-20],[-37,-18.1],[-38,-17.3],[-39,-18.1],[-39.4,-20],[-39,-21.9],[-38,-22.7],[-37,-21.9]],
+          "confidence": 0.9,
+          "executable": true,
+          "defaultSelected": true,
+          "reasons": []
+        },
+        {
+          "id": "d6c",
+          "groupId": "p6a",
+          "preset": "declutter",
+          "kind": "item",
+          "label": "Sponge",
+          "description": "Sponge against the soap bottle.",
+          "origin": "inventory",
+          "region": {"yaw":-35.5,"pitch":-21.5,"hfov":3,"vfov":3},
+          "outline": [
+            [-34.1,-21.5],
+            [-34.5,-20.5],
+            [-35.5,-20.1],
+            [-36.5,-20.5],
+            [-36.9,-21.5],
+            [-36.5,-22.5],
+            [-35.5,-22.8],
+            [-34.5,-22.5]
+          ],
+          "confidence": 0.88,
+          "executable": true,
+          "defaultSelected": true,
+          "reasons": []
+        },
+        {
+          "id": "d6d",
+          "groupId": null,
+          "preset": "declutter",
+          "kind": "item",
+          "label": "Paper towel holder",
+          "description": "Paper towel roll right of the sink.",
+          "origin": "inventory",
+          "region": {"yaw":-24,"pitch":-18,"hfov":4,"vfov":9},
+          "outline": [[-22.2,-18],[-22.7,-15.1],[-24,-13.9],[-25.3,-15.1],[-25.8,-18],[-25.3,-20.9],[-24,-22],[-22.7,-20.9]],
+          "confidence": 0.8,
+          "executable": true,
+          "defaultSelected": true,
+          "reasons": []
+        },
+        {
+          "id": "d6e",
+          "groupId": null,
+          "preset": "declutter",
+          "kind": "item",
+          "label": "Stack of mail",
+          "description": "Letters on the island.",
+          "origin": "inventory",
+          "region": {"yaw":52,"pitch":-34,"hfov":9,"vfov":5},
+          "outline": [[56,-34],[54.9,-32.4],[52,-31.7],[49.1,-32.4],[48,-34],[49.1,-35.6],[52,-36.2],[54.9,-35.6]],
+          "confidence": 0.91,
+          "executable": true,
+          "defaultSelected": true,
+          "reasons": []
+        },
+        {
+          "id": "d6f",
+          "groupId": null,
+          "preset": "declutter",
+          "kind": "item",
+          "label": "Glass vase",
+          "description": "Clear vase with flowers; glass is not removed in v1.",
+          "origin": "inventory",
+          "region": {"yaw":70,"pitch":-30,"hfov":6,"vfov":10},
+          "outline": [[72.7,-30],[71.9,-26.8],[70,-25.5],[68.1,-26.8],[67.3,-30],[68.1,-33.2],[70,-34.5],[71.9,-33.2]],
+          "confidence": 0.84,
+          "executable": false,
+          "defaultSelected": false,
+          "reasons": ["glass_or_mirror"]
+        }
+      ]
+    },
+    {
+      "caseId": "b4fc8b64-15af-4fb5-b9f7-2c076ee4c368",
+      "order": 7,
+      "roomName": "KITCHEN",
+      "floorName": "Main Floor",
+      "status": "surveyed",
+      "error": null,
+      "survey": {
+        "space": {"setting":"interior","label":"Kitchen"},
+        "skyShare": 0.01,
+        "light": {"windows":true,"daylight":true,"lamps":true,"hardShadows":false,"mirrorsOrGlass":false},
+        "lawn": {"status":"none","condition":null,"areas":[]},
+        "clutter": {
+          "surfaces": [
+            {
+              "id": "s7a",
+              "label": "Counter by the stove",
+              "region": {"yaw":150,"pitch":-24,"hfov":40,"vfov":14},
+              "itemIds": ["d7a","d7b"]
+            }
+          ]
+        },
+        "notes": []
+      },
+      "applicability": {
+        "golden-hour": {"status":"recommended","reasons":["daylight_windows"]},
+        "twilight": {"status":"recommended","reasons":["windows_and_lamps"]},
+        "grass": {"status":"not_applicable","reasons":["interior"]},
+        "declutter": {"status":"recommended","reasons":["loose_items_found"]}
+      },
+      "candidates": [
+        {
+          "id": "g7",
+          "groupId": null,
+          "preset": "golden-hour",
+          "kind": "whole_room",
+          "label": "Whole room",
+          "description": "Warm light from the sink window seen from the stove side.",
+          "origin": "rule",
+          "region": {"yaw":0,"pitch":0,"hfov":360,"vfov":180},
+          "confidence": 0.86,
+          "executable": true,
+          "defaultSelected": true,
+          "reasons": ["daylight_windows"]
+        },
+        {
+          "id": "t7",
+          "groupId": null,
+          "preset": "twilight",
+          "kind": "whole_room",
+          "label": "Whole room",
+          "description": "Dusk in the sink window from the stove side; pendants on.",
+          "origin": "rule",
+          "region": {"yaw":0,"pitch":0,"hfov":360,"vfov":180},
+          "confidence": 0.86,
+          "executable": true,
+          "defaultSelected": true,
+          "reasons": ["windows_and_lamps"]
+        },
+        {
+          "id": "d7a",
+          "groupId": null,
+          "preset": "declutter",
+          "kind": "item",
+          "label": "Cutting board",
+          "description": "Board leaning by the stove.",
+          "origin": "survey",
+          "region": {"yaw":142,"pitch":-24,"hfov":10,"vfov":5},
+          "confidence": 0.83,
+          "executable": true,
+          "defaultSelected": true,
+          "reasons": []
+        },
+        {
+          "id": "d7b",
+          "groupId": null,
+          "preset": "declutter",
+          "kind": "item",
+          "label": "Olive oil bottles",
+          "description": "Two bottles beside the cooktop.",
+          "origin": "survey",
+          "region": {"yaw":158,"pitch":-21,"hfov":5,"vfov":8},
+          "confidence": 0.79,
+          "executable": true,
+          "defaultSelected": true,
+          "reasons": []
+        }
+      ]
+    },
+    {
+      "caseId": "37cecb0a-ad0d-4f1e-8d54-6bd5d62857a8",
+      "order": 8,
+      "roomName": "POWDER",
+      "floorName": "Main Floor",
+      "status": "surveyed",
+      "error": null,
+      "survey": {
+        "space": {"setting":"interior","label":"Powder room"},
+        "skyShare": 0,
+        "light": {"windows":false,"daylight":false,"lamps":true,"hardShadows":false,"mirrorsOrGlass":true},
+        "lawn": {"status":"none","condition":null,"areas":[]},
+        "clutter": {
+          "surfaces": [{"id":"s8a","label":"Vanity","region":{"yaw":-10,"pitch":-30,"hfov":30,"vfov":15},"itemIds":["d8a"]}]
+        },
+        "notes": []
+      },
+      "applicability": {
+        "golden-hour": {"status":"not_applicable","reasons":["no_window"]},
+        "twilight": {"status":"possible","reasons":["lamps_only"]},
+        "grass": {"status":"not_applicable","reasons":["interior"]},
+        "declutter": {"status":"possible","reasons":["low_confidence"]}
+      },
+      "candidates": [
+        {
+          "id": "g8",
+          "groupId": null,
+          "preset": "golden-hour",
+          "kind": "whole_room",
+          "label": "Whole room",
+          "description": "No window to carry sunlight.",
+          "origin": "rule",
+          "region": {"yaw":0,"pitch":0,"hfov":360,"vfov":180},
+          "confidence": 0.95,
+          "executable": false,
+          "defaultSelected": false,
+          "reasons": ["no_window"]
+        },
+        {
+          "id": "t8",
+          "groupId": null,
+          "preset": "twilight",
+          "kind": "whole_room",
+          "label": "Whole room",
+          "description": "No window; vanity light on only.",
+          "origin": "rule",
+          "region": {"yaw":0,"pitch":0,"hfov":360,"vfov":180},
+          "confidence": 0.86,
+          "executable": true,
+          "defaultSelected": false,
+          "reasons": ["lamps_only"]
+        },
+        {
+          "id": "d8a",
+          "groupId": null,
+          "preset": "declutter",
+          "kind": "item",
+          "label": "Hand towel",
+          "description": "Towel on the vanity edge; may be styling.",
+          "origin": "survey",
+          "region": {"yaw":-18,"pitch":-32,"hfov":7,"vfov":8},
+          "confidence": 0.6,
+          "executable": true,
+          "defaultSelected": false,
+          "reasons": ["low_confidence"]
+        }
+      ]
+    },
+    {
+      "caseId": "57d6a6c5-521a-43a4-8660-d8203fa70133",
+      "order": 9,
+      "roomName": "LAUNDRY",
+      "floorName": "Main Floor",
+      "status": "surveyed",
+      "error": null,
+      "survey": {
+        "space": {"setting":"interior","label":"Laundry room"},
+        "skyShare": 0.01,
+        "light": {"windows":true,"daylight":true,"lamps":false,"hardShadows":false,"mirrorsOrGlass":false},
+        "lawn": {"status":"none","condition":null,"areas":[]},
+        "clutter": {
+          "surfaces": [
+            {
+              "id": "s9a",
+              "label": "Dryer top",
+              "region": {"yaw":45,"pitch":-28,"hfov":30,"vfov":12},
+              "itemIds": ["d9a","d9b"]
+            }
+          ]
+        },
+        "notes": []
+      },
+      "applicability": {
+        "golden-hour": {"status":"possible","reasons":["small_window"]},
+        "twilight": {"status":"possible","reasons":["small_window"]},
+        "grass": {"status":"not_applicable","reasons":["interior"]},
+        "declutter": {"status":"recommended","reasons":["loose_items_found"]}
+      },
+      "candidates": [
+        {
+          "id": "g9",
+          "groupId": null,
+          "preset": "golden-hour",
+          "kind": "whole_room",
+          "label": "Whole room",
+          "description": "Small window; the effect would be slight.",
+          "origin": "rule",
+          "region": {"yaw":0,"pitch":0,"hfov":360,"vfov":180},
+          "confidence": 0.86,
+          "executable": true,
+          "defaultSelected": false,
+          "reasons": ["small_window"]
+        },
+        {
+          "id": "t9",
+          "groupId": null,
+          "preset": "twilight",
+          "kind": "whole_room",
+          "label": "Whole room",
+          "description": "Small window; little visible change.",
+          "origin": "rule",
+          "region": {"yaw":0,"pitch":0,"hfov":360,"vfov":180},
+          "confidence": 0.86,
+          "executable": true,
+          "defaultSelected": false,
+          "reasons": ["small_window"]
+        },
+        {
+          "id": "d9a",
+          "groupId": null,
+          "preset": "declutter",
+          "kind": "item",
+          "label": "Detergent bottles",
+          "description": "Bottles on the dryer.",
+          "origin": "survey",
+          "region": {"yaw":40,"pitch":-26,"hfov":8,"vfov":9},
+          "confidence": 0.87,
+          "executable": true,
+          "defaultSelected": true,
+          "reasons": []
+        },
+        {
+          "id": "d9b",
+          "groupId": null,
+          "preset": "declutter",
+          "kind": "item",
+          "label": "Folded clothes",
+          "description": "Pile of folded laundry.",
+          "origin": "survey",
+          "region": {"yaw":52,"pitch":-29,"hfov":12,"vfov":7},
+          "confidence": 0.81,
+          "executable": true,
+          "defaultSelected": true,
+          "reasons": []
+        }
+      ]
+    },
+    {
+      "caseId": "e0ad6276-ca98-4e1c-8825-0d16a8ec0829",
+      "order": 10,
+      "roomName": "OFFICE",
+      "floorName": "Main Floor",
+      "status": "surveyed",
+      "error": null,
+      "survey": {
+        "space": {"setting":"interior","label":"Office"},
+        "skyShare": 0.02,
+        "light": {"windows":true,"daylight":true,"lamps":true,"hardShadows":false,"mirrorsOrGlass":false},
+        "lawn": {"status":"none","condition":null,"areas":[]},
+        "clutter": {
+          "surfaces": [
+            {
+              "id": "s10a",
+              "label": "Desk",
+              "region": {"yaw":-60,"pitch":-26,"hfov":44,"vfov":16},
+              "itemIds": ["d10a","d10b","d10c"]
+            }
+          ]
+        },
+        "notes": []
+      },
+      "applicability": {
+        "golden-hour": {"status":"possible","reasons":["weak_daylight"]},
+        "twilight": {"status":"recommended","reasons":["windows_and_lamps"]},
+        "grass": {"status":"not_applicable","reasons":["interior"]},
+        "declutter": {"status":"recommended","reasons":["loose_items_found"]}
+      },
+      "candidates": [
+        {
+          "id": "g10",
+          "groupId": null,
+          "preset": "golden-hour",
+          "kind": "whole_room",
+          "label": "Whole room",
+          "description": "North-facing window; warm light would look added.",
+          "origin": "rule",
+          "region": {"yaw":0,"pitch":0,"hfov":360,"vfov":180},
+          "confidence": 0.86,
+          "executable": true,
+          "defaultSelected": false,
+          "reasons": ["weak_daylight"]
+        },
+        {
+          "id": "t10",
+          "groupId": null,
+          "preset": "twilight",
+          "kind": "whole_room",
+          "label": "Whole room",
+          "description": "Dusk in the window; desk lamp on.",
+          "origin": "rule",
+          "region": {"yaw":0,"pitch":0,"hfov":360,"vfov":180},
+          "confidence": 0.86,
+          "executable": true,
+          "defaultSelected": true,
+          "reasons": ["windows_and_lamps"]
+        },
+        {
+          "id": "d10a",
+          "groupId": null,
+          "preset": "declutter",
+          "kind": "item",
+          "label": "Loose papers",
+          "description": "Papers spread on the desk.",
+          "origin": "survey",
+          "region": {"yaw":-70,"pitch":-27,"hfov":12,"vfov":6},
+          "confidence": 0.86,
+          "executable": true,
+          "defaultSelected": true,
+          "reasons": []
+        },
+        {
+          "id": "d10b",
+          "groupId": null,
+          "preset": "declutter",
+          "kind": "item",
+          "label": "Cables",
+          "description": "Charging cables on the desk.",
+          "origin": "survey",
+          "region": {"yaw":-58,"pitch":-30,"hfov":10,"vfov":6},
+          "confidence": 0.7,
+          "executable": true,
+          "defaultSelected": true,
+          "reasons": []
+        },
+        {
+          "id": "d10c",
+          "groupId": null,
+          "preset": "declutter",
+          "kind": "item",
+          "label": "Coffee mug",
+          "description": "Mug by the monitor.",
+          "origin": "survey",
+          "region": {"yaw":-48,"pitch":-24,"hfov":4,"vfov":4},
+          "confidence": 0.89,
+          "executable": true,
+          "defaultSelected": true,
+          "reasons": []
+        }
+      ]
+    },
+    {
+      "caseId": "391b9c08-25b1-4a74-9557-49e2058d1daf",
+      "order": 11,
+      "roomName": "HALL",
+      "floorName": "Upper Floor",
+      "status": "surveyed",
+      "error": null,
+      "survey": {
+        "space": {"setting":"interior","label":"Upstairs hall"},
+        "skyShare": 0,
+        "light": {"windows":false,"daylight":true,"lamps":true,"hardShadows":false,"mirrorsOrGlass":false},
+        "lawn": {"status":"none","condition":null,"areas":[]},
+        "clutter": {"surfaces":[]},
+        "notes": []
+      },
+      "applicability": {
+        "golden-hour": {"status":"possible","reasons":["indirect_daylight"]},
+        "twilight": {"status":"possible","reasons":["lamps_only"]},
+        "grass": {"status":"not_applicable","reasons":["interior"]},
+        "declutter": {"status":"not_applicable","reasons":["no_loose_items"]}
+      },
+      "candidates": [
+        {
+          "id": "g11",
+          "groupId": null,
+          "preset": "golden-hour",
+          "kind": "whole_room",
+          "label": "Whole room",
+          "description": "Daylight only spills in from the bedrooms.",
+          "origin": "rule",
+          "region": {"yaw":0,"pitch":0,"hfov":360,"vfov":180},
+          "confidence": 0.7,
+          "executable": true,
+          "defaultSelected": false,
+          "reasons": ["indirect_daylight"]
+        },
+        {
+          "id": "t11",
+          "groupId": null,
+          "preset": "twilight",
+          "kind": "whole_room",
+          "label": "Whole room",
+          "description": "No window; ceiling light on only.",
+          "origin": "rule",
+          "region": {"yaw":0,"pitch":0,"hfov":360,"vfov":180},
+          "confidence": 0.86,
+          "executable": true,
+          "defaultSelected": false,
+          "reasons": ["lamps_only"]
+        }
+      ]
+    },
+    {
+      "caseId": "1dd172c6-b103-49fc-a09d-098c64516911",
+      "order": 12,
+      "roomName": "PRIMARY",
+      "floorName": "Upper Floor",
+      "status": "surveyed",
+      "error": null,
+      "survey": {
+        "space": {"setting":"interior","label":"Primary bedroom"},
+        "skyShare": 0.03,
+        "light": {"windows":true,"daylight":true,"lamps":true,"hardShadows":true,"mirrorsOrGlass":false},
+        "lawn": {"status":"none","condition":null,"areas":[]},
+        "clutter": {
+          "surfaces": [
+            {
+              "id": "s12a",
+              "label": "Nightstand",
+              "region": {"yaw":100,"pitch":-24,"hfov":16,"vfov":12},
+              "itemIds": ["d12a","d12b"]
+            }
+          ]
+        },
+        "notes": []
+      },
+      "applicability": {
+        "golden-hour": {"status":"recommended","reasons":["daylight_windows"]},
+        "twilight": {"status":"recommended","reasons":["windows_and_lamps"]},
+        "grass": {"status":"not_applicable","reasons":["interior"]},
+        "declutter": {"status":"recommended","reasons":["loose_items_found"]}
+      },
+      "candidates": [
+        {
+          "id": "g12",
+          "groupId": null,
+          "preset": "golden-hour",
+          "kind": "whole_room",
+          "label": "Whole room",
+          "description": "Low sun through the side windows onto the bed wall.",
+          "origin": "rule",
+          "region": {"yaw":0,"pitch":0,"hfov":360,"vfov":180},
+          "confidence": 0.86,
+          "executable": true,
+          "defaultSelected": true,
+          "reasons": ["daylight_windows"]
+        },
+        {
+          "id": "t12",
+          "groupId": null,
+          "preset": "twilight",
+          "kind": "whole_room",
+          "label": "Whole room",
+          "description": "Blue hour in the side windows; bedside lamps on.",
+          "origin": "rule",
+          "region": {"yaw":0,"pitch":0,"hfov":360,"vfov":180},
+          "confidence": 0.86,
+          "executable": true,
+          "defaultSelected": true,
+          "reasons": ["windows_and_lamps"]
+        },
+        {
+          "id": "d12a",
+          "groupId": null,
+          "preset": "declutter",
+          "kind": "item",
+          "label": "Phone and charger",
+          "description": "Phone on the nightstand.",
+          "origin": "survey",
+          "region": {"yaw":97,"pitch":-22,"hfov":6,"vfov":4},
+          "confidence": 0.85,
+          "executable": true,
+          "defaultSelected": true,
+          "reasons": []
+        },
+        {
+          "id": "d12b",
+          "groupId": null,
+          "preset": "declutter",
+          "kind": "item",
+          "label": "Stack of books",
+          "description": "Three books on the nightstand.",
+          "origin": "survey",
+          "region": {"yaw":104,"pitch":-23,"hfov":6,"vfov":6},
+          "confidence": 0.77,
+          "executable": true,
+          "defaultSelected": true,
+          "reasons": []
+        }
+      ]
+    },
+    {
+      "caseId": "78e83bde-02b9-44d0-83f4-08a6495748e4",
+      "order": 13,
+      "roomName": "ENSUITE",
+      "floorName": "Upper Floor",
+      "status": "surveyed",
+      "error": null,
+      "survey": {
+        "space": {"setting":"interior","label":"Primary bathroom"},
+        "skyShare": 0,
+        "light": {"windows":true,"daylight":true,"lamps":true,"hardShadows":false,"mirrorsOrGlass":true},
+        "lawn": {"status":"none","condition":null,"areas":[]},
+        "clutter": {
+          "surfaces": [
+            {
+              "id": "s13a",
+              "label": "Double vanity",
+              "region": {"yaw":-20,"pitch":-24,"hfov":60,"vfov":16},
+              "itemIds": ["d13a","d13b"]
+            }
+          ]
+        },
+        "notes": []
+      },
+      "applicability": {
+        "golden-hour": {"status":"possible","reasons":["frosted_window"]},
+        "twilight": {"status":"possible","reasons":["frosted_window"]},
+        "grass": {"status":"not_applicable","reasons":["interior"]},
+        "declutter": {"status":"recommended","reasons":["loose_items_found"]}
+      },
+      "candidates": [
+        {
+          "id": "g13",
+          "groupId": null,
+          "preset": "golden-hour",
+          "kind": "whole_room",
+          "label": "Whole room",
+          "description": "Frosted window; warm glow only, no sun bands.",
+          "origin": "rule",
+          "region": {"yaw":0,"pitch":0,"hfov":360,"vfov":180},
+          "confidence": 0.86,
+          "executable": true,
+          "defaultSelected": false,
+          "reasons": ["frosted_window"]
+        },
+        {
+          "id": "t13",
+          "groupId": null,
+          "preset": "twilight",
+          "kind": "whole_room",
+          "label": "Whole room",
+          "description": "Frosted window; dusk tone only.",
+          "origin": "rule",
+          "region": {"yaw":0,"pitch":0,"hfov":360,"vfov":180},
+          "confidence": 0.86,
+          "executable": true,
+          "defaultSelected": false,
+          "reasons": ["frosted_window"]
+        },
+        {
+          "id": "d13a",
+          "groupId": null,
+          "preset": "declutter",
+          "kind": "item",
+          "label": "Toiletry bottles",
+          "description": "Bottles between the sinks.",
+          "origin": "survey",
+          "region": {"yaw":-30,"pitch":-21,"hfov":10,"vfov":8},
+          "confidence": 0.88,
+          "executable": true,
+          "defaultSelected": true,
+          "reasons": []
+        },
+        {
+          "id": "d13b",
+          "groupId": null,
+          "preset": "declutter",
+          "kind": "item",
+          "label": "Hair dryer",
+          "description": "Dryer and cord on the right sink.",
+          "origin": "survey",
+          "region": {"yaw":-8,"pitch":-24,"hfov":8,"vfov":6},
+          "confidence": 0.86,
+          "executable": true,
+          "defaultSelected": true,
+          "reasons": []
+        }
+      ]
+    },
+    {
+      "caseId": "81a6a886-2028-4d65-b1fe-5fab5791cf57",
+      "order": 14,
+      "roomName": "WIC",
+      "floorName": "Upper Floor",
+      "status": "surveyed",
+      "error": null,
+      "survey": {
+        "space": {"setting":"interior","label":"Walk-in closet"},
+        "skyShare": 0,
+        "light": {"windows":false,"daylight":false,"lamps":false,"hardShadows":false,"mirrorsOrGlass":false},
+        "lawn": {"status":"none","condition":null,"areas":[]},
+        "clutter": {"surfaces":[]},
+        "notes": [{"topic":"light","text":"No window and no lamps on; lighting presets are not suitable."}]
+      },
+      "applicability": {
+        "golden-hour": {"status":"not_applicable","reasons":["no_window"]},
+        "twilight": {"status":"not_applicable","reasons":["no_window","no_lamps"]},
+        "grass": {"status":"not_applicable","reasons":["interior"]},
+        "declutter": {"status":"not_applicable","reasons":["no_loose_items"]}
+      },
+      "candidates": [
+        {
+          "id": "g14",
+          "groupId": null,
+          "preset": "golden-hour",
+          "kind": "whole_room",
+          "label": "Whole room",
+          "description": "Closet without a window.",
+          "origin": "rule",
+          "region": {"yaw":0,"pitch":0,"hfov":360,"vfov":180},
+          "confidence": 0.95,
+          "executable": false,
+          "defaultSelected": false,
+          "reasons": ["no_window"]
+        },
+        {
+          "id": "t14",
+          "groupId": null,
+          "preset": "twilight",
+          "kind": "whole_room",
+          "label": "Whole room",
+          "description": "No window and no lights on.",
+          "origin": "rule",
+          "region": {"yaw":0,"pitch":0,"hfov":360,"vfov":180},
+          "confidence": 0.93,
+          "executable": false,
+          "defaultSelected": false,
+          "reasons": ["no_window","no_lamps"]
+        }
+      ]
+    },
+    {
+      "caseId": "5f6bb9ca-1cbc-4ba4-be5b-a2b75e9b3ba5",
+      "order": 15,
+      "roomName": "BEDROOM",
+      "floorName": "Upper Floor",
+      "status": "surveyed",
+      "error": null,
+      "survey": {
+        "space": {"setting":"interior","label":"Bedroom"},
+        "skyShare": 0.02,
+        "light": {"windows":true,"daylight":true,"lamps":false,"hardShadows":false,"mirrorsOrGlass":false},
+        "lawn": {"status":"none","condition":null,"areas":[]},
+        "clutter": {
+          "surfaces": [
+            {
+              "id": "s15a",
+              "label": "Floor by the bed",
+              "region": {"yaw":130,"pitch":-50,"hfov":30,"vfov":20},
+              "itemIds": ["d15a"]
+            }
+          ]
+        },
+        "notes": []
+      },
+      "applicability": {
+        "golden-hour": {"status":"possible","reasons":["weak_daylight"]},
+        "twilight": {"status":"possible","reasons":["no_lamps_on"]},
+        "grass": {"status":"not_applicable","reasons":["interior"]},
+        "declutter": {"status":"possible","reasons":["low_confidence"]}
+      },
+      "candidates": [
+        {
+          "id": "g15",
+          "groupId": null,
+          "preset": "golden-hour",
+          "kind": "whole_room",
+          "label": "Whole room",
+          "description": "Small window in shade.",
+          "origin": "rule",
+          "region": {"yaw":0,"pitch":0,"hfov":360,"vfov":180},
+          "confidence": 0.86,
+          "executable": true,
+          "defaultSelected": false,
+          "reasons": ["weak_daylight"]
+        },
+        {
+          "id": "t15",
+          "groupId": null,
+          "preset": "twilight",
+          "kind": "whole_room",
+          "label": "Whole room",
+          "description": "Window but no lamps on.",
+          "origin": "rule",
+          "region": {"yaw":0,"pitch":0,"hfov":360,"vfov":180},
+          "confidence": 0.86,
+          "executable": true,
+          "defaultSelected": false,
+          "reasons": ["no_lamps_on"]
+        },
+        {
+          "id": "d15a",
+          "groupId": null,
+          "preset": "declutter",
+          "kind": "item",
+          "label": "Toy bin",
+          "description": "Open toy bin by the bed; may be furniture.",
+          "origin": "survey",
+          "region": {"yaw":128,"pitch":-48,"hfov":14,"vfov":12},
+          "confidence": 0.58,
+          "executable": true,
+          "defaultSelected": false,
+          "reasons": ["low_confidence"]
+        }
+      ]
+    },
+    {
+      "caseId": "708a27b9-6967-4b71-ac26-b2d2443a304c",
+      "order": 16,
+      "roomName": "BEDROOM",
+      "floorName": "Upper Floor",
+      "status": "surveyed",
+      "error": null,
+      "survey": {
+        "space": {"setting":"interior","label":"Bedroom"},
+        "skyShare": 0.02,
+        "light": {"windows":true,"daylight":true,"lamps":false,"hardShadows":false,"mirrorsOrGlass":false},
+        "lawn": {"status":"none","condition":null,"areas":[]},
+        "clutter": {"surfaces":[]},
+        "notes": []
+      },
+      "applicability": {
+        "golden-hour": {"status":"possible","reasons":["weak_daylight"]},
+        "twilight": {"status":"possible","reasons":["no_lamps_on"]},
+        "grass": {"status":"not_applicable","reasons":["interior"]},
+        "declutter": {"status":"not_applicable","reasons":["no_loose_items"]}
+      },
+      "candidates": [
+        {
+          "id": "g16",
+          "groupId": null,
+          "preset": "golden-hour",
+          "kind": "whole_room",
+          "label": "Whole room",
+          "description": "Window faces the neighbouring house.",
+          "origin": "rule",
+          "region": {"yaw":0,"pitch":0,"hfov":360,"vfov":180},
+          "confidence": 0.86,
+          "executable": true,
+          "defaultSelected": false,
+          "reasons": ["weak_daylight"]
+        },
+        {
+          "id": "t16",
+          "groupId": null,
+          "preset": "twilight",
+          "kind": "whole_room",
+          "label": "Whole room",
+          "description": "Window but no lamps on.",
+          "origin": "rule",
+          "region": {"yaw":0,"pitch":0,"hfov":360,"vfov":180},
+          "confidence": 0.86,
+          "executable": true,
+          "defaultSelected": false,
+          "reasons": ["no_lamps_on"]
+        }
+      ]
+    },
+    {
+      "caseId": "7365a11f-86f3-472d-9750-dc6ae5480e9b",
+      "order": 17,
+      "roomName": "BATH",
+      "floorName": "Upper Floor",
+      "status": "surveyed",
+      "error": null,
+      "survey": {
+        "space": {"setting":"interior","label":"Bathroom"},
+        "skyShare": 0,
+        "light": {"windows":false,"daylight":false,"lamps":true,"hardShadows":false,"mirrorsOrGlass":true},
+        "lawn": {"status":"none","condition":null,"areas":[]},
+        "clutter": {
+          "surfaces": [
+            {
+              "id": "s17a",
+              "label": "Vanity",
+              "region": {"yaw":15,"pitch":-26,"hfov":36,"vfov":14},
+              "itemIds": ["d17a","d17b"]
+            },
+            {
+              "id": "s17b",
+              "label": "Bathtub ledge",
+              "region": {"yaw":-120,"pitch":-30,"hfov":40,"vfov":12},
+              "itemIds": ["d17c"]
+            }
+          ]
+        },
+        "notes": [{"topic":"light","text":"Inner bathroom without a window; only the vanity lights are on."}]
+      },
+      "applicability": {
+        "golden-hour": {"status":"not_applicable","reasons":["no_window"]},
+        "twilight": {"status":"possible","reasons":["lamps_only"]},
+        "grass": {"status":"not_applicable","reasons":["interior"]},
+        "declutter": {"status":"recommended","reasons":["loose_items_found"]}
+      },
+      "candidates": [
+        {
+          "id": "g17",
+          "groupId": null,
+          "preset": "golden-hour",
+          "kind": "whole_room",
+          "label": "Whole room",
+          "description": "Inner bathroom without a window.",
+          "origin": "rule",
+          "region": {"yaw":0,"pitch":0,"hfov":360,"vfov":180},
+          "confidence": 0.95,
+          "executable": false,
+          "defaultSelected": false,
+          "reasons": ["no_window"]
+        },
+        {
+          "id": "t17",
+          "groupId": null,
+          "preset": "twilight",
+          "kind": "whole_room",
+          "label": "Whole room",
+          "description": "No window; vanity lights on only.",
+          "origin": "rule",
+          "region": {"yaw":0,"pitch":0,"hfov":360,"vfov":180},
+          "confidence": 0.86,
+          "executable": true,
+          "defaultSelected": false,
+          "reasons": ["lamps_only"]
+        },
+        {
+          "id": "d17a",
+          "groupId": null,
+          "preset": "declutter",
+          "kind": "item",
+          "label": "Toothbrush cup",
+          "description": "Cup with toothbrushes by the tap.",
+          "origin": "inventory",
+          "region": {"yaw":8,"pitch":-23,"hfov":4,"vfov":6},
+          "outline": [[9.8,-23],[9.3,-21.1],[8,-20.3],[6.7,-21.1],[6.2,-23],[6.7,-24.9],[8,-25.7],[9.3,-24.9]],
+          "confidence": 0.89,
+          "executable": true,
+          "defaultSelected": true,
+          "reasons": []
+        },
+        {
+          "id": "d17b",
+          "groupId": null,
+          "preset": "declutter",
+          "kind": "item",
+          "label": "Hair straightener",
+          "description": "Straightener and cord on the vanity.",
+          "origin": "inventory",
+          "region": {"yaw":22,"pitch":-26,"hfov":10,"vfov":5},
+          "outline": [[26.5,-26],[25.2,-24.4],[22,-23.7],[18.8,-24.4],[17.5,-26],[18.8,-27.6],[22,-28.2],[25.2,-27.6]],
+          "confidence": 0.84,
+          "executable": true,
+          "defaultSelected": true,
+          "reasons": []
+        },
+        {
+          "id": "d17c",
+          "groupId": null,
+          "preset": "declutter",
+          "kind": "item",
+          "label": "Shampoo bottles",
+          "description": "Three bottles on the tub ledge.",
+          "origin": "inventory",
+          "region": {"yaw":-128,"pitch":-27,"hfov":8,"vfov":9},
+          "outline": [
+            [-124.4,-27],
+            [-125.5,-24.1],
+            [-128,-22.9],
+            [-130.5,-24.1],
+            [-131.6,-27],
+            [-130.5,-29.9],
+            [-128,-31],
+            [-125.5,-29.9]
+          ],
+          "confidence": 0.86,
+          "executable": true,
+          "defaultSelected": true,
+          "reasons": []
+        }
+      ]
+    },
+    {
+      "caseId": "b4b04601-a805-4813-b09d-fbbc1aea0e88",
+      "order": 18,
+      "roomName": "DECK",
+      "floorName": null,
+      "status": "surveyed",
+      "error": null,
+      "survey": {
+        "space": {"setting":"exterior","label":"Deck"},
+        "skyShare": 0.41,
+        "light": {"windows":true,"daylight":true,"lamps":false,"hardShadows":true,"mirrorsOrGlass":false},
+        "lawn": {
+          "status": "uncertain",
+          "condition": null,
+          "areas": [
+            {
+              "id": "l18a",
+              "label": "Lawn edge below the deck",
+              "position": "back",
+              "region": {"yaw":-30,"pitch":-40,"hfov":50,"vfov":20}
+            }
+          ]
+        },
+        "clutter": {
+          "surfaces": [
+            {
+              "id": "s18a",
+              "label": "Deck boards",
+              "region": {"yaw":-150,"pitch":-55,"hfov":40,"vfov":25},
+              "itemIds": ["d18a"]
+            }
+          ]
+        },
+        "notes": []
+      },
+      "applicability": {
+        "golden-hour": {"status":"recommended","reasons":["exterior_with_sky"]},
+        "twilight": {"status":"not_applicable","reasons":["outdoor_twilight_pending"]},
+        "grass": {"status":"possible","reasons":["small_lawn_area"]},
+        "declutter": {"status":"recommended","reasons":["loose_items_found"]}
+      },
+      "candidates": [
+        {
+          "id": "g18",
+          "groupId": null,
+          "preset": "golden-hour",
+          "kind": "whole_room",
+          "label": "Whole view",
+          "description": "Warm low sun across the deck boards; sky graded golden.",
+          "origin": "rule",
+          "region": {"yaw":0,"pitch":0,"hfov":360,"vfov":180},
+          "confidence": 0.9,
+          "executable": true,
+          "defaultSelected": true,
+          "reasons": ["exterior_with_sky"]
+        },
+        {
+          "id": "t18",
+          "groupId": null,
+          "preset": "twilight",
+          "kind": "whole_room",
+          "label": "Whole view",
+          "description": "Outdoor twilight comes in a later release.",
+          "origin": "rule",
+          "region": {"yaw":0,"pitch":0,"hfov":360,"vfov":180},
+          "confidence": 0.9,
+          "executable": false,
+          "defaultSelected": false,
+          "reasons": ["outdoor_twilight_pending"]
+        },
+        {
+          "id": "l18a",
+          "groupId": null,
+          "preset": "grass",
+          "kind": "lawn_area",
+          "label": "Lawn edge below the deck",
+          "description": "Only a sliver of lawn is visible past the railing.",
+          "origin": "survey",
+          "region": {"yaw":-30,"pitch":-40,"hfov":50,"vfov":20},
+          "confidence": 0.42,
+          "executable": true,
+          "defaultSelected": false,
+          "reasons": ["small_lawn_area"]
+        },
+        {
+          "id": "d18a",
+          "groupId": null,
+          "preset": "declutter",
+          "kind": "item",
+          "label": "Garden hose",
+          "description": "Coiled hose on the deck boards.",
+          "origin": "survey",
+          "region": {"yaw":-150,"pitch":-58,"hfov":24,"vfov":16},
+          "confidence": 0.81,
+          "executable": true,
+          "defaultSelected": true,
+          "reasons": []
+        }
+      ]
+    },
+    {
+      "caseId": "72b7b3b5-1e80-4498-99e4-ea99f28b00ca",
+      "order": 19,
+      "roomName": "Rear Exterior",
+      "floorName": null,
+      "status": "surveyed",
+      "error": null,
+      "survey": {
+        "space": {"setting":"exterior","label":"Back yard"},
+        "skyShare": 0.45,
+        "light": {"windows":true,"daylight":true,"lamps":false,"hardShadows":true,"mirrorsOrGlass":false},
+        "lawn": {
+          "status": "found",
+          "condition": "patchy",
+          "areas": [
+            {"id":"l19a","label":"Back lawn","position":"back","region":{"yaw":5,"pitch":-26,"hfov":140,"vfov":44}},
+            {
+              "id": "l19b",
+              "label": "Side yard strip",
+              "position": "side",
+              "region": {"yaw":-172,"pitch":-32,"hfov":36,"vfov":26}
+            }
+          ]
+        },
+        "clutter": {"surfaces":[]},
+        "notes": [
+          {
+            "topic": "lawn",
+            "text": "Back lawn is patchy near the swing set; bare soil stays soil and only existing grass is recoloured."
+          }
+        ]
+      },
+      "applicability": {
+        "golden-hour": {"status":"recommended","reasons":["exterior_with_sky"]},
+        "twilight": {"status":"not_applicable","reasons":["outdoor_twilight_pending"]},
+        "grass": {"status":"recommended","reasons":["lawn_found"]},
+        "declutter": {"status":"not_applicable","reasons":["no_loose_items"]}
+      },
+      "candidates": [
+        {
+          "id": "g19",
+          "groupId": null,
+          "preset": "golden-hour",
+          "kind": "whole_room",
+          "label": "Whole view",
+          "description": "Golden light across the back of the house and lawn.",
+          "origin": "rule",
+          "region": {"yaw":0,"pitch":0,"hfov":360,"vfov":180},
+          "confidence": 0.92,
+          "executable": true,
+          "defaultSelected": true,
+          "reasons": ["exterior_with_sky"]
+        },
+        {
+          "id": "t19",
+          "groupId": null,
+          "preset": "twilight",
+          "kind": "whole_room",
+          "label": "Whole view",
+          "description": "Outdoor twilight comes in a later release.",
+          "origin": "rule",
+          "region": {"yaw":0,"pitch":0,"hfov":360,"vfov":180},
+          "confidence": 0.9,
+          "executable": false,
+          "defaultSelected": false,
+          "reasons": ["outdoor_twilight_pending"]
+        },
+        {
+          "id": "l19a",
+          "groupId": null,
+          "preset": "grass",
+          "kind": "lawn_area",
+          "label": "Back lawn",
+          "description": "AI guess: back of the house. Patchy; bare soil stays soil.",
+          "origin": "survey",
+          "region": {"yaw":5,"pitch":-26,"hfov":140,"vfov":44},
+          "outline": [
+            [68,-26],
+            [59.6,-16.1],
+            [36.5,-8.9],
+            [5,-6.2],
+            [-26.5,-8.9],
+            [-49.6,-16.1],
+            [-58,-26],
+            [-49.6,-35.9],
+            [-26.5,-43.1],
+            [5,-45.8],
+            [36.5,-43.1],
+            [59.6,-35.9]
+          ],
+          "confidence": 0.88,
+          "executable": true,
+          "defaultSelected": true,
+          "reasons": []
+        },
+        {
+          "id": "l19b",
+          "groupId": null,
+          "preset": "grass",
+          "kind": "lawn_area",
+          "label": "Side yard strip",
+          "description": "AI guess: side of the house, behind the camera.",
+          "origin": "survey",
+          "region": {"yaw":-172,"pitch":-32,"hfov":36,"vfov":26},
+          "outline": [
+            [-155.8,-32],
+            [-158,-26.1],
+            [-163.9,-21.9],
+            [-172,-20.3],
+            [179.9,-21.9],
+            [174,-26.1],
+            [171.8,-32],
+            [174,-37.8],
+            [179.9,-42.1],
+            [-172,-43.7],
+            [-163.9,-42.1],
+            [-158,-37.9]
+          ],
+          "confidence": 0.74,
+          "executable": true,
+          "defaultSelected": true,
+          "reasons": []
+        }
+      ]
+    },
+    {
+      "caseId": "38cb2941-9cce-4e36-bb74-61956aaef9dc",
+      "order": 20,
+      "roomName": "REC ROOM",
+      "floorName": "Basement",
+      "status": "surveyed",
+      "error": null,
+      "survey": {
+        "space": {"setting":"interior","label":"Recreation room"},
+        "skyShare": 0,
+        "light": {"windows":true,"daylight":false,"lamps":true,"hardShadows":false,"mirrorsOrGlass":false},
+        "lawn": {"status":"none","condition":null,"areas":[]},
+        "clutter": {
+          "surfaces": [
+            {
+              "id": "s20a",
+              "label": "Coffee table",
+              "region": {"yaw":60,"pitch":-40,"hfov":40,"vfov":18},
+              "itemIds": ["d20a","d20b"]
+            }
+          ]
+        },
+        "notes": []
+      },
+      "applicability": {
+        "golden-hour": {"status":"possible","reasons":["weak_daylight"]},
+        "twilight": {"status":"recommended","reasons":["windows_and_lamps"]},
+        "grass": {"status":"not_applicable","reasons":["interior"]},
+        "declutter": {"status":"recommended","reasons":["loose_items_found"]}
+      },
+      "candidates": [
+        {
+          "id": "g20",
+          "groupId": null,
+          "preset": "golden-hour",
+          "kind": "whole_room",
+          "label": "Whole room",
+          "description": "Basement egress window gives little daylight.",
+          "origin": "rule",
+          "region": {"yaw":0,"pitch":0,"hfov":360,"vfov":180},
+          "confidence": 0.86,
+          "executable": true,
+          "defaultSelected": false,
+          "reasons": ["weak_daylight"]
+        },
+        {
+          "id": "t20",
+          "groupId": null,
+          "preset": "twilight",
+          "kind": "whole_room",
+          "label": "Whole room",
+          "description": "Dusk in the egress window; lamps on.",
+          "origin": "rule",
+          "region": {"yaw":0,"pitch":0,"hfov":360,"vfov":180},
+          "confidence": 0.86,
+          "executable": true,
+          "defaultSelected": true,
+          "reasons": ["windows_and_lamps"]
+        },
+        {
+          "id": "d20a",
+          "groupId": null,
+          "preset": "declutter",
+          "kind": "item",
+          "label": "Game controllers",
+          "description": "Two controllers on the table.",
+          "origin": "survey",
+          "region": {"yaw":55,"pitch":-41,"hfov":10,"vfov":5},
+          "confidence": 0.87,
+          "executable": true,
+          "defaultSelected": true,
+          "reasons": []
+        },
+        {
+          "id": "d20b",
+          "groupId": null,
+          "preset": "declutter",
+          "kind": "item",
+          "label": "Snack bowls",
+          "description": "Two bowls on the table.",
+          "origin": "survey",
+          "region": {"yaw":67,"pitch":-39,"hfov":10,"vfov":6},
+          "confidence": 0.83,
+          "executable": true,
+          "defaultSelected": true,
+          "reasons": []
+        }
+      ]
+    },
+    {
+      "caseId": "a6ebd35b-f09a-455b-9975-47bbdd1dfc16",
+      "order": 21,
+      "roomName": "UTILITY",
+      "floorName": "Basement",
+      "status": "surveyed",
+      "error": null,
+      "survey": {
+        "space": {"setting":"interior","label":"Utility room"},
+        "skyShare": 0,
+        "light": {"windows":false,"daylight":false,"lamps":false,"hardShadows":false,"mirrorsOrGlass":false},
+        "lawn": {"status":"none","condition":null,"areas":[]},
+        "clutter": {"surfaces":[]},
+        "notes": []
+      },
+      "applicability": {
+        "golden-hour": {"status":"not_applicable","reasons":["no_window"]},
+        "twilight": {"status":"not_applicable","reasons":["no_window","no_lamps"]},
+        "grass": {"status":"not_applicable","reasons":["interior"]},
+        "declutter": {"status":"not_applicable","reasons":["no_loose_items"]}
+      },
+      "candidates": [
+        {
+          "id": "g21",
+          "groupId": null,
+          "preset": "golden-hour",
+          "kind": "whole_room",
+          "label": "Whole room",
+          "description": "No window.",
+          "origin": "rule",
+          "region": {"yaw":0,"pitch":0,"hfov":360,"vfov":180},
+          "confidence": 0.95,
+          "executable": false,
+          "defaultSelected": false,
+          "reasons": ["no_window"]
+        },
+        {
+          "id": "t21",
+          "groupId": null,
+          "preset": "twilight",
+          "kind": "whole_room",
+          "label": "Whole room",
+          "description": "No window and no lights on.",
+          "origin": "rule",
+          "region": {"yaw":0,"pitch":0,"hfov":360,"vfov":180},
+          "confidence": 0.93,
+          "executable": false,
+          "defaultSelected": false,
+          "reasons": ["no_window","no_lamps"]
+        }
+      ]
+    },
+    {
+      "caseId": "20e41623-52da-412a-a557-b579fb169e8b",
+      "order": 22,
+      "roomName": "BEDROOM",
+      "floorName": "Basement",
+      "status": "surveyed",
+      "error": null,
+      "survey": {
+        "space": {"setting":"interior","label":"Bedroom"},
+        "skyShare": 0,
+        "light": {"windows":true,"daylight":false,"lamps":true,"hardShadows":false,"mirrorsOrGlass":false},
+        "lawn": {"status":"none","condition":null,"areas":[]},
+        "clutter": {"surfaces":[]},
+        "notes": []
+      },
+      "applicability": {
+        "golden-hour": {"status":"possible","reasons":["weak_daylight"]},
+        "twilight": {"status":"possible","reasons":["small_window"]},
+        "grass": {"status":"not_applicable","reasons":["interior"]},
+        "declutter": {"status":"not_applicable","reasons":["no_loose_items"]}
+      },
+      "candidates": [
+        {
+          "id": "g22",
+          "groupId": null,
+          "preset": "golden-hour",
+          "kind": "whole_room",
+          "label": "Whole room",
+          "description": "Basement egress window gives little daylight.",
+          "origin": "rule",
+          "region": {"yaw":0,"pitch":0,"hfov":360,"vfov":180},
+          "confidence": 0.86,
+          "executable": true,
+          "defaultSelected": false,
+          "reasons": ["weak_daylight"]
+        },
+        {
+          "id": "t22",
+          "groupId": null,
+          "preset": "twilight",
+          "kind": "whole_room",
+          "label": "Whole room",
+          "description": "Egress window; lamp on.",
+          "origin": "rule",
+          "region": {"yaw":0,"pitch":0,"hfov":360,"vfov":180},
+          "confidence": 0.86,
+          "executable": true,
+          "defaultSelected": false,
+          "reasons": ["small_window"]
+        }
+      ]
+    },
+    {
+      "caseId": "8954bc86-8b7b-4bf8-bf5d-f497b7cfaa3f",
+      "order": 23,
+      "roomName": "Side Exterior",
+      "floorName": null,
+      "status": "surveyed",
+      "error": null,
+      "survey": {
+        "space": {"setting":"exterior","label":"Side of house"},
+        "skyShare": 0.22,
+        "light": {"windows":true,"daylight":true,"lamps":false,"hardShadows":true,"mirrorsOrGlass":false},
+        "lawn": {"status":"none","condition":null,"areas":[]},
+        "clutter": {"surfaces":[]},
+        "notes": [{"topic":"general","text":"Gravel side path along the fence; no lawn."}]
+      },
+      "applicability": {
+        "golden-hour": {"status":"recommended","reasons":["exterior_with_sky"]},
+        "twilight": {"status":"not_applicable","reasons":["outdoor_twilight_pending"]},
+        "grass": {"status":"not_applicable","reasons":["no_lawn_found"]},
+        "declutter": {"status":"not_applicable","reasons":["no_loose_items"]}
+      },
+      "candidates": [
+        {
+          "id": "g23",
+          "groupId": null,
+          "preset": "golden-hour",
+          "kind": "whole_room",
+          "label": "Whole view",
+          "description": "Warm light along the side wall; fence shadows kept.",
+          "origin": "rule",
+          "region": {"yaw":0,"pitch":0,"hfov":360,"vfov":180},
+          "confidence": 0.84,
+          "executable": true,
+          "defaultSelected": true,
+          "reasons": ["exterior_with_sky"]
+        },
+        {
+          "id": "t23",
+          "groupId": null,
+          "preset": "twilight",
+          "kind": "whole_room",
+          "label": "Whole view",
+          "description": "Outdoor twilight comes in a later release.",
+          "origin": "rule",
+          "region": {"yaw":0,"pitch":0,"hfov":360,"vfov":180},
+          "confidence": 0.9,
+          "executable": false,
+          "defaultSelected": false,
+          "reasons": ["outdoor_twilight_pending"]
+        }
+      ]
+    },
+    {
+      "caseId": "ff82b406-4c8f-481c-a402-c7f481282f86",
+      "order": 24,
+      "roomName": "GARAGE",
+      "floorName": "Main Floor",
+      "status": "failed",
+      "error": "survey_unreadable",
+      "survey": null,
+      "applicability": null,
+      "candidates": []
+    }
+  ],
+  "presets": {
+    "golden-hour": {
+      "selection": {"revision":0,"sha256":"5a5dc23dae9ad41848213c638cdabbe298ce4a81240e24c6cc273db8e45d19e0","changes":[]},
+      "estimate": {
+        "selectionRevision": 0,
+        "roomsSelected": 12,
+        "itemsSelected": 12,
+        "roomsThatFit": 12,
+        "worstCaseImages": 36,
+        "limitingReason": null,
+        "estimatedMinutes": {"min":36,"max":60},
+        "computedAt": "2026-11-20T14:31:05+00:00"
+      },
+      "activeRunId": null
+    },
+    "twilight": {
+      "selection": {"revision":0,"sha256":"7c59393c3c424575b0947812a730de4124973e46f3ae38d5a6ebfc3900ca6c09","changes":[]},
+      "estimate": {
+        "selectionRevision": 0,
+        "roomsSelected": 9,
+        "itemsSelected": 9,
+        "roomsThatFit": 9,
+        "worstCaseImages": 27,
+        "limitingReason": null,
+        "estimatedMinutes": {"min":27,"max":45},
+        "computedAt": "2026-11-20T14:31:05+00:00"
+      },
+      "activeRunId": null
+    },
+    "grass": {
+      "selection": {"revision":0,"sha256":"c8f8669e3d8019513fd0ee8f965206be59e728851f095b3c915acb1b14075731","changes":[]},
+      "estimate": {
+        "selectionRevision": 0,
+        "roomsSelected": 3,
+        "itemsSelected": 5,
+        "roomsThatFit": 3,
+        "worstCaseImages": 3,
+        "limitingReason": null,
+        "estimatedMinutes": {"min":9,"max":15},
+        "computedAt": "2026-11-20T14:31:05+00:00"
+      },
+      "activeRunId": null
+    },
+    "declutter": {
+      "selection": {
+        "revision": 2,
+        "sha256": "48292999e7244e6bc416fcc4e8129f8131cb236a434ae9443a196fd476e19707",
+        "changes": [
+          {"caseId":"8e6469ce-3440-4fcc-8cda-e30da915d677","add":[],"remove":["d6d"]},
+          {"caseId":"5f6bb9ca-1cbc-4ba4-be5b-a2b75e9b3ba5","add":["d15a"],"remove":[]}
+        ]
+      },
+      "estimate": {
+        "selectionRevision": 2,
+        "roomsSelected": 14,
+        "itemsSelected": 30,
+        "roomsThatFit": 14,
+        "worstCaseImages": 28,
+        "limitingReason": null,
+        "estimatedMinutes": {"min":42,"max":70},
+        "computedAt": "2026-11-20T14:31:05+00:00"
+      },
+      "activeRunId": null
+    }
+  },
+  "runs": [],
+  "createdAt": "2026-11-20T14:02:11+00:00",
+  "updatedAt": "2026-11-20T14:31:05+00:00",
+  "completedAt": "2026-11-20T14:24:52+00:00"
+}
