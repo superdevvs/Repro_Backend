@@ -226,6 +226,19 @@ class IguideLabTourSchedulerTest extends TestCase
         app(LabService::class)->addCase($this->project,UploadedFile::fake()->createWithContent('section.png',$png),$helper);
     }
 
+    public function test_tour_monitor_schedule_runs_in_background_with_a_five_minute_lock():void
+    {
+        // Deploy 1.1: a killed sweep must not hold its overlap mutex for the default 24 h (1440 min), and the sweep must
+        // not run in the foreground ahead of the other every-minute tasks (voice, SMS, automations).
+        $events=collect(app(\Illuminate\Console\Scheduling\Schedule::class)->events())
+            ->filter(fn($event)=>str_contains((string)$event->command,'iguide-lab:tour-monitors'));
+        $this->assertCount(1,$events);$event=$events->first();
+        $this->assertSame('* * * * *',$event->expression);
+        $this->assertTrue($event->withoutOverlapping);
+        $this->assertSame(5,$event->expiresAt);
+        $this->assertTrue($event->runInBackground);
+    }
+
     public function test_actual_process_job_advances_all_eighty_captures_across_every_recipe_sequentially_and_replays_terminal():void
     {
         $policy=app(LabWorkflowPolicy::class)->snapshot();
