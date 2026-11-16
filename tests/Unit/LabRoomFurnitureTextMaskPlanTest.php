@@ -46,4 +46,13 @@ class LabRoomFurnitureTextMaskPlanTest extends TestCase
         $this->assertFalse($p->usable([['width'=>1024]+$this->mask()]));
         $this->assertFalse($p->usable([$this->mask(5000,[0,0,0,10])]));
     }
+    public function test_the_valid_subset_of_a_draft_mask_set_is_kept_and_invalid_fragments_are_dropped(): void
+    {
+        $p=app(P::class);
+        $this->assertSame([0,2],$p->validIndexes([$this->mask(),$this->mask(100),$this->mask()]));
+        $this->assertSame([1],$p->validIndexes([['width'=>1024]+$this->mask(),$this->mask(),$this->mask(5000,[0,0,0,10])]));
+        $this->assertSame([],$p->validIndexes([$this->mask(12)]));$this->assertSame([],$p->validIndexes([]));
+        $this->assertSame([],$p->validIndexes([$this->mask(),$this->mask(),$this->mask(),$this->mask()]));
+        $this->assertSame([],$p->validIndexes(['a'=>$this->mask()]));
+    }
 }

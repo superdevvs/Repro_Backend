@@ -93,12 +93,13 @@ class LabRoomFurnishingArtifacts extends LabWorkflowArtifacts
         $this->validateSnapshot($step->input['recipe']);$this->runtime();$route=app(LabInteriorRoomRoutes::class)->verify($item);
         $case=app(LabWorkflowSources::class)->verify($item->project_id,$item->source);$masks=$this->draftMasks($item,$step);
         abort_unless($step->input['outputSha256']===$this->runHash($run)&&$step->input['routeSha256']===LabMachineSegmentationPlan::canonicalHash($route),422);
+        $layout=app(LabInteriorRoomAssessments::class)->completed($item,$step->input['layoutAssessmentId'],'layout');abort_unless($layout->result_sha256===$step->input['layoutAssessmentSha256'],422);
         $disk=Storage::disk(LabService::DISK);$loader=app(LabInteriorRoomContext::class);
         $section=IguideLabSection::where('project_id',$item->project_id)->where('status','completed')->findOrFail($step->input['sectionId']);
         $geometry=['path'=>$loader->file($item->project_id,$section->data['geometryPath'],$section->data['geometrySha256'],65536),'sha256'=>$section->data['geometrySha256']];
         $out='iguide-lab/'.$item->project_id.'/workflow-items/'.$item->id.'/room-native-'.$step->id;
         $request=['schemaVersion'=>1,'operation'=>'compose-room-objects','privateRoot'=>$disk->path('iguide-lab/'.$item->project_id),'source'=>['path'=>$disk->path($case->source_path),'sha256'=>$case->source_sha256],
-            'candidate'=>['path'=>$disk->path($run->output_path),'sha256'=>$run->output_sha256],'preset'=>'interior-design','outputDirectory'=>$disk->path($out),'geometry'=>$geometry,'objectMasks'=>$masks['files']];
+            'candidate'=>['path'=>$disk->path($run->output_path),'sha256'=>$run->output_sha256],'preset'=>'interior-design','outputDirectory'=>$disk->path($out),'geometry'=>$geometry,'objectMasks'=>$masks['files'],'draftRegion'=>self::draftRegion($layout->result)];
         $report=$this->executeObjects($out.'-request.json',$request,$step->input['recipe']);
         $preview=$this->asset($report['artifacts']['preview'],$disk->path($out),[2048,1024]);$native=$this->asset($report['artifacts']['native'],$disk->path($out),[$case->width,$case->height]);
         $alpha=$this->asset($report['artifacts']['effective-alpha'],$disk->path($out),[$case->width,$case->height]);$nativeCanvas=$case->width>2048;
@@ -111,7 +112,7 @@ class LabRoomFurnishingArtifacts extends LabWorkflowArtifacts
             'preview'=>['sha256'=>$preview['sha256'],'width'=>2048,'height'=>1024],'native'=>$nativeCanvas?['sha256'=>$native['sha256'],'width'=>$case->width,'height'=>$case->height]:null,
             'generatedDetail'=>['width'=>2048,'height'=>2048,'description'=>'One source-bound generated furniture draft composited with machine furniture masks. No native generated-detail or cross-view claim.'],
             'recipeSha256'=>LabAnalysisRecipes::hash($step->input),'geometryManifestSha256'=>$geometry['sha256'],'scenePlanSha256'=>null,'qaManifestSha256'=>$reportSha,
-            'children'=>[['runId'=>$run->id,'requestId'=>$run->request_id,'outputSha256'=>$run->output_sha256,'projection'=>'rectilinear','editScope'=>'masked','maskSha256'=>$step->input['draftMasks']['sha256'][0],'view'=>$view]],
+            'children'=>[['runId'=>$run->id,'requestId'=>$run->request_id,'outputSha256'=>$run->output_sha256,'projection'=>'rectilinear','editScope'=>'masked','maskSha256'=>$step->input['draftMasks']['sha256'][0]??$alpha['sha256'],'view'=>$view]],
             'lineage'=>['executionContext'=>'unattended_workflow','workflowInvocation'=>app(LabWorkflowSteps::class)->invocation($step),'recipe'=>$step->input['recipe'],
                 'roomRecipe'=>$step->input['roomRecipe'],'supportRecipe'=>$step->input['supportRecipe'],'sourceRoomRoute'=>$route,'profileId'=>$route['profileId'],
                 'layoutAssessmentId'=>$step->input['layoutAssessmentId'],'layoutAssessmentSha256'=>$step->input['layoutAssessmentSha256'],'candidateAssessmentId'=>$step->input['candidateAssessmentId'],'candidateAssessmentSha256'=>$step->input['candidateAssessmentSha256'],
@@ -121,13 +122,38 @@ class LabRoomFurnishingArtifacts extends LabWorkflowArtifacts
                 'maskOrigin'=>'model_segmentation','selectionOrigin'=>'machine','limitations'=>$limits]];
         [$composite]=app(LabComposites::class)->add(IguideLabProject::findOrFail($item->project_id),$case,$preview['path'],$manifest,$nativeCanvas?$native['path']:null,app(LabWorkflowSteps::class)->invocation($step));return $composite;
     }
-    /** @return array{recordId:string,files:list<array{path:string,sha256:string}>} the exact masks this composition step was reserved with */
+    /**
+     * The exact masks this composition step was reserved with. An empty reserved set means no usable furniture
+     * outline existed: the draft is then composited inside the layout's planned region, and that must still hold.
+     * @return array{recordId:string,files:list<array{path:string,sha256:string}>,indexes:list<int>}
+     */
     private function draftMasks(IguideLabWorkflowItem $item,IguideLabWorkflowStep $step): array
     {
         $maskStep=IguideLabWorkflowStep::where('project_id',$item->project_id)->where('item_id',$item->id)->findOrFail($step->input['draftMasks']['stepId']);
-        $masks=app(LabRoomFurnishingMasks::class)->draftMasks($maskStep);
-        abort_unless($masks!==null&&$masks['recordId']===$step->input['draftMasks']['recordId']&&array_column($masks['files'],'sha256')===$step->input['draftMasks']['sha256'],422,'Staging furniture masks changed.');
+        $masks=app(LabRoomFurnishingMasks::class)->draftMasks($maskStep);$reserved=$step->input['draftMasks'];
+        if($reserved['sha256']===[]){abort_unless($masks===null&&$reserved['indexes']===[]&&is_string($reserved['recordId'])&&$maskStep->child_id===$reserved['recordId'],422,'Staging furniture masks changed.');
+            return ['recordId'=>$reserved['recordId'],'files'=>[],'indexes'=>[]];}
+        abort_unless($masks!==null&&$masks['recordId']===$reserved['recordId']&&array_column($masks['files'],'sha256')===$reserved['sha256']&&$masks['indexes']===$reserved['indexes'],422,'Staging furniture masks changed.');
         return $masks;
+    }
+    /**
+     * The layout's planned furniture boxes and source-floor box(es) on the 2048 draft, [x0,y0,x1,y1]: where the whole
+     * draft may be blended when no furniture outline is usable. Only well-formed integer boxes are kept (at most 8).
+     * @return list<list<int>>
+     */
+    public static function draftRegion(array $layout): array
+    {
+        $boxes=array_map(fn($object)=>is_array($object)?($object['box']??null):null,is_array($layout['objects']??null)?$layout['objects']:[]);
+        $floor=$layout['sourceFloor']??null;if(is_array($floor)){$boxes[]=$floor['box']??null;foreach(is_array($floor['regions']??null)?$floor['regions']:[] as $region)$boxes[]=$region;}
+        $out=[];foreach($boxes as $b)if(is_array($b)&&array_is_list($b)&&count($b)===4&&count(array_filter($b,'is_int'))===4
+            &&$b[0]>=0&&$b[1]>=0&&$b[2]<=2048&&$b[3]<=2048&&$b[0]<$b[2]&&$b[1]<$b[3])$out[]=$b;
+        abort_unless($out!==[],422,'The staging layout has no planned furniture or floor region.');return array_slice($out,0,8);
+    }
+    /** True when the stored composite blended the whole draft inside the planned region (no furniture outline). */
+    public function draftRegionUsed(IguideLabWorkflowItem $item,IguideLabComposite $composite): bool
+    {
+        $l=$composite->manifest['lineage'];$path=app(LabInteriorRoomContext::class)->file($item->project_id,$l['supportReport']['path'],$l['supportReport']['sha256'],4*1024*1024);
+        return (json_decode(file_get_contents($path),true,flags:JSON_THROW_ON_ERROR)['objects']['fallback']??null)==='draft_region';
     }
     protected function executeObjects(string $path,array $request,array $snapshot): array
     {
@@ -185,7 +211,9 @@ class LabRoomFurnishingArtifacts extends LabWorkflowArtifacts
             $caveats=array_slice($caveats,0,9);$caveats[]=$this->draftCaveat($candidate);
             foreach(array_slice($this->draftDoubts($candidate),0,2) as $doubt)$caveats[]=$doubt;
             $objects=json_decode(file_get_contents($disk->path($l['supportReport']['path'])),true,flags:JSON_THROW_ON_ERROR)['objects']??[];
-            $caveats[]='Staging composition: '.(($objects['fallback']??null)==='edge_faded'?'furniture touching the draft border was faded at that border; ':'').'no contact shadows were added under the furniture.';
+            $caveats[]='Staging composition: '.match($objects['fallback']??null){'edge_faded'=>'furniture touching the draft border was faded at that border; ',
+                'draft_region'=>'no clean furniture outline was found, so the whole draft was blended inside the planned furniture and floor area with faded edges; check walls, openings and floor texture there; ',
+                default=>''}.'no contact shadows were added under the furniture.';
             $caveats=array_map(fn($text)=>mb_substr($text,0,600),$caveats);
         }
         foreach($caveats as $text)abort_unless(mb_strlen($text)<=600,422,'Complete source caveat exceeds the quality context bound.');abort_if(count($caveats)>13,422);
