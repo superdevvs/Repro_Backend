@@ -29,6 +29,9 @@ final class ProviderAssetRecoveryThrottle
 
     public const MAX_ATTEMPTS = 10;
 
+    /** The provider gates these assets behind a protected view and no access token is available. */
+    public const OUTCOME_PROTECTED = 'provider-protected';
+
     /** @param array<int, mixed> $assets */
     public static function fingerprint(array $assets): string
     {
@@ -101,12 +104,25 @@ final class ProviderAssetRecoveryThrottle
             'last_attempt_at' => $now,
             'next_attempt_at' => $now->copy()->addMinutes($delay),
             'gave_up_at' => $attempts >= self::MAX_ATTEMPTS ? $now : null,
+            'outcome' => null,
             'created_at' => $now,
             'updated_at' => $now,
         ];
         LockedWrite::run(fn () => DB::table(self::TABLE)->upsert([$row], ['scope_key'], [
-            'fingerprint', 'attempts', 'first_attempt_at', 'last_attempt_at', 'next_attempt_at', 'gave_up_at', 'updated_at',
+            'fingerprint', 'attempts', 'first_attempt_at', 'last_attempt_at', 'next_attempt_at', 'gave_up_at', 'outcome', 'updated_at',
         ]), 'provider-assets.recovery-attempt');
+    }
+
+    /**
+     * Stop retrying a shoot's provider assets now: the provider gates them behind a protected view
+     * and no access token can be obtained. New provider links (a new fingerprint) start over.
+     */
+    public function markProtected(int $shootId, string $channel = 'recovery-iguide'): void
+    {
+        $now = now();
+        LockedWrite::run(fn () => DB::table(self::TABLE)->where('channel', $channel)->where('shoot_id', $shootId)->update([
+            'gave_up_at' => $now, 'next_attempt_at' => $now, 'outcome' => self::OUTCOME_PROTECTED, 'updated_at' => $now,
+        ]), 'provider-assets.recovery-protected');
     }
 
     /** Forget a schedule once every asset in its scope exists locally. */
