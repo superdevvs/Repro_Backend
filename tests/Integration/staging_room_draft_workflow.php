@@ -2,7 +2,7 @@
 /** Virtual staging on the room engine: one paid draft always ends with a viewable result. Disposable local Docker, network disabled, synthetic provider responses only. */
 declare(strict_types=1);
 $code='/app';$root=(getenv('ROOM_PROOF_ROOT')?:'/proof').'/'.($argv[1]??'attempt-1');$scenario=$argv[2]??'bedroom';$floorUnion=getenv('ROOM_FLOOR_UNION_PROOF')==='1';
-if(!in_array($scenario,['staging-ready','staging-held-draft','staging-three-masks','staging-no-mask'],true))throw new RuntimeException('Unknown scenario');
+if(!in_array($scenario,['staging-ready','staging-held-draft','staging-three-masks','staging-no-mask','staging-furnished','staging-no-capacity'],true))throw new RuntimeException('Unknown scenario');
 if(is_dir($root))throw new RuntimeException('Immutable proof directory already exists');mkdir($root,02770,true);chmod($root,02770);$db=$root.'/test.sqlite';touch($db);
 foreach(['APP_ENV'=>'testing','APP_KEY'=>'base64:'.base64_encode(str_repeat('k',32)),'DB_CONNECTION'=>'sqlite','DB_DATABASE'=>$db,'CACHE_STORE'=>'array','QUEUE_CONNECTION'=>'sync','SESSION_DRIVER'=>'array','MAIL_MAILER'=>'array','LOG_CHANNEL'=>'single','CLAMAV_SCAN_ON_UPLOAD'=>'false'] as $k=>$v){putenv($k.'='.$v);$_ENV[$k]=$v;$_SERVER[$k]=$v;}
 $loader=require $code.'/vendor/autoload.php';$app=require $code.'/bootstrap/app.php';$app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap();
@@ -69,7 +69,10 @@ Http::fake(function($request)use(&$calls,$maskBytes,$scenario,$profile,$roles,$b
         else{$item=IguideLabWorkflowItem::sole();app(LabWorkflows::class)->cancel(\App\Models\IguideLabWorkflow::findOrFail($item->workflow_id));}
         return Http::response(['error'=>['code'=>'insufficient_quota','message'=>'synthetic explicit quota']],429,['x-request-id'=>'fake-quota']);
     }
-    if(($c['version']??null)===LabInteriorRoomRouteProtocol::VERSION){$value=Tests\Unit\IguideLabInteriorRoomRouteProtocolTest::candidate($c);$value['room']['function']=$profile===LabInteriorRoomProfiles::BEDROOM?'bedroom':'living';$value['metadataAgreement']['status']='unknown';if($scenario==='route-hold')$value['occupancy']['status']='uncertain';}
+    if(($c['version']??null)===LabInteriorRoomRouteProtocol::VERSION){$value=Tests\Unit\IguideLabInteriorRoomRouteProtocolTest::candidate($c);$value['room']['function']=$profile===LabInteriorRoomProfiles::BEDROOM?'bedroom':'living';$value['metadataAgreement']['status']='unknown';if($scenario==='route-hold')$value['occupancy']['status']='uncertain';
+        if($scenario==='staging-furnished'){$value['room']['function']='living';$value['occupancy']['status']='furnished';$value['occupancy']['existingFurnishings']=[['description'=>'Original sofa and rug.','evidenceViewIds'=>['source','front']]];
+            $value['materialPotential']['status']='supported';$value['materialPotential']['eligibleSurfaces']=[['description'=>'Complete matte sofa cloth.','evidenceViewIds'=>['source','front']],['description'=>'Existing complete rug.','evidenceViewIds'=>['source','front']]];
+            $value['materialPotential']['styleFeatures']=[['kind'=>'texture','description'=>'Recognizable woven cloth.'],['kind'=>'pattern','description'=>'Style-appropriate rug pattern.']];}}
     elseif(isset($c['phase'])){$p=match($c['phase']){'framing'=>LabRoomFurnishingFramingProtocol::class,'layout'=>$floorUnion?App\Services\IguideLab\LabRoomFloorUnionLayoutProtocol::class:LabRoomEvidenceLayoutProtocol::class,'candidate'=>$floorUnion?App\Services\IguideLab\LabRoomFloorUnionCandidateProtocol::class:LabRoomEvidenceCandidateProtocol::class};$value=Tests\Unit\IguideLabRoomFurnishingProtocolTest::value($p,$c);
         if($c['phase']==='framing')$value['view']=['yaw'=>0.,'pitch'=>-20.,'hFov'=>100.];
         else{foreach($value['objects'] as $i=>&$object){$b=$boxes[$i];$object['box']=$b;$object['supportForm']='narrow_terminals';$object['visibleBaseContacts']=[];}unset($object);$value['sourceFloor']=['status'=>'opaque_matte','prompt'=>LabRoomFloorWitness::LABEL,'box'=>[0,600,2047,2047]];
@@ -110,6 +113,7 @@ function controller(string $method,string $path,?array $body,?string $capability
 $body=['requestId'=>(string)Str::uuid(),'items'=>[['caseId'=>$case->id,'preset'=>'staging','style'=>'scandinavian']]];
 $dto=controller('POST','/api/iguide-lab/workflows',$body,$capability,$public.'/00-workflow-created.json',202);
 $workflow=App\Models\IguideLabWorkflow::findOrFail($dto['data']['id']);$history=[];
+if($scenario==='staging-no-capacity')$project->update(['used_runs'=>$project->max_runs]);
 controller('GET','/api/iguide-lab/workflows/'.$workflow->id,null,null,$public.'/negative-unauthorized.json',401);
 $foreignToken=bin2hex(random_bytes(32));IguideLabProject::create(['name'=>'Foreign fixture','token_hash'=>hash('sha256',$foreignToken),'expires_at'=>now()->addDay(),'max_runs'=>1]);
 controller('GET','/api/iguide-lab/workflows/'.$workflow->id,null,$foreignToken,$public.'/negative-cross-project.json',404);
@@ -146,16 +150,18 @@ saveJson($root.'/proof.json',$proof);
 $expected=in_array($scenario,['staging-ready','staging-three-masks'],true)?'ready':'needs_review';check($workflow->status===$expected,'Unexpected terminal: '.$workflow->status.' '.json_encode($item->data['reviewReasons']??null));
 $publicItem=app(LabWorkflows::class)->dto($workflow)['items'][0];check($publicItem['preset']==='staging','Staging must keep its public preset');
 check(array_keys($publicItem)===['id','caseId','preset','style','status','stageLabel','attemptCount','result','reviewReasons','automation','createdAt','updatedAt'],'Staging item shape changed: '.implode(',',array_keys($publicItem)));
-if($scenario==='staging-no-mask'){check($publicItem['result']===null&&$publicItem['reviewReasons'][0]['code']==='staging_furniture_mask_unavailable','No-mask stop must be explicit');}
+$stops=['staging-furnished'=>'staging_room_not_empty','staging-no-capacity'=>'generation_capacity_unavailable'];
+if(isset($stops[$scenario])){check($publicItem['result']===null&&$publicItem['reviewReasons'][0]['code']===$stops[$scenario],'Expected a clear stop before any image: '.json_encode($publicItem['reviewReasons']));check(IguideLabRun::count()===0,'No image may be bought');}
+elseif($scenario==='staging-no-mask'){check($publicItem['result']===null&&$publicItem['reviewReasons'][0]['code']==='staging_furniture_mask_unavailable','No-mask stop must be explicit');}
 else{check(($publicItem['result']['kind']??null)==='composite'&&$publicItem['result']['native']!==null,'A paid staging draft must end with a viewable result');check(App\Models\IguideLabComposite::count()===1,'Exactly one composite');
     check(IguideLabWorkflowEvaluation::where('status','completed')->count()===1,'The final check must run on the composite');}
 $imageCalls=count(array_filter($calls,fn($c)=>$c['url']==='https://api.openai.com/v1/images/edits'));
-$expectedImages=1;
+$expectedImages=isset($stops[$scenario])?0:1;
 check($imageCalls===$expectedImages,'Unexpected primary image count or fallback');
-check(IguideLabRun::count()===1,'Staging buys exactly one image');check(IguideLabRoomAssessment::count()<=5,'Analysis ceiling exceeded');
+check(IguideLabRun::count()===$expectedImages,'Staging buys exactly one image');check(IguideLabRoomAssessment::count()<=5,'Analysis ceiling exceeded');
 $steps=\App\Models\IguideLabWorkflowStep::where('item_id',$item->id)->get();
 check($steps->pluck('request_id')->unique()->count()===$steps->count(),'Duplicate owned request identity');
-check($item->data['interiorRoomRoute']['budget']===LabRoomEvidenceDraftPolicy::BUDGET,'New budget not persisted');
+check($scenario==='staging-furnished'||$item->data['interiorRoomRoute']['budget']===LabRoomEvidenceDraftPolicy::BUDGET,'New budget not persisted');
 if(false){
     $records=app(LabWorkflows::class)->dto($workflow)['items'][0]['roomRouting']['assessments'];
     $actual=array_values(array_filter($records,fn($r)=>$r['phase']==='candidate'));check(count($actual)===2,'Corrected public assessment omitted');
