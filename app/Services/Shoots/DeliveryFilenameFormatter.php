@@ -2,7 +2,9 @@
 
 namespace App\Services\Shoots;
 
+use App\Models\Shoot;
 use App\Models\ShootFile;
+use Illuminate\Support\Str;
 
 /**
  * Builds the position-prefixed names used for delivered copies of shoot media.
@@ -30,6 +32,14 @@ class DeliveryFilenameFormatter
 {
     public const MIN_WIDTH = 3;
 
+    /** Longest delivered floor plan name, including a JPG page's "-page-N" suffix. */
+    public const FLOORPLAN_MAX_LENGTH = 60;
+
+    private const PAGE_SUFFIX_RESERVE = 8;
+
+    /** @var array<int, Shoot|null> */
+    private array $shoots = [];
+
     /**
      * Zero-padding width for a set of $total files.
      */
@@ -56,9 +66,49 @@ class DeliveryFilenameFormatter
         $name = $this->baseNameFor($file, $fallback);
         if ($this->hasEditedName($file)) return $name;
         $unit = $file->shoot_service_id ? $file->serviceItem?->unit : null;
-        if ($unit) $name = 'unit-'.$unit->id.'_'.$this->safeSegment($unit->label).'_'.$name;
+        $formatted = $this->format($position, $total, $unit ? 'unit-'.$unit->id.'_'.$this->safeSegment($unit->label).'_'.$name : $name);
 
-        return $this->format($position, $total, $name);
+        if ($file->media_type === 'floorplan' && strlen($formatted) > self::FLOORPLAN_MAX_LENGTH - self::PAGE_SUFFIX_RESERVE) {
+            return $this->shortFloorplanName($file, $name, $unit?->label, $position, $total);
+        }
+
+        return $formatted;
+    }
+
+    /**
+     * MLS uploads reject long names, and CubiCasa names its files after the full
+     * geocoded address (county, country, zip), so a delivered copy reached ~115
+     * characters. Rebuild it from the shoot's street address instead, leaving
+     * room for the "-page-N" suffix added to JPG pages of a PDF floor plan.
+     */
+    private function shortFloorplanName(ShootFile $file, string $name, ?string $unitLabel, int $position, int $total): string
+    {
+        $extension = strtolower(pathinfo($name, PATHINFO_EXTENSION));
+        $hint = match (true) {
+            stripos($name, 'metric') !== false => '-metric',
+            stripos($name, 'imperial') !== false => '-imperial',
+            default => '',
+        };
+        $suffix = ($unitLabel ? '_'.substr(Str::slug($unitLabel), 0, 15) : '')
+            .'_floorplan'.$hint.($extension !== '' ? '.'.$extension : '');
+        $prefix = sprintf('%0'.$this->width($total).'d_', max($position, 1));
+        $budget = max(8, self::FLOORPLAN_MAX_LENGTH - self::PAGE_SUFFIX_RESERVE - strlen($prefix) - strlen($suffix));
+
+        $address = Str::slug((string) $this->shootFor($file)?->address) ?: 'shoot-'.(int) $file->shoot_id;
+        if (strlen($address) > $budget) {
+            $address = substr($address, 0, $budget);
+            $cut = strrpos($address, '-');
+            $address = rtrim($cut ? substr($address, 0, $cut) : $address, '-');
+        }
+
+        return $prefix.$address.$suffix;
+    }
+
+    private function shootFor(ShootFile $file): ?Shoot
+    {
+        if (! $file->shoot_id) return null;
+
+        return $this->shoots[(int) $file->shoot_id] ??= $file->shoot;
     }
 
     /** Only archive copies get folders; stored master paths are never moved. */
