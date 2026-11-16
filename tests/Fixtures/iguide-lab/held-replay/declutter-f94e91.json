@@ -1,0 +1,134 @@
+{
+ "itemId": "01a1db49-5317-7338-902a-f94e91980380",
+ "storedReason": [
+  {
+   "code": "unsupported_removal_route",
+   "message": "The source does not justify one isolated opaque target and a complete bounded section."
+  }
+ ],
+ "proposal": {
+  "schemaVersion": "scene-plan-v1",
+  "sourceSha256": "1c74c729d9117c5a529d9317aa292a458542511557421aad86e38f00953c0ff5",
+  "projection": "equirectangular",
+  "preset": "declutter",
+  "style": null,
+  "summary": "Unreviewed proposal to remove one small floral canister. Possible reflected imagery and an interrupted receiver surface require manual review rather than a bounded section proposal.",
+  "protectedFeatures": [
+   {
+    "id": "fixed_finishes",
+    "description": "Blue speckled countertops, edge profiles and upstands; pale backsplash and wood cabinetry.",
+    "evidenceViewIds": [
+     "source",
+     "front",
+     "left",
+     "right"
+    ],
+    "confidence": "high"
+   },
+   {
+    "id": "installed_equipment",
+    "description": "Stainless appliances, sink, faucet, outlets, switches and installed lighting.",
+    "evidenceViewIds": [
+     "source",
+     "front",
+     "left",
+     "right"
+    ],
+    "confidence": "high"
+   },
+   {
+    "id": "architecture",
+    "description": "Walls, ceiling, windows, doors, trim, flooring, thresholds and adjoining-room openings.",
+    "evidenceViewIds": [
+     "source",
+     "front",
+     "right",
+     "back",
+     "zenith",
+     "nadir"
+    ],
+    "confidence": "high"
+   },
+   {
+    "id": "retained_contents",
+    "description": "Other canisters, knife block, white countertop appliance, flower vase, seating and adjoining-room furnishings.",
+    "evidenceViewIds": [
+     "source",
+     "front",
+     "left"
+    ],
+    "confidence": "high"
+   },
+   {
+    "id": "unrelated_optical_effects",
+    "description": "Existing daylight gradients, pendant highlights, window reflections and stainless-surface highlights.",
+    "evidenceViewIds": [
+     "source",
+     "front",
+     "left",
+     "right"
+    ],
+    "confidence": "high"
+   }
+  ],
+  "targets": [
+   {
+    "id": "target_object",
+    "description": "Small white floral-patterned canister at the right end of the canister group, immediately left of the white countertop appliance; only its attributable short local shadow.",
+    "action": "remove",
+    "objectCount": 1,
+    "evidenceViewIds": [
+     "source",
+     "front"
+    ]
+   }
+  ],
+  "sourceArtifacts": [
+   "Dark camera/support artifact and associated distortion at the nadir.",
+   "Existing equirectangular projection curvature and polar stretching."
+  ],
+  "uncertainties": [
+   "Pale vertical marks beneath the canister group may include coherent canister reflections; the selected item's contribution is not confidently separable.",
+   "The selected canister appears to occlude the backsplash/upstand transition, so an uninterrupted receiver patch is not established.",
+   "The selected item's short shadow is not clearly separable from neighboring canister shading.",
+   "The knife-block alternative also overlaps the upstand background; the island vase has transparency and foliage. Neither establishes a compliant fallback.",
+   "Hidden receiver pixels would be an unobserved generated estimate, not recoverable ground truth."
+  ],
+  "workflow": {
+   "mode": "manual_review",
+   "reason": "Possible target reflections, uncertain shadow separation and a background boundary prevent the requested item-plus-short-shadow route. A section with adequate margin alone would not resolve these dependencies.",
+   "sections": []
+  },
+  "generationPrompt": "Remove exactly one compact item: the small opaque white floral-patterned canister at the right end of the group on the rear blue kitchen counter, immediately left of the white countertop appliance and to the right of the sink. Remove only this item's attributable short local shadow. This is not whole-room decluttering. Leave the neighboring canisters, knife block, countertop appliance, flowers and glass vase, furniture and every other non-selected object unchanged.\n\nContinue the locally exposed surface with matching color, fine speckle, scale and illumination, without stamped repetition or an artificially smooth patch. Preserve the blue counter edge and upstand, pale backsplash boundaries, cabinetry, sink, faucet, sockets and all appliances. Do not expand the removal into shared shadows or ambiguous reflected forms. Retain unrelated window reflections, pendant highlights and broad daylight gradients on the counters and metal surfaces. Do not change finishes, lighting intensity or adjoining rooms.\n\nRetain the complete 2:1 equirectangular sphere with the original camera position, horizon, orientation, horizontal wrap and poles. Preserve projection curves rather than straightening them. Keep the existing nadir camera/support artifact and surrounding distortion unchanged, and do not invent replacement polar texture.",
+  "reviewChecks": [
+   {
+    "check": "edit",
+    "instruction": "Confirm the selected rightmost floral canister is exactly one item; neighboring canisters and all other objects must remain."
+   },
+   {
+    "check": "geometry",
+    "instruction": "Determine whether the canister footprint crosses the backsplash/upstand boundary. Do not approve the bounded route if a structural boundary crosses the replacement."
+   },
+   {
+    "check": "appearance",
+    "instruction": "Resolve the pale marks beneath the canisters and distinguish target reflection, short shadow and unrelated illumination. Possible target reflections or shared shadows keep this in manual review."
+   },
+   {
+    "check": "edit",
+    "instruction": "Before proposing a section, establish unobstructed receiver material on at least two cardinal sides and at least 10% margin around the complete item and attributable short shadow."
+   },
+   {
+    "check": "appearance",
+    "instruction": "Any exposed-surface estimate must match nearby blue speckle and tonal gradients without erasing unrelated highlights or changing fixed finishes."
+   },
+   {
+    "check": "seam",
+    "instruction": "Preserve the full sphere, wrap, projection curvature, poles and existing nadir artifact."
+   },
+   {
+    "check": "cross_view",
+    "instruction": "Compare source and front projections for target identity and neighboring-object preservation; these are views of one capture, not independent geometric or reflection validation."
+   }
+  ]
+ }
+}

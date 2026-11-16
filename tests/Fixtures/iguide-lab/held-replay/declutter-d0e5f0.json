@@ -1,0 +1,131 @@
+{
+ "itemId": "01a1da5d-17d7-70a0-b7d0-d0e5f0678609",
+ "storedReason": [
+  {
+   "code": "unsupported_removal_route",
+   "message": "The source does not justify one isolated opaque target and a complete bounded section."
+  }
+ ],
+ "proposal": {
+  "schemaVersion": "scene-plan-v1",
+  "sourceSha256": "1c74c729d9117c5a529d9317aa292a458542511557421aad86e38f00953c0ff5",
+  "projection": "equirectangular",
+  "preset": "declutter",
+  "style": null,
+  "summary": "Unreviewed proposal: manual review required. No compact opaque decorative tabletop object is clearly supported on a simple matte receiver with an isolated short shadow.",
+  "protectedFeatures": [
+   {
+    "id": "architecture",
+    "description": "Preserve walls, ceiling, windows, white doors and trim, open passages, and the living-area railing and fireplace.",
+    "evidenceViewIds": [
+     "source",
+     "front",
+     "right",
+     "back",
+     "zenith"
+    ],
+    "confidence": "high"
+   },
+   {
+    "id": "fixed_finishes",
+    "description": "Preserve wood cabinetry, blue speckled countertops, pale backsplash, light kitchen flooring, and adjoining wood floors.",
+    "evidenceViewIds": [
+     "source",
+     "front",
+     "right",
+     "left",
+     "nadir"
+    ],
+    "confidence": "high"
+   },
+   {
+    "id": "fixtures_appliances",
+    "description": "Preserve refrigerator, visible cooking appliances, dishwasher, sink, faucet, pendant lights, and other installed fixtures.",
+    "evidenceViewIds": [
+     "source",
+     "front",
+     "left"
+    ],
+    "confidence": "high"
+   },
+   {
+    "id": "furniture_contents",
+    "description": "Preserve seating, tables, rugs, lamps, plants, glass flower vase, canisters, knife block, shelf ornaments, and distant tabletop contents.",
+    "evidenceViewIds": [
+     "source",
+     "front",
+     "right",
+     "left",
+     "back"
+    ],
+    "confidence": "high"
+   },
+   {
+    "id": "existing_optical_effects",
+    "description": "Preserve countertop highlights, stainless-steel reflections, window glazing, ceiling light patterns, and unrelated object shadows.",
+    "evidenceViewIds": [
+     "source",
+     "front",
+     "left",
+     "right",
+     "nadir"
+    ],
+    "confidence": "high"
+   }
+  ],
+  "targets": [
+   {
+    "id": "target_object",
+    "description": "Requested single opaque decorative tabletop object; no qualifying object identified, so selection remains unresolved.",
+    "action": "remove",
+    "objectCount": 1,
+    "evidenceViewIds": [
+     "source",
+     "front",
+     "left"
+    ]
+   }
+  ],
+  "sourceArtifacts": [
+   "Existing dark camera/support artifact at the nadir and lower panorama edge.",
+   "Existing equirectangular curvature and polar stretching."
+  ],
+  "uncertainties": [
+   "Distant dining and living-room tabletop items lack sufficient detail to establish decorative identity, opacity, foreground ordering, receiver material, or an isolated short shadow.",
+   "Countertop highlights and nearby glazing and stainless steel are visible; attributable reflections or hidden optical dependencies cannot be excluded for an unresolved target.",
+   "No complete eligible object-and-shadow footprint is established, so a perspective section with at least 10% margin on every boundary cannot be supported."
+  ],
+  "workflow": {
+   "mode": "manual_review",
+   "reason": "The prominent island centerpiece has a transparent vase and thin foliage on a speckled, highlighted support. Countertop canisters are grouped on the same unsuitable finish; shelf ornaments are not tabletop objects. Rear-table candidates are insufficiently resolved. No eligible removal can be proposed without guessing.",
+   "sections": []
+  },
+  "generationPrompt": "Limit the intended declutter change to exactly one compact, clearly decorative, opaque tabletop object and only its attributable short local shadow. The complete object and shadow must be distinguishable on a simple continuous matte receiver, without overlap, reflective dependencies, open holes, or uncertain foreground ordering. No qualifying object is unambiguously established in this capture; leave the scene unchanged rather than choose a substitute or infer unseen details.\n\nDo not remove the transparent flower vase or foliage on the blue island, the grouped countertop canisters, the knife block, shelf ornaments, or unresolved items on the distant dining and living-room tables. Preserve every other object and every permanent finish. Retain the wood cabinets, blue speckled counters, pale backsplash, stainless-steel refrigerator and sink, faucet, pendant lights, white doors and trim, windows, railing, fireplace, seating, rugs, plants, and adjoining rooms. Preserve existing countertop and appliance highlights, window reflections, ceiling illumination, and unrelated shadows. Do not flatten a patterned or reflective finish into matte material to make an object eligible.\n\nMaintain the original full 2:1 equirectangular sphere, camera position, horizon, orientation, wrap, and poles. Keep projection curves and the existing nadir camera/support artifact unchanged; do not invent polar texture.",
+  "reviewChecks": [
+   {
+    "check": "edit",
+    "instruction": "Before any removal, establish one specific eligible opaque decorative tabletop object; do not substitute the glass centerpiece, grouped canisters, or shelf ornaments."
+   },
+   {
+    "check": "edit",
+    "instruction": "Require a visible isolated short shadow and simple continuous matte receiver. Reject possible reflections, overlapping objects, shared shadows, or hidden optical dependencies."
+   },
+   {
+    "check": "geometry",
+    "instruction": "Require complete object-and-shadow context with at least 10% margin from every proposed section boundary; suggested framing alone does not establish clearance."
+   },
+   {
+    "check": "appearance",
+    "instruction": "Preserve blue-counter speckling and highlights, refrigerator and sink reflections, window glazing, lamp highlights, adjacent objects, and every fixed finish."
+   },
+   {
+    "check": "seam",
+    "instruction": "Preserve the full 2:1 panorama, wrap, curved projection geometry, poles, and existing dark nadir artifact."
+   },
+   {
+    "check": "cross_view",
+    "instruction": "Use labelled projections only to inspect the same source capture; they do not independently establish depth, reflection geometry, hidden surfaces, or clearance."
+   }
+  ]
+ }
+}

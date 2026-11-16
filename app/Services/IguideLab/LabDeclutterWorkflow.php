@@ -51,11 +51,11 @@ class LabDeclutterWorkflow
         else $owner->reconcileQueuedChild($sourceStep,$source);
         $steps->attach($sourceStep,$source->id);$data['sourceAnalysisId']=$source->id;
         if(!$this->completed($item,$source,'analyzing',$data))return;
-        if(!$this->sourceRoute($source->proposal)){$owner->finish($item,'needs_review','unsupported_removal_route','The source analysis found no removable small loose item with a bounded section.',$data);return;}
+        $view=$this->route($source->proposal);
+        if($view===null){$owner->finish($item,'needs_review','unsupported_removal_route','The source analysis found no removable small loose item with a bounded section.',$data);return;}
         // Source doubts are recorded caveats for the final check, not stops before an image.
         $data['sourceCaveats']=$source->proposal['uncertainties']??[];
-        $v=$source->proposal['workflow']['sections'][0];
-        $view=['yaw'=>(float)$v['yawDegrees'],'pitch'=>(float)$v['pitchDegrees'],'hFov'=>(float)$v['hfovDegrees']];
+        if(!$this->sourceRoute($source->proposal))$data['sourceCaveats'][]=mb_substr('The source analysis chose manual review; the section was derived from the overview its target cites. Model reason: '.($source->proposal['workflow']['reason']??''),0,600);
         $sectionInput=['caseId'=>$native->id,'view'=>$view];$sectionStep=$steps->reserve($item,'declutter-section','section',$sectionInput);
         $section=IguideLabSection::where('project_id',$project->id)->where('request_id',$sectionStep->request_id)->first();
         if(!$section)$section=app(LabSections::class)->start($project,$sectionInput+['requestId'=>$sectionStep->request_id],$steps->invocation($sectionStep));
@@ -83,6 +83,7 @@ class LabDeclutterWorkflow
         $support=app(LabDeclutterSupport::class)->derive($item,$plan,$workflow->policy['declutterWorkflow']['support']);
         $data['support']=['path'=>$support['reportPath'],'sha256'=>$support['reportSha256'],'status'=>$support['report']['status']];$data['supportCaveats']=$support['report']['caveats']??[];
         if($support['report']['status']!=='ready_for_generation'){$data['supportReviewReasons']=$support['report']['reviewReasons'];$owner->finish($item,'needs_review','removal_support_requires_review','No usable item mask was found away from the cut edge; no image was submitted.',$data);return;}
+        if($stop=app(LabPreImageCapacity::class)->stop($item,'declutter-image')){$owner->finish($item,'needs_review',$stop[0],$stop[1],$data);return;}
         $imageInput=['caseId'=>$cut->id,'preset'=>'declutter','style'=>null,'modelId'=>$workflow->policy['modelId'],
             'removalPlanId'=>$plan->id,'supportSha256'=>$support['reportSha256'],'prompt'=>$plan->result['proposal']['generationPrompt'],
             'options'=>['complexity'=>'low','sectionId'=>$section->id]];
@@ -113,6 +114,23 @@ class LabDeclutterWorkflow
         app(LabWorkflowEvaluations::class)->payload($evidence,$project->id,$item->id);
         $passed=($evaluation->result['qualityStatus']??null)==='passed_automated_checks';
         $owner->finish($item,$passed?'ready':'needs_review',$passed?null:'quality_checks_failed',$passed?null:'Independent panorama checks require review; no second image is authorized.',$data);
+    }
+    /** Overview directions a source analysis cites (analysis_views.py ANGLES), as section yaw. */
+    private const OVERVIEW_YAW=['front'=>0.0,'right'=>90.0,'back'=>180.0,'left'=>-90.0];
+    /**
+     * The model's own section; or, when the model held for manual_review but still names one removal target,
+     * a fixed section toward the first overview its target cites. 120 degrees keeps that whole 100-degree overview
+     * inside the 10% guard band; the removal plan on that cut then finds the item box or stops before any image.
+     * Null when there is nothing to remove or no cited direction.
+     */
+    public function route(array $p): ?array
+    {
+        if($this->sourceRoute($p)){$v=$p['workflow']['sections'][0];return ['yaw'=>(float)$v['yawDegrees'],'pitch'=>(float)$v['pitchDegrees'],'hFov'=>(float)$v['hfovDegrees']];}
+        $t=$p['targets']??[];$n=$t[0]['objectCount']??null;
+        if(($p['workflow']['mode']??null)!=='manual_review'||($p['workflow']['sections']??null)!==[]||count($t)!==1||($t[0]['id']??null)!=='target_object'
+            ||($t[0]['action']??null)!=='remove'||!($n===null||(is_int($n)&&$n>=1)))return null;
+        foreach($t[0]['evidenceViewIds']??[] as $id)if(is_string($id)&&isset(self::OVERVIEW_YAW[$id]))return ['yaw'=>self::OVERVIEW_YAW[$id],'pitch'=>-15.0,'hFov'=>120.0];
+        return null;
     }
     public function sourceRoute(array $p): bool
     {

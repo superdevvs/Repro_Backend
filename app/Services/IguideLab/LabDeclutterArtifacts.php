@@ -147,7 +147,9 @@ class LabDeclutterArtifacts extends LabWorkflowArtifacts
         $unique=fn(array $a)=>array_values(array_unique($a));
         $samples=$materials?array_map(fn($b)=>[(int)floor($b['xMin']*2048),(int)floor($b['yMin']*2048),(int)ceil($b['xMax']*2048),(int)ceil($b['yMax']*2048)],$plan['receiver']['samples']):[];
         $result=['protectedFeatures'=>$unique([...array_column($source['protectedFeatures'],'description'),...array_map(fn($v)=>$v['id'].': '.$v['notes'],$plan['protectedFeatures'])]),
-            'sourceCaveats'=>self::pack($unique([...($source['uncertainties']??[]),...($source['sourceArtifacts']??[]),...$plan['uncertainties'],...$caveats,
+            'sourceCaveats'=>self::pack($unique([...($source['uncertainties']??[]),...($source['sourceArtifacts']??[]),
+                ...(($source['workflow']['mode']??null)==='manual_review'?['The source analysis chose manual review; the section was derived from the overview its target cites. Model reason: '.($source['workflow']['reason']??'')]:[]),
+                ...$plan['uncertainties'],...$caveats,
                 'The receiver behind the removed object is unobserved. Generated continuation is an estimate, not source restoration or ground truth.']),13),
             'opticalDependencies'=>[],
             'reviewRequirements'=>$unique([...($materials?self::MATERIALS_REVIEW_CONSTRAINTS:self::REVIEW_CONSTRAINTS),
