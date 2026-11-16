@@ -13,6 +13,7 @@ use App\Models\IguideLabTourRunTarget;
 use App\Models\IguideLabTourSurvey;
 use App\Models\IguideLabTourSurveyAttempt;
 use App\Support\LockedWrite;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
@@ -117,6 +118,14 @@ class LabTourSurveys
             $values = $this->completedValues($this->parseStored($survey));
         } catch (LabTourSurveyParseException $error) {
             $values = ['status' => 'failed', 'error_code' => $error->reasonCode, 'parse_error' => $error->parseError,
+                'parser_version' => LabTourSurveyProtocol::PARSER_VERSION, 'completed_at' => now()];
+        } catch (QueryException|\PDOException $error) {
+            throw $error; // a database error keeps the row received; the job is retried
+        } catch (\Throwable $error) {
+            // Anything else (a changed recipe, an encode error) would fail every retry and be re-pushed by the sweep forever.
+            // The stored answer is kept, so the free re-parse (5.13) can recover it.
+            Log::warning('Tour survey parse failed unexpectedly.', ['surveyId' => $survey->id, 'exception' => $error::class]);
+            $values = ['status' => 'failed', 'error_code' => 'survey_unreadable', 'parse_error' => 'internal',
                 'parser_version' => LabTourSurveyProtocol::PARSER_VERSION, 'completed_at' => now()];
         }
         if ($this->labWrite($survey->project_id, 'survey-parse', fn () => IguideLabTourSurvey::whereKey($survey->id)->where('status', 'received')->update($values) === 1)) {
@@ -498,7 +507,8 @@ class LabTourSurveys
         }
         if (! is_string($body) || strlen($body) !== $receipt['response']['bytes']) throw new LabTourSurveyParseException('survey_unreadable', 'receipt_file');
 
-        return LabTourSurveyProtocol::parse($body, $model, $receipt['providerResponseId']);
+        // Parse seam: the protocol is resolved from the container (a plain instance unless a test binds a double).
+        return app(LabTourSurveyProtocol::class)::parse($body, $model, $receipt['providerResponseId']);
     }
 
     private function completedValues(array $result): array
