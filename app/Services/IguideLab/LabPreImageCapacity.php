@@ -1,13 +1,13 @@
 <?php
 namespace App\Services\IguideLab;
 
-use App\Models\{IguideLabComposite,IguideLabLifestyleAssessment,IguideLabProject,IguideLabRun,IguideLabWorkflowEvaluation,IguideLabWorkflowItem,IguideLabWorkflowStep};
+use App\Models\{IguideLabComposite,IguideLabGrassAssessment,IguideLabLifestyleAssessment,IguideLabProject,IguideLabRun,IguideLabWorkflowEvaluation,IguideLabWorkflowItem,IguideLabWorkflowStep};
 
 /**
- * Checked before a declutter or lifestyle image is bought, as staging does (LabStagingRoomAlias::capacityStop):
+ * Checked before a declutter, lifestyle or grass image is bought, as staging does (LabStagingRoomAlias::capacityStop):
  * the paid image must be able to reach a viewable result. Ceilings mirror the record services that run after
  * the image: LabService (runs), LabComposites (120 per project), LabWorkflowEvaluations and
- * LabLifestyleAssessments (120 per project and 120 per day across the lab). Machine segmentation has no
+ * LabLifestyleAssessments and LabGrassAssessments (120 per project and 120 per day across the lab). Machine segmentation has no
  * record ceiling; its per-item allowance is fixed by LabWorkflowSteps for each recipe.
  */
 class LabPreImageCapacity
@@ -16,6 +16,7 @@ class LabPreImageCapacity
     private const AFTER_IMAGE=[
         'declutter'=>[IguideLabComposite::class=>false,IguideLabWorkflowEvaluation::class=>true],
         'lifestyle'=>[IguideLabLifestyleAssessment::class=>true,IguideLabComposite::class=>false,IguideLabWorkflowEvaluation::class=>true],
+        'grass'=>[IguideLabGrassAssessment::class=>true,IguideLabComposite::class=>false,IguideLabWorkflowEvaluation::class=>true],
     ];
     private const LIMIT=120;
 

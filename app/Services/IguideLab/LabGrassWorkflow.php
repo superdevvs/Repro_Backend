@@ -70,6 +70,8 @@ class LabGrassWorkflow
         $imageInput = ['caseId' => $case->id, 'preset' => 'grass', 'style' => $item->style, 'modelId' => $workflow->policy['modelId'],
             'prompt' => $analysis->proposal['generationPrompt'], 'options' => $analysis->settings['options'] + [
                 'analysisId' => $analysis->id, 'promptMode' => 'scene-plan', 'complexity' => 'low']];
+        // Capacity for every record after the image is checked first, so a paid grass image can always reach a viewable result.
+        if ($stop = app(LabPreImageCapacity::class)->stop($item, 'grass-image')) { $state->finish($item, 'needs_review', $stop[0], $stop[1], $data); return; }
         $imageStep = $steps->reserve($item, 'grass-image', 'image', $imageInput);
         $run = IguideLabRun::where('project_id', $project->id)->where('request_id', $imageStep->request_id)->first();
         if (! $run) $run = app(LabService::class)->start($project, $imageInput + ['requestId' => $imageStep->request_id], $steps->invocation($imageStep));
