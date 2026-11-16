@@ -37,26 +37,42 @@ class SupportTests(unittest.TestCase):
     def test_deterministic_exact_array_replay(self):
         a=s.derive_support(*fixture());b=s.derive_support(*fixture())
         for k in ['objectAlpha','scalarShadow','safeFloorAlpha']:self.assertTrue(np.array_equal(a[k],b[k]))
-    def test_no_floor_contact_stops_shadow(self):
+    def assertCaveat(self,result,code):
+        # The paid people image is always composited; doubts are caveats for the final full-sphere check.
+        r=result['report'];self.assertEqual(r['status'],'ready_for_unreviewed_composition');self.assertEqual(r['reviewReasons'],[])
+        self.assertIn(code,r['caveats'])
+    def test_ready_support_records_no_caveats(self):
+        self.assertEqual(s.derive_support(*fixture())['report']['caveats'],[])
+    def test_no_floor_contact_drops_only_that_shadow(self):
         args=list(fixture());args[3][395:420,90:150]=0
-        result=s.derive_support(*args);self.assertEqual(result['report']['status'],'needs_review');self.assertFalse(np.any(result['scalarShadow']))
+        result=s.derive_support(*args);self.assertCaveat(result,'SHOE_CONTACT_LACKS_INWARD_ORIGINAL_FLOOR')
+        self.assertFalse(np.any(result['scalarShadow'][380:440,80:160]));self.assertTrue(np.any(result['scalarShadow']))
+        self.assertEqual(result['report']['shadowOutsideSafeFloorPixels'],0)
     def test_hand_edge_cannot_be_used_as_shoe(self):
         args=list(fixture());shoe=args[-1]['proposal']['people'][0]['shoes'][0];shoe['soleSegment']=[{'x':101/512,'y':245/512},{'x':108/512,'y':245/512}]
-        result=s.derive_support(*args);self.assertEqual(result['report']['status'],'needs_review');self.assertFalse(np.any(result['scalarShadow']))
+        result=s.derive_support(*args);r=result['report'];self.assertEqual(r['status'],'ready_for_unreviewed_composition');self.assertTrue(r['caveats'])
+        self.assertFalse(np.any(result['scalarShadow'][230:265,90:120]));self.assertEqual([len(x['contacts']) for x in r['people']],[1,2])
     def test_no_occluded_shoe_invention(self):
         args=list(fixture());args[-1]['proposal']['people'][0]['shoes'][0]['status']='occluded'
-        result=s.derive_support(*args);self.assertIn('VISIBLE_SHOE_CONTACT_UNRESOLVED',result['report']['reviewReasons']);self.assertFalse(np.any(result['scalarShadow']))
-    def test_broad_shadow_and_reflections_hold(self):
+        result=s.derive_support(*args);self.assertCaveat(result,'VISIBLE_SHOE_CONTACT_UNRESOLVED')
+        self.assertFalse(np.any(result['scalarShadow'][400:425,103:121]));self.assertTrue(np.any(result['scalarShadow']))
+    def test_broad_shadow_and_reflection_doubts_are_caveats_with_tiny_contacts_only(self):
         for name,status in [('lighting','broad_or_directional_shadow_required'),('optics','visible_or_possible_dependency'),('foreground','overlap')]:
             args=list(fixture());args[-1]['proposal'][name]['status']=status;result=s.derive_support(*args)
-            with self.subTest(name=name):self.assertEqual(result['report']['status'],'needs_review');self.assertFalse(np.any(result['scalarShadow']))
+            with self.subTest(name=name):
+                self.assertCaveat(result,name.upper()+'_REQUIRES_REVIEW');self.assertTrue(np.any(result['scalarShadow']))
+                self.assertEqual(result['report']['shadowOutsideSafeFloorPixels'],0)
+    def test_unready_typed_assessment_is_a_hard_stop(self):
+        args=list(fixture());args[-1]['status']='needs_review';args[-1]['reviewReasons']=['PERSON_BOX_MISSING']
+        result=s.derive_support(*args);r=result['report']
+        self.assertEqual(r['status'],'needs_review');self.assertIn('TYPED_PEOPLE_ASSESSMENT_NOT_READY',r['reviewReasons']);self.assertFalse(np.any(result['scalarShadow']))
     def test_exactly_two_masks_and_binary_only(self):
         args=list(fixture());args[2]=args[2][:1]
         with self.assertRaisesRegex(ValueError,'EXACTLY_TWO'):s.derive_support(*args)
         args=list(fixture());args[2][0][200,110]=128
         with self.assertRaisesRegex(ValueError,'MUST_BE_BINARY'):s.derive_support(*args)
-    def test_disconnected_extra_person_piece_holds(self):
+    def test_disconnected_extra_person_piece_is_a_caveat(self):
         args=list(fixture());args[2][0][180:220,160:180]=255;args[1][180:220,160:180]=(25,35,55)
-        result=s.derive_support(*args);self.assertIn('PERSON_MASK_FRAGMENTED',result['report']['reviewReasons'])
+        result=s.derive_support(*args);self.assertCaveat(result,'PERSON_MASK_FRAGMENTED')
 
 if __name__=='__main__':unittest.main()

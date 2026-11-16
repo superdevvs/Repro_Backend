@@ -56,6 +56,10 @@ class ProtocolTests(unittest.TestCase):
     def test_compile_exact_bound_images(self):
         payload=p.compile_request(self.context,self.images);self.assertEqual(payload['text']['format']['name'],'iguide_lifestyle_assessment')
         self.assertIn('BOTH shoes',payload['instructions']);self.assertEqual(payload['model'],p.MODEL)
+    def test_compile_uses_medium_effort_with_room_for_an_answer(self):
+        payload=p.compile_request(self.context,self.images)
+        self.assertEqual(payload['reasoning'],{'effort':'medium'});self.assertGreaterEqual(payload['max_output_tokens'],16000)
+        self.assertNotIn('Uncertainty always stops before SAM',payload['instructions']);self.assertIn('caveat',payload['instructions'])
     def test_changed_actual_image_rejected(self):
         bad=self.images.copy();bad[1]=bad[0]
         with self.assertRaisesRegex(ValueError,'IMAGE_HASH'):p.compile_request(self.context,bad)
@@ -68,21 +72,35 @@ class ProtocolTests(unittest.TestCase):
     def test_receipt_hash_and_execution_identity_rejected(self):
         for key,value in [('responseSha256','0'*64),('providerResponseId','resp_other'),('contextSha256','0'*64),('model','wrong')]:
             with self.subTest(key=key),self.assertRaises(ValueError):self.parse(mutate_execution=lambda x:x.update({key:value}))
-    def test_semantic_holds_never_emit_sam(self):
+    def assertCaveat(self,result,code):
+        # A paid image is always segmented and composited; a doubt is a recorded caveat, never a stop.
+        self.assertEqual(result['status'],'ready_for_segmentation');self.assertEqual(result['reviewReasons'],[])
+        self.assertIn(code,result['caveats']);self.assertEqual(len(result['segmentationPlan']),2)
+    def test_ready_result_records_no_caveats(self):
+        self.assertEqual(self.parse()['caveats'],[])
+    def test_semantic_doubts_become_caveats_and_still_emit_sam(self):
         values={'sourceRegion':'occupied_or_complex','group':'count_overlap_or_props','foreground':'overlap','protectedFeatures':'conflict','optics':'visible_or_possible_dependency','lighting':'broad_or_directional_shadow_required','contextCoverage':'insufficient_context'}
         for key,status in values.items():
             q=copy.deepcopy(self.proposal);q[key]['status']=status
-            with self.subTest(key=key):
-                result=self.parse(q);self.assertEqual(result['status'],'needs_review');self.assertEqual(result['segmentationPlan'],[])
-    def test_seated_missing_anatomy_and_unclear_hair_hold(self):
-        for key,status in [('status','seated'),('anatomy','malformed'),('scale','uncertain'),('topology','ambiguous_hair_hands_or_holes')]:
+            with self.subTest(key=key):self.assertCaveat(self.parse(q),key.upper()+'_REQUIRES_REVIEW')
+    def test_seated_anatomy_scale_and_unclear_hair_are_caveats(self):
+        for key,status,code in [('status','seated','PERSON_INCOMPLETE_OR_NOT_STANDING'),('anatomy','malformed','ANATOMY_OR_SCALE_UNRESOLVED'),
+                ('scale','uncertain','ANATOMY_OR_SCALE_UNRESOLVED'),('topology','ambiguous_hair_hands_or_holes','PERSON_TOPOLOGY_UNRESOLVED')]:
             q=copy.deepcopy(self.proposal);q['people'][0][key]=status
-            with self.subTest(key=key):self.assertEqual(self.parse(q)['segmentationPlan'],[])
-    def test_hidden_or_outside_shoe_holds(self):
+            with self.subTest(key=key):self.assertCaveat(self.parse(q),code)
+    def test_hidden_or_outside_shoe_are_caveats(self):
         q=copy.deepcopy(self.proposal);q['people'][0]['shoes'][0]['status']='occluded';q['people'][0]['shoes'][0]['soleSegment']=None
-        self.assertIn('SHOE_CONTACT_UNRESOLVED',self.parse(q)['reviewReasons'])
+        self.assertCaveat(self.parse(q),'SHOE_CONTACT_UNRESOLVED')
         q=copy.deepcopy(self.proposal);q['people'][0]['shoes'][0]['soleSegment'][0]['x']=.9
-        self.assertIn('SHOE_OUTSIDE_PERSON_SELECTION',self.parse(q)['reviewReasons'])
+        self.assertCaveat(self.parse(q),'SHOE_OUTSIDE_PERSON_SELECTION')
+        q=copy.deepcopy(self.proposal);q['uncertainties']=['A faint reflection may be expected in the patio door.']
+        self.assertCaveat(self.parse(q),'ASSESSMENT_HAS_UNRESOLVED_UNCERTAINTY')
+    def test_missing_person_or_floor_box_is_a_hard_stop_before_sam(self):
+        for change,code in [(lambda q:q['people'][1].update(box=None),'PERSON_BOX_MISSING'),(lambda q:q['people'][0].update(status='missing'),'PERSON_BOX_MISSING'),
+                (lambda q:q['floorSelection'].update(box=None),'FLOOR_BOX_MISSING')]:
+            q=copy.deepcopy(self.proposal);change(q)
+            with self.subTest(code=code):
+                result=self.parse(q);self.assertEqual(result['status'],'needs_review');self.assertIn(code,result['reviewReasons']);self.assertEqual(result['segmentationPlan'],[])
     def test_missing_parent_optics_evidence_rejected(self):
         q=copy.deepcopy(self.proposal);q['optics']['evidenceIds']=['parent_front']
         with self.assertRaisesRegex(ValueError,'FINDING_EVIDENCE'):self.parse(q)
@@ -93,14 +111,14 @@ class ProtocolTests(unittest.TestCase):
     def test_source_only_floor_cannot_use_candidate(self):
         q=copy.deepcopy(self.proposal);q['floorSelection']['evidenceIds'].append('candidate_cut')
         with self.assertRaisesRegex(ValueError,'FINDING_EVIDENCE'):self.parse(q)
-    def test_guard_and_person_overlap_hold(self):
+    def test_guard_and_person_overlap_are_caveats(self):
         q=copy.deepcopy(self.proposal);q['people'][0]['box']['xMin']=.09
-        self.assertIn('PERSON_TOUCHES_FRAME_GUARD',self.parse(q)['reviewReasons'])
+        self.assertCaveat(self.parse(q),'PERSON_TOUCHES_FRAME_GUARD')
         q=copy.deepcopy(self.proposal);q['people'][0]['box']['xMax']=.7
-        self.assertIn('PERSON_SELECTION_OVERLAP',self.parse(q)['reviewReasons'])
-    def test_uncertain_floor_box_remains_diagnostic(self):
+        self.assertCaveat(self.parse(q),'PERSON_SELECTION_OVERLAP')
+    def test_uncertain_floor_with_a_box_is_a_caveat(self):
         q=copy.deepcopy(self.proposal);q['floorSelection']['status']='uncertain'
-        result=self.parse(q);self.assertEqual(result['segmentationPlan'],[]);self.assertIsNotNone(result['proposal']['floorSelection']['box'])
+        result=self.parse(q);self.assertCaveat(result,'FLOOR_SELECTION_UNRESOLVED');self.assertIsNotNone(result['proposal']['floorSelection']['box'])
     def test_furniture_identity_not_accepted(self):
         q=copy.deepcopy(self.proposal);q['people'][0]['id']='sofa'
         with self.assertRaisesRegex(ValueError,'ENUM_INVALID'):self.parse(q)

@@ -47,6 +47,19 @@ class IguideLabLifestyleOpticalCutProtocolTest extends TestCase
         $v=$good;$v['lifestyleReadiness']['checks']['optical_dependencies']['status']='uncertain';
         $this->assertFalse(P::parse(IguideLabLifestyleFramingProtocolTest::response($v),$c)['lifestyleReadiness']['allRequiredChecksPass']);
     }
+    public function test_cut_gate_records_soft_doubts_as_caveats_and_uses_medium_effort(): void
+    {
+        [$c,$images]=self::fixture(2);$recipes=app(LabAnalysisRecipes::class);
+        foreach([LabAnalysisRecipes::LIFESTYLE_ORIGINAL_OPTICAL_CUT,LabAnalysisRecipes::LIFESTYLE_OPTICAL_CUT] as $version){
+            $wire=$recipes->request($recipes->snapshot($version),$c,$images);$text=$wire['instructions'];
+            $this->assertSame(['effort'=>'medium'],$wire['reasoning']);$this->assertGreaterThanOrEqual(16000,$wire['max_output_tokens']);
+            foreach(['must be fail/uncertain and workflow manual_review','All seven lifestyleReadiness checks must pass independently before any image',
+                'fail or uncertain remains a hold','When a required reflection, shadow or coherent object extent falls outside the cut, choose manual_review'] as $hold)
+                $this->assertStringNotContainsString($hold,$text);
+            $this->assertStringContainsString('caveat',$text);$this->assertStringContainsString('source_floor fail',$text);
+            $this->assertStringContainsString('whole_panorama',$text);
+        }
+    }
     public function test_native_details_do_not_expand_legacy_six_input_recipe(): void
     {
         [$c,$images]=self::fixture();$recipe=app(LabAnalysisRecipes::class)->snapshot(LabAnalysisRecipes::LIFESTYLE_CUT)['recipe'];
