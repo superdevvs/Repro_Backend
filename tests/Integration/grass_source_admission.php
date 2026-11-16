@@ -89,7 +89,8 @@ $upload=new Illuminate\Http\UploadedFile($zipPath,'original.zip','application/zi
 $import=$imports->start($project,$importInput,$upload,null);$imports->process($import);$import->refresh();check($import->status==='completed','Import failed');
 $case=IguideLabCase::findOrFail($import->sources[0]['caseId']);check(app(LabWorkflowSources::class)->capture($case)['authority']['importId']===$import->id,'Import authority absent');
 $fakeCalls=[];$submittedSourceHashes=[];$maskBytes=[];
-foreach(json_decode(file_get_contents($fixtures.'/masks-index.json'),true) as $entry){$maskBytes[$entry['role']][]=file_get_contents($fixtures.'/masks/'.basename($entry['path']));}
+// The lawn is one text-prompted mask (Deploy 2); the two seam-split lawn masks remain decoder fixtures only.
+foreach(json_decode(file_get_contents($fixtures.'/masks-index.json'),true) as $entry){if($entry['role']==='lawn')continue;$maskBytes[$entry['role']==='lawn-text'?'lawn':$entry['role']][]=file_get_contents($fixtures.'/masks/'.basename($entry['path']));}
 $preparedSha=hash('sha256',App\Services\IguideLab\LabImages::prepared($source));
 Http::fake(function($request)use(&$fakeCalls,&$submittedSourceHashes,$maskBytes,$fixtures,$preparedSha,$scenario){
     $url=$request->url();$fakeCalls[]=['url'=>$url,'method'=>$request->method()];
