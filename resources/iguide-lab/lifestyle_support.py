@@ -131,6 +131,17 @@ def derive_support(source,candidate,person_masks,source_floor,pose,assessment):
     distance=cv2.distanceTransform(np.uint8(union>0),cv2.DIST_L2,5)
     alpha=np.rint(np.clip((distance-.25)/max(.75,1.5*scale),0,1)*255).astype(np.uint8)
     alpha[union==0]=0
+    # The pinned recompose-section step (workflow_qa) aborts on any support inside the outer 10% of the section, which
+    # would discard the paid image. Fade the person to zero across that band instead and record it for the final check.
+    def ramp(n):
+        i=np.arange(n);inside=(i/n>=.10)&((n-1-i)/n>=.10)
+        if not inside.any():return np.zeros(n,np.float32)
+        lo,hi=int(np.argmax(inside)),int(n-1-np.argmax(inside[::-1]))
+        return np.where(inside,np.clip((np.minimum(i-lo,hi-i)+1)/max(2,round(.01*n)),0,1),0).astype(np.float32)
+    faded=np.rint(alpha*np.outer(ramp(h),ramp(w))).astype(np.uint8)
+    if np.any(faded!=alpha):
+        caveat('PERSON_FADED_AT_SECTION_EDGE');alpha=faded
+        if not np.any(alpha):hold('PERSON_ALPHA_EMPTY_AFTER_SECTION_EDGE_FADE')
     shadows=np.zeros((h,w),np.float32)
     if not reasons and contacts:
         yy,xx=np.mgrid[:h,:w]

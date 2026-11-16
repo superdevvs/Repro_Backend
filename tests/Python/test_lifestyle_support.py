@@ -7,9 +7,9 @@ import lifestyle_support as s
 import numpy as np
 import cv2
 
-def fixture():
+def fixture(xs=(100,310)):
     size=512;source=np.full((size,size,3),130,np.uint8);source[300:]=(120,100,80);candidate=source.copy();masks=[];people=[]
-    for i,x in enumerate([100,310]):
+    for i,x in enumerate(xs):
         mask=np.zeros((size,size),np.uint8)
         cv2.circle(mask,(x+22,128),17,255,-1)
         cv2.rectangle(mask,(x+8,140),(x+36,272),255,-1)
@@ -41,6 +41,16 @@ class SupportTests(unittest.TestCase):
         # The paid people image is always composited; doubts are caveats for the final full-sphere check.
         r=result['report'];self.assertEqual(r['status'],'ready_for_unreviewed_composition');self.assertEqual(r['reviewReasons'],[])
         self.assertIn(code,r['caveats'])
+    def test_a_person_inside_the_section_guard_is_faded_so_the_paid_image_still_composites(self):
+        # workflow_qa.recompose_arrays (pinned by the lighting workflow manifest) aborts with SUPPORT_TOUCHES_SECTION_TAPER on
+        # any support inside the outer 10%; the person is faded to zero across that band instead of discarding the image.
+        sys.path.insert(0,str(Path(s.__file__).resolve().parent));import workflow_qa
+        result=s.derive_support(*fixture((30,310)));self.assertCaveat(result,'PERSON_FADED_AT_SECTION_EDGE')
+        support=np.maximum(result['objectAlpha'],result['scalarShadow'])
+        self.assertGreaterEqual(workflow_qa.margin_stats(support)['minimumMarginFraction'],.10)
+        self.assertEqual(result['objectAlpha'][300,62],255,'the person is kept inward of the band')
+        self.assertEqual(result['objectAlpha'][200,34],0,'the arm inside the band fades out')
+        self.assertGreater(s.derive_support(*fixture((30,310)))['report']['objectAlphaStatistics']['positivePixels'],0)
     def test_ready_support_records_no_caveats(self):
         self.assertEqual(s.derive_support(*fixture())['report']['caveats'],[])
     def test_no_floor_contact_drops_only_that_shadow(self):
