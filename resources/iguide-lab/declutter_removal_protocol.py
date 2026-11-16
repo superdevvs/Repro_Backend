@@ -22,7 +22,7 @@ BINDINGS = ['workflowItemId', 'captureId', 'nativeSourceSha256', 'sourceCutSha25
             'submittedSourceSha256', 'parentContextSha256', 'sourceGeometrySha256',
             'sourcePreparationSha256', 'sourceAnalysisSha256']
 ROLES = ['target_object', 'target_local_shadow']
-CUT_EDGE = .02  # a selection this close to the cut border is clipped: the only geometric stop
+CUT_EDGE = .02  # a selection this close to the cut border is clipped; the 10% guard band below is also a stop (recompose margin)
 digest = shared.digest
 _fail, _keys, _hash, _uuid, _loads, _validate = shared._fail, shared._keys, shared._hash, shared._uuid, shared._loads, shared._validate
 _obj, _string, _enum, _list, _box, _evidence = shared._obj, shared._string, shared._enum, shared._list, shared._box, shared._evidence
@@ -174,7 +174,8 @@ def parse_response(response_text,context,execution):
     gate(shadow['box'] is not None and not proper(shadow['box']),'SHADOW_SELECTION_INVALID')
     for obj in [target,*([shadow] if shadow['status']=='single_local_attributable' else [])]:
         box=obj['box']
-        gate(proper(box) and min(box['xMin'],box['yMin'],1-box['xMax'],1-box['yMax'])<.1,'SUPPORT_SELECTION_TOUCHES_GUARD')
+        # stop, not a caveat: the pinned recompose-section step aborts inside the 10% band after the image is bought
+        stop(proper(box) and min(box['xMin'],box['yMin'],1-box['xMax'],1-box['yMax'])<.1,'SUPPORT_SELECTION_TOUCHES_GUARD')
     seen=set()
     for feature in p['protectedFeatures']:
         if feature['id'] in seen or not set(feature['evidenceIds'])<=set(IDS) or 'source_cut' not in feature['evidenceIds']:_fail('PROTECTED_FEATURE_EVIDENCE_INVALID')

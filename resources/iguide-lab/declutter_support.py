@@ -77,7 +77,7 @@ def derive(masks,proposal):
     if int(expanded.sum())>LIMITS['maxEditablePixels']:caveats.append('EDIT_DOMAIN_TOO_LARGE')
     edge=LIMITS['cutEdgePixels'];guard=LIMITS['guardPixels']
     if any(np.any(v) for v in [expanded[:edge],expanded[-edge:],expanded[:,:edge],expanded[:,-edge:]]):reasons.append('SUPPORT_TOUCHES_CUT_EDGE')
-    elif any(np.any(v) for v in [expanded[:guard],expanded[-guard:],expanded[:,:guard],expanded[:,-guard:]]):caveats.append('SUPPORT_TOUCHES_GUARD')
+    elif any(np.any(v) for v in [expanded[:guard],expanded[-guard:],expanded[:,:guard],expanded[:,-guard:]]):reasons.append('SUPPORT_TOUCHES_GUARD')  # pinned recompose-section needs a 10% margin: stop before the image
     for feature in proposal['protectedFeatures']:
         b=feature['box']
         if b is None:caveats.append('PROTECTED_FEATURE_UNLOCATED');continue

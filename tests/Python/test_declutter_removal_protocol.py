@@ -73,9 +73,9 @@ class ProtocolTests(unittest.TestCase):
             with self.subTest(group=group,key=key):
                 proposal=copy.deepcopy(self.proposal);proposal[group][key]=value;a=parsed(self.context,proposal)
                 self.assertEqual(a['status'],'ready_for_segmentation');self.assertTrue(a['caveats']);self.assertEqual(a['reviewReasons'],[])
-    def test_margin_and_uncertainty_are_caveats(self):
+    def test_margin_stops_and_uncertainty_is_a_caveat(self):
         self.proposal['target']['box']['xMin']=.09
-        self.assertIn('SUPPORT_SELECTION_TOUCHES_GUARD',parsed(self.context,self.proposal)['caveats'])
+        self.assertIn('SUPPORT_SELECTION_TOUCHES_GUARD',parsed(self.context,self.proposal)['reviewReasons'])
         self.proposal=copy.deepcopy(self.base[2]);self.proposal['uncertainties']=['Cannot distinguish adjacent edge.']
         a=parsed(self.context,self.proposal);self.assertEqual(a['status'],'ready_for_segmentation');self.assertIn('UNRESOLVED_UNCERTAINTY',a['caveats'])
     def test_parent_uncertainty_cannot_be_silently_discarded(self):

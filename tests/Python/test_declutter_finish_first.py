@@ -44,10 +44,12 @@ class FinishFirstProtocolTests(unittest.TestCase):
     def test_target_touching_the_cut_edge_stops(self):
         self.proposal['target']['box'].update(xMin=.005);a=parsed(self.context,self.proposal)
         self.assertEqual(a['status'],'needs_review');self.assertIn('TARGET_TOUCHES_CUT_EDGE',a['reviewReasons'])
-    def test_target_inside_old_ten_percent_guard_is_only_a_caveat(self):
+    def test_target_inside_the_ten_percent_guard_stops_before_the_image(self):
+        # workflow_qa recompose-section (pinned by the lighting workflow manifest) aborts inside this band after the
+        # image, so it is a stop before any money is spent, not a caveat
         self.proposal['target']['box'].update(xMin=.05);self.proposal['receiver']['samples']=[]
         a=parsed(self.context,self.proposal)
-        self.assertEqual(a['status'],'ready_for_segmentation');self.assertIn('SUPPORT_SELECTION_TOUCHES_GUARD',a['caveats'])
+        self.assertEqual(a['status'],'needs_review');self.assertIn('SUPPORT_SELECTION_TOUCHES_GUARD',a['reviewReasons'])
     def test_bad_shadow_or_protected_box_is_a_caveat_not_a_parser_break(self):
         self.proposal['shadow'].update(status='single_local_attributable',box={'xMin':.6,'yMin':.5,'xMax':.6,'yMax':.6})
         self.proposal['protectedFeatures']=[{'id':'cup','box':{'xMin':.7,'yMin':.7,'xMax':.7,'yMax':.8},'evidenceIds':['source_cut'],'notes':'Keep.'},
@@ -75,10 +77,10 @@ class FinishFirstSupportTests(unittest.TestCase):
         self.assertEqual(reasons,[]);self.assertIn('OBJECT_MASK_HOLES_FILLED',stats['caveats']);self.assertEqual(a[805,705],255)
     def test_empty_mask_is_still_a_hard_stop(self):
         self.assertIn('OBJECT_MASK_EMPTY_OR_TOO_SMALL',s.derive({'target_object':np.zeros_like(self.mask)},self.proposal)[1])
-    def test_only_the_cut_edge_stops_and_guard_band_is_a_caveat(self):
+    def test_an_object_100px_from_the_cut_edge_stops_before_the_image(self):
         near=np.zeros_like(self.mask);near[100:200,600:700]=True
         _,reasons,stats=s.derive({'target_object':near},self.proposal)
-        self.assertEqual(reasons,[]);self.assertIn('SUPPORT_TOUCHES_GUARD',stats['caveats'])
+        self.assertEqual(reasons,['SUPPORT_TOUCHES_GUARD']);self.assertNotIn('SUPPORT_TOUCHES_GUARD',stats['caveats'])
         edge=np.zeros_like(self.mask);edge[5:200,600:700]=True
         self.assertIn('SUPPORT_TOUCHES_CUT_EDGE',s.derive({'target_object':edge},self.proposal)[1])
     def test_large_domain_and_protected_overlap_are_caveats(self):

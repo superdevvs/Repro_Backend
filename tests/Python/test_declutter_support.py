@@ -23,11 +23,12 @@ class SupportTests(unittest.TestCase):
         self.assertIn('OBJECT_MASK_EMPTY_OR_TOO_SMALL',s.derive({'target_object':empty},self.proposal)[1])
         for m,reason in [(split,'OBJECT_MASK_DISCONNECTED'),(hole,'OBJECT_MASK_HOLES_FILLED')]:
             _,reasons,stats=s.derive({'target_object':m},self.proposal);self.assertEqual(reasons,[]);self.assertIn(reason,stats['caveats'])
-    def test_large_guard_and_protected_feature_are_caveats(self):
+    def test_large_domain_and_protected_feature_are_caveats_but_the_guard_band_stops(self):
         large=self.mask.copy();large[600:1100,600:1100]=True
         guard=np.zeros_like(self.mask);guard[204:300,600:700]=True
         self.assertIn('EDIT_DOMAIN_TOO_LARGE',s.derive({'target_object':large},self.proposal)[2]['caveats'])
-        self.assertIn('SUPPORT_TOUCHES_GUARD',s.derive({'target_object':guard},self.proposal)[2]['caveats'])
+        # the pinned recompose step needs a 10% margin, so the guard band must stop before any image is bought
+        self.assertIn('SUPPORT_TOUCHES_GUARD',s.derive({'target_object':guard},self.proposal)[1])
         self.proposal['protectedFeatures']=[{'box':{'xMin':.3,'xMax':.4,'yMin':.3,'yMax':.5}}]
         self.assertIn('PROTECTED_FEATURE_OVERLAP',s.derive({'target_object':self.mask},self.proposal)[2]['caveats'])
     def test_unlocated_protection_and_detached_legacy_shadow_are_caveats(self):
