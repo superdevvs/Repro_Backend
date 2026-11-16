@@ -7,8 +7,9 @@ use Illuminate\Support\Str;
  * Text-only "furniture" masks of one paid staging draft (no planner boxes, 1-3 masks).
  *
  * The masks are only support for compositing the draft; they claim no object identity, contact or
- * clearance. The provider may return several instances, so 1-3 valid masks are usable; any other
- * set means there is no usable furniture outline, the only stop allowed between image and result.
+ * clearance. The provider may return several instances; the valid ones among 1-3 returned masks are
+ * used and invalid fragments are dropped. With none left, the draft is still composited inside the
+ * layout's planned region (see room_object_worker.py) and the item ends Needs review.
  */
 class LabRoomFurnitureTextMaskPlan
 {
@@ -59,12 +60,24 @@ class LabRoomFurnitureTextMaskPlan
     public function usable(array $masks): bool
     {
         if(!array_is_list($masks)||count($masks)<1||count($masks)>self::MAX_MASKS)return false;
-        foreach($masks as $mask){
-            if(!is_array($mask)||($mask['width']??null)!==2048||($mask['height']??null)!==2048||!is_int($mask['positivePixels']??null)
-                ||$mask['positivePixels']<self::MIN_PIXELS||!is_string($mask['sha256']??null)||!preg_match('/\A[a-f0-9]{64}\z/D',$mask['sha256']))return false;
-            $b=$mask['bounds']??null;if(!is_array($b)||!array_is_list($b)||count($b)!==4)return false;foreach($b as $n)if(!is_int($n))return false;
-            if($b[0]<0||$b[1]<0||$b[2]>2048||$b[3]>2048||$b[0]>=$b[2]||$b[1]>=$b[3]||$mask['positivePixels']>($b[2]-$b[0])*($b[3]-$b[1]))return false;
-        }
+        foreach($masks as $mask)if(!$this->valid($mask))return false;
         return true;
+    }
+    /**
+     * Indexes of the valid masks of a 1-3 mask receipt, in receipt order. Invalid fragments (for example
+     * under 128 px) are dropped instead of making the whole set unusable; an empty list means no usable outline.
+     * @return list<int>
+     */
+    public function validIndexes(array $masks): array
+    {
+        if(!array_is_list($masks)||count($masks)<1||count($masks)>self::MAX_MASKS)return [];
+        return array_keys(array_filter($masks,fn($mask)=>$this->valid($mask)));
+    }
+    private function valid(mixed $mask): bool
+    {
+        if(!is_array($mask)||($mask['width']??null)!==2048||($mask['height']??null)!==2048||!is_int($mask['positivePixels']??null)
+            ||$mask['positivePixels']<self::MIN_PIXELS||!is_string($mask['sha256']??null)||!preg_match('/\A[a-f0-9]{64}\z/D',$mask['sha256']))return false;
+        $b=$mask['bounds']??null;if(!is_array($b)||!array_is_list($b)||count($b)!==4)return false;foreach($b as $n)if(!is_int($n))return false;
+        return !($b[0]<0||$b[1]<0||$b[2]>2048||$b[3]>2048||$b[0]>=$b[2]||$b[1]>=$b[3]||$mask['positivePixels']>($b[2]-$b[0])*($b[3]-$b[1]));
     }
 }

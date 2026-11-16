@@ -41,9 +41,9 @@ class LabRoomFurnishingMasks implements LabMachineSegmentationCapability
             'sourceRole'=>LabRoomFurnitureTextMaskPlan::ROLE,'inputSha256'=>$run->output_sha256,'profileId'=>$route['profileId'],'routeSha256'=>$routeSha]];
     }
     /**
-     * The retained masks of a draft mask step when 1-3 of them are valid, else null (no usable furniture outline).
+     * The valid retained masks of a draft mask step (invalid fragments dropped), else null (no usable furniture outline).
      * The shared segmentation service marks 2-3 returned masks as needs_review (it expects one identity);
-     * those retained files are re-verified here byte for byte instead.
+     * every retained file is re-verified here byte for byte instead, and the kept receipt indexes are returned.
      */
     public function draftMasks(IguideLabWorkflowStep $step): ?array
     {
@@ -55,14 +55,15 @@ class LabRoomFurnishingMasks implements LabMachineSegmentationCapability
             &&LabMachineSegmentationPlan::canonicalHash($record->data['assetBinding']??[])===LabMachineSegmentationPlan::canonicalHash($owned['binding'])
             &&($record->result['maskOrigin']??null)==='model_segmentation'&&($record->result['automaticAcceptance']??null)===false,422);
         $receipt=$record->result['receipt']??[];$assets=$record->result['artifacts']??[];
-        if(($receipt['providerRequestId']??null)!==$record->provider_request_id||!is_array($receipt['masks']??null)||!$text->usable($receipt['masks'])||count($assets)!==count($receipt['masks']))return null;
+        if(($receipt['providerRequestId']??null)!==$record->provider_request_id||!is_array($receipt['masks']??null)||count($assets)!==count($receipt['masks']))return null;
+        $indexes=$text->validIndexes($receipt['masks']);if($indexes===[])return null;
         if($record->status==='completed')abort_unless(($record->result['association']['status']??null)===$this->readyAssociationStatus(),422);
         $base='iguide-lab/'.$step->project_id.'/machine-segmentations/'.$record->id;$loader=app(LabInteriorRoomContext::class);
         $loader->file($step->project_id,$base.'/provider-result.json',$receipt['rawResponseSha256'],LabMachineSegmentationTransport::MAX_RESPONSE_BYTES);
         $files=[];foreach($assets as $i=>$asset){abort_unless(($asset['index']??null)===$i&&($asset['path']??null)===$base.'/mask-'.$i.'.png',422);
             $path=$loader->file($step->project_id,$asset['path'],$asset['sha256'],LabMachineSegmentationTransport::MAX_MASK_BYTES);
-            abort_unless($this->describeMask(file_get_contents($path))===$receipt['masks'][$i],422);$files[]=['path'=>$path,'sha256'=>$asset['sha256']];}
-        return ['stepId'=>$step->id,'recordId'=>$record->id,'plan'=>$plan,'receipt'=>$receipt,'artifacts'=>$assets,'files'=>$files];
+            abort_unless($this->describeMask(file_get_contents($path))===$receipt['masks'][$i],422);if(in_array($i,$indexes,true))$files[]=['path'=>$path,'sha256'=>$asset['sha256']];}
+        return ['stepId'=>$step->id,'recordId'=>$record->id,'plan'=>$plan,'receipt'=>$receipt,'artifacts'=>$assets,'files'=>$files,'indexes'=>$indexes];
     }
     private function owned(IguideLabWorkflowStep $step): array
     {

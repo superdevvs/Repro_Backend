@@ -118,7 +118,8 @@ class LabInteriorRoomWorkflow
     private const SETTLED=['completed','failed','needs_attention','needs_review'];
     /**
      * Staging: the paid draft always reaches a composite and the independent final check. The draft's own
-     * check never stops it (it becomes a caveat); only "no usable furniture outline" may stop before a result.
+     * check never stops it (it becomes a caveat). Invalid mask fragments are dropped; with no usable furniture
+     * outline at all, the whole draft is blended inside the layout's planned region and the item ends Needs review.
      */
     private function finishDraft(IguideLabWorkflow $workflow,IguideLabWorkflowItem $item,IguideLabProject $project,IguideLabRun $run,IguideLabWorkflowStep $imageStep,
         \App\Models\IguideLabRoomAssessment $layout,IguideLabSection $section,array $route,array $parents,array $data): void
@@ -129,13 +130,12 @@ class LabInteriorRoomWorkflow
         $masks=app(LabRoomFurnishingMasks::class);$maskStep=$masks->reserveDraft($item,$run,$imageStep);
         $maskRecord=app(LabMachineSegmentations::class)->start($maskStep);$data['roomObjectSegmentationId']=$maskRecord->id;
         if(!in_array($maskRecord->status,self::SETTLED,true)){$owner->save($item,'checking',$data);return;}
-        $usable=$masks->draftMasks($maskStep);
-        if($usable===null){$this->hold($item,'staging_furniture_mask_unavailable','The staging draft was made, but no usable furniture outline was found to place it into the photo.',$data);return;}
+        $usable=$masks->draftMasks($maskStep)??['recordId'=>$maskRecord->id,'files'=>[],'indexes'=>[]];
         $artifacts=app(LabRoomFurnishingArtifacts::class);
         $composition=$steps->reserve($item,'room-composition','composition',['runId'=>$run->id,'outputSha256'=>$artifacts->runHash($run),'candidateAssessmentId'=>$candidate->id,
             'candidateAssessmentSha256'=>$candidate->status==='completed'&&is_string($candidate->result_sha256)?$candidate->result_sha256:LabMachineSegmentationPlan::canonicalHash(['id'=>$candidate->id,'status'=>$candidate->status]),
             'layoutAssessmentId'=>$layout->id,'layoutAssessmentSha256'=>$layout->result_sha256,'sectionId'=>$section->id,'routeSha256'=>LabMachineSegmentationPlan::canonicalHash($route),
-            'draftMasks'=>['stepId'=>$maskStep->id,'recordId'=>$usable['recordId'],'sha256'=>array_column($usable['files'],'sha256')],
+            'draftMasks'=>['stepId'=>$maskStep->id,'recordId'=>$usable['recordId'],'sha256'=>array_column($usable['files'],'sha256'),'indexes'=>$usable['indexes']],
             'recipe'=>$workflow->policy['artifacts'],'roomRecipe'=>$workflow->policy['interiorRoomWorkflow'],'supportRecipe'=>$workflow->policy['interiorRoomSupport']]);
         if(!$composition->child_id){$composite=$artifacts->composeDraft($item,$composition,$run);$steps->attach($composition,$composite->id);$data['compositeId']=$composite->id;$owner->save($item,'preparing',$data);return;}
         $composite=IguideLabComposite::where('project_id',$item->project_id)->findOrFail($composition->child_id);$artifacts->verifyComposite($item,$composite,$composition,$run);$data['compositeId']=$composite->id;
@@ -146,6 +146,7 @@ class LabInteriorRoomWorkflow
         if(!$evaluation)$evaluation=app(LabWorkflowEvaluations::class)->start($evaluationStep);else $owner->reconcileQueuedChild($evaluationStep,$evaluation);
         $steps->attach($evaluationStep,$evaluation->id);$data['evaluationId']=$evaluation->id;
         if(!$this->completed($item,$evaluation,'checking',$data))return;$verified=app(LabWorkflowEvaluations::class)->verifiedCompleted($item,$evaluation);$passed=$verified['qualityStatus']==='passed_automated_checks';
+        if($artifacts->draftRegionUsed($item,$composite)){$this->hold($item,'staging_furniture_outline_unavailable','Furniture was added by blending the draft over the planned furniture and floor area, because no clean furniture outline was found. Review the result before use.',$data);return;}
         $owner->finish($item,$passed?'ready':'needs_review',$passed?null:'staging_furniture_requires_review',$passed?null:'Furniture was added. The final check did not confirm every detail; review the result before use.',$data);
     }
     private function completed(IguideLabWorkflowItem $item,$record,string $stage,array $data): bool
