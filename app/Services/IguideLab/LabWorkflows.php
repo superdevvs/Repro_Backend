@@ -38,6 +38,12 @@ class LabWorkflows
         if ($prior) { abort_unless(hash_equals($prior->request_hash, $identity), 409, 'This workflow request already has different source or choices.'); return $prior; }
         abort_unless(count($items)<=LabWorkflowScheduler::maxItems(),422,'The selected capture count exceeds the currently enabled workflow capability.');
         $policy = app(LabWorkflowPolicy::class)->snapshot();
+        // Virtual staging runs on the interior room engine; the item remembers its public name (LabStagingRoomAlias).
+        if ($alias = LabStagingRoomAlias::capture($policy)) {
+            $policy['stagingRoomAlias'] = $alias;
+            $items = array_map(fn ($entry) => $entry['preset'] === LabStagingRoomAlias::PUBLIC_PRESET
+                ? ['preset' => LabStagingRoomAlias::ENGINE_PRESET, 'publicPreset' => LabStagingRoomAlias::PUBLIC_PRESET] + $entry : $entry, $items);
+        }
         if(LabWorkflowScheduler::enabled())$policy['scheduler']=app(LabWorkflowScheduler::class)->snapshot($project,$items,$policy);
         [$workflow, $created] = LockedWrite::run(fn () => DB::transaction(function () use ($project, $input, $identity, $policy, $items) {
             IguideLabProject::whereKey($project->id)->update(['updated_at' => now()]); abort_unless($project->fresh()->active(), 401);
@@ -50,7 +56,8 @@ class LabWorkflows
             $record = IguideLabWorkflow::create(['id'=>$id,'project_id' => $project->id, 'request_id' => $input['requestId'], 'request_hash' => $identity, 'policy' => $savedPolicy, 'status' => 'queued']);
             foreach ($items as $position => $entry) IguideLabWorkflowItem::create(['workflow_id' => $record->id, 'project_id' => $project->id,
                 'case_id' => $entry['caseId'], 'position' => $position, 'preset' => $entry['preset'], 'style' => $entry['style'],
-                'instructions' => $entry['instructions'], 'source' => $entry['source'], 'status' => 'queued', 'data' => ['reviewReasons' => [], 'planRevision' => 1]]);
+                'instructions' => $entry['instructions'], 'source' => $entry['source'], 'status' => 'queued',
+                'data' => ['reviewReasons' => [], 'planRevision' => 1] + (isset($entry['publicPreset']) ? ['publicPreset' => $entry['publicPreset']] : [])]);
             return [$record, true];
         }), 'iguide-lab.workflow-reserve');
         if ($created) {
@@ -359,7 +366,9 @@ class LabWorkflows
         $data = $item->data; $result = null;
         $framing = null; $roomRouting = null;
         $workflow=IguideLabWorkflow::where('project_id',$item->project_id)->findOrFail($item->workflow_id);
-        if(LabInteriorRoomPolicy::enabled($workflow->policy,$item->preset)) {
+        // A staging item on the room engine keeps the old staging item shape: no room or material read models.
+        $stagingAlias=LabStagingRoomAlias::isAlias($workflow->policy,$item);
+        if(!$stagingAlias&&LabInteriorRoomPolicy::enabled($workflow->policy,$item->preset)) {
             // Historical read dispatch follows the persisted route, never current enablement.
             $routeVersion=$data['interiorRoomRoute']['version']??LabInteriorRoomProfiles::VERSION;
             abort_unless(in_array($routeVersion,[LabInteriorRoomProfiles::VERSION,LabRoomEvidenceDraftPolicy::ROUTE_VERSION],true),422,'Unknown persisted room routing read version.');
@@ -382,7 +391,7 @@ class LabWorkflows
                 'assessments'=>$records,'nativeDetailFollowupAvailable'=>false,'branchSwitchAllowed'=>false];
         }
         $materialInspection=null;
-        if(LabInteriorDesignPolicy::enabled($workflow->policy,$item->preset)&&LabInteriorMaterialDetails::selected($workflow->policy['interiorAssessments']??[])
+        if(!$stagingAlias&&LabInteriorDesignPolicy::enabled($workflow->policy,$item->preset)&&LabInteriorMaterialDetails::selected($workflow->policy['interiorAssessments']??[])
             &&(!LabInteriorRoomPolicy::enabled($workflow->policy,$item->preset)||($data['interiorRoomRoute']['profileId']??null)===LabInteriorRoomProfiles::MATERIALS)) {
             $records=[];foreach(['interior-cut'=>'cut','interior-cut-followup'=>'cut-followup','interior-candidate'=>'candidate'] as $key=>$phase){
                 $step=IguideLabWorkflowStep::where('project_id',$item->project_id)->where('item_id',$item->id)->where('kind','analysis')->where('step_key',$key)->first();
@@ -405,7 +414,7 @@ class LabWorkflows
             $result = ['kind' => 'composite', 'id' => $composite->id, 'preview' => $dto['preview'], 'native' => $dto['native'], 'sourceSha256' => $item->source['sha256']];
         }
         $label = match ($item->status) { 'queued', 'analyzing', 'preparing' => 'Preparing', 'editing', 'repairing' => 'Editing', 'checking' => 'Checking', 'ready' => 'Ready', 'cancelled' => 'Cancelled', 'failed' => 'Failed', default => 'Needs review' };
-        return ['id' => $item->id, 'caseId' => $item->case_id, 'preset' => $item->preset, 'style' => $item->style, 'status' => $item->status,
+        return ['id' => $item->id, 'caseId' => $item->case_id, 'preset' => LabStagingRoomAlias::publicPreset($item), 'style' => $item->style, 'status' => $item->status,
             'stageLabel' => $label, 'attemptCount' => $item->attempt_count, 'result' => $result, 'reviewReasons' => $data['reviewReasons'] ?? [],
             ...($framing === null ? [] : ['sourceFraming' => $framing]),
             ...($roomRouting === null ? [] : ['roomRouting' => $roomRouting]),

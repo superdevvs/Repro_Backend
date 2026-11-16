@@ -52,6 +52,7 @@ class LabInteriorRoomWorkflow
         $routeRecord=$service->completed($item,$routeRecord->id,'route');
         if($routeRecord->result['route']['status']!=='route_candidate'){$data['roomRouteFindings']=$routeRecord->result['route'];$this->hold($item,'interior_source_profile_unsupported','The source room or requested scope requires an unsupported furnishing, material or optical change.',$data);return;}
         $route=app(LabInteriorRoomRoutes::class)->bind($item,$routeRecord);$item->refresh();$data['interiorRoomRoute']=$route;
+        if($stop=LabStagingRoomAlias::routeStop($workflow,$item,$route['profileId'])){$this->hold($item,$stop[0],$stop[1],$data);return;}
         if($route['profileId']===LabInteriorRoomProfiles::MATERIALS){$owner->save($item,'analyzing',$data);app(LabInteriorDesignWorkflow::class)->advance($workflow,$item,$project);return;}
         $framing=$service->start($service->reserve($item,'framing',['routeId'=>$routeRecord->id]));$data['roomFramingId']=$framing->id;
         if(!$this->completed($item,$framing,'analyzing',$data))return;$framing=$service->completed($item,$framing->id,'framing');
@@ -70,13 +71,14 @@ class LabInteriorRoomWorkflow
         $maskAuthority=app(LabRoomFurnishingMasks::class);$floorStep=$maskAuthority->reserve($item,$layout);$floorRecord=app(LabMachineSegmentations::class)->start($floorStep);$data['roomFloorSegmentationId']=$floorRecord->id;
         if(!$this->completed($item,$floorRecord,'checking',$data))return;$floor=$maskAuthority->verifiedReceipt($floorStep);
         $draft=LabRoomEvidenceDraftPolicy::selected($workflow->policy['interiorRoomAssessments']??[])!==null;$priorCandidate=null;
-        for($ordinal=1;$ordinal<=($draft?2:1);$ordinal++){
+        for($ordinal=1;$ordinal<=LabStagingRoomAlias::imageLimit($workflow,$item,$draft?2:1);$ordinal++){
             $imageAdapter=app(LabRoomFloorWitnessUnion::selected($layout->data['recipe'])?LabRoomFloorUnionImageDraft::class:($draft?LabRoomEvidenceImageDraft::class:LabRoomFurnishingImageDraft::class));
             $imageInput=['caseId'=>$section->derived_case_id,'preset'=>'interior-design','style'=>$item->style,'modelId'=>$workflow->policy['modelId'],
                 'roomPlanId'=>$layout->id,'floorReceiptSha256'=>LabMachineSegmentationPlan::canonicalHash($floor),
                 'prompt'=>$draft?$imageAdapter->prompt($layout,$priorCandidate):$imageAdapter->prompt($layout),
                 'options'=>['sectionId'=>$section->id,'complexity'=>'low','promptMode'=>'machine-interior-furnishing-plan']];
             if($draft)$imageInput['roomEvidenceDraft']=$imageAdapter->evidenceBinding($item,$layout,$ordinal,$priorCandidate?->id);
+            if(!IguideLabWorkflowStep::where('item_id',$item->id)->where('step_key',$ordinal===1?'room-image':'room-image-2')->exists()&&($stop=LabStagingRoomAlias::capacityStop($workflow,$item))){$this->hold($item,$stop[0],$stop[1],$data);return;}
             $imageStep=$steps->reserve($item,$ordinal===1?'room-image':'room-image-2','image',$imageInput);
             $run=IguideLabRun::where('project_id',$project->id)->where('request_id',$imageStep->request_id)->first();
             if(!$run)$run=app(LabService::class)->start($project,$imageInput+['requestId'=>$imageStep->request_id],$steps->invocation($imageStep),null,null,$layout);
