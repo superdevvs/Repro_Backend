@@ -91,7 +91,8 @@ class IguideLabTourOperatorCommandTest extends TestCase
         config(['iguide-lab-tour.tour_analysis_enabled' => true, 'iguide-lab.openai_primary_key_path' => $keyFile, 'services.openai.api_key' => 'fixture-fallback']);
         $token = str_repeat('c', 64);
         [$project, $analysis] = $this->seedAnalysis($token);
-        $this->mock(LabTourAnalyses::class, function (MockInterface $mock) use ($project, $analysis) {
+        // Partial: only create() is replaced; the receipt's surveyCallsLeft() (WP3) runs for real on the seeded rows.
+        $this->partialMock(LabTourAnalyses::class, function (MockInterface $mock) use ($project, $analysis) {
             $mock->shouldReceive('create')->once()->with(
                 Mockery::on(fn ($given) => $given instanceof IguideLabProject && $given->id === $project->id),
                 Mockery::on(fn ($input) => is_array($input) && array_keys($input) === ['requestId', 'importId', 'preset']

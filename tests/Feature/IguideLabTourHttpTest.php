@@ -33,7 +33,8 @@ use Tests\TestCase;
 /**
  * HTTP layer of the tour analysis layer (spec 10, 13.6): routes, guards, capabilities, the record and progress
  * assembly from one read snapshot, and the scheduled monitor sweeper (9.9). WP2-WP4 services are bound as
- * TourLayerDoubles (spec 14), so these tests cover the WP5 code only; the end-to-end tests come with integration.
+ * TourLayerDoubles (spec 14), so these tests cover the WP5 code only; IguideLabTourEndToEndTest runs the same routes
+ * against the real services.
  */
 class IguideLabTourHttpTest extends TestCase
 {
@@ -618,7 +619,14 @@ class IguideLabTourHttpTest extends TestCase
         $runJobs = $this->pushed(\App\Jobs\MonitorIguideLabTourRun::class);
         $this->assertEqualsCanonicalizing([$dead->id, $neverClaimed->id], array_map(fn ($job) => $job->analysisId, $analysisJobs));
         $this->assertEqualsCanonicalizing([$deadRun->id, $boundCancelled->id], array_map(fn ($job) => $job->runId, $runJobs));
-        foreach (array_merge($analysisJobs, $runJobs) as $job) $this->assertNull($job->token, 'a new chain');
+        // A new chain (9.8): no seq; the real jobs fill a null token with a fresh UUID in their constructor.
+        $tokens = [];
+        foreach (array_merge($analysisJobs, $runJobs) as $job) {
+            $this->assertNull($job->seq, 'a new chain');
+            $this->assertTrue($this->isTourUuid($job->token), 'a fresh chain token');
+            $tokens[] = $job->token;
+        }
+        $this->assertSame(count($tokens), count(array_unique($tokens)), 'every pushed chain has its own token');
         $this->assertSame([$this->queue->baselineLevel], array_values(array_unique($this->queue->levels)));
         $this->assertNotContains($fresh->id, array_map(fn ($job) => $job->analysisId, $analysisJobs));
         $this->assertNotContains($idle->id, array_map(fn ($job) => $job->analysisId, $analysisJobs));

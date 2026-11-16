@@ -20,8 +20,8 @@ final class LabTourErrors
     public const UUID_RULE = '/\A(?:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}|0{8}-0{4}-0{4}-0{4}-0{12}|f{8}-f{4}-f{4}-f{4}-f{12})\z/Di';
 
     /**
-     * Contract key (TOUR_CONFLICT_MESSAGES, tourContract.ts) => [status, code, text]. requestReused is backend-only
-     * until the owner approves adding it to the contract (spec 12.1, 15.2 item 1).
+     * Contract key (TOUR_CONFLICT_MESSAGES, tourContract.ts) => [status, code, text]. requestReused is a contract key:
+     * the conditional hunk of spec 12.1 (15.2 item 1) was applied to tourContract.ts with D1 (build-notes-wp5.md).
      */
     public const MESSAGES = [
         'staleSelection' => [409, 'tour_selection_stale', 'The selection changed since it was loaded. Reload and try again.'],

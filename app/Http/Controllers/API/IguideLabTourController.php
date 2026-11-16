@@ -109,9 +109,13 @@ class IguideLabTourController extends Controller
         if (! is_int($input['selectionRevision'])) throw LabTourErrors::unprocessable('tour_invalid_type');
         $input = ['requestId' => strtolower($input['requestId']), 'preset' => $input['preset'], 'selectionRevision' => $input['selectionRevision'],
             'selectionSha256' => strtolower($input['selectionSha256'])];
-        [$run, $created] = app(LabTourRuns::class)->create($analysis, $input);
+        // LabTourRuns::create() returns [run, created, dto]: a new run's DTO is built inside its creating transaction and a
+        // replay's in one read snapshot (9.1 step 3.12, 10.7). A read snapshot here is only the fallback for a two-element answer.
+        $result = app(LabTourRuns::class)->create($analysis, $input);
+        [$run, $created] = $result;
+        $dto = is_array($result[2] ?? null) ? $result[2] : $records->runDto($analysis, $run->id);
 
-        return response()->json(['data' => $records->runDto($analysis, $run->id)], $created ? 202 : 200);
+        return response()->json(['data' => $dto], $created ? 202 : 200);
     }
 
     /** E7: "Use this edit anyway" or Undo; the updated run (10.8, D13). */
