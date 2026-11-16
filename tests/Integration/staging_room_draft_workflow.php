@@ -2,7 +2,7 @@
 /** Virtual staging on the room engine: one paid draft always ends with a viewable result. Disposable local Docker, network disabled, synthetic provider responses only. */
 declare(strict_types=1);
 $code='/app';$root=(getenv('ROOM_PROOF_ROOT')?:'/proof').'/'.($argv[1]??'attempt-1');$scenario=$argv[2]??'bedroom';$floorUnion=getenv('ROOM_FLOOR_UNION_PROOF')==='1';
-if(!in_array($scenario,['staging-ready','staging-held-draft','staging-three-masks','staging-mask-fragment','staging-no-mask','staging-furnished','staging-no-capacity'],true))throw new RuntimeException('Unknown scenario');
+if(!in_array($scenario,['staging-ready','staging-held-draft','staging-three-masks','staging-mask-fragment','staging-no-mask','staging-furnished','staging-no-capacity','staging-layout-soft-hold'],true))throw new RuntimeException('Unknown scenario');
 if(is_dir($root))throw new RuntimeException('Immutable proof directory already exists');mkdir($root,02770,true);chmod($root,02770);$db=$root.'/test.sqlite';touch($db);
 foreach(['APP_ENV'=>'testing','APP_KEY'=>'base64:'.base64_encode(str_repeat('k',32)),'DB_CONNECTION'=>'sqlite','DB_DATABASE'=>$db,'CACHE_STORE'=>'array','QUEUE_CONNECTION'=>'sync','SESSION_DRIVER'=>'array','MAIL_MAILER'=>'array','LOG_CHANNEL'=>'single','CLAMAV_SCAN_ON_UPLOAD'=>'false'] as $k=>$v){putenv($k.'='.$v);$_ENV[$k]=$v;$_SERVER[$k]=$v;}
 $loader=require $code.'/vendor/autoload.php';$app=require $code.'/bootstrap/app.php';$app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap();
@@ -85,7 +85,7 @@ Http::fake(function($request)use(&$calls,$maskBytes,$scenario,$profile,$roles,$b
                     'sourceChecks'=>array_fill_keys(LabRoomEvidenceDraftPolicy::SOURCE_CHECKS,['status'=>'pass','evidenceViewIds'=>$p::ids(),'reason'=>'Synthetic visible source constraint, no real calibration claim.']),
                     'anchors'=>array_map(fn($id)=>['objectId'=>$id,'sourceAnchor'=>'Visible synthetic original wall and floor.','orientation'=>'Toward the original centre.','knownExclusions'=>'Keep the source doorway approach clear.'],$roles),
                     'candidateQuestions'=>[['id'=>'frame_margin','reason'=>'Actual candidate extents still need independent review.']]];
-                if($scenario==='source-hold'){$value['status']='needs_review';$value['objects']=[];$value['sourceFloor']=null;$value['styleFeatures']=[];$value['draftEvidence']['sourceChecks']['receiver_observability']['status']='uncertain';$value['draftEvidence']['anchors']=[];$value['draftEvidence']['candidateQuestions']=[];}
+                if(in_array($scenario,['source-hold','staging-layout-soft-hold'],true)){$value['status']='needs_review';$value['objects']=[];$value['sourceFloor']=null;$value['styleFeatures']=[];$value['draftEvidence']['sourceChecks']['receiver_observability']['status']='uncertain';$value['draftEvidence']['anchors']=[];$value['draftEvidence']['candidateQuestions']=[];}
             }else{
                 $value['sourceFloor']=$c['layout']['result']['sourceFloor'];$value['obligationClosures']=[['id'=>'verify_frame_margin','status'=>'pass','evidenceViewIds'=>['source','candidate'],'reason'=>'Synthetic fully observed candidate extent.']];
                 if($c['imageOrdinal']===1&&$scenario!=='staging-ready'){
@@ -151,7 +151,9 @@ saveJson($root.'/proof.json',$proof);
 $expected=in_array($scenario,['staging-ready','staging-three-masks','staging-mask-fragment'],true)?'ready':'needs_review';check($workflow->status===$expected,'Unexpected terminal: '.$workflow->status.' '.json_encode($item->data['reviewReasons']??null));
 $publicItem=app(LabWorkflows::class)->dto($workflow)['items'][0];check($publicItem['preset']==='staging','Staging must keep its public preset');
 check(array_keys($publicItem)===['id','caseId','preset','style','status','stageLabel','attemptCount','result','reviewReasons','automation','createdAt','updatedAt'],'Staging item shape changed: '.implode(',',array_keys($publicItem)));
-$stops=['staging-furnished'=>'staging_room_not_empty','staging-no-capacity'=>'generation_capacity_unavailable'];
+// staging-layout-soft-hold characterises a KNOWN GAP (Deploy 2.1 part 1 not done): an empty room whose layout answer is a soft
+// needs_review (stored b60cc0 / 90d438 pattern) still stops before the image. Flip this entry when soft layout holds become caveats.
+$stops=['staging-furnished'=>'staging_room_not_empty','staging-no-capacity'=>'generation_capacity_unavailable','staging-layout-soft-hold'=>'interior_actual_cut_requires_review'];
 if(isset($stops[$scenario])){check($publicItem['result']===null&&$publicItem['reviewReasons'][0]['code']===$stops[$scenario],'Expected a clear stop before any image: '.json_encode($publicItem['reviewReasons']));check(IguideLabRun::count()===0,'No image may be bought');}
 else{check(($publicItem['result']['kind']??null)==='composite'&&$publicItem['result']['native']!==null,'A paid staging draft must end with a viewable result');check(App\Models\IguideLabComposite::count()===1,'Exactly one composite');
     check(IguideLabWorkflowEvaluation::where('status','completed')->count()===1,'The final check must run on the composite');
