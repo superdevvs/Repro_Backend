@@ -93,6 +93,14 @@ class FinishFirstSupportTests(unittest.TestCase):
         self.assertEqual(reasons,[]);self.assertEqual(a[960,880],255)  # inside box and next to the object
         self.assertEqual(a[960,1300],0)  # inside the box but far from the object: never a long-shadow paste
         self.assertGreater(stats['shadowPixels'],0)
+    def test_a_selected_group_replaces_its_whole_box_so_unmasked_neighbours_go_too(self):
+        # One mask request may outline only one item of a touching group; the analysis box covers them all.
+        box={'xMin':640/2048,'yMin':740/2048,'xMax':1000/2048,'yMax':960/2048}
+        self.proposal['target']={'count':'multiple_or_uncertain','box':box}
+        a,reasons,stats=s.derive({'target_object':self.mask},self.proposal)
+        self.assertEqual(reasons,[]);self.assertEqual(a[850,980],255);self.assertIn('GROUP_SELECTION_BOX_REPLACED',stats['caveats'])
+        self.proposal['target']={'count':'exactly_one','box':box}
+        a,_,stats=s.derive({'target_object':self.mask},self.proposal);self.assertEqual(a[850,980],0)
     def test_no_declared_shadow_adds_nothing(self):
         self.proposal['shadow']={'status':'none_observed','box':None}
         a,_,stats=s.derive({'target_object':self.mask},self.proposal);self.assertEqual(stats['shadowPixels'],0)

@@ -45,6 +45,12 @@ def derive(masks,proposal):
     filled=ndimage.binary_fill_holes(obj)
     if np.any(filled&~obj):caveats.append('OBJECT_MASK_HOLES_FILLED')
     union=filled.copy();shadow_distance=0.0;shadow_limit=0.0;shadow_pixels=0
+    target=proposal.get('target') or {}
+    if obj.any() and target.get('count')=='multiple_or_uncertain' and protocol.valid_sample_box(target.get('box')):
+        # One mask request can outline a single member of a touching group; the analysis
+        # box encloses the whole selection, so the whole box is replaced.
+        b=target['box'];x1,y1=int(b['xMin']*2048),int(b['yMin']*2048);x2,y2=int(np.ceil(b['xMax']*2048)),int(np.ceil(b['yMax']*2048))
+        union[y1:y2,x1:x2]=True;caveats.append('GROUP_SELECTION_BOX_REPLACED')
     if obj.any():
         yy,xx=np.where(obj)
         shadow_limit=min(LIMITS['maxShadowDistancePixels'],max(8,max(int(xx.max()-xx.min()+1),int(yy.max()-yy.min()+1))*LIMITS['shadowObjectExtentFraction']))
