@@ -181,7 +181,7 @@ class LabImports
     }
     public function dto(IguideLabImport $record): array
     {
-        return ['id' => $record->id, 'requestId' => $record->request_id, 'sourceKind' => $record->source_kind, 'status' => $record->status,
+        return ['id' => $record->id, 'requestId' => $record->request_id, 'sourceKind' => $record->source_kind === 'iguide_link' ? 'link' : $record->source_kind, 'status' => $record->status,
             'error' => $record->error, 'audit' => $record->audit, 'sources' => array_map(function ($source) use ($record) {
                 unset($source['previewPath']); $source['previewAssetPath'] = '/api/iguide-lab/imports/'.$record->id.'/sources/'.$source['caseId'].'/preview'; return $source;
             }, $record->sources ?? []), 'createdAt' => $record->created_at?->toIso8601String(), 'completedAt' => $record->completed_at?->toIso8601String()];

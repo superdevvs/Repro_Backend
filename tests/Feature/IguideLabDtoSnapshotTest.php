@@ -23,7 +23,8 @@ use Tests\TestCase;
  * bytes are produced, so the responses do not depend on the PHP build. The goldens in
  * tests/Fixtures/iguide-lab/d1-snapshots were written on the untouched base with
  * D1_SNAPSHOT_WRITE=1, which only writes a golden that does not exist yet; delete a golden
- * on purpose before regenerating it.
+ * on purpose before regenerating it. The link-import golden is pre-D16 (stored kind
+ * "iguide_link") and is only read, never written, after D16.
  */
 class IguideLabDtoSnapshotTest extends TestCase
 {
@@ -64,7 +65,7 @@ class IguideLabDtoSnapshotTest extends TestCase
         $this->assertGolden('zip-import.json', $this->encode($document));
     }
 
-    public function test_link_import_dtos_match_pre_d1_goldens(): void
+    public function test_link_import_dto_differs_only_in_source_kind(): void
     {
         $this->import(0x111, 'iguide_link', 'queued', '08:10:00', audit: $this->audit('link-queued', 'https://youriguide.com/sample/', archive: false));
         $this->import(0x112, 'iguide_link', 'completed', '08:11:00', audit: $this->completedAudit('link-completed', 'https://youriguide.com/sample/', 'iguide_viewObject', 1, []),
@@ -80,7 +81,15 @@ class IguideLabDtoSnapshotTest extends TestCase
         }
         $document['index'] = $this->wire($this->withToken(self::TOKEN)->getJson('/api/iguide-lab/imports')->assertOk());
 
-        $this->assertGolden('link-import.json', $this->encode($document));
+        // D16: the pre-D1 golden carries the stored kind "iguide_link" in the three shown link DTOs and the
+        // three link rows of the index; the DTO now says "link" there and nothing else may differ.
+        $path = __DIR__.'/../Fixtures/iguide-lab/d1-snapshots/link-import.json';
+        $this->assertFileExists($path, 'Missing pre-D1 golden link-import.json; it is never regenerated after D16.');
+        $expected = str_replace('"sourceKind": "iguide_link"', '"sourceKind": "link"', file_get_contents($path), $patched);
+        $this->assertSame(6, $patched);
+        $actual = $this->encode($document);
+        $this->assertStringNotContainsString('iguide_link', $actual);
+        $this->assertSame($expected, $actual);
     }
 
     public function test_non_tour_workflow_dtos_match_pre_d1_goldens(): void

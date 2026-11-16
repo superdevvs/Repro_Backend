@@ -44,6 +44,7 @@ class IguideLabImportTest extends TestCase
     {
         $archive = $this->zip(['room.png' => $this->image]); $requestId = (string) Str::uuid();
         $first = $this->reserve($archive, $requestId); $record = IguideLabImport::findOrFail($first['id']);
+        $this->assertSame('zip', $first['sourceKind']);
         $this->assertSame('queued', $first['status']); $this->assertSame([], $first['sources']);
         $this->assertSame($first['id'], $this->reserve($archive, $requestId)['id']);
         $this->process($record); $source = $record->fresh()->sources[0]; $case = IguideLabCase::findOrFail($source['caseId']);
@@ -153,6 +154,7 @@ class IguideLabImportTest extends TestCase
         });
         $requestId = (string) Str::uuid();
         $first = $this->withToken($this->token)->postJson('/api/iguide-lab/imports', ['requestId' => $requestId, 'url' => 'https://youriguide.com/sample/?accessToken=secret&pano=13'])->assertAccepted()->json('data');
+        $this->assertSame('link', $first['sourceKind']);
         foreach (['https://youriguide.com/embed/sample/?pano=29&accessToken=secret', 'https://youriguide.com/sample/?accessToken=secret'] as $url) {
             $same = $this->withToken($this->token)->postJson('/api/iguide-lab/imports', ['requestId' => $requestId, 'url' => $url])->assertAccepted()->json('data');
             $this->assertSame($first['id'], $same['id']);
@@ -163,8 +165,37 @@ class IguideLabImportTest extends TestCase
         $this->assertStringNotContainsString('secret', json_encode($first));
         $this->assertStringNotContainsString('secret', \Illuminate\Support\Facades\DB::table('iguide_lab_imports')->where('id', $first['id'])->value('private_input'));
         $record = IguideLabImport::find($first['id']); $this->process($record);
+        // D16: the stored kind is part of the request identity and drives the download branch; only the DTO says "link".
+        $this->assertSame('iguide_link', \Illuminate\Support\Facades\DB::table('iguide_lab_imports')->where('id', $first['id'])->value('source_kind'));
+        $this->assertSame('link', $this->withToken($this->token)->getJson('/api/iguide-lab/imports')->assertOk()->json('data.0.sourceKind'));
+        $this->assertSame('link', $this->withToken($this->token)->getJson('/api/iguide-lab/imports/'.$first['id'])->assertOk()->json('data.sourceKind'));
         $this->assertSame('completed', $record->fresh()->status); $this->assertSame('https://youriguide.com/sample/', IguideLabCase::first()->tour_url);
         $this->assertStringNotContainsString('secret', json_encode(app(LabImports::class)->dto($record->fresh())));
+    }
+
+    public function test_link_dto_differs_from_stored_kind_only_in_source_kind(): void
+    {
+        $id = '7a1c0000-0000-4000-8000-000000000001'; $caseId = '7a1c0000-0000-4000-8000-000000000002';
+        $audit = ['parserVersion' => 'scan-import-json-1', 'sourceUrl' => 'https://youriguide.com/sample/', 'archiveSha256' => str_repeat('a', 64),
+            'metadataSha256' => str_repeat('b', 64), 'providerCalls' => 0, 'format' => 'iguide_viewObject', 'warnings' => [], 'expandedBytes' => 2000, 'archiveBytes' => 1000, 'sourceCount' => 1];
+        $source = ['caseId' => $caseId, 'importSourceKey' => str_repeat('c', 64), 'sourceSha256' => str_repeat('d', 64), 'width' => 2048, 'height' => 1024,
+            'panoId' => '1', 'roomId' => 'scan:'.str_repeat('e', 48), 'originalRoomId' => '7', 'roomName' => 'Kitchen', 'floorId' => '1', 'floorName' => 'Ground',
+            'metadataAuthority' => 'iguide_viewObject', 'entry' => 'sample/spheres/p1-s.jpg', 'reused' => false];
+        $preview = ['previewSha256' => str_repeat('f', 64), 'previewDimensions' => [2048, 1024]];
+        IguideLabImport::create(['id' => $id, 'project_id' => $this->project->id, 'request_id' => '7a1c0000-0000-4000-8000-000000000003', 'request_hash' => str_repeat('9', 64),
+            'source_kind' => 'iguide_link', 'private_input' => ['tour' => null, 'archivePath' => 'x', 'archiveSha256' => str_repeat('a', 64), 'metadataPath' => null, 'metadataSha256' => null],
+            'status' => 'completed', 'error' => null, 'audit' => $audit,
+            'sources' => [$source + ['previewPath' => 'iguide-lab/'.$this->project->id.'/imports/'.$id.'/'.$caseId.'-preview.png'] + $preview],
+            'completed_at' => '2026-11-14 08:01:00', 'created_at' => '2026-11-14 08:00:00', 'updated_at' => '2026-11-14 08:01:00']);
+        $record = IguideLabImport::findOrFail($id);
+        $raw = ['id' => $id, 'requestId' => '7a1c0000-0000-4000-8000-000000000003', 'sourceKind' => 'iguide_link', 'status' => 'completed', 'error' => null, 'audit' => $audit,
+            'sources' => [$source + $preview + ['previewAssetPath' => '/api/iguide-lab/imports/'.$id.'/sources/'.$caseId.'/preview']],
+            'createdAt' => '2026-11-14T08:00:00+00:00', 'completedAt' => '2026-11-14T08:01:00+00:00'];
+        $dto = app(LabImports::class)->dto($record);
+        $this->assertSame('link', $dto['sourceKind']);
+        $this->assertSame([...$raw, 'sourceKind' => 'link'], $dto);
+        $this->assertSame('iguide_link', $record->fresh()->source_kind);
+        $this->assertSame('iguide_link', \Illuminate\Support\Facades\DB::table('iguide_lab_imports')->where('id', $id)->value('source_kind'));
     }
 
     public function test_chunked_archive_resumes_verifies_assembly_and_queues_exactly_one_import(): void
