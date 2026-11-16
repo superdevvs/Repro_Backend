@@ -7,6 +7,7 @@ from PIL import Image,ImageFilter
 
 VERSION='native-source-grass-chroma/1'
 CLASSES=['paving','plants','loose_debris','non_turf_ground','capture_artifact']
+TURF_MATERIALS={'established_turf','established_dormant_turf','patchy_turf','sparse_or_missing_turf','uncertain'}
 PARAMETERS={'guidanceDimensions':[2048,1024],'maximumNativePixels':64000000,'rowBlock':64,
     'lawnErodePixelsAt2048':2,'exclusionDilatePixelsAt2048':2,'featherSigmaPixelsAt2048':2,
     'minimumSamplesAt2K':1024,'maximumChromaDeltaNorm':40.,'gamutIterations':8,
@@ -67,12 +68,14 @@ def _sample_rows(value,w,h,y0,y1,nearest=False):
 def semantic_gates(assessment,exclusion_by_class):
     reasons=[]
     if assessment.get('authorOrigin')!='machine' or assessment.get('maskSelectionOrigin')!='machine':reasons.append('HUMAN_OR_UNKNOWN_ASSISTANCE')
-    if assessment.get('lawnMaterial')!='established_turf' or assessment.get('requestedChange')!='recolor_existing_turf':reasons.append('MATERIAL_OR_TEXTURE_REPLACEMENT_REQUIRES_REVIEW')
+    # Existing turf in any condition is recolored honestly (soil stays soil); only bare-soil-only ground stops.
+    if assessment.get('lawnMaterial') not in TURF_MATERIALS or assessment.get('requestedChange')!='recolor_existing_turf':reasons.append('MATERIAL_OR_TEXTURE_REPLACEMENT_REQUIRES_REVIEW')
     if assessment.get('scope')!='all_visible_established_turf':reasons.append('PROPERTY_BOUNDARY_SCOPE_UNRESOLVED')
     declarations=assessment.get('exclusions',{})
     for name in CLASSES:
         status=declarations.get(name,'unknown');masks=exclusion_by_class.get(name,[])
-        if status not in {'supplied','none_observed'} or (status=='supplied' and not masks) or (status=='none_observed' and masks):reasons.append('EXCLUSION_EVIDENCE_UNRESOLVED:'+name)
+        # 'unsegmented' is a recorded caveat from the assessment: that role has no mask and protects nothing.
+        if status not in {'supplied','none_observed','unsegmented'} or (status=='supplied' and not masks) or (status!='supplied' and masks):reasons.append('EXCLUSION_EVIDENCE_UNRESOLVED:'+name)
     if assessment.get('uncertainties')!=[]:reasons.append('SOURCE_ASSESSMENT_UNCERTAINTY')
     return reasons
 
@@ -107,11 +110,15 @@ def compose(source,guidance_source,guidance_candidate,lawn_masks,exclusion_by_cl
     if count<max(64,round(1024*gw*gh/(2048*1024))):
         blockers.append('INSUFFICIENT_SAFE_CHROMA_SAMPLES');return {'report':report}
     source_median=np.median(src_lab[sample],axis=0);donor_median=np.median(donor_lab[sample],axis=0)
-    delta=donor_median[1:]-source_median[1:]
-    report['chromaGuidance']={'sourceMedianLab':source_median.tolist(),'candidateMedianLab':donor_median.tolist(),'deltaAB':delta.tolist(),
-        'spatialDonorPixelsCopied':0,'sourceLuminanceDeltaRequested':0}
-    if not np.isfinite(delta).all() or np.linalg.norm(delta)>40:
+    requested=donor_median[1:]-source_median[1:];delta=requested
+    if not np.isfinite(requested).all():
         blockers.append('CHROMA_GUIDANCE_OUTSIDE_OPERATIONAL_BOUND');return {'report':report}
+    if np.linalg.norm(requested)>PARAMETERS['maximumChromaDeltaNorm']:
+        # Clamp an over-strong colour shift to the operational bound instead of discarding the paid image.
+        delta=(requested*(PARAMETERS['maximumChromaDeltaNorm']/np.linalg.norm(requested))).astype(requested.dtype)
+        report['reviewFlags'].append('CHROMA_GUIDANCE_CLAMPED')
+    report['chromaGuidance']={'sourceMedianLab':source_median.tolist(),'candidateMedianLab':donor_median.tolist(),'deltaAB':requested.tolist(),
+        'appliedDeltaAB':delta.tolist(),'spatialDonorPixelsCopied':0,'sourceLuminanceDeltaRequested':0}
     del src_lab,donor_lab
     h,w=source.shape[:2];result=np.empty_like(source);effective=np.zeros((h,w),np.uint8)
     stats={'outsideAlphaChangedPixels':0,'protectedMaskChangedPixels':0,'nadirProtectedChangedPixels':0,'gamutAttenuatedPixels':0,

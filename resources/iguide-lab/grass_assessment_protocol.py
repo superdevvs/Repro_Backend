@@ -28,13 +28,18 @@ BINDINGS=['workflowItemId','captureId','nativeSourceSha256','guidanceSourceSha25
     'sourcePreparationSha256','sourceAnalysisSha256','generationSettingsSha256']
 PROMPTS={'lawn':'grass lawn','paving':'paving','plants':'plants','loose_debris':'fallen leaves and twigs',
     'non_turf_ground':'bare soil and mulch','capture_artifact':'camera and tripod'}
+MATERIALS=['established_turf','established_dormant_turf','patchy_turf','sparse_or_missing_turf','bare_soil','uncertain']
+# Only these stop the recolor; every other doubt is a recorded caveat (one paid image is always finished).
+HARD_STOPS=['NO_SOURCE_LAWN_OBSERVED','NO_SOURCE_TURF_TO_RECOLOR','PARCEL_OR_EDIT_SCOPE_UNRESOLVED']
+TEXT_LAWN_PAYLOAD={'prompt':'grass lawn','box_prompts':[],'apply_mask':False,'output_format':'png','return_multiple_masks':True,
+    'max_masks':1,'include_scores':True,'include_boxes':True}
 POLICY={'scope':'all_visible_established_turf','operation':'recolor_existing_turf','maximumSegmentationOperations':6,
     'maximumSelectionsPerRole':8,'width':2048,'height':1024}
 INSTRUCTIONS='''Assess only the exact bound source and candidate evidence. This is a source-native turf recolor workflow: original pixels and native brightness stay authoritative; candidate supplies color guidance only. Do not propose texture creation, new blades, soil coverage, object removal, parcel-boundary inference or cross-camera consistency. Read source material, lawn extent, exclusions, optical dependencies and uncertainty from ORIGINAL source images only. Use candidate only to judge whether corresponding existing turf provides natural green color guidance. Full panorama and directional views are the SAME capture, never independent cameras.
 
-Identify existing established turf and the source exclusions: paving, living plants, loose leaves/twigs, soil/mulch/non-turf ground and capture camera/tripod artifact. Only declare none_observed when the supplied source panorama and all six source directions support that finding; a missing segmentation mask is never absence evidence. Select complete visible objects/regions with approximate normalized boxes, not verified masks. Split longitude-boundary selections only when each visible segment can be independently selected; mark uncertain otherwise. Do not call thin/dense debris selectable if a 2048 x 1024 mask cannot defensibly retain it. Mark human/operator capture artifacts or a capture form not covered by camera/tripod as uncertain rather than silently protecting only a guessed cap. Preserve original uncertainty, mixed grass/soil, actual turf reflections in glazing, missing context, requested parcel subsets and unresolved material boundaries as review gates. No exact optical physics or unseen-object guarantee.
+Identify existing established turf and the source exclusions: paving, living plants, loose leaves/twigs, soil/mulch/non-turf ground and capture camera/tripod artifact. Only declare none_observed when the supplied source panorama and all six source directions support that finding; a missing segmentation mask is never absence evidence. Select complete visible objects/regions with approximate normalized boxes, not verified masks. Split longitude-boundary selections only when each visible segment can be independently selected; mark uncertain otherwise. Do not call thin/dense debris selectable if a 2048 x 1024 mask cannot defensibly retain it. Mark human/operator capture artifacts or a capture form not covered by camera/tripod as uncertain rather than silently protecting only a guessed cap. Record original uncertainty, mixed grass/soil, dormant or patchy turf, actual turf reflections in glazing, missing context and unresolved material boundaries honestly in the matching finding and notes: they become recorded caveats carried to the final check, not reasons to stop. Only no visible lawn, a bare-soil-only ground or a requested parcel subset stop the recolor. The lawn itself is segmented once by text prompt over the whole original source; lawn boxes are evidence only. No exact optical physics or unseen-object guarantee.
 
-For selections, use a nonblank descriptive id (at most 60 characters), unique within its role; these labels are evidence, not provider object IDs. The server assigns canonical segmentation identities from role and array order. visible_selectable and observed_selectable require at least one complete selection. none_observed requires an empty selections array. Uncertain, too_fragmented and too_fine_or_dense findings may retain valid approximate boxes to explain partial observations, or use an empty array; all such findings stop segmentation regardless of their boxes. Never change an uncertain status merely to supply selections.
+For selections, use a nonblank descriptive id (at most 60 characters), unique within its role; these labels are evidence, not provider object IDs. The server assigns canonical segmentation identities from role and array order. visible_selectable and observed_selectable require at least one complete selection. none_observed requires an empty selections array. Uncertain, too_fragmented and too_fine_or_dense findings may retain valid approximate boxes to explain partial observations, or use an empty array; such exclusion roles are not segmented and are recorded as caveats. Never change an uncertain status merely to supply selections.
 
 Use source_panorama plus relevant source views for source findings; none_observed exclusions, full coverage and reflections must cite all seven original source IDs. Candidate guidance must cite source_panorama and candidate_panorama. Return the strict structured schema only. No acceptance, invented segmentation result or calibrated camera claims.'''
 
@@ -54,11 +59,11 @@ def response_schema(wire=False):
     selection=_obj({'id':{**_string(60),'description':'Nonblank descriptive label, at most 60 characters, unique within this role. Not a SAM identity; the server derives that from role and array order.'},'box':box})
     finding=lambda status:_obj({'status':status,'evidenceIds':evidence,'notes':_string(700)})
     selection_finding=lambda statuses:_obj({'status':_enum(*statuses),'selections':{**_list(selection,8),
-        'description':'Selectable status requires at least one complete selection. none_observed requires []. Uncertain or fragmented/dense status may retain valid diagnostic boxes or []; it always stops segmentation.'},
+        'description':'Selectable status requires at least one complete selection. none_observed requires []. Uncertain or fragmented/dense status may retain valid diagnostic boxes or []; that role is not box-segmented and is recorded as a caveat.'},
         'evidenceIds':evidence,'notes':_string(700)})
     result=_obj({'schemaVersion':_enum(VERSION),'contextSha256':_string(64),
         'binding':_obj({key:_string(64 if key not in BINDINGS[:2] else 36) for key in BINDINGS}),
-        'summary':_string(700),'material':finding(_enum('established_turf','sparse_or_missing_turf','bare_soil','uncertain')),
+        'summary':_string(700),'material':finding(_enum(*MATERIALS)),
         'scope':finding(_enum('all_visible_established_turf','parcel_subset_requested','uncertain')),
         'lawn':selection_finding(['visible_selectable','none_observed','too_fragmented','uncertain']),
         'exclusions':_obj({name:selection_finding(['observed_selectable','none_observed','too_fine_or_dense','uncertain']) for name in CLASSES}),
@@ -77,6 +82,19 @@ def response_schema(wire=False):
                 for child in value:visit(child)
         visit(result)
     return result
+
+
+def _fit(value,schema):
+    """Shorten over-long model text and string lists instead of rejecting a paid answer."""
+    if isinstance(value,dict) and schema.get('type')=='object':
+        return {k:(_fit(v,schema['properties'][k]) if k in schema.get('properties',{}) else v) for k,v in value.items()}
+    if isinstance(value,list) and schema.get('type')=='array':
+        items=schema['items']
+        if items.get('type')=='string' and 'maxItems' in schema:value=value[:schema['maxItems']]
+        return [_fit(v,items) for v in value]
+    if isinstance(value,str) and schema.get('type')=='string' and 'enum' not in schema and schema.get('maxLength',0)>=60:
+        return value[:schema['maxLength']]
+    return value
 
 
 def validate_context(context):
@@ -124,7 +142,7 @@ def compile_request(context,image_bytes):
             mime='png' if im.format=='PNG' else 'jpeg';im.load()
         content.extend([{'type':'input_text','text':'Evidence ID: '+view['id']},{'type':'input_image','detail':'high',
             'image_url':'data:image/'+mime+';base64,'+base64.b64encode(raw).decode()}])
-    return {'model':MODEL,'store':False,'service_tier':'default','reasoning':{'effort':'high'},'max_output_tokens':12000,
+    return {'model':MODEL,'store':False,'service_tier':'default','reasoning':{'effort':'medium'},'max_output_tokens':24000,
         'instructions':INSTRUCTIONS,'input':[{'role':'user','content':content}],
         'text':{'format':{'type':'json_schema','name':'iguide_native_grass_assessment','strict':True,'schema':response_schema(True)}}}
 
@@ -148,7 +166,7 @@ def parse_response(response_text,context,execution):
             if not isinstance(part,dict) or part.get('type')!='output_text' or not isinstance(part.get('text'),str):raise ValueError('GRASS_REFUSAL_OR_UNEXPECTED_CONTENT')
             texts.append(part['text'])
     if len(texts)!=1 or len(texts[0].encode())>64*1024:raise ValueError('GRASS_SINGLE_RESPONSE_REQUIRED')
-    proposal=shared._loads(texts[0]);shared._validate(proposal,response_schema())
+    proposal=_fit(shared._loads(texts[0]),response_schema());shared._validate(proposal,response_schema())
     if proposal['contextSha256']!=context_hash or proposal['binding']!=context['binding']:raise ValueError('GRASS_PROPOSAL_BINDING_INVALID')
     known={v['id'] for v in context['evidence']}
     def evidence(finding,required,source_only=True):
@@ -158,12 +176,16 @@ def parse_response(response_text,context,execution):
     for name in ['material','scope','lawn']:evidence(proposal[name],['source_panorama'])
     for name in ['contextCoverage','reflections']:evidence(proposal[name],SOURCE_IDS)
     evidence(proposal['candidateGuidance'],['source_panorama','candidate_panorama'],False)
-    reasons=[]
+    reasons=[];caveats=[]
     def gate(condition,reason):
-        if condition and reason not in reasons:reasons.append(reason)
-    gate(proposal['material']['status']!='established_turf','TEXTURE_OR_MATERIAL_REQUIRES_REVIEW')
-    gate(proposal['scope']['status']!='all_visible_established_turf','PARCEL_OR_EDIT_SCOPE_UNRESOLVED')
-    gate(proposal['lawn']['status']!='visible_selectable','SOURCE_LAWN_SELECTION_UNRESOLVED')
+        target=reasons if reason in HARD_STOPS else caveats
+        if condition and reason not in target:target.append(reason)
+    gate(proposal['lawn']['status']=='none_observed','NO_SOURCE_LAWN_OBSERVED')
+    gate(proposal['material']['status']=='bare_soil','NO_SOURCE_TURF_TO_RECOLOR')
+    gate(proposal['material']['status'] not in {'established_turf','bare_soil'},'TEXTURE_OR_MATERIAL_REQUIRES_REVIEW')
+    gate(proposal['scope']['status']=='parcel_subset_requested','PARCEL_OR_EDIT_SCOPE_UNRESOLVED')
+    gate(proposal['scope']['status']=='uncertain','EDIT_SCOPE_UNCERTAIN')
+    gate(proposal['lawn']['status'] in {'too_fragmented','uncertain'},'SOURCE_LAWN_SELECTION_UNRESOLVED')
     gate(proposal['contextCoverage']['status']!='sufficient_same_capture_views' or bool(proposal['contextCoverage']['requestedDetails']),'EXTRA_SOURCE_CONTEXT_REQUIRED')
     gate(proposal['reflections']['status']!='no_visible_turf_reflection_observed','TURF_REFLECTION_DEPENDENCY_UNRESOLVED')
     gate(proposal['candidateGuidance']['status']!='natural_green_corresponding_turf','CANDIDATE_CHROMA_GUIDANCE_UNRESOLVED')
@@ -186,7 +208,7 @@ def parse_response(response_text,context,execution):
             gate(min(width,height)<8,'SELECTION_TOO_FINE_FOR_GUIDANCE:'+role)
     report={'schemaVersion':VERSION,'status':'needs_review' if reasons else 'ready_for_source_segmentation',
         'contextSha256':context_hash,'binding':context['binding'],'policy':dict(POLICY),'proposal':proposal,'proposalSha256':digest(proposal),
-        'execution':dict(execution),'reviewReasons':reasons,'authorOrigin':'machine','automaticAcceptance':False,
+        'execution':dict(execution),'reviewReasons':reasons,'caveats':caveats,'authorOrigin':'machine','automaticAcceptance':False,
         'maskSemanticsVerified':False,'opticsPhysicallyVerified':False,'crossViewVerified':False,'providerCallsPerformed':0}
     report['segmentationPlan']=segmentation_plan(report) if not reasons else []
     return report
@@ -199,16 +221,16 @@ def segmentation_plan(assessment):
     plans=[]
     for role in ['lawn',*CLASSES]:
         finding=proposal['lawn'] if role=='lawn' else proposal['exclusions'][role]
-        if role!='lawn' and finding['status']=='none_observed':continue
-        selections=finding['selections'];boxes=[]
+        if role!='lawn' and finding['status']!='observed_selectable':continue
+        selections=[] if role=='lawn' else finding['selections'];boxes=[]
         for index,selection in enumerate(selections):
             box=selection['box'];boxes.append({'x_min':math.floor(box['xMin']*2048),'y_min':math.floor(box['yMin']*1024),
                 'x_max':min(2047,math.ceil(box['xMax']*2048)),'y_max':min(1023,math.ceil(box['yMax']*1024)),'object_id':index+1})
-        payload={'prompt':PROMPTS[role],'box_prompts':boxes,'apply_mask':False,'output_format':'png','return_multiple_masks':True,
+        payload=dict(TEXT_LAWN_PAYLOAD) if role=='lawn' else {'prompt':PROMPTS[role],'box_prompts':boxes,'apply_mask':False,'output_format':'png','return_multiple_masks':True,
             'max_masks':len(boxes),'include_scores':True,'include_boxes':True}
         step={'stepKey':'source-grass-'+role,'maskRole':role,'requestId':None,'reservationState':'unreserved','model':SAM_MODEL,
             'inputSha256':binding['guidanceSourceSha256'],'width':2048,'height':1024,'payload':payload,
-            'expectedIdentities':[role+'_'+str(i+1) for i in range(len(selections))],'selectionOrigin':'machine',
+            'expectedIdentities':[role+'_1'] if role=='lawn' else [role+'_'+str(i+1) for i in range(len(selections))],'selectionOrigin':'machine',
             'assessmentProposalSha256':assessment['proposalSha256'],'contextSha256':assessment['contextSha256'],
             'maximumPostAttempts':1,'automaticRetry':False,'semanticClassVerified':False}
         step['inputFingerprint']=digest(step);plans.append(step)
@@ -233,11 +255,15 @@ def bind_segmentation_receipt(step,receipt):
     role=step['maskRole'];payload=step.get('payload');identities=step.get('expectedIdentities')
     if not isinstance(payload,dict) or not isinstance(identities,list) or not 1<=len(identities)<=8:raise ValueError('GRASS_ROLE_PLAN_INVALID')
     boxes=payload.get('box_prompts')
-    if not isinstance(boxes,list) or len(boxes)!=len(identities) or identities!=[role+'_'+str(i+1) for i in range(len(identities))]:raise ValueError('GRASS_ROLE_PLAN_INVALID')
+    text_only=role=='lawn'
+    if text_only:
+        # The lawn is one text-prompted mask over the whole original source (no box association).
+        if payload!=TEXT_LAWN_PAYLOAD or identities!=['lawn_1']:raise ValueError('GRASS_ROLE_PROMPT_OR_OPTIONS_CHANGED')
+    elif not isinstance(boxes,list) or len(boxes)!=len(identities) or identities!=[role+'_'+str(i+1) for i in range(len(identities))]:raise ValueError('GRASS_ROLE_PLAN_INVALID')
     for index,box in enumerate(boxes):
         _keys(box,['x_min','y_min','x_max','y_max','object_id'],'GRASS_ROLE_BOX_INVALID')
         if any(type(v) is not int for v in box.values()) or box['object_id']!=index+1 or not (0<=box['x_min']<box['x_max']<=2047 and 0<=box['y_min']<box['y_max']<=1023):raise ValueError('GRASS_ROLE_BOX_INVALID')
-    expected_payload={'prompt':PROMPTS[role],'box_prompts':boxes,'apply_mask':False,'output_format':'png','return_multiple_masks':True,
+    expected_payload=TEXT_LAWN_PAYLOAD if text_only else {'prompt':PROMPTS[role],'box_prompts':boxes,'apply_mask':False,'output_format':'png','return_multiple_masks':True,
         'max_masks':len(boxes),'include_scores':True,'include_boxes':True}
     if payload!=expected_payload:raise ValueError('GRASS_ROLE_PROMPT_OR_OPTIONS_CHANGED')
     _uuid(step['requestId'])
@@ -246,7 +272,7 @@ def bind_segmentation_receipt(step,receipt):
         if receipt[key]!=step[key]:raise ValueError('GRASS_RECEIPT_BINDING_INVALID')
     _hash(receipt['rawResponseSha256'])
     if not isinstance(receipt['providerRequestId'],str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,200}',receipt['providerRequestId']):raise ValueError('GRASS_PROVIDER_ID_INVALID')
-    masks=receipt['masks'];reasons=[];associations=[]
+    masks=receipt['masks'];reasons=[];associations=[];caveats=[]
     if receipt['status']!='completed' or not isinstance(masks,list) or len(masks)!=len(step['expectedIdentities']):reasons.append('MISSING_OR_EXTRA_ROLE_MASKS')
     else:
         for mask in masks:
@@ -255,18 +281,24 @@ def bind_segmentation_receipt(step,receipt):
             if (mask['width'],mask['height'])!=(2048,1024) or not isinstance(area,int) or isinstance(area,bool) or not 1<=area<=2048*1024:raise ValueError('GRASS_MASK_DIMENSIONS_OR_AREA_INVALID')
             if not isinstance(box,list) or len(box)!=4 or any(type(v) is not int for v in box) or not (0<=box[0]<box[2]<=2048 and 0<=box[1]<box[3]<=1024) or area>shared._area(box):raise ValueError('GRASS_MASK_BOUNDS_INVALID')
         if len({m['sha256'] for m in masks})!=len(masks):reasons.append('DUPLICATE_ROLE_MASK')
-        # Compute at most64 geometric comparisons, then stop once ambiguity is
-        # demonstrated. No factorial repeated IoU computation on eight masks.
-        matrix=[[shared._match(mask['bounds'],box) for mask in masks] for box in boxes]
-        matches=[]
-        def visit(chosen,used):
-            if len(matches)>1:return
-            if len(chosen)==len(masks):
-                matches.append((tuple(chosen),[matrix[i][j] for i,j in enumerate(chosen)]));return
-            for index,score in enumerate(matrix[len(chosen)]):
-                if index not in used and score[0]>=.90 and score[1]>=.40:visit(chosen+[index],used|{index})
-        visit([],set())
-        if len(matches)!=1:reasons.append('ROLE_MASK_ASSOCIATION_AMBIGUOUS')
+        if text_only:matches=[((0,),[(1.,None)])]
+        else:
+            # Compute at most64 geometric comparisons, then stop once ambiguity is
+            # demonstrated. No factorial repeated IoU computation on eight masks.
+            matrix=[[shared._match(mask['bounds'],box) for mask in masks] for box in boxes]
+            matches=[]
+            def visit(chosen,used):
+                if len(matches)>1:return
+                if len(chosen)==len(masks):
+                    matches.append((tuple(chosen),[matrix[i][j] for i,j in enumerate(chosen)]));return
+                for index,score in enumerate(matrix[len(chosen)]):
+                    if index not in used and score[0]>=.90 and score[1]>=.40:visit(chosen+[index],used|{index})
+            visit([],set())
+            if len(matches)!=1 and not reasons:
+                # Exclusions only protect pixels (their union is never recolored), so an
+                # ambiguous identity order is recorded and the masks protect in returned order.
+                matches=[(tuple(range(len(masks))),[matrix[i][i] for i in range(len(masks))])]
+                caveats.append('ROLE_MASK_ASSOCIATION_AMBIGUOUS_PROTECTED_IN_ORDER')
         if not reasons:
             permutation,scores=matches[0]
             for index,mask_index in enumerate(permutation):
@@ -275,6 +307,7 @@ def bind_segmentation_receipt(step,receipt):
                     'generationOrigin':'model_segmentation','selectionOrigin':'machine','providerRequestId':receipt['providerRequestId'],
                     'selectionContainment':scores[index][0],'selectionIoU':scores[index][1]})
     return {'status':'needs_review' if reasons else 'ready_for_source_support','reviewReasons':reasons,'associations':associations,
+        **({'associationCaveats':caveats} if caveats else {}),
         'maskSemanticsVerified':False,'automaticRetry':False,'stepKey':step['stepKey'],'maskRole':step['maskRole'],
         'requestId':step['requestId'],'inputFingerprint':step['inputFingerprint'],'inputSha256':step['inputSha256'],
         'contextSha256':step['contextSha256'],'receiptSha256':digest(receipt)}
@@ -292,9 +325,9 @@ def composition_assessment_record(assessment,reserved_plans,bindings):
     return {'nativeSourceSha256':source['nativeSourceSha256'],'guidanceSourceSha256':source['guidanceSourceSha256'],
         'sourcePreparationSha256':source['sourcePreparationSha256'],
         'candidateSha256':source['candidateSha256'],'authorOrigin':'machine','maskSelectionOrigin':'machine',
-        'lawnMaterial':'established_turf','requestedChange':'recolor_existing_turf','scope':'all_visible_established_turf',
-        'exclusions':{name:('none_observed' if assessment['proposal']['exclusions'][name]['status']=='none_observed' else 'supplied') for name in CLASSES},
-        'uncertainties':[],'assessmentProtocol':VERSION,'assessmentProposalSha256':assessment['proposalSha256'],
+        'lawnMaterial':assessment['proposal']['material']['status'],'requestedChange':'recolor_existing_turf','scope':'all_visible_established_turf',
+        'exclusions':{name:{'none_observed':'none_observed','observed_selectable':'supplied'}.get(assessment['proposal']['exclusions'][name]['status'],'unsegmented') for name in CLASSES},
+        'uncertainties':[],'caveats':list(assessment['caveats'])+[c for x in bindings for c in x.get('associationCaveats',[]) if c not in assessment['caveats']],'assessmentProtocol':VERSION,'assessmentProposalSha256':assessment['proposalSha256'],
         'contextSha256':assessment['contextSha256'],'executionRequestId':assessment['execution']['requestId'],
         'segmentationReceiptSha256':[x['receiptSha256'] for x in bindings],
         'automaticAcceptance':False,'maskSemanticsVerified':False,

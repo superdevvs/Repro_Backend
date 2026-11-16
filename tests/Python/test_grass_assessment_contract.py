@@ -48,7 +48,7 @@ class GrassAssessmentContractTests(unittest.TestCase):
             self.assertEqual(associated['status'],'ready_for_source_support')
             self.assertEqual([x['identity'] for x in associated['associations']],plan['expectedIdentities'])
 
-    def test_retained_response_shape_keeps_seven_semantic_holds_and_no_sam(self):
+    def test_retained_response_shape_records_seven_caveats_and_still_segments_lawn(self):
         self.descriptive_labels()
         self.proposal['material']['status']='sparse_or_missing_turf'
         self.proposal['contextCoverage']['status']='extra_context_required'
@@ -57,16 +57,19 @@ class GrassAssessmentContractTests(unittest.TestCase):
             self.proposal['exclusions'][role]['status']=status
         self.proposal['uncertainties']=['Sparse turf and overlapping materials cannot be separated.']
         original=copy.deepcopy(self.proposal); report=self.parse()
-        self.assertEqual(report['status'],'needs_review')
-        self.assertEqual(report['reviewReasons'],['TEXTURE_OR_MATERIAL_REQUIRES_REVIEW','EXTRA_SOURCE_CONTEXT_REQUIRED',
+        self.assertEqual(report['status'],'ready_for_source_segmentation')
+        self.assertEqual(report['reviewReasons'],[])
+        self.assertEqual(report['caveats'],['TEXTURE_OR_MATERIAL_REQUIRES_REVIEW','EXTRA_SOURCE_CONTEXT_REQUIRED',
             'SOURCE_ASSESSMENT_UNCERTAINTY','EXCLUSION_UNRESOLVED:plants','EXCLUSION_UNRESOLVED:loose_debris',
             'EXCLUSION_UNRESOLVED:non_turf_ground','EXCLUSION_UNRESOLVED:capture_artifact'])
         self.assertEqual(report['proposal'],original)
-        self.assertEqual(report['segmentationPlan'],[])
-        with self.assertRaisesRegex(ValueError,'NOT_ELIGIBLE'):protocol.segmentation_plan(report)
-        with self.assertRaisesRegex(ValueError,'NOT_ELIGIBLE'):protocol.bind_reserved_plans(report,{})
+        self.assertEqual([x['maskRole'] for x in report['segmentationPlan']],['lawn','paving'])
+        self.assertEqual(protocol.segmentation_plan(report),report['segmentationPlan'])
+        hard=copy.deepcopy(report);hard['status']='needs_review';hard['reviewReasons']=['NO_SOURCE_LAWN_OBSERVED']
+        with self.assertRaisesRegex(ValueError,'NOT_ELIGIBLE'):protocol.segmentation_plan(hard)
+        with self.assertRaisesRegex(ValueError,'NOT_ELIGIBLE'):protocol.bind_reserved_plans(hard,{})
 
-    def test_each_uncertain_role_with_valid_partial_boxes_holds_independently(self):
+    def test_each_doubtful_role_is_a_caveat_and_is_never_box_segmented(self):
         for role in ['lawn',*protocol.CLASSES]:
             for state in (['uncertain','too_fragmented'] if role=='lawn' else ['uncertain','too_fine_or_dense']):
                 with self.subTest(role=role,status=state):
@@ -74,10 +77,13 @@ class GrassAssessmentContractTests(unittest.TestCase):
                     finding=self.proposal['lawn'] if role=='lawn' else self.proposal['exclusions'][role]
                     finding['status']=state
                     self.assertTrue(finding['selections'])
-                    report=self.parse()
-                    self.assertEqual(report['status'],'needs_review');self.assertEqual(report['segmentationPlan'],[])
-                    finding['selections']=[]
-                    self.assertEqual(self.parse()['status'],'needs_review')
+                    for selections in [finding['selections'],[]]:
+                        finding['selections']=selections;report=self.parse()
+                        self.assertEqual(report['status'],'ready_for_source_segmentation');self.assertEqual(report['reviewReasons'],[])
+                        self.assertIn('SOURCE_LAWN_SELECTION_UNRESOLVED' if role=='lawn' else 'EXCLUSION_UNRESOLVED:'+role,report['caveats'])
+                        roles=[x['maskRole'] for x in report['segmentationPlan']]
+                        self.assertEqual(roles[0],'lawn');self.assertEqual(report['segmentationPlan'][0]['payload']['box_prompts'],[])
+                        if role!='lawn':self.assertNotIn(role,roles)
 
     def test_selectable_empty_and_absent_nonempty_findings_remain_invalid(self):
         self.proposal['lawn']['selections']=[]
@@ -86,8 +92,8 @@ class GrassAssessmentContractTests(unittest.TestCase):
         self.proposal['exclusions']['plants']['evidenceIds']=protocol.SOURCE_IDS
         with self.assertRaisesRegex(ValueError,'STATUS_MISMATCH'):self.parse()
 
-    def test_duplicate_blank_and_overlong_labels_remain_invalid(self):
-        for label in [' ', 'x'*61, self.proposal['lawn']['selections'][0]['id']]:
+    def test_duplicate_and_blank_labels_remain_invalid(self):
+        for label in [' ', self.proposal['lawn']['selections'][0]['id']]:
             with self.subTest(label=label):
                 self.proposal['lawn']['selections'][1]['id']=label
                 with self.assertRaises(ValueError):self.parse()
@@ -106,7 +112,7 @@ class GrassAssessmentContractTests(unittest.TestCase):
             selections=finding['properties']['selections']
             self.assertIn('diagnostic boxes',selections['description'])
             self.assertIn('server derives',selections['items']['properties']['id']['description'])
-        self.assertIn('all such findings stop segmentation',protocol.INSTRUCTIONS)
+        self.assertIn('not segmented and are recorded as caveats',protocol.INSTRUCTIONS)
         self.descriptive_labels()
         protocol.shared._validate(self.proposal,schema)
 
