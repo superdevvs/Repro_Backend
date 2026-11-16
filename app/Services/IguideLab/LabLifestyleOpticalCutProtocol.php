@@ -8,6 +8,21 @@ final class LabLifestyleOpticalCutProtocol
     public const GATE_VERSION='lifestyle-cut-readiness/2';
     public const VIEW_RECIPE='section-parent-native-optical8/2';
     public const CHECKS=['group_coverage','frame_margin','source_floor','circulation','fixed_features','optical_dependencies','ambient_contact_lighting'];
+    /** Owner policy: soft doubts are recorded caveats for the later image checks; only hard blockers choose manual_review. */
+    public const CAVEAT_INSTRUCTIONS=[
+        'If a dependency lies in another direction, describe it in uncertainties and choose a coherent linked section plan or manual_review;'
+            =>'If a dependency lies in another direction, describe it in uncertainties and keep one coherent proposal for this cut, recording the dependency as a caveat;',
+        'A section proposal should leave at least ten percent of its image dimensions between the edit footprint and every boundary; when that cannot be supported visually, request wider framing or manual review.'
+            =>'A section proposal should leave at least ten percent of its image dimensions between the edit footprint and every boundary; when that cannot be supported visually, record the margin doubt as a caveat in uncertainties.',
+        'When a required reflection, shadow or coherent object extent falls outside the cut, choose manual_review, record the unresolved off-cut dependency and required later identity/pose check, and provide no spherical section coordinates.'
+            =>'When a reflection, shadow or object extent falls outside the cut, record the off-cut dependency and the later identity/pose check in uncertainties as a caveat, keep the whole_panorama proposal for this cut, and provide no spherical section coordinates.',
+        'All seven lifestyleReadiness checks must pass independently before any image: group_coverage, frame_margin, source_floor, circulation, fixed_features, optical_dependencies, ambient_contact_lighting.'
+            =>'Report all seven lifestyleReadiness checks honestly before any image: group_coverage, frame_margin, source_floor, circulation, fixed_features, optical_dependencies, ambient_contact_lighting. A fail or uncertain check is a recorded caveat for the later image and full-sphere checks, not a stop, except a source_floor fail.',
+        'Any present relevant glass/mirror/glossy-floor reflection, uncertain visibility or foreground order, stairs, unclear source floor, existing people, broad/directional cast-shadow need or missing context must be fail/uncertain and workflow manual_review.'
+            =>'Record any relevant glass/mirror/glossy-floor reflection, uncertain visibility or foreground order, tight margin or clearance, scale doubt, broad/directional light or limited context as fail or uncertain on the matching check with a concise reason, and still return workflow whole_panorama with both adult targets and a usable generationPrompt that keeps the pair on visible open floor away from those risks. Choose manual_review only for a hard blocker: existing people in the cut, stairs as the only standing area, or no visible level original floor for two standing adults, which is a source_floor fail.',
+        'Improved visibility does not remove a real reflection/occlusion dependency; fail or uncertain remains a hold.'
+            =>'Improved visibility does not remove a real reflection/occlusion dependency; record it as fail or uncertain, a caveat for the later checks.',
+    ];
     public static function compile(array $recipe,array $context,array $images): array
     {
         self::binding($context);$base=$context;unset($base['lifestyleFraming']);$base['viewIds']=LabAnalysisSourceContext::IDS;
@@ -16,6 +31,8 @@ final class LabLifestyleOpticalCutProtocol
         $total=0;foreach($images as $image){if(!is_string($image)||!preg_match('/\Adata:image\/png;base64,([A-Za-z0-9+\/=]+)\z/D',$image,$m))throw new \InvalidArgumentException('PNG evidence required.');
             $bytes=base64_decode($m[1],true);if($bytes===false||($total+=strlen($bytes))>24*1024*1024)throw new \InvalidArgumentException('Evidence byte limit exceeded.');}
         $payload=LabSectionAnalysisProtocol::compile($recipe,$base,array_slice($images,0,6));
+        // Same fix as staging layout: high effort at a 12,000 cap returned no answer there (Phase 0), so medium effort with room to answer.
+        $payload['instructions']=self::caveatInstructions($payload['instructions']);$payload['reasoning']=['effort'=>'medium'];$payload['max_output_tokens']=16000;
         foreach($views as $i=>$v){$image=$images[6+$i];$bytes=base64_decode(substr($image,22),true);$size=@getimagesizefromstring($bytes);
             if(!$size||[$size[0],$size[1],$size['mime']]!==[2048,2048,'image/png']||hash('sha256',$bytes)!==$v['sha256'])throw new \InvalidArgumentException('Native context bytes changed.');
             $payload['input'][0]['content'][]=['type'=>'input_text','text'=>'View ID: '.$v['id'].'; original native projection, context only; rendered pixels can interpolate the source grid, not independent optical samples.'];
@@ -43,6 +60,11 @@ final class LabLifestyleOpticalCutProtocol
         $parsed=LabScenePlanProtocol::parseWithSourceDetails($plain,$base);
         $gate+=['allRequiredChecksPass'=>$ready,'sourceFramingId'=>$binding['id'],'generationAuthority'=>'actual_cut_checks_only','manualAcceptance'=>false];
         return $parsed+['lifestyleReadiness'=>$gate];
+    }
+    private static function caveatInstructions(string $text): string
+    {
+        foreach(self::CAVEAT_INSTRUCTIONS as $old=>$new){if(substr_count($text,$old)!==1)throw new \InvalidArgumentException('Lifestyle cut recipe wording changed.');$text=str_replace($old,$new,$text);}
+        return $text;
     }
     private static function hash(mixed $v): void {if(!is_string($v)||!preg_match('/\A[a-f0-9]{64}\z/D',$v))throw new \InvalidArgumentException('Invalid optical context digest.');}
     private static function binding(array $context): void

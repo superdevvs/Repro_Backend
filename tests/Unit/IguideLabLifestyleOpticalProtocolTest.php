@@ -63,13 +63,47 @@ class IguideLabLifestyleOpticalProtocolTest extends TestCase
         $result=self::candidate($c);$this->assertSame('framing_candidate',P::parse(IguideLabLifestyleFramingProtocolTest::response($result),$c)['status']);
         $result['constraints']['optical_dependencies']['evidenceViewIds']=['source','source_detail_1'];$this->reject($result,$c);
     }
-    public function test_clearer_details_do_not_clear_optics_or_permit_another_followup(): void
+    public function test_clearer_details_do_not_permit_another_followup_and_holds_stay_held(): void
     {
         [$c,$images]=self::fixture();[$c]=self::followup($c,$images);$v=self::candidate($c);
-        foreach(['resolution_limited','physically_unsupported','unresolved','verify_on_cut'] as $status){$x=$v;$x['constraints']['optical_dependencies']['status']=$status;$this->reject($x,$c);}
         $held=$v;$held['status']='needs_review';$held['view']=null;$held['constraints']['optical_dependencies']['status']='unresolved';
         $this->assertSame('needs_review',P::parse(IguideLabLifestyleFramingProtocolTest::response($held),$c)['status']);
         $this->reject(self::enquiry($c),$c);$v['constraints']['optical_dependencies']['evidenceViewIds']=['source'];$this->reject($v,$c);
+    }
+    public function test_reflection_scale_and_clearance_doubts_are_caveats_on_a_framing_candidate(): void
+    {
+        [$c,$images]=self::fixture();
+        foreach([[$c,null],self::followup($c,$images)] as [$context]){
+            foreach(['verify_on_cut','resolution_limited','unresolved','physically_unsupported'] as $status){
+                $v=self::candidate($context);$v['constraints']['optical_dependencies']['status']=$status;
+                $v['constraints']['optical_dependencies']['reason']='Sliding-door glazing faces the standing floor; a faint reflection may be expected.';
+                $v['constraints']['frame_margin']['status']=$status==='verify_on_cut'?'verify_on_cut':'unresolved';
+                $parsed=P::parse(IguideLabLifestyleFramingProtocolTest::response($v),$context);
+                $this->assertSame('framing_candidate',$parsed['status']);$this->assertNotNull($parsed['view']);
+                $this->assertFalse($parsed['imageGenerationAuthorized']);
+                foreach(['optical_dependencies','frame_margin'] as $name){
+                    // Stored constraint statuses stay inside the editor's closed enum; the doubt stays in the reason.
+                    $this->assertContains($parsed['constraints'][$name]['status'],['supported','verify_on_cut']);
+                    $this->assertLessThanOrEqual(550,mb_strlen($parsed['constraints'][$name]['reason']));}
+                if($status!=='verify_on_cut')$this->assertStringContainsString($status,$parsed['constraints']['optical_dependencies']['reason']);
+                $this->assertStringContainsString('reflection',$parsed['constraints']['optical_dependencies']['reason']);
+            }
+        }
+    }
+    public function test_hard_blockers_still_prevent_a_framing_candidate(): void
+    {
+        [$c]=self::fixture();$good=self::candidate($c);
+        $v=$good;$v['sourcePeople']='present';$this->reject($v,$c);
+        $v=$good;$v['coherentGroup']='not_plausible';$this->reject($v,$c);
+        $v=$good;$v['constraints']['source_floor']['status']='physically_unsupported';$this->reject($v,$c);
+        $v=$good;$v['view']=null;$this->reject($v,$c);
+    }
+    public function test_framing_request_uses_medium_effort_with_room_for_an_answer_and_caveat_instructions(): void
+    {
+        [$c,$images]=self::fixture();$wire=P::request($c,$images);
+        $this->assertSame(['effort'=>'medium'],$wire['reasoning']);$this->assertGreaterThanOrEqual(16000,$wire['max_output_tokens']);
+        $this->assertStringNotContainsString('Relevant or uncertain person reflections remain a hold',P::INSTRUCTIONS);
+        $this->assertStringContainsString('caveat',P::INSTRUCTIONS);
     }
     public function test_unknown_constraint_invalid_pose_binding_and_operator_fields_rejected(): void
     {
@@ -101,16 +135,16 @@ class IguideLabLifestyleOpticalProtocolTest extends TestCase
         $this->assertSame('blocked',Legacy::parse(IguideLabLifestyleFramingProtocolTest::response($v),$c)['constraints']['optical_dependencies']['status']);
         $v['status']='detail_required';$this->expectException(\InvalidArgumentException::class);Legacy::parse(IguideLabLifestyleFramingProtocolTest::response($v),$c);
     }
-    public function test_long_optical_explanation_is_not_truncated_or_promoted_to_a_candidate(): void
+    public function test_long_optical_explanation_is_shortened_not_rejected_or_promoted_to_a_candidate(): void
     {
         [$c,$images]=self::fixture();[$c]=self::followup($c,$images);$held=self::candidate($c);
         $held['status']='needs_review';$held['view']=null;$held['constraints']['optical_dependencies']['status']='unresolved';
-        $held['constraints']['optical_dependencies']['reason']=str_repeat('x',768);
-        $this->reject($held,$c);
-        $held['constraints']['optical_dependencies']['reason']=str_repeat('x',550);
+        $held['constraints']['optical_dependencies']['reason']=str_repeat('x',768);$held['summary']=str_repeat('y',1300);
         $parsed=P::parse(IguideLabLifestyleFramingProtocolTest::response($held),$c);
         $this->assertSame('needs_review',$parsed['status']);$this->assertNull($parsed['view']);
+        $this->assertSame(550,mb_strlen($parsed['constraints']['optical_dependencies']['reason']));$this->assertSame(1200,mb_strlen($parsed['summary']));
+        $this->assertSame('unresolved',$parsed['constraints']['optical_dependencies']['status']);
         $this->assertFalse($parsed['imageGenerationAuthorized']);
-        $held['constraints']['optical_dependencies']['reason'].='x';$this->reject($held,$c);
+        $held['constraints']['optical_dependencies']['reason']='   ';$this->reject($held,$c);
     }
 }

@@ -78,9 +78,13 @@ def derive_support(source,candidate,person_masks,source_floor,pose,assessment):
     if len(person_masks)!=2:raise ValueError('EXACTLY_TWO_PERSON_MASKS_REQUIRED')
     for m in person_masks:check_array(m,(h,w),'PERSON_MASK',binary=True)
     if not -60<=pose.get('pitch',90)<=15 or not 30<=pose.get('hFov',0)<=120:raise ValueError('POSE_UNSUPPORTED')
-    reasons=[]
+    # Owner policy: a paid image is always composited. Only an unready typed assessment stops here; every
+    # other doubt is a recorded caveat and the independent full-sphere check still decides Ready.
+    reasons=[];caveats=[]
     def hold(code):
         if code not in reasons:reasons.append(code)
+    def caveat(code):
+        if code not in caveats:caveats.append(code)
     if assessment.get('schemaVersion')!='automatic-standing-pair-assessment/1' or assessment.get('status')!='ready_for_segmentation' or assessment.get('reviewReasons'):
         hold('TYPED_PEOPLE_ASSESSMENT_NOT_READY')
     p=assessment.get('proposal',{});people=p.get('people',[])
@@ -88,39 +92,39 @@ def derive_support(source,candidate,person_masks,source_floor,pose,assessment):
     required={'sourceRegion':'visible_level_floor_no_existing_people','group':'two_separate_standing_adults_no_props','foreground':'no_foreground_overlap',
         'protectedFeatures':'no_conflict_observed','optics':'no_relevant_dependency_observed','lighting':'diffuse_tiny_contact_only','contextCoverage':'sufficient_same_capture_views'}
     for key,status in required.items():
-        if p.get(key,{}).get('status')!=status:hold(key.upper()+'_REQUIRES_REVIEW')
-    if p.get('uncertainties'):hold('UNRESOLVED_UNCERTAINTY')
+        if p.get(key,{}).get('status')!=status:caveat(key.upper()+'_REQUIRES_REVIEW')
+    if p.get('uncertainties'):caveat('UNRESOLVED_UNCERTAINTY')
     scale=w/2048;radius=max(1,round(6*scale));kernel=cv2.getStructuringElement(cv2.MORPH_ELLIPSE,(radius*2+1,radius*2+1))
     safe=cv2.erode(source_floor,kernel);refined=[];details=[];contacts=[]
-    if not np.any(safe):hold('ORIGINAL_FLOOR_SUPPORT_EMPTY')
+    if not np.any(safe):caveat('ORIGINAL_FLOOR_SUPPORT_EMPTY')
     for i,initial in enumerate(person_masks):
         person=people[i];before=stats(initial)
-        if person.get('status')!='complete_standing_adult' or person.get('anatomy')!='plausible_visible_limbs' or person.get('scale')!='plausible_source_relative' or person.get('topology')!='clear_visible_boundaries_and_holes':hold('PERSON_SEMANTICS_UNRESOLVED')
+        if person.get('status')!='complete_standing_adult' or person.get('anatomy')!='plausible_visible_limbs' or person.get('scale')!='plausible_source_relative' or person.get('topology')!='clear_visible_boundaries_and_holes':caveat('PERSON_SEMANTICS_UNRESOLVED')
         if before['positivePixels']==0:raise ValueError('PERSON_MASK_EMPTY')
-        if before['minimumMarginFraction']<.10:hold('PERSON_MASK_TOUCHES_GUARD')
+        if before['minimumMarginFraction']<.10:caveat('PERSON_MASK_TOUCHES_GUARD')
         areas=before['componentAreas']
-        if before['components']>8 or sum(areas[1:])>before['positivePixels']*.005:hold('PERSON_MASK_FRAGMENTED')
-        if before['holes']>32:hold('PERSON_MASK_TOPOLOGY_COMPLEX')
+        if before['components']>8 or sum(areas[1:])>before['positivePixels']*.005:caveat('PERSON_MASK_FRAGMENTED')
+        if before['holes']>32:caveat('PERSON_MASK_TOPOLOGY_COMPLEX')
         bx0,by0,bx1,by1=before['bounds'];bh=by1-by0;bw=bx1-bx0
-        if not .20<=bh/h<=.8 or not .12<=bw/bh<=.75:hold('PERSON_MASK_PROPORTION_UNSUPPORTED')
+        if not .20<=bh/h<=.8 or not .12<=bw/bh<=.75:caveat('PERSON_MASK_PROPORTION_UNSUPPORTED')
         try:m,refinement=refine_contour(candidate,initial,scale/3)
-        except ValueError as e:m=initial.copy();refinement={'error':str(e)};hold('PERSON_CONTOUR_REFINEMENT_HELD')
+        except ValueError as e:m=initial.copy();refinement={'error':str(e)};caveat('PERSON_CONTOUR_REFINEMENT_HELD')
         after=stats(m)
-        if before['components']!=after['components'] or before['holes']!=after['holes']:hold('PERSON_MASK_TOPOLOGY_CHANGED')
-        if np.count_nonzero(m!=initial)>before['positivePixels']*.08:hold('PERSON_BOUNDARY_CHANGE_EXCESSIVE')
-        if after['minimumMarginFraction']<.10:hold('REFINED_PERSON_TOUCHES_GUARD')
+        if before['components']!=after['components'] or before['holes']!=after['holes']:caveat('PERSON_MASK_TOPOLOGY_CHANGED')
+        if np.count_nonzero(m!=initial)>before['positivePixels']*.08:caveat('PERSON_BOUNDARY_CHANGE_EXCESSIVE')
+        if after['minimumMarginFraction']<.10:caveat('REFINED_PERSON_TOUCHES_GUARD')
         shoes=person.get('shoes',[]);person_contacts=[]
-        if [s.get('side') for s in shoes]!=['left','right']:hold('TWO_VISIBLE_SHOES_REQUIRED')
+        if [s.get('side') for s in shoes]!=['left','right']:caveat('TWO_VISIBLE_SHOES_REQUIRED')
         else:
             for shoe in shoes:
                 contact,reason=visible_shoe_contact(m,safe,shoe,pose,scale)
-                if reason:hold(reason)
+                if reason:caveat(reason)
                 else:person_contacts.append(contact);contacts.append(contact)
         if len(person_contacts)==2:
             a,b=[np.array(x['centrePixel']) for x in person_contacts]
-            if np.linalg.norm(a-b)<max(4,12*scale):hold('SHOE_CONTACTS_NOT_DISTINCT')
+            if np.linalg.norm(a-b)<max(4,12*scale):caveat('SHOE_CONTACTS_NOT_DISTINCT')
         refined.append(m);details.append({'identity':person['id'],'initial':before,'refinement':refinement,'after':after,'contacts':person_contacts})
-    if np.any((refined[0]>0)&(refined[1]>0)):hold('PERSON_MASKS_OVERLAP')
+    if np.any((refined[0]>0)&(refined[1]>0)):caveat('PERSON_MASKS_OVERLAP')
     union=np.maximum.reduce(refined)
     # Fractional boundary is inward only. No growth into unselected hair/background
     # corridors and no filling of arm/leg holes or disconnected appendages.
@@ -128,7 +132,7 @@ def derive_support(source,candidate,person_masks,source_floor,pose,assessment):
     alpha=np.rint(np.clip((distance-.25)/max(.75,1.5*scale),0,1)*255).astype(np.uint8)
     alpha[union==0]=0
     shadows=np.zeros((h,w),np.float32)
-    if not reasons and len(contacts)==4:
+    if not reasons and contacts:
         yy,xx=np.mgrid[:h,:w]
         for contact in contacts:
             centre=np.array(contact['centrePixel']);down=np.array(contact['downVector']);down/=np.linalg.norm(down);across=np.array([down[1],-down[0]])
@@ -136,18 +140,18 @@ def derive_support(source,candidate,person_masks,source_floor,pose,assessment):
             rx=max(2,min(45*scale,contact['soleLengthPixels']*.65));ry=max(1,4*scale)
             d=((dx*across[0]+dy*across[1])/rx)**2+((dx*down[0]+dy*down[1])/ry)**2
             local=.18*np.exp(-4*d);local[d>1]=0;local[union>0]=0
-            if np.any((local>=1/255)&(safe!=255)):hold('SHOE_SHADOW_OUTSIDE_INWARD_SOURCE_FLOOR');break
+            if np.any((local>=1/255)&(safe!=255)):caveat('SHOE_SHADOW_OUTSIDE_INWARD_SOURCE_FLOOR');continue
             shadows=np.maximum(shadows,local)
-    elif len(contacts)!=4:hold('FOUR_VISIBLE_SHOE_CONTACTS_REQUIRED')
+    if len(contacts)!=4:caveat('FOUR_VISIBLE_SHOE_CONTACTS_REQUIRED')
     shadow8=np.rint(shadows*255).astype(np.uint8)
-    if np.count_nonzero(shadow8)>h*w*.003:hold('SHOE_SHADOW_SUPPORT_EXCESSIVE')
-    if np.any(shadow8) and stats(shadow8)['minimumMarginFraction']<.10:hold('SHOE_SHADOW_TOUCHES_GUARD')
+    if np.count_nonzero(shadow8)>h*w*.003:caveat('SHOE_SHADOW_SUPPORT_EXCESSIVE');shadow8[:]=0
+    if np.any(shadow8) and stats(shadow8)['minimumMarginFraction']<.10:caveat('SHOE_SHADOW_TOUCHES_GUARD');shadow8[:]=0
     if reasons:shadow8[:]=0
     report={'schemaVersion':1,'recipe':VERSION,'status':'needs_review' if reasons else 'ready_for_unreviewed_composition',
         'automaticAcceptance':False,'machineAuthoredSupport':True,'humanReviewedSupport':False,'parameters':PARAMETERS,'runtime':runtime(),'pose':pose,
         'people':details,'objectAlphaStatistics':stats(alpha),'scalarShadowStatistics':stats(shadow8),
         'shadowOutsideSafeFloorPixels':int(np.count_nonzero((shadow8>0)&(safe!=255))),'alphaOutsidePersonMasksPixels':int(np.count_nonzero((alpha>0)&(union==0))),
-        'reviewReasons':reasons,'providerCalls':0,'elapsedMs':round((time.monotonic()-start)*1000),
+        'reviewReasons':reasons,'caveats':caveats,'providerCalls':0,'elapsedMs':round((time.monotonic()-start)*1000),
         'limitations':['Visible shoes and anatomy are machine visual observations, not calibrated measurements.',
             'Fine hair/finger alpha remains bounded image matting, subject to independent quality review.',
             'No person relocation, hidden limb synthesis, reflection synthesis or broad cast shadow is supported.',

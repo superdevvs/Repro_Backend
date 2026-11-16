@@ -1,7 +1,7 @@
 <?php
 namespace Tests\Unit;
 use App\Models\IguideLabWorkflowStep;
-use App\Services\IguideLab\{LabLifestyleWorkflow,LabLifestyleSupport,LabLifestyleAssessments,LabLifestyleSegmentationAuthority,LabMachineSegmentationCapabilities,LabWorkflowPolicy};
+use App\Services\IguideLab\{LabLifestyleWorkflow,LabLifestyleCutReadiness,LabLifestyleSupport,LabLifestyleAssessments,LabLifestyleSegmentationAuthority,LabMachineSegmentationCapabilities,LabWorkflowPolicy};
 use Tests\TestCase;
 
 class LabLifestyleWorkflowTest extends TestCase
@@ -14,6 +14,26 @@ class LabLifestyleWorkflowTest extends TestCase
         $extra=$proposal;$extra['targets'][]=['id'=>'rug','action'=>'add','objectCount'=>1];$this->assertFalse($driver->twoTargets($extra));
         $extra=$proposal;$extra['targets'][0]['objectCount']=2;$this->assertFalse($driver->twoTargets($extra));
         $extra=$proposal;$extra['targets'][0]['action']='restyle';$this->assertFalse($driver->twoTargets($extra));
+    }
+    public function test_only_a_source_floor_fail_blocks_the_image_and_soft_checks_become_caveats(): void
+    {
+        $check=fn($status,$reason='Visible evidence.')=>['status'=>$status,'evidenceViewIds'=>['source','parent_front'],'reason'=>$reason];
+        $gate=['checks'=>array_fill_keys(\App\Services\IguideLab\LabLifestyleOpticalCutProtocol::CHECKS,$check('pass')),'allRequiredChecksPass'=>true];
+        $this->assertSame([],LabLifestyleCutReadiness::hardBlockers($gate));$this->assertSame([],LabLifestyleCutReadiness::caveats($gate));
+        $gate['checks']['optical_dependencies']=$check('fail','Patio glazing faces the standing floor.');
+        $gate['checks']['frame_margin']=$check('uncertain','Margin around the right adult is tight.');
+        $gate['checks']['source_floor']=$check('uncertain','Floor edge near the hearth is unclear.');$gate['allRequiredChecksPass']=false;
+        $this->assertSame([],LabLifestyleCutReadiness::hardBlockers($gate));
+        $this->assertSame(['frame_margin (uncertain): Margin around the right adult is tight.','source_floor (uncertain): Floor edge near the hearth is unclear.',
+            'optical_dependencies (fail): Patio glazing faces the standing floor.'],LabLifestyleCutReadiness::caveats($gate));
+        $gate['checks']['source_floor']=$check('fail','No visible level floor.');
+        $this->assertSame(['source_floor'],LabLifestyleCutReadiness::hardBlockers($gate));
+    }
+    public function test_intent_records_soft_doubts_as_caveats_instead_of_manual_review(): void
+    {
+        $this->assertStringNotContainsString('require manual_review',LabLifestyleWorkflow::INTENT);
+        $this->assertStringContainsString('caveat',LabLifestyleWorkflow::INTENT);
+        $this->assertStringContainsString('adult_1 and adult_2',LabLifestyleWorkflow::INTENT);
     }
     public function test_capability_dispatch_cannot_select_a_client_named_class_or_sphere_as_square(): void
     {

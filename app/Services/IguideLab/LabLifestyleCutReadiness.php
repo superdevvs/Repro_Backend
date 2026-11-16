@@ -92,9 +92,22 @@ class LabLifestyleCutReadiness
         abort_unless(($raw['model']??null)==='gpt-6-astra'&&is_string($raw['id']??null)&&$raw['id']!==''&&$raw['id']===($receipt['responseId']??null),422);
         $parsed=app(LabAnalysisRecipes::class)->parse($data['executionRecipe'],$raw,$context);$gate=$parsed['lifestyleReadiness'];
         abort_unless(LabAnalysisRecipes::hash($parsed['proposal'])===$analysis->proposal_sha256&&LabAnalysisRecipes::hash($gate)===LabAnalysisRecipes::hash($data['lifestyleReadiness']??[]),422,'Actual cut gate changed.');
-        if($requirePass)abort_unless($gate['allRequiredChecksPass']===true&&($analysis->proposal['workflow']['mode']??null)==='whole_panorama'
-            &&app(LabLifestyleWorkflow::class)->twoTargets($analysis->proposal),422,'Actual cut scope/clearance/optical checks require review.');
+        // Owner policy: only a hard blocker stops before the image; fail/uncertain soft checks are recorded caveats.
+        if($requirePass)abort_unless(self::hardBlockers($gate)===[]&&($analysis->proposal['workflow']['mode']??null)==='whole_panorama'
+            &&app(LabLifestyleWorkflow::class)->twoTargets($analysis->proposal),422,'Actual cut has a hard blocker or no two-person plan.');
         return $gate;
+    }
+    /** Hard blockers before any image: no visible level original floor for the pair. Everything else is a caveat. */
+    public static function hardBlockers(array $gate): array
+    {
+        return ($gate['checks']['source_floor']['status']??null)==='pass'||($gate['checks']['source_floor']['status']??null)==='uncertain'?[]:['source_floor'];
+    }
+    /** Soft fail/uncertain readiness checks, in check order, recorded on the item for the later image checks. */
+    public static function caveats(array $gate): array
+    {
+        $out=[];foreach(LabLifestyleOpticalCutProtocol::CHECKS as $name){$check=$gate['checks'][$name]??null;
+            if(is_array($check)&&($check['status']??null)!=='pass'&&!in_array($name,self::hardBlockers($gate),true))$out[]=$name.' ('.$check['status'].'): '.$check['reason'];}
+        return $out;
     }
     public function verifyImageStep(IguideLabWorkflowStep $step): void
     {

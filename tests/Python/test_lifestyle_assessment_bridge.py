@@ -91,8 +91,14 @@ class BridgeTests(unittest.TestCase):
         execution=json.loads(Path(req['execution']['path']).read_text());execution['requestPayloadSha256']=req['compiledPayload']['sha256']
         req['execution']=self.write('changed-execution.json',execution)
         with self.assertRaisesRegex(ValueError,'COMPILED_PAYLOAD_CONTEXT_OR_POLICY_CHANGED'):b.run(req,self.root)
-    def test_optical_hold_never_produces_segmentation_plans(self):
+    def test_optical_doubt_is_a_caveat_and_still_produces_segmentation_plans(self):
         proposal=copy.deepcopy(self.proposal);proposal['optics']['status']='visible_or_possible_dependency'
+        req=self.parse_inputs(proposal);report=b.run(req,self.root)
+        self.assertEqual(report['resultStatus'],'ready_for_segmentation')
+        assessment=json.loads(Path(report['outputs']['assessment']['path']).read_text())
+        self.assertEqual(len(assessment['segmentationPlan']),2);self.assertEqual(assessment['caveats'],['OPTICS_REQUIRES_REVIEW'])
+    def test_missing_person_box_never_produces_segmentation_plans(self):
+        proposal=copy.deepcopy(self.proposal);proposal['people'][1]['box']=None
         req=self.parse_inputs(proposal);report=b.run(req,self.root)
         self.assertEqual(report['resultStatus'],'needs_review')
         assessment=json.loads(Path(report['outputs']['assessment']['path']).read_text());self.assertEqual(assessment['segmentationPlan'],[])

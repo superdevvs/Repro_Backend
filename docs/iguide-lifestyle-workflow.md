@@ -17,7 +17,20 @@ submission holds. No manual mask, box, pose or successful analysis assertion is 
 The first route holds on existing people, seated poses, props, uncertain body
 scale/anatomy, missing or hidden shoes, person-person or foreground overlap,
 relevant glass/mirror dependencies, insufficient original context, directional
-cast shadows or uncertain support. Existing furniture may remain elsewhere; it
+cast shadows or uncertain support.
+
+Owner caveat policy (supersedes the hold list above for reaching a result):
+before the image only hard blockers stop the item (people already present, no
+plausible standing pair, no visible level original floor, no two-person plan).
+Reflection, scale, margin, clearance, lighting, anatomy and shoe doubts are
+recorded caveats: framing stores them as `verify_on_cut` with the doubt in the
+reason, the cut gate keeps `allRequiredChecksPass` honest but only a
+`source_floor` fail blocks, and the item records the soft checks in
+`sourceCaveats`. After the image, the placement assessment and support record
+doubts in `caveats` and always proceed to segmentation and composition unless a
+person or floor box (or a usable SAM mask) is missing. The independent
+full-sphere check still decides Ready; otherwise the item is held with its
+composite viewable. Existing furniture may remain elsewhere; it
 must not interact with or occlude the new group. The whole group must retain a
 10% cut margin. A generated candidate's actual placement is checked independently
 of the proposed source pose.

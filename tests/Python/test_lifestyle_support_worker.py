@@ -86,8 +86,10 @@ class AdapterTests(unittest.TestCase):
         typed=self.assessment['typedAssessment'];typed['proposal']['people'][0]['shoes'][0]['status']='occluded'
         typed['proposalSha256']=protocol.digest(typed['proposal']);self.assessment['assessmentProposalSha256']=typed['proposalSha256']
         self.request['assessment']=self.save_json('assessment.json',self.assessment)
-        result=w.execute(self.request,self.root);self.assertEqual(result['status'],'needs_review')
-        mask=np.asarray(Image.open(Path(self.request['outputDirectory'])/'scalar-shadow.png'));self.assertFalse(np.any(mask))
+        # The hidden shoe is a recorded caveat: the pair is still composited, with no contact invented for that shoe.
+        result=w.execute(self.request,self.root);self.assertEqual(result['status'],'ready_for_unreviewed_composition')
+        self.assertIn('VISIBLE_SHOE_CONTACT_UNRESOLVED',result['caveats']);self.assertEqual([len(x['contacts']) for x in result['people']],[1,2])
+        self.assertEqual([c['side'] for c in result['people'][0]['contacts']],['right'])
     def test_furniture_or_reordered_identity_is_not_people_authority(self):
         self.request['candidatePeople']=list(reversed(self.request['candidatePeople']))
         with self.assertRaisesRegex(ValueError,'EXPECTED_TWO_PERSON'):w.execute(self.request,self.root)

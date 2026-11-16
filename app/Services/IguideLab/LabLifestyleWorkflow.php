@@ -5,7 +5,7 @@ use App\Models\{IguideLabAnalysis,IguideLabCase,IguideLabComposite,IguideLabMach
 /** One bounded standing-pair recipe. No automatic repair or human mask claims. */
 class LabLifestyleWorkflow
 {
-    public const INTENT = 'Add exactly two fictional adults standing separately and conversing naturally, adult_1 to the left and adult_2 to the right. Both entire bodies, hair, visible hands and both shoes must be plausible and contained with 10% image margin. No sitting, props, touching, person-person overlap or furniture interaction. Keep every original object, architecture, finish and detail unchanged. Use only a visibly level source floor region at plausible adult scale. In targets use exactly adult_1 and adult_2, each action add and objectCount 1. Relevant reflections, foreground overlap, uncertain feet or anatomy and broad or directional cast shadows require manual_review; this recipe supports diffuse ambient light and tiny shoe contacts only. Do not invent depth, calibration or hidden supports.';
+    public const INTENT = 'Add exactly two fictional adults standing separately and conversing naturally, adult_1 to the left and adult_2 to the right. Both entire bodies, hair, visible hands and both shoes must be plausible and contained with 10% image margin. No sitting, props, touching, person-person overlap or furniture interaction. Keep every original object, architecture, finish and detail unchanged. Use only a visibly level source floor region at plausible adult scale. In targets use exactly adult_1 and adult_2, each action add and objectCount 1. Record reflection, foreground, feet, anatomy, scale, margin, clearance or cast-shadow doubts as caveats in uncertainties and on the readiness checks; they do not stop the edit. Render diffuse ambient light with tiny shoe contacts only. Do not invent depth, calibration or hidden supports.';
 
     public function snapshot(): array
     {
@@ -81,9 +81,11 @@ class LabLifestyleWorkflow
         if(!$this->completed($item,$analysis,'analyzing',$data))return;
         if(isset($workflow->policy['lifestyleFraming'])) {
             $gate=app(LabLifestyleCutReadiness::class)->verified($analysis,false);
-            if(!$gate['allRequiredChecksPass']) {
-                $owner->finish($item,'needs_review','actual_cut_requires_review','Actual view scope, margin, clearance or optical checks require review. No image was requested.',$data);return;
+            if(LabLifestyleCutReadiness::hardBlockers($gate)) {
+                $owner->finish($item,'needs_review','actual_cut_requires_review','No visible level original floor supports the standing pair in this view. No image was requested.',$data);return;
             }
+            // Soft doubts travel with the item as caveats; the final full-sphere check still decides Ready.
+            $data['sourceCaveats']=array_values(array_unique([...LabLifestyleCutReadiness::caveats($gate),...array_filter($analysis->proposal['uncertainties']??[],'is_string')]));
         }
         if(!$this->twoTargets($analysis->proposal)||($analysis->proposal['workflow']['mode']??null)!=='whole_panorama'){
             $owner->finish($item,'needs_review','unsupported_section_plan','The actual section does not support the unchanged two-person scope.',$data);return;}
@@ -105,7 +107,7 @@ class LabLifestyleWorkflow
         if(!$this->completed($item,$assessment,'checking',$data))return;
         if(($assessment->result['status']??null)!=='ready_for_segmentation'){
             $data['assessmentReviewReasons']=$assessment->result['reviewReasons']??[];
-            $owner->finish($item,'needs_review','placement_requires_review','Actual placement or its optical/context dependencies require review before segmentation.',$data);return;}
+            $owner->finish($item,'needs_review','placement_requires_review','The generated image has no selectable person or floor region to composite.',$data);return;}
         $segSteps=$assessments->reserveSegmentationSteps($assessment);
         foreach(['source-floor','candidate-people'] as $role) {
             $step=collect($segSteps)->first(fn($s)=>($s->input['logicalPlan']['stepKey']??null)===$role);abort_unless($step,422);
