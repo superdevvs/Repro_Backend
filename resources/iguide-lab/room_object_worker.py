@@ -4,8 +4,11 @@ Inputs are hash-bound: the native source, one 2048 square furniture draft of a s
 section, and 1-3 machine "furniture" masks of that draft. Nothing here judges the furniture; the
 result is unreviewed and is only ever shown with its caveats until the independent final check.
 
-Fallback ladder (only an empty mask set fails): opaque objects with the compositor's own small
-filter clearance, then the same objects edge-faded just inside the draft border.
+Fallback ladder: opaque objects with the compositor's own small filter clearance, then the same
+objects edge-faded just inside the draft border, then (when the request carries the layout's planned
+furniture and floor boxes) the whole draft inside that region, edge-faded at the old 10% margin.
+The last step needs no furniture mask, so a paid draft with no usable mask still gets a composite.
+Without a region, only an empty mask set fails.
 """
 from __future__ import annotations
 import argparse
@@ -34,6 +37,10 @@ SECTION = (2048, 2048)
 GUARD_FAILURES = ('SOURCE_SUPPORT_INSIDE_FILTER_FOOTPRINT_GUARD_REQUIRED', 'SUPPORT_TOUCHES_SOURCE_BORDER',
                   'ACTIVE_SUPPORT_REQUIRES_CLAMPED_BILINEAR_SAMPLE', 'ACTIVE_SUPPORT_REQUIRES_TRUNCATED_MIP_FILTER')
 FIELDS = {'schemaVersion', 'operation', 'privateRoot', 'source', 'candidate', 'preset', 'outputDirectory', 'geometry', 'objectMasks'}
+REGION_FIELD = 'draftRegion'
+MAX_REGION_BOXES = 8
+REGION_CLEARANCE = 206
+REGION_FEATHER = 24
 
 
 def object_runtime():
@@ -73,35 +80,61 @@ def edge_fade(alpha, clearance):
     return np.rint(alpha.astype(np.float32) * ramp).astype(np.uint8)
 
 
-def compose(source, candidate, alpha, view):
-    """Objects first; on a clearance failure, fade the objects just inside the draft border and retry."""
-    try:
-        return c.recompose_objects(source, candidate, alpha, view, enabled=True), 'objects', 0
-    except ValueError as error:
-        if str(error) not in GUARD_FAILURES:
-            raise
+def checked_region(region):
+    """Planned furniture and floor boxes [x0, y0, x1, y1] on the 2048 draft; integers only."""
+    q.require(isinstance(region, list) and 1 <= len(region) <= MAX_REGION_BOXES and all(
+        isinstance(b, list) and len(b) == 4 and all(type(n) is int for n in b)
+        and 0 <= b[0] < b[2] <= SECTION[0] and 0 <= b[1] < b[3] <= SECTION[1] for b in region), 'DRAFT_REGION_INVALID')
+    return region
+
+
+def region_alpha(region):
+    """The whole draft inside the planned region, feathered, and faded at the old 10% margin (always fits)."""
+    m = np.zeros((SECTION[1], SECTION[0]), np.uint8)
+    for x0, y0, x1, y1 in region:
+        m[y0:y1, x0:x1] = 255
+    soft = np.asarray(Image.fromarray(m).filter(ImageFilter.GaussianBlur(REGION_FEATHER)))
+    faded = edge_fade(soft, REGION_CLEARANCE)
+    q.require(np.any(faded), 'EMPTY_OBJECT_MASK')
+    return faded
+
+
+def compose(source, candidate, alpha, view, region=None):
+    """Objects first; on a clearance failure, fade the objects just inside the draft border and retry;
+    if that still cannot place them (or there is no usable mask), use the draft region when one was given."""
     last = None
-    # 32 px covers the filter guard up to mip level 2; 206 px is the old 10% section margin, which always fits.
-    for clearance in (32, 206):
-        faded = edge_fade(alpha, clearance)
-        q.require(np.any(faded), 'EMPTY_OBJECT_MASK')
+    if alpha is not None:
         try:
-            return c.recompose_objects(source, candidate, faded, view, enabled=True), 'edge_faded', clearance
+            return c.recompose_objects(source, candidate, alpha, view, enabled=True), 'objects', 0
         except ValueError as error:
             if str(error) not in GUARD_FAILURES:
                 raise
-            last = error
-    raise last
+        # 32 px covers the filter guard up to mip level 2; 206 px is the old 10% section margin, which always fits.
+        for clearance in (32, 206):
+            faded = edge_fade(alpha, clearance)
+            if region is not None and not np.any(faded):
+                break
+            q.require(np.any(faded), 'EMPTY_OBJECT_MASK')
+            try:
+                return c.recompose_objects(source, candidate, faded, view, enabled=True), 'edge_faded', clearance
+            except ValueError as error:
+                if str(error) not in GUARD_FAILURES:
+                    raise
+                last = error
+        if region is None:
+            raise last
+    return c.recompose_objects(source, candidate, region_alpha(region), view, enabled=True), 'draft_region', REGION_CLEARANCE
 
 
 def run(request):
     start = time.monotonic()
     q.validate_runtime()
-    q.require(isinstance(request, dict) and set(request) == FIELDS and request['schemaVersion'] == 1
+    q.require(isinstance(request, dict) and set(request) in (FIELDS, FIELDS | {REGION_FIELD}) and request['schemaVersion'] == 1
               and request['operation'] == OPERATION, 'REQUEST_FIELDS_INVALID')
     q.require(request['preset'] in q.PRESETS, 'UNKNOWN_PRESET')
+    region = checked_region(request[REGION_FIELD]) if REGION_FIELD in request else None
     masks = request['objectMasks']
-    q.require(isinstance(masks, list) and 1 <= len(masks) <= MAX_MASKS, 'OBJECT_MASK_COUNT')
+    q.require(isinstance(masks, list) and (0 if region else 1) <= len(masks) <= MAX_MASKS, 'OBJECT_MASK_COUNT')
     root = Path(request['privateRoot']).resolve(strict=True)
     out = Path(request['outputDirectory']).resolve()
     q.require(out != root and out.is_relative_to(root), 'OUTPUT_PATH_INVALID')
@@ -127,9 +160,15 @@ def run(request):
     source = q.read_image(assets['source'], panorama=True)
     q.require((view['width'], view['height']) == SECTION, 'EXPECTED_2048_SQUARE_SECTION')
     candidate = q.read_image(assets['candidate'], expected=SECTION)
-    alpha = union_alpha([q.read_image(p, grayscale=True, expected=SECTION) for p in mask_paths])
-    candidate, gain = grade(candidate, q.read_image(cut_path, expected=SECTION), alpha)
-    (result, effective, object_native, shadow_native, compositor), fallback, clearance = compose(source, candidate, alpha, view)
+    alpha = None
+    if mask_paths:
+        try:
+            alpha = union_alpha([q.read_image(p, grayscale=True, expected=SECTION) for p in mask_paths])
+        except q.WorkerError as error:
+            if region is None or str(error) != 'EMPTY_OBJECT_MASK':
+                raise
+    candidate, gain = grade(candidate, q.read_image(cut_path, expected=SECTION), alpha if alpha is not None else region_alpha(region))
+    (result, effective, object_native, shadow_native, compositor), fallback, clearance = compose(source, candidate, alpha, view, region)
     qa = q.qa_arrays(source, result, effective, request['preset'])
     for key, p in assets.items():
         q.require(g.sha256(p) == request[key]['sha256'], 'INPUT_CHANGED_DURING_WORK')
@@ -140,7 +179,7 @@ def run(request):
                    'shadowOnlyFormulaMismatchPixels': 0, 'mode': 'replacement', 'alphaAppliedOnce': True, 'nativeFloorResampled': False,
                    'generatedDetailDimensions': list(SECTION), 'nativeCanvasDimensions': [source.shape[1], source.shape[0]]}
     objects = {'fallback': fallback, 'edgeFadeClearancePixels': clearance, 'edgeFadePixels': FADE_PIXELS if clearance else 0,
-               'maskCount': len(masks), 'contactShadow': False, 'colorGain': gain, 'compositor': compositor}
+               'maskCount': len(masks), 'draftRegion': region, 'contactShadow': False, 'colorGain': gain, 'compositor': compositor}
     out.parent.mkdir(parents=True, exist_ok=True)
     temp = Path(tempfile.mkdtemp(prefix='.automation-', dir=out.parent))
     try:

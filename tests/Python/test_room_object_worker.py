@@ -46,10 +46,13 @@ class RoomObjectWorkerTests(unittest.TestCase):
         Image.fromarray(m).save(self.root / name)
         return self.descriptor(name)
 
-    def request(self, masks, out='out'):
-        return {'schemaVersion': 1, 'operation': 'compose-room-objects', 'privateRoot': str(self.root), 'source': self.descriptor('source.png'),
-                'candidate': self.descriptor('draft.png'), 'preset': 'interior-design', 'outputDirectory': str(self.root / out),
-                'geometry': self.geometry, 'objectMasks': masks}
+    def request(self, masks, out='out', region=None):
+        request = {'schemaVersion': 1, 'operation': 'compose-room-objects', 'privateRoot': str(self.root), 'source': self.descriptor('source.png'),
+                   'candidate': self.descriptor('draft.png'), 'preset': 'interior-design', 'outputDirectory': str(self.root / out),
+                   'geometry': self.geometry, 'objectMasks': masks}
+        if region is not None:
+            request['draftRegion'] = region
+        return request
 
     def native(self, report, name):
         return np.asarray(Image.open(report['artifacts'][name]['path']))
@@ -91,6 +94,30 @@ class RoomObjectWorkerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'OBJECT_MASK_COUNT'):
             worker.run(self.request(four, 'four'))
         self.assertFalse((self.root / 'four').exists())
+
+    # Planned furniture and floor boxes of the layout, [x0, y0, x1, y1] on the 2048 draft.
+    REGION = [[700, 850, 1300, 1350], [400, 1250, 1900, 1900]]
+
+    def test_no_usable_furniture_mask_still_composites_the_draft_inside_the_planned_floor_region(self):
+        report = worker.run(self.request([], 'region', self.REGION))
+        self.assertEqual('completed', report['status']); self.assertEqual('draft_region', report['objects']['fallback'])
+        self.assertEqual(0, report['objects']['maskCount']); self.assertEqual([], report['maskHashes'])
+        result, alpha = self.native(report, 'native'), self.native(report, 'effective-alpha')
+        np.testing.assert_array_equal(result[alpha == 0], self.source[alpha == 0]); self.assertGreater(int(np.count_nonzero(alpha)), 10000)
+        self.assertEqual(report, worker.run(self.request([], 'region', self.REGION)))
+
+    def test_furniture_entirely_inside_the_border_band_falls_back_to_the_draft_region(self):
+        report = worker.run(self.request([self.mask('rim.png', (1000, 1200, 0, 30))], 'rim', self.REGION))
+        self.assertEqual('completed', report['status']); self.assertEqual('draft_region', report['objects']['fallback'])
+        self.assertGreater(int(np.count_nonzero(self.native(report, 'effective-alpha'))), 0)
+
+    def test_an_empty_mask_with_a_region_falls_back_and_an_invalid_region_is_refused(self):
+        report = worker.run(self.request([self.mask('empty.png')], 'empty-region', self.REGION))
+        self.assertEqual('draft_region', report['objects']['fallback'])
+        for region in ([], [[0, 0, 10]], [[100, 100, 50, 200]], [[0, 0, 2049, 10]], [[0.5, 0, 10, 10]]):
+            with self.assertRaisesRegex(ValueError, 'DRAFT_REGION_INVALID'):
+                worker.run(self.request([], 'bad', region))
+        self.assertFalse((self.root / 'bad').exists())
 
 
 if __name__ == '__main__':
