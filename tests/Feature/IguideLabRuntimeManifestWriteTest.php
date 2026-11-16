@@ -125,16 +125,23 @@ class IguideLabRuntimeManifestWriteTest extends TestCase
     public function test_write_rebuilds_interior_material_against_its_real_python_probe(): void
     {
         $python = '/usr/local/bin/python3.12';
-        if (! is_executable($python)) $this->markTestSkipped('Needs the pinned Python 3.12.3 runtime of the test image.');
         $path = $this->dir.'/interior_material.json';
         file_put_contents($path, json_encode(['version' => 'interior-material-runtime/1', 'validationStatus' => 'passed', 'python' => '3.12.3', 'numpy' => '2.5.4',
             'pillow' => '13.0.0', 'opencv' => '5.0.0', 'files' => ['interior_material_worker.py' => self::STALE]]));
         chmod($path, 0640);
         config(['iguide-lab.interior_material_runtime_manifest' => $path, 'iguide-lab.interior_material_python_path' => $python]);
         $this->assertSame('fail', $this->checks()['interior_material']);
+        $before = file_get_contents($path);
 
         [$exit, $output] = $this->manifests(['--write' => true, '--only' => 'interior_material']);
 
+        if (! is_executable($python)) {
+            // CI has no pinned Python runtime (it runs the PHP suite only), so the real probe cannot pass there:
+            // the candidate must then fail validation and nothing may be written. Never skip (CI fails on skips).
+            $this->assertSame(1, $exit, $output);
+            $this->assertSame($before, file_get_contents($path), 'a candidate that cannot be validated is never written');
+            return;
+        }
         $this->assertSame(0, $exit, $output);
         $this->assertSame(['write', 'pass'], [$this->jsonLines($output)['interior_material']['action'], $this->jsonLines($output)['interior_material']['check']]);
         $this->assertSame('pass', $this->checks()['interior_material'], 'the Python worker accepts the rebuilt file hashes');
@@ -251,7 +258,18 @@ class IguideLabRuntimeManifestWriteTest extends TestCase
 
     public function test_refuses_when_the_new_file_would_have_another_owner(): void
     {
-        if (! function_exists('posix_geteuid') || posix_geteuid() !== 0) $this->markTestSkipped('Changing a file owner needs root.');
+        if (! function_exists('posix_geteuid') || posix_geteuid() !== 0) {
+            // Without root no file can be given a foreign owner. CI runs unprivileged and fails on skipped tests, so assert
+            // the unprivileged half of the rule instead: a manifest the current user owns is rewritten with the same owner,
+            // group and mode.
+            $stat = stat($this->paths['grass']);
+            [$exit, $output] = $this->manifests(['--write' => true, '--only' => 'grass']);
+            $this->assertSame(0, $exit, $output);
+            clearstatcache();
+            $after = stat($this->paths['grass']);
+            $this->assertSame([$stat['uid'], $stat['gid'], $stat['mode'] & 0777], [$after['uid'], $after['gid'], $after['mode'] & 0777]);
+            return;
+        }
         chown($this->paths['grass'], 4242);
         $state = $this->state();
 
