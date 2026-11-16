@@ -45,4 +45,31 @@ class IguideLabDeclutterWorkflowTest extends TestCase
         [,,$workflow,$item]=$this->fixture();$workflow->update(['cancelled_at'=>now()]);
         $this->expectException(HttpException::class);app(LabWorkflowSteps::class)->reserve($item,'removal-plan','analysis',[]);
     }
+    public function test_a_plan_that_needs_review_is_recorded_with_its_reasons_not_a_processing_guard(): void
+    {
+        [$project,$case,$workflow,$item]=$this->fixture();config(['iguide-lab.declutter_workflow_enabled'=>true]);
+        $policy=$workflow->policy;$policy['declutterWorkflow']=app(\App\Services\IguideLab\LabDeclutterWorkflow::class)->snapshot();$workflow->update(['policy'=>$policy]);
+        $this->partialMock(\App\Services\IguideLab\LabDeclutterWorkflow::class,fn($m)=>$m->shouldReceive('ready')->andReturn(true));
+        $this->mock(\App\Services\IguideLab\LabWorkflowArtifacts::class,fn($m)=>$m->shouldReceive('preflight'));
+        $proposal=['uncertainties'=>['A faint reflection may exist.'],'targets'=>[['id'=>'target_object','action'=>'remove','objectCount'=>2]],
+            'workflow'=>['mode'=>'perspective_sections','sections'=>[['targetIds'=>['target_object'],'yawDegrees'=>10,'pitchDegrees'=>-30,'hfovDegrees'=>65]]]];
+        $this->mock(\App\Services\IguideLab\LabAnalyses::class,fn($m)=>$m->shouldReceive('start')->andReturnUsing(function()use($proposal){
+            $a=new \App\Models\IguideLabAnalysis(['status'=>'completed']);$a->id=(string)Str::uuid();$a->proposal=$proposal;return $a;}));
+        $this->mock(\App\Services\IguideLab\LabSections::class,fn($m)=>$m->shouldReceive('start')->andReturnUsing(function($p,$input)use($case){
+            $s=new \App\Models\IguideLabSection(['status'=>'completed']);$s->id=(string)Str::uuid();$s->case_id=$case->id;$s->source_sha256=$case->source_sha256;
+            $s->view=$input['view'];$s->derived_case_id=$case->id;return $s;}));
+        $plan=new \App\Models\IguideLabDeclutterRemovalPlan(['status'=>'completed']);$plan->id=(string)Str::uuid();
+        $plan->result=['status'=>'needs_review','reviewReasons'=>['TARGET_TOUCHES_CUT_EDGE'],'caveats'=>[]];
+        $this->mock(\App\Services\IguideLab\LabDeclutterRemovalPlans::class,function($m)use($item,$plan){
+            $m->shouldReceive('reserve')->andReturnUsing(fn()=>app(LabWorkflowSteps::class)->reserve($item,'removal-plan','analysis',['fixture'=>true]));
+            $m->shouldReceive('start')->andReturn($plan);
+            $m->shouldReceive('verified')->andThrow(new HttpException(422,'The persisted source-removal plan does not authorize support.'));
+        });
+        app(\App\Services\IguideLab\LabDeclutterWorkflow::class)->advance($workflow->fresh(),$item->fresh(),$project);
+        $item->refresh();
+        $this->assertSame('needs_review',$item->status);
+        $this->assertSame('removal_plan_requires_review',$item->data['reviewReasons'][0]['code']);
+        $this->assertSame(['TARGET_TOUCHES_CUT_EDGE'],$item->data['removalReviewReasons']);
+        $this->assertSame(['A faint reflection may exist.'],$item->data['sourceCaveats']);Http::assertNothingSent();
+    }
 }
