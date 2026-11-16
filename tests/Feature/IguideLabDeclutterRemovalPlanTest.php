@@ -172,7 +172,7 @@ class IguideLabDeclutterRemovalPlanTest extends TestCase
         $this->assertIsArray($failure);
         $this->assertSame(\Symfony\Component\HttpKernel\Exception\HttpException::class, $failure['exceptionClass']);
         $this->assertSame(422, $failure['httpStatus']); $this->assertSame('Fixture source drift', $failure['message']);
-        $this->assertMatchesRegularExpression('/\A[A-Za-z0-9_.-]+\.php:\d+\z/D', $failure['location']);
+        $this->assertMatchesRegularExpression('/\ALabDeclutterRemovalPlans\.php:\d+\z/D', $failure['location']); // first app frame, not the framework's abort()
     }
     public function test_a_stopped_plan_never_copies_untrusted_exception_text(): void
     {

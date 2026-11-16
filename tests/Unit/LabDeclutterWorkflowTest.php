@@ -133,4 +133,11 @@ class LabDeclutterWorkflowTest extends TestCase
         $plan=['target'=>['description'=>'opaque stone'],'shadow'=>['status'=>'none_observed'],'protectedFeatures'=>[],'uncertainties'=>[]];
         $this->expectException(HttpException::class);app(LabDeclutterArtifacts::class)->removalReviewContext($source,$plan,[]);
     }
+    public function test_parser_break_keeps_only_the_protocol_error_code(): void
+    {
+        $bridge=\App\Services\IguideLab\LabDeclutterRemovalBridge::class;
+        $this->assertSame('RESPONSE_ENVELOPE_INVALID',$bridge::errorCode("Traceback (most recent call last):\n  File \"/x/bridge.py\", line 9\nValueError: RESPONSE_ENVELOPE_INVALID\n"));
+        $this->assertNull($bridge::errorCode("Traceback\nKeyError: 'secret /home/user/key'\n"));
+        $this->assertNull($bridge::errorCode(''));
+    }
 }

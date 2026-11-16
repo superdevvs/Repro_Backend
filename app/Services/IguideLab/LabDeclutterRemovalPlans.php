@@ -277,9 +277,11 @@ class LabDeclutterRemovalPlans
                 // Keep the failure reason. Only our own abort messages are copied: client and
                 // provider exception text can embed credentials or private paths.
                 $http = $error instanceof \Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
+                $frame = collect([['file' => $error->getFile(), 'line' => $error->getLine()], ...$error->getTrace()])
+                    ->first(fn ($f) => isset($f['file'], $f['line']) && str_starts_with($f['file'], app_path())) ?? ['file' => $error->getFile(), 'line' => $error->getLine()];
                 $values['data'] = json_encode([...($fresh->data ?? []), 'failure' => ['code' => $code, 'exceptionClass' => get_class($error),
                     'httpStatus' => $http ? $error->getStatusCode() : null, 'message' => $http ? mb_substr($error->getMessage(), 0, 300) : null,
-                    'location' => basename($error->getFile()).':'.$error->getLine(), 'recordedAt' => now()->toIso8601String()]], JSON_THROW_ON_ERROR);
+                    'location' => basename($frame['file']).':'.$frame['line'], 'recordedAt' => now()->toIso8601String()]], JSON_THROW_ON_ERROR);
             }
             IguideLabDeclutterRemovalPlan::whereKey($record->id)->where('status', '!=', 'completed')->update($values);
         }, 'iguide-lab.declutter-removal-plan-attention');
