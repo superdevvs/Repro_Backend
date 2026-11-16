@@ -58,8 +58,15 @@ class ClientBillingService
                 $invoicedShootIds[$shoot->id] = true;
             }
 
+            // A voided/cancelled invoice is not collectible (accounting home and
+            // reminders already skip it). It still claims its shoots above so the
+            // abandoned booking does not reappear as a payable "Shoot balance".
+            if ($this->isNonCollectibleInvoice($invoice)) {
+                return null;
+            }
+
             return $this->buildInvoiceItem($invoice, $client, $relatedShoots);
-        });
+        })->filter()->values();
 
         $shootItems = Shoot::query()
             ->with(['client', 'photographer', 'payments'])
@@ -90,6 +97,11 @@ class ClientBillingService
 
         return $this->normalizeInvoiceRole($invoice->role) === Invoice::ROLE_CLIENT
             && $this->collectInvoiceShoots($invoice, $clientId)->isNotEmpty();
+    }
+
+    private function isNonCollectibleInvoice(Invoice $invoice): bool
+    {
+        return in_array(strtolower((string) $invoice->status), ['void', 'voided', 'cancelled', 'canceled'], true);
     }
 
     private function collectInvoiceShoots(Invoice $invoice, int $clientId): Collection
