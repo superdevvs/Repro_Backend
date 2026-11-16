@@ -63,7 +63,7 @@ class CubiCasaServiceOwnershipTest extends TestCase
         [$shoot, $line] = $this->fixture();
         $this->existing($shoot, ['shoot_service_id' => $line->id]);
         $result = app(ProviderFloorplanRecovery::class)->recover('cubicasa', 10, $shoot->id, true);
-        $this->assertSame(['shoots' => 0, 'imports' => 0, 'scans' => 0, 'previews' => 0], $result);
+        $this->assertSame(['shoots' => 0, 'imports' => 0, 'scans' => 0, 'previews' => 0, 'deferred' => 0, 'abandoned' => 0], $result);
         Http::assertNothingSent();
     }
 

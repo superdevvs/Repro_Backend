@@ -12,17 +12,33 @@ use Illuminate\Support\Facades\Cache;
 
 class ProviderFloorplanRecovery
 {
+    /** Shoots in these states never receive provider deliverables. */
+    public const CLOSED_STATUSES = ['cancelled', 'canceled', 'declined'];
+
+    public static function isClosed(Shoot $shoot): bool
+    {
+        foreach ([$shoot->status, $shoot->workflow_status] as $status) {
+            if (in_array(strtolower(trim((string) $status)), self::CLOSED_STATUSES, true)) return true;
+        }
+
+        return false;
+    }
+
     public function recover(string $provider, int $limit = 100, ?int $shootId = null, bool $dryRun = false): array
     {
         if (!in_array($provider, ['cubicasa', 'iguide'], true)) throw new \InvalidArgumentException('Unsupported floorplan provider.');
-        $result = ['shoots' => 0, 'imports' => 0, 'scans' => 0, 'previews' => 0];
+        $result = ['shoots' => 0, 'imports' => 0, 'scans' => 0, 'previews' => 0, 'deferred' => 0, 'abandoned' => 0];
+        $throttle = app(ProviderAssetRecoveryThrottle::class);
+        $channel = 'recovery-'.$provider;
+        // Read every schedule before any queue write; a SQLite read snapshot must not stay open across writes.
+        $schedules = $throttle->load($channel);
         // Finish each read before writing queue/cache rows on SQLite. Apply the work limit
         // after inspecting completeness so already-complete shoots cannot starve old ones.
         $ids = Shoot::query()->where(fn ($q) => $q->whereNotNull($provider.'_floorplans')->orWhereHas('units', fn ($u) => $u->whereNotNull('provider_data'))->orWhereHas('files', fn ($f) => $f->where('media_type', 'floorplan')->where('metadata->source', $provider)))
             ->when($shootId, fn ($q) => $q->whereKey($shootId))->orderBy('id')->pluck('id');
         foreach ($ids as $id) {
             $shoot = Shoot::with('services.category')->find($id);
-            if (!$shoot || $shoot->isInternalTestShoot()) continue;
+            if (!$shoot || $shoot->isInternalTestShoot() || self::isClosed($shoot)) continue;
             $scopes = [];
             if (!$shoot->units()->exists()) {
                 $lineId = $provider === 'cubicasa' ? app(CubiCasaServiceOwnership::class)->resolve($shoot)?->id : null;
@@ -60,10 +76,25 @@ class ProviderFloorplanRecovery
                     }
                 }
                 $missing = array_values(array_filter($assets, fn ($a) => is_array($a) && !empty($a['url']) && !empty($a['asset_key']) && !isset($keys[$a['asset_key']])));
+                $scopeKey = ProviderAssetRecoveryThrottle::scopeKey($channel, $id, $lineId ?: null);
+                $schedule = $schedules[$scopeKey] ?? null;
                 if ($missing) {
-                    $worked = true;
-                    $job = $provider === 'cubicasa' ? IngestCubiCasaAssetsJob::class : IngestIguideAssetsJob::class;
-                    if ($this->queue('import:'.$provider.':'.$id.':'.$lineId, fn () => $job::dispatch($id, $missing, $lineId ?: null)->afterCommit(), $dryRun)) $result['imports']++;
+                    // Assets that keep failing wait for their next retry (or were given up) and do
+                    // not take a work slot, so they cannot starve newer shoots.
+                    $status = $throttle->status($schedule, $missing);
+                    if ($status !== 'due') {
+                        $result[$status]++;
+                    } else {
+                        $worked = true;
+                        $job = $provider === 'cubicasa' ? IngestCubiCasaAssetsJob::class : IngestIguideAssetsJob::class;
+                        $identity = 'import:'.$provider.':'.$id.':'.$lineId.':'.substr(ProviderAssetRecoveryThrottle::fingerprint($missing), 0, 16);
+                        if ($this->queue($identity, fn () => $job::dispatch($id, $missing, $lineId ?: null)->afterCommit(), $dryRun)) {
+                            $result['imports']++;
+                            if (!$dryRun) $throttle->record($channel, $id, $lineId ?: null, $missing, $schedule);
+                        }
+                    }
+                } elseif ($schedule && !$dryRun) {
+                    $throttle->clear($scopeKey);
                 }
             }
             if ($worked && ++$result['shoots'] >= max(1, $limit)) break;

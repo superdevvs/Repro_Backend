@@ -6,6 +6,8 @@ use App\Jobs\CreateCubiCasaOrderJob;
 use App\Jobs\IngestCubiCasaAssetsJob;
 use App\Models\Shoot;
 use App\Services\CubiCasaService;
+use App\Services\Shoots\ProviderAssetRecoveryThrottle;
+use App\Services\Shoots\ProviderFloorplanRecovery;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -19,6 +21,8 @@ class ResyncPendingCubiCasaCommand extends Command
     protected $signature = 'cubicasa:resync-pending {--limit=100 : Max shoots per run}';
 
     protected $description = 'Reconcile unfinished CubiCasa orders and recover missing floorplan deliveries.';
+
+    private const RESYNC_CHANNEL = 'resync-cubicasa';
 
     public function handle(CubiCasaService $cubicasa): int
     {
@@ -68,6 +72,7 @@ class ResyncPendingCubiCasaCommand extends Command
 
         $count = 0;
         $failed = 0;
+        $throttle = app(ProviderAssetRecoveryThrottle::class);
 
         foreach ($shootIds as $shootId) {
             $shoot = Shoot::with('services.category')->find($shootId);
@@ -95,8 +100,14 @@ class ResyncPendingCubiCasaCommand extends Command
             }
 
             $floorplans = is_array($parsed['floorplans'] ?? null) ? $parsed['floorplans'] : [];
-            if (!empty($floorplans) && $shoot->hasCubiCasaEligibleService()) {
-                IngestCubiCasaAssetsJob::dispatch($shoot->id, $floorplans, null, true);
+            if (!empty($floorplans) && $shoot->hasCubiCasaEligibleService() && !ProviderFloorplanRecovery::isClosed($shoot)) {
+                // A Ready order whose files the provider no longer serves used to be
+                // re-imported every 30 minutes forever; repeats of the same files back off.
+                $schedule = $throttle->find(self::RESYNC_CHANNEL, $shoot->id, null);
+                if ($throttle->allows($schedule, $floorplans)) {
+                    IngestCubiCasaAssetsJob::dispatch($shoot->id, $floorplans, null, true);
+                    $throttle->record(self::RESYNC_CHANNEL, $shoot->id, null, $floorplans, $schedule);
+                }
             }
             $count++;
         }
@@ -124,10 +135,16 @@ class ResyncPendingCubiCasaCommand extends Command
      */
     private function readyShootsMissingAssets(): array
     {
+        $closed = ProviderFloorplanRecovery::CLOSED_STATUSES;
+        $placeholders = implode(', ', array_fill(0, count($closed), '?'));
+
         return Shoot::query()
             ->where(fn ($q) => $q->whereNull('shoot_type')->orWhere('shoot_type', '!=', Shoot::SHOOT_TYPE_INTERNAL_TEST))
             ->whereDoesntHave('units')
             ->whereRaw('LOWER(cubicasa_status) = ?', ['ready'])
+            // Cancelled or declined shoots never receive deliverables; polling them only repeats failures.
+            ->whereRaw("LOWER(TRIM(COALESCE(status, ''))) NOT IN ($placeholders)", $closed)
+            ->whereRaw("LOWER(TRIM(COALESCE(workflow_status, ''))) NOT IN ($placeholders)", $closed)
             ->with(['files' => fn ($q) => $q->where('media_type', 'floorplan')->whereNull('shoot_service_id')->select('id', 'shoot_id', 'metadata', 'media_type', 'file_type', 'mime_type', 'scan_status')])
             ->get(['id', 'cubicasa_floorplans'])
             ->filter(function (Shoot $shoot): bool {
