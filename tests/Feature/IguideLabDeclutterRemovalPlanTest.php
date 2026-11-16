@@ -163,6 +163,24 @@ class IguideLabDeclutterRemovalPlanTest extends TestCase
         app(LabDeclutterRemovalPlans::class)->process($record);
         $this->assertSame('needs_attention', $record->fresh()->status); Http::assertNothingSent();
     }
+    public function test_a_stopped_plan_keeps_its_failure_reason(): void
+    {
+        [, , , , , $record] = $this->reserved(); $this->context->reject = true;
+        app(LabDeclutterRemovalPlans::class)->process($record); $fresh = $record->fresh();
+        $this->assertSame('assessment_preflight_rejected', $fresh->error_code);
+        $failure = $fresh->data['failure'] ?? null;
+        $this->assertIsArray($failure);
+        $this->assertSame(\Symfony\Component\HttpKernel\Exception\HttpException::class, $failure['exceptionClass']);
+        $this->assertSame(422, $failure['httpStatus']); $this->assertSame('Fixture source drift', $failure['message']);
+        $this->assertMatchesRegularExpression('/\A[A-Za-z0-9_.-]+\.php:\d+\z/D', $failure['location']);
+    }
+    public function test_a_stopped_plan_never_copies_untrusted_exception_text(): void
+    {
+        [, , , , , $record] = $this->reserved();
+        Http::fake(function () { throw new \Illuminate\Http\Client\ConnectionException('secret-token https://example.invalid/private'); });
+        $service = app(LabDeclutterRemovalPlans::class); $service->process($record); $service->process($record->fresh());
+        $this->assertStringNotContainsString('secret-token', json_encode($record->fresh()->data));
+    }
     public function test_machine_association_rechecks_authority_after_receipt_and_rejects_result_tampering(): void
     {
         [, , , , , $record] = $this->reserved(); $service = app(LabDeclutterRemovalPlans::class);

@@ -6,7 +6,7 @@ use App\Models\{IguideLabAnalysis,IguideLabCase,IguideLabComposite,IguideLabProj
 class LabDeclutterWorkflow
 {
     public const INTENT = 'Remove exactly one compact, clearly decorative, opaque tabletop object and only its attributable short local shadow. Preserve all other objects and every permanent finish. In targets use exactly target_object, action remove, objectCount 1. Select one complete perspective section with at least 10% margin around the object and its local shadow. The surrounding receiver must be simple continuous matte material. Transparent, reflective or patterned support, possible reflections, shared or long shadows, overlapping objects, thin foliage or open holes, uncertain foreground ordering, missing context, and hidden optical dependencies require manual_review. Do not infer unseen detail as ground truth. A proposed framing is not measured clearance. If no such object is clearly supported, choose manual_review.';
-    public const MATERIALS_INTENT = 'Remove exactly one compact opaque portable countertop or tabletop item and only its attributable short local shadow. The selected item may be decorative or everyday clutter, including a container, utensil holder or freestanding knife block. Preserve all non-selected items, installed appliances, plumbing, sockets, cabinetry and other fixed features. In targets use exactly target_object, action remove, objectCount 1. Select one complete perspective section with at least 10% margin around the item and its local shadow. The visible receiver may be simple continuous material or stochastic stone/speckle, with unobstructed nearby material on at least two cardinal sides. No structural joint, counter edge, regular grid, major directional vein or coherent target reflection may cross the replacement. Broad unrelated illumination is not a target reflection and must continue. Transparency, foliage, holes, overlap, shared or long shadows, uncertain foreground ordering, missing optical context and possible target reflections require manual_review. Hidden receiver pixels are an unobserved generated estimate, not recoverable ground truth. This is one-item removal, not whole-room decluttering. If this bounded route is unsupported, choose manual_review.';
+    public const MATERIALS_INTENT = 'Remove the small loose portable clutter visible on one countertop or tabletop: one compact item, or one tight group of touching small loose items removed together, with only their attributable short local shadows. Containers, jars, canisters, mail, remotes, cups, toiletries, utensil holders or a freestanding knife block qualify. Preserve all non-selected items, furniture, plants, glass, mirrors, installed appliances, plumbing, sockets, cabinetry and other fixed features. In targets use exactly one target with id target_object, action remove and objectCount set to the number of selected items. Select one complete perspective section with margin around the selection and its local shadow, keeping the selection away from the section border. The visible receiver may be simple continuous material or stochastic stone/speckle. Hidden receiver pixels are an unobserved generated estimate, not recoverable ground truth. Record every doubt (transparency, foliage, holes, overlap, shared or long shadows, uncertain foreground ordering, missing optical context, possible target reflections, patterned receiver) in uncertainties: each doubt becomes a caveat for the final independent check and does not by itself stop the edit. Choose manual_review only when no removable small loose item is visible. This is removal of the selected items, not whole-room decluttering.';
     public static function intent(bool $materials = false): string { return $materials?self::MATERIALS_INTENT:self::INTENT; }
     public function snapshot(bool $materials = false): array
     {
@@ -51,7 +51,9 @@ class LabDeclutterWorkflow
         else $owner->reconcileQueuedChild($sourceStep,$source);
         $steps->attach($sourceStep,$source->id);$data['sourceAnalysisId']=$source->id;
         if(!$this->completed($item,$source,'analyzing',$data))return;
-        if(!$this->sourceRoute($source->proposal)){$owner->finish($item,'needs_review','unsupported_removal_route','The source does not justify one isolated opaque target and a complete bounded section.',$data);return;}
+        if(!$this->sourceRoute($source->proposal)){$owner->finish($item,'needs_review','unsupported_removal_route','The source analysis found no removable small loose item with a bounded section.',$data);return;}
+        // Source doubts are recorded caveats for the final check, not stops before an image.
+        $data['sourceCaveats']=$source->proposal['uncertainties']??[];
         $v=$source->proposal['workflow']['sections'][0];
         $view=['yaw'=>(float)$v['yawDegrees'],'pitch'=>(float)$v['pitchDegrees'],'hFov'=>(float)$v['hfovDegrees']];
         $sectionInput=['caseId'=>$native->id,'view'=>$view];$sectionStep=$steps->reserve($item,'declutter-section','section',$sectionInput);
@@ -71,16 +73,16 @@ class LabDeclutterWorkflow
         $cut=IguideLabCase::where('project_id',$project->id)->findOrFail($section->derived_case_id);
         $plans=app(LabDeclutterRemovalPlans::class);$planStep=$plans->reserve($item,$section->id,$source->id);$plan=$plans->start($planStep);$data['removalPlanId']=$plan->id;
         if(!$this->completed($item,$plan,'analyzing',$data))return;
-        $plans->verified($plan);
         if(($plan->result['status']??null)!=='ready_for_segmentation'){
-            $data['removalReviewReasons']=$plan->result['reviewReasons']??[];$owner->finish($item,'needs_review','removal_plan_requires_review','Source removal or its hidden-surface dependencies are unsupported.',$data);return;}
+            $data['removalReviewReasons']=$plan->result['reviewReasons']??[];$owner->finish($item,'needs_review','removal_plan_requires_review','The removal plan found no selectable item away from the cut edge.',$data);return;}
+        $plans->verified($plan);$data['removalCaveats']=$plan->result['caveats']??[];
         foreach($plans->reserveSegmentationSteps($plan) as $step){
             $record=app(LabMachineSegmentations::class)->start($step);$data['segmentations'][$step->input['logicalPlan']['stepKey']]=$record->id;
             if(!$this->completed($item,$record,'checking',$data))return;
         }
         $support=app(LabDeclutterSupport::class)->derive($item,$plan,$workflow->policy['declutterWorkflow']['support']);
-        $data['support']=['path'=>$support['reportPath'],'sha256'=>$support['reportSha256'],'status'=>$support['report']['status']];
-        if($support['report']['status']!=='ready_for_generation'){$data['supportReviewReasons']=$support['report']['reviewReasons'];$owner->finish($item,'needs_review','removal_support_requires_review','Source-only support is incomplete or conflicts with protected detail.',$data);return;}
+        $data['support']=['path'=>$support['reportPath'],'sha256'=>$support['reportSha256'],'status'=>$support['report']['status']];$data['supportCaveats']=$support['report']['caveats']??[];
+        if($support['report']['status']!=='ready_for_generation'){$data['supportReviewReasons']=$support['report']['reviewReasons'];$owner->finish($item,'needs_review','removal_support_requires_review','No usable item mask was found away from the cut edge; no image was submitted.',$data);return;}
         $imageInput=['caseId'=>$cut->id,'preset'=>'declutter','style'=>null,'modelId'=>$workflow->policy['modelId'],
             'removalPlanId'=>$plan->id,'supportSha256'=>$support['reportSha256'],'prompt'=>$plan->result['proposal']['generationPrompt'],
             'options'=>['complexity'=>'low','sectionId'=>$section->id]];
@@ -114,16 +116,20 @@ class LabDeclutterWorkflow
     }
     public function sourceRoute(array $p): bool
     {
-        $t=$p['targets']??[];$v=$p['workflow']['sections']??[];
-        return count($t)===1&&($t[0]['id']??null)==='target_object'&&($t[0]['action']??null)==='remove'&&($t[0]['objectCount']??null)===1
-            &&empty($p['uncertainties'])&&($p['workflow']['mode']??null)==='perspective_sections'&&count($v)===1
+        // Stops only when there is no removable target or no supported section; doubts are caveats.
+        $t=$p['targets']??[];$v=$p['workflow']['sections']??[];$n=$t[0]['objectCount']??null;
+        return count($t)===1&&($t[0]['id']??null)==='target_object'&&($t[0]['action']??null)==='remove'&&($n===null||(is_int($n)&&$n>=1))
+            &&($p['workflow']['mode']??null)==='perspective_sections'&&count($v)===1
             &&($v[0]['targetIds']??[])===['target_object']&&$v[0]['pitchDegrees']>=-75&&$v[0]['pitchDegrees']<=30
             &&$v[0]['hfovDegrees']>=30&&$v[0]['hfovDegrees']<=120;
     }
     private function completed(IguideLabWorkflowItem $item,$record,string $stage,array $data): bool
     {
         if($record->status==='completed')return true;$owner=app(LabWorkflows::class);
-        if(in_array($record->status,['failed','needs_attention','needs_review'],true))$owner->finish($item,'needs_review','removal_child_unconfirmed','A removal child requires review; the existing receipt is retained.',$data);
+        if(in_array($record->status,['failed','needs_attention','needs_review'],true)){
+            $data['childFailure']=['table'=>$record->getTable(),'id'=>$record->id,'status'=>$record->status,'errorCode'=>$record->error_code??null];
+            $owner->finish($item,'needs_review','removal_child_unconfirmed','A removal child requires review; the existing receipt is retained.',$data);
+        }
         else $owner->save($item,$stage,$data);return false;
     }
 }

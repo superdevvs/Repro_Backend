@@ -105,7 +105,7 @@ class LabDeclutterRemovalPlans
             LockedWrite::run(fn () => $record->update(['status' => 'completed', 'result' => $result, 'result_sha256' => $asset['sha256'],
                 'data' => $data, 'completed_at' => now(), 'error_code' => null]), 'iguide-lab.declutter-removal-plan-complete');
         } catch (\Throwable $error) {
-            $this->attention($record, in_array($record->fresh()->status, ['submitting', 'received'], true) ? 'submitted_assessment_unconfirmed_or_rejected' : 'assessment_preflight_rejected');
+            $this->attention($record, in_array($record->fresh()->status, ['submitting', 'received'], true) ? 'submitted_assessment_unconfirmed_or_rejected' : 'assessment_preflight_rejected', $error);
         }
     }
     private function protocolContextHash(array $compiled): string
@@ -269,9 +269,19 @@ class LabDeclutterRemovalPlans
             && LabMachineSegmentationPlan::canonicalHash($record->result['execution'] ?? []) === LabMachineSegmentationPlan::canonicalHash($execution), 422, 'The parsed assessment execution changed.');
         $loader->file($record->project_id, $base.'/execution.json', hash('sha256', json_encode($execution, JSON_THROW_ON_ERROR)), 4096);
     }
-    public function attention(IguideLabDeclutterRemovalPlan $record, string $code): void
+    public function attention(IguideLabDeclutterRemovalPlan $record, string $code, ?\Throwable $error = null): void
     {
-        LockedWrite::run(fn () => IguideLabDeclutterRemovalPlan::whereKey($record->id)->where('status', '!=', 'completed')->update([
-            'status' => 'needs_attention', 'error_code' => $code, 'completed_at' => now(), 'updated_at' => now()]), 'iguide-lab.declutter-removal-plan-attention');
+        LockedWrite::run(function () use ($record, $code, $error) {
+            $values = ['status' => 'needs_attention', 'error_code' => $code, 'completed_at' => now(), 'updated_at' => now()];
+            if ($error && ($fresh = IguideLabDeclutterRemovalPlan::whereKey($record->id)->where('status', '!=', 'completed')->first())) {
+                // Keep the failure reason. Only our own abort messages are copied: client and
+                // provider exception text can embed credentials or private paths.
+                $http = $error instanceof \Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
+                $values['data'] = json_encode([...($fresh->data ?? []), 'failure' => ['code' => $code, 'exceptionClass' => get_class($error),
+                    'httpStatus' => $http ? $error->getStatusCode() : null, 'message' => $http ? mb_substr($error->getMessage(), 0, 300) : null,
+                    'location' => basename($error->getFile()).':'.$error->getLine(), 'recordedAt' => now()->toIso8601String()]], JSON_THROW_ON_ERROR);
+            }
+            IguideLabDeclutterRemovalPlan::whereKey($record->id)->where('status', '!=', 'completed')->update($values);
+        }, 'iguide-lab.declutter-removal-plan-attention');
     }
 }
