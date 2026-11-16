@@ -87,4 +87,22 @@ class LabLifestyleWorkflowTest extends TestCase
         $this->assertContains(\App\Services\IguideLab\LabLifestyleArtifacts::REVIEW_CONSTRAINTS[0],$context['reviewRequirements']);
         $this->assertContains('Check all furniture legs.',$context['reviewRequirements']);
     }
+    public function test_many_caveats_are_packed_into_the_bounded_final_check_instead_of_aborting(): void
+    {
+        // 7 framing claims + 4 section uncertainties + 2 artifacts used to abort after the composite existed.
+        $claims=array_map(fn($i)=>'claim_'.$i.' (verify_on_cut): '.str_repeat('framing reason '.$i.' ',20),range(1,7));
+        $source=['protectedFeatures'=>[],'uncertainties'=>[...$claims,'Recorded lifestyle caveats: PERSON_FADED_AT_SECTION_EDGE, '.str_repeat('X_REQUIRES_REVIEW, ',60)],
+            'sourceArtifacts'=>[],'reviewChecks'=>[]];
+        $section=['protectedFeatures'=>[],'uncertainties'=>array_map(fn($i)=>'section doubt '.$i,range(1,6)),'sourceArtifacts'=>['artifact a','artifact b'],
+            'reviewChecks'=>array_map(fn($i)=>['instruction'=>'Check '.$i.' '.str_repeat('detail ',30)],range(1,8))];
+        $context=app(\App\Services\IguideLab\LabLifestyleArtifacts::class)->lifestyleReviewContext($source,$section,['flags'=>['f1','f2','f3']]);
+        foreach(['sourceCaveats'=>13,'reviewRequirements'=>12] as $key=>$limit){
+            $this->assertLessThanOrEqual($limit,count($context[$key]));
+            foreach($context[$key] as $text)$this->assertLessThanOrEqual(600,mb_strlen($text));
+        }
+        $joined=implode(' | ',$context['sourceCaveats']);
+        $this->assertStringContainsString('claim_1 (verify_on_cut)',$joined);
+        $this->assertStringContainsString('PERSON_FADED_AT_SECTION_EDGE',$joined);
+        $this->assertStringContainsString(\App\Services\IguideLab\LabLifestyleArtifacts::REVIEW_CONSTRAINTS[0],implode(' | ',$context['reviewRequirements']));
+    }
 }

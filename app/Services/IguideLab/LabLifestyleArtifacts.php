@@ -85,6 +85,10 @@ class LabLifestyleArtifacts extends LabWorkflowArtifacts
         foreach($authority as $key=>$value)abort_unless(($composite->manifest['lineage'][$key]??null)===$value,422,'Source framing authority changed.');
         $framing=app(LabLifestyleFramings::class)->completed($item,$authority['sourceFramingId']);
         $claims=[];foreach($framing->result['constraints'] as $name=>$check)$claims[]=$name.' ('.$check['status'].'): '.$check['reason'];
+        // Soft doubts that no longer stop the item must reach the independent check (never weaken Ready silently).
+        $assessment=IguideLabLifestyleAssessment::where('project_id',$item->project_id)->find($composite->manifest['lineage']['assessmentId']??'');
+        $caveats=array_values(array_unique(array_filter([...(array)($item->data['sourceCaveats']??[]),...(array)($assessment?->result['caveats']??[])],'is_string')));
+        if($caveats)$claims[]='Recorded lifestyle caveats: '.implode('; ',$caveats);
         return $this->lifestyleReviewContext(['protectedFeatures'=>[],'uncertainties'=>$claims,'sourceArtifacts'=>[], 'reviewChecks'=>[]],$analysis->proposal,$qa);
     }
     private function sourceAuthority(IguideLabWorkflowItem $item,IguideLabAnalysis $analysis): array
@@ -95,15 +99,25 @@ class LabLifestyleArtifacts extends LabWorkflowArtifacts
         return ['sourceFramingId'=>$framing->id,'sourceFramingResultSha256'=>$framing->result_sha256,
             'actualCutReadinessSha256'=>LabAnalysisRecipes::hash($gate)];
     }
+    /** Bounded 600-character entries, as LabDeclutterArtifacts::pack, instead of aborting after the composite exists. */
+    private static function pack(array $texts,int $limit): array
+    {
+        $texts=array_values(array_filter($texts,'is_string'));
+        $split=[];foreach($texts as $text)array_push($split,...(mb_strlen($text)<=600?[$text]:mb_str_split($text,600)));
+        if(count($split)<=$limit)return $split;
+        $chunks=mb_str_split(implode(' | ',$texts),600);if(count($chunks)<=$limit)return $chunks;
+        $note=' [further caveats are kept on the item record]';
+        return [...array_slice($chunks,0,$limit-1),mb_substr($chunks[$limit-1],0,600-mb_strlen($note)).$note];
+    }
     public function lifestyleReviewContext(array $source,array $section,array $qa): array
     {
         $unique=fn(array $values)=>array_values(array_unique($values));
         $result=['protectedFeatures'=>$unique([...array_column($source['protectedFeatures'],'description'),...array_column($section['protectedFeatures'],'description')]),
-            'sourceCaveats'=>$unique([...($source['uncertainties']??[]),...($source['sourceArtifacts']??[]),
+            'sourceCaveats'=>self::pack($unique([...($source['uncertainties']??[]),...($source['sourceArtifacts']??[]),
                 ...($section['uncertainties']??[]),...($section['sourceArtifacts']??[]),
-                'Source and section plans are same-capture model evidence, not independent calibrated optical or physical geometry proof.']),
+                'Source and section plans are same-capture model evidence, not independent calibrated optical or physical geometry proof.']),13),
             'opticalDependencies'=>[],
-            'reviewRequirements'=>$unique([...self::REVIEW_CONSTRAINTS,...$this->evaluationReviewRequirements($source,[]),...$this->evaluationReviewRequirements($section,$qa)])];
+            'reviewRequirements'=>self::pack($unique([...self::REVIEW_CONSTRAINTS,...$this->evaluationReviewRequirements($source,[]),...$this->evaluationReviewRequirements($section,$qa)]),12)];
         foreach(['protectedFeatures'=>20,'sourceCaveats'=>13,'reviewRequirements'=>12] as $key=>$limit){
             abort_unless(count($result[$key])<=$limit,422,'The complete lifestyle constraints exceed bounded evaluation; review is required.');
             foreach($result[$key] as $text)abort_unless(is_string($text)&&mb_strlen($text)<=600,422,'A lifestyle constraint exceeds bounded evaluation.');
