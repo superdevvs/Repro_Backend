@@ -1,0 +1,21 @@
+{
+  "id": "1399b537-687f-433d-9f6e-79cb407c2c1e",
+  "status": "ready",
+  "recordRevision": 74,
+  "counts": {"total":25,"surveyed":24,"failed":1,"skipped":0,"pending":0},
+  "etaMinutes": null,
+  "runs": [
+    {
+      "id": "ef6c5f71-a951-499d-977c-c1f676a126a8",
+      "preset": "twilight",
+      "status": "running",
+      "rooms": 8,
+      "done": 2,
+      "ready": 2,
+      "held": 0,
+      "failed": 0,
+      "etaMinutes": {"min":18,"max":30}
+    }
+  ],
+  "updatedAt": "2026-11-20T16:05:30+00:00"
+}
