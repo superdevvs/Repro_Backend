@@ -13,6 +13,7 @@ use Tests\TestCase;
 class IguideLabGrassSourceAdmissionTest extends TestCase
 {
     use RefreshDatabase;
+    use \Tests\Concerns\LabReasoningModelFlows;
     private string $key;
     private SourceAdmissionContextFixture $context;
     private SourceAdmissionBridgeFixture $bridge;
@@ -164,6 +165,24 @@ class IguideLabGrassSourceAdmissionTest extends TestCase
         catch (HttpException $e) { $this->assertSame(422, $e->getStatusCode()); }
         Http::assertNothingSent();
     }
+
+    public function test_configured_reasoning_model_is_sent_and_its_dated_echo_validates(): void
+    {
+        $service = app(LabGrassSourceAdmissions::class);
+        $this->assertConfiguredModelFlow(function () use (&$item) { [, , $item, , $record] = $this->reserved(); return $record; }, fn ($record) => $service->process($record), function ($record) use (&$item, $service) { return $service->verifiedReport($record, $item); }, fn () => $this->response(), 'workflow_grass_source_admission');
+        $record = \App\Models\IguideLabGrassSourceAdmission::sole();
+        $this->assertSame(self::TERRA, json_decode(Storage::disk(LabService::DISK)->get($record->data['base'].'/compile-request.json'), true)['model']);
+    }
+    public function test_completed_astra_admission_stays_valid_after_the_reasoning_model_changes(): void
+    {
+        $service = app(LabGrassSourceAdmissions::class);
+        $this->assertHistoricalReceiptSurvivesFlip(function () use (&$item) { [, , $item, , $record] = $this->reserved(); return $record; }, fn ($record) => $service->process($record), function ($record) use (&$item, $service) { return $service->verifiedReport($record, $item); }, fn () => $this->response());
+    }
+    public function test_admission_reserved_before_the_reasoning_model_changes_is_sent_as_reserved(): void
+    {
+        $service = app(LabGrassSourceAdmissions::class);
+        $this->assertReservedRequestKeepsItsModel(function () use (&$item) { [, , $item, , $record] = $this->reserved(); return $record; }, fn ($record) => $service->process($record), function ($record) use (&$item, $service) { return $service->verifiedReport($record, $item); }, fn () => $this->response());
+    }
 }
 
 class SourceAdmissionContextFixture extends LabGrassSourceAdmissionContext
@@ -179,7 +198,7 @@ class SourceAdmissionBridgeFixture extends LabGrassSourceAdmissionBridge
     public function run(string $projectId, string $relativeRequest, array $request, array $snapshot): array
     {
         $this->validate($snapshot); $this->json($relativeRequest, $request); $disk = Storage::disk(LabService::DISK);
-        if ($request['operation'] === 'compile') $outputs = ['payload' => ['model' => 'gpt-6-astra', 'store' => false,
+        if ($request['operation'] === 'compile') $outputs = ['payload' => ['model' => $request['model'], 'store' => false,
             'input' => [['content' => [['type' => 'input_text', 'text' => json_encode(['contextSha256' => str_repeat('c', 64)])]]]]]];
         else $outputs = ['assessment' => ['status' => $this->status, 'automaticAcceptance' => false, 'segmentationAuthority' => false,
             'authorOrigin' => 'machine', 'round' => 0, 'reviewReasons' => [], 'detailPlan' => [], 'contextSha256' => str_repeat('c', 64),

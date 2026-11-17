@@ -24,7 +24,7 @@ TEXT;
     public static function request(array $context,array $images): array
     {
         self::binding($context);$base=$context;unset($base['interiorFraming']);
-        $recipe=['model'=>'gpt-6-astra','store'=>false,'service_tier'=>'default','reasoning'=>['effort'=>'high'],'max_output_tokens'=>12000,'instructions'=>self::INSTRUCTIONS,'schema'=>self::schema()];
+        $recipe=['model'=>LabReasoningModel::current(),'store'=>false,'service_tier'=>'default','reasoning'=>['effort'=>'high'],'max_output_tokens'=>12000,'instructions'=>self::INSTRUCTIONS,'schema'=>self::schema()];
         $payload=LabSectionAnalysisProtocol::compile($recipe,$base,$images);
         $payload['input'][0]['content'][0]['text']=json_encode($context,JSON_THROW_ON_ERROR|JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES);
         $payload['text']['format']['name']='iguide_interior_material_cut';return $payload;

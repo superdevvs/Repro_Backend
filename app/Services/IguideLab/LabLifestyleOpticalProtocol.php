@@ -33,7 +33,7 @@ TEXT;
             if($bytes===false||($total+=strlen($bytes))>24*1024*1024||!$size||$size['mime']!=='image/png'||hash('sha256',$bytes)!==$v['sha256']||[$size[0],$size[1]]!==[$v['width'],$v['height']])self::fail('Optical evidence bytes changed.');
             $content[]=['type'=>'input_text','text'=>'View ID: '.$ids[$i]];$content[]=['type'=>'input_image','detail'=>'high','image_url'=>$image];
         }
-        return ['model'=>'gpt-6-astra','store'=>false,'service_tier'=>'default','reasoning'=>['effort'=>'medium'],'max_output_tokens'=>16000,
+        return ['model'=>LabReasoningModel::current(),'store'=>false,'service_tier'=>'default','reasoning'=>['effort'=>'medium'],'max_output_tokens'=>16000,
             'instructions'=>self::INSTRUCTIONS,'input'=>[['role'=>'user','content'=>$content]],
             'text'=>['format'=>['type'=>'json_schema','name'=>'iguide_lifestyle_optical_framing','strict'=>true,'schema'=>self::schema()]]];
     }

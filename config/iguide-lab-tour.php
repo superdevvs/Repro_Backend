@@ -8,7 +8,8 @@ return [
     'declutter_runs_enabled' => env('IGUIDE_LAB_TOUR_DECLUTTER_RUNS_ENABLED', false),
 
     'survey' => [
-        'model' => env('IGUIDE_LAB_TOUR_SURVEY_MODEL', 'gpt-6-astra'),
+        // Unset = the lab reasoning model (config/iguide-lab-models.php); either must be in its allow-list.
+        'model' => env('IGUIDE_LAB_TOUR_SURVEY_MODEL', env('IGUIDE_LAB_REASONING_MODEL', 'gpt-6-astra')),
         'effort' => env('IGUIDE_LAB_TOUR_SURVEY_EFFORT', 'medium'),
         'max_output_tokens' => (int) env('IGUIDE_LAB_TOUR_SURVEY_MAX_OUTPUT_TOKENS', 16000),
         'max_response_bytes' => (int) env('IGUIDE_LAB_TOUR_SURVEY_MAX_RESPONSE_BYTES', 524288),

@@ -31,11 +31,11 @@ def fixture(shadow=False):
 
 
 def parsed(context,proposal):
-    body={'id':'resp_synthetic','model':p.MODEL,'status':'completed','output':[{'type':'message','role':'assistant','status':'completed','content':[{'type':'output_text','text':json.dumps(proposal)}]}]}
+    body={'id':'resp_synthetic','model':'gpt-6-astra','status':'completed','output':[{'type':'message','role':'assistant','status':'completed','content':[{'type':'output_text','text':json.dumps(proposal)}]}]}
     raw=json.dumps(body)
-    execution={'state':'completed','requestId':str(uuid.UUID(int=3)),'providerResponseId':body['id'],'model':p.MODEL,
+    execution={'state':'completed','requestId':str(uuid.UUID(int=3)),'providerResponseId':body['id'],'model':'gpt-6-astra',
         'contextSha256':p.digest(context),'requestPayloadSha256':'b'*64,'responseSha256':hashlib.sha256(raw.encode()).hexdigest()}
-    return p.parse_response(raw,context,execution)
+    return p.parse_response(raw,context,execution,'gpt-6-astra')
 
 
 class ProtocolTests(unittest.TestCase):
@@ -43,12 +43,12 @@ class ProtocolTests(unittest.TestCase):
     def setUpClass(cls):cls.base=fixture()
     def setUp(self):self.context,self.images,self.proposal=copy.deepcopy(self.base)
     def test_compile_exact_source_only_inputs(self):
-        body=p.compile_request(self.context,self.images)
+        body=p.compile_request(self.context,self.images,'gpt-6-astra')
         self.assertEqual(body['model'],'gpt-6-astra');self.assertFalse(body['store'])
         self.assertEqual(len(body['input'][0]['content']),13);self.assertNotIn('candidate_cut',json.dumps(self.context))
     def test_source_hash_drift_rejects(self):
         self.images[0]+=b'changed'
-        with self.assertRaisesRegex(ValueError,'IMAGE_HASH'):p.compile_request(self.context,self.images)
+        with self.assertRaisesRegex(ValueError,'IMAGE_HASH'):p.compile_request(self.context,self.images,'gpt-6-astra')
     def test_native_and_pose_bindings_reject_drift(self):
         for field,value in [('nativeSourceSha256','b'*64),('derivationSha256','b'*64)]:
             c=copy.deepcopy(self.context);c['evidence'][0][field]=value

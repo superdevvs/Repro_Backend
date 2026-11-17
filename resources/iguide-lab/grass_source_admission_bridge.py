@@ -21,7 +21,7 @@ VERSION='grass-source-admission-filesystem/1'
 MAX_IMAGES=24*1024**2
 MAX_PAYLOAD=36*1024**2
 LIMITS={'context':256*1024,'execution':64*1024,'response':128*1024,'compiledPayload':MAX_PAYLOAD}
-FIELDS={'compile':{'context','images'},'parse':{'context','response','execution','compiledPayload'}}
+FIELDS={'compile':{'context','images','model'},'parse':{'context','response','execution','compiledPayload'}}
 COMMON={'schemaVersion','operation','outputDirectory'}
 
 
@@ -88,7 +88,7 @@ def _validate_saved_payload(context,payload):
             if hashlib.sha256(raw).hexdigest()!=view['sha256']:raise ValueError('PAYLOAD_EVIDENCE_HASH_MISMATCH')
             _validate_image(raw,view);raws.append(raw)
     except (KeyError,IndexError,TypeError,AttributeError) as exc:raise ValueError('COMPILED_PAYLOAD_SHAPE_INVALID') from exc
-    expected=protocol.compile_request(context,raws)
+    expected=protocol.compile_request(context,raws,payload.get('model'))
     if payload!=expected:raise ValueError('COMPILED_PAYLOAD_CONTEXT_OR_POLICY_CHANGED')
 
 
@@ -117,7 +117,7 @@ def run(request,allowed_root):
         inputs[str(path)]=desc['sha256']
         return decode_json(raw) if json_value else raw
     values={}
-    for name in FIELDS[operation]-{'images'}:
+    for name in FIELDS[operation]-{'images','model'}:
         values[name]=load(request[name],LIMITS[name],json_value=name!='response')
         if name!='response' and not isinstance(values[name],dict):raise ValueError('INPUT_JSON_OBJECT_REQUIRED')
     if operation=='compile':
@@ -151,13 +151,13 @@ def run(request,allowed_root):
         if any(sha(path)!=expected for path,expected in inputs.items()):raise ValueError('INPUT_CHANGED_DURING_REPLAY')
         return report
     if operation=='compile':
-        payload=protocol.compile_request(values['context'],values['images'])
+        payload=protocol.compile_request(values['context'],values['images'],request['model'])
         outputs={'payload':payload};status='compiled'
     elif operation=='parse':
         payload=values['compiledPayload'];execution=values['execution']
         if execution.get('requestPayloadSha256')!=request['compiledPayload']['sha256']:raise ValueError('EXECUTION_REQUEST_PAYLOAD_HASH_INVALID')
         _validate_saved_payload(values['context'],payload)
-        assessment=protocol.parse_response(values['response'].decode('utf-8'),values['context'],execution)
+        assessment=protocol.parse_response(values['response'].decode('utf-8'),values['context'],execution,payload.get('model'))
         outputs={'assessment':assessment};status=assessment['status']
     if any(sha(path)!=expected for path,expected in inputs.items()):raise ValueError('INPUT_CHANGED_DURING_PROCESSING')
     output.parent.mkdir(parents=True,exist_ok=True)

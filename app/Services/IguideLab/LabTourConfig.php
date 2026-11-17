@@ -10,7 +10,6 @@ use Illuminate\Support\Facades\Log;
  */
 final class LabTourConfig
 {
-    public const SURVEY_MODELS = ['gpt-6-astra'];
     public const SURVEY_EFFORTS = ['low', 'medium', 'high'];
     /** floor(10000 / 80): every minute total multiplies by at most 80 rooms or captures (MINUTES max, tourContract.ts:83). */
     public const MAX_MINUTES_PER_UNIT = 125;
@@ -33,7 +32,7 @@ final class LabTourConfig
     public static function surveyModel(): string
     {
         $model = config('iguide-lab-tour.survey.model');
-        if (! in_array($model, self::SURVEY_MODELS, true)) throw new LabTourConfigException('survey_misconfigured');
+        if (! LabReasoningModel::requestable($model)) throw new LabTourConfigException('survey_misconfigured'); // config/iguide-lab-models.php allow-list
 
         return $model;
     }

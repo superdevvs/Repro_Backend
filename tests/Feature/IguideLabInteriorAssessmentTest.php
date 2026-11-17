@@ -13,6 +13,7 @@ use Tests\Unit\IguideLabInteriorDesignFramingProtocolTest as Fixtures;
 class IguideLabInteriorAssessmentTest extends TestCase
 {
     use RefreshDatabase;
+    use \Tests\Concerns\LabReasoningModelFlows;
     private array $temporary=[];
     private InteriorContextFixture $context;
     protected function setUp(): void
@@ -111,6 +112,22 @@ class IguideLabInteriorAssessmentTest extends TestCase
         $this->assertFalse(config('iguide-lab.interior_design_workflow_enabled'));$policy=app(\App\Services\IguideLab\LabWorkflowPolicy::class)->snapshot();$this->assertArrayNotHasKey('interiorDesign',$policy);
         $path=config('iguide-lab.interior_design_runtime_manifest');$m=json_decode(file_get_contents($path),true);$m['implementation']['framing']['protocolSha256']=str_repeat('0',64);file_put_contents($path,json_encode($m));
         $this->assertFalse(app(LabInteriorDesignAssessments::class)->ready());$this->expectException(HttpException::class);app(LabInteriorDesignAssessments::class)->snapshot();
+    }
+
+    public function test_configured_reasoning_model_is_sent_and_its_dated_echo_validates(): void
+    {
+        $service = app(LabInteriorDesignAssessments::class);
+        $this->assertConfiguredModelFlow(function () use (&$item) { [, , $item, , , $record] = $this->fixture(); return $record; }, fn ($record) => $service->process($record), function ($record) use (&$item, $service) { return $service->completed($item, $record->id, 'framing'); }, fn () => $this->response(), 'workflow_interior_assessment');
+    }
+    public function test_completed_astra_assessment_stays_valid_after_the_reasoning_model_changes(): void
+    {
+        $service = app(LabInteriorDesignAssessments::class);
+        $this->assertHistoricalReceiptSurvivesFlip(function () use (&$item) { [, , $item, , , $record] = $this->fixture(); return $record; }, fn ($record) => $service->process($record), function ($record) use (&$item, $service) { return $service->completed($item, $record->id, 'framing'); }, fn () => $this->response());
+    }
+    public function test_assessment_reserved_before_the_reasoning_model_changes_is_sent_as_reserved(): void
+    {
+        $service = app(LabInteriorDesignAssessments::class);
+        $this->assertReservedRequestKeepsItsModel(function () use (&$item) { [, , $item, , , $record] = $this->fixture(); return $record; }, fn ($record) => $service->process($record), function ($record) use (&$item, $service) { return $service->completed($item, $record->id, 'framing'); }, fn () => $this->response());
     }
 }
 class InteriorContextFixture extends LabInteriorDesignContext

@@ -135,6 +135,19 @@ class IguideLabStagingLayoutLifecycleTest extends TestCase
         app(LabAnalyses::class)->process($record);Http::assertSentCount(1);$this->assertTrue(config('iguide-lab.staging_framing_enabled'));
         $this->assertSame('needs_attention',$record->fresh()->status);$this->assertSame(['quota_rejected'],array_column($record->fresh()->provider_attempts,'status'));
     }
+    public function test_layout_gate_sends_the_configured_model_and_its_dated_echo_stays_verified_after_the_setting_changes():void {
+        config(['iguide-lab-models.reasoning'=>'gpt-6.1-terra']);$record=$this->reserve();
+        $this->fake(function($request){$context=json_decode($request['input'][0]['content'][0]['text'],true);return Http::response(['model'=>'gpt-6.1-terra-2026-11-01']+$this->response($context),200,['x-request-id'=>'req-layout-terra']);});
+        app(LabAnalyses::class)->process($record);$record=$record->fresh();$this->assertSame('completed',$record->status,$record->error??'');
+        Http::assertSentCount(1);Http::assertSent(fn($request)=>$request['model']==='gpt-6.1-terra');$this->assertSame(['gpt-6.1-terra'],array_column($record->provider_attempts,'requestedModelId'));
+        config(['iguide-lab-models.reasoning'=>'gpt-6-astra']);$this->assertTrue(app(LabStagingLayoutReadiness::class)->verified($record)['eligibleForDraft']);
+        $attempts=$record->provider_attempts;$attempts[0]['requestedModelId']='gpt-6-sol';$record->update(['provider_attempts'=>$attempts]);
+        $this->expectException(HttpException::class);app(LabStagingLayoutReadiness::class)->verified($record);
+    }
+    public function test_completed_astra_layout_gate_stays_verified_after_the_setting_changes():void {
+        $record=$this->finish($this->reserve());config(['iguide-lab-models.reasoning'=>'gpt-6.1-terra']);
+        $this->assertTrue(app(LabStagingLayoutReadiness::class)->verified($record)['eligibleForDraft']);Http::assertSent(fn($request)=>$request['model']==='gpt-6-astra');
+    }
     public function test_completed_quota_path_rechecks_primary_model_identity():void {
         $record=$this->reserve();$count=0;$this->fake(function($request)use(&$count){
             if(++$count===1)return Http::response(['error'=>['code'=>'insufficient_quota']],429);

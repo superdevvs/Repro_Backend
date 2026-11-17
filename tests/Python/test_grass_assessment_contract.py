@@ -24,7 +24,7 @@ class GrassAssessmentContractTests(unittest.TestCase):
         self.message['content'][0]['text']=json.dumps(self.proposal)
         raw=json.dumps(self.envelope)
         self.execution['responseSha256']=hashlib.sha256(raw.encode()).hexdigest()
-        return protocol.parse_response(raw,self.context,self.execution)
+        return protocol.parse_response(raw,self.context,self.execution,'gpt-6-astra')
 
     def descriptive_labels(self):
         for role in ['lawn',*protocol.CLASSES]:

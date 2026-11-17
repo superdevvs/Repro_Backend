@@ -1,6 +1,6 @@
 # Tour analysis (Deploy 1) runbook
 
-Deploy 1 adds a tour analysis layer to the private lab. Each tour photo gets one paid survey (`gpt-6-astra`). The survey becomes editable defaults and selections, and golden hour and twilight runs are built from the existing lab workflows. D1 ships switched off.
+Deploy 1 adds a tour analysis layer to the private lab. Each tour photo gets one paid survey (the lab reasoning model, default `gpt-6-astra`). The survey becomes editable defaults and selections, and golden hour and twilight runs are built from the existing lab workflows. D1 ships switched off.
 
 Every step on the server needs the owner's approval first: flag flips, the installer, the paid test and the rollback. Run all commands as `maverick` in `/var/www/backend`. `~/.local/share/repro-studio` is the user-owned Supervisor runtime.
 
@@ -126,11 +126,11 @@ If the php line runs as root, stop and decide; a tour-only line does not help, b
 
 | Step | Paid calls | Limits |
 |---|---|---|
-| Survey (one per photo) | One OpenAI Responses call (`gpt-6-astra`, medium effort, up to 16,000 output tokens). A quota fallback to the Dashboard key is a second paid attempt. | 240 attempts per project lifetime and 160 lab-wide per rolling 24 h; quota fallbacks count. At most 2 paid surveys per photo, and none is retried automatically. A cached survey (same project, photo, preview and survey version) is free. |
+| Survey (one per photo) | One OpenAI Responses call (`IGUIDE_LAB_TOUR_SURVEY_MODEL`, else `IGUIDE_LAB_REASONING_MODEL`, default `gpt-6-astra`; medium effort, up to 16,000 output tokens). A quota fallback to the Dashboard key is a second paid attempt. | 240 attempts per project lifetime and 160 lab-wide per rolling 24 h; quota fallbacks count. At most 2 paid surveys per photo, and none is retried automatically. A cached survey (same project, photo, preview and survey version) is free. |
 | Re-parse, manifest check, worker count | none | |
 | Lighting run, per room (golden hour / twilight) | Worst case: 3 image edits, 2 analyses and 5 quality evaluations. Composites are local. | Images count against the project's `max_runs` and the lab-wide 120 per day. Evaluations allow about 24 rooms per project lifetime and per lab-wide day (120 / 5). The estimate shows `roomsThatFit` and `worstCaseImages` before a run starts. |
 
-The usage rows show tokens. `estimated_cost_usd` stays empty because `config/ai_usage.php` has no `gpt-6-astra` price.
+The usage rows show tokens and, since pricing version 2026-11-17, an `estimated_cost_usd` for the lab reasoning models (`config/ai_usage.php`).
 
 ## 8. Post-deploy checks (flags still off)
 

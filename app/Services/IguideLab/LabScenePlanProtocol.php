@@ -9,7 +9,9 @@ use JsonException;
 final class LabScenePlanProtocol
 {
     public const VERSION = 'scene-plan-v1';
-    public const MODEL = 'gpt-6-astra';
+
+    /** The lab's configured reasoning model (config/iguide-lab-models.php). */
+    public static function model(): string { return LabReasoningModel::current(); }
 
     public static function instructions(): string
     {
@@ -52,7 +54,7 @@ TEXT;
             $content[] = ['type' => 'input_text', 'text' => 'View ID: '.$context['viewIds'][$index]];
             $content[] = ['type' => 'input_image', 'detail' => 'high', 'image_url' => $image];
         }
-        return ['model' => self::MODEL, 'store' => false, 'service_tier' => 'default',
+        return ['model' => self::model(), 'store' => false, 'service_tier' => 'default',
             'reasoning' => ['effort' => 'high'], 'max_output_tokens' => 12000,
             'instructions' => self::instructions(), 'input' => [['role' => 'user', 'content' => $content]],
             'text' => ['format' => ['type' => 'json_schema', 'name' => 'iguide_scene_plan', 'strict' => true, 'schema' => self::schema()]]];

@@ -22,10 +22,10 @@ class MaterialProtocolTests(unittest.TestCase):
     def setUp(self):self.context,self.images,self.proposal=copy.deepcopy(self.base)
     def test_legacy_wire_contract_is_unchanged(self):
         c,images,_=fixture()
-        self.assertEqual(p.digest(p.compile_request(c,images)),'bfc95d87e43eb5adea99410c233e9178aae0a15b8e83244ae2d235095898f0ce')
+        self.assertEqual(p.digest(p.compile_request(c,images,'gpt-6-astra')),'bfc95d87e43eb5adea99410c233e9178aae0a15b8e83244ae2d235095898f0ce')
         self.assertEqual(p.digest(p.response_schema()),'46d60eda796e2b932dc914b9d3bbdf12fae4f0c1e356acc8bbcd4c639a4c4233')
     def test_portable_item_and_stone_use_distinct_wire_and_authority(self):
-        body=p.compile_request(self.context,self.images);self.assertEqual(body['instructions'],p.MATERIALS_INSTRUCTIONS)
+        body=p.compile_request(self.context,self.images,'gpt-6-astra');self.assertEqual(body['instructions'],p.MATERIALS_INSTRUCTIONS)
         result=parsed(self.context,self.proposal)
         self.assertEqual(result['status'],'ready_for_segmentation');self.assertEqual(result['schemaVersion'],p.MATERIALS_VERSION)
         self.assertFalse(result['hiddenSurfaceVerified']);self.assertFalse(result['automaticAcceptance'])

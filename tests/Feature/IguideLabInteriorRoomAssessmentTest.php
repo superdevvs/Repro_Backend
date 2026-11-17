@@ -14,6 +14,7 @@ use Tests\Unit\IguideLabInteriorRoomRouteProtocolTest as Fixtures;
 class IguideLabInteriorRoomAssessmentTest extends TestCase
 {
     use RefreshDatabase;
+    use \Tests\Concerns\LabReasoningModelFlows;
     private array $temporary=[];
     private RoomContextFixture $context;
     protected function setUp(): void
@@ -274,6 +275,22 @@ class IguideLabInteriorRoomAssessmentTest extends TestCase
         $this->assertSame($evidence['context'],json_decode($wire['input'][0]['content'][0]['text'],true));Http::assertNothingSent();
     }
     private function rejects(callable $f): void {try{$f();$this->fail('Invalid room authority accepted.');}catch(HttpException $e){$this->assertContains($e->getStatusCode(),[409,422,503]);}}
+
+    public function test_configured_reasoning_model_is_sent_and_its_dated_echo_validates(): void
+    {
+        $service = app(LabInteriorRoomAssessments::class);
+        $this->assertConfiguredModelFlow(function () use (&$item) { [, , $item, , , $record] = $this->fixture(); return $record; }, fn ($record) => $service->process($record), function ($record) use (&$item, $service) { return $service->completed($item, $record->id, 'route'); }, fn () => $this->response(), 'workflow_interior_room_assessment');
+    }
+    public function test_completed_astra_assessment_stays_valid_after_the_reasoning_model_changes(): void
+    {
+        $service = app(LabInteriorRoomAssessments::class);
+        $this->assertHistoricalReceiptSurvivesFlip(function () use (&$item) { [, , $item, , , $record] = $this->fixture(); return $record; }, fn ($record) => $service->process($record), function ($record) use (&$item, $service) { return $service->completed($item, $record->id, 'route'); }, fn () => $this->response());
+    }
+    public function test_assessment_reserved_before_the_reasoning_model_changes_is_sent_as_reserved(): void
+    {
+        $service = app(LabInteriorRoomAssessments::class);
+        $this->assertReservedRequestKeepsItsModel(function () use (&$item) { [, , $item, , , $record] = $this->fixture(); return $record; }, fn ($record) => $service->process($record), function ($record) use (&$item, $service) { return $service->completed($item, $record->id, 'route'); }, fn () => $this->response());
+    }
 }
 class RoomContextFixture extends LabInteriorRoomContext
 {

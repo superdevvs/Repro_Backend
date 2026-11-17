@@ -22,7 +22,7 @@ TEXT;
             'validatorSha256'=>hash_file('sha256',__DIR__.'/LabInteriorDesignProtocol.php'),
             'wireCompilerSha256'=>hash_file('sha256',__DIR__.'/LabAnalysisRequestV1.php'),
             'instructionsSha256'=>hash('sha256',self::INSTRUCTIONS),'schemaSha256'=>LabAnalysisRecipes::hash(self::schema()),
-            'model'=>'gpt-6-astra','reasoning'=>'medium','maxOutputTokens'=>4000];
+            'model'=>LabReasoningModel::SETTING,'reasoning'=>'medium','maxOutputTokens'=>4000];
     }
 
     public static function context(array $c): void
@@ -46,7 +46,7 @@ TEXT;
     public static function request(array $context,array $images): array
     {
         self::context($context);
-        $recipe=['model'=>'gpt-6-astra','store'=>false,'service_tier'=>'default','reasoning'=>['effort'=>'medium'],
+        $recipe=['model'=>LabReasoningModel::current(),'store'=>false,'service_tier'=>'default','reasoning'=>['effort'=>'medium'],
             'max_output_tokens'=>4000,'instructions'=>self::INSTRUCTIONS,'schema'=>self::schema()];
         $wire=LabAnalysisRequestV1::compile($recipe,['sourceSha256'=>$context['nativeSourceSha256'],'projection'=>'equirectangular',
             'preset'=>'interior-design','style'=>$context['style'],'instructions'=>$context['instructions'],'viewIds'=>self::IDS],$images);

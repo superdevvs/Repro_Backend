@@ -25,7 +25,7 @@ class GrassBridgeTests(unittest.TestCase):
     def desc(self,path):return {'path':str(path),'sha256':hashlib.sha256(path.read_bytes()).hexdigest()}
     def save(self,name,value):
         path=self.root/name;path.write_text(json.dumps(value),encoding='utf-8');return self.desc(path)
-    def request(self,op,**assets):return {'schemaVersion':1,'operation':op,'outputDirectory':str(self.root/('out-'+op)),**assets}
+    def request(self,op,**assets):return {'schemaVersion':1,'operation':op,'outputDirectory':str(self.root/('out-'+op)),**({'model':'gpt-6-astra'} if op=='compile' else {}),**assets}
     def compile(self):
         context=json.loads((self.inputs/'context.json').read_text());images=[]
         for e in context['evidence']:

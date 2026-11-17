@@ -19,7 +19,6 @@ except ModuleNotFoundError:
     import staging_assessment_protocol as shared
 
 VERSION='source-native-grass-assessment/1'
-MODEL='gpt-6-astra'
 SAM_MODEL='fal-ai/sam-3-1/image'
 CLASSES=['paving','plants','loose_debris','non_turf_ground','capture_artifact']
 IDS=['source_panorama','candidate_panorama','source_front','source_right','source_back','source_left','source_zenith','source_nadir']
@@ -128,7 +127,7 @@ def validate_context(context):
     return digest(context)
 
 
-def compile_request(context,image_bytes):
+def compile_request(context,image_bytes,model):
     context_hash=validate_context(context)
     if not isinstance(image_bytes,list) or len(image_bytes)!=len(context['evidence']) or any(not isinstance(raw,bytes) for raw in image_bytes):raise ValueError('GRASS_IMAGE_BYTES_INVALID')
     if sum(map(len,image_bytes))>24*1024**2:raise ValueError('GRASS_IMAGE_BYTES_LIMIT')
@@ -142,20 +141,20 @@ def compile_request(context,image_bytes):
             mime='png' if im.format=='PNG' else 'jpeg';im.load()
         content.extend([{'type':'input_text','text':'Evidence ID: '+view['id']},{'type':'input_image','detail':'high',
             'image_url':'data:image/'+mime+';base64,'+base64.b64encode(raw).decode()}])
-    return {'model':MODEL,'store':False,'service_tier':'default','reasoning':{'effort':'medium'},'max_output_tokens':24000,
+    return {'model':shared.reasoning_model(model),'store':False,'service_tier':'default','reasoning':{'effort':'medium'},'max_output_tokens':24000,
         'instructions':INSTRUCTIONS,'input':[{'role':'user','content':content}],
         'text':{'format':{'type':'json_schema','name':'iguide_native_grass_assessment','strict':True,'schema':response_schema(True)}}}
 
 
-def parse_response(response_text,context,execution):
+def parse_response(response_text,context,execution,model):
     context_hash=validate_context(context)
     _keys(execution,['state','requestId','providerResponseId','model','contextSha256','requestPayloadSha256','responseSha256'],'GRASS_EXECUTION_FIELDS_INVALID')
     _uuid(execution['requestId']);_hash(execution['responseSha256']);_hash(execution['requestPayloadSha256'])
-    if execution['state']!='completed' or execution['model']!=MODEL or execution['contextSha256']!=context_hash:raise ValueError('GRASS_EXECUTION_BINDING_INVALID')
+    if execution['state']!='completed' or not shared.model_echoes(model,execution['model']) or execution['contextSha256']!=context_hash:raise ValueError('GRASS_EXECUTION_BINDING_INVALID')
     if not isinstance(execution['providerResponseId'],str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,200}',execution['providerResponseId']):raise ValueError('GRASS_PROVIDER_ID_INVALID')
     if not isinstance(response_text,str) or len(response_text.encode())>128*1024 or hashlib.sha256(response_text.encode()).hexdigest()!=execution['responseSha256']:raise ValueError('GRASS_RESPONSE_BYTES_INVALID')
     raw=shared._loads(response_text)
-    if not isinstance(raw,dict) or raw.get('status')!='completed' or raw.get('id')!=execution['providerResponseId'] or raw.get('model')!=MODEL:raise ValueError('GRASS_RESPONSE_ENVELOPE_INVALID')
+    if not isinstance(raw,dict) or raw.get('status')!='completed' or raw.get('id')!=execution['providerResponseId'] or raw.get('model')!=execution['model']:raise ValueError('GRASS_RESPONSE_ENVELOPE_INVALID')
     items=raw.get('output');texts=[]
     if not isinstance(items,list):raise ValueError('GRASS_OUTPUT_INVALID')
     for item in items:

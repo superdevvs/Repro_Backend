@@ -85,11 +85,11 @@ class LabInteriorRoomAssessments
         $current=app(LabInteriorRoomContext::class)->capture($item,$phase,$input['parents']);
         abort_unless(LabAnalysisRecipes::hash($current)===LabAnalysisRecipes::hash($input['contextSnapshot']),422,'Interior source, intent or parent receipt changed.');return $item;
     }
-    public function payload(IguideLabWorkflowStep $step): string
+    public function payload(IguideLabWorkflowStep $step,?string $model=null): string
     {
         $images=[];$context=app(LabInteriorRoomContext::class);
         foreach($step->input['contextSnapshot']['assets'] as $asset){$file=$context->file($step->project_id,$asset['path'],$asset['sha256']);$images[]='data:image/png;base64,'.base64_encode(file_get_contents($file));}
-        $protocol=$this->protocol($step->input['phase'],$step->input['recipe']);$wire=$protocol::request($step->input['contextSnapshot']['context'],$images);
+        $protocol=$this->protocol($step->input['phase'],$step->input['recipe']);$wire=LabReasoningModel::replay($model,fn()=>$protocol::request($step->input['contextSnapshot']['context'],$images));
         if($floor=LabRoomFloorWitness::selected($step->input['recipe']))$wire=LabRoomFloorWitness::request($wire,$floor,$step->input['phase']);
         if(($draft=LabRoomEvidenceDraftPolicy::selected($step->input['recipe']))!==null&&in_array($step->input['phase'],['layout','candidate'],true)){
             $binding=json_decode($wire['input'][0]['content'][1]['text'],true,flags:JSON_THROW_ON_ERROR);
@@ -125,13 +125,13 @@ class LabInteriorRoomAssessments
     {
         $record->refresh();abort_unless($record->status==='submitting'&&empty($record->data['providerReceipt']),409);
         $step=IguideLabWorkflowStep::where('project_id',$record->project_id)->findOrFail($record->step_id);$this->verifyStep($step);$this->verifyRecord($record,$step);
-        abort_unless(hash('sha256',$payload)===$record->data['providerBodySha256']&&hash('sha256',$this->payload($step))===$record->data['providerBodySha256'],422,'Interior paid request changed.');
+        abort_unless(hash('sha256',$payload)===$record->data['providerBodySha256']&&hash('sha256',$this->payload($step,LabReasoningModel::ofPayload($payload)))===$record->data['providerBodySha256'],422,'Interior paid request changed.');
     }
     public function process(IguideLabRoomAssessment $record): void
     {
         $record->refresh();if(in_array($record->status,['completed','needs_attention'],true))return;
         if($record->status==='submitting'&&empty($record->data['providerReceipt'])){$this->attention($record,'submission_outcome_unconfirmed');return;}
-        try{$step=IguideLabWorkflowStep::where('project_id',$record->project_id)->findOrFail($record->step_id);$this->verifyStep($step);$this->verifyRecord($record,$step);$bytes=$this->payload($step);
+        try{$step=IguideLabWorkflowStep::where('project_id',$record->project_id)->findOrFail($record->step_id);$this->verifyStep($step);$this->verifyRecord($record,$step);$bytes=$this->payload($step,$this->storedModel($record));
             abort_unless(hash('sha256',$bytes)===$record->data['providerBodySha256'],422);
             if(empty($record->data['providerReceipt'])){
                 app(LabWorkflowInvocation::class)->claim($record->data['workflowInvocation'],$record->project_id,$record->request_id,'analysis',function()use($record){abort_unless($record->fresh()->status==='queued',409);$record->update(['status'=>'submitting','started_at'=>now()]);});
@@ -152,17 +152,17 @@ class LabInteriorRoomAssessments
     }
     private function parseReceipt(IguideLabRoomAssessment $record,IguideLabWorkflowStep $step): array
     {
-        $attempts=$record->provider_attempts??[];$index=count($attempts)-1;$a=$attempts[$index]??[];$receipt=$record->data['providerReceipt']??[];
+        $attempts=$record->provider_attempts??[];$index=count($attempts)-1;$a=$attempts[$index]??[];$receipt=$record->data['providerReceipt']??[];$model=LabReasoningModel::attempted($attempts);
         abort_unless(in_array(count($attempts),[1,2],true)&&($attempts[0]['credentialSource']??null)==='lab-primary'
-            &&($attempts[0]['requestedModelId']??null)==='gpt-6-astra'&&($a['status']??null)==='received'
-            &&($a['requestedModelId']??null)==='gpt-6-astra'&&($a['providerRequestId']??null)===$record->provider_request_id&&is_string($record->provider_request_id)&&$record->provider_request_id!==''
+            &&$model!==null&&$model===$this->storedModel($record)&&($a['status']??null)==='received'
+            &&($a['providerRequestId']??null)===$record->provider_request_id&&is_string($record->provider_request_id)&&$record->provider_request_id!==''
             &&($a['httpStatus']??0)>=200&&($a['httpStatus']??0)<300
             &&($index===0||(($attempts[0]['status']??null)==='quota_rejected'&&($attempts[0]['httpStatus']??null)===429&&($a['credentialSource']??null)==='dashboard-fallback')),422,'Interior provider receipt is not confirmed.');
         $path='iguide-lab/'.$record->project_id.'/room-assessments/'.$record->id.'/response-'.$index.'.json';
         abort_unless(($receipt['response']['path']??null)===$path&&($receipt['providerRequestId']??null)===$record->provider_request_id&&($receipt['payloadSha256']??null)===$record->data['providerBodySha256'],422);
         $file=app(LabInteriorRoomContext::class)->file($record->project_id,$path,$receipt['response']['sha256']??'',128*1024);
         $raw=json_decode(file_get_contents($file),true,flags:JSON_THROW_ON_ERROR);
-        abort_unless(($raw['id']??null)===($receipt['providerResponseId']??null)&&is_string($raw['id']??null)&&$raw['id']!==''&&($raw['model']??null)==='gpt-6-astra'&&($receipt['model']??null)==='gpt-6-astra',422);
+        abort_unless(($raw['id']??null)===($receipt['providerResponseId']??null)&&is_string($raw['id']??null)&&$raw['id']!==''&&LabReasoningModel::echoes($model,$receipt['model']??null)&&($raw['model']??null)===$receipt['model'],422);
         $protocol=$this->protocol($record->phase,$record->data['recipe']??[]);$value=$protocol::parse($raw,$step->input['contextSnapshot']['context']);
         if(LabRoomFloorWitnessUnion::selected($step->input['recipe']))return LabRoomFloorWitnessUnion::result($value,$record->phase);
         return LabRoomFloorWitness::selected($step->input['recipe'])?LabRoomFloorWitness::result($value,$record->phase):$value;
@@ -172,9 +172,12 @@ class LabInteriorRoomAssessments
         $record=IguideLabRoomAssessment::where('project_id',$item->project_id)->where('phase',$phase)->findOrFail($id);
         $step=IguideLabWorkflowStep::where('project_id',$item->project_id)->where('item_id',$item->id)->findOrFail($record->step_id);
         $this->verifyStep($step);$this->verifyRecord($record,$step);abort_unless($record->status==='completed',422);
-        abort_unless(hash('sha256',$this->payload($step))===$record->data['providerBodySha256'],422);$result=$this->parseReceipt($record,$step);
+        abort_unless(hash('sha256',$this->payload($step,$this->storedModel($record)))===$record->data['providerBodySha256'],422);$result=$this->parseReceipt($record,$step);
         abort_unless(LabMachineSegmentationPlan::canonicalHash($result)===$record->result_sha256&&LabMachineSegmentationPlan::canonicalHash($record->result)===$record->result_sha256,422,'Interior room structured result changed.');return $record;
     }
+    /** The model the stored request names (verifyRecord() binds its bytes); a replayed compile must use it. */
+    private function storedModel(IguideLabRoomAssessment $record): string
+    {return LabReasoningModel::ofPayloadFile(\Illuminate\Support\Facades\Storage::disk(LabService::DISK)->path($record->data['payloadPath']));}
     public function attention(IguideLabRoomAssessment $record,string $code): void
     {LockedWrite::run(fn()=>IguideLabRoomAssessment::whereKey($record->id)->where('status','!=','completed')->update(['status'=>'needs_attention','error_code'=>$code,'completed_at'=>now(),'updated_at'=>now()]),'iguide-lab.interior-attention');}
     public function dto(IguideLabRoomAssessment $record): array

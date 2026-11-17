@@ -26,6 +26,7 @@ use Tests\TestCase;
 class IguideLabGrassAssessmentTest extends TestCase
 {
     use RefreshDatabase;
+    use \Tests\Concerns\LabReasoningModelFlows;
     private string $key;
     private GrassAssessmentContextFixture $context;
     private GrassAssessmentBridgeFixture $bridge;
@@ -252,6 +253,24 @@ class IguideLabGrassAssessmentTest extends TestCase
         }
         $this->assertSame(1, IguideLabGrassAssessment::count()); Http::assertNothingSent();
     }
+
+    public function test_configured_reasoning_model_is_sent_and_its_dated_echo_validates(): void
+    {
+        $service = app(LabGrassAssessments::class);
+        $this->assertConfiguredModelFlow(fn () => $this->reserved()[5], fn ($record) => $service->process($record), fn ($record) => $service->forSegmentation($service->reserveSegmentationSteps($record)['source-grass-lawn']), fn () => $this->response(), 'workflow_grass_assessment');
+        $record = \App\Models\IguideLabGrassAssessment::sole();
+        $this->assertSame(self::TERRA, json_decode(Storage::disk(LabService::DISK)->get($record->data['base'].'/compile-request.json'), true)['model']);
+    }
+    public function test_completed_astra_assessment_stays_valid_after_the_reasoning_model_changes(): void
+    {
+        $service = app(LabGrassAssessments::class);
+        $this->assertHistoricalReceiptSurvivesFlip(fn () => $this->reserved()[5], fn ($record) => $service->process($record), fn ($record) => $service->forSegmentation($service->reserveSegmentationSteps($record)['source-grass-lawn']), fn () => $this->response());
+    }
+    public function test_assessment_reserved_before_the_reasoning_model_changes_is_sent_as_reserved(): void
+    {
+        $service = app(LabGrassAssessments::class);
+        $this->assertReservedRequestKeepsItsModel(fn () => $this->reserved()[5], fn ($record) => $service->process($record), fn ($record) => $service->forSegmentation($service->reserveSegmentationSteps($record)['source-grass-lawn']), fn () => $this->response());
+    }
 }
 
 class GrassAssessmentContextFixture extends LabGrassAssessmentContext
@@ -269,7 +288,7 @@ class GrassAssessmentBridgeFixture extends LabGrassAssessmentBridge
         $this->validate($snapshot); $disk = Storage::disk(LabService::DISK); $this->json($relativeRequest, $request);
         $operation = $request['operation'];
         abort_if($operation === 'parse' && $this->rejectParse, 422, 'The local assessment protocol rejected its inputs: GRASS_SELECTION_ID_INVALID');
-        if ($operation === 'compile') $outputs = ['payload' => ['model' => 'gpt-6-astra', 'store' => false, 'input' => [['content' => [['type' => 'input_text', 'text' => json_encode(['contextSha256' => str_repeat('c', 64)])]]]]]];
+        if ($operation === 'compile') $outputs = ['payload' => ['model' => $request['model'], 'store' => false, 'input' => [['content' => [['type' => 'input_text', 'text' => json_encode(['contextSha256' => str_repeat('c', 64)])]]]]]];
         elseif ($operation === 'parse') $outputs = ['assessment' => ['status' => 'ready_for_source_segmentation', 'automaticAcceptance' => false, 'authorOrigin' => 'machine', 'reviewReasons' => [],
             'contextSha256' => str_repeat('c', 64), 'execution' => json_decode(file_get_contents($request['execution']['path']), true, flags: JSON_THROW_ON_ERROR),
             'segmentationPlan' => [['stepKey' => 'source-grass-lawn', 'maskRole' => 'lawn', 'inputSha256' => $this->sourceSha], ['stepKey' => 'source-grass-paving', 'maskRole' => 'paving', 'inputSha256' => $this->sourceSha]]]];

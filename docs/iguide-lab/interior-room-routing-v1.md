@@ -2,7 +2,7 @@
 
 This default-off candidate keeps the public preset **Interior design**, the selected existing style, and the original user instructions. It does not replace historical material-only records or reinterpret their holds. No completed result is a human acceptance or a cross-view consistency claim.
 
-An original-only classifier uses the immutable overview and six directional images. Its model/budget is `gpt-6-astra`, medium reasoning, 4000 output tokens. Server-parsed room metadata corroborates the images; unknown metadata remains null. Classification never authorizes image generation or support by itself.
+An original-only classifier uses the immutable overview and six directional images. Its model is the lab reasoning model (`IGUIDE_LAB_REASONING_MODEL`, default `gpt-6-astra`); budget medium reasoning, 4000 output tokens. Server-parsed room metadata corroborates the images; unknown metadata remains null. Classification never authorizes image generation or support by itself.
 
 The closed routes are:
 

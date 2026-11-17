@@ -22,6 +22,7 @@ use Tests\TestCase;
 class IguideLabWorkflowEvaluationTest extends TestCase
 {
     use RefreshDatabase;
+    use \Tests\Concerns\LabReasoningModelFlows;
     private string $key;
     protected function setUp(): void
     {
@@ -307,5 +308,21 @@ class IguideLabWorkflowEvaluationTest extends TestCase
         (new \ReflectionMethod($service, 'save'))->invoke($service, $item, 'checking', $item->data);
         $this->assertTrue($injected); $this->assertSame('cancelled', $workflow->fresh()->status);
         $this->assertSame('cancelled', $item->fresh()->status); Http::assertNothingSent();
+    }
+
+    public function test_configured_reasoning_model_is_sent_and_its_dated_echo_validates(): void
+    {
+        $service = app(LabWorkflowEvaluations::class);
+        $this->assertConfiguredModelFlow(function () use (&$item, &$step, $service) { [, $item, $step] = $this->fixture(); return $service->start($step); }, fn ($record) => $service->process($record), function ($record) use (&$item, &$step, $service) { app(LabWorkflowSteps::class)->attach($step, $record->id); return $service->verifiedCompleted($item, $record); }, function () use (&$step) { return $this->response($step->input['context']); }, 'workflow_visual_evaluation');
+    }
+    public function test_completed_astra_evaluation_stays_valid_after_the_reasoning_model_changes(): void
+    {
+        $service = app(LabWorkflowEvaluations::class);
+        $this->assertHistoricalReceiptSurvivesFlip(function () use (&$item, &$step, $service) { [, $item, $step] = $this->fixture(); return $service->start($step); }, fn ($record) => $service->process($record), function ($record) use (&$item, &$step, $service) { app(LabWorkflowSteps::class)->attach($step, $record->id); return $service->verifiedCompleted($item, $record); }, function () use (&$step) { return $this->response($step->input['context']); });
+    }
+    public function test_evaluation_reserved_before_the_reasoning_model_changes_is_sent_as_reserved(): void
+    {
+        $service = app(LabWorkflowEvaluations::class);
+        $this->assertReservedRequestKeepsItsModel(function () use (&$item, &$step, $service) { [, $item, $step] = $this->fixture(); return $service->start($step); }, fn ($record) => $service->process($record), function ($record) use (&$item, &$step, $service) { app(LabWorkflowSteps::class)->attach($step, $record->id); return $service->verifiedCompleted($item, $record); }, function () use (&$step) { return $this->response($step->input['context']); });
     }
 }

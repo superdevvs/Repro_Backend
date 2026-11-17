@@ -4,8 +4,9 @@ namespace Tests\Unit;
 
 use App\Services\IguideLab\LabScenePlanProtocol;
 use InvalidArgumentException;
-use PHPUnit\Framework\TestCase;
+use Tests\TestCase;
 
+/** Booted app: request() names the configured lab reasoning model (config/iguide-lab-models.php). */
 final class IguideLabScenePlanProtocolTest extends TestCase
 {
     private function context(): array

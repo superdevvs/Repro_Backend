@@ -34,7 +34,7 @@ final class LabInteriorRoomProfiles
     public static function snapshot(): array
     {
         return ['version'=>self::VERSION,'profiles'=>self::all(),'budget'=>self::BUDGET,
-            'classifier'=>['model'=>'gpt-6-astra','reasoning'=>'medium','maxOutputTokens'=>4000],
+            'classifier'=>['model'=>LabReasoningModel::SETTING,'reasoning'=>'medium','maxOutputTokens'=>4000],
             'sourceInspection'=>['mode'=>'initial_source_and_actual_cut_only','nativeDetailFollowup'=>false,'imageDetail'=>'high',
                 'declaredSourceOverviewSize'=>[2048,1024],'declaredSourceDirectionalSize'=>[1024,1024],'declaredActualCutSize'=>[2048,2048],
                 'implementedAnalysesPerBranch'=>4,'analysisCeilingIsNotFollowupAuthority'=>true,

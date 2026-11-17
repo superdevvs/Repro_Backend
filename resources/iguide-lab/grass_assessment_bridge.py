@@ -23,7 +23,7 @@ MAX_PAYLOAD=36*1024**2
 LIMITS={'context':256*1024,'execution':64*1024,'response':128*1024,'compiledPayload':MAX_PAYLOAD,
     'assessment':1024*1024,'reservations':16*1024,'plans':256*1024,'step':128*1024,'receipt':256*1024}
 FIELDS={
-    'compile':{'context','images'},
+    'compile':{'context','images','model'},
     'parse':{'context','response','execution','compiledPayload'},
     'bind-plans':{'assessment','reservations'},
     'associate':{'step','receipt'},
@@ -95,7 +95,7 @@ def _validate_saved_payload(context,payload):
             if hashlib.sha256(raw).hexdigest()!=view['sha256']:raise ValueError('PAYLOAD_EVIDENCE_HASH_MISMATCH')
             _validate_image(raw,view);raws.append(raw)
     except (KeyError,IndexError,TypeError,AttributeError) as exc:raise ValueError('COMPILED_PAYLOAD_SHAPE_INVALID') from exc
-    expected=protocol.compile_request(context,raws)
+    expected=protocol.compile_request(context,raws,payload.get('model'))
     if payload!=expected:raise ValueError('COMPILED_PAYLOAD_CONTEXT_OR_POLICY_CHANGED')
 
 
@@ -128,7 +128,7 @@ def run(request,allowed_root):
         inputs[str(path)]=desc['sha256']
         return decode_json(raw) if json_value else raw
     values={}
-    for name in FIELDS[operation]-{'images','receipts','unsegmented'}:
+    for name in FIELDS[operation]-{'images','model','receipts','unsegmented'}:
         values[name]=load(request[name],LIMITS[name],json_value=name!='response')
         if name not in {'response','plans'} and not isinstance(values[name],dict):raise ValueError('INPUT_JSON_OBJECT_REQUIRED')
     if operation=='compile':
@@ -166,13 +166,13 @@ def run(request,allowed_root):
         if any(sha(path)!=expected for path,expected in inputs.items()):raise ValueError('INPUT_CHANGED_DURING_REPLAY')
         return report
     if operation=='compile':
-        payload=protocol.compile_request(values['context'],values['images'])
+        payload=protocol.compile_request(values['context'],values['images'],request['model'])
         outputs={'payload':payload};status='compiled'
     elif operation=='parse':
         payload=values['compiledPayload'];execution=values['execution']
         if execution.get('requestPayloadSha256')!=request['compiledPayload']['sha256']:raise ValueError('EXECUTION_REQUEST_PAYLOAD_HASH_INVALID')
         _validate_saved_payload(values['context'],payload)
-        assessment=protocol.parse_response(values['response'].decode('utf-8'),values['context'],execution)
+        assessment=protocol.parse_response(values['response'].decode('utf-8'),values['context'],execution,payload.get('model'))
         outputs={'assessment':assessment};status=assessment['status']
     elif operation=='bind-plans':
         plans=protocol.bind_reserved_plans(values['assessment'],values['reservations'])

@@ -15,7 +15,6 @@ import staging_assessment_protocol as shared
 
 VERSION = 'automatic-declutter-removal-plan/1'
 MATERIALS_VERSION = 'automatic-declutter-removal-plan/2'
-MODEL = 'gpt-6-astra'
 SAM_MODEL = 'fal-ai/sam-3-1/image'
 IDS = ['source_cut', 'parent_overview', 'parent_front', 'parent_right', 'parent_back', 'parent_left']
 BINDINGS = ['workflowItemId', 'captureId', 'nativeSourceSha256', 'sourceCutSha256',
@@ -102,7 +101,7 @@ def validate_context(context):
     return digest(context)
 
 
-def compile_request(context,image_bytes):
+def compile_request(context,image_bytes,model):
     context_hash=validate_context(context)
     if not isinstance(image_bytes,list) or len(image_bytes)!=6 or any(not isinstance(x,bytes) for x in image_bytes):_fail('IMAGE_COUNT_OR_BYTES_INVALID')
     if sum(map(len,image_bytes))>24*1024**2:_fail('IMAGE_BYTES_LIMIT')
@@ -115,21 +114,21 @@ def compile_request(context,image_bytes):
             if im.mode=='RGBA' and im.getchannel('A').getextrema()!=(255,255):_fail('TRANSPARENT_EVIDENCE_UNSUPPORTED')
             mime='png' if im.format=='PNG' else 'jpeg';im.load()
         content += [{'type':'input_text','text':'Evidence ID: '+view['id']},{'type':'input_image','detail':'high','image_url':f'data:image/{mime};base64,'+base64.b64encode(raw).decode()}]
-    return {'model':MODEL,'store':False,'service_tier':'default','reasoning':{'effort':'high'},'max_output_tokens':12000,
+    return {'model':shared.reasoning_model(model),'store':False,'service_tier':'default','reasoning':{'effort':'high'},'max_output_tokens':12000,
             'instructions':MATERIALS_INSTRUCTIONS if context['schemaVersion']==MATERIALS_VERSION else INSTRUCTIONS,'input':[{'role':'user','content':content}],
             'text':{'format':{'type':'json_schema','name':'iguide_declutter_removal_plan','strict':True,'schema':response_schema(True,context['schemaVersion'])}}}
 
 
-def parse_response(response_text,context,execution):
+def parse_response(response_text,context,execution,model):
     context_hash=validate_context(context)
     _keys(execution,['state','requestId','providerResponseId','model','contextSha256','requestPayloadSha256','responseSha256'],'EXECUTION_FIELDS_INVALID')
     _uuid(execution['requestId'])
     for key in ['requestPayloadSha256','responseSha256']:_hash(execution[key])
-    if execution['state']!='completed' or execution['model']!=MODEL or execution['contextSha256']!=context_hash:_fail('EXECUTION_BINDING_INVALID')
+    if execution['state']!='completed' or not shared.model_echoes(model,execution['model']) or execution['contextSha256']!=context_hash:_fail('EXECUTION_BINDING_INVALID')
     if not isinstance(execution['providerResponseId'],str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,200}',execution['providerResponseId']):_fail('EXECUTION_PROVIDER_ID_INVALID')
     if not isinstance(response_text,str) or len(response_text.encode())>128*1024 or hashlib.sha256(response_text.encode()).hexdigest()!=execution['responseSha256']:_fail('RESPONSE_RECEIPT_HASH_INVALID')
     raw=_loads(response_text)
-    if not isinstance(raw,dict) or raw.get('status')!='completed' or raw.get('id')!=execution['providerResponseId'] or raw.get('model')!=MODEL:_fail('RESPONSE_ENVELOPE_INVALID')
+    if not isinstance(raw,dict) or raw.get('status')!='completed' or raw.get('id')!=execution['providerResponseId'] or raw.get('model')!=execution['model']:_fail('RESPONSE_ENVELOPE_INVALID')
     texts=[]
     if not isinstance(raw.get('output'),list):_fail('OUTPUT_INVALID')
     for item in raw['output']:

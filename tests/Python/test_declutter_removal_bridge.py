@@ -18,13 +18,13 @@ class BridgeTests(unittest.TestCase):
     def request(self,operation,**args):
         return {'schemaVersion':1,'operation':operation,'outputDirectory':str(self.root/operation),**args}
     def compile(self):
-        request=self.request('compile',context=self.context_asset,images=self.image_assets)
+        request=self.request('compile',context=self.context_asset,images=self.image_assets,model='gpt-6-astra')
         return request,bridge.run(request,str(self.root))
     def parsed(self):
         _,compiled=self.compile();payload=compiled['outputs']['payload'];payload={k:payload[k] for k in ['path','sha256']}
-        body={'id':'resp_fake','model':bridge.protocol.MODEL,'status':'completed','output':[{'type':'message','role':'assistant','status':'completed','content':[{'type':'output_text','text':json.dumps(self.proposal)}]}]}
+        body={'id':'resp_fake','model':'gpt-6-astra','status':'completed','output':[{'type':'message','role':'assistant','status':'completed','content':[{'type':'output_text','text':json.dumps(self.proposal)}]}]}
         response=self.write('response.json',body)
-        execution=self.write('execution.json',{'state':'completed','requestId':str(uuid.UUID(int=8)),'providerResponseId':'resp_fake','model':bridge.protocol.MODEL,
+        execution=self.write('execution.json',{'state':'completed','requestId':str(uuid.UUID(int=8)),'providerResponseId':'resp_fake','model':'gpt-6-astra',
             'contextSha256':bridge.protocol.digest(self.context),'requestPayloadSha256':payload['sha256'],'responseSha256':response['sha256']})
         request=self.request('parse',context=self.context_asset,compiledPayload=payload,response=response,execution=execution)
         return request,bridge.run(request,str(self.root))
@@ -43,15 +43,15 @@ class BridgeTests(unittest.TestCase):
         request,report=self.compile();Path(report['outputs']['payload']['path']).write_text('{}')
         with self.assertRaisesRegex(ValueError,'CACHE_OUTPUT'):bridge.run(request,str(self.root))
     def test_extra_client_fields_and_scope_operations_reject(self):
-        req=self.request('compile',context=self.context_asset,images=self.image_assets,humanReviewed=True)
+        req=self.request('compile',context=self.context_asset,images=self.image_assets,model='gpt-6-astra',humanReviewed=True)
         with self.assertRaisesRegex(ValueError,'REQUEST_FIELDS'):bridge.run(req,str(self.root))
         req=self.request('finalize-support',assessment=self.context_asset,plans=self.context_asset,receipts=[])
         with self.assertRaisesRegex(ValueError,'REQUEST_INVALID'):bridge.run(req,str(self.root))
     def test_wrong_evidence_order_rejected(self):
-        request=self.request('compile',context=self.context_asset,images=list(reversed(self.image_assets)))
+        request=self.request('compile',context=self.context_asset,images=list(reversed(self.image_assets)),model='gpt-6-astra')
         with self.assertRaisesRegex(ValueError,'EVIDENCE_ORDER'):bridge.run(request,str(self.root))
     def test_output_cannot_contain_input(self):
-        request=self.request('compile',context=self.context_asset,images=self.image_assets);request['outputDirectory']=str(self.root)
+        request=self.request('compile',context=self.context_asset,images=self.image_assets,model='gpt-6-astra');request['outputDirectory']=str(self.root)
         with self.assertRaises(ValueError):bridge.run(request,str(self.root))
 
 

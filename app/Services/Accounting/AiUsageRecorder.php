@@ -17,6 +17,11 @@ class AiUsageRecorder
         'object_detection' => 'Object detection', 'image_edit' => 'Image editing',
         'image_outpaint' => 'Image extension', 'voice_summary' => 'Voice intelligence',
         'health_check' => 'Provider health checks', 'scene_analysis' => 'Property scene analysis', 'tour_survey' => 'Tour survey',
+        'workflow_staging_assessment' => 'Staging assessment', 'workflow_staging_framing' => 'Staging framing',
+        'workflow_grass_assessment' => 'Grass assessment', 'workflow_grass_source_admission' => 'Grass source check',
+        'workflow_declutter_removal' => 'Declutter planning', 'workflow_interior_assessment' => 'Interior design assessment',
+        'workflow_interior_room_assessment' => 'Interior room assessment', 'workflow_lifestyle_assessment' => 'Lifestyle assessment',
+        'workflow_lifestyle_framing' => 'Lifestyle framing', 'workflow_visual_evaluation' => 'Visual quality evaluation',
         'other' => 'Other OpenAI calls',
     ];
 
@@ -57,7 +62,9 @@ class AiUsageRecorder
         $output = $this->tokens($usage, ['completion_tokens', 'output_tokens']);
         if ($input === null || $output === null) return null;
         $base = preg_replace('/-\d{4}-\d{2}-\d{2}$/', '', $model);
-        $rates = config('ai_usage.prices.'.$base);
+        $prices = config('ai_usage.prices');
+        // Model ids can contain dots (gpt-6.1-terra), so never look them up with config() dot notation.
+        $rates = is_array($prices) ? ($prices[$base] ?? null) : null;
         if (! is_array($rates)) return null;
         if (isset($rates['image_input'])) {
             // Images API edits do not receive a prompt-cache discount. Missing modality splits are unpriced.

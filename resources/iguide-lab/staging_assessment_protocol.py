@@ -15,7 +15,10 @@ import uuid
 from PIL import Image
 
 VERSION='automatic-staging-assessment/1'
-MODEL='gpt-6-astra'
+# The lab reasoning models a request may name. Keep equal to 'allowed' in config/iguide-lab-models.php
+# (IguideLabReasoningModelTest checks this). The server passes the model to use; stored receipts are checked
+# against the model they requested, never against the current setting.
+REASONING_MODELS=('gpt-6-astra','gpt-6.1-terra','gpt-6-sol')
 SAM_MODEL='fal-ai/sam-3-1/image'
 IDS=['source_cut','candidate_cut','parent_overview','parent_front','parent_right','parent_back','parent_left']
 OBJECTS=['sofa','chair','coffee_table']
@@ -31,6 +34,13 @@ Every finding must cite stable supplied evidence IDs. Room/floor findings cite o
 
 def digest(value):return hashlib.sha256(json.dumps(value,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
 def _fail(code):raise ValueError(code)
+def reasoning_model(model):
+    if not isinstance(model,str) or model not in REASONING_MODELS:_fail('REASONING_MODEL_NOT_ALLOWED')
+    return model
+def model_echoes(requested,echo):
+    """The provider echo is the allow-listed requested model, exactly or as its dated snapshot (-YYYY-MM-DD)."""
+    return isinstance(requested,str) and requested in REASONING_MODELS and isinstance(echo,str) and (echo==requested
+        or (echo.startswith(requested+'-') and re.fullmatch(r'\d{4}-\d{2}-\d{2}',echo[len(requested)+1:]) is not None))
 def _keys(value,keys,code):
     if not isinstance(value,dict) or set(value)!=set(keys):_fail(code)
 def _hash(value):
@@ -138,7 +148,7 @@ def validate_context(context):
     return digest(context)
 
 
-def compile_request(context,image_bytes):
+def compile_request(context,image_bytes,model):
     """Build a Responses request only. Caller reserves it before sending."""
     context_hash=validate_context(context)
     if not isinstance(image_bytes,list) or len(image_bytes)!=len(context['evidence']):_fail('IMAGE_COUNT_INVALID')
@@ -153,7 +163,7 @@ def compile_request(context,image_bytes):
             mime='png' if im.format=='PNG' else 'jpeg';im.load()
         content.extend([{'type':'input_text','text':'Evidence ID: '+desc['id']},
             {'type':'input_image','detail':'high','image_url':f'data:image/{mime};base64,'+base64.b64encode(raw).decode()}])
-    return {'model':MODEL,'store':False,'service_tier':'default','reasoning':{'effort':'high'},'max_output_tokens':12000,
+    return {'model':reasoning_model(model),'store':False,'service_tier':'default','reasoning':{'effort':'high'},'max_output_tokens':12000,
         'instructions':INSTRUCTIONS,'input':[{'role':'user','content':content}],
         'text':{'format':{'type':'json_schema','name':'iguide_staging_assessment','strict':True,'schema':response_schema(True)}}}
 
@@ -169,18 +179,18 @@ def _loads(text):
     except (json.JSONDecodeError,RecursionError):_fail('INVALID_JSON')
 
 
-def parse_response(response_text,context,execution):
+def parse_response(response_text,context,execution,model):
     """Execution is a trusted saved server receipt, never model/client content."""
     context_hash=validate_context(context)
     _keys(execution,['state','requestId','providerResponseId','model','contextSha256','requestPayloadSha256','responseSha256'],'EXECUTION_FIELDS_INVALID')
     _uuid(execution['requestId']);_hash(execution['responseSha256'])
     _hash(execution['requestPayloadSha256'])
     if not isinstance(execution['providerResponseId'],str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,200}',execution['providerResponseId']):_fail('EXECUTION_PROVIDER_ID_INVALID')
-    if execution['state']!='completed' or execution['model']!=MODEL or execution['contextSha256']!=context_hash:_fail('EXECUTION_BINDING_INVALID')
+    if execution['state']!='completed' or not model_echoes(model,execution['model']) or execution['contextSha256']!=context_hash:_fail('EXECUTION_BINDING_INVALID')
     if not isinstance(response_text,str) or len(response_text.encode())>128*1024:_fail('RESPONSE_SIZE_LIMIT')
     if hashlib.sha256(response_text.encode()).hexdigest()!=execution['responseSha256']:_fail('RESPONSE_RECEIPT_HASH_INVALID')
     raw=_loads(response_text)
-    if not isinstance(raw,dict) or raw.get('status')!='completed' or raw.get('id')!=execution['providerResponseId'] or raw.get('model')!=MODEL:_fail('RESPONSE_ENVELOPE_INVALID')
+    if not isinstance(raw,dict) or raw.get('status')!='completed' or raw.get('id')!=execution['providerResponseId'] or raw.get('model')!=execution['model']:_fail('RESPONSE_ENVELOPE_INVALID')
     outputs=raw.get('output')
     if not isinstance(outputs,list):_fail('OUTPUT_INVALID')
     texts=[]

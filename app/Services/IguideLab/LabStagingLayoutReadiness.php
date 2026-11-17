@@ -60,7 +60,7 @@ class LabStagingLayoutReadiness
         $fresh=$this->reference($item,$reference['framingId']??'',$cut,$reference['followup']['previousAnalysisId']??null);
         abort_unless(LabMachineSegmentationPlan::canonicalHash($fresh)===LabMachineSegmentationPlan::canonicalHash($reference),422,'Source layout authority changed.');
     }
-    private function inputs(IguideLabAnalysis $analysis): array
+    private function inputs(IguideLabAnalysis $analysis,string $model): array
     {
         $data=$analysis->data;$reference=$data['stagingLayout']??null;$invocation=$data['workflowInvocation']??null;
         abort_unless(is_array($reference)&&is_array($invocation),422);
@@ -82,30 +82,30 @@ class LabStagingLayoutReadiness
             'viewIds'=>array_column($data['views'],'id'),'instructions'=>app(LabAnalyses::class)->wireInstructions($analysis->settings),
             'sourceContext'=>$data['sourceContextManifest'],'stagingLayout'=>$reference];
         $images=[];foreach($data['views'] as $v)$images[]='data:image/png;base64,'.base64_encode(file_get_contents(app(LabStagingFramingContext::class)->file($analysis->project_id,$v['path'],$v['sha256'])));
-        $payload=app(LabAnalysisRecipes::class)->request($data['executionRecipe'],$context,$images);
+        $payload=LabReasoningModel::replay($model,fn()=>app(LabAnalysisRecipes::class)->request($data['executionRecipe'],$context,$images));
         abort_unless(LabAnalysisRecipes::hash($payload)===$data['providerBodySha256'],422,'Source layout payload changed.');return [$context,$payload];
     }
     public function verifyForAttempt(IguideLabAnalysis $analysis,array $payload): void
     {
         $analysis->refresh();abort_unless($analysis->status==='submitting',422);
-        [, $fresh]=$this->inputs($analysis);
+        [, $fresh]=$this->inputs($analysis,(string)($payload['model']??''));
         abort_unless(LabAnalysisRecipes::hash($fresh)===LabAnalysisRecipes::hash($payload),422,'Source layout attempt payload changed.');
     }
     public function verified(IguideLabAnalysis $analysis,bool $requirePass=true): array
     {
         abort_unless($analysis->status==='completed'&&$analysis->proposal_sha256===LabAnalysisRecipes::hash($analysis->proposal),422);
-        [$context,$payload]=$this->inputs($analysis);$data=$analysis->data;$receipt=$data['stagingLayoutReceipt']??[];
+        $model=LabReasoningModel::attempted($analysis->provider_attempts??[]);abort_unless($model!==null,422,'Source layout receipt association changed.');
+        [$context,$payload]=$this->inputs($analysis,$model);$data=$analysis->data;$receipt=$data['stagingLayoutReceipt']??[];
         $attempts=$analysis->provider_attempts??[];$index=count($attempts)-1;$last=$attempts[$index]??[];
         abort_unless(in_array(count($attempts),[1,2],true)&&($attempts[0]['credentialSource']??null)==='lab-primary'
-            &&($attempts[0]['requestedModelId']??null)==='gpt-6-astra'
-            &&($last['status']??null)==='received'&&($last['requestedModelId']??null)==='gpt-6-astra'
+            &&($last['status']??null)==='received'
             &&($last['httpStatus']??0)>=200&&($last['httpStatus']??0)<300&&is_string($analysis->provider_request_id)&&$analysis->provider_request_id!==''
             &&($last['providerRequestId']??null)===$analysis->provider_request_id
             &&($index===0||(($attempts[0]['status']??null)==='quota_rejected'&&($attempts[0]['httpStatus']??null)===429&&($last['credentialSource']??null)==='dashboard-fallback'))
             &&($receipt['payloadSha256']??null)===LabAnalysisRecipes::hash($payload)&&($receipt['providerRequestId']??null)===$analysis->provider_request_id,422,'Source layout receipt association changed.');
         $path='iguide-lab/'.$analysis->project_id.'/analyses/'.$analysis->id.'/response-'.$index.'.json';abort_unless(($receipt['path']??null)===$path,422);
         $raw=json_decode(file_get_contents(app(LabStagingFramingContext::class)->file($analysis->project_id,$path,$receipt['sha256']??'',512*1024)),true,512,JSON_THROW_ON_ERROR);
-        abort_unless(($raw['model']??null)==='gpt-6-astra'&&is_string($raw['id']??null)&&$raw['id']!==''&&$raw['id']===($receipt['responseId']??null),422);
+        abort_unless(LabReasoningModel::echoes($model,$raw['model']??null)&&is_string($raw['id']??null)&&$raw['id']!==''&&$raw['id']===($receipt['responseId']??null),422);
         $parsed=app(LabAnalysisRecipes::class)->parse($data['executionRecipe'],$raw,$context);$gate=$parsed['stagingLayout'];
         abort_unless(LabAnalysisRecipes::hash($parsed['proposal'])===$analysis->proposal_sha256
             &&LabMachineSegmentationPlan::canonicalHash($gate)===LabMachineSegmentationPlan::canonicalHash($data['stagingLayoutResult']??[]),422,'Saved source layout result changed.');

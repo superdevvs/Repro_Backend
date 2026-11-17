@@ -9,7 +9,7 @@ final class LabLifestyleOriginalDetailTransport
     public static function snapshot(): array
     {
         return ['version'=>self::VERSION,'implementationSha256'=>hash_file('sha256',__FILE__),
-            'model'=>'gpt-6-astra','detailIds'=>LabLifestyleOpticalProtocol::DETAILS,
+            'model'=>LabReasoningModel::SETTING,'detailIds'=>LabLifestyleOpticalProtocol::DETAILS,
             'nativeDetail'=>'original','otherDetail'=>'high','patchSize'=>32,'maxPatchesPerDetail'=>30000,
             'maxDimension'=>65535,'maxRawImageBytes'=>24*1024*1024];
     }
@@ -41,7 +41,7 @@ final class LabLifestyleOriginalDetailTransport
 
     public static function apply(array $payload,array $ids,array $descriptors): array
     {
-        if (($payload['model']??null)!=='gpt-6-astra') throw new \InvalidArgumentException('Original detail model changed.');
+        if (!LabReasoningModel::requestable($payload['model']??null)) throw new \InvalidArgumentException('Original detail model changed.');
         $byId=[];
         foreach($descriptors as $v){if(isset($byId[$v['id']]))throw new \InvalidArgumentException('Duplicate detail descriptor.');$byId[$v['id']]=$v;}
         $index=0;$bytesTotal=0;

@@ -79,13 +79,13 @@ class LabLifestyleFramings
         abort_unless(LabAnalysisRecipes::hash($step->input['recipe'])===LabAnalysisRecipes::hash($policy)
             &&LabAnalysisRecipes::hash($fresh)===LabAnalysisRecipes::hash($step->input['contextSnapshot']),422,'Framing source/evidence changed.');return $item;
     }
-    private function payload(IguideLabWorkflowStep $step): string
+    private function payload(IguideLabWorkflowStep $step,?string $model=null): string
     {
         $images=[];$snapshot=$step->input['contextSnapshot'];
         foreach($snapshot['assets'] as $asset){$path=app(LabLifestyleFramingContext::class)->file($step->project_id,$asset['path'],$asset['sha256']);$images[]='data:image/png;base64,'.base64_encode(file_get_contents($path));}
-        $payload=$step->input['protocolVersion']===LabLifestyleOpticalProtocol::VERSION
+        $payload=LabReasoningModel::replay($model,fn()=>$step->input['protocolVersion']===LabLifestyleOpticalProtocol::VERSION
             ? LabLifestyleOriginalDetailTransport::framing($snapshot['context'],$images,$step->input['recipe']['imageDetailPolicy']??null)
-            : LabLifestyleFramingProtocol::request($snapshot['context'],$images);
+            : LabLifestyleFramingProtocol::request($snapshot['context'],$images));
         return json_encode($payload,JSON_THROW_ON_ERROR);
     }
     /** Revalidate retained source evidence before each primary or explicit-quota attempt. */
@@ -95,7 +95,7 @@ class LabLifestyleFramings
         $this->verifyStep($step);$this->verifyRecord($record,$step);
         abort_unless($record->status==='submitting'&&empty($record->data['providerReceipt'])
             &&hash('sha256',$payload)===$record->data['providerBodySha256']
-            &&hash('sha256',$this->payload($step))===$record->data['providerBodySha256'],422,'Framing attempt authority changed.');
+            &&hash('sha256',$this->payload($step,LabReasoningModel::ofPayload($payload)))===$record->data['providerBodySha256'],422,'Framing attempt authority changed.');
     }
     public function start(IguideLabWorkflowStep $step): IguideLabLifestyleFraming
     {
@@ -124,7 +124,7 @@ class LabLifestyleFramings
     {
         $record->refresh();if(in_array($record->status,['completed','needs_attention'],true))return;
         if($record->status==='submitting'&&empty($record->data['providerReceipt'])){$this->attention($record,'submission_outcome_unconfirmed');return;}
-        try{$step=IguideLabWorkflowStep::where('project_id',$record->project_id)->findOrFail($record->step_id);$this->verifyStep($step);$this->verifyRecord($record,$step);$bytes=$this->payload($step);
+        try{$step=IguideLabWorkflowStep::where('project_id',$record->project_id)->findOrFail($record->step_id);$this->verifyStep($step);$this->verifyRecord($record,$step);$bytes=$this->payload($step,$this->storedModel($record));
             abort_unless(hash('sha256',$bytes)===$record->data['providerBodySha256'],422);
             if(empty($record->data['providerReceipt'])){
                 app(LabWorkflowInvocation::class)->claim($record->data['workflowInvocation'],$record->project_id,$record->request_id,'analysis',function()use($record){abort_unless($record->fresh()->status==='queued',409);$record->update(['status'=>'submitting','started_at'=>now()]);});
@@ -145,25 +145,28 @@ class LabLifestyleFramings
     }
     private function parseReceipt(IguideLabLifestyleFraming $record,IguideLabWorkflowStep $step): array
     {
-        $attempts=$record->provider_attempts??[];$index=count($attempts)-1;$attempt=$attempts[$index]??[];$receipt=$record->data['providerReceipt']??[];
+        $attempts=$record->provider_attempts??[];$index=count($attempts)-1;$attempt=$attempts[$index]??[];$receipt=$record->data['providerReceipt']??[];$model=LabReasoningModel::attempted($attempts);
         abort_unless(in_array(count($attempts),[1,2],true)&&($attempts[0]['credentialSource']??null)==='lab-primary'&&($attempt['status']??null)==='received'
-            &&($attempts[0]['requestedModelId']??null)==='gpt-6-astra'&&($attempt['requestedModelId']??null)==='gpt-6-astra'&&($attempt['providerRequestId']??null)===$record->provider_request_id&&is_string($record->provider_request_id)&&$record->provider_request_id!==''
+            &&$model!==null&&$model===$this->storedModel($record)&&($attempt['providerRequestId']??null)===$record->provider_request_id&&is_string($record->provider_request_id)&&$record->provider_request_id!==''
             &&($attempt['httpStatus']??0)>=200&&($attempt['httpStatus']??0)<300
             &&($index===0||(($attempts[0]['status']??null)==='quota_rejected'&&($attempts[0]['httpStatus']??null)===429&&($attempt['credentialSource']??null)==='dashboard-fallback')),422,'Framing provider receipt is not confirmed.');
         $path='iguide-lab/'.$record->project_id.'/lifestyle-framings/'.$record->id.'/response-'.$index.'.json';abort_unless(($receipt['response']['path']??null)===$path
             &&($receipt['providerRequestId']??null)===$record->provider_request_id&&($receipt['payloadSha256']??null)===$record->data['providerBodySha256'],422);
         $file=app(LabLifestyleFramingContext::class)->file($record->project_id,$path,$receipt['response']['sha256']??'',128*1024);
         $raw=json_decode(file_get_contents($file),true,flags:JSON_THROW_ON_ERROR);
-        abort_unless(($raw['id']??null)===($receipt['providerResponseId']??null)&&is_string($raw['id']??null)&&$raw['id']!==''&&($raw['model']??null)==='gpt-6-astra'&&$receipt['model']==='gpt-6-astra',422);
+        abort_unless(($raw['id']??null)===($receipt['providerResponseId']??null)&&is_string($raw['id']??null)&&$raw['id']!==''&&LabReasoningModel::echoes($model,$receipt['model']??null)&&($raw['model']??null)===$receipt['model'],422);
         return ($step->input['protocolVersion']===LabLifestyleOpticalProtocol::VERSION?LabLifestyleOpticalProtocol::class:LabLifestyleFramingProtocol::class)::parse($raw,$step->input['contextSnapshot']['context']);
     }
     public function completed(IguideLabWorkflowItem $item,string $id): IguideLabLifestyleFraming
     {
         $record=IguideLabLifestyleFraming::where('project_id',$item->project_id)->findOrFail($id);$step=IguideLabWorkflowStep::where('project_id',$item->project_id)->where('item_id',$item->id)->findOrFail($record->step_id);
         $this->verifyStep($step);$this->verifyRecord($record,$step);abort_unless($record->status==='completed',422);
-        abort_unless(hash('sha256',$this->payload($step))===$record->data['providerBodySha256'],422);
+        abort_unless(hash('sha256',$this->payload($step,$this->storedModel($record)))===$record->data['providerBodySha256'],422);
         $result=$this->parseReceipt($record,$step);abort_unless(LabAnalysisRecipes::hash($result)===$record->result_sha256&&LabAnalysisRecipes::hash($record->result)===$record->result_sha256,422,'Framing result changed.');return $record;
     }
+    /** The model the stored request names (verifyRecord() binds its bytes); a replayed compile must use it. */
+    private function storedModel(IguideLabLifestyleFraming $record): string
+    {return LabReasoningModel::ofPayloadFile(\Illuminate\Support\Facades\Storage::disk(LabService::DISK)->path($record->data['payloadPath']));}
     public function attention(IguideLabLifestyleFraming $record,string $code): void
     {LockedWrite::run(fn()=>IguideLabLifestyleFraming::whereKey($record->id)->where('status','!=','completed')->update(['status'=>'needs_attention','error_code'=>$code,'completed_at'=>now(),'updated_at'=>now()]),'iguide-lab.framing-attention');}
     public function dto(IguideLabLifestyleFraming $record): array

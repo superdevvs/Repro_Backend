@@ -10,7 +10,6 @@ from PIL import Image
 import staging_assessment_protocol as shared
 
 VERSION='grass-original-source-admission/1'
-MODEL='gpt-6-astra'
 SOURCE_IDS=['source_panorama','source_front','source_right','source_back','source_left','source_zenith','source_nadir']
 ROLES=['paving','plants','loose_debris','non_turf_ground','capture_artifact']
 BINDINGS=['workflowItemId','captureId','nativeSourceSha256','sourceSha256','sourcePreparationSha256','sourceAuthoritySha256']
@@ -94,7 +93,7 @@ def validate_context(context):
             if view['pose']!=expected_pose:raise ValueError('ADMISSION_VIEW_POSE_INVALID')
     return digest(context)
 
-def compile_request(context,images):
+def compile_request(context,images,model):
     context_sha=validate_context(context)
     if not isinstance(images,list) or len(images)!=len(context['evidence']) or any(not isinstance(raw,bytes) for raw in images) or sum(map(len,images))>24*1024**2:
         raise ValueError('ADMISSION_IMAGE_BYTES_INVALID')
@@ -108,20 +107,20 @@ def compile_request(context,images):
             if im.info.get('icc_profile') or im.getexif().get(274,1)!=1:raise ValueError('ADMISSION_IMAGE_NORMALIZATION_REQUIRED')
             im.load()
         content.extend([{'type':'input_text','text':'Evidence ID: '+view['id']},{'type':'input_image','detail':'high','image_url':'data:image/png;base64,'+base64.b64encode(raw).decode()}])
-    return {'model':MODEL,'store':False,'service_tier':'default','reasoning':{'effort':'high'},'max_output_tokens':10000,
+    return {'model':shared.reasoning_model(model),'store':False,'service_tier':'default','reasoning':{'effort':'high'},'max_output_tokens':10000,
         'instructions':INSTRUCTIONS,'input':[{'role':'user','content':content}],
         'text':{'format':{'type':'json_schema','name':'iguide_grass_source_admission','strict':True,'schema':response_schema(True)}}}
 
-def parse_response(response_text,context,execution):
+def parse_response(response_text,context,execution,model):
     context_sha=validate_context(context)
     shared._keys(execution,['state','requestId','providerResponseId','model','contextSha256','requestPayloadSha256','responseSha256'],'ADMISSION_EXECUTION_INVALID')
     shared._uuid(execution['requestId']);shared._hash(execution['responseSha256']);shared._hash(execution['requestPayloadSha256'])
-    if execution['state']!='completed' or execution['model']!=MODEL or execution['contextSha256']!=context_sha:raise ValueError('ADMISSION_EXECUTION_BINDING_INVALID')
+    if execution['state']!='completed' or not shared.model_echoes(model,execution['model']) or execution['contextSha256']!=context_sha:raise ValueError('ADMISSION_EXECUTION_BINDING_INVALID')
     if not isinstance(execution['providerResponseId'],str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,200}',execution['providerResponseId']):raise ValueError('ADMISSION_PROVIDER_ID_INVALID')
     if not isinstance(response_text,str) or len(response_text.encode())>128*1024 or hashlib.sha256(response_text.encode()).hexdigest()!=execution['responseSha256']:
         raise ValueError('ADMISSION_RESPONSE_BYTES_INVALID')
     raw=shared._loads(response_text)
-    if not isinstance(raw,dict) or raw.get('status')!='completed' or raw.get('model')!=MODEL or raw.get('id')!=execution['providerResponseId']:
+    if not isinstance(raw,dict) or raw.get('status')!='completed' or raw.get('model')!=execution['model'] or raw.get('id')!=execution['providerResponseId']:
         raise ValueError('ADMISSION_RESPONSE_ENVELOPE_INVALID')
     if not isinstance(raw.get('output'),list):raise ValueError('ADMISSION_OUTPUT_INVALID')
     texts=[]

@@ -63,16 +63,17 @@ class BridgeTests(unittest.TestCase):
         path=self.root/name;path.write_bytes(raw)
         return {'path':str(path),'sha256':hashlib.sha256(raw).hexdigest()}
     def request(self,operation,**fields):
+        if operation=='compile':fields.setdefault('model','gpt-6-astra')
         return {'schemaVersion':1,'operation':operation,'outputDirectory':str(self.root/(operation+'-out')),**fields}
     def run_compile(self):
         req=self.request('compile',context=self.context_asset,images=self.image_assets)
         return req,b.run(req,self.root)
     def parse_inputs(self,proposal=None):
         _,compiled=self.run_compile();payload=compiled['outputs']['payload'];payload_asset={k:payload[k] for k in ['path','sha256']}
-        response={'id':'resp_synthetic','model':p.MODEL,'status':'completed','output':[{'type':'message','role':'assistant','status':'completed',
+        response={'id':'resp_synthetic','model':'gpt-6-astra','status':'completed','output':[{'type':'message','role':'assistant','status':'completed',
             'content':[{'type':'output_text','text':json.dumps(proposal or self.proposal)}]}]}
         response_asset=self.write('response.json',response)
-        execution={'state':'completed','requestId':'07c734c6-d827-414d-92de-329d661eb656','providerResponseId':'resp_synthetic','model':p.MODEL,
+        execution={'state':'completed','requestId':'07c734c6-d827-414d-92de-329d661eb656','providerResponseId':'resp_synthetic','model':'gpt-6-astra',
             'contextSha256':p.digest(self.context),'requestPayloadSha256':payload_asset['sha256'],'responseSha256':response_asset['sha256']}
         return self.request('parse',context=self.context_asset,response=response_asset,execution=self.write('execution.json',execution),compiledPayload=payload_asset)
     def ready_assessment(self):
@@ -152,8 +153,8 @@ class BridgeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'NONFINITE_JSON'):b.decode_json(b'{"a":NaN}')
     def test_input_drift_during_compile_is_not_published(self):
         req=self.request('compile',context=self.context_asset,images=self.image_assets);original=p.compile_request
-        def change(context,images):
-            value=original(context,images);Path(self.image_assets[0]['path']).write_bytes(b'changed');return value
+        def change(context,images,model):
+            value=original(context,images,model);Path(self.image_assets[0]['path']).write_bytes(b'changed');return value
         with patch.object(p,'compile_request',side_effect=change):
             with self.assertRaisesRegex(ValueError,'INPUT_CHANGED_DURING_PROCESSING'):b.run(req,self.root)
         self.assertFalse(Path(req['outputDirectory']).exists())

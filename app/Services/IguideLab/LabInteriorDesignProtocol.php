@@ -50,8 +50,8 @@ final class LabInteriorDesignProtocol
     public static function mask(mixed $plan,bool $guard=true): void
     {self::keys($plan,['prompt','box']);self::text($plan['prompt'],160);self::box($plan['box'],$guard);}
     public static function response(array $value): array
-    {return ['status'=>'completed','model'=>'gpt-6-astra','output'=>[['type'=>'message','role'=>'assistant','status'=>'completed','content'=>[['type'=>'output_text','text'=>json_encode($value,JSON_THROW_ON_ERROR)]]]]];}
+    {return ['status'=>'completed','model'=>LabReasoningModel::allowed()[0],'output'=>[['type'=>'message','role'=>'assistant','status'=>'completed','content'=>[['type'=>'output_text','text'=>json_encode($value,JSON_THROW_ON_ERROR)]]]]];}
     public static function parsed(array $response): array
-    {if(($response['model']??null)!=='gpt-6-astra')self::invalid('Interior provider model changed.');return LabStagingFramingProtocol::structured($response);}
+    {if(!LabReasoningModel::known($response['model']??null))self::invalid('Interior provider model changed.');return LabStagingFramingProtocol::structured($response);}
     public static function invalid(string $message): never {throw new \InvalidArgumentException($message);}
 }

@@ -38,7 +38,7 @@ TEXT;
     public static function request(array $c,array $images): array
     {
         self::context($c);$cut=$c['cutContext'];
-        $recipe=['model'=>'gpt-6-astra','store'=>false,'service_tier'=>'default','reasoning'=>['effort'=>'high'],'max_output_tokens'=>10000,'instructions'=>self::INSTRUCTIONS,'schema'=>self::schema()];
+        $recipe=['model'=>LabReasoningModel::current(),'store'=>false,'service_tier'=>'default','reasoning'=>['effort'=>'high'],'max_output_tokens'=>10000,'instructions'=>self::INSTRUCTIONS,'schema'=>self::schema()];
         $wire=LabAnalysisRequestV1::compile($recipe,['sourceSha256'=>$cut['sourceSha256'],'projection'=>'rectilinear','preset'=>'interior-design','style'=>$cut['style'],'instructions'=>$cut['instructions'],'viewIds'=>self::IDS],$images);
         foreach($images as $i=>$image){$bytes=base64_decode(explode(',',$image,2)[1],true);$size=getimagesizefromstring($bytes);$view=$c['views'][$i];
             if(hash('sha256',$bytes)!==$view['sha256']||[$size[0],$size[1]]!==[$view['width'],$view['height']])V::invalid('Interior donor evidence bytes changed.');}

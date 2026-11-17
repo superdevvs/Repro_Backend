@@ -82,7 +82,7 @@ TEXT;
             else $contacts['maxItems']=0;
             unset($contacts);
         }
-        $recipe=['model'=>'gpt-6-astra','store'=>false,'service_tier'=>'default','reasoning'=>['effort'=>'medium'],
+        $recipe=['model'=>LabReasoningModel::current(),'store'=>false,'service_tier'=>'default','reasoning'=>['effort'=>'medium'],
             'max_output_tokens'=>6000,'instructions'=>static::instructions(),'schema'=>$schema];
         $wire=LabAnalysisRequestV1::compile($recipe,['sourceSha256'=>$c['sourceSha256'],'projection'=>static::PHASE==='framing'?'equirectangular':'rectilinear',
             'preset'=>'interior-design','style'=>$c['style'],'instructions'=>$c['instructions'],'viewIds'=>static::ids()],$images);

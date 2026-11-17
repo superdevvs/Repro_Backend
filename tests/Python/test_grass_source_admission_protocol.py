@@ -19,11 +19,11 @@ def fixture():
     return context,proposal
 
 def parse(context,proposal):
-    raw=json.dumps({'id':'resp-fixture','model':p.MODEL,'status':'completed','output':[{'type':'message','role':'assistant','status':'completed',
+    raw=json.dumps({'id':'resp-fixture','model':'gpt-6-astra','status':'completed','output':[{'type':'message','role':'assistant','status':'completed',
         'content':[{'type':'output_text','text':json.dumps(proposal)}]}]})
-    execution={'state':'completed','requestId':context['binding']['workflowItemId'],'providerResponseId':'resp-fixture','model':p.MODEL,
+    execution={'state':'completed','requestId':context['binding']['workflowItemId'],'providerResponseId':'resp-fixture','model':'gpt-6-astra',
         'contextSha256':p.digest(context),'requestPayloadSha256':'b'*64,'responseSha256':hashlib.sha256(raw.encode()).hexdigest()}
-    return p.parse_response(raw,context,execution)
+    return p.parse_response(raw,context,execution,'gpt-6-astra')
 
 def request_detail(proposal):
     proposal['material']['status']='uncertain'
@@ -105,10 +105,10 @@ class AdmissionTests(unittest.TestCase):
     def test_compile_is_source_only_and_hash_bound(self):
         context,proposal=fixture();folder=ROOT/'tests/Fixtures/iguide-lab/grass-integration/images'
         images=[(folder/('source.png' if x['id']=='source_panorama' else x['id']+'.png')).read_bytes() for x in context['evidence']]
-        payload=p.compile_request(context,images)
-        self.assertEqual(payload,p.compile_request(context,images));self.assertEqual(len(payload['input'][0]['content']),15)
+        payload=p.compile_request(context,images,'gpt-6-astra')
+        self.assertEqual(payload,p.compile_request(context,images,'gpt-6-astra'));self.assertEqual(len(payload['input'][0]['content']),15)
         self.assertNotIn('candidate_panorama',json.dumps(payload))
         images[0]+=b'changed'
-        with self.assertRaisesRegex(ValueError,'HASH'):p.compile_request(context,images)
+        with self.assertRaisesRegex(ValueError,'HASH'):p.compile_request(context,images,'gpt-6-astra')
 
 if __name__=='__main__':unittest.main()

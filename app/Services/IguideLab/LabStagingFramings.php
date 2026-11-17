@@ -53,11 +53,11 @@ class LabStagingFramings
         $this->validate($step->input['recipe']);abort_unless(LabAnalysisRecipes::hash($step->input['recipe'])===LabAnalysisRecipes::hash($workflow->policy['stagingFraming']),422);
         abort_unless(LabAnalysisRecipes::hash(app(LabStagingFramingContext::class)->capture($item))===LabAnalysisRecipes::hash($step->input['contextSnapshot']),422,'Framing source/evidence changed.');return $item;
     }
-    private function payload(IguideLabWorkflowStep $step): string
+    private function payload(IguideLabWorkflowStep $step,?string $model=null): string
     {
         $images=[];$snapshot=$step->input['contextSnapshot'];
         foreach($snapshot['assets'] as $asset){$path=app(LabStagingFramingContext::class)->file($step->project_id,$asset['path'],$asset['sha256']);$images[]='data:image/png;base64,'.base64_encode(file_get_contents($path));}
-        return json_encode(LabStagingFramingProtocol::request($snapshot['context'],$images),JSON_THROW_ON_ERROR);
+        return json_encode(LabReasoningModel::replay($model,fn()=>LabStagingFramingProtocol::request($snapshot['context'],$images)),JSON_THROW_ON_ERROR);
     }
     public function start(IguideLabWorkflowStep $step): IguideLabStagingFraming
     {
@@ -86,7 +86,7 @@ class LabStagingFramings
     {
         $record->refresh();if(in_array($record->status,['completed','needs_attention'],true))return;
         if($record->status==='submitting'&&empty($record->data['providerReceipt'])){$this->attention($record,'submission_outcome_unconfirmed');return;}
-        try{$step=IguideLabWorkflowStep::where('project_id',$record->project_id)->findOrFail($record->step_id);$this->verifyStep($step);$this->verifyRecord($record,$step);$bytes=$this->payload($step);
+        try{$step=IguideLabWorkflowStep::where('project_id',$record->project_id)->findOrFail($record->step_id);$this->verifyStep($step);$this->verifyRecord($record,$step);$bytes=$this->payload($step,$this->storedModel($record));
             abort_unless(hash('sha256',$bytes)===$record->data['providerBodySha256'],422);
             if(empty($record->data['providerReceipt'])){
                 app(LabWorkflowInvocation::class)->claim($record->data['workflowInvocation'],$record->project_id,$record->request_id,'analysis',function()use($record){abort_unless($record->fresh()->status==='queued',409);$record->update(['status'=>'submitting','started_at'=>now()]);});
@@ -107,25 +107,28 @@ class LabStagingFramings
     }
     private function parseReceipt(IguideLabStagingFraming $record,IguideLabWorkflowStep $step): array
     {
-        $attempts=$record->provider_attempts??[];$index=count($attempts)-1;$attempt=$attempts[$index]??[];$receipt=$record->data['providerReceipt']??[];
+        $attempts=$record->provider_attempts??[];$index=count($attempts)-1;$attempt=$attempts[$index]??[];$receipt=$record->data['providerReceipt']??[];$model=LabReasoningModel::attempted($attempts);
         abort_unless(in_array(count($attempts),[1,2],true)&&($attempts[0]['credentialSource']??null)==='lab-primary'&&($attempt['status']??null)==='received'
-            &&($attempt['requestedModelId']??null)==='gpt-6-astra'&&($attempt['providerRequestId']??null)===$record->provider_request_id&&is_string($record->provider_request_id)&&$record->provider_request_id!==''
+            &&$model!==null&&$model===$this->storedModel($record)&&($attempt['providerRequestId']??null)===$record->provider_request_id&&is_string($record->provider_request_id)&&$record->provider_request_id!==''
             &&($attempt['httpStatus']??0)>=200&&($attempt['httpStatus']??0)<300
             &&($index===0||(($attempts[0]['status']??null)==='quota_rejected'&&($attempts[0]['httpStatus']??null)===429&&($attempt['credentialSource']??null)==='dashboard-fallback')),422,'Framing provider receipt is not confirmed.');
         $path='iguide-lab/'.$record->project_id.'/staging-framings/'.$record->id.'/response-'.$index.'.json';abort_unless(($receipt['response']['path']??null)===$path
             &&($receipt['providerRequestId']??null)===$record->provider_request_id&&($receipt['payloadSha256']??null)===$record->data['providerBodySha256'],422);
         $file=app(LabStagingFramingContext::class)->file($record->project_id,$path,$receipt['response']['sha256']??'',128*1024);
         $raw=json_decode(file_get_contents($file),true,flags:JSON_THROW_ON_ERROR);
-        abort_unless(($raw['id']??null)===($receipt['providerResponseId']??null)&&is_string($raw['id']??null)&&$raw['id']!==''&&($raw['model']??null)==='gpt-6-astra'&&$receipt['model']==='gpt-6-astra',422);
+        abort_unless(($raw['id']??null)===($receipt['providerResponseId']??null)&&is_string($raw['id']??null)&&$raw['id']!==''&&LabReasoningModel::echoes($model,$receipt['model']??null)&&($raw['model']??null)===$receipt['model'],422);
         return LabStagingFramingProtocol::parse($raw,$step->input['contextSnapshot']['context']);
     }
     public function completed(IguideLabWorkflowItem $item,string $id): IguideLabStagingFraming
     {
         $record=IguideLabStagingFraming::where('project_id',$item->project_id)->findOrFail($id);$step=IguideLabWorkflowStep::where('project_id',$item->project_id)->where('item_id',$item->id)->findOrFail($record->step_id);
         $this->verifyStep($step);$this->verifyRecord($record,$step);abort_unless($record->status==='completed',422);
-        abort_unless(hash('sha256',$this->payload($step))===$record->data['providerBodySha256'],422);
+        abort_unless(hash('sha256',$this->payload($step,$this->storedModel($record)))===$record->data['providerBodySha256'],422);
         $result=$this->parseReceipt($record,$step);abort_unless(LabAnalysisRecipes::hash($result)===$record->result_sha256&&LabAnalysisRecipes::hash($record->result)===$record->result_sha256,422,'Framing result changed.');return $record;
     }
+    /** The model the stored request names (verifyRecord() binds its bytes); a replayed compile must use it. */
+    private function storedModel(IguideLabStagingFraming $record): string
+    {return LabReasoningModel::ofPayloadFile(\Illuminate\Support\Facades\Storage::disk(LabService::DISK)->path($record->data['payloadPath']));}
     public function attention(IguideLabStagingFraming $record,string $code): void
     {LockedWrite::run(fn()=>IguideLabStagingFraming::whereKey($record->id)->where('status','!=','completed')->update(['status'=>'needs_attention','error_code'=>$code,'completed_at'=>now(),'updated_at'=>now()]),'iguide-lab.framing-attention');}
     public function dto(IguideLabStagingFraming $record): array

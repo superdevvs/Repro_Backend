@@ -26,6 +26,7 @@ use Tests\TestCase;
 class IguideLabLifestyleAssessmentTest extends TestCase
 {
     use RefreshDatabase;
+    use \Tests\Concerns\LabReasoningModelFlows;
     private string $key;
     private LifestyleAssessmentContextFixture $context;
     private LifestyleAssessmentBridgeFixture $bridge;
@@ -258,6 +259,24 @@ class IguideLabLifestyleAssessmentTest extends TestCase
         }
         $this->assertSame(1, IguideLabLifestyleAssessment::count()); Http::assertNothingSent();
     }
+
+    public function test_configured_reasoning_model_is_sent_and_its_dated_echo_validates(): void
+    {
+        $service = app(LabLifestyleAssessments::class);
+        $this->assertConfiguredModelFlow(fn () => $this->reserved()[5], fn ($record) => $service->process($record), fn ($record) => $service->forSegmentation($service->reserveSegmentationSteps($record)['source-floor']), fn () => $this->response(), 'workflow_lifestyle_assessment');
+        $record = \App\Models\IguideLabLifestyleAssessment::sole();
+        $this->assertSame(self::TERRA, json_decode(Storage::disk(LabService::DISK)->get($record->data['base'].'/compile-request.json'), true)['model']);
+    }
+    public function test_completed_astra_assessment_stays_valid_after_the_reasoning_model_changes(): void
+    {
+        $service = app(LabLifestyleAssessments::class);
+        $this->assertHistoricalReceiptSurvivesFlip(fn () => $this->reserved()[5], fn ($record) => $service->process($record), fn ($record) => $service->forSegmentation($service->reserveSegmentationSteps($record)['source-floor']), fn () => $this->response());
+    }
+    public function test_assessment_reserved_before_the_reasoning_model_changes_is_sent_as_reserved(): void
+    {
+        $service = app(LabLifestyleAssessments::class);
+        $this->assertReservedRequestKeepsItsModel(fn () => $this->reserved()[5], fn ($record) => $service->process($record), fn ($record) => $service->forSegmentation($service->reserveSegmentationSteps($record)['source-floor']), fn () => $this->response());
+    }
 }
 
 class LifestyleAssessmentContextFixture extends LabLifestyleAssessmentContext
@@ -274,7 +293,7 @@ class LifestyleAssessmentBridgeFixture extends LabLifestyleAssessmentBridge
     {
         $this->validate($snapshot); $disk = Storage::disk(LabService::DISK); $this->json($relativeRequest, $request);
         $operation = $request['operation'];
-        if ($operation === 'compile') $outputs = ['payload' => ['model' => 'gpt-6-astra', 'store' => false, 'input' => [['content' => [['type' => 'input_text', 'text' => json_encode(['contextSha256' => str_repeat('c', 64)])]]]]]];
+        if ($operation === 'compile') $outputs = ['payload' => ['model' => $request['model'], 'store' => false, 'input' => [['content' => [['type' => 'input_text', 'text' => json_encode(['contextSha256' => str_repeat('c', 64)])]]]]]];
         elseif ($operation === 'parse') $outputs = ['assessment' => ['status' => 'ready_for_segmentation', 'automaticAcceptance' => false, 'authorOrigin' => 'machine', 'reviewReasons' => [],
             'segmentationPlan' => [['stepKey' => 'source-floor', 'inputSha256' => $this->sourceSha], ['stepKey' => 'candidate-people', 'inputSha256' => $this->sourceSha]]]];
         elseif ($operation === 'bind-plans') {

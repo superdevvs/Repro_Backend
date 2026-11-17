@@ -119,7 +119,8 @@ class LabGrassSourceAdmissions
     {
         $disk = Storage::disk(LabService::DISK); $images = array_map(fn ($asset) => ['id' => $asset['id'], 'path' => $disk->path($asset['path']), 'sha256' => $asset['sha256']], $step->input['contextSnapshot']['assets']);
         return app(LabGrassSourceAdmissionBridge::class)->run($step->project_id, $base.'/compile-request.json', ['schemaVersion' => 1, 'operation' => 'compile',
-            'outputDirectory' => $disk->path($base.'/compiled'), 'context' => $context, 'images' => $images], $step->input['recipe']);
+            'outputDirectory' => $disk->path($base.'/compiled'), 'context' => $context, 'images' => $images,
+            'model' => LabReasoningModel::forRequestFile($disk->path($base.'/compile-request.json'))], $step->input['recipe']);
     }
     private function verifyStep(IguideLabWorkflowStep $step): IguideLabWorkflowItem
     {
@@ -199,17 +200,17 @@ class LabGrassSourceAdmissions
         $attempts = $record->provider_attempts; $receipt = $data['providerReceipt'] ?? [];
         abort_unless(($data['base'] ?? null) === $base && is_array($attempts) && array_is_list($attempts)
             && in_array(count($attempts), [1, 2], true), 422, 'The retained assessment attempt ownership changed.');
-        $index = count($attempts) - 1; $last = $attempts[$index];
-        abort_unless(($last['status'] ?? null) === 'received' && ($last['requestedModelId'] ?? null) === 'gpt-6-astra'
+        $index = count($attempts) - 1; $last = $attempts[$index]; $model = LabReasoningModel::attempted($attempts);
+        abort_unless(($last['status'] ?? null) === 'received' && $model !== null
             && is_int($last['httpStatus'] ?? null) && $last['httpStatus'] >= 200 && $last['httpStatus'] < 300
             && ($last['providerRequestId'] ?? null) === $record->provider_request_id
             && ($last['credentialSource'] ?? null) === ($index === 0 ? 'lab-primary' : 'dashboard-fallback'), 422, 'The retained assessment attempt changed.');
         if ($index === 1) abort_unless(($attempts[0]['status'] ?? null) === 'quota_rejected'
-            && ($attempts[0]['httpStatus'] ?? null) === 429 && ($attempts[0]['requestedModelId'] ?? null) === 'gpt-6-astra'
+            && ($attempts[0]['httpStatus'] ?? null) === 429 && ($attempts[0]['requestedModelId'] ?? null) === $model
             && ($attempts[0]['credentialSource'] ?? null) === 'lab-primary', 422, 'An assessment fallback lacks its explicit quota rejection.');
         $loader = app(LabGrassSourceAdmissionContext::class); $disk = Storage::disk(LabService::DISK);
         $responsePath = $base.'/response-'.$index.'.json';
-        abort_unless(($receipt['response']['path'] ?? null) === $responsePath && ($receipt['model'] ?? null) === 'gpt-6-astra', 422, 'The retained assessment receipt path changed.');
+        abort_unless(($receipt['response']['path'] ?? null) === $responsePath && LabReasoningModel::echoes($model, $receipt['model'] ?? null), 422, 'The retained assessment receipt path changed.');
         $file = $loader->file($record->project_id, $responsePath, $receipt['response']['sha256'] ?? '', 128 * 1024);
         $raw = json_decode(file_get_contents($file), true, flags: JSON_THROW_ON_ERROR);
         abort_unless(($raw['status'] ?? null) === 'completed' && ($raw['model'] ?? null) === $receipt['model']

@@ -240,7 +240,8 @@ class LabAnalyses
         return ['id' => $record->id, 'requestId' => $record->request_id, 'caseId' => $record->case_id, 'sourceSha256' => $record->source_sha256,
             'originalSourceSha256' => $data['originalSourceSha256'] ?? null, 'preparedSourceSha256' => $data['preparedSourceSha256'] ?? null,
             'settings' => $record->settings, 'protocolVersion' => $record->settings['protocolVersion'] ?? LabAnalysisRecipes::LEGACY_PROTOCOL,
-            'requestedModelId' => $provenance ? $data['executionRecipe']['recipe']['model'] : ($record->provider_attempts[0]['requestedModelId'] ?? 'gpt-6-astra'),
+            // What was actually requested; a recipe file keeps the model it was written with, not the configured one sent.
+            'requestedModelId' => $record->provider_attempts[0]['requestedModelId'] ?? ($provenance ? $data['executionRecipe']['recipe']['model'] : 'gpt-6-astra'),
             'instructionProvenance' => $provenance,
             ...(isset($data['stagingFraming']) ? ['stagingFraming' => $data['stagingFraming'], 'stagingReadiness' => $data['stagingReadiness'] ?? null] : []),
             ...(isset($data['lifestyleFraming']) ? ['lifestyleFraming' => $data['lifestyleFraming'], 'lifestyleReadiness' => $data['lifestyleReadiness'] ?? null] : []),

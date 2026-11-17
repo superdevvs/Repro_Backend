@@ -55,7 +55,7 @@ class IguideLabTourProcessingBudgetTest extends TestCase
         $this->assertSame($w->id,$owner->start($this->project,$body)->id);$this->assertSame(80,IguideLabTourBudget::sole()->reserved_items);
         $analysis=\Mockery::mock(LabAnalyses::class)->makePartial();$analysis->shouldReceive('ready')->andReturn(true);
         $analysis->shouldReceive('appliedDraft')->andReturn(['id'=>(string)Str::uuid(),'sourceSha256'=>$this->source->source_sha256]);$this->app->instance(LabAnalyses::class,$analysis);
-        $qa=\Mockery::mock(LabWorkflowEvaluations::class)->makePartial();$qa->shouldReceive('ready')->andReturn(true);$qa->shouldReceive('payload')->andReturn(['synthetic'=>'quality payload only']);
+        $qa=\Mockery::mock(LabWorkflowEvaluations::class)->makePartial();$qa->shouldReceive('ready')->andReturn(true);$qa->shouldReceive('payload')->andReturn(['model'=>'gpt-6-astra','synthetic'=>'quality payload only']);
         $steps=app(LabWorkflowSteps::class);$scheduler=app(LabWorkflowScheduler::class);$replays=[];
         foreach(IguideLabWorkflowItem::where('workflow_id',$w->id)->orderBy('position')->get() as $item){
             $this->assertTrue($scheduler->admit($w,$item,$this->project));

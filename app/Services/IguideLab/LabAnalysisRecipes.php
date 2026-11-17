@@ -66,7 +66,18 @@ class LabAnalysisRecipes
         return $this->snapshot(self::BASELINE);
     }
 
+    /**
+     * Recipe files are content-addressed and keep the model they were written with, so the request names the lab's
+     * configured reasoning model instead (a stored request is recompiled inside LabReasoningModel::replay()).
+     */
     public function request(array $snapshot, array $context, array $images): array
+    {
+        $payload = $this->compile($snapshot, $context, $images);
+        $payload['model'] = LabReasoningModel::current();
+        return $payload;
+    }
+
+    private function compile(array $snapshot, array $context, array $images): array
     {
         $recipe = $this->validate($snapshot);
         if ($recipe['compilerVersion'] === LabRepairAnalysisProtocol::VERSION) return LabRepairAnalysisProtocol::compile($recipe, $context, $images);

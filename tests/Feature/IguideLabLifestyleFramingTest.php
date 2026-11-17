@@ -13,6 +13,7 @@ use Tests\Unit\IguideLabLifestyleFramingProtocolTest as Fixtures;
 class IguideLabLifestyleFramingTest extends TestCase
 {
     use RefreshDatabase;
+    use \Tests\Concerns\LabReasoningModelFlows;
     private array $temporary=[];
     private LifestyleFramingContextFixture $context;
     protected function setUp(): void
@@ -151,6 +152,22 @@ class IguideLabLifestyleFramingTest extends TestCase
         $this->assertFalse(config('iguide-lab.lifestyle_framing_enabled'));$policy=app(\App\Services\IguideLab\LabWorkflowPolicy::class)->snapshot();$this->assertArrayNotHasKey('lifestyleFraming',$policy);
         $path=config('iguide-lab.lifestyle_framing_runtime_manifest');$m=json_decode(file_get_contents($path),true);$m['implementation']['protocolSha256']=str_repeat('0',64);file_put_contents($path,json_encode($m));
         $this->assertFalse(app(LabLifestyleFramings::class)->ready());$this->expectException(HttpException::class);app(LabLifestyleFramings::class)->snapshot();
+    }
+
+    public function test_configured_reasoning_model_is_sent_and_its_dated_echo_validates(): void
+    {
+        $service = app(LabLifestyleFramings::class);
+        $this->assertConfiguredModelFlow(function () use (&$item) { [, , $item, , , $record] = $this->fixture(); return $record; }, fn ($record) => $service->process($record), function ($record) use (&$item, $service) { return $service->completed($item, $record->id); }, fn () => $this->response(), 'workflow_lifestyle_framing');
+    }
+    public function test_completed_astra_framing_stays_valid_after_the_reasoning_model_changes(): void
+    {
+        $service = app(LabLifestyleFramings::class);
+        $this->assertHistoricalReceiptSurvivesFlip(function () use (&$item) { [, , $item, , , $record] = $this->fixture(); return $record; }, fn ($record) => $service->process($record), function ($record) use (&$item, $service) { return $service->completed($item, $record->id); }, fn () => $this->response());
+    }
+    public function test_framing_reserved_before_the_reasoning_model_changes_is_sent_as_reserved(): void
+    {
+        $service = app(LabLifestyleFramings::class);
+        $this->assertReservedRequestKeepsItsModel(function () use (&$item) { [, , $item, , , $record] = $this->fixture(); return $record; }, fn ($record) => $service->process($record), function ($record) use (&$item, $service) { return $service->completed($item, $record->id); }, fn () => $this->response());
     }
 }
 class LifestyleFramingContextFixture extends LabLifestyleFramingContext

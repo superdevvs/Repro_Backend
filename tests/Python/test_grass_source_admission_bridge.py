@@ -21,7 +21,7 @@ class AdmissionBridgeTests(unittest.TestCase):
         for view in context['evidence']:
             filename='source.png' if view['id']=='source_panorama' else view['id']+'.png'
             path=self.root/filename;shutil.copyfile(folder/filename,path);assets.append({'id':view['id'],**self.desc(path)})
-        req={'schemaVersion':1,'operation':'compile','outputDirectory':str(self.root/'compiled'),'context':self.save('context.json',context),'images':assets}
+        req={'schemaVersion':1,'operation':'compile','outputDirectory':str(self.root/'compiled'),'context':self.save('context.json',context),'images':assets,'model':'gpt-6-astra'}
         report=bridge.run(req,self.root);return context,proposal,req,report
     def parsed(self):
         context,proposal,compile_req,compiled=self.compiled();request_detail(proposal)

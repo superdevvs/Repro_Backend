@@ -26,7 +26,7 @@ TEXT;
         self::context($context);
         $base=['sourceSha256'=>$context['sourceSha256'],'projection'=>'equirectangular','preset'=>'staging','style'=>$context['style'],
             'instructions'=>$context['instructions'],'viewIds'=>self::IDS];
-        $recipe=['model'=>'gpt-6-astra','store'=>false,'service_tier'=>'default','reasoning'=>['effort'=>'high'],'max_output_tokens'=>8000,
+        $recipe=['model'=>LabReasoningModel::current(),'store'=>false,'service_tier'=>'default','reasoning'=>['effort'=>'high'],'max_output_tokens'=>8000,
             'instructions'=>self::INSTRUCTIONS,'schema'=>self::schema()];
         $payload=LabAnalysisRequestV1::compile($recipe,$base,$images);
         foreach($images as $i=>$image){$bytes=base64_decode(substr($image,strpos($image,',')+1),true);$view=$context['views'][$i];$size=getimagesizefromstring($bytes);

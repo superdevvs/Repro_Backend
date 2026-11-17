@@ -38,7 +38,7 @@ class IguideLabController extends Controller
                     'harmonization' => ['supported' => true, 'ready' => app(\App\Services\IguideLab\LabHarmonization::class)->ready(),
                         'modes' => [\App\Services\IguideLab\LabHarmonization::MODE], 'sectionOnly' => true, 'automaticAcceptance' => false,
                         'limits' => \App\Services\IguideLab\LabHarmonization::LIMITS]],
-                'sceneAnalysis' => ['supported' => true, 'ready' => app(LabAnalyses::class)->ready(), 'modelId' => LabScenePlanProtocol::MODEL,
+                'sceneAnalysis' => ['supported' => true, 'ready' => app(LabAnalyses::class)->ready(), 'modelId' => LabScenePlanProtocol::model(),
                     'protocolVersion' => LabScenePlanProtocol::VERSION, 'automaticGeneration' => false, 'applyDraft' => true, 'maxAnalyses' => 120,
                     'usedAnalyses' => IguideLabAnalysis::where('project_id', $project->id)->count(), 'suggestedSectionMaxHfov' => 120, 'sectionExecution' => false,
                     'sectionParentContext' => ['supported' => true, 'version' => \App\Services\IguideLab\LabAnalysisSourceContext::VERSION,

@@ -13,6 +13,7 @@ use Tests\Unit\IguideLabStagingFramingProtocolTest as Fixtures;
 class IguideLabStagingFramingTest extends TestCase
 {
     use RefreshDatabase;
+    use \Tests\Concerns\LabReasoningModelFlows;
     private array $temporary=[];
     private FramingContextFixture $context;
     protected function setUp(): void
@@ -128,6 +129,22 @@ class IguideLabStagingFramingTest extends TestCase
         $this->assertFalse(config('iguide-lab.staging_framing_enabled'));$policy=app(\App\Services\IguideLab\LabWorkflowPolicy::class)->snapshot();$this->assertArrayNotHasKey('stagingFraming',$policy);
         $path=config('iguide-lab.staging_framing_runtime_manifest');$m=json_decode(file_get_contents($path),true);$m['implementation']['protocolSha256']=str_repeat('0',64);file_put_contents($path,json_encode($m));
         $this->assertFalse(app(LabStagingFramings::class)->ready());$this->expectException(HttpException::class);app(LabStagingFramings::class)->snapshot();
+    }
+
+    public function test_configured_reasoning_model_is_sent_and_its_dated_echo_validates(): void
+    {
+        $service = app(LabStagingFramings::class);
+        $this->assertConfiguredModelFlow(function () use (&$item) { [, , $item, , , $record] = $this->fixture(); return $record; }, fn ($record) => $service->process($record), function ($record) use (&$item, $service) { return $service->completed($item, $record->id); }, fn () => $this->response(), 'workflow_staging_framing');
+    }
+    public function test_completed_astra_framing_stays_valid_after_the_reasoning_model_changes(): void
+    {
+        $service = app(LabStagingFramings::class);
+        $this->assertHistoricalReceiptSurvivesFlip(function () use (&$item) { [, , $item, , , $record] = $this->fixture(); return $record; }, fn ($record) => $service->process($record), function ($record) use (&$item, $service) { return $service->completed($item, $record->id); }, fn () => $this->response());
+    }
+    public function test_framing_reserved_before_the_reasoning_model_changes_is_sent_as_reserved(): void
+    {
+        $service = app(LabStagingFramings::class);
+        $this->assertReservedRequestKeepsItsModel(function () use (&$item) { [, , $item, , , $record] = $this->fixture(); return $record; }, fn ($record) => $service->process($record), function ($record) use (&$item, $service) { return $service->completed($item, $record->id); }, fn () => $this->response());
     }
 }
 class FramingContextFixture extends LabStagingFramingContext

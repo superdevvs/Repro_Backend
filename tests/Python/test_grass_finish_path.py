@@ -29,7 +29,7 @@ class StoredHeldAnswerTests(unittest.TestCase):
     def parse_held(self):
         context=json.loads((HELD/'context.json').read_text())
         execution=json.loads((HELD/'execution.json').read_text())
-        return protocol.parse_response((HELD/'response-0.json').read_bytes().decode('utf-8'),context,execution)
+        return protocol.parse_response((HELD/'response-0.json').read_bytes().decode('utf-8'),context,execution,'gpt-6-astra')
 
     def test_stored_held_answer_now_reaches_segmentation_with_its_doubts_as_caveats(self):
         report=self.parse_held()
@@ -62,7 +62,7 @@ class SyntheticAssessmentTests(unittest.TestCase):
         self.message['content'][0]['text']=json.dumps(self.proposal)
         raw=json.dumps(self.envelope)
         self.execution['responseSha256']=hashlib.sha256(raw.encode()).hexdigest()
-        return protocol.parse_response(raw,self.context,self.execution)
+        return protocol.parse_response(raw,self.context,self.execution,'gpt-6-astra')
 
     def test_no_lawn_observed_is_still_a_hard_stop(self):
         self.proposal['lawn']['status']='none_observed';self.proposal['lawn']['selections']=[]
@@ -131,7 +131,7 @@ class SyntheticAssessmentTests(unittest.TestCase):
     def test_request_uses_medium_effort_and_a_larger_output_cap(self):
         names={'source_panorama':'source.png','candidate_panorama':'candidate.png'}
         images=[(SYNTHETIC/'images'/names.get(view['id'],view['id']+'.png')).read_bytes() for view in self.context['evidence']]
-        request=protocol.compile_request(self.context,images)
+        request=protocol.compile_request(self.context,images,'gpt-6-astra')
         self.assertEqual(request['reasoning'],{'effort':'medium'})
         self.assertEqual(request['max_output_tokens'],24000)
 

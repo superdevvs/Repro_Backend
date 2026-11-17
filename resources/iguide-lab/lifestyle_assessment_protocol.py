@@ -14,11 +14,10 @@ import re
 from PIL import Image
 from staging_assessment_protocol import (
     _keys, _hash, _uuid, _fail, _string, _enum, _obj, _list, _box,
-    _validate, _loads, digest, bind_segmentation_receipt,
+    _validate, _loads, digest, bind_segmentation_receipt, reasoning_model, model_echoes,
 )
 
 VERSION='automatic-standing-pair-assessment/1'
-MODEL='gpt-6-astra'
 SAM_MODEL='fal-ai/sam-3-1/image'
 PEOPLE=['adult_1','adult_2']
 IDS=['source_cut','candidate_cut','parent_overview','parent_front','parent_right','parent_back','parent_left']
@@ -88,7 +87,7 @@ def validate_context(context):
     if views[0]['derivationSha256']!=b['sourceGeometrySha256']:_fail('GEOMETRY_BINDING_INVALID')
     return digest(context)
 
-def compile_request(context,image_bytes):
+def compile_request(context,image_bytes,model):
     sha=validate_context(context)
     if not isinstance(image_bytes,list) or len(image_bytes)!=7 or any(not isinstance(b,bytes) for b in image_bytes):_fail('IMAGE_COUNT_INVALID')
     if sum(map(len,image_bytes))>24*1024**2:_fail('IMAGE_BYTES_LIMIT')
@@ -99,19 +98,19 @@ def compile_request(context,image_bytes):
             if im.format not in {'PNG','JPEG'} or im.size!=(desc['width'],desc['height']) or im.info.get('icc_profile') or im.getexif().get(274,1)!=1:_fail('IMAGE_ENCODING_INVALID')
             mime='png' if im.format=='PNG' else 'jpeg';im.load()
         content.extend([{'type':'input_text','text':'Evidence ID: '+desc['id']},{'type':'input_image','detail':'high','image_url':f'data:image/{mime};base64,'+base64.b64encode(raw).decode()}])
-    return {'model':MODEL,'store':False,'service_tier':'default','reasoning':{'effort':'medium'},'max_output_tokens':16000,'instructions':INSTRUCTIONS,
+    return {'model':reasoning_model(model),'store':False,'service_tier':'default','reasoning':{'effort':'medium'},'max_output_tokens':16000,'instructions':INSTRUCTIONS,
         'input':[{'role':'user','content':content}],'text':{'format':{'type':'json_schema','name':'iguide_lifestyle_assessment','strict':True,'schema':response_schema(True)}}}
 
-def parse_response(response_text,context,execution):
+def parse_response(response_text,context,execution,model):
     sha=validate_context(context)
     _keys(execution,['state','requestId','providerResponseId','model','contextSha256','requestPayloadSha256','responseSha256'],'EXECUTION_FIELDS_INVALID')
     _uuid(execution['requestId'])
     for k in ['requestPayloadSha256','responseSha256']:_hash(execution[k])
-    if execution['state']!='completed' or execution['model']!=MODEL or execution['contextSha256']!=sha:_fail('EXECUTION_BINDING_INVALID')
+    if execution['state']!='completed' or not model_echoes(model,execution['model']) or execution['contextSha256']!=sha:_fail('EXECUTION_BINDING_INVALID')
     if not isinstance(execution['providerResponseId'],str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,200}',execution['providerResponseId']):_fail('PROVIDER_RESPONSE_ID_INVALID')
     if not isinstance(response_text,str) or len(response_text.encode())>128*1024 or hashlib.sha256(response_text.encode()).hexdigest()!=execution['responseSha256']:_fail('RESPONSE_RECEIPT_INVALID')
     raw=_loads(response_text)
-    if not isinstance(raw,dict) or raw.get('status')!='completed' or raw.get('id')!=execution['providerResponseId'] or raw.get('model')!=MODEL:_fail('RESPONSE_ENVELOPE_INVALID')
+    if not isinstance(raw,dict) or raw.get('status')!='completed' or raw.get('id')!=execution['providerResponseId'] or raw.get('model')!=execution['model']:_fail('RESPONSE_ENVELOPE_INVALID')
     texts=[]
     for item in raw.get('output',[]):
         if not isinstance(item,dict):_fail('OUTPUT_INVALID')

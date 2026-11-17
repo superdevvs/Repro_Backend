@@ -28,7 +28,7 @@ class LabLifestyleCutReadiness
             'viewIds'=>array_column($data['views'],'id'),'instructions'=>app(LabAnalyses::class)->wireInstructions($analysis->settings),
             'sourceContext'=>$data['sourceContextManifest'],'lifestyleFraming'=>$reference];
         $images=[];foreach($data['views'] as $view)$images[]='data:image/png;base64,'.base64_encode(file_get_contents(app(LabLifestyleFramingContext::class)->file($analysis->project_id,$view['path'],$view['sha256'])));
-        $fresh=app(LabAnalysisRecipes::class)->request($data['executionRecipe'],$context,$images);
+        $fresh=LabReasoningModel::replay((string)($payload['model']??''),fn()=>app(LabAnalysisRecipes::class)->request($data['executionRecipe'],$context,$images));
         abort_unless(LabAnalysisRecipes::hash($fresh)===$data['providerBodySha256']&&LabAnalysisRecipes::hash($payload)===$data['providerBodySha256'],422,'Cut attempt payload changed.');
     }
     public function reference(IguideLabWorkflowItem $item,string $framingId,IguideLabCase $cut): array
@@ -79,17 +79,18 @@ class LabLifestyleCutReadiness
             'sourceContext'=>$data['sourceContextManifest'],'lifestyleFraming'=>$reference];
         $images=[];$files=app(LabLifestyleFramingContext::class);
         foreach($data['views'] as $view)$images[]='data:image/png;base64,'.base64_encode(file_get_contents($files->file($analysis->project_id,$view['path'],$view['sha256'])));
-        $payload=app(LabAnalysisRecipes::class)->request($data['executionRecipe'],$context,$images);
+        $model=LabReasoningModel::attempted($analysis->provider_attempts??[]);abort_unless($model!==null,422,'Cut gate paid execution changed.');
+        $payload=LabReasoningModel::replay($model,fn()=>app(LabAnalysisRecipes::class)->request($data['executionRecipe'],$context,$images));
         $attempts=$analysis->provider_attempts??[];$index=count($attempts)-1;$last=$attempts[$index]??[];$receipt=$data['lifestyleCutReceipt']??[];
-        abort_unless(in_array(count($attempts),[1,2],true)&&($attempts[0]['credentialSource']??null)==='lab-primary'&&($attempts[0]['requestedModelId']??null)==='gpt-6-astra'&&($last['status']??null)==='received'
-            &&($last['requestedModelId']??null)==='gpt-6-astra'&&($last['httpStatus']??0)>=200&&($last['httpStatus']??0)<300
+        abort_unless(in_array(count($attempts),[1,2],true)&&($attempts[0]['credentialSource']??null)==='lab-primary'&&($last['status']??null)==='received'
+            &&($last['httpStatus']??0)>=200&&($last['httpStatus']??0)<300
             &&($last['providerRequestId']??null)===$analysis->provider_request_id&&is_string($analysis->provider_request_id)&&$analysis->provider_request_id!==''
             &&($index===0||(($attempts[0]['status']??null)==='quota_rejected'&&($attempts[0]['httpStatus']??null)===429&&($last['credentialSource']??null)==='dashboard-fallback'))
             &&LabAnalysisRecipes::hash($payload)===$data['providerBodySha256']&&($receipt['payloadSha256']??null)===$data['providerBodySha256'],422,'Cut gate paid execution changed.');
         $path='iguide-lab/'.$analysis->project_id.'/analyses/'.$analysis->id.'/response-'.$index.'.json';
         abort_unless(($receipt['path']??null)===$path&&($receipt['providerRequestId']??null)===$analysis->provider_request_id,422);
         $raw=json_decode(file_get_contents($files->file($analysis->project_id,$path,$receipt['sha256']??'',512*1024)),true,flags:JSON_THROW_ON_ERROR);
-        abort_unless(($raw['model']??null)==='gpt-6-astra'&&is_string($raw['id']??null)&&$raw['id']!==''&&$raw['id']===($receipt['responseId']??null),422);
+        abort_unless(LabReasoningModel::echoes($model,$raw['model']??null)&&is_string($raw['id']??null)&&$raw['id']!==''&&$raw['id']===($receipt['responseId']??null),422);
         $parsed=app(LabAnalysisRecipes::class)->parse($data['executionRecipe'],$raw,$context);$gate=$parsed['lifestyleReadiness'];
         abort_unless(LabAnalysisRecipes::hash($parsed['proposal'])===$analysis->proposal_sha256&&LabAnalysisRecipes::hash($gate)===LabAnalysisRecipes::hash($data['lifestyleReadiness']??[]),422,'Actual cut gate changed.');
         // Owner policy: only a hard blocker stops before the image; fail/uncertain soft checks are recorded caveats.

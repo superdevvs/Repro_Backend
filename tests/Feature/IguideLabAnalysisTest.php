@@ -241,6 +241,23 @@ class IguideLabAnalysisTest extends TestCase
         Http::assertNothingSent();
     }
 
+    public function test_recipe_analysis_sends_the_configured_model_and_reports_what_it_requested(): void
+    {
+        config(['iguide-lab-models.reasoning' => 'gpt-6.1-terra']);
+        $record = $this->reserve();
+        Http::fake(['api.openai.com/v1/responses' => Http::response(['model' => 'gpt-6.1-terra-2026-11-01'] + $this->response(), 200, ['x-request-id' => 'req-terra'])]);
+        app(LabAnalyses::class)->process($record); $record->refresh();
+        $this->assertSame('completed', $record->status); Http::assertSentCount(1); Http::assertSent(fn ($request) => $request['model'] === 'gpt-6.1-terra');
+        $this->assertSame(['gpt-6.1-terra'], array_column($record->provider_attempts, 'requestedModelId'));
+        $this->assertDatabaseHas('ai_provider_usage', ['feature' => 'scene_analysis', 'model' => 'gpt-6.1-terra', 'status' => 'success']);
+        // The content-addressed recipe is untouched; the record says what was really requested, after the setting moves on too.
+        $this->assertSame('gpt-6-astra', $record->data['executionRecipe']['recipe']['model']);
+        config(['iguide-lab-models.reasoning' => 'gpt-6-astra']);
+        $dto = $this->withToken($this->token)->getJson('/api/iguide-lab/analyses/'.$record->id)->assertOk()->json('data');
+        $this->assertSame(['gpt-6.1-terra', 'gpt-6.1-terra-2026-11-01'], [$dto['requestedModelId'], $dto['responseModel']]);
+        $this->assertSame($record->data['executionRecipe']['recipeSha256'], $dto['instructionProvenance']['executionRecipeSha256']);
+    }
+
     private function input(): array { return ['requestId' => (string) Str::uuid(), 'caseId' => $this->case->id, 'preset' => 'declutter', 'instructions' => 'Remove the vase only.']; }
     private function reserve(): IguideLabAnalysis { return IguideLabAnalysis::find($this->withToken($this->token)->postJson('/api/iguide-lab/analyses', $this->input())->assertAccepted()->json('data.id')); }
     private function proposal(): array

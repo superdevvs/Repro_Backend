@@ -43,26 +43,26 @@ class ProtocolTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):cls.context,cls.images,cls.proposal=fixture()
     def parse(self,proposal=None,mutate_execution=None):
-        raw=json.dumps({'id':'resp_people','model':p.MODEL,'status':'completed','output':[{'type':'message','role':'assistant','status':'completed','content':[{'type':'output_text','text':json.dumps(proposal or self.proposal)}]}]})
-        execution={'state':'completed','requestId':'07c734c6-d827-414d-92de-329d661eb656','providerResponseId':'resp_people','model':p.MODEL,
+        raw=json.dumps({'id':'resp_people','model':'gpt-6-astra','status':'completed','output':[{'type':'message','role':'assistant','status':'completed','content':[{'type':'output_text','text':json.dumps(proposal or self.proposal)}]}]})
+        execution={'state':'completed','requestId':'07c734c6-d827-414d-92de-329d661eb656','providerResponseId':'resp_people','model':'gpt-6-astra',
             'contextSha256':p.digest(self.context),'requestPayloadSha256':'f'*64,'responseSha256':hashlib.sha256(raw.encode()).hexdigest()}
         if mutate_execution:mutate_execution(execution)
-        return p.parse_response(raw,self.context,execution)
+        return p.parse_response(raw,self.context,execution,'gpt-6-astra')
     def test_ready_has_two_explicit_people_plans_no_furniture(self):
         result=self.parse();self.assertEqual(result['status'],'ready_for_segmentation');plans=result['segmentationPlan']
         self.assertEqual([x['stepKey'] for x in plans],['source-floor','candidate-people'])
         self.assertEqual(plans[1]['expectedIdentities'],p.PEOPLE);self.assertEqual(plans[1]['payload']['max_masks'],2)
         self.assertEqual(plans[1]['payload']['prompt'],'person');self.assertFalse(result['automaticAcceptance'])
     def test_compile_exact_bound_images(self):
-        payload=p.compile_request(self.context,self.images);self.assertEqual(payload['text']['format']['name'],'iguide_lifestyle_assessment')
-        self.assertIn('BOTH shoes',payload['instructions']);self.assertEqual(payload['model'],p.MODEL)
+        payload=p.compile_request(self.context,self.images,'gpt-6-astra');self.assertEqual(payload['text']['format']['name'],'iguide_lifestyle_assessment')
+        self.assertIn('BOTH shoes',payload['instructions']);self.assertEqual(payload['model'],'gpt-6-astra')
     def test_compile_uses_medium_effort_with_room_for_an_answer(self):
-        payload=p.compile_request(self.context,self.images)
+        payload=p.compile_request(self.context,self.images,'gpt-6-astra')
         self.assertEqual(payload['reasoning'],{'effort':'medium'});self.assertGreaterEqual(payload['max_output_tokens'],16000)
         self.assertNotIn('Uncertainty always stops before SAM',payload['instructions']);self.assertIn('caveat',payload['instructions'])
     def test_changed_actual_image_rejected(self):
         bad=self.images.copy();bad[1]=bad[0]
-        with self.assertRaisesRegex(ValueError,'IMAGE_HASH'):p.compile_request(self.context,bad)
+        with self.assertRaisesRegex(ValueError,'IMAGE_HASH'):p.compile_request(self.context,bad,'gpt-6-astra')
     def test_wrong_native_parent_rejected(self):
         c=copy.deepcopy(self.context);c['evidence'][3]['nativeSourceSha256']='0'*64
         with self.assertRaisesRegex(ValueError,'SAME_CAPTURE'):p.validate_context(c)

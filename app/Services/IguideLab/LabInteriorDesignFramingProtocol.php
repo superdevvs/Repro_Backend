@@ -29,7 +29,7 @@ TEXT;
     public static function request(array $context,array $images): array
     {
         self::context($context);
-        $recipe=['model'=>'gpt-6-astra','store'=>false,'service_tier'=>'default','reasoning'=>['effort'=>'high'],
+        $recipe=['model'=>LabReasoningModel::current(),'store'=>false,'service_tier'=>'default','reasoning'=>['effort'=>'high'],
             'max_output_tokens'=>10000,'instructions'=>self::INSTRUCTIONS,'schema'=>self::schema()];
         $base=['sourceSha256'=>$context['nativeSourceSha256'],'projection'=>'equirectangular','preset'=>'interior-design',
             'style'=>$context['style'],'instructions'=>$context['instructions'],'viewIds'=>self::IDS];
@@ -42,7 +42,7 @@ TEXT;
     public static function parse(array $response,array $context): array
     {
         self::context($context);
-        if(($response['model']??null)!=='gpt-6-astra')self::invalid('Interior framing model changed.');
+        if(!LabReasoningModel::known($response['model']??null))self::invalid('Interior framing model changed.');
         $v=LabStagingFramingProtocol::structured($response);
         self::keys($v,['version','nativeSourceSha256','preparedSourceSha256','sourceAuthoritySha256','intentSha256','style','status','view','targets','styleFeatures','checks','summary']);
         foreach(['version','nativeSourceSha256','preparedSourceSha256','sourceAuthoritySha256','intentSha256','style'] as $key)if($v[$key]!==$context[$key])self::invalid('Interior framing authority changed.');

@@ -27,20 +27,20 @@ class LabWorkflowEvaluations
     {
         $step = IguideLabWorkflowStep::where('project_id', $item->project_id)->where('item_id', $item->id)->findOrFail($record->step_id);
         $data = $record->data; $receipt = $data['responseReceipt'] ?? []; $attempts = $record->provider_attempts ?? [];
-        $last = count($attempts) - 1; $attempt = $attempts[$last] ?? [];
+        $last = count($attempts) - 1; $attempt = $attempts[$last] ?? []; $model = LabReasoningModel::attempted($attempts);
         abort_unless($record->status === 'completed' && $record->project_id === $item->project_id && $step->kind === 'evaluation'
             && $step->child_id === $record->id && $step->request_id === $record->request_id
             && $record->request_hash === $step->input_sha256 && $step->input_sha256 === LabAnalysisRecipes::hash($step->input)
             && LabAnalysisRecipes::hash($step->input) === LabAnalysisRecipes::hash($data['evidence'])
             && ($data['workflowInvocation'] ?? null) === app(LabWorkflowSteps::class)->invocation($step)
             && in_array(count($attempts), [1, 2], true) && ($attempt['status'] ?? null) === 'received'
-            && ($attempt['requestedModelId'] ?? null) === LabVisualQualityProtocol::MODEL
+            && $model !== null
             && ($attempt['httpStatus'] ?? 0) >= 200 && ($attempt['httpStatus'] ?? 0) < 300
             && ($attempt['providerRequestId'] ?? null) === $record->provider_request_id
             && ($receipt['providerRequestId'] ?? null) === $record->provider_request_id
             && is_string($record->provider_request_id) && $record->provider_request_id !== '', 422, 'The quality receipt is not confirmed.');
         abort_unless(($attempts[0]['credentialSource'] ?? null) === 'lab-primary'
-            && ($attempts[0]['requestedModelId'] ?? null) === LabVisualQualityProtocol::MODEL
+            && ($attempts[0]['requestedModelId'] ?? null) === $model
             && ($last === 0 || (($attempts[0]['status'] ?? null) === 'quota_rejected' && ($attempts[0]['httpStatus'] ?? null) === 429
                 && ($attempt['credentialSource'] ?? null) === 'dashboard-fallback')), 422, 'Unexpected quality provider attempt history.');
         $path = 'iguide-lab/'.$item->project_id.'/workflow-evaluations/'.$record->id.'/response-'.$last.'.json';
@@ -50,11 +50,11 @@ class LabWorkflowEvaluations
             && hash_equals($receipt['sha256'] ?? '', hash_file('sha256', $disk->path($path))), 422, 'The retained quality response changed.');
         $raw = json_decode($disk->get($path), true, flags: JSON_THROW_ON_ERROR);
         abort_unless(($raw['status'] ?? null) === 'completed' && is_string($raw['id'] ?? null) && $raw['id'] !== ''
-            && ($raw['model'] ?? null) === LabVisualQualityProtocol::MODEL
+            && LabReasoningModel::echoes($model, $raw['model'] ?? null)
             && $raw['id'] === ($receipt['responseId'] ?? null) && $raw['model'] === ($receipt['responseModel'] ?? null)
             && ($data['recipeSha256'] ?? null) === LabVisualQualityProtocol::recipeSha256()
             && ($data['parserSha256'] ?? null) === hash_file('sha256', (new \ReflectionClass(LabVisualQualityProtocol::class))->getFileName()), 422, 'The quality execution identity changed.');
-        $payload = $this->payload($step->input, $item->project_id, $item->id);
+        $payload = $this->payload($step->input, $item->project_id, $item->id, $model);
         abort_unless(LabAnalysisRecipes::hash($payload) === ($data['providerBodySha256'] ?? null)
             && $data['providerBodySha256'] === ($receipt['providerBodySha256'] ?? null), 422, 'The quality payload association changed.');
         $result = LabVisualQualityProtocol::parse($raw, $step->input['context']);
@@ -78,7 +78,7 @@ class LabWorkflowEvaluations
             return [IguideLabWorkflowEvaluation::create(['project_id' => $step->project_id, 'step_id' => $step->id,
                 'request_id' => $step->request_id, 'request_hash' => $step->input_sha256, 'status' => 'queued',
                 'data' => ['workflowInvocation' => $invocation, 'evidence' => $step->input,
-                    'providerBodySha256' => LabAnalysisRecipes::hash($payload), 'recipeSha256' => LabVisualQualityProtocol::recipeSha256(),
+                    'providerBodySha256' => LabAnalysisRecipes::hash($payload), 'requestedModelId' => $payload['model'], 'recipeSha256' => LabVisualQualityProtocol::recipeSha256(),
                     'parserSha256' => hash_file('sha256', (new \ReflectionClass(LabVisualQualityProtocol::class))->getFileName())]]), true];
         }), 'iguide-lab.workflow-evaluation-reserve');
         if ($created) {
@@ -97,7 +97,8 @@ class LabWorkflowEvaluations
             abort_unless(hash_equals($record->request_hash, LabAnalysisRecipes::hash($data['evidence']))
                 && hash_equals($data['recipeSha256'], LabVisualQualityProtocol::recipeSha256())
                 && hash_equals($data['parserSha256'], hash_file('sha256', (new \ReflectionClass(LabVisualQualityProtocol::class))->getFileName())), 422, 'The evaluation implementation changed after reservation.');
-            $payload = $this->payload($data['evidence'], $record->project_id, $step->item_id);
+            // Before requestedModelId was kept, every evaluation was compiled with its recipe's model.
+            $payload = $this->payload($data['evidence'], $record->project_id, $step->item_id, $data['requestedModelId'] ?? LabVisualQualityProtocol::MODEL);
             abort_unless(hash_equals($data['providerBodySha256'], LabAnalysisRecipes::hash($payload)), 422, 'The evaluation payload changed.');
             app(LabStorage::class)->prepareEvaluation($record->project_id, $record->id);
             $claimed = app(LabWorkflowInvocation::class)->claim($data['workflowInvocation'], $record->project_id, $record->request_id, 'evaluation',
@@ -111,8 +112,11 @@ class LabWorkflowEvaluations
         } catch (Throwable) { $this->attention($record, 'The evidence or structured evaluation needs review. No paid request will be repeated.'); }
     }
 
-    /** Revalidates private evidence immediately before submission, never trusts caller image URLs. */
-    public function payload(array $evidence, string $projectId, string $itemId): array
+    /**
+     * Revalidates private evidence immediately before submission, never trusts caller image URLs. The recipe file keeps
+     * the model it was written with; the request names $model (a stored request's own) or the configured lab model.
+     */
+    public function payload(array $evidence, string $projectId, string $itemId, ?string $model = null): array
     {
         $disk = Storage::disk(LabService::DISK); $images = [];
         $item = IguideLabWorkflowItem::where('project_id', $projectId)->findOrFail($itemId);
@@ -145,7 +149,7 @@ class LabWorkflowEvaluations
             abort_unless(hash_equals($asset['sha256'], hash('sha256', $bytes)), 422, 'Evaluation evidence changed.');
             $images[] = 'data:image/png;base64,'.base64_encode($bytes);
         }
-        return LabVisualQualityProtocol::request($evidence['context'], $images);
+        return LabReasoningModel::replay($model, fn () => ['model' => LabReasoningModel::current()] + LabVisualQualityProtocol::request($evidence['context'], $images));
     }
 
     /** Original user intent plus only constraints from the immutable server recipe. */
