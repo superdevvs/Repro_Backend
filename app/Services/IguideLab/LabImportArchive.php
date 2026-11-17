@@ -29,17 +29,22 @@ class LabImportArchive
                 if (in_array(strtolower(basename($name)), ['panoramas.json', 'view-data.json', 'index.html'], true)) $metadataFiles[] = $name;
             }
             $metadata = null; $metadataHash = null;
+            $sphereNames = array_values(array_filter(array_keys($paths), fn ($name) => preg_match('~(?:^|/)spheres/p([0-9]+)-s\.(?:jpg|jpeg|png|webp)$~iD', $name)));
+            // Offline package shape (<alias>/index.html plus <alias>/assets/p<id>-s_4096x.jpg, no spheres): only here may the viewer be an expired tour without layout.
+            $packageShape = $externalMetadata === null && ! $sphereNames && count($metadataFiles) === 1 && preg_match('~^([a-zA-Z0-9_-]{1,200})/index\.html$~D', $metadataFiles[0], $root)
+                && collect(array_keys($paths))->contains(fn ($name) => preg_match('~^'.preg_quote($root[1], '~').'/assets/p[0-9]{1,10}-s_4096x\.jpg$~D', $name));
             if ($externalMetadata !== null) {
                 $metadata = app(LabImportMetadata::class)->parse($externalMetadata); $metadataHash = hash('sha256', $externalMetadata);
             } elseif ($metadataFiles) {
                 // Never silently choose between multiple manifests or viewer roots.
                 $this->require(count($metadataFiles) === 1, 'Provide one unambiguous panorama manifest or viewer index.');
                 $bytes = $this->read($zip, $metadataFiles[0], LabImportMetadata::MAX_BYTES);
-                $metadata = app(LabImportMetadata::class)->parse($bytes); $metadataHash = hash('sha256', $bytes);
+                $metadata = app(LabImportMetadata::class)->parse($bytes, $packageShape); $metadataHash = hash('sha256', $bytes);
             }
-            $sphereNames = array_values(array_filter(array_keys($paths), fn ($name) => preg_match('~(?:^|/)spheres/p([0-9]+)-s\.(?:jpg|jpeg|png|webp)$~iD', $name)));
+            $expiredTour = $metadata && $metadata['kind'] === 'iguide_expired_tour';
             // iGUIDE offline package (offline_en.zip): <alias>/index.html viewer plus one <alias>/assets/p<id>-s_4096x.jpg equirect per pano.
-            $offline = $externalMetadata === null && ! $sphereNames && $metadata && $metadata['kind'] === 'iguide_viewObject'
+            // An expired tour package keeps its equirects; they import by pano id without room or floor data (like spheres without metadata).
+            $offline = $externalMetadata === null && ! $sphereNames && $metadata && in_array($metadata['kind'], ['iguide_viewObject', 'iguide_expired_tour'], true)
                 && preg_match('~^([a-zA-Z0-9_-]{1,200})/index\.html$~D', $metadataFiles[0], $root) ? ['alias' => $root[1], 'assets' => []] : null;
             if ($offline) {
                 $this->require($metadata['alias'] === null || $metadata['alias'] === $offline['alias'], 'The iGUIDE package folder does not match its tour metadata.');
@@ -75,10 +80,11 @@ class LabImportArchive
                     'width' => $size[0], 'height' => $size[1], 'mime' => $size['mime']];
                 unset($bytes);
             }
-            return ['format' => $metadata['kind'] ?? ($sphereNames ? 'iguide_spheres' : 'generic_360_zip'), 'inspection' => $inspection,
+            $warnings = collect($sources)->contains(fn ($source) => $source['roomId'] === null) ? ['Some panoramas have no authoritative room assignment.'] : [];
+            if ($expiredTour) $warnings[] = 'This iGUIDE tour is expired or restricted, so its room and floor names are unavailable.';
+            return ['format' => $expiredTour ? 'iguide_spheres' : ($metadata['kind'] ?? ($sphereNames ? 'iguide_spheres' : 'generic_360_zip')), 'inspection' => $inspection,
                 'metadataSha256' => $metadataHash, 'tourId' => $metadata['tourId'] ?? null, 'alias' => $metadata['alias'] ?? null,
-                'propertyName' => $metadata['propertyName'] ?? null, 'sources' => $sources,
-                'warnings' => collect($sources)->contains(fn ($source) => $source['roomId'] === null) ? ['Some panoramas have no authoritative room assignment.'] : []];
+                'propertyName' => $metadata['propertyName'] ?? null, 'sources' => $sources, 'warnings' => $warnings];
         } finally { $zip->close(); }
     }
 

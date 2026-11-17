@@ -116,6 +116,57 @@ class IguideLabOfflineImportTest extends TestCase
         $this->assertRejected($path, 'An exported sphere cannot be matched to its iGUIDE metadata.');
     }
 
+    public function test_expired_tour_package_imports_its_equirects_by_pano_id_without_room_data(): void
+    {
+        // An expired or access-denied tour still ships its equirects, but iGUIDE strips dataV2 to {formatVersion} (no buildings).
+        $path = $this->package('sample', $this->expiredIndex()); $inventory = app(LabImportArchive::class)->inventory($path, null, 'sample'); unlink($path);
+        $this->assertSame('iguide_spheres', $inventory['format']); $this->assertSame('ig1', $inventory['tourId']); $this->assertSame('sample', $inventory['alias']);
+        $this->assertSame('1 Main St Town', $inventory['propertyName']); $this->assertSame(hash('sha256', $this->expiredIndex()), $inventory['metadataSha256']);
+        $this->assertSame(['sample/assets/p1-s_4096x.jpg', 'sample/assets/p2-s_4096x.jpg'], array_column($inventory['sources'], 'entry'));
+        $this->assertSame(['1', '2'], array_column($inventory['sources'], 'panoId'));
+        $this->assertSame([null, null], array_column($inventory['sources'], 'roomName')); $this->assertSame([null, null], array_column($inventory['sources'], 'floorName'));
+        $this->assertSame(['iguide_export_filename', 'iguide_export_filename'], array_column($inventory['sources'], 'authority'));
+        $this->assertSame([[4096, 2048], [4096, 2048]], array_map(fn ($s) => [$s['width'], $s['height']], $inventory['sources']));
+        $this->assertSame(['Some panoramas have no authoritative room assignment.', 'This iGUIDE tour is expired or restricted, so its room and floor names are unavailable.'], $inventory['warnings']);
+    }
+
+    public function test_expired_tour_package_imports_by_link(): void
+    {
+        $bytes = file_get_contents($path = $this->package('sample', $this->expiredIndex())); unlink($path); $this->fakeDownload($bytes);
+        $record = IguideLabImport::findOrFail($this->withToken($this->token)->postJson('/api/iguide-lab/imports', ['requestId' => (string) Str::uuid(), 'url' => self::LINK])->assertAccepted()->json('data.id'));
+        app(LabImports::class)->process($record); $record->refresh();
+        $this->assertSame('completed', $record->status, (string) $record->error); $this->assertSame('iguide_spheres', $record->audit['format']);
+        $this->assertSame(['1', '2'], array_column($record->sources, 'panoId')); $this->assertSame([null, null], array_column($record->sources, 'roomName'));
+        $this->assertSame(['iguide_export_filename', 'iguide_export_filename'], array_column($record->sources, 'metadataAuthority'));
+        $dto = app(LabImports::class)->dto($record);
+        $this->assertSame(['id', 'requestId', 'sourceKind', 'status', 'error', 'audit', 'sources', 'createdAt', 'completedAt'], array_keys($dto));
+        $this->assertSame('https://youriguide.com/sample/', $dto['audit']['sourceUrl']); $this->assertStringNotContainsString(self::TOKEN, json_encode($dto));
+        $this->assertSame(2, IguideLabCase::count());
+    }
+
+    public function test_expired_tour_package_must_still_match_its_folder_and_the_link(): void
+    {
+        $this->assertRejected($this->package('sample', $this->expiredIndex('other')), 'The iGUIDE package folder does not match its tour metadata.');
+        $path = $this->package('other', $this->expiredIndex('other'));
+        try { app(LabImportArchive::class)->inventory($path, null, 'sample'); $this->fail('Inventory accepted the package.'); }
+        catch (ValidationException $error) { $this->assertSame('The downloaded iGUIDE package does not match the requested tour.', $error->errors()['source'][0]); }
+        finally { unlink($path); }
+    }
+
+    public function test_viewer_without_buildings_is_still_rejected_unless_it_is_an_expired_offline_package(): void
+    {
+        $message = 'Unsupported iGUIDE metadata: dataV2 buildings are required.';
+        // A shell viewer that does not say the tour expired.
+        $shell = $this->index('sample', ['id' => 'view1', 'iguide' => ['id' => 'ig1', 'alias' => 'sample'], 'dataV2' => ['formatVersion' => 51], 'attrs' => []]);
+        $this->assertRejected($this->package('sample', $shell), $message);
+        // Expired viewers outside the offline package shape keep the previous behaviour.
+        $this->assertRejected($this->zip(['sample/index.html' => $this->expiredIndex(), 'sample/spheres/p1-s.jpg' => $this->image(1)]), $message);
+        $this->assertRejected($this->zip(['index.html' => $this->expiredIndex(), 'assets/p1-s_4096x.jpg' => $this->image(1)]), $message);
+        $this->assertRejected($this->zip(['sample/index.html' => $this->expiredIndex(), 'sample/assets/p1-0.jpg' => $this->image(1, 64, 64)]), $message);
+        try { app(\App\Services\IguideLab\LabImportMetadata::class)->parse($this->expiredIndex()); $this->fail('Parsed an expired viewer as metadata.'); }
+        catch (ValidationException $error) { $this->assertSame($message, $error->errors()['source'][0]); }
+    }
+
     private function assertRejected(string $path, string $message): void
     {
         try { app(LabImportArchive::class)->inventory($path); $this->fail('Inventory accepted the package.'); }
@@ -140,9 +191,15 @@ class IguideLabOfflineImportTest extends TestCase
             $alias.'/assets/p2-s_4096x.jpg' => $this->image(2), $alias.'/doc/floor_imperial_en_1.svg' => '<svg viewBox="0 0 10 10"></svg>'] + $extra);
     }
 
-    private function index(string $alias = 'sample'): string
+    private function expiredIndex(string $alias = 'sample'): string
     {
-        $view = ['id' => 'view1', 'iguide' => ['id' => 'ig1', 'alias' => $alias, 'property' => ['house' => '1', 'street' => 'Main St', 'city' => 'Town']],
+        return $this->index($alias, ['id' => 'view1', 'iguide' => ['id' => 'ig1', 'alias' => $alias, 'property' => ['house' => '1', 'street' => 'Main St', 'city' => 'Town']],
+            'updated_at' => '2024-02-21T00:00:00Z', 'data' => new \stdClass, 'dataV2' => ['formatVersion' => 51], 'attrs' => ['accessDenied' => true, 'expired' => true]]);
+    }
+
+    private function index(string $alias = 'sample', ?array $view = null): string
+    {
+        $view ??= ['id' => 'view1', 'iguide' => ['id' => 'ig1', 'alias' => $alias, 'property' => ['house' => '1', 'street' => 'Main St', 'city' => 'Town']],
             'dataV2' => ['buildings' => [['id' => 1, 'floors' => [
                 ['id' => 1, 'name' => 'Main Floor', 'layout' => ['rooms' => [['id' => 7, 'name' => 'Kitchen']], 'panos' => [['id' => 1, 'roomId' => 7, 'pos' => [1.5, 2], 'rot' => 0.5]]]],
                 ['id' => 2, 'name' => 'Upper Floor', 'layout' => ['rooms' => [['id' => 8, 'name' => 'Primary Bedroom']], 'panos' => [['id' => 2, 'roomId' => 8, 'pos' => [3, 4], 'rot' => 1]]]]]]]]];

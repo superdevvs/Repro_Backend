@@ -10,7 +10,11 @@ class LabImportMetadata
     public const VERSION = 'scan-import-json-1';
     public const MAX_BYTES = 8 * 1024 * 1024;
 
-    public function parse(string $bytes): array
+    /**
+     * $expiredTourAllowed (offline package viewers only): an expired or access-denied tour whose dataV2 carries no buildings
+     * yields kind iguide_expired_tour with its identity but no panorama, room or floor data.
+     */
+    public function parse(string $bytes, bool $expiredTourAllowed = false): array
     {
         $this->require(strlen($bytes) <= self::MAX_BYTES, 'Scan metadata exceeds 8 MiB.');
         $text = ltrim($bytes, "\xEF\xBB\xBF \r\n\t");
@@ -31,7 +35,7 @@ class LabImportMetadata
         catch (\JsonException) { $this->require(false, 'Scan metadata must be strict JSON, not executable JavaScript.'); }
         $this->require(is_array($data), 'Scan metadata must be a JSON object.');
         if (isset($data['panoramas'])) return $this->generic($data);
-        return $this->iguide($data);
+        return $this->iguide($data, $expiredTourAllowed);
     }
 
     private function generic(array $data): array
@@ -47,9 +51,16 @@ class LabImportMetadata
         return ['kind' => 'generic_manifest', 'tourId' => null, 'propertyName' => $this->text($data['propertyName'] ?? null, 160), 'byFile' => $entries, 'byPano' => []];
     }
 
-    private function iguide(array $data): array
+    private function iguide(array $data, bool $expiredTourAllowed): array
     {
         $view = $data['viewObject'] ?? $data;
+        if ($expiredTourAllowed && is_array($view) && is_array($view['dataV2'] ?? null) && ! array_key_exists('buildings', $view['dataV2'])
+            && is_array($view['attrs'] ?? null) && (($view['attrs']['expired'] ?? null) === true || ($view['attrs']['accessDenied'] ?? null) === true)) {
+            $tour = $this->text($view['iguide']['id'] ?? $view['id'] ?? null, 100);
+            $this->require($tour !== null, 'The iGUIDE metadata is missing its source identity.');
+            return ['kind' => 'iguide_expired_tour', 'tourId' => $tour, 'alias' => $this->text($view['iguide']['alias'] ?? null, 200),
+                'propertyName' => $this->property($view), 'byPano' => [], 'byFile' => []];
+        }
         $buildingData = $view['dataV2']['buildings'] ?? null;
         $this->require(is_array($buildingData) && count($buildingData) <= 30, 'Unsupported iGUIDE metadata: dataV2 buildings are required.');
         $tour = $this->text($view['iguide']['id'] ?? $view['id'] ?? null, 100);
@@ -80,10 +91,15 @@ class LabImportMetadata
             }
         }
         $this->require(count($panos) > 0, 'The iGUIDE metadata has no panoramas.');
+        return ['kind' => 'iguide_viewObject', 'tourId' => $tour, 'alias' => $this->text($view['iguide']['alias'] ?? null, 200),
+            'propertyName' => $this->property($view), 'byPano' => $panos, 'byFile' => []];
+    }
+
+    private function property(array $view): ?string
+    {
         $property = $view['iguide']['property'] ?? []; $this->require(is_array($property), 'Invalid source property metadata.');
         $address = array_filter(array_map(fn ($key) => $this->text($property[$key] ?? null, 160), ['house', 'street', 'city']), fn ($value) => $value !== null);
-        return ['kind' => 'iguide_viewObject', 'tourId' => $tour, 'alias' => $this->text($view['iguide']['alias'] ?? null, 200),
-            'propertyName' => $address ? mb_substr(implode(' ', $address), 0, 160) : null, 'byPano' => $panos, 'byFile' => []];
+        return $address ? mb_substr(implode(' ', $address), 0, 160) : null;
     }
 
     private function camera(array $pano): array
