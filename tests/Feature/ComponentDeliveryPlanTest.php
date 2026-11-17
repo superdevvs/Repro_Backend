@@ -86,6 +86,28 @@ class ComponentDeliveryPlanTest extends TestCase
         $this->assertDatabaseCount('shoot_delivery_receipts', 0);
     }
 
+    public function test_hiding_already_delivered_output_keeps_the_component_delivered(): void
+    {
+        // 536 Highmeadow (shoot 5902): photos hidden by curation after
+        // delivery reopened the service and later hid the Finalize action.
+        [$shoot, $item, $actor] = $this->fixture();
+        $photo = $this->file($shoot, $item, $actor);
+        $this->deliver($shoot, $actor);
+        $component = fn () => collect(app(DeliveryPlanService::class)->plan($shoot->fresh(), $actor)['components'])->firstWhere('id', $item->id.':photo');
+        $this->assertTrue($component()['resolved']);
+
+        app(\App\Services\Shoots\ShootMediaInteractionService::class)->toggleHidden($shoot->fresh(), [$photo->id], true);
+        app(DeliveryPlanService::class)->forgetReleasedFiles();
+        $this->assertTrue($photo->fresh()->is_hidden);
+        $this->assertTrue($component()['resolved'], 'Hiding delivered media is curation, not a revoked delivery.');
+        $this->assertSame('delivered', $component()['status']);
+
+        // Safety blocks still revoke the approval.
+        $photo->forceFill(['scan_status' => 'infected'])->save();
+        app(DeliveryPlanService::class)->forgetReleasedFiles();
+        $this->assertFalse($component()['resolved']);
+    }
+
     public function test_scoped_manual_completion_from_scheduled_requires_reason_and_keeps_other_components_pending(): void
     {
         [$shoot, $item] = $this->fixture();

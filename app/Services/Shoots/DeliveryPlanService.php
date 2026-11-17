@@ -424,7 +424,8 @@ class DeliveryPlanService
         return str_starts_with($mime, 'image/') ? 'photo' : null;
     }
 
-    private function safe(ShootFile $file): bool { return ! $file->is_hidden && ! $file->flag_reason && ! $file->isBlockedFromDelivery() && ! $file->is_extra
+    /** Hiding is curation: it stops new outputs from qualifying but never revokes an approved delivery. */
+    private function safe(ShootFile $file, bool $ignoreVisibility = false): bool { return ($ignoreVisibility || ! $file->is_hidden) && ! $file->flag_reason && ! $file->isBlockedFromDelivery() && ! $file->is_extra
         && ! app(ShootAuthorizationSupport::class)->isRawCameraFile($file)
         && ! in_array($file->media_type, ['raw', 'extra', 'reference', 'additional'], true) && ! data_get($file->metadata, 'reference_only') && ! $file->isIguideOfflinePackage(); }
     public function usableOutput(ShootFile $file): bool { return $this->safe($file) && $this->contentKind($file) !== null; }
@@ -451,7 +452,7 @@ class DeliveryPlanService
         foreach ($evidence['files'] as $entry) {
             $file = $files->get($entry['id']);
             if (! $file || (int) $file->shoot_id !== (int) $receipt->shoot_id || (int) $file->shoot_service_id !== (int) $receipt->shoot_service_id
-                || (int) ($file->content_version ?: 1) !== (int) $entry['version'] || ! $this->safe($file)
+                || (int) ($file->content_version ?: 1) !== (int) $entry['version'] || ! $this->safe($file, ignoreVisibility: true)
                 || ! in_array($file->workflow_stage, ['completed', 'verified'], true) || $this->contentKind($file) !== $receipt->component_key
                 || ($current && ! $current->has($file->id))) return false;
         }
