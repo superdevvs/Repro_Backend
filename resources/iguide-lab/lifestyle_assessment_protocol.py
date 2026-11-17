@@ -14,7 +14,7 @@ import re
 from PIL import Image
 from staging_assessment_protocol import (
     _keys, _hash, _uuid, _fail, _string, _enum, _obj, _list, _box,
-    _validate, _loads, digest, bind_segmentation_receipt, reasoning_model, model_echoes,
+    _validate, _loads, digest, fit_and_validate, bind_segmentation_receipt, reasoning_model, model_echoes,
 )
 
 VERSION='automatic-standing-pair-assessment/1'
@@ -120,7 +120,7 @@ def parse_response(response_text,context,execution,model):
             if part.get('type')!='output_text' or not isinstance(part.get('text'),str):_fail('REFUSED_OR_INVALID_CONTENT')
             texts.append(part['text'])
     if len(texts)!=1 or len(texts[0].encode())>64*1024:_fail('SINGLE_STRUCTURED_RESPONSE_REQUIRED')
-    p=_loads(texts[0]);_validate(p,response_schema())
+    p,clipped=fit_and_validate(_loads(texts[0]),response_schema())
     if p['contextSha256']!=sha or p['binding']!=context['binding']:_fail('PROPOSAL_BINDING_INVALID')
     def ev(x,required=(),source=False):
         ids=x['evidenceIds']
@@ -168,6 +168,7 @@ def parse_response(response_text,context,execution,model):
     result={'schemaVersion':VERSION,'status':'needs_review' if reasons else 'ready_for_segmentation','contextSha256':sha,'binding':context['binding'],
         'proposal':p,'proposalSha256':digest(p),'execution':dict(execution),'reviewReasons':reasons,'caveats':caveats,'automaticAcceptance':False,
         'physicalGeometryVerified':False,'opticsPhysicallyVerified':False,'maskVerified':False,'crossViewVerified':False,'providerCallsPerformed':0,'authorOrigin':'machine'}
+    if clipped:result['proseClipped']=clipped  # internal record only: over-long prose was shortened to its bound
     result['segmentationPlan']=segmentation_plan(result) if not reasons else []
     return result
 

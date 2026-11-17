@@ -139,7 +139,7 @@ def parse_response(response_text,context,execution,model):
             if not isinstance(part,dict) or part.get('type')!='output_text' or not isinstance(part.get('text'),str):_fail('REFUSED_OR_UNEXPECTED_CONTENT')
             texts.append(part['text'])
     if len(texts)!=1 or len(texts[0].encode())>64*1024:_fail('SINGLE_STRUCTURED_RESPONSE_REQUIRED')
-    p=_loads(texts[0]);_validate(p,response_schema(version=context['schemaVersion']))
+    p,clipped=shared.fit_and_validate(_loads(texts[0]),response_schema(version=context['schemaVersion']))
     if p['contextSha256']!=context_hash or p['binding']!=context['binding']:_fail('PROPOSAL_BINDING_INVALID')
     for key in ['target','receiver','shadow','foreground','optics','contextCoverage']:
         ids=p[key]['evidenceIds'];required=IDS[1:] if key in {'optics','contextCoverage'} else ['source_cut']
@@ -189,6 +189,7 @@ def parse_response(response_text,context,execution,model):
     out={'schemaVersion':context['schemaVersion'],'status':'needs_review' if reasons else 'ready_for_segmentation','contextSha256':context_hash,
          'binding':context['binding'],'proposal':p,'proposalSha256':digest(p),'execution':dict(execution),'reviewReasons':reasons,'caveats':caveats,
          'automaticAcceptance':False,'authorOrigin':'machine','maskVerified':False,'hiddenSurfaceVerified':False,'crossViewVerified':False,'providerCallsPerformed':0}
+    if clipped:out['proseClipped']=clipped  # internal record only: over-long prose was shortened to its bound
     out['segmentationPlan']=segmentation_plan(out) if not reasons else []
     return out
 

@@ -16,6 +16,8 @@ Separate a plausible FRAMING CANDIDATE from FINAL PLACEMENT readiness. An empty 
 Return every named constraint once with evidence view IDs and a concise reason. A framing_candidate requires emptyRoom=empty, coherentGroup=plausible, a pose, and no blocked constraint. It still has ZERO image-generation authority: the exact cut plus native-parent context must independently pass all scope, margin, circulation, fixed-feature and optical checks before an image can be requested.
 TEXT;
 
+    /** Over-long prose is clipped to these bounds (LabProseText); every other field stays strict. */
+    public const PROSE=['summary'=>1200,'constraints.*.reason'=>550];
     public static function snapshot(): array
     {
         return ['version'=>self::VERSION,'protocolSha256'=>hash_file('sha256',__FILE__),
@@ -36,7 +38,7 @@ TEXT;
     }
     public static function parse(array $response,array $context): array
     {
-        self::context($context);$value=self::structured($response);
+        self::context($context);$value=LabProseText::fitPaths(self::structured($response),self::PROSE,'staging-framing');
         self::keys($value,['version','sourceSha256','intentSha256','status','emptyRoom','coherentGroup','view','constraints','summary']);
         if($value['version']!==self::VERSION||$value['sourceSha256']!==$context['sourceSha256']||$value['intentSha256']!==$context['intentSha256'])self::invalid('Framing authority changed.');
         if(!in_array($value['status'],['framing_candidate','needs_review'],true)||!in_array($value['emptyRoom'],['empty','occupied','uncertain'],true)

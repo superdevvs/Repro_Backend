@@ -42,7 +42,7 @@ TEXT;
 
     public static function parse(array $response, array $context, bool $combined = false): array
     {
-        self::context($context, $combined); $value=LabStagingFramingProtocol::structured($response); $layout=$value['stagingLayout']??null; unset($value['stagingLayout']);
+        self::context($context, $combined); $value=LabProseText::fitPaths(LabStagingFramingProtocol::structured($response),['stagingLayout.summary'=>1200,'stagingLayout.**.reason'=>550],'staging-layout'); $layout=$value['stagingLayout']??null; unset($value['stagingLayout']);
         $gate=self::validateLayout($layout,$context,$combined);
         $base=$context;unset($base['sourceContext'],$base['stagingLayout']);
         $plain=$response;$plain['output']=[['type'=>'message','role'=>'assistant','status'=>'completed','content'=>[['type'=>'output_text','text'=>json_encode($value,JSON_THROW_ON_ERROR)]]]];

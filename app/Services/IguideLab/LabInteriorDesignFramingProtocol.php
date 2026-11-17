@@ -43,7 +43,7 @@ TEXT;
     {
         self::context($context);
         if(!LabReasoningModel::known($response['model']??null))self::invalid('Interior framing model changed.');
-        $v=LabStagingFramingProtocol::structured($response);
+        $v=LabProseText::fitPaths(LabStagingFramingProtocol::structured($response),['summary'=>1200,'checks.*.reason'=>550,'styleFeatures.*.description'=>500],'interior-framing');
         self::keys($v,['version','nativeSourceSha256','preparedSourceSha256','sourceAuthoritySha256','intentSha256','style','status','view','targets','styleFeatures','checks','summary']);
         foreach(['version','nativeSourceSha256','preparedSourceSha256','sourceAuthoritySha256','intentSha256','style'] as $key)if($v[$key]!==$context[$key])self::invalid('Interior framing authority changed.');
         if(!in_array($v['status'],['framing_candidate','needs_review'],true))self::invalid('Invalid interior framing status.');

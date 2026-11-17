@@ -45,7 +45,7 @@ TEXT;
     }
     public static function parse(array $response,array $c): array
     {
-        self::context($c);$v=V::parsed($response);$cut=$c['cutResult'];
+        self::context($c);$v=LabProseText::fitPaths(V::parsed($response),['summary'=>1200,'checks.*.reason'=>550],'interior-material-candidate');$cut=$c['cutResult'];
         V::keys($v,['version','sourceSha256','candidateSha256','nativeSourceSha256','cutResultSha256','style','status','foregroundFinding','targets','checks','summary']);
         foreach(['version'=>self::VERSION,'sourceSha256'=>$cut['preparedSourceSha256'],'candidateSha256'=>$c['candidateSha256'],'nativeSourceSha256'=>$cut['nativeSourceSha256'],
             'cutResultSha256'=>$c['cutResultSha256'],'style'=>$cut['style']] as $key=>$expected)if($v[$key]!==$expected)V::invalid('Interior candidate result binding changed.');

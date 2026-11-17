@@ -114,7 +114,7 @@ DRAFT;
     }
     public static function parse(array $response,array $c): array
     {
-        static::context($c);$p=LabInteriorDesignProtocol::class;$v=$p::parsed($response);
+        static::context($c);$p=LabInteriorDesignProtocol::class;$v=LabProseText::fitPaths($p::parsed($response),['summary'=>900,'**.reason'=>550,'objects.*.description'=>300,'styleFeatures.*.description'=>220],'room-evidence');
         $p::keys($v,['version','contextSha256','profileId','status','view','objects','sourceFloor','styleFeatures','foregroundStatus','opticalStatus','contactShadowStatus','checks','summary','draftEvidence','obligationClosures','correction']);
         $profile=LabInteriorRoomProfiles::get($c['route']['binding']['profileId']);
         if($v['version']!==static::VERSION||$v['contextSha256']!==LabMachineSegmentationPlan::canonicalHash($c)||$v['profileId']!==$profile['id'])$p::invalid('Furnishing result authority changed.');

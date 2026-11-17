@@ -16,7 +16,7 @@ final class LabStagingCutProtocol
     }
     public static function parse(array $response,array $context): array
     {
-        self::binding($context);$structured=LabStagingFramingProtocol::structured($response);$gate=$structured['stagingReadiness']??null;unset($structured['stagingReadiness']);
+        self::binding($context);$structured=LabProseText::fitPaths(LabStagingFramingProtocol::structured($response),['stagingReadiness.checks.*.reason'=>900],'staging-cut');$gate=$structured['stagingReadiness']??null;unset($structured['stagingReadiness']);
         LabStagingFramingProtocol::keys($gate,['version','sourceSha256','nativeSourceSha256','framingResultSha256','checks']);
         $binding=$context['stagingFraming'];
         if($gate['version']!==self::GATE_VERSION||$gate['sourceSha256']!==$context['sourceSha256']||$gate['nativeSourceSha256']!==$binding['nativeSourceSha256']

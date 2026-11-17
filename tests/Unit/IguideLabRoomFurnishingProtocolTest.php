@@ -143,7 +143,7 @@ class IguideLabRoomFurnishingProtocolTest extends TestCase
             $this->assertStringContainsString('copies the entire prior layout.result.sourceFloor exactly',$p::instructions());
         }
     }
-    public function test_evidence_bounds_box_order_and_text_limits_remain_parser_requirements(): void
+    public function test_evidence_bounds_box_order_and_blank_text_remain_parser_requirements_and_long_prose_is_clipped(): void
     {
         foreach([F::class,L::class,C::class] as $p){
             $c=self::context($p::PHASE);$v=self::value($p,$c);$key=$p===C::class?'geometry':'room_scope';
@@ -151,8 +151,9 @@ class IguideLabRoomFurnishingProtocolTest extends TestCase
                 $bad=$v;$bad['checks'][$key]['evidenceViewIds']=$ids;$this->rejects(fn()=>$p::parse(V::response($bad),$c));
             }
             $bad=$v;$bad['checks']['optical_dependencies']['evidenceViewIds']=['source'];$this->rejects(fn()=>$p::parse(V::response($bad),$c));
-            $bad=$v;$bad['summary']=str_repeat('x',901);$this->rejects(fn()=>$p::parse(V::response($bad),$c));
-            $bad=$v;$bad['checks'][$key]['reason']=str_repeat('x',551);$this->rejects(fn()=>$p::parse(V::response($bad),$c));
+            // Over-long prose is clipped to its bound (LabProseText), never a reason to discard the answer.
+            $long=$v;$long['summary']=str_repeat('x',901);$long['checks'][$key]['reason']=str_repeat('x',551);$parsed=$p::parse(V::response($long),$c);
+            $this->assertSame([str_repeat('x',899).'…',str_repeat('x',549).'…'],[$parsed['summary'],$parsed['checks'][$key]['reason']]);
             $bad=$v;$bad['checks'][$key]['reason']=' ';$this->rejects(fn()=>$p::parse(V::response($bad),$c));
             $v['summary']=str_repeat('x',900);$v['checks'][$key]['reason']=str_repeat('x',550);
             $this->assertSame($v['status'],$p::parse(V::response($v),$c)['status']);

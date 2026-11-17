@@ -45,7 +45,7 @@ TEXT;
     }
     public static function parse(array $response,array $context): array
     {
-        self::binding($context);$v=V::parsed($response);
+        self::binding($context);$v=LabProseText::fitPaths(V::parsed($response),['summary'=>1200,'checks.*.reason'=>550,'foreground.*.description'=>200],'interior-cut');
         V::keys($v,['version','sourceCutSha256','preparedSourceSha256','nativeSourceSha256','sourceContextBindingSha256','framingResultSha256','style','status','targets','foreground','checks','generationPrompt','summary']);
         $binding=$context['sourceContext'];$f=$context['interiorFraming'];
         foreach(['version'=>self::VERSION,'sourceCutSha256'=>$context['sourceSha256'],'preparedSourceSha256'=>$binding['views'][0]['sha256'],

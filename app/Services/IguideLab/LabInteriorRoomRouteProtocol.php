@@ -60,7 +60,7 @@ TEXT;
 
     public static function parse(array $response,array $context): array
     {
-        self::context($context);$p=LabInteriorDesignProtocol::class;$v=$p::parsed($response);
+        self::context($context);$p=LabInteriorDesignProtocol::class;$v=LabProseText::fitPaths($p::parsed($response),['summary'=>900,'*.reason'=>550,'*.*.*.description'=>220],'interior-room-route');
         $p::keys($v,[...self::BINDINGS,'room','occupancy','materialPotential','metadataAgreement','intentCompatibility','opticalDependencies','summary']);
         foreach(self::BINDINGS as $key) if($v[$key]!==$context[$key]) $p::invalid('Room classifier source or intent changed.');
         self::finding($v['room'],['identified','uncertain'],['function']);

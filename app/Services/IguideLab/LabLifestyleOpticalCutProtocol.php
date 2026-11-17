@@ -43,7 +43,7 @@ final class LabLifestyleOpticalCutProtocol
 
     public static function parse(array $response,array $context): array
     {
-        self::binding($context);$structured=LabLifestyleFramingProtocol::structured($response);$gate=$structured['lifestyleReadiness']??null;unset($structured['lifestyleReadiness']);
+        self::binding($context);$structured=LabProseText::fitPaths(LabLifestyleFramingProtocol::structured($response),['lifestyleReadiness.checks.*.reason'=>900],'lifestyle-optical-cut');$gate=$structured['lifestyleReadiness']??null;unset($structured['lifestyleReadiness']);
         LabLifestyleFramingProtocol::keys($gate,['version','sourceSha256','nativeSourceSha256','framingResultSha256','checks']);
         $binding=$context['lifestyleFraming'];
         if($gate['version']!==self::GATE_VERSION||$gate['sourceSha256']!==$context['sourceSha256']||$gate['nativeSourceSha256']!==$binding['nativeSourceSha256']

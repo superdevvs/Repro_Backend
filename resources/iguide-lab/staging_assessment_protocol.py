@@ -108,6 +108,47 @@ def _validate(value,schema,path='$'):
         if not math.isfinite(value) or not schema.get('minimum',-math.inf)<=value<=schema.get('maximum',math.inf):_fail('NUMBER_BOUND:'+path)
 
 
+# Human-readable model prose: these property names, and the string items of these list properties. Only such a
+# plain string (no enum or pattern) longer than its maxLength is shortened to fit; ids, enums, hashes, prompts and
+# every other bound (types, keys, arrays, numbers, minLength) stay strict in _validate.
+PROSE_KEYS=frozenset({'notes','description','summary','rationale','reason','purpose','uncertainties','requestedDetails','sourceArtifacts'})
+ELLIPSIS='…'
+
+
+def clip_prose(text,maximum):
+    """At most `maximum` code points (PHP mb_strlen), cut at a nearby word boundary, ending with an ellipsis."""
+    if len(text)<=maximum:return text
+    if maximum<2:return text[:maximum]
+    head=text[:maximum-1]
+    if not text[maximum-1].isspace():
+        boundary=re.match(r'(?s)(.*\S)\s+\S*\Z',head)
+        if boundary and len(boundary.group(1))>=maximum//2:head=boundary.group(1)
+    head=head.rstrip().rstrip(',;:-–—').rstrip()
+    return (head or text[:maximum-1])+ELLIPSIS
+
+
+def fit_prose(value,schema,clipped,path='$',prose=False,prose_keys=PROSE_KEYS):
+    """Copy of a decoded model answer with over-long prose clipped; each clip is appended to `clipped`."""
+    types=schema.get('type') if isinstance(schema,dict) else None
+    types=types if isinstance(types,list) else [types]
+    if isinstance(value,dict) and 'object' in types and isinstance(schema.get('properties'),dict):
+        props=schema['properties']
+        return {k:(fit_prose(v,props[k],clipped,path+'.'+k,k in prose_keys,prose_keys) if k in props else v) for k,v in value.items()}
+    if isinstance(value,list) and 'array' in types and isinstance(schema.get('items'),dict):
+        return [fit_prose(v,schema['items'],clipped,path+f'[{i}]',prose,prose_keys) for i,v in enumerate(value)]
+    if (prose and isinstance(value,str) and 'string' in types and 'enum' not in schema and 'pattern' not in schema
+            and isinstance(schema.get('maxLength'),int) and len(value)>schema['maxLength']):
+        clipped.append({'path':path,'length':len(value),'maxLength':schema['maxLength']})
+        return clip_prose(value,schema['maxLength'])
+    return value
+
+
+def fit_and_validate(value,schema,prose_keys=PROSE_KEYS):
+    """Prose clipping, then the unchanged strict validation. Returns (value, clips)."""
+    clipped=[];value=fit_prose(value,schema,clipped,prose_keys=prose_keys);_validate(value,schema)
+    return value,clipped
+
+
 def validate_context(context):
     _keys(context,['schemaVersion','binding','pose','evidence'],'CONTEXT_FIELDS_INVALID')
     if context['schemaVersion']!=VERSION:_fail('CONTEXT_VERSION_INVALID')
@@ -203,7 +244,7 @@ def parse_response(response_text,context,execution,model):
             if not isinstance(part,dict) or part.get('type')!='output_text' or not isinstance(part.get('text'),str):_fail('REFUSED_OR_UNEXPECTED_CONTENT')
             texts.append(part['text'])
     if len(texts)!=1 or len(texts[0].encode())>64*1024:_fail('SINGLE_STRUCTURED_RESPONSE_REQUIRED')
-    proposal=_loads(texts[0]);_validate(proposal,response_schema())
+    proposal,clipped=fit_and_validate(_loads(texts[0]),response_schema())
     if proposal['contextSha256']!=context_hash or proposal['binding']!=context['binding']:_fail('PROPOSAL_BINDING_INVALID')
     known={x['id'] for x in context['evidence']}
     def evidence(item,required=(),source_only=False):
@@ -250,6 +291,7 @@ def parse_response(response_text,context,execution,model):
         'execution':dict(execution),'reviewReasons':reasons,'automaticAcceptance':False,'physicalGeometryVerified':False,
         'opticsPhysicallyVerified':False,'maskVerified':False,'crossViewVerified':False,'providerCallsPerformed':0,
         'authorOrigin':'machine','trustedInputPolicy':'Server-loaded context and receipt only; hash checks do not authenticate arbitrary client records.'}
+    if clipped:report['proseClipped']=clipped  # internal record only: over-long prose was shortened to its bound
     report['segmentationPlan']=segmentation_plan(report) if not reasons else []
     return report
 

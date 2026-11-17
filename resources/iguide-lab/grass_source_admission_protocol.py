@@ -133,7 +133,7 @@ def parse_response(response_text,context,execution,model):
             if not isinstance(part,dict) or part.get('type')!='output_text' or not isinstance(part.get('text'),str):raise ValueError('ADMISSION_OUTPUT_INVALID')
             texts.append(part['text'])
     if len(texts)!=1 or len(texts[0].encode())>64*1024:raise ValueError('ADMISSION_SINGLE_OUTPUT_REQUIRED')
-    proposal=shared._loads(texts[0]);shared._validate(proposal,response_schema())
+    proposal,clipped=shared.fit_and_validate(shared._loads(texts[0]),response_schema())
     if proposal['contextSha256']!=context_sha or proposal['binding']!=context['binding']:raise ValueError('ADMISSION_PROPOSAL_BINDING_INVALID')
     known={v['id'] for v in context['evidence']}
     def evidence(finding,required):
@@ -151,10 +151,12 @@ def parse_response(response_text,context,execution,model):
     if len({digest(request['pose']) for request in requests})!=len(requests):raise ValueError('ADMISSION_DUPLICATE_DETAIL_POSE')
     status,reasons,caveats=screen(proposal,context['round'])
     # No detail round is bought: soft doubts are caveats, so a detail view could not change the outcome.
-    return {'schemaVersion':VERSION,'status':status,'contextSha256':context_sha,'binding':context['binding'],'policy':dict(POLICY),
+    result={'schemaVersion':VERSION,'status':status,'contextSha256':context_sha,'binding':context['binding'],'policy':dict(POLICY),
         'round':context['round'],'proposal':proposal,'proposalSha256':digest(proposal),'execution':dict(execution),
         'reviewReasons':reasons,'caveats':caveats,'detailPlan':[],'authorOrigin':'machine',
         'automaticAcceptance':False,'segmentationAuthority':False,'crossViewVerified':False,'providerCallsPerformed':0}
+    if clipped:result['proseClipped']=clipped  # internal record only: over-long prose was shortened to its bound
+    return result
 
 
 def screen(proposal,round_):

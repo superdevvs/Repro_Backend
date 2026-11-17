@@ -83,16 +83,19 @@ def response_schema(wire=False):
     return result
 
 
+# Grass also shortens its descriptive selection labels ('id': evidence text, not a SAM identity; the server derives
+# identities from role and array order). Other ids, hashes and enums stay strict.
+PROSE_KEYS=shared.PROSE_KEYS|{'id'}
+
+
 def _fit(value,schema):
-    """Shorten over-long model text and string lists instead of rejecting a paid answer."""
+    """Drop surplus items of over-long string lists instead of rejecting a paid answer (text is clipped by shared.fit_prose)."""
     if isinstance(value,dict) and schema.get('type')=='object':
         return {k:(_fit(v,schema['properties'][k]) if k in schema.get('properties',{}) else v) for k,v in value.items()}
     if isinstance(value,list) and schema.get('type')=='array':
         items=schema['items']
         if items.get('type')=='string' and 'maxItems' in schema:value=value[:schema['maxItems']]
         return [_fit(v,items) for v in value]
-    if isinstance(value,str) and schema.get('type')=='string' and 'enum' not in schema and schema.get('maxLength',0)>=60:
-        return value[:schema['maxLength']]
     return value
 
 
@@ -165,7 +168,7 @@ def parse_response(response_text,context,execution,model):
             if not isinstance(part,dict) or part.get('type')!='output_text' or not isinstance(part.get('text'),str):raise ValueError('GRASS_REFUSAL_OR_UNEXPECTED_CONTENT')
             texts.append(part['text'])
     if len(texts)!=1 or len(texts[0].encode())>64*1024:raise ValueError('GRASS_SINGLE_RESPONSE_REQUIRED')
-    proposal=_fit(shared._loads(texts[0]),response_schema());shared._validate(proposal,response_schema())
+    proposal,clipped=shared.fit_and_validate(_fit(shared._loads(texts[0]),response_schema()),response_schema(),PROSE_KEYS)
     if proposal['contextSha256']!=context_hash or proposal['binding']!=context['binding']:raise ValueError('GRASS_PROPOSAL_BINDING_INVALID')
     known={v['id'] for v in context['evidence']}
     def evidence(finding,required,source_only=True):
@@ -209,6 +212,7 @@ def parse_response(response_text,context,execution,model):
         'contextSha256':context_hash,'binding':context['binding'],'policy':dict(POLICY),'proposal':proposal,'proposalSha256':digest(proposal),
         'execution':dict(execution),'reviewReasons':reasons,'caveats':caveats,'authorOrigin':'machine','automaticAcceptance':False,
         'maskSemanticsVerified':False,'opticsPhysicallyVerified':False,'crossViewVerified':False,'providerCallsPerformed':0}
+    if clipped:report['proseClipped']=clipped  # internal record only: over-long prose was shortened to its bound
     report['segmentationPlan']=segmentation_plan(report) if not reasons else []
     return report
 

@@ -91,7 +91,9 @@ TEXT;
         if (count($texts) !== 1 || strlen($texts[0]) > 64 * 1024) self::invalid('Expected one bounded structured proposal.');
         try { $proposal = json_decode($texts[0], true, 32, JSON_THROW_ON_ERROR); }
         catch (JsonException) { self::invalid('The proposal is not valid JSON.'); }
-        self::validate($proposal, self::validationSchema($maxViews), '$');
+        // Over-long prose (summary, descriptions, reasons, caveat lists) is clipped to its bound; every other bound stays strict.
+        $schema = self::validationSchema($maxViews); $proposal = LabProseText::fitSchema($proposal, $schema, 'scene-plan');
+        self::validate($proposal, $schema, '$');
         foreach (['sourceSha256', 'projection', 'preset', 'style'] as $field) {
             if ($proposal[$field] !== $context[$field]) self::invalid('The proposal does not match its source and edit settings.');
         }

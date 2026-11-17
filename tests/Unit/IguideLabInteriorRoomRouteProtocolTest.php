@@ -82,7 +82,8 @@ class IguideLabInteriorRoomRouteProtocolTest extends TestCase
         $this->assertSame(220,$schema['materialPotential']['properties']['eligibleSurfaces']['items']['properties']['description']['maxLength']);
         $this->assertSame(220,$schema['materialPotential']['properties']['styleFeatures']['items']['properties']['description']['maxLength']);
         $this->assertSame('route_candidate',$this->parsed($c,$v)['route']['status']);
-        $v['summary'].='x';$this->rejects(fn()=>$this->parsed($c,$v));
+        // One over the bound is clipped (LabProseText), never a reason to discard the answer.
+        $v['summary'].='x';$this->assertSame(str_repeat('x',899).'…',$this->parsed($c,$v)['summary']);
         foreach(['550','220','900'] as $bound)$this->assertStringContainsString($bound,P::INSTRUCTIONS);
     }
     public function test_empty_room_cannot_claim_material_restylability_and_furnished_palette_is_not_full_style(): void

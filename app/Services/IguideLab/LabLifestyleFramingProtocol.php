@@ -16,6 +16,8 @@ Separate a plausible FRAMING CANDIDATE from FINAL PLACEMENT readiness. A coheren
 Return every named constraint once with original evidence IDs and a concise reason. A framing_candidate requires sourcePeople=none_observed, coherentGroup=plausible, a pose and no blocked constraint. It still has ZERO image-generation authority: the exact cut plus original parent context must independently pass all scope, floor, margin, circulation, fixed-feature, optical and lighting checks before one image may be requested. All uncertainty is retained for that later gate.
 TEXT;
 
+    /** Over-long prose is clipped to these bounds (LabProseText); every other field stays strict. */
+    public const PROSE=['summary'=>1200,'constraints.*.reason'=>550];
     public static function snapshot(): array
     {
         return ['version'=>self::VERSION,'protocolSha256'=>hash_file('sha256',__FILE__),
@@ -36,7 +38,7 @@ TEXT;
     }
     public static function parse(array $response,array $context): array
     {
-        self::context($context);$value=self::structured($response);
+        self::context($context);$value=LabProseText::fitPaths(self::structured($response),self::PROSE,'lifestyle-framing');
         self::keys($value,['version','sourceSha256','intentSha256','status','sourcePeople','coherentGroup','view','constraints','summary']);
         if($value['version']!==self::VERSION||$value['sourceSha256']!==$context['sourceSha256']||$value['intentSha256']!==$context['intentSha256'])self::invalid('Framing authority changed.');
         if(!in_array($value['status'],['framing_candidate','needs_review'],true)||!in_array($value['sourcePeople'],['none_observed','present','uncertain'],true)

@@ -146,7 +146,7 @@ class LabDeclutterArtifacts extends LabWorkflowArtifacts
     {
         $unique=fn(array $a)=>array_values(array_unique($a));
         $samples=$materials?array_map(fn($b)=>[(int)floor($b['xMin']*2048),(int)floor($b['yMin']*2048),(int)ceil($b['xMax']*2048),(int)ceil($b['yMax']*2048)],$plan['receiver']['samples']):[];
-        $result=['protectedFeatures'=>$unique([...array_column($source['protectedFeatures'],'description'),...array_map(fn($v)=>$v['id'].': '.$v['notes'],$plan['protectedFeatures'])]),
+        $result=['protectedFeatures'=>$unique([...array_column($source['protectedFeatures'],'description'),...array_map(fn($v)=>LabProseText::clip($v['id'].': '.$v['notes'],600),$plan['protectedFeatures'])]),
             'sourceCaveats'=>self::pack($unique([...($source['uncertainties']??[]),...($source['sourceArtifacts']??[]),
                 ...(($source['workflow']['mode']??null)==='manual_review'?['The source analysis chose manual review; the section was derived from the overview its target cites. Model reason: '.($source['workflow']['reason']??'')]:[]),
                 ...$plan['uncertainties'],...$caveats,
