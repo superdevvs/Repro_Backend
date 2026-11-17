@@ -13,5 +13,6 @@ return [
     // Allowed models confirmed to accept input_image detail "original" (lifestyle native details, interior material
     // source details; docs/iguide-lifestyle-original-detail-transport.md). A request that would send "original" to any
     // other model is refused before the paid call. Add a model only after confirming its original-detail sizing.
-    'original_detail' => ['gpt-6-astra'],
+    // Confirmed 2026-11-17: a 2048-square image bills 3014 input tokens at "high" and 4929 at "original" on all three.
+    'original_detail' => ['gpt-6-astra', 'gpt-6.1-terra', 'gpt-6-sol'],
 ];

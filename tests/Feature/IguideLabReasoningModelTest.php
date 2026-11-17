@@ -103,9 +103,21 @@ class IguideLabReasoningModelTest extends TestCase
         LabStagingFramingProtocol::request($context, $images);
     }
 
+    public function test_every_allowed_model_is_confirmed_for_original_image_detail(): void
+    {
+        // Confirmed 2026-11-17: a 2048-square image bills 3014 input tokens at detail "high" and 4929 at "original"
+        // on gpt-6-astra, gpt-6.1-terra and gpt-6-sol alike, so all three keep original dimensions.
+        $file = require config_path('iguide-lab-models.php');
+        $this->assertSame($file['allowed'], $file['original_detail']);
+        $native = ['lifestyle optical native detail', 'lifestyle original optical cut recipe'];
+        config(['iguide-lab-models.reasoning' => self::TERRA, 'iguide-lab-tour.survey.model' => self::TERRA]);
+        foreach ($this->requests() as $family => $request) $this->assertSame(self::TERRA, $request()['model'], $family);
+        foreach ($native as $family) $this->assertStringContainsString('"detail":"original"', json_encode($this->requests()[$family]()), $family);
+    }
+
     public function test_original_image_detail_is_sent_only_to_a_model_confirmed_for_it(): void
     {
-        $this->assertSame(['gpt-6-astra'], (require config_path('iguide-lab-models.php'))['original_detail']);
+        config(['iguide-lab-models.original_detail' => ['gpt-6-astra']]);
         $native = ['lifestyle optical native detail', 'lifestyle original optical cut recipe'];
         config(['iguide-lab-models.reasoning' => self::TERRA, 'iguide-lab-tour.survey.model' => self::TERRA]);
         foreach ($this->requests() as $family => $request) {
