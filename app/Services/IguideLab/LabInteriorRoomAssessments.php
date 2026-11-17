@@ -40,7 +40,7 @@ class LabInteriorRoomAssessments
         $out=app(LabInteriorRoomContext::class)->snapshot();
         foreach(['service'=>self::class,'provider'=>LabInteriorRoomProvider::class,'job'=>ProcessIguideLabRoomAssessment::class,'validator'=>LabInteriorDesignProtocol::class,
             'policy'=>LabInteriorRoomPolicy::class,'wireCompiler'=>LabAnalysisRequestV1::class,'sectionCompiler'=>LabSectionAnalysisProtocol::class,
-            'invocation'=>LabWorkflowInvocation::class,'steps'=>LabWorkflowSteps::class] as $key=>$class)$out[$key.'Sha256']=hash_file('sha256',(new \ReflectionClass($class))->getFileName());
+            'invocation'=>LabWorkflowInvocation::class,'steps'=>LabWorkflowSteps::class,'proseText'=>LabProseText::class] as $key=>$class)$out[$key.'Sha256']=hash_file('sha256',(new \ReflectionClass($class))->getFileName());
         foreach(['route','framing','layout','candidate'] as $phase)$out[$phase]=$this->protocol($phase)::snapshot();
         // A passed assessment runtime also validates the complete PHP orchestration/authority adapter.
         // Taking a current hash only at reservation would otherwise admit unvalidated changed code.

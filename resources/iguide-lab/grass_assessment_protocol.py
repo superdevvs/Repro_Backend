@@ -83,19 +83,22 @@ def response_schema(wire=False):
     return result
 
 
-# Grass also shortens its descriptive selection labels ('id': evidence text, not a SAM identity; the server derives
-# identities from role and array order). Other ids, hashes and enums stay strict.
-PROSE_KEYS=shared.PROSE_KEYS|{'id'}
-
-
-def _fit(value,schema):
-    """Drop surplus items of over-long string lists instead of rejecting a paid answer (text is clipped by shared.fit_prose)."""
+def _fit(value,schema,cut,path='$',key=None):
+    """Drop surplus items of over-long string lists and hard-cut over-long selection labels instead of rejecting a
+    paid answer (prose is clipped by shared.fit_prose). Selection 'id' labels keep the plain [:maxLength] cut and no
+    ellipsis: a word-boundary clip could merge two labels that differ near the cut and fail the uniqueness check.
+    Each label cut is appended to `cut` (internal record)."""
     if isinstance(value,dict) and schema.get('type')=='object':
-        return {k:(_fit(v,schema['properties'][k]) if k in schema.get('properties',{}) else v) for k,v in value.items()}
+        props=schema.get('properties',{})
+        return {k:(_fit(v,props[k],cut,path+'.'+k,k) if k in props else v) for k,v in value.items()}
     if isinstance(value,list) and schema.get('type')=='array':
         items=schema['items']
         if items.get('type')=='string' and 'maxItems' in schema:value=value[:schema['maxItems']]
-        return [_fit(v,items) for v in value]
+        return [_fit(v,items,cut,path+f'[{i}]') for i,v in enumerate(value)]
+    if (key=='id' and isinstance(value,str) and schema.get('type')=='string' and 'enum' not in schema
+            and isinstance(schema.get('maxLength'),int) and len(value)>schema['maxLength']):
+        cut.append({'path':path,'length':len(value),'maxLength':schema['maxLength']})
+        return value[:schema['maxLength']]
     return value
 
 
@@ -168,7 +171,7 @@ def parse_response(response_text,context,execution,model):
             if not isinstance(part,dict) or part.get('type')!='output_text' or not isinstance(part.get('text'),str):raise ValueError('GRASS_REFUSAL_OR_UNEXPECTED_CONTENT')
             texts.append(part['text'])
     if len(texts)!=1 or len(texts[0].encode())>64*1024:raise ValueError('GRASS_SINGLE_RESPONSE_REQUIRED')
-    proposal,clipped=shared.fit_and_validate(_fit(shared._loads(texts[0]),response_schema()),response_schema(),PROSE_KEYS)
+    cut=[];proposal,clipped=shared.fit_and_validate(_fit(shared._loads(texts[0]),response_schema(),cut),response_schema());clipped=cut+clipped
     if proposal['contextSha256']!=context_hash or proposal['binding']!=context['binding']:raise ValueError('GRASS_PROPOSAL_BINDING_INVALID')
     known={v['id'] for v in context['evidence']}
     def evidence(finding,required,source_only=True):

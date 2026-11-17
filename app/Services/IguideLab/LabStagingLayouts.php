@@ -13,7 +13,7 @@ class LabStagingLayouts
         foreach([self::class,LabStagingLayoutReadiness::class,LabStagingLayoutViews::class,LabStagingLayoutProtocol::class,LabStagingCombinedLayoutProtocol::class,
             LabStagingLayoutGeometry::class,LabSectionAnalysisProtocol::class,LabScenePlanProtocol::class,LabSectionAnalysisViews::class,
             LabAnalysisSourceContext::class,LabAnalyses::class,LabAnalysisProvider::class,LabAnalysisRecipes::class,LabStagingWorkflow::class,
-            LabWorkflowPolicy::class,LabWorkflowSteps::class,LabWorkflowInvocation::class,LabStagingArtifacts::class,LabImages::class] as $class){
+            LabWorkflowPolicy::class,LabWorkflowSteps::class,LabWorkflowInvocation::class,LabStagingArtifacts::class,LabImages::class,LabProseText::class] as $class){
             $path=(new \ReflectionClass($class))->getFileName();$files[str_replace('\\','/',substr($path,strlen(base_path())+1))]=hash_file('sha256',$path);}
         foreach(['staging_layout_details.py','pano_geometry.py','analysis-recipes/staging-layout-1.json','analysis-recipes/staging-layout-3.json','analysis-recipes/staging-layout-4.json'] as $name)$files['resources/iguide-lab/'.$name]=hash_file('sha256',resource_path('iguide-lab/'.$name));
         foreach(['app/Http/Controllers/API/IguideLabController.php','routes/iguide-lab.php','config/iguide-lab.php'] as $name)$files[$name]=hash_file('sha256',base_path($name));

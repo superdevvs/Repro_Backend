@@ -14,7 +14,7 @@ class LabStagingFramings
         foreach(['service'=>self::class,'protocol'=>LabStagingFramingProtocol::class,'provider'=>LabStagingFramingProvider::class,
             'cutProtocol'=>LabStagingCutProtocol::class,'cutReadiness'=>LabStagingCutReadiness::class,'analysisService'=>LabAnalyses::class,
             'analysisProvider'=>LabAnalysisProvider::class,'invocation'=>LabWorkflowInvocation::class,'driver'=>LabStagingWorkflow::class,
-            'artifactAdapter'=>LabStagingArtifacts::class,'recipeRegistry'=>LabAnalysisRecipes::class,'job'=>ProcessIguideLabStagingFraming::class] as $key=>$class)$out[$key.'Sha256']=hash_file('sha256',(new \ReflectionClass($class))->getFileName());
+            'artifactAdapter'=>LabStagingArtifacts::class,'recipeRegistry'=>LabAnalysisRecipes::class,'job'=>ProcessIguideLabStagingFraming::class,'proseText'=>LabProseText::class] as $key=>$class)$out[$key.'Sha256']=hash_file('sha256',(new \ReflectionClass($class))->getFileName());
         return $out;
     }
     public function snapshot(): array

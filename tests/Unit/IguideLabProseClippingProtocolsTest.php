@@ -3,7 +3,10 @@ namespace Tests\Unit;
 
 use App\Services\IguideLab\LabDeclutterArtifacts;
 use App\Services\IguideLab\LabInteriorDesignFramingProtocol;
+use App\Services\IguideLab\LabInteriorDesignProtocol;
 use App\Services\IguideLab\LabProseText;
+use App\Services\IguideLab\LabRoomEvidenceCandidateProtocol;
+use App\Services\IguideLab\LabRoomEvidenceLayoutProtocol;
 use App\Services\IguideLab\LabScenePlanProtocol;
 use App\Services\IguideLab\LabStagingFramingProtocol;
 use Illuminate\Support\Facades\Log;
@@ -119,6 +122,44 @@ final class IguideLabProseClippingProtocolsTest extends TestCase
             'protectedFeatures' => [['id' => str_repeat('f', 80), 'notes' => $note]], 'receiver' => ['material' => 'matte_simple_continuous']];
         $features = app(LabDeclutterArtifacts::class)->removalReviewContext($source, $plan, [])['protectedFeatures'];
         $this->assertClipped(str_repeat('f', 80).': '.$note, $features[0], 600);
+    }
+
+    public function test_removal_review_context_keeps_a_long_manual_review_reason_within_the_evaluator_bound(): void
+    {
+        // Scene-plan workflow.reason may hold 800 characters; with its 115-character prefix the caveat line must not abort
+        // the final check (422) after the removal image was bought.
+        $reason = self::prose(800);
+        $source = ['protectedFeatures' => [], 'uncertainties' => [], 'sourceArtifacts' => [], 'reviewChecks' => [],
+            'workflow' => ['mode' => 'manual_review', 'reason' => $reason, 'sections' => []]];
+        $plan = ['target' => ['description' => 'one canister'], 'shadow' => ['status' => 'none_observed'], 'protectedFeatures' => [], 'uncertainties' => [],
+            'receiver' => ['material' => 'stochastic_stone_continuous', 'samples' => []]];
+        $caveats = app(LabDeclutterArtifacts::class)->removalReviewContext($source, $plan, [], true)['sourceCaveats'];
+        $line = 'The source analysis chose manual review; the section was derived from the overview its target cites. Model reason: '.$reason;
+        $this->assertClipped($line, $caveats[0], 600);
+    }
+
+    public function test_room_evidence_clips_draft_anchor_and_correction_prose_but_role_ids_stay_strict(): void
+    {
+        // These texts only feed the draft image prompt; they are never compared or matched.
+        [$c, $v] = IguideLabRoomEvidenceProtocolTest::layout();
+        $anchor = self::prose(301); $orientation = self::prose(377); $exclusions = self::prose(520);
+        $v['draftEvidence']['anchors'][0] = ['sourceAnchor' => $anchor, 'orientation' => $orientation, 'knownExclusions' => $exclusions] + $v['draftEvidence']['anchors'][0];
+        $layout = LabRoomEvidenceLayoutProtocol::parse(LabInteriorDesignProtocol::response($v), $c);
+        $this->assertSame('ready_for_image', $layout['status']);
+        $this->assertClipped($anchor, $layout['draftEvidence']['anchors'][0]['sourceAnchor'], 300);
+        $this->assertClipped($orientation, $layout['draftEvidence']['anchors'][0]['orientation'], 160);
+        $this->assertClipped($exclusions, $layout['draftEvidence']['anchors'][0]['knownExclusions'], 300);
+        $bad = $v; $bad['draftEvidence']['anchors'][0]['objectId'] = 'sofa_left';
+        $this->rejects(fn () => LabRoomEvidenceLayoutProtocol::parse(LabInteriorDesignProtocol::response($bad), $c));
+
+        [$c, $v] = IguideLabRoomEvidenceProtocolTest::candidate();
+        $v['status'] = 'needs_review'; $v['objects'] = []; $v['sourceFloor'] = null; $v['styleFeatures'] = [];
+        $v['checks']['geometry']['status'] = 'fail'; $v['obligationClosures'][0]['status'] = 'fail';
+        $alternative = self::prose(301 + 250);
+        $v['correction'] = ['decision' => 'one_correction', 'defects' => [['checkId' => 'geometry', 'kind' => 'frame_margin', 'objectIds' => ['sofa'], 'sourceAlternative' => $alternative]]];
+        $first = LabRoomEvidenceCandidateProtocol::parse(LabInteriorDesignProtocol::response($v), $c);
+        $this->assertTrue($first['repairDecision']['eligible']);
+        $this->assertClipped($alternative, $first['correction']['defects'][0]['sourceAlternative'], 300);
     }
 
     public function test_path_patterns_match_only_the_named_prose(): void

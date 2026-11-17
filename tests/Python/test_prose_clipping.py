@@ -140,6 +140,31 @@ class DeclutterClipTests(ProtocolClipMixin,unittest.TestCase):
                 self.assertLessEqual(len(report['proposal']['target']['description']),120)
 
 
+class DeclutterProtectedFeatureEvidenceTests(unittest.TestCase):
+    """17 Nov item f4a30c3c: an unlocated protected feature seen only in parent views (outside the cut) discarded the plan."""
+    def setUp(self):
+        context,_,proposal=declutter_fixture();self.context=copy.deepcopy(context);self.proposal=copy.deepcopy(proposal)
+        self.baseline=run(declutter,self.context,copy.deepcopy(self.proposal))
+
+    def feature(self,**change):
+        return {'id':'adjoining_bedroom','box':None,'evidenceIds':['parent_overview','parent_back'],'notes':'No edits outside this cut.',**change}
+
+    def test_unlocated_parent_only_feature_is_a_recorded_caveat(self):
+        self.proposal['protectedFeatures']=[self.feature()]
+        report=run(declutter,self.context,self.proposal)
+        self.assertEqual(report['status'],self.baseline['status']);self.assertEqual(report['reviewReasons'],self.baseline['reviewReasons'])
+        self.assertIn('PROTECTED_FEATURE_OUTSIDE_SOURCE_CUT',report['caveats'])
+        self.assertNotIn('PROTECTED_FEATURE_OUTSIDE_SOURCE_CUT',self.baseline['caveats'])
+
+    def test_located_feature_without_source_cut_unknown_or_duplicate_ids_still_fail(self):
+        for features in [[self.feature(box={'xMin':.7,'yMin':.1,'xMax':.9,'yMax':.3})],
+                         [self.feature(evidenceIds=['parent_overview','parent_attic'])],
+                         [self.feature(evidenceIds=['source_cut']),self.feature()]]:
+            with self.subTest(features=features):
+                proposal=copy.deepcopy(self.proposal);proposal['protectedFeatures']=features
+                with self.assertRaisesRegex(ValueError,'PROTECTED_FEATURE_EVIDENCE_INVALID|ENUM_INVALID'):run(declutter,self.context,proposal)
+
+
 class LifestyleClipTests(ProtocolClipMixin,unittest.TestCase):
     module=lifestyle
     prose_paths=(('$.optics.notes',500),('$.summary',700),('$.people[1].shoes[0].notes',400),('$.floorSelection.notes',400),('$.uncertainties[0]',300))
@@ -190,11 +215,25 @@ class GrassClipTests(ProtocolClipMixin,unittest.TestCase):
         self.proposal['contextSha256']=self.proposal['contextSha256']+'0'
         with self.assertRaisesRegex(ValueError,'STRING_BOUND'):self.parse()
 
-    def test_descriptive_selection_labels_remain_clipped_as_before(self):
+    def test_descriptive_selection_labels_keep_the_plain_cut(self):
         self.proposal['exclusions']['paving']['selections'][0]['id']='paving '+'x'*80
         report=self.parse();label=report['proposal']['exclusions']['paving']['selections'][0]['id']
-        self.assertEqual(len(label),60);self.assertTrue(label.endswith(ELLIPSIS))
+        self.assertEqual(label,('paving '+'x'*80)[:60])
         self.assertEqual(report['proseClipped'],[{'path':'$.exclusions.paving.selections[0].id','length':87,'maxLength':60}])
+
+    def test_long_labels_sharing_a_prefix_stay_distinct(self):
+        # Review finding: a word-boundary clip merged these into one label and GRASS_SELECTION_ID_INVALID discarded the
+        # paid answer; the plain [:60] cut (Deploy 2 behaviour) keeps them distinct.
+        box=lambda x:{'xMin':x,'yMin':.6,'xMax':x+.05,'yMax':.7}
+        for a,b in [('Rear lawn panel beside the cedar fence near the shed, northern edge strip',
+                     'Rear lawn panel beside the cedar fence near the shed, southern edge strip'),
+                    ('concrete stepping stones along the left lawn edge, group A12 of three',
+                     'concrete stepping stones along the left lawn edge, group B07 of three')]:
+            with self.subTest(a=a):
+                self.setUp();lawn=self.proposal['lawn']
+                lawn['selections']=[{'id':a,'box':box(.1)},{'id':b,'box':box(.3)}]
+                report=self.parse();labels=[v['id'] for v in report['proposal']['lawn']['selections']]
+                self.assertEqual(labels,[a[:60],b[:60]]);self.assertNotEqual(labels[0],labels[1])
 
 
 class AdmissionClipTests(ProtocolClipMixin,unittest.TestCase):

@@ -13,7 +13,7 @@ class LabInteriorMaterialDetails
     {return ($recipe['implementation']['sourceDetails']['version']??null)===self::VERSION;}
     public static function implementation(): array
     {
-        $files=[];foreach([self::class,LabInteriorMaterialFramingWire::class,LabWorkflows::class,LabInteriorMaterialSourceProtocol::class,LabInteriorMaterialCandidateProtocol::class,LabInteriorMaterialEvidenceWire::class,LabLifestyleOpticalSampling::class] as $c)
+        $files=[];foreach([self::class,LabInteriorMaterialFramingWire::class,LabWorkflows::class,LabInteriorMaterialSourceProtocol::class,LabInteriorMaterialCandidateProtocol::class,LabInteriorMaterialEvidenceWire::class,LabLifestyleOpticalSampling::class,LabProseText::class] as $c)
             $files[class_basename($c)]=hash_file('sha256',(new \ReflectionClass($c))->getFileName());
         foreach(['interior_source_details.py','pano_geometry.py'] as $name)$files[$name]=hash_file('sha256',resource_path('iguide-lab/'.$name));
         $python=(string)config('iguide-lab.pipeline_python_path');clearstatcache(true,$python);

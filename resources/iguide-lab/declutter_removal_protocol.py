@@ -177,8 +177,15 @@ def parse_response(response_text,context,execution,model):
         stop(proper(box) and min(box['xMin'],box['yMin'],1-box['xMax'],1-box['yMax'])<.1,'SUPPORT_SELECTION_TOUCHES_GUARD')
     seen=set()
     for feature in p['protectedFeatures']:
-        if feature['id'] in seen or not set(feature['evidenceIds'])<=set(IDS) or 'source_cut' not in feature['evidenceIds']:_fail('PROTECTED_FEATURE_EVIDENCE_INVALID')
-        seen.add(feature['id']);box=feature['box']
+        box=feature['box']
+        if feature['id'] in seen or not set(feature['evidenceIds'])<=set(IDS):_fail('PROTECTED_FEATURE_EVIDENCE_INVALID')
+        # A located feature must cite the cut its box is drawn in. An unlocated (box null) feature seen only in parent
+        # views lies outside this cut: it constrains nothing the edit touches, so it is a recorded caveat, not a reason
+        # to discard the whole plan (17 Nov production item f4a30c3c).
+        if 'source_cut' not in feature['evidenceIds']:
+            if box is not None:_fail('PROTECTED_FEATURE_EVIDENCE_INVALID')
+            gate(True,'PROTECTED_FEATURE_OUTSIDE_SOURCE_CUT')
+        seen.add(feature['id'])
         gate(not proper(box),'PROTECTED_FEATURE_LOCATION_UNRESOLVED')
         if proper(box):
             for selected in [target['box'],shadow['box']]:
