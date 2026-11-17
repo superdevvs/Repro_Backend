@@ -40,7 +40,7 @@ def reasoning_model(model):
 def model_echoes(requested,echo):
     """The provider echo is the allow-listed requested model, exactly or as its dated snapshot (-YYYY-MM-DD)."""
     return isinstance(requested,str) and requested in REASONING_MODELS and isinstance(echo,str) and (echo==requested
-        or (echo.startswith(requested+'-') and re.fullmatch(r'\d{4}-\d{2}-\d{2}',echo[len(requested)+1:]) is not None))
+        or (echo.startswith(requested+'-') and re.fullmatch(r'[0-9]{4}-[0-9]{2}-[0-9]{2}',echo[len(requested)+1:]) is not None))
 def _keys(value,keys,code):
     if not isinstance(value,dict) or set(value)!=set(keys):_fail(code)
 def _hash(value):

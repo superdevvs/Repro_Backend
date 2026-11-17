@@ -416,6 +416,15 @@ class LabTourSurveys
      */
     private function prepare(IguideLabTourSurvey $survey): ?string
     {
+        // A payload already saved while queued is rebuilt with the model it was reserved with (data.payload and protocol
+        // are written together), so changing the survey model setting cannot change its bytes.
+        $reserved = isset($survey->data['payload']) && is_string($survey->protocol['model'] ?? null) ? $survey->protocol['model'] : null;
+
+        return LabTourConfig::withSurveyModel($reserved, fn () => $this->compile($survey));
+    }
+
+    private function compile(IguideLabTourSurvey $survey): ?string
+    {
         $snapshot = LabTourSurveyProtocol::snapshot();
         $views = app(LabTourSurveyViews::class)->prepare($survey);
         [$roomName, $floorName] = $this->names($survey);

@@ -59,7 +59,7 @@ class IguideLabReasoningModelTest extends TestCase
     public function test_each_request_family_names_the_configured_model_and_the_recipe_files_do_not_change(): void
     {
         $recipes = app(LabAnalysisRecipes::class); $before = $recipes->snapshot(LabAnalysisRecipes::BASELINE);
-        config(['iguide-lab-models.reasoning' => self::TERRA, 'iguide-lab-tour.survey.model' => self::TERRA]);
+        config(['iguide-lab-models.reasoning' => self::TERRA, 'iguide-lab-tour.survey.model' => self::TERRA, 'iguide-lab-models.original_detail' => ['gpt-6-astra', self::TERRA]]);
         foreach ($this->requests() as $family => $request) $this->assertSame(self::TERRA, $request()['model'], $family);
         $this->assertSame(self::TERRA, LabScenePlanProtocol::model());
         // The content-addressed recipe still says what it was written with; only the request names the setting.
@@ -103,12 +103,31 @@ class IguideLabReasoningModelTest extends TestCase
         LabStagingFramingProtocol::request($context, $images);
     }
 
+    public function test_original_image_detail_is_sent_only_to_a_model_confirmed_for_it(): void
+    {
+        $this->assertSame(['gpt-6-astra'], (require config_path('iguide-lab-models.php'))['original_detail']);
+        $native = ['lifestyle optical native detail', 'lifestyle original optical cut recipe'];
+        config(['iguide-lab-models.reasoning' => self::TERRA, 'iguide-lab-tour.survey.model' => self::TERRA]);
+        foreach ($this->requests() as $family => $request) {
+            if (! in_array($family, $native, true)) { $this->assertSame(self::TERRA, $request()['model'], $family); continue; }
+            try { $request(); $this->fail('Original detail sent to an unconfirmed model: '.$family); }
+            catch (LabReasoningModelException $e) { $this->assertStringContainsString('original_detail', $e->getMessage()); }
+        }
+        // A request reserved with astra still recompiles with original detail after the setting moves on.
+        foreach ($native as $family) $this->assertSame('gpt-6-astra', LabReasoningModel::replay('gpt-6-astra', $this->requests()[$family])['model'], $family);
+        $body = ['model' => self::TERRA, 'input' => [['role' => 'user', 'content' => [['type' => 'input_image', 'detail' => 'high', 'image_url' => 'data:,']]]]];
+        $this->assertSame($body, LabReasoningModel::originalDetail($body));
+        $body['input'][0]['content'][0]['detail'] = 'original';
+        $this->expectException(LabReasoningModelException::class);
+        LabReasoningModel::originalDetail($body);
+    }
+
     public function test_an_echo_must_be_the_requested_model_or_its_dated_snapshot(): void
     {
         $this->assertTrue(LabReasoningModel::echoes(self::TERRA, self::TERRA));
         $this->assertTrue(LabReasoningModel::echoes(self::TERRA, 'gpt-6.1-terra-2026-11-01'));
         $this->assertTrue(LabReasoningModel::echoes('gpt-6-astra', 'gpt-6-astra-2026-10-01'));
-        foreach (['gpt-6.1-terra-latest', 'gpt-6.1-terra-2026-11', 'gpt-6-astra', 'gpt-6.1-terra-2026-11-01x', 'GPT-6.1-TERRA', null, 7] as $echo) {
+        foreach (['gpt-6.1-terra-latest', 'gpt-6.1-terra-2026-11', 'gpt-6-astra', 'gpt-6.1-terra-2026-11-01x', 'GPT-6.1-TERRA', "gpt-6.1-terra-\u{662}\u{660}\u{662}\u{666}-01-01", "gpt-6.1-terra-2026-11-01\n", null, 7] as $echo) {
             $this->assertFalse(LabReasoningModel::echoes(self::TERRA, $echo), json_encode($echo));
         }
         $this->assertFalse(LabReasoningModel::echoes('gpt-5', 'gpt-5'), 'An unlisted request never validates.');

@@ -36,7 +36,8 @@ def main():
     Image.fromarray(union,'L').save(HERE/'masks/lawn-text.png',optimize=False,compress_level=6)
     lawn_mask=descriptor(HERE/'masks/lawn-text.png')
     response=(HERE/'response.SYNTHETIC.json').read_text(encoding='utf-8')
-    assessment=protocol.parse_response(response,load('context.json'),load('execution.SYNTHETIC.json'))
+    # The synthetic fixtures were requested with gpt-6-astra (the server passes the requested model in).
+    assessment=protocol.parse_response(response,load('context.json'),load('execution.SYNTHETIC.json'),'gpt-6-astra')
     assert assessment['status']=='ready_for_source_segmentation'
     dump('assessment.json',assessment)
     plans=protocol.bind_reserved_plans(assessment,load('reservations.mock-database.json'))

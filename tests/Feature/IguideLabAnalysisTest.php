@@ -258,6 +258,22 @@ class IguideLabAnalysisTest extends TestCase
         $this->assertSame($record->data['executionRecipe']['recipeSha256'], $dto['instructionProvenance']['executionRecipeSha256']);
     }
 
+    public function test_unsent_analysis_reports_the_model_it_will_request_and_a_bad_setting_does_not_break_the_lab_index(): void
+    {
+        config(['iguide-lab-models.reasoning' => 'gpt-6.1-terra']);
+        $record = $this->reserve(); $this->assertSame('queued', $record->status);
+        $this->withToken($this->token)->getJson('/api/iguide-lab/analyses/'.$record->id)->assertOk()->assertJsonPath('data.requestedModelId', 'gpt-6.1-terra');
+        $this->withToken($this->token)->getJson('/api/iguide-lab')->assertOk()
+            ->assertJsonPath('data.capabilities.sceneAnalysis.modelId', 'gpt-6.1-terra')->assertJsonPath('data.capabilities.sceneAnalysis.ready', true);
+        // A dated id or a typo is not allow-listed: scene analysis is not ready, the rest of the lab still loads.
+        config(['iguide-lab-models.reasoning' => 'gpt-6.1-terra-2026-11-01']);
+        $index = $this->withToken($this->token)->getJson('/api/iguide-lab')->assertOk()
+            ->assertJsonPath('data.capabilities.sceneAnalysis.ready', false)->assertJsonPath('data.capabilities.sceneAnalysis.modelId', 'gpt-6.1-terra-2026-11-01');
+        $this->assertSame([$record->id], array_column($index->json('data.analyses'), 'id'));
+        $this->assertSame('gpt-6-astra', $index->json('data.analyses.0.requestedModelId'), 'An unsent analysis falls back to its recipe model.');
+        Http::assertNothingSent();
+    }
+
     private function input(): array { return ['requestId' => (string) Str::uuid(), 'caseId' => $this->case->id, 'preset' => 'declutter', 'instructions' => 'Remove the vase only.']; }
     private function reserve(): IguideLabAnalysis { return IguideLabAnalysis::find($this->withToken($this->token)->postJson('/api/iguide-lab/analyses', $this->input())->assertAccepted()->json('data.id')); }
     private function proposal(): array

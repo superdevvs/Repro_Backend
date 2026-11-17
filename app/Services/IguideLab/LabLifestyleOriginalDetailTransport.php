@@ -63,6 +63,6 @@ final class LabLifestyleOriginalDetailTransport
         }
         unset($part);
         if($index!==count($ids))throw new \InvalidArgumentException('Native detail wire image count changed.');
-        return $payload;
+        return LabReasoningModel::originalDetail($payload);
     }
 }

@@ -20,6 +20,13 @@ class LabAnalyses
 
     public function ready(): bool { return app(LabCredentials::class)->ready() && app(LabAnalysisViews::class)->ready(); }
 
+    /** The model an analysis not yet sent will request (compiled at send time); null once terminal or when misconfigured. */
+    private function pendingModel(IguideLabAnalysis $record): ?string
+    {
+        if (! in_array($record->status, ['queued', 'preparing'], true)) return null;
+        try { return LabReasoningModel::current(); } catch (LabReasoningModelException) { return null; }
+    }
+
     public function editSettings(array $input): array
     {
         $options = array_replace(self::EDIT_DEFAULTS, array_intersect_key($input, self::EDIT_DEFAULTS));
@@ -241,7 +248,8 @@ class LabAnalyses
             'originalSourceSha256' => $data['originalSourceSha256'] ?? null, 'preparedSourceSha256' => $data['preparedSourceSha256'] ?? null,
             'settings' => $record->settings, 'protocolVersion' => $record->settings['protocolVersion'] ?? LabAnalysisRecipes::LEGACY_PROTOCOL,
             // What was actually requested; a recipe file keeps the model it was written with, not the configured one sent.
-            'requestedModelId' => $record->provider_attempts[0]['requestedModelId'] ?? ($provenance ? $data['executionRecipe']['recipe']['model'] : 'gpt-6-astra'),
+            'requestedModelId' => $record->provider_attempts[0]['requestedModelId'] ?? $this->pendingModel($record)
+                ?? ($provenance ? $data['executionRecipe']['recipe']['model'] : 'gpt-6-astra'),
             'instructionProvenance' => $provenance,
             ...(isset($data['stagingFraming']) ? ['stagingFraming' => $data['stagingFraming'], 'stagingReadiness' => $data['stagingReadiness'] ?? null] : []),
             ...(isset($data['lifestyleFraming']) ? ['lifestyleFraming' => $data['lifestyleFraming'], 'lifestyleReadiness' => $data['lifestyleReadiness'] ?? null] : []),

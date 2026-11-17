@@ -17,6 +17,9 @@ final class LabTourConfig
         'chunk_reserved_seconds', 'max_chunk_start_attempts'];
     private const BODY_LIMITS = ['selection' => 'selection_bytes', 'default' => 'default_bytes'];
 
+    /** The model of a reserved survey payload being rebuilt (withSurveyModel()); null = configured. */
+    private static ?string $surveyReplay = null;
+
     /** @var array<string, true> invalid queue settings already logged by this process */
     private static array $queueWarnings = [];
 
@@ -31,10 +34,24 @@ final class LabTourConfig
 
     public static function surveyModel(): string
     {
-        $model = config('iguide-lab-tour.survey.model');
+        $model = self::$surveyReplay ?? config('iguide-lab-tour.survey.model');
         if (! LabReasoningModel::requestable($model)) throw new LabTourConfigException('survey_misconfigured'); // config/iguide-lab-models.php allow-list
 
         return $model;
+    }
+
+    /** Run $prepare with surveyModel() returning $model (a survey payload already reserved keeps its model); null = configured. */
+    public static function withSurveyModel(?string $model, callable $prepare): mixed
+    {
+        if ($model === null) return $prepare();
+        if (! LabReasoningModel::requestable($model)) throw new LabTourConfigException('survey_misconfigured');
+        $previous = self::$surveyReplay;
+        self::$surveyReplay = $model;
+        try {
+            return $prepare();
+        } finally {
+            self::$surveyReplay = $previous;
+        }
     }
 
     public static function surveyEffort(): string

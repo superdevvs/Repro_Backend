@@ -20,8 +20,8 @@ final class LabInteriorMaterialEvidenceWire
             $content[]=['type'=>'input_text','text'=>'View ID: '.$v['id'].'; '.($v['id']==='source'?'authoritative unchanged edit cut':($v['id']==='candidate'?'actual material donor only':'same original capture, context only; not an independent camera or edit target'))];
             $content[]=['type'=>'input_image','detail'=>$native?'original':'high','image_url'=>$images[$i]];
         }
-        return ['model'=>LabReasoningModel::current(),'store'=>false,'service_tier'=>'default','reasoning'=>['effort'=>'high'],'max_output_tokens'=>12000,
+        return LabReasoningModel::originalDetail(['model'=>LabReasoningModel::current(),'store'=>false,'service_tier'=>'default','reasoning'=>['effort'=>'high'],'max_output_tokens'=>12000,
             'instructions'=>$instructions,'input'=>[['role'=>'user','content'=>$content]],
-            'text'=>['format'=>['type'=>'json_schema','name'=>$name,'strict'=>true,'schema'=>$schema]]];
+            'text'=>['format'=>['type'=>'json_schema','name'=>$name,'strict'=>true,'schema'=>$schema]]]);
     }
 }

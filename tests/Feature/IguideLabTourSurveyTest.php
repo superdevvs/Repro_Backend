@@ -865,7 +865,33 @@ class IguideLabTourSurveyTest extends TestCase
         Http::assertSentCount(1);
     }
 
-    /** Parse seam: LabTourSurveyProtocol resolved from the container is replaced by a double whose parse() throws $error. */
+    public function test_a_payload_reserved_while_queued_keeps_its_model_after_the_survey_model_changes(): void
+    {
+        ['captures' => [$capture, $next]] = $this->seedTour(2, ['names' => ['Kitchen', 'Kitchen']]);
+        $survey = $this->dispatchCapture($capture);
+        $service = app(LabTourSurveys::class);
+        // Prepared (payload and protocol saved) but never claimed, as when a submitting row resolves back to queued.
+        $this->assertNotNull(\Closure::bind(fn ($row) => $this->prepare($row), $service, LabTourSurveys::class)($survey->fresh()));
+        $this->assertSame(['queued', 'gpt-6-astra'], [$survey->fresh()->status, $survey->fresh()->protocol['model']]);
+        $reserved = Storage::disk(LabService::DISK)->get($this->base($survey).'/compiled/payload.json');
+
+        config(['iguide-lab-tour.survey.model' => 'gpt-6.1-terra']);
+        $this->fakeProvider('kitchen', 'kitchen');
+        $service->process($survey->fresh());
+        $service->process($survey->fresh());
+        $this->assertSame(['completed', 'gpt-6-astra'], [$survey->fresh()->status, $survey->fresh()->protocol['model']]);
+        $this->assertSame(['gpt-6-astra'], IguideLabTourSurveyAttempt::where('survey_id', $survey->id)->pluck('requested_model')->all());
+        Http::assertSent(fn (Request $request) => $request->body() === $reserved);
+
+        // A survey prepared after the change uses the new model.
+        $fresh = $this->dispatchCapture($next);
+        $service->process($fresh);
+        $this->assertSame('gpt-6.1-terra', $fresh->fresh()->protocol['model']);
+        $this->assertSame('gpt-6.1-terra', json_decode(Storage::disk(LabService::DISK)->get($this->base($fresh).'/compiled/payload.json'), true)['model']);
+        Http::assertSentCount(2);
+    }
+
+    /** Parse seam:LabTourSurveyProtocol resolved from the container is replaced by a double whose parse() throws $error. */
     private function bindParseDouble(\Throwable $error): void
     {
         $this->app->instance(LabTourSurveyProtocol::class, new class($error) {

@@ -74,7 +74,7 @@ class LabAnalysisRecipes
     {
         $payload = $this->compile($snapshot, $context, $images);
         $payload['model'] = LabReasoningModel::current();
-        return $payload;
+        return LabReasoningModel::originalDetail($payload);
     }
 
     private function compile(array $snapshot, array $context, array $images): array

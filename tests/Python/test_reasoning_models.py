@@ -39,7 +39,8 @@ class AllowListTests(unittest.TestCase):
 
     def test_echo_is_the_requested_model_or_its_dated_snapshot(self):
         self.assertTrue(shared.model_echoes(TERRA,TERRA));self.assertTrue(shared.model_echoes(TERRA,ECHO))
-        for echo in ['gpt-6-astra',TERRA+'-latest',TERRA+'-2026-11',ECHO+'x',None,7]:self.assertFalse(shared.model_echoes(TERRA,echo),echo)
+        # ASCII digits only, as PHP's preg \d without /u: a Unicode-digit date must not parse here and then fail PHP checks.
+        for echo in ['gpt-6-astra',TERRA+'-latest',TERRA+'-2026-11',ECHO+'x',ECHO+'\n',TERRA+'-٢٠٢٦-01-01',TERRA+'-２０２６-11-01',None,7]:self.assertFalse(shared.model_echoes(TERRA,echo),echo)
         self.assertFalse(shared.model_echoes('gpt-5','gpt-5'))
         self.assertEqual(shared.reasoning_model(TERRA),TERRA)
         for bad in ['gpt-5',ECHO,None,'']:

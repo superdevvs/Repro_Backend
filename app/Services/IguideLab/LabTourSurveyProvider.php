@@ -42,9 +42,12 @@ class LabTourSurveyProvider
         if (strlen($payload) > self::MAX_PAYLOAD_BYTES || ! is_string($bodySha) || ! hash_equals($bodySha, hash('sha256', $payload))) {
             throw new \LogicException('tour_survey_payload_changed');
         }
-        $model = LabTourConfig::surveyModel();
+        // The model this payload was reserved with (saved with it in protocol), not the current setting.
+        $model = $fresh->protocol['model'] ?? null;
         $decoded = json_decode($payload, true, 64, JSON_THROW_ON_ERROR);
-        if (($decoded['model'] ?? null) !== $model || ($decoded['store'] ?? null) !== false) throw new \LogicException('tour_survey_payload_changed');
+        if (! LabReasoningModel::requestable($model) || ($decoded['model'] ?? null) !== $model || ($decoded['store'] ?? null) !== false) {
+            throw new \LogicException('tour_survey_payload_changed');
+        }
         unset($decoded);
 
         $primary = $this->credentials->primary();

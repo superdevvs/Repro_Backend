@@ -39,6 +39,29 @@ final class LabReasoningModel
         return $allowed;
     }
 
+    /**
+     * The request body unchanged, unless it sends any input_image with detail "original" to a model not confirmed for
+     * it (config iguide-lab-models.original_detail). Check the body as sent, after its model is final.
+     */
+    public static function originalDetail(array $payload): array
+    {
+        $original = false;
+        foreach ($payload['input'] ?? [] as $message) {
+            foreach (is_array($message) && is_array($message['content'] ?? null) ? $message['content'] : [] as $part) {
+                if (is_array($part) && ($part['type'] ?? null) === 'input_image' && ($part['detail'] ?? null) === 'original') $original = true;
+            }
+        }
+        if (! $original) return $payload;
+        $confirmed = config('iguide-lab-models.original_detail');
+        $model = $payload['model'] ?? null;
+        if (! self::requestable($model) || ! is_array($confirmed) || ! in_array($model, $confirmed, true)) {
+            throw new LabReasoningModelException('The lab reasoning model ('.(is_string($model) ? $model : get_debug_type($model))
+                .') is not confirmed for image detail "original" (iguide-lab-models.original_detail).');
+        }
+
+        return $payload;
+    }
+
     /** An allow-listed model id exactly as a request body names it. */
     public static function requestable(mixed $model): bool
     {

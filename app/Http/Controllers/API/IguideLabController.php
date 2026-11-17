@@ -15,6 +15,7 @@ use App\Services\IguideLab\LabReviews;
 use App\Services\IguideLab\LabPipelines;
 use App\Services\IguideLab\LabDisplayMetadata;
 use App\Services\IguideLab\LabAnalyses;
+use App\Services\IguideLab\LabReasoningModelException;
 use App\Services\IguideLab\LabScenePlanProtocol;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
@@ -25,6 +26,9 @@ class IguideLabController extends Controller
     public function index(Request $request, LabService $service)
     {
         $project = $request->attributes->get('iguide_lab_project');
+        // A misconfigured reasoning model makes scene analysis not ready; it must not fail the whole lab index.
+        try { $sceneModel = LabScenePlanProtocol::model(); } catch (LabReasoningModelException $e) { report($e); $sceneModel = null; }
+        $configuredModel = config('iguide-lab-models.reasoning');
 
         return response()->json(['data' => [
             'project' => ['id' => $project->id, 'name' => $project->name, 'expiresAt' => $project->expires_at->toIso8601String(),
@@ -38,7 +42,8 @@ class IguideLabController extends Controller
                     'harmonization' => ['supported' => true, 'ready' => app(\App\Services\IguideLab\LabHarmonization::class)->ready(),
                         'modes' => [\App\Services\IguideLab\LabHarmonization::MODE], 'sectionOnly' => true, 'automaticAcceptance' => false,
                         'limits' => \App\Services\IguideLab\LabHarmonization::LIMITS]],
-                'sceneAnalysis' => ['supported' => true, 'ready' => app(LabAnalyses::class)->ready(), 'modelId' => LabScenePlanProtocol::model(),
+                'sceneAnalysis' => ['supported' => true, 'ready' => $sceneModel !== null && app(LabAnalyses::class)->ready(),
+                    'modelId' => $sceneModel ?? (is_string($configuredModel) && $configuredModel !== '' ? $configuredModel : 'gpt-6-astra'),
                     'protocolVersion' => LabScenePlanProtocol::VERSION, 'automaticGeneration' => false, 'applyDraft' => true, 'maxAnalyses' => 120,
                     'usedAnalyses' => IguideLabAnalysis::where('project_id', $project->id)->count(), 'suggestedSectionMaxHfov' => 120, 'sectionExecution' => false,
                     'sectionParentContext' => ['supported' => true, 'version' => \App\Services\IguideLab\LabAnalysisSourceContext::VERSION,
