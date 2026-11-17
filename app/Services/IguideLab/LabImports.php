@@ -77,16 +77,21 @@ class LabImports
         try {
             app(LabStorage::class)->prepareImport($project->id, $record->id);
             $record->update(['status' => 'inspecting', 'started_at' => $record->started_at ?? now()]); $private = $record->private_input;
-            if ($record->source_kind === 'iguide_link' && ! $private['archiveSha256']) {
-                $network = app(LabImportNetwork::class); $tour = $network->tour($private['tour']['pageUrl']);
+            $network = app(LabImportNetwork::class);
+            $tour = $record->source_kind === 'iguide_link' ? $network->tour($private['tour']['pageUrl']) : null;
+            if ($tour && ! $private['archiveSha256']) {
                 $htmlPath = $prefix.'/tour.html';
                 // Failed/terminated downloads have no committed hash and are free to restart.
                 $disk->delete([$htmlPath, $private['archivePath']]);
-                $network->download($tour['pageUrl'], $disk->path($htmlPath), LabImportMetadata::MAX_BYTES); $disk->setVisibility($htmlPath, 'private');
-                $view = app(LabImportMetadata::class)->parse($disk->get($htmlPath));
-                abort_unless($view['kind'] === 'iguide_viewObject' && (! $view['alias'] || $view['alias'] === $tour['alias']), 422, 'The tour metadata does not match the requested source.');
+                if (! $tour['offlinePackage']) {
+                    $network->download($tour['pageUrl'], $disk->path($htmlPath), LabImportMetadata::MAX_BYTES); $disk->setVisibility($htmlPath, 'private');
+                    $view = app(LabImportMetadata::class)->parse($disk->get($htmlPath));
+                    abort_unless($view['kind'] === 'iguide_viewObject' && (! $view['alias'] || $view['alias'] === $tour['alias']), 422, 'The tour metadata does not match the requested source.');
+                }
+                // An offline package (offline_en.zip) carries its own viewer metadata; it is inventoried from the archive below.
                 $download = $network->download($tour['archiveUrl'], $disk->path($private['archivePath']), 1024 * 1024 * 1024); $disk->setVisibility($private['archivePath'], 'private');
-                $private['archiveSha256'] = $download['sha256']; $private['metadataPath'] = $htmlPath; $private['metadataSha256'] = hash_file('sha256', $disk->path($htmlPath));
+                $private['archiveSha256'] = $download['sha256'];
+                if (! $tour['offlinePackage']) { $private['metadataPath'] = $htmlPath; $private['metadataSha256'] = hash_file('sha256', $disk->path($htmlPath)); }
                 $record->update(['private_input' => $private]);
             }
             abort_unless($disk->exists($private['archivePath']) && hash_equals($private['archiveSha256'], hash_file('sha256', $disk->path($private['archivePath']))), 422, 'The private archive changed before import.');
@@ -94,7 +99,7 @@ class LabImports
             if ($private['metadataPath']) {
                 $metadata = $disk->get($private['metadataPath']); abort_unless(hash_equals($private['metadataSha256'], hash('sha256', $metadata)), 422, 'The private metadata changed before import.');
             }
-            $inventory = app(LabImportArchive::class)->inventory($disk->path($private['archivePath']), $metadata);
+            $inventory = app(LabImportArchive::class)->inventory($disk->path($private['archivePath']), $metadata, $tour && $tour['offlinePackage'] ? $tour['alias'] : null);
             $record->update(['status' => 'importing', 'audit' => $record->audit + ['format' => $inventory['format'], 'warnings' => $inventory['warnings']]]);
             $namespace = $inventory['tourId'] ?? $private['archiveSha256'];
             $zip = new ZipArchive; $zip->open($disk->path($private['archivePath']), ZipArchive::CHECKCONS); $plans = [];

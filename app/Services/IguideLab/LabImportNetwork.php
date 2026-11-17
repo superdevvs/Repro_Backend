@@ -7,6 +7,10 @@ use Illuminate\Validation\ValidationException;
 /** The observed provider route only. No embedded URLs, redirects, cookies or credentials. */
 class LabImportNetwork
 {
+    /** The iGUIDE offline package (offline_en.zip) route and its only accepted query: one JWT-like authtoken. */
+    private const OFFLINE_PATH = '~^/([a-zA-Z0-9_-]{1,200})/doc/offline_en\.zip$~D';
+    private const OFFLINE_QUERY = '/\Aauthtoken=[A-Za-z0-9_.-]{1,4096}\z/D';
+
     public function tour(string $url): array
     {
         // parse_url replaces raw control characters; do not silently change a token.
@@ -15,11 +19,17 @@ class LabImportNetwork
         $this->require(is_array($parts) && ($parts['scheme'] ?? '') === 'https' && ($parts['host'] ?? '') === 'youriguide.com'
             && ! isset($parts['user'], $parts['pass']) && ! isset($parts['user']) && ! isset($parts['pass'])
             && ! isset($parts['port']) && ! isset($parts['fragment']), 'Use a supported HTTPS youriguide.com tour link.');
+        if (preg_match(self::OFFLINE_PATH, $parts['path'] ?? '', $match)) {
+            // The package carries its own viewer metadata; the tour page is never fetched for this route.
+            $this->require(preg_match(self::OFFLINE_QUERY, $parts['query'] ?? '') === 1, 'An iGUIDE offline package link needs exactly one authtoken parameter and nothing else.');
+            $base = 'https://youriguide.com/'.$match[1].'/'; $package = $base.'doc/offline_en.zip?'.$parts['query'];
+            return ['alias' => $match[1], 'publicUrl' => $base, 'pageUrl' => $package, 'archiveUrl' => $package, 'offlinePackage' => true];
+        }
         $this->require((bool) preg_match('~^/(?:embed/)?([a-zA-Z0-9_-]{1,200})/?$~D', $parts['path'] ?? '', $match), 'The link must identify one iGUIDE tour, not an arbitrary asset.');
         $query = $this->tourQuery($parts['query'] ?? '');
         $alias = $match[1]; $base = 'https://youriguide.com/'.$alias.'/';
         $suffix = $query ? '?'.http_build_query($query, '', '&', PHP_QUERY_RFC3986) : '';
-        return ['alias' => $alias, 'publicUrl' => $base, 'pageUrl' => $base.$suffix, 'archiveUrl' => $base.'doc/spheres.zip'.$suffix];
+        return ['alias' => $alias, 'publicUrl' => $base, 'pageUrl' => $base.$suffix, 'archiveUrl' => $base.'doc/spheres.zip'.$suffix, 'offlinePackage' => false];
     }
 
     private function tourQuery(string $raw): array
@@ -48,7 +58,8 @@ class LabImportNetwork
     {
         $parts = parse_url($url); $host = $parts['host'] ?? '';
         $this->require($host === 'youriguide.com' && ($parts['scheme'] ?? '') === 'https' && ! isset($parts['port']) && ! isset($parts['user']) && ! isset($parts['pass']) && ! isset($parts['fragment'])
-            && (bool) preg_match('~^/[a-zA-Z0-9_-]{1,200}/(?:doc/spheres\.zip)?$~D', $parts['path'] ?? ''), 'Unsupported provider download route.');
+            && ((bool) preg_match('~^/[a-zA-Z0-9_-]{1,200}/(?:doc/spheres\.zip)?$~D', $parts['path'] ?? '')
+                || (preg_match(self::OFFLINE_PATH, $parts['path'] ?? '') === 1 && preg_match(self::OFFLINE_QUERY, $parts['query'] ?? '') === 1)), 'Unsupported provider download route.');
         $ips = $this->addresses($host);
         $this->require(count($ips) > 0, 'The provider address could not be resolved.');
         foreach ($ips as $ip) $this->require($this->publicAddress($ip), 'The provider address is not a public network address.');

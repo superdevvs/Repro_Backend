@@ -12,8 +12,11 @@ class LabImportArchive
     public const MAX_PANORAMAS = 80;
     public const MAX_IMAGE_BYTES = 30 * 1024 * 1024;
 
-    /** Inventory first; no case or archive-controlled path is written here. */
-    public function inventory(string $path, ?string $externalMetadata = null): array
+    /**
+     * Inventory first; no case or archive-controlled path is written here.
+     * $packageAlias (link imports of offline_en.zip only) requires an iGUIDE offline package of exactly that tour.
+     */
+    public function inventory(string $path, ?string $externalMetadata = null, ?string $packageAlias = null): array
     {
         $inspection = app(IguideOfflinePackageService::class)->inspect(new UploadedFile($path, 'scan.zip', 'application/zip', null, true), false);
         $zip = new ZipArchive; $zip->open($path, ZipArchive::CHECKCONS);
@@ -35,8 +38,17 @@ class LabImportArchive
                 $metadata = app(LabImportMetadata::class)->parse($bytes); $metadataHash = hash('sha256', $bytes);
             }
             $sphereNames = array_values(array_filter(array_keys($paths), fn ($name) => preg_match('~(?:^|/)spheres/p([0-9]+)-s\.(?:jpg|jpeg|png|webp)$~iD', $name)));
-            $candidates = $metadata && $metadata['kind'] === 'generic_manifest' ? array_keys($metadata['byFile']) : ($sphereNames ?: array_values(array_filter(array_keys($paths), fn ($name) => preg_match('/\.(jpg|jpeg|png|webp)$/iD', $name))));
-            if ($metadata && $metadata['kind'] === 'iguide_viewObject') $this->require(count($sphereNames) > 0, 'This iGUIDE package does not contain supported original full-sphere files. Tiled or script-only exports are unsupported.');
+            // iGUIDE offline package (offline_en.zip): <alias>/index.html viewer plus one <alias>/assets/p<id>-s_4096x.jpg equirect per pano.
+            $offline = $externalMetadata === null && ! $sphereNames && $metadata && $metadata['kind'] === 'iguide_viewObject'
+                && preg_match('~^([a-zA-Z0-9_-]{1,200})/index\.html$~D', $metadataFiles[0], $root) ? ['alias' => $root[1], 'assets' => []] : null;
+            if ($offline) {
+                $this->require($metadata['alias'] === null || $metadata['alias'] === $offline['alias'], 'The iGUIDE package folder does not match its tour metadata.');
+                foreach (array_keys($paths) as $name) if (preg_match('~^'.preg_quote($offline['alias'], '~').'/assets/p([0-9]{1,10})-s_4096x\.jpg$~D', $name, $m)) $offline['assets'][$name] = $m[1];
+                $this->require(count($offline['assets']) > 0, 'This iGUIDE offline package has no full panorama images (assets/p<id>-s_4096x.jpg). Download the complete offline package again.');
+            }
+            $this->require($packageAlias === null || ($offline && $offline['alias'] === $packageAlias), 'The downloaded iGUIDE package does not match the requested tour.');
+            $candidates = $metadata && $metadata['kind'] === 'generic_manifest' ? array_keys($metadata['byFile']) : ($offline ? array_keys($offline['assets']) : ($sphereNames ?: array_values(array_filter(array_keys($paths), fn ($name) => preg_match('/\.(jpg|jpeg|png|webp)$/iD', $name)))));
+            if ($metadata && $metadata['kind'] === 'iguide_viewObject' && ! $offline) $this->require(count($sphereNames) > 0, 'This iGUIDE package does not contain supported original full-sphere files. Tiled or script-only exports are unsupported.');
             $this->require(count($candidates) > 0 && count($candidates) <= self::MAX_PANORAMAS, 'Use an archive containing 1 to 80 full panoramas.');
             $sources = []; $seenPanos = [];
             foreach ($candidates as $name) {
@@ -50,6 +62,7 @@ class LabImportArchive
                 app(LabImportImage::class)->validate($bytes, $size);
                 $pano = null;
                 if (preg_match('~(?:^|/)spheres/p([0-9]+)-s\.(?:jpg|jpeg|png|webp)$~iD', $name, $m)) $pano = $m[1];
+                elseif ($offline) $pano = $offline['assets'][$name];
                 $details = $metadata['byFile'][$name] ?? ($pano !== null ? ($metadata['byPano'][$pano] ?? null) : null);
                 if ($metadata && $metadata['kind'] === 'iguide_viewObject') $this->require($details !== null, 'An exported sphere cannot be matched to its iGUIDE metadata.');
                 $details ??= ['panoId' => $pano, 'roomId' => null, 'roomName' => null, 'floorId' => null, 'floorName' => null,
