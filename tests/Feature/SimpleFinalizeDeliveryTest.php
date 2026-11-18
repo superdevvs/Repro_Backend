@@ -97,9 +97,35 @@ class SimpleFinalizeDeliveryTest extends TestCase
         $this->assertSame('pending', $summary[$floorplan->id][0]['status']);
         $this->assertFalse($summary[$floorplan->id][0]['without_content']);
         $this->assertTrue($summary[$floorplan->id][0]['deferred']);
-        $this->assertFalse(app(DeliveryPlanService::class)->canFinalizeDelivery($shoot->fresh(), $actor));
+        // Deferred work stays actionable so staff can complete it without content.
+        $this->assertTrue(app(DeliveryPlanService::class)->canFinalizeDelivery($shoot->fresh(), $actor));
         $this->assertTrue(app(DeliveryPlanService::class)->isReplay($shoot->fresh(), $actor, $intent));
-        $this->actingAs($actor)->getJson('/api/shoots/'.$shoot->id)->assertOk()->assertJsonPath('data.can_finalize_delivery', false);
+        $this->actingAs($actor)->getJson('/api/shoots/'.$shoot->id)->assertOk()->assertJsonPath('data.can_finalize_delivery', true);
+    }
+
+    public function test_deferred_work_can_be_completed_without_content(): void
+    {
+        // Shoots 5902, 5937 and 5996 were stuck: deferred work hid Finalize and nothing could close it.
+        [$shoot, $item, $floorplan, , $actor] = $this->fixture();
+        $this->runDelivery($shoot, $actor, [$item->id.':photo', $item->id.':tour', $floorplan->id.':floorplan'], [
+            'allow_without_content' => true, 'reason' => 'Deliver photos while the floorplan is pending',
+        ]);
+        $this->assertSame('partially_delivered', $shoot->fresh()->delivery_status);
+        $this->assertTrue(app(DeliveryPlanService::class)->canFinalizeDelivery($shoot->fresh(), $actor));
+
+        $close = ['mode' => 'auto', 'component_ids' => [$floorplan->id.':floorplan'], 'complete_without_content' => true, 'confirmed' => true,
+            'plan_revision' => app(DeliveryPlanService::class)->plan($shoot->fresh(), $actor)['revision']];
+        $this->actingAs($actor)->postJson('/api/shoots/'.$shoot->id.'/finalize', $close)->assertUnprocessable(); // reason required
+        $this->actingAs($actor)->postJson('/api/shoots/'.$shoot->id.'/finalize', array_merge($close, ['confirmed' => false, 'reason' => 'Client cancelled floorplan']))->assertUnprocessable();
+
+        $intent = $this->runDelivery($shoot->fresh(), $actor, [$floorplan->id.':floorplan'], [
+            'complete_without_content' => true, 'reason' => 'Client cancelled floorplan',
+        ]);
+        $this->assertSame([$floorplan->id.':floorplan' => 'manual_no_content'], $intent['component_methods']);
+        $this->assertSame('manual_no_content', DB::table('shoot_delivery_receipts')->orderByDesc('id')->value('method'));
+        $this->assertSame('delivered', $shoot->fresh()->delivery_status);
+        $this->assertFalse(app(DeliveryPlanService::class)->canFinalizeDelivery($shoot->fresh(), $actor));
+        $this->assertTrue(app(DeliveryPlanService::class)->componentSummaries($shoot->fresh())[$floorplan->id][0]['without_content']);
     }
 
     public function test_empty_duplicate_foreign_or_unconfirmed_selections_and_missing_exception_reason_are_rejected(): void
@@ -171,7 +197,7 @@ class SimpleFinalizeDeliveryTest extends TestCase
         ]);
         $this->assertSame('partially_delivered', $shoot->fresh()->delivery_status);
         $this->assertNotSame('delivered', $item->fresh()->delivery_status);
-        $this->assertFalse(app(DeliveryPlanService::class)->canFinalizeDelivery($shoot->fresh(), $actor));
+        $this->assertTrue(app(DeliveryPlanService::class)->canFinalizeDelivery($shoot->fresh(), $actor));
         $original = DB::table('shoot_delivery_receipts')->where('component_key', 'photo')->first();
         $planFile = $file->replicate();
         $planFile->forceFill(['filename' => 'floorplan.jpg', 'stored_filename' => 'floorplan.jpg', 'media_type' => 'floorplan', 'workflow_stage' => 'completed'])->save();

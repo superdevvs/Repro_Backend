@@ -37,13 +37,15 @@ class DeliveryPlanService
             && app(RolePermissionService::class)->userCan($actor, 'shoots', 'manage');
     }
 
-    /** Current delivery work, rather than the actor's permanent role, controls the action. */
+    /**
+     * Current delivery work, rather than the actor's permanent role, controls the action.
+     * Deferred work stays actionable: staff may complete it without content.
+     */
     public function canFinalizeDelivery(Shoot $shoot, ?User $actor): bool
     {
         if (! $this->canFinalize($actor)) return false;
         if ($this->usesComponents($shoot)) {
             return collect($this->plan($shoot, null)['components'])->contains(fn ($component) => ! $component['resolved']
-                && ($component['status'] === 'ready' || ! $component['deferred'])
                 && ! array_intersect(['work_suspended', 'future_appointment'], $component['reason_codes']));
         }
         return app(NoMediaDeliveryEligibility::class)->allows($shoot, $actor)
@@ -165,9 +167,10 @@ class DeliveryPlanService
         if (isset($intent['shoot_service_id'])) $ids = array_values(array_filter($ids, fn ($id) => str_starts_with($id, $intent['shoot_service_id'].':')));
         if (! is_array($ids) || $ids === [] || count($ids) !== count(array_unique($ids))) throw ValidationException::withMessages(['component_ids' => $plan['summary']]);
         $methods = [];
+        $complete = $mode === 'auto' && ! empty($intent['complete_without_content']);
         foreach ($ids as $id) {
             $component = collect($plan['components'])->firstWhere('id', $id);
-            $method = $mode === 'auto' && $component ? $this->automaticMethod($component, ! empty($intent['allow_without_content'])) : $mode;
+            $method = $mode === 'auto' && $component ? $this->automaticMethod($component, ! empty($intent['allow_without_content']), $complete) : $mode;
             if (! $component || $component['resolved'] || ! in_array($method, $component['methods'], true)) throw ValidationException::withMessages(['component_ids' => $component['reason'] ?? 'This component cannot be delivered with the selected method.']);
             $methods[$id] = $method;
         }
@@ -176,17 +179,19 @@ class DeliveryPlanService
         }
         if (in_array('external', $methods, true) && empty($intent['confirmed'])) throw ValidationException::withMessages(['confirmed' => 'Confirm that the selected requirements are present at the reviewed external destination.']);
         return ['component_ids' => array_values($ids), 'mode' => $mode, 'reason' => trim($intent['reason'] ?? ''), 'confirmed' => (bool) ($intent['confirmed'] ?? false),
-            'allow_without_content' => $mode === 'auto' && ! empty($intent['allow_without_content']), 'component_methods' => $methods,
+            'allow_without_content' => $mode === 'auto' && ! empty($intent['allow_without_content']), 'complete_without_content' => $complete, 'component_methods' => $methods,
             'plan_revision' => $plan['revision'], 'request_plan_revision' => $intent['request_plan_revision'] ?? $intent['plan_revision'] ?? $plan['revision'],
             'idempotency_key' => $intent['idempotency_key'] ?? (string) Str::uuid()];
     }
 
     /** Choose from server-owned readiness; a provider URL alone never implies delivery. */
-    private function automaticMethod(array $component, bool $allowWithoutContent): ?string
+    private function automaticMethod(array $component, bool $allowWithoutContent, bool $completeWithoutContent = false): ?string
     {
         if ($component['status'] === 'ready') {
             foreach (['media', 'external'] as $method) if (in_array($method, $component['methods'], true)) return $method;
         }
+        // An explicit staff exception closes missing (including deferred) work.
+        if ($completeWithoutContent) return in_array('manual_no_content', $component['methods'], true) ? 'manual_no_content' : null;
         // Explicitly selected, reviewed external work keeps the existing confirmation
         // path. It is never included in the automatically selected ready set.
         if (! $allowWithoutContent && in_array('external', $component['methods'], true)
@@ -205,6 +210,7 @@ class DeliveryPlanService
         $same = $expected === $requested && $rows->every(fn ($row) => (int) $row->actor_id === (int) $actor->id
             && (json_decode($row->evidence, true)['operation_mode'] ?? $row->method) === ($intent['mode'] ?? 'media')
             && (bool) (json_decode($row->evidence, true)['allow_without_content'] ?? false) === (bool) ($intent['allow_without_content'] ?? false)
+            && (bool) (json_decode($row->evidence, true)['complete_without_content'] ?? false) === (bool) ($intent['complete_without_content'] ?? false)
             && trim((string) $row->reason) === trim((string) ($intent['reason'] ?? ''))
             && (! isset($intent['plan_revision']) || hash_equals($row->plan_revision, $intent['plan_revision'])
                 || hash_equals((string) (json_decode($row->evidence, true)['request_plan_revision'] ?? ''), $intent['plan_revision']))
@@ -227,7 +233,7 @@ class DeliveryPlanService
             $evidence = ['files' => $method === 'media' ? $component['versions'] : [],
                 'external' => $method === 'external' ? $component['external_evidence'] : null,
                 'missing_components' => in_array($method, ['manual_no_content', 'defer'], true) ? [$component['label']] : [], 'confirmed' => $intent['confirmed'],
-                'operation_mode' => $intent['mode'], 'allow_without_content' => $intent['allow_without_content'],
+                'operation_mode' => $intent['mode'], 'allow_without_content' => $intent['allow_without_content'], 'complete_without_content' => $intent['complete_without_content'] ?? false,
                 'request_plan_revision' => $intent['request_plan_revision']];
             // The historical single-line fallback is an explicit reviewed scope.
             // Bind its exact approved files atomically; never guess across lines.
