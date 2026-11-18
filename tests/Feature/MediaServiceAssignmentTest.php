@@ -134,6 +134,28 @@ class MediaServiceAssignmentTest extends TestCase
             ->assertJsonFragment(['code' => 'incomplete_hdr_group']);
     }
 
+    public function test_unassigned_hdr_stacks_use_their_real_size_when_the_shoot_has_no_legacy_bracket_mode(): void
+    {
+        // Shoot 5996 (1148 Old Manchester Rd): 75 detached 5-frame stacks could not move to a 5-bracket service
+        // because the unassigned fallback read shoots.bracket_mode, which nothing writes any more (NULL).
+        $this->shoot->forceFill(['bracket_mode' => null])->save();
+        $target = $this->item(['bracket_mode' => 5], Service::factory()->bracketedPhoto(25)->create());
+        $stack = fn (int $group, int $size) => collect(range(1, $size))->map(fn ($n) => $this->file(null, ['workflow_stage' => 'todo',
+            'media_type' => 'raw', 'filename' => "g{$group}-{$n}.CR3", 'file_type' => 'application/octet-stream', 'bracket_group' => $group, 'sequence' => $n]));
+        $five = $stack(1, 5);
+        $intent = ['dry_run' => false, 'file_ids' => $five->pluck('id')->all(), 'shoot_service_id' => $target->id,
+            'expected_files' => $five->map(fn ($f) => ['id' => $f->id, 'shoot_service_id' => null, 'content_version' => 1])->all(),
+            'expected_target_unit_id' => $target->shoot_unit_id, 'idempotency_key' => 'assign-'.str()->uuid()];
+        $this->postJson($this->url(), ['dry_run' => true] + $intent)->assertOk()->assertJsonPath('can_apply', true)->assertJsonPath('blockers', []);
+        $this->postJson($this->url(), $intent)->assertOk()->assertJsonPath('updated_count', 5);
+        $this->assertSame([$target->id], ShootFile::whereIn('id', $five->pluck('id')->all())->distinct()->pluck('shoot_service_id')->all());
+
+        // A real regrouping (3-frame stacks into a 5-bracket service) is still refused.
+        $three = $stack(2, 3);
+        $this->postJson($this->url(), ['dry_run' => true, 'file_ids' => $three->pluck('id')->all(), 'shoot_service_id' => $target->id])
+            ->assertOk()->assertJsonPath('can_apply', false)->assertJsonFragment(['code' => 'hdr_mode_change']);
+    }
+
     public function test_original_legacy_historical_move_requires_reason_confirmation_and_fresh_receipts(): void
     {
         $this->shoot->forceFill(['status' => 'delivered', 'workflow_status' => 'delivered', 'admin_verified_at' => now()->subDay()])->save();

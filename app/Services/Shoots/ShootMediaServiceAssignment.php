@@ -130,7 +130,9 @@ final class ShootMediaServiceAssignment
             if ($file->workflow_stage === ShootFile::STAGE_TODO && $file->bracket_group) {
                 $group = $shoot->files()->where('shoot_service_id', $file->shoot_service_id)->where('workflow_stage', ShootFile::STAGE_TODO)->where('bracket_group', $file->bracket_group)->pluck('id')->all();
                 if (array_diff($group, $ids)) $add('incomplete_hdr_group', 'Select every member of the HDR bracket group.', $file->id);
-                $oldMode = $file->serviceItem ? app(BracketModeResolver::class)->effectiveBracketMode($file->serviceItem) : $shoot->bracket_mode;
+                // Unassigned stacks keep their real grouping. shoots.bracket_mode is legacy and NULL on
+                // current shoots, so the stack's own size is the mode it was grouped with.
+                $oldMode = $file->serviceItem ? app(BracketModeResolver::class)->effectiveBracketMode($file->serviceItem) : ($shoot->bracket_mode ?: count($group));
                 if ((int) $oldMode !== (int) app(BracketModeResolver::class)->effectiveBracketMode($target)) $add('hdr_mode_change', 'This move would change HDR grouping. Use an explicit restack workflow.', $file->id);
             }
         }
