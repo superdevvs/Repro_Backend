@@ -21,6 +21,10 @@ class ShootServicePivot extends Pivot
             $shoot = Shoot::find($line->shoot_id);
             $service = Service::find($line->service_id);
             if ($shoot && $service && ! $shoot->isComplimentaryReshoot()) app(PhotographerPayoutBasis::class)->capture($line, $shoot, $service);
+            // Same booking fact ShootService records: a fee added by sync is applied, never delivered.
+            if (\Illuminate\Support\Facades\Schema::hasColumn('services', 'financial_only')) {
+                app(\App\Services\Shoots\FinancialServiceClassification::class)->snapshot($line, $service);
+            }
         });
     }
 }
