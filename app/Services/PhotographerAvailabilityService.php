@@ -570,6 +570,40 @@ class PhotographerAvailabilityService
     }
 
     /**
+     * Display facts for an outside-hours result: the requested local clock and the
+     * photographer's working windows. assertWithinAvailabilityBounds stays the rule.
+     */
+    public function workingHoursContext(int $photographerId, Carbon $scheduledAt, int $durationMinutes, ?string $timezone = null): array
+    {
+        $local = $scheduledAt->copy();
+        if ($timezone) {
+            $tz = $this->validTimezoneOrUtc($timezone);
+            if ($tz !== (string) config('app.timezone', 'UTC') && $local->timezoneName !== $tz) {
+                $local->setTimezone($tz);
+            }
+        }
+        $date = $local->copy()->startOfDay();
+        $dayOfWeek = strtolower($local->format('l'));
+        $end = $local->copy()->addMinutes($durationMinutes);
+        $slots = $this->getConfiguredAvailableSlots($photographerId, $date, $dayOfWeek);
+        $windows = $slots->isEmpty()
+            ? [['start' => Carbon::parse(config('availability.fallback_start_time', '09:00'))->format('H:i'),
+                'end' => Carbon::parse(config('availability.fallback_end_time', '18:00'))->format('H:i')]]
+            : array_map(fn (array $window) => ['start' => $window['start_time'], 'end' => $window['end_time']],
+                \App\Services\Scheduling\AvailableTimeWindows::merge($slots));
+
+        return [
+            'photographer_id' => $photographerId,
+            'photographer_name' => User::whereKey($photographerId)->value('name'),
+            'date' => $local->toDateString(), 'day' => ucfirst($dayOfWeek),
+            'start' => $local->format('H:i'), 'end' => $end->format('H:i'),
+            'ends_next_day' => $end->toDateString() !== $local->toDateString(),
+            'blocked' => $this->overlapsUnavailability($photographerId, $date, $dayOfWeek, $local->format('H:i'), $end),
+            'windows' => $windows,
+        ];
+    }
+
+    /**
      * Whether the requested range overlaps a specific-date or recurring
      * unavailability block. Mirrors the unavailability logic in isAvailable().
      */

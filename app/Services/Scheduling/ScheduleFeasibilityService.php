@@ -303,7 +303,7 @@ class ScheduleFeasibilityService
     public function publicResult(array $result): array
     {
         $public = Arr::only($result, ['enabled', 'status', 'available', 'reason_codes', 'transitions', 'alternatives',
-            'radius_checks',
+            'radius_checks', 'working_hours',
             'can_override', 'can_confirm_location', 'can_force_save', 'force_save_confirmation_version',
             'can_override_working_hours', 'working_hours_confirmation_version',
             'policy_version', 'schedule_version', 'confirmation_version', 'budget']);

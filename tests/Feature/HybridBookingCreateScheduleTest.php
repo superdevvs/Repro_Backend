@@ -487,6 +487,21 @@ class HybridBookingCreateScheduleTest extends TestCase
         $this->assertSame(0, Shoot::count());
     }
 
+    public function test_outside_hours_preview_states_the_working_window_and_requested_time(): void
+    {
+        foreach ([['09:00', '12:00'], ['12:00', '17:00']] as [$start, $end]) {
+            PhotographerAvailability::create(['photographer_id' => $this->photographer->id, 'date' => null, 'day_of_week' => 'friday',
+                'start_time' => $start, 'end_time' => $end, 'status' => 'available']);
+        }
+        $hours = $this->preview($this->payload('2026-10-02T16:59:00-04:00'))['working_hours'];
+        $this->assertCount(1, $hours);
+        $this->assertSame([$this->photographer->id, $this->photographer->name, '2026-10-02', 'Friday', '16:59', false, false],
+            [$hours[0]['photographer_id'], $hours[0]['photographer_name'], $hours[0]['date'], $hours[0]['day'], $hours[0]['start'], $hours[0]['blocked'], $hours[0]['ends_next_day']]);
+        $this->assertGreaterThan('17:00', $hours[0]['end']);
+        $this->assertSame([['start' => '09:00', 'end' => '17:00']], $hours[0]['windows']);
+        $this->assertSame([], $this->preview($this->payload('2026-10-02T10:00:00-04:00'))['working_hours']);
+    }
+
     public function test_independent_capture_rows_sum_without_counting_digital_work_or_a_second_buffer(): void
     {
         $this->booked('09:45', 15, 'Next Property');

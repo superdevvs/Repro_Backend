@@ -14,6 +14,7 @@ class ScheduleTransitionEvaluator
     public function evaluate(array $proposed, array $existing, array $locations, bool $evaluateOutsideHoursTravel = false): array
     {
         $reasons = [];
+        $workingHours = [];
         $transitions = [];
         $all = array_merge($existing, $proposed);
         foreach ($proposed as $visit) {
@@ -24,6 +25,8 @@ class ScheduleTransitionEvaluator
                 );
             } catch (ValidationException) {
                 $reasons[] = 'outside_working_hours';
+                $workingHours[] = app(PhotographerAvailabilityService::class)->workingHoursContext(
+                    $visit['photographer_id'], Carbon::parse($visit['start']), $visit['duration_minutes'], $visit['timezone']);
             }
             $samePhotographer = array_values(array_filter($all, fn ($other) => $other['id'] !== $visit['id']
                 && $other['photographer_id'] === $visit['photographer_id']));
@@ -37,7 +40,7 @@ class ScheduleTransitionEvaluator
         }
         // Do not spend provider quota on a schedule that cannot fit capture work.
         if ($reasons !== [] && (! $evaluateOutsideHoursTravel || in_array('capture_overlap', $reasons, true))) {
-            return ['reason_codes' => array_values(array_unique($reasons)), 'transitions' => [],
+            return ['reason_codes' => array_values(array_unique($reasons)), 'transitions' => [], 'working_hours' => $workingHours,
                 'hard_conflict' => true, 'status' => 'conflict'];
         }
         foreach ($proposed as $visit) {
@@ -107,7 +110,7 @@ class ScheduleTransitionEvaluator
         $reasons = array_values(array_unique($reasons));
         $hard = array_intersect($reasons, ['capture_overlap', 'outside_working_hours']) !== [];
 
-        return ['reason_codes' => $reasons, 'transitions' => array_values($transitions), 'hard_conflict' => $hard,
+        return ['reason_codes' => $reasons, 'transitions' => array_values($transitions), 'working_hours' => $workingHours, 'hard_conflict' => $hard,
             'status' => $hard || in_array('insufficient_travel_time', $reasons, true) ? 'conflict'
                 : (in_array('travel_review_required', $reasons, true) ? 'review_required' : 'available')];
     }
