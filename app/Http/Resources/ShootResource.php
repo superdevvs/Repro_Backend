@@ -75,6 +75,9 @@ class ShootResource extends JsonResource
 
         $this->services->loadMissing('sqftRanges');
         $requestingUser = $request->user();
+        // Client-side viewers do not count media staff marked Hidden.
+        $clientEditedPhotoCount = (int) (app(\App\Services\Shoots\ShootAuthorizationSupport::class)
+            ->clientVisibleEditedPhotoCount($this->resource, $requestingUser) ?? $this->edited_photo_count ?? 0);
         $schedulingCapabilities = app(\App\Services\Shoots\ShootAuthorizationSupport::class)->schedulingCapabilities($this->resource, $requestingUser);
         $canReviewRequests = $schedulingCapabilities['canReviewRequests'];
         $requestingRole = strtolower((string) ($requestingUser?->role ?? ''));
@@ -511,9 +514,9 @@ class ShootResource extends JsonResource
             'productStatus' => $this->product_status ?? Shoot::PRODUCT_STATUS_HAS_PRODUCT,
             'deliveryStatus' => $this->delivery_status ?? 'not_started',
             'rawPhotoCount' => (int) ($this->raw_photo_count ?? 0),
-            'editedPhotoCount' => (int) ($this->edited_photo_count ?? 0),
+            'editedPhotoCount' => $clientEditedPhotoCount,
             'raw_photo_count' => (int) ($this->raw_photo_count ?? 0),
-            'edited_photo_count' => (int) ($this->edited_photo_count ?? 0),
+            'edited_photo_count' => $clientEditedPhotoCount,
             'canSubmitRaw' => $this->computeCanSubmitRaw($requestingUser),
             'canSubmitEdits' => $this->computeCanSubmitEdits($requestingUser),
             'canApproveEditingReview' => $this->computeCanApproveEditingReview($requestingUser),

@@ -282,6 +282,7 @@ class ShootPresenter
                     'is_favorite',
                     'is_cover',
                     'is_hidden',
+                    'is_client_hidden',
                     'flag_reason',
                     'url',
                     'path',
@@ -1181,6 +1182,10 @@ class ShootPresenter
         // only the returned counters are narrowed to this viewer's assignments.
         foreach ($scopedMediaCounts ?? [] as $field => $value) {
             $shoot->setAttribute($field, $value);
+        }
+        $clientEditedCount = app(ShootAuthorizationSupport::class)->clientVisibleEditedPhotoCount($shoot, $requestingUser);
+        if ($clientEditedCount !== null) {
+            $shoot->setAttribute('edited_photo_count', $clientEditedCount);
         }
         $shoot->media_summary = $this->buildMediaSummary($shoot);
 

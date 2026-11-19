@@ -602,6 +602,10 @@ class ShootAuthorizationSupport
 
     public function isClientInteractableEditedFile(ShootFile $file): bool
     {
+        // Staff "Hidden" marking: the client may neither see nor restore it.
+        if ($file->isClientHidden()) {
+            return false;
+        }
         if (! in_array($file->workflow_stage, [ShootFile::STAGE_COMPLETED, ShootFile::STAGE_VERIFIED], true)) {
             return false;
         }
@@ -695,8 +699,44 @@ class ShootAuthorizationSupport
         if ($this->isClientUser($user)) {
             return $this->isClientManageableEditedFile($file);
         }
+        if ($file->isClientHidden() && $this->withholdsClientHiddenMedia($user)) {
+            return false;
+        }
 
         return true;
+    }
+
+    /** Only these roles may mark media Hidden from the client or restore it. */
+    public function canManageClientHiddenMedia(?User $user): bool
+    {
+        return $this->hasRole($user, ['admin', 'superadmin', 'super_admin', 'editing_manager']);
+    }
+
+    /**
+     * Client-side viewers (the client and restricted reps acting for them) never
+     * receive staff-hidden media. Assigned contractors keep their production view.
+     */
+    public function withholdsClientHiddenMedia(?User $user): bool
+    {
+        return $this->isCustomerMediaCurator($user) && ! $this->hasRole($user, ['photographer', 'editor']);
+    }
+
+    /**
+     * Edited count as the client sees it: the stored operational counter minus
+     * the delivered-stage files staff marked Hidden. Null when the viewer is not
+     * client-side or nothing is hidden, so callers keep the stored value.
+     */
+    public function clientVisibleEditedPhotoCount(Shoot $shoot, ?User $user): ?int
+    {
+        if (! $this->withholdsClientHiddenMedia($user)) {
+            return null;
+        }
+        $hidden = $shoot->files()->where('is_client_hidden', true)
+            ->whereIn('workflow_stage', [ShootFile::STAGE_COMPLETED, ShootFile::STAGE_VERIFIED])
+            ->where(fn ($query) => $query->whereNull('flag_reason')->orWhere('flag_reason', ''))
+            ->count();
+
+        return $hidden > 0 ? max(0, (int) ($shoot->edited_photo_count ?? 0) - $hidden) : null;
     }
 
     /** Read-only reference images for the currently assigned video editor. */
@@ -752,6 +792,9 @@ class ShootAuthorizationSupport
             : ($this->hasRole($user, ['editor']) && ($this->canEditorDownloadRawFile($shoot, $file, $user)
                 || app(ShootEditorRequestAccess::class)->allowsFile($shoot, $file, $user)));
         if ($file->is_hidden && $this->isCustomerMediaCurator($user) && ! $contractorDownload) {
+            return false;
+        }
+        if ($file->isClientHidden() && $this->withholdsClientHiddenMedia($user)) {
             return false;
         }
         if (! $file->is_hidden && $this->canManageCustomerMediaCuration($shoot, $user) && $this->isCustomerCuratableFile($file)) {

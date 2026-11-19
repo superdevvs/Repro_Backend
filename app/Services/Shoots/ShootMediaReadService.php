@@ -145,6 +145,12 @@ class ShootMediaReadService
                 $query->where('is_hidden', false)->orWhereNull('is_hidden');
             });
         }
+        // Staff-hidden media never reaches client-side viewers, curation view included.
+        if ($this->authorizationSupport->withholdsClientHiddenMedia($user)) {
+            $filesQuery->where(function ($query) {
+                $query->where('is_client_hidden', false)->orWhereNull('is_client_hidden');
+            });
+        }
 
         if ($isClientUser) {
             $filesQuery->whereIn('workflow_stage', [ShootFile::STAGE_COMPLETED, ShootFile::STAGE_VERIFIED]);
@@ -280,7 +286,7 @@ class ShootMediaReadService
 
         return [
             'raw_photo_count' => $shoot->raw_photo_count,
-            'edited_photo_count' => $shoot->edited_photo_count,
+            'edited_photo_count' => $this->authorizationSupport->clientVisibleEditedPhotoCount($shoot, auth()->user()) ?? $shoot->edited_photo_count,
             'extra_photo_count' => $shoot->extra_photo_count,
             'expected_raw_count' => app(BracketModeResolver::class)->expectedRawForShoot($shoot),
             'expected_final_count' => $shoot->expected_final_count,
@@ -670,6 +676,9 @@ class ShootMediaReadService
             'bracket_group' => $file->bracket_group,
             'sequence' => $file->sequence,
             'is_hidden' => $file->is_hidden ?? false,
+            // Staff-only marking; client-side viewers never receive these rows.
+            'is_client_hidden' => $file->isClientHidden(),
+            'isClientHidden' => $file->isClientHidden(),
             'media_type' => $file->media_type,
             'download_asset_type' => app(ShootDownloadAssetClassifier::class)->type($file),
             // Requested post-capture treatment (virtual staging / green grass /

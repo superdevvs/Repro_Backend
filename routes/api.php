@@ -937,6 +937,8 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::patch('/shoots/{shoot}/files/reclassify', [ShootMediaController::class, 'reclassifyFiles']);
     Route::patch('/shoots/{shoot}/files/reorder', [ShootMediaController::class, 'reorderFiles']);
     Route::patch('/shoots/{shoot}/files/toggle-hidden', [ShootMediaController::class, 'toggleFileHidden']);
+    Route::patch('/shoots/{shoot}/files/client-visibility', [ShootMediaController::class, 'setFileClientVisibility'])
+        ->middleware('role:admin,superadmin,editing_manager');
     // Bracket size is per shoot-service execution row, so it is addressed by that row.
     Route::patch(
         '/shoots/{shoot}/service-items/{shootService}/bracket-mode',

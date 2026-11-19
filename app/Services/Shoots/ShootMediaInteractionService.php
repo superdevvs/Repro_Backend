@@ -305,7 +305,11 @@ class ShootMediaInteractionService
         $updated = \App\Support\LockedWrite::run(fn () => DB::transaction(function () use ($shoot, $fileIds, $hidden, $actor) {
             // Take the SQLite writer before reading cover state; visibility and
             // the stored listing hero must change together.
-            $updated = ShootFile::where('shoot_id', $shoot->id)->whereIn('id', $fileIds)->update(['is_hidden' => $hidden]);
+            // Restoring tour visibility never reveals media staff hid from the
+            // client; that marking is cleared only through setClientHidden().
+            $updated = ShootFile::where('shoot_id', $shoot->id)->whereIn('id', $fileIds)
+                ->when(! $hidden, fn ($query) => $query->where(fn ($scope) => $scope->where('is_client_hidden', false)->orWhereNull('is_client_hidden')))
+                ->update(['is_hidden' => $hidden]);
             $selected = ShootFile::where('shoot_id', $shoot->id)->whereIn('id', $fileIds)->get();
             $freshShoot = Shoot::findOrFail($shoot->id);
             if ($actor) {
@@ -316,15 +320,7 @@ class ShootMediaInteractionService
                     $access->isCustomerMediaCurator($actor) ? 422 : 403, 'These files or their assignment changed. Reload before changing visibility.');
             }
             if ($hidden) {
-                $heroKey = $this->normalizedHeroKey($freshShoot->hero_image);
-                $containsHero = $selected->contains(fn (ShootFile $file) => $file->is_cover || ($heroKey && collect([
-                    $file->path, $file->storage_path, $file->web_path, $file->thumbnail_path,
-                ])->contains(fn ($path) => $this->normalizedHeroKey($path) === $heroKey)));
-                ShootFile::where('shoot_id', $shoot->id)->whereIn('id', $fileIds)->where('is_cover', true)->update(['is_cover' => false]);
-                if ($containsHero) {
-                    $freshShoot->hero_image = null;
-                    $freshShoot->save();
-                }
+                $this->releaseHeroHeldBy($freshShoot, $selected, $fileIds);
             }
             return $updated;
         }), 'shoot-media.visibility');
@@ -336,6 +332,74 @@ class ShootMediaInteractionService
             'updated_count' => $updated,
             'hidden' => $hidden,
         ];
+    }
+
+    /**
+     * Staff "Hidden" marking: withhold edited media from every client surface.
+     * Also sets `is_hidden` (remembering the client's own curation choice) so all
+     * existing tour, archive, share and delivery exclusions apply; delivery
+     * receipts ignore visibility, so delivered work stays delivered.
+     */
+    public function setClientHidden(Shoot $shoot, array $fileIds, bool $hidden, User $actor): array
+    {
+        $fileIds = array_values(array_unique(array_map('intval', $fileIds)));
+        $updated = \App\Support\LockedWrite::run(fn () => DB::transaction(function () use ($shoot, $fileIds, $hidden, $actor) {
+            $selected = ShootFile::where('shoot_id', $shoot->id)->whereIn('id', $fileIds)->get();
+            abort_unless($selected->count() === count($fileIds), 422, 'These files changed. Reload before changing visibility.');
+            abort_if($selected->contains(fn (ShootFile $file) => ! in_array($file->workflow_stage, [ShootFile::STAGE_COMPLETED, ShootFile::STAGE_VERIFIED], true)),
+                422, 'Only edited media can be hidden from the client.');
+
+            $changed = 0;
+            foreach ($selected as $file) {
+                if ($file->isClientHidden() === $hidden) {
+                    continue;
+                }
+                $metadata = is_array($file->metadata) ? $file->metadata : [];
+                if ($hidden) {
+                    $metadata['client_hidden_restore_is_hidden'] = (bool) $file->is_hidden;
+                    $file->forceFill(['is_client_hidden' => true, 'is_hidden' => true, 'is_cover' => false,
+                        'client_hidden_at' => now(), 'client_hidden_by' => $actor->id, 'metadata' => $metadata]);
+                } else {
+                    $restoreHidden = (bool) ($metadata['client_hidden_restore_is_hidden'] ?? false);
+                    unset($metadata['client_hidden_restore_is_hidden']);
+                    $file->forceFill(['is_client_hidden' => false, 'is_hidden' => $restoreHidden,
+                        'client_hidden_at' => null, 'client_hidden_by' => null, 'metadata' => $metadata]);
+                }
+                $file->save();
+                $changed++;
+            }
+            if ($hidden) {
+                $this->releaseHeroHeldBy(Shoot::findOrFail($shoot->id), $selected, $fileIds);
+            }
+
+            return $changed;
+        }), 'shoot-media.visibility');
+
+        $this->shootMediaMutationSupportService->clearShootFilesCache($shoot);
+        Log::info('Shoot media client visibility changed', [
+            'shoot_id' => $shoot->id, 'file_ids' => $fileIds, 'hidden_from_client' => $hidden,
+            'updated_count' => $updated, 'actor_id' => $actor->id,
+        ]);
+
+        return [
+            'message' => $hidden ? "Hid {$updated} file(s) from the client" : "Showed {$updated} file(s) to the client",
+            'updated_count' => $updated,
+            'hidden_from_client' => $hidden,
+        ];
+    }
+
+    /** A hidden file can no longer be the cover or the stored listing hero. */
+    private function releaseHeroHeldBy(Shoot $freshShoot, $selected, array $fileIds): void
+    {
+        $heroKey = $this->normalizedHeroKey($freshShoot->hero_image);
+        $containsHero = $selected->contains(fn (ShootFile $file) => $file->is_cover || ($heroKey && collect([
+            $file->path, $file->storage_path, $file->web_path, $file->thumbnail_path,
+        ])->contains(fn ($path) => $this->normalizedHeroKey($path) === $heroKey)));
+        ShootFile::where('shoot_id', $freshShoot->id)->whereIn('id', $fileIds)->where('is_cover', true)->update(['is_cover' => false]);
+        if ($containsHero) {
+            $freshShoot->hero_image = null;
+            $freshShoot->save();
+        }
     }
 
     private function normalizedHeroKey(?string $path): ?string

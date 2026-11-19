@@ -1061,8 +1061,32 @@ class ShootMediaController extends Controller
             || $files->contains(fn (ShootFile $file) => ! $this->shootAuthorizationSupport->canManageFileVisibility($shoot, $file, $user, $curation))) {
             return response()->json(['message' => 'Only safe completed media from this shoot can be hidden or restored.'], $customer ? 422 : 403);
         }
+        if (! $request->boolean('hidden') && $files->contains(fn (ShootFile $file) => $file->isClientHidden())) {
+            return response()->json(['message' => 'Some selected media is hidden from the client. Turn off "Hidden from client" in Mark media to show it again.'], 422);
+        }
 
         return response()->json($this->shootMediaInteractionService->toggleHidden(
+            $shoot,
+            $request->input('file_ids'),
+            $request->boolean('hidden'),
+            $user
+        ));
+    }
+
+    /** Mark media Hidden from the client (or show it again). Staff only. */
+    public function setFileClientVisibility(Request $request, Shoot $shoot)
+    {
+        $user = $request->user();
+        if (! $this->shootAuthorizationSupport->canManageClientHiddenMedia($user)) {
+            return response()->json(['message' => 'Only admins and editing managers can hide media from the client.'], 403);
+        }
+        $request->validate([
+            'file_ids' => 'required|array|min:1|max:1000',
+            'file_ids.*' => 'integer',
+            'hidden' => 'required|boolean',
+        ]);
+
+        return response()->json($this->shootMediaInteractionService->setClientHidden(
             $shoot,
             $request->input('file_ids'),
             $request->boolean('hidden'),

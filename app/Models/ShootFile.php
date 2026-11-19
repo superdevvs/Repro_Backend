@@ -13,6 +13,15 @@ class ShootFile extends Model
 
     protected static function booted(): void
     {
+        // A client-hidden file is always tour-hidden too, so every surface that
+        // already withholds `is_hidden` media (archives, share links, guest
+        // shares, public tours, delivery emails) keeps withholding it even when
+        // another writer (provider re-ingest, curation) touches `is_hidden`.
+        static::saving(function (ShootFile $file) {
+            if ($file->is_client_hidden) {
+                $file->is_hidden = true;
+            }
+        });
         static::addGlobalScope('private_import_drafts', function ($query) {
             if (! Shoot::canReviewImportDrafts()) {
                 $query->whereNotIn('shoot_files.shoot_id', function ($drafts) {
@@ -59,6 +68,9 @@ class ShootFile extends Model
         'is_cover',
         'is_favorite',
         'is_hidden',
+        'is_client_hidden',
+        'client_hidden_at',
+        'client_hidden_by',
         'is_extra',
         'required_for_editing',
         'scan_status',
@@ -88,6 +100,9 @@ class ShootFile extends Model
         'is_cover' => 'boolean',
         'is_favorite' => 'boolean',
         'is_hidden' => 'boolean',
+        'is_client_hidden' => 'boolean',
+        'client_hidden_at' => 'datetime',
+        'client_hidden_by' => 'integer',
         'is_extra' => 'boolean',
         'required_for_editing' => 'boolean',
         'bracket_group' => 'integer',
@@ -481,5 +496,11 @@ class ShootFile extends Model
         return $files
             ->sortBy(fn (ShootFile $file) => $file->deliveryOrderKey(), SORT_REGULAR)
             ->values();
+    }
+
+    /** Staff marked this file Hidden: no client-side surface may show it. */
+    public function isClientHidden(): bool
+    {
+        return (bool) ($this->is_client_hidden ?? false);
     }
 }
