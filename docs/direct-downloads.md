@@ -43,3 +43,28 @@ Benchmark actual editor networks. Compare equal byte ranges on the old and new
 paths, then validate a complete archive with SHA-256. Direct routing removes the
 Cloudflare proxy hop; it cannot exceed the origin's upload link, disk throughput,
 or recipient's bandwidth. Storage/CDN migration remains a separate future choice.
+
+## Long-distance transfers
+
+The direct host is not behind Cloudflare, so the origin's own TCP sender carries
+each download the whole way to the recipient. On 18 Nov 2026 an editor in Vietnam
+(236 ms round trip, about 0.16% retransmitted) received 0.8-2.2 MB/s in total
+across four archives while the origin's uplink measured 44 MB/s. The kernel
+default, CUBIC, shrinks its window at every lost packet; at that round trip it
+cannot recover between losses. Browsers also reuse one HTTP/2 connection per
+host, so simultaneous downloads, and the four ranges of **Parallel download**,
+share that single window rather than adding to it.
+
+`python3 scripts/deploy/install-download-tcp.py` previews the remedy: BBR
+congestion control and a 32 MiB send-buffer ceiling. Run it with `sudo` and
+`--apply`; `--restore` returns the saved previous values. It affects new
+connections only and reloads nothing. An emulation of the measured path
+(netem, 236 ms, 300 Mbit) gave 0.3-2.2 MiB/s with CUBIC and 22-25 MiB/s with
+BBR and the larger buffer. Confirm on the real path afterwards: for a large
+`signed_media` row in `/var/log/nginx/repro-transfers.jsonl`, divide
+`body_bytes` by `total_seconds`, or watch `ss -ti` for the connection.
+
+BBR applies to every outgoing connection from this host and competes more
+firmly than CUBIC with other traffic on the same uplink. If a far-away
+recipient is still slow afterwards, an empty `MEDIA_DOWNLOAD_ORIGIN` returns
+their links to the Cloudflare route, whose edge sits near them.

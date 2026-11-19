@@ -132,6 +132,22 @@ class EditorDownloadNotificationTest extends TestCase
         Event::assertDispatchedTimes(ShootActivityBroadcast::class, 1);
     }
 
+    public function test_scoped_ready_archive_downloads_under_the_property_name_not_its_cache_hash(): void
+    {
+        $descriptor = app(EditorRawArchiveService::class)->descriptor($this->shoot, $this->editor, $this->files->take(1));
+        Storage::disk('local')->put($descriptor['storage_path'], 'PK-ready-fixture');
+        $url = $this->download([$this->files->first()->id])->getData(true)['url'];
+        $expected = app(\App\Services\Shoots\ShootArchiveFilenameFormatter::class)->rawFiles($this->shoot);
+
+        $response = $this->get($url)->assertOk();
+        $disposition = (string) $response->headers->get('Content-Disposition');
+        $this->assertStringContainsString($expected, $disposition);
+        $this->assertStringNotContainsString(basename($descriptor['storage_path']), $disposition);
+        $this->assertSame('PK-ready-fixture', $response->streamedContent());
+        // The attachment name stays covered by the link signature.
+        $this->get(str_replace(rawurlencode($expected), 'other.zip', $url))->assertForbidden();
+    }
+
     public function test_error_or_missing_ready_url_never_records_a_download(): void
     {
         foreach ([['status' => 404, 'payload' => ['error' => 'No files']],

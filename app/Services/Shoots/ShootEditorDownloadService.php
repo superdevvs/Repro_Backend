@@ -147,8 +147,11 @@ class ShootEditorDownloadService
         $media = app(MediaStorage::class);
 
         if ($media->exists($storagePath)) {
-            $url = $this->shootFileAccessService->resolvePublicStorageUrl($storagePath)
-                ?? $media->publicUrl($storagePath);
+            // The cache key is a content signature. Name the attachment by
+            // property, as the full-set archive is; object-store URLs keep their key.
+            $url = $media->readFromR2Enabled() || $media->r2Only()
+                ? ($this->shootFileAccessService->resolvePublicStorageUrl($storagePath) ?? $media->publicUrl($storagePath))
+                : $media->signedAppUrl($storagePath, null, $this->archiveFilenameFormatter->rawFiles($shoot));
 
             if (is_string($url) && $url !== '') {
                 $this->recordReadyDownload($shoot, $user, $files,
