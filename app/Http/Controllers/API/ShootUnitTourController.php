@@ -12,7 +12,7 @@ use App\Services\IguideService;
 use App\Services\Shoots\ShootAuthorizationSupport;
 use App\Services\Shoots\ShootUnitTourScope;
 use App\Services\Shoots\ShootRealtorOptionsService;
-use App\Services\Shoots\ZillowTourLinks;
+use App\Services\Shoots\PublicTourVisibility;
 use App\Support\LockedWrite;
 use Illuminate\Http\Request;
 use Illuminate\Support\Arr;
@@ -70,7 +70,7 @@ class ShootUnitTourController extends Controller
         LockedWrite::run(fn () => DB::transaction(function () use ($shoot, $unit, $data, $line) {
             app(\App\Services\Shoots\ActiveVideoLinkOutput::class)->ensureBaseline($shoot);
             $unit->refresh();
-            $incomingLinks = Arr::except($data['tour_links'] ?? [], ZillowTourLinks::VISIBILITY_KEYS);
+            $incomingLinks = Arr::except($data['tour_links'] ?? [], PublicTourVisibility::KEYS);
             foreach (ShootUnitTourScope::INHERITED_SETTINGS as $key) {
                 if (! array_key_exists($key, $unit->tour_links ?? []) && array_key_exists($key, $incomingLinks) && $incomingLinks[$key] === ($shoot->tour_links[$key] ?? null)) unset($incomingLinks[$key]);
             }

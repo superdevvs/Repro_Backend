@@ -146,7 +146,7 @@ class ShootUnitTourScope
         }
         $providerData['lines'] = array_filter($providerData['lines'] ?? [], fn ($id) => in_array((int) $id, $releasedIds, true), ARRAY_FILTER_USE_KEY);
         if (! $releasedIds) {
-            $links = Arr::only($links, array_merge(self::INHERITED_SETTINGS, ZillowTourLinks::VISIBILITY_KEYS, [
+            $links = Arr::only($links, array_merge(self::INHERITED_SETTINGS, PublicTourVisibility::KEYS, [
                 'property_mls', 'property_price', 'property_lot_size', 'property_description',
             ]));
         }

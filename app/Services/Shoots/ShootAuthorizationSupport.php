@@ -410,11 +410,34 @@ class ShootAuthorizationSupport
         return $this->hasRole($user, ['admin', 'superadmin', 'editing_manager']);
     }
 
-    public function canManageZillowVisibility(Shoot $shoot, ?User $user): bool
+    /**
+     * Who may switch video and 3D content off on the public tour: office
+     * staff, the client who owns the shoot and the shoot's own sales rep.
+     * Linked, shared and other clients, and reps of other shoots, may not.
+     */
+    public function canManageTourVisibility(Shoot $shoot, ?User $user): bool
     {
-        return $user && ($this->canManageShootOperations($user)
-            || ($this->hasRole($user, ['client']) && (int) $shoot->client_id === (int) $user->id))
-            && $this->canViewShootDetails($shoot, $user);
+        if (! $user || ! $this->canViewShootDetails($shoot, $user)) {
+            return false;
+        }
+        if ($this->canManageShootOperations($user)) {
+            return true;
+        }
+        if ($shoot->isImportDraft()) {
+            return false;
+        }
+        if ($this->isClientUser($user)) {
+            return (string) $shoot->client_id === (string) $user->id;
+        }
+        if (! app(ShootManagementAccess::class)->isRestrictedSalesRep($user)) {
+            return false;
+        }
+
+        // Legacy shoots carry no rep of their own and inherit the client's.
+        return $shoot->rep_id !== null
+            ? (string) $shoot->rep_id === (string) $user->id
+            : $shoot->client_id !== null
+                && app(ShootMutationSupportService::class)->getClientRep((int) $shoot->client_id) === (int) $user->id;
     }
 
     /** Request review is an office/sales duty, independent of media workflow writes. */

@@ -87,7 +87,16 @@ class ShootPublicAssetsService
             $reconcilePayments = false;
         }
         $assets = $this->buildPublicAssets($shoot, $reconcilePayments);
-        $tourLinks = $this->normalizeTourLinks($shoot->tour_links ?? []);
+        $isBranded = $type === 'branded';
+        // Content the owner switched off for this page is removed before any
+        // source is resolved, so no fallback below can bring it back. The
+        // saved links stay on the shoot and in the dashboard.
+        $visibility = app(PublicTourVisibility::class);
+        $savedTourLinks = $this->normalizeTourLinks($shoot->tour_links ?? []);
+        $hiddenContent = $visibility->hiddenContent($savedTourLinks, $isBranded);
+        $iguideHidden = in_array('iguide', $hiddenContent, true);
+        $videoHidden = in_array('video', $hiddenContent, true);
+        $tourLinks = $visibility->publicLinks($savedTourLinks, $isBranded);
         $propertyDetails = $this->buildPublicTourPropertyDetails($shoot, $tourLinks);
         $videoUrl = $this->resolveTypedVideoUrl($tourLinks, $type);
         $videoThumbnailUrl = $this->resolveVideoThumbnailUrl($videoUrl);
@@ -97,7 +106,7 @@ class ShootPublicAssetsService
         // is the most explicit source and becomes the branded or MLS viewer
         // without exposing the private ZIP itself.
         $explicitBrandedIguideUrl = $this->normalizePublicTourUrl($tourLinks['iguide_branded'] ?? null);
-        $providerBrandedIguideUrl = $this->normalizePublicTourUrl($shoot->iguide_tour_url);
+        $providerBrandedIguideUrl = $iguideHidden ? null : $this->normalizePublicTourUrl($shoot->iguide_tour_url);
         $legacyBrandedIguideUrl = $this->firstFilled(
             $this->normalizePublicTourUrl($tourLinks['iGuide'] ?? null),
             $this->normalizePublicTourUrl($tourLinks['iguide'] ?? null)
@@ -153,7 +162,6 @@ class ShootPublicAssetsService
             $matterportMlsUrl = null;
         }
 
-        $isBranded = $type === 'branded';
         $isHistoricalImport = (bool) data_get($shoot->external_booking_payload, 'legacy_migration.released_to_history', false);
         $assets['historical_import'] = $isHistoricalImport;
         if ($isHistoricalImport && ! $isBranded) {
@@ -173,8 +181,15 @@ class ShootPublicAssetsService
             ));
             $videoUrl ??= $assets['videos'][0] ?? null;
         }
+        if ($videoHidden) {
+            // Uploaded films are published through the same Video section.
+            $assets['videos'] = [];
+            $videoUrl = null;
+            $videoThumbnailUrl = null;
+        }
 
-        $offlineViewer = ($this->iguideOfflineViewerService ?? app(IguideOfflineViewerService::class))
+        // A signed offline viewer link is a way in to the same walkthrough.
+        $offlineViewer = $iguideHidden ? null : ($this->iguideOfflineViewerService ?? app(IguideOfflineViewerService::class))
             ->issuePublicViewerLinkIfEligible($shoot, $isBranded ? 'branded' : 'mls');
         if ($offlineViewer !== null) {
             $iguideUrl = $offlineViewer['url'];
@@ -204,7 +219,6 @@ class ShootPublicAssetsService
         // A branded-only URL still fails closed rather than leaking attribution.
         $zillow = app(ZillowTourLinks::class);
         $zillowViewer = $zillow->viewer($tourLinks, $isBranded);
-        $tourLinks = $zillow->publicLinks($tourLinks, $isBranded);
         if (! $isBranded) {
             unset(
                 $tourLinks['iguide_branded'],
@@ -495,7 +509,9 @@ class ShootPublicAssetsService
                 ->values()
                 ->toArray();
 
-            $tourLinks = app(ZillowTourLinks::class)->publicLinks($this->normalizeTourLinks($shoot->tour_links ?? []), true);
+            $savedTourLinks = $this->normalizeTourLinks($shoot->tour_links ?? []);
+            $tourLinks = app(PublicTourVisibility::class)->publicLinks($savedTourLinks, true);
+            $iguideHidden = ! app(PublicTourVisibility::class)->isVisible($savedTourLinks, 'iguide', true);
             $propDetails = $this->buildPublicTourPropertyDetails($shoot, $tourLinks);
             $deliveredStatuses = [
                 Shoot::STATUS_DELIVERED,
@@ -523,11 +539,11 @@ class ShootPublicAssetsService
                 'files_count' => $files->count(),
                 'preview_image' => $preview,
                 'gallery' => $gallery,
-                'iguide_tour_url' => $shoot->iguide_tour_url
+                'iguide_tour_url' => $iguideHidden ? null : ($shoot->iguide_tour_url
                     ?? $tourLinks['iguide_branded']
                     ?? $tourLinks['iguide_mls']
                     ?? $tourLinks['iGuide']
-                    ?? null,
+                    ?? null),
                 'tour_links' => $tourLinks,
                 'branded_tour_url' => $this->buildPublicTourUrl($shoot->id, 'branded'),
                 'listing_type' => $shoot->listing_type,

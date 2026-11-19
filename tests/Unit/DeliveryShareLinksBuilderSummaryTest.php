@@ -164,6 +164,44 @@ class DeliveryShareLinksBuilderSummaryTest extends TestCase
         $this->assertSame('https://example.test/property.mp4', $withVideo['video_download_link']);
     }
 
+    public function test_tour_content_switched_off_for_the_public_tour_is_not_mailed_out(): void
+    {
+        $archives = Mockery::mock(ShootMediaArchiveService::class);
+        $archives->shouldReceive('hasDownloadableFiles')->andReturn(false);
+        $builder = $this->makeBuilder($archives);
+        $saved = [
+            'video_branded' => 'https://vimeo.com/900000001', 'video_mls' => 'https://vimeo.com/900000003',
+            'video_generic' => 'https://cdn.example.test/film.mp4',
+            'matterport_branded' => 'https://my.matterport.com/show/?m=branded', 'matterport_mls' => 'https://my.matterport.com/show/?m=mls',
+            'iguide_mls' => 'https://unbranded.youriguide.com/home', 'zillow_3d' => 'https://www.zillow.com/view-3d-home/example',
+        ];
+        $shoot = $this->makeShoot(['payment_status' => 'paid', 'total_paid' => 299, 'total_quote' => 299,
+            'iguide_tour_url' => 'https://youriguide.com/home', 'tour_links' => $saved]);
+        $shoot->setRelation('files', collect());
+        $shoot->setRelation('service', new \App\Models\Service(['upload_intake_type' => 'video']));
+
+        $urls = array_column($builder->forShootSummary($shoot)['links'], 'url');
+        foreach (array_merge(array_values($saved), ['https://youriguide.com/home']) as $url) {
+            $this->assertContains($url, $urls);
+        }
+
+        $shoot->tour_links = $saved + [
+            'show_video_on_branded' => false, 'show_matterport_on_mls' => false,
+            'show_iguide_on_branded' => false, 'show_zillow_on_branded' => false,
+        ];
+        $links = $builder->forShootSummary($shoot);
+        $urls = array_column($links['links'], 'url');
+        foreach (['https://vimeo.com/900000001', 'https://my.matterport.com/show/?m=mls', 'https://youriguide.com/home', 'https://www.zillow.com/view-3d-home/example'] as $url) {
+            $this->assertNotContains($url, $urls);
+        }
+        // The page each of these feeds still shows it.
+        foreach (['https://vimeo.com/900000003', 'https://my.matterport.com/show/?m=branded', 'https://unbranded.youriguide.com/home'] as $url) {
+            $this->assertContains($url, $urls);
+        }
+        $this->assertNull($links['zillow_3d_link']);
+        $this->assertSame('https://my.matterport.com/show/?m=branded', $links['branded_tour_link']);
+    }
+
     public function test_floorplans_have_their_own_available_download_section(): void
     {
         $archives = Mockery::mock(ShootMediaArchiveService::class);

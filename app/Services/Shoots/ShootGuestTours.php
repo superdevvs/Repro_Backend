@@ -24,6 +24,11 @@ class ShootGuestTours
             }
         }
         $plan = app(DeliveryPlanService::class);
+        // Links the owner switched off for the public tour are not handed to
+        // guests either. Delivered files in the share are not affected.
+        $visibility = app(PublicTourVisibility::class);
+        $savedLinks = is_array($shoot->tour_links) ? $shoot->tour_links : [];
+        $unitLinks = $units->mapWithKeys(fn ($unit) => [$unit->id => is_array($unit->tour_links) ? $unit->tour_links : []]);
         foreach ($files as $file) {
             if ($plan->contentKind($file) === 'video') {
                 $tours[] = $this->link($file->filename ?: 'Property video',
@@ -44,6 +49,9 @@ class ShootGuestTours
                 || ! $item?->is_unlocked_for_delivery || ! $this->validUrl($url)) continue;
             $kind = $component['kind'] === 'video' ? 'video' : '3d';
             $provider = $this->provider($component['external_evidence']['provider'] ?? '', $url);
+            $content = $visibility->contentFor($kind, $provider);
+            $scopeLinks = $item->shoot_unit_id ? ($unitLinks[$item->shoot_unit_id] ?? []) : $savedLinks;
+            if ($content !== null && $visibility->hidesSharedUrl($scopeLinks, $content, $url)) continue;
             $tours[] = $this->link($component['label'], $url, $kind, $provider);
         }
 
@@ -58,7 +66,7 @@ class ShootGuestTours
         if ($legacyDelivered && ! $plan->usesComponents($shoot) && ! app(ShootActiveWorkLifecycle::class)->hasActiveWork($shoot)
             && ($shoot->workflow_status ?: $shoot->status) === Shoot::STATUS_DELIVERED
             && ! app(ShootClientReleaseAccessService::class)->isPublicReleaseLocked($shoot)) {
-            $links = $shoot->tour_links ?? [];
+            $links = $visibility->shareableLinks($savedLinks);
             $bookedVideo = $items->contains(fn ($item) => $item->is_deliverable && ! $item->cancelled_at && $item->service?->supportsVideoIntake());
             $known = [
                 'matterport_branded' => ['Matterport 3D tour', '3d', 'matterport'],
@@ -79,7 +87,7 @@ class ShootGuestTours
                 }
             }
             foreach (['iguide' => $shoot->iguide_tour_url, 'cubicasa' => $shoot->cubicasa_tour_url] as $provider => $url) {
-                if ($this->validUrl($url)) $tours[] = $this->link($provider === 'iguide' ? 'iGUIDE 3D tour' : 'CubiCasa tour', $url, '3d', $provider);
+                if ($this->validUrl($url) && ! $visibility->hidesSharedUrl($savedLinks, $provider, $url)) $tours[] = $this->link($provider === 'iguide' ? 'iGUIDE 3D tour' : 'CubiCasa tour', $url, '3d', $provider);
             }
         }
         return collect($tours)->unique('url')->values()->all();

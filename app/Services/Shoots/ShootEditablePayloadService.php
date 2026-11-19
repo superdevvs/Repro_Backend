@@ -659,7 +659,7 @@ class ShootEditablePayloadService
             if (is_string($currentTourLinks)) {
                 $currentTourLinks = json_decode($currentTourLinks, true) ?? [];
             }
-            $submittedTourLinks = Arr::except($validated['tour_links'], ZillowTourLinks::VISIBILITY_KEYS);
+            $submittedTourLinks = Arr::except($validated['tour_links'], PublicTourVisibility::KEYS);
             // Provenance is server-owned. Entering a URL in the dedicated MLS
             // slot is an explicit admin attestation that it is the unbranded
             // destination; callers cannot forge provider provenance separately.

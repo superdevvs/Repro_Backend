@@ -6,6 +6,7 @@ use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Services\Media\MediaStorage;
 use App\Services\Shoots\ShootClientReleaseAccessService;
+use App\Services\Shoots\PublicTourVisibility;
 use App\Services\Shoots\ShootMediaArchiveService;
 use Illuminate\Support\Facades\Log;
 
@@ -91,7 +92,11 @@ class DeliveryShareLinksBuilder
             return $this->emptyShare() + ['additional_links' => []];
         }
 
-        $tourLinks = $this->normalizeTourLinks($shoot->tour_links ?? null);
+        // A link switched off for the public tour is not mailed out either;
+        // the ZIP and video downloads are deliveries and stay.
+        $visibility = app(PublicTourVisibility::class);
+        $savedTourLinks = $this->normalizeTourLinks($shoot->tour_links ?? null);
+        $tourLinks = $visibility->shareableLinks($savedTourLinks);
         $hasBookedVideo = $this->hasBookedVideo($shoot);
         if (! $hasBookedVideo) {
             $tourLinks = array_diff_key($tourLinks, array_flip(['video_mls', 'video_branded', 'video_generic', 'video_link']));
@@ -117,7 +122,7 @@ class DeliveryShareLinksBuilder
             $tourLinks['iguide_branded'] ?? null,
             $tourLinks['iGuide'] ?? null,
             $tourLinks['iguide'] ?? null,
-            $shoot->iguide_tour_url ?? null,
+            $visibility->hidesSharedUrl($savedTourLinks, 'iguide', $shoot->iguide_tour_url) ? null : $shoot->iguide_tour_url,
             $tourLinks['matterport_branded'] ?? null,
             $tourLinks['matterport'] ?? null,
             $tourLinks['cubicasa_branded'] ?? null,
