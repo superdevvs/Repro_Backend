@@ -21,6 +21,13 @@ SETTINGS = {
     # min and default are the kernel's; only the autotuning ceiling is raised (4 MiB -> 32 MiB).
     'net.ipv4.tcp_wmem': '4096 16384 33554432',
 }
+# Ubuntu 24.04's values on this host before the change (2026-11-18). Used whenever a
+# setting already equals the target, e.g. after a manual `sysctl -w`, because that
+# value is not a state worth restoring.
+KERNEL_DEFAULTS = {
+    'net.ipv4.tcp_congestion_control': 'cubic',
+    'net.ipv4.tcp_wmem': '4096 16384 4194304',
+}
 
 
 def render(settings):
@@ -40,6 +47,12 @@ def parse(text):
 
 def current(key):
     return ' '.join(Path('/proc/sys', *key.split('.')).read_text().split())
+
+
+def restorable(values):
+    """Previous values to return to: a value equal to the target means "not recorded"."""
+    return {key: KERNEL_DEFAULTS[key] if values.get(key, SETTINGS[key]) == SETTINGS[key] else values[key]
+            for key in SETTINGS}
 
 
 def run(*args):
@@ -79,7 +92,7 @@ def apply():
     # Keep the first saved state: a second --apply must not record BBR as "previous".
     if not BACKUP.exists():
         BACKUP.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
-        BACKUP.write_text(render(previous))
+        BACKUP.write_text(render(restorable(previous)))
     try:
         set_live(SETTINGS)
         MODULE.write_text(MARKER + 'tcp_bbr\n')
@@ -98,7 +111,8 @@ def restore():
     require_root()
     if not BACKUP.exists():
         raise SystemExit(f'No saved state at {BACKUP}. Nothing was changed.')
-    previous = {key: value for key, value in parse(BACKUP.read_text()).items() if key in SETTINGS}
+    # A backup saved by an earlier release may hold the target itself.
+    previous = restorable(parse(BACKUP.read_text()))
     set_live(previous)
     for target in (SYSCTL, MODULE):
         if target.exists() and target.read_text().startswith(MARKER):

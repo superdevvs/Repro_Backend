@@ -52,6 +52,24 @@ class InstallDownloadTcpTest(unittest.TestCase):
         self.assertEqual(CUBIC, self.tunables())
         self.assertFalse(tcp.SYSCTL.exists() or tcp.MODULE.exists() or tcp.BACKUP.exists())
 
+    def test_apply_over_a_manual_change_saves_the_kernel_defaults_not_the_target(self):
+        self.live.update(tcp.SETTINGS)  # BBR was switched on by hand before the installer ran.
+        tcp.apply()
+        self.assertEqual(CUBIC, tcp.parse(tcp.BACKUP.read_text()))
+        tcp.restore()
+        self.assertEqual(CUBIC, self.tunables())
+
+    def test_restore_from_a_backup_that_saved_the_target_returns_the_kernel_defaults(self):
+        # Production's first apply ran after a manual change and saved BBR as "previous".
+        self.live.update(tcp.SETTINGS)
+        tcp.BACKUP.parent.mkdir(parents=True)
+        tcp.BACKUP.write_text(tcp.render(tcp.SETTINGS))
+        tcp.SYSCTL.write_text(tcp.render(tcp.SETTINGS))
+        tcp.MODULE.write_text(tcp.MARKER + 'tcp_bbr\n')
+        tcp.restore()
+        self.assertEqual(CUBIC, self.tunables())
+        self.assertFalse(tcp.SYSCTL.exists() or tcp.MODULE.exists() or tcp.BACKUP.exists())
+
     def test_a_failed_apply_leaves_the_previous_values_and_no_persistent_files(self):
         self.fail_on = 'net.ipv4.tcp_wmem'
         with self.assertRaises(RuntimeError):
