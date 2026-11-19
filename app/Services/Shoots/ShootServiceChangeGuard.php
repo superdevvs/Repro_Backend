@@ -57,7 +57,8 @@ class ShootServiceChangeGuard
         ?string $confirmationToken = null,
         ?float $adjustedTotal = null,
         ?string $pricingState = null,
-        ?string $taxRegion = null
+        ?string $taxRegion = null,
+        array $pendingDiscount = []
     ): ?array {
         $shoot->loadMissing(['client', 'serviceItems.service']);
         $targetServiceIds = collect($targetServices)
@@ -129,7 +130,8 @@ class ShootServiceChangeGuard
             $removedItems,
             $adjustedTotal,
             $pricingState,
-            $taxRegion
+            $taxRegion,
+            $pendingDiscount
         );
         $expectedToken = $this->confirmationToken($shoot, $actor, $targetServices, $impact);
 
@@ -152,7 +154,8 @@ class ShootServiceChangeGuard
         $removedItems,
         ?float $adjustedTotal,
         ?string $pricingState,
-        ?string $taxRegion
+        ?string $taxRegion,
+        array $pendingDiscount = []
     ): array {
         $removedIds = $removedItems->pluck('id')->map(fn ($id) => (int) $id)->all();
         $files = ShootFile::query()->whereIn('shoot_service_id', $removedIds)->count();
@@ -169,9 +172,11 @@ class ShootServiceChangeGuard
                 || ! in_array((string) $item->delivery_status, ['', 'not_started'], true);
         })->count();
 
+        // A discount changed in the same edit is saved with it; preview that total.
+        $pricingShoot = $pendingDiscount ? (clone $shoot)->forceFill($pendingDiscount) : $shoot;
         $pricing = $this->support->buildPricingCalculationForExistingShoot(
             $targetServices,
-            $shoot,
+            $pricingShoot,
             $pricingState ?? $shoot->state,
             $taxRegion
         );

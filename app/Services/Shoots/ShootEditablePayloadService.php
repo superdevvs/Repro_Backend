@@ -236,7 +236,8 @@ class ShootEditablePayloadService
                         ? (float) $validated['admin_adjusted_total_quote']
                         : null,
                     $validated['state'] ?? $lockedShoot->state,
-                    array_key_exists('state', $validated) ? null : ($lockedShoot->tax_region ?: null)
+                    array_key_exists('state', $validated) ? null : ($lockedShoot->tax_region ?: null),
+                    array_intersect_key($validated, array_flip(['discount_type', 'discount_value']))
                 );
             }
 

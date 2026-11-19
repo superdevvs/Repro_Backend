@@ -98,6 +98,31 @@ class SalesShootManagementTest extends TestCase
         $this->patchJson('/api/shoots/'.$shoot->id, ['city' => 'Reviewed correction', 'expected_edit_version' => app(ShootManagementAccess::class)->editVersion($shoot->fresh())])->assertOk();
     }
 
+    public function test_notes_saved_while_editing_do_not_conflict_with_the_open_draft(): void
+    {
+        Sanctum::actingAs(User::factory()->create(['role' => 'salesRep']));
+        $shoot = $this->shoot();
+        $token = $this->getJson('/api/shoots/'.$shoot->id)->assertOk()->json('data.editVersion');
+        $this->travel(2)->minutes();
+        $this->postJson('/api/shoots/'.$shoot->id.'/notes', ['type' => 'editing', 'visibility' => 'internal', 'content' => 'Complimentary twilight image'])->assertCreated();
+        $this->assertSame('Complimentary twilight image', $shoot->fresh()->editor_notes);
+        $this->patchJson('/api/shoots/'.$shoot->id, ['city' => 'Knoxville', 'expected_edit_version' => $token])->assertOk();
+        $this->assertSame('Knoxville', $shoot->fresh()->city);
+        $this->assertSame('Complimentary twilight image', $shoot->fresh()->editor_notes);
+    }
+
+    public function test_service_removal_preview_prices_a_discount_added_in_the_same_edit(): void
+    {
+        Sanctum::actingAs(User::factory()->create(['role' => 'salesRep']));
+        $shoot = $this->shoot();
+        $replacement = Service::factory()->noIntake()->create(['price' => 600, 'photographer_required' => false]);
+        $payload = ['services' => [['id' => $replacement->id, 'quantity' => 1]], 'discount_type' => 'percent', 'discount_value' => 5];
+        $confirmation = $this->patchJson('/api/shoots/'.$shoot->id, $payload)->assertConflict()->assertJsonPath('code', 'service_detach_confirmation_required');
+        $this->patchJson('/api/shoots/'.$shoot->id, $payload + ['confirm_service_detach' => true, 'service_detach_confirmation_token' => $confirmation->json('confirmation_token')])->assertOk();
+        $this->assertEqualsWithDelta(604.2, (float) $shoot->fresh()->total_quote, 0.001);
+        $this->assertEqualsWithDelta((float) $shoot->fresh()->total_quote, (float) $confirmation->json('impact.new_total'), 0.001);
+    }
+
     public function test_excluded_capabilities_locked_states_and_denied_accounts_stay_restricted(): void
     {
         $shoot = $this->shoot(); $rep = User::factory()->create(['role' => 'salesRep']); Sanctum::actingAs($rep);

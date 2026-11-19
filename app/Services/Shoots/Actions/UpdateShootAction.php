@@ -448,7 +448,8 @@ class UpdateShootAction
                     ? (float) $validated['admin_adjusted_total_quote']
                     : null,
                 $validated['state'] ?? $shoot->state,
-                array_key_exists('state', $validated) ? null : ($shoot->tax_region ?: null)
+                array_key_exists('state', $validated) ? null : ($shoot->tax_region ?: null),
+                array_intersect_key($validated, array_flip(['discount_type', 'discount_value']))
             );
         }
         $availabilityPayload = $validated;

@@ -79,7 +79,7 @@ class NativeShootActionContractTest extends TestCase
         $shoot = $this->shoot($multi);
         $before = $shoot->serviceItems()->orderBy('id')->get()->map->getRawOriginal()->all();
         $body = $this->assignment($shoot, $multi);
-        $shoot->update(['company_notes' => 'Another reviewer changed this shoot']);
+        $shoot->update(['city' => 'Another reviewer changed this shoot']);
         $this->postJson('/api/shoots/'.$shoot->id.'/assign-service-photographers', $body)
             ->assertConflict()->assertJsonPath('code', 'shoot_edit_conflict');
         $this->assertSame($before, $shoot->serviceItems()->orderBy('id')->get()->map->getRawOriginal()->all());
@@ -95,14 +95,14 @@ class NativeShootActionContractTest extends TestCase
         $guard = Mockery::mock(ScheduleCommitGuard::class);
         $guard->shouldReceive('prepare')->once()->andReturnUsing(function () use ($shoot) {
             // A concurrent save after preflight/planning, before assignment commit.
-            DB::table('shoots')->where('id', $shoot->id)->update(['company_notes' => 'Changed during planning']);
+            DB::table('shoots')->where('id', $shoot->id)->update(['city' => 'Changed during planning']);
             return ['enabled' => false];
         });
         $guard->shouldReceive('commit')->once()->andReturnUsing(fn ($prepared, $write) => $write());
         $this->app->instance(ScheduleCommitGuard::class, $guard);
         $this->postJson('/api/shoots/'.$shoot->id.'/assign-service-photographers', $body)
             ->assertConflict()->assertJsonPath('code', 'shoot_edit_conflict');
-        $this->assertSame('Changed during planning', $shoot->fresh()->company_notes);
+        $this->assertSame('Changed during planning', $shoot->fresh()->city);
         $this->assertSame($before, $shoot->serviceItems()->orderBy('id')->get()->map->getRawOriginal()->all());
     }
 
@@ -111,7 +111,7 @@ class NativeShootActionContractTest extends TestCase
         $shoot = $this->shoot(false);
         $batch = $this->assignment($shoot, false);
         $payload = $batch['assignments'][0] + ['expected_edit_version' => $batch['expected_edit_version']];
-        $shoot->update(['company_notes' => 'Another save']);
+        $shoot->update(['city' => 'Another save']);
         $this->postJson('/api/shoots/'.$shoot->id.'/assign-service-photographer', $payload)
             ->assertConflict()->assertJsonPath('code', 'shoot_edit_conflict');
         $this->assertNull($shoot->serviceItems()->orderBy('id')->first()->photographer_id);

@@ -152,10 +152,16 @@ class ShootManagementAccess
         return $payload;
     }
 
+    /**
+     * Notes are saved by their own endpoint, often from the same window as an open
+     * booking draft; they and the row timestamp must not make that draft conflict.
+     */
+    private const VERSION_IGNORED_FIELDS = ['updated_at', 'shoot_notes', 'company_notes', 'photographer_notes', 'editor_notes', 'approval_annotation'];
+
     /** Content token also detects assignment changes made within the same second. */
     public function editVersion(Shoot $shoot): string
     {
-        $row = $shoot->getRawOriginal();
+        $row = array_diff_key($shoot->getRawOriginal(), array_flip(self::VERSION_IGNORED_FIELDS));
         ksort($row);
         $lines = $shoot->serviceItems()->orderBy('id')->get()->map(fn ($line) => $line->getRawOriginal())->all();
         return hash('sha256', json_encode([$row, $lines], JSON_THROW_ON_ERROR));
