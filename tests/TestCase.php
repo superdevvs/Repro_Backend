@@ -52,7 +52,9 @@ abstract class TestCase extends BaseTestCase
         if (! isset(self::$preparedParallelStorage[$token])) {
             $files = new Filesystem;
             $files->deleteDirectory($path);
-            foreach (['app/public', 'app/private', 'framework/cache/data', 'framework/sessions', 'framework/testing', 'framework/views', 'logs'] as $directory) {
+            // logs/scheduling is provisioned on servers; SchedulingDiagnostics
+            // cannot create it itself here (it needs the www-data group).
+            foreach (['app/public', 'app/private', 'framework/cache/data', 'framework/sessions', 'framework/testing', 'framework/views', 'logs/scheduling'] as $directory) {
                 $files->ensureDirectoryExists($path.'/'.$directory);
             }
             self::$preparedParallelStorage[$token] = true;
