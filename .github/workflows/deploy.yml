@@ -12,14 +12,9 @@ permissions:
   contents: read
 
 jobs:
-  quality:
+  # Repository and dependency checks that do not need the test suite.
+  checks:
     runs-on: ubuntu-latest
-
-    services:
-      clamav:
-        image: clamav/clamav:1.4.5-debian13-slim
-        ports:
-          - 3310:3310
 
     steps:
       - name: Checkout
@@ -51,6 +46,41 @@ jobs:
       - name: Audit locked dependencies
         run: composer audit --locked
 
+  # The full PHPUnit suite, split across parallel jobs and, inside each job,
+  # across concurrent PHPUnit processes (scripts/ci/run_phpunit_shard.py).
+  # Run serially it took ~37 minutes. Every test file still runs exactly once
+  # with the same --fail-on-* flags as `composer test`. Deploy-App.ps1 waits for
+  # this whole workflow run, so a failure in any job blocks a deploy.
+  quality:
+    name: quality (tests ${{ matrix.shard }}/3)
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+
+    services:
+      clamav:
+        image: clamav/clamav:1.4.5-debian13-slim
+        ports:
+          - 3310:3310
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240  # v2
+        with:
+          php-version: 8.3
+          extensions: mbstring, pdo_sqlite, sqlite3, sodium, gd
+          tools: composer:2.10.2
+          coverage: none
+
+      - name: Install Composer dependencies
+        run: composer install --no-interaction --prefer-dist --no-progress
+
       - name: Install media rendering dependencies
         run: |
           sudo apt-get update
@@ -71,11 +101,11 @@ jobs:
       - name: Prepare test environment file
         run: |
           # phpdotenv reads .env on every boot and PHPUnit turns the resulting
-          # "failed to open stream" warning into a test warning. composer quality
-          # runs artisan test with --fail-on-warning, so a missing .env fails the
-          # job on its own. This stays minimal rather than copying .env.example:
-          # what the suite needs is declared in phpunit.xml, and inheriting the
-          # example's integration defaults would let them drift into test runs.
+          # "failed to open stream" warning into a test warning. The suite runs
+          # with --fail-on-warning, so a missing .env fails the job on its own.
+          # This stays minimal rather than copying .env.example: what the suite
+          # needs is declared in phpunit.xml, and inheriting the example's
+          # integration defaults would let them drift into test runs.
           printf 'APP_ENV=testing\n' > .env
 
       - name: Generate throwaway CI APP_KEY
@@ -85,7 +115,7 @@ jobs:
           echo "::add-mask::$key"
           echo "APP_KEY=$key" >> "$GITHUB_ENV"
 
-      - name: Run test suite
+      - name: Run test suite (shard ${{ matrix.shard }} of 3)
         env:
           APP_ENV: testing
           # Fresh throwaway APP_KEY is generated in the previous step so this
@@ -100,4 +130,15 @@ jobs:
           CLAMAV_SOCKET: ''
           CLAMAV_HOST: 127.0.0.1
           CLAMAV_PORT: 3310
-        run: composer quality
+        run: |
+          php artisan config:clear --ansi
+          python3 scripts/ci/run_phpunit_shard.py --shard-index ${{ matrix.shard }} --shard-total 3 --workers "$(nproc)"
+
+      - name: Keep JUnit timings
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: phpunit-junit-${{ matrix.shard }}
+          path: build/phpunit/*.xml
+          if-no-files-found: ignore
+          retention-days: 14

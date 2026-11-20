@@ -39,3 +39,4 @@ verify_reel.php
 
 # Python deployment/integration helper bytecode is local test output.
 __pycache__/
+/build/phpunit
