@@ -23,6 +23,10 @@ class ScheduleCommitGuardTest extends TestCase
     {
         parent::setUp();
         config(['availability.hybrid_travel_enabled' => true, 'availability.scheduling_lock_store' => 'array']);
+        // Servers provision this directory. Without it, SchedulingDiagnostics tries to
+        // create it with the www-data group, fails, and drops the log line this file
+        // asserts, so the result would depend on whether an earlier test created it.
+        \Illuminate\Support\Facades\File::ensureDirectoryExists(storage_path('logs/scheduling'));
     }
 
     private function engine(array $result): \Mockery\MockInterface
