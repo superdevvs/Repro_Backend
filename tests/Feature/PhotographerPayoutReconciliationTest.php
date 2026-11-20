@@ -60,6 +60,28 @@ class PhotographerPayoutReconciliationTest extends TestCase
         $this->assertSame(78.75,(float)$invoice->fresh()->total_amount);
     }
 
+    public function test_whole_dollar_booked_override_is_not_flagged_as_a_changed_payout_basis(): void
+    {
+        // JSON stores a 25.00 override as the integer 25; comparing it strictly
+        // with the float pivot value flagged every whole-dollar override (W-5950).
+        $person=User::factory()->photographer()->create();
+        $shoot=$this->work($person);
+        $travel=Service::factory()->create(['name'=>'Travel fee - 60 miles','price'=>25,'photographer_pay'=>10,'pricing_type'=>'fixed']);
+        $shoot->services()->attach($travel->id,['price'=>25,'quantity'=>1,'photographer_id'=>$person->id,'photographer_pay'=>25]);
+        $invoice=$this->generate()->sole();
+        $line=$invoice->items->firstWhere('meta.service_id',$travel->id);
+        $this->assertSame(25.0,(float)$line->total_amount);
+        $this->assertArrayNotHasKey('review_required',$line->meta['payout_basis']);
+        $this->assertSame([],$invoice->fresh()->unresolved_warnings ?? []);
+
+        // A real change to the booked override is still flagged for accounts.
+        \Illuminate\Support\Facades\DB::table('shoot_service')->where('shoot_id',$shoot->id)->where('service_id',$travel->id)->update(['photographer_pay'=>35]);
+        $basis=app(\App\Services\Invoices\PhotographerPayoutBasis::class)->forLine($shoot->fresh()->services->firstWhere('id',$travel->id)->pivot,$shoot,$travel);
+        $this->assertTrue($basis['review_required']);
+        $this->assertSame(25,$basis['previous_basis']['override']);
+        $this->assertSame(35.0,$basis['unit_pay']);
+    }
+
     public function test_unassigned_digital_services_do_not_inherit_onsite_payouts_but_historical_recipient_is_retained(): void
     {
         $person = User::factory()->photographer()->create();

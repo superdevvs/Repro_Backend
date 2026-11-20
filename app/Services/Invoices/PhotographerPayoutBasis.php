@@ -75,10 +75,17 @@ final class PhotographerPayoutBasis
         if ($basis && ((int) ($basis['service_id'] ?? 0) !== (int) $service->id
             || ($line->price !== null && abs((float)$basis['booked_price'] - (float)$line->price) > 0.005)
             || (int) ($basis['quantity'] ?? 1) !== (int) ($line->quantity ?? 1)
-            || ($basis['override'] ?? null) !== ($line->photographer_pay !== null ? (float)$line->photographer_pay : null))) {
+            || $this->overrideChanged($basis['override'] ?? null, $line->photographer_pay))) {
             return $this->capture($line, $shoot, $service);
         }
         return $basis ?: $this->capture($line, $shoot, $service, true);
+    }
+
+    /** JSON stores a 25.00 override as the integer 25, so compare amounts, not PHP types. */
+    private function overrideChanged(mixed $captured, mixed $current): bool
+    {
+        if ($captured === null || $current === null) return ($captured === null) !== ($current === null);
+        return abs((float) $captured - (float) $current) > 0.005;
     }
 
     public function amount(Model $line, Shoot $shoot, Service $service): float
