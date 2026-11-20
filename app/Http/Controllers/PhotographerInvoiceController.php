@@ -32,6 +32,7 @@ class PhotographerInvoiceController extends Controller
             ->with(['items', 'shoots'])
             ->orderByDesc('billing_period_start')
             ->paginate($request->integer('per_page', 15));
+        Invoice::primePayoutLineClientNames($invoices->getCollection());
 
         return response()->json($invoices);
     }

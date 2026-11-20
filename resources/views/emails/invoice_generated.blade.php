@@ -62,7 +62,7 @@
                     </tr>
                     @foreach($invoice->items as $item)
                     <tr>
-                        <td class="line-td detail-border" style="padding:12px 0; border-bottom:1px solid #edf2f7;"><span class="dark-heading" style="color:#071223; font-weight:700; font-size:14px;">{{ $item->description }}</span></td>
+                        <td class="line-td detail-border" style="padding:12px 0; border-bottom:1px solid #edf2f7;"><span class="dark-heading" style="color:#071223; font-weight:700; font-size:14px;">{{ $item->description }}</span>@if(!empty($item->client_name))<br><span class="dark-muted" style="color:#7188a6; font-size:12px;">Client: {{ $item->client_name }}</span>@endif</td>
                         <td class="line-td detail-border dark-muted" style="padding:12px 0; border-bottom:1px solid #edf2f7; color:#7188a6; font-size:12px;">{{ ucfirst($item->type) }}</td>
                         <td class="line-td amount-td detail-border dark-heading" style="padding:12px 0; border-bottom:1px solid #edf2f7; text-align:right; white-space:nowrap; color:#071223; font-weight:800; font-size:14px;">{{ '$' . number_format($item->total_amount, 2) }}</td>
                     </tr>

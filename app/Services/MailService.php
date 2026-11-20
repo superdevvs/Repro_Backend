@@ -2217,6 +2217,7 @@ class MailService
     private function formatInvoiceData(Invoice $invoice): object
     {
         $invoice->loadMissing(['items', 'shoot', 'photographer', 'salesRep']);
+        $invoice->withPayoutLineClientNames();
 
         return (object) [
             'id' => $invoice->id,
@@ -2239,6 +2240,7 @@ class MailService
                 ? $invoice->items->map(fn ($item) => (object) [
                     'id' => $item->id,
                     'description' => $item->description,
+                    'client_name' => $invoice->isPayoutInvoice() ? $item->client_name : null,
                     'type' => $item->type,
                     'total_amount' => $item->total_amount,
                 ])->all()

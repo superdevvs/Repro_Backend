@@ -62,4 +62,29 @@ class InvoiceItem extends Model
     {
         return $this->type === self::TYPE_EXPENSE;
     }
+
+    /**
+     * Client name looked up from the line's shoot for lines generated before
+     * payout lines stored meta.client_name. Never persisted.
+     */
+    protected ?string $derivedClientName = null;
+
+    public function setDerivedClientName(?string $name): self
+    {
+        $name = trim((string) $name);
+        $this->derivedClientName = $name !== '' ? $name : null;
+
+        return $this;
+    }
+
+    /**
+     * The shoot's client for a payout line: the name stored when the line was
+     * generated, otherwise the shoot's current client.
+     */
+    public function getClientNameAttribute(): ?string
+    {
+        $stored = trim((string) data_get($this->meta, 'client_name', ''));
+
+        return $stored !== '' ? $stored : $this->derivedClientName;
+    }
 }

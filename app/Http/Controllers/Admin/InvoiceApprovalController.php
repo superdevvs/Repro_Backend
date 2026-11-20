@@ -431,6 +431,8 @@ class InvoiceApprovalController extends Controller
 
     private function serializeReviewDetailInvoice(Invoice $invoice): array
     {
+        $invoice->withPayoutLineClientNames();
+
         return array_merge($this->serializeReviewQueueInvoice($invoice), [
             'items' => $invoice->items
                 ->map(fn ($item) => [
@@ -443,6 +445,7 @@ class InvoiceApprovalController extends Controller
                     'unit_amount' => round((float) $item->unit_amount, 2),
                     'total_amount' => round((float) $item->total_amount, 2),
                     'recorded_at' => optional($item->recorded_at)->toISOString(),
+                    'client_name' => $item->client_name,
                     'meta' => $item->meta,
                 ])
                 ->values(),

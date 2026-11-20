@@ -191,6 +191,7 @@ class InvoiceController extends Controller
         } else {
             $invoices = $query->paginate($filters['per_page'] ?? 15);
             Invoice::primePaymentRecords($invoices->getCollection());
+            Invoice::primePayoutLineClientNames($invoices->getCollection());
             $invoices->getCollection()->transform(fn (Invoice $invoice) => $invoice->applyResolvedPaymentMetadata());
             $serializeStart = hrtime(true);
             $response = response()->json($invoices);
@@ -216,6 +217,10 @@ class InvoiceController extends Controller
             'shoots.client',
             'shoots.payments.refunds',
         ]);
+
+        $invoice->withPayoutLineClientNames();
+        // Payout lines span many clients, so each line names its shoot's client.
+        $showsLineClients = $invoice->isPayoutInvoice();
 
         $periodStart = $invoice->billing_period_start
             ?? $invoice->period_start
@@ -309,7 +314,8 @@ class InvoiceController extends Controller
             $balance,
             $isPaid,
             $isNoPaymentDocument,
-            $documentLabel
+            $documentLabel,
+            $showsLineClients
         ) {
             $handle = fopen('php://output', 'w');
 
@@ -341,6 +347,7 @@ class InvoiceController extends Controller
                 $this->writeCsvRow($handle, [
                     'Type',
                     'Description',
+                    ...($showsLineClients ? ['Client'] : []),
                     'Quantity',
                     'Unit Amount',
                     'Line Total',
@@ -351,6 +358,7 @@ class InvoiceController extends Controller
                     $this->writeCsvRow($handle, [
                         $item->type,
                         $item->description,
+                        ...($showsLineClients ? [$item->client_name ?? ''] : []),
                         $item->quantity,
                         number_format((float) $item->unit_amount, 2, '.', ''),
                         number_format((float) $item->total_amount, 2, '.', ''),

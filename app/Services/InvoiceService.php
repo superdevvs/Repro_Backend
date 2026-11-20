@@ -794,7 +794,7 @@ class InvoiceService
             $this->acquirePayoutGenerationLock(Invoice::ROLE_SALES_REP, $start, $end);
 
             $compensations = ShootCompensation::query()
-                ->with(['shoot', 'recipient', 'invoiceItem.invoice'])
+                ->with(['shoot.client:id,name', 'recipient', 'invoiceItem.invoice'])
                 ->where('recipient_type', ShootCompensation::RECIPIENT_SALES_REP)
                 ->where('mode', '!=', ShootCompensation::MODE_NONE)
                 ->whereNull('voided_at')
@@ -1118,6 +1118,7 @@ class InvoiceService
             'shoot' => $shoot,
             'shoot_id' => $shoot->id,
             'address' => $shoot->address ?? 'Location TBD',
+            'client_name' => $this->shootClientName($shoot),
             'scheduled_date' => $shoot->scheduled_date,
             'workflow_status' => $shoot->workflow_status,
             'commissionable_gross' => round($commissionableGross, 2),
@@ -1139,6 +1140,7 @@ class InvoiceService
         return [
             'shoot_id' => $shoot->id,
             'address' => $shoot->address ?? 'Location TBD',
+            'client_name' => $this->shootClientName($shoot),
             'recorded_at' => $compensation->earned_at,
             'shoot_compensation_id' => $compensation->id,
             'compensation_amount' => round((float) $compensation->amount, 2),
@@ -1187,6 +1189,7 @@ class InvoiceService
             'total_amount' => $row['commission_amount'],
             'recorded_at' => $row['scheduled_date'],
             'meta' => [
+                'client_name' => $row['client_name'] ?? null,
                 'workflow_status' => $row['workflow_status'],
                 'commissionable_gross' => $row['commissionable_gross'],
                 'excluded_fees_total' => $row['excluded_fees_total'],
@@ -1217,6 +1220,7 @@ class InvoiceService
             'recorded_at' => $row['recorded_at'],
             'meta' => array_filter([
                 'payout_kind' => 'complimentary_reshoot_compensation',
+                'client_name' => $row['client_name'] ?? null,
                 'commissionable_gross' => 0,
                 'commission_rate' => 0,
                 'commission_amount' => 0,
@@ -1228,6 +1232,14 @@ class InvoiceService
                 'rate_snapshot' => $row['rate_snapshot'],
             ], fn ($value) => $value !== null),
         ]);
+    }
+
+    /** The shoot's client at generation time, stored beside the line's address. */
+    private function shootClientName(Shoot $shoot): ?string
+    {
+        $name = trim((string) ($shoot->client?->name ?? ''));
+
+        return $name !== '' ? $name : null;
     }
 
     private function looksLikeExcludedFee(string $name): bool

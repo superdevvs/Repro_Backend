@@ -8,6 +8,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
 class Invoice extends Model
@@ -921,6 +922,87 @@ class Invoice extends Model
     public function isPayoutInvoice(): bool
     {
         return in_array($this->role, [self::ROLE_PHOTOGRAPHER, self::ROLE_SALES_REP], true);
+    }
+
+    protected bool $payoutLineClientNamesPrimed = false;
+
+    /**
+     * Serialized payout invoices carry each line's client name next to its
+     * address. Lines generated before meta.client_name was stored fall back
+     * to the shoot's client.
+     */
+    public function toArray()
+    {
+        $this->withPayoutLineClientNames();
+
+        return parent::toArray();
+    }
+
+    public function withPayoutLineClientNames(): self
+    {
+        self::primePayoutLineClientNames([$this]);
+
+        return $this;
+    }
+
+    /**
+     * Resolve client names for the loaded lines of several payout invoices with
+     * two small lookups in total. Only reads; amounts and meta are untouched.
+     */
+    public static function primePayoutLineClientNames(iterable $invoices): void
+    {
+        $invoices = collect($invoices)
+            ->filter(fn ($invoice) => $invoice instanceof self
+                && ! $invoice->payoutLineClientNamesPrimed
+                && $invoice->isPayoutInvoice()
+                && $invoice->relationLoaded('items'))
+            ->values();
+        if ($invoices->isEmpty()) {
+            return;
+        }
+
+        $items = $invoices->flatMap(fn (self $invoice) => $invoice->items);
+        $pendingShootIds = $items
+            ->filter(fn (InvoiceItem $item) => $item->shoot_id && $item->client_name === null)
+            ->pluck('shoot_id')
+            ->map(fn ($id) => (int) $id)
+            ->unique()
+            ->values();
+
+        $names = collect();
+        if ($pendingShootIds->isNotEmpty()) {
+            $clientIdsByShoot = collect();
+            foreach ($invoices as $invoice) {
+                if ($invoice->relationLoaded('shoots')) {
+                    foreach ($invoice->shoots as $shoot) {
+                        $clientIdsByShoot[(int) $shoot->id] = $shoot->client_id;
+                    }
+                }
+            }
+            $missing = $pendingShootIds->reject(fn (int $id) => $clientIdsByShoot->has($id));
+            foreach ($missing->chunk(500) as $chunk) {
+                foreach (DB::table('shoots')->whereIn('id', $chunk->all())->pluck('client_id', 'id') as $shootId => $clientId) {
+                    $clientIdsByShoot[(int) $shootId] = $clientId;
+                }
+            }
+
+            $clientNames = collect();
+            $clientIds = $clientIdsByShoot->only($pendingShootIds->all())->filter()->unique()->values();
+            foreach ($clientIds->chunk(500) as $chunk) {
+                $clientNames = $clientNames->union(DB::table('users')->whereIn('id', $chunk->all())->pluck('name', 'id'));
+            }
+            $names = $clientIdsByShoot->map(fn ($clientId) => $clientId ? $clientNames->get($clientId) : null);
+        }
+
+        foreach ($invoices as $invoice) {
+            foreach ($invoice->items as $item) {
+                if ($item->shoot_id && $item->client_name === null) {
+                    $item->setDerivedClientName($names->get((int) $item->shoot_id));
+                }
+                $item->append('client_name');
+            }
+            $invoice->payoutLineClientNamesPrimed = true;
+        }
     }
 
     public function requiresPayment(): bool
