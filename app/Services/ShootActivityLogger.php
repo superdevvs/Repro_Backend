@@ -273,6 +273,8 @@ class ShootActivityLogger
 
             // Notes
             'note_added' => 'Note added' . $by . (isset($metadata['note_type']) && $metadata['note_type'] ? " ({$metadata['note_type']})" : ''),
+            'standing_editor_notes_hidden' => 'Standing editor note hidden on this shoot' . $by,
+            'standing_editor_notes_shown' => 'Standing editor note shown on this shoot' . $by,
 
             // Emails
             'shoot_scheduled_email' => 'Scheduled email sent' . (isset($metadata['to']) && $metadata['to'] ? " to {$metadata['to']}" : ''),
