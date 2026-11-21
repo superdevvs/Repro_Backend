@@ -22,6 +22,14 @@ class ShootPresenter
         protected IguideDataVisibilityService $iguideDataVisibility
     ) {}
 
+    private ?StandingEditorNoteService $standingEditorNoteService = null;
+
+    /** One resolver per presenter so a list of shoots loads the notes once. */
+    private function standingEditorNotes(): StandingEditorNoteService
+    {
+        return $this->standingEditorNoteService ??= app(StandingEditorNoteService::class);
+    }
+
     public function transformOperationalShoot(Shoot $shoot, bool $isClientUser, bool $includeFiles = true): array
     {
         $transformedShoot = $this->transformShoot($shoot, $includeFiles);
@@ -623,6 +631,12 @@ class ShootPresenter
         }
         if (! app(ShootManagementAccess::class)->isSalesRep($requestingUser) && ! app(ShootAuthorizationSupport::class)->hasRole(auth()->user(), ['admin', 'superadmin', 'editing_manager', 'salesRep'])) {
             $shoot->makeHidden('approval_annotation');
+        }
+        // Standing client/brokerage instructions for the editor. Staff and
+        // editors only; clients and photographers never receive the key.
+        $standingEditorNotes = $isClientRole ? null : $this->standingEditorNotes()->presentForShoot($shoot, $requestingUser);
+        if ($standingEditorNotes !== null) {
+            $shoot->setAttribute('standing_editor_notes', $standingEditorNotes);
         }
 
         // Complimentary-reshoot notes are the internal reason narrative. The

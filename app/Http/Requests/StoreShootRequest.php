@@ -177,6 +177,7 @@ class StoreShootRequest extends FormRequest
             'company_notes' => 'nullable|string',
             'photographer_notes' => 'nullable|string',
             'editor_notes' => 'nullable|string',
+            'standing_editor_notes_hidden' => 'sometimes|boolean',
 
             // Package info (optional)
             'package_name' => 'nullable|string|max:255',

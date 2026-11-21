@@ -393,6 +393,13 @@ class CreateShootAction
                 'editor_notes' => $validated['editor_notes'] ?? null,
             ]);
 
+            // Staff can switch off the client's standing editor notes for this one
+            // shoot. Not mass-assignable, so no other write path can set it.
+            if (($validated['standing_editor_notes_hidden'] ?? false)
+                && app(\App\Services\Shoots\StandingEditorNoteService::class)->canManage($user)) {
+                $shoot->forceFill(['standing_editor_notes_hidden' => true])->saveQuietly();
+            }
+
             if ($operationId = $request->attributes->get('copilot_operation_id')) {
                 // Server-owned operation ID: persisted in the booking transaction for crash reconciliation.
                 $shoot->forceFill(['copilot_operation_id' => $operationId])->save();

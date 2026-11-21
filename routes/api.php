@@ -882,6 +882,14 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/shoots/{shoot}/notes', [ShootNotesController::class, 'getNotes']);
     Route::post('/shoots/{shoot}/notes', [ShootNotesController::class, 'storeNote']);
     Route::patch('/shoots/{shoot}/notes', [ShootNotesController::class, 'updateNotesSimple']);
+    Route::patch('/shoots/{shoot}/standing-editor-notes', [App\Http\Controllers\API\StandingEditorNoteController::class, 'setShootHidden']);
+
+    // Standing editor notes (per client or brokerage); role checks live in the controller.
+    Route::get('/standing-editor-notes', [App\Http\Controllers\API\StandingEditorNoteController::class, 'index']);
+    Route::get('/standing-editor-notes/matches', [App\Http\Controllers\API\StandingEditorNoteController::class, 'matches']);
+    Route::post('/standing-editor-notes', [App\Http\Controllers\API\StandingEditorNoteController::class, 'store']);
+    Route::put('/standing-editor-notes/{note}', [App\Http\Controllers\API\StandingEditorNoteController::class, 'update'])->whereNumber('note');
+    Route::delete('/standing-editor-notes/{note}', [App\Http\Controllers\API\StandingEditorNoteController::class, 'destroy'])->whereNumber('note');
 
     Route::get('/client/delivery-notifications', [ClientDeliveryNotificationController::class, 'index']);
     Route::post('/client/delivery-notifications/{notification}/seen', [ClientDeliveryNotificationController::class, 'seen']);

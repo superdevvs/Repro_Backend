@@ -37,7 +37,7 @@ final class ShootCardProjection
             'hero_image', 'preview_images', 'delivery_card_media', 'media_summary', 'package_name', 'package_details',
             'expected_final_count', 'bracket_mode', 'expected_raw_count', 'raw_photo_count', 'edited_photo_count', 'extra_photo_count',
             'raw_missing_count', 'edited_missing_count', 'missing_raw', 'missing_final',
-            'notes', 'shoot_notes', 'editor_notes', 'photographer_notes', 'admin_issue_notes',
+            'notes', 'shoot_notes', 'editor_notes', 'photographer_notes', 'admin_issue_notes', 'standing_editor_notes',
             'is_flagged', 'issues_resolved_at', 'hold_reason', 'hold_requested_at', 'hold_requested_by', 'hold_status',
             'cancellation_requested_at', 'cancellation_reason', 'action_requests', 'actions',
             'created_by', 'created_at', 'updated_at', 'weather', 'property_slug', 'tour_purchased',
