@@ -13,7 +13,9 @@ The corrected import verified all **291 tables and 1,841,678 original rows**
 in **9 minutes 16 seconds**, including planning and initialization. It
 installed all **477 foreign keys**, including eight relationships that retain
 195 historical rows with 223 missing references, and installed 25 direct
-triggers. The first attempt caught an oversized iGUIDE survey index.
+triggers. A separate PHP reader used a SELECT-only account and a read-only
+MySQL instance to compare all **29,909,713 fields** in 80 seconds with zero
+mismatches. The first import attempt caught an oversized iGUIDE survey index.
 The conversion now uses the original migration's declared 64- and
 32-character widths for its two identity fields and retains the full unique key.
 

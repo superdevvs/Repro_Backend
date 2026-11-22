@@ -6,7 +6,7 @@ use App\Models\{IguideLabProject, IguideLabRun, IguideLabTourBudget};
 use App\Services\IguideLab\{LabRunCapacity, LabService, LabTourProcessingBudget};
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
-use Illuminate\Support\Facades\{DB, Http, Queue, Storage};
+use Illuminate\Support\Facades\{DB, Http, Queue, Schema, Storage};
 use Illuminate\Support\Str;
 use Symfony\Component\HttpKernel\Exception\HttpException;
 use Symfony\Component\Process\Process;
@@ -59,8 +59,11 @@ class IguideLabRunCapacityTest extends TestCase
     private function retainedTables(): array
     {
         $rows = [];
-        foreach (DB::select("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'iguide_lab_%' ORDER BY name") as $table) {
-            if ($table->name !== 'iguide_lab_projects') $rows[$table->name] = DB::table($table->name)->get()->toJson();
+        $tables = array_values(array_filter(Schema::getTableListing(schemaQualified: false), fn ($name) => str_starts_with($name, 'iguide_lab_')));
+        $this->assertContains('iguide_lab_runs', $tables, 'The retention check must inspect the actual lab tables.');
+        sort($tables);
+        foreach ($tables as $table) {
+            if ($table !== 'iguide_lab_projects') $rows[$table] = DB::table($table)->orderBy('id')->get()->toJson();
         }
         return $rows;
     }
@@ -165,6 +168,7 @@ class IguideLabRunCapacityTest extends TestCase
 
     public function test_competing_sqlite_writers_cannot_both_extend_from_the_same_expected_limit(): void
     {
+        if (DB::getDriverName() !== 'sqlite') $this->markTestSkipped('SQLite WAL mechanics; native MySQL contention is covered by IguideLabConcurrencyTest.');
         $directory = sys_get_temp_dir().'/iguide-run-cap-race-'.bin2hex(random_bytes(8));
         mkdir($directory, 0700);
         $database = $directory.'/isolated.sqlite';

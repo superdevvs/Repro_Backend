@@ -53,6 +53,10 @@ final class DatabaseBackupTest extends TestCase
             $table->binary('payload');
         });
         DB::table('_backup_contract_probe')->insert(['payload' => "\x00\x01\x02\xff"]);
+        $triggerNames = static fn (): array => DB::table('information_schema.TRIGGERS')
+            ->where('TRIGGER_SCHEMA', 'repro_mysql_test')->orderBy('TRIGGER_NAME')->pluck('TRIGGER_NAME')->all();
+        $originalTriggers = $triggerNames();
+        $this->assertNotEmpty($originalTriggers);
         $process = $this->backup();
         $this->assertTrue($process->isSuccessful(), $process->getErrorOutput());
         $manifest = json_decode(file_get_contents($this->directory.'/database-backup.json'), true, flags: JSON_THROW_ON_ERROR);
@@ -78,7 +82,8 @@ final class DatabaseBackupTest extends TestCase
         $restore->run();
         $this->assertTrue($restore->isSuccessful(), $restore->getErrorOutput());
         $this->assertSame("\x00\x01\x02\xff", DB::table('_backup_contract_probe')->value('payload'));
-        $this->assertSame(35, (int) DB::table('information_schema.TRIGGERS')->where('TRIGGER_SCHEMA', 'repro_mysql_test')->count());
+        $this->assertSame($originalTriggers, $triggerNames());
+        $this->assertSame(count($originalTriggers), $manifest['triggers']);
         $this->assertSame($manifest['foreign_keys'], (int) DB::table('information_schema.TABLE_CONSTRAINTS')->where('CONSTRAINT_SCHEMA', 'repro_mysql_test')->where('CONSTRAINT_TYPE', 'FOREIGN KEY')->count());
         $this->assertSame($manifest['server_uuid'], DB::selectOne('SELECT @@server_uuid AS uuid')->uuid);
     }

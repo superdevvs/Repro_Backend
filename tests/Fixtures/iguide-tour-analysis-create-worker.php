@@ -11,7 +11,8 @@ config(['app.env' => 'testing', 'database.default' => 'sqlite',
     'database.connections.sqlite.busy_timeout' => 2000, 'database.connections.sqlite.journal_mode' => null,
     'database.connections.sqlite.synchronous' => null, 'cache.default' => 'array', 'queue.default' => 'sync',
     'iguide-lab-tour.tour_analysis_enabled' => true]);
-\Illuminate\Support\Facades\DB::purge('sqlite');
+if ($argv[1] === 'mysql') require __DIR__.'/../MySql/support/use-isolated-iguide-mysql.php';
+else \Illuminate\Support\Facades\DB::purge('sqlite');
 \Illuminate\Support\Facades\DB::connection()->getPdo();
 \Illuminate\Support\Facades\Http::preventStrayRequests();
 \Illuminate\Support\Facades\Queue::fake();
@@ -23,9 +24,11 @@ $deadline = microtime(true) + 40;
 while (! is_file($argv[5].'.go') && microtime(true) < $deadline) usleep(10000);
 if (! is_file($argv[5].'.go')) exit(2);
 try {
+    file_put_contents($argv[5].'.attempted.'.$argv[6], 'attempting');
     $project = \App\Models\IguideLabProject::findOrFail($argv[2]);
     [$analysis, $queued] = app(\App\Services\IguideLab\LabTourAnalyses::class)->create($project,
         ['requestId' => $argv[4], 'importId' => $argv[3], 'preset' => 'golden-hour']);
+    \Illuminate\Support\Facades\Http::assertNothingSent();
     echo json_encode(['status' => $queued ? 202 : 200, 'id' => $analysis->id], JSON_THROW_ON_ERROR);
 } catch (\Symfony\Component\HttpKernel\Exception\HttpExceptionInterface $error) {
     echo json_encode(['status' => $error->getStatusCode()], JSON_THROW_ON_ERROR);

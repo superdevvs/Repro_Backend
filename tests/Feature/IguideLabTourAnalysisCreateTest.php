@@ -45,6 +45,9 @@ class IguideLabTourAnalysisCreateTest extends TestCase
     public function test_create_returns_202_with_captures_in_sources_order(): void
     {
         $import = $this->tourImport($this->project, ['KITCHEN', 'Front Yard', null, 'Back deck', str_repeat('Long room name ', 20)]);
+        $this->assertSame(str_repeat('Long room name ', 20).' · Panorama 4',
+            DB::table('iguide_lab_cases')->where('id', $import->sources[4]['caseId'])->value('label'),
+            'Keep the full legacy source label even though the public room display is bounded.');
         [$analysis, $queued] = $this->analyses()->create($this->project, $this->input($import, 'golden-hour', $requestId = (string) Str::uuid()));
 
         $this->assertTrue($queued, 'new survey work was queued (202)');
@@ -385,6 +388,7 @@ class IguideLabTourAnalysisCreateTest extends TestCase
 
     public function test_concurrent_creates_for_one_import_make_one_record(): void
     {
+        if (DB::getDriverName() !== 'sqlite') $this->markTestSkipped('SQLite WAL mechanics; native MySQL contention is covered by IguideLabConcurrencyTest.');
         $import = $this->tourImport($this->project, 3);
         $directory = sys_get_temp_dir().'/iguide-tour-create-race-'.bin2hex(random_bytes(8));
         mkdir($directory, 0700);

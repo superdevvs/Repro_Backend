@@ -48,7 +48,7 @@ class AdditionalEditedUploadTest extends TestCase
         [$shoot, $item] = $this->delivered();
         $actor = User::factory()->create(['role' => $role]);
         $oldFiles = $shoot->files()->orderBy('id')->get()->map->getRawOriginal()->all();
-        $deliveredAt = $item->getRawOriginal('delivered_at');
+        $deliveredAt = $item->fresh()->getRawOriginal('delivered_at');
         $this->actingAs($actor)->post("/api/shoots/{$shoot->id}/upload", [
             'files' => [UploadedFile::fake()->image('additional.jpg', 8, 8)],
             'upload_type' => 'edited', 'shoot_service_id' => $item->id,

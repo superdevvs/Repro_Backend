@@ -196,6 +196,9 @@ class IguideLabTourRunCreateTest extends TestCase
 
     public function test_concurrent_run_posts_for_one_preset(): void
     {
+        if (DB::connection()->getDriverName() !== 'sqlite') {
+            $this->markTestSkipped('SQLite WAL/BEGIN IMMEDIATE child-process fixture; duplicate-active, replay and transaction behavior are tested on both engines in this class.');
+        }
         [$analysis] = $this->seedAnalysis(rooms: 3, options: ['files' => false]);
         $input = $this->runInput($analysis, 'golden-hour');
         $directory = sys_get_temp_dir().'/iguide-tour-run-race-'.bin2hex(random_bytes(8));

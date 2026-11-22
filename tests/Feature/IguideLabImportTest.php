@@ -21,6 +21,7 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
+use Symfony\Component\Process\Process;
 use Tests\TestCase;
 use ZipArchive;
 
@@ -249,26 +250,21 @@ class IguideLabImportTest extends TestCase
 
     public function test_concurrent_retry_cannot_enter_publication_window_or_delete_canonical_chunk(): void
     {
-        if (! function_exists('pcntl_fork')) $this->markTestSkipped('The Linux worker lock test requires pcntl.');
         $service = app(LabImportUploads::class); $bytes = 'short fixture'; $sha = hash('sha256', $bytes);
         $upload = $service->start($this->project, ['requestId' => (string) Str::uuid(), 'importRequestId' => (string) Str::uuid(), 'filename' => 'source.zip', 'sizeBytes' => 13, 'sha256' => $sha]);
         app(LabStorage::class)->prepareImportUpload($upload->project_id, $upload->id); $disk = Storage::disk(LabService::DISK);
-        $path = 'iguide-lab/'.$this->project->id.'/import-uploads/'.$upload->id.'/0-'.$sha.'.part'; $signal = tempnam(sys_get_temp_dir(), 'lock-proof-'); chmod($signal, 0660);
+        $path = 'iguide-lab/'.$this->project->id.'/import-uploads/'.$upload->id.'/0-'.$sha.'.part';
         // Exact former race window: canonical bytes exist but no chunk row committed.
-        app(LabImportUploadLock::class)->run($upload, function () use ($upload, $disk, $path, $bytes, $signal) {
+        app(LabImportUploadLock::class)->run($upload, function () use ($upload, $disk, $path, $bytes) {
             $disk->put($path, $bytes, ['visibility' => 'private']); $this->assertSame([], $upload->fresh()->chunks);
-            $pid = pcntl_fork(); $this->assertNotSame(-1, $pid);
-            if ($pid === 0) {
-                // A distinct Unix owner sharing the private group must open the
-                // same inode without attempting chmod on the original owner.
-                if (function_exists('posix_geteuid') && posix_geteuid() === 0 && ! posix_seteuid(33)) exit(2);
-                $entered = app(LabImportUploadLock::class)->run($upload, function () use ($disk, $path) { $disk->delete($path); return true; }, false);
-                file_put_contents($signal, $entered === null ? 'blocked' : 'entered'); exit(0);
-            }
-            pcntl_waitpid($pid, $status); $this->assertSame(0, pcntl_wexitstatus($status));
-            $this->assertSame('blocked', file_get_contents($signal)); $this->assertSame($bytes, $disk->get($path));
+            // A fresh process cannot inherit (and close) the parent's PDO socket
+            // or transaction. It still contends on the real shared lock inode.
+            $worker = new Process([PHP_BINARY, base_path('tests/Fixtures/iguide-import-lock-worker.php'),
+                $disk->path(''), $upload->project_id, $upload->id, $path], base_path());
+            $worker->setTimeout(20); $worker->run();
+            $this->assertTrue($worker->isSuccessful(), $worker->getErrorOutput());
+            $this->assertSame('blocked', $worker->getOutput()); $this->assertSame($bytes, $disk->get($path));
         });
-        unlink($signal);
         // The canonical file then commits and exact retry converges on the same row.
         for ($i = 0; $i < 2; $i++) { $stream = fopen('php://temp', 'w+b'); fwrite($stream, $bytes); rewind($stream); $service->chunk($upload->fresh(), 0, 'bytes 0-12/13', $sha, $stream); fclose($stream); }
         $this->assertCount(1, $upload->fresh()->chunks); $this->assertSame($sha, hash_file('sha256', $disk->path($path)));

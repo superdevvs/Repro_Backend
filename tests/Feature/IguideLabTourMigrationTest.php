@@ -21,6 +21,7 @@ class IguideLabTourMigrationTest extends TestCase
         '2026_11_16_100100_create_iguide_lab_tour_analyses.php' => ['iguide_lab_tour_analyses', 'iguide_lab_tour_analysis_requests'],
         '2026_11_16_100200_create_iguide_lab_tour_captures.php' => ['iguide_lab_tour_captures'],
         '2026_11_16_100300_create_iguide_lab_tour_runs.php' => ['iguide_lab_tour_runs', 'iguide_lab_tour_run_chunks', 'iguide_lab_tour_run_targets'],
+        '2026_11_22_120200_preserve_iguide_lab_project_deletion.php' => [],
     ];
 
     private const COLUMNS = [
@@ -90,14 +91,24 @@ class IguideLabTourMigrationTest extends TestCase
         $this->assertSame($before, $this->labSnapshot());
         $this->assertSame(0, DB::table('iguide_lab_tour_analyses')->count());
 
+        $mysql = DB::getDriverName() === 'mysql';
         foreach (self::COLUMNS as $table => $columns) $this->assertSame($columns, Schema::getColumnListing($table), $table);
         foreach (self::INDEXES as $table => $expected) {
+            if ($mysql) {
+                $indexedPrefixes = array_column(array_column($expected, 0), 0);
+                foreach (array_diff(array_keys(self::FOREIGN_KEYS[$table]), $indexedPrefixes) as $column) {
+                    $expected[] = [[$column], false];
+                }
+            }
             $actual = array_map(fn ($index) => [$index['columns'], (bool) $index['unique']], array_values(array_filter(Schema::getIndexes($table), fn ($index) => ! $index['primary'])));
             $this->assertEqualsCanonicalizing($expected, $actual, $table);
         }
         foreach (self::FOREIGN_KEYS as $table => $expected) {
             $actual = [];
-            foreach (Schema::getForeignKeys($table) as $key) $actual[$key['columns'][0]] = [$key['foreign_table'], strtolower($key['on_delete'])];
+            foreach (Schema::getForeignKeys($table) as $key) {
+                $onDelete = strtolower($key['on_delete']);
+                $actual[$key['columns'][0]] = [$key['foreign_table'], $mysql && $onDelete === 'restrict' ? 'no action' : $onDelete];
+            }
             ksort($actual);
             ksort($expected);
             $this->assertSame($expected, $actual, $table);
@@ -154,6 +165,21 @@ class IguideLabTourMigrationTest extends TestCase
         $this->assertSame([0, 0, 0], [DB::table('iguide_lab_tour_surveys')->count(), DB::table('iguide_lab_tour_survey_attempts')->count(), DB::table('iguide_lab_cases')->count()]);
     }
 
+    public function test_project_delete_removes_the_full_tour_without_touching_another_project(): void
+    {
+        $removed = $this->seedRows();
+        $retained = $this->seedRows();
+
+        $this->assertSame(1, DB::table('iguide_lab_projects')->where('id', $removed['project'])->delete());
+
+        foreach (array_keys(self::COLUMNS) as $table) {
+            $this->assertDatabaseMissing($table, ['project_id' => $removed['project']]);
+            $this->assertDatabaseHas($table, ['project_id' => $retained['project']]);
+        }
+        $this->assertDatabaseMissing('iguide_lab_cases', ['id' => $removed['case']]);
+        $this->assertDatabaseHas('iguide_lab_cases', ['id' => $retained['case']]);
+    }
+
     private function seedRows(): array
     {
         $project = IguideLabProject::create(['name' => 'Tour migration fixture', 'token_hash' => hash('sha256', Str::random(64)),
@@ -204,7 +230,7 @@ class IguideLabTourMigrationTest extends TestCase
 
     private function attemptRow(array $r): array
     {
-        $survey = DB::table('iguide_lab_tour_surveys')->where('generation', 1)->value('id');
+        $survey = DB::table('iguide_lab_tour_surveys')->where('project_id', $r['project'])->where('generation', 1)->value('id');
 
         return ['id' => (string) Str::uuid(), 'project_id' => $r['project'], 'survey_id' => $survey, 'attempt_index' => 0, 'credential_source' => 'lab-primary',
             'requested_model' => 'gpt-6-astra', 'status' => 'submitting', 'started_at' => now(), 'created_at' => now(), 'updated_at' => now()];

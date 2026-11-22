@@ -14,6 +14,7 @@ use App\Services\IguideLab\LabTourAnalyses;
 use App\Services\IguideLab\LabTourDefaults;
 use App\Services\IguideLab\LabTourErrors;
 use App\Services\IguideLab\LabTourView;
+use Illuminate\Database\Connection;
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Database\Events\TransactionCommitted;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -346,17 +347,19 @@ class IguideLabTourEndToEndTest extends TestCase
         $columns = ['status', 'survey', 'applicability', 'candidates', 'defaults_version', 'defaults_flags', 'surveyed_at'];
         $finished = (array) DB::table('iguide_lab_tour_captures')->where('id', $last->id)->first($columns);
         $record = (array) DB::table('iguide_lab_tour_analyses')->where('id', $id)->first(['record_revision', 'completed_at', 'updated_at']);
-        $set = fn (array $values) => implode(', ', array_map(fn ($column, $value) => $column.' = '.($value === null ? 'NULL' : DB::getPdo()->quote((string) $value)),
-            array_keys($values), $values));
-        $finish = 'UPDATE iguide_lab_tour_captures SET '.$set($finished)." WHERE id = '{$last->id}';"
-            .' UPDATE iguide_lab_tour_analyses SET '.$set(['status' => 'ready'] + $record)." WHERE id = '$id';";
-        $restart = 'UPDATE iguide_lab_tour_captures SET '.$set(['status' => 'surveying'] + array_fill_keys(array_slice($columns, 1), null))." WHERE id = '{$last->id}';"
-            .' UPDATE iguide_lab_tour_analyses SET '.$set(['status' => 'analysing', 'completed_at' => null, 'record_revision' => $record['record_revision'] - 1,
-                'monitor_heartbeat_at' => now()->format('Y-m-d H:i:s')])." WHERE id = '$id';";
+        $finish = static function (Connection $writer) use ($id, $last, $finished, $record): void {
+            $writer->table('iguide_lab_tour_captures')->where('id', $last->id)->update($finished);
+            $writer->table('iguide_lab_tour_analyses')->where('id', $id)->update(['status' => 'ready'] + $record);
+        };
+        $restart = static function (Connection $writer) use ($id, $last, $columns, $record): void {
+            $writer->table('iguide_lab_tour_captures')->where('id', $last->id)->update(['status' => 'surveying'] + array_fill_keys(array_slice($columns, 1), null));
+            $writer->table('iguide_lab_tour_analyses')->where('id', $id)->update(['status' => 'analysing', 'completed_at' => null,
+                'record_revision' => $record['record_revision'] - 1, 'monitor_heartbeat_at' => now()->format('Y-m-d H:i:s')]);
+        };
 
-        $this->withWalDatabase(function (\PDO $writer) use ($id, $finish, $restart, $record) {
+        $this->withSnapshotDatabase(function (Connection $writer) use ($id, $finish, $restart, $record) {
             foreach (["tour-analyses/$id", "tour-analyses/$id/progress"] as $path) {
-                $writer->exec($restart);
+                $writer->transaction(fn () => $restart($writer));
                 $hook = $this->commitInsideTheSnapshot($writer, $finish);
                 $before = $this->tour('GET', $path);
                 $this->assertTrue($hook->fired, "$path: the monitor commit ran between two loader queries");
@@ -620,9 +623,15 @@ class IguideLabTourEndToEndTest extends TestCase
         return $response;
     }
 
-    /** Runs $test with the default connection on a WAL copy of every table, and a second writer on that file. */
-    private function withWalDatabase(callable $test): void
+    /** Two real connections, outside RefreshDatabase's enclosing fixture transaction. */
+    private function withSnapshotDatabase(callable $test): void
     {
+        if (DB::getDriverName() === 'mysql') {
+            $this->withMySqlSnapshotDatabase($test);
+
+            return;
+        }
+        $this->assertSame('sqlite', DB::getDriverName());
         $directory = sys_get_temp_dir().'/tour-e2e-snapshot-'.bin2hex(random_bytes(8));
         mkdir($directory, 0700);
         $file = $directory.'/tour.sqlite';
@@ -640,28 +649,81 @@ class IguideLabTourEndToEndTest extends TestCase
                     ->execute(array_values($row));
             }
         }
-        config(['database.connections.tour_e2e_snapshot' => ['driver' => 'sqlite', 'database' => $file, 'prefix' => '', 'foreign_key_constraints' => true,
-            'busy_timeout' => 5000, 'journal_mode' => 'wal']]);
+        $writer = null;
+        $configuration = ['driver' => 'sqlite', 'database' => $file, 'prefix' => '', 'foreign_key_constraints' => true,
+            'busy_timeout' => 5000, 'journal_mode' => 'wal'];
+        config(['database.connections.tour_e2e_snapshot' => $configuration, 'database.connections.tour_e2e_snapshot_writer' => $configuration]);
         $previous = DB::getDefaultConnection();
         DB::setDefaultConnection('tour_e2e_snapshot');
         try {
-            $test($writer);
+            $this->assertSame(0, DB::transactionLevel());
+            $test(DB::connection('tour_e2e_snapshot_writer'));
         } finally {
             DB::setDefaultConnection($previous);
             DB::purge('tour_e2e_snapshot');
-            $writer = null;
+            DB::purge('tour_e2e_snapshot_writer');
+            config(['database.connections.tour_e2e_snapshot' => null, 'database.connections.tour_e2e_snapshot_writer' => null]);
             foreach (glob($directory.'/*') ?: [] as $path) @unlink($path);
             @rmdir($directory);
         }
     }
 
+    /** Native MySQL snapshots against committed copies of only this synthetic lab fixture. */
+    private function withMySqlSnapshotDatabase(callable $test): void
+    {
+        $source = DB::connection();
+        $this->assertSame('repro_mysql_test', $source->getDatabaseName());
+        $this->assertSame('repro_test', $source->getConfig('username'));
+        $this->assertSame('', $source->getTablePrefix());
+        $prefix = 't'.bin2hex(random_bytes(3)).'_';
+        $configuration = array_replace($source->getConfig(), ['prefix' => $prefix, 'prefix_indexes' => true]);
+        config(['database.connections.tour_e2e_snapshot' => array_replace($configuration, ['name' => 'tour_e2e_snapshot']),
+            'database.connections.tour_e2e_snapshot_writer' => array_replace($configuration, ['name' => 'tour_e2e_snapshot_writer'])]);
+        $previous = DB::getDefaultConnection();
+        $writer = DB::connection('tour_e2e_snapshot_writer');
+        $created = [];
+        try {
+            $tables = array_column($source->select('SELECT TABLE_NAME AS name FROM information_schema.tables WHERE TABLE_SCHEMA = ? AND TABLE_TYPE = ?',
+                [$source->getDatabaseName(), 'BASE TABLE']), 'name');
+            $tables = array_values(array_filter($tables, fn ($table) => str_starts_with($table, 'iguide_lab_')
+                || in_array($table, ['jobs', 'job_batches', 'failed_jobs', 'cache', 'cache_locks'], true)));
+            $this->assertContains('iguide_lab_tour_analyses', $tables);
+            foreach ($tables as $table) {
+                $this->assertLessThanOrEqual(64, strlen($prefix.$table));
+                $this->assertFalse($source->getSchemaBuilder()->hasTable($prefix.$table), 'Refuse an existing snapshot fixture.');
+                $writer->statement('CREATE TABLE '.$writer->getQueryGrammar()->wrapTable($table).' LIKE '.$source->getQueryGrammar()->wrapTable($table));
+                $created[] = $table;
+                // Read through the original test transaction, then commit copies
+                // on the separate writer. The original fixture is never committed.
+                foreach ($source->table($table)->get()->chunk(100) as $rows) {
+                    $writer->table($table)->insert($rows->map(fn ($row) => (array) $row)->all());
+                }
+            }
+            DB::setDefaultConnection('tour_e2e_snapshot');
+            $this->assertSame(0, DB::transactionLevel());
+            $this->assertNotSame(DB::getPdo(), $writer->getPdo());
+            $test($writer);
+        } finally {
+            DB::setDefaultConnection($previous);
+            DB::purge('tour_e2e_snapshot');
+            try {
+                foreach (array_reverse($created) as $table) {
+                    $writer->statement('DROP TABLE '.$writer->getQueryGrammar()->wrapTable($table));
+                }
+            } finally {
+                DB::purge('tour_e2e_snapshot_writer');
+                config(['database.connections.tour_e2e_snapshot' => null, 'database.connections.tour_e2e_snapshot_writer' => null]);
+            }
+        }
+    }
+
     /**
-     * Commits $sql through a second connection right after the analyses read of LabTourView::load() (found on the call
+     * Commits $write through a second connection right after the analyses read of LabTourView::load() (found on the call
      * stack, so the hook does not depend on how the code frames its reads; the controller lookup and the GET kick also
      * read the analysis). A loader that did not hold one snapshot would read the captures after the commit and mix the
      * two states.
      */
-    private function commitInsideTheSnapshot(\PDO $writer, string $sql): object
+    private function commitInsideTheSnapshot(Connection $writer, callable $write): object
     {
         $hook = new class
         {
@@ -670,16 +732,15 @@ class IguideLabTourEndToEndTest extends TestCase
             /** @var list<string> */
             public array $after = [];
         };
-        Event::listen(QueryExecuted::class, function (QueryExecuted $query) use ($hook, $writer, $sql) {
+        $analysisTable = DB::connection('tour_e2e_snapshot')->getQueryGrammar()->wrapTable('iguide_lab_tour_analyses');
+        Event::listen(QueryExecuted::class, function (QueryExecuted $query) use ($hook, $writer, $write, $analysisTable) {
             if (! $hook->armed || $query->connectionName !== 'tour_e2e_snapshot') return;
             if ($hook->fired) { $hook->after[] = $query->sql; return; }
-            if (! preg_match('/\A\s*select .* from "iguide_lab_tour_analyses"/is', $query->sql)) return;
+            if (! preg_match('/\A\s*select .* from '.preg_quote($analysisTable, '/').'/is', $query->sql)) return;
             $inLoader = collect(debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS))->contains(fn ($frame) => ($frame['class'] ?? null) === LabTourView::class && $frame['function'] === 'load');
             if (! $inLoader) return;
             $hook->fired = true;
-            $writer->exec('BEGIN IMMEDIATE');
-            $writer->exec($sql);
-            $writer->exec('COMMIT');
+            $writer->transaction(fn () => $write($writer));
         });
 
         return $hook;
