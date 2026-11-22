@@ -98,6 +98,21 @@ and `password`; credentials never belong in command arguments or source control.
 First generate a fresh plan with a new private output directory:
 
 ```bash
+python scripts/mysql/schema-drift.py \
+  --release /protected/release-schema.sqlite \
+  --release-sha256 <verified-release-schema-file-sha256> \
+  --release-commit <reviewed-backend-commit> \
+  --snapshot /protected/frozen.sqlite \
+  --snapshot-sha256 <verified-snapshot-sha256>
+```
+
+Build the release schema from the reviewed commit in an isolated SQLite
+environment. Inspect the report and resolve or explicitly approve each
+difference before signing the import layout. Preserve historical tables and
+data unless a separate reviewed change makes a different disposition explicit.
+The report reads metadata only and leaves both files intact.
+
+```bash
 python scripts/mysql/migrate.py plan \
   --snapshot /protected/frozen.sqlite \
   --snapshot-sha256 <verified-snapshot-sha256> \
@@ -128,9 +143,28 @@ changed snapshot or changed exception set. It has no reset/drop-database path.
 A failed import leaves a partial isolated target for investigation; never
 automatically erase it or retry against a database that has received traffic.
 
-Import success is deliberately **not** cutover approval. It verifies every
-original row/field, restores the approved legacy constraints with enforcement
-enabled, and installs the 25 direct change-feed triggers. Apply the reviewed
+The importer verifies every original row and field, restores the approved
+legacy constraints with enforcement enabled, and installs the 25 direct
+change-feed triggers. While writers remain stopped, run the independent PHP
+reader against the imported schema before applying the reviewed repairs. Use a
+separate read-only account and record the checksum of the exact schema-plan file
+independently of its structural fingerprint.
+
+```bash
+php scripts/mysql/verify-fields.php \
+  --snapshot=/protected/frozen.sqlite \
+  --snapshot-sha256=<verified-snapshot-sha256> \
+  --schema-plan=/protected/new-import/schema-plan.json \
+  --schema-plan-sha256=<verified-schema-plan-file-sha256> \
+  --credentials=/protected/mysql-parity-reader.json \
+  --database=repro_dashboard \
+  --expected-server-uuid=<independently-observed-new-server-uuid> \
+  --writers-stopped
+```
+
+Require `all-fields-verified`, with zero mismatches and the expected table and
+row totals. Both checks belong to the same immutable snapshot and target.
+Apply the reviewed
 application migrations in an isolated maintenance configuration, then always run
 the guarded schema-completion tool to add the repairs, effective-period index
 and ten MySQL cascade triggers. SQLite can have already recorded these migration
@@ -174,6 +208,22 @@ Keep public writes and all workers stopped while checking:
 - Measured target-host latency/throughput, write contention, connection headroom,
   queue backlog/recovery and backup/restore meet the agreed limits. Review both
   typical and sustained load; an empty test DB is not a performance benchmark.
+
+Use the [readiness receipt checker](../scripts/cutover/readiness/README.md) with
+both timed dress-rehearsal reports and the independent off-site recovery report.
+Review the original measurements along with the output. A passing receipt is
+evidence for the operator's go/no-go review. Live writer fencing must pass an
+actual restart test using the [admission guard](../scripts/cutover/fence/README.md)
+and its privileged wrappers. The [Telnyx inbox](../scripts/cutover/inbox/README.md)
+requires a reviewed ingress and replay integration before it can capture
+events during maintenance.
+
+The current deploy scripts check `/etc/repro-database-cutover/active`
+after taking their individual backend and frontend deployment locks. The
+privileged cutover controller must coordinate both locks when publishing or
+clearing that marker. Its parent directory must let the deploy account check
+the marker and allow writes only by root. A stale script or manual deployment
+also needs the host-level permission fence.
 
 Back up the verified MySQL target. Change only the database settings in the
 preserved environment through the approved cutover procedure. Retain the APP_KEY

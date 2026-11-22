@@ -17,7 +17,7 @@ final class WriteConcurrencyTest extends TestCase
         parent::setUp();
         self::assertSame('repro_mysql_test', getenv('DB_DATABASE'));
         self::assertSame('repro_test', getenv('DB_USERNAME'));
-        $this->pdo = new PDO('mysql:host='.getenv('DB_HOST').';dbname=repro_mysql_test;charset=utf8mb4', 'repro_test', getenv('DB_PASSWORD'), [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+        $this->pdo = require __DIR__.'/support/socket-or-tcp-connection.php';
         $this->pdo->exec('CREATE TABLE _mysql_migration_concurrency_probe (id BIGINT PRIMARY KEY, counter BIGINT NOT NULL) ENGINE=InnoDB');
         $this->pdo->exec('INSERT INTO _mysql_migration_concurrency_probe VALUES (1,0),(2,0)');
         $this->directory = sys_get_temp_dir().'/repro-mysql-concurrency-'.bin2hex(random_bytes(8));

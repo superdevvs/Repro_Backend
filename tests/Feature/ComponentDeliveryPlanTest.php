@@ -178,10 +178,18 @@ class ComponentDeliveryPlanTest extends TestCase
                 ->update(['evidence' => json_encode($proof, JSON_THROW_ON_ERROR)]);
             $planner->forgetReleasedFiles($shoot);
         };
+        $component = function (string $kind) use ($planner, $shoot, $actor, $item): array {
+            $row = collect($planner->plan($shoot->fresh(), $actor)['components'])->firstWhere('id', $item->id.':'.$kind);
+            $this->assertNotNull($row, 'The booked component must exist: '.$kind);
+
+            return $row;
+        };
         $save($evidence);
-        $component = $planner->plan($shoot->fresh(), $actor)['components'][0];
-        $this->assertTrue($component['resolved']);
-        $this->assertSame('delivered', $component['status']);
+        $this->assertTrue($component('tour')['resolved']);
+        $this->assertSame('delivered', $component('tour')['status']);
+        // An iGuide inclusion also requires floorplans. Approving its tour must
+        // not accidentally approve the first (floorplan) component in the plan.
+        $this->assertFalse($component('floorplan')['resolved']);
         $this->assertSame([$item->id], $planner->releasedServiceIds($shoot->fresh()));
 
         foreach ([['url', 'https://youriguide.com/different-output'], ['property_id', 'different-property'],
@@ -189,15 +197,16 @@ class ComponentDeliveryPlanTest extends TestCase
             $changed = $evidence;
             $changed['external'][$field] = $value;
             $save($changed);
-            $this->assertFalse($planner->plan($shoot->fresh(), $actor)['components'][0]['resolved'],
+            $this->assertFalse($component('tour')['resolved'],
                 'A changed external identity must invalidate approval: '.$field);
             $this->assertSame([], $planner->releasedServiceIds($shoot->fresh()));
         }
         $save($evidence);
-        $this->assertTrue($planner->plan($shoot->fresh(), $actor)['components'][0]['resolved']);
+        $this->assertTrue($component('tour')['resolved']);
+        $this->assertFalse($component('floorplan')['resolved']);
         DB::table('shoot_delivery_receipts')->where('id', $receipt->id)->update(['revoked_at' => now()]);
         $planner->forgetReleasedFiles($shoot);
-        $this->assertFalse($planner->plan($shoot->fresh(), $actor)['components'][0]['resolved']);
+        $this->assertFalse($component('tour')['resolved']);
     }
 
     public function test_worker_rechecks_stale_versions_and_actor_permissions_before_any_receipt(): void

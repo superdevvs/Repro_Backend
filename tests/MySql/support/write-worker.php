@@ -10,7 +10,7 @@ $loops = (int) ($argv[4] ?? 1);
 if (! in_array($id, [1, 2], true) || $loops < 1 || $loops > 100 || ! str_starts_with($directory, sys_get_temp_dir().'/repro-mysql-concurrency-') || ! is_dir($directory)) {
     throw new RuntimeException('Invalid probe arguments.');
 }
-$pdo = new PDO('mysql:host='.getenv('DB_HOST').';dbname=repro_mysql_test;charset=utf8mb4', 'repro_test', getenv('DB_PASSWORD'), [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+$pdo = require __DIR__.'/socket-or-tcp-connection.php';
 for ($i = 0; $i < $loops; $i++) {
     $pdo->beginTransaction();
     $value = (int) $pdo->query('SELECT counter FROM _mysql_migration_concurrency_probe WHERE id='.$id.' FOR UPDATE')->fetchColumn();

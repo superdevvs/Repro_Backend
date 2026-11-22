@@ -476,6 +476,11 @@ stage="/tmp/repro-frontend-$commit"
 command -v flock >/dev/null
 exec 9>"$HOME/.repro-frontend-deploy.lock"
 flock -w 300 9 || { echo 'Another frontend deployment holds the lock; retry later.' >&2; exit 94; }
+if [ -e /etc/repro-database-cutover/active ] || [ -L /etc/repro-database-cutover/active ]; then
+  echo 'Database cutover holds the frontend deployment fence.' >&2
+  exit 95
+fi
+
 python3 /var/www/backend/scripts/deploy/deployment-storage.py preflight frontend "$archive_bytes" "$release_bytes"
 
 case "$archive" in /tmp/repro-frontend-*.tar.gz) ;; *) echo "Unsafe archive path" >&2; exit 90 ;; esac

@@ -66,7 +66,10 @@ final class DatabaseBackupTest extends TestCase
         $this->assertFileDoesNotExist($this->directory.'/.database-backup.lock');
         $config = DB::connection()->getConfig();
         $defaults = $this->directory.'/restore.cnf';
-        file_put_contents($defaults, "[client]\nuser=repro_test\npassword=".$config['password']."\nhost=".$config['host']."\n");
+        $transport = $config['unix_socket']
+            ? "protocol=socket\nsocket=".$config['unix_socket']
+            : "protocol=tcp\nhost=".$config['host']."\nport=".$config['port'];
+        file_put_contents($defaults, "[client]\nuser=repro_test\npassword=".$config['password']."\n".$transport."\n");
         chmod($defaults, 0600);
         DB::table('_backup_contract_probe')->delete();
         $restore = new Process([getenv('REPRO_MYSQL_CLIENT') ?: '/opt/mysql84/bin/mysql', '--defaults-file='.$defaults, '--no-login-paths', '--database=repro_mysql_test']);

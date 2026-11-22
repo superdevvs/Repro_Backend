@@ -93,6 +93,19 @@ class Observation:
     def mysql_live(self) -> bool:
         return self.engine == "mysql" and self.admissions_open and self.mysql_writable and not self.sqlite_writable
 
+    def sealed(self, engine: str) -> bool:
+        """A single writer route is prepared while every admission stays held."""
+        return (
+            engine in {"sqlite", "mysql"}
+            and self.engine == engine
+            and not self.admissions_open
+            and self.workers_stopped
+            and self.sqlite_writable is (engine == "sqlite")
+            and self.mysql_writable is (engine == "mysql")
+            and not self.mysql_business_activity
+            and self.deployment_fenced
+        )
+
 
 @dataclass(frozen=True)
 class Evidence:
@@ -142,12 +155,15 @@ class Journal:
     def write(self, state: dict) -> None:
         self.write_record(self.path.name, state)
 
+    @staticmethod
+    def encode(value: dict) -> bytes:
+        return (json.dumps(value, sort_keys=True, allow_nan=False) + "\n").encode("utf-8")
+
     def write_record(self, name: str, value: dict) -> None:
         descriptor, temporary = tempfile.mkstemp(prefix=".journal-", dir=self.directory)
         try:
-            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-                json.dump(value, stream, sort_keys=True, allow_nan=False)
-                stream.write("\n")
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(self.encode(value))
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(temporary, self.directory / name)
@@ -204,8 +220,9 @@ class Adapter(Protocol):
     def freeze(self, lease: Lease, deadline: int) -> None: ...
     def prepare(self, lease: Lease, deadline: int) -> None: ...
     def evidence(self) -> Evidence: ...
-    def enable_mysql(self, lease: Lease, deadline: int) -> None: ...
-    def restore_sqlite(self, lease: Lease, deadline: int) -> None: ...
+    def seal_mysql(self, lease: Lease, deadline: int) -> None: ...
+    def seal_sqlite(self, lease: Lease, deadline: int) -> None: ...
+    def publish_authority(self, lease: Lease, engine: str, candidate: bytes, deadline: int) -> None: ...
 
 
 class Runner:
@@ -290,7 +307,7 @@ class Runner:
         state["pending"] = {"action": action, "before": asdict(before), "at": now, **metadata}
         self.journal.write(state)
 
-    def _finish(self, state: dict, after: Observation, phase: str) -> None:
+    def _complete(self, state: dict, after: Observation, phase: str) -> None:
         finished_at = max(state["last_observed_at"], int(self.clock()))
         state["history"].append({**state["pending"], "after": asdict(after), "phase": phase,
                                  "finished_at": finished_at})
@@ -298,6 +315,22 @@ class Runner:
         state["pending"] = None
         state["phase"] = phase
         state["challenge"] = uuid.uuid4().hex
+
+    def _finish(self, state: dict, after: Observation, phase: str) -> None:
+        self._complete(state, after, phase)
+        self.journal.write(state)
+
+    def _publish_authority(self, state: dict, lease: Lease, engine: str, deadline: int) -> None:
+        after = self.adapter.observe()
+        if not after.sealed(engine) or int(self.clock()) >= deadline:
+            raise UnsafeCutover("A sealed single-engine route could not be verified in time")
+        self._complete(state, after, f"{engine}_authoritative")
+        # The proof matches the candidate bytes only. While holding the exclusive
+        # lease, publish the proof first, then commit exactly those journal bytes.
+        # A crash between the two leaves a pending journal and no usable proof.
+        self.adapter.publish_authority(lease, engine, self.journal.encode(state), deadline)
+        if not self.adapter.observe().sealed(engine) or int(self.clock()) >= deadline:
+            raise UnsafeCutover("The authority proof or admission seal could not be maintained in time")
         self.journal.write(state)
 
     def _record_recovery(self, state: dict) -> None:
@@ -314,11 +347,8 @@ class Runner:
         self._intent(state, "abort", before, now)
         # Even a late watchdog must attempt recovery with a bounded fresh budget.
         rollback_deadline = max(state["started_at"] + self.WINDOW_SECONDS, now + 10 * 60)
-        self.adapter.restore_sqlite(lease, rollback_deadline)
-        after = self.adapter.observe()
-        if not after.sqlite_live():
-            raise UnsafeCutover("SQLite restoration could not be verified")
-        self._finish(state, after, "sqlite_authoritative")
+        self.adapter.seal_sqlite(lease, rollback_deadline)
+        self._publish_authority(state, lease, "sqlite", rollback_deadline)
 
     def perform(self, action: str, approval: Approval | None = None) -> dict:
         if action not in {"freeze", "prepare", "promote", "tick", "abort"}:
@@ -330,20 +360,29 @@ class Runner:
             before = self.adapter.observe()
             now = int(self.clock())
             clock_reversed = now < state["last_observed_at"]
-            state["last_observed_at"] = max(now, state["last_observed_at"])
-            state["generation"] = lease.generation
-            self.journal.write(state)
+            phase = state["phase"]
 
-            if state["writes_possible"] or before.mysql_writable or before.mysql_business_activity:
-                if state["phase"] == "mysql_authoritative" and action == "tick" and before.mysql_live():
+            if (phase == "mysql_authoritative" and state["writes_possible"] is True
+                    and state["pending"] is None and (before.sealed("mysql") or before.mysql_live())):
+                if action == "tick":
                     return state
-                if state["phase"] != "mysql_authoritative" or not before.mysql_live():
+                raise UnsafeCutover("MySQL writes may exist. Use separately verified recovery")
+            if (phase == "sqlite_authoritative" and state["writes_possible"] is False
+                    and state["pending"] is None and (before.sealed("sqlite") or before.sqlite_live())):
+                if action in {"tick", "abort"}:
+                    return state
+                raise UnsafeCutover("Completed SQLite rollback cannot be re-run")
+
+            last_observed = state["last_observed_at"]
+            state["last_observed_at"] = max(now, last_observed)
+            state["generation"] = lease.generation
+            if state["writes_possible"] or before.mysql_writable or before.mysql_business_activity:
+                if phase != "recovery_required":
                     self._record_recovery(state)
                 raise UnsafeCutover("MySQL writes may exist. Use separately verified recovery")
-            if state["phase"] == "sqlite_authoritative":
-                if action not in {"tick", "abort"} or not before.sqlite_live():
-                    raise UnsafeCutover("Completed SQLite rollback cannot be re-run or verified")
-                return state
+            if phase == "sqlite_authoritative":
+                self._record_recovery(state)
+                raise UnsafeCutover("SQLite authority could not be verified. Use separately verified recovery")
 
             started = state["started_at"]
             if started is not None and (
@@ -352,7 +391,12 @@ class Runner:
                 self._rollback(state, lease, before, state["last_observed_at"])
                 return state
             if action == "tick":
-                return state
+                # Preserve rollback-clock tracking only during the freeze. An
+                # authorizing or idle journal has no time-sensitive transition.
+                if started is not None and now > last_observed:
+                    self.journal.write(state)
+                    return state
+                return self.status()
             if state["pending"] is not None:
                 raise UnsafeCutover("Interrupted action requires a verified pre-write abort")
             if clock_reversed:
@@ -420,11 +464,9 @@ class Runner:
         state["phase"] = "writes_possible"
         self._intent(state, "promote", before, accepted_at, approval=asdict(approval))
         try:
-            self.adapter.enable_mysql(lease, state["started_at"] + self.WINDOW_SECONDS)
-            after = self.adapter.observe()
-            if not after.mysql_live():
-                raise UnsafeCutover("MySQL admission could not be verified")
+            deadline = state["started_at"] + self.WINDOW_SECONDS
+            self.adapter.seal_mysql(lease, deadline)
+            self._publish_authority(state, lease, "mysql", deadline)
         except Exception:
             self._record_recovery(state)
             raise
-        self._finish(state, after, "mysql_authoritative")

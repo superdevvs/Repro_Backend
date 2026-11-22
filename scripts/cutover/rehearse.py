@@ -9,10 +9,14 @@ import uuid
 from dataclasses import asdict, replace
 from pathlib import Path
 
+from fence import guard
 from runner import Approval, Evidence, Identity, Journal, Lease, Observation, Runner, UnsafeCutover, digest
 
 
 class FixtureAdapter:
+    MACHINE_SHA256 = "e" * 64
+    BOOT_ID = "2fb9e4be-f041-45a0-9055-8d3ed47f9857"
+
     def __init__(self, journal: Journal, identity: Identity):
         self.journal = journal
         self._identity = identity
@@ -50,18 +54,62 @@ class FixtureAdapter:
             "fixture-binlog.000001", 4, True, True, True, True, True,
         )
 
-    def enable_mysql(self, lease: Lease, deadline: int) -> None:
-        self._write(lease, Observation("mysql", True, False, False, True, True, True))
+    def seal_mysql(self, lease: Lease, deadline: int) -> None:
+        self._write(lease, Observation("mysql", False, True, False, True, False, True))
 
-    def restore_sqlite(self, lease: Lease, deadline: int) -> None:
-        self._write(lease, Observation("sqlite", True, False, True, False, False, False))
+    def seal_sqlite(self, lease: Lease, deadline: int) -> None:
+        self._write(lease, Observation("sqlite", False, True, True, False, False, True))
+
+    def policy(self) -> dict:
+        return {
+            "version": 1, "machine_id_sha256": self.MACHINE_SHA256, "identity": asdict(self._identity),
+            "sqlite_live_config_sha256": "1" * 64, "mysql_live_config_sha256": "2" * 64,
+        }
+
+    def authority_evidence(self, engine: str, candidate: bytes) -> dict:
+        policy = self.policy()
+        return {
+            "version": 1, "boot_id": self.BOOT_ID, "policy_sha256": guard.sha256(self.journal.encode(policy)),
+            "journal_sha256": guard.sha256(candidate), "engine": engine,
+            "database_identity": self._identity.source_sha256 if engine == "sqlite" else self._identity.target_uuid,
+            "live_config_sha256": policy[f"{engine}_live_config_sha256"],
+            "release_sha": self._identity.release_sha, "artifact_sha256": self._identity.artifact_sha256,
+            "competing_writer_detected": False,
+        }
+
+    def publish_authority(self, lease: Lease, engine: str, candidate: bytes, deadline: int) -> None:
+        lease.require_current()
+        if not self.observe().sealed(engine):
+            raise UnsafeCutover("Fixture admissions are not sealed")
+        self.journal.write_record("fixture-authority.json", self.authority_evidence(engine, candidate))
+
+    def reopen(self) -> None:
+        # The cross-platform fixture takes a conflicting lock on the same
+        # journal without changing its generation. The installed Linux guard
+        # and host admission wrappers use the real shared lease.
+        with self.journal.acquire():
+            observed = self.observe()
+            if not observed.sealed(observed.engine):
+                raise UnsafeCutover("Fixture has no sealed authority to reopen")
+            try:
+                guard.verify(
+                    self.journal.encode(self.policy()), self.journal.path.read_bytes(),
+                    (self.journal.directory / "fixture-authority.json").read_bytes(),
+                    machine_sha=self.MACHINE_SHA256, boot_id=self.BOOT_ID,
+                    action="queue-worker", expected_engine=observed.engine,
+                )
+            except guard.Refused as error:
+                raise UnsafeCutover(str(error)) from error
+            self.journal.write_record("fixture.json", asdict(replace(
+                observed, admissions_open=True, workers_stopped=False, deployment_fenced=False,
+            )))
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--state-dir", required=True, type=Path)
     parser.add_argument(
-        "action", choices=["init", "status", "approval-template", "freeze", "prepare", "promote", "tick", "abort"]
+        "action", choices=["init", "status", "approval-template", "freeze", "prepare", "promote", "tick", "abort", "reopen"]
     )
     parser.add_argument("--phase", choices=["freeze", "promote"])
     parser.add_argument("--approval", type=Path)
@@ -76,7 +124,8 @@ def main() -> int:
         identity = Identity(name, "a" * 40, "b" * 64, "c" * 64, "d" * 64,
                             str(uuid.uuid5(uuid.NAMESPACE_URL, "repro-cutover-fixture:" + name)))
         journal = Journal(args.state_dir)
-        runner = Runner(journal, identity, FixtureAdapter(journal, identity))
+        adapter = FixtureAdapter(journal, identity)
+        runner = Runner(journal, identity, adapter)
         if args.action == "init":
             result = runner.initialize()
         elif args.action == "status":
@@ -84,13 +133,16 @@ def main() -> int:
         elif args.action == "approval-template":
             print(json.dumps(asdict(runner.approval_request(args.phase)), indent=2))
             return 0
+        elif args.action == "reopen":
+            adapter.reopen()
+            result = runner.status()
         else:
             approval = Approval(**json.loads(args.approval.read_text(encoding="utf-8-sig"))) if args.approval else None
             result = runner.perform(args.action, approval)
     except (UnsafeCutover, ValueError, OSError, TypeError) as error:
         print(f"Cutover rehearsal refused: {error}", file=sys.stderr)
         return 1
-    print(json.dumps({"mode": "fixture-only", "state": result}, indent=2))
+    print(json.dumps({"mode": "fixture-only", "state": result, "observation": asdict(adapter.observe())}, indent=2))
     return 0
 
 

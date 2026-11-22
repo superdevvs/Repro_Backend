@@ -1,0 +1,312 @@
+"""Check isolated migration readiness receipts against a reviewed policy."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+from dataclasses import asdict
+from pathlib import Path
+from typing import Callable
+
+from scripts.cutover.runner import Identity, digest, is_sha256
+
+MINUTE = 60_000
+TIMINGS = {
+    "reopen_decision_ms": 40 * MINUTE,
+    "prewrite_rollback_ms": 10 * MINUTE,
+    "postwrite_failback_ms": 60 * MINUTE,
+}
+PREREQUISITES = (
+    "sqlite_ci_passed",
+    "mysql_ci_passed",
+    "field_and_schema_parity_passed",
+    "role_finance_delivery_workflows_passed",
+    "provider_egress_isolation_passed",
+    "native_host_capacity_and_isolation_passed",
+    "host_writer_fence_restart_passed",
+    "database_crash_recovery_passed",
+)
+RECOVERY_PROOFS = (
+    "offsite_only",
+    "independent_restore",
+    "contiguous_binlog_chain",
+    "chosen_transaction_verified",
+    "stored_value_decrypted",
+)
+
+
+class Missing(ValueError):
+    """A required measurement or report is absent."""
+
+
+class Failed(ValueError):
+    """Evidence failed a requirement or could not be interpreted."""
+
+
+def field(record: dict, name: str):
+    if name not in record or record[name] is None:
+        raise Missing(f"{name} is missing")
+    return record[name]
+
+
+def object_field(record: dict, name: str) -> dict:
+    value = field(record, name)
+    if not isinstance(value, dict):
+        raise Failed(f"{name} must be a record")
+    return value
+
+
+def sha_field(record: dict, name: str) -> str:
+    value = field(record, name)
+    if not is_sha256(value):
+        raise Failed(f"{name} must be a SHA-256 digest")
+    return value
+
+
+def number(record: dict, name: str, minimum: int = 0) -> int:
+    value = field(record, name)
+    if type(value) is not int or value < minimum:
+        raise Failed(f"{name} must be an integer of at least {minimum}")
+    return value
+
+
+def confirmed(record: dict, name: str) -> None:
+    if field(record, name) is not True:
+        raise Failed(f"{name} did not pass")
+
+
+def cap(record: dict, name: str, limit: int) -> None:
+    if number(record, name, minimum=1) > limit:
+        raise Failed(f"{name} exceeds {limit}")
+
+
+def zero(record: dict, name: str) -> None:
+    if number(record, name) != 0:
+        raise Failed(f"{name} must be zero")
+
+
+def version(record: dict) -> None:
+    if number(record, "version", minimum=1) != 1:
+        raise Failed("Unsupported receipt version")
+
+
+def load_identity(record: dict) -> dict:
+    values = object_field(record, "identity")
+    for name in Identity.__dataclass_fields__:
+        field(values, name)
+    try:
+        return asdict(Identity(**values))
+    except (ValueError, AttributeError, TypeError) as error:
+        raise Failed("Malformed release, source, configuration or target identity") from error
+
+
+def endpoints(policy: dict) -> list[str]:
+    values = field(policy, "critical_endpoints")
+    if (not isinstance(values, list) or not values
+            or any(not isinstance(value, str) or not value.strip() for value in values)
+            or len(values) != len(set(values))):
+        raise Failed("Critical endpoints must be a nonempty list of unique labels")
+    return values
+
+
+class Gates:
+    def __init__(self) -> None:
+        self.results = {}
+
+    def check(self, name: str, validate: Callable[[], object]) -> bool:
+        try:
+            validate()
+        except Missing as error:
+            self.results[name] = {"status": "missing", "detail": str(error)}
+        except Failed as error:
+            self.results[name] = {"status": "failed", "detail": str(error)}
+        else:
+            self.results[name] = {"status": "passed"}
+            return True
+        return False
+
+    def report(self, **binding) -> dict:
+        passed = bool(self.results) and all(result["status"] == "passed" for result in self.results.values())
+        return {"decision": "meets_review_gates" if passed else "no_go", **binding, "gates": self.results}
+
+
+def review_policy(policy: dict) -> None:
+    version(policy)
+    load_identity(policy)
+    endpoints(policy)
+    sha_field(policy, "host_profile_sha256")
+    sha_field(policy, "workload_sha256")
+
+
+def review_binding(policy: dict, receipt: dict) -> None:
+    version(receipt)
+    if sha_field(receipt, "policy_sha256") != digest(policy) or load_identity(receipt) != load_identity(policy):
+        raise Failed("Receipt does not match the approved policy or cutover identity")
+
+
+def review_prerequisites(policy: dict, receipt: dict) -> None:
+    report = object_field(receipt, "prerequisites")
+    sha_field(report, "report_sha256")
+    if sha_field(report, "identity_sha256") != digest(load_identity(policy)):
+        raise Failed("Prerequisite report is for a different release or target")
+
+
+def review_rehearsal_pair(receipt: dict) -> None:
+    values = field(receipt, "dress_rehearsals")
+    if not isinstance(values, list):
+        raise Failed("Dress rehearsals must be a list")
+    if len(values) < 2:
+        raise Missing("Two dress rehearsals are required")
+    if len(values) != 2 or any(not isinstance(value, dict) for value in values):
+        raise Failed("Select exactly two dress rehearsal records")
+    ids = [field(value, "id") for value in values]
+    if any(not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", value) for value in ids):
+        raise Failed("Each dress rehearsal requires a valid run ID")
+    if len(set(ids)) != 2 or len({sha_field(value, "report_sha256") for value in values}) != 2:
+        raise Failed("Dress rehearsals must use distinct run IDs and reports")
+
+
+def review_rehearsal_scope(policy: dict, rehearsal: dict) -> None:
+    sha_field(rehearsal, "snapshot_sha256")
+    for name in ("host_profile_sha256", "workload_sha256"):
+        if sha_field(rehearsal, name) != policy[name]:
+            raise Failed(f"{name} does not match the approved benchmark")
+    if sha_field(rehearsal, "identity_sha256") != digest(load_identity(policy)):
+        raise Failed("Dress rehearsal identity differs from the approved release and target")
+    confirmed(rehearsal, "peak_and_surge_profile_completed")
+
+
+def review_p95(policy: dict, rehearsal: dict) -> None:
+    measurements = object_field(rehearsal, "endpoint_p95_us")
+    expected = set(endpoints(policy))
+    if expected - measurements.keys():
+        raise Missing("P95 measurements do not cover every critical endpoint")
+    if measurements.keys() - expected:
+        raise Failed("P95 measurements differ from the approved endpoint inventory")
+    for label in sorted(expected):
+        endpoint = object_field(measurements, label)
+        if number(endpoint, "mysql", minimum=1) * 100 > number(endpoint, "sqlite", minimum=1) * 110:
+            raise Failed("A critical endpoint p95 is more than 10% slower")
+
+
+def review_queue(rehearsal: dict) -> None:
+    if number(rehearsal, "peak_queue_end_depth") > number(rehearsal, "peak_queue_start_depth"):
+        raise Failed("The queue backlog grew under normal peak load")
+
+
+def write_improvement(rehearsal: dict) -> tuple[bool, bool]:
+    sqlite = object_field(rehearsal, "sqlite_writes")
+    mysql = object_field(rehearsal, "mysql_writes")
+    sqlite_attempts = number(sqlite, "attempts", minimum=1)
+    mysql_attempts = number(mysql, "attempts", minimum=1)
+    sqlite_contentions = number(sqlite, "contended_attempts")
+    mysql_contentions = number(mysql, "contended_attempts")
+    if sqlite_contentions > sqlite_attempts or mysql_contentions > mysql_attempts:
+        raise Failed("Contention count exceeds measured write attempts")
+    faster = number(mysql, "p95_us", minimum=1) < number(sqlite, "p95_us", minimum=1)
+    less_contended = mysql_contentions * sqlite_attempts < sqlite_contentions * mysql_attempts
+    return faster, less_contended
+
+
+def review_repeatability(rehearsals: list[dict]) -> None:
+    first, second = [write_improvement(rehearsal) for rehearsal in rehearsals]
+    if not any(a and b for a, b in zip(first, second)):
+        raise Failed("Neither write latency nor contention improved in both rehearsals")
+
+
+def review_recovery(policy: dict, receipt: dict) -> None:
+    recovery = object_field(receipt, "offsite_recovery")
+    sha_field(recovery, "report_sha256")
+    if sha_field(recovery, "identity_sha256") != digest(load_identity(policy)):
+        raise Failed("Off-site recovery report is for a different release or target")
+    for proof in RECOVERY_PROOFS:
+        confirmed(recovery, proof)
+    cap(recovery, "database_recovery_ms", 60 * MINUTE)
+    if number(recovery, "offsite_database_data_loss_ms") > 5 * MINUTE:
+        raise Failed("Measured off-site database data loss exceeds five minutes")
+
+
+def evaluate(policy: dict, receipt: dict) -> dict:
+    gates = Gates()
+    if not gates.check("approved_policy", lambda: review_policy(policy)):
+        return gates.report()
+    binding = {"policy_sha256": digest(policy), "receipt_sha256": digest(receipt)}
+    if not gates.check("receipt_binding", lambda: review_binding(policy, receipt)):
+        return gates.report(**binding)
+
+    if gates.check("prerequisite_report", lambda: review_prerequisites(policy, receipt)):
+        prerequisites = receipt["prerequisites"]
+        for name in PREREQUISITES:
+            gates.check(name, lambda: confirmed(prerequisites, name))
+
+    if gates.check("distinct_dress_rehearsals", lambda: review_rehearsal_pair(receipt)):
+        rehearsals = receipt["dress_rehearsals"]
+        comparable = []
+        for index, rehearsal in enumerate(rehearsals, 1):
+            prefix = f"dress_rehearsal_{index}"
+            if not gates.check(f"{prefix}.scope", lambda: review_rehearsal_scope(policy, rehearsal)):
+                continue
+            comparable.append(rehearsal)
+            for name, limit in TIMINGS.items():
+                gates.check(f"{prefix}.{name}", lambda: cap(rehearsal, name, limit))
+            for name in ("lost_acknowledged_writes", "duplicate_business_effects"):
+                gates.check(f"{prefix}.{name}", lambda: zero(rehearsal, name))
+            gates.check(f"{prefix}.queue", lambda: review_queue(rehearsal))
+            gates.check(f"{prefix}.critical_p95", lambda: review_p95(policy, rehearsal))
+        if len(comparable) == 2:
+            gates.check("repeatable_write_improvement", lambda: review_repeatability(comparable))
+
+    gates.check("offsite_database_recovery", lambda: review_recovery(policy, receipt))
+    return gates.report(**binding)
+
+
+def reject_constant(_value: str):
+    raise Failed("Receipt numbers must be finite integers")
+
+
+def unique_keys(pairs: list[tuple[str, object]]) -> dict:
+    record = dict(pairs)
+    if len(record) != len(pairs):
+        raise Failed("Malformed JSON contains duplicate fields")
+    return record
+
+
+def load(path: Path) -> dict:
+    try:
+        with path.open("rb") as stream:
+            payload = stream.read(1024 * 1024 + 1)
+    except FileNotFoundError as error:
+        raise Missing("Evidence file was not supplied") from error
+    except OSError as error:
+        raise Failed("Evidence file could not be read") from error
+    if not payload:
+        raise Missing("Evidence file is empty")
+    if len(payload) > 1024 * 1024:
+        raise Failed("Evidence file exceeds the receipt size limit")
+    try:
+        record = json.loads(payload.decode("utf-8"), object_pairs_hook=unique_keys,
+                            parse_constant=reject_constant, parse_float=reject_constant)
+    except (ValueError, UnicodeError, RecursionError) as error:
+        raise Failed("Malformed evidence JSON") from error
+    if not isinstance(record, dict):
+        raise Failed("Evidence JSON must be an object")
+    return record
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--policy", required=True, type=Path)
+    parser.add_argument("--receipt", required=True, type=Path)
+    args = parser.parse_args()
+    gates = Gates()
+    inputs = {}
+    for name in ("policy", "receipt"):
+        gates.check(f"{name}_file", lambda: inputs.update({name: load(getattr(args, name))}))
+    report = evaluate(**inputs) if len(inputs) == 2 else gates.report()
+    print(json.dumps(report, indent=2))
+    return 0 if report["decision"] == "meets_review_gates" else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

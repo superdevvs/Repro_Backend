@@ -20,6 +20,7 @@ class FaultAdapter(FixtureAdapter):
         self.after_promote = lambda: None
         self.after_prepare = lambda: None
         self.after_restore = lambda: None
+        self.after_authority_publish = lambda: None
         self.children_active = False
         self.backup_ok = True
         self.evidence_override = {}
@@ -36,15 +37,19 @@ class FaultAdapter(FixtureAdapter):
         super().prepare(lease, deadline)
         self.after_prepare()
 
-    def enable_mysql(self, lease, deadline):
+    def seal_mysql(self, lease, deadline):
         self.before_promote()
-        super().enable_mysql(lease, deadline)
+        super().seal_mysql(lease, deadline)
         self.after_promote()
 
-    def restore_sqlite(self, lease, deadline):
+    def seal_sqlite(self, lease, deadline):
         self.sqlite_restores += 1
-        super().restore_sqlite(lease, deadline)
+        super().seal_sqlite(lease, deadline)
         self.after_restore()
+
+    def publish_authority(self, lease, engine, candidate, deadline):
+        super().publish_authority(lease, engine, candidate, deadline)
+        self.after_authority_publish()
 
     def require_quiescent(self):
         if self.children_active:
@@ -94,6 +99,8 @@ class CutoverTest(unittest.TestCase):
         self.adapter.before_promote = check_persisted_marker
         state = self.runner.perform("promote", self.runner.approval_request("promote"))
         self.assertEqual("mysql_authoritative", state["phase"])
+        self.assertTrue(self.adapter.observe().sealed("mysql"))
+        self.adapter.reopen()
         self.assertTrue(self.adapter.observe().mysql_live())
         with self.assertRaisesRegex(UnsafeCutover, "writes may exist"):
             self.runner.perform("abort")
@@ -182,9 +189,49 @@ class CutoverTest(unittest.TestCase):
         self.adapter.after_promote = self.crash
         with self.assertRaises(SimulatedPowerLoss):
             self.runner.perform("promote", self.runner.approval_request("promote"))
-        self.assertTrue(self.adapter.observe().mysql_business_activity)
+        self.assertTrue(self.adapter.observe().sealed("mysql"))
         with self.assertRaisesRegex(UnsafeCutover, "writes may exist"):
             self.new_runner().perform("abort")
+        self.assertEqual(0, self.adapter.sqlite_restores)
+
+    def test_power_loss_after_mysql_proof_before_commit_never_authorizes_or_reverts(self):
+        self.ready()
+        self.adapter.after_authority_publish = self.crash
+        with self.assertRaises(SimulatedPowerLoss):
+            self.runner.perform("promote", self.runner.approval_request("promote"))
+        self.assertTrue(self.journal.read()["writes_possible"])
+        self.assertEqual("promote", self.journal.read()["pending"]["action"])
+        with self.assertRaisesRegex(UnsafeCutover, "unfinished"):
+            self.adapter.reopen()
+        with self.assertRaisesRegex(UnsafeCutover, "writes may exist"):
+            self.new_runner().perform("tick")
+        self.assertEqual("recovery_required", self.journal.read()["phase"])
+        self.assertEqual(0, self.adapter.sqlite_restores)
+
+    def test_power_loss_after_sqlite_proof_before_commit_requires_verified_abort_retry(self):
+        self.ready()
+        self.adapter.after_authority_publish = self.crash
+        with self.assertRaises(SimulatedPowerLoss):
+            self.runner.perform("abort")
+        self.assertFalse(self.journal.read()["writes_possible"])
+        self.assertEqual("abort", self.journal.read()["pending"]["action"])
+        with self.assertRaisesRegex(UnsafeCutover, "unfinished"):
+            self.adapter.reopen()
+        self.adapter.after_authority_publish = lambda: None
+        self.assertEqual("sqlite_authoritative", self.new_runner().perform("abort")["phase"])
+        self.adapter.reopen()
+        self.assertTrue(self.adapter.observe().sqlite_live())
+
+    def test_authority_proof_after_window_does_not_commit_mysql_authority(self):
+        self.ready()
+        started = self.journal.read()["started_at"]
+        self.adapter.after_authority_publish = lambda: setattr(self, "now", started + self.runner.WINDOW_SECONDS)
+        with self.assertRaisesRegex(UnsafeCutover, "maintained in time"):
+            self.runner.perform("promote", self.runner.approval_request("promote"))
+        self.assertEqual("recovery_required", self.journal.read()["phase"])
+        self.assertTrue(self.journal.read()["writes_possible"])
+        with self.assertRaises(UnsafeCutover):
+            self.adapter.reopen()
         self.assertEqual(0, self.adapter.sqlite_restores)
 
     def test_abort_can_reconcile_crash_after_restore(self):
@@ -195,6 +242,7 @@ class CutoverTest(unittest.TestCase):
         self.assertEqual("abort", self.journal.read()["pending"]["action"])
         self.adapter.after_restore = lambda: None
         self.assertEqual("sqlite_authoritative", self.new_runner().perform("abort")["phase"])
+        self.adapter.reopen()
         self.assertTrue(self.adapter.observe().sqlite_live())
 
     def test_failed_offsite_backup_blocks_readiness(self):

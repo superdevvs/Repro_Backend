@@ -1,4 +1,33 @@
-# MySQL production readiness: November 5, 2026
+# MySQL production readiness
+
+## November 22 data rehearsal
+
+The candidate is based on deployed backend
+`9ef19f686d14b07de0995ee0b2cb157126d044a7`. The live application uses
+SQLite. The rehearsal took an online backup with the source open read-only,
+then imported the copy into a temporary, socket-only native MySQL 8.4.13
+process under the deployment account. No application, scheduler or queue
+worker used this database.
+
+The corrected import verified all **291 tables and 1,841,678 original rows**
+in **9 minutes 16 seconds**, including planning and initialization. It
+installed all **477 foreign keys**, including eight relationships that retain
+195 historical rows with 223 missing references, and installed 25 direct
+triggers. The first attempt caught an oversized iGUIDE survey index.
+The conversion now uses the original migration's declared 64- and
+32-character widths for its two identity fields and retains the full unique key.
+
+The fresh release build had 284 tables. The copy has seven additional
+historical tables and other differences in constraints, columns, indexes and
+triggers. The data rehearsal retained all seven tables. The protected drift
+report must be reviewed against the final release and frozen snapshot before
+signing a cutover layout.
+
+The data-only timing is one part of a dress rehearsal. The managed target,
+privileged cutover and webhook integration, independent off-host restore, real
+application workload and two timed dress rehearsals are acceptance gates.
+The separate MySQL 8.4 administrator packet is staged privately on the host.
+Live cutover requires a distinct approval.
 
 ## November 8 refresh
 

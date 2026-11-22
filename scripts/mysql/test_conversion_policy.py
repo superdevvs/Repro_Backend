@@ -51,6 +51,30 @@ class ConversionPolicyTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, r"money\.cents: 1 rows"):
             conversion.validate_source_values(self.source, [self.schema("money")])
 
+    def test_tour_survey_index_preserves_full_values_with_declared_widths(self):
+        self.source.executescript("""
+            CREATE TABLE iguide_lab_tour_surveys (
+                project_id VARCHAR NOT NULL,
+                case_id VARCHAR NOT NULL,
+                preview_sha256 VARCHAR NOT NULL,
+                survey_version VARCHAR NOT NULL,
+                generation INTEGER NOT NULL
+            );
+            CREATE UNIQUE INDEX iguide_lab_tour_surveys_identity_unique
+                ON iguide_lab_tour_surveys (project_id, case_id, preview_sha256, survey_version, generation);
+        """)
+        schema = self.schema("iguide_lab_tour_surveys")
+        self.assertEqual(["VARCHAR(255)", "VARCHAR(255)", "VARCHAR(64)", "VARCHAR(32)", "BIGINT"],
+                         [column["target_type"] for column in schema["columns"]])
+        self.assertLessEqual(4 * (255 + 255 + 64 + 32) + 8, 3072)
+        self.source.execute("INSERT INTO iguide_lab_tour_surveys VALUES (?,?,?,?,?)",
+                            ("project", "case", "a" * 64, "v" * 32, 1))
+        self.schema("iguide_lab_tour_surveys")
+        self.source.execute("INSERT INTO iguide_lab_tour_surveys VALUES (?,?,?,?,?)",
+                            ("project", "case", "b" * 64, "v" * 33, 1))
+        with self.assertRaisesRegex(ValueError, r"iguide_lab_tour_surveys\.survey_version"):
+            self.schema("iguide_lab_tour_surveys")
+
     def test_real_mysql_forward_and_reverse(self):
         credentials_path = os.environ.get("REPRO_CONVERSION_TEST_CREDENTIALS")
         uuid = os.environ.get("REPRO_CONVERSION_TEST_UUID")
@@ -78,6 +102,17 @@ class ConversionPolicyTest(unittest.TestCase):
                     INSERT INTO records VALUES(0,0,'2026-11-22','2026-11-22 09:00:00.123456+02:00',12.75,X'00FF');
                     INSERT INTO records VALUES(7,42,'2026-11-22 00:00:00','2026-11-22',2147483649,X'01');
                     UPDATE sqlite_sequence SET seq=22 WHERE name='records';
+                    CREATE TABLE iguide_lab_tour_surveys (
+                        id VARCHAR PRIMARY KEY,
+                        project_id VARCHAR NOT NULL,
+                        case_id VARCHAR NOT NULL,
+                        preview_sha256 VARCHAR NOT NULL,
+                        survey_version VARCHAR NOT NULL,
+                        generation INTEGER NOT NULL
+                    );
+                    CREATE UNIQUE INDEX iguide_lab_tour_surveys_identity_unique
+                        ON iguide_lab_tour_surveys (project_id, case_id, preview_sha256, survey_version, generation);
+                    INSERT INTO iguide_lab_tour_surveys VALUES ('first','project','case',hex(zeroblob(32)),'tour-survey/1',1);
                 """)
             checksum = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
 
@@ -107,6 +142,8 @@ class ConversionPolicyTest(unittest.TestCase):
                 with mysql.cursor() as cursor:
                     with self.assertRaises(conversion.pymysql.err.IntegrityError):
                         cursor.execute("INSERT INTO records(owner_id,day,recorded) VALUES(99,'2026-11-22','2026-11-22')")
+                    with self.assertRaises(conversion.pymysql.err.IntegrityError):
+                        cursor.execute("INSERT INTO iguide_lab_tour_surveys SELECT 'other',project_id,case_id,preview_sha256,survey_version,generation FROM iguide_lab_tour_surveys WHERE id='first'")
                     cursor.execute("INSERT INTO records(owner_id,day,recorded) VALUES(0,'2026-11-23','2026-11-23')")
                     new_id = cursor.lastrowid
                     self.assertGreater(new_id, 22)
