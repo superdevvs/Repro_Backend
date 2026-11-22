@@ -61,10 +61,15 @@ the worker itself still runs as its service account.
 
 ## Integration and acceptance
 
-Treat the condition check as point-in-time admission. The production deploy
-and short scheduler wrappers must also hold the shared lease for their
-mutating operation and call this check under that lease. Keep the regular
-deployment mutex as well, since a shared lease permits multiple admissions.
+The CLI and systemd condition check only at admission time. A reviewed,
+root-installed deploy or short scheduler wrapper can call
+`with admitted(action, expected_engine) as lease_fd` to verify under the
+shared lease and hold it through its full bounded operation. If a synchronous
+child performs the operation, pass this specific descriptor with
+`subprocess.run(..., pass_fds=(lease_fd,))` and supervise the full process tree.
+The child's inherited descriptor keeps the lease alive if the wrapper exits.
+Use fixed command paths and arguments, preserve the existing deploy mutex, and
+never use a process that outlives its lease or the wrapper's deadline.
 Keep the deployment hold until the controller has verified live activation.
 Record activation separately from the authorization-bearing journal. Restrict
 filesystem and entrypoint permissions so stale scripts cannot mutate release files, run

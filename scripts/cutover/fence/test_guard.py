@@ -1,8 +1,11 @@
 import json
+import os
 import stat
+import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -53,6 +56,84 @@ class HostWriterGuardTests(unittest.TestCase):
 
     def freeze(self):
         return self.runner.perform("freeze", self.runner.approval_request("freeze"))
+
+    @contextmanager
+    def fixture_guard(self, evidence_overrides=None):
+        root = Path(self.root.name)
+        machine_id = root / "machine-id"
+        boot_id = root / "boot-id"
+        policy = root / "policy.json"
+        evidence = root / "verified-engine.json"
+        machine_id.write_bytes(b"fixture machine")
+        boot_id.write_text(self.boot, encoding="ascii")
+        policy.write_bytes(self.encode(self.policy | {"machine_id_sha256": guard.sha256(machine_id.read_bytes())}))
+        proof = self.evidence(self.state, "sqlite") | {
+            "journal_sha256": guard.sha256(self.journal.path.read_bytes()),
+            "policy_sha256": guard.sha256(policy.read_bytes()),
+        } | (evidence_overrides or {})
+        evidence.write_bytes(self.encode(proof))
+        runtime = SimpleNamespace(
+            platform="linux", executable="/usr/bin/python3", flags=SimpleNamespace(isolated=1, no_site=1),
+        )
+        # Replace installation-specific permissions and paths. The real kernel
+        # lock, evidence files and guard verification are used unchanged.
+        with (
+            patch.multiple(
+                guard, STATE=self.journal.directory, POLICY=policy, EVIDENCE=evidence,
+                MACHINE_ID=machine_id, BOOT_ID=boot_id, ENTRYPOINT=Path(guard.__file__).absolute(), sys=runtime,
+            ),
+            patch.object(guard.os, "geteuid", return_value=0),
+            patch.object(guard, "check_chain"),
+            patch.object(guard, "trusted"),
+        ):
+            yield
+
+    @unittest.skipUnless(sys.platform == "linux", "Exercises the Linux flock shared lease")
+    def test_verified_admission_blocks_transition_until_the_scope_ends(self):
+        with self.fixture_guard():
+            with guard.admitted("scheduler", "sqlite") as lease_fd:
+                self.assertFalse(os.get_inheritable(lease_fd))
+                with self.assertRaisesRegex(UnsafeCutover, "holds the cutover lock"):
+                    with self.journal.acquire():
+                        self.fail("Transition acquired during the bounded admission")
+
+            with self.journal.acquire():
+                pass
+            guard.check("scheduler", "sqlite")
+            with self.journal.acquire():
+                pass
+
+    @unittest.skipUnless(sys.platform == "linux", "Exercises the Linux flock shared lease")
+    def test_invalid_evidence_never_enters_operation_and_releases_the_lease(self):
+        with self.fixture_guard({"boot_id": self.identity.target_uuid}):
+            with self.assertRaisesRegex(guard.Refused, "this boot"):
+                with guard.admitted("scheduler", "sqlite"):
+                    self.fail("Operation entered without valid evidence")
+            with self.journal.acquire():
+                pass
+
+    @unittest.skipUnless(sys.platform == "linux", "Exercises inherited Linux flock descriptors")
+    def test_bounded_child_retains_admission_after_wrapper_scope_closes(self):
+        child_code = "import os, sys; os.fstat(int(sys.argv[1])); sys.stdin.buffer.read(1)"
+        child = None
+        try:
+            with self.fixture_guard(), guard.admitted("scheduler", "sqlite") as lease_fd:
+                child = subprocess.Popen(
+                    [sys.executable, "-I", "-S", "-c", child_code, str(lease_fd)],
+                    stdin=subprocess.PIPE, pass_fds=(lease_fd,),
+                )
+            self.assertIsNone(child.poll())
+            with self.assertRaisesRegex(UnsafeCutover, "holds the cutover lock"):
+                with self.journal.acquire():
+                    self.fail("Transition acquired before the admitted child exited")
+            child.communicate(b"x", timeout=5)
+            self.assertEqual(0, child.returncode)
+            with self.journal.acquire():
+                pass
+        finally:
+            if child is not None and child.poll() is None:
+                child.kill()
+                child.communicate(timeout=5)
 
     def test_planned_keeps_one_sqlite_authority_and_holds_deploys(self):
         for kind in ("scheduler", "web-writer", "queue-worker"):

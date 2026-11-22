@@ -9,6 +9,7 @@ import os
 import re
 import stat
 import sys
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -16,6 +17,8 @@ ENTRYPOINT = Path("/opt/repro-cutover-fence/guard.py")
 POLICY = Path("/etc/repro-cutover-fence/policy.json")
 STATE = Path("/var/lib/repro-cutover-fence")
 EVIDENCE = Path("/run/repro-cutover-fence/verified-engine.json")
+MACHINE_ID = Path("/etc/machine-id")
+BOOT_ID = Path("/proc/sys/kernel/random/boot_id")
 MAX_RECORD_BYTES = 1024 * 1024
 ACTIONS = ("deploy", "scheduler", "web-writer", "queue-worker")
 IDENTITY_FIELDS = {"run_id", "release_sha", "artifact_sha256", "source_sha256", "config_sha256", "target_uuid"}
@@ -156,7 +159,9 @@ def verify(policy_raw: bytes, journal_raw: bytes, evidence_raw: bytes, *, machin
             "Authority evidence failed the engine, configuration, release or writer checks")
 
 
-def check(action: str, expected_engine: str) -> None:
+@contextmanager
+def admitted(action: str, expected_engine: str) -> Iterator[int]:
+    """Hold a verified shared lease for the bounded operation in this scope."""
     require(sys.platform == "linux" and os.geteuid() == 0 and sys.flags.isolated and sys.flags.no_site,
             "Guard requires Linux root with the isolated system interpreter")
     import fcntl
@@ -174,10 +179,16 @@ def check(action: str, expected_engine: str) -> None:
         fcntl.flock(lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
         verify(
             read_protected(POLICY), read_protected(STATE / "state.json"), read_protected(EVIDENCE),
-            machine_sha=sha256(read_protected(Path("/etc/machine-id"))),
-            boot_id=Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip(),
+            machine_sha=sha256(read_protected(MACHINE_ID)),
+            boot_id=BOOT_ID.read_text(encoding="ascii").strip(),
             action=action, expected_engine=expected_engine,
         )
+        yield lock
+
+
+def check(action: str, expected_engine: str) -> None:
+    with admitted(action, expected_engine):
+        pass
 
 
 def main() -> int:
