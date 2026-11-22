@@ -112,8 +112,9 @@ class Guard
         // Different destinations can refer to the same provider job/place.
         // Serialize their short ownership decisions on the installation row;
         // this lock never spans a provider request or a queued job.
-        AryeoApiInstallation::whereIn('id', AryeoApiDestination::whereKey($export->destination_id)->select('installation_id'))
-            ->lockForUpdate()->firstOrFail();
+        AryeoApiInstallation::query()->select('aryeo_api_installations.*')
+            ->join('aryeo_api_destinations as ownership_destination', 'ownership_destination.installation_id', '=', 'aryeo_api_installations.id')
+            ->where('ownership_destination.id', $export->destination_id)->lockForUpdate()->firstOrFail();
 
         return $export->destination()->lockForUpdate()->firstOrFail();
     }

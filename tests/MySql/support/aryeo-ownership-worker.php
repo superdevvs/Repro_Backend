@@ -15,6 +15,7 @@ $db = Illuminate\Support\Facades\DB::connection();
 if ($db->getDriverName() !== 'mysql' || $db->getDatabaseName() !== 'repro_mysql_test' || $db->getConfig('username') !== 'repro_test') {
     throw new RuntimeException('Actual worker connection differs from its isolated test configuration.');
 }
+$db->statement('SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ');
 [$directory, $id] = array_slice($argv, 1);
 if (! in_array($id, ['1', '2'], true)) throw new RuntimeException('Unknown race participant.');
 $fixture = json_decode(file_get_contents($directory.'/fixture.json'), true, flags: JSON_THROW_ON_ERROR);
@@ -27,6 +28,9 @@ $db->listen(function (Illuminate\Database\Events\QueryExecuted $query) use ($dir
     $paused = true;
     file_put_contents($directory.'/checked-'.$id, '1');
     if ($id === '1') {
+        $startDeadline = microtime(true) + 10;
+        while (! is_file($directory.'/attempted-2') && microtime(true) < $startDeadline) usleep(10_000);
+        if (! is_file($directory.'/attempted-2')) throw new RuntimeException('Competing ownership attempt did not start.');
         // Without the ownership row lock, process 2 can claim the same free
         // destination while process 1 is paused after its ownership check.
         $deadline = microtime(true) + 3;
@@ -38,6 +42,7 @@ $deadline = microtime(true) + 15;
 while (! is_file($directory.'/start-'.$id) && microtime(true) < $deadline) usleep(10_000);
 if (! is_file($directory.'/start-'.$id)) throw new RuntimeException('Ownership race barrier timed out.');
 try {
+    file_put_contents($directory.'/attempted-'.$id, '1');
     try {
         $owner = app(App\Services\Aryeo\Api\Guard::class)->claim($export);
         $result = ['status' => 200, 'owner' => $owner];
