@@ -18,7 +18,7 @@ return new class extends Migration
             $table->string('status', 30)->default('completed');
             $table->string('preview_path');
             $table->string('native_path')->nullable();
-            $table->json('manifest');
+            $table->longText('manifest');
             $table->timestamps();
             $table->unique(['project_id', 'request_id']);
         });
@@ -30,12 +30,12 @@ return new class extends Migration
             $table->uuid('request_id');
             $table->string('request_hash', 64);
             $table->string('verdict', 20);
-            $table->json('checks');
+            $table->longText('checks');
             $table->text('notes');
             $table->string('pipeline', 30);
             $table->string('scope', 30);
             $table->string('batch_id', 100)->nullable();
-            $table->json('metrics')->nullable();
+            $table->longText('metrics')->nullable();
             $table->timestamps();
             $table->unique(['project_id', 'request_id']);
             $table->index(['composite_id', 'id']);

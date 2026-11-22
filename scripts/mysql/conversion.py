@@ -1,15 +1,21 @@
 """SQLite conversion primitives verified on the isolated full-size rehearsal.
 
 Called only through migrate.py. No credentials, fixed lab paths or reset commands.
-Canonical hashes preserve strings and compare numeric/time values by meaning.
+Canonical hashes preserve stored temporal text and compare approved numeric values exactly.
 """
 from __future__ import annotations
-import collections, datetime as dt, decimal, hashlib, json, pathlib, re, time
-import pymysql
+import collections, decimal, hashlib, json, pathlib, re, time
+try:
+    import pymysql
+except ModuleNotFoundError as error:
+    if error.name != "pymysql":
+        raise
+    pymysql = None
 
 COLLATION = "utf8mb4_0900_bin"
-TYPE_OVERRIDES = {("services", "delivery_time"): ("LONGTEXT", "text"),
-                  ("voice_calls", "duration_seconds"): ("DECIMAL(65,30)", "decimal")}
+TYPE_POLICY_PATH = pathlib.Path(__file__).with_name("type-policy.json")
+TYPE_POLICY = json.loads(TYPE_POLICY_PATH.read_text(encoding="utf-8"))
+TEMPORAL_TYPES = {"DATE", "DATETIME", "TIMESTAMP", "TIME"}
 REPORTS = None
 
 def emit(event, **details):
@@ -115,28 +121,32 @@ def table_schema(src, name, sql):
             kind = "integer"
         elif any(t in declared for t in ["CHAR", "TEXT", "CLOB"]):
             if column["name"] in indexed:
-                if maximum > 768:
-                    raise ValueError("Indexed text exceeds InnoDB key limit: " + name + "." + column["name"])
-                target = "VARCHAR(" + str(max(255, maximum)) + ")"
+                declared_width = re.fullmatch(r"(?:VAR)?CHAR\s*\((\d+)\)", declared)
+                width = int(declared_width[1]) if declared_width else TYPE_POLICY["indexed_text_default_characters"]
+                if not 1 <= width <= 768:
+                    raise ValueError("Indexed text needs a reviewed width: " + name + "." + column["name"])
+                target = f"VARCHAR({width})"
             else:
                 target = "LONGTEXT"
             kind = "text"
         elif "BLOB" in declared or not declared:
             target, kind = "LONGBLOB", "blob"
-        elif declared == "DATE":
-            target, kind = "DATE", "date"
-        elif declared in ["DATETIME", "TIMESTAMP"]:
-            target, kind = "DATETIME(6)", "datetime"
-        elif declared == "TIME":
-            target, kind = "TIME(6)", "time"
+        elif declared in TEMPORAL_TYPES:
+            # SQLite date/time affinity does not normalize stored text. Keep
+            # date-only values, offsets and fractional precision byte for byte.
+            target, kind = f'VARCHAR({TYPE_POLICY["temporal_text_characters"]})', "temporal_text"
         elif any(t in declared for t in ["REAL", "FLOAT", "DOUBLE"]):
             target, kind = "DOUBLE", "float"
         elif any(t in declared for t in ["NUMERIC", "DECIMAL", "BOOLEAN"]):
             target, kind = "DECIMAL(65,30)", "decimal"
         else:
             raise ValueError("Unknown SQLite type: " + declared)
-        if (name, column["name"]) in TYPE_OVERRIDES:
-            target, kind = TYPE_OVERRIDES[(name, column["name"])]
+        override = TYPE_POLICY["overrides"].get(f'{name}.{column["name"]}')
+        if override:
+            target, kind = override["type"], override["kind"]
+        varchar = re.fullmatch(r"VARCHAR\((\d+)\)", target)
+        if varchar and maximum > int(varchar[1]):
+            raise ValueError("Stored text exceeds the reviewed width: " + name + "." + column["name"])
         column.update(target_type=target, kind=kind, maximum_characters=maximum, auto_increment=bool(is_integer_pk))
         part = q(column["name"]) + " " + target
         part += " NOT NULL" if column["notnull"] or column["pk"] else " NULL"
@@ -147,8 +157,10 @@ def table_schema(src, name, sql):
             default = default.strip()
             while default.startswith("(") and default.endswith(")"):
                 default = default[1:-1].strip()
-            if default.upper() == "CURRENT_TIMESTAMP":
-                part += " DEFAULT CURRENT_TIMESTAMP(6)"
+            if default.upper() == "CURRENT_TIMESTAMP" and kind == "temporal_text":
+                part += " DEFAULT (DATE_FORMAT(UTC_TIMESTAMP(), '%Y-%m-%d %H:%i:%s'))"
+            elif default.upper() == "CURRENT_TIMESTAMP":
+                raise ValueError("Timestamp default needs an explicit mapping: " + name + "." + column["name"])
             elif target in ["LONGTEXT", "LONGBLOB"]:
                 part += " DEFAULT (" + default + ")"
             else:
@@ -159,6 +171,43 @@ def table_schema(src, name, sql):
     create = "CREATE TABLE " + q(name) + " (" + ",".join(definitions) + ") ENGINE=InnoDB ROW_FORMAT=DYNAMIC DEFAULT CHARACTER SET utf8mb4 COLLATE " + COLLATION
     return {"name": name, "source_sql": sql, "columns": columns, "indexes": indexes,
             "foreign_keys": foreign_keys, "checks": checks(sql), "primary": primary, "create": create}
+
+
+def schema_fingerprint(schema):
+    # Observed lengths are evidence, never part of the target schema contract.
+    structure = [
+        {**table, "columns": [
+            {key: value for key, value in column.items() if key != "maximum_characters"}
+            for column in table["columns"]
+        ]}
+        for table in schema
+    ]
+    return hashlib.sha256(json.dumps(structure, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def validate_source_values(src, schema):
+    """Census fields subject to coercion before touching the destination."""
+    for table in schema:
+        checks = []
+        for column in table["columns"]:
+            field = q(column["name"])
+            kind = column["kind"]
+            valid = {
+                "integer": f"typeof({field})='integer'",
+                "decimal": f"typeof({field}) IN ('integer','real')",
+                "float": f"(typeof({field})='real' OR (typeof({field})='integer' AND {field} BETWEEN -9007199254740992 AND 9007199254740992))",
+                "text": f"typeof({field})='text'",
+                "blob": f"typeof({field})='blob'",
+                "temporal_text": f"(typeof({field})='text' AND length({field}) BETWEEN 1 AND {TYPE_POLICY['temporal_text_characters']})",
+                "legacy_text": f"typeof({field}) IN ('integer','real','text')",
+            }[kind]
+            checks.append(f"COALESCE(SUM({field} IS NOT NULL AND NOT ({valid})),0)")
+        counts = src.execute("SELECT " + ",".join(checks) + " FROM " + q(table["name"])).fetchone()
+        for column, invalid in zip(table["columns"], counts):
+            if invalid:
+                raise ValueError(
+                    f'Unsupported stored values in {table["name"]}.{column["name"]}: {invalid} rows'
+                )
 
 
 def index_statement(table, index):
@@ -234,29 +283,8 @@ def canonical(value, column):
         return ["number", format(number.normalize(context=decimal.Context(prec=80)), "f")]
     if kind == "float":
         return ["float", repr(float(value))]
-    if kind in ["date", "datetime", "time"]:
-        text = str(value)
-        if kind == "date":
-            return [kind, dt.date.fromisoformat(text[:10]).isoformat()]
-        if kind == "time":
-            if isinstance(value, dt.timedelta):
-                return [kind, str(decimal.Decimal(str(value.total_seconds())).normalize())]
-            match = re.fullmatch(r"(-?)(\d+):(\d{2})(?::(\d{2})(?:\.(\d+))?)?", text)
-            if not match:
-                raise ValueError("Unsupported time representation")
-            sign, hour, minute, second, fraction = match.groups()
-            seconds = decimal.Decimal(hour) * 3600 + decimal.Decimal(minute) * 60 + decimal.Decimal(second or 0)
-            if fraction:
-                seconds += decimal.Decimal('0.' + fraction)
-            return [kind, str((-seconds if sign else seconds).normalize())]
-        if kind == "datetime":
-            fraction = re.search(r"\.(\d+)", text)
-            if fraction and len(fraction[1]) > 6 and any(c != '0' for c in fraction[1][6:]):
-                raise ValueError("Sub-microsecond precision requires explicit preservation")
-            parsed = value if isinstance(value, dt.datetime) else dt.datetime.fromisoformat(text)
-            if parsed.tzinfo:
-                parsed = parsed.astimezone(dt.timezone.utc).replace(tzinfo=None)
-            return [kind, parsed.isoformat(timespec='microseconds')]
+    if kind == "temporal_text" and not isinstance(value, str):
+        raise ValueError("Temporal value was normalized by a driver or database type.")
     if isinstance(value, bytes):
         return ["bytes", value.hex()]
     return ["text", str(value)]
@@ -276,7 +304,9 @@ def apply(mysql, src, schema):
         for table in schema:
             cursor.execute(table["create"])
     progress = []
-    sequences = {row[0]: row[1] for row in src.execute("SELECT name,seq FROM sqlite_sequence")}
+    sequences = {}
+    if src.execute("SELECT 1 FROM sqlite_schema WHERE name='sqlite_sequence'").fetchone():
+        sequences = {row[0]: row[1] for row in src.execute("SELECT name,seq FROM sqlite_sequence")}
     for table in schema:
         started = time.monotonic()
         columns = table["columns"]

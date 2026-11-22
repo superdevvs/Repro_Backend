@@ -30,7 +30,12 @@ def audit_exceptions(source,schema):
             query+=' AND NOT EXISTS (SELECT 1 FROM '+core.q(parent)+' parent WHERE '
             query+=' AND '.join('parent.'+core.q(key['to'])+'=child.'+core.q(key['from']) for key in keys)+')'
             query+=' ORDER BY '+','.join('child.'+core.q(column) for column in table['primary'])
-            rows=[dict(row) for row in source.execute(query)]
+            if isinstance(source,sqlite3.Connection):
+                rows=[dict(row) for row in source.execute(query)]
+            else:
+                with source.cursor(core.pymysql.cursors.DictCursor) as cursor:
+                    cursor.execute(query)
+                    rows=list(cursor.fetchall())
             if rows:details.append({'table':table['name'],'foreign_key':number,'columns':[key['from'] for key in keys],
                 'parent_table':parent,'nullable':{key['from']:not next(c for c in table['columns'] if c['name']==key['from'])['notnull'] for key in keys},
                 'orphan_count':len(rows),'rows':rows})
@@ -45,6 +50,8 @@ def canonical_exceptions(details):
     return sorted(normalized,key=lambda item:(item['table'],item['foreign_key']))
 
 def destination(credentials,database,uuid):
+    if core.pymysql is None:
+        raise RuntimeError('Install the pinned PyMySQL dependency before importing.')
     config=protected_json(credentials)
     if set(config)!={'unix_socket','user','password'} or not str(config['unix_socket']).startswith('/'):
         raise RuntimeError('Only an explicit local Unix socket and scoped maintenance account are accepted.')
@@ -59,6 +66,8 @@ def destination(credentials,database,uuid):
         if not {'STRICT_TRANS_TABLES','ONLY_FULL_GROUP_BY'}<=set(mode.split(',')):
             raise RuntimeError('Strict SQL and grouped-query enforcement are required.')
         cursor.execute('SET SESSION time_zone=\'+00:00\'')
+        if 'NO_AUTO_VALUE_ON_ZERO' not in mode.split(','):
+            cursor.execute('SET SESSION sql_mode=%s',[mode+',NO_AUTO_VALUE_ON_ZERO'])
         cursor.execute('SELECT GET_LOCK(%s,0)',['repro-sqlite-import:'+database])
         if cursor.fetchone()[0]!=1:raise RuntimeError('Another import holds the target lock.')
         for catalog,column in [('TABLES','TABLE_SCHEMA'),('TRIGGERS','TRIGGER_SCHEMA'),('ROUTINES','ROUTINE_SCHEMA'),('EVENTS','EVENT_SCHEMA')]:
@@ -125,24 +134,32 @@ def main():
     parser.add_argument('--expected-server-uuid')
     parser.add_argument('--approved-exceptions',type=pathlib.Path)
     parser.add_argument('--exceptions-file-sha256')
+    parser.add_argument('--schema-sha256')
     options=parser.parse_args()
     if options.output.exists():raise RuntimeError('Output must be a new private directory.')
     options.output.mkdir(mode=0o700,parents=False);core.REPORTS=options.output
     snapshot=options.snapshot.resolve(strict=True)
     if options.snapshot.is_symlink() or not re.fullmatch('[a-f0-9]{64}',options.snapshot_sha256) or file_hash(snapshot)!=options.snapshot_sha256:
         raise RuntimeError('Frozen snapshot checksum does not match.')
+    if any(pathlib.Path(str(snapshot)+suffix).exists() for suffix in ('-wal','-shm','-journal')):
+        raise RuntimeError('Use a standalone online backup without journal sidecars.')
     source=sqlite3.connect(snapshot.as_uri()+'?mode=ro&immutable=1',uri=True);source.row_factory=sqlite3.Row
     source.execute('PRAGMA query_only=ON')
     if source.execute('PRAGMA quick_check').fetchone()[0]!='ok':raise RuntimeError('SQLite snapshot integrity check failed.')
     schema=[core.table_schema(source,name,sql) for name,sql in source.execute("SELECT name,sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")]
     if not schema:raise RuntimeError('Snapshot has no application tables.')
     core.save('schema-plan.json',schema)
+    schema_sha256=core.schema_fingerprint(schema)
+    core.validate_source_values(source,schema)
     exceptions=audit_exceptions(source,schema);core.save('exceptions-private.json',exceptions)
     result={'mode':options.mode,'source_sha256':options.snapshot_sha256,'tables':len(schema),'legacy_exception_relationships':len(exceptions),
+            'schema_sha256':schema_sha256,'type_policy_sha256':file_hash(core.TYPE_POLICY_PATH),
             'source_changed':False,'application_configuration_changed':False,'cutover_ready':False}
     if options.mode=='import-empty':
         if not all([options.credentials,options.database,options.expected_server_uuid,options.approved_exceptions,options.exceptions_file_sha256]):
             raise RuntimeError('Import requires private credentials, target identity and an approved exception manifest checksum.')
+        if options.schema_sha256!=schema_sha256:
+            raise RuntimeError('Import requires the independently reviewed target schema fingerprint.')
         if file_hash(options.approved_exceptions)!=options.exceptions_file_sha256:raise RuntimeError('Approved exception file checksum differs.')
         approved=protected_json(options.approved_exceptions)
         if canonical_exceptions(approved)!=canonical_exceptions(exceptions):raise RuntimeError('Historical exceptions changed; review the fresh audit before importing.')
@@ -152,6 +169,8 @@ def main():
             verified=core.verify(db,source,schema)
             if not all(row['match'] for row in verified):raise RuntimeError('Original row/field hashes differ after import.')
             install_legacy_constraints(db,schema,exceptions,constraints['failures'])
+            if canonical_exceptions(audit_exceptions(db,schema))!=canonical_exceptions(approved):
+                raise RuntimeError('Imported orphan identities differ from the approved exception list.')
             triggers=install_triggers(db,source)
             result.update(import_verified=True,original_rows=sum(row['source_rows'] for row in verified),triggers=triggers,
                           target_database=options.database,target_server_uuid=options.expected_server_uuid,
@@ -166,6 +185,6 @@ if __name__=='__main__':
     try:main()
     except Exception as error:
         if core.REPORTS is not None:core.save('failure-private.json',{'type':type(error).__name__,'traceback':traceback.format_exc()})
-        print(json.dumps({'stopped':True,'error_type':type(error).__name__,'error_code':error.args[0] if isinstance(error,core.pymysql.MySQLError) else None,
+        print(json.dumps({'stopped':True,'error_type':type(error).__name__,'error_code':error.args[0] if core.pymysql is not None and isinstance(error,core.pymysql.MySQLError) else None,
                           'details':'See the protected report. No application configuration or source database was changed.'}),flush=True)
         raise SystemExit(1)

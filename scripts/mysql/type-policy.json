@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "indexed_text_default_characters": 255,
+  "temporal_text_characters": 64,
+  "overrides": {
+    "services.delivery_time": {"type": "LONGTEXT", "kind": "legacy_text"},
+    "voice_calls.duration_seconds": {"type": "DECIMAL(65,30)", "kind": "decimal"}
+  }
+}

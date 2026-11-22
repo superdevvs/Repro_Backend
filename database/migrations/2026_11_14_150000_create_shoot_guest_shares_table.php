@@ -1,5 +1,6 @@
 <?php
 
+use App\Support\MigrationForeignId;
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
@@ -10,8 +11,8 @@ return new class extends Migration
     {
         Schema::create('shoot_guest_shares', function (Blueprint $table) {
             $table->id();
-            $table->foreignId('shoot_id')->constrained()->cascadeOnDelete();
-            $table->foreignId('created_by')->constrained('users')->cascadeOnDelete();
+            MigrationForeignId::matching($table, 'shoot_id', 'shoots')->constrained()->cascadeOnDelete();
+            MigrationForeignId::matching($table, 'created_by', 'users')->constrained('users')->cascadeOnDelete();
             $table->string('email', 254);
             $table->string('token_hash', 64)->unique();
             $table->timestamp('expires_at');

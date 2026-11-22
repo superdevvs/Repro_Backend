@@ -1,11 +1,10 @@
 # MySQL production cutover runbook
 
-Status: prepared for review and isolated rehearsal. This document does not
-authorize a deployment, service installation, database switch, or live provider
-action. The owner explicitly requested that production stay unchanged.
+Status: implementation and isolated rehearsal. Production cutover has a separate
+approval gate. The previous Docker-based rehearsal is historical evidence.
 
-Use the separate **MySQL 8.4.13** target from
-[`scripts/mysql/server`](../scripts/mysql/server/README.md). The existing 8.0.46
+Use the separate native **MySQL 8.4.13** target from
+[`scripts/mysql/native`](../scripts/mysql/native/README.md). The existing 8.0.46
 service is outside this migration. The actual target host, its administrator
 preparation, backup destination/retention, and maintenance window must be
 confirmed before cutover. Local success does not substitute for that acceptance.
@@ -24,13 +23,12 @@ confirmed before cutover. Local success does not substitute for that acceptance.
    This marks conditional MySQL migrations as applied even when they did no
    MySQL DDL; the completion step below is required regardless of ledger state.
 3. Have the administrator provision the separate target. Verify the pinned
-   image/version, server UUID, durable commit/binlog settings, strict mode,
+   binary manifest/version, server UUID, durable commit/binlog settings, strict mode,
    Unix-socket access as both `www-data` and `maverick`, account isolation,
    connection budget, automatic recovery, disk alerts, and off-host backups.
-   Validate boot recovery on the actual host. Do not upgrade/restart the
-   existing MySQL service or install Docker without the owner's authorization.
-4. Install matching 8.4 `mysql` and `mysqldump` under
-   `/opt/repro-mysql84/client/`; retain the old clients. Rehearse the candidate's
+   Validate boot recovery on the actual host. The native service leaves the
+   existing MySQL service and system client binaries in place.
+4. Use the native bundle's matching 8.4 `mysql` and `mysqldump` by absolute path. Rehearse the candidate's
    `scripts/deploy/backup-database.php` and an independent full restore on the
    actual target. A successful dump alone is insufficient.
 5. Rehearse the whole sequence using a fresh read-only online SQLite backup.
@@ -108,6 +106,8 @@ python scripts/mysql/migrate.py plan \
 
 Compare `exceptions-private.json` with the approved exception list. Preserve
 history exactly; any additional exception requires review. Record its file hash.
+Review the schema fingerprint and the checked-in type policy. The fingerprint
+binds the conversion layout, while the census checks the actual values fit.
 Only after confirming writer freeze, the empty target and independent UUID:
 
 ```bash
@@ -117,6 +117,7 @@ python scripts/mysql/migrate.py import-empty \
   --credentials /protected/maintenance.json \
   --database repro_dashboard \
   --expected-server-uuid <independently-observed-new-server-uuid> \
+  --schema-sha256 <reviewed-schema-fingerprint> \
   --approved-exceptions /protected/new-plan/exceptions-private.json \
   --exceptions-file-sha256 <approved-exception-file-sha256> \
   --output /protected/new-import

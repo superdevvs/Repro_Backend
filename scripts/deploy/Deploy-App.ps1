@@ -208,6 +208,13 @@ command -v flock >/dev/null
 exec 9>"$HOME/.repro-backend-deploy.lock"
 flock -w 300 9 || { echo 'Another backend deployment holds the lock; retry later.' >&2; exit 94; }
 
+# The administrator-installed cutover controller owns this flag. Check it
+# after taking the deploy lock, before any app mutation.
+if [ -e /etc/repro-database-cutover/active ] || [ -L /etc/repro-database-cutover/active ]; then
+  echo 'Database cutover holds the backend deployment fence.' >&2
+  exit 95
+fi
+
 # Recheck current free blocks under the deployment lock, before extraction,
 # maintenance or rollback backups. The first check ran before SCP.
 tar -xOf "$archive" scripts/deploy/deployment-storage.py | python3 - preflight backend "$archive_bytes" "$release_bytes"
@@ -258,7 +265,6 @@ test -s "$app/.env"
 test -s "$archive"
 rm -rf "$stage"
 mkdir -p "$stage" "$backup"
-chmod 0700 "$backup"
 chmod 0700 "$backup"
 tar -xzf "$archive" -C "$stage"
 test -s "$stage/artisan"

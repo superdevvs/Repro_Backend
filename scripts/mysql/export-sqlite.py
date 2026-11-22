@@ -17,6 +17,8 @@ def portable(value):
     return value
 
 def connect(options):
+    if core.pymysql is None:
+        raise RuntimeError('Install the pinned PyMySQL dependency before exporting.')
     config=migrate.protected_json(options.credentials)
     if set(config)!={'unix_socket','user','password'} or not str(config['unix_socket']).startswith('/'):
         raise RuntimeError('An explicit local socket and protected account are required.')
@@ -67,8 +69,8 @@ def export(options):
     if set(metadata)!=set(schema):raise RuntimeError('Current-release SQLite template and source tables differ.')
     sqlite_triggers=migrate.sqlite_triggers(template)
     expected=set(sqlite_triggers)
-    cascade_file=pathlib.Path(__file__).resolve().parents[2]/'database/schema/mysql-cascade-triggers.json'
     if {'aryeo_changes','shoots','shoot_files','payments'}<=set(metadata):
+        cascade_file=pathlib.Path(__file__).resolve().parents[2]/'database/schema/mysql-cascade-triggers.json'
         expected|={row['name'] for row in json.loads(cascade_file.read_text())}
     if expected!={row['TRIGGER_NAME'] for row in triggers}:raise RuntimeError('Unknown/missing source trigger needs review before reverse export.')
     destination=options.output/'database.sqlite'

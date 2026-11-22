@@ -6,6 +6,7 @@ use App\Models\AryeoApiAsset;
 use App\Models\AryeoApiCase;
 use App\Models\AryeoApiDestination;
 use App\Models\AryeoApiExport;
+use App\Support\JsonIdentity;
 use App\Support\LockedWrite;
 use Illuminate\Support\Facades\DB;
 
@@ -44,7 +45,7 @@ class Exports
                 // Reuse only previously receipted exact revisions in this same
                 // destination, and only if the complete baseline still has them.
                 $previous = AryeoApiAsset::whereIn('export_id', AryeoApiExport::where('destination_id', $d->id)->where('status', 'delivered')->select('id'))
-                    ->where('source_key', $source['key'])->get()->first(fn ($a) => $a->source === $source && collect($baseline ?? [])->contains(fn ($r) => $r['id'] === $a->place_asset_id && $r['asset_id'] === $a->provider_asset_id && $r['delivery_id']));
+                    ->where('source_key', $source['key'])->get()->first(fn ($a) => JsonIdentity::same($a->source, $source) && collect($baseline ?? [])->contains(fn ($r) => $r['id'] === $a->place_asset_id && $r['asset_id'] === $a->provider_asset_id && $r['delivery_id']));
                 if ($previous) {
                     $asset->update(['provider_asset_id' => $previous->provider_asset_id, 'place_asset_id' => $previous->place_asset_id, 'status' => 'delivered', 'ownership' => 'reused']);
                 }
@@ -60,7 +61,7 @@ class Exports
         app(Snapshots::class)->assertCurrent($export, true);
         abort_unless(is_array($export->remote_baseline), 409, 'complete_provider_inventory_required');
         $remote = app(Inventory::class)->read($export->destination);
-        abort_unless($remote === $export->remote_baseline, 409, 'remote_inventory_changed');
+        abort_unless(JsonIdentity::same($remote, $export->remote_baseline), 409, 'remote_inventory_changed');
         abort_if(collect($remote)->contains(fn ($a) => ! $a['delivery_id']), 409, 'unexpected_undelivered_assets');
         $changed = AryeoApiExport::whereKey($export->id)->where('status', 'draft')->whereNull('cancelled_at')
             ->update(['status' => 'approved', 'approved_by' => $actor, 'approved_at' => now(), 'editing_window_until' => $window,
@@ -75,13 +76,13 @@ class Exports
     {
         app(Guard::class)->assertWrite($export);
         LockedWrite::run(fn () => DB::transaction(function () use ($export) {
+            $d = app(Guard::class)->lockDestination($export);
             $export->refresh();
             if (in_array($export->status, ['queued', 'running'], true)) {
                 return;
             }
             app(Guard::class)->assertWrite($export);
             abort_unless(in_array($export->status, ['approved', 'blocked', 'queued'], true), 409, 'export_not_submittable');
-            $d = $export->destination()->firstOrFail();
             abort_if(AryeoApiDestination::where('installation_id', $d->installation_id)->where('id', '!=', $d->id)
                 ->whereNotNull('active_export_id')->where(fn ($q) => $q->where('provider_job_id', $d->provider_job_id)->orWhere('provider_place_id', $d->provider_place_id))->exists(), 409, 'destination_owned');
             abort_if($d->active_export_id && $d->active_export_id !== $export->id, 409, 'destination_owned');
@@ -96,6 +97,7 @@ class Exports
     public function cancel(AryeoApiExport $export, int $actor, string $reason): void
     {
         LockedWrite::run(fn () => DB::transaction(function () use ($export, $actor, $reason) {
+            app(Guard::class)->lockDestination($export);
             $export->refresh();
             $staged = $export->operations()->whereIn('status', ['sent', 'unknown', 'confirmed'])->exists();
             $export->update(['cancelled_at' => now(), 'status' => $staged ? 'correction_required' : 'cancelled', 'blocker' => $staged ? 'provider_cleanup_required' : null]);

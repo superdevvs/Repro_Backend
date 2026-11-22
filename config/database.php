@@ -63,6 +63,8 @@ return [
 
         'mysql' => [
             'driver' => 'mysql',
+            'repro_require_server_identity' => env('APP_ENV', 'production') === 'production',
+            'repro_expected_server_uuid' => env('REPRO_MYSQL_EXPECTED_SERVER_UUID'),
             'url' => env('DB_URL'),
             'host' => env('DB_HOST', '127.0.0.1'),
             'port' => env('DB_PORT', '3306'),

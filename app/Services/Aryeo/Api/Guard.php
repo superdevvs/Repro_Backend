@@ -4,6 +4,7 @@ namespace App\Services\Aryeo\Api;
 
 use App\Models\AryeoApiDestination;
 use App\Models\AryeoApiExport;
+use App\Models\AryeoApiInstallation;
 use App\Models\AryeoJob;
 use App\Support\LockedWrite;
 use Illuminate\Support\Facades\DB;
@@ -88,7 +89,9 @@ class Guard
     public function claim(AryeoApiExport $export): string
     {
         return LockedWrite::run(fn () => DB::transaction(function () use ($export) {
-            $d = $export->destination()->firstOrFail();
+            $d = $this->lockDestination($export);
+            $export->refresh();
+            abort_if($export->cancelled_at || in_array($export->status, ['cancelled', 'delivered', 'draft', 'correction_required'], true), 409, 'export_not_executable');
             abort_if(AryeoApiDestination::where('installation_id', $d->installation_id)->where('id', '!=', $d->id)
                 ->whereNotNull('active_export_id')->where(fn ($q) => $q->where('provider_job_id', $d->provider_job_id)->orWhere('provider_place_id', $d->provider_place_id))
                 ->exists(), 409, 'destination_owned');
@@ -101,6 +104,18 @@ class Guard
 
             return $token;
         }), 'aryeo-api.claim');
+    }
+
+    /** Call first inside an ownership transaction, before any snapshot reads. */
+    public function lockDestination(AryeoApiExport $export): AryeoApiDestination
+    {
+        // Different destinations can refer to the same provider job/place.
+        // Serialize their short ownership decisions on the installation row;
+        // this lock never spans a provider request or a queued job.
+        AryeoApiInstallation::whereIn('id', AryeoApiDestination::whereKey($export->destination_id)->select('installation_id'))
+            ->lockForUpdate()->firstOrFail();
+
+        return $export->destination()->lockForUpdate()->firstOrFail();
     }
 
     public function yield(AryeoApiExport $export, string $owner): void

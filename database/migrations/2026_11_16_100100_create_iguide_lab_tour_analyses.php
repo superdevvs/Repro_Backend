@@ -13,7 +13,7 @@ return new class extends Migration {
             $table->foreignUuid('project_id')->constrained('iguide_lab_projects')->cascadeOnDelete();
             $table->foreignUuid('import_id')->constrained('iguide_lab_imports')->cascadeOnDelete();
             $table->uuid('request_id'); $table->string('request_hash', 64); $table->string('priority_preset', 24);
-            $table->string('status', 24)->default('queued'); $table->unsignedInteger('record_revision')->default(0); $table->json('selections');
+            $table->string('status', 24)->default('queued'); $table->unsignedInteger('record_revision')->default(0); $table->longText('selections');
             $table->timestamp('monitor_heartbeat_at')->nullable(); $table->uuid('monitor_token')->nullable();
             $table->unsignedInteger('monitor_seq')->default(0); $table->boolean('monitor_idle')->default(false);
             $table->timestamp('cancelled_at')->nullable(); $table->timestamp('completed_at')->nullable(); $table->timestamps();

@@ -34,7 +34,7 @@ function backupBinary(string $variable, string $name): string
     if (($configured = getenv($variable)) !== false && $configured !== '') {
         return $configured;
     }
-    foreach (['/opt/repro-mysql84/client/', '/opt/mysql84/bin/'] as $prefix) {
+    foreach (['/opt/repro-mysql84-native/mysql-8.4.13/bin/', '/opt/repro-mysql84/client/', '/opt/mysql84/bin/'] as $prefix) {
         if (is_executable($prefix.$name)) {
             return $prefix.$name;
         }
@@ -52,6 +52,59 @@ function backupWrite($stream, string $bytes): void
         }
         $offset += $written;
     }
+}
+
+function backupClientFile(string $directory, string $user, string $password, array &$temporary): string
+{
+    $path = $directory.'/.mysql-client-'.bin2hex(random_bytes(8)).'.cnf';
+    $temporary[] = $path;
+    $handle = fopen($path, 'x');
+    chmod($path, 0600);
+    $quote = static fn (string $item): string => '"'.strtr($item, ["\\" => "\\\\", '"' => '\\"', "\n" => '\\n', "\r" => '\\r', "\t" => '\\t']).'"';
+    backupWrite($handle, "[client]\nuser=".$quote($user)."\npassword=".$quote($password)."\n");
+    fclose($handle);
+
+    return $path;
+}
+
+function backupPitrCredentials(string $path): array
+{
+    if ($path === '' || ! is_file($path) || is_link($path) || (fileperms($path) & 0077) !== 0 || filesize($path) > 16384) {
+        throw new RuntimeException('PITR requires a protected, explicit backup account option file.');
+    }
+    $settings = parse_ini_file($path, true, INI_SCANNER_RAW);
+    $client = is_array($settings) ? ($settings['client'] ?? null) : null;
+    // This mode only accepts credentials. In particular no options may filter
+    // tables, override the target, use includes, or send output elsewhere.
+    if (! is_array($settings) || count($settings) !== 1 || ! is_array($client) || count($client) !== 2
+        || ! is_string($client['user'] ?? null) || $client['user'] === ''
+        || ! is_string($client['password'] ?? null) || $client['password'] === ''
+        || str_contains($client['user'].$client['password'], "\0")) {
+        throw new RuntimeException('PITR option file must contain only client user and password.');
+    }
+
+    return [$client['user'], $client['password']];
+}
+
+function backupPitrCoordinates(string $prefix, string $tail): array
+{
+    // Matched Oracle clients emit this heading and commented statement before
+    // any table contents. Never take a position from a row value or a separate
+    // query running outside the dump's snapshot.
+    $boundary = preg_split('/^-- (?:Table structure for table|Temporary view structure for view) /m', $prefix, 2);
+    $header = $boundary[0];
+    if (count($boundary) !== 2
+        || ! preg_match('/\A-- MySQL dump /', $header)
+        || substr_count($header, '-- Position to start replication or point-in-time recovery from') !== 1
+        || preg_match_all('/^(?:-- )?CHANGE (?:REPLICATION SOURCE|MASTER) TO\b/m', $header) !== 1
+        || ! preg_match("/^-- CHANGE REPLICATION SOURCE TO SOURCE_LOG_FILE='([A-Za-z0-9][A-Za-z0-9_.-]*\.[0-9]{6,})', SOURCE_LOG_POS=([0-9]+);\r?$/m", $header, $match)
+        || strlen($match[1]) > 255
+        || ($position = filter_var($match[2], FILTER_VALIDATE_INT, ['options' => ['min_range' => 4]])) === false
+        || ! preg_match('/^-- Dump completed on [0-9 -]+[0-9:]+\r?\n?\z/m', $tail)) {
+        throw new RuntimeException('Missing or invalid snapshot coordinates or dump completion marker.');
+    }
+
+    return ['binlog_file' => $match[1], 'binlog_position' => $position, 'coordinate_source' => 'mysqldump-source-data'];
 }
 
 function backupMysqlSchema(PDO $pdo): array
@@ -81,13 +134,20 @@ function backupMysqlSchema(PDO $pdo): array
 $temporary = [];
 $artifact = null;
 $artifactCreated = false;
+$manifestCreated = false;
 $lock = null;
 $directory = null;
 $exitCode = 0;
 $process = null;
 $stage = 'configuration';
 try {
-    if ($argc !== 3 || ! ($app = realpath($argv[1])) || ! ($directory = realpath($argv[2])) || ! is_dir($directory)
+    $expectedUuid = null;
+    if ($argc === 6 && $argv[3] === '--pitr' && $argv[4] === '--expected-server-uuid'
+        && preg_match('/\A[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\z/', $argv[5])) {
+        $expectedUuid = $argv[5];
+    }
+    $pitr = $expectedUuid !== null;
+    if (($argc !== 3 && ! $pitr) || ! ($app = realpath($argv[1])) || ! ($directory = realpath($argv[2])) || ! is_dir($directory)
         || is_link($argv[2]) || ! is_file($app.'/.env') || ! is_file($app.'/vendor/autoload.php')) {
         throw new RuntimeException('Expected an application root and an existing private backup directory.');
     }
@@ -114,6 +174,9 @@ try {
     }
     $driver = $connection['driver'];
     $manifest = ['format_version' => 1, 'driver' => $driver, 'created_utc' => gmdate('c'), 'application_booted' => false];
+    if ($pitr && $driver !== 'mysql') {
+        throw new RuntimeException('PITR base backups require an active MySQL database.');
+    }
     if ($driver === 'sqlite') {
         $source = $connection['database'];
         if (! str_starts_with($source, '/')) {
@@ -139,34 +202,40 @@ try {
         }
         $database = $connection['database'];
         $socket = $connection['unix_socket'] ?? '';
+        $defaults = getenv('REPRO_MYSQL_BACKUP_DEFAULTS_FILE') ?: '';
+        $username = (string) $connection['username'];
+        $password = (string) $connection['password'];
+        $stage = 'credentials';
+        if ($pitr) {
+            [$username, $password] = backupPitrCredentials($defaults);
+            // Pass our own credentials-only file to both clients so they
+            // cannot inherit additional dump or connection options.
+            $defaults = backupClientFile($directory, $username, $password, $temporary);
+        } elseif ($defaults === '') {
+            $defaults = backupClientFile($directory, $username, $password, $temporary);
+        } elseif (! is_file($defaults) || is_link($defaults) || (fileperms($defaults) & 0077) !== 0) {
+            throw new RuntimeException('Backup credentials require a protected regular option file.');
+        }
+        $stage = 'connection';
         $dsn = 'mysql:'.($socket !== '' ? 'unix_socket='.$socket : 'host='.$connection['host'].';port='.$connection['port']).';dbname='.$database.';charset=utf8mb4';
-        $pdo = new PDO($dsn, $connection['username'], $connection['password'], [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION] + ($connection['options'] ?? []));
-        $identity = $pdo->query('SELECT VERSION() AS version,@@server_uuid AS server_uuid,DATABASE() AS db')->fetch(PDO::FETCH_ASSOC);
-        preg_match('/\A(\d+\.\d+)\./', $identity['version'], $serverVersion);
-        if (($serverVersion[1] ?? null) !== '8.4' || $identity['db'] !== $database) {
+        $pdo = new PDO($dsn, $username, $password, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION] + ($connection['options'] ?? []));
+        $identity = $pdo->query('SELECT VERSION() AS version,@@server_uuid AS server_uuid,DATABASE() AS db,@@GLOBAL.log_bin AS log_bin')->fetch(PDO::FETCH_ASSOC);
+        preg_match('/\A(8\.4\.\d+(?:\.\d+)?)(?:\z|[-+])/', $identity['version'], $serverVersion);
+        if (! isset($serverVersion[1]) || $identity['db'] !== $database) {
             throw new RuntimeException('This migration release requires the validated MySQL 8.4 target.');
+        }
+        if ($pitr && (! hash_equals($expectedUuid, $identity['server_uuid']) || (int) $identity['log_bin'] !== 1)) {
+            throw new RuntimeException('PITR requires the expected source UUID and enabled binary logging.');
         }
         $mysql = backupBinary('REPRO_MYSQL_CLIENT', 'mysql');
         $dump = backupBinary('REPRO_MYSQLDUMP', 'mysqldump');
         $stage = 'client_versions';
         foreach ([$mysql, $dump] as $binary) {
             $version = backupRun([$binary, '--no-defaults', '--version']);
-            if (! preg_match('/\b(?:Ver|ver)\s+8\.4\./', $version)) {
-                throw new RuntimeException('MySQL backup clients must match the validated 8.4 server family.');
+            if (! preg_match('/\b(?:Ver|ver)\s+(8\.4\.\d+(?:\.\d+)?)(?:\s|\z|[-+])/', $version, $clientVersion)
+                || ($pitr && $clientVersion[1] !== $serverVersion[1])) {
+                throw new RuntimeException('MySQL backup clients must match the validated server version.');
             }
-        }
-        $defaults = getenv('REPRO_MYSQL_BACKUP_DEFAULTS_FILE');
-        $stage = 'credentials';
-        if ($defaults === false || $defaults === '') {
-            $defaults = $directory.'/.mysql-client-'.bin2hex(random_bytes(8)).'.cnf';
-            $temporary[] = $defaults;
-            $handle = fopen($defaults, 'x');
-            chmod($defaults, 0600);
-            $quote = static fn (string $item): string => '"'.strtr($item, ["\\" => "\\\\", '"' => '\\"', "\n" => '\\n', "\r" => '\\r', "\t" => '\\t']).'"';
-            backupWrite($handle, "[client]\nuser=".$quote((string) $connection['username'])."\npassword=".$quote((string) $connection['password'])."\n");
-            fclose($handle);
-        } elseif (! is_file($defaults) || is_link($defaults) || (fileperms($defaults) & 0077) !== 0) {
-            throw new RuntimeException('Backup credentials require a protected regular option file.');
         }
         $options = ['--defaults-file='.$defaults, '--no-login-paths', '--default-character-set=utf8mb4'];
         $options = array_merge($options, $socket !== '' ? ['--protocol=SOCKET', '--socket='.$socket] : ['--protocol=TCP', '--host='.$connection['host'], '--port='.(string) $connection['port']]);
@@ -186,7 +255,8 @@ try {
         $temporary[] = $errorPath;
         $errorStream = fopen($errorPath, 'x+');
         chmod($errorPath, 0600);
-        $process = proc_open([$dump, ...$options, '--single-transaction', '--quick', '--hex-blob', '--no-tablespaces', '--set-gtid-purged=OFF',
+        $pitrOptions = $pitr ? ['--source-data=2', '--comments', '--dump-date'] : [];
+        $process = proc_open([$dump, ...$options, '--single-transaction', ...$pitrOptions, '--quick', '--hex-blob', '--no-tablespaces', '--set-gtid-purged=OFF',
             '--routines', '--events', '--triggers', '--skip-add-locks', '--column-statistics=0', '--', $database],
             [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => $errorStream], $pipes, null, null, ['bypass_shell' => true]);
         if (! is_resource($process)) {
@@ -195,9 +265,17 @@ try {
         fclose($pipes[0]);
         $compression = deflate_init(ZLIB_ENCODING_GZIP, ['level' => 3]);
         $uncompressed = 0;
+        $prefix = '';
+        $tail = '';
         while (! feof($pipes[1])) {
             $chunk = fread($pipes[1], 1048576);
             $uncompressed += strlen($chunk);
+            if ($pitr) {
+                if (strlen($prefix) < 32768) {
+                    $prefix .= substr($chunk, 0, 32768 - strlen($prefix));
+                }
+                $tail = substr($tail.$chunk, -4096);
+            }
             backupWrite($output, deflate_add($compression, $chunk, ZLIB_NO_FLUSH));
         }
         fclose($pipes[1]);
@@ -207,10 +285,27 @@ try {
         $errors = stream_get_contents($errorStream, 65536);
         fclose($errorStream);
         backupWrite($output, deflate_add($compression, '', ZLIB_FINISH));
+        if ($pitr && ! fsync($output)) {
+            throw new RuntimeException('Could not sync the PITR backup artifact.');
+        }
         fclose($output);
         if ($exit !== 0 || $uncompressed === 0) {
             preg_match('/\bERROR\s+(\d+)\b/', $errors, $match);
             throw new RuntimeException('The MySQL dump did not complete.', isset($match[1]) ? (int) $match[1] : $exit);
+        }
+        if ($pitr) {
+            $stage = 'pitr_coordinates';
+            $manifest['pitr'] = backupPitrCoordinates($prefix, $tail);
+            if (trim($errors) !== '') {
+                $stage = 'pitr_diagnostics';
+                throw new RuntimeException('MySQL reported diagnostics during the PITR dump.');
+            }
+            $stage = 'server_identity_recheck';
+            $probe = trim(backupRun([$mysql, ...$options, '--batch', '--skip-column-names', '--database='.$database,
+                "--execute=SELECT CONCAT(@@server_uuid, ':', @@GLOBAL.log_bin)"]));
+            if (! hash_equals($expectedUuid.':1', $probe)) {
+                throw new RuntimeException('The source UUID or binary log status changed during the PITR backup.');
+            }
         }
         $stage = 'schema_recheck';
         if ($schema !== backupMysqlSchema($pdo)) {
@@ -226,12 +321,23 @@ try {
     $manifest['file'] = basename($artifact);
     $manifest['bytes'] = filesize($artifact);
     $manifest['sha256'] = hash_file('sha256', $artifact);
-    $manifestHandle = fopen($directory.'/database-backup.json', 'x');
-    chmod($directory.'/database-backup.json', 0600);
+    $manifestPath = $directory.'/database-backup.json';
+    $manifestTemporary = $directory.'/.database-manifest-'.bin2hex(random_bytes(8));
+    $temporary[] = $manifestTemporary;
+    $manifestHandle = fopen($manifestTemporary, 'x');
+    chmod($manifestTemporary, 0600);
     backupWrite($manifestHandle, json_encode($manifest, JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR)."\n");
+    if (! fsync($manifestHandle)) {
+        throw new RuntimeException('Could not sync the verified backup manifest.');
+    }
     fclose($manifestHandle);
+    rename($manifestTemporary, $manifestPath);
+    $manifestCreated = true;
     echo json_encode(['database_backup' => 'passed', 'driver' => $driver, 'file' => $manifest['file'], 'bytes' => $manifest['bytes'], 'sha256' => $manifest['sha256']], JSON_THROW_ON_ERROR)."\n";
 } catch (Throwable $error) {
+    if ($manifestCreated) {
+        unlink($manifestPath);
+    }
     if ($artifactCreated && $artifact !== null && is_file($artifact)) {
         unlink($artifact);
     }

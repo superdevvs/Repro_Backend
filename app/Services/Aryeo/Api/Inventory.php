@@ -4,6 +4,7 @@ namespace App\Services\Aryeo\Api;
 
 use App\Models\AryeoApiDestination;
 use App\Models\AryeoApiExport;
+use App\Support\JsonIdentity;
 
 class Inventory
 {
@@ -26,7 +27,7 @@ class Inventory
         $assets = $export->assets()->get();
         $new = $assets->where('ownership', 'created')->pluck('place_asset_id')->filter()->all();
         $baselineNow = array_values(array_filter($remote, fn ($a) => ! in_array($a['id'], $new, true)));
-        abort_unless($baselineNow === $export->remote_baseline, 409, 'remote_inventory_changed');
+        abort_unless(JsonIdentity::same($baselineNow, $export->remote_baseline), 409, 'remote_inventory_changed');
         $ids = array_column($remote, 'id');
         abort_unless(count($ids) === count(array_unique($ids)), 409, 'remote_inventory_ambiguous');
         $expectedNew = $assets->where('ownership', 'created')->pluck('place_asset_id')->all();
@@ -45,7 +46,7 @@ class Inventory
                 $expected = $asset->presentation;
                 abort_unless(is_array($expected), 409, 'asset_presentation_unverified');
                 $expected['delivery_id'] = $afterDelivery ? $export->provider_delivery_id : null;
-                abort_unless($expected === $actual, 409, 'asset_presentation_changed');
+                abort_unless(JsonIdentity::same($expected, $actual), 409, 'asset_presentation_changed');
             }
             if ($afterDelivery && $asset->ownership === 'created') {
                 abort_unless($actual['delivery_id'] === $export->provider_delivery_id, 409, 'delivery_evidence_incomplete');
