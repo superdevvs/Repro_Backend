@@ -52,7 +52,7 @@ class Shoot extends Model
 
 
     // Stored upstream diagnostics are not part of the public shoot representation.
-    protected $hidden = ['bright_mls_response', 'external_booking_payload'];
+    protected $hidden = ['bright_mls_response', 'external_booking_payload', 'standing_editor_notes_hidden', 'standing_editor_notes_snapshot'];
 
     protected $fillable = [
         'client_id',
@@ -288,6 +288,8 @@ class Shoot extends Model
         'hold_requested_at' => 'datetime',
         'photographer_paid_at' => 'datetime',
         'sales_rep_paid_at' => 'datetime',
+        'standing_editor_notes_hidden' => 'boolean',
+        'standing_editor_notes_snapshot' => 'array',
         'sales_rep_pay_enabled' => 'boolean',
         'reshoot_of_shoot_id' => 'integer',
         'root_shoot_id' => 'integer',
