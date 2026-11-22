@@ -32,6 +32,12 @@ triggers. The data rehearsal retained all seven tables. The protected drift
 report must be reviewed against the final release and frozen snapshot before
 signing a cutover layout.
 
+On the retained rehearsal copy, a fresh metadata-only comparison verified the
+copy's recorded SHA-256 and found 56 schema differences from the source release
+and 62 from the candidate. Both fresh fixtures have 284 tables compared with
+291 in the copy. Rebuilding the fixtures with locked dependencies reproduced
+both schema fingerprints. The comparison queried schema metadata only.
+
 The separate managed MySQL 8.4.13 service on Maverick passed authenticated
 checks on the empty instance before and after a controlled restart. Both
 `www-data` and `maverick` initially received permission denied at the socket.
@@ -41,6 +47,20 @@ temporary ACL after restart. A subsequent host test must prove that the unit
 sets this permission automatically. The service and rotation timer were left
 stopped and disabled. The live app still uses SQLite and the existing MySQL
 service kept its process identity.
+
+The isolated Laravel smoke now runs with the candidate's locked dependencies
+and a disposable socket-only MySQL 8.4.13 instance. It verified that valid
+credentials work and invalid credentials are refused, notification reads
+persist with the correct user and watermark, rolled-back writes remain
+invisible, and one native queue job produces one acknowledged effect. All 16
+launcher tests passed on Linux. The disposable database was empty again after
+the test. The smoke used only synthetic records.
+
+Maverick refused unprivileged user namespace creation. The supervised smoke
+mode verifies a distinct private network namespace, a non-root UID, empty
+capability sets, and no outbound route. This mode passed its isolation and
+database checks in the disposable Linux fixture. On-host testing requires the
+reviewed, isolated supervisor and remains part of the managed acceptance.
 
 The data-only timing is one part of a dress rehearsal. Remaining acceptance
 requires the managed socket and log rotation checks, privileged cutover and
