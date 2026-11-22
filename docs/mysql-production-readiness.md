@@ -19,6 +19,13 @@ mismatches. The first import attempt caught an oversized iGUIDE survey index.
 The conversion now uses the original migration's declared 64- and
 32-character widths for its two identity fields and retains the full unique key.
 
+A separate same-host instance restored the compressed backup and verified all
+291 tables, 29,909,713 fields, 477 foreign keys, 25 triggers and 166 next record
+IDs. Exact column metadata matched. The DDL comparison accepted only a
+redundant character-set clause where the collation was identical. Both
+temporary instances stopped after verification. Off-site recovery remains
+its own acceptance gate.
+
 The fresh release build had 284 tables. The copy has seven additional
 historical tables and other differences in constraints, columns, indexes and
 triggers. The data rehearsal retained all seven tables. The protected drift

@@ -5,7 +5,9 @@ namespace Tests\Feature;
 use App\Queue\SqliteDatabaseQueue;
 use App\Services\IguideLab\LabTourConfig;
 use App\Services\IguideLab\LabTourConfigException;
+use Illuminate\Queue\DatabaseQueue;
 use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
@@ -155,7 +157,12 @@ class IguideLabTourConfigTest extends TestCase
         $this->assertTrue($connection['after_commit']);
         $this->assertSame(config('queue.connections.studio.connection'), $connection['connection']);
         $this->assertArrayHasKey('studio', config('queue.connections'));
-        $this->assertInstanceOf(SqliteDatabaseQueue::class, Queue::connection('iguide-lab-tour'));
+        $queue = Queue::connection('iguide-lab-tour');
+        $database = DB::connection($connection['connection']);
+        $this->assertSame($database, $queue->getDatabase());
+        // SQLite keeps its bounded lock retries; MySQL uses Laravel's native
+        // database queue and row-lock reservation semantics.
+        $this->assertSame($database->getDriverName() === 'sqlite' ? SqliteDatabaseQueue::class : DatabaseQueue::class, $queue::class);
         // The studio connection the tour layer uses by default is unchanged.
         $this->assertSame(['driver' => 'database', 'connection' => config('queue.connections.studio.connection'), 'table' => 'jobs',
             'queue' => 'studio', 'retry_after' => 7260, 'after_commit' => true], config('queue.connections.studio'));
