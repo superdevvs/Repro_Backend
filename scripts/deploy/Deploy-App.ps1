@@ -259,6 +259,7 @@ test -s "$archive"
 rm -rf "$stage"
 mkdir -p "$stage" "$backup"
 chmod 0700 "$backup"
+chmod 0700 "$backup"
 tar -xzf "$archive" -C "$stage"
 test -s "$stage/artisan"
 test -s "$stage/composer.lock"
@@ -311,9 +312,7 @@ tar -czf "$backup/source.tar.gz" -C "$app" \
   --exclude='.env*' --exclude='*.pem' --exclude='*.key' --exclude='*.p12' --exclude='*.pfx' --exclude='*.jks' --exclude='./output' --exclude='quarantine*' --exclude='./bootstrap/cache/*.php' --exclude='./.git' --exclude='./vendor' --exclude='./node_modules' \
   --exclude='./storage' --exclude='./database/*.sqlite' --exclude='./database/*.sqlite-*' \
   --exclude='./public/storage' .
-if [ -f "$app/database/database.sqlite" ]; then
-  php "$stage/scripts/deploy/backup-sqlite.php" "$app/database/database.sqlite" "$backup/database.sqlite"
-fi
+php "$stage/scripts/deploy/backup-database.php" "$app" "$backup"
 echo "Rollback backups: $backup"
 
 code_replaced=1

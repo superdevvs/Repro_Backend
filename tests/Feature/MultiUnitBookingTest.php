@@ -135,17 +135,17 @@ class MultiUnitBookingTest extends TestCase
         $payload['service_lines'][0]['scheduled_at'] = '2026-10-06T15:30:00Z';
         $payload['service_lines'][1]['scheduled_at'] = '2026-10-07T18:00:00Z';
         $this->persist($payload);
-        $this->assertSame('2026-10-06 15:30:00', $this->shoot->getRawOriginal('scheduled_at'));
+        $this->assertSame('2026-10-06 15:30:00', \Carbon\Carbon::parse($this->shoot->getRawOriginal('scheduled_at'), 'UTC')->format('Y-m-d H:i:s'));
         $this->assertSame('11:30:00', $this->shoot->time);
 
         $edit = $this->existingPayload();
         $edit['service_lines'][0]['scheduled_at'] = '2026-10-08T09:00:00-04:00';
         $this->patchJson('/api/shoots/'.$this->shoot->id, $edit)->assertOk();
         $this->shoot->refresh();
-        $this->assertSame('2026-10-07 18:00:00', $this->shoot->getRawOriginal('scheduled_at'));
+        $this->assertSame('2026-10-07 18:00:00', \Carbon\Carbon::parse($this->shoot->getRawOriginal('scheduled_at'), 'UTC')->format('Y-m-d H:i:s'));
         $this->assertSame('14:00:00', $this->shoot->time);
         $this->assertSame(['2026-10-08 13:00:00', '2026-10-07 18:00:00'],
-            $this->shoot->serviceItems()->orderBy('id')->get()->map(fn ($item) => $item->getRawOriginal('scheduled_at'))->all());
+            $this->shoot->serviceItems()->orderBy('id')->get()->map(fn ($item) => \Carbon\Carbon::parse($item->getRawOriginal('scheduled_at'), 'UTC')->format('Y-m-d H:i:s'))->all());
     }
 
     private function persist(array $payload): void
@@ -708,6 +708,9 @@ class MultiUnitBookingTest extends TestCase
 
     public function test_hundred_unit_edit_completes_with_a_concurrent_sqlite_wal_writer(): void
     {
+        if (DB::getDriverName() !== 'sqlite') {
+            $this->markTestSkipped('This exercises SQLite WAL snapshot promotion; MySQL uses the separate concurrency checks.');
+        }
         $this->persist($this->payload(100));
         $directory = storage_path('framework/testing/unit-contention-'.bin2hex(random_bytes(6)));
         mkdir($directory, 0700, true);

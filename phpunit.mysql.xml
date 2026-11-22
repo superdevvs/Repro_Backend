@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<phpunit xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:noNamespaceSchemaLocation="vendor/phpunit/phpunit/phpunit.xsd"
+         bootstrap="tests/bootstrap-mysql.php" colors="true">
+    <testsuites>
+        <testsuite name="MySQL">
+            <directory>tests/Feature</directory><directory>tests/MySql</directory>
+            <!-- Historical SQLite schema surgery/repair-command fixtures are
+                 covered by the SQLite suite, not the converted MySQL baseline. -->
+            <exclude>tests/Feature/AiJobStudioColumnsMigrationTest.php</exclude>
+            <exclude>tests/Feature/ReconcilePartialServiceDeliveryTest.php</exclude>
+        </testsuite>
+    </testsuites>
+    <source><include><directory>app</directory></include></source>
+    <php>
+        <env name="APP_ENV" value="testing" force="true"/>
+        <env name="MYSQL_TEST_FACTORY_DEFAULTS" value="true" force="true"/>
+        <env name="DB_CONNECTION" value="mysql" force="true"/>
+        <env name="DB_DATABASE" value="repro_mysql_test" force="true"/>
+        <env name="DB_USERNAME" value="repro_test" force="true"/>
+        <env name="DB_COLLATION" value="utf8mb4_0900_bin" force="true"/>
+        <env name="CACHE_STORE" value="array" force="true"/>
+        <env name="SESSION_DRIVER" value="array" force="true"/>
+        <env name="QUEUE_CONNECTION" value="sync" force="true"/>
+        <env name="MAIL_MAILER" value="array" force="true"/>
+        <env name="VOICE_LOCK_STORE" value="array" force="true"/>
+        <env name="VOICE_CACHE_STORE" value="array" force="true"/>
+        <env name="CUBICASA_API_KEY" value="" force="true"/>
+        <env name="CUBICASA_BASE_URL" value="https://cubicasa.test" force="true"/>
+        <env name="PHOTOGRAPHER_RADIUS_ENFORCEMENT" value="false" force="true"/>
+        <env name="PULSE_ENABLED" value="false" force="true"/>
+        <env name="TELESCOPE_ENABLED" value="false" force="true"/>
+        <env name="BCRYPT_ROUNDS" value="4" force="true"/>
+    </php>
+</phpunit>

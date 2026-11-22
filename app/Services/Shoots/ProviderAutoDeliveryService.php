@@ -67,7 +67,9 @@ class ProviderAutoDeliveryService
         if (! $view || $view->getAttribute($provider === 'iguide' ? 'iguide_property_id' : 'cubicasa_order_id') !== $identity) return null;
         $id = LockedWrite::run(fn () => DB::transaction(function () use ($root, $item, $provider, $identity, $state, $source, $parsed, $eventFingerprint) {
             EditingDispatchWriteLock::acquire($root->id);
-            $fresh = Shoot::findOrFail($root->id); $line = $fresh->serviceItems()->findOrFail($item->id);
+            // Serialize same-shoot observations before taking a MySQL read
+            // snapshot; SQLite already holds its writer reservation above.
+            $fresh = Shoot::lockForUpdate()->findOrFail($root->id); $line = $fresh->serviceItems()->findOrFail($item->id);
             $view = $this->scope($fresh, $line, $provider);
             if (! $view || $view->getAttribute($provider === 'iguide' ? 'iguide_property_id' : 'cubicasa_order_id') !== $identity) return null;
             $execution = app(DeliveryPlanService::class)->itemExecutionKey($fresh, $line);

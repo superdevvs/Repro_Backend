@@ -13,6 +13,10 @@ class ShootUploadWriterReservationTest extends TestCase
 {
     public function test_raw_and_edited_uploads_reserve_the_writer_before_media_reads(): void
     {
+        if (DB::getDriverName() !== 'sqlite') {
+            $this->markTestSkipped('SQLite WAL/schema-specific fixture; MySQL has separate parallel-write coverage.');
+        }
+
         // A real WAL database and independent connection reproduce the production
         // race; an in-memory database or a mocked lock exception cannot do that.
         $path = tempnam(sys_get_temp_dir(), 'upload-writer-');

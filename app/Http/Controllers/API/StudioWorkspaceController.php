@@ -55,11 +55,13 @@ class StudioWorkspaceController extends StudioController
             $shoot = \App\Models\Shoot::findOrFail($shootId);
             abort_unless(app(\App\Services\Shoots\ShootAuthorizationSupport::class)->canAccessShootMedia($shoot, $request->user()), 403);
             // Standalone edits retain their source shoot in the media snapshot.
-            // json_each is SQLite's bounded array expansion (also used in production).
+            $containsShoot = fn (string $column, string $alias) => $query->getConnection()->getDriverName() === 'mysql'
+                ? "EXISTS (SELECT 1 FROM JSON_TABLE({$column}, '$[*]' COLUMNS (shoot_id BIGINT PATH '$.shootId' NULL ON EMPTY NULL ON ERROR)) AS {$alias} WHERE {$alias}.shoot_id = ?)"
+                : "EXISTS (SELECT 1 FROM json_each({$column}) AS {$alias} WHERE CAST(json_extract({$alias}.value, '$.shootId') AS INTEGER) = ?)";
             $query->where(fn ($scope) => $scope->where('shoot_id', $shootId)->orWhereRaw(
-                "EXISTS (SELECT 1 FROM json_each(studio_workspaces.media) AS selected_media WHERE CAST(json_extract(selected_media.value, '$.shootId') AS INTEGER) = ?)", [$shootId]
+                $containsShoot('studio_workspaces.media', 'selected_media'), [$shootId]
             )->orWhereRaw(
-                "EXISTS (SELECT 1 FROM json_each(studio_workspaces.access_media) AS retained_media WHERE CAST(json_extract(retained_media.value, '$.shootId') AS INTEGER) = ?)", [$shootId]
+                $containsShoot('studio_workspaces.access_media', 'retained_media'), [$shootId]
             ));
         }
         if ($term = trim((string) $request->query('search', ''))) {

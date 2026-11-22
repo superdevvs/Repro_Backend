@@ -49,8 +49,11 @@ class ListingStudioAiRevisionService
         }
         app(ListingStudioPaidMedia::class)->read($item->output_descriptor);
         $revision = LockedWrite::run(fn () => DB::transaction(function () use ($client, $orderId, $instructions, $key, $hash, $route) {
-            $order = ListingStudioOrder::where('client_id', $client->id)->with('item')->findOrFail($orderId);
-            $item = $order->item;
+            // Take current locking reads before opening a consistent-read snapshot.
+            // Settlement and item lifecycle writes use the same parent-first order.
+            $order = ListingStudioOrder::where('client_id', $client->id)->lockForUpdate()->findOrFail($orderId);
+            $item = $order->item()->lockForUpdate()->firstOrFail();
+            $item->setRelation('order', $order);
             $item->touch(); // Acquire the write guard before counting/reserving the shared allowance.
             $existing = ListingStudioAiRevision::where('order_item_id', $item->id)->where('request_key', $key)->first();
             if ($existing) {
@@ -113,8 +116,8 @@ class ListingStudioAiRevisionService
             || (int) $workspace->created_by !== (int) $item->client_id || (int) $revision->client_id !== (int) $item->client_id
             || $workspace->team_id !== null || $workspace->shoot_id || $workspace->editing_dispatch_id || $workspace->listing_studio_trial_id
             || ($workspace->operation['id'] ?? null) !== $revision->id || ($workspace->operation['type'] ?? null) !== 'revision'
-            || ($workspace->operation['recipeVersion'] ?? null) !== self::VERSION || ($workspace->operation['payload'] ?? []) !== $this->payload($revision)
-            || ($workspace->operation['routing'] ?? []) !== ['revision' => $revision->route]
+            || ($workspace->operation['recipeVersion'] ?? null) !== self::VERSION || ! StudioWorkspace::sameConfig($workspace->operation['payload'] ?? [], $this->payload($revision))
+            || ! StudioWorkspace::sameConfig($workspace->operation['routing'] ?? [], ['revision' => $revision->route])
             || count($workspace->media ?? []) !== 1 || ($workspace->media[0]['id'] ?? '') !== 'source'
             || ($workspace->media[0]['orderItemId'] ?? '') !== $item->id
             || ($workspace->media[0]['mediaRef'] ?? '') !== ($item->source_snapshot['path'] ?? null)
@@ -168,7 +171,9 @@ class ListingStudioAiRevisionService
             }
             $descriptor = app(ListingStudioPaidMedia::class)->completeOutput($item, ['disk' => ListingStudioPaidStorage::DISK, 'path' => $output['path']]);
             LockedWrite::run(fn () => DB::transaction(function () use ($item, $revision, $workspace, $descriptor): void {
-                $item = ListingStudioOrderItem::findOrFail($item->id);
+                $order = ListingStudioOrder::whereKey($item->order_id)->lockForUpdate()->firstOrFail();
+                $item = ListingStudioOrderItem::whereKey($item->id)->lockForUpdate()->firstOrFail();
+                $item->setRelation('order', $order);
                 $item->touch();
                 $fresh = ListingStudioAiRevision::findOrFail($revision->id);
                 if ($fresh->status === 'completed') {

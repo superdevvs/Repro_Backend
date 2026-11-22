@@ -7,7 +7,7 @@ use App\Models\{Service, Shoot, ShootFile, ShootService, User};
 use App\Services\Messaging\ShootDeliveryNotificationOutbox;
 use App\Services\Shoots\{DeliveryComponentRequirements, DeliveryPlanService, ReviewedTravelFeeCatalog, ShootActiveWorkLifecycle, ShootEditingAssignmentService, ShootServiceProgress};
 use Illuminate\Foundation\Testing\RefreshDatabase;
-use Illuminate\Support\Facades\{Artisan, DB, Http, Mail, Notification, Queue};
+use Illuminate\Support\Facades\{Artisan, DB, Http, Mail, Notification, Queue, Schema};
 use PDO;
 use Tests\TestCase;
 
@@ -81,7 +81,7 @@ class TravelFeeClassificationTest extends TestCase
         $travel = $this->catalog(63, true);
         $shoot = Shoot::factory()->create(['status' => 'delivered', 'workflow_status' => 'delivered', 'delivery_status' => 'delivered',
             'admin_verified_at' => now()->subDay(), 'completed_at' => now()->subDay()]);
-        $before = $shoot->getRawOriginal();
+        $before = $shoot->fresh()->getRawOriginal();
         $fee = $shoot->serviceItems()->create(['service_id' => $travel->id, 'quantity' => 2, 'price' => 50,
             'photographer_id' => $shoot->photographer_id, 'photographer_pay' => 17, 'workflow_status' => 'pending', 'delivery_status' => 'not_started']);
         $this->assertFalse($fee->is_deliverable);
@@ -274,11 +274,21 @@ class TravelFeeClassificationTest extends TestCase
         $path = tempnam(sys_get_temp_dir(), 'travel-fee-backup-'); $this->backups[] = $path;
         $pdo = new PDO('sqlite:'.$path, null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
         foreach ($this->state() as $table => $rows) {
-            $definition = DB::selectOne("SELECT sql FROM sqlite_master WHERE type='table' AND name=?", [$table]); $pdo->exec($definition->sql);
+            // The operator validates a read-only SQLite snapshot even when the
+            // application uses MySQL. Copy the real fixture's complete column
+            // set through portable metadata, preserving decimal/JSON strings
+            // with SQLite's non-coercing BLOB affinity and explicit scalar binds.
+            $quote = fn (string $name) => '"'.str_replace('"', '""', $name).'"';
+            $definitions = array_map(fn ($name) => $quote($name).($name === 'id' ? ' INTEGER PRIMARY KEY' : ' BLOB'), Schema::getColumnListing($table));
+            $pdo->exec('CREATE TABLE '.$quote($table).' ('.implode(',', $definitions).')');
             foreach ($rows as $row) {
-                $columns = implode(',', array_map(fn ($key) => '"'.$key.'"', array_keys($row)));
+                $columns = implode(',', array_map($quote, array_keys($row)));
                 $statement = $pdo->prepare('INSERT INTO "'.$table.'" ('.$columns.') VALUES ('.implode(',', array_fill(0, count($row), '?')).')');
-                $statement->execute(array_values($row));
+                foreach (array_values($row) as $index => $value) {
+                    $type = $value === null ? PDO::PARAM_NULL : ((is_int($value) || is_bool($value)) ? PDO::PARAM_INT : PDO::PARAM_STR);
+                    $statement->bindValue($index + 1, $value, $type);
+                }
+                $statement->execute();
             }
         }
         $pdo = null; clearstatcache(true, $path); return $path;

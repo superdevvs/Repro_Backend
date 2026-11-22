@@ -12,6 +12,9 @@ permissions:
   contents: read
 
 jobs:
+  mysql:
+    uses: ./.github/workflows/mysql.yml
+
   # Repository and dependency checks that do not need the test suite.
   checks:
     runs-on: ubuntu-latest

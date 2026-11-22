@@ -154,6 +154,52 @@ class ComponentDeliveryPlanTest extends TestCase
         $this->assertDatabaseCount('shoot_delivery_receipts', 2);
     }
 
+    public function test_external_receipt_ignores_json_key_order_but_preserves_exact_output_identity(): void
+    {
+        [$shoot, $item, $actor] = $this->fixture('none');
+        $item->service->forceFill(['included_components' => [
+            ['name' => 'iGuide tour', 'upload_intake_type' => 'none', 'uses_hdr_brackets' => false],
+        ]])->save();
+        $item->forceFill(['delivery_requirements' => null])->save();
+        $shoot->forceFill(['iguide_tour_url' => 'https://youriguide.com/reviewed-identity',
+            'iguide_property_id' => 'reviewed-property'])->save();
+        $planner = app(DeliveryPlanService::class);
+        $selection = $planner->validateSelection($shoot->fresh(), $actor,
+            ['component_ids' => [$item->id.':tour'], 'mode' => 'external', 'confirmed' => true]);
+        DB::transaction(fn () => $planner->commitSelection($shoot->fresh(), $actor, $selection));
+        $receipt = DB::table('shoot_delivery_receipts')->where('shoot_id', $shoot->id)->sole();
+        $evidence = json_decode($receipt->evidence, true, 512, JSON_THROW_ON_ERROR);
+        // Exercise reordered persisted JSON on SQLite as well as native MySQL
+        // JSON, which chooses its own object-key order on every write.
+        $evidence['external'] = array_reverse($evidence['external'], true);
+        $evidence['external']['readiness'] = 'ready';
+        $save = function (array $proof) use ($receipt, $planner, $shoot): void {
+            DB::table('shoot_delivery_receipts')->where('id', $receipt->id)
+                ->update(['evidence' => json_encode($proof, JSON_THROW_ON_ERROR)]);
+            $planner->forgetReleasedFiles($shoot);
+        };
+        $save($evidence);
+        $component = $planner->plan($shoot->fresh(), $actor)['components'][0];
+        $this->assertTrue($component['resolved']);
+        $this->assertSame('delivered', $component['status']);
+        $this->assertSame([$item->id], $planner->releasedServiceIds($shoot->fresh()));
+
+        foreach ([['url', 'https://youriguide.com/different-output'], ['property_id', 'different-property'],
+            ['service_id', $item->id + 1], ['service_id', (string) $item->id]] as [$field, $value]) {
+            $changed = $evidence;
+            $changed['external'][$field] = $value;
+            $save($changed);
+            $this->assertFalse($planner->plan($shoot->fresh(), $actor)['components'][0]['resolved'],
+                'A changed external identity must invalidate approval: '.$field);
+            $this->assertSame([], $planner->releasedServiceIds($shoot->fresh()));
+        }
+        $save($evidence);
+        $this->assertTrue($planner->plan($shoot->fresh(), $actor)['components'][0]['resolved']);
+        DB::table('shoot_delivery_receipts')->where('id', $receipt->id)->update(['revoked_at' => now()]);
+        $planner->forgetReleasedFiles($shoot);
+        $this->assertFalse($planner->plan($shoot->fresh(), $actor)['components'][0]['resolved']);
+    }
+
     public function test_worker_rechecks_stale_versions_and_actor_permissions_before_any_receipt(): void
     {
         [$shoot, $item, $actor] = $this->fixture('photo');

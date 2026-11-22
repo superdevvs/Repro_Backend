@@ -50,6 +50,7 @@ class InvoiceApprovalController extends Controller
 
         $summaryQuery = clone $query;
         $statusBreakdown = (clone $summaryQuery)
+            ->reorder()
             ->select('approval_status', DB::raw('COUNT(*) as aggregate'))
             ->groupBy('approval_status')
             ->pluck('aggregate', 'approval_status');
@@ -375,7 +376,8 @@ class InvoiceApprovalController extends Controller
                     Invoice::APPROVAL_STATUS_LEGACY_APPROVED,
                 ]
             )
-            ->orderByRaw('COALESCE(modified_at, approved_at, rejected_at, created_at) DESC');
+            ->orderByRaw('COALESCE(modified_at, approved_at, rejected_at, created_at) DESC')
+            ->orderByDesc('invoices.id');
     }
 
     private function serializeReviewQueueInvoice(Invoice $invoice): array

@@ -89,8 +89,9 @@ class AccountingHomeDateRangeTest extends TestCase
 
     public function test_equipment_and_subscription_billing_periods_follow_range(): void
     {
-        PhotographerEquipment::create(['name' => 'Selected camera', 'issue_date' => '2026-10-02', 'status' => 'pending_verification']);
-        PhotographerEquipment::create(['name' => 'Old camera', 'issue_date' => '2026-08-01', 'status' => 'pending_verification']);
+        $photographer = User::factory()->create(['role' => 'photographer']);
+        PhotographerEquipment::create(['photographer_id' => $photographer->id, 'name' => 'Selected camera', 'issue_date' => '2026-10-02', 'status' => 'pending_verification']);
+        PhotographerEquipment::create(['photographer_id' => $photographer->id, 'name' => 'Old camera', 'issue_date' => '2026-08-01', 'status' => 'pending_verification']);
         foreach (['2026-08-01', '2026-10-01'] as $date) {
             ListingStudioSubscription::create([
                 'stripe_account_id' => 'acct_range', 'livemode' => false, 'stripe_subscription_id' => 'sub_'.$date,

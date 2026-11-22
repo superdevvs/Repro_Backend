@@ -130,7 +130,7 @@ class ExclusiveListingPreviewTest extends TestCase
         $queries = DB::getQueryLog();
         DB::disableQueryLog();
         $this->assertCount(4, array_filter(array_column($items, 'preview_image_url')));
-        $fileReads = array_filter($queries, fn ($entry) => str_contains($entry['query'], 'from "shoot_files"'));
+        $fileReads = array_filter($queries, fn ($entry) => str_contains(str_replace('`', '"', $entry['query']), 'from "shoot_files"'));
         $this->assertCount(1, $fileReads, 'Preview files must be read in one bounded batch.');
         $this->assertStringContainsString('laravel_row', array_values($fileReads)[0]['query']);
     }

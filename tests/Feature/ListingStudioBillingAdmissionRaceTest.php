@@ -15,6 +15,10 @@ class ListingStudioBillingAdmissionRaceTest extends TestCase
 
     public function test_independent_writers_preserve_request_cap_exact_replay_and_email_cooldown(): void
     {
+        if (DB::getDriverName() !== 'sqlite') {
+            $this->markTestSkipped('SQLite WAL/schema-specific fixture; MySQL has separate parallel-write coverage.');
+        }
+
         $client = User::factory()->create(['role' => 'client', 'account_status' => 'active']);
         $actor = User::factory()->create(['role' => 'salesRep', 'account_status' => 'active']);
         $root = sys_get_temp_dir().'/studio-billing-race-'.bin2hex(random_bytes(8));

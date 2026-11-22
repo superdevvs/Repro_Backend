@@ -1,0 +1,16 @@
+[Unit]
+Description=Rotate isolated RePro MySQL 8.4 slow log
+After=docker.service repro-mysql84.service
+ConditionPathExists=/etc/repro-mysql84/logrotate.conf
+ConditionPathExists=/var/lib/repro-mysql84/slow.log
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+UMask=0077
+StateDirectory=repro-mysql84-logrotate
+StateDirectoryMode=0700
+ExecStartPre=/usr/bin/docker compose --project-name repro-mysql84 --file /etc/repro-mysql84/compose.yaml exec -T mysql mysql --defaults-file=/run/secrets/root-client.cnf --no-login-paths --connect-timeout=5 --batch --skip-column-names "--execute=SELECT 1"
+ExecStart=/usr/sbin/logrotate --state /var/lib/repro-mysql84-logrotate/status /etc/repro-mysql84/logrotate.conf
+TimeoutStartSec=120

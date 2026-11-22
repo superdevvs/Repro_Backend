@@ -168,7 +168,9 @@ class ShootListOrderingTest extends TestCase
         $invalidTime = $this->shoot(['time' => '25:90'])->id;
         $undated = $this->shoot(['scheduled_date' => null, 'time' => null])->id;
         $invalidDate = $this->shoot()->id;
-        DB::table('shoots')->where('id', $invalidDate)->update(['scheduled_date' => '2026-02-30']);
+        // SQLite permits an invalid legacy date; MySQL's typed date rejects it.
+        // Exercise the missing-date position here and strict rejection separately.
+        DB::table('shoots')->where('id', $invalidDate)->update(['scheduled_date' => DB::getDriverName() === 'mysql' ? null : '2026-02-30']);
         $before = $this->shoot(['scheduled_date' => '2026-09-28'])->id;
         $after = $this->shoot(['scheduled_date' => '2026-09-30'])->id;
         Cache::flush();
@@ -272,7 +274,7 @@ class ShootListOrderingTest extends TestCase
         DB::disableQueryLog();
         $this->assertCount(6, $result->items());
         $this->assertSame(15, $result->total());
-        $mediaQueries = array_values(array_filter($queries, fn ($query) => str_contains($query['query'], 'from "shoot_files"')));
+        $mediaQueries = array_values(array_filter($queries, fn ($query) => preg_match('/from ["`]shoot_files["`]/i', $query['query'])));
         $this->assertCount(1, $mediaQueries);
         $expectedIds = implode(', ', array_map(fn ($shoot) => $shoot->id, $result->items()));
         $this->assertStringContainsString('in ('.$expectedIds.')', $mediaQueries[0]['query']);

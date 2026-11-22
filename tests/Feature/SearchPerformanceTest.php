@@ -43,8 +43,8 @@ class SearchPerformanceTest extends TestCase
         $queries = collect(DB::getQueryLog())->pluck('query');
         DB::disableQueryLog();
         // Related rows are predicates, not full models loaded for editing UI.
-        $this->assertFalse($queries->contains(fn ($sql) => str_starts_with($sql, 'select * from "invoice_items"')));
-        $this->assertFalse($queries->contains(fn ($sql) => str_starts_with($sql, 'select * from "payments"')));
+        $this->assertFalse($queries->contains(fn ($sql) => preg_match('/\Aselect \* from ["`]invoice_items["`]/i', $sql)));
+        $this->assertFalse($queries->contains(fn ($sql) => preg_match('/\Aselect \* from ["`]payments["`]/i', $sql)));
     }
 
     public function test_invoice_summary_search_still_applies_viewer_ownership_and_source_permission_middleware(): void
@@ -63,6 +63,9 @@ class SearchPerformanceTest extends TestCase
 
     public function test_sqlite_relation_predicates_use_lookup_indexes_instead_of_scanning_every_related_row(): void
     {
+        if (DB::getDriverName() !== 'sqlite') {
+            $this->markTestSkipped('SQLite EXPLAIN QUERY PLAN format; native MySQL plans are measured in the migration lab.');
+        }
         $invoiceQuery = Invoice::query()->whereHas('items', fn ($items) => $items->where('meta->property_address', 'like', '%1447%'));
         $invoicePlan = collect(DB::select('EXPLAIN QUERY PLAN '.$invoiceQuery->toSql(), $invoiceQuery->getBindings()))->pluck('detail')->implode("\n");
         $this->assertStringContainsString('invoice_items_invoice_lookup', $invoicePlan);

@@ -14,6 +14,10 @@ class PasswordResetConcurrencyTest extends TestCase
 
     public function test_two_sqlite_processes_cannot_consume_the_same_reset_token(): void
     {
+        if (DB::getDriverName() !== 'sqlite') {
+            $this->markTestSkipped('SQLite WAL/schema-specific fixture; MySQL has separate parallel-write coverage.');
+        }
+
         $user = User::factory()->create(['password' => 'Legacy123!']);
         $user->createToken('old-session');
         $token = app(PasswordRecoveryService::class)->issue($user);

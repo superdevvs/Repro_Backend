@@ -1,0 +1,108 @@
+name: MySQL compatibility
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  mysql:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1]
+    services:
+      mysql:
+        image: mysql:8.4@sha256:a81d043930e51745522bd5c430961cf8286f0a23f0a9a2a6e0108f7ea71b0902
+        env:
+          # Disposable service on the CI runner; no application data or secrets.
+          MYSQL_ALLOW_EMPTY_PASSWORD: 'yes'
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd="mysqladmin ping --silent"
+          --health-interval=5s --health-timeout=3s --health-retries=40
+      clamav:
+        image: clamav/clamav:1.4.5-debian13-slim
+        ports: ['3310:3310']
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240
+        with:
+          php-version: '8.3'
+          extensions: mbstring, pdo_mysql, pdo_sqlite, sqlite3, sodium, gd, bcmath, intl, zip
+          tools: composer:2.10.2
+          coverage: none
+      - name: Install dependencies and matching Oracle MySQL clients
+        env:
+          MYSQL_CONTAINER: ${{ job.services.mysql.id }}
+        run: |
+          set -euo pipefail
+          composer validate --strict
+          composer install --no-interaction --prefer-dist --no-progress
+          composer audit --locked
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libaio1t64 libncurses6 libtinfo6 poppler-utils imagemagick ffmpeg fonts-dejavu-core hugin-tools enfuse libraw-bin libimage-exiftool-perl
+          for binary in convert pdftoppm ffmpeg align_image_stack enfuse; do command -v "$binary"; done
+          mkdir -p "$RUNNER_TEMP/mysql84"
+          docker cp "$MYSQL_CONTAINER:/usr/bin/mysql" "$RUNNER_TEMP/mysql84/mysql"
+          docker cp "$MYSQL_CONTAINER:/usr/bin/mysqldump" "$RUNNER_TEMP/mysql84/mysqldump"
+          chmod 0755 "$RUNNER_TEMP/mysql84/"*
+          "$RUNNER_TEMP/mysql84/mysql" --version
+          echo "$RUNNER_TEMP/mysql84" >> "$GITHUB_PATH"
+          echo "REPRO_MYSQL_CLIENT=$RUNNER_TEMP/mysql84/mysql" >> "$GITHUB_ENV"
+          echo "REPRO_MYSQLDUMP=$RUNNER_TEMP/mysql84/mysqldump" >> "$GITHUB_ENV"
+      - name: Create a separately permissioned empty test database
+        env:
+          MYSQL_CONTAINER: ${{ job.services.mysql.id }}
+        run: |
+          set -euo pipefail
+          password="$(openssl rand -hex 32)"
+          key="base64:$(openssl rand -base64 32)"
+          echo "::add-mask::$password"
+          echo "::add-mask::$key"
+          echo "DB_PASSWORD=$password" >> "$GITHUB_ENV"
+          echo "APP_KEY=$key" >> "$GITHUB_ENV"
+          printf 'APP_ENV=testing\n' > .env
+          printf "SET GLOBAL log_bin_trust_function_creators=1; CREATE DATABASE repro_mysql_test CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin; CREATE USER 'repro_test'@'%%' IDENTIFIED BY '%s'; GRANT ALL ON repro_mysql_test.* TO 'repro_test'@'%%';\n" "$password" | docker exec -i "$MYSQL_CONTAINER" mysql -uroot
+      - name: Wait for antivirus
+        run: |
+          for attempt in {1..90}; do
+            if printf 'PING\n' | nc -w 2 127.0.0.1 3310 | grep -q PONG; then exit 0; fi
+            sleep 2
+          done
+          exit 1
+      - name: Run the complete MySQL profile in disjoint file shards
+        env:
+          SHARD: ${{ matrix.shard }}
+          APP_ENV: testing
+          DB_CONNECTION: mysql
+          DB_HOST: 127.0.0.1
+          DB_PORT: '3306'
+          DB_DATABASE: repro_mysql_test
+          DB_USERNAME: repro_test
+          DB_COLLATION: utf8mb4_0900_bin
+          CACHE_STORE: array
+          QUEUE_CONNECTION: sync
+          SESSION_DRIVER: array
+          MAIL_MAILER: array
+          CLAMAV_SOCKET: ''
+          CLAMAV_HOST: 127.0.0.1
+          CLAMAV_PORT: '3310'
+        shell: bash
+        run: |
+          set -euo pipefail
+          php -d memory_limit=2G artisan migrate:fresh --force
+          php -d memory_limit=2G vendor/bin/phpunit -c phpunit.mysql.xml --fail-on-warning --fail-on-risky tests/Unit/HdrExposureFusionTest.php
+          python3 - <<'PY'
+          import os,pathlib,xml.etree.ElementTree as ET
+          config=ET.parse('phpunit.mysql.xml').getroot()
+          excluded={e.text for e in config.findall('./testsuites/testsuite/exclude')}
+          files=sorted({str(p) for folder in ['tests/Feature','tests/MySql'] for p in pathlib.Path(folder).rglob('*Test.php')}-excluded)
+          pathlib.Path('/tmp/mysql-test-files').write_text('\n'.join(files[int(os.environ['SHARD'])::2])+'\n')
+          PY
+          mapfile -t files < /tmp/mysql-test-files
+          php -d memory_limit=2G vendor/bin/phpunit -c phpunit.mysql.xml --do-not-cache-result --fail-on-warning --fail-on-risky --fail-on-phpunit-deprecation "${files[@]}"
