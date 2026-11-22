@@ -10,7 +10,7 @@ import sys
 import tempfile
 import types
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 SOURCE = Path(__file__).resolve().parent
 spec = importlib.util.spec_from_file_location("native_mysql", SOURCE / "native_mysql.py")
@@ -228,11 +228,83 @@ class NativePreparationTests(unittest.TestCase):
 
     def test_failed_authentication_never_flushes_logs(self):
         with patch.object(native, "root_only"), patch.object(native, "verify_start", return_value={}), \
+             patch.object(native, "verify_runtime_access"), \
              patch.object(native, "sql", side_effect=native.Refusal("offline")) as sql:
             with self.assertRaises(native.Refusal):
                 native.check(flush=True)
             self.assertEqual(sql.call_count, 1)
             self.assertTrue(sql.call_args.args[0].startswith("SELECT "))
+
+    def acl_tool(self, name):
+        tool = MagicMock(spec=Path)
+        tool.name = name
+        tool.__str__.return_value = "/usr/bin/" + name
+        tool.is_file.return_value = True
+        tool.resolve.return_value = tool
+        tool.stat.return_value = types.SimpleNamespace(st_mode=stat.S_IFREG | 0o755)
+        return tool
+
+    def test_acl_prerequisites_only_execute_protected_version_checks(self):
+        tools = (self.acl_tool("setfacl"), self.acl_tool("getfacl"))
+        with patch.object(native, "ACL_TOOLS", tools), patch.object(native, "protected") as protect, \
+             patch.object(native, "command", side_effect=["setfacl 2.3.2", "getfacl 2.3.2"]) as execute:
+            native.verify_acl_tools()
+            self.assertEqual(protect.call_count, 2)
+            self.assertEqual([call.args[0] for call in execute.call_args_list],
+                             [["/usr/bin/setfacl", "--version"], ["/usr/bin/getfacl", "--version"]])
+
+    def test_missing_unsafe_or_nonexecutable_acl_tool_refuses_without_execution(self):
+        for failure in ("missing", "unsafe", "nonexecutable"):
+            with self.subTest(failure=failure):
+                tool = self.acl_tool("setfacl")
+                if failure == "missing":
+                    tool.is_file.return_value = False
+                if failure == "nonexecutable":
+                    tool.stat.return_value = types.SimpleNamespace(st_mode=stat.S_IFREG | 0o644)
+                with patch.object(native, "ACL_TOOLS", (tool,)), \
+                     patch.object(native, "protected", side_effect=native.Refusal("unsafe") if failure == "unsafe" else None), \
+                     patch.object(native, "command") as execute:
+                    with self.assertRaises(native.Refusal):
+                        native.verify_acl_tools()
+                    execute.assert_not_called()
+
+    @contextmanager
+    def runtime_access_fixture(self, acl, *, directory=None, socket=None):
+        directory = directory or types.SimpleNamespace(st_mode=stat.S_IFDIR | 0o750, st_uid=64084, st_gid=64084)
+        socket = socket or types.SimpleNamespace(st_mode=stat.S_IFSOCK | 0o777, st_uid=64084, st_gid=64084)
+        with patch.object(Path, "lstat", lambda path: directory if path == native.RUN else socket), \
+             patch.object(native, "verify_acl_tools"), patch.object(native, "command", return_value=acl):
+            yield
+
+    def test_runtime_acceptance_requires_exact_traversal_acl(self):
+        expected = "user::rwx\ngroup::r-x\ngroup:33:--x\nmask::r-x\nother::---"
+        with self.runtime_access_fixture(expected):
+            native.verify_runtime_access()
+        for bad in (expected.replace("group:33:--x\n", ""),
+                    expected.replace("group:33:--x", "group:33:r-x"),
+                    expected + "\nuser:1000:rwx", expected + "\ngroup:44:--x",
+                    expected + "\ndefault:user::rwx", expected + "\ngroup:33:--x"):
+            with self.subTest(acl=bad), self.runtime_access_fixture(bad), \
+                 self.assertRaisesRegex(native.Refusal, "exact www-data traversal ACL"):
+                native.verify_runtime_access()
+
+    def test_runtime_acceptance_refuses_owner_mode_type_and_socket_drift(self):
+        for kind, info in (("directory", types.SimpleNamespace(st_mode=stat.S_IFDIR | 0o750, st_uid=64084, st_gid=33)),
+                           ("directory", types.SimpleNamespace(st_mode=stat.S_IFDIR | 0o755, st_uid=64084, st_gid=64084)),
+                           ("directory", types.SimpleNamespace(st_mode=stat.S_IFLNK | 0o750, st_uid=64084, st_gid=64084)),
+                           ("socket", types.SimpleNamespace(st_mode=stat.S_IFSOCK | 0o777, st_uid=0, st_gid=64084)),
+                           ("socket", types.SimpleNamespace(st_mode=stat.S_IFSOCK | 0o770, st_uid=64084, st_gid=64084))):
+            with self.subTest(kind=kind, info=info), self.runtime_access_fixture("", **{kind: info}), \
+                 self.assertRaisesRegex(native.Refusal, "ownership or mode"):
+                native.verify_runtime_access()
+
+    def test_acl_refusal_prevents_sql_and_log_flushing(self):
+        with patch.object(native, "root_only"), patch.object(native, "verify_start", return_value={}), \
+             patch.object(native, "verify_runtime_access", side_effect=native.Refusal("ACL drift")), \
+             patch.object(native, "sql") as sql:
+            with self.assertRaisesRegex(native.Refusal, "ACL drift"):
+                native.check(flush=True)
+            sql.assert_not_called()
 
     def test_unit_dropin_and_wrong_unit_source_are_refused(self):
         for fragment, overrides in ((str(native.SYSTEMD / native.UNIT), "/etc/systemd/system/service.d/custom.conf"),
@@ -267,6 +339,12 @@ class NativePreparationTests(unittest.TestCase):
         self.assertNotIn("docker", unit.lower())
         self.assertIn("Group=repro-mysql84-native", unit)
         self.assertNotIn("Group=www-data", unit)
+        self.assertNotIn("chgrp", unit)
+        execution = [line for line in unit.splitlines() if line.startswith("Exec")]
+        self.assertEqual(execution[-1],
+                         "ExecStartPost=+/usr/bin/setfacl --modify=group:33:--x,mask::r-x /run/repro-mysql84-native")
+        self.assertIn("wait-ready", execution[-2])
+        self.assertIn("RuntimeDirectoryMode=0750", unit)
         config = (SOURCE / "mysql.cnf").read_text()
         for required in ("skip-networking", "mysqlx=OFF", "innodb-flush-log-at-trx-commit=1",
                          "sync-binlog=1", "binlog-expire-logs-auto-purge=OFF",

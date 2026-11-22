@@ -32,11 +32,20 @@ triggers. The data rehearsal retained all seven tables. The protected drift
 report must be reviewed against the final release and frozen snapshot before
 signing a cutover layout.
 
-The data-only timing is one part of a dress rehearsal. The managed target,
-privileged cutover and webhook integration, independent off-host restore, real
-application workload and two timed dress rehearsals are acceptance gates.
-The separate MySQL 8.4 administrator packet is staged privately on the host.
-Live cutover requires a distinct approval.
+The separate managed MySQL 8.4.13 service on Maverick passed authenticated
+checks on the empty instance before and after a controlled restart. Both
+`www-data` and `maverick` initially received permission denied at the socket.
+Granting the existing `www-data` group traverse-only access to the runtime
+directory let both accounts reach the expected daemon. The test reapplied the
+temporary ACL after restart. A subsequent host test must prove that the unit
+sets this permission automatically. The service and rotation timer were left
+stopped and disabled. The live app still uses SQLite and the existing MySQL
+service kept its process identity.
+
+The data-only timing is one part of a dress rehearsal. Remaining acceptance
+requires the managed socket and log rotation checks, privileged cutover and
+webhook integration, an independent off-host restore, the actual application
+workload and two timed dress rehearsals. Live cutover requires distinct approval.
 
 ## November 8 refresh
 

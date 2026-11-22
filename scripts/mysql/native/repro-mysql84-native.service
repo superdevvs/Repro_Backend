@@ -13,12 +13,13 @@ UMask=0077
 RuntimeDirectory=repro-mysql84-native
 RuntimeDirectoryMode=0750
 WorkingDirectory=/var/lib/repro-mysql84-native
-# Fixed privileged operation on the new runtime directory only. mysqld itself
-# never inherits www-data access to unrelated application files.
-ExecStartPre=+/usr/bin/chgrp www-data /run/repro-mysql84-native
 ExecStartPre=/usr/bin/python3 -I /opt/repro-mysql84-native/ops/native_mysql.py verify-start
 ExecStart=/opt/repro-mysql84-native/mysql-8.4.13/bin/mysqld --defaults-file=/etc/repro-mysql84-native/mysql.cnf
 ExecStartPost=/usr/bin/python3 -I /opt/repro-mysql84-native/ops/native_mysql.py wait-ready
+# systemd reapplies RuntimeDirectory ownership before each Exec command. Keep
+# its dedicated UID/GID; the final command grants only www-data path traversal.
+# Failure is fatal to startup. Never give mysqld the www-data group itself.
+ExecStartPost=+/usr/bin/setfacl --modify=group:33:--x,mask::r-x /run/repro-mysql84-native
 Restart=on-failure
 RestartSec=10
 TimeoutStartSec=180

@@ -49,6 +49,7 @@ SERVER_RESOURCES = (
     SERVER_MESSAGE_DIR / "english/errmsg.sys",
 )
 SAFE_ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C", "LC_ALL": "C"}
+ACL_TOOLS = (Path("/usr/bin/setfacl"), Path("/usr/bin/getfacl"))
 
 
 class Refusal(RuntimeError):
@@ -263,15 +264,26 @@ def verify_unit(name: str) -> None:
          f"unexpected unit source or drop-ins: {name}")
 
 
+def verify_acl_tools() -> None:
+    for path in ACL_TOOLS:
+        need(path.is_file(), f"required ACL tool missing: {path}")
+        resolved = path.resolve()
+        protected(resolved)
+        need(resolved.stat().st_mode & 0o111 == 0o111, f"ACL tool is not executable: {path}")
+        need(command([str(path), "--version"]).startswith(path.name + " "),
+             f"unexpected ACL tool: {path}")
+
+
 def preflight(args: argparse.Namespace) -> dict:
     host_identity(args.expect_host, args.machine_id_sha256)
     absent_targets()
     unused_account()
     verify_package(Path(__file__).absolute().parent)
     manifest = verify_bundle(args.bundle, args.manifest, args.manifest_sha256)
-    for executable in ("/usr/bin/python3", "/usr/bin/chgrp", "/usr/bin/systemctl", "/usr/bin/systemd-analyze",
+    for executable in ("/usr/bin/python3", "/usr/bin/systemctl", "/usr/bin/systemd-analyze",
                        "/usr/sbin/logrotate", "/usr/sbin/useradd", "/usr/sbin/groupadd"):
         protected(Path(executable).resolve())
+    verify_acl_tools()
     # Fail closed if the expected unrelated service is not active. Never start it.
     previous = existing_service()
     for name in (UNIT, f"{ACCOUNT}-logrotate.service", f"{ACCOUNT}-logrotate.timer"):
@@ -456,9 +468,26 @@ def validate_live_row(row: str, identity: dict) -> None:
     need(values == expected, "authenticated identity/durability/isolation check failed")
 
 
+def verify_runtime_access() -> None:
+    # Called only after startup, never by verify-start/wait-ready: the named
+    # traversal ACL is granted by the final ExecStartPost command.
+    info = RUN.lstat()
+    need(stat.S_ISDIR(info.st_mode) and info.st_uid == UID and info.st_gid == GID and
+         stat.S_IMODE(info.st_mode) == 0o750, "runtime directory ownership or mode changed")
+    info = SOCKET.lstat()
+    need(stat.S_ISSOCK(info.st_mode) and info.st_uid == UID and info.st_gid == GID and
+         stat.S_IMODE(info.st_mode) == 0o777, "runtime socket ownership or mode changed")
+    verify_acl_tools()
+    acl = command(["/usr/bin/getfacl", "--omit-header", "--numeric", "--absolute-names", str(RUN)])
+    expected = ["user::rwx", "group::r-x", f"group:{WEB_GID}:--x", "mask::r-x", "other::---"]
+    need(sorted(acl.splitlines()) == sorted(expected),
+         "runtime directory must have only the exact www-data traversal ACL; no extra or default ACLs")
+
+
 def check(flush: bool = False) -> dict:
     root_only()
     identity = verify_start()
+    verify_runtime_access()
     query = ("SELECT @@server_uuid,VERSION(),@@datadir,@@socket,@@skip_networking,"
              "@@innodb_flush_log_at_trx_commit,@@sync_binlog,@@local_infile,"
              "@@event_scheduler,@@gtid_mode,@@enforce_gtid_consistency,@@persisted_globals_load,"

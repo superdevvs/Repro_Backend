@@ -32,12 +32,20 @@ No existing `/etc/mysql`, `/var/lib/mysql`, `mysql.service`, system client path,
 or worker membership is changed. A pre-existing target path also refuses the
 operation. Review the actual application worker groups before using the socket.
 
-The account has no login shell or created home. Data/log directories are 0700;
-only the runtime directory is traversable by `www-data` (0750). A fixed privileged
-unit precommand changes that new directory's group. The database process retains
-only its dedicated group, so it cannot inherit access to unrelated `www-data`
-files. It cannot open IP sockets and has a private network
-namespace. The account is not granted sudo.
+The account has no login shell or created home. Data/log directories are 0700.
+The runtime directory stays **0750, UID/GID 64084**. The final privileged
+`ExecStartPost` grants only the named ACL `group:33:--x` with mask `r-x`, allowing
+`www-data` to traverse the known socket path without listing or writing the
+directory. The MySQL socket is 0777; access is restricted by its parent directory
+and MySQL authentication. The database process retains only its dedicated group,
+so it cannot inherit access to unrelated `www-data` files. It cannot open IP
+sockets and has a private network namespace. The account is not granted sudo.
+
+Do not replace this ACL with an early `chgrp`: systemd reapplies the configured
+`RuntimeDirectory` owner/group before subsequent execution commands. The final
+ACL operation runs on every start, and its failure fails startup. No default ACL
+or recursive ACL is installed. Actual worker processes must already belong to
+GID 33; this package changes no worker membership.
 
 ## Prerequisites and administrator handoff
 
@@ -91,9 +99,12 @@ namespace. The account is not granted sudo.
    replace shared system libraries, remove MySQL 8.0 or disable AppArmor to pass.
    The generic server's `libaio.so.1` dependency is why this bundle uses the
    Noble server-core binary. [Oracle generic binary guidance](https://dev.mysql.com/doc/refman/8.4/en/binary-installation.html)
-4. `python3`, `chgrp`, `systemd-analyze`, `systemctl`, `logrotate`, `useradd` and `groupadd`
-   must already exist. If a prerequisite is missing, review a package simulation
-   and service restart policy separately; this installer never runs APT.
+4. `python3`, `systemd-analyze`, `systemctl`, `logrotate`, `useradd`, `groupadd`,
+   `/usr/bin/setfacl` and `/usr/bin/getfacl` must already exist. Preflight checks
+   root-controlled executable ACL tools and their read-only `--version` output.
+   The runtime ACL operation must succeed on `/run` for the service to start.
+   If a prerequisite is missing, review a package simulation and service restart
+   policy separately. The installer runs with the packages already on the host.
    Confirm `/opt`, `/var/lib`, `/var/log`, `/etc` resolve to the intended local
    filesystems. The 40 GiB free-space floor is an installation check, not capacity
    acceptance for the workload.
@@ -185,8 +196,13 @@ namespace. The account is not granted sudo.
    ```
 
    `check` compares UUID, exact version, data/socket paths, networking, durability,
-   GTID, event scheduler and persisted-settings flags. A check is read-only. Only
-   `flush-logs` sends the two FLUSH statements. Do not use an unqualified `mysql`,
+   GTID, event scheduler and persisted-settings flags. It also requires exact
+   runtime directory and socket ownership and modes, plus all five directory ACL
+   entries (`user::rwx`, `group::r-x`, `group:33:--x`, `mask::r-x`, `other::---`). Missing,
+   additional, or default ACL entries refuse acceptance. These ACL checks run
+   after startup; `verify-start` and `wait-ready` run before the ACL is granted.
+   A check is read-only. Only `flush-logs` sends the two FLUSH statements.
+   Do not use an unqualified `mysql`,
    `mysqlbinlog` or `mysqldump`: the host PATH may still point to 8.0.
 
 The installed bundle (including libraries/plugins), configuration and actual unit
@@ -235,7 +251,8 @@ python -B -m unittest discover -s scripts/mysql/native -p 'test_*.py' -v
 
 They test manifest tampering, traversal, missing clients, collision refusal,
 wrong-platform refusal, nonempty initialization, error redaction, unsafe live
-identity/settings, offline rotation refusal, and static isolation/durability rules.
+identity/settings, missing/unsafe ACL tools, runtime ACL drift, offline rotation
+refusal, and static isolation/durability/startup ordering rules.
 They do not establish Linux ABI compatibility or systemd/MySQL runtime behavior.
 
 Before any real-host install, run the whole handoff on an isolated Ubuntu 24.04
@@ -246,6 +263,15 @@ refusal. Crash-test only that disposable database. Compare the original 8.0 PID,
 invocation ID, configuration/data hashes and network/firewall inventory before/after.
 Use synthetic data and provider-free accounts. Do not run this fixed-path installer
 directly on the developer's workstation or substitute production for the fixture.
+
+For the directory ACL specifically, prove a full stop/start and an automatic
+failure restart in that disposable systemd fixture. After each service becomes
+active, both intended worker identities must read a MySQL handshake from the
+exact filesystem socket, while an unrelated UID receives `EACCES`. Capture
+directory/socket numeric ownership, modes and `getfacl --numeric` output.
+A successful passwordless handshake or authentication denial proves transport
+only; keep the authenticated UUID check separate. Prior manual temporary-ACL
+smoke evidence does not prove this updated unit's restart behavior.
 
 Actual-host acceptance additionally needs peak-load headroom, storage health,
 backup/restore timing, operator availability and the application's full compatibility
