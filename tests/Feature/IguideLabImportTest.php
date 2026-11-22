@@ -262,7 +262,7 @@ class IguideLabImportTest extends TestCase
             $worker = new Process([PHP_BINARY, base_path('tests/Fixtures/iguide-import-lock-worker.php'),
                 $disk->path(''), $upload->project_id, $upload->id, $path], base_path());
             $worker->setTimeout(20); $worker->run();
-            $this->assertTrue($worker->isSuccessful(), $worker->getErrorOutput());
+            $this->assertTrue($worker->isSuccessful(), $worker->getErrorOutput().$worker->getOutput());
             $this->assertSame('blocked', $worker->getOutput()); $this->assertSame($bytes, $disk->get($path));
         });
         // The canonical file then commits and exact retry converges on the same row.

@@ -35,6 +35,7 @@ try {
         '2026_11_04_190000_index_mysql_invoice_effective_period',
         '2026_11_04_200000_restore_optional_equipment_assignment',
         '2026_11_04_210000_restore_mysql_nullable_invoice_role',
+        '2026_11_22_120200_preserve_iguide_lab_project_deletion',
     ];
     foreach ($migrations as $name) {
         $migration = require $root.'/database/migrations/'.$name.'.php';

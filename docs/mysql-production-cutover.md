@@ -167,9 +167,10 @@ row totals. Both checks belong to the same immutable snapshot and target.
 Apply the reviewed
 application migrations in an isolated maintenance configuration, then always run
 the guarded schema-completion tool to add the repairs, effective-period index
-and ten MySQL cascade triggers. SQLite can have already recorded these migration
-names while skipping their MySQL-specific work. The tool reapplies only the five
-reviewed idempotent repairs and does not delete or rewrite migration-ledger rows.
+and MySQL cascade triggers, including iGUIDE project cleanup. SQLite can have
+already recorded these migration names while skipping their MySQL-specific
+work. The tool reapplies only the reviewed idempotent repairs and does not
+delete or rewrite migration-ledger rows.
 
 With explicit MySQL process configuration and a separate staging cache:
 
