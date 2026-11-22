@@ -92,6 +92,33 @@ python -B -m unittest discover -s scripts/mysql/workload -p test_compare.py -v
 
 Actual PHP and both-engine execution are separate from these fixture tests.
 
+## Copied-data HTTP rehearsal
+
+The protected seven-day traffic report supplies the route frequencies.
+`GET /api/voice/incoming-offers` led that sample, followed by shoot files,
+upload summaries and the Listing Studio revisions list. Retain the offers
+polling rate in the main profile and give the less frequent media, billing and
+search routes their own per-route result. Use a fixed logical clock and seeded
+eligible offer data on both clones so the five-minute offers window contains
+the same records.
+
+Run the two engines against the same copied-data shape, app release, FPM
+limits, role and workflow fixtures. Capture query counts, latency per route,
+contention and queue depth. Seed only disposable jobs and writes, and check
+the persisted IDs, totals and duplicate effects after each run. The recorded
+distribution should include the `POST /api/shoots/{shoot}/upload` workflow
+using fixture files and isolated storage.
+
+Review route behavior before selecting credential and provider fixtures.
+`GET /api/autoenhance/editing-types` delegates to provider services and must
+use a local stub for both engines. Voice claim and token issuance belong in a
+separately stubbed workflow. Follow the actual controller for every selected
+route and verify the isolated runtime has no provider route, copied pending
+jobs or production signing credentials before load begins.
+
+The copied-data and peak/surge runs must produce the independent metrics used
+by the [cutover readiness check](../../cutover/readiness/README.md).
+
 ## Disposable local runner and regression evidence
 
 `run-local-comparison.ps1` uses only the already available pinned MySQL 8.4.13
