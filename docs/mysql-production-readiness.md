@@ -43,11 +43,19 @@ using existing compatibility handling for 11, and collecting proof for 32.
 The base SQLite recovery template was built from the pinned copy and contains
 291 tables, 668 indexes and 16 original SQLite triggers. It contains no copied
 application rows. A separate verified overlay adds the six optional messaging
-columns and preserves the existing SQLite foreign-key ordinals. Before using
-the template for failback, verify it against the completed MySQL target in
-a full reverse rehearsal. Reverse export now checks the reviewed MySQL-only
-iGUIDE trigger and recreates only the SQLite trigger definitions in the
-restored database.
+columns and preserves the existing SQLite foreign-key ordinals. Reverse export
+checks the reviewed MySQL-only iGUIDE trigger and recreates only the SQLite
+trigger definitions in the restored database.
+
+The resumed full-copy recovery restored the isolated MySQL backup and exported
+all 291 tables and 1,841,678 rows to a new SQLite file in 125.3 seconds.
+The export checked exact historical exceptions and enabled SQLite foreign-key
+enforcement. An independent SELECT-only PHP reader compared 29,914,612 fields
+with zero mismatches in a separate 75.84-second verification session. The
+temporary MySQL process shut down cleanly. The restore and verification ran in
+separate sessions around two compatibility corrections. Rehearse the complete
+application failback and provider reconciliation under the outage clock before
+signing off on recovery.
 
 The separate managed MySQL 8.4.13 service on Maverick passed authenticated
 checks on the empty instance before and after a controlled restart. Both

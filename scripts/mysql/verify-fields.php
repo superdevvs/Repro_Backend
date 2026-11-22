@@ -9,6 +9,9 @@ declare(strict_types=1);
  *   --credentials=/private/mysql.json --database=repro_fixture
  *   --expected-server-uuid=UUID --writers-stopped
  *
+ * For a reviewed reverse export containing the optional native messaging
+ * columns, pass --reviewed-reverse-layout with the freshly built SQLite plan.
+ *
  * Credentials use migrate.py's {unix_socket,user,password} JSON contract.
  * Requires a standalone closed SQLite snapshot with no WAL/SHM/journal siblings,
  * an externally frozen MySQL target, PHP 64-bit, sqlite3 and pdo_mysql.
@@ -230,7 +233,24 @@ function allRows(PDO $db, string $sql): array
     return $rows;
 }
 
-function schemaChecks(SQLite3 $source, PDO $target, array $plan): void
+function storageTypeMatches(string $table, array $column, string $actual, bool $reviewedReverse): bool
+{
+    if ($reviewedReverse && $column['kind'] === 'text' && $column['target_type'] === 'LONGTEXT') {
+        $nativeType = match ($table.'.'.$column['name']) {
+            'contacts.phones_json', 'contacts.tags_json', 'message_threads.tags_json' => 'json',
+            'contacts.comment' => 'text',
+            'message_threads.status' => 'varchar(255)',
+            default => null,
+        };
+        if ($nativeType !== null) {
+            return $actual === $nativeType;
+        }
+    }
+
+    return $actual === strtolower($column['target_type']);
+}
+
+function schemaChecks(SQLite3 $source, PDO $target, array $plan, bool $reviewedReverse): void
 {
     $expectedTables = array_column($plan, 'name');
     sort($expectedTables);
@@ -266,7 +286,7 @@ function schemaChecks(SQLite3 $source, PDO $target, array $plan): void
         requireThat($sourceColumns === $expected && array_keys($targetColumns[$table['name']] ?? []) === $expected,
             'column-set-or-order-mismatch');
         foreach ($table['columns'] as $column) {
-            requireThat($targetColumns[$table['name']][$column['name']] === strtolower($column['target_type']),
+            requireThat(storageTypeMatches($table['name'], $column, $targetColumns[$table['name']][$column['name']], $reviewedReverse),
                 'target-storage-type-mismatch');
         }
     }
@@ -337,7 +357,8 @@ function run(array $options): array
     $target->exec("SET SESSION time_zone='+00:00'");
     $target->exec('SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ');
     $target->exec('SET SESSION TRANSACTION READ ONLY');
-    schemaChecks($source, $target, $plan);
+    $reviewedReverse = isset($options['reviewed-reverse-layout']);
+    schemaChecks($source, $target, $plan, $reviewedReverse);
     $target->exec('START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY');
     requireThat((int) allRows($target, 'SELECT @@transaction_read_only AS value')[0]['value'] === 1,
         'target-transaction-not-read-only');
@@ -378,7 +399,7 @@ function run(array $options): array
                 'fields' => $rows * count($table['columns'])], JSON_THROW_ON_ERROR)."\n";
         }
         $context = [];
-        schemaChecks($source, $target, $plan);
+        schemaChecks($source, $target, $plan, $reviewedReverse);
         requireThat(allRows($target, $identitySql)[0] === $identity, 'target-identity-changed');
         $target->rollBack();
         $source->close();
@@ -407,7 +428,7 @@ function main(): int
     $names = ['snapshot', 'snapshot-sha256', 'schema-plan', 'schema-plan-sha256', 'credentials',
         'database', 'expected-server-uuid'];
     try {
-        $options = getopt('', [...array_map(static fn ($name) => $name.':', $names), 'writers-stopped']);
+        $options = getopt('', [...array_map(static fn ($name) => $name.':', $names), 'writers-stopped', 'reviewed-reverse-layout']);
         foreach ($names as $name) {
             requireThat(isset($options[$name]) && is_string($options[$name]) && $options[$name] !== '', 'missing-required-option');
         }

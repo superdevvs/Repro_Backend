@@ -281,9 +281,16 @@ This tool never switches the application or replaces a file. It refuses source
 identity, table/column-set and trigger-name mismatches, detects DDL changes during
 export, and stops on a field hash, precision, integrity or historical-exception
 mismatch. Its `verified` result still requires independent
-application/side-effect validation before connection activation. The complete
-private evidence is retained in the protected November 5 lab; repeat acceptance
-against the final actual target.
+field, application, and side-effect validation before connection activation.
+Build a new schema plan with `migrate.py plan` against the checksum-pinned
+exported SQLite file. Compare it against the frozen MySQL source with
+`verify-fields.php` and dedicated SELECT-only credentials. When using the
+reviewed six-column messaging overlay, pass `--reviewed-reverse-layout`.
+This option expects the exact MySQL JSON, TEXT, and VARCHAR types from the
+messaging repair and compares every value using the same field checks.
+
+Repeat acceptance against the final candidate and target before planning a
+connection switch.
 
 The local forward import took 508.6 seconds plus 135.4 seconds for field-hash
 verification, before further migrations and acceptance. Agree on a maintenance

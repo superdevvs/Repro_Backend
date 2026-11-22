@@ -9,6 +9,7 @@ use function ReproMysqlFields\equivalent;
 use function ReproMysqlFields\legacyText;
 use function ReproMysqlFields\openSnapshot;
 use function ReproMysqlFields\sortSql;
+use function ReproMysqlFields\storageTypeMatches;
 use function ReproMysqlFields\validatePlan;
 
 ini_set('serialize_precision', '-1');
@@ -69,6 +70,23 @@ foreach ([[2, '2'], [2.0, '2.0'], ['02', '02'], ['next day', 'next day'],
     check(legacyText($value) === $expected);
 }
 check(!equivalent('02', '2', 'legacy_text', SQLITE3_TEXT));
+
+foreach ([
+    ['contacts', 'phones_json', 'json'],
+    ['contacts', 'tags_json', 'json'],
+    ['contacts', 'comment', 'text'],
+    ['message_threads', 'status', 'varchar(255)'],
+    ['message_threads', 'tags_json', 'json'],
+] as [$tableName, $columnName, $nativeType]) {
+    $column = ['name' => $columnName, 'kind' => 'text', 'target_type' => 'LONGTEXT'];
+    check(storageTypeMatches($tableName, $column, $nativeType, true));
+    check(!storageTypeMatches($tableName, $column, $nativeType, false));
+    check(storageTypeMatches($tableName, $column, 'longtext', false));
+    check(!storageTypeMatches($tableName, $column, 'longtext', true));
+    check(!storageTypeMatches('unrelated_table', $column, $nativeType, true));
+}
+check(!storageTypeMatches('message_threads',
+    ['name' => 'status', 'kind' => 'text', 'target_type' => 'LONGTEXT'], 'varchar(191)', true));
 
 $columns = [
     ['name' => 'label', 'kind' => 'text', 'target_type' => 'LONGTEXT'],
