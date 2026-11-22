@@ -127,6 +127,9 @@ namespace. The account is not granted sudo.
    in an actual administrator terminal. It repeats every preflight, creates the
    dedicated account and new directories, copies and verifies the bundle, installs
    the three units and calls `daemon-reload`. It does **not** start or enable them.
+   The install makes directories inside the copied vendor tree traversable by
+   the service account and local clients. Regular-file modes and contents stay
+   pinned to the bundle manifest. The staging tree retains its private permissions.
    A failure may leave a partial disabled installation; stop and inspect the exact
    new paths. There is intentionally no recursive/destructive automatic undo.
 7. Initialize **only** the new empty data directory with the installed operation:

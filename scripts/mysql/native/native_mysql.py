@@ -120,6 +120,54 @@ def validate_manifest(value: dict) -> None:
              "unsafe manifest path")
 
 
+def verify_vendor_file_modes(manifest: dict) -> None:
+    # File modes are pinned by the original manifest, so reject inaccessible
+    # files before installing rather than silently changing signed file modes.
+    for name, entry in manifest["files"].items():
+        if "sha256" in entry:
+            need(entry["mode"] & 0o444 == 0o444, f"vendor file is not service-readable: {name}")
+    for name in CLIENTS:
+        need(manifest["files"][f"bin/{name}"]["mode"] & 0o111 == 0o111,
+             f"vendor executable is not service-executable: {name}")
+
+
+def normalize_copied_bundle(bundle: Path, manifest: dict) -> None:
+    # Only install() calls this, immediately after copytree into its new path.
+    # Verify the unmodified copy first. Never chmod the source staging tree or
+    # follow a symlink: inventory() rejects links outside the copied bundle.
+    need(inventory(bundle) == manifest, "copied bundle verification failed")
+    verify_vendor_file_modes(manifest)
+    for item in (bundle, *sorted(bundle.rglob("*"))):
+        info = item.lstat()
+        if stat.S_ISDIR(info.st_mode):
+            os.chmod(item, 0o755)
+    need(inventory(bundle) == manifest, "normalized bundle verification failed")
+
+
+def verify_installed_bundle_access(bundle: Path) -> None:
+    # This also runs as the service UID. Check directories before hashing files
+    # so a root-only directory is an explicit refusal, not a partial inventory.
+    def verify(path: Path) -> None:
+        info = path.lstat()
+        need(info.st_uid == 0 and (stat.S_ISLNK(info.st_mode) or not info.st_mode & 0o022),
+             "installed vendor ownership or directory permissions changed")
+        if stat.S_ISDIR(info.st_mode):
+            need(info.st_mode & 0o555 == 0o555, "installed vendor directory is not service-readable/traversable")
+        elif stat.S_ISREG(info.st_mode):
+            need(info.st_mode & 0o444 == 0o444, "installed vendor file is not service-readable")
+        else:
+            need(stat.S_ISLNK(info.st_mode), "special file in installed bundle")
+
+    need(not bundle.is_symlink() and bundle.is_dir(), "installed bundle must be a real directory")
+    verify(bundle)
+    for item in bundle.rglob("*"):
+        verify(item)
+    for name in CLIENTS:
+        info = (bundle / "bin" / name).lstat()
+        need(stat.S_ISREG(info.st_mode) and info.st_mode & 0o111 == 0o111,
+             f"installed executable is not service-executable: {name}")
+
+
 def verify_bundle(bundle: Path, manifest: Path, expected_sha256: str) -> dict:
     need(re.fullmatch(r"[0-9a-fA-F]{64}", expected_sha256) is not None,
          "supply the independently reviewed manifest SHA-256")
@@ -134,6 +182,7 @@ def verify_bundle(bundle: Path, manifest: Path, expected_sha256: str) -> dict:
         if not item.is_symlink():
             need(not info.st_mode & 0o022, f"writable bundle entry: {item.relative_to(bundle)}")
     need(inventory(bundle) == expected, "bundle differs from reviewed manifest")
+    verify_vendor_file_modes(expected)
     for name in CLIENTS:
         exe = bundle / "bin" / name
         # Only execute after trusted manifest and ownership checks. No user defaults.
@@ -258,7 +307,8 @@ def install(args: argparse.Namespace) -> dict:
              "--home-dir", str(STATE), "--shell", "/usr/sbin/nologin", ACCOUNT])
     mkdir(PREFIX, 0o755)
     shutil.copytree(args.bundle, BINARY, symlinks=True)
-    need(inventory(BINARY) == json.loads(args.manifest.read_text()), "copied bundle verification failed")
+    normalize_copied_bundle(BINARY, json.loads(args.manifest.read_text()))
+    verify_installed_bundle_access(BINARY)
     mkdir(OPS, 0o755)
     for name in FILES:
         shutil.copyfile(source / name, OPS / name)
@@ -314,11 +364,8 @@ def installed_receipt() -> dict:
     need(digest(ETC / "logrotate.conf") == receipt["package"]["logrotate.conf"], "log rotation drift")
     need(digest(OPS / "bundle-manifest.json") == receipt["bundle_manifest_sha256"], "manifest drift")
     manifest = json.loads((OPS / "bundle-manifest.json").read_text())
+    verify_installed_bundle_access(BINARY)
     need(inventory(BINARY) == manifest, "installed vendor files or libraries changed")
-    for item in BINARY.rglob("*"):
-        info = item.lstat()
-        need(info.st_uid == 0 and (item.is_symlink() or not info.st_mode & 0o022),
-             "installed vendor ownership or directory permissions changed")
     for name in CLIENTS:
         exe = BINARY / "bin" / name
         protected(exe)

@@ -1,8 +1,11 @@
 """No Docker, MySQL process, sudo or host modification; temporary fixtures only."""
 import importlib.util
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
+import shutil
+import stat
 import sys
 import tempfile
 import types
@@ -16,6 +19,31 @@ spec.loader.exec_module(native)
 
 
 class NativePreparationTests(unittest.TestCase):
+    @contextmanager
+    def posix_modes(self, modes):
+        """Model POSIX ownership/modes on Windows; bytes and traversal remain real."""
+        original = Path.lstat
+        changes = []
+
+        def lstat(path, *args, **kwargs):
+            values = list(original(path, *args, **kwargs))
+            values[0] = stat.S_IFMT(values[0]) | modes.get(path, stat.S_IMODE(values[0]))
+            values[4] = 0
+            return os.stat_result(values)
+
+        def chmod(path, mode):
+            changes.append((Path(path), mode))
+            modes[Path(path)] = mode
+
+        with patch.object(Path, "lstat", lstat), patch.object(native.os, "chmod", side_effect=chmod):
+            yield changes
+
+    def bundle_modes(self, bundle):
+        modes = {path: 0o755 if path.is_dir() else 0o644 for path in (bundle, *bundle.rglob("*"))}
+        for name in native.CLIENTS:
+            modes[bundle / "bin" / name] = 0o755
+        return modes
+
     def bundle(self, root):
         path = Path(root) / "bundle"
         (path / "bin").mkdir(parents=True)
@@ -47,6 +75,83 @@ class NativePreparationTests(unittest.TestCase):
             (bundle / native.SERVER_PRIVATE_LIBRARY).unlink()
             with self.assertRaisesRegex(native.Refusal, "Noble server resource"):
                 native.inventory(bundle)
+
+    def test_copied_nested_directories_are_traversable_without_changing_staging_or_manifest(self):
+        with tempfile.TemporaryDirectory() as root:
+            staged = self.bundle(root)
+            copied = Path(root) / "installed"
+            shutil.copytree(staged, copied)
+            modes = {**self.bundle_modes(staged), **self.bundle_modes(copied)}
+            for bundle in (staged, copied):
+                modes[bundle / "lib/mysql"] = 0o700
+                modes[bundle / "lib/mysql/private"] = 0o700
+            with self.posix_modes(modes) as changes:
+                manifest = native.inventory(staged)
+                original_manifest = json.dumps(manifest, sort_keys=True)
+                native.normalize_copied_bundle(copied, manifest)
+                native.verify_installed_bundle_access(copied)
+                self.assertEqual(native.inventory(copied), manifest)
+                self.assertEqual(native.inventory(staged), manifest)
+                self.assertEqual(json.dumps(manifest, sort_keys=True), original_manifest)
+                self.assertEqual(modes[staged / "lib/mysql"], 0o700)
+                self.assertEqual(modes[staged / "lib/mysql/private"], 0o700)
+                self.assertTrue(changes)
+                for path, mode in changes:
+                    self.assertTrue(path == copied or path.is_relative_to(copied))
+                    self.assertTrue(path.is_dir())
+                    self.assertEqual(mode, 0o755)
+                self.assertEqual(modes[copied / native.SERVER_PRIVATE_LIBRARY], 0o644)
+                self.assertEqual(modes[copied / "bin/mysqld"], 0o755)
+
+    def test_unreadable_vendor_file_or_nonexecutable_client_refuses_before_execution(self):
+        for relative, mode, reason in ((native.SERVER_PRIVATE_LIBRARY, 0o600, "service-readable"),
+                                       (Path("bin/mysql"), 0o644, "service-executable")):
+            with self.subTest(path=relative), tempfile.TemporaryDirectory() as root:
+                bundle = self.bundle(root)
+                modes = self.bundle_modes(bundle)
+                modes[bundle / relative] = mode
+                with self.posix_modes(modes) as changes:
+                    manifest = Path(root) / "manifest.json"
+                    manifest.write_text(json.dumps(native.inventory(bundle)))
+                    with patch.object(native, "protected"), patch.object(native, "command") as execute:
+                        with self.assertRaisesRegex(native.Refusal, reason):
+                            native.verify_bundle(bundle, manifest, native.digest(manifest))
+                        execute.assert_not_called()
+                    self.assertEqual(changes, [])
+
+    def test_installed_guard_rejects_root_only_nested_directory_and_library(self):
+        for relative, mode in ((Path("lib/mysql"), 0o700), (native.SERVER_PRIVATE_LIBRARY, 0o600)):
+            with self.subTest(path=relative), tempfile.TemporaryDirectory() as root:
+                bundle = self.bundle(root)
+                modes = self.bundle_modes(bundle)
+                modes[bundle / relative] = mode
+                with self.posix_modes(modes), self.assertRaisesRegex(native.Refusal, "service-readable"):
+                    native.verify_installed_bundle_access(bundle)
+
+    def test_normalization_refuses_tampering_before_chmod(self):
+        with tempfile.TemporaryDirectory() as root:
+            bundle = self.bundle(root)
+            with self.posix_modes(self.bundle_modes(bundle)) as changes:
+                manifest = native.inventory(bundle)
+                (bundle / "bin/mysql").write_bytes(b"changed")
+                with self.assertRaisesRegex(native.Refusal, "copied bundle verification failed"):
+                    native.normalize_copied_bundle(bundle, manifest)
+                self.assertEqual(changes, [])
+
+    def test_normalization_never_chmods_contained_symlink(self):
+        with tempfile.TemporaryDirectory() as root:
+            bundle = self.bundle(root)
+            link = bundle / "lib/mysql/private/libprotobuf-link.so"
+            try:
+                link.symlink_to(native.SERVER_PRIVATE_LIBRARY.name)
+            except (OSError, NotImplementedError):
+                self.skipTest("host does not permit fixture symlinks")
+            with self.posix_modes(self.bundle_modes(bundle)) as changes:
+                manifest = native.inventory(bundle)
+                native.normalize_copied_bundle(bundle, manifest)
+                self.assertNotIn(link, [path for path, _ in changes])
+                self.assertEqual(os.readlink(link), native.SERVER_PRIVATE_LIBRARY.name)
+                self.assertEqual(native.inventory(bundle), manifest)
 
     def test_noble_server_requires_t64_and_its_own_protobuf(self):
         with tempfile.TemporaryDirectory() as root:
