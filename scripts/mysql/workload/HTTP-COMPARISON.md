@@ -173,3 +173,127 @@ It cannot verify that requests ran, that counters were instrumented correctly,
 that FPM was isolated, or that an operator supplied authentic observations. The
 real executor, its supervising receipt and independent acceptance remain pending.
 Do not translate these results directly into a cutover readiness receipt.
+
+## First real transport executor
+
+`http_execute.py` now executes one engine/round against one pinned private Linux
+AF_UNIX HTTP socket. It starts no server, FPM process, container or database. The
+reviewed external supervisor must establish isolation and start only the intended
+fixture before calling it. This is a small real HTTP transport slice, not a general
+HTTP client or an implemented copied-data/FPM benchmark.
+
+```text
+python -B scripts/mysql/workload/http_execute.py run --profile /private/profile.json --schedule /private/schedule.json --supervised-parent-net net:[OBSERVED_BASELINE] --output /private/sqlite-round-1.json < /private/synthetic-run.json
+python -B scripts/mysql/workload/http_execute.py assemble --profile /private/profile.json --round-one /private/sqlite-round-1.json --round-two /private/sqlite-round-2.json --output /private/sqlite-receipt.json
+```
+
+Use the same commands for the MySQL-labelled rounds, in the profile's prescribed
+counterbalanced order. The independently supervised fixture preparation and engine
+ordering remain external responsibilities. The assembled receipts feed the earlier
+`http_profile.py compare` command. Retain the original round fragments and supervisor
+proof: assembly preserves the reducer's existing schema and does not add execution
+attestation to it. The complete executor digest binds `http_execute.py`,
+`http_profile.py`, and the reused isolation helper `run.py`.
+
+Before reading stdin, the CLI verifies a distinct network namespace, only loopback
+interfaces, no outbound route, a nonroot UID, empty capability sets and
+`NoNewPrivs=1`, using the existing `run.py` checks. The baseline namespace must come
+from the reviewed supervisor; an arbitrary different namespace string is not proof
+of supervision. Socket and output parents must be canonical, owned by the executing
+UID and mode 0700. Ancestors must be owned by root or that UID and not writable by
+others, except root-owned sticky temporary directories. `/var/www` is refused.
+The socket must be mode 0600, owned by the same unprivileged UID, and match the
+reviewed device/inode. Linux `SO_PEERCRED` must match the expected UID/PID before
+any request bytes are sent. The socket identity is checked again after connecting.
+This initial same-UID restriction is intentional; do not relax it for a live FPM
+socket. Every output is a fresh 0600 file, flushed and synced; existing output paths
+are refused. A failed write may leave an incomplete output that is not a receipt.
+
+The bounded stdin object has exactly these fields:
+
+| Field | Required contract |
+| --- | --- |
+| `version`, `engine`, `round` | `1`, `sqlite` or `mysql`, and `1` or `2`. The engine is a reviewed target label, not inferred database proof. |
+| `profile_sha256`, `schedule_sha256`, `database_identity` | Exact bindings required by the reducer. |
+| `server_kind` | `inert-http-fixture` or `reviewed-http-instrumentation`; the server must confirm its configured kind. |
+| `socket` | Exact `path`, `device`, `inode`, `uid`, `pid` supplied by the supervisor. |
+| `run_token` | Fresh random 64-character lowercase hex correlation token. |
+| `fixture_manifest` | `version: 1`, reviewed `seed_receipt_sha256`, and fixed per-label `routes`. Its canonical digest must equal the profile pin. |
+| `response_contract` | `version: 1` and per-label `routes`, each exactly `{"kind":"exact-json-numeric-lexemes-v1"}`. Its canonical digest must equal the profile pin. |
+| `synthetic_authorization` | Exact role-to-Authorization map. Only `Bearer repro-fixture-` followed by 32–128 ASCII letters/digits/underscores/hyphens is accepted. No production tokens. |
+
+Each fixed fixture route has exactly `role`, `fixture`, `method`, `path`, and
+`query`. The first three must match the reviewed profile. The path must match its
+template, with placeholders resolved to bounded ASCII letters/digits/underscores/
+hyphens. Query parameters are a separately pinned small map of constrained strings;
+the executor URL-encodes them. There is no arbitrary URL, request-header, request-body,
+proxy, cookie, shell-command or redirect interface. Use synthetic values only.
+The protected input is at most 64 KiB, passes through stdin, and is never included
+in output or errors. Keep any input file private mode 0600.
+
+Requests use GET HTTP/1.0, a fixed inert Host header, JSON Accept and identity
+encoding. Responses support HTTP/1.0 or HTTP/1.1 with bounded Content-Length or
+connection-close framing. One explicit `Connection: close` header is allowed;
+duplicate or non-close Connection options are refused. Other hop-by-hop headers,
+Location, all redirects, chunked encoding and compression are refused. Headers
+are capped at 16 KiB/48 fields, the body at 1 MiB, with an absolute per-request
+deadline. These restrictions are suitable for a specifically configured local
+gateway, not an arbitrary web server.
+
+Every response must bind the following headers to that exact request:
+
+```text
+X-Repro-Run-Token              X-Repro-Request-Nonce
+X-Repro-Profile-Sha256         X-Repro-Schedule-Sha256
+X-Repro-Engine                 X-Repro-Database-Identity
+X-Repro-Sequence               X-Repro-Round
+X-Repro-Server-Kind
+```
+
+It must also supply measured integer `X-Repro-Query-Count` and
+`X-Repro-Database-Warning-Count`. A real application adapter must derive identity
+and counters from its verified runtime and request instrumentation, not blindly
+echo identity claims or hardcode zero. Correlation nonces/tokens bind a response;
+they do not independently prove the server's measurements. Missing or unbound
+metrics, malformed responses or transport timeouts abort the round and cancel
+its remaining work without retries. No successful receipt is emitted and unknown
+counters are never filled with zero. Already-dispatched concurrent requests may
+have reached the fixture before cancellation; no rollback or exactly-once business
+effect is claimed. Ordinary non-success HTTP statuses with complete instrumentation
+can be recorded as error samples and subsequently fail the comparison.
+
+The client hashes the actual JSON response. It sorts object keys, preserves array
+order, all fields and exact numeric lexemes (including decimal precision), and
+rejects duplicate keys/nonstandard numbers. There is no field-ignore callback or
+user-supplied normalization code. Timing ends at complete response reception;
+subsequent client JSON normalization is excluded. These are real socket/HTTP
+measurements, not PHP-FPM or database measurements unless separately demonstrated.
+
+### Application work still required
+
+Authenticated GETs in this application can write traces and session data:
+`SystemOverviewTelemetryMiddleware::terminate` calls
+`SystemOverviewTelemetryService::recordRequestTrace`, which can also broadcast.
+A future FPM fixture must explicitly contain those writes and provider/broadcast
+effects, as well as copied jobs, schedulers, auth state and storage. Disabling
+telemetry changes the workload and must be recorded in the pinned profile; it
+cannot support a claim of production-equivalent timing. The network-isolated
+client does not by itself isolate a separately running server.
+
+The current tests use an inert, same-UID Unix HTTP server with synthetic JSON and
+zero actual database queries. They exercise the guarded CLI for both target labels,
+two rounds each, real timing, response parity, protected output and receipt
+assembly, plus peer/socket, framing, deadline and metric failures. No Laravel,
+FPM, database, copied customer data, production credential or provider is involved.
+
+```text
+python -B -m unittest discover -s scripts/mysql/workload -p test_http_execute.py -v
+```
+
+Real transport tests require unprivileged Linux. The full CLI test additionally
+requires `REPRO_HTTP_TEST_BASELINE_NET` from an independently observed, distinct
+namespace. The local acceptance run uses the already installed, pinned Python
+3.12.3 image with `--network none`, nonroot UID 65532, no capabilities/new privileges,
+a read-only root filesystem and bounded tmpfs. A second small network-disabled
+container supplies the observed namespace baseline; both are removed afterward.
+Windows-only results deliberately skip the Linux proof.
