@@ -5,6 +5,7 @@ namespace Tests\MySql;
 use App\Models\User;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Symfony\Component\Process\Process;
 use Tests\Concerns\FreshDatabaseOutsideTransaction;
 use Tests\TestCase;
@@ -65,5 +66,98 @@ final class MysqlCutoverSchemaTest extends TestCase
         $this->assertFalse($this->complete(frozen: false)->isSuccessful());
         $this->assertTrue(Schema::hasIndex('invoices', 'invoices_effective_period_sort'));
         $this->assertSame($ledger, DB::table('migrations')->orderBy('id')->get()->toJson());
+    }
+
+    #[DataProvider('invoiceRoleDefinitions')]
+    public function test_nullable_role_repair_preserves_existing_type_literals_collation_and_data(
+        string $type, ?string $default, string $collation, string $value, bool $noBackslashEscapes = false
+    ): void {
+        $sqlMode = DB::selectOne('SELECT @@SESSION.sql_mode AS mode')->mode;
+        $comment = "Legacy 'role' \\ comment";
+        try {
+            if ($noBackslashEscapes) {
+                DB::statement('SET SESSION sql_mode = ?', [$sqlMode.',NO_BACKSLASH_ESCAPES']);
+            }
+            $quote = fn (string $literal): string => DB::getPdo()->quote($literal);
+            DB::statement('ALTER TABLE invoices MODIFY role '.$type.' CHARACTER SET utf8mb4 COLLATE '.$collation
+                .' NOT NULL'.($default === null ? '' : ' DEFAULT '.$quote($default)).' COMMENT '.$quote($comment));
+            $before = $this->invoiceRoleMetadata();
+            $this->assertSame($default, $before['column_default']);
+            $this->assertSame($comment, $before['column_comment']);
+            $user = User::withoutEvents(fn () => User::factory()->create());
+            $invoice = ['user_id' => $user->id, 'period_start' => '2026-01-01', 'period_end' => '2026-01-31'];
+            $id = DB::table('invoices')->insertGetId($invoice + ['role' => $value]);
+            $original = (array) DB::table('invoices')->find($id);
+
+            $migration = require database_path('migrations/2026_11_04_210000_restore_mysql_nullable_invoice_role.php');
+            foreach ([1, 2] as $run) {
+                $migration->up();
+                $this->assertSame(array_replace($before, ['is_nullable' => 'YES']), $this->invoiceRoleMetadata());
+                $this->assertSame($original, (array) DB::table('invoices')->find($id));
+                $this->assertSame($value, DB::table('invoices')->where('id', $id)->value('role'));
+            }
+            $nullId = DB::table('invoices')->insertGetId($invoice + ['role' => null]);
+            $defaultId = DB::table('invoices')->insertGetId($invoice);
+            $this->assertNull(DB::table('invoices')->where('id', $nullId)->value('role'));
+            $this->assertSame($default, DB::table('invoices')->where('id', $defaultId)->value('role'));
+        } finally {
+            DB::statement('SET SESSION sql_mode = ?', [$sqlMode]);
+            $this->restoreInvoiceRoleFixture();
+        }
+    }
+
+    public static function invoiceRoleDefinitions(): array
+    {
+        $escaped = "client's \\ role";
+
+        return [
+            'imported longtext without default' => ['LONGTEXT', null, 'utf8mb4_0900_bin', str_repeat('Legacy rôle ', 80).'  '],
+            'fresh varchar default' => ['VARCHAR(255)', 'photographer', 'utf8mb4_0900_bin', 'editor'],
+            'custom varchar width and collation' => ['VARCHAR(47)', $escaped, 'utf8mb4_general_ci', 'CuStOm rôle  '],
+            'wider varchar capacity' => ['VARCHAR(512)', 'editor', 'utf8mb4_0900_bin', str_repeat('Legacy ', 60)],
+            'empty literal default' => ['VARCHAR(33)', '', 'utf8mb4_0900_bin', 'editor'],
+            'NULL literal default' => ['VARCHAR(35)', 'NULL', 'utf8mb4_0900_bin', 'editor'],
+            'zero literal default' => ['VARCHAR(36)', '0', 'utf8mb4_0900_bin', 'editor'],
+            'no backslash escapes' => ['VARCHAR(47)', $escaped, 'utf8mb4_general_ci', 'CuStOm rôle  ', true],
+        ];
+    }
+
+    public function test_nullable_role_repair_refuses_expression_defaults_without_changing_them(): void
+    {
+        try {
+            DB::statement('ALTER TABLE invoices MODIFY role VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin NOT NULL DEFAULT (UUID())');
+            $before = $this->invoiceRoleMetadata();
+            $this->assertSame('DEFAULT_GENERATED', $before['extra']);
+            $user = User::withoutEvents(fn () => User::factory()->create());
+            $id = DB::table('invoices')->insertGetId(['user_id' => $user->id, 'role' => 'Preserve Original Role  ',
+                'period_start' => '2026-01-01', 'period_end' => '2026-01-31']);
+            $original = (array) DB::table('invoices')->find($id);
+            $migration = require database_path('migrations/2026_11_04_210000_restore_mysql_nullable_invoice_role.php');
+            try {
+                $migration->up();
+                $this->fail('An unreviewed expression default must not be rewritten.');
+            } catch (\RuntimeException $error) {
+                $this->assertSame('Unsupported invoices.role definition; nullability was not changed.', $error->getMessage());
+            }
+            $this->assertSame($before, $this->invoiceRoleMetadata());
+            $this->assertSame($original, (array) DB::table('invoices')->find($id));
+        } finally {
+            $this->restoreInvoiceRoleFixture();
+        }
+    }
+
+    private function invoiceRoleMetadata(): array
+    {
+        return (array) DB::selectOne('SELECT COLUMN_TYPE AS column_type, IS_NULLABLE AS is_nullable,
+            CHARACTER_SET_NAME AS character_set_name, COLLATION_NAME AS collation_name,
+            COLUMN_DEFAULT AS column_default, EXTRA AS extra,
+            GENERATION_EXPRESSION AS generation_expression, COLUMN_COMMENT AS column_comment
+            FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?', ['invoices', 'role']);
+    }
+
+    private function restoreInvoiceRoleFixture(): void
+    {
+        DB::table('invoices')->delete();
+        DB::statement("ALTER TABLE invoices MODIFY role VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin NULL DEFAULT NULL COMMENT ''");
     }
 }
