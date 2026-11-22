@@ -31,6 +31,18 @@ verification public keys available across key rotation. Missing event IDs are re
 Supported destination labels are `messaging`, `status`, `voice`, and
 `shared-mms:<canonical-lowercase-uuid>`; these labels are operator-selected, not body data.
 
+`reconciliationSnapshot()` takes a bounded snapshot of locally published receipt IDs
+under the intake lock, then authenticates each complete receipt without holding up
+new captures. The private report contains receipt IDs, routes, receipt times, and
+flags for voice review or multiple signed versions of one provider event. Identical
+retries already share a receipt. An unexpected file, corrupt receipt, or exceeded
+limit fails the whole inventory. New captures after enumeration appear in the next
+snapshot. Preserve published receipts while reconciling.
+
+Use this inventory to compare the local and independently recovered spool. Its
+order is for repeatable comparison. A replay consumer must still confirm protected
+storage, order status updates for each message, and verify processed receipts.
+
 ## Source-verified replay constraints
 
 - The current SMS controller validates `timestamp|raw-body` and a 300-second freshness

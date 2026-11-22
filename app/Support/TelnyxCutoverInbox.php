@@ -3,6 +3,7 @@
 namespace App\Support;
 
 use Illuminate\Encryption\Encrypter;
+use FilesystemIterator;
 use RuntimeException;
 
 /**
@@ -39,20 +40,9 @@ class TelnyxCutoverInbox
         $receivedAt = time();
         $eventId = $this->verify($destination, $body, $signature, $timestamp, $receivedAt);
         $receipt = $this->identity($destination, $eventId, $body);
-        $this->assertDirectory();
-        $lockPath = $this->directory.'/.intake.lock';
-        if (is_link($lockPath)) throw new RuntimeException('Unsafe inbox lock.');
-        $lock = @fopen($lockPath, 'c+b');
-        if ($lock === false) throw new RuntimeException('Cannot open inbox lock.');
+        $lock = $this->lock(LOCK_EX);
         $stage = null;
         try {
-            if (! @chmod($lockPath, 0600)) throw new RuntimeException('Cannot protect inbox lock.');
-            $this->assertFile($lock);
-            $deadline = microtime(true) + 2;
-            while (! flock($lock, LOCK_EX | LOCK_NB)) {
-                if (microtime(true) >= $deadline) throw new RuntimeException('Inbox intake is busy.');
-                usleep(10_000);
-            }
             $target = $this->path($receipt);
             if (file_exists($target) || is_link($target)) {
                 $prior = $this->open($receipt);
@@ -92,6 +82,67 @@ class TelnyxCutoverInbox
             flock($lock, LOCK_UN);
             fclose($lock);
         }
+    }
+
+    /**
+     * Authenticates a snapshot of the local receipts for private reconciliation.
+     * Provider IDs and bodies stay inside this reader. The list has no dispatch order.
+     */
+    public function reconciliationSnapshot(int $maxReceipts = 2000): array
+    {
+        if ($maxReceipts < 1 || $maxReceipts > 5000) {
+            throw new RuntimeException('Invalid inbox reconciliation limit.');
+        }
+        $deadline = hrtime(true) + 30_000_000_000;
+        $lock = $this->lock(LOCK_SH);
+        $ids = [];
+        try {
+            foreach (new FilesystemIterator($this->directory) as $entry) {
+                $name = $entry->getFilename();
+                if (hrtime(true) >= $deadline) {
+                    throw new RuntimeException('Inbox reconciliation timed out.');
+                }
+                if ($name === '.intake.lock' || preg_match('/\A\.pending-[a-f0-9]{32}\z/', $name)) {
+                    continue;
+                }
+                if (! preg_match('/\A([a-f0-9]{64})\.sealed\z/', $name, $parts)) {
+                    throw new RuntimeException('Unexpected entry in the inbox.');
+                }
+                if (count($ids) >= $maxReceipts) {
+                    throw new RuntimeException('Inbox exceeds the reconciliation limit.');
+                }
+                $ids[] = $parts[1];
+            }
+        } finally {
+            flock($lock, LOCK_UN);
+            fclose($lock);
+        }
+        // Intake only appends. Enumerate under its lock, then authenticate outside
+        // the lock so decryption does not block subsequent HTTP requests.
+        sort($ids, SORT_STRING);
+        $envelopes = [];
+        $eventCounts = [];
+        foreach ($ids as $id) {
+            $receipt = $this->open($id);
+            if (hrtime(true) >= $deadline) {
+                throw new RuntimeException('Inbox reconciliation timed out.');
+            }
+            $eventId = 'event:'.$receipt['event_id'];
+            $envelopes[$id] = [$eventId, $receipt['destination'], $receipt['received_at']];
+            $eventCounts[$eventId] = ($eventCounts[$eventId] ?? 0) + 1;
+        }
+        $receipts = [];
+        foreach ($envelopes as $id => [$eventId, $destination, $receivedAt]) {
+            $receipts[] = [
+                'receipt_id' => $id,
+                'destination' => $destination,
+                'received_at' => $receivedAt,
+                'provider_event_conflict' => $eventCounts[$eventId] > 1,
+                'voice_review_required' => $destination === 'voice',
+            ];
+        }
+
+        return $receipts;
     }
 
     /** Explicit local replay readers receive the original signed bytes; no dispatch occurs. */
@@ -163,6 +214,29 @@ class TelnyxCutoverInbox
         if (! preg_match('/\A[a-f0-9]{64}\z/D', $receipt)) throw new RuntimeException('Invalid receipt identifier.');
 
         return $this->directory.'/'.$receipt.'.sealed';
+    }
+
+    private function lock(int $mode)
+    {
+        $this->assertDirectory();
+        $path = $this->directory.'/.intake.lock';
+        if (is_link($path)) throw new RuntimeException('Unsafe inbox lock.');
+        $stream = @fopen($path, 'c+b');
+        if ($stream === false) throw new RuntimeException('Cannot open inbox lock.');
+        try {
+            if (! @chmod($path, 0600)) throw new RuntimeException('Cannot protect inbox lock.');
+            $this->assertFile($stream);
+            $deadline = hrtime(true) + 2_000_000_000;
+            while (! flock($stream, $mode | LOCK_NB)) {
+                if (hrtime(true) >= $deadline) throw new RuntimeException('Inbox intake is busy.');
+                usleep(10_000);
+            }
+
+            return $stream;
+        } catch (\Throwable $error) {
+            fclose($stream);
+            throw $error;
+        }
     }
 
     private function assertDirectory(): void

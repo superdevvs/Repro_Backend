@@ -89,6 +89,50 @@ final class TelnyxCutoverInboxTest extends TestCase
         $this->assertSame('event-fixture-1', $inbox->open($first['receipt_id'])['event_id']);
     }
 
+    public function test_reconciliation_authenticates_all_versions_and_flags_voice_for_review(): void
+    {
+        $inbox = $this->inbox();
+        $first = $inbox->store(...$this->request());
+        $inbox->store(...$this->request());
+        $second = $inbox->store(...$this->request('{"data":{"id":"event-fixture-1","event_type":"message.finalized"}}',
+            destination: 'status'));
+        $voice = $inbox->store(...$this->request('{"data":{"id":"event-fixture-2","event_type":"call.initiated"}}',
+            destination: 'voice'));
+        $pending = $this->directory.'/.pending-'.str_repeat('f', 32);
+        file_put_contents($pending, 'synthetic unpublished receipt');
+
+        $snapshot = $inbox->reconciliationSnapshot();
+        $this->assertCount(3, $snapshot);
+        $this->assertSame($snapshot, $inbox->reconciliationSnapshot());
+        $byId = array_column($snapshot, null, 'receipt_id');
+        $this->assertTrue($byId[$first['receipt_id']]['provider_event_conflict']);
+        $this->assertTrue($byId[$second['receipt_id']]['provider_event_conflict']);
+        $this->assertFalse($byId[$voice['receipt_id']]['provider_event_conflict']);
+        $this->assertTrue($byId[$voice['receipt_id']]['voice_review_required']);
+        $this->assertFalse($byId[$first['receipt_id']]['voice_review_required']);
+        $this->assertStringNotContainsString('event-fixture-', json_encode($snapshot, JSON_THROW_ON_ERROR));
+        $this->assertStringNotContainsString('private fixture content', json_encode($snapshot, JSON_THROW_ON_ERROR));
+        $this->assertFileExists($pending);
+        $this->assertCount(3, glob($this->directory.'/*.sealed'));
+    }
+
+    public function test_reconciliation_refuses_partial_or_damaged_batches(): void
+    {
+        $inbox = $this->inbox();
+        $this->assertSame([], $inbox->reconciliationSnapshot());
+        $inbox->store(...$this->request());
+        $second = $inbox->store(...$this->request('{"data":{"id":"event-fixture-2"}}'));
+        $error = $this->failure(fn () => $inbox->reconciliationSnapshot(1));
+        $this->assertSame('Inbox exceeds the reconciliation limit.', $error->getMessage());
+        file_put_contents($this->directory.'/unknown.sealed', 'unexpected file');
+        $error = $this->failure(fn () => $inbox->reconciliationSnapshot());
+        $this->assertSame('Unexpected entry in the inbox.', $error->getMessage());
+        unlink($this->directory.'/unknown.sealed');
+        file_put_contents($this->directory.'/'.$second['receipt_id'].'.sealed', 'damaged');
+        $error = $this->failure(fn () => $inbox->reconciliationSnapshot());
+        $this->assertSame('Inbox receipt authentication failed.', $error->getMessage());
+    }
+
     public function test_invalid_or_stale_requests_never_create_a_receipt(): void
     {
         $invalidSignature = $this->request(); $invalidSignature[2] = base64_encode(str_repeat('x', 64));
