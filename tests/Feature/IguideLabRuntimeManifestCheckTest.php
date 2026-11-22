@@ -390,7 +390,9 @@ class IguideLabRuntimeManifestCheckTest extends TestCase
     private function tableCounts(): array
     {
         $counts = [];
-        foreach (DB::connection()->getSchemaBuilder()->getTableListing(schemaQualified: false) as $table) {
+        $connection = DB::connection();
+        $schema = $connection->getDriverName() === 'mysql' ? $connection->getDatabaseName() : null;
+        foreach ($connection->getSchemaBuilder()->getTableListing($schema, schemaQualified: false) as $table) {
             $counts[$table] = DB::table($table)->count();
         }
         ksort($counts);

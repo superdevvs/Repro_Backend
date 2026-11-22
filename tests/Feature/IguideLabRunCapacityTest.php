@@ -59,7 +59,8 @@ class IguideLabRunCapacityTest extends TestCase
     private function retainedTables(): array
     {
         $rows = [];
-        $tables = array_values(array_filter(Schema::getTableListing(schemaQualified: false), fn ($name) => str_starts_with($name, 'iguide_lab_')));
+        $schema = DB::getDriverName() === 'mysql' ? DB::getDatabaseName() : null;
+        $tables = array_values(array_filter(Schema::getTableListing($schema, schemaQualified: false), fn ($name) => str_starts_with($name, 'iguide_lab_')));
         $this->assertContains('iguide_lab_runs', $tables, 'The retention check must inspect the actual lab tables.');
         sort($tables);
         foreach ($tables as $table) {

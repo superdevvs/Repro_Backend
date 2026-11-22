@@ -276,7 +276,8 @@ class IguideLabTourMigrationTest extends TestCase
 
     private function tables(): array
     {
-        $names = array_column(Schema::getTables(), 'name');
+        $schema = DB::getDriverName() === 'mysql' ? DB::getDatabaseName() : null;
+        $names = Schema::getTableListing($schema, schemaQualified: false);
         sort($names);
 
         return $names;
