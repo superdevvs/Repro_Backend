@@ -7,8 +7,11 @@ database backups use separate manifests and prefixes. It does not create a
 database snapshot, install rclone, configure a bucket, read a live database, or
 claim that a backup can be restored.
 
-Only local fixture tests have run. No credentials, bucket access, uploads or
-off-host recovery were used to develop this package.
+Fixture acceptance used signed rclone 1.76.0 with a private HTTPS S3-compatible
+endpoint and synthetic credentials. The publisher verified encrypted names and
+contents. A separate container recovered and checked a SQLite database with
+no producer files mounted. The real private bucket, lock rules and independent
+MySQL recovery remain acceptance gates.
 
 ## Input contract
 
@@ -147,7 +150,38 @@ configuration rewrite, overwrite retry, or cleanup of partially uploaded objects
 Abandon the UUID and retain its attempt record. A failure during final-marker
 readback can leave a marker remotely; without the verified receipt it is not an
 accepted run. Recovery must independently verify the marker, input manifest and
-every artifact; merely finding `completion.json` is insufficient.
+every artifact.
+
+## Independent retrieval
+
+Install the two reviewed Python scripts together in the same root-owned tools
+directory. Give the restore operator an independently verified publication
+receipt and a separate private rclone configuration scoped to reads. Use the
+receipt's exact backup ID, manifest and completion sizes and digests. The
+retrieval process needs no files from the publication machine.
+
+```sh
+/usr/bin/python3 -I -B /opt/repro-backup-tools/restore_backup.py \
+  --backup-id APPROVED_BACKUP_ID --scope database \
+  --expected-release APPROVED_FULL_COMMIT --expected-identity APPROVED_INSTANCE_ID \
+  --manifest-bytes APPROVED_MANIFEST_SIZE --manifest-sha256 APPROVED_MANIFEST_SHA256 \
+  --completion-bytes APPROVED_COMPLETION_SIZE --completion-sha256 APPROVED_COMPLETION_SHA256 \
+  --config /var/lib/repro-recovery/credentials/rclone.conf --rclone /usr/bin/rclone \
+  --crypt-remote APPROVED_CRYPT_NAME --expected-destination APPROVED_S3_BUCKET_PREFIX \
+  --output /var/lib/repro-recovery/private/new-recovery
+```
+
+The restore output has a new `0700` directory name under an operator-owned
+`0700` parent. The tool verifies the completion record against the input
+manifest and writes only reviewed objects, each to a private file checked by
+size and SHA-256. It publishes the result tree and `recovery-receipt.json`
+after all checks pass. A failure before publication leaves the approved
+destination available for a clean attempt. An interruption during the final
+reservation can leave an empty directory.
+
+An artifact recovery receipt proves the downloaded bytes. Separately load the
+base backup into the isolated recovery instance, verify the recovery point
+and database results, and test decryption with the separately held key.
 
 `--immutable` is a client guard, not a cloud retention lock or conditional
 create-only storage primitive. The upload key must lack deletion/retention-policy
@@ -160,11 +194,11 @@ tests those policies and cannot prevent a second authorized writer racing it.
 
 ## Acceptance still required
 
-1. Run the fixtures, then exercise a disposable crypt/S3 bucket with the installed
-   rclone version, a private account/config and synthetic artifacts. Test
-   authentication denial, interrupted uploads, corrupt/missing objects, a
-   preexisting prefix and failed final-marker readback. Check cloud-side objects
-   are encrypted and only the exact approved prefix is writable.
+1. Exercise the actual bucket with the installed rclone version, a private
+   account/config and synthetic artifacts. Test authentication denial,
+   interrupted uploads, corrupt/missing objects, a preexisting prefix and failed
+   final-marker readback. Check cloud-side objects are encrypted and only the
+   exact approved prefix is writable.
 2. Test overwrite/delete denial and lock/lifecycle coverage using the actual
    production upload identity. Do not infer this from the copy flags.
 3. Restore independently on another host from the bucket and separately held

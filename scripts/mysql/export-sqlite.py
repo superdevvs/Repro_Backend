@@ -9,6 +9,15 @@ import argparse,datetime,decimal,hashlib,json,os,pathlib,re,sqlite3,time,traceba
 import conversion as core
 import migrate
 
+IGUIDE_PROJECT_TRIGGER = 'iguide_lab_project_delete_dependencies'
+IGUIDE_PROJECT_TABLES = {
+    'iguide_lab_projects', 'iguide_lab_compositions', 'iguide_lab_pipelines', 'iguide_lab_masks',
+    'iguide_lab_sections', 'iguide_lab_workflow_items', 'iguide_lab_tour_run_targets',
+    'iguide_lab_tour_captures', 'iguide_lab_tour_surveys',
+}
+# The normalized body from 2026_11_22_120200_preserve_iguide_lab_project_deletion.php.
+IGUIDE_PROJECT_TRIGGER_SHA256 = '4d40869921f1abab41729467e05bcea46a0ecaa7a09983160641800a0e5984ce'
+
 def portable(value):
     if isinstance(value,(datetime.date,datetime.time,datetime.datetime,decimal.Decimal)):return str(value)
     if isinstance(value,datetime.timedelta):
@@ -50,6 +59,26 @@ def schema_state(db):
             cursor.execute('SHOW CREATE TABLE '+core.q(name));tables[name]=cursor.fetchone()['Create Table']
     return metadata,triggers,tables
 
+def verify_source_triggers(tables, sqlite_triggers, mysql_triggers):
+    expected = set(sqlite_triggers)
+    if IGUIDE_PROJECT_TRIGGER in expected:
+        raise RuntimeError('The MySQL-only iGUIDE trigger cannot be in the SQLite template.')
+    if {'aryeo_changes', 'shoots', 'shoot_files', 'payments'} <= tables:
+        cascade_file = pathlib.Path(__file__).resolve().parents[2] / 'database/schema/mysql-cascade-triggers.json'
+        expected.update(row['name'] for row in json.loads(cascade_file.read_text()))
+    if IGUIDE_PROJECT_TABLES <= tables:
+        expected.add(IGUIDE_PROJECT_TRIGGER)
+    by_name = {row['TRIGGER_NAME']: row for row in mysql_triggers}
+    if expected != by_name.keys():
+        raise RuntimeError('Unknown/missing source trigger needs review before reverse export.')
+    if IGUIDE_PROJECT_TRIGGER in by_name:
+        trigger = by_name[IGUIDE_PROJECT_TRIGGER]
+        body = ' '.join(trigger['ACTION_STATEMENT'].split())
+        if (trigger['EVENT_OBJECT_TABLE'], trigger['ACTION_TIMING'], trigger['EVENT_MANIPULATION']) != (
+            'iguide_lab_projects', 'BEFORE', 'DELETE',
+        ) or hashlib.sha256(body.encode('utf-8')).hexdigest() != IGUIDE_PROJECT_TRIGGER_SHA256:
+            raise RuntimeError('The MySQL-only iGUIDE trigger definition differs from the reviewed migration.')
+
 def export(options):
     started=time.monotonic()
     if not options.writers_stopped:raise RuntimeError('Externally drain/stop all writers and explicitly attest the freeze.')
@@ -68,11 +97,7 @@ def export(options):
     db=connect(options);before=schema_state(db);metadata,triggers,ddl=before
     if set(metadata)!=set(schema):raise RuntimeError('Current-release SQLite template and source tables differ.')
     sqlite_triggers=migrate.sqlite_triggers(template)
-    expected=set(sqlite_triggers)
-    if {'aryeo_changes','shoots','shoot_files','payments'}<=set(metadata):
-        cascade_file=pathlib.Path(__file__).resolve().parents[2]/'database/schema/mysql-cascade-triggers.json'
-        expected|={row['name'] for row in json.loads(cascade_file.read_text())}
-    if expected!={row['TRIGGER_NAME'] for row in triggers}:raise RuntimeError('Unknown/missing source trigger needs review before reverse export.')
+    verify_source_triggers(metadata.keys(), sqlite_triggers, triggers)
     destination=options.output/'database.sqlite'
     with destination.open('xb'):pass
     destination.chmod(0o600)

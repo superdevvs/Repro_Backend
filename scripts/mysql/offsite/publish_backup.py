@@ -18,6 +18,7 @@ import stat
 import subprocess
 import tempfile
 import threading
+from typing import BinaryIO
 import uuid
 
 INPUT_SCHEMA = "repro.offsite.input.v1"
@@ -161,6 +162,15 @@ def local_hash(path: Path) -> tuple[int, str]:
     return after.st_size, value
 
 
+def protected_rclone(path: Path) -> None:
+    need(path.is_absolute() and path.is_file() and not path.is_symlink(),
+         "supply the absolute installed rclone executable")
+    for entry in (path, *path.parents):
+        info = entry.lstat()
+        need(not stat.S_ISLNK(info.st_mode) and info.st_uid == 0 and not info.st_mode & 0o022,
+             "rclone executable/ancestors must be protected root-owned paths")
+
+
 def transfer_budget(manifest: dict, timeout: int) -> None:
     # Reserve 30 seconds plus 20% for setup/protocol overhead. Slower networking
     # can still time out; this merely refuses mathematically impossible batches.
@@ -197,9 +207,10 @@ class Rclone:
         self.run("copy", str(source), destination, "--immutable", "--no-update-modtime",
                  "--transfers", "1", "--checkers", "1")
 
-    def readback(self, remote: str, expected_size: int, expected_hash: str) -> None:
-        # stdout is plaintext and is consumed only by this hash loop, never logged
-        # or saved. A deadline kills a stalled child even while read() is blocked.
+    def readback(self, remote: str, expected_size: int, expected_hash: str,
+                 sink: BinaryIO | None = None) -> None:
+        # Plaintext streams only to the hash loop and an optional private restore
+        # file. A deadline kills a stalled child even while read() is blocked.
         process = subprocess.Popen(self.argv("cat", remote), env=SAFE_ENV,
                                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                    stderr=subprocess.DEVNULL)
@@ -215,6 +226,8 @@ class Rclone:
                 count += len(chunk)
                 need(count <= expected_size, "decrypted remote artifact exceeds expected size")
                 digest.update(chunk)
+                if sink is not None:
+                    sink.write(chunk)
             need(process.wait(timeout=10) == 0, "decrypted remote read failed")
             need(count == expected_size and digest.hexdigest() == expected_hash,
                  "decrypted remote artifact hash/length mismatch")
@@ -261,7 +274,8 @@ def publish(manifest: dict, raw: bytes, root: Path, remote: str,
     return {"result": "published-readback-verified", "scope": manifest["scope"],
             "backup_id": manifest["backup_id"], "release": manifest["release"],
             "identity": manifest["identity"], "completion_sha256": sha256(completion_raw),
-            "completion_bytes": len(completion_raw), "artifact_count": len(manifest["artifacts"]),
+            "completion_bytes": len(completion_raw), "input_manifest_sha256": sha256(raw),
+            "input_manifest_bytes": len(raw), "artifact_count": len(manifest["artifacts"]),
             "artifact_bytes": sum(item["bytes"] for item in manifest["artifacts"]),
             "remote": prefix, "restore_verified": False, "retention_verified": False}
 
@@ -284,13 +298,7 @@ def main() -> int:
             private_path(path, directory=True)
         for path in (args.manifest, args.config):
             private_path(path)
-        need(args.rclone.is_absolute() and args.rclone.is_file() and not args.rclone.is_symlink(),
-             "supply the absolute installed rclone executable")
-        for entry in (args.rclone, *args.rclone.parents):
-            executable = entry.lstat()
-            need(not stat.S_ISLNK(executable.st_mode) and executable.st_uid == 0 and
-                 not executable.st_mode & 0o022,
-                 "rclone executable/ancestors must be protected root-owned paths")
+        protected_rclone(args.rclone)
         need(args.manifest.stat().st_size <= 4 * 1024**2 and args.config.stat().st_size <= 1024**2,
              "manifest/configuration too large")
         raw = args.manifest.read_bytes()

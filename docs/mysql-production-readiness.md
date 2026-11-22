@@ -38,6 +38,17 @@ and 62 from the candidate. Both fresh fixtures have 284 tables compared with
 291 in the copy. Rebuilding the fixtures with locked dependencies reproduced
 both schema fingerprints. The comparison queried schema metadata only.
 
+The draft disposition covers all 62 records. It proposes keeping 19,
+using existing compatibility handling for 11, and collecting proof for 32.
+The base SQLite recovery template was built from the pinned copy and contains
+291 tables, 668 indexes and 16 original SQLite triggers. It contains no copied
+application rows. A separate verified overlay adds the six optional messaging
+columns and preserves the existing SQLite foreign-key ordinals. Before using
+the template for failback, verify it against the completed MySQL target in
+a full reverse rehearsal. Reverse export now checks the reviewed MySQL-only
+iGUIDE trigger and recreates only the SQLite trigger definitions in the
+restored database.
+
 The separate managed MySQL 8.4.13 service on Maverick passed authenticated
 checks on the empty instance before and after a controlled restart. Both
 `www-data` and `maverick` initially received permission denied at the socket.
@@ -61,6 +72,40 @@ mode verifies a distinct private network namespace, a non-root UID, empty
 capability sets, and no outbound route. This mode passed its isolation and
 database checks in the disposable Linux fixture. On-host testing requires the
 reviewed, isolated supervisor and remains part of the managed acceptance.
+
+The first host supervisor stopped during filesystem sandbox setup before
+Python started. The revised supervisor keeps the private network and production
+path guards and checks that the process cannot use the host service manager
+socket. The original MySQL service and live SQLite application kept their
+verified identities. Host acceptance of the revision remains pending.
+
+The encrypted backup fixture published a SQLite backup and checkpoint to a
+private S3-compatible HTTPS endpoint with rclone 1.76.0. A separate recovery
+container had access only to the published objects and independently supplied
+credentials. It verified both artifacts, SQLite integrity and the synthetic
+records. The real bucket, retention rules and independent off-site recovery
+still require acceptance.
+
+The local MySQL fixture also published a consistent MySQL 8.4.13 dump, closed
+binlog and checkpoint over encrypted HTTPS storage. A fresh recovery instance
+used the recovered objects, restored the baseline, then replayed to the
+reviewed transaction boundary. It recovered the first two synthetic rows and
+excluded the later third row. Both database containers stopped and the test
+network and volumes were removed.
+
+Concurrent notification updates initially deadlocked on MySQL. The fix locks
+the user's row before adding or updating that user's notification state.
+The native regression reproduced error 1213 with the original service and
+passed with the fix. Two separate small comparisons then completed 1,600
+measured service calls, including 320 writes, with the expected final state.
+In this fixture MySQL was slower than SQLite. The measured paths run through
+the Laravel service and do not represent peak HTTP/FPM or copied-data load.
+
+The refreshed read-only host inventory observed 12 queue workers. Three use
+Supervisor, one uses the media archives service, and eight appear under the
+cron service. PHP-FPM and nginx are active. The final rehearsal must verify
+the scheduler, worker restart sources, provider intake and manual/deploy
+writers before reporting a freeze.
 
 The data-only timing is one part of a dress rehearsal. Remaining acceptance
 requires the managed socket and log rotation checks, privileged cutover and
