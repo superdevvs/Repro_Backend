@@ -5,16 +5,16 @@ namespace Tests\Feature;
 use App\Models\IguideLabProject;
 use Illuminate\Database\QueryException;
 use Illuminate\Database\UniqueConstraintViolationException;
-use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
+use Tests\Concerns\FreshDatabaseOutsideTransaction;
 use Tests\TestCase;
 
 /** Tour tables (spec 4.1-4.7): reversible, isolated from the existing lab tables, keys as specified. */
 class IguideLabTourMigrationTest extends TestCase
 {
-    use RefreshDatabase;
+    use FreshDatabaseOutsideTransaction;
 
     private const FILES = [
         '2026_11_16_100000_create_iguide_lab_tour_surveys.php' => ['iguide_lab_tour_surveys', 'iguide_lab_tour_survey_attempts'],
@@ -82,11 +82,20 @@ class IguideLabTourMigrationTest extends TestCase
         $this->assertSame(1, DB::table('iguide_lab_tour_budgets')->count());
 
         $migrations = array_map(fn ($file) => require database_path('migrations/'.$file), array_combine(array_keys(self::FILES), array_keys(self::FILES)));
-        foreach (array_reverse($migrations) as $migration) $migration->down();
-        $this->assertSame(array_values(array_diff($allTables, $tourTables)), $this->tables());
-        $this->assertSame($before, $this->labSnapshot());
+        $rolledBack = [];
+        try {
+            foreach (array_reverse($migrations) as $migration) {
+                $migration->down();
+                $rolledBack[] = $migration;
+            }
+            $this->assertSame(array_values(array_diff($allTables, $tourTables)), $this->tables());
+            $this->assertSame($before, $this->labSnapshot());
+        } finally {
+            foreach (array_reverse($rolledBack) as $migration) {
+                $migration->up();
+            }
+        }
 
-        foreach ($migrations as $migration) $migration->up();
         $this->assertSame($allTables, $this->tables());
         $this->assertSame($before, $this->labSnapshot());
         $this->assertSame(0, DB::table('iguide_lab_tour_analyses')->count());
