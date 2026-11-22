@@ -101,6 +101,13 @@ reviewed transaction boundary. It recovered the first two synthetic rows and
 excluded the later third row. Both database containers stopped and the test
 network and volumes were removed.
 
+The current SQLite backup producer and encrypted publication staging passed a
+separate fixture with a WAL writer open. The exported single file retained the
+committed row and excluded the uncommitted row. The source database and WAL
+hashes stayed identical. Staging checked the backup bytes, SQLite integrity and
+table count, then wrote the publisher manifest. The real destination and
+independent recovery remain acceptance gates.
+
 Concurrent notification updates initially deadlocked on MySQL. The fix locks
 the user's row before adding or updating that user's notification state.
 The native regression reproduced error 1213 with the original service and
@@ -109,11 +116,36 @@ measured service calls, including 320 writes, with the expected final state.
 In this fixture MySQL was slower than SQLite. The measured paths run through
 the Laravel service and do not represent peak HTTP/FPM or copied-data load.
 
+The paired HTTP workload contract fixes the request schedule before either
+engine runs and reports each route separately, including time waiting for
+concurrency capacity. The contract tests refuse incomplete schedules,
+uncomparable sources, database warnings and logical response differences.
+Host load results require a supervised Laravel execution on the two copies,
+alongside write, upload, queue and crash checks.
+
+The initial single-writer rule has a separately tested MySQL component.
+Its lock row lives in a proposed control schema so the application snapshot
+still compares exactly. On MySQL 8.4.13, 23 tests checked the scoped grants,
+transaction isolation, lock timeout and rollback, savepoints, peer readers,
+wrong-target refusal, and release after a worker was killed. The application
+does not invoke this component yet. Before enabling it, verify all Laravel and
+direct database write paths, the queue exception, retry and cache behavior,
+restore provisioning, and representative contention.
+
 The refreshed read-only host inventory observed 12 queue workers. Three use
 Supervisor, one uses the media archives service, and eight appear under the
 cron service. PHP-FPM and nginx are active. The final rehearsal must verify
 the scheduler, worker restart sources, provider intake and manual/deploy
 writers before reporting a freeze.
+
+Network-isolated subprocess tests verified the runner and admission guard
+against the same real lock and journal. An admitted operation held off a
+competing freeze. A process killed after publishing authority proof left both
+engine admissions closed until recovery. The private Telnyx inbox can also
+authenticate an inventory of its captured receipts and flag multiple signed
+versions or voice events for review. The host admission wrappers and
+independently durable webhook capture and replay still need isolated
+integration proof before any production wiring.
 
 The data-only timing is one part of a dress rehearsal. Remaining acceptance
 requires the managed socket and log rotation checks, privileged cutover and
