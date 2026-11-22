@@ -36,6 +36,9 @@ $db->listen(function (Illuminate\Database\Events\QueryExecuted $query) use ($dir
     $paused = true;
     file_put_contents($directory.'/checked-'.$id, '1');
     if ($id === '1') {
+        $startDeadline = microtime(true) + 10;
+        while (! is_file($directory.'/attempted-2') && microtime(true) < $startDeadline) usleep(10_000);
+        if (! is_file($directory.'/attempted-2')) throw new RuntimeException('Competing preference attempt did not start.');
         // Removing the parent-row lock allows the newer request to pass its
         // check while the older request still plans to create the missing row.
         // With the lock the newer request waits and then re-reads sequence 1.
@@ -49,6 +52,7 @@ while (! is_file($directory.'/start-'.$id) && microtime(true) < $deadline) uslee
 if (! is_file($directory.'/start-'.$id)) throw new RuntimeException('Preference race barrier timed out.');
 
 try {
+    file_put_contents($directory.'/attempted-'.$id, '1');
     $response = app(App\Http\Controllers\API\MobileDevicePreferenceController::class)->update($request);
     file_put_contents($directory.'/finished-'.$id, '1');
     Illuminate\Support\Facades\Http::assertNothingSent();
