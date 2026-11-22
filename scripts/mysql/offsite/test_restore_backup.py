@@ -30,7 +30,10 @@ class MemoryRemote:
 @unittest.skipUnless(os.name == "posix", "requires POSIX file permissions")
 class RestoreTests(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
+        parent = Path(tempfile.gettempdir()).resolve()
+        if any(path.stat().st_mode & 0o022 for path in (parent, *parent.parents)):
+            parent = Path.home().resolve()
+        self.temp = tempfile.TemporaryDirectory(dir=parent)
         self.addCleanup(self.temp.cleanup)
         # Linux fixture runners can supply a protected base outside shared /tmp.
         self.root = Path(self.temp.name).resolve()
