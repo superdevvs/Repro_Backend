@@ -15,6 +15,21 @@ MySQL recovery remain acceptance gates.
 
 ## Input contract
 
+For a completed SQLite backup from `scripts/deploy/backup-database.php`, use the
+local staging command to build the publisher's manifest. Supply the independently
+recorded SHA-256 of the producer's `database-backup.json` and the reviewed release
+and SQLite lineage. Staging checks the data hash, table count and SQLite integrity,
+refuses open backups and sidecars, and creates `input-manifest.json` exclusively
+in the private backup directory. Pass its reported manifest digest to the publisher.
+
+```sh
+/usr/bin/python3 -I /opt/repro-backup-tools/prepare_sqlite_backup.py \
+  --source /var/lib/repro-backups/staged/closed-sqlite \
+  --producer-sha256 REVIEWED_PRODUCER_RECEIPT_SHA256 \
+  --expected-release APPROVED_FULL_COMMIT \
+  --expected-identity APPROVED_SQLITE_LINEAGE
+```
+
 The upstream backup producer must close every artifact and stop writing to the
 source directory before invoking this gate. Create a fresh UUID for each attempt;
 abandon failed prefixes rather than resuming them. A backup's input manifest is a
