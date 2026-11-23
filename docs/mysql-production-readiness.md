@@ -375,12 +375,24 @@ including a pending scheduler permit and a hold that changed during authority
 publication. The fixture supplies the hold from local state. The host still
 needs to supply it through the supervised scheduler.
 
-Maverick's user-level systemd fixture refused to start a scheduler writer
-because it could still see host network interfaces, its manager socket and a
-writable cgroup despite the requested restrictions. The trial confirmed socket
-creation was blocked and removed its transient units and directories. Use an
-isolated systemd VM or a separately reviewed privileged rehearsal scope for the
-remaining supervised drain and aborted-start checks.
+Maverick's user-level systemd fixture stopped before it could start a scheduler
+writer because its namespace controls left host interfaces, the manager socket
+and a writable cgroup visible. A subsequent administrator-supervised test
+passed both scenarios in temporary systemd units. It verified a private
+network, blocked socket creation and access to the systemd manager and live
+application files, and mounted the cgroup filesystem read-only.
+
+The detached writer committed exactly once after its wrapper exited. Its
+permit stayed present despite acquisition of the exclusive lock. The root
+supervisor verified the bound writer exited, its cgroup was empty, and no
+manager job remained before retiring the permit. It then cancelled a pending
+manager start and confirmed it committed nothing. The two drains took 6.53 ms
+and 6.27 ms, measured from the stop request to observed drain. The transient
+units and scratch were removed, and the existing MySQL invocation stayed the
+same. The synthetic witness report has SHA-256
+`b82cea13b4fa9b79094de86936361bc2fc47f5fa5f8f44e0bbc92ae15e60ebc7`.
+Laravel's scheduler and all other writer sources still need to exercise the
+production adapter during the complete dress rehearsals.
 
 A separate disposable PHP process recovered and authenticated all eight
 synthetic acknowledged receipts from the second encrypted spool after the
