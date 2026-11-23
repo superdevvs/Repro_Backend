@@ -48,6 +48,20 @@ function fixtureHistory(PDO $monitor, int $thread, int $after = 0): array
     return $statement->fetch(PDO::FETCH_ASSOC);
 }
 
+function fixtureOfferIds(): array
+{
+    return array_map(static fn (int $id) => '00000000-0000-4000-8000-'.str_pad((string)$id, 12, '0', STR_PAD_LEFT), range(1, 5));
+}
+
+function fixtureVoiceDigest(PDO $pdo): string
+{
+    $graph = [];
+    foreach (['voice_calls', 'voice_incoming_offers', 'voice_browser_calls', 'voice_browser_legs', 'voice_phone_offers'] as $table) {
+        $graph[$table] = $pdo->query('SELECT * FROM '.$table.' ORDER BY id')->fetchAll(PDO::FETCH_ASSOC);
+    }
+    return hash('sha256', json_encode($graph, JSON_THROW_ON_ERROR));
+}
+
 try {
     $cli = PHP_SAPI === 'cli';
     $mode = $cli ? ($argv[1] ?? '') : 'http';
@@ -124,16 +138,31 @@ try {
             fixtureNeed((int)$pdo->query('SELECT COUNT(*) FROM users')->fetchColumn() === 0, 'empty-users-required');
             $pdo->exec('CREATE TABLE _repro_http_fixture_owner(token VARCHAR(64) NOT NULL)');
             $pdo->prepare('INSERT INTO _repro_http_fixture_owner(token) VALUES(?)')->execute([$config['owner_token']]);
-            foreach ([1, 2] as $id) {
+            foreach ([1 => 'client', 2 => 'client', 3 => 'admin'] as $id => $role) {
                 $stamp = '2026-01-01 00:00:00';
                 $statement = $pdo->prepare('INSERT INTO users(id,name,username,email,password,role,email_verified_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)');
-                $statement->execute([$id, 'Synthetic HTTP '.$id, 'synthetic-http-'.$id, 'http-'.$id.'@example.invalid', $config['password_hash'], 'client', $stamp, $stamp, $stamp]);
+                $statement->execute([$id, 'Synthetic HTTP '.$id, 'synthetic-http-'.$id, 'http-'.$id.'@example.invalid', $config['password_hash'], $role, $stamp, $stamp, $stamp]);
                 $statement = $pdo->prepare('INSERT INTO personal_access_tokens(id,tokenable_type,tokenable_id,name,token,abilities,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)');
                 $statement->execute([$id, 'App\\Models\\User', $id, 'synthetic-http', hash('sha256', $config['tokens'][(string)$id]), '["*"]', $stamp, $stamp]);
-                $statement = $pdo->prepare('INSERT INTO notification_read_states(user_id,context,last_seen_at,read_ids,created_at,updated_at) VALUES(?,?,?,?,?,?)');
-                $statement->execute([$id, 'client', 1793491200000 + $id, json_encode(['synthetic-owner-'.$id => 1793491200000 + $id]), $stamp, $stamp]);
+                if ($role === 'client') {
+                    $statement = $pdo->prepare('INSERT INTO notification_read_states(user_id,context,last_seen_at,read_ids,created_at,updated_at) VALUES(?,?,?,?,?,?)');
+                    $statement->execute([$id, 'client', 1793491200000 + $id, json_encode(['synthetic-owner-'.$id => 1793491200000 + $id]), $stamp, $stamp]);
+                }
             }
-            echo json_encode(['result' => 'seeded', 'users' => 2]);
+            $anchor = $config['offer_time'];
+            fixtureNeed(is_int($anchor) && $anchor <= time() && $anchor > time() - 240, 'voice-fixture-anchor');
+            $call = $pdo->prepare("INSERT INTO voice_calls(id,direction,status,caller_user_id,from_phone,to_phone,created_at,updated_at) VALUES(?,'INBOUND','ringing',1,'+12025550101','+12025550102',?,?)");
+            $offer = $pdo->prepare("INSERT INTO voice_incoming_offers(id,voice_call_id,status,eligible_user_ids,expires_at,created_at,updated_at) VALUES(?,?,'waiting',?,?,?,?)");
+            // Live and expired offers for the operator, then unrelated, wrong JSON type and stale controls.
+            $cases = [[[3], 0, 300], [[3], -90, -30], [[30], -10, 300], [['3'], -15, 300], [[3], -600, -300]];
+            foreach (fixtureOfferIds() as $index => $id) {
+                [$targets, $createdOffset, $expiresOffset] = $cases[$index];
+                $created = gmdate('Y-m-d H:i:s', $anchor + $createdOffset);
+                $expires = gmdate('Y-m-d H:i:s', $anchor + $expiresOffset);
+                $call->execute([$index + 1, $created, $created]);
+                $offer->execute([$id, $index + 1, json_encode($targets, JSON_THROW_ON_ERROR), $expires, $created, $created]);
+            }
+            echo json_encode(['result' => 'seeded', 'users' => 3, 'voice_graph_sha256' => fixtureVoiceDigest($pdo)]);
         } elseif ($mode === 'warning-probe') {
             fixtureNeed($config['engine'] === 'mysql', 'mysql-warning-probe-required');
             $monitor = fixturePdo($config, 'monitor');
@@ -147,7 +176,7 @@ try {
             echo json_encode(['result' => 'warning-detected', 'warnings' => 1]);
         } else {
             $counts = [];
-            foreach (['users', 'notification_read_states', 'system_overview_request_traces', 'system_overview_sessions', 'system_overview_error_events', 'jobs', 'messages', 'voice_calls'] as $table) {
+            foreach (['users', 'notification_read_states', 'system_overview_request_traces', 'system_overview_sessions', 'system_overview_error_events', 'jobs', 'messages', 'voice_calls', 'voice_incoming_offers', 'voice_browser_calls', 'voice_browser_legs', 'voice_phone_offers'] as $table) {
                 $counts[$table] = (int)$pdo->query('SELECT COUNT(*) FROM '.$table)->fetchColumn();
             }
             $rows = $pdo->query('SELECT user_id,context,last_seen_at,read_ids FROM notification_read_states ORDER BY user_id')->fetchAll(PDO::FETCH_ASSOC);
@@ -156,7 +185,9 @@ try {
                 fixtureNeed($row['context'] === 'client' && (int)$row['last_seen_at'] === 1793491200000 + $id
                     && json_decode($row['read_ids'], true) === ['synthetic-owner-'.$id => 1793491200000 + $id], 'persisted-owner-state-mismatch');
             }
-            echo json_encode(['result' => 'verified', 'engine' => $config['engine'], 'counts' => $counts, 'owner_state_preserved' => count($rows) === 2]);
+            $traces = $pdo->query('SELECT path,status_code,COUNT(*) AS count FROM system_overview_request_traces GROUP BY path,status_code ORDER BY path,status_code')->fetchAll(PDO::FETCH_ASSOC);
+            echo json_encode(['result' => 'verified', 'engine' => $config['engine'], 'counts' => $counts,
+                'traces' => $traces, 'owner_state_preserved' => count($rows) === 2, 'voice_graph_sha256' => fixtureVoiceDigest($pdo)]);
         }
         exit;
     }
@@ -180,7 +211,9 @@ try {
     $db->enableQueryLog();
     $phase = 'real-http-kernel';
     $request = Illuminate\Http\Request::capture();
-    fixtureNeed($request->getMethod() === 'GET' && $request->path() === 'api/notifications', 'fixed-fixture-route');
+    $voice = $request->path() === 'api/voice/incoming-offers';
+    fixtureNeed($request->getMethod() === 'GET' && ($voice || $request->path() === 'api/notifications')
+        && $request->getQueryString() === null, 'fixed-fixture-route');
     foreach ($config['http_contract'] as $name => $expected) {
         fixtureNeed($request->header('X-Repro-'.$name) === (string)$expected, 'fixed-http-contract');
     }
@@ -197,17 +230,34 @@ try {
     }
     fixtureNeed($queries > 0, 'request-query-instrumentation-required');
     $phase = 'response-validity';
+    $controller = $voice ? App\Http\Controllers\API\Voice\VoiceTeamController::class : App\Http\Controllers\API\DashboardController::class;
+    fixtureNeed($request->route()?->getController() instanceof $controller
+        && $request->route()->getActionMethod() === ($voice ? 'offers' : 'notifications'), 'normal-controller-required');
+    $middleware = $app['router']->gatherRouteMiddleware($request->route());
+    fixtureNeed(in_array(Illuminate\Auth\Middleware\Authenticate::class.':sanctum', $middleware, true), 'normal-auth-middleware-required');
+    if ($voice) {
+        fixtureNeed(in_array(App\Http\Middleware\PermissionMiddleware::class.':voice-calls', $middleware, true)
+            && in_array(App\Http\Middleware\PermissionMiddleware::class.':voice-calls,operate', $middleware, true), 'normal-voice-permissions-required');
+    }
     if ($response->getStatusCode() === 200) {
         $id = (int)$request->user()?->id;
         $data = json_decode($response->getContent(), true, 64, JSON_THROW_ON_ERROR)['data'] ?? null;
-        fixtureNeed(in_array($id, [1, 2], true) && is_array($data) && isset($data['read_state'])
-            && $data['user_role'] === 'client' && $data['read_state']['lastSeenAt'] === 1793491200000 + $id
-            && $data['read_state']['readIds'] === ['synthetic-owner-'.$id => 1793491200000 + $id]
-            && is_array($data['activity_log']) && isset($data['unread_counts']['total']), 'real-response-or-owner-check');
-        fixtureNeed($request->route()?->getController() instanceof App\Http\Controllers\API\DashboardController
-            && $request->route()->getActionMethod() === 'notifications', 'normal-controller-required');
-        $middleware = $app['router']->gatherRouteMiddleware($request->route());
-        fixtureNeed(in_array(Illuminate\Auth\Middleware\Authenticate::class.':sanctum', $middleware, true), 'normal-auth-middleware-required');
+        if ($voice) {
+            fixtureNeed($id === 3 && is_array($data) && array_column($data, 'id') === array_slice(fixtureOfferIds(), 0, 2)
+                && array_column($data, 'status') === ['waiting', 'expired']
+                && array_column($data, 'can_claim') === [true, false]
+                && array_column($data, 'can_send_robbie') === [false, false]
+                && array_column($data, 'phone_available') === [false, false], 'real-voice-offer-visibility');
+        } else {
+            fixtureNeed(in_array($id, [1, 2], true) && is_array($data) && isset($data['read_state'])
+                && $data['user_role'] === 'client' && $data['read_state']['lastSeenAt'] === 1793491200000 + $id
+                && $data['read_state']['readIds'] === ['synthetic-owner-'.$id => 1793491200000 + $id]
+                && is_array($data['activity_log']) && isset($data['unread_counts']['total']), 'real-response-or-owner-check');
+        }
+    } elseif ($voice && $response->getStatusCode() === 403) {
+        $denial = json_decode($response->getContent(), true, 64, JSON_THROW_ON_ERROR);
+        fixtureNeed((int)$request->user()?->id === 1 && ($denial['resource'] ?? null) === 'voice-calls'
+            && ($denial['action'] ?? null) === 'view', 'real-voice-permission-denial');
     } else {
         fixtureNeed($response->getStatusCode() === 401, 'unexpected-route-failure');
     }

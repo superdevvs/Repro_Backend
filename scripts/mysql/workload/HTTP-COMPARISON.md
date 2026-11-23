@@ -335,24 +335,30 @@ terminated host process still requires an ownership-scoped cleanup. Dependency
 archive entries are confined to `vendor/` and cannot replace application code,
 the lockfile or bootstrap files; links, traversal and environment files are refused.
 
-`laravel_http_fixture.py` builds fresh schemas using the candidate's normal
-migrations, seeds two synthetic clients and distinct notification read states,
-and drives the unchanged `http_execute.py` over a fixed Unix HTTP-to-FastCGI
-bridge. `laravel-http-fixture.php` wraps the actual HTTP kernel and invokes the
-existing `GET /api/notifications` route through its normal Sanctum authentication
-and middleware. It registers no replacement route, provider, auth service or
-clock. Every round first proves an invalid token receives 401; valid responses
-must contain each owner's expected read state and the expected response shape,
-including an activity array, so a caught-error fallback is rejected.
+`laravel_http_fixture.py` builds fresh schemas using the candidate's migrations
+and drives the unchanged `http_execute.py` over a Unix HTTP-to-FastCGI bridge.
+`laravel-http-fixture.php` wraps the actual HTTP kernel. Two synthetic clients
+call `GET /api/notifications` through Sanctum and must see their own read state
+and the expected response shape, including an activity array. A synthetic
+operator calls `GET /api/voice/incoming-offers` through its normal Sanctum and
+voice permission middleware. The response must show one claimable offer and
+one expired offer, and exclude an unrelated recipient, a string-typed
+recipient ID and an offer outside the five-minute window.
 
-The fixed profile is deliberately small and synthetic: two equally weighted
-owners, one second each at 2, 4 and 8 arrivals/second, and at most two requests in
-flight. It makes 14 valid GETs per engine/round, runs SQLite then MySQL and then
-MySQL then SQLite on fresh fixtures, and compares every response field with the
-existing exact numeric-lexeme-preserving hash. Its fixed logical-time value is
-seed/reference metadata only: the application clock runs normally, and the
-report explicitly says `fixed_clock_applied: false`. No production traffic mix
-or copied-data timing acceptance is implied.
+Every round issues two untimed voice probes. The response must be 401 for an
+invalid bearer and 403 from the voice permission middleware for a valid client
+bearer. The fixture registers no replacement route, provider, auth service or
+clock. Its network namespace and credentials are private.
+
+The synthetic schedule weights the operator and the two clients 6:1:1 so
+each phase exercises every actor. It offers 2, 4 and 8 arrivals per second
+for four seconds each, with at most two requests in flight. It runs 56 valid
+GETs per engine/round, first SQLite then MySQL and then MySQL then SQLite on
+fresh fixtures. It compares every response field using the exact
+numeric-lexeme-preserving hash. The seed timestamp is shared across all
+rounds and the application clock runs normally. The sample is suitable for
+behavior comparison on two routes; host capacity and production traffic
+composition require a copied-data workload.
 
 The private evidence directory retains the four credential-free round fragments,
 two assembled receipts, profile and schedule. `result.json` binds the fragment and
@@ -377,31 +383,34 @@ boundary and proves the observer detects a deliberate synthetic warning before
 requests. SQLite has no equivalent SQL warning channel. Both observers add
 overhead, and the report identifies their scope.
 
-Telemetry remains enabled. Every round verifies 14 persisted request traces,
-two sessions, preserved owner read states, no system error events and no queued
-jobs/messages/calls; its 14 broadcasts use the normal local `log` driver. Thus
-these GETs do exercise contained writes. The fixture starts no queue worker or
-scheduler. `APP_ENV=testing`, array cache/session, log broadcasting, tmpfs,
+Telemetry remains enabled. Every round verifies 56 successful request traces
+by endpoint, one 403 trace, three sessions, preserved owner read states and
+an unchanged voice graph. It verifies zero system error events, queued jobs,
+messages, browser calls, call legs and phone offers. The normal local `log`
+broadcast driver records the telemetry writes. The fixture starts no queue
+worker or scheduler. `APP_ENV=testing`, array cache/session, log broadcasting, tmpfs,
 disabled opcache and the small two-child FPM pool differ from production. The
 wrapper sends the response after `terminate`, so measured time includes
 termination, instrumentation, FPM bootstrap and the Unix bridge. Production
 nginx/FPM response-release timing is not reproduced.
 
-The 2026-11-23 local run against candidate
-`59e58e8349fd856984fb6e5ac5592535dc182328` passed all 56 authenticated GETs
-(48 measured, eight warmup) and four 401 probes with zero request errors,
-observed database warnings or paired response mismatches. The database remained
-running without an OOM flag until cleanup; independent labelled inventories
-then found no owned containers or volumes. Its `result.json` SHA-256 is
-`354d5cb4f923e6ca92c53ed21723242cb1dde4cfb99b2a339ebf376cf662ba82`.
-The six saved fragment/receipt hashes were checked, and a separate invocation of
-the comparison CLI reproduced the saved comparison exactly. Four focused Linux
-tests also passed the dependency archive boundary checks.
+The 2026-11-23 local run used application archive
+`8f748358909f3d5680b2b4b124c223add992952d` and the mounted fixture scripts pinned
+in `supervisor.json`. All 224 authenticated GETs (192 measured, 32 warmup),
+four 401 probes and four 403 probes passed. There were zero request errors,
+observed database warnings or paired response mismatches. The database stayed
+up without an OOM flag until cleanup. Labelled inventories found no owned
+containers or volumes afterward. The six fragment and receipt hashes were
+verified, and an independent comparison reproduced the saved results.
+`result.json` SHA-256 is
+`5fe053a7127d540f7c138eef88cfc511490c3f4a4d380725d48042ddee192917`.
 
-This proves the first real application HTTP slice and its measuring path. It
-does not establish production speed, capacity, full role/route coverage,
-copied-data behavior, external delivery, queue-worker behavior or cutover
-readiness. The report retains `production_readiness: false`; the generic receipt
-reducer's execution-attestation fields remain false because it cannot independently
-verify the supervisor's evidence. Review the separate supervisor and fixture
-checks together with the comparison rather than promoting the reducer alone.
+Voice p95 from scheduled arrival was 476 vs 408 ms (SQLite vs MySQL) at peak
+in the first round, and 383 vs 433 ms at peak in the second. At surge it was
+1,880 vs 3,163 ms and 1,782 vs 2,439 ms, respectively. Time spent waiting for the
+two available request slots contributes to those measurements. The voice groups
+have 12 peak and 24 surge samples per engine per round. Production capacity,
+copied-data behavior, external delivery, queue-worker behavior and cutover
+readiness still require their dedicated checks. Review the supervisor and
+fixture evidence alongside the generic comparison, which retains
+`production_readiness: false`.

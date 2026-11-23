@@ -161,6 +161,15 @@ logical response differences. The small MySQL samples were slower under
 this instrumented configuration. They establish behavior for one endpoint
 and leave production-sized latency and capacity open.
 
+The subsequent [two-route FPM comparison](../scripts/mysql/workload/HTTP-COMPARISON.md)
+added incoming voice offers to notifications. All 224 authenticated requests
+matched across both engines and engine orders. Four invalid-token and four
+client-permission checks passed. The eligible and expired offers were correct,
+the persisted voice state was unchanged, and no voice jobs were queued.
+MySQL voice p95 was slower in both synthetic surge rounds. This is a signal
+to measure the same route on the host with the copied dataset and realistic
+worker and connection settings before accepting performance.
+
 The initial single-writer rule has a separately tested MySQL component.
 Its lock row lives in a proposed control schema so the application snapshot
 still compares exactly. On MySQL 8.4.13, 23 tests checked the scoped grants,

@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import argparse
 import base64
+from collections import Counter
+from datetime import datetime, timezone
 import hashlib
 import importlib.util
 import json
@@ -32,6 +34,10 @@ transport = load_module('real_laravel_http_transport', 'http_execute.py')
 contract = transport.profile_tools
 need = contract.need
 PHASE = 'startup'
+NOTIFICATIONS = '/api/notifications'
+VOICE_OFFERS = '/api/voice/incoming-offers'
+ACTORS = {'owner-1': (1, NOTIFICATIONS, 1), 'owner-2': (2, NOTIFICATIONS, 1),
+          'voice-operator': (3, VOICE_OFFERS, 6)}
 
 
 def sha(path):
@@ -168,7 +174,8 @@ class Handler(socketserver.BaseRequestHandler):
                 wire.extend(block)
                 need(len(wire) <= transport.MAX_HEADERS, 'http-request-budget')
             lines = bytes(wire).decode('ascii').split('\r\n')
-            need(lines[0] == 'GET /api/notifications HTTP/1.0', 'fixed-request-route')
+            method, path, protocol = lines[0].split(' ')
+            need(method == 'GET' and path in (NOTIFICATIONS, VOICE_OFFERS) and protocol == 'HTTP/1.0', 'fixed-request-route')
             headers = {}
             for line in lines[1:]:
                 if not line: continue
@@ -180,7 +187,7 @@ class Handler(socketserver.BaseRequestHandler):
                 self.server.client_config, self.server.schedule, {'sequence': 0}, '0' * 32))
             need(set(headers) <= allowed, 'unexpected-request-header')
             params = {'GATEWAY_INTERFACE': 'CGI/1.1', 'SERVER_PROTOCOL': 'HTTP/1.0', 'REQUEST_METHOD': 'GET',
-                      'REQUEST_URI': '/api/notifications', 'QUERY_STRING': '', 'SCRIPT_NAME': '/index.php',
+                      'REQUEST_URI': path, 'QUERY_STRING': '', 'SCRIPT_NAME': '/index.php',
                       'SCRIPT_FILENAME': '/fixture-tools/laravel-http-fixture.php', 'DOCUMENT_ROOT': '/workspace/public',
                       'SERVER_NAME': 'repro-http-workload.invalid', 'SERVER_PORT': '80', 'REMOTE_ADDR': '127.0.0.1',
                       'REMOTE_PORT': '12345', 'CONTENT_LENGTH': '0', 'REQUEST_SCHEME': 'http'}
@@ -206,7 +213,7 @@ class Handler(socketserver.BaseRequestHandler):
             except OSError: pass
 
 
-def run_round(profile, schedule, client, application, env, path):
+def run_round(profile, schedule, client, application, env, path, seed_digest):
     application['http_contract'] = {'profile-sha256': schedule['profile_sha256'], 'schedule-sha256': schedule['schedule_sha256'],
                                     'run-token': client['run_token'], 'round': client['round']}
     config_file = path / 'app-config.json'
@@ -237,15 +244,21 @@ def run_round(profile, schedule, client, application, env, path):
         proxy.failures, proxy.statuses = [], []
         thread = threading.Thread(target=proxy.serve_forever, kwargs={'poll_interval': .01}, daemon=True)
         thread.start()
-        # A real invalid bearer goes through the same route/auth middleware.
-        denied = json.loads(json.dumps(client))
-        denied['synthetic_authorization'] = {role: 'Bearer repro-fixture-' + 'x' * 32 for role in client['synthetic_authorization']}
+        # Both probes run through the real route and middleware outside timed samples.
+        unauthorized = {**client, 'synthetic_authorization': {**client['synthetic_authorization'],
+                        'voice-operator': 'Bearer repro-fixture-' + 'x' * 32}}
+        routes = client['fixture_manifest']['routes']
+        without_permission = {**client, 'fixture_manifest': {**client['fixture_manifest'], 'routes': {
+            **routes, 'voice-operator': {**routes['voice-operator'], 'role': 'owner-1'}}}}
+        probe = {**next(item for item in schedule['operations'] if item['route'] == 'voice-operator'), 'due_us': 0}
         active = transport.ActiveSockets()
         try:
-            result = transport.request(profile, schedule, denied, schedule['operations'][0], time.monotonic_ns(), active)
+            for probe_client, status in ((unauthorized, 401), (without_permission, 403)):
+                result = transport.request(profile, schedule, probe_client, probe, time.monotonic_ns(), active)
+                need(result['status'] == status and result['outcome'] == 'http_error'
+                     and result['query_count'] > 0 and result['database_warning_count'] == 0, 'real-voice-auth-probe-failed')
         finally:
             active.cancel()
-        need(result['status'] == 401 and result['outcome'] == 'http_error', 'real-auth-denial-required')
         output = path / 'round.json'
         command = ['/usr/bin/python3', '-B', '/fixture-tools/http_execute.py', 'run', '--profile', '/runs/profile.json',
                    '--schedule', '/runs/schedule.json', '--supervised-parent-net', env['REPRO_HTTP_PARENT_NET'], '--output', str(output)]
@@ -262,13 +275,21 @@ def run_round(profile, schedule, client, application, env, path):
                  item['database_warning_count'] == 0 for item in fragment['run']['samples']), 'real-http-samples-failed')
         verified = php('verify', application, env)
         expected = len(schedule['operations'])
-        need(verified['counts']['system_overview_request_traces'] == expected and verified['counts']['system_overview_sessions'] == 2
-             and verified['counts']['system_overview_error_events'] == 0 and verified['owner_state_preserved']
-             and all(verified['counts'][name] == 0 for name in ('jobs', 'messages', 'voice_calls')), 'persisted-request-effects')
+        expected_traces = Counter((ACTORS[item['route']][1].lstrip('/'), 200) for item in schedule['operations'])
+        expected_traces[(VOICE_OFFERS.lstrip('/'), 403)] = 1
+        traces = {(item['path'].lstrip('/'), int(item['status_code'])): int(item['count']) for item in verified['traces']}
+        counts = verified['counts']
+        need(traces == expected_traces and counts['system_overview_request_traces'] == expected + 1
+             and counts['system_overview_sessions'] == 3 and counts['system_overview_error_events'] == 0
+             and verified['owner_state_preserved'] and verified['voice_graph_sha256'] == seed_digest
+             and counts['users'] == 3 and counts['voice_calls'] == counts['voice_incoming_offers'] == 5
+             and all(counts[name] == 0 for name in ('jobs', 'messages', 'voice_browser_calls', 'voice_browser_legs', 'voice_phone_offers')),
+             'persisted-request-effects')
         logs = list((path / 'storage/logs').glob('laravel*.log'))
         broadcasts = sum(item.read_bytes().count(b'SystemOverviewActivity') for item in logs)
-        need(broadcasts >= expected, 'local-broadcast-proof-required')
-        return fragment, {**verified, 'unauthenticated_status': 401, 'local_broadcast_records': broadcasts}
+        need(broadcasts >= expected + 1, 'local-broadcast-proof-required')
+        return fragment, {**verified, 'unauthenticated_voice_status': 401, 'unprivileged_voice_status': 403,
+                          'voice_graph_preserved': True, 'local_broadcast_records': broadcasts}
     finally:
         if proxy is not None: proxy.shutdown(); proxy.server_close()
         if thread is not None: thread.join(2)
@@ -305,36 +326,40 @@ def main():
          and item.get('source', {}).get('reference') == actual[item['name']].get('source', {}).get('reference') for item in lock), 'locked-dependency-inventory')
     source_hash = transport.isolation.source_digest(Path('/workspace'))
     source_token = os.urandom(32).hex()
-    tokens = {str(number): 'repro-fixture-' + os.urandom(24).hex() for number in (1, 2)}
+    tokens = {str(number): 'repro-fixture-' + os.urandom(24).hex() for number, _, _ in ACTORS.values()}
     app_key = 'base64:' + base64.b64encode(os.urandom(32)).decode()
     password = subprocess.check_output(['/usr/local/bin/php', '-r', "echo password_hash('unused-synthetic-password', PASSWORD_BCRYPT);"], env=env).decode()
+    snapshot_hash = '0' * 64
+    offer_time = 0
 
     def config(path, engine, admin=False):
         return {'scope': 'synthetic-laravel-http-v1', 'runtime': str(path), 'sqlite': str(path / 'database.sqlite'),
                 'engine': engine, 'database': setup['admin'] if admin else setup['app'], 'monitor': setup['monitor'],
                 'uuid': setup['uuid'], 'owner_token': source_token, 'tokens': tokens, 'password_hash': password,
-                'app_key': app_key, 'sqlite_source_sha256': snapshot_hash if 'snapshot_hash' in locals() else '0' * 64}
+                'app_key': app_key, 'sqlite_source_sha256': snapshot_hash, 'offer_time': offer_time}
 
     base = Path('/runs/base-sqlite'); runtime(base)
     PHASE = 'sqlite-baseline'
-    base_config = config(base, 'sqlite', True)
-    php('migrate', base_config, env); php('seed', base_config, env)
+    php('migrate', config(base, 'sqlite', True), env)
+    offer_time = int(time.time())
+    sqlite_seed_digest = php('seed', config(base, 'sqlite', True), env)['voice_graph_sha256']
     snapshot_hash = sha(base / 'database.sqlite')
     manifest = {'version': 1, 'seed_receipt_sha256': contract.digest({'source': source_hash, 'snapshot': snapshot_hash,
-                'users': [1, 2], 'route': '/api/notifications', 'telemetry': 'enabled', 'broadcast': 'log'}), 'routes': {
-        'owner-' + str(number): {'role': 'owner-' + str(number), 'fixture': 'owner-' + str(number), 'method': 'GET',
-                                'path': '/api/notifications', 'query': {}} for number in (1, 2)}}
+                'actors': ACTORS, 'offer_time': offer_time, 'voice_graph_sha256': sqlite_seed_digest,
+                'telemetry': 'enabled', 'broadcast': 'log'}), 'routes': {
+        label: {'role': label, 'fixture': label, 'method': 'GET', 'path': path, 'query': {}}
+        for label, (_, path, _) in ACTORS.items()}}
     response_contract = {'version': 1, 'routes': {label: {'kind': 'exact-json-numeric-lexemes-v1'} for label in manifest['routes']}}
     profile = {'version': 1, 'scope': 'isolated-http-read-workload', 'release_sha': args.release,
                'app_source_sha256': source_hash, 'source_snapshot_sha256': snapshot_hash,
                'host_profile_sha256': contract.digest({'fpm_children': 2, 'fpm_memory_mib': 192, 'opcache': False,
                    'storage': 'tmpfs', 'cache': 'array', 'telemetry': True, 'broadcast': 'log', 'server_monitor': False}),
                'fixture_manifest_sha256': contract.digest(manifest), 'response_contract_sha256': contract.digest(response_contract),
-               'mysql_server_uuid': setup['uuid'], 'logical_time_utc': '2026-11-01T00:00:00Z',
+               'mysql_server_uuid': setup['uuid'], 'logical_time_utc': datetime.fromtimestamp(offer_time, timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
                'max_in_flight': 2, 'request_timeout_ms': 20000,
-               'routes': [{'label': label, 'method': 'GET', 'path_template': '/api/notifications', 'role': label,
-                           'fixture': label, 'weight': 1, 'expected_status': 200} for label in manifest['routes']],
-               'phases': [{'name': name, 'duration_ms': 1000, 'arrival_rate_milli_rps': rate}
+               'routes': [{'label': label, 'method': 'GET', 'path_template': path, 'role': label,
+                           'fixture': label, 'weight': weight, 'expected_status': 200} for label, (_, path, weight) in ACTORS.items()],
+               'phases': [{'name': name, 'duration_ms': 4000, 'arrival_rate_milli_rps': rate}
                           for name, rate in (('warmup', 2000), ('peak', 4000), ('surge', 8000))]}
     schedule = contract.plan(profile)
     private_json(Path('/runs/profile.json'), profile); private_json(Path('/runs/schedule.json'), schedule)
@@ -344,21 +369,22 @@ def main():
             PHASE = 'round-' + str(number) + '-' + engine
             path = Path('/runs/round-' + str(number) + '-' + engine); runtime(path)
             application = config(path, engine)
-            application['sqlite_source_sha256'] = snapshot_hash
             if engine == 'sqlite':
                 shutil.copyfile(base / 'database.sqlite', path / 'database.sqlite')
+                seed_digest = sqlite_seed_digest
             else:
                 administrator = {**application, 'database': setup['admin']}
                 if prepared_mysql: php('reset', administrator, env)
-                php('migrate', administrator, env); php('seed', administrator, env)
+                php('migrate', administrator, env)
+                seed_digest = php('seed', administrator, env)['voice_graph_sha256']
                 php('warning-probe', application, env)
                 prepared_mysql = True
             client = {'version': 1, 'profile_sha256': schedule['profile_sha256'], 'schedule_sha256': schedule['schedule_sha256'],
                       'engine': engine, 'round': number, 'database_identity': snapshot_hash if engine == 'sqlite' else setup['uuid'],
                       'server_kind': 'reviewed-http-instrumentation', 'run_token': os.urandom(32).hex(), 'socket': {},
                       'fixture_manifest': manifest, 'response_contract': response_contract,
-                      'synthetic_authorization': {'owner-' + key: 'Bearer ' + value for key, value in tokens.items()}}
-            fragment, verified = run_round(profile, schedule, client, application, env, path)
+                      'synthetic_authorization': {label: 'Bearer ' + tokens[str(number)] for label, (number, _, _) in ACTORS.items()}}
+            fragment, verified = run_round(profile, schedule, client, application, env, path, seed_digest)
             fragments[engine].append(fragment)
             evidence_name = engine + '-round-' + str(number) + '.json'
             private_json(Path('/evidence') / evidence_name, fragment)
@@ -388,7 +414,7 @@ def main():
     private_json(Path('/evidence/result.json'), result)
     for name in ('profile.json', 'schedule.json'): shutil.copyfile(Path('/runs') / name, Path('/evidence') / name)
     print(json.dumps({'scope': result['scope'], 'result': 'passed', 'report_sha256': contract.digest(result),
-                      'total_measured_and_warmup_gets': 4 * len(schedule['operations']), 'denial_gets': 4,
+                      'total_measured_and_warmup_gets': 4 * len(schedule['operations']), 'denial_gets': 8,
                       'production_readiness': False}), flush=True)
 
 
