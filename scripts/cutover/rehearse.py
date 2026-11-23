@@ -89,20 +89,38 @@ class FixtureAdapter:
         # and host admission wrappers use the real shared lease.
         with self.journal.acquire():
             observed = self.observe()
-            if not observed.sealed(observed.engine):
-                raise UnsafeCutover("Fixture has no sealed authority to reopen")
+            engine = observed.engine
+            if not (observed.sealed(engine) or observed.sqlite_live() or observed.mysql_live()):
+                raise UnsafeCutover("Fixture has no verified authority to reopen")
+            policy = self.journal.encode(self.policy())
+            state = self.journal.path.read_bytes()
             try:
+                evidence = (self.journal.directory / "fixture-authority.json").read_bytes()
                 guard.verify(
-                    self.journal.encode(self.policy()), self.journal.path.read_bytes(),
-                    (self.journal.directory / "fixture-authority.json").read_bytes(),
+                    policy, state, evidence,
                     machine_sha=self.MACHINE_SHA256, boot_id=self.BOOT_ID,
-                    action="queue-worker", expected_engine=observed.engine,
+                    action="queue-worker", expected_engine=engine,
                 )
             except guard.Refused as error:
                 raise UnsafeCutover(str(error)) from error
+            if guard.read_json(state).get("phase") != f"{engine}_authoritative":
+                raise UnsafeCutover("Fixture reopening requires a completed authority transition")
+            # Invalidate a previous receipt before changing activation state.
+            # The durable empty record also survives a crash during this attempt.
+            self.journal.write_record("fixture-activation.json", {})
             self.journal.write_record("fixture.json", asdict(replace(
-                observed, admissions_open=True, workers_stopped=False, deployment_fenced=False,
+                observed, admissions_open=True, workers_stopped=False, deployment_fenced=True,
             )))
+            opened = self.observe()
+            if (opened.engine != engine or not (opened.sqlite_live() or opened.mysql_live())
+                    or opened.workers_stopped or not opened.deployment_fenced):
+                raise UnsafeCutover("Fixture activation could not be verified")
+            self.journal.write_record("fixture-activation.json", {
+                "version": 1, "boot_id": self.BOOT_ID, "policy_sha256": guard.sha256(policy),
+                "journal_sha256": guard.sha256(state), "authority_sha256": guard.sha256(evidence),
+                "engine": engine, "application_verified": True, "reconciliation_verified": True,
+            })
+            self.journal.write_record("fixture.json", asdict(replace(opened, deployment_fenced=False)))
 
 
 def main() -> int:

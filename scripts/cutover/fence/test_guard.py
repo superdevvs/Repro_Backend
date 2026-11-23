@@ -47,12 +47,12 @@ class HostWriterGuardTests(unittest.TestCase):
             "competing_writer_detected": False,
         }
 
-    def verify(self, state, engine, action="scheduler", evidence=None, **host):
+    def verify(self, state, engine, action="scheduler", evidence=None, activation=None, **host):
         if evidence is None:
             evidence = self.evidence(state, engine)
         guard.verify(self.encode(self.policy), self.encode(state), self.encode(evidence),
                      **({"machine_sha": self.machine, "boot_id": self.boot} | host),
-                     action=action, expected_engine=engine)
+                     action=action, expected_engine=engine, activation_raw=activation)
 
     def freeze(self):
         return self.runner.perform("freeze", self.runner.approval_request("freeze"))
@@ -164,6 +164,8 @@ class HostWriterGuardTests(unittest.TestCase):
         host = {"machine_sha": self.adapter.MACHINE_SHA256, "boot_id": self.adapter.BOOT_ID}
         wrong_engine = "mysql" if engine == "sqlite" else "sqlite"
         guard.verify(*proof_inputs, **host, action="queue-worker", expected_engine=engine)
+        with self.assertRaisesRegex(guard.Refused, "until application activation"):
+            guard.verify(*proof_inputs, **host, action="deploy", expected_engine=engine)
         with self.assertRaisesRegex(guard.Refused, "not authoritative"):
             guard.verify(*proof_inputs, **host, action="queue-worker", expected_engine=wrong_engine)
         self.now += 5
@@ -172,6 +174,8 @@ class HostWriterGuardTests(unittest.TestCase):
         self.adapter.reopen()
         self.assertTrue(self.adapter.observe().admissions_open)
         self.assertEqual(engine, self.adapter.observe().engine)
+        activation = (self.journal.directory / "fixture-activation.json").read_bytes()
+        guard.verify(*proof_inputs, **host, action="deploy", expected_engine=engine, activation_raw=activation)
         self.now += 5
         self.assertEqual(state, self.runner.perform("tick"))
         self.assertEqual(committed, self.journal.path.read_bytes())
@@ -184,6 +188,86 @@ class HostWriterGuardTests(unittest.TestCase):
         self.freeze()
         self.runner.perform("prepare")
         self.check_sealed_transition("promote", "mysql", self.runner.approval_request("promote"))
+
+    def test_deploy_receipt_requires_same_boot_policy_journal_authority_and_engine(self):
+        self.freeze()
+        state = self.runner.perform("abort")
+        evidence = self.evidence(state, "sqlite")
+        activation = {
+            "version": 1, "boot_id": self.boot, "policy_sha256": guard.sha256(self.encode(self.policy)),
+            "journal_sha256": guard.sha256(self.encode(state)), "authority_sha256": guard.sha256(self.encode(evidence)),
+            "engine": "sqlite", "application_verified": True, "reconciliation_verified": True,
+        }
+        self.verify(state, "sqlite", action="deploy", activation=self.encode(activation))
+        for name, wrong in (
+            ("boot_id", self.identity.target_uuid), ("policy_sha256", "1" * 64), ("journal_sha256", "2" * 64),
+            ("authority_sha256", "3" * 64), ("engine", "mysql"), ("application_verified", 1),
+            ("reconciliation_verified", False),
+        ):
+            with self.subTest(name=name), self.assertRaisesRegex(guard.Refused, "stale or incomplete"):
+                self.verify(state, "sqlite", action="deploy", activation=self.encode(activation | {name: wrong}))
+
+    def test_reopen_can_resume_after_application_opens_before_activation_receipt(self):
+        self.freeze()
+        self.runner.perform("abort")
+        write = self.journal.write_record
+
+        def interrupt_activation(name, record):
+            if name == "fixture-activation.json" and record.get("application_verified") is True:
+                raise OSError("interrupted activation")
+            return write(name, record)
+
+        with patch.object(self.journal, "write_record", side_effect=interrupt_activation):
+            with self.assertRaisesRegex(OSError, "interrupted activation"):
+                self.adapter.reopen()
+        self.assertTrue(self.adapter.observe().sqlite_live())
+        self.assertTrue(self.adapter.observe().deployment_fenced)
+        self.assertEqual({}, json.loads((self.journal.directory / "fixture-activation.json").read_bytes()))
+        self.adapter.reopen()
+        self.assertFalse(self.adapter.observe().deployment_fenced)
+        self.assertTrue((self.journal.directory / "fixture-activation.json").exists())
+
+    def test_reopen_retry_invalidates_prior_activation_before_effects(self):
+        self.freeze()
+        self.runner.perform("abort")
+        self.adapter.reopen()
+        write = self.journal.write_record
+
+        def interrupt_activation(name, record):
+            if name == "fixture-activation.json" and record.get("application_verified") is True:
+                raise OSError("interrupted activation")
+            return write(name, record)
+
+        with patch.object(self.journal, "write_record", side_effect=interrupt_activation):
+            with self.assertRaisesRegex(OSError, "interrupted activation"):
+                self.adapter.reopen()
+        activation = (self.journal.directory / "fixture-activation.json").read_bytes()
+        with self.assertRaises(guard.Refused):
+            guard.verify(
+                self.journal.encode(self.adapter.policy()), self.journal.path.read_bytes(),
+                (self.journal.directory / "fixture-authority.json").read_bytes(),
+                machine_sha=self.adapter.MACHINE_SHA256, boot_id=self.adapter.BOOT_ID,
+                action="deploy", expected_engine="sqlite", activation_raw=activation,
+            )
+
+    def test_planned_fixture_cannot_publish_activation_even_with_sqlite_authority_proof(self):
+        journal = self.journal.path.read_bytes()
+        original = self.adapter.observe()
+        self.journal.write_record("fixture-authority.json", self.adapter.authority_evidence("sqlite", journal))
+        with self.assertRaisesRegex(UnsafeCutover, "completed authority transition"):
+            self.adapter.reopen()
+        self.assertEqual(original, self.adapter.observe())
+        self.assertFalse((self.journal.directory / "fixture-activation.json").exists())
+
+    def test_fixture_activation_refuses_a_change_to_the_other_engine_after_opening(self):
+        self.freeze()
+        self.runner.perform("abort")
+        initial = self.adapter.observe()
+        wrong_engine = type(initial)("mysql", True, False, False, True, False, True)
+        with patch.object(self.adapter, "observe", side_effect=[initial, wrong_engine]):
+            with self.assertRaisesRegex(UnsafeCutover, "activation could not be verified"):
+                self.adapter.reopen()
+        self.assertEqual({}, json.loads((self.journal.directory / "fixture-activation.json").read_bytes()))
 
     def test_planned_watchdog_tick_keeps_original_authority_proof_valid(self):
         original = self.journal.path.read_bytes()

@@ -17,11 +17,16 @@ ENTRYPOINT = Path("/opt/repro-cutover-fence/guard.py")
 POLICY = Path("/etc/repro-cutover-fence/policy.json")
 STATE = Path("/var/lib/repro-cutover-fence")
 EVIDENCE = Path("/run/repro-cutover-fence/verified-engine.json")
+ACTIVATION = Path("/run/repro-cutover-fence/verified-activation.json")
 MACHINE_ID = Path("/etc/machine-id")
 BOOT_ID = Path("/proc/sys/kernel/random/boot_id")
 MAX_RECORD_BYTES = 1024 * 1024
 ACTIONS = ("deploy", "scheduler", "web-writer", "queue-worker")
 IDENTITY_FIELDS = {"run_id", "release_sha", "artifact_sha256", "source_sha256", "config_sha256", "target_uuid"}
+ACTIVATION_FIELDS = {
+    "version", "boot_id", "policy_sha256", "journal_sha256", "authority_sha256", "engine",
+    "application_verified", "reconciliation_verified",
+}
 
 
 class Refused(RuntimeError):
@@ -136,7 +141,7 @@ def authority(policy: dict, journal: dict, action: str) -> str:
 
 
 def verify(policy_raw: bytes, journal_raw: bytes, evidence_raw: bytes, *, machine_sha: str,
-           boot_id: str, action: str, expected_engine: str) -> None:
+           boot_id: str, action: str, expected_engine: str, activation_raw: bytes | None = None) -> None:
     require(action in ACTIONS and expected_engine in ("sqlite", "mysql"), "Unknown admission request")
     policy, journal, evidence = map(read_json, (policy_raw, journal_raw, evidence_raw))
     require(matches(r"[0-9a-f]{64}", machine_sha) and policy.get("machine_id_sha256") == machine_sha,
@@ -157,6 +162,18 @@ def verify(policy_raw: bytes, journal_raw: bytes, evidence_raw: bytes, *, machin
             and evidence.get("artifact_sha256") == identity["artifact_sha256"]
             and evidence.get("competing_writer_detected") is False,
             "Authority evidence failed the engine, configuration, release or writer checks")
+    if action == "deploy":
+        require(activation_raw is not None, "Deploys are held until application activation is verified")
+        activation = read_json(activation_raw)
+        require(activation.keys() == ACTIVATION_FIELDS
+                and activation["boot_id"] == boot_id
+                and activation["policy_sha256"] == sha256(policy_raw)
+                and activation["journal_sha256"] == sha256(journal_raw)
+                and activation["authority_sha256"] == sha256(evidence_raw)
+                and activation["engine"] == engine
+                and activation["application_verified"] is True
+                and activation["reconciliation_verified"] is True,
+                "Deploys are held because activation evidence is stale or incomplete")
 
 
 @contextmanager
@@ -177,11 +194,15 @@ def admitted(action: str, expected_engine: str) -> Iterator[int]:
     require(not private.st_mode & 0o077, "Cutover journal directory is not root-private")
     with open_protected(STATE / "operator.lock") as lock:
         fcntl.flock(lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        try:
+            activation_raw = read_protected(ACTIVATION) if action == "deploy" else None
+        except FileNotFoundError:
+            activation_raw = None
         verify(
             read_protected(POLICY), read_protected(STATE / "state.json"), read_protected(EVIDENCE),
             machine_sha=sha256(read_protected(MACHINE_ID)),
             boot_id=BOOT_ID.read_text(encoding="ascii").strip(),
-            action=action, expected_engine=expected_engine,
+            action=action, expected_engine=expected_engine, activation_raw=activation_raw,
         )
         yield lock
 

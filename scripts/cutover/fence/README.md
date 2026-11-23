@@ -8,8 +8,8 @@ and the trusted evidence publisher still need implementation and acceptance.
 | Journal phase | Allowed on valid authority evidence |
 | --- | --- |
 | `planned` | SQLite web, queue and scheduler writers |
-| `sqlite_authoritative` | SQLite writer admissions and the guarded deploy entrypoint |
-| `mysql_authoritative` | MySQL writer admissions and the guarded deploy entrypoint |
+| `sqlite_authoritative` | SQLite writer admissions. Deploy requires a verified activation receipt. |
+| `mysql_authoritative` | MySQL writer admissions. Deploy requires a verified activation receipt. |
 | Other phase, unresolved action or missing evidence | All admissions held |
 
 ## Installation contract
@@ -59,6 +59,19 @@ the worker itself still runs as its service account.
    source identity or MySQL UUID. Keep hashes of SQLite snapshot contents in
    the migration evidence, since live SQLite contents change after reopening.
 
+4. **Application activation evidence.** After admission reopens, verify the
+   application and reconcile the writer state before lifting the deploy hold.
+   Atomically publish protected
+   `/run/repro-cutover-fence/verified-activation.json` with `version: 1`,
+   `boot_id`, `engine`, `policy_sha256`, `journal_sha256`, and
+   `authority_sha256` over the exact verified policy, journal, and engine
+   evidence bytes, plus boolean `application_verified` and
+   `reconciliation_verified` set to true. Use the operator lease during
+   reconciliation and publication. Invalidate any prior activation receipt
+   under that lease before restarting activation. An interrupted activation, reboot, or
+   change to any bound record holds deploys until new evidence is verified.
+   Web, queue and scheduler admissions still use the engine evidence.
+
 ## Integration and acceptance
 
 The CLI and systemd condition check only at admission time. A reviewed,
@@ -70,9 +83,7 @@ child performs the operation, pass this specific descriptor with
 The child's inherited descriptor keeps the lease alive if the wrapper exits.
 Use fixed command paths and arguments, preserve the existing deploy mutex, and
 never use a process that outlives its lease or the wrapper's deadline.
-Keep the deployment hold until the controller has verified live activation.
-Record activation separately from the authorization-bearing journal. Restrict
-filesystem and entrypoint permissions so stale scripts cannot mutate release files, run
+Restrict filesystem and entrypoint permissions so stale scripts cannot mutate release files, run
 migrations, or reload services around the wrapper. Cutover preparation must
 close admission and drain existing processes before a writer can change
 engine. The actual web write gate, long-lived worker draining, and webhook
