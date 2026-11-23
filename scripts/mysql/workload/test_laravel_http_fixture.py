@@ -2,6 +2,7 @@
 import hashlib
 import importlib.util
 import io
+import json
 from pathlib import Path
 import socketserver
 import tarfile
@@ -16,6 +17,7 @@ if not hasattr(socketserver, 'UnixStreamServer'):
 spec = importlib.util.spec_from_file_location('laravel_http_fixture', Path(__file__).with_name('laravel_http_fixture.py'))
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
+copied_fixture = fixture.load_module('copied_http_fixture_tests', 'copied_http_fixture.py')
 
 
 class DependencyArchiveBoundaryTest(unittest.TestCase):
@@ -87,6 +89,47 @@ class RehearsalBearerBoundaryTest(unittest.TestCase):
         self.assertEqual(fixture.request_actor(tokens['owner-1'], tokens), 'owner-1')
         self.assertEqual(fixture.request_actor(fixture.INVALID_BEARER, tokens), 'denied')
         self.assertIsNone(fixture.request_actor(None, tokens))
+
+
+class CopiedDataCalibrationTest(unittest.TestCase):
+    def calibration(self, root, change):
+        _, routes, _, _ = copied_fixture.workload(root, None)
+        data = {'version': 1, 'scope': 'isolated-host-two-route-pilot-calibration',
+                'proposed_routes': [{**route, 'weight': weight} for route, weight in zip(routes, (100, 100, 3727))],
+                'proposed_phases': [
+                    {'name': name, 'duration_ms': duration, 'arrival_rate_milli_rps': rate}
+                    for name, duration, rate in (('warmup', 120000, 1000), ('peak', 180000, 2750), ('surge', 180000, 5417))
+                ], 'proposed_max_in_flight': 20}
+        change(data)
+        (root / 'inputs').mkdir()
+        file = root / 'inputs/calibration.json'
+        file.write_text(json.dumps(data))
+        return hashlib.sha256(file.read_bytes()).hexdigest()
+
+    def test_pins_routes_scheduler_budgets_and_mixed_weights(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            checksum = self.calibration(root, lambda data: None)
+            scope, routes, phases, concurrency = copied_fixture.workload(root, checksum)
+            self.assertEqual(scope, 'native-copied-two-route-fpm-load')
+            self.assertEqual([value['weight'] for value in routes], [100, 100, 3727])
+            self.assertEqual(sum(value['duration_ms'] for value in phases), 480000)
+            self.assertEqual(concurrency, 20)
+            with self.assertRaises(copied_fixture.fixture.contract.Refusal):
+                copied_fixture.workload(root, '0' * 64)
+
+    def test_calibration_cannot_create_a_new_route_or_unbounded_surge(self):
+        for field, value in (('path_template', '/api/unreviewed'), ('arrival_rate_milli_rps', 6001)):
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                def change(data):
+                    if field == 'path_template':
+                        data['proposed_routes'][0][field] = value
+                    else:
+                        data['proposed_phases'][2][field] = value
+                checksum = self.calibration(root, change)
+                with self.assertRaises(copied_fixture.fixture.contract.Refusal):
+                    copied_fixture.workload(root, checksum)
 
 
 if __name__ == '__main__':

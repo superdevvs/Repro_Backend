@@ -170,6 +170,12 @@ MySQL voice p95 was slower in both synthetic surge rounds. This is a signal
 to measure the same route on the host with the copied dataset and realistic
 worker and connection settings before accepting performance.
 
+The first native two-route run against the server copies passed all 224
+requests and 12 access checks. MySQL p95 was within 5.4% of SQLite across the
+observed groups. The samples were small, and the broader sustained workload
+and business workflow checks remain open. The [workload report](../scripts/mysql/workload/HTTP-COMPARISON.md)
+records the native comparisons and the longer schedule verified offline.
+
 The initial single-writer rule has a separately tested MySQL component.
 Its lock row lives in a proposed control schema so the application snapshot
 still compares exactly. On MySQL 8.4.13, 23 tests checked the scoped grants,

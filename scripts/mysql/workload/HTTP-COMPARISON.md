@@ -436,6 +436,31 @@ rounds. Later rounds therefore measure additional telemetry against the prior
 round's state. Both copies retain their historical business rows. The runner
 evaluates two routes and leaves production capacity and cutover approval open.
 
+On 2026-11-23, the first native run against the copied customer dataset passed
+all 224 GETs across the two engines and both execution orders. All 12 access
+checks passed. Existing job counts and the seeded voice and notification
+state were preserved. Independent reduction of the two saved receipts
+reproduced the comparison, with zero response mismatches, observed database
+warnings or request errors. The transient unit and its runtime directory were
+removed after exit. `result.json` SHA-256 is
+`858d6d5ace7d9ab38bb6fdba83e8f715152dd6cbcb3cd9dd7fb873571440d86a`.
+
+MySQL arrival p95 ranged from 5.3% lower to 5.4% higher than SQLite across
+these route and actor groups. Each engine/round had 12 peak and 24 surge
+voice samples and two peak and four surge samples per notifications actor.
+The short run establishes behavior on two copied-data routes. Sustained host
+load, the rest of the route and workflow coverage, and performance acceptance
+require separate evidence.
+
+For the longer two-route comparison, the Linux runner accepts a
+`--calibration-sha256` for the reviewed `inputs/calibration.json`. It uses
+only the existing route and role bindings and applies ceilings of 20
+in-flight requests, six arrivals per second and eight minutes per engine
+round. The current calibration schedules 1,591 requests in each of four
+counterbalanced engine rounds. Its arrival rates use bounds from the
+sampled traffic. An isolated supervisor with a matching execution budget
+and fresh copies is required before starting this profile.
+
 Voice p95 from scheduled arrival was 476 vs 408 ms (SQLite vs MySQL) at peak
 in the first round, and 383 vs 433 ms at peak in the second. At surge it was
 1,880 vs 3,163 ms and 1,782 vs 2,439 ms, respectively. Time spent waiting for the
