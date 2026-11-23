@@ -274,6 +274,60 @@ It makes no request to cloud storage. Use separate monitoring for binlog
 lag, retention and restore success. Configure the timer and alert destination
 only after reviewing those controls.
 
+### Schedule verified base backups
+
+Install `scheduled_backup.py`, both preparation scripts, the publisher and
+freshness checker alongside the reviewed `backup-database.php` and
+`backup-sqlite.php` deployment tools in the root-owned tools directory.
+Run the coordinator as a dedicated account with its own `0700` state directory.
+The plan is a regular root-owned `0640` file readable by that account. It lists
+identity and paths. Credentials remain in separate private files.
+
+```json
+{
+  "version": 1,
+  "driver": "sqlite",
+  "release": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "identity": "isolated-sqlite-copy",
+  "app_root": "/srv/repro-isolated/app",
+  "state_dir": "/var/lib/repro-backup",
+  "rclone_config": "/var/lib/repro-backup/credentials/rclone.conf",
+  "php": "/usr/bin/php8.3",
+  "rclone": "/usr/bin/rclone",
+  "crypt_remote": "repro_encrypted",
+  "destination": "storage:APPROVED_BUCKET/APPROVED_PREFIX",
+  "max_age_seconds": 93600,
+  "run_timeout_seconds": 1800,
+  "transfer_timeout_seconds": 900,
+  "mysql": null
+}
+```
+
+For MySQL, set `driver` to `mysql`, set `identity` to the expected server
+UUID, and supply `mysql.database`, `mysql.defaults_file`, `mysql.client` and
+`mysql.dump`. The defaults file is a private credentials-only option file.
+Use resolved executable paths. The stock MySQL producer checks the exact server
+and client versions and records the base snapshot's starting binlog coordinate.
+
+```sh
+/usr/bin/python3 -I -B /opt/repro-backup-tools/scheduled_backup.py run --plan /etc/repro-backup/plan.json
+/usr/bin/python3 -I -B /opt/repro-backup-tools/scheduled_backup.py check --plan /etc/repro-backup/plan.json
+```
+
+Each run acquires an exclusive lock, makes a fresh private snapshot, stages
+and publishes it, and verifies the receipt. It atomically records success
+after staging cleanup. A failed attempt preserves the previous verified receipt
+and returns nonzero immediately. The local health check reads that state and
+returns nonzero for missing, failed or stale evidence. Changes to the reviewed
+plan require a fresh successful backup. Interrupted processes and partially
+uploaded UUIDs are treated as failed attempts. Inspect and remove abandoned
+private staging files only after confirming the service has stopped.
+
+This schedule covers base snapshots. Schedule closed-binlog archival and check
+its lag independently. Verify the protected destination, independent restores
+and alert delivery before relying on this schedule during cutover. See the
+[systemd unit and rehearsal instructions](systemd/README.md).
+
 ### Check rotated MySQL logs before replay
 
 Put the retrieved base producer receipt, the required closed log files, and

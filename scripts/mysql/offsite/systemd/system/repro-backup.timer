@@ -1,0 +1,13 @@
+[Unit]
+Description=RePro daily database base backup schedule
+
+[Timer]
+# Example UTC schedule; review with the plan's freshness budget before enabling.
+OnCalendar=*-*-* 02:30:00 UTC
+RandomizedDelaySec=5m
+AccuracySec=1m
+Persistent=true
+Unit=repro-backup.service
+
+[Install]
+WantedBy=timers.target

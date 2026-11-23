@@ -1,0 +1,40 @@
+[Unit]
+Description=RePro verified database base backup
+OnFailure=repro-backup-alert.service
+OnFailureJobMode=replace
+
+[Service]
+Type=oneshot
+User=repro-backup
+Group=repro-backup
+WorkingDirectory=/var/lib/repro-backup
+StateDirectory=repro-backup
+StateDirectoryMode=0700
+ExecStart=/usr/bin/python3 -I -B /opt/repro-backup-tools/scheduled_backup.py run --plan /etc/repro-backup/plan.json
+TimeoutStartSec=7200s
+UMask=0077
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+KillMode=control-group
+TimeoutStopSec=30s
+SendSIGKILL=yes
+Restart=no
+StandardOutput=journal
+StandardError=journal
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+ReadWritePaths=/var/lib/repro-backup
+CPUQuota=100%
+MemoryMax=1G
+TasksMax=128
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SyslogIdentifier=repro-backup

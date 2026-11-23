@@ -1,0 +1,24 @@
+# Fixture only: requires an externally isolated user manager and prepared state.
+# This profile does not provide the system profile's filesystem/network sandbox.
+[Unit]
+Description=RePro database backup failure journal alert
+
+[Service]
+Type=oneshot
+WorkingDirectory=/
+ExecStartPre=/usr/bin/echo REPRO_BACKUP_ALERT: scheduled backup or freshness check failed
+ExecStart=/usr/bin/python3 -I -B /opt/repro-backup-tools/scheduled_backup.py check --plan /etc/repro-backup/plan.json
+TimeoutStartSec=60s
+UMask=0077
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+KillMode=control-group
+TimeoutStopSec=30s
+SendSIGKILL=yes
+Restart=no
+StandardOutput=journal
+StandardError=journal
+RestrictAddressFamilies=AF_UNIX
+SyslogIdentifier=repro-backup-alert
+SyslogLevel=err

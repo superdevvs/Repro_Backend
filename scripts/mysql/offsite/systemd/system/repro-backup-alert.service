@@ -1,0 +1,38 @@
+[Unit]
+Description=RePro database backup failure journal alert
+
+[Service]
+Type=oneshot
+User=repro-backup
+Group=repro-backup
+WorkingDirectory=/
+ExecStartPre=/usr/bin/echo REPRO_BACKUP_ALERT: scheduled backup or freshness check failed
+ExecStart=/usr/bin/python3 -I -B /opt/repro-backup-tools/scheduled_backup.py check --plan /etc/repro-backup/plan.json
+TimeoutStartSec=60s
+UMask=0077
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+KillMode=control-group
+TimeoutStopSec=30s
+SendSIGKILL=yes
+Restart=no
+StandardOutput=journal
+StandardError=journal
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+PrivateNetwork=yes
+CPUQuota=25%
+MemoryMax=256M
+TasksMax=32
+RestrictAddressFamilies=AF_UNIX
+SyslogIdentifier=repro-backup-alert
+SyslogLevel=err

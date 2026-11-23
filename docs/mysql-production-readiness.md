@@ -234,6 +234,46 @@ This verifies boot and key recovery for the allowlisted rehearsal package.
 The full production recovery kit and its protected key custody still require
 operational acceptance.
 
+## November 24 backup and cutover integration
+
+The scheduled base backup runs the stock producer, stages a closed snapshot,
+and records a new restore point after encrypted publication and read-back.
+The separate local health check reports stale or failed attempts. On a
+private HTTPS storage fixture, both the SQLite and MySQL 8.4.13 workflows
+published a baseline, reported an injected storage failure, preserved the
+last verified receipt, and published a fresh UUID after storage recovered.
+Independent consumers restored the expected synthetic records. The MySQL
+consumer verified the snapshot's binlog coordinate and restored into a new
+native MySQL instance after the source container stopped. All owned
+containers, volumes and fixture networks were removed.
+
+The backup and watchdog unit definitions passed Linux parser checks and
+fixed-argument alert tests. A separate transient timer in Maverick's user
+manager started its synthetic job. A failed watchdog fired the alert handler in
+order. All test units and scratch were removed. Activating the real backup
+units in the accepted environment, delivering alerts to monitoring, automatic
+closed-binlog archival and live retention remain operational acceptance gates.
+The retention verifier tested local evidence for exact prefix, duration,
+provider refusals and unchanged content.
+
+The local cutover adapter froze a disposable SQLite Laravel state, copied
+four fixture tables into MySQL, verified read-only application access and
+refused promotion while the off-site backup gate was unsatisfied. Aborting
+reopened SQLite and drained the queued job exactly once. The two recorded
+intervals were 613 ms from freeze to the MySQL smoke and 440 ms from abort
+to restored SQLite HTTP. This used a synthetic HTTP route and a one-shot
+worker. The full timed host rehearsals still need the real ingress,
+scheduler, writer inventory and representative load together.
+
+In a separate isolated webhook trial, the actual capture adapter returned
+HTTP 503 while its intake lock was held and while replica verification was
+unavailable. An identical protected retry returned 204 and kept the encrypted
+receipt unchanged. Two fresh replay processes recovered all seven acknowledged
+receipts after the original spool was removed. They produced identical dry-run
+projections, and a missing receipt stopped replay. The replica was a second
+local directory. Live ingress, off-host durability and effects still need
+their integrated rehearsal.
+
 The snapshot-age check accepted the retained synthetic R2 receipt and exact
 manifest at the 26-hour limit. It returned stale and a nonzero exit when the
 test applied a one-second limit to the same evidence. Both checks ran locally
