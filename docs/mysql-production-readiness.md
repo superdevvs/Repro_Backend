@@ -171,10 +171,12 @@ to measure the same route on the host with the copied dataset and realistic
 worker and connection settings before accepting performance.
 
 The first native two-route run against the server copies passed all 224
-requests and 12 access checks. MySQL p95 was within 5.4% of SQLite across the
-observed groups. The samples were small, and the broader sustained workload
-and business workflow checks remain open. The [workload report](../scripts/mysql/workload/HTTP-COMPARISON.md)
-records the native comparisons and the longer schedule verified offline.
+requests and 12 access checks. The sustained follow-up passed all 6,364
+requests and 12 access checks with matching responses and zero observed
+request errors or database warnings. MySQL p95 was within 2.5% of SQLite
+across the measured groups. Wider route and workflow coverage and production
+capacity checks remain open. The [workload report](../scripts/mysql/workload/HTTP-COMPARISON.md)
+records the comparisons and the verified cleanup.
 
 The initial single-writer rule has a separately tested MySQL component.
 Its lock row lives in a proposed control schema so the application snapshot

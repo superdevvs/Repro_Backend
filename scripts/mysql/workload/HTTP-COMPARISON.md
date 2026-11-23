@@ -461,6 +461,18 @@ counterbalanced engine rounds. Its arrival rates use bounds from the
 sampled traffic. An isolated supervisor with a matching execution budget
 and fresh copies is required before starting this profile.
 
+The first sustained native comparison completed all 6,364 scheduled GETs
+and 12 access probes on the copied dataset with zero request errors,
+observed database warnings or response mismatches. Peak and surge arrival
+p95 on MySQL was within 2.5% of SQLite for every measured actor and round.
+Incoming-offer arrival p95 was about 1.4–2.1% lower on MySQL. The test
+used two FPM children, a fixed application clock and the two reviewed
+read routes with request telemetry enabled. After shutdown, 93,909
+pre-existing rows in 20 selected SQLite tables still matched the closed
+baseline. The transient unit and runtime directory were removed.
+The independently reproduced result has SHA-256
+`b18a1348c45bacc0a47b0a7c01acdb4d829a481bcaf90f6e3ac98c8fa10f7227`.
+
 The next route coverage uses the existing workflow contracts as fixtures.
 For `GET /api/shoots/{shoot}/upload-summaries`, seed a complete two-file
 batch, a pending batch and a failed batch on a synthetic shoot. Check the
