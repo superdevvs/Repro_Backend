@@ -69,6 +69,42 @@ function fixtureVoiceDigest(PDO $pdo, int $base): string
     return hash('sha256', json_encode($graph, JSON_THROW_ON_ERROR));
 }
 
+function fixtureSeedUploadSummary(PDO $pdo, int $base, int $anchor): void
+{
+    $shootId = $base + 1;
+    $photographer = $base + 4;
+    $shoot = $pdo->prepare("INSERT INTO shoots(id,client_id,photographer_id,address,city,state,zip,base_quote,tax_amount,total_quote,status,created_by) VALUES(?,?,?,'Synthetic property','Example','NA','00000',0,0,0,'scheduled','synthetic-http')");
+    $shoot->execute([$shootId, $base + 1, $photographer]);
+
+    $attempt = $pdo->prepare("INSERT INTO shoot_upload_attempts(id,shoot_id,actor_id,idempotency_key,request_fingerprint,upload_type,upload_batch_id,upload_batch_index,upload_batch_total,status,result_file_ids,result_payload,correlation_id,completed_at,created_at,updated_at) VALUES(?,?,?,?,?,'raw',?,?,?,?,?,?,?,?,?,?)");
+    $cases = [
+        ['complete', 0, 2, 'completed', 0], ['complete', 1, 2, 'completed', 0],
+        ['pending', 0, 2, 'completed', 0], ['pending', 1, 2, 'pending', 0],
+        ['failed', 0, 1, 'failed', 0], ['partial', 0, 1, 'completed', 1],
+    ];
+    foreach ($cases as $index => [$batch, $slot, $total, $status, $errors]) {
+        $file = 101 + $index;
+        $completed = $status === 'completed';
+        $stamp = gmdate('Y-m-d H:i:s', $anchor - 60 + $index);
+        $attempt->execute([$base + $index + 1, $shootId, $photographer, 'fixture-upload-'.$file,
+            hash('sha256', 'fixture-upload-'.$file), $batch, $slot, $total, $status,
+            json_encode($completed ? [$file] : [], JSON_THROW_ON_ERROR),
+            json_encode(['uploaded_files' => [['id' => $file, 'file_size' => 1000]], 'error_count' => $errors], JSON_THROW_ON_ERROR),
+            'fixture-upload-correlation-'.$file, $completed ? $stamp : null, $stamp, $stamp]);
+    }
+}
+
+function fixtureUploadDigest(PDO $pdo, int $shoot): string
+{
+    $seed = [];
+    foreach (['shoots' => 'id', 'shoot_upload_attempts' => 'shoot_id'] as $table => $key) {
+        $query = $pdo->prepare('SELECT * FROM '.$table.' WHERE '.$key.' = ? ORDER BY id');
+        $query->execute([$shoot]);
+        $seed[$table] = $query->fetchAll(PDO::FETCH_ASSOC);
+    }
+    return hash('sha256', json_encode($seed, JSON_THROW_ON_ERROR));
+}
+
 function fixtureOwner(PDO $pdo, array $config): void
 {
     fixtureNeed($pdo->query('SELECT token FROM _repro_http_fixture_owner')->fetchColumn() === $config['owner_token'], 'fixture-ownership-required');
@@ -119,6 +155,9 @@ try {
     $base = $copied ? 2000000000 : 0;
     $operator = $base + 3;
     $clientIds = [$base + 1, $base + 2];
+    $media = ($config['media_fixture'] ?? false) === true;
+    $roles = [$clientIds[0] => 'client', $clientIds[1] => 'client', $operator => 'admin'];
+    if ($media) $roles += [$base + 4 => 'photographer', $base + 5 => 'photographer'];
     fixtureNeed(posix_geteuid() !== 0 && getenv('APP_ENV') === 'testing', 'unprivileged-testing-process');
     fixtureNeed(preg_match('/\Anet:\[[0-9]+\]\z/', (string)getenv('REPRO_HTTP_PARENT_NET')) === 1
         && readlink('/proc/self/ns/net') !== getenv('REPRO_HTTP_PARENT_NET')
@@ -183,14 +222,16 @@ try {
             echo json_encode(['result' => 'history-staged']);
         } elseif ($mode === 'seed') {
             if ($copied) {
-                foreach (['users', 'personal_access_tokens', 'notification_read_states', 'voice_calls'] as $table) {
+                $reservedTables = ['users', 'personal_access_tokens', 'notification_read_states', 'voice_calls'];
+                if ($media) array_push($reservedTables, 'shoots', 'shoot_upload_attempts');
+                foreach ($reservedTables as $table) {
                     fixtureNeed((int)$pdo->query('SELECT COALESCE(MAX(id),0) FROM '.$table)->fetchColumn() <= $base, 'fixture-id-range-in-use');
                 }
             } else {
                 fixtureClaim($pdo, $config);
             }
             $pdo->beginTransaction();
-            foreach ([$clientIds[0] => 'client', $clientIds[1] => 'client', $operator => 'admin'] as $id => $role) {
+            foreach ($roles as $id => $role) {
                 $stamp = '2026-01-01 00:00:00';
                 $statement = $pdo->prepare('INSERT INTO users(id,name,username,email,password,role,email_verified_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)');
                 $statement->execute([$id, 'Synthetic HTTP '.$id, 'synthetic-http-'.$id, 'http-'.$id.'@example.invalid', $config['password_hash'], $role, $stamp, $stamp, $stamp]);
@@ -202,7 +243,7 @@ try {
                 }
             }
             $pdo->prepare('INSERT INTO personal_access_tokens(id,tokenable_type,tokenable_id,name,token,abilities,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)')
-                ->execute([$base + 4, 'App\\Models\\User', $operator, 'synthetic-preexisting', hash('sha256', $config['preexisting_token']), '["*"]', $stamp, $stamp]);
+                ->execute([$base + count($roles) + 1, 'App\\Models\\User', $operator, 'synthetic-preexisting', hash('sha256', $config['preexisting_token']), '["*"]', $stamp, $stamp]);
             $call = $pdo->prepare("INSERT INTO voice_calls(id,direction,status,caller_user_id,from_phone,to_phone,created_at,updated_at) VALUES(?,'INBOUND','ringing',?,'+12025550101','+12025550102',?,?)");
             $offer = $pdo->prepare("INSERT INTO voice_incoming_offers(id,voice_call_id,status,eligible_user_ids,expires_at,created_at,updated_at) VALUES(?,?,'waiting',?,?,?,?)");
             // Live and expired offers for the operator, then unrelated, wrong JSON type and stale controls.
@@ -214,8 +255,10 @@ try {
                 $call->execute([$base + $index + 1, $clientIds[0], $created, $created]);
                 $offer->execute([$id, $base + $index + 1, json_encode($targets, JSON_THROW_ON_ERROR), $expires, $created, $created]);
             }
+            if ($media) fixtureSeedUploadSummary($pdo, $base, $anchor);
             $pdo->commit();
-            echo json_encode(['result' => 'seeded', 'users' => 3, 'voice_graph_sha256' => fixtureVoiceDigest($pdo, $base)]);
+            echo json_encode(['result' => 'seeded', 'users' => count($roles), 'voice_graph_sha256' => fixtureVoiceDigest($pdo, $base),
+                'upload_graph_sha256' => $media ? fixtureUploadDigest($pdo, $base + 1) : null]);
         } elseif ($mode === 'warning-probe') {
             fixtureNeed($config['engine'] === 'mysql', 'mysql-warning-probe-required');
             $monitor = fixturePdo($config, 'monitor');
@@ -229,7 +272,9 @@ try {
             echo json_encode(['result' => 'warning-detected', 'warnings' => 1]);
         } else {
             $counts = [];
-            foreach (['users', 'notification_read_states', 'system_overview_request_traces', 'system_overview_sessions', 'system_overview_error_events', 'jobs', 'messages', 'voice_calls', 'voice_incoming_offers', 'voice_browser_calls', 'voice_browser_legs', 'voice_phone_offers'] as $table) {
+            $tables = ['users', 'notification_read_states', 'system_overview_request_traces', 'system_overview_sessions', 'system_overview_error_events', 'jobs', 'messages', 'voice_calls', 'voice_incoming_offers', 'voice_browser_calls', 'voice_browser_legs', 'voice_phone_offers'];
+            if ($media) array_push($tables, 'shoots', 'shoot_upload_attempts');
+            foreach ($tables as $table) {
                 $counts[$table] = (int)$pdo->query('SELECT COUNT(*) FROM '.$table)->fetchColumn();
             }
             $readStates = $pdo->prepare('SELECT user_id,context,last_seen_at,read_ids FROM notification_read_states WHERE user_id IN (?,?) ORDER BY user_id');
@@ -240,16 +285,18 @@ try {
                 fixtureNeed($row['context'] === 'client' && (int)$row['last_seen_at'] === 1793491200000 + $id
                     && json_decode($row['read_ids'], true) === ['synthetic-owner-'.$id => 1793491200000 + $id], 'persisted-owner-state-mismatch');
             }
-            $actorTraces = $pdo->prepare('SELECT path,status_code,COUNT(*) AS count FROM system_overview_request_traces WHERE user_id IN (?,?,?) GROUP BY path,status_code ORDER BY path,status_code');
-            $actorTraces->execute([...$clientIds, $operator]);
+            $actorList = implode(',', array_fill(0, count($roles), '?'));
+            $actorTraces = $pdo->prepare('SELECT path,status_code,COUNT(*) AS count FROM system_overview_request_traces WHERE user_id IN ('.$actorList.') GROUP BY path,status_code ORDER BY path,status_code');
+            $actorTraces->execute(array_keys($roles));
             $traces = $actorTraces->fetchAll(PDO::FETCH_ASSOC);
-            $actorSessions = $pdo->prepare('SELECT COUNT(*) FROM system_overview_sessions WHERE user_id IN (?,?,?)');
-            $actorSessions->execute([...$clientIds, $operator]);
+            $actorSessions = $pdo->prepare('SELECT COUNT(*) FROM system_overview_sessions WHERE user_id IN ('.$actorList.')');
+            $actorSessions->execute(array_keys($roles));
             $uncheckedToken = $pdo->prepare('SELECT COUNT(*) FROM personal_access_tokens WHERE token=? AND last_used_at IS NULL');
             $uncheckedToken->execute([hash('sha256', $config['preexisting_token'])]);
             echo json_encode(['result' => 'verified', 'engine' => $config['engine'], 'counts' => $counts,
                 'traces' => $traces, 'owner_state_preserved' => count($rows) === 2, 'voice_graph_sha256' => fixtureVoiceDigest($pdo, $base),
-                'actor_sessions' => (int)$actorSessions->fetchColumn(), 'preexisting_token_unused' => (int)$uncheckedToken->fetchColumn() === 1]);
+                'actor_sessions' => (int)$actorSessions->fetchColumn(), 'preexisting_token_unused' => (int)$uncheckedToken->fetchColumn() === 1,
+                'upload_graph_sha256' => $media ? fixtureUploadDigest($pdo, $base + 1) : null]);
         }
         exit;
     }
@@ -277,7 +324,8 @@ try {
     $phase = 'real-http-kernel';
     $request = Illuminate\Http\Request::capture();
     $voice = $request->path() === 'api/voice/incoming-offers';
-    fixtureNeed($request->getMethod() === 'GET' && ($voice || $request->path() === 'api/notifications')
+    $upload = $media && $request->path() === 'api/shoots/'.($base + 1).'/upload-summaries';
+    fixtureNeed($request->getMethod() === 'GET' && ($voice || $upload || $request->path() === 'api/notifications')
         && $request->getQueryString() === null, 'fixed-fixture-route');
     foreach ($config['http_contract'] as $name => $expected) {
         fixtureNeed($request->header('X-Repro-'.$name) === (string)$expected, 'fixed-http-contract');
@@ -296,9 +344,13 @@ try {
     }
     fixtureNeed($queries > 0, 'request-query-instrumentation-required');
     $phase = 'response-validity';
-    $controller = $voice ? App\Http\Controllers\API\Voice\VoiceTeamController::class : App\Http\Controllers\API\DashboardController::class;
+    [$controller, $action] = match (true) {
+        $upload => [App\Http\Controllers\API\ShootUploadSummaryController::class, 'index'],
+        $voice => [App\Http\Controllers\API\Voice\VoiceTeamController::class, 'offers'],
+        default => [App\Http\Controllers\API\DashboardController::class, 'notifications'],
+    };
     fixtureNeed($request->route()?->getController() instanceof $controller
-        && $request->route()->getActionMethod() === ($voice ? 'offers' : 'notifications'), 'normal-controller-required');
+        && $request->route()->getActionMethod() === $action, 'normal-controller-required');
     $middleware = $app['router']->gatherRouteMiddleware($request->route());
     fixtureNeed(in_array(Illuminate\Auth\Middleware\Authenticate::class.':sanctum', $middleware, true), 'normal-auth-middleware-required');
     if ($voice) {
@@ -308,7 +360,12 @@ try {
     if ($response->getStatusCode() === 200) {
         $id = (int)$request->user()?->id;
         $data = json_decode($response->getContent(), true, 64, JSON_THROW_ON_ERROR)['data'] ?? null;
-        if ($voice) {
+        if ($upload) {
+            fixtureNeed(in_array($id, [$operator, $base + 4], true) && $data === [[
+                'id' => ($base + 4).':raw:complete', 'uploadType' => 'raw', 'fileCount' => 2, 'totalBytes' => 2000,
+                'completedAt' => gmdate('Y-m-d\TH:i:s.000000\Z', $anchor - 59),
+            ]], 'real-upload-batches');
+        } elseif ($voice) {
             fixtureNeed($id === $operator && is_array($data) && array_column($data, 'id') === array_slice(fixtureOfferIds($base), 0, 2)
                 && array_column($data, 'status') === ['waiting', 'expired']
                 && array_column($data, 'can_claim') === [true, false]
@@ -324,6 +381,8 @@ try {
         $denial = json_decode($response->getContent(), true, 64, JSON_THROW_ON_ERROR);
         fixtureNeed((int)$request->user()?->id === $clientIds[0] && ($denial['resource'] ?? null) === 'voice-calls'
             && ($denial['action'] ?? null) === 'view', 'real-voice-permission-denial');
+    } elseif ($upload && $response->getStatusCode() === 403) {
+        fixtureNeed(in_array((int)$request->user()?->id, [$clientIds[0], $base + 5], true), 'real-upload-permission-denial');
     } else {
         fixtureNeed($response->getStatusCode() === 401, 'unexpected-route-failure');
     }

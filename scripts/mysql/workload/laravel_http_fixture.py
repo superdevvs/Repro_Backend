@@ -36,11 +36,16 @@ need = contract.need
 PHASE = 'startup'
 NOTIFICATIONS = '/api/notifications'
 VOICE_OFFERS = '/api/voice/incoming-offers'
+UPLOAD_SUMMARIES = '/api/shoots/{shoot}/upload-summaries'
 ACTORS = {'owner-1': (1, NOTIFICATIONS, 1), 'owner-2': (2, NOTIFICATIONS, 1),
           'voice-operator': (3, VOICE_OFFERS, 6)}
 INVALID_BEARER = 'Bearer repro-fixture-' + 'x' * 32
 COPY_ACTOR_BASE = 2_000_000_000
 TOOLS = Path(__file__).resolve().parent
+
+
+def fixture_actors(media):
+    return {**ACTORS, 'upload-photographer': (4, UPLOAD_SUMMARIES, 2)} if media else ACTORS
 
 
 def request_actor(authorization, tokens):
@@ -192,7 +197,7 @@ class Handler(socketserver.BaseRequestHandler):
                 need(len(wire) <= transport.MAX_HEADERS, 'http-request-budget')
             lines = bytes(wire).decode('ascii').split('\r\n')
             method, path, protocol = lines[0].split(' ')
-            need(method == 'GET' and path in (NOTIFICATIONS, VOICE_OFFERS) and protocol == 'HTTP/1.0', 'fixed-request-route')
+            need(method == 'GET' and path in self.server.request_paths and protocol == 'HTTP/1.0', 'fixed-request-route')
             headers = {}
             for line in lines[1:]:
                 if not line: continue
@@ -203,7 +208,7 @@ class Handler(socketserver.BaseRequestHandler):
             allowed = {'host', 'accept', 'accept-encoding', 'authorization'} | set(transport.metric_headers(
                 self.server.client_config, self.server.schedule, {'sequence': 0}, '0' * 32))
             need(set(headers) <= allowed, 'unexpected-request-header')
-            actor = request_actor(headers.get('authorization'), self.server.client_config['synthetic_authorization'])
+            actor = request_actor(headers.get('authorization'), self.server.authorizations)
             if actor is None:
                 # A token outside this rehearsal never reaches the application or its database.
                 self.request.sendall(b'HTTP/1.0 403 Forbidden\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}')
@@ -237,6 +242,7 @@ def run_round(profile, schedule, client, application, env, path, seed_digest):
     root = Path(env.get('REPRO_HTTP_ROOT', '/'))
     workspace = root / 'workspace'
     before = php('verify', application, env)
+    media = application.get('media_fixture', False)
     need(datetime.fromtimestamp(application['offer_time'], timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
          == profile['logical_time_utc'], 'fixture-clock-profile-mismatch')
     application['http_contract'] = {'profile-sha256': schedule['profile_sha256'], 'schedule-sha256': schedule['schedule_sha256'],
@@ -268,6 +274,13 @@ def run_round(profile, schedule, client, application, env, path, seed_digest):
         proxy.fpm_socket, proxy.fpm_pid = fpm_socket, fpm.pid
         proxy.app = workspace
         proxy.client_config, proxy.schedule = client, schedule
+        routes = client['fixture_manifest']['routes']
+        proxy.request_paths = {entry['path'] for entry in routes.values()}
+        authorizations = dict(client['synthetic_authorization'])
+        if media:
+            base = COPY_ACTOR_BASE if application['scope'] == 'copied-laravel-http-v1' else 0
+            authorizations['upload-unassigned'] = 'Bearer ' + application['tokens'][str(base + 5)]
+        proxy.authorizations = authorizations
         proxy.failures, proxy.statuses = [], []
         thread = threading.Thread(target=proxy.serve_forever, kwargs={'poll_interval': .01}, daemon=True)
         thread.start()
@@ -279,19 +292,24 @@ def run_round(profile, schedule, client, application, env, path, seed_digest):
             status, headers, body, _ = transport.get_response(probe_stream, time.monotonic_ns() + 5_000_000_000)
             need(status == 403 and body == b'{}' and not any(key.startswith('x-repro-') for key in headers),
                  'preexisting-bearer-reached-app')
-        # Both probes run through the real route and middleware outside timed samples.
-        unauthorized = {**client, 'synthetic_authorization': {**client['synthetic_authorization'],
-                        'voice-operator': INVALID_BEARER}}
-        routes = client['fixture_manifest']['routes']
-        without_permission = {**client, 'fixture_manifest': {**client['fixture_manifest'], 'routes': {
-            **routes, 'voice-operator': {**routes['voice-operator'], 'role': 'owner-1'}}}}
-        probe = {**next(item for item in schedule['operations'] if item['route'] == 'voice-operator'), 'due_us': 0}
+        # Exercise the real live route contracts with synthetic actors outside
+        # timed samples. The extra photographer participates only in a denial.
+        probes = [('voice-operator', 'voice-operator', INVALID_BEARER, 401),
+                  ('voice-operator', 'owner-1', authorizations['owner-1'], 403)]
+        if media:
+            probes.extend([('upload-photographer', 'voice-operator', authorizations['voice-operator'], 200),
+                           ('upload-photographer', 'owner-1', authorizations['owner-1'], 403),
+                           ('upload-photographer', 'upload-unassigned', authorizations['upload-unassigned'], 403)])
         active = transport.ActiveSockets()
         try:
-            for probe_client, status in ((unauthorized, 401), (without_permission, 403)):
+            for route, actor, token, status in probes:
+                probe_client = {**client, 'fixture_manifest': {**client['fixture_manifest'], 'routes': {
+                                **routes, route: {**routes[route], 'role': actor}}},
+                                'synthetic_authorization': {**authorizations, actor: token}}
+                probe = {**next(item for item in schedule['operations'] if item['route'] == route), 'due_us': 0}
                 result = transport.request(profile, schedule, probe_client, probe, time.monotonic_ns(), active)
-                need(result['status'] == status and result['outcome'] == 'http_error'
-                     and result['query_count'] > 0 and result['database_warning_count'] == 0, 'real-voice-auth-probe-failed')
+                need(result['status'] == status and result['outcome'] == ('ok' if status == 200 else 'http_error')
+                     and result['query_count'] > 0 and result['database_warning_count'] == 0, 'real-role-probe-failed')
         finally:
             active.cancel()
         output = path / 'round.json'
@@ -311,25 +329,36 @@ def run_round(profile, schedule, client, application, env, path, seed_digest):
         need(all(item['status'] == 200 and item['outcome'] == 'ok' and item['query_count'] > 0 and
                  item['database_warning_count'] == 0 for item in fragment['run']['samples']), 'real-http-samples-failed')
         verified = php('verify', application, env)
-        expected = len(schedule['operations'])
-        expected_traces = Counter((ACTORS[item['route']][1].lstrip('/'), 200) for item in schedule['operations'])
+        templates = {route['label']: route['path_template'].lstrip('/') for route in profile['routes']}
+        expected_traces = Counter((templates[item['route']], 200) for item in schedule['operations'])
         expected_traces[(VOICE_OFFERS.lstrip('/'), 403)] = 1
+        if media:
+            expected_traces[(UPLOAD_SUMMARIES.lstrip('/'), 200)] += 1
+            expected_traces[(UPLOAD_SUMMARIES.lstrip('/'), 403)] = 2
         def trace_counts(state):
             return Counter({(item['path'].lstrip('/'), int(item['status_code'])): int(item['count']) for item in state['traces']})
         traces = trace_counts(before)
         traces.update(expected_traces)
         counts = dict(before['counts'])
-        counts['system_overview_request_traces'] += expected + 1
-        counts['system_overview_sessions'] += 3 - before['actor_sessions']
+        observed_requests = sum(expected_traces.values())
+        actor_sessions = 5 if media else 3
+        counts['system_overview_request_traces'] += observed_requests
+        counts['system_overview_sessions'] += actor_sessions - before['actor_sessions']
+        if media:
+            counts['system_overview_error_events'] += 2
         need(trace_counts(verified) == traces and verified['counts'] == counts
-             and verified['actor_sessions'] == 3 and verified['owner_state_preserved']
+             and verified['actor_sessions'] == actor_sessions and verified['owner_state_preserved']
              and verified['voice_graph_sha256'] == before['voice_graph_sha256'] == seed_digest
-             and verified['preexisting_token_unused'], 'persisted-request-effects')
+             and verified['preexisting_token_unused']
+             and (not media or before['upload_graph_sha256'] == verified['upload_graph_sha256']), 'persisted-request-effects')
         logs = list((path / 'storage/logs').glob('laravel*.log'))
         broadcasts = sum(item.read_bytes().count(b'SystemOverviewActivity') for item in logs)
-        need(broadcasts >= expected + 1, 'local-broadcast-proof-required')
+        need(broadcasts >= observed_requests, 'local-broadcast-proof-required')
         return fragment, {**verified, 'unauthenticated_voice_status': 401, 'unprivileged_voice_status': 403,
                           'preexisting_bearer_bridge_status': 403,
+                          'upload_staff_status': 200 if media else None,
+                          'upload_client_status': 403 if media else None,
+                          'upload_unassigned_status': 403 if media else None,
                           'voice_graph_preserved': True, 'local_broadcast_records': broadcasts,
                           'logical_time_utc': profile['logical_time_utc']}
     finally:
@@ -348,6 +377,7 @@ def main():
     parser.add_argument('--release', required=True)
     parser.add_argument('--baseline-net', required=True)
     parser.add_argument('--simulate-copy', action='store_true')
+    parser.add_argument('--media-fixture', action='store_true')
     args = parser.parse_args()
     os.umask(0o077)
     transport.isolation.namespace_check(args.baseline_net)
@@ -370,7 +400,11 @@ def main():
     source_hash = transport.isolation.source_digest(Path('/workspace'))
     source_token = os.urandom(32).hex()
     actor_base = COPY_ACTOR_BASE if args.simulate_copy else 0
-    tokens = {str(actor_base + number): 'repro-fixture-' + os.urandom(24).hex() for number, _, _ in ACTORS.values()}
+    actors = fixture_actors(args.media_fixture)
+    actor_numbers = [number for number, _, _ in actors.values()]
+    if args.media_fixture:
+        actor_numbers.append(5)
+    tokens = {str(actor_base + number): 'repro-fixture-' + os.urandom(24).hex() for number in actor_numbers}
     preexisting_token = 'repro-fixture-' + os.urandom(24).hex()
     app_key = 'base64:' + base64.b64encode(os.urandom(32)).decode()
     password = subprocess.check_output(['/usr/local/bin/php', '-r', "echo password_hash('unused-synthetic-password', PASSWORD_BCRYPT);"], env=env).decode()
@@ -385,7 +419,7 @@ def main():
                 'engine': engine, 'database': setup['admin'] if admin else setup['app'], 'monitor': setup['monitor'],
                 'uuid': setup['uuid'], 'owner_token': source_token, 'tokens': tokens, 'preexisting_token': preexisting_token,
                 'password_hash': password,
-                'app_key': app_key, 'sqlite_source_sha256': snapshot_hash, 'offer_time': offer_time}
+                'app_key': app_key, 'sqlite_source_sha256': snapshot_hash, 'offer_time': offer_time, 'media_fixture': args.media_fixture}
 
     base = Path('/runs/base-sqlite'); runtime(base)
     PHASE = 'sqlite-baseline'
@@ -396,10 +430,11 @@ def main():
     sqlite_seed_digest = php('seed', config(base, 'sqlite', True), env)['voice_graph_sha256']
     snapshot_hash = sha(base / 'database.sqlite')
     manifest = {'version': 1, 'seed_receipt_sha256': contract.digest({'source': source_hash, 'snapshot': snapshot_hash,
-                'actors': ACTORS, 'offer_time': offer_time, 'voice_graph_sha256': sqlite_seed_digest,
+                'actors': actors, 'offer_time': offer_time, 'voice_graph_sha256': sqlite_seed_digest,
                 'telemetry': 'enabled', 'broadcast': 'log'}), 'routes': {
-        label: {'role': label, 'fixture': label, 'method': 'GET', 'path': path, 'query': {}}
-        for label, (_, path, _) in ACTORS.items()}}
+        label: {'role': label, 'fixture': label, 'method': 'GET',
+                'path': path.replace('{shoot}', str(actor_base + 1)), 'query': {}}
+        for label, (_, path, _) in actors.items()}}
     response_contract = {'version': 1, 'routes': {label: {'kind': 'exact-json-numeric-lexemes-v1'} for label in manifest['routes']}}
     profile = {'version': 1, 'scope': 'isolated-http-read-workload', 'release_sha': args.release,
                'app_source_sha256': source_hash, 'source_snapshot_sha256': snapshot_hash,
@@ -409,7 +444,7 @@ def main():
                'mysql_server_uuid': setup['uuid'], 'logical_time_utc': datetime.fromtimestamp(offer_time, timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
                'max_in_flight': 2, 'request_timeout_ms': 20000,
                'routes': [{'label': label, 'method': 'GET', 'path_template': path, 'role': label,
-                           'fixture': label, 'weight': weight, 'expected_status': 200} for label, (_, path, weight) in ACTORS.items()],
+                           'fixture': label, 'weight': weight, 'expected_status': 200} for label, (_, path, weight) in actors.items()],
                'phases': [{'name': name, 'duration_ms': 4000, 'arrival_rate_milli_rps': rate}
                           for name, rate in (('warmup', 2000), ('peak', 4000), ('surge', 8000))]}
     schedule = contract.plan(profile)
@@ -436,7 +471,7 @@ def main():
                       'engine': engine, 'round': number, 'database_identity': snapshot_hash if engine == 'sqlite' else setup['uuid'],
                       'server_kind': 'reviewed-http-instrumentation', 'run_token': os.urandom(32).hex(), 'socket': {},
                       'fixture_manifest': manifest, 'response_contract': response_contract,
-                      'synthetic_authorization': {label: 'Bearer ' + tokens[str(actor_base + number)] for label, (number, _, _) in ACTORS.items()}}
+                      'synthetic_authorization': {label: 'Bearer ' + tokens[str(actor_base + number)] for label, (number, _, _) in actors.items()}}
             fragment, verified = run_round(profile, schedule, client, application, env, path, seed_digest)
             fragments[engine].append(fragment)
             evidence_name = engine + '-round-' + str(number) + '.json'
@@ -460,6 +495,7 @@ def main():
               'database_warning_injection_detected': True, 'fixed_clock_applied': True,
               'voice_control_expired_at_wall_time': True,
               'populated_fixture_tested': args.simulate_copy,
+              'upload_summary_fixture_tested': args.media_fixture,
               'real_auth_and_existing_route_middleware': True, 'telemetry_writes_enabled': True, 'broadcast_driver': 'log',
               'normalization': 'all-fields-exact-json-preserving-numeric-lexemes',
               'query_metric_scope': 'default Laravel connection during handle and terminate; raw transaction control excluded',
@@ -469,7 +505,8 @@ def main():
     private_json(Path('/evidence/result.json'), result)
     for name in ('profile.json', 'schedule.json'): shutil.copyfile(Path('/runs') / name, Path('/evidence') / name)
     print(json.dumps({'scope': result['scope'], 'result': 'passed', 'report_sha256': contract.digest(result),
-                      'total_measured_and_warmup_gets': 4 * len(schedule['operations']), 'denial_gets': 12,
+                      'total_measured_and_warmup_gets': 4 * len(schedule['operations']),
+                      'denial_gets': 20 if args.media_fixture else 12,
                       'production_readiness': False}), flush=True)
 
 

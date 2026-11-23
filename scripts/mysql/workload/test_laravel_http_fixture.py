@@ -77,7 +77,9 @@ class RehearsalBearerBoundaryTest(unittest.TestCase):
             b'GET /api/voice/incoming-offers HTTP/1.0\r\nAuthorization: Bearer unrelated-copied-token\r\n\r\n'
         )
         handler.server = Mock()
-        handler.server.client_config = {'synthetic_authorization': {'voice-operator': 'Bearer synthetic-token'}}
+        handler.server.client_config = {}
+        handler.server.request_paths = {fixture.VOICE_OFFERS}
+        handler.server.authorizations = {'voice-operator': 'Bearer synthetic-token'}
         handler.server.schedule = {}
         with patch.object(fixture.transport, 'metric_headers', return_value={}), patch.object(fixture, 'fastcgi') as forward:
             handler.handle()
@@ -130,6 +132,14 @@ class CopiedDataCalibrationTest(unittest.TestCase):
                 checksum = self.calibration(root, change)
                 with self.assertRaises(copied_fixture.fixture.contract.Refusal):
                     copied_fixture.workload(root, checksum)
+
+    def test_upload_summary_requires_a_separate_uncalibrated_smoke(self):
+        root = Path('/unused')
+        scope, routes, _, _ = copied_fixture.workload(root, None, media=True)
+        self.assertEqual(scope, 'native-copied-upload-summary-fpm-smoke')
+        self.assertIn(fixture.UPLOAD_SUMMARIES, [route['path_template'] for route in routes])
+        with self.assertRaises(copied_fixture.fixture.contract.Refusal):
+            copied_fixture.workload(root, '0' * 64, media=True)
 
 
 if __name__ == '__main__':

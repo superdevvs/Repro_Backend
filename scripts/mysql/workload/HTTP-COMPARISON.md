@@ -470,6 +470,18 @@ reads the acknowledgement ledger, so this route can be measured with the
 real authorization logic and a private synthetic ledger. Actual upload
 and retry behavior belongs in the separately isolated write workload.
 
+The local `-SimulateCopy -MediaFixture` comparison now exercises that ledger
+through the real HTTP kernel on both engines. All 224 scheduled GETs matched,
+20 denial probes passed, and the four untimed staff reads returned the
+expected two-file, 2,000-byte summary. No pending, failed or partial batch
+appeared as complete. The assigned photographer could read the summary,
+while the client and unassigned photographer received 403. The copied
+synthetic job, shoot and upload ledger state were preserved. The report
+SHA-256 is
+`9e02beae2be05ef7b7ee9249eb6f44c13b773d1e6fc3b0e2c0fccb6e77ee3bda`.
+The Linux runner offers this route as a separate `--media-fixture` smoke
+test. Its supervisor must provision the two additional seed-table grants.
+
 Voice p95 from scheduled arrival was 476 vs 408 ms (SQLite vs MySQL) at peak
 in the first round, and 383 vs 433 ms at peak in the second. At surge it was
 1,880 vs 3,163 ms and 1,782 vs 2,439 ms, respectively. Time spent waiting for the

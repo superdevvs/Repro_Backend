@@ -17,14 +17,16 @@ from datetime import datetime, timezone
 import laravel_http_fixture as fixture
 
 
-def workload(root, calibration_sha256):
+def workload(root, calibration_sha256, media=False):
     routes = [{'label': label, 'method': 'GET', 'path_template': route, 'role': label, 'fixture': label,
-               'weight': weight, 'expected_status': 200} for label, (_, route, weight) in fixture.ACTORS.items()]
+               'weight': weight, 'expected_status': 200} for label, (_, route, weight) in fixture.fixture_actors(media).items()]
     if calibration_sha256 is None:
-        return 'native-copied-two-route-fpm-smoke', routes, [
+        scope = 'native-copied-upload-summary-fpm-smoke' if media else 'native-copied-two-route-fpm-smoke'
+        return scope, routes, [
             {'name': name, 'duration_ms': 4000, 'arrival_rate_milli_rps': rate}
             for name, rate in (('warmup', 2000), ('peak', 4000), ('surge', 8000))
         ], 2
+    fixture.need(not media, 'copy-pilot-calibration-cannot-add-upload-route')
 
     path = root / 'inputs/calibration.json'
     fixture.need(path.is_file() and path.resolve() == path, 'copy-pilot-calibration-path')
@@ -115,6 +117,7 @@ def main():
     parser.add_argument('--release', required=True)
     parser.add_argument('--baseline-net', required=True)
     parser.add_argument('--calibration-sha256')
+    parser.add_argument('--media-fixture', action='store_true')
     args = parser.parse_args()
     os.umask(0o077)
     root = args.root
@@ -126,11 +129,14 @@ def main():
     fixture.need(len(raw) <= 65536, 'copy-pilot-input-budget')
     setup = json.loads(raw)
     verify_inputs(root, setup)
-    run_scope, profile_routes, phases, max_in_flight = workload(root, args.calibration_sha256)
+    run_scope, profile_routes, phases, max_in_flight = workload(root, args.calibration_sha256, args.media_fixture)
     env = fixture.environment(args.baseline_net, root)
-    actors = fixture.ACTORS
+    actors = fixture.fixture_actors(args.media_fixture)
+    actor_numbers = [number for number, _, _ in actors.values()]
+    if args.media_fixture:
+        actor_numbers.append(5)
     tokens = {str(fixture.COPY_ACTOR_BASE + number): 'repro-fixture-' + os.urandom(24).hex()
-              for number, _, _ in actors.values()}
+              for number in actor_numbers}
     preexisting = 'repro-fixture-' + os.urandom(24).hex()
     app_key = 'base64:' + base64.b64encode(os.urandom(32)).decode()
     password = subprocess.check_output(['/usr/bin/php8.3', '-r', "echo password_hash('unused-synthetic-password', PASSWORD_BCRYPT);"],
@@ -145,7 +151,8 @@ def main():
                 'engine': engine, 'database': setup['database'], 'monitor': setup['monitor'],
                 'uuid': setup['mysql_uuid'], 'mysql_datadir': setup['mysql_datadir'], 'owner_token': setup['owner_token'],
                 'tokens': tokens, 'preexisting_token': preexisting, 'password_hash': password, 'app_key': app_key,
-                'sqlite_source_sha256': setup['snapshot_sha256'], 'offer_time': offer_time}
+                'sqlite_source_sha256': setup['snapshot_sha256'], 'offer_time': offer_time,
+                'media_fixture': args.media_fixture}
 
     mysql_stage = runs / 'mysql-seed'
     fixture.runtime(mysql_stage)
@@ -162,7 +169,8 @@ def main():
     manifest = {'version': 1, 'seed_receipt_sha256': fixture.contract.digest(
         {'snapshot': setup['snapshot_sha256'], 'voice_graph': digests, 'logical_time_utc': clock,
          'actor_base': fixture.COPY_ACTOR_BASE}), 'routes': {
-        label: {'role': label, 'fixture': label, 'method': 'GET', 'path': route, 'query': {}}
+        label: {'role': label, 'fixture': label, 'method': 'GET',
+                'path': route.replace('{shoot}', str(fixture.COPY_ACTOR_BASE + 1)), 'query': {}}
         for label, (_, route, _) in actors.items()}}
     response = {'version': 1, 'routes': {label: {'kind': 'exact-json-numeric-lexemes-v1'} for label in actors}}
     profile = {'version': 1, 'scope': 'isolated-http-read-workload', 'release_sha': args.release,

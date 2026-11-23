@@ -1,7 +1,8 @@
 param(
     [Parameter(Mandatory = $true)][string]$LockedVendorArchive,
     [Parameter(Mandatory = $true)][string]$EvidenceDirectory,
-    [switch]$SimulateCopy
+    [switch]$SimulateCopy,
+    [switch]$MediaFixture
 )
 
 $ErrorActionPreference = 'Stop'
@@ -87,6 +88,7 @@ ALTER USER root@localhost IDENTIFIED WITH caching_sha2_password BY '$rootPasswor
     } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $evidence 'supervisor.json') -Encoding utf8
     $fixtureArgs = @('-B', '/fixture-tools/laravel_http_fixture.py', '--release', $release, '--baseline-net', $baseline)
     if ($SimulateCopy) { $fixtureArgs += '--simulate-copy' }
+    if ($MediaFixture) { $fixtureArgs += '--media-fixture' }
     $payload | docker run --rm -i --pull never --name $appName --label purpose=repro-laravel-http-fixture --network none --read-only --cap-drop ALL --security-opt no-new-privileges --user '1000:1000' --memory 1024m --cpus 2 --pids-limit 100 --tmpfs '/workspace:rw,exec,size=640m,uid=1000,gid=1000,mode=0700' --tmpfs '/runs:rw,noexec,size=128m,uid=1000,gid=1000,mode=0700' --tmpfs '/tmp:rw,noexec,size=64m,mode=1777' --mount $socketMount --mount "type=bind,source=$sourceArchive,target=/source.tar,readonly" --mount "type=bind,source=$vendorArchive,target=/vendor.tar.gz,readonly" --mount "type=bind,source=$PSScriptRoot,target=/fixture-tools,readonly" --mount "type=bind,source=$evidence,target=/evidence" --workdir /workspace --entrypoint /usr/bin/python3 $appImage @fixtureArgs | Tee-Object -FilePath (Join-Path $evidence 'run.log')
     if ($LASTEXITCODE -ne 0) { throw 'Local synthetic Laravel HTTP fixture refused' }
 } finally {
