@@ -461,6 +461,15 @@ counterbalanced engine rounds. Its arrival rates use bounds from the
 sampled traffic. An isolated supervisor with a matching execution budget
 and fresh copies is required before starting this profile.
 
+The next route coverage uses the existing workflow contracts as fixtures.
+For `GET /api/shoots/{shoot}/upload-summaries`, seed a complete two-file
+batch, a pending batch and a failed batch on a synthetic shoot. Check the
+confirmed file count and bytes for the assigned photographer and staff, and
+verify that clients and unassigned photographers receive 403. The controller
+reads the acknowledgement ledger, so this route can be measured with the
+real authorization logic and a private synthetic ledger. Actual upload
+and retry behavior belongs in the separately isolated write workload.
+
 Voice p95 from scheduled arrival was 476 vs 408 ms (SQLite vs MySQL) at peak
 in the first round, and 383 vs 433 ms at peak in the second. At surge it was
 1,880 vs 3,163 ms and 1,782 vs 2,439 ms, respectively. Time spent waiting for the

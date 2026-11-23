@@ -176,12 +176,17 @@ def main():
     for name, data in (('profile.json', profile), ('schedule.json', schedule)):
         fixture.private_json(runs / name, data)
         fixture.private_json(evidence / name, data)
+    print(json.dumps({'phase': 'copied-data-schedule', 'result': 'ready',
+                      'requests_per_round': len(schedule['operations']),
+                      'scheduled_seconds_per_round': sum(item['duration_ms'] for item in phases) // 1000}), flush=True)
     fragments = {'sqlite': [], 'mysql': []}
     checks = []
     for run, order in enumerate(fixture.contract.ORDERS, 1):
         for engine in order:
             path = runs / f'round-{run}-{engine}'
             fixture.runtime(path)
+            print(json.dumps({'phase': 'copied-data-http', 'engine': engine, 'round': run,
+                              'result': 'started'}), flush=True)
             client = {'version': 1, 'profile_sha256': schedule['profile_sha256'], 'schedule_sha256': schedule['schedule_sha256'],
                       'engine': engine, 'round': run, 'database_identity': setup['snapshot_sha256'] if engine == 'sqlite' else setup['mysql_uuid'],
                       'server_kind': 'reviewed-http-instrumentation', 'run_token': os.urandom(32).hex(), 'socket': {},
