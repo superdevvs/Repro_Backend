@@ -41,8 +41,11 @@ both schema fingerprints. The comparison queried schema metadata only.
 The archived MySQL import catalog and the original empty SQLite template agree
 on all **477 foreign-key relationships** across the 291 tables. The offline
 comparison checks child and parent column order and both referential actions.
-The full rehearsal still needs to test enforcement on new writes and preserve
-the exact historical exceptions. [Layout verifier](../scripts/mysql/verify-foreign-key-layout.py)
+On the recovered copy, MySQL rejected an attempted invalid update for each of
+the eight relationships with approved historical exceptions. Each transaction
+was rolled back and its sampled historical row retained its original value.
+Recheck the final snapshot and exception set during the dress rehearsals.
+[Layout verifier](../scripts/mysql/verify-foreign-key-layout.py)
 
 The draft disposition covers all 62 records. It proposes keeping 19,
 using existing compatibility handling for 11, and collecting proof for 32.
@@ -62,6 +65,19 @@ temporary MySQL process shut down cleanly. The restore and verification ran in
 separate sessions around two compatibility corrections. Rehearse the complete
 application failback and provider reconciliation under the outage clock before
 signing off on recovery.
+
+The November 23 data drill added two synthetic notification records to the
+disposable MySQL copy and committed an update to one of them. The temporary
+server was killed while a different write was uncommitted. It recovered the
+committed records in a verified read-only restart. A new invalid foreign-key
+write was rejected, and the explicitly rolled-back and in-flight writes were
+absent. The first export stopped before copying rows because the packet omitted
+the cascade trigger manifest. The corrected export resumed read-only, took
+110.5 seconds, and produced 1,841,680 rows across 291 tables with exactly the
+two intended additions. Independent PHP verification compared 29,914,626 fields
+with zero mismatches. All other tables and the prior notification rows matched
+the baseline. These were data-recovery steps over two sessions. The timed
+application failback and provider checks remain open.
 
 The separate managed MySQL 8.4.13 service on Maverick passed authenticated
 checks on the empty instance before and after a controlled restart. Both
@@ -128,6 +144,14 @@ concurrency capacity. The contract tests refuse incomplete schedules,
 uncomparable sources, database warnings and logical response differences.
 Host load results require a supervised Laravel execution on the two copies,
 alongside write, upload, queue and crash checks.
+
+The synthetic FPM fixture completed 56 authenticated `GET /api/notifications`
+requests across both engines and two engine orders, with four separate 401
+checks. It used the existing route, Sanctum authentication, and request
+telemetry. The measured requests produced zero errors, database warnings or
+logical response differences. The small MySQL samples were slower under
+this instrumented configuration. They establish behavior for one endpoint
+and leave production-sized latency and capacity open.
 
 The initial single-writer rule has a separately tested MySQL component.
 Its lock row lives in a proposed control schema so the application snapshot
