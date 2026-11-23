@@ -131,6 +131,23 @@ reviewed transaction boundary. It recovered the first two synthetic rows and
 excluded the later third row. Both database containers stopped and the test
 network and volumes were removed.
 
+A full-size recovery drill on Maverick used the isolated MySQL copy from the
+upload rehearsal. Rclone encrypted the consistent dump and closed binary log,
+then verified their decrypted sizes and hashes. The compressed dump was
+766,321,760 bytes. A fresh MySQL 8.4.13 instance loaded the snapshot from
+ciphertext, recovered the selected transaction and excluded the later one.
+The comparison covered 293 tables, including two rehearsal tables, and matched
+1,841,841 preexisting rows by table count and an ordered data-dump digest. It
+also matched table definitions, indexes, foreign keys, triggers and next IDs.
+
+Recovery took 191.7 seconds from fresh instance preparation through validation
+and clean shutdown. The complete backup and recovery drill took 304.35 seconds.
+Both private instances stopped. A separate check confirmed the live app still
+used SQLite and the existing MySQL service had kept its original process
+invocation. This rehearsal used encrypted storage on Maverick. Acceptance still
+requires testing the designated off-host bucket, its retention controls and an
+independent recovery from that bucket.
+
 The current SQLite backup producer and encrypted publication staging passed a
 separate fixture with a WAL writer open. The exported single file retained the
 committed row and excluded the uncommitted row. The source database and WAL
