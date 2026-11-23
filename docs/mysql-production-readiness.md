@@ -148,6 +148,14 @@ invocation. This rehearsal used encrypted storage on Maverick. Acceptance still
 requires testing the designated off-host bucket, its retention controls and an
 independent recovery from that bucket.
 
+The stock MySQL 8.4.13 PITR backup command also produced a 737,159,499-byte
+compressed snapshot of the read-only copy. The backup took 44.04 seconds.
+The MySQL staging command compared the dump's recovery position to its
+producer receipt, verified the gzip stream and both artifact hashes, and
+created the publisher manifest. The publisher's local checks passed 49.4
+seconds after the start. The private database stopped and the temporary
+plaintext batch was removed. No cloud bucket was configured for this run.
+
 The current SQLite backup producer and encrypted publication staging passed a
 separate fixture with a WAL writer open. The exported single file retained the
 committed row and excluded the uncommitted row. The source database and WAL
@@ -205,6 +213,19 @@ databases. An independent SELECT-only check against the post-rehearsal
 MySQL copy also matched 170,534 selected financial fields across 24,465
 invoice, invoice-item, payment, allocation and refund rows against the
 closed SQLite baseline.
+
+An expanded synthetic run passed the same 19 cases and 136 assertions on
+each engine, covering rescheduling, delivery, payment allocation and refunds,
+payout review, and mocked SMS. All 48 cutover runner, write fence and readiness
+contracts passed on Linux. The fixtures ran with networking disabled.
+
+A four-client Laravel service comparison completed 6,400 notification reads
+and 1,600 writes across both engines and two engine orders. Each round matched
+the expected final notification state and all 418 shared-user receipts. Write
+p95 was 19.60–19.63 ms on SQLite and 22.25–22.43 ms on MySQL. Separate queue
+contract runs passed seven cases on SQLite and four on MySQL. These
+measurements used synthetic data on memory-backed filesystems. The combined
+HTTP and queue workload on the server copies remains an acceptance gate.
 
 The initial single-writer rule has a separately tested MySQL component.
 Its lock row lives in a proposed control schema so the application snapshot

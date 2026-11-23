@@ -10,13 +10,11 @@ import os
 from pathlib import Path
 import sqlite3
 import sys
-import tempfile
 import time
 import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import publish_backup as backup
-from restore_backup import sync_directory
 
 PRODUCER = "database-backup.json"
 DATABASE = "database.sqlite"
@@ -72,23 +70,10 @@ def prepare(root: Path, *, producer_sha256: str, release: str, identity: str) ->
             {"path": PRODUCER, "bytes": len(raw_producer), "sha256": producer_sha256},
         ],
     }
-    raw = backup.encode(manifest)
-    digest = backup.sha256(raw)
-    backup.parse_manifest(raw, digest, "database", release, identity)
-    with tempfile.NamedTemporaryFile(dir=root, prefix=".input-manifest-", delete=False) as stream:
-        staged = Path(stream.name)
-        try:
-            os.fchmod(stream.fileno(), 0o600)
-            stream.write(raw)
-            stream.flush()
-            os.fsync(stream.fileno())
-            os.link(staged, root / OUTPUT, follow_symlinks=False)
-        finally:
-            staged.unlink()
-    sync_directory(root)
+    digest, size = backup.write_input_manifest(root, manifest)
     return {"result": "sqlite-backup-ready-for-publication", "backup_id": manifest["backup_id"],
             "scope": "database", "tables": tables, "manifest_sha256": digest,
-            "manifest_bytes": len(raw), "remote_accessed": False}
+            "manifest_bytes": size, "remote_accessed": False}
 
 
 def main() -> int:

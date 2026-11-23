@@ -26,14 +26,6 @@ def read_metadata(transport, prefix: str, name: str, size: int, digest: str, lim
     return received.getvalue()
 
 
-def sync_directory(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-
-
 def restore(args, transport) -> dict:
     prefix = f"{args.crypt_remote}:{args.scope}/{args.expected_identity}/{args.backup_id}"
     completion_raw = read_metadata(transport, prefix, "completion.json", args.completion_bytes,
@@ -77,12 +69,12 @@ def restore(args, transport) -> dict:
                 output.flush()
                 os.fsync(output.fileno())
         for directory, _, _ in os.walk(staged, topdown=False):
-            sync_directory(Path(directory))
+            backup.sync_directory(Path(directory))
         # Reserve the name exclusively and then expose the fully checked tree.
         # A crash between these operations can leave only an empty reservation.
         args.output.mkdir(mode=0o700)
         staged.replace(args.output)
-        sync_directory(args.output.parent)
+        backup.sync_directory(args.output.parent)
     return report
 
 

@@ -95,6 +95,32 @@ def parse_manifest(raw: bytes, expected_sha256: str, scope: str,
         raise Refusal("malformed input manifest") from None
 
 
+def sync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def write_input_manifest(root: Path, manifest: dict) -> tuple[str, int]:
+    raw = encode(manifest)
+    digest = sha256(raw)
+    parse_manifest(raw, digest, manifest["scope"], manifest["release"], manifest["identity"])
+    with tempfile.NamedTemporaryFile(dir=root, prefix=".input-manifest-", delete=False) as stream:
+        staged = Path(stream.name)
+        try:
+            os.fchmod(stream.fileno(), 0o600)
+            stream.write(raw)
+            stream.flush()
+            os.fsync(stream.fileno())
+            os.link(staged, root / "input-manifest.json", follow_symlinks=False)
+        finally:
+            staged.unlink()
+    sync_directory(root)
+    return digest, len(raw)
+
+
 def private_path(path: Path, *, directory: bool = False) -> None:
     need(os.name == "posix" and path.is_absolute(), "Linux absolute paths required")
     owner = os.geteuid()
@@ -139,13 +165,16 @@ def validate_config(raw: bytes, remote: str, expected_destination: str) -> None:
              "only explicit S3 credentials are supported")
         need(store.get("access_key_id", "") and store.get("secret_access_key", "") and
              store.get("no_check_bucket", "false").lower() == "true",
-             "static scoped credentials and no_check_bucket=true required")
+             "explicit scoped credentials and no_check_bucket=true required")
         allowed_s3 = {"type", "provider", "env_auth", "access_key_id", "secret_access_key",
-                      "region", "endpoint", "location_constraint", "acl", "no_check_bucket"}
+                      "session_token", "region", "endpoint", "location_constraint", "acl", "no_check_bucket"}
         need(set(store) <= allowed_s3 and set(cfg.sections()) == {remote, backend},
              "configuration must contain only the reviewed crypt/S3 pair")
         endpoint = store.get("endpoint", "")
         need(not endpoint or endpoint.startswith("https://"), "HTTPS storage endpoint required")
+        if "session_token" in store:
+            need(store["session_token"] and not any(char.isspace() for char in store["session_token"]),
+                 "S3 session token must be explicit and nonempty")
     except (configparser.Error, KeyError, UnicodeError, ValueError):
         raise Refusal("invalid or unsupported rclone configuration") from None
 

@@ -30,6 +30,28 @@ in the private backup directory. Pass its reported manifest digest to the publis
   --expected-identity APPROVED_SQLITE_LINEAGE
 ```
 
+For MySQL 8.4, run the reviewed database producer in `--pitr` mode with the
+approved source UUID and backup account. Once it exits successfully and closes
+the batch, independently record the SHA-256 of `database-backup.json`. Stage
+that receipt and `database.sql.gz` with the approved release, source UUID and
+database name:
+
+```sh
+/usr/bin/python3 -I /opt/repro-backup-tools/prepare_mysql_backup.py \
+  --source /var/lib/repro-backups/staged/closed-mysql \
+  --producer-sha256 REVIEWED_PRODUCER_RECEIPT_SHA256 \
+  --expected-release APPROVED_FULL_COMMIT \
+  --expected-identity APPROVED_MYSQL_SOURCE_UUID \
+  --expected-database APPROVED_MYSQL_DATABASE
+```
+
+Staging verifies the compressed dump's size and hash, gzip integrity, full
+expanded length, completion marker and the snapshot position recorded by
+`mysqldump`. It creates the same `input-manifest.json` used by the publisher.
+Pass the staging result's `manifest_sha256` to the publication gate. Keep
+archiving the binlog sequence separately and verify continuity from the
+snapshot position to the desired recovery point during an independent restore.
+
 The upstream backup producer must close every artifact and stop writing to the
 source directory before invoking this gate. Create a fresh UUID for each attempt;
 abandon failed prefixes rather than resuming them. A backup's input manifest is a
@@ -96,13 +118,42 @@ password-encrypted rclone config is not supported by this noninteractive gate.
 Required crypt options are `type=crypt`, the exact approved `remote`, nonempty
 `password` and `password2`, standard filename encryption and directory encryption
 (the last two may use their safe defaults). Data encryption must remain enabled.
-The S3 section requires `type=s3`, static `access_key_id`/`secret_access_key`,
+The S3 section requires `type=s3`, explicit `access_key_id`/`secret_access_key`,
 `env_auth=false`, and `no_check_bucket=true`. An explicit endpoint must use HTTPS.
-Supported optional S3 settings are provider, region, endpoint, location_constraint
-and acl. Use the existing reviewed configuration; this package does not generate,
+The optional `session_token` supports short-lived credentials. Other optional
+S3 settings are provider, region, endpoint, location_constraint and acl. Use the
+reviewed configuration; this package does not generate,
 print or prompt for keys. Ambient rclone, AWS and proxy environment overrides are
 removed from child processes. A validated config snapshot is kept only inside a
 private temporary directory during the run.
+
+### Cloudflare R2 setup for acceptance
+
+Create a dedicated private bucket for backups. Keep its development URL and
+custom domains disabled. Give the publisher and the separate recovery machine
+different credentials scoped to that bucket. Keep the configuration-management
+credentials separate from both machines. [Create a bucket](https://developers.cloudflare.com/r2/buckets/create-buckets/)
+and [configure access](https://developers.cloudflare.com/r2/api/tokens/).
+
+Use a fixed outer prefix for each retention class, such as `daily/`,
+`monthly/` and `final-sqlite/`. Put that prefix in the crypt remote's
+`remote=storage:BUCKET/PREFIX` setting so it remains visible to the bucket
+rules. The logical artifact names beneath it are encrypted. For the plan's
+retention, lock daily backups and binlogs for 30 days and the monthly backups
+and final SQLite copy for 12 months. Apply matching expiry rules at or after
+the corresponding lock periods. [Bucket locks](https://developers.cloudflare.com/r2/buckets/bucket-locks/)
+and [object lifecycles](https://developers.cloudflare.com/r2/buckets/object-lifecycles/).
+
+For the publisher, supply short-lived credentials with the list, read, write
+and multipart operations needed by the tested rclone release. Exclude object
+deletion and bucket management. The recovery config only needs independent
+read access and the separately held crypt material. Validate the actual
+permissions and expiry with synthetic artifacts before configuring recurring
+publication. Use a disposable synthetic key to prove an overwrite is refused
+by the lock and a delete is refused by the uploader's permissions. A separate
+recovery machine must read and decrypt the synthetic backup after the
+publication machine's copy is unavailable. [R2 temporary credentials](https://developers.cloudflare.com/r2/api/s3/temporary-credentials/)
+and [rclone session tokens](https://rclone.org/s3/#s3-session-token).
 
 ## Exact invocation
 

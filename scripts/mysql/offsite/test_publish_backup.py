@@ -185,6 +185,17 @@ class BackupTests(unittest.TestCase):
         with self.assertRaises(p.Refusal):
             p.validate_config(CONFIG, "encrypted", "storage:other-bucket/prefix")
 
+    def test_explicit_s3_session_token_supports_a_scoped_backup_account(self):
+        destination = "storage:example-bucket/repro-fixture"
+        config = CONFIG + b"session_token = fixture-scoped-token\n"
+        p.validate_config(config, "encrypted", destination)
+        for before, after in ((b"fixture-scoped-token", b""),
+                              (b"fixture-scoped-token", b"two words"),
+                              (b"access_key_id = fixture-only\n", b""),
+                              (b"env_auth = false", b"env_auth = true")):
+            with self.subTest(after=after), self.assertRaises(p.Refusal):
+                p.validate_config(config.replace(before, after), "encrypted", destination)
+
     def test_rclone_copy_is_immutable_and_environment_is_scrubbed(self):
         remote = p.Rclone(Path("/usr/bin/rclone"), Path("/private/rclone.conf"), 60)
         with patch.object(p.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, b"")) as run:
