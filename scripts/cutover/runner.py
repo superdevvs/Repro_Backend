@@ -134,6 +134,30 @@ class Evidence:
             raise UnsafeCutover("Required parity, smoke or off-site backup gate failed")
 
 
+@dataclass(frozen=True)
+class SchedulerDrain:
+    identity_sha256: str
+    boot_id: str
+    hold_id: str
+    admission_closed: bool
+    unresolved_permits: int
+
+    def require_verified(self, identity: Identity, current_boot: str) -> None:
+        try:
+            canonical = all(str(uuid.UUID(value)) == value for value in (self.boot_id, self.hold_id))
+        except (ValueError, TypeError, AttributeError):
+            canonical = False
+        if (
+            not canonical
+            or self.boot_id != current_boot
+            or self.identity_sha256 != digest(asdict(identity))
+            or self.admission_closed is not True
+            or type(self.unresolved_permits) is not int
+            or self.unresolved_permits != 0
+        ):
+            raise UnsafeCutover("Current scheduler hold and zero unresolved permits could not be verified")
+
+
 class Journal:
     """One operation at a time, using an OS lock and atomically replaced state."""
 
@@ -217,6 +241,9 @@ class Adapter(Protocol):
     def observe(self) -> Observation: ...
     def require_quiescent(self) -> None: ...
     def preflight_sha256(self) -> str: ...
+    def boot_id(self) -> str: ...
+    def hold_and_drain_scheduler(self, lease: Lease, deadline: int) -> SchedulerDrain: ...
+    def scheduler_drain(self) -> SchedulerDrain: ...
     def freeze(self, lease: Lease, deadline: int) -> None: ...
     def prepare(self, lease: Lease, deadline: int) -> None: ...
     def evidence(self) -> Evidence: ...
@@ -285,7 +312,9 @@ class Runner:
             expires = min(expires, state["started_at"] + self.DECISION_SECONDS)
         if state["pending"] is not None or expires <= now or now < state["last_observed_at"]:
             raise UnsafeCutover("No approval may be issued for the current journal state")
-        evidence = state["preflight_sha256"] if action == "freeze" else digest(state["evidence"])
+        evidence = state["preflight_sha256"] if action == "freeze" else digest({
+            "target": state["evidence"], "scheduler_drain": state.get("scheduler_drain"),
+        })
         return Approval(action, digest(state["identity"]), evidence, state["challenge"], expires)
 
     def approval_request(self, action: str) -> Approval:
@@ -320,7 +349,22 @@ class Runner:
         self._complete(state, after, phase)
         self.journal.write(state)
 
+    def _hold_scheduler(self, state: dict, lease: Lease, deadline: int) -> None:
+        observed = self.adapter.hold_and_drain_scheduler(lease, deadline)
+        observed.require_verified(self.identity, self.adapter.boot_id())
+        if self.clock() >= deadline:
+            raise UnsafeCutover("Scheduler drain did not complete in time")
+        state["scheduler_drain"] = asdict(observed)
+        self.journal.write(state)
+
+    def _verify_scheduler_hold(self, state: dict) -> None:
+        observed = self.adapter.scheduler_drain()
+        observed.require_verified(self.identity, self.adapter.boot_id())
+        if asdict(observed) != state.get("scheduler_drain"):
+            raise UnsafeCutover("Scheduler hold changed during cutover")
+
     def _publish_authority(self, state: dict, lease: Lease, engine: str, deadline: int) -> None:
+        self._verify_scheduler_hold(state)
         after = self.adapter.observe()
         if not after.sealed(engine) or int(self.clock()) >= deadline:
             raise UnsafeCutover("A sealed single-engine route could not be verified in time")
@@ -329,6 +373,7 @@ class Runner:
         # lease, publish the proof first, then commit exactly those journal bytes.
         # A crash between the two leaves a pending journal and no usable proof.
         self.adapter.publish_authority(lease, engine, self.journal.encode(state), deadline)
+        self._verify_scheduler_hold(state)
         if not self.adapter.observe().sealed(engine) or int(self.clock()) >= deadline:
             raise UnsafeCutover("The authority proof or admission seal could not be maintained in time")
         self.journal.write(state)
@@ -347,6 +392,7 @@ class Runner:
         self._intent(state, "abort", before, now)
         # Even a late watchdog must attempt recovery with a bounded fresh budget.
         rollback_deadline = max(state["started_at"] + self.WINDOW_SECONDS, now + 10 * 60)
+        self._hold_scheduler(state, lease, rollback_deadline)
         self.adapter.seal_sqlite(lease, rollback_deadline)
         self._publish_authority(state, lease, "sqlite", rollback_deadline)
 
@@ -420,9 +466,12 @@ class Runner:
         self._require_approval(state, "freeze", approval, now)
         state["started_at"] = now
         self._intent(state, "freeze", before, now, approval=asdict(approval))
-        self.adapter.freeze(lease, now + self.DECISION_SECONDS)
+        deadline = now + self.DECISION_SECONDS
+        self._hold_scheduler(state, lease, deadline)
+        self.adapter.freeze(lease, deadline)
+        self._verify_scheduler_hold(state)
         after = self.adapter.observe()
-        if not after.frozen() or not now <= self.clock() < now + self.DECISION_SECONDS:
+        if not after.frozen() or not now <= self.clock() < deadline:
             raise UnsafeCutover("Could not establish the source, target and deploy freeze in time")
         self._finish(state, after, "frozen")
 
@@ -430,9 +479,11 @@ class Runner:
         self._require_state(state, {"frozen"})
         if not before.frozen():
             raise UnsafeCutover("Writer freeze was lost")
+        self._verify_scheduler_hold(state)
         deadline = state["started_at"] + self.DECISION_SECONDS
         self._intent(state, "prepare", before, now)
         self.adapter.prepare(lease, deadline)
+        self._verify_scheduler_hold(state)
         after = self.adapter.observe()
         if self.clock() >= deadline or not after.frozen() or after.engine != "mysql":
             raise UnsafeCutover("Read-only MySQL verification did not complete under the freeze in time")
@@ -447,11 +498,13 @@ class Runner:
         self._require_approval(state, "promote", approval, now)
         if not before.frozen() or before.engine != "mysql":
             raise UnsafeCutover("Writer freeze or read-only target was lost")
+        self._verify_scheduler_hold(state)
         evidence = self.adapter.evidence()
         evidence.require_verified()
         if asdict(evidence) != state["evidence"]:
             raise UnsafeCutover("Verification evidence changed after approval")
         self._verify_identity()
+        self._verify_scheduler_hold(state)
         before = self.adapter.observe()
         if not before.frozen() or before.engine != "mysql":
             raise UnsafeCutover("Writer freeze or read-only target changed during verification")

@@ -1,7 +1,8 @@
 import tempfile
 import unittest
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
+from unittest.mock import patch
 
 from rehearse import FixtureAdapter
 from runner import Identity, Journal, Runner, UnsafeCutover
@@ -136,6 +137,60 @@ class CutoverTest(unittest.TestCase):
         self.assertTrue(state["pending"]["before"]["admissions_open"])
         self.assertTrue(self.adapter.observe().sqlite_live())
         self.assertEqual("sqlite_authoritative", self.new_runner().perform("abort")["phase"])
+
+    def test_scheduler_drain_blocks_snapshot_while_background_permit_remains(self):
+        self.freeze()
+        path = "fixture-scheduler-drain.json"
+        drained = self.adapter.scheduler_drain()
+        self.journal.write_record(path, asdict(replace(drained, unresolved_permits=1)))
+        with self.assertRaisesRegex(UnsafeCutover, "zero unresolved permits"):
+            self.runner.perform("prepare")
+        self.assertEqual("frozen", self.journal.read()["phase"])
+        self.assertEqual("sqlite", self.adapter.observe().engine)
+        with self.assertRaisesRegex(UnsafeCutover, "zero unresolved permits"):
+            self.runner.perform("abort")
+        self.assertEqual(0, self.adapter.sqlite_restores)
+        self.journal.write_record(path, asdict(drained))
+        self.assertEqual("sqlite_authoritative", self.new_runner().perform("abort")["phase"])
+
+    def test_scheduler_proof_binds_promotion_to_the_current_boot_and_hold(self):
+        self.ready()
+        approval = self.runner.approval_request("promote")
+        drained = self.adapter.scheduler_drain()
+        for changed in (
+            replace(drained, boot_id="104565fc-e301-46b2-a6a4-bd0ace01ab5e"),
+            replace(drained, hold_id="8fcf0bf4-906b-4610-b96b-ecbaa8087aae"),
+            replace(drained, identity_sha256="a" * 64),
+            replace(drained, admission_closed=False),
+        ):
+            self.journal.write_record("fixture-scheduler-drain.json", asdict(changed))
+            with self.assertRaisesRegex(UnsafeCutover, "[Ss]cheduler hold"):
+                self.runner.perform("promote", approval)
+            self.assertFalse(self.journal.read()["writes_possible"])
+            self.assertFalse(self.adapter.observe().mysql_writable)
+
+    def test_interrupted_scheduler_close_can_establish_drain_for_abort(self):
+        with patch.object(self.adapter, "hold_and_drain_scheduler", side_effect=SimulatedPowerLoss):
+            with self.assertRaises(SimulatedPowerLoss):
+                self.freeze()
+        self.assertNotIn("scheduler_drain", self.journal.read())
+        recovered = self.new_runner().perform("abort")
+        self.assertEqual("sqlite_authoritative", recovered["phase"])
+        self.assertEqual(0, recovered["scheduler_drain"]["unresolved_permits"])
+        self.assertTrue(self.adapter.observe().sealed("sqlite"))
+
+    def test_authority_is_held_if_scheduler_proof_changes_during_publication(self):
+        self.ready()
+        drained = self.adapter.scheduler_drain()
+
+        def change_hold():
+            changed = replace(drained, admission_closed=False)
+            self.journal.write_record("fixture-scheduler-drain.json", asdict(changed))
+
+        self.adapter.after_authority_publish = change_hold
+        with self.assertRaisesRegex(UnsafeCutover, "scheduler hold"):
+            self.runner.perform("promote", self.runner.approval_request("promote"))
+        self.assertEqual("recovery_required", self.journal.read()["phase"])
 
     def test_standby_cannot_reverse_while_old_import_child_is_active(self):
         self.adapter.after_freeze = self.crash

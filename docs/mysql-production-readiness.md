@@ -79,6 +79,20 @@ with zero mismatches. All other tables and the prior notification rows matched
 the baseline. These were data-recovery steps over two sessions. The timed
 application failback and provider checks remain open.
 
+A later full-size private drill completed the failure recovery on one clock,
+using a fresh isolated MySQL restore of the same retained copy. From the
+controlled MySQL crash it took 14.091 seconds to reach verified read-only
+mode, 128.898 seconds to export the new SQLite file, 207.601 seconds to finish
+independent field verification, and 208.469 seconds to stop MySQL cleanly.
+The recovery kept both acknowledged synthetic rows and excluded invalid,
+rolled-back and unacknowledged writes. It matched all 29,914,626 fields
+across 1,841,680 rows and 291 tables. The other 290 tables matched the
+baseline. The rehearsal removed its new sensitive scratch data. The receipt
+for release `fbfe24233423ebdb6fb1b505fce64d685e793e0e` has SHA-256
+`d363c0d93a65e808520845f111f374545e3772dec853cb04ecfa9fc7445ab021`.
+The clock ends with database verification and shutdown. Laravel reopening
+and provider reconciliation still need their application rehearsal.
+
 The separate managed MySQL 8.4.13 service on Maverick passed authenticated
 checks on the empty instance before and after a controlled restart. Both
 `www-data` and `maverick` initially received permission denied at the socket.
@@ -179,8 +193,26 @@ excluded the later row 5. Native replay and clean shutdown took 5.326 seconds
 for this small fixture. The local recovery containers, private volume and
 temporary Maverick credential files were removed.
 
-The rehearsal used synthetic records. Full-size recovery from R2, automatic
-off-host backups and retention controls remain acceptance gates.
+The full-size follow-up published **753,141,689 bytes** of synthetic data
+across seven artifacts to the private R2 rehearsal bucket. The encrypted
+upload and publisher read-back took 140.94 seconds. A separate read-only
+credential on Windows retrieved and verified the seven artifacts in 57.72
+seconds. The decoder verified three closed logs and both the chosen and later
+commit positions. A fresh network-isolated MySQL 8.4.13 process loaded the
+snapshot, replayed through the chosen commit, and stopped cleanly in 51.18
+seconds. All 79,168 generated payload rows and their indexes matched. The
+four expected witness rows remained and the later fifth row was excluded.
+The independent replay also regenerated each expected digest from the test
+seed. Its report SHA-256 is
+`24ebdbed04dec236290a54e44b92d817be8709a36fac99d9e2fe8874c62cbbbb`.
+
+Only generated data went to R2. The two credential configurations stayed in
+temporary memory-backed storage. The run removed the nine exact encrypted
+test objects, both credential configurations, the temporary source files and
+the independent recovery volumes. The rehearsal bucket's only lifecycle
+rule aborts unfinished multipart uploads after seven days. It has no bucket
+lock rules. Automatic backups, protected retention and off-host application
+recovery remain acceptance gates.
 
 The snapshot-age check accepted the retained synthetic R2 receipt and exact
 manifest at the 26-hour limit. It returned stale and a nonzero exit when the
@@ -318,6 +350,37 @@ authenticate an inventory of its captured receipts and flag multiple signed
 versions or voice events for review. The host admission wrappers and
 independently durable webhook capture and replay still need isolated
 integration proof before any production wiring.
+
+The exact deployment admission guard at release `91f6241429fc` also passed
+98 isolated Linux cases using its fixed protected paths and actual exclusive
+locks. It held deployments closed until the selected application engine and
+reconciliation were both verified, and rejected stale activation proofs.
+The guard, runner and readiness suites passed 53 checks on Maverick without
+starting its application or workers.
+
+A disposable Linux scheduler fixture reproduced a freeze gap. A background
+writer detached, closed the inherited lease descriptor and committed one
+SQLite row after the wrapper was killed and an operator acquired the exclusive
+lock. The proposed durable permit refused the transition, refused another
+launch while starts were closed, and allowed the transition only after the
+existing writer exited. The fixture exercised real Linux processes and the
+SQLite write. The systemd supervisor, permit retirement and Laravel scheduling
+still need integration proof together.
+
+The runner now requires a scheduler hold tied to the cutover identity and
+boot before it can freeze the databases, prepare or promote MySQL, or seal a
+SQLite rollback. The promotion approval binds the hold. A separate Linux
+run passed 57 runner, cross-process lock, fence and readiness checks,
+including a pending scheduler permit and a hold that changed during authority
+publication. The fixture supplies the hold from local state. The host still
+needs to supply it through the supervised scheduler.
+
+Maverick's user-level systemd fixture refused to start a scheduler writer
+because it could still see host network interfaces, its manager socket and a
+writable cgroup despite the requested restrictions. The trial confirmed socket
+creation was blocked and removed its transient units and directories. Use an
+isolated systemd VM or a separately reviewed privileged rehearsal scope for the
+remaining supervised drain and aborted-start checks.
 
 A separate disposable PHP process recovered and authenticated all eight
 synthetic acknowledged receipts from the second encrypted spool after the

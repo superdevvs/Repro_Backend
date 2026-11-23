@@ -10,7 +10,7 @@ from dataclasses import asdict, replace
 from pathlib import Path
 
 from fence import guard
-from runner import Approval, Evidence, Identity, Journal, Lease, Observation, Runner, UnsafeCutover, digest
+from runner import Approval, Evidence, Identity, Journal, Lease, Observation, Runner, SchedulerDrain, UnsafeCutover, digest
 
 
 class FixtureAdapter:
@@ -36,6 +36,24 @@ class FixtureAdapter:
 
     def preflight_sha256(self) -> str:
         return digest({"fixture": True, "identity": asdict(self._identity)})
+
+    def boot_id(self) -> str:
+        return self.BOOT_ID
+
+    def hold_and_drain_scheduler(self, lease: Lease, deadline: int) -> SchedulerDrain:
+        lease.require_current()
+        if (self.journal.directory / "fixture-scheduler-drain.json").exists():
+            return self.scheduler_drain()
+        observed = SchedulerDrain(digest(asdict(self._identity)), self.boot_id(), str(uuid.uuid4()), True, 0)
+        self.journal.write_record("fixture-scheduler-drain.json", asdict(observed))
+        return observed
+
+    def scheduler_drain(self) -> SchedulerDrain:
+        path = self.journal.directory / "fixture-scheduler-drain.json"
+        try:
+            return SchedulerDrain(**json.loads(path.read_text(encoding="utf-8")))
+        except (OSError, ValueError, TypeError) as error:
+            raise UnsafeCutover("Scheduler hold observation is unavailable") from error
 
     def _write(self, lease: Lease, state: Observation) -> None:
         lease.require_current()
