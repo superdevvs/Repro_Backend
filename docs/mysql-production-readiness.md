@@ -146,7 +146,7 @@ Both private instances stopped. A separate check confirmed the live app still
 used SQLite and the existing MySQL service had kept its original process
 invocation. This rehearsal used encrypted storage on Maverick. Acceptance still
 requires testing the designated off-host bucket, its retention controls and an
-independent recovery from that bucket.
+independent full-size recovery from that bucket.
 
 The stock MySQL 8.4.13 PITR backup command also produced a 737,159,499-byte
 compressed snapshot of the read-only copy. The backup took 44.04 seconds.
@@ -165,6 +165,22 @@ verified the same behavior. It checked actual event checksums, rotation
 pointers, and the selected commit position before replay. Recovery, validation
 and shutdown took 7.03 seconds in the second small fixture. Both drills used
 fresh isolated MySQL instances and cleaned up their raw fixture data.
+
+On November 23, an independent synthetic recovery passed against the actual
+private Cloudflare R2 rehearsal bucket. Maverick published a stock MySQL
+snapshot, three closed binary logs and their two metadata files. The publisher
+verified all six artifacts after upload. A raw R2 listing found eight stored
+objects, including the encrypted manifest and completion record, with encrypted
+names. The Windows recovery environment received only the publication receipt
+and used a separate bucket-scoped read-only key to download and verify all six
+artifacts. A fresh network-isolated MySQL 8.4.13 instance restored the snapshot
+and replayed three logs through the selected commit. It recovered rows 1–4 and
+excluded the later row 5. Native replay and clean shutdown took 5.326 seconds
+for this small fixture. The local recovery containers, private volume and
+temporary Maverick credential files were removed.
+
+The rehearsal used synthetic records. Full-size recovery from R2, automatic
+off-host backups and retention controls remain acceptance gates.
 
 The current SQLite backup producer and encrypted publication staging passed a
 separate fixture with a WAL writer open. The exported single file retained the
