@@ -76,6 +76,16 @@ is deterministic and resets at each phase. Route order resolves equal-weight tie
 and is part of the profile digest. Both measured phases must actually schedule
 every declared route, otherwise planning refuses the profile.
 
+The November 16–22 UTC calibration used the retained Nginx history with an
+exact Dashboard referer-host match and a checksum-pinned Laravel route catalog.
+It counted 507,362 GETs across 159 unambiguous route templates, with records on
+all seven dates. Across the full filtered sample, per-minute p95 was 137,
+p99 was 202, and the highest minute had 596 requests. The top-ten-route cohort
+measured 115, 165, and 325 requests per minute at those same points. Use the
+chosen cohort's rates and route weights together when preparing a synthetic
+profile. The source filter excludes some requests and compatibility still
+depends on reviewing the selected roles, routes and side effects.
+
 Each phase has exactly `name`, `duration_ms` (1–600000), and
 `arrival_rate_milli_rps` (1–1000000). A rate of 1000 means one request per second;
 rates are explicit review inputs, not inferred from prior results. Surge must be
@@ -171,7 +181,8 @@ fail the run. No averages across routes or rounds can hide a regression.
 This receipt reducer verifies structure, bindings, counts and arithmetic only.
 It cannot verify that requests ran, that counters were instrumented correctly,
 that FPM was isolated, or that an operator supplied authentic observations. The
-real executor, its supervising receipt and independent acceptance remain pending.
+executor, its supervising receipt and independent acceptance must provide that
+separate proof; this reducer cannot supply it.
 Do not translate these results directly into a cutover readiness receipt.
 
 ## First real transport executor
