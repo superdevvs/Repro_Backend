@@ -37,6 +37,7 @@ jobs:
           python3 -m unittest discover -s scripts/mysql
           python3 -m unittest discover -s scripts/mysql/native
           python3 -m unittest discover -s scripts/mysql/offsite
+          python3 -m unittest discover -s scripts/mysql/offsite/systemd
           python3 -m unittest discover -s scripts/mysql/workload
           python3 -m unittest discover -s scripts/cutover
           python3 -m unittest discover -s scripts/cutover/fence

@@ -18,6 +18,14 @@ For the fixture promotion path use `approval-template --phase promote` after `pr
 
 The journal binds the full release commit, release archive digest, source identity, expected configuration digest, target UUID and run ID. A second approval also binds the verified snapshot, readiness evidence, and the scheduler hold verified for this run and boot. The readiness evidence includes the backup proofs and starting binlog position. Each approval expires and has a challenge tied to the phase.
 
+Use `python3 -I -B scripts/cutover/final_backup_check.py --help` for the
+frozen-backup review inputs. Supply independently obtained receipt SHA-256
+pins for both published bases, their original manifests and producer receipts,
+the trusted freeze time and release SHA. Pin the exact closed SQLite artifact
+used for the import and the reviewed MySQL server UUID, database and starting
+binlog coordinate. A matching report verifies the document bindings. The
+operator and host adapter still need storage, restore and readiness evidence.
+
 One operator at a time holds the OS lock. The adapter must check its generation before every effect. The journal records the intent and observed state before each effect, and the verified result afterward. Linux state replacements sync the file and parent directory. On restart, an interrupted pre-write effect requires a verified retry of `abort` after its processes are drained. `tick` starts the same rollback at minute 45 if writes have not been enabled. The irreversible marker is saved and synced before the first opportunity for a MySQL business write. Any uncertain outcome after that marker requires recovery on the MySQL side.
 
 Promotion and pre-write abort first prepare a single writable database route while keeping all application writes, workers, scheduler and deploy admissions closed. Under the exclusive lease, the adapter attests those controls and publishes current-boot evidence matching the candidate authoritative journal bytes. The runner then durably commits those exact bytes and releases the lease. The guard requires both records. A failure before the commit leaves the pending journal in force, even if the proof was already published. A valid authoritative phase records permission for guarded reopening. The fixture `reopen` verifies that permission and records a separate live observation. Watchdog reads on a healthy planned or authoritative phase preserve the journal bytes and its current proof.

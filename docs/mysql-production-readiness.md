@@ -256,6 +256,15 @@ closed-binlog archival and live retention remain operational acceptance gates.
 The retention verifier tested local evidence for exact prefix, duration,
 provider refusals and unchanged content.
 
+The closed-binlog stager accepted two CRC-checked files from actual MySQL
+8.4.13 rotations and proved the next filename. It refused the current active
+log. The checkpoint advances only when the next expected file and the
+verified publication match. The frozen-base reviewer verified both publication chains
+against independently pinned SQLite snapshot and MySQL coordinate evidence
+in a local fixture. It rejected preflight-only evidence and reused backup
+IDs. The production collector and off-site destination still need their
+timed operational acceptance.
+
 The local cutover adapter froze a disposable SQLite Laravel state, copied
 four fixture tables into MySQL, verified read-only application access and
 refused promotion while the off-site backup gate was unsatisfied. Aborting
@@ -264,6 +273,8 @@ intervals were 613 ms from freeze to the MySQL smoke and 440 ms from abort
 to restored SQLite HTTP. This used a synthetic HTTP route and a one-shot
 worker. The full timed host rehearsals still need the real ingress,
 scheduler, writer inventory and representative load together.
+The same test on `08a6e4d855ec29f52c9a24945be888cf41e8d94c` took 587 ms
+through the target smoke and 350 ms from abort to the recovered HTTP read.
 
 In a separate isolated webhook trial, the actual capture adapter returned
 HTTP 503 while its intake lock was held and while replica verification was

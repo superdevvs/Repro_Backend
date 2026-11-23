@@ -328,6 +328,37 @@ its lag independently. Verify the protected destination, independent restores
 and alert delivery before relying on this schedule during cutover. See the
 [systemd unit and rehearsal instructions](systemd/README.md).
 
+### Stage closed MySQL logs for archival
+
+Supply protected copies of the already closed log files in a dedicated
+directory. Include a pinned `closed-binlogs.json` with
+`schema=repro.mysql.closed-binlogs.v1`, the original `source_uuid` and
+`server_id`, a UTC `sealed_at` timestamp, the rotated-to `next_file`, and
+ordered `segments` with `file`, `bytes` and `sha256`. Export and pin the
+inventory through the reviewed collector before preparing publication.
+
+```sh
+python3 -I -B /opt/repro-backup-tools/prepare_closed_binlogs.py \
+  --source /var/lib/repro-backup/closed-batch \
+  --inventory-sha256 REVIEWED_INVENTORY_SHA256 --expected-release REVIEWED_RELEASE \
+  --expected-identity REVIEWED_SERVER_UUID --expected-server-id REVIEWED_SERVER_ID \
+  --expected-first-file DURABLE_NEXT_FILE
+```
+
+Use the generated manifest with the stock publisher under database scope
+and identity `REVIEWED_SERVER_UUID.closed-binlogs`. Use
+`advance_binlog_checkpoint.py initialize` with the independently pinned
+base receipt to set the first file, and `check` to read the current anchor.
+Use `advance` after successful publication with the original inventory,
+the separately pinned staging manifest and the independently obtained
+publication receipt pin. It rejects discontinuities and accepts an exact
+retry of the latest successful advancement. See the command's `--help`
+for input paths and identity flags.
+
+The stager checks checksums and terminal rotations, including in the last
+file. Collection, rotation, invocation and lag monitoring belong to the
+scheduler that invokes these tools.
+
 ### Check rotated MySQL logs before replay
 
 Put the retrieved base producer receipt, the required closed log files, and
