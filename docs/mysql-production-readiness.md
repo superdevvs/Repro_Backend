@@ -38,6 +38,12 @@ and 62 from the candidate. Both fresh fixtures have 284 tables compared with
 291 in the copy. Rebuilding the fixtures with locked dependencies reproduced
 both schema fingerprints. The comparison queried schema metadata only.
 
+The archived MySQL import catalog and the original empty SQLite template agree
+on all **477 foreign-key relationships** across the 291 tables. The offline
+comparison checks child and parent column order and both referential actions.
+The full rehearsal still needs to test enforcement on new writes and preserve
+the exact historical exceptions. [Layout verifier](../scripts/mysql/verify-foreign-key-layout.py)
+
 The draft disposition covers all 62 records. It proposes keeping 19,
 using existing compatibility handling for 11, and collecting proof for 32.
 The base SQLite recovery template was built from the pinned copy and contains
@@ -132,6 +138,14 @@ does not invoke this component yet. Before enabling it, verify all Laravel and
 direct database write paths, the queue exception, retry and cache behavior,
 restore provisioning, and representative contention.
 
+A fixture-only integration exercised Laravel's actual transaction manager and
+the same native writer lock. The 40 combined native contract tests covered
+outer and nested transactions, deferred callbacks, pre-write retry, lock
+failures caught by a caller, and a lost commit acknowledgement. They verified
+that an uncertain commit cannot replay the callback. Cover autocommit writes,
+raw connections, queue and cache behavior before considering application
+registration.
+
 The refreshed read-only host inventory observed 12 queue workers. Three use
 Supervisor, one uses the media archives service, and eight appear under the
 cron service. PHP-FPM and nginx are active. The final rehearsal must verify
@@ -146,6 +160,12 @@ authenticate an inventory of its captured receipts and flag multiple signed
 versions or voice events for review. The host admission wrappers and
 independently durable webhook capture and replay still need isolated
 integration proof before any production wiring.
+
+A separate disposable PHP process recovered and authenticated all eight
+synthetic acknowledged receipts from the second encrypted spool after the
+source spool was removed. The dry-run projection recorded one SMS effect,
+one duplicate and six receipts requiring review. Missing, additional or
+altered receipts failed reconciliation.
 
 The data-only timing is one part of a dress rehearsal. Remaining acceptance
 requires the managed socket and log rotation checks, privileged cutover and
