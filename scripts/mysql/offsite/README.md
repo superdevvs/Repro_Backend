@@ -249,6 +249,31 @@ An artifact recovery receipt proves the downloaded bytes. Separately load the
 base backup into the isolated recovery instance, verify the recovery point
 and database results, and test decryption with the separately held key.
 
+### Check whether the latest published snapshot is fresh
+
+Run the local checker with the latest accepted publication receipt and its
+original input manifest. Supply the receipt hash from the verified publication
+job or an independently reviewed copy. An attempted upload has no success
+receipt. Keep the evidence files in protected Linux storage.
+
+```sh
+/usr/bin/python3 -I -B /opt/repro-backup-tools/check_backup_freshness.py \
+  --receipt /var/lib/repro-backups/evidence/latest-publication.json \
+  --receipt-sha256 REVIEWED_PUBLICATION_RECEIPT_SHA256 \
+  --manifest /var/lib/repro-backups/evidence/latest-input-manifest.json \
+  --scope database --expected-release APPROVED_FULL_COMMIT \
+  --expected-identity APPROVED_INSTANCE_ID --crypt-remote APPROVED_CRYPT_NAME
+```
+
+Exit zero means the accepted snapshot is younger than 26 hours. Exit one
+reports stale, missing or invalid evidence. The clock is local UTC and the
+age starts at the snapshot time recorded in the manifest. Reuploading an
+old snapshot leaves its age intact. An alternate positive limit can be set
+with `--max-age-seconds`. This checks evidence from completed publication.
+It makes no request to cloud storage. Use separate monitoring for binlog
+lag, retention and restore success. Configure the timer and alert destination
+only after reviewing those controls.
+
 ### Check rotated MySQL logs before replay
 
 Put the retrieved base producer receipt, the required closed log files, and

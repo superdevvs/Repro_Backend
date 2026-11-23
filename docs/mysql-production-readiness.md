@@ -182,6 +182,30 @@ temporary Maverick credential files were removed.
 The rehearsal used synthetic records. Full-size recovery from R2, automatic
 off-host backups and retention controls remain acceptance gates.
 
+The snapshot-age check accepted the retained synthetic R2 receipt and exact
+manifest at the 26-hour limit. It returned stale and a nonzero exit when the
+test applied a one-second limit to the same evidence. Both checks ran locally
+on Maverick, with no request to R2.
+
+Two isolated pre-write rollback trials set the Laravel configuration cache to
+an unavailable MySQL socket, then used the cutover journal and write fence to
+restore the saved SQLite cache. The fence denied both admission probes during
+authority publication. SQLite authority was restored in 332–340 ms and the
+first permitted fresh Laravel read succeeded in 472–489 ms. The SQLite file
+and saved configuration cache matched byte-for-byte, and one pending
+synthetic job was preserved in each trial. The timings cover the local rollback
+component from abort through the first admitted read. The host rehearsals
+still need to measure service and worker restart and reopening.
+
+An isolated post-write trial timed the sequence from disconnecting a pending
+synthetic writer through the first fresh Laravel read from the new SQLite file
+at 371 ms. It proved MySQL read-only before using the existing reverse exporter.
+The new file kept both acknowledged transactions, excluded the uncommitted
+job and accounting change, and matched all 34 independently compared field
+values across eight rows and four tables. Next IDs matched and SQLite foreign
+keys were enabled. The old SQLite file stayed byte-identical. This was a small
+synthetic trial. The timed full-size host failback remains open.
+
 The current SQLite backup producer and encrypted publication staging passed a
 separate fixture with a WAL writer open. The exported single file retained the
 committed row and excluded the uncommitted row. The source database and WAL
