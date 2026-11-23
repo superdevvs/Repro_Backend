@@ -178,6 +178,17 @@ across the measured groups. Wider route and workflow coverage and production
 capacity checks remain open. The [workload report](../scripts/mysql/workload/HTTP-COMPARISON.md)
 records the comparisons and the verified cleanup.
 
+The native upload-acknowledgement run completed 224 matched GETs on the
+server copies. The assigned photographer and staff could read the completed
+batch. The client and unassigned photographer received 403. Separate
+provider-disabled workflow regressions passed 14 cases and 114 assertions
+per engine for upload retries, booking permissions and overlap protection,
+and invoice report totals. Those regressions ran on fresh synthetic
+databases. An independent SELECT-only check against the post-rehearsal
+MySQL copy also matched 170,534 selected financial fields across 24,465
+invoice, invoice-item, payment, allocation and refund rows against the
+closed SQLite baseline.
+
 The initial single-writer rule has a separately tested MySQL component.
 Its lock row lives in a proposed control schema so the application snapshot
 still compares exactly. On MySQL 8.4.13, 23 tests checked the scoped grants,

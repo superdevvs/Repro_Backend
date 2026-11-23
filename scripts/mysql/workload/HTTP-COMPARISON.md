@@ -494,6 +494,17 @@ SHA-256 is
 The Linux runner offers this route as a separate `--media-fixture` smoke
 test. Its supervisor must provision the two additional seed-table grants.
 
+The native upload-summary smoke on the copied dataset completed all 224
+scheduled requests with identical responses. All 20 denial probes and four
+untimed staff reads passed. The assigned photographer saw only the complete
+two-file batch, and the client and unassigned photographer received 403.
+The app checked that the seeded upload records stayed unchanged in both
+engines. After clean shutdown, an independent SQLite comparison confirmed
+127,672 pre-existing rows across 22 selected tables, including the
+historical upload ledger, still matched the baseline. The temporary
+unit and runtime directory were removed. The native report SHA-256 is
+`032aa857e0c081c522ef8567f52894e67406b57da3ac1b42ff38c3c4e08afd67`.
+
 Voice p95 from scheduled arrival was 476 vs 408 ms (SQLite vs MySQL) at peak
 in the first round, and 383 vs 433 ms at peak in the second. At surge it was
 1,880 vs 3,163 ms and 1,782 vs 2,439 ms, respectively. Time spent waiting for the
