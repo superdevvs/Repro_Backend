@@ -4,7 +4,6 @@ import json
 import os
 from pathlib import Path
 import tempfile
-import time
 import unittest
 from unittest.mock import patch
 import uuid
@@ -98,7 +97,7 @@ class ScheduledBackupTests(unittest.TestCase):
     def test_overlap_is_refused_and_abandoned_running_attempt_alerts(self):
         with patch.object(scheduled, "execute", side_effect=self.accepted):
             scheduled.run(self.plan, self.pin)
-        record = self.read() | {"status": "running", "started_at": int(time.time())}
+        record = self.read() | {"status": "running", "started_at": int(self.clock.timestamp())}
         scheduled.write_state(self.directory, record)
         with (self.directory / "scheduler.lock").open("rb") as held:
             fcntl.flock(held, fcntl.LOCK_EX)
