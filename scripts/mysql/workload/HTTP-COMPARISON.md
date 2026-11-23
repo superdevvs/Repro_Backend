@@ -280,7 +280,7 @@ telemetry changes the workload and must be recorded in the pinned profile; it
 cannot support a claim of production-equivalent timing. The network-isolated
 client does not by itself isolate a separately running server.
 
-The current tests use an inert, same-UID Unix HTTP server with synthetic JSON and
+The executor unit tests use an inert, same-UID Unix HTTP server with synthetic JSON and
 zero actual database queries. They exercise the guarded CLI for both target labels,
 two rounds each, real timing, response parity, protected output and receipt
 assembly, plus peer/socket, framing, deadline and metric failures. No Laravel,
@@ -297,3 +297,100 @@ namespace. The local acceptance run uses the already installed, pinned Python
 a read-only root filesystem and bounded tmpfs. A second small network-disabled
 container supplies the observed namespace baseline; both are removed afterward.
 Windows-only results deliberately skip the Linux proof.
+
+## Local real Laravel and PHP-FPM fixture
+
+`run-local-http-fixture.ps1` now provides a separate first application proof. It
+archives the candidate commit, refuses staged/unstaged/untracked application
+changes, verifies a supplied locked dependency archive against `composer.lock`,
+and starts only pre-existing pinned MySQL 8.4.13 and PHP 8.3 images. It uses two
+network-disabled, nonroot containers with no capabilities or new privileges,
+read-only roots, bounded memory/CPU/tmpfs, and a private Unix database socket.
+It does not use production data, environment files, credentials or providers.
+
+```powershell
+pwsh -NoProfile -File scripts/mysql/workload/run-local-http-fixture.ps1 `
+  -LockedVendorArchive C:\private\locked-vendor.tar.gz `
+  -EvidenceDirectory C:\private\new-http-fixture-evidence
+```
+
+The evidence directory must not exist. Docker must already be available with the
+two image digests named in the launcher; it never pulls images. The dependency
+archive must be readable by fixture UID 1000 and contain the exact locked
+production dependencies. No customer files may be supplied. The launcher creates
+unique labelled resources and removes its exact containers/socket volume in
+`finally`, verifies their absence, and fails if cleanup cannot be confirmed. A
+terminated host process still requires an ownership-scoped cleanup. Dependency
+archive entries are confined to `vendor/` and cannot replace application code,
+the lockfile or bootstrap files; links, traversal and environment files are refused.
+
+`laravel_http_fixture.py` builds fresh schemas using the candidate's normal
+migrations, seeds two synthetic clients and distinct notification read states,
+and drives the unchanged `http_execute.py` over a fixed Unix HTTP-to-FastCGI
+bridge. `laravel-http-fixture.php` wraps the actual HTTP kernel and invokes the
+existing `GET /api/notifications` route through its normal Sanctum authentication
+and middleware. It registers no replacement route, provider, auth service or
+clock. Every round first proves an invalid token receives 401; valid responses
+must contain each owner's expected read state and the expected response shape,
+including an activity array, so a caught-error fallback is rejected.
+
+The fixed profile is deliberately small and synthetic: two equally weighted
+owners, one second each at 2, 4 and 8 arrivals/second, and at most two requests in
+flight. It makes 14 valid GETs per engine/round, runs SQLite then MySQL and then
+MySQL then SQLite on fresh fixtures, and compares every response field with the
+existing exact numeric-lexeme-preserving hash. Its fixed logical-time value is
+seed/reference metadata only: the application clock runs normally, and the
+report explicitly says `fixed_clock_applied: false`. No production traffic mix
+or copied-data timing acceptance is implied.
+
+The private evidence directory retains the four credential-free round fragments,
+two assembled receipts, profile and schedule. `result.json` binds the fragment and
+receipt hashes; `supervisor.json` records the launcher/helper/image pins and limits.
+No HTTP response bodies, auth headers or credentials are retained. Re-run the
+existing `http_profile.py compare` against these receipts for independent
+arithmetic/parity checking. `cleanup.json` records the exact-resource cleanup
+check separately from the request result.
+
+The dependency boundary tests run without a database on Linux:
+
+```text
+python -B -m unittest discover -s scripts/mysql/workload -p test_laravel_http_fixture.py -v
+```
+
+Application query logging measures the default connection during `handle` and
+`terminate`; bootstrap/setup queries and raw transaction-control statements are
+outside that count. A separate narrowly granted MySQL monitor connection reads
+the application's `performance_schema` thread history without changing the
+application PDO's warning/result state. The fixture rejects a wrapped history
+boundary and proves the observer detects a deliberate synthetic warning before
+requests. SQLite has no equivalent SQL warning channel. Both observers add
+overhead, and the report identifies their scope.
+
+Telemetry remains enabled. Every round verifies 14 persisted request traces,
+two sessions, preserved owner read states, no system error events and no queued
+jobs/messages/calls; its 14 broadcasts use the normal local `log` driver. Thus
+these GETs do exercise contained writes. The fixture starts no queue worker or
+scheduler. `APP_ENV=testing`, array cache/session, log broadcasting, tmpfs,
+disabled opcache and the small two-child FPM pool differ from production. The
+wrapper sends the response after `terminate`, so measured time includes
+termination, instrumentation, FPM bootstrap and the Unix bridge. Production
+nginx/FPM response-release timing is not reproduced.
+
+The 2026-11-23 local run against candidate
+`59e58e8349fd856984fb6e5ac5592535dc182328` passed all 56 authenticated GETs
+(48 measured, eight warmup) and four 401 probes with zero request errors,
+observed database warnings or paired response mismatches. The database remained
+running without an OOM flag until cleanup; independent labelled inventories
+then found no owned containers or volumes. Its `result.json` SHA-256 is
+`354d5cb4f923e6ca92c53ed21723242cb1dde4cfb99b2a339ebf376cf662ba82`.
+The six saved fragment/receipt hashes were checked, and a separate invocation of
+the comparison CLI reproduced the saved comparison exactly. Four focused Linux
+tests also passed the dependency archive boundary checks.
+
+This proves the first real application HTTP slice and its measuring path. It
+does not establish production speed, capacity, full role/route coverage,
+copied-data behavior, external delivery, queue-worker behavior or cutover
+readiness. The report retains `production_readiness: false`; the generic receipt
+reducer's execution-attestation fields remain false because it cannot independently
+verify the supervisor's evidence. Review the separate supervisor and fixture
+checks together with the comparison rather than promoting the reducer alone.

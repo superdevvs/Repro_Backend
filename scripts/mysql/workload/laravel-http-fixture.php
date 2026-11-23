@@ -1,0 +1,237 @@
+<?php
+
+declare(strict_types=1);
+
+// Private synthetic fixture entrypoint. It loads the unmodified application
+// kernel, routes and middleware. No route/auth/container/time substitutions.
+ini_set('display_errors', '0');
+ini_set('log_errors', PHP_SAPI === 'cli' ? '0' : '1');
+$phase = 'input';
+
+function fixtureNeed(bool $ok, string $reason): void
+{
+    if (!$ok) throw new RuntimeException($reason);
+}
+
+function fixturePdo(array $config, string $account = 'database'): PDO
+{
+    if ($config['engine'] === 'sqlite') {
+        $pdo = new PDO('sqlite:'.$config['sqlite'], null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+        $pdo->exec('PRAGMA foreign_keys=ON');
+        $pdo->exec('PRAGMA busy_timeout=5000');
+        return $pdo;
+    }
+    $credential = $config[$account];
+    $database = $account === 'monitor' ? 'performance_schema' : 'repro_http_fixture';
+    return new PDO('mysql:unix_socket=/db/mysql.sock;dbname='.$database.';charset=utf8mb4',
+        $credential['username'], $credential['password'], [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_EMULATE_PREPARES => false]);
+}
+
+function fixtureIdentity(PDO $pdo, array $config): void
+{
+    if ($config['engine'] === 'mysql') {
+        $row = $pdo->query('SELECT @@server_uuid uuid,VERSION() version,@@skip_networking isolated,@@innodb_flush_log_at_trx_commit durable,@@sync_binlog binlog,@@foreign_key_checks fk,CURRENT_USER() principal')->fetch(PDO::FETCH_ASSOC);
+        fixtureNeed($row['uuid'] === $config['uuid'] && $row['version'] === '8.4.13'
+            && (int)$row['isolated'] === 1 && (int)$row['durable'] === 1 && (int)$row['binlog'] === 1
+            && (int)$row['fk'] === 1 && $row['principal'] === $config['database']['username'].'@localhost', 'database-identity');
+    } else {
+        fixtureNeed($pdo->query('PRAGMA journal_mode')->fetchColumn() === 'wal'
+            && (int)$pdo->query('PRAGMA synchronous')->fetchColumn() === 2
+            && (int)$pdo->query('PRAGMA foreign_keys')->fetchColumn() === 1, 'sqlite-durability');
+    }
+}
+
+function fixtureHistory(PDO $monitor, int $thread, int $after = 0): array
+{
+    $statement = $monitor->prepare('SELECT COALESCE(SUM(EVENT_ID > ?),0) entries,COALESCE(SUM(CASE WHEN EVENT_ID > ? THEN WARNINGS ELSE 0 END),0) warnings,COALESCE(SUM(CASE WHEN EVENT_ID > ? THEN ERRORS ELSE 0 END),0) errors,COALESCE(MAX(EVENT_ID),0) last_event,COALESCE(SUM(EVENT_ID = ?),0) boundary_present FROM performance_schema.events_statements_history WHERE THREAD_ID=?');
+    $statement->execute([$after, $after, $after, $after, $thread]);
+    return $statement->fetch(PDO::FETCH_ASSOC);
+}
+
+try {
+    $cli = PHP_SAPI === 'cli';
+    $mode = $cli ? ($argv[1] ?? '') : 'http';
+    fixtureNeed(in_array($mode, ['migrate', 'reset', 'seed', 'verify', 'warning-probe', 'http'], true), 'fixture-mode');
+    if ($cli) {
+        $raw = stream_get_contents(STDIN, 65537);
+    } else {
+        $path = getenv('REPRO_HTTP_CONFIG');
+        fixtureNeed(is_string($path) && preg_match('~\A/runs/round-[1-2]-(sqlite|mysql)/app-config.json\z~', $path) === 1
+            && !is_link($path) && (fileperms($path) & 0777) === 0600, 'protected-fixture-config');
+        $raw = file_get_contents($path);
+    }
+    fixtureNeed(is_string($raw) && strlen($raw) <= 65536, 'fixture-input-budget');
+    $config = json_decode($raw, true, 32, JSON_THROW_ON_ERROR);
+    unset($raw);
+    fixtureNeed(($config['scope'] ?? null) === 'synthetic-laravel-http-v1'
+        && in_array($config['engine'] ?? null, ['sqlite', 'mysql'], true)
+        && is_dir('/workspace') && !file_exists('/workspace/.env')
+        && !file_exists('/workspace/bootstrap/cache/config.php'), 'private-application-required');
+    fixtureNeed(preg_match('~\A/runs/[a-z0-9-]+\z~', $config['runtime']) === 1
+        && preg_match('~\A/runs/[a-z0-9-]+/database.sqlite\z~', $config['sqlite']) === 1, 'private-runtime-paths');
+    fixtureNeed(posix_geteuid() !== 0 && getenv('APP_ENV') === 'testing', 'unprivileged-testing-process');
+    fixtureNeed(preg_match('/\Anet:\[[0-9]+\]\z/', (string)getenv('REPRO_HTTP_PARENT_NET')) === 1
+        && readlink('/proc/self/ns/net') !== getenv('REPRO_HTTP_PARENT_NET')
+        && count(file('/proc/net/route', FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES)) <= 1, 'private-network-required');
+    $environment = [
+        'DB_CONNECTION' => $config['engine'], 'DB_DATABASE' => $config['engine'] === 'sqlite' ? $config['sqlite'] : 'repro_http_fixture',
+        'DB_SOCKET' => '/db/mysql.sock', 'DB_USERNAME' => $config['database']['username'], 'DB_PASSWORD' => $config['database']['password'],
+        'DB_COLLATION' => 'utf8mb4_0900_bin', 'DB_JOURNAL_MODE' => 'WAL', 'DB_SYNCHRONOUS' => 'FULL', 'DB_BUSY_TIMEOUT' => '5000',
+        'DB_FOREIGN_KEYS' => 'true', 'APP_KEY' => $config['app_key'], 'APP_URL' => 'http://repro-http-workload.invalid',
+        'CACHE_STORE' => 'array', 'SESSION_DRIVER' => 'array', 'MAIL_MAILER' => 'array', 'QUEUE_CONNECTION' => 'database',
+        'BROADCAST_DRIVER' => 'log', 'FILESYSTEM_DISK' => 'local', 'LOG_CHANNEL' => 'single', 'LOG_LEVEL' => 'debug',
+        'SERVER_MONITOR_ENABLED' => 'false', 'CLAMAV_SCAN_ON_UPLOAD' => 'false', 'APP_DEBUG' => 'false',
+    ];
+    foreach (['CONFIG', 'SERVICES', 'PACKAGES', 'ROUTES', 'EVENTS'] as $name) {
+        $environment['APP_'.$name.'_CACHE'] = $config['runtime'].'/cache/'.strtolower($name).'.php';
+    }
+    foreach ($environment as $name => $value) { putenv($name.'='.$value); $_ENV[$name] = $_SERVER[$name] = $value; }
+    unset($environment);
+    require '/workspace/vendor/autoload.php';
+    $app = require '/workspace/bootstrap/app.php';
+    $app->useStoragePath($config['runtime'].'/storage');
+
+    if ($mode === 'reset') {
+        $phase = 'owned-fixture-reset';
+        fixtureNeed($config['engine'] === 'mysql', 'mysql-reset-only');
+        $pdo = fixturePdo($config);
+        fixtureIdentity($pdo, $config);
+        fixtureNeed($pdo->query('SELECT token FROM _repro_http_fixture_owner')->fetchColumn() === $config['owner_token'], 'fixture-ownership-required');
+        $pdo->exec('DROP DATABASE repro_http_fixture');
+        $pdo->exec('CREATE DATABASE repro_http_fixture CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin');
+        echo json_encode(['result' => 'owned-fixture-reset']);
+        exit;
+    }
+
+    if ($mode === 'migrate') {
+        $phase = 'fresh-schema';
+        $pdo = fixturePdo($config);
+        $count = $config['engine'] === 'sqlite'
+            ? $pdo->query("SELECT COUNT(*) FROM sqlite_master WHERE type='table'")->fetchColumn()
+            : $pdo->query("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='repro_http_fixture'")->fetchColumn();
+        fixtureNeed((int)$count === 0, 'empty-fixture-database-required');
+        $kernel = $app->make(Illuminate\Contracts\Console\Kernel::class);
+        fixtureNeed($kernel->call('migrate', ['--force' => true, '--no-interaction' => true]) === 0, 'fixture-migrations-failed');
+        echo json_encode(['result' => 'migrated', 'engine' => $config['engine']]);
+        exit;
+    }
+
+    if ($mode === 'seed' || $mode === 'verify' || $mode === 'warning-probe') {
+        $phase = $mode;
+        $pdo = fixturePdo($config);
+        fixtureIdentity($pdo, $config);
+        if ($mode === 'seed') {
+            fixtureNeed((int)$pdo->query('SELECT COUNT(*) FROM users')->fetchColumn() === 0, 'empty-users-required');
+            $pdo->exec('CREATE TABLE _repro_http_fixture_owner(token VARCHAR(64) NOT NULL)');
+            $pdo->prepare('INSERT INTO _repro_http_fixture_owner(token) VALUES(?)')->execute([$config['owner_token']]);
+            foreach ([1, 2] as $id) {
+                $stamp = '2026-01-01 00:00:00';
+                $statement = $pdo->prepare('INSERT INTO users(id,name,username,email,password,role,email_verified_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)');
+                $statement->execute([$id, 'Synthetic HTTP '.$id, 'synthetic-http-'.$id, 'http-'.$id.'@example.invalid', $config['password_hash'], 'client', $stamp, $stamp, $stamp]);
+                $statement = $pdo->prepare('INSERT INTO personal_access_tokens(id,tokenable_type,tokenable_id,name,token,abilities,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)');
+                $statement->execute([$id, 'App\\Models\\User', $id, 'synthetic-http', hash('sha256', $config['tokens'][(string)$id]), '["*"]', $stamp, $stamp]);
+                $statement = $pdo->prepare('INSERT INTO notification_read_states(user_id,context,last_seen_at,read_ids,created_at,updated_at) VALUES(?,?,?,?,?,?)');
+                $statement->execute([$id, 'client', 1793491200000 + $id, json_encode(['synthetic-owner-'.$id => 1793491200000 + $id]), $stamp, $stamp]);
+            }
+            echo json_encode(['result' => 'seeded', 'users' => 2]);
+        } elseif ($mode === 'warning-probe') {
+            fixtureNeed($config['engine'] === 'mysql', 'mysql-warning-probe-required');
+            $monitor = fixturePdo($config, 'monitor');
+            $connection = (int)$pdo->query('SELECT CONNECTION_ID()')->fetchColumn();
+            $thread = (int)$monitor->query('SELECT THREAD_ID FROM performance_schema.threads WHERE PROCESSLIST_ID='.$connection)->fetchColumn();
+            $before = (int)fixtureHistory($monitor, $thread)['last_event'];
+            $pdo->query("SELECT CAST('synthetic-invalid-number' AS UNSIGNED)")->fetchColumn();
+            $after = fixtureHistory($monitor, $thread, $before);
+            fixtureNeed((int)$after['warnings'] === 1 && (int)$after['errors'] === 0
+                && (int)$after['boundary_present'] === 1, 'warning-observation-failed');
+            echo json_encode(['result' => 'warning-detected', 'warnings' => 1]);
+        } else {
+            $counts = [];
+            foreach (['users', 'notification_read_states', 'system_overview_request_traces', 'system_overview_sessions', 'system_overview_error_events', 'jobs', 'messages', 'voice_calls'] as $table) {
+                $counts[$table] = (int)$pdo->query('SELECT COUNT(*) FROM '.$table)->fetchColumn();
+            }
+            $rows = $pdo->query('SELECT user_id,context,last_seen_at,read_ids FROM notification_read_states ORDER BY user_id')->fetchAll(PDO::FETCH_ASSOC);
+            foreach ($rows as $row) {
+                $id = (int)$row['user_id'];
+                fixtureNeed($row['context'] === 'client' && (int)$row['last_seen_at'] === 1793491200000 + $id
+                    && json_decode($row['read_ids'], true) === ['synthetic-owner-'.$id => 1793491200000 + $id], 'persisted-owner-state-mismatch');
+            }
+            echo json_encode(['result' => 'verified', 'engine' => $config['engine'], 'counts' => $counts, 'owner_state_preserved' => count($rows) === 2]);
+        }
+        exit;
+    }
+
+    $phase = 'http-bootstrap';
+    $kernel = $app->make(Illuminate\Contracts\Http\Kernel::class);
+    $kernel->bootstrap();
+    $db = $app['db']->connection();
+    $pdo = $db->getPdo();
+    fixtureIdentity($pdo, $config);
+    $monitor = null;
+    $thread = $before = 0;
+    if ($config['engine'] === 'mysql') {
+        $monitor = fixturePdo($config, 'monitor');
+        $connection = (int)$pdo->query('SELECT CONNECTION_ID()')->fetchColumn();
+        $thread = (int)$monitor->query('SELECT THREAD_ID FROM performance_schema.threads WHERE PROCESSLIST_ID='.$connection)->fetchColumn();
+        fixtureNeed($thread > 0, 'instrumented-thread-required');
+        $before = (int)fixtureHistory($monitor, $thread)['last_event'];
+    }
+    $db->flushQueryLog();
+    $db->enableQueryLog();
+    $phase = 'real-http-kernel';
+    $request = Illuminate\Http\Request::capture();
+    fixtureNeed($request->getMethod() === 'GET' && $request->path() === 'api/notifications', 'fixed-fixture-route');
+    foreach ($config['http_contract'] as $name => $expected) {
+        fixtureNeed($request->header('X-Repro-'.$name) === (string)$expected, 'fixed-http-contract');
+    }
+    $response = $kernel->handle($request);
+    $kernel->terminate($request, $response);
+    $queries = count($db->getQueryLog());
+    $db->disableQueryLog();
+    $warnings = 0;
+    if ($monitor) {
+        $history = fixtureHistory($monitor, $thread, $before);
+        fixtureNeed((int)$history['entries'] >= $queries && (int)$history['boundary_present'] === 1
+            && (int)$history['errors'] === 0, 'request-history-incomplete-or-errors');
+        $warnings = (int)$history['warnings'];
+    }
+    fixtureNeed($queries > 0, 'request-query-instrumentation-required');
+    $phase = 'response-validity';
+    if ($response->getStatusCode() === 200) {
+        $id = (int)$request->user()?->id;
+        $data = json_decode($response->getContent(), true, 64, JSON_THROW_ON_ERROR)['data'] ?? null;
+        fixtureNeed(in_array($id, [1, 2], true) && is_array($data) && isset($data['read_state'])
+            && $data['user_role'] === 'client' && $data['read_state']['lastSeenAt'] === 1793491200000 + $id
+            && $data['read_state']['readIds'] === ['synthetic-owner-'.$id => 1793491200000 + $id]
+            && is_array($data['activity_log']) && isset($data['unread_counts']['total']), 'real-response-or-owner-check');
+        fixtureNeed($request->route()?->getController() instanceof App\Http\Controllers\API\DashboardController
+            && $request->route()->getActionMethod() === 'notifications', 'normal-controller-required');
+        $middleware = $app['router']->gatherRouteMiddleware($request->route());
+        fixtureNeed(in_array(Illuminate\Auth\Middleware\Authenticate::class.':sanctum', $middleware, true), 'normal-auth-middleware-required');
+    } else {
+        fixtureNeed($response->getStatusCode() === 401, 'unexpected-route-failure');
+    }
+    foreach (['run-token', 'request-nonce', 'profile-sha256', 'schedule-sha256', 'sequence', 'round'] as $name) {
+        $value = $request->header('X-Repro-'.$name);
+        fixtureNeed(is_string($value) && preg_match('/\A[a-z0-9-]{1,128}\z/', $value) === 1, 'request-metric-binding');
+        $response->headers->set('X-Repro-'.$name, $value);
+    }
+    $response->headers->set('X-Repro-Engine', $config['engine']);
+    $response->headers->set('X-Repro-Database-Identity', $config['engine'] === 'mysql' ? $config['uuid'] : $config['sqlite_source_sha256']);
+    $response->headers->set('X-Repro-Server-Kind', 'reviewed-http-instrumentation');
+    $response->headers->set('X-Repro-Query-Count', (string)$queries);
+    $response->headers->set('X-Repro-Database-Warning-Count', (string)$warnings);
+    $response->send();
+} catch (Throwable $error) {
+    $safe = ['result' => 'refused', 'phase' => $phase, 'class' => $error::class,
+        'source' => basename($error->getFile()), 'line' => $error->getLine(), 'code' => (string)$error->getCode()];
+    if (get_class($error) === RuntimeException::class && preg_match('/\A[a-z-]{1,80}\z/', $error->getMessage())) $safe['reason'] = $error->getMessage();
+    if ($error instanceof Symfony\Component\Process\Exception\ProcessFailedException) {
+        $safe['client_exit'] = $error->getProcess()->getExitCode();
+        preg_match_all('/ERROR ([0-9]{4})(?: \(([A-Z0-9]+)\))?(?: at line ([0-9]+))?/', $error->getProcess()->getErrorOutput(), $matches, PREG_SET_ORDER);
+        $safe['client_errors'] = array_map(static fn ($match) => array_slice($match, 1), $matches);
+    }
+    if (PHP_SAPI !== 'cli') { http_response_code(500); header('Content-Type: application/json'); }
+    echo json_encode($safe);
+    if (PHP_SAPI === 'cli') exit(1);
+}
