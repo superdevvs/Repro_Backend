@@ -211,8 +211,28 @@ temporary memory-backed storage. The run removed the nine exact encrypted
 test objects, both credential configurations, the temporary source files and
 the independent recovery volumes. The rehearsal bucket's only lifecycle
 rule aborts unfinished multipart uploads after seven days. It has no bucket
-lock rules. Automatic backups, protected retention and off-host application
-recovery remain acceptance gates.
+lock rules. Automatic backups and protected retention remain acceptance gates.
+
+A separate off-site application rehearsal published **13,512,184 bytes**
+from draft release `1683dfaa6e503a201f61158857b42c48d533b907`. The
+application-scope kit contained 1,759 allowlisted Git source files, locked
+production dependencies and a wrapped synthetic Laravel key. Historical seed
+records, files with address-bearing examples or history, cached configuration
+and the live application key were outside the archive. The synthetic wrapping
+key stayed in separate local custody.
+
+The encrypted upload and read-back took 21.33 seconds. The independent
+read-only recovery took 8.23 seconds to fetch and verify the three artifacts.
+A fresh offline container used only those recovered artifacts and the
+separately held wrapping key. It booted Laravel 12.71.0, decrypted the
+synthetic stored value and rejected the wrong wrapping key in 3.73 seconds.
+The restore report SHA-256 is
+`616eaf5fef544430d60f55c29cdf4917ab23a4327711a14220015cf83fe00b5b`.
+All five encrypted test objects, temporary payloads, credential
+configurations, the synthetic escrow and the recovery volumes were removed.
+This verifies boot and key recovery for the allowlisted rehearsal package.
+The full production recovery kit and its protected key custody still require
+operational acceptance.
 
 The snapshot-age check accepted the retained synthetic R2 receipt and exact
 manifest at the 26-hour limit. It returned stale and a nonzero exit when the
