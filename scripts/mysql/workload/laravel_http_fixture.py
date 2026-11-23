@@ -39,6 +39,8 @@ VOICE_OFFERS = '/api/voice/incoming-offers'
 ACTORS = {'owner-1': (1, NOTIFICATIONS, 1), 'owner-2': (2, NOTIFICATIONS, 1),
           'voice-operator': (3, VOICE_OFFERS, 6)}
 INVALID_BEARER = 'Bearer repro-fixture-' + 'x' * 32
+COPY_ACTOR_BASE = 2_000_000_000
+TOOLS = Path(__file__).resolve().parent
 
 
 def request_actor(authorization, tokens):
@@ -63,15 +65,20 @@ def private_json(path, value):
         stream.write(contract.canonical(value))
 
 
-def environment(baseline):
-    return {'PATH': '/usr/local/bin:/usr/bin:/bin', 'HOME': '/runs', 'TMPDIR': '/tmp', 'LANG': 'C.UTF-8',
-            'APP_ENV': 'testing', 'REPRO_HTTP_PARENT_NET': baseline, 'TZ': 'UTC'}
+def environment(baseline, root=None):
+    env = {'PATH': '/usr/local/bin:/usr/bin:/bin', 'HOME': str((root or Path('/')) / 'runs'),
+           'TMPDIR': '/tmp', 'LANG': 'C.UTF-8', 'APP_ENV': 'testing', 'REPRO_HTTP_PARENT_NET': baseline, 'TZ': 'UTC'}
+    if root is not None:
+        env['REPRO_HTTP_ROOT'] = str(root)
+    return env
 
 
 def php(mode, config, env):
-    child = subprocess.run(['/usr/local/bin/php', '-d', 'memory_limit=384M', '-d', 'display_errors=0',
-                            '/fixture-tools/laravel-http-fixture.php', mode], input=contract.canonical(config),
-                           env=env, cwd='/workspace', capture_output=True, timeout=180)
+    root = Path(env.get('REPRO_HTTP_ROOT', '/'))
+    php_binary = '/usr/bin/php8.3' if root != Path('/') else '/usr/local/bin/php'
+    child = subprocess.run([php_binary, '-d', 'memory_limit=384M', '-d', 'display_errors=0',
+                            str(TOOLS / 'laravel-http-fixture.php'), mode], input=contract.canonical(config),
+                           env=env, cwd=root / 'workspace', capture_output=True, timeout=180)
     need(len(child.stdout) <= 65536 and len(child.stderr) <= 65536, 'php-output-budget')
     try:
         result = json.loads(child.stdout)
@@ -203,7 +210,7 @@ class Handler(socketserver.BaseRequestHandler):
                 return
             params = {'GATEWAY_INTERFACE': 'CGI/1.1', 'SERVER_PROTOCOL': 'HTTP/1.0', 'REQUEST_METHOD': 'GET',
                       'REQUEST_URI': path, 'QUERY_STRING': '', 'SCRIPT_NAME': '/index.php',
-                      'SCRIPT_FILENAME': '/fixture-tools/laravel-http-fixture.php', 'DOCUMENT_ROOT': '/workspace/public',
+                      'SCRIPT_FILENAME': str(TOOLS / 'laravel-http-fixture.php'), 'DOCUMENT_ROOT': str(self.server.app / 'public'),
                       'SERVER_NAME': 'repro-http-workload.invalid', 'SERVER_PORT': '80', 'REMOTE_ADDR': '127.0.0.1',
                       'REMOTE_PORT': '12345', 'CONTENT_LENGTH': '0', 'REQUEST_SCHEME': 'http'}
             params.update({'HTTP_' + key.upper().replace('-', '_'): value for key, value in headers.items()})
@@ -227,6 +234,9 @@ class Handler(socketserver.BaseRequestHandler):
 
 
 def run_round(profile, schedule, client, application, env, path, seed_digest):
+    root = Path(env.get('REPRO_HTTP_ROOT', '/'))
+    workspace = root / 'workspace'
+    before = php('verify', application, env)
     need(datetime.fromtimestamp(application['offer_time'], timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
          == profile['logical_time_utc'], 'fixture-clock-profile-mismatch')
     application['http_contract'] = {'profile-sha256': schedule['profile_sha256'], 'schedule-sha256': schedule['schedule_sha256'],
@@ -237,11 +247,12 @@ def run_round(profile, schedule, client, application, env, path, seed_digest):
     fpm_config = path / 'fpm.conf'
     fpm_config.write_text('[global]\ndaemonize=no\nerror_log=' + str(path / 'fpm.log') + '\n[fixture]\n'
                           'listen=' + str(fpm_socket) + '\nlisten.mode=0600\npm=static\npm.max_children=2\nclear_env=no\n'
-                          'chdir=/workspace\nphp_admin_value[memory_limit]=192M\nphp_admin_flag[opcache.enable]=off\n'
+                          'chdir=' + str(workspace) + '\nphp_admin_value[memory_limit]=192M\nphp_admin_flag[opcache.enable]=off\n'
                           'php_admin_flag[display_errors]=off\nphp_admin_flag[log_errors]=on\n'
                           'php_admin_value[error_log]=' + str(path / 'php-error.log') + '\n', encoding='utf-8')
     log = (path / 'fpm-launch.log').open('wb')
-    fpm = subprocess.Popen(['/usr/local/sbin/php-fpm', '-F', '-y', str(fpm_config)],
+    fpm_binary = '/usr/sbin/php-fpm8.3' if root != Path('/') else '/usr/local/sbin/php-fpm'
+    fpm = subprocess.Popen([fpm_binary, '-F', '-y', str(fpm_config)],
                            env={**env, 'REPRO_HTTP_CONFIG': str(config_file)}, stdout=log, stderr=log)
     proxy = thread = None
     try:
@@ -255,6 +266,7 @@ def run_round(profile, schedule, client, application, env, path, seed_digest):
         info = http_socket.stat()
         client['socket'] = {'path': str(http_socket), 'device': info.st_dev, 'inode': info.st_ino, 'uid': os.geteuid(), 'pid': os.getpid()}
         proxy.fpm_socket, proxy.fpm_pid = fpm_socket, fpm.pid
+        proxy.app = workspace
         proxy.client_config, proxy.schedule = client, schedule
         proxy.failures, proxy.statuses = [], []
         thread = threading.Thread(target=proxy.serve_forever, kwargs={'poll_interval': .01}, daemon=True)
@@ -283,9 +295,11 @@ def run_round(profile, schedule, client, application, env, path, seed_digest):
         finally:
             active.cancel()
         output = path / 'round.json'
-        command = ['/usr/bin/python3', '-B', '/fixture-tools/http_execute.py', 'run', '--profile', '/runs/profile.json',
-                   '--schedule', '/runs/schedule.json', '--supervised-parent-net', env['REPRO_HTTP_PARENT_NET'], '--output', str(output)]
-        executed = subprocess.run(command, input=contract.canonical(client), env=env, capture_output=True, timeout=90)
+        command = ['/usr/bin/python3', '-B', str(TOOLS / 'http_execute.py'), 'run',
+                   '--profile', str(root / 'runs/profile.json'), '--schedule', str(root / 'runs/schedule.json'),
+                   '--supervised-parent-net', env['REPRO_HTTP_PARENT_NET'], '--output', str(output)]
+        timeout = sum(phase['duration_ms'] for phase in profile['phases']) / 1000 + 90
+        executed = subprocess.run(command, input=contract.canonical(client), env=env, capture_output=True, timeout=timeout)
         if executed.returncode != 0:
             error_log = (path / 'php-error.log').read_text(errors='replace') if (path / 'php-error.log').exists() else ''
             facts = {'memory_limit_hit': 'Allowed memory size' in error_log,
@@ -300,14 +314,17 @@ def run_round(profile, schedule, client, application, env, path, seed_digest):
         expected = len(schedule['operations'])
         expected_traces = Counter((ACTORS[item['route']][1].lstrip('/'), 200) for item in schedule['operations'])
         expected_traces[(VOICE_OFFERS.lstrip('/'), 403)] = 1
-        traces = {(item['path'].lstrip('/'), int(item['status_code'])): int(item['count']) for item in verified['traces']}
-        counts = verified['counts']
-        need(traces == expected_traces and counts['system_overview_request_traces'] == expected + 1
-             and counts['system_overview_sessions'] == 3 and counts['system_overview_error_events'] == 0
-             and verified['owner_state_preserved'] and verified['voice_graph_sha256'] == seed_digest and verified['preexisting_token_unused']
-             and counts['users'] == 3 and counts['voice_calls'] == counts['voice_incoming_offers'] == 5
-             and all(counts[name] == 0 for name in ('jobs', 'messages', 'voice_browser_calls', 'voice_browser_legs', 'voice_phone_offers')),
-             'persisted-request-effects')
+        def trace_counts(state):
+            return Counter({(item['path'].lstrip('/'), int(item['status_code'])): int(item['count']) for item in state['traces']})
+        traces = trace_counts(before)
+        traces.update(expected_traces)
+        counts = dict(before['counts'])
+        counts['system_overview_request_traces'] += expected + 1
+        counts['system_overview_sessions'] += 3 - before['actor_sessions']
+        need(trace_counts(verified) == traces and verified['counts'] == counts
+             and verified['actor_sessions'] == 3 and verified['owner_state_preserved']
+             and verified['voice_graph_sha256'] == before['voice_graph_sha256'] == seed_digest
+             and verified['preexisting_token_unused'], 'persisted-request-effects')
         logs = list((path / 'storage/logs').glob('laravel*.log'))
         broadcasts = sum(item.read_bytes().count(b'SystemOverviewActivity') for item in logs)
         need(broadcasts >= expected + 1, 'local-broadcast-proof-required')
@@ -330,6 +347,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--release', required=True)
     parser.add_argument('--baseline-net', required=True)
+    parser.add_argument('--simulate-copy', action='store_true')
     args = parser.parse_args()
     os.umask(0o077)
     transport.isolation.namespace_check(args.baseline_net)
@@ -351,7 +369,8 @@ def main():
          and item.get('source', {}).get('reference') == actual[item['name']].get('source', {}).get('reference') for item in lock), 'locked-dependency-inventory')
     source_hash = transport.isolation.source_digest(Path('/workspace'))
     source_token = os.urandom(32).hex()
-    tokens = {str(number): 'repro-fixture-' + os.urandom(24).hex() for number, _, _ in ACTORS.values()}
+    actor_base = COPY_ACTOR_BASE if args.simulate_copy else 0
+    tokens = {str(actor_base + number): 'repro-fixture-' + os.urandom(24).hex() for number, _, _ in ACTORS.values()}
     preexisting_token = 'repro-fixture-' + os.urandom(24).hex()
     app_key = 'base64:' + base64.b64encode(os.urandom(32)).decode()
     password = subprocess.check_output(['/usr/local/bin/php', '-r', "echo password_hash('unused-synthetic-password', PASSWORD_BCRYPT);"], env=env).decode()
@@ -360,8 +379,9 @@ def main():
     # proves that each engine and round uses the same application clock.
     offer_time = int(time.time()) - 900
 
-    def config(path, engine, admin=False):
-        return {'scope': 'synthetic-laravel-http-v1', 'runtime': str(path), 'sqlite': str(path / 'database.sqlite'),
+    def config(path, engine, admin=False, copied=args.simulate_copy):
+        return {'scope': 'copied-laravel-http-v1' if copied else 'synthetic-laravel-http-v1',
+                'runtime': str(path), 'sqlite': str(path / 'database.sqlite'),
                 'engine': engine, 'database': setup['admin'] if admin else setup['app'], 'monitor': setup['monitor'],
                 'uuid': setup['uuid'], 'owner_token': source_token, 'tokens': tokens, 'preexisting_token': preexisting_token,
                 'password_hash': password,
@@ -369,7 +389,10 @@ def main():
 
     base = Path('/runs/base-sqlite'); runtime(base)
     PHASE = 'sqlite-baseline'
-    php('migrate', config(base, 'sqlite', True), env)
+    sqlite_admin = config(base, 'sqlite', True, copied=False)
+    php('migrate', sqlite_admin, env)
+    if args.simulate_copy:
+        php('synthetic-history', sqlite_admin, env)
     sqlite_seed_digest = php('seed', config(base, 'sqlite', True), env)['voice_graph_sha256']
     snapshot_hash = sha(base / 'database.sqlite')
     manifest = {'version': 1, 'seed_receipt_sha256': contract.digest({'source': source_hash, 'snapshot': snapshot_hash,
@@ -401,17 +424,19 @@ def main():
                 shutil.copyfile(base / 'database.sqlite', path / 'database.sqlite')
                 seed_digest = sqlite_seed_digest
             else:
-                administrator = {**application, 'database': setup['admin']}
+                administrator = config(path, engine, True, copied=False)
                 if prepared_mysql: php('reset', administrator, env)
                 php('migrate', administrator, env)
-                seed_digest = php('seed', administrator, env)['voice_graph_sha256']
+                if args.simulate_copy:
+                    php('synthetic-history', administrator, env)
+                seed_digest = php('seed', {**application, 'database': setup['admin']}, env)['voice_graph_sha256']
                 php('warning-probe', application, env)
                 prepared_mysql = True
             client = {'version': 1, 'profile_sha256': schedule['profile_sha256'], 'schedule_sha256': schedule['schedule_sha256'],
                       'engine': engine, 'round': number, 'database_identity': snapshot_hash if engine == 'sqlite' else setup['uuid'],
                       'server_kind': 'reviewed-http-instrumentation', 'run_token': os.urandom(32).hex(), 'socket': {},
                       'fixture_manifest': manifest, 'response_contract': response_contract,
-                      'synthetic_authorization': {label: 'Bearer ' + tokens[str(number)] for label, (number, _, _) in ACTORS.items()}}
+                      'synthetic_authorization': {label: 'Bearer ' + tokens[str(actor_base + number)] for label, (number, _, _) in ACTORS.items()}}
             fragment, verified = run_round(profile, schedule, client, application, env, path, seed_digest)
             fragments[engine].append(fragment)
             evidence_name = engine + '-round-' + str(number) + '.json'
@@ -434,6 +459,7 @@ def main():
               'execution_evidence_sha256': evidence_hashes,
               'database_warning_injection_detected': True, 'fixed_clock_applied': True,
               'voice_control_expired_at_wall_time': True,
+              'populated_fixture_tested': args.simulate_copy,
               'real_auth_and_existing_route_middleware': True, 'telemetry_writes_enabled': True, 'broadcast_driver': 'log',
               'normalization': 'all-fields-exact-json-preserving-numeric-lexemes',
               'query_metric_scope': 'default Laravel connection during handle and terminate; raw transaction control excluded',

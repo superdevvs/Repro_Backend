@@ -417,6 +417,25 @@ bridge refusals outside the measured workload. All four copied-bearer controls
 were unused in the database. `result.json` SHA-256 is
 `ecd6b2528150a6d1c69910639362c95238a5ae6c5320619b8d0e69bd31f7ca23`.
 
+Use `-SimulateCopy` with the local launcher to rehearse seeding into a populated
+database. It reserves a separate actor ID range and reads existing state before
+each round. Verification compares the expected changes in actor traces and
+sessions with the actual database changes. The simulated history includes a
+queued job, an unrelated user and a voice call. No worker starts. The populated
+fixture completed 224 requests and 12 denial probes on both engines, with no
+database warnings or logical response mismatches and its original job count
+preserved. Its report SHA-256 is
+`a6fe6f17f238224909728e61fd1c69902da3070773e027f938ccb2299b4fabfd`.
+
+`copied_http_fixture.py` runs the same bounded HTTP smoke in the dedicated
+Linux rehearsal unit. It requires root-owned supervision with an isolated
+namespace and read-only code mounts, a pinned source and closed SQLite working
+copy, fresh MySQL principals and the explicit owner marker on the dedicated
+database. The native smoke reuses the working copies across two counterbalanced
+rounds. Later rounds therefore measure additional telemetry against the prior
+round's state. Both copies retain their historical business rows. The runner
+evaluates two routes and leaves production capacity and cutover approval open.
+
 Voice p95 from scheduled arrival was 476 vs 408 ms (SQLite vs MySQL) at peak
 in the first round, and 383 vs 433 ms at peak in the second. At surge it was
 1,880 vs 3,163 ms and 1,782 vs 2,439 ms, respectively. Time spent waiting for the
