@@ -345,20 +345,25 @@ voice permission middleware. The response must show one claimable offer and
 one expired offer, and exclude an unrelated recipient, a string-typed
 recipient ID and an offer outside the five-minute window.
 
-Every round issues two untimed voice probes. The response must be 401 for an
-invalid bearer and 403 from the voice permission middleware for a valid client
-bearer. The fixture registers no replacement route, provider, auth service or
-clock. Its network namespace and credentials are private.
+Every round issues three untimed voice probes. The bridge rejects a bearer
+that is valid in the database but absent from the fixture's allowlist before
+FastCGI, and the database must record no use of that token. The intentional
+invalid bearer reaches Sanctum and returns 401. A valid fixture client reaches
+the voice permission middleware and receives 403. The fixture registers no
+replacement route, provider or auth service. Its network namespace and
+credentials are private.
 
 The synthetic schedule weights the operator and the two clients 6:1:1 so
 each phase exercises every actor. It offers 2, 4 and 8 arrivals per second
 for four seconds each, with at most two requests in flight. It runs 56 valid
 GETs per engine/round, first SQLite then MySQL and then MySQL then SQLite on
 fresh fixtures. It compares every response field using the exact
-numeric-lexeme-preserving hash. The seed timestamp is shared across all
-rounds and the application clock runs normally. The sample is suitable for
-behavior comparison on two routes; host capacity and production traffic
-composition require a copied-data workload.
+numeric-lexeme-preserving hash. Every round uses the same Laravel application
+clock, bound to the profile and verified before and after the request. The live
+offer is seeded far enough in the past to expire under the real wall clock, so
+seeing it as claimable also verifies the pin. Request arrival and completion
+still use the monotonic system clock. The sample covers behavior on two routes.
+Production-sized capacity requires a copied-data workload.
 
 The private evidence directory retains the four credential-free round fragments,
 two assembled receipts, profile and schedule. `result.json` binds the fragment and
@@ -394,7 +399,7 @@ wrapper sends the response after `terminate`, so measured time includes
 termination, instrumentation, FPM bootstrap and the Unix bridge. Production
 nginx/FPM response-release timing is not reproduced.
 
-The 2026-11-23 local run used application archive
+The first 2026-11-23 local run used application archive
 `8f748358909f3d5680b2b4b124c223add992952d` and the mounted fixture scripts pinned
 in `supervisor.json`. All 224 authenticated GETs (192 measured, 32 warmup),
 four 401 probes and four 403 probes passed. There were zero request errors,
@@ -404,6 +409,13 @@ containers or volumes afterward. The six fragment and receipt hashes were
 verified, and an independent comparison reproduced the saved results.
 `result.json` SHA-256 is
 `5fe053a7127d540f7c138eef88cfc511490c3f4a4d380725d48042ddee192917`.
+
+A second run verified the fixed application clock and bearer allowlist against
+application archive `11549b9a84423bcb25bc17610d216174f93ec26c`. All 224
+authenticated GETs matched, with four 401s, four permission denials and four
+bridge refusals outside the measured workload. All four copied-bearer controls
+were unused in the database. `result.json` SHA-256 is
+`ecd6b2528150a6d1c69910639362c95238a5ae6c5320619b8d0e69bd31f7ca23`.
 
 Voice p95 from scheduled arrival was 476 vs 408 ms (SQLite vs MySQL) at peak
 in the first round, and 383 vs 433 ms at peak in the second. At surge it was

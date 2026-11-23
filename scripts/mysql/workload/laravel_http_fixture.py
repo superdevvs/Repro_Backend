@@ -38,6 +38,16 @@ NOTIFICATIONS = '/api/notifications'
 VOICE_OFFERS = '/api/voice/incoming-offers'
 ACTORS = {'owner-1': (1, NOTIFICATIONS, 1), 'owner-2': (2, NOTIFICATIONS, 1),
           'voice-operator': (3, VOICE_OFFERS, 6)}
+INVALID_BEARER = 'Bearer repro-fixture-' + 'x' * 32
+
+
+def request_actor(authorization, tokens):
+    if authorization == INVALID_BEARER:
+        return 'denied'
+    for actor, token in tokens.items():
+        if authorization == token:
+            return actor
+    return None
 
 
 def sha(path):
@@ -186,15 +196,18 @@ class Handler(socketserver.BaseRequestHandler):
             allowed = {'host', 'accept', 'accept-encoding', 'authorization'} | set(transport.metric_headers(
                 self.server.client_config, self.server.schedule, {'sequence': 0}, '0' * 32))
             need(set(headers) <= allowed, 'unexpected-request-header')
+            actor = request_actor(headers.get('authorization'), self.server.client_config['synthetic_authorization'])
+            if actor is None:
+                # A token outside this rehearsal never reaches the application or its database.
+                self.request.sendall(b'HTTP/1.0 403 Forbidden\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}')
+                return
             params = {'GATEWAY_INTERFACE': 'CGI/1.1', 'SERVER_PROTOCOL': 'HTTP/1.0', 'REQUEST_METHOD': 'GET',
                       'REQUEST_URI': path, 'QUERY_STRING': '', 'SCRIPT_NAME': '/index.php',
                       'SCRIPT_FILENAME': '/fixture-tools/laravel-http-fixture.php', 'DOCUMENT_ROOT': '/workspace/public',
                       'SERVER_NAME': 'repro-http-workload.invalid', 'SERVER_PORT': '80', 'REMOTE_ADDR': '127.0.0.1',
                       'REMOTE_PORT': '12345', 'CONTENT_LENGTH': '0', 'REQUEST_SCHEME': 'http'}
             params.update({'HTTP_' + key.upper().replace('-', '_'): value for key, value in headers.items()})
-            role = next((role for role, token in self.server.client_config['synthetic_authorization'].items()
-                         if token == headers.get('authorization')), 'denied')
-            params['HTTP_X_SYSTEM_SESSION_ID'] = 'synthetic-http-' + role
+            params['HTTP_X_SYSTEM_SESSION_ID'] = 'synthetic-http-' + actor
             result = fastcgi(self.server.fpm_socket, self.server.fpm_pid, params)
             status_code = int(result.split(b' ', 2)[1])
             if status_code >= 500:
@@ -214,6 +227,8 @@ class Handler(socketserver.BaseRequestHandler):
 
 
 def run_round(profile, schedule, client, application, env, path, seed_digest):
+    need(datetime.fromtimestamp(application['offer_time'], timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+         == profile['logical_time_utc'], 'fixture-clock-profile-mismatch')
     application['http_contract'] = {'profile-sha256': schedule['profile_sha256'], 'schedule-sha256': schedule['schedule_sha256'],
                                     'run-token': client['run_token'], 'round': client['round']}
     config_file = path / 'app-config.json'
@@ -244,9 +259,17 @@ def run_round(profile, schedule, client, application, env, path, seed_digest):
         proxy.failures, proxy.statuses = [], []
         thread = threading.Thread(target=proxy.serve_forever, kwargs={'poll_interval': .01}, daemon=True)
         thread.start()
+        # This bearer is valid in the database but was never issued by the bridge.
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe_stream:
+            probe_stream.settimeout(5)
+            probe_stream.connect(str(http_socket))
+            probe_stream.sendall((f'GET {VOICE_OFFERS} HTTP/1.0\r\nAuthorization: Bearer {application["preexisting_token"]}\r\n\r\n').encode('ascii'))
+            status, headers, body, _ = transport.get_response(probe_stream, time.monotonic_ns() + 5_000_000_000)
+            need(status == 403 and body == b'{}' and not any(key.startswith('x-repro-') for key in headers),
+                 'preexisting-bearer-reached-app')
         # Both probes run through the real route and middleware outside timed samples.
         unauthorized = {**client, 'synthetic_authorization': {**client['synthetic_authorization'],
-                        'voice-operator': 'Bearer repro-fixture-' + 'x' * 32}}
+                        'voice-operator': INVALID_BEARER}}
         routes = client['fixture_manifest']['routes']
         without_permission = {**client, 'fixture_manifest': {**client['fixture_manifest'], 'routes': {
             **routes, 'voice-operator': {**routes['voice-operator'], 'role': 'owner-1'}}}}
@@ -281,7 +304,7 @@ def run_round(profile, schedule, client, application, env, path, seed_digest):
         counts = verified['counts']
         need(traces == expected_traces and counts['system_overview_request_traces'] == expected + 1
              and counts['system_overview_sessions'] == 3 and counts['system_overview_error_events'] == 0
-             and verified['owner_state_preserved'] and verified['voice_graph_sha256'] == seed_digest
+             and verified['owner_state_preserved'] and verified['voice_graph_sha256'] == seed_digest and verified['preexisting_token_unused']
              and counts['users'] == 3 and counts['voice_calls'] == counts['voice_incoming_offers'] == 5
              and all(counts[name] == 0 for name in ('jobs', 'messages', 'voice_browser_calls', 'voice_browser_legs', 'voice_phone_offers')),
              'persisted-request-effects')
@@ -289,7 +312,9 @@ def run_round(profile, schedule, client, application, env, path, seed_digest):
         broadcasts = sum(item.read_bytes().count(b'SystemOverviewActivity') for item in logs)
         need(broadcasts >= expected + 1, 'local-broadcast-proof-required')
         return fragment, {**verified, 'unauthenticated_voice_status': 401, 'unprivileged_voice_status': 403,
-                          'voice_graph_preserved': True, 'local_broadcast_records': broadcasts}
+                          'preexisting_bearer_bridge_status': 403,
+                          'voice_graph_preserved': True, 'local_broadcast_records': broadcasts,
+                          'logical_time_utc': profile['logical_time_utc']}
     finally:
         if proxy is not None: proxy.shutdown(); proxy.server_close()
         if thread is not None: thread.join(2)
@@ -327,21 +352,24 @@ def main():
     source_hash = transport.isolation.source_digest(Path('/workspace'))
     source_token = os.urandom(32).hex()
     tokens = {str(number): 'repro-fixture-' + os.urandom(24).hex() for number, _, _ in ACTORS.values()}
+    preexisting_token = 'repro-fixture-' + os.urandom(24).hex()
     app_key = 'base64:' + base64.b64encode(os.urandom(32)).decode()
     password = subprocess.check_output(['/usr/local/bin/php', '-r', "echo password_hash('unused-synthetic-password', PASSWORD_BCRYPT);"], env=env).decode()
     snapshot_hash = '0' * 64
-    offer_time = 0
+    # The voice offer would be expired at real wall time, so route success also
+    # proves that each engine and round uses the same application clock.
+    offer_time = int(time.time()) - 900
 
     def config(path, engine, admin=False):
         return {'scope': 'synthetic-laravel-http-v1', 'runtime': str(path), 'sqlite': str(path / 'database.sqlite'),
                 'engine': engine, 'database': setup['admin'] if admin else setup['app'], 'monitor': setup['monitor'],
-                'uuid': setup['uuid'], 'owner_token': source_token, 'tokens': tokens, 'password_hash': password,
+                'uuid': setup['uuid'], 'owner_token': source_token, 'tokens': tokens, 'preexisting_token': preexisting_token,
+                'password_hash': password,
                 'app_key': app_key, 'sqlite_source_sha256': snapshot_hash, 'offer_time': offer_time}
 
     base = Path('/runs/base-sqlite'); runtime(base)
     PHASE = 'sqlite-baseline'
     php('migrate', config(base, 'sqlite', True), env)
-    offer_time = int(time.time())
     sqlite_seed_digest = php('seed', config(base, 'sqlite', True), env)['voice_graph_sha256']
     snapshot_hash = sha(base / 'database.sqlite')
     manifest = {'version': 1, 'seed_receipt_sha256': contract.digest({'source': source_hash, 'snapshot': snapshot_hash,
@@ -404,7 +432,8 @@ def main():
               'source_sha256': source_hash, 'dependency_archive_sha256': setup['vendor_archive_sha256'],
               'source_archive_sha256': setup['source_archive_sha256'], 'comparison': comparison, 'checks': checks,
               'execution_evidence_sha256': evidence_hashes,
-              'database_warning_injection_detected': True, 'fixed_clock_applied': False,
+              'database_warning_injection_detected': True, 'fixed_clock_applied': True,
+              'voice_control_expired_at_wall_time': True,
               'real_auth_and_existing_route_middleware': True, 'telemetry_writes_enabled': True, 'broadcast_driver': 'log',
               'normalization': 'all-fields-exact-json-preserving-numeric-lexemes',
               'query_metric_scope': 'default Laravel connection during handle and terminate; raw transaction control excluded',
@@ -414,7 +443,7 @@ def main():
     private_json(Path('/evidence/result.json'), result)
     for name in ('profile.json', 'schedule.json'): shutil.copyfile(Path('/runs') / name, Path('/evidence') / name)
     print(json.dumps({'scope': result['scope'], 'result': 'passed', 'report_sha256': contract.digest(result),
-                      'total_measured_and_warmup_gets': 4 * len(schedule['operations']), 'denial_gets': 8,
+                      'total_measured_and_warmup_gets': 4 * len(schedule['operations']), 'denial_gets': 12,
                       'production_readiness': False}), flush=True)
 
 

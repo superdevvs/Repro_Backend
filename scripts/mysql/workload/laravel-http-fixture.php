@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 // Private synthetic fixture entrypoint. It loads the unmodified application
-// kernel, routes and middleware. No route/auth/container/time substitutions.
+// kernel, routes and middleware. Only the private application clock is pinned.
 ini_set('display_errors', '0');
 ini_set('log_errors', PHP_SAPI === 'cli' ? '0' : '1');
 $phase = 'input';
@@ -87,6 +87,9 @@ try {
     fixtureNeed(preg_match('/\Anet:\[[0-9]+\]\z/', (string)getenv('REPRO_HTTP_PARENT_NET')) === 1
         && readlink('/proc/self/ns/net') !== getenv('REPRO_HTTP_PARENT_NET')
         && count(file('/proc/net/route', FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES)) <= 1, 'private-network-required');
+    $anchor = $config['offer_time'];
+    // Even the live fixture offer must already be expired according to wall time.
+    fixtureNeed(is_int($anchor) && $anchor >= 946684800 && $anchor < min(time() - 300, 2147483347), 'voice-fixture-anchor');
     $environment = [
         'DB_CONNECTION' => $config['engine'], 'DB_DATABASE' => $config['engine'] === 'sqlite' ? $config['sqlite'] : 'repro_http_fixture',
         'DB_SOCKET' => '/db/mysql.sock', 'DB_USERNAME' => $config['database']['username'], 'DB_PASSWORD' => $config['database']['password'],
@@ -149,8 +152,8 @@ try {
                     $statement->execute([$id, 'client', 1793491200000 + $id, json_encode(['synthetic-owner-'.$id => 1793491200000 + $id]), $stamp, $stamp]);
                 }
             }
-            $anchor = $config['offer_time'];
-            fixtureNeed(is_int($anchor) && $anchor <= time() && $anchor > time() - 240, 'voice-fixture-anchor');
+            $pdo->prepare('INSERT INTO personal_access_tokens(id,tokenable_type,tokenable_id,name,token,abilities,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)')
+                ->execute([4, 'App\\Models\\User', 3, 'synthetic-preexisting', hash('sha256', $config['preexisting_token']), '["*"]', $stamp, $stamp]);
             $call = $pdo->prepare("INSERT INTO voice_calls(id,direction,status,caller_user_id,from_phone,to_phone,created_at,updated_at) VALUES(?,'INBOUND','ringing',1,'+12025550101','+12025550102',?,?)");
             $offer = $pdo->prepare("INSERT INTO voice_incoming_offers(id,voice_call_id,status,eligible_user_ids,expires_at,created_at,updated_at) VALUES(?,?,'waiting',?,?,?,?)");
             // Live and expired offers for the operator, then unrelated, wrong JSON type and stale controls.
@@ -186,15 +189,20 @@ try {
                     && json_decode($row['read_ids'], true) === ['synthetic-owner-'.$id => 1793491200000 + $id], 'persisted-owner-state-mismatch');
             }
             $traces = $pdo->query('SELECT path,status_code,COUNT(*) AS count FROM system_overview_request_traces GROUP BY path,status_code ORDER BY path,status_code')->fetchAll(PDO::FETCH_ASSOC);
+            $uncheckedToken = $pdo->prepare('SELECT COUNT(*) FROM personal_access_tokens WHERE token=? AND last_used_at IS NULL');
+            $uncheckedToken->execute([hash('sha256', $config['preexisting_token'])]);
             echo json_encode(['result' => 'verified', 'engine' => $config['engine'], 'counts' => $counts,
-                'traces' => $traces, 'owner_state_preserved' => count($rows) === 2, 'voice_graph_sha256' => fixtureVoiceDigest($pdo)]);
+                'traces' => $traces, 'owner_state_preserved' => count($rows) === 2, 'voice_graph_sha256' => fixtureVoiceDigest($pdo),
+                'preexisting_token_unused' => (int)$uncheckedToken->fetchColumn() === 1]);
         }
         exit;
     }
 
     $phase = 'http-bootstrap';
+    Illuminate\Support\Carbon::setTestNow(Illuminate\Support\Carbon::createFromTimestampUTC($anchor));
     $kernel = $app->make(Illuminate\Contracts\Http\Kernel::class);
     $kernel->bootstrap();
+    fixtureNeed(now()->getTimestamp() === $anchor, 'application-clock-not-pinned');
     $db = $app['db']->connection();
     $pdo = $db->getPdo();
     fixtureIdentity($pdo, $config);
@@ -219,6 +227,7 @@ try {
     }
     $response = $kernel->handle($request);
     $kernel->terminate($request, $response);
+    fixtureNeed(now()->getTimestamp() === $anchor && time() > $anchor + 300, 'application-clock-changed');
     $queries = count($db->getQueryLog());
     $db->disableQueryLog();
     $warnings = 0;

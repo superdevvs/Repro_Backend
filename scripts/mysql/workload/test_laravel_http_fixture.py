@@ -67,5 +67,27 @@ class DependencyArchiveBoundaryTest(unittest.TestCase):
             run.assert_not_called()
 
 
+class RehearsalBearerBoundaryTest(unittest.TestCase):
+    def test_bridge_refuses_a_non_fixture_bearer_before_fastcgi(self):
+        handler = fixture.Handler.__new__(fixture.Handler)
+        handler.request = Mock()
+        handler.request.recv.return_value = (
+            b'GET /api/voice/incoming-offers HTTP/1.0\r\nAuthorization: Bearer unrelated-copied-token\r\n\r\n'
+        )
+        handler.server = Mock()
+        handler.server.client_config = {'synthetic_authorization': {'voice-operator': 'Bearer synthetic-token'}}
+        handler.server.schedule = {}
+        with patch.object(fixture.transport, 'metric_headers', return_value={}), patch.object(fixture, 'fastcgi') as forward:
+            handler.handle()
+        forward.assert_not_called()
+        self.assertTrue(handler.request.sendall.call_args.args[0].startswith(b'HTTP/1.0 403'))
+
+    def test_only_synthetic_tokens_and_the_intentional_probe_have_an_actor(self):
+        tokens = {'owner-1': 'Bearer synthetic-token'}
+        self.assertEqual(fixture.request_actor(tokens['owner-1'], tokens), 'owner-1')
+        self.assertEqual(fixture.request_actor(fixture.INVALID_BEARER, tokens), 'denied')
+        self.assertIsNone(fixture.request_actor(None, tokens))
+
+
 if __name__ == '__main__':
     unittest.main()
