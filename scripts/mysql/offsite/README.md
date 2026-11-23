@@ -249,6 +249,39 @@ An artifact recovery receipt proves the downloaded bytes. Separately load the
 base backup into the isolated recovery instance, verify the recovery point
 and database results, and test decryption with the separately held key.
 
+### Check rotated MySQL logs before replay
+
+Put the retrieved base producer receipt, the required closed log files, and
+the reviewed `binlog-chain.json` in a private recovery directory. The inventory
+has schema `repro.mysql.binlog-chain.v1` with `source_uuid`, the originating
+numeric `server_id`, `start` and `stop` objects containing `file` and integer
+`position`, and the ordered `segments` list. Each segment contains `file`,
+`bytes` and `sha256` from verified archive receipts. The start is the
+snapshot coordinate from the base producer. The stop is the end position of
+the selected committed transaction. Keep the inventory and base receipt hashes
+independently from the recovered files.
+
+```sh
+/usr/bin/python3 -I /opt/repro-backup-tools/verify_mysql_binlog_chain.py \
+  --source /var/lib/repro-recovery/private/replay-inputs \
+  --inventory-sha256 REVIEWED_CHAIN_INVENTORY_SHA256 \
+  --producer-sha256 REVIEWED_BASE_PRODUCER_SHA256 \
+  --expected-identity APPROVED_MYSQL_SOURCE_UUID \
+  --expected-database APPROVED_MYSQL_DATABASE
+```
+
+The verifier checks file and event checksums, the source server ID, rotation to
+the next filename, and complete event boundaries. It accepts CRC32-checked
+MySQL logs closed by rotation and an end position immediately after an InnoDB
+commit. Keep the verified files immutable until replay. Run mysqlbinlog once
+with `--verify-binlog-checksum`, the ordered files, and the verified start and
+stop positions. Feed its output to one connection on the isolated recovery
+server. Count and compare restored data and confirm exclusion of commits after
+the selected point. The chain check does no SQL replay. [MySQL recovery with binary logs](https://dev.mysql.com/doc/refman/8.4/en/point-in-time-recovery-binlog.html)
+and [MySQL event positions](https://dev.mysql.com/doc/refman/8.4/en/point-in-time-recovery-positions.html).
+
+### Verify bucket retention
+
 `--immutable` is a client guard, not a cloud retention lock or conditional
 create-only storage primitive. The upload key must lack deletion/retention-policy
 management authority, and independently tested bucket rules must prevent

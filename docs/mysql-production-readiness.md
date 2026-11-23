@@ -156,6 +156,16 @@ created the publisher manifest. The publisher's local checks passed 49.4
 seconds after the start. The private database stopped and the temporary
 plaintext batch was removed. No cloud bucket was configured for this run.
 
+A separate synthetic recovery drill used three real MySQL 8.4.13 binlogs
+closed by rotation. It refused a missing middle file before starting the
+target, then replayed all three files on one connection through the selected
+commit. The target recovered four committed rows and excluded the later fifth
+row. A second drill using the stock backup producer and the repository checker
+verified the same behavior. It checked actual event checksums, rotation
+pointers, and the selected commit position before replay. Recovery, validation
+and shutdown took 7.03 seconds in the second small fixture. Both drills used
+fresh isolated MySQL instances and cleaned up their raw fixture data.
+
 The current SQLite backup producer and encrypted publication staging passed a
 separate fixture with a WAL writer open. The exported single file retained the
 committed row and excluded the uncommitted row. The source database and WAL
@@ -226,6 +236,16 @@ p95 was 19.60–19.63 ms on SQLite and 22.25–22.43 ms on MySQL. Separate queue
 contract runs passed seven cases on SQLite and four on MySQL. These
 measurements used synthetic data on memory-backed filesystems. The combined
 HTTP and queue workload on the server copies remains an acceptance gate.
+
+A short 20-client Laravel command-line load then ran alongside two actual
+database queue workers. Across four engine-order rounds, all 8,000 notification
+operations completed and all 960 jobs produced exactly one committed effect.
+Both workers operated during each roughly 2.47-second interval with all
+clients active. Queue backlogs drained to zero and final notification state
+matched. In this fixture, write p95 was 80.18–130.53 ms on SQLite and
+52.68–54.83 ms on MySQL. SQLite completed reads and queue drain faster.
+The sustained HTTP load and crash-recovery timings still require the host
+dress rehearsals.
 
 The initial single-writer rule has a separately tested MySQL component.
 Its lock row lives in a proposed control schema so the application snapshot
