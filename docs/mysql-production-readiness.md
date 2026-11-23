@@ -83,9 +83,9 @@ The separate managed MySQL 8.4.13 service on Maverick passed authenticated
 checks on the empty instance before and after a controlled restart. Both
 `www-data` and `maverick` initially received permission denied at the socket.
 Granting the existing `www-data` group traverse-only access to the runtime
-directory let both accounts reach the expected daemon. The test reapplied the
-temporary ACL after restart. A subsequent host test must prove that the unit
-sets this permission automatically. The service and rotation timer were left
+directory let both accounts reach the expected daemon. The managed v3 test
+verified this access on start and restart without a manual ACL change. An
+unrelated account was refused. The service and rotation timer were left
 stopped and disabled. The live app still uses SQLite and the existing MySQL
 service kept its process identity.
 
@@ -98,16 +98,24 @@ launcher tests passed on Linux. The disposable database was empty again after
 the test. The smoke used only synthetic records.
 
 Maverick refused unprivileged user namespace creation. The supervised smoke
-mode verifies a distinct private network namespace, a non-root UID, empty
-capability sets, and no outbound route. This mode passed its isolation and
-database checks in the disposable Linux fixture. On-host testing requires the
-reviewed, isolated supervisor and remains part of the managed acceptance.
+verified a distinct private network namespace, a non-root UID, empty capability
+sets, and no outbound route. The first supervisor stopped during filesystem
+sandbox setup. The next refused its root-only service manager socket because
+the check expected mode 0600 and Maverick uses 0700. The corrected host test
+passed the isolation probe and all three database checks using the pinned
+rehearsal release `0f644b36` and a synthetic schema. It verified that the production
+paths and the service manager socket
+were inaccessible. Each transient workload unit stopped and was collected.
 
-The first host supervisor stopped during filesystem sandbox setup before
-Python started. The revised supervisor keeps the private network and production
-path guards and checks that the process cannot use the host service manager
-socket. The original MySQL service and live SQLite application kept their
-verified identities. Host acceptance of the revision remains pending.
+The managed log-rotation service ran online and retained seven slow-log
+archives through nine forced rotations. The offline test refused before
+starting logrotate and left the logs and rotation state exact. Systemd kept the
+one-shot unit marked failed after this intentional refusal. The coordinator's
+final status check counted that marker as a cleanup failure. An independent
+read-only check confirmed zero processes for the one-shot unit, no remaining
+workload units, and both the isolated database service and timer stopped and
+disabled. The candidate's loaded-copy workload and timed cutover remain to be
+rehearsed.
 
 The encrypted backup fixture published a SQLite backup and checkpoint to a
 private S3-compatible HTTPS endpoint with rclone 1.76.0. A separate recovery
@@ -192,8 +200,8 @@ one duplicate and six receipts requiring review. Missing, additional or
 altered receipts failed reconciliation.
 
 The data-only timing is one part of a dress rehearsal. Remaining acceptance
-requires the managed socket and log rotation checks, privileged cutover and
-webhook integration, an independent off-host restore, the actual application
+requires privileged cutover and webhook integration, an independent off-host
+restore, the actual application
 workload and two timed dress rehearsals. Live cutover requires distinct approval.
 
 ## November 8 refresh
