@@ -6,6 +6,7 @@ Every copied field is verified; precision loss or unknown schema stops recovery.
 """
 from __future__ import annotations
 import argparse,datetime,decimal,hashlib,json,os,pathlib,re,sqlite3,time,traceback
+from contextlib import closing
 import conversion as core
 import migrate
 
@@ -17,6 +18,11 @@ IGUIDE_PROJECT_TABLES = {
 }
 # The normalized body from 2026_11_22_120200_preserve_iguide_lab_project_deletion.php.
 IGUIDE_PROJECT_TRIGGER_SHA256 = '4d40869921f1abab41729467e05bcea46a0ecaa7a09983160641800a0e5984ce'
+CASCADE_TRIGGER_MANIFEST = pathlib.Path(__file__).resolve().parents[2] / 'database/schema/mysql-cascade-triggers.json'
+
+
+class ReverseInputError(RuntimeError):
+    pass
 
 def portable(value):
     if isinstance(value,(datetime.date,datetime.time,datetime.datetime,decimal.Decimal)):return str(value)
@@ -59,15 +65,27 @@ def schema_state(db):
             cursor.execute('SHOW CREATE TABLE '+core.q(name));tables[name]=cursor.fetchone()['Create Table']
     return metadata,triggers,tables
 
-def verify_source_triggers(tables, sqlite_triggers, mysql_triggers):
+def expected_source_triggers(tables, sqlite_triggers):
     expected = set(sqlite_triggers)
     if IGUIDE_PROJECT_TRIGGER in expected:
         raise RuntimeError('The MySQL-only iGUIDE trigger cannot be in the SQLite template.')
     if {'aryeo_changes', 'shoots', 'shoot_files', 'payments'} <= tables:
-        cascade_file = pathlib.Path(__file__).resolve().parents[2] / 'database/schema/mysql-cascade-triggers.json'
-        expected.update(row['name'] for row in json.loads(cascade_file.read_text()))
+        try:
+            names = [row['name'] for row in json.loads(CASCADE_TRIGGER_MANIFEST.read_text(encoding='utf-8'))]
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            raise ReverseInputError('Required reverse-export cascade trigger manifest is missing or invalid.') from error
+        if not names or not all(isinstance(name, str) and re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,63}', name)
+                                for name in names) or len(names) != len(set(names)):
+            raise ReverseInputError('Required reverse-export cascade trigger manifest is missing or invalid.')
+        expected.update(names)
     if IGUIDE_PROJECT_TABLES <= tables:
         expected.add(IGUIDE_PROJECT_TRIGGER)
+    return expected
+
+
+def verify_source_triggers(tables, sqlite_triggers, mysql_triggers, expected=None):
+    if expected is None:
+        expected = expected_source_triggers(tables, sqlite_triggers)
     by_name = {row['TRIGGER_NAME']: row for row in mysql_triggers}
     if expected != by_name.keys():
         raise RuntimeError('Unknown/missing source trigger needs review before reverse export.')
@@ -79,29 +97,54 @@ def verify_source_triggers(tables, sqlite_triggers, mysql_triggers):
         ) or hashlib.sha256(body.encode('utf-8')).hexdigest() != IGUIDE_PROJECT_TRIGGER_SHA256:
             raise RuntimeError('The MySQL-only iGUIDE trigger definition differs from the reviewed migration.')
 
+def prepare_reverse_inputs(options):
+    template_path = options.schema_template.resolve(strict=True)
+    if (options.schema_template.is_symlink() or not template_path.is_file() or
+            any(os.path.lexists(str(template_path) + suffix) for suffix in ('-wal', '-shm', '-journal')) or
+            migrate.file_hash(template_path) != options.schema_template_sha256):
+        raise ReverseInputError('Schema template must be standalone and match the reviewed checksum.')
+    if migrate.file_hash(options.approved_exceptions) != options.exceptions_file_sha256:
+        raise ReverseInputError('Approved exception file checksum differs.')
+    approved = migrate.protected_json(options.approved_exceptions)
+    if not isinstance(approved, list):
+        raise ReverseInputError('Approved exceptions must be the reviewed relationship list.')
+    approved = migrate.canonical_exceptions(approved)
+    with closing(sqlite3.connect(template_path.as_uri() + '?mode=ro&immutable=1', uri=True)) as template:
+        template.row_factory = sqlite3.Row
+        template.execute('PRAGMA query_only=ON')
+        if template.execute('PRAGMA quick_check').fetchone()[0] != 'ok':
+            raise ReverseInputError('Schema-template integrity check failed.')
+        definitions = [dict(row) for row in template.execute(
+            "SELECT type,name,sql FROM sqlite_master WHERE sql IS NOT NULL "
+            "AND type IN ('table','index','trigger') ORDER BY type,name")]
+        schema = {name: core.table_schema(template, name, sql) for name, sql in template.execute(
+            "SELECT name,sql FROM sqlite_master WHERE type='table' "
+            "AND name NOT LIKE 'sqlite_%' ORDER BY name")}
+        if not schema:
+            raise ReverseInputError('Reviewed SQLite schema template has no application tables.')
+        sqlite_triggers = migrate.sqlite_triggers(template)
+    expected = expected_source_triggers(schema.keys(), sqlite_triggers)
+    return template_path, approved, definitions, schema, sqlite_triggers, expected
+
+
 def export(options):
     started=time.monotonic()
     if not options.writers_stopped:raise RuntimeError('Externally drain/stop all writers and explicitly attest the freeze.')
     if options.output.exists():raise RuntimeError('Output must be a new private directory; existing files are never replaced.')
+    template_path, approved, definitions, schema, sqlite_triggers, expected = prepare_reverse_inputs(options)
     options.output.mkdir(mode=0o700,parents=False);core.REPORTS=options.output
-    template_path=options.schema_template.resolve(strict=True)
-    if options.schema_template.is_symlink() or migrate.file_hash(template_path)!=options.schema_template_sha256:
-        raise RuntimeError('Reviewed SQLite schema-template checksum differs.')
-    if migrate.file_hash(options.approved_exceptions)!=options.exceptions_file_sha256:raise RuntimeError('Approved exception file checksum differs.')
-    approved=migrate.protected_json(options.approved_exceptions)
-    template=sqlite3.connect(template_path.as_uri()+'?mode=ro&immutable=1',uri=True);template.row_factory=sqlite3.Row
-    template.execute('PRAGMA query_only=ON')
-    if template.execute('PRAGMA quick_check').fetchone()[0]!='ok':raise RuntimeError('Schema-template integrity check failed.')
-    definitions=[dict(row) for row in template.execute("SELECT type,name,sql FROM sqlite_master WHERE sql IS NOT NULL AND type IN ('table','index','trigger') ORDER BY type,name")]
-    schema={name:core.table_schema(template,name,sql) for name,sql in template.execute("SELECT name,sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")}
-    db=connect(options);before=schema_state(db);metadata,triggers,ddl=before
-    if set(metadata)!=set(schema):raise RuntimeError('Current-release SQLite template and source tables differ.')
-    sqlite_triggers=migrate.sqlite_triggers(template)
-    verify_source_triggers(metadata.keys(), sqlite_triggers, triggers)
-    destination=options.output/'database.sqlite'
-    with destination.open('xb'):pass
-    destination.chmod(0o600)
-    out=sqlite3.connect(destination)
+    db=connect(options)
+    try:
+        before=schema_state(db);metadata,triggers,ddl=before
+        if set(metadata)!=set(schema):raise RuntimeError('Current-release SQLite template and source tables differ.')
+        verify_source_triggers(metadata.keys(), sqlite_triggers, triggers, expected)
+        destination=options.output/'database.sqlite'
+        with destination.open('xb'):pass
+        destination.chmod(0o600)
+        out=sqlite3.connect(destination)
+    except BaseException:
+        db.close()
+        raise
     out.execute('PRAGMA journal_mode=DELETE');out.execute('PRAGMA synchronous=FULL');out.execute('PRAGMA foreign_keys=OFF')
     try:
         for entry in definitions:
@@ -148,11 +191,11 @@ def export(options):
         out.commit();out.row_factory=sqlite3.Row
         if out.execute('PRAGMA quick_check').fetchone()[0]!='ok':raise RuntimeError('Reverse SQLite integrity check failed.')
         exceptions=migrate.audit_exceptions(out,list(schema.values()));core.save('exceptions-private.json',exceptions)
-        if migrate.canonical_exceptions(exceptions)!=migrate.canonical_exceptions(approved):raise RuntimeError('Reverse historical exceptions differ; investigate before any switch.')
+        if migrate.canonical_exceptions(exceptions)!=approved:raise RuntimeError('Reverse historical exceptions differ; investigate before any switch.')
         out.execute('PRAGMA foreign_keys=ON')
         if out.execute('PRAGMA foreign_keys').fetchone()[0]!=1:raise RuntimeError('SQLite foreign-key enforcement was not restored.')
     finally:
-        out.close();db.close();template.close()
+        out.close();db.close()
     if migrate.file_hash(template_path)!=options.schema_template_sha256:raise RuntimeError('Schema template changed during export.')
     result={'verified':True,'tables':len(verified),'rows':sum(row['rows'] for row in verified),'field_mismatches':0,
         'sqlite_triggers':len(sqlite_triggers),'exception_relationships':len(exceptions),'foreign_keys_enabled':True,
@@ -164,17 +207,30 @@ def export(options):
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--credentials',type=pathlib.Path,required=True);parser.add_argument('--database',required=True)
-    parser.add_argument('--expected-server-uuid',required=True);parser.add_argument('--schema-template',type=pathlib.Path,required=True)
+    parser.add_argument('--credentials',type=pathlib.Path);parser.add_argument('--database')
+    parser.add_argument('--expected-server-uuid');parser.add_argument('--schema-template',type=pathlib.Path,required=True)
     parser.add_argument('--schema-template-sha256',required=True);parser.add_argument('--approved-exceptions',type=pathlib.Path,required=True)
-    parser.add_argument('--exceptions-file-sha256',required=True);parser.add_argument('--output',type=pathlib.Path,required=True)
+    parser.add_argument('--exceptions-file-sha256',required=True);parser.add_argument('--output',type=pathlib.Path)
     parser.add_argument('--writers-stopped',action='store_true')
-    export(parser.parse_args())
+    parser.add_argument('--check-inputs-only', action='store_true')
+    options = parser.parse_args()
+    if options.check_inputs_only:
+        _, approved, _, schema, sqlite_triggers, expected = prepare_reverse_inputs(options)
+        print(json.dumps({'result':'reverse-inputs-verified','tables':len(schema),
+                          'historical_exception_relationships':len(approved),'sqlite_triggers':len(sqlite_triggers),
+                          'expected_mysql_triggers':len(expected),'mysql_connected':False,'output_created':False}),
+              flush=True)
+        return
+    if any(not getattr(options, argument) for argument in ('credentials', 'database', 'expected_server_uuid', 'output')):
+        parser.error('export requires --credentials, --database, --expected-server-uuid and --output')
+    export(options)
 
 if __name__=='__main__':
     os.umask(0o077)
     try:main()
     except Exception as error:
         if core.REPORTS is not None:core.save('failure-private.json',{'type':type(error).__name__,'traceback':traceback.format_exc()})
-        print(json.dumps({'stopped':True,'error_type':type(error).__name__,'details':'See the protected report. No existing source or application configuration was changed.'}),flush=True)
+        details = str(error) if isinstance(error, ReverseInputError) else (
+            'See the protected report.' if core.REPORTS is not None else 'Reverse export refused before starting.')
+        print(json.dumps({'stopped':True,'error_type':type(error).__name__,'details':details}),flush=True)
         raise SystemExit(1)

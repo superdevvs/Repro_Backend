@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import re
 import sqlite3
+import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -56,6 +57,53 @@ class FixtureSource:
 
 
 class ReverseExportTest(unittest.TestCase):
+    def test_missing_manifest_refuses_before_connecting_to_source(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            template = root / "template.sqlite"
+            with contextlib.closing(sqlite3.connect(template)) as db:
+                for table in ("aryeo_changes", "shoots", "shoot_files", "payments"):
+                    db.execute(f"CREATE TABLE {table} (id INTEGER PRIMARY KEY)")
+            approved = root / "approved.json"
+            approved.write_text("[]")
+            approved.chmod(0o600)
+            options = SimpleNamespace(
+                writers_stopped=True, output=root / "out", schema_template=template,
+                schema_template_sha256=reverse.migrate.file_hash(template), approved_exceptions=approved,
+                exceptions_file_sha256=reverse.migrate.file_hash(approved),
+            )
+            with patch.object(reverse, "CASCADE_TRIGGER_MANIFEST", root / "missing.json"), \
+                    patch.object(reverse, "connect") as connect, \
+                    self.assertRaisesRegex(RuntimeError, "cascade trigger manifest is missing or invalid"):
+                reverse.export(options)
+            connect.assert_not_called()
+            self.assertFalse(options.output.exists())
+
+    def test_cli_input_check_needs_no_credentials_or_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            template = root / "template.sqlite"
+            with contextlib.closing(sqlite3.connect(template)) as db:
+                db.execute("CREATE TABLE fixture (id INTEGER PRIMARY KEY)")
+            approved = root / "approved.json"
+            approved.write_text("[]")
+            approved.chmod(0o600)
+            args = [
+                "export-sqlite.py", "--check-inputs-only", "--schema-template", str(template),
+                "--schema-template-sha256", reverse.migrate.file_hash(template), "--approved-exceptions", str(approved),
+                "--exceptions-file-sha256", reverse.migrate.file_hash(approved),
+            ]
+            stdout = io.StringIO()
+            with patch.object(sys, "argv", args), patch.object(reverse, "connect") as connect, \
+                    contextlib.redirect_stdout(stdout):
+                reverse.main()
+            connect.assert_not_called()
+            report = json.loads(stdout.getvalue())
+            self.assertEqual(report["result"], "reverse-inputs-verified")
+            self.assertEqual(report["tables"], 1)
+            self.assertFalse(report["mysql_connected"])
+            self.assertFalse(report["output_created"])
+
     def test_new_trigger_uses_the_reviewed_migration_and_is_required(self):
         tables = reverse.IGUIDE_PROJECT_TABLES
         reverse.verify_source_triggers(tables, {}, [project_trigger()])

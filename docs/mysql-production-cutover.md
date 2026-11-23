@@ -262,8 +262,12 @@ The additional rows are intentional local activity, not additional production
 rows claimed from the original snapshot.
 
 Prepare a frozen current-release SQLite schema template before cutover, including
-the candidate's SQLite-compatible migrations. Record its checksum. After stopping
-writers and reconciling external effects, the reviewed reverse tool is:
+the candidate's SQLite-compatible migrations. Record its checksum. Before the
+outage, use `export-sqlite.py --check-inputs-only` with the four template and
+exception-file flags below to validate the local recovery packet. This checks
+the pinned template, exceptions and bundled cascade-trigger manifest without
+connecting to MySQL. After stopping writers and reconciling external effects,
+the reviewed reverse tool is:
 
 ```bash
 python scripts/mysql/export-sqlite.py \
