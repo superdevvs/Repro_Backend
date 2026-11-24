@@ -24,6 +24,11 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withSchedule(function (Schedule $schedule) {
+        // Sales CRM. Every command returns early while CRM_ENABLED is off.
+        $schedule->command('crm:send-due')->everyFiveMinutes()->withoutOverlapping()->onOneServer();
+        $schedule->command('crm:nightly')->dailyAt('03:15')->withoutOverlapping()->onOneServer();
+        $schedule->command('crm:follow-up-digest')->weekdays()->at('07:00')->withoutOverlapping()->onOneServer();
+        $schedule->command('crm:calendar-sync')->everyFiveMinutes()->withoutOverlapping()->onOneServer();
         $schedule->command('voice-browser:reconcile')->everyMinute()->withoutOverlapping();
         $schedule->command('groundwire-sms:recover')->everyMinute()->withoutOverlapping();
         // Laravel 11 in this project boots schedules from the application builder.

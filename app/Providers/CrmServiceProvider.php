@@ -32,17 +32,14 @@ class CrmServiceProvider extends ServiceProvider
     /** @return array<class-string, array<int, class-string>> */
     public static function listeners(): array
     {
-        $map = [];
-        foreach ([
-            // Kept outside app/Listeners so Laravel's listener discovery does not register them a second time.
-            \App\Services\Crm\Listeners\StopDripOnStageChange::class => \App\Events\Crm\CrmContactStageChanged::class,
-            \App\Services\Crm\Listeners\CancelEventsWhenLost::class => \App\Events\Crm\CrmContactStageChanged::class,
-        ] as $listener => $event) {
-            if (class_exists($listener)) {
-                $map[$event][] = $listener;
-            }
-        }
-
-        return $map;
+        // Kept outside app/Listeners so Laravel's listener discovery does not register them a second time.
+        return [
+            \App\Events\Crm\CrmContactStageChanged::class => [
+                \App\Services\Crm\Listeners\StopDripOnStageChange::class,
+                \App\Services\Crm\Listeners\CancelEventsWhenLost::class,
+            ],
+            \App\Events\Crm\CrmEmailBlocked::class => [\App\Services\Crm\Listeners\StopDripOnStageChange::class],
+            \App\Events\Crm\CrmContactReplied::class => [\App\Services\Crm\Listeners\StopDripOnStageChange::class],
+        ];
     }
 }
