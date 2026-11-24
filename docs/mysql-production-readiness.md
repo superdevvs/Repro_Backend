@@ -1016,6 +1016,20 @@ had networking disabled and were removed after each engine run. The test
 receipt SHA-256 is
 `0009fae84239220e78868898b2fc3f8d511ba30fffccdd5e2c72dba22aaaa930`.
 
+The private application finance rehearsal used disposable derivatives of
+the same protected snapshot and the exact application package at
+`f4b1826f`. The sandbox proved a private network namespace, refused
+Internet socket families, hid production paths and mounted the staged
+input read-only. SQLite and MySQL matched across eight weeks of reports,
+past-due invoices and the last completed week's photographer
+reconciliation. The latest completed week's generation matched for payout
+invoices, payout work allocations, editor payouts and six sampled client
+invoices. The temporary service and both working databases were removed.
+The snapshot and live database services kept their existing identities.
+The receipt SHA-256 is
+`b5f5c5a525534aa1e4744165af1c10657992953100b63ab48b386d99ed60f2eb`.
+This run used the lock before the JWT security update in `7114966b`.
+
 Before cutover, the actual target needs administrator acceptance for service/boot
 behavior, FPM and both worker owners, measured load, storage/disk alerts,
 off-host backup destination/retention and an independent restore. Inventory all
@@ -1054,8 +1068,12 @@ reviewed observations, including unverified recovery points.
 Matching offline adapters derive the reviewed nightly, point-in-time and
 external alert receipts from SHA-256-pinned source evidence. Provider emails
 from the synthetic pilot were reported delivered. The operator observed the
-backup-failure notification, and handset receipt of the missed check-in
-remains unconfirmed.
+backup-failure notification. The November 24 rerun produced one missed
+check-in event at around 18:04 IST. Healthchecks reported delivery and the
+operator confirmed that the email reached the inbox. The operator observed
+no iPhone notification for that event. The rehearsal check was paused
+again. The handset gate remains open. Retry receipt SHA-256
+`7cb4df84a8921c66133103d25037018dca2c632acca82c8f551baa9005a7d4d4`.
 
 Use the [cutover and rollback runbook](mysql-production-cutover.md). Its tools
 produce verified artifacts and deliberately never switch a live application.

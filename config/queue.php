@@ -35,6 +35,8 @@ return [
         'studio' => [
             'driver' => 'database',
             'connection' => env('DB_QUEUE_CONNECTION'),
+            'repro_worker_connection' => env('DB_CONNECTION') === 'mysql'
+                && env('REPRO_MYSQL_STUDIO_QUEUE_WORKER', false) === true ? 'mysql_queue_worker' : null,
             'table' => env('DB_QUEUE_TABLE', 'jobs'),
             'queue' => 'studio',
             'retry_after' => 7260,
@@ -46,6 +48,8 @@ return [
         'iguide-lab-tour' => [
             'driver' => 'database',
             'connection' => env('DB_QUEUE_CONNECTION'),
+            'repro_worker_connection' => env('DB_CONNECTION') === 'mysql'
+                && env('REPRO_MYSQL_IGUIDE_LAB_TOUR_QUEUE_WORKER', false) === true ? 'mysql_queue_worker' : null,
             'table' => env('DB_QUEUE_TABLE', 'jobs'),
             'queue' => 'iguide-lab-tour',
             'retry_after' => 900,

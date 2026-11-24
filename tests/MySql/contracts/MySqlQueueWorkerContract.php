@@ -17,6 +17,12 @@ use RuntimeException;
 /** Run explicitly against the disposable socket-only queue worker fixture. */
 final class MySqlQueueWorkerContract extends TestCase
 {
+    private const WORKER_FLAGS = [
+        'database' => 'REPRO_MYSQL_QUEUE_WORKER',
+        'studio' => 'REPRO_MYSQL_STUDIO_QUEUE_WORKER',
+        'iguide-lab-tour' => 'REPRO_MYSQL_IGUIDE_LAB_TOUR_QUEUE_WORKER',
+    ];
+
     private Application $app;
 
     private PDO $admin;
@@ -64,13 +70,33 @@ final class MySqlQueueWorkerContract extends TestCase
         parent::tearDown();
     }
 
-    private function queue(): MySqlWorkerDatabaseQueue
+    private function queue(string $name = 'database'): MySqlWorkerDatabaseQueue
     {
-        $queue = $this->app['queue']->connection('database');
+        $queue = $this->app['queue']->connection($name);
         self::assertInstanceOf(MySqlWorkerDatabaseQueue::class, $queue);
         self::assertSame($this->app['db']->connection('mysql'), $queue->getDatabase());
 
         return $queue;
+    }
+
+    private function configuredQueues(string $engine, array $enabledQueues): array
+    {
+        $environment = $_ENV;
+        $server = $_SERVER;
+        $overrides = ['DB_CONNECTION' => $engine] + array_fill_keys(self::WORKER_FLAGS, 'false');
+        foreach ($enabledQueues as $name) {
+            $overrides[self::WORKER_FLAGS[$name]] = 'true';
+        }
+        try {
+            $_ENV = $overrides + $_ENV;
+            $_SERVER = $overrides + $_SERVER;
+            $config = require dirname(__DIR__, 3).'/config/queue.php';
+
+            return $config['connections'];
+        } finally {
+            $_ENV = $environment;
+            $_SERVER = $server;
+        }
     }
 
     private function jobRows(): int
@@ -214,5 +240,126 @@ final class MySqlQueueWorkerContract extends TestCase
             'queue.connections.studio.connection' => 'sqlite',
         ]);
         self::assertSame(SqliteDatabaseQueue::class, $this->app['queue']->connection('studio')::class);
+    }
+
+    public function test_worker_route_flags_are_independent_and_mysql_only(): void
+    {
+        foreach (array_keys(self::WORKER_FLAGS) as $enabled) {
+            $connections = $this->configuredQueues('mysql', [$enabled]);
+            foreach (array_keys(self::WORKER_FLAGS) as $name) {
+                self::assertSame($name === $enabled ? 'mysql_queue_worker' : null, $connections[$name]['repro_worker_connection']);
+            }
+        }
+
+        $sqlite = $this->configuredQueues('sqlite', array_keys(self::WORKER_FLAGS));
+        foreach (array_keys(self::WORKER_FLAGS) as $name) {
+            self::assertNull($sqlite[$name]['repro_worker_connection']);
+        }
+    }
+
+    public function test_alias_dispatch_defers_enqueue_until_commit_and_uses_the_business_session(): void
+    {
+        $this->app['config']->set('queue.connections', $this->configuredQueues('mysql', ['studio', 'iguide-lab-tour']));
+        $studio = $this->queue('studio');
+        $tour = $this->queue('iguide-lab-tour');
+        $business = $studio->getDatabase();
+        $inserts = [];
+        $business->listen(function (QueryExecuted $event) use (&$inserts): void {
+            if (str_starts_with($event->sql, 'insert into `jobs`')) {
+                $inserts[] = $event->connectionName;
+            }
+        });
+
+        $business->beginTransaction();
+        try {
+            $studio->push('queue-alias-probe');
+            $tour->push('queue-alias-probe');
+            self::assertSame(0, $business->table('jobs')->count());
+            self::assertSame(0, $this->jobRows());
+        } finally {
+            $business->rollBack();
+        }
+        self::assertSame([], $inserts);
+        self::assertSame(0, $this->jobRows());
+
+        $business->transaction(function () use ($studio, $tour, $business): void {
+            $studio->push('queue-alias-probe');
+            $tour->push('queue-alias-probe');
+            self::assertSame(0, $business->table('jobs')->count());
+            self::assertSame(0, $this->jobRows());
+        });
+        self::assertSame(['mysql', 'mysql'], $inserts);
+        self::assertSame(['studio', 'iguide-lab-tour'], $this->admin->query('SELECT queue FROM jobs ORDER BY id')->fetchAll(PDO::FETCH_COLUMN));
+        self::assertSame(DatabaseQueue::class, $this->app['queue']->connection('database')::class);
+    }
+
+    public function test_aliases_share_the_verified_worker_and_keep_their_retry_windows(): void
+    {
+        $this->app['config']->set('queue.connections', $this->configuredQueues('mysql', ['studio', 'iguide-lab-tour']));
+        $studio = $this->queue('studio');
+        $tour = $this->queue('iguide-lab-tour');
+        $studio->push('queue-alias-probe');
+        $studio->push('queue-alias-probe');
+        $tour->push('queue-alias-probe');
+        $studioIds = $this->admin->query("SELECT id FROM jobs WHERE queue = 'studio' ORDER BY id")
+            ->fetchAll(PDO::FETCH_COLUMN);
+        self::assertCount(2, $studioIds);
+        [$youngStudio, $expiredStudio] = $studioIds;
+        $expiredTour = $this->admin->query("SELECT id FROM jobs WHERE queue = 'iguide-lab-tour'")->fetchColumn();
+        self::assertNotFalse($expiredTour);
+        $reserve = $this->admin->prepare('UPDATE jobs SET reserved_at = ? WHERE id = ?');
+        $now = time();
+        $reserve->execute([$now - 1200, $youngStudio]);
+        $reserve->execute([$now - 8000, $expiredStudio]);
+        $reserve->execute([$now - 1200, $expiredTour]);
+
+        $worker = $this->app['db']->connection('mysql_queue_worker');
+        $sessions = [];
+        $worker->listen(function (QueryExecuted $event) use (&$sessions): void {
+            if (str_contains($event->sql, '`jobs`')) {
+                $identity = $event->connection->getPdo()->query('SELECT CURRENT_USER(), CONNECTION_ID()')->fetch(PDO::FETCH_NUM);
+                $sessions[] = [$event->connectionName, ...$identity];
+            }
+        });
+
+        $this->admin->beginTransaction();
+        try {
+            $this->admin->query('SELECT id FROM repro_mysql_control.writer_token WHERE id = 1 FOR UPDATE')->closeCursor();
+            $studioJob = $studio->pop();
+            self::assertSame((string) $expiredStudio, (string) $studioJob?->getJobId());
+            self::assertSame('studio', $studioJob->getConnectionName());
+            self::assertSame('studio', $studioJob->getQueue());
+            $studioJob->delete();
+            self::assertNull($studio->pop());
+
+            $tourJob = $tour->pop();
+            self::assertSame((string) $expiredTour, (string) $tourJob?->getJobId());
+            self::assertSame('iguide-lab-tour', $tourJob->getConnectionName());
+            self::assertSame('iguide-lab-tour', $tourJob->getQueue());
+            $tourJob->release(0);
+            $retry = $tour->pop();
+            self::assertNotNull($retry);
+            self::assertSame('iguide-lab-tour', $retry->getConnectionName());
+            self::assertSame(2, $retry->attempts());
+            self::assertSame($tourJob->getRawBody(), $retry->getRawBody());
+
+            self::assertGreaterThan(5, count($sessions));
+            self::assertSame(['mysql_queue_worker', 'repro_queue_worker@localhost'], array_slice($sessions[0], 0, 2));
+            self::assertSame(array_fill(0, count($sessions), $sessions[0]), $sessions);
+
+            $previousSession = $worker->getPdo()->query('SELECT CONNECTION_ID()')->fetchColumn();
+            $replacement = $this->app['db']->reconnect('mysql_queue_worker')->getPdo()
+                ->query('SELECT CONNECTION_ID()')->fetchColumn();
+            self::assertNotSame($previousSession, $replacement);
+            $sessions = [];
+            $retry->delete();
+            self::assertNotEmpty($sessions);
+            self::assertSame(array_fill(0, count($sessions),
+                ['mysql_queue_worker', 'repro_queue_worker@localhost', $replacement]), $sessions);
+        } finally {
+            $this->admin->rollBack();
+        }
+        self::assertSame(1, $this->jobRows());
+        self::assertSame((string) $youngStudio, (string) $this->admin->query('SELECT id FROM jobs')->fetchColumn());
     }
 }

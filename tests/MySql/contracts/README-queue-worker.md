@@ -1,18 +1,22 @@
 # MySQL queue worker routing pilot
 
-The default database queue uses its original business connection. The
-`REPRO_MYSQL_QUEUE_WORKER` flag defaults to false and only applies when
-`DB_CONNECTION=mysql`. This pilot covers the `database` queue connection and
-its existing unprefixed InnoDB `jobs` table. Studio and iGUIDE use their
-existing connections.
+Each logical queue has its own optional jobs-only worker routing on
+`DB_CONNECTION=mysql`. Every flag defaults to false.
 
-When the flag is enabled, claim, acknowledgement, and release use the
-`mysql_queue_worker` database connection. Laravel's normal job object keeps
-that worker connection for acknowledgement and release under the same logical
-queue name. A normal, raw, delayed or bulk enqueue or administrative clear
-uses the original business PDO. A rolled-back business transaction still
-rolls back its enqueues. The SQLite connector is used normally with SQLite
-configured.
+| Queue connection | Flag | Existing retry interval | Existing enqueue timing |
+| --- | --- | ---: | --- |
+| `database` | `REPRO_MYSQL_QUEUE_WORKER` | `DB_QUEUE_RETRY_AFTER`, default 2,100 seconds | During the business transaction |
+| `studio` | `REPRO_MYSQL_STUDIO_QUEUE_WORKER` | 7,260 seconds | After commit |
+| `iguide-lab-tour` | `REPRO_MYSQL_IGUIDE_LAB_TOUR_QUEUE_WORKER` | 900 seconds | After commit |
+
+Enabled queues share the verified `mysql_queue_worker` database connection
+and its existing unprefixed InnoDB `jobs` table for claim, acknowledgement,
+and release. Laravel's job object retains its logical queue name, and each
+queue keeps its retry interval. Enqueue and administrative clear use the
+original business PDO. A rolled-back business transaction leaves no normal
+queued job.
+Each queue retains its existing dispatch and after-commit behavior. SQLite
+continues through the SQLite connector.
 
 The worker connection shares the original socket, schema and expected server
 UUID. Its username and password come from the protected
@@ -29,5 +33,13 @@ Run `MySqlQueueWorkerContract.php` explicitly in a network-isolated MySQL
 jobs-only, and intentionally overprivileged test accounts. The contract
 exercises transactional enqueue and rollback, job progress while the business
 token is held, the same scoped session for claim and acknowledgement, and
-refusal of an invalid or overprivileged worker. The fixture provides no
-application data or external communications.
+refusal of an invalid or overprivileged worker. It also checks the independent
+alias flags, after-commit dispatch, logical queue names, distinct reservation
+windows, and acknowledgement after an authenticated shared-session
+replacement. The fixture provides no application data or external
+communications.
+
+The MySQL CI workflow runs this contract once before the regular tests in
+shard zero. It starts a separate server from the workflow's pinned Oracle
+image, shares a private Unix socket with the hosted runner, and runs the
+already-installed PHP dependencies in an empty network namespace.
